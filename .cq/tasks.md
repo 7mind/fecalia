@@ -51,10 +51,10 @@ archives: []
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
 
-### T4 — planned
+### T4 — done
 
 - createdAt: 2026-07-01T23:38:36.294Z
-- updatedAt: 2026-07-01T23:38:36.294Z
+- updatedAt: 2026-07-02T21:51:48.656Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Implement TOML config loader (role, paths, WG keys, amnezia params, PSK; 0600)
@@ -63,6 +63,9 @@ archives: []
 - suggestedModel: standard
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
+- resultCommit: dc4c090
+- completion: "TOML config loader (internal/config): single schema for both roles, explicit role, base64 Curve25519 keys, per-path source addrs, amnezia params, outer-control PSK; Load() enforces exact 0600 + fail-fast validation. Fully unit-tested and green (go test ./internal/config green; build/vet/gofmt clean). Uses github.com/pelletier/go-toml/v2. Verified in sandbox."
+- tags: ["direct-impl-sandbox"]
 
 ### T5 — planned
 
