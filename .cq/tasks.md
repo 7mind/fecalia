@@ -25,10 +25,10 @@ archives: []
 - resultCommit: 9b3dc47
 - completion: "Go module github.com/7mind/wanbond (go 1.26.4) + cmd/wanbond stub and internal/{config,frame,bind,sched,fec,reseq,telemetry,metrics,log} package stubs; test/e2e behind the e2e build tag. Verified: go build/vet green, e2e excluded from default build and compiles under -tags e2e. Implemented directly in the main checkout (worktree-isolated workers unavailable this session)."
 
-### T2 — wip
+### T2 — done
 
 - createdAt: 2026-07-01T23:38:27.297Z
-- updatedAt: 2026-07-02T21:57:16.328Z
+- updatedAt: 2026-07-02T22:00:34.224Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: "Add Nix flake: dev shell and static binary package"
@@ -37,6 +37,9 @@ archives: []
 - suggestedModel: standard
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
+- resultCommit: ad8416c
+- completion: "Nix flake: devShells.default (go 1.26.4, gopls, golangci-lint, just, gnumake, iproute2/tc, iperf3, tcpdump, ndpi, suricata) + packages.default static buildGoModule binary (CGO_ENABLED=0, vendorHash pinned). Verified in sandbox: nix build produces a runnable statically-linked ./result/bin/wanbond; nix develop resolves go + all harness/DPI tools (tc, ip, iperf3, tcpdump, ndpiReader, suricata)."
+- tags: ["direct-impl-sandbox"]
 
 ### T3 — done
 
