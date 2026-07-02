@@ -85,10 +85,10 @@ archives: []
 
 ## M3
 
-### T6 — planned
+### T6 — done
 
 - createdAt: 2026-07-01T23:38:45.236Z
-- updatedAt: 2026-07-01T23:38:45.236Z
+- updatedAt: 2026-07-02T21:55:14.075Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: e2e suite layering, sudo target, and acceptance-threshold constants table
@@ -97,6 +97,9 @@ archives: []
 - suggestedModel: fast
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
+- resultCommit: 307f1f8
+- completion: "e2e suite layering + Q1 constants + manual checklist. test/e2e/thresholds.go (e2e-tagged) is the single source of Q1 acceptance constants; TestThresholds proves import with no magic literals. Justfile targets build/lint/fmt-check/test (unprivileged) + e2e/e2e-run (sudo -tags e2e). docs/manual-checklist.md per-phase template. Verified in sandbox: default go test excludes e2e (0 e2e pkgs), e2e-tagged threshold test passes, e2e build compiles, Justfile lists targets. NOTE: the sudo e2e RUN is deferred to hardware (no /dev/net/tun in sandbox); compile verified."
+- tags: ["direct-impl-sandbox"]
 
 ### T7 — planned
 
