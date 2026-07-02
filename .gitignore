@@ -1,0 +1,5 @@
+/.cq/ledgers.yaml
+/.cq/*.lock
+/.cq/*.bak
+/result
+/result-*
