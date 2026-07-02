@@ -35,6 +35,8 @@
             just
             # privileged e2e harness tooling
             iproute2
+            util-linux # unshare / nsenter for the netns fixture
+            iputils # ping
             iperf3
             tcpdump
             # P5 DPI-classification checks
