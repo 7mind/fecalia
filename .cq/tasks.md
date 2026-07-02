@@ -3,122 +3,20 @@ ledger: tasks
 counters:
   milestone: 0
   item: 30
-archives: []
+archives:
+  - id: M2
+    path: ./archive/tasks/M2.md
+    summary: "wanbond S (scaffolding) complete: git repo + Go module github.com/7mind/wanbond, package layout, Nix flake (dev shell + static binary), golangci-lint + GitHub Actions CI, TOML config loader (0600 + fail-fast), structured logging. T1-T5 done and verified in-sandbox; Q9 answered."
+    title: "wanbond S: repo scaffolding &amp; toolchain"
+    status: done
+  - id: M3
+    path: ./archive/tasks/M3.md
+    summary: "wanbond H (test harness) complete: netns/netem two-path fixture (Starlink-like 45ms+jitter / 5G-like 64ms stable; loss/blackhole/readdress knobs; PID-addressed peer ns, no /run needed) verified in-sandbox via userns; e2e suite layering behind the e2e build tag with sudo Justfile targets; Q1 acceptance-threshold constants table; per-phase manual checklist. T6-T7 done and verified."
+    title: "wanbond H: netns/netem test harness"
+    status: done
 ---
 
 # tasks
-
-## M2
-
-### T1 — done
-
-- createdAt: 2026-07-01T23:38:18.474Z
-- updatedAt: 2026-07-02T21:47:32.806Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: Initialize git repo, Go module, and package layout
-- description: "In /home/pavel/work/safe/fecalia: `git init`; `go mod init github.com/7mind/wanbond` pinned to the latest stable Go; skeleton package layout `cmd/wanbond/` plus `internal/{config,frame,bind,sched,fec,reseq,telemetry,metrics,log}` and `test/e2e/`; one binary serves both roles (edge|concentrator selected by config). Reasonable `.gitignore` (Go artifacts, nix result/, pcaps)."
-- acceptance: "`go build ./...` and `go vet ./...` succeed on the committed skeleton; `go mod edit -json` shows module github.com/7mind/wanbond and a stable (non-rc/beta) Go version; the directory is a git repo with an initial commit and a .gitignore."
-- suggestedModel: fast
-- ledgerRefs: ["goals:G1"]
-- tags: ["direct-impl-sandbox"]
-- resultCommit: 9b3dc47
-- completion: "Go module github.com/7mind/wanbond (go 1.26.4) + cmd/wanbond stub and internal/{config,frame,bind,sched,fec,reseq,telemetry,metrics,log} package stubs; test/e2e behind the e2e build tag. Verified: go build/vet green, e2e excluded from default build and compiles under -tags e2e. Implemented directly in the main checkout (worktree-isolated workers unavailable this session)."
-
-### T2 — done
-
-- createdAt: 2026-07-01T23:38:27.297Z
-- updatedAt: 2026-07-02T22:00:34.224Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: "Add Nix flake: dev shell and static binary package"
-- description: "Author flake.nix: (a) dev shell providing the pinned Go toolchain plus the privileged-harness and DPI tooling — iproute2/tc (netem), iperf3, tcpdump, golangci-lint, and the nDPI + Suricata CLIs used by P5; (b) a package output building the static wanbond binary with CGO_ENABLED=0."
-- acceptance: "`nix develop -c go version` prints the pinned Go; `nix develop -c sh -c 'command -v tc && command -v ip && command -v iperf3 && command -v tcpdump'` all resolve; `nix build` produces a runnable ./result/bin/wanbond (a stub main is acceptable at this stage)."
-- suggestedModel: standard
-- dependsOn: ["T1"]
-- ledgerRefs: ["goals:G1"]
-- resultCommit: ad8416c
-- completion: "Nix flake: devShells.default (go 1.26.4, gopls, golangci-lint, just, gnumake, iproute2/tc, iperf3, tcpdump, ndpi, suricata) + packages.default static buildGoModule binary (CGO_ENABLED=0, vendorHash pinned). Verified in sandbox: nix build produces a runnable statically-linked ./result/bin/wanbond; nix develop resolves go + all harness/DPI tools (tc, ip, iperf3, tcpdump, ndpiReader, suricata)."
-- tags: ["direct-impl-sandbox"]
-
-### T3 — done
-
-- createdAt: 2026-07-01T23:38:31.570Z
-- updatedAt: 2026-07-02T21:57:16.257Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: Configure golangci-lint and GitHub Actions CI (lint + unit)
-- description: Add a standard-strict `.golangci.yml`; a Justfile/Makefile with thin targets (build, lint, test unprivileged, e2e = sudo + `-tags e2e`); and `.github/workflows/ci.yml` running golangci-lint and `go test ./...` (unprivileged only — the `e2e` build tag is never set in CI, per Q3). No privileged runners.
-- acceptance: "`golangci-lint run ./...` exits 0 on the scaffold; `just lint` and `just test` exit 0; the workflow YAML passes actionlint and its steps invoke golangci-lint and `go test ./...` with no `-tags e2e`."
-- suggestedModel: standard
-- dependsOn: ["T1"]
-- ledgerRefs: ["goals:G1"]
-- resultCommit: 6cc34cb
-- completion: "golangci-lint v2 config (.golangci.yml: standard + bodyclose/errorlint/misspell/unconvert + gofmt) and .github/workflows/ci.yml (build/vet/test + golangci-lint, ubuntu-latest, unprivileged; e2e tag never set). Verified in sandbox: golangci-lint run ./... = 0 issues over T1/T4/T5/T6 code; actionlint on the workflow = 0 issues; go test ./... green. Justfile lint/test targets wrap these."
-- tags: ["direct-impl-sandbox"]
-
-### T4 — done
-
-- createdAt: 2026-07-01T23:38:36.294Z
-- updatedAt: 2026-07-02T21:51:48.656Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: Implement TOML config loader (role, paths, WG keys, amnezia params, PSK; 0600)
-- description: Single TOML schema for both roles with an explicit `role = "edge"|"concentrator"` field (fail-fast validation, no inference); per-path source address list; WG private key/peers; amnezia obfuscation params (Jc/Jmin/Jmax, S1/S2, H1-H4); outer-control PSK inline. Parse into typed structs; enforce file mode 0600 at load (per Q5).
-- acceptance: "Unit tests pass: a valid edge and a valid concentrator config parse into typed structs; missing role, empty path list, malformed key, and file mode != 0600 are each rejected with a descriptive error."
-- suggestedModel: standard
-- dependsOn: ["T1"]
-- ledgerRefs: ["goals:G1"]
-- resultCommit: dc4c090
-- completion: "TOML config loader (internal/config): single schema for both roles, explicit role, base64 Curve25519 keys, per-path source addrs, amnezia params, outer-control PSK; Load() enforces exact 0600 + fail-fast validation. Fully unit-tested and green (go test ./internal/config green; build/vet/gofmt clean). Uses github.com/pelletier/go-toml/v2. Verified in sandbox."
-- tags: ["direct-impl-sandbox"]
-
-### T5 — done
-
-- createdAt: 2026-07-01T23:38:40.169Z
-- updatedAt: 2026-07-02T21:53:00.730Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: Structured logging foundation with per-path fields
-- description: slog-based structured logging (JSON handler) used from P0 onward (per Q7), behind a thin package wrapper so the rest of the code depends on an interface, not slog directly. Conventions for `component` and `path` fields so per-path events (up/down, roam, loss) are machine-filterable; level is config-driven.
-- acceptance: Unit test asserts a record emitted through the wrapper is valid JSON and carries `component` and `path` attributes; the skeleton binary logs startup/shutdown through it.
-- suggestedModel: fast
-- dependsOn: ["T1"]
-- ledgerRefs: ["goals:G1"]
-- resultCommit: 7995a54
-- completion: "Structured logging (internal/log): Logger interface over slog JSON handler so no other package imports slog directly; config-driven level (fail-fast on unknown); Component()/Path() child loggers for per-path fields; skeleton binary logs startup/shutdown through it. Unit-tested green (field attachment, level filtering, unknown-level rejection, empty-level default). Verified in sandbox."
-- tags: ["direct-impl-sandbox"]
-
-## M3
-
-### T6 — done
-
-- createdAt: 2026-07-01T23:38:45.236Z
-- updatedAt: 2026-07-02T21:55:14.075Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: e2e suite layering, sudo target, and acceptance-threshold constants table
-- description: "Layer the suite per Q3: unprivileged `go test ./...` vs a privileged `-tags e2e` suite behind a just/make target invoking sudo. Define the Q1 thresholds as named constants in one file: P1RecoverySeconds=3; P2BondedMinFraction=0.85; P2MeteredMaxByteFraction=0.01; P3InjectedLossRates={0.05,0.15}; P3MinRecoveredFraction=0.95; P3MaxOverheadFactor=2 (× configured parity ratio); P4ResidualLossMax=0.005 at steady 5% loss; P4 adaptive-overhead <= fixed-FEC baseline. Commit the per-phase manual real-link checklist template (docs/manual-checklist.md, per Q2)."
-- acceptance: "`go test ./...` runs zero privileged tests; the sudo e2e target compiles and runs the tagged suite; the constants file contains exactly the Q1 values above and the harness imports it (no magic literals in tests); checklist template committed."
-- suggestedModel: fast
-- dependsOn: ["T1"]
-- ledgerRefs: ["goals:G1"]
-- resultCommit: 307f1f8
-- completion: "e2e suite layering + Q1 constants + manual checklist. test/e2e/thresholds.go (e2e-tagged) is the single source of Q1 acceptance constants; TestThresholds proves import with no magic literals. Justfile targets build/lint/fmt-check/test (unprivileged) + e2e/e2e-run (sudo -tags e2e). docs/manual-checklist.md per-phase template. Verified in sandbox: default go test excludes e2e (0 e2e pkgs), e2e-tagged threshold test passes, e2e build compiles, Justfile lists targets. NOTE: the sudo e2e RUN is deferred to hardware (no /dev/net/tun in sandbox); compile verified."
-- tags: ["direct-impl-sandbox"]
-
-### T7 — planned
-
-- createdAt: 2026-07-01T23:38:53.166Z
-- updatedAt: 2026-07-01T23:38:53.166Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- headline: netns/netem two-path fixture library (Starlink-like + 5G-like)
-- description: "Go fixture (root-required, `e2e` build tag) creating edge and concentrator network namespaces joined by two veth paths: path A netem 45ms with jitter (Starlink-like), path B netem 64ms stable (5G-like). Runtime knobs: inject uniform loss %, blackhole/restore a path, re-address a veth (for the IP-change test), rate limits. Idempotent teardown (per Q2)."
-- acceptance: "`sudo go test -tags e2e -run TestFixture ./test/e2e` brings the topology up, measures path RTTs of ~45ms (with jitter) and ~64ms (stable) within tolerance (verified via `tc qdisc show`), injects and removes 5% loss on path A, passes ICMP between namespaces, and tears down leaving no residual netns/veth."
-- suggestedModel: standard
-- dependsOn: ["T2"]
-- ledgerRefs: ["goals:G1"]
 
 ## M4
 

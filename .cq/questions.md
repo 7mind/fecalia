@@ -3,7 +3,12 @@ ledger: questions
 counters:
   milestone: 0
   item: 9
-archives: []
+archives:
+  - id: M2
+    path: ./archive/questions/M2.md
+    summary: "wanbond S (scaffolding) complete: git repo + Go module github.com/7mind/wanbond, package layout, Nix flake (dev shell + static binary), golangci-lint + GitHub Actions CI, TOML config loader (0600 + fail-fast), structured logging. T1-T5 done and verified in-sandbox; Q9 answered."
+    title: "wanbond S: repo scaffolding &amp; toolchain"
+    status: done
 ---
 
 # questions
@@ -113,16 +118,3 @@ archives: []
 - recommendation: "Option (a) with a ~2-3 day timebox on P0: the architecture is already decided, so most P1+ tasks are stable regardless of spike findings, and a full DAG gives the reviewer the whole picture; the checkpoint task makes the revision point explicit."
 - ledgerRefs: ["goals:G1"]
 - answer: as recommended
-
-## M2
-
-### Q9 — answered
-
-- createdAt: 2026-07-02T00:26:24.794Z
-- updatedAt: 2026-07-02T21:46:10.309Z
-- author: user
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
-- question: "Environment-readiness gate for implement-flow execution. The implement flow could not dispatch worker subagents this session because native worktree isolation was disabled: the harness snapshots whether the cwd is a git repository at SESSION START, and at start this dir was not a repo (the repo was git-init'd mid-session while bootstrapping). git worktrees themselves work fine (verified). PRIMARY FIX: start a FRESH Claude Code session in this directory now that the repo exists (its startup snapshot will detect git and enable subagent worktree isolation) and re-run /cq:advance. (Configuring WorktreeCreate/WorktreeRemove hooks is only the harness's non-git-VCS fallback and is NOT needed for git.) SEPARATE, still-open constraint: /dev/net/tun is absent in this sandbox, so the P0-P5 e2e-tagged acceptance (actual amneziawg tunnel bring-up) cannot run here — run those on real hardware with root + TUN (your Starlink+5G edge + concentrator VPS, per Q2), or keep them as the planned manual checklist. Answer once you've started a session where worker worktrees function (note whether e2e runs on real hardware or stays a manual checklist) to re-open T1 and resume."
-- context: "Confirmed diagnosis: `git rev-parse --is-inside-work-tree` = true now; manual `git worktree add` succeeds; `.git` mtime is mid-session (post-startup); no WorktreeCreate hooks configured. So the block is the harness's startup-time git detection, not a git or sandbox worktree defect. Go is reachable offline via `nix shell nixpkgs#go` (go1.26.4), so the unprivileged tasks (T1-T7 + unit-level logic) are buildable once worker dispatch works; only e2e-tagged acceptance needs real TUN hardware. Plan (8 milestones M2-M9, 30 tasks T1-T30) is locked and approved (decision K1)."
-- ledgerRefs: ["tasks:T1","goals:G1"]
-- answer: Root credentials to physical hosts will be provided later for hardware/e2e testing. For now, implement what is feasible in the sandbox. Since worktree-isolated worker subagents remain unavailable in THIS session (harness snapshotted non-git at startup), proceed by implementing the sandbox-verifiable tasks DIRECTLY (main checkout, Go via `nix shell nixpkgs#go`), verifying with go build/vet/test. Defer all e2e-tagged acceptance (P0+ tunnel bring-up, netns/TUN, sudo) to the later hardware phase. The proper worktree-isolated multi-agent flow can be resumed in a fresh session (repo now exists) if desired.

@@ -3,7 +3,17 @@ ledger: milestones
 counters:
   milestone: 0
   item: 9
-archives: []
+archives:
+  - id: M2
+    path: ./archive/milestones/M2.md
+    summary: "wanbond S (scaffolding) complete: git repo + Go module github.com/7mind/wanbond, package layout, Nix flake (dev shell + static binary), golangci-lint + GitHub Actions CI, TOML config loader (0600 + fail-fast), structured logging. T1-T5 done and verified in-sandbox; Q9 answered."
+    title: "wanbond S: repo scaffolding &amp; toolchain"
+    status: done
+  - id: M3
+    path: ./archive/milestones/M3.md
+    summary: "wanbond H (test harness) complete: netns/netem two-path fixture (Starlink-like 45ms+jitter / 5G-like 64ms stable; loss/blackhole/readdress knobs; PID-addressed peer ns, no /run needed) verified in-sandbox via userns; e2e suite layering behind the e2e build tag with sudo Justfile targets; Q1 acceptance-threshold constants table; per-phase manual checklist. T6-T7 done and verified."
+    title: "wanbond H: netns/netem test harness"
+    status: done
 ---
 
 # milestones
@@ -22,21 +32,6 @@ archives: []
 - updatedAt: 2026-07-01T23:11:32.541Z
 - title: "Plan: wanbond — WAN-bonding tunnel (amneziawg-go + custom Bind)"
 - description: "Coordination milestone for the plan-flow goal: implementation + test harness plan for wanbond, a 2-WAN bonding tunnel with adaptive FEC built on amneziawg-go with a custom conn.Bind. Groups the goal, clarifying questions, reviews, and approval decision."
-
-### M2 — open
-
-- createdAt: 2026-07-01T23:36:54.706Z
-- updatedAt: 2026-07-01T23:36:54.706Z
-- title: "wanbond S: repo scaffolding &amp; toolchain"
-- description: "Greenfield foundations for wanbond (goal G1): git init, Go module github.com/7mind/wanbond, package layout, Nix flake dev shell + static binary package, golangci-lint + GitHub Actions CI (lint+unit only), TOML config loader (role/paths/WG keys/amnezia params/PSK, 0600), structured per-path logging. Feeds every later phase."
-
-### M3 — open
-
-- createdAt: 2026-07-01T23:36:59.458Z
-- updatedAt: 2026-07-01T23:36:59.458Z
-- title: "wanbond H: netns/netem test harness"
-- description: "First-class test harness for wanbond (goal G1): netns/netem two-path fixture (Starlink-like 45ms jitter + 5G-like 64ms stable; loss injection, path blackhole, veth re-address, idempotent teardown), e2e suite layering behind an `e2e` build tag with a sudo target, Q1 acceptance-threshold constants table, and the per-phase manual real-link checklist template. Every phase asserts against this."
-- dependsOn: ["M2"]
 
 ### M4 — open
 
