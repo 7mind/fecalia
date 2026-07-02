@@ -6,6 +6,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/7mind/wanbond/internal/log"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -20,12 +22,22 @@ func main() {
 
 // run is the testable entry point. The full command-line surface (config path,
 // role dispatch to edge/concentrator) is implemented in later tasks; for now it
-// only reports the build version so the skeleton binary is runnable.
+// reports the build version and exercises the structured logger so the skeleton
+// binary is runnable and its logging path is live.
 func run(args []string) error {
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Println("wanbond", version)
 		return nil
 	}
+
+	lg, err := log.New("info", os.Stderr)
+	if err != nil {
+		return err
+	}
+	main := lg.Component("main")
+	main.Info("wanbond starting", "version", version)
+	defer main.Info("wanbond stopped")
+
 	fmt.Println("wanbond", version, "- config-driven WAN bonding tunnel (edge|concentrator)")
 	return nil
 }
