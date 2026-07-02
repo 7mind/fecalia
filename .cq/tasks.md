@@ -20,10 +20,10 @@ archives:
 
 ## M4
 
-### T8 — planned
+### T8 — blocked
 
 - createdAt: 2026-07-01T23:39:01.889Z
-- updatedAt: 2026-07-01T23:39:01.889Z
+- updatedAt: 2026-07-02T22:11:26.275Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Embed amneziawg-go with pass-through Bind; bring tunnel up edge↔concentrator
@@ -32,6 +32,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T4","T5","T6","T7"]
 - ledgerRefs: ["goals:G1"]
+- tags: ["blocked-on-hardware"]
 
 ### T9 — planned
 

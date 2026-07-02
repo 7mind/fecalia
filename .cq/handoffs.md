@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 2
+  item: 3
 archives: []
 ---
 
@@ -37,3 +37,15 @@ archives: []
 - handoffReasons: ["drained: investigate stage found no actionable defects; plan stage drove G1 to planned/approved (decision K1; milestones M2-M9; tasks T1-T30)","answers-required: T1 blocked on open question Q9 (environment-readiness gate for implement-flow execution)","user-action-required: implement-worker worktree isolation is unavailable in this sandbox (configure WorktreeCreate/WorktreeRemove hooks in settings.json, OR run /cq:advance from a non-sandboxed git checkout); P0+ e2e acceptance needs real hardware with root + /dev/net/tun (Starlink+5G edge + concentrator VPS)"]
 - sessionLogs: [".cq/logs/20260701-234215-a533f3a14c0afe112.md",".cq/logs/20260701-234215-a2ee01f9272ece9de.md",".cq/logs/20260701-235345-a7740b6485fe5fb68.md",".cq/logs/20260701-235345-aa548e9af4732b445.md",".cq/logs/20260702-000518-a6e2847f4e4ea475d.md",".cq/logs/20260702-000518-a8090f5e41a8e7704.md",".cq/logs/20260702-001700-aebb6055cd61166dd.md",".cq/logs/20260702-001700-a89072ddab484d8b1.md"]
 - rawLogs: [".cq/logs/raw/20260701-234215-a533f3a14c0afe112.jsonl",".cq/logs/raw/20260701-234215-a2ee01f9272ece9de.jsonl",".cq/logs/raw/20260701-235345-a7740b6485fe5fb68.jsonl",".cq/logs/raw/20260701-235345-aa548e9af4732b445.jsonl",".cq/logs/raw/20260702-000518-a6e2847f4e4ea475d.jsonl",".cq/logs/raw/20260702-000518-a8090f5e41a8e7704.jsonl",".cq/logs/raw/20260702-001700-aebb6055cd61166dd.jsonl",".cq/logs/raw/20260702-001700-a89072ddab484d8b1.jsonl"]
+
+### HO3 — mixed
+
+- createdAt: 2026-07-02T22:11:52.280Z
+- updatedAt: 2026-07-02T22:11:52.280Z
+- author: fable-5
+- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- summary: "/cq:advance (sandbox-implementation run): landed the ENTIRE sandbox-verifiable foundation for wanbond and stopped at the P0/hardware boundary. Because worktree-isolated worker subagents are unavailable this session (Q9), implemented directly in the main checkout, verifying every task with the nix-provided Go toolchain. DONE + VERIFIED + ARCHIVED: S milestone (M2) T1 module/layout, T2 Nix flake (dev shell + static binary), T3 golangci-lint + GitHub Actions CI, T4 TOML config loader (0600 + fail-fast, unit-tested), T5 structured logging (unit-tested); H milestone (M3) T6 e2e layering + Q1 constants + manual checklist, T7 netns/netem two-path fixture (verified via userns, TestFixture green). 7 tasks done, 2 milestones archived, all go build/vet/test/golangci-lint green. STOPPED: T8 (P0 embed amneziawg-go) blocked on Q10 — its acceptance is the real amneziawg tunnel bring-up, which needs /dev/net/tun + root (absent in sandbox, deferred to the user's hardware). MIXED: major work landed; P0+ blocked on Q10 (approach choice) and on host/TUN access."
+- flow: advance
+- ledgerRefs: ["goals:G1","tasks:T8"]
+- blockingQuestions: ["Q10"]
+- handoffReasons: ["drained: investigate + plan drained earlier; this run implemented and verified the full sandbox-doable foundation (S+H milestones, 7 tasks, both archived)","answers-required: T8/P0 blocked on open question Q10 (implement sandbox-verifiable P0 code now vs defer all P0 to hardware; + strong recommendation to resume in a fresh session for the proper worker flow)","user-action-required: P0-P5 e2e acceptance needs host root + /dev/net/tun (Starlink+5G edge + concentrator VPS); provide host access to verify the tunnel/scheduler/FEC/DPI phases"]
