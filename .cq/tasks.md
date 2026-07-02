@@ -10,10 +10,10 @@ archives: []
 
 ## M2
 
-### T1 — blocked
+### T1 — done
 
 - createdAt: 2026-07-01T23:38:18.474Z
-- updatedAt: 2026-07-02T00:26:15.031Z
+- updatedAt: 2026-07-02T21:47:32.806Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Initialize git repo, Go module, and package layout
@@ -21,7 +21,9 @@ archives: []
 - acceptance: "`go build ./...` and `go vet ./...` succeed on the committed skeleton; `go mod edit -json` shows module github.com/7mind/wanbond and a stable (non-rc/beta) Go version; the directory is a git repo with an initial commit and a .gitignore."
 - suggestedModel: fast
 - ledgerRefs: ["goals:G1"]
-- tags: ["blocked-on-environment"]
+- tags: ["direct-impl-sandbox"]
+- resultCommit: 9b3dc47
+- completion: "Go module github.com/7mind/wanbond (go 1.26.4) + cmd/wanbond stub and internal/{config,frame,bind,sched,fec,reseq,telemetry,metrics,log} package stubs; test/e2e behind the e2e build tag. Verified: go build/vet green, e2e excluded from default build and compiles under -tags e2e. Implemented directly in the main checkout (worktree-isolated workers unavailable this session)."
 
 ### T2 — planned
 
