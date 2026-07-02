@@ -3,3 +3,5 @@
 /.cq/*.bak
 /result
 /result-*
+/.worktrees/
+/.gocache/
