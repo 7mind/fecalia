@@ -25,10 +25,10 @@ archives: []
 - resultCommit: 9b3dc47
 - completion: "Go module github.com/7mind/wanbond (go 1.26.4) + cmd/wanbond stub and internal/{config,frame,bind,sched,fec,reseq,telemetry,metrics,log} package stubs; test/e2e behind the e2e build tag. Verified: go build/vet green, e2e excluded from default build and compiles under -tags e2e. Implemented directly in the main checkout (worktree-isolated workers unavailable this session)."
 
-### T2 — planned
+### T2 — wip
 
 - createdAt: 2026-07-01T23:38:27.297Z
-- updatedAt: 2026-07-01T23:38:27.297Z
+- updatedAt: 2026-07-02T21:57:16.328Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: "Add Nix flake: dev shell and static binary package"
@@ -38,10 +38,10 @@ archives: []
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
 
-### T3 — planned
+### T3 — done
 
 - createdAt: 2026-07-01T23:38:31.570Z
-- updatedAt: 2026-07-01T23:38:31.570Z
+- updatedAt: 2026-07-02T21:57:16.257Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Configure golangci-lint and GitHub Actions CI (lint + unit)
@@ -50,6 +50,9 @@ archives: []
 - suggestedModel: standard
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
+- resultCommit: 6cc34cb
+- completion: "golangci-lint v2 config (.golangci.yml: standard + bodyclose/errorlint/misspell/unconvert + gofmt) and .github/workflows/ci.yml (build/vet/test + golangci-lint, ubuntu-latest, unprivileged; e2e tag never set). Verified in sandbox: golangci-lint run ./... = 0 issues over T1/T4/T5/T6 code; actionlint on the workflow = 0 issues; go test ./... green. Justfile lint/test targets wrap these."
+- tags: ["direct-impl-sandbox"]
 
 ### T4 — done
 
