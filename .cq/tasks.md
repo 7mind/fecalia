@@ -10,10 +10,10 @@ archives: []
 
 ## M2
 
-### T1 — planned
+### T1 — blocked
 
 - createdAt: 2026-07-01T23:38:18.474Z
-- updatedAt: 2026-07-01T23:38:18.474Z
+- updatedAt: 2026-07-02T00:26:15.031Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Initialize git repo, Go module, and package layout
@@ -21,6 +21,7 @@ archives: []
 - acceptance: "`go build ./...` and `go vet ./...` succeed on the committed skeleton; `go mod edit -json` shows module github.com/7mind/wanbond and a stable (non-rc/beta) Go version; the directory is a git repo with an initial commit and a .gitignore."
 - suggestedModel: fast
 - ledgerRefs: ["goals:G1"]
+- tags: ["blocked-on-environment"]
 
 ### T2 — planned
 

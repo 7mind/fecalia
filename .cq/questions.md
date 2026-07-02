@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 8
+  item: 9
 archives: []
 ---
 
@@ -113,3 +113,15 @@ archives: []
 - recommendation: "Option (a) with a ~2-3 day timebox on P0: the architecture is already decided, so most P1+ tasks are stable regardless of spike findings, and a full DAG gives the reviewer the whole picture; the checkpoint task makes the revision point explicit."
 - ledgerRefs: ["goals:G1"]
 - answer: as recommended
+
+## M2
+
+### Q9 — open
+
+- createdAt: 2026-07-02T00:26:24.794Z
+- updatedAt: 2026-07-02T00:26:24.794Z
+- author: fable-5
+- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- question: "Environment-readiness gate for implement-flow execution. The implement flow could not run in this sandbox: dispatching an `implement-worker` subagent fails with 'Cannot create agent worktree: not in a git repository and no WorktreeCreate hooks are configured' — worktree isolation (the flow's per-task worker mechanism) is unavailable here. Separately, `/dev/net/tun` is absent, so the P0-P5 end-to-end acceptance (actual amneziawg tunnel bring-up) cannot be verified in-sandbox regardless. To proceed with implementation, do ONE of: (a) configure WorktreeCreate/WorktreeRemove hooks in settings.json so subagents can use git worktrees; or (b) run `/cq:advance` (or `/cq:implement:advance`) from a normal, non-sandboxed git checkout that supports native worktree isolation. For the P0+ e2e tasks specifically, run on real hardware with root + `/dev/net/tun` (your Starlink+5G edge + concentrator VPS, per your Q2 answer). Answer this once the environment supports worker worktrees (and note whether e2e will run on real hardware or should stay a manual checklist) to re-open T1 and resume the build."
+- context: Repo was bootstrapped this session (git init + initial commits so worktree isolation and ledger commits have a base). Go is reachable offline via `nix shell nixpkgs#go` (go1.26.4), so the unprivileged, unit-verifiable tasks (T1-T7 scaffolding/harness/config/logging + unit-level logic in later phases) ARE buildable once worker dispatch works; only the e2e-tagged acceptance needs real TUN hardware. The plan itself (8 milestones M2-M9, 30 tasks T1-T30) is locked and approved (decision K1).
+- ledgerRefs: ["tasks:T1","goals:G1"]
