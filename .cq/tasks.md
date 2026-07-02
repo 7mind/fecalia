@@ -67,10 +67,10 @@ archives: []
 - completion: "TOML config loader (internal/config): single schema for both roles, explicit role, base64 Curve25519 keys, per-path source addrs, amnezia params, outer-control PSK; Load() enforces exact 0600 + fail-fast validation. Fully unit-tested and green (go test ./internal/config green; build/vet/gofmt clean). Uses github.com/pelletier/go-toml/v2. Verified in sandbox."
 - tags: ["direct-impl-sandbox"]
 
-### T5 — planned
+### T5 — done
 
 - createdAt: 2026-07-01T23:38:40.169Z
-- updatedAt: 2026-07-01T23:38:40.169Z
+- updatedAt: 2026-07-02T21:53:00.730Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Structured logging foundation with per-path fields
@@ -79,6 +79,9 @@ archives: []
 - suggestedModel: fast
 - dependsOn: ["T1"]
 - ledgerRefs: ["goals:G1"]
+- resultCommit: 7995a54
+- completion: "Structured logging (internal/log): Logger interface over slog JSON handler so no other package imports slog directly; config-driven level (fail-fast on unknown); Component()/Path() child loggers for per-path fields; skeleton binary logs startup/shutdown through it. Unit-tested green (field attachment, level filtering, unknown-level rejection, empty-level default). Verified in sandbox."
+- tags: ["direct-impl-sandbox"]
 
 ## M3
 
