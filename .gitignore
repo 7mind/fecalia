@@ -5,3 +5,10 @@
 /result-*
 /.worktrees/
 /.gocache/
+/wanbond
+/cmd/wanbond/wanbond
+*.test
+*.out
+coverage.txt
+*.pcap
+*.pcapng
