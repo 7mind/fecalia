@@ -68,8 +68,9 @@ and (b) a standing queue can form so pacing has something to bound.
 `pathSpec` gains an OPTIONAL per-path bandwidth cap (`netem rate`) and a
 config-time controlled-loss knob (`netem loss`), both defaulting to zero so the
 DefaultPaths topology stays uncapped/lossless and every existing P0/P1 e2e test
-runs unchanged; the cap is sized well below the ~150 Mbit/s CPU bound (default
-50 Mbit/s) so the link is the bottleneck and a standing queue forms. T35's
+runs unchanged (`pathSpec.rateMbit`/`lossPct` default to 0 = uncapped/lossless);
+when a cap IS set it is sized well below the ~150 Mbit/s CPU bound (the self-test
+uses 50 Mbit/s) so the link is the bottleneck and a standing queue forms. T35's
 `TestFixtureImpairment` self-test proves both knobs operationally. The drafted
 follow-up below is **superseded by, and unified into, T35** — there is no
 duplicate/parallel fixture-cap knob; T23's aggregation e2e and T21's empirical
