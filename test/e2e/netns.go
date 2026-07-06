@@ -14,7 +14,14 @@ import (
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
-// egress.
+// egress. The bandwidth cap (rateMbit) and controlled loss (lossPct) are
+// OPTIONAL config-time impairments: both default to zero, so the DefaultPaths
+// topology stays uncapped and lossless and every existing P0/P1 e2e test runs
+// unchanged. A non-zero rateMbit makes the LINK — not the single-core userspace
+// WG crypto (CPU-bound at ~150-170 Mbit/s on a 1-vCPU host) — the bottleneck, so
+// a standing queue can form for bufferbloat/pacing (T21/T23) work; a non-zero
+// lossPct injects uniform egress loss at Setup time for FEC-recovery (T25/T29)
+// work.
 type pathSpec struct {
 	name     string
 	edgeIP   string
@@ -23,6 +30,8 @@ type pathSpec struct {
 	concVeth string
 	delayMs  int
 	jitterMs int
+	rateMbit int     // optional per-path bandwidth cap (netem rate); 0 = uncapped
+	lossPct  float64 // optional config-time uniform egress loss (netem loss); 0 = lossless
 }
 
 // DefaultPaths are the two emulated links: Starlink-like (low latency, jittery)
@@ -42,11 +51,19 @@ type Topology struct {
 	paths  []pathSpec
 }
 
-// Setup builds the two-path topology. It requires CAP_NET_ADMIN, which the e2e
-// TestMain provides via an unprivileged user+net namespace (`unshare -Urmn`).
+// Setup builds the two-path topology from DefaultPaths (uncapped, lossless). It
+// requires CAP_NET_ADMIN, which the e2e TestMain provides via an unprivileged
+// user+net namespace (`unshare -Urmn`).
 func Setup(t *testing.T) *Topology {
+	return SetupWithPaths(t, DefaultPaths)
+}
+
+// SetupWithPaths builds the topology from an explicit path set, allowing a test
+// to opt into the optional per-path bandwidth cap (rateMbit) and/or config-time
+// loss (lossPct). DefaultPaths leaves both zero, so Setup is unchanged.
+func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 	t.Helper()
-	top := &Topology{t: t, paths: DefaultPaths}
+	top := &Topology{t: t, paths: paths}
 
 	// Hold the concentrator network namespace open with a sleeping child.
 	top.holder = exec.Command("unshare", "-n", "sleep", "600")
@@ -66,7 +83,7 @@ func Setup(t *testing.T) *Topology {
 		top.run("ip", "link", "set", p.edgeVeth, "up")
 		top.nsenter("ip", "addr", "add", p.concIP+"/24", "dev", p.concVeth)
 		top.nsenter("ip", "link", "set", p.concVeth, "up")
-		qargs := append([]string{"qdisc", "add", "dev", p.edgeVeth, "root", "netem"}, top.delayArgs(p)...)
+		qargs := append([]string{"qdisc", "add", "dev", p.edgeVeth, "root", "netem"}, top.netemArgs(p)...)
 		top.run("tc", qargs...)
 	}
 	t.Cleanup(top.Teardown)
@@ -85,10 +102,27 @@ func (top *Topology) waitForNetns() {
 	top.t.Fatalf("concentrator netns %s never appeared", path)
 }
 
-func (top *Topology) delayArgs(p pathSpec) []string {
+// netemArgs builds the netem parameter list for a path's baseline impairment
+// profile: delay/jitter, then its configured loss (lossPct) and bandwidth cap
+// (rateMbit) if set. For a DefaultPaths entry (both zero) this reduces to the
+// prior delay/jitter-only output, so existing qdisc setup is byte-identical.
+func (top *Topology) netemArgs(p pathSpec) []string {
+	return top.netemArgsWithLoss(p, p.lossPct)
+}
+
+// netemArgsWithLoss is netemArgs with the loss percentage overridden — used by
+// InjectLoss to set runtime loss while preserving delay/jitter and any rate cap.
+// netem accepts the options in delay/loss/rate order.
+func (top *Topology) netemArgsWithLoss(p pathSpec, lossPct float64) []string {
 	args := []string{"delay", fmt.Sprintf("%dms", p.delayMs)}
 	if p.jitterMs > 0 {
 		args = append(args, fmt.Sprintf("%dms", p.jitterMs))
+	}
+	if lossPct > 0 {
+		args = append(args, "loss", fmt.Sprintf("%g%%", lossPct))
+	}
+	if p.rateMbit > 0 {
+		args = append(args, "rate", fmt.Sprintf("%dmbit", p.rateMbit))
 	}
 	return args
 }
@@ -130,19 +164,20 @@ func (top *Topology) Reachable(name string, count int) bool {
 	return top.tryRun("ping", "-c", strconv.Itoa(count), "-i", "0.2", "-W", "1", p.concIP) == nil
 }
 
-// InjectLoss sets uniform egress loss (percent) on the named path, preserving its
-// delay/jitter profile.
+// InjectLoss sets uniform egress loss (percent) on the named path at runtime,
+// preserving its delay/jitter profile and any configured bandwidth cap.
 func (top *Topology) InjectLoss(name string, pct float64) {
 	p := top.path(name)
-	args := append([]string{"qdisc", "change", "dev", p.edgeVeth, "root", "netem"}, top.delayArgs(p)...)
-	args = append(args, "loss", fmt.Sprintf("%g%%", pct))
+	args := append([]string{"qdisc", "change", "dev", p.edgeVeth, "root", "netem"}, top.netemArgsWithLoss(p, pct)...)
 	top.run("tc", args...)
 }
 
-// ClearLoss restores the named path to delay/jitter only.
+// ClearLoss restores the named path to its configured baseline impairment
+// (delay/jitter, plus any config-time loss and bandwidth cap). For a DefaultPaths
+// entry that is delay/jitter only.
 func (top *Topology) ClearLoss(name string) {
 	p := top.path(name)
-	args := append([]string{"qdisc", "change", "dev", p.edgeVeth, "root", "netem"}, top.delayArgs(p)...)
+	args := append([]string{"qdisc", "change", "dev", p.edgeVeth, "root", "netem"}, top.netemArgs(p)...)
 	top.run("tc", args...)
 }
 

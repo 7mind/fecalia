@@ -62,8 +62,18 @@ fixture variant** (a
 `netem rate` or a `tbf`/`htb` bottleneck qdisc on the edge veth, ideally with a
 per-path cap and enough CPU headroom that the link — not the crypto — is the
 bottleneck) so that (a) each path is link-bound and aggregation is measurable,
-and (b) a standing queue can form so pacing has something to bound. See the
-drafted follow-up below.
+and (b) a standing queue can form so pacing has something to bound.
+
+**This prerequisite is now planned as T35** (M10 additive follow-up):
+`pathSpec` gains an OPTIONAL per-path bandwidth cap (`netem rate`) and a
+config-time controlled-loss knob (`netem loss`), both defaulting to zero so the
+DefaultPaths topology stays uncapped/lossless and every existing P0/P1 e2e test
+runs unchanged; the cap is sized well below the ~150 Mbit/s CPU bound (default
+50 Mbit/s) so the link is the bottleneck and a standing queue forms. T35's
+`TestFixtureImpairment` self-test proves both knobs operationally. The drafted
+follow-up below is **superseded by, and unified into, T35** — there is no
+duplicate/parallel fixture-cap knob; T23's aggregation e2e and T21's empirical
+pace-sizing run against T35's capped fixture.
 
 ## Added scope from P0 defects (not gating P1)
 
@@ -93,9 +103,16 @@ recovery/entropy/classification, not pacing or aggregate bandwidth).
 (including the synthetic pacing/backlog test) also proceeds now; only **T23's
 in-fixture aggregation e2e** — and T21's *empirical* per-path pace-sizing from a
 measured BDP — must be preceded by the bandwidth-capped fixture variant (A7).
-Drafted follow-up for when P2 planning begins:
 
-> `/cq:plan:follow-up G1` — P0 checkpoint (T10) revised assumption A7: the
+**Actioned as T35** (M10). The drafted follow-up below was the original
+placeholder; it is now **SUPERSEDED by and MERGED into T35** (extend the netns
+fixture with a per-path bandwidth cap and controlled-loss knobs). No separate
+`/cq:plan:follow-up` and no parallel fixture-cap task should be created — T35 is
+the single owner of this harness prerequisite. Retained verbatim below for
+provenance only:
+
+> _(superseded by T35)_ `/cq:plan:follow-up G1` — P0 checkpoint (T10) revised
+> assumption A7: the
 > netns/netem fixture emulates delay/jitter/loss but no bandwidth cap, and P0
 > tunnel throughput is CPU-bound, so T23's bonded-vs-sum aggregation e2e and the
 > empirical BDP-based sizing of T21's per-path pace cannot be measured in it
