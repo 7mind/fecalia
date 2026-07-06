@@ -39,3 +39,10 @@ e2e-run TEST:
 # Run all: `just realhosts`; one test: `just realhosts TestRealConnectivity`.
 realhosts TEST="":
     go test -tags realhosts ./test/realhosts/... {{ if TEST != "" { "-run " + TEST } else { "" } }} -count=1 -v
+
+# Opt-in idempotent real-host provisioning: ensure iperf3 + gcc + Go 1.26.x on
+# both hosts and the concentrator's tunnel-interface INPUT ACCEPT rule. Report-
+# only, idempotent (a second run reports no changes); same SSH key requirements
+# as `realhosts`. Thin wrapper over TestRealProvision. NEVER part of `just test`.
+realhosts-provision:
+    go test -tags realhosts ./test/realhosts/... -run TestRealProvision -count=1 -v
