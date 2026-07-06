@@ -16,7 +16,7 @@ import (
 // handshake. Post-fix, Close clears state and Open rebuilds it, so Send succeeds.
 func TestMultipathEngineLifecycleCloseThenOpen(t *testing.T) {
 	psk := testKey(t, 0xAB)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestMultipathEngineLifecycleCloseThenOpen(t *testing.T) {
 // the bind was not reopenable. conn.StdNetBind supports this cycle; so must we.
 func TestMultipathReopenAfterClose(t *testing.T) {
 	psk := testKey(t, 0xCD)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}

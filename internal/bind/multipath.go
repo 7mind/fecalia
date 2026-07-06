@@ -12,6 +12,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/sched"
 )
 
 // socketRecvBuffer is the SO_RCVBUF requested on every per-path socket, matching
@@ -53,7 +54,6 @@ type pathState struct {
 	mu        sync.Mutex
 	remote    netip.AddrPort
 	hasRemote bool
-	healthy   bool
 }
 
 func (ps *pathState) setRemote(ap netip.AddrPort) {
@@ -85,12 +85,17 @@ func (ps *pathState) getRemote() (netip.AddrPort, bool) {
 // state is simply "no bound sockets" (len(paths)==0); there is no separate sticky
 // flag that a later Open would have to reset.
 //
-// T12 scope: the path policy is "first healthy path with a known remote" — the
-// real weighted scheduler is T15. No FEC/resequencing yet (P2/P3), but every
-// DATA frame carries its outer-seq and path-id so T18/T24 can consume them.
+// Path policy: an injected sched.Scheduler (T15) chooses the egress path per
+// datagram. The P1 MVP wires an active-backup scheduler (all traffic on the
+// preferred primary, transparent failover to a backup on a T13 path-DOWN signal
+// with failback hysteresis); the weighted/FEC-aware policy (T21) is a different
+// Scheduler swapped in here with no Bind change. No FEC/resequencing yet
+// (P2/P3), but every DATA frame carries its outer-seq and path-id so T18/T24 can
+// consume them.
 type Multipath struct {
-	psk  config.Key
-	defs []config.Path
+	psk       config.Key
+	defs      []config.Path
+	scheduler sched.Scheduler
 
 	mu        sync.Mutex
 	paths     []*pathState
@@ -110,8 +115,11 @@ var _ Bind = (*Multipath)(nil)
 
 // NewMultipath returns a closed multipath Bind over the configured paths; call
 // Open to bind the per-path sockets. The PSK keys the outer DATA framing and must
-// be set (config validation guarantees it).
-func NewMultipath(paths []config.Path, psk config.Key) (*Multipath, error) {
+// be set (config validation guarantees it). The scheduler is the injected
+// send-side path-selection policy (T15) whose priority order MUST match the
+// paths slice order (index 0 = the preferred primary); it is a required
+// collaborator so the send path is never without a policy.
+func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -122,10 +130,14 @@ func NewMultipath(paths []config.Path, psk config.Key) (*Multipath, error) {
 		// path-id is a uint8 in the DATA frame header.
 		return nil, fmt.Errorf("bind: at most 256 paths supported, got %d", len(paths))
 	}
+	if scheduler == nil {
+		return nil, errors.New("bind: a send scheduler is required")
+	}
 	return &Multipath{
-		psk:  psk,
-		defs: append([]config.Path(nil), paths...),
-		virt: &udpEndpoint{},
+		psk:       psk,
+		defs:      append([]config.Path(nil), paths...),
+		scheduler: scheduler,
+		virt:      &udpEndpoint{},
 	}, nil
 }
 
@@ -177,7 +189,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			return nil, 0, err
 		}
 
-		ps := &pathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c, codec: codec, healthy: true}
+		ps := &pathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c, codec: codec}
 		switch {
 		case def.DestAddr.IsValid():
 			ps.setRemote(def.DestAddr)
@@ -257,15 +269,22 @@ func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
 }
 
 // Send wraps each buffer in an outer DATA frame (fresh outer-seq + the chosen
-// path's id) and writes it to that path's remote. The path policy is T12's simple
-// "first healthy path with a known remote".
+// path's id) and writes it to that path's remote. The egress path is chosen by
+// the injected scheduler (T15): the active-backup policy returns the preferred
+// primary while it is up and the failover backup otherwise. The scheduler
+// selects by path priority/liveness only; the Bind additionally requires the
+// chosen path to have a known remote, failing the send otherwise (matching the
+// pre-T15 "no remote → no send" behaviour) rather than silently dropping.
 //
 // Critical-section discipline: path selection and framing run under m.mu (the
 // send Codec is shared and stateful — D5's single keystream requires sequential,
 // mutex-guarded Encode), but each datagram is encoded into its OWN fresh buffer
 // so it outlives the lock, and the WriteToUDPAddrPort syscalls run WITHOUT m.mu
-// held. A receive goroutine pinning the virtual endpoint therefore never blocks
-// behind an in-flight transmit syscall.
+// held. The scheduler is internally synchronized and never calls back into the
+// Bind, so calling Pick under m.mu cannot deadlock and adds no receive-path
+// contention (the lock-free virtual-endpoint fast path is untouched). A receive
+// goroutine pinning the virtual endpoint therefore never blocks behind an
+// in-flight transmit syscall.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	if _, ok := ep.(*udpEndpoint); !ok {
 		return conn.ErrWrongEndpointType
@@ -276,11 +295,12 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		m.mu.Unlock()
 		return errClosed
 	}
-	ps := m.pickPathLocked()
-	if ps == nil {
+	idx := m.scheduler.Pick()
+	if idx < 0 || idx >= len(m.paths) {
 		m.mu.Unlock()
 		return errNoHealthyPath
 	}
+	ps := m.paths[idx]
 	remote, ok := ps.getRemote()
 	if !ok {
 		m.mu.Unlock()
@@ -302,20 +322,6 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	for _, wire := range wires {
 		if _, err := c.WriteToUDPAddrPort(wire, remote); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-// pickPathLocked returns the first healthy path that has a known remote, or nil.
-// Caller holds m.mu.
-func (m *Multipath) pickPathLocked() *pathState {
-	for _, ps := range m.paths {
-		if !ps.healthy {
-			continue
-		}
-		if _, ok := ps.getRemote(); ok {
-			return ps
 		}
 	}
 	return nil

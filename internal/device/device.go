@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
@@ -18,6 +19,8 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/sched"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // defaultTUNName is the requested interface name; the kernel honours it unless it
@@ -56,7 +59,12 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		return nil, fmt.Errorf("device: read TUN name: %w", err)
 	}
 
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK)
+	scheduler, err := buildScheduler(cfg, clg)
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: build scheduler: %w", err)
+	}
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -79,6 +87,30 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
 	return &Tunnel{dev: dev, tun: tunDev, name: name}, nil
+}
+
+// defaultFailbackDwell is how long a recovered higher-priority path must stay up
+// before egress fails BACK to it, damping flap-induced thrash (T15 hysteresis).
+const defaultFailbackDwell = 5 * time.Second
+
+// buildScheduler constructs the P1 active-backup send scheduler over cfg.Paths in
+// their configured priority order (index 0 = the preferred primary). Real
+// per-path liveness arrives once the probe-transport wiring lands (a follow-up
+// task drives *telemetry.Prober per path); until then every path is reported
+// statically Up, so the active-backup scheduler keeps all egress on the primary —
+// the data-thrift bring-up behaviour — and swapping the AlwaysUp sources for live
+// Probers activates failover with no further Bind or scheduler change.
+func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, error) {
+	health := make([]sched.PathHealth, len(cfg.Paths))
+	for i := range health {
+		health[i] = sched.AlwaysUp{}
+	}
+	return sched.NewActiveBackup(
+		health,
+		sched.Config{FailbackAfter: defaultFailbackDwell},
+		telemetry.SystemClock{},
+		lg,
+	)
 }
 
 // Name is the created TUN interface name (for external addressing/routing).

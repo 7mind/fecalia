@@ -67,7 +67,7 @@ func TestMultipathEngineUpCanTransmit(t *testing.T) {
 	defer peer.Close()
 	peerAP := peer.LocalAddr().(*net.UDPAddr).AddrPort()
 
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}

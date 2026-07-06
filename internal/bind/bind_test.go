@@ -3,15 +3,41 @@ package bind
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/sched"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
+
+// newMultipath builds a Multipath over paths with a default active-backup
+// scheduler whose paths are all statically Up, so path selection reduces to the
+// preferred primary (index 0) — the T12 send behaviour these tests assert. The
+// scheduler's own failover/hysteresis logic is exercised in internal/sched.
+func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath, error) {
+	t.Helper()
+	health := make([]sched.PathHealth, len(paths))
+	for i := range health {
+		health[i] = sched.AlwaysUp{}
+	}
+	lg, err := log.New("error", io.Discard)
+	if err != nil {
+		t.Fatalf("build logger: %v", err)
+	}
+	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
+	if err != nil {
+		t.Fatalf("build scheduler: %v", err)
+	}
+	return NewMultipath(paths, psk, scheduler)
+}
 
 // testKey builds a valid 32-byte config.Key seeded by b.
 func testKey(t testing.TB, b byte) config.Key {
@@ -67,7 +93,7 @@ func sendDataTo(t testing.TB, psk config.Key, dst *net.UDPAddr, pathID uint8, pa
 // endpoint bookkeeping: each path learns its sender's remote.
 func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	psk := testKey(t, 0x5A)
-	m, err := NewMultipath(loopbackPaths(2), psk)
+	m, err := newMultipath(t, loopbackPaths(2), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -132,7 +158,7 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 // concurrency, so it is guarded here on the object T12 delivers.
 func TestMultipathVirtualEndpointDstRace(t *testing.T) {
 	psk := testKey(t, 0x99)
-	m, err := NewMultipath(loopbackPaths(4), psk)
+	m, err := newMultipath(t, loopbackPaths(4), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -193,7 +219,7 @@ func TestMultipathVirtualEndpointDstRace(t *testing.T) {
 // remote so the edge can send immediately after Open.
 func TestMultipathParseEndpointStable(t *testing.T) {
 	psk := testKey(t, 0x11)
-	m, err := NewMultipath(loopbackPaths(2), psk)
+	m, err := newMultipath(t, loopbackPaths(2), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -231,7 +257,7 @@ func TestMultipathParseEndpointStable(t *testing.T) {
 // default remote must reach the paths at Open.
 func TestMultipathParseEndpointBeforeOpen(t *testing.T) {
 	psk := testKey(t, 0x22)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -254,7 +280,7 @@ func TestMultipathDestAddrOverridesDefault(t *testing.T) {
 	psk := testKey(t, 0x33)
 	paths := loopbackPaths(2)
 	paths[1].DestAddr = netip.MustParseAddrPort("192.0.2.9:9999")
-	m, err := NewMultipath(paths, psk)
+	m, err := newMultipath(t, paths, psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -281,7 +307,7 @@ func TestMultipathDestAddrOverridesDefault(t *testing.T) {
 // remote), wrap it in a DATA frame, and the wire must decode back to the payload.
 func TestMultipathSendRoutesAndFrames(t *testing.T) {
 	psk := testKey(t, 0x44)
-	m, err := NewMultipath(loopbackPaths(2), psk)
+	m, err := newMultipath(t, loopbackPaths(2), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -335,7 +361,7 @@ func TestMultipathSendRoutesAndFrames(t *testing.T) {
 // rather than silently dropping.
 func TestMultipathSendNoHealthyPath(t *testing.T) {
 	psk := testKey(t, 0x55)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -351,7 +377,7 @@ func TestMultipathSendNoHealthyPath(t *testing.T) {
 // TestMultipathWrongEndpointType: Send rejects a foreign endpoint type.
 func TestMultipathWrongEndpointType(t *testing.T) {
 	psk := testKey(t, 0x66)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -376,7 +402,7 @@ func (notOurEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 // TestMultipathBatchSizePositive is a contract check.
 func TestMultipathBatchSizePositive(t *testing.T) {
 	psk := testKey(t, 0x77)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -392,7 +418,7 @@ func TestMultipathBatchSizePositive(t *testing.T) {
 // test asserts a lower bound rather than the exact requested size and logs both.
 func TestMultipathLargeRecvBuffer(t *testing.T) {
 	psk := testKey(t, 0x88)
-	m, err := NewMultipath(loopbackPaths(1), psk)
+	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
