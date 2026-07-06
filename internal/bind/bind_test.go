@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net"
 	"net/netip"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -118,6 +119,72 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 		if remote != learned[i] {
 			t.Fatalf("path %d learned remote %v, want %v", i, remote, learned[i])
 		}
+	}
+}
+
+// TestMultipathVirtualEndpointDstRace is the regression for the reproduced data
+// race: the Bind pins the virtual endpoint's destination (via virtualEndpoint /
+// ParseEndpoint) from receive goroutines while the engine reads that same field
+// locklessly through the Dst* accessors. It pins from multiple goroutines while
+// others hammer DstToBytes/DstToString/DstIP; under `go test -race` a plain
+// (non-atomic) dst field trips the detector deterministically, and the atomic
+// pointer makes it clean. T15's cross-path scheduling activates exactly this
+// concurrency, so it is guarded here on the object T12 delivers.
+func TestMultipathVirtualEndpointDstRace(t *testing.T) {
+	psk := testKey(t, 0x99)
+	m, err := NewMultipath(loopbackPaths(4), psk)
+	if err != nil {
+		t.Fatalf("NewMultipath: %v", err)
+	}
+
+	const (
+		writers = 4
+		readers = 4
+		iters   = 2000
+	)
+	var readersWg, writersWg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Readers: the engine-facing lockless accessors, spinning until stopped.
+	for i := 0; i < readers; i++ {
+		readersWg.Add(1)
+		go func() {
+			defer readersWg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = m.virt.DstToBytes()
+				_ = m.virt.DstToString()
+				_ = m.virt.DstIP()
+			}
+		}()
+	}
+
+	// Writers: pin the endpoint concurrently via the real Bind path (each with a
+	// distinct address) plus a direct setDst hammer, so repeated writes overlap
+	// the reads regardless of the once-guard.
+	for i := 0; i < writers; i++ {
+		writersWg.Add(1)
+		go func(id int) {
+			defer writersWg.Done()
+			ap := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, byte(id + 1)}), uint16(1000+id))
+			for j := 0; j < iters; j++ {
+				m.virtualEndpoint(ap) // real pin path (guarded, publishes atomically)
+				m.virt.setDst(ap)     // direct hammer to stress the accessor
+			}
+		}(i)
+	}
+
+	writersWg.Wait() // writers finish; then release the readers
+	close(stop)
+	readersWg.Wait()
+
+	// Sanity: after all the pinning, the endpoint has a valid destination.
+	if !m.virt.dstValid() {
+		t.Fatal("virtual endpoint destination never pinned")
 	}
 }
 

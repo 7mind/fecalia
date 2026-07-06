@@ -2,6 +2,7 @@ package bind
 
 import (
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 )
@@ -26,14 +27,35 @@ type (
 // one of these while the Bind privately fans out across the per-path sockets
 // beneath it (see docs/p0-findings.md §3). The engine must never see per-packet
 // endpoint churn, so every ReceiveFunc returns the very same *udpEndpoint.
+//
+// The destination is stored in an atomic.Pointer because the Bind pins it (once,
+// under its mutex, from a receive goroutine) while the WireGuard engine reads it
+// LOCKLESSLY from its own goroutines via the Dst* accessors — a data race on a
+// plain field. The atomic makes writer and reader consistent per the Go memory
+// model; a nil pointer means "destination not yet known" (equivalent to the zero
+// AddrPort the accessors previously exposed).
 type udpEndpoint struct {
-	dst netip.AddrPort
+	dst atomic.Pointer[netip.AddrPort]
 	src netip.Addr
 }
 
+// setDst atomically publishes the destination to the lockless Dst* readers.
+func (e *udpEndpoint) setDst(ap netip.AddrPort) { e.dst.Store(&ap) }
+
+// dstValid reports whether a destination has been pinned.
+func (e *udpEndpoint) dstValid() bool { return e.dst.Load() != nil }
+
+// dstAddrPort returns the pinned destination, or the zero AddrPort if unset.
+func (e *udpEndpoint) dstAddrPort() netip.AddrPort {
+	if p := e.dst.Load(); p != nil {
+		return *p
+	}
+	return netip.AddrPort{}
+}
+
 func (e *udpEndpoint) ClearSrc()           { e.src = netip.Addr{} }
-func (e *udpEndpoint) DstToString() string { return e.dst.String() }
-func (e *udpEndpoint) DstIP() netip.Addr   { return e.dst.Addr() }
+func (e *udpEndpoint) DstToString() string { return e.dstAddrPort().String() }
+func (e *udpEndpoint) DstIP() netip.Addr   { return e.dstAddrPort().Addr() }
 func (e *udpEndpoint) SrcIP() netip.Addr   { return e.src }
 
 func (e *udpEndpoint) SrcToString() string {
@@ -46,7 +68,8 @@ func (e *udpEndpoint) SrcToString() string {
 // DstToBytes serializes the destination as address bytes followed by the
 // little-endian port, matching the engine's expectation for mac2 cookies.
 func (e *udpEndpoint) DstToBytes() []byte {
-	b, _ := e.dst.Addr().MarshalBinary()
-	port := e.dst.Port()
+	ap := e.dstAddrPort()
+	b, _ := ap.Addr().MarshalBinary()
+	port := ap.Port()
 	return append(b, byte(port), byte(port>>8))
 }

@@ -227,8 +227,8 @@ func (m *Multipath) receiver(ps *pathState) ReceiveFunc {
 func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.virt.dst.IsValid() {
-		m.virt.dst = learned
+	if !m.virt.dstValid() {
+		m.virt.setDst(learned)
 	}
 	return m.virt
 }
@@ -294,8 +294,8 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.defaultRemote, m.hasDefaultRemote = ap, true
-	if !m.virt.dst.IsValid() {
-		m.virt.dst = ap
+	if !m.virt.dstValid() {
+		m.virt.setDst(ap)
 	}
 	for _, ps := range m.paths {
 		if _, ok := ps.getRemote(); !ok {
