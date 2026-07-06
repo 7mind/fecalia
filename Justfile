@@ -31,3 +31,11 @@ e2e:
 # Run one named e2e phase test, e.g. `just e2e-run TestP1Failover`.
 e2e-run TEST:
     sudo -E go test -tags e2e ./test/e2e/... -run {{TEST}} -v
+
+# Opt-in real-host e2e tier: drive the two standing worker machines (edge behind
+# symmetric NAT, aarch64 concentrator) over SSH. Report-only — it records host
+# uname/arch and gates nothing. Needs the `llm` SSH key (WANBOND_SSH_KEY, default
+# /run/agenix/llm-ssh-key); no root required. NEVER part of `just test` or CI.
+# Run all: `just realhosts`; one test: `just realhosts TestRealConnectivity`.
+realhosts TEST="":
+    go test -tags realhosts ./test/realhosts/... {{ if TEST != "" { "-run " + TEST } else { "" } }} -v
