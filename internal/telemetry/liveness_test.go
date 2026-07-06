@@ -37,6 +37,54 @@ func TestLivenessUpHysteresis(t *testing.T) {
 	}
 }
 
+// TestLivenessStaleEchoesDoNotFlapUp is the regression for the silence-hysteresis
+// defect: UpAfterSuccesses echoes separated by silence longer than DownAfter must
+// NOT bring a Down path Up, because they are not consecutive. Reproduces the
+// reported failure (DownAfter=1s, 3 echoes 10 minutes apart).
+func TestLivenessStaleEchoesDoNotFlapUp(t *testing.T) {
+	clk := newFakeClock()
+	cfg := LivenessConfig{DownAfter: time.Second, UpAfterSuccesses: 3}
+	l := NewLiveness("starlink", cfg, clk, discardLogger(t))
+
+	for i := 0; i < 3; i++ {
+		l.RecordEcho()
+		if l.State() != StateDown {
+			t.Fatalf("stale echo %d flapped path up (silence resets the streak)", i)
+		}
+		clk.advance(10 * time.Minute)
+	}
+}
+
+// TestLivenessTickResetsStalePartialStreak asserts that a partial up-streak
+// accumulated while Down is reset by a Tick after the staleness threshold, so
+// recovery requires a fresh consecutive run — not echoes bridged across silence.
+func TestLivenessTickResetsStalePartialStreak(t *testing.T) {
+	clk := newFakeClock()
+	cfg := LivenessConfig{DownAfter: time.Second, UpAfterSuccesses: 3}
+	l := NewLiveness("starlink", cfg, clk, discardLogger(t))
+
+	// Accumulate 2 of the 3 echoes needed (still Down).
+	l.RecordEcho()
+	l.RecordEcho()
+	if l.State() != StateDown {
+		t.Fatalf("state = %v after 2 echoes, want down", l.State())
+	}
+	// Silence past the threshold, then a Tick clears the partial streak.
+	clk.advance(cfg.DownAfter + time.Millisecond)
+	l.Tick()
+	// A single fresh echo must now leave the streak at 1, not reach 3.
+	l.RecordEcho()
+	if l.State() != StateDown {
+		t.Fatalf("state = %v: stale partial streak was not reset by Tick", l.State())
+	}
+	// Two more consecutive echoes complete the fresh run and bring it up.
+	l.RecordEcho()
+	l.RecordEcho()
+	if l.State() != StateUp {
+		t.Fatalf("state = %v after a fresh consecutive run, want up", l.State())
+	}
+}
+
 // TestLivenessDownDetection asserts an Up path is marked Down only after silence
 // strictly exceeds DownAfter, and not before.
 func TestLivenessDownDetection(t *testing.T) {

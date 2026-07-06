@@ -1,6 +1,9 @@
 package telemetry
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Smoothing constants for the RTT/jitter estimator. They mirror the RFC 6298
 // SRTT/RTTVAR recursion (alpha = 1/8, beta = 1/4): srtt tracks the smoothed
@@ -27,11 +30,18 @@ type Estimate struct {
 	Loss float64
 }
 
-// Estimator fuses two independent quality signals for one path: an EWMA RTT and
-// jitter estimator fed by probe echoes (ObserveRTT), and a windowed loss
-// estimator fed by observed DATA outer-sequence numbers (ObserveDataSeq). It
-// holds no clock and does no I/O, so it is exercised directly on synthetic
-// traces.
+// Estimator fuses per-path quality signals: an EWMA RTT and jitter estimator
+// (ObserveRTT) and a windowed per-path loss estimator, BOTH fed by the path's
+// active probe stream. Per-path loss is derived from gaps in the ProbeSeq of
+// received probe echoes (ObserveProbeEcho), NOT from the outer DATA sequence:
+// the outer-seq is connection-global — a single sequence the send scheduler
+// stripes across all paths (T12) and the receiver resequences into one global
+// order (T18) — so counting a single path's outer-seq gaps would read scheduler
+// striping (and a mid-stream path attach) as loss. Connection-scoped outer-seq
+// loss is a separate, correctly-scoped metric: see ConnLoss.
+//
+// Estimator holds no clock, does no I/O, and is NOT safe for concurrent use; its
+// owner (Prober) serializes access. It is exercised directly on synthetic traces.
 type Estimator struct {
 	haveRTT bool
 	srtt    float64 // nanoseconds
@@ -39,8 +49,8 @@ type Estimator struct {
 	loss    *lossWindow
 }
 
-// NewEstimator builds an Estimator whose passive loss estimate is computed over
-// a trailing window of lossWindow sequence numbers (defaultLossWindow when
+// NewEstimator builds an Estimator whose per-path loss estimate is computed over
+// a trailing window of lossWindow probe echoes (defaultLossWindow when
 // non-positive).
 func NewEstimator(lossWindow int) *Estimator {
 	return &Estimator{loss: newLossWindow(lossWindow)}
@@ -65,10 +75,12 @@ func (e *Estimator) ObserveRTT(sample time.Duration) {
 	e.srtt = (1-rttAlpha)*e.srtt + rttAlpha*s
 }
 
-// ObserveDataSeq folds one observed DATA outer-sequence number into the passive
-// loss estimate. Sequence numbers may arrive out of order; late arrivals within
-// the window retroactively fill their gap.
-func (e *Estimator) ObserveDataSeq(seq uint64) {
+// ObserveProbeEcho folds one received probe echo's ProbeSeq into the per-path
+// loss estimate. The prober assigns ProbeSeq densely (0,1,2,…) on this path, so a
+// gap in received echo seqs is a probe that did not round-trip — i.e. per-path
+// loss. Echoes may arrive out of order; a late arrival within the window
+// retroactively fills its gap, and a duplicate is idempotent.
+func (e *Estimator) ObserveProbeEcho(seq uint64) {
 	e.loss.observe(seq)
 }
 
@@ -81,15 +93,19 @@ func (e *Estimator) Estimate() Estimate {
 	}
 }
 
-// lossWindow is a sliding-window passive loss estimator over a monotonic
-// sequence space. It tracks, for the trailing win sequence numbers ending at the
-// highest seen, which were received; loss is the unfilled fraction of that
-// window. It never inspects payloads — only outer-seq presence — so a burst of
-// missing sequence numbers reads as loss without any per-packet state beyond the
-// ring.
+// lossWindow is a sliding-window loss estimator over a monotonic sequence space.
+// It tracks, for the trailing win sequence numbers ending at the highest seen,
+// which were received; loss is the unfilled fraction of that window. It never
+// inspects payloads — only sequence presence — so a burst of missing sequence
+// numbers reads as loss without any per-packet state beyond the ring.
+//
+// The window is bounded below by the FIRST observed sequence, not by zero, so a
+// stream that starts (or a receiver that attaches) mid-sequence does not count
+// the never-seen prefix as loss.
 type lossWindow struct {
 	win     int
 	recv    []bool
+	first   uint64
 	highest uint64
 	have    bool
 }
@@ -106,6 +122,7 @@ func (w *lossWindow) slot(seq uint64) int { return int(seq % uint64(w.win)) }
 func (w *lossWindow) observe(seq uint64) {
 	if !w.have {
 		w.have = true
+		w.first = seq
 		w.highest = seq
 		for i := range w.recv {
 			w.recv[i] = false
@@ -139,15 +156,54 @@ func (w *lossWindow) fraction() float64 {
 	if !w.have {
 		return 0
 	}
-	n := uint64(w.win)
-	if w.highest+1 < n {
-		n = w.highest + 1
+	lower := uint64(0)
+	if w.highest+1 > uint64(w.win) {
+		lower = w.highest + 1 - uint64(w.win)
 	}
+	if lower < w.first {
+		lower = w.first // never charge loss for sequences before the first observed
+	}
+	n := w.highest - lower + 1
 	missing := 0
-	for k := w.highest + 1 - n; k <= w.highest; k++ {
+	for k := lower; k <= w.highest; k++ {
 		if !w.recv[w.slot(k)] {
 			missing++
 		}
 	}
 	return float64(missing) / float64(n)
+}
+
+// ConnLoss estimates CONNECTION-SCOPED loss from the connection-global outer-seq
+// DATA stream. The outer-seq is a single sequence the send scheduler stripes
+// across every path (T12) and the receiver resequences into one global order
+// (T18), so this is explicitly NOT a per-path metric: feeding it a single path's
+// frames would read scheduler striping as loss. Feed it EVERY received DATA
+// frame's OuterSeq regardless of which path delivered it. For per-path loss use
+// Estimator/Prober, which measures the active probe stream instead.
+//
+// ConnLoss is safe for concurrent use by the per-path receive goroutines.
+type ConnLoss struct {
+	mu sync.Mutex
+	w  *lossWindow
+}
+
+// NewConnLoss builds a ConnLoss over a trailing window of window outer-sequence
+// numbers (defaultLossWindow when non-positive).
+func NewConnLoss(window int) *ConnLoss {
+	return &ConnLoss{w: newLossWindow(window)}
+}
+
+// Observe folds one received DATA frame's connection-global OuterSeq into the
+// loss estimate.
+func (c *ConnLoss) Observe(outerSeq uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.w.observe(outerSeq)
+}
+
+// Loss returns the current connection loss fraction in [0,1].
+func (c *ConnLoss) Loss() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.w.fraction()
 }

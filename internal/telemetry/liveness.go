@@ -82,10 +82,16 @@ func NewLiveness(pathName string, cfg LivenessConfig, clock Clock, logger log.Lo
 }
 
 // RecordEcho registers a successful, authenticated probe echo as a liveness
-// heartbeat. Once UpAfterSuccesses consecutive heartbeats accumulate, a Down
-// path transitions Up.
+// heartbeat. Only echoes that are CONSECUTIVE — no more than DownAfter apart —
+// accumulate toward Up; an echo that arrives after a longer silence starts the
+// streak over, so UpAfterSuccesses stray echoes spread across arbitrary silence
+// never bring a Down path Up. Once UpAfterSuccesses consecutive heartbeats
+// accumulate, a Down path transitions Up.
 func (l *Liveness) RecordEcho() {
 	now := l.clock.Now()
+	if l.haveGood && now.Sub(l.lastGood) > l.cfg.DownAfter {
+		l.goodStreak = 0 // silence broke the run of consecutive echoes
+	}
 	l.lastGood = now
 	l.haveGood = true
 	l.goodStreak++
@@ -95,13 +101,23 @@ func (l *Liveness) RecordEcho() {
 }
 
 // Tick re-evaluates liveness against the clock. An Up path with no heartbeat for
-// longer than DownAfter transitions Down. Call it at least as often as the
-// probe interval so detection latency stays within DownAfter plus one interval.
+// longer than DownAfter transitions Down; a Down path that has gone silent past
+// DownAfter has its partial up-streak reset, so recovery requires a fresh run of
+// UpAfterSuccesses consecutive echoes rather than echoes accumulated before the
+// silence. Call Tick at least as often as the probe interval so detection latency
+// stays within DownAfter plus one interval.
 func (l *Liveness) Tick() {
 	now := l.clock.Now()
-	if l.state == StateUp && l.haveGood && now.Sub(l.lastGood) > l.cfg.DownAfter {
+	if !l.haveGood {
+		return
+	}
+	stale := now.Sub(l.lastGood) > l.cfg.DownAfter
+	switch {
+	case l.state == StateUp && stale:
 		l.goodStreak = 0
 		l.transition(StateDown, now)
+	case l.state == StateDown && stale:
+		l.goodStreak = 0
 	}
 }
 

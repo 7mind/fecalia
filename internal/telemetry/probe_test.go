@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,6 +169,150 @@ func TestNonProbeFrameRejected(t *testing.T) {
 	if err := p.HandleEcho(ctrl); err == nil {
 		t.Fatal("prober accepted a control frame as an echo")
 	}
+}
+
+// TestReflectorPerPathAntiReplay asserts a single Reflector serving multiple
+// paths keys its anti-replay by PathID: each path's ProbeSeq space is independent
+// (both start at 0), so path B's opening probe is not rejected as a replay of path
+// A's, while a genuine per-path replay still is.
+func TestReflectorPerPathAntiReplay(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	clk := newFakeClock()
+	r := NewReflector(psk)
+
+	probeOnPath := func(pathID uint8, seq uint64) []byte {
+		raw, err := frame.Encode(psk, frame.Probe{
+			PathID:         pathID,
+			ProbeSeq:       seq,
+			TimestampNanos: clk.Now().UnixNano(),
+		})
+		if err != nil {
+			t.Fatalf("encode probe path=%d seq=%d: %v", pathID, seq, err)
+		}
+		return raw
+	}
+
+	// Path A seq 0 accepted.
+	if _, err := r.Reflect(probeOnPath(1, 0)); err != nil {
+		t.Fatalf("path A seq 0: %v", err)
+	}
+	// Path B seq 0 must ALSO be accepted (independent seq space).
+	if _, err := r.Reflect(probeOnPath(2, 0)); err != nil {
+		t.Fatalf("path B seq 0 rejected as a cross-path replay: %v", err)
+	}
+	// A genuine per-path replay (path A seq 0 again) is rejected.
+	if _, err := r.Reflect(probeOnPath(1, 0)); !errors.Is(err, ErrReplay) {
+		t.Fatalf("path A replay: got %v, want ErrReplay", err)
+	}
+	// Path A advancing to seq 1 is still fine.
+	if _, err := r.Reflect(probeOnPath(1, 1)); err != nil {
+		t.Fatalf("path A seq 1: %v", err)
+	}
+}
+
+// TestHandleEchoRejectsWrongPath asserts a Prober rejects an echo carrying another
+// path's PathID (ErrPathMismatch) and does not count it as this path's heartbeat —
+// otherwise one live path would mask every other path's death.
+func TestHandleEchoRejectsWrongPath(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	clk := newFakeClock()
+	p := newTestProber(t, psk, clk) // pathID 1
+
+	foreign, err := frame.Encode(psk, frame.Probe{
+		PathID:         2, // not this prober's path
+		ProbeSeq:       0,
+		TimestampNanos: clk.Now().UnixNano(),
+	})
+	if err != nil {
+		t.Fatalf("encode foreign-path echo: %v", err)
+	}
+	if err := p.HandleEcho(foreign); !errors.Is(err, ErrPathMismatch) {
+		t.Fatalf("wrong-path echo: got %v, want ErrPathMismatch", err)
+	}
+	if p.State() != StateDown {
+		t.Fatalf("wrong-path echo advanced liveness: state = %v", p.State())
+	}
+	if got := p.Estimate().RTT; got != 0 {
+		t.Fatalf("wrong-path echo mutated RTT estimate: %v", got)
+	}
+}
+
+// TestProberConcurrent drives a Prober from several goroutines at once — the T12
+// ownership model (receive goroutine calling HandleEcho, timer goroutine calling
+// SendProbe/Tick, plus readers) — so the race detector validates the mutex.
+func TestProberConcurrent(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	p := NewProber("starlink", 1, psk, proberCfg(), SystemClock{}, discardLogger(t))
+	r := NewReflector(psk)
+
+	const iters = 2000
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Sender + echo handler (one path's receive path).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			raw, err := p.SendProbe()
+			if err != nil {
+				t.Errorf("send probe: %v", err)
+				return
+			}
+			echo, err := r.Reflect(raw)
+			if err != nil {
+				t.Errorf("reflect: %v", err)
+				return
+			}
+			_ = p.HandleEcho(echo)
+		}
+	}()
+	// Timer goroutine.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			p.Tick()
+		}
+	}()
+	// Reader goroutine (metrics scrape).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			_ = p.Estimate()
+			_ = p.State()
+		}
+	}()
+	wg.Wait()
+}
+
+// TestReflectorConcurrent reflects probes for distinct paths from concurrent
+// goroutines, validating the PathID-keyed anti-replay map under the race detector.
+func TestReflectorConcurrent(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	r := NewReflector(psk)
+
+	const (
+		paths = 4
+		iters = 1000
+	)
+	var wg sync.WaitGroup
+	wg.Add(paths)
+	for path := 0; path < paths; path++ {
+		go func(pathID uint8) {
+			defer wg.Done()
+			for seq := uint64(0); seq < iters; seq++ {
+				raw, err := frame.Encode(psk, frame.Probe{PathID: pathID, ProbeSeq: seq})
+				if err != nil {
+					t.Errorf("encode: %v", err)
+					return
+				}
+				if _, err := r.Reflect(raw); err != nil {
+					t.Errorf("reflect path=%d seq=%d: %v", pathID, seq, err)
+					return
+				}
+			}
+		}(uint8(path))
+	}
+	wg.Wait()
 }
 
 // TestProberDrivesLiveness is an end-to-end (in-memory) check that a healthy

@@ -52,6 +52,19 @@ var P3InjectedLossRates = []float64{0.05, 0.15}
 // PLivenessProbeInterval is the probe cadence; detection latency is therefore
 // bounded by DownAfter plus roughly one interval, and the e2e asserts the
 // blackholed path is marked down within PLivenessDetectBudget.
+//
+// Relationship to P1RecoverySeconds (the 3s failover-recovery budget). The two
+// budgets compose: killing a WAN must restore the surviving flow within
+// P1RecoverySeconds, and that clock is (path marked down) + (scheduler fails the
+// path out and reroutes). This liveness machine owns only the first term; marking
+// a path down is what TRIGGERS failover (the T12 scheduler drops a down path from
+// its active set). Worst-case detection is DownAfter + one probe interval ≈ 2.0s +
+// 0.2s = 2.2s, leaving ~0.8s of the 3s budget for the scheduler's reroute — the
+// send-side switch is a data-structure update (sub-millisecond), so 2s DownAfter
+// is comfortably compatible with the 3s P1 recovery budget. The invariant to
+// preserve when retuning: PLivenessDetectBudget < P1RecoverySeconds, with headroom
+// for the reroute. Tighten DownAfter (at the cost of more probe traffic and a
+// higher false-down risk on a jittery link) if the reroute term ever grows.
 const (
 	PLivenessProbeInterval = 200 * time.Millisecond
 	PLivenessDownAfter     = 2 * time.Second
