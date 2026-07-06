@@ -155,14 +155,20 @@ func (d *Decoder) Offer(s Shard) ([]Recovered, error) {
 
 	switch sh := s.(type) {
 	case DataShard:
-		if sh.Index < 0 {
-			return nil, fmt.Errorf("fec: negative data shard index %d in group %d", sh.Index, sh.Group)
+		// A data index can never be valid at or above maxShards-K: RS admits at most
+		// maxShards total shards, so any group has m <= maxShards-K data shards and
+		// valid indices 0..m-1. Rejecting an out-of-range index here — before it is
+		// buffered — bounds a single group's data index space (a flood of distinct
+		// bogus indices can no longer grow gs.data without bound) and stops one bogus
+		// shard from being buffered to permanently poison the group.
+		if sh.Index < 0 || sh.Index >= maxShards-d.cfg.ParityShards {
+			return nil, fmt.Errorf("fec: data shard index %d out of range [0,%d) in group %d", sh.Index, maxShards-d.cfg.ParityShards, sh.Group)
 		}
 		buf := make([]byte, len(sh.Payload))
 		copy(buf, sh.Payload)
 		gs.data[sh.Index] = buf
 	case ParityShard:
-		if err := gs.observeParity(sh); err != nil {
+		if err := gs.observeParity(sh, d.cfg.ParityShards); err != nil {
 			return nil, err
 		}
 	default:
@@ -175,9 +181,24 @@ func (d *Decoder) Offer(s Shard) ([]Recovered, error) {
 
 // observeParity records a parity shard and pins/checks the group's cardinality
 // and shard geometry, failing fast on an inconsistent group.
-func (gs *groupState) observeParity(p ParityShard) error {
+func (gs *groupState) observeParity(p ParityShard, parityShards int) error {
+	// A parity position is only ever 0..K-1. Rejecting an out-of-range index here —
+	// before it is buffered — bounds gs.parity to at most K entries and keeps a bogus
+	// index out of the group's state entirely.
+	if p.Index < 0 || p.Index >= parityShards {
+		return fmt.Errorf("fec: parity index %d out of range [0,%d) for group %d", p.Index, parityShards, p.Group)
+	}
 	if p.DataCount < 1 {
 		return fmt.Errorf("fec: parity for group %d carries invalid DataCount %d", p.Group, p.DataCount)
+	}
+	// DataCount is the group cardinality m carried on the wire. RS admits m+K <=
+	// maxShards, so m can never exceed maxShards-K. Reject an oversized DataCount
+	// here, before maybeReconstruct runs its O(m) missing-index scan and allocates
+	// an m+K shard table: a bogus DataCount near 2^31 would otherwise force a
+	// multi-billion-iteration loop and a multi-gigabyte allocation before
+	// reedsolomon.New rejected it.
+	if maxData := maxShards - parityShards; p.DataCount > maxData {
+		return fmt.Errorf("fec: parity for group %d carries DataCount %d exceeding max %d", p.Group, p.DataCount, maxData)
 	}
 	// A parity payload IS one RS shard, so its length is the group's uniform shard
 	// length. Reject a payload too short to hold a data shard's length prefix:
@@ -209,6 +230,18 @@ func (d *Decoder) maybeReconstruct(g GroupID, gs *groupState) ([]Recovered, erro
 	}
 	m := gs.dataCount
 
+	// A buffered data shard whose index is within the static wire bound (accepted at
+	// Offer time, when m was not yet known) but >= this group's actual cardinality m
+	// cannot belong to the group. Drop it rather than wedging the group: leaving it
+	// buffered would make every reconstruct attempt fail on the stale out-of-range
+	// index, so a later valid <=K shard set could never recover. Dropping it also
+	// releases its buffer.
+	for idx := range gs.data {
+		if idx >= m {
+			delete(gs.data, idx)
+		}
+	}
+
 	missing := make([]int, 0)
 	for i := 0; i < m; i++ {
 		if _, ok := gs.data[i]; !ok {
@@ -222,12 +255,6 @@ func (d *Decoder) maybeReconstruct(g GroupID, gs *groupState) ([]Recovered, erro
 
 	if len(gs.data)+len(gs.parity) < m {
 		return nil, nil // fewer than M shards survive; recovery impossible so far
-	}
-
-	for idx := range gs.data {
-		if idx >= m {
-			return nil, fmt.Errorf("fec: data shard index %d out of range for group %d (M=%d)", idx, g, m)
-		}
 	}
 
 	codec, err := d.codec(m)

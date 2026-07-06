@@ -3,6 +3,7 @@ package fec
 import (
 	"bytes"
 	"math/rand"
+	"strings"
 	"testing"
 )
 
@@ -29,10 +30,19 @@ func TestDecoderRejectsShortParityPayload(t *testing.T) {
 	}
 }
 
-// TestDecoderRejectsOversizedDataPayload proves the decoder fails fast rather than
-// silently truncating a DataShard whose lenPrefixLen+len(Payload) exceeds the
-// group shard length, which would otherwise feed RS inconsistent bytes and
-// fabricate recovered payloads (the reviewer's repro (b)).
+// TestDecoderRejectsOversizedDataPayload proves the maybeReconstruct oversized-data
+// guard rejects a DataShard whose lenPrefixLen+len(Payload) exceeds the group shard
+// length, which would otherwise be silently truncated by encodeDataShard, feed RS
+// inconsistent bytes, and fabricate recovered payloads.
+//
+// The assertion is deliberately SPECIFIC to that guard's error ("does not fit ...
+// shard length"). A weaker "err != nil" assertion is vacuous: on the pre-fix decoder
+// the truncated shard still reconstructs, and decodeDataShard on the reconstructed
+// garbage shard happens to return a DIFFERENT error ("length prefix ... overruns")
+// incidentally — so the group is guarded by an accident downstream, not by the
+// maybeReconstruct check. Matching the guard's own message discriminates the two:
+// this test FAILS on the pre-fix decoder (which never emits that message) and PASSES
+// on the fix.
 func TestDecoderRejectsOversizedDataPayload(t *testing.T) {
 	cfg := Config{DataShards: 2, ParityShards: 1, Deadline: testDeadline}
 	d, err := NewDecoder(cfg)
@@ -46,6 +56,9 @@ func TestDecoderRejectsOversizedDataPayload(t *testing.T) {
 	rec, err := d.Offer(ParityShard{Group: 0, Index: 0, DataCount: 2, Payload: make([]byte, 8)})
 	if err == nil {
 		t.Fatalf("expected error on oversized data payload, got recovered=%v", rec)
+	}
+	if !strings.Contains(err.Error(), "does not fit") || !strings.Contains(err.Error(), "shard length") {
+		t.Fatalf("expected the maybeReconstruct oversized-data guard error (\"does not fit ... shard length\"), got a different (incidental) error: %v", err)
 	}
 	if rec != nil {
 		t.Fatalf("expected no fabricated payloads on oversized data, got %v", rec)
@@ -83,6 +96,140 @@ func TestDecoderRejectsInconsistentParityGeometry(t *testing.T) {
 			t.Fatal("expected error on inconsistent shard length")
 		}
 	})
+}
+
+// TestDecoderBoundsPerGroupDataEntries proves a SINGLE group cannot buffer an
+// unbounded number of distinct-index data entries: an index at or above maxShards-K
+// can never belong to any group, so it is rejected at Offer time rather than
+// buffered. The sliding window bounds the group COUNT; this bounds per-group state.
+// On the pre-fix decoder (which only rejected negative indices) this flood would
+// retain 100000 entries in one group; here it is capped at maxShards-K.
+func TestDecoderBoundsPerGroupDataEntries(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2, Deadline: testDeadline}
+	d, err := NewDecoder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const flood = 100000
+	rejected := 0
+	for i := 0; i < flood; i++ {
+		if _, err := d.Offer(DataShard{Group: 0, Index: i, Payload: []byte{1}}); err != nil {
+			rejected++
+		}
+	}
+	bound := maxShards - cfg.ParityShards
+	gs, ok := d.groups[0]
+	if !ok {
+		t.Fatal("group 0 unexpectedly absent")
+	}
+	if len(gs.data) > bound {
+		t.Fatalf("per-group data map holds %d entries, want <= %d (unbounded per-group memory)", len(gs.data), bound)
+	}
+	if rejected == 0 {
+		t.Fatal("expected out-of-range indices to be rejected, none were")
+	}
+}
+
+// TestDecoderBogusIndexDoesNotWedgeGroup proves that a bogus-index data shard does
+// NOT permanently poison an otherwise-recoverable group. Two faults are covered:
+//
+//   - an out-of-range index (>= maxShards-K) is rejected at Offer time, never
+//     buffered, so a subsequent valid <=K shard set still recovers; and
+//   - an index within the static wire bound but >= this group's actual cardinality m
+//     (only knowable once a parity pins m) is DROPPED by maybeReconstruct rather than
+//     wedging the group — on the pre-fix decoder it returned "data shard index out of
+//     range" on every reconstruct attempt and the missing data was never recovered.
+func TestDecoderBogusIndexDoesNotWedgeGroup(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2, Deadline: testDeadline}
+
+	// recoverDropZero feeds data 1..3 + both parity (data 0 dropped) and returns the
+	// recovered payload for index 0, or nil if the group failed to recover.
+	recoverDropZero := func(t *testing.T, d *Decoder, g GroupID, data []DataShard, parity []ParityShard) []byte {
+		t.Helper()
+		var got []byte
+		feed := []Shard{data[1], data[2], data[3], parity[0], parity[1]}
+		for _, s := range feed {
+			rec, err := d.Offer(s)
+			if err != nil {
+				t.Fatalf("offer %T: %v", s, err)
+			}
+			for _, r := range rec {
+				if r.Index == 0 {
+					got = r.Payload
+				}
+			}
+		}
+		return got
+	}
+
+	t.Run("out-of-range index rejected at offer, group still recovers", func(t *testing.T) {
+		enc, err := NewEncoder(cfg, newFakeClock())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rng := rand.New(rand.NewSource(7))
+		originals := randomPayloads(rng, cfg.DataShards)
+		data, parity := admitAll(t, enc, originals)
+		g := data[0].Group
+
+		d, err := NewDecoder(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// maxShards-K = 254; 9999 can never be a valid data index.
+		if _, err := d.Offer(DataShard{Group: g, Index: 9999, Payload: []byte{0xFF}}); err == nil {
+			t.Fatal("expected out-of-range index 9999 to be rejected at Offer")
+		}
+		got := recoverDropZero(t, d, g, data, parity)
+		if !bytes.Equal(got, originals[0]) {
+			t.Fatalf("bogus offer wedged the group: want %x got %x", originals[0], got)
+		}
+	})
+
+	t.Run("within-bound index >= m dropped, not wedged", func(t *testing.T) {
+		enc, err := NewEncoder(cfg, newFakeClock())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rng := rand.New(rand.NewSource(9))
+		originals := randomPayloads(rng, cfg.DataShards)
+		data, parity := admitAll(t, enc, originals)
+		g := data[0].Group
+
+		d, err := NewDecoder(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Index 200 is < maxShards-K (accepted at Offer, m not yet known) but >= the
+		// real m=4 once parity pins it; maybeReconstruct must drop it, not wedge.
+		if _, err := d.Offer(DataShard{Group: g, Index: 200, Payload: []byte{0xFF}}); err != nil {
+			t.Fatalf("within-bound index 200 should be accepted at Offer: %v", err)
+		}
+		got := recoverDropZero(t, d, g, data, parity)
+		if !bytes.Equal(got, originals[0]) {
+			t.Fatalf("within-bound-but->=m shard wedged the group: want %x got %x", originals[0], got)
+		}
+	})
+}
+
+// TestDecoderRejectsOversizedDataCount proves observeParity bounds the group
+// cardinality BEFORE maybeReconstruct's O(m) missing-index scan and m+K allocation:
+// a ParityShard whose DataCount exceeds maxShards-K (here ~2^30) is rejected up
+// front rather than forcing a multi-billion-iteration loop and multi-gigabyte
+// allocation before reedsolomon.New would reject it.
+func TestDecoderRejectsOversizedDataCount(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2, Deadline: testDeadline}
+	d, err := NewDecoder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := d.Offer(ParityShard{Group: 0, Index: 0, DataCount: 1 << 30, Payload: make([]byte, 8)})
+	if err == nil {
+		t.Fatalf("expected error on oversized DataCount, got recovered=%v", rec)
+	}
+	if !strings.Contains(err.Error(), "DataCount") {
+		t.Fatalf("expected a DataCount-bound error, got: %v", err)
+	}
 }
 
 // TestDecoderReleasesDoneGroupBuffers asserts that once a group completes its
