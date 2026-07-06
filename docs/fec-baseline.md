@@ -13,6 +13,8 @@ this file with fresh measurements.
 | One-way delay (netem) | 25 ms (RTT ~= 50 ms) |
 | Loss model | netem uniform egress loss (edge side) |
 | Transport under test | single-flow TCP (iperf3) through the wanbond tunnel |
+| TCP congestion control | cubic (pinned via iperf3 `--congestion`) |
+| Goodput metric | iperf3 `end.sum_received` (receiver-side delivered bytes) |
 | iperf3 duration per point | 8 s |
 | Topology | single capped path, edge <-> concentrator netns, WireGuard tunnel |
 
@@ -23,10 +25,10 @@ fixed 50 Mbit/s cap and ~50 ms RTT:
 
 | Configured loss | Goodput (Mbit/s) | Fraction of 0%-loss |
 |---|---|---|
-| 0.0% | 48.5 | 1.00 |
-| 0.5% | 9.4 | 0.19 |
-| 1.0% | 4.8 | 0.10 |
-| 2.0% | 2.4 | 0.05 |
+| 0.0% | 45.1 | 1.00 |
+| 0.5% | 7.3 | 0.16 |
+| 1.0% | 5.4 | 0.12 |
+| 2.0% | 3.7 | 0.08 |
 
 ## Interpretation
 
@@ -34,9 +36,10 @@ At a fixed bandwidth cap and RTT, single-flow TCP goodput is bounded by the
 Mathis relation, goodput <= MSS / (RTT * sqrt(p)), where p is the packet-loss
 probability. Goodput therefore falls with roughly 1/sqrt(p): a fraction of a
 percent of loss on a long-fat path collapses a single flow far below the link
-capacity. This session's real-internet evidence agrees — a single TCP flow
-over a ~29 ms RTT path collapsed to ~18-48 Mbit/s under only ~0.1-0.8% loss,
-well under the available capacity.
+capacity. The P0 real-host validation over live uplinks recorded the same
+effect — a single TCP flow over a ~29 ms RTT path held only ~18-48 Mbit/s
+under sub-percent (~0.1-0.8%) loss, well under the available capacity (see
+`docs/p0-findings.md` and the ledger handoff HO5 / goal G1 follow-up section).
 
 The results above reproduce the phenomenon in the netns fixture: at >=1%
 configured loss the tunnel's single-flow TCP goodput drops below 50% of the

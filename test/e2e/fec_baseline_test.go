@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,14 @@ const (
 	fecCapMbit   = 50 // per-path bandwidth cap (netem rate, Mbit/s)
 	fecDelayMs   = 25 // one-way netem delay; RTT ~= 2× ~= 50ms — makes loss bite
 	fecIperfSecs = 8  // single-flow TCP measurement window per loss point
+
+	// fecCongestionControl pins the sender-side TCP congestion-control algorithm.
+	// The collapse gate and the T25/T29 reference assume a LOSS-based CC (CUBIC):
+	// a delay/BBR-based CC does not react to netem drops the same way, so on a
+	// BBR-default host the single-flow collapse would not manifest, the gate would
+	// fail spuriously, and the baseline would be invalid as the pre-FEC reference.
+	// Linux iperf3 sets TCP_CONGESTION on the client socket via --congestion.
+	fecCongestionControl = "cubic"
 
 	// fecCollapseFrac is the collapse gate: single-flow TCP goodput at >=1%
 	// configured loss must fall below this fraction of the 0%-loss capped figure.
@@ -64,6 +73,13 @@ type fecPoint struct {
 // persists as loss is injected via InjectLoss (which preserves the cap), so each
 // sweep point measures the same tunnel under a different drop rate.
 func TestFECBaselineCollapse(t *testing.T) {
+	// The collapse gate divides by the 0%-loss figure, which MUST be measured
+	// first. Assert it at runtime so a reorder of fecLossSweep cannot make
+	// baseline=0 -> frac=0 -> gate pass vacuously.
+	if fecLossSweep[0] != 0 {
+		t.Fatalf("fecLossSweep[0] = %g, want 0: the 0%%-loss reference must be measured first, else the collapse gate is vacuous", fecLossSweep[0])
+	}
+
 	top := SetupWithPaths(t, fecBaselinePath)
 	fecBringUpTunnel(t, top, top.path("wan"))
 
@@ -74,7 +90,7 @@ func TestFECBaselineCollapse(t *testing.T) {
 		top.InjectLoss("wan", loss)
 		time.Sleep(500 * time.Millisecond) // let the qdisc change settle
 
-		mbps := top.iperf3Mbps(t, concInner, fecIperfSecs)
+		mbps := top.fecIperf3RecvMbps(t, concInner, fecIperfSecs)
 		if loss == 0 {
 			baseline = mbps
 			if baseline <= 0 {
@@ -179,6 +195,34 @@ level = "error"
 	}
 }
 
+// fecIperf3RecvMbps runs a single-flow TCP transfer to serverIP (inside the peer
+// netns) for secs seconds with the congestion control pinned to
+// fecCongestionControl, and returns the RECEIVER-side goodput in Mbit/s
+// (end.sum_received.bits_per_second). It reads sum_received — NOT sum_sent —
+// because at the collapsed low points the sender-side figure still counts
+// unacked in-flight bytes, which materially overestimates delivered goodput; and
+// delivered goodput is exactly the quantity FEC recovery (T25/T29) is later
+// compared against. This is a T36-local variant that deliberately does NOT change
+// the shared iperf3Mbps used by the P0/baseline tests.
+func (top *Topology) fecIperf3RecvMbps(t *testing.T, serverIP string, secs int) float64 {
+	t.Helper()
+	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP)
+	time.Sleep(500 * time.Millisecond) // allow the server to bind and listen
+
+	out := top.runOut("iperf3", "-c", serverIP, "-t", strconv.Itoa(secs), "--congestion", fecCongestionControl, "-J")
+	var r struct {
+		End struct {
+			SumReceived struct {
+				BitsPerSecond float64 `json:"bits_per_second"`
+			} `json:"sum_received"`
+		} `json:"end"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("parse iperf3 json: %v\n%s", err, out)
+	}
+	return r.End.SumReceived.BitsPerSecond / 1e6
+}
+
 // fecBaselineDocPath resolves docs/fec-baseline.md relative to the module root,
 // found by walking up from the test's working directory to the go.mod.
 func fecBaselineDocPath(t *testing.T) string {
@@ -218,6 +262,8 @@ func renderFECBaselineDoc(results []fecPoint) string {
 	b.WriteString(fmt.Sprintf("| One-way delay (netem) | %d ms (RTT ~= %d ms) |\n", fecDelayMs, 2*fecDelayMs))
 	b.WriteString("| Loss model | netem uniform egress loss (edge side) |\n")
 	b.WriteString("| Transport under test | single-flow TCP (iperf3) through the wanbond tunnel |\n")
+	b.WriteString(fmt.Sprintf("| TCP congestion control | %s (pinned via iperf3 `--congestion`) |\n", fecCongestionControl))
+	b.WriteString("| Goodput metric | iperf3 `end.sum_received` (receiver-side delivered bytes) |\n")
 	b.WriteString(fmt.Sprintf("| iperf3 duration per point | %d s |\n", fecIperfSecs))
 	b.WriteString("| Topology | single capped path, edge <-> concentrator netns, WireGuard tunnel |\n\n")
 
@@ -236,9 +282,10 @@ func renderFECBaselineDoc(results []fecPoint) string {
 	b.WriteString("Mathis relation, goodput <= MSS / (RTT * sqrt(p)), where p is the packet-loss\n")
 	b.WriteString("probability. Goodput therefore falls with roughly 1/sqrt(p): a fraction of a\n")
 	b.WriteString("percent of loss on a long-fat path collapses a single flow far below the link\n")
-	b.WriteString("capacity. This session's real-internet evidence agrees — a single TCP flow\n")
-	b.WriteString("over a ~29 ms RTT path collapsed to ~18-48 Mbit/s under only ~0.1-0.8% loss,\n")
-	b.WriteString("well under the available capacity.\n\n")
+	b.WriteString("capacity. The P0 real-host validation over live uplinks recorded the same\n")
+	b.WriteString("effect — a single TCP flow over a ~29 ms RTT path held only ~18-48 Mbit/s\n")
+	b.WriteString("under sub-percent (~0.1-0.8%) loss, well under the available capacity (see\n")
+	b.WriteString("`docs/p0-findings.md` and the ledger handoff HO5 / goal G1 follow-up section).\n\n")
 	b.WriteString("The results above reproduce the phenomenon in the netns fixture: at >=1%\n")
 	b.WriteString(fmt.Sprintf("configured loss the tunnel's single-flow TCP goodput drops below %.0f%% of the\n", fecCollapseFrac*100))
 	b.WriteString("0%-loss capped figure. This is the pre-FEC reference the FEC-recovery work\n")
