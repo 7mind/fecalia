@@ -37,18 +37,21 @@ archives:
 - sessionLogs: [".cq/logs/20260706-200109-a1fd7a439122cc6ad.md",".cq/logs/20260706-200109-aa8173f2778caf84c.md",".cq/logs/20260706-200109-ac0148457e0d74922.md",".cq/logs/20260706-200109-a61cae3e31e0f7460.md"]
 - resultCommit: 86b0749
 
-### T9 — planned
+### T9 — done
 
 - createdAt: 2026-07-01T23:39:12.755Z
-- updatedAt: 2026-07-01T23:54:00.282Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T20:31:42.557Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Baseline throughput measurement + conn.Bind pitfalls findings doc
 - description: "Measure baseline single-path tunnel throughput/latency in the fixture (iperf3). Author docs/p0-findings.md documenting, with citations into the amneziawg-go source, the pitfalls that shape P1+: (1) batched Send/ReceiveFunc semantics and BatchSize; (2) GSO/GRO fast paths; (3) the Endpoint identity model (how N real paths can hide behind one virtual endpoint); (4) amnezia junk packets arriving at the Bind; (5) fork lag / API drift vs upstream wireguard-go; (6) the WG anti-replay-window-vs-multipath-reorder margin (own outer-seq, never reuse the inner counter); (7) congestion/bufferbloat and whether send-pacing is needed (measure standing queue / latency-under-load on the emulated paths; note whether the scheduler must pace egress). Record the P0 manual real-link checklist section."
 - acceptance: e2e prints a baseline throughput number for the single path; docs/p0-findings.md exists and contains a concrete finding (not a placeholder), citing specific amneziawg-go files/symbols where applicable, for each of the SEVEN named pitfall areas including the pacing/bufferbloat measurement and its verdict on whether the scheduler must pace.
 - suggestedModel: frontier
 - dependsOn: ["T8"]
 - ledgerRefs: ["goals:G1"]
+- completion: "DONE (merged d4781a6; worker commit cb77a83 + orchestrator fixes 1531911/d4781a6). test/e2e/baseline_test.go TestP0Baseline measures per-uplink idle RTT, saturated tunnel throughput, and RTT-under-load (bufferbloat) — verified on o3.7mind.io: starlink 44.8ms idle / 18.9-88.8 Mbit/s (CPU-bound, noisy), cellular 64.3ms / 43.5 Mbit/s; bufferbloat Δ negligible. docs/p0-findings.md documents all 7 pitfall areas with amneziawg-go@v1.0.4 source citations (audited exact by the review panel): BatchSize/batched I/O, GSO/GRO, Endpoint identity (N-paths-behind-one-virtual-endpoint), amnezia junk at the Bind, fork lag/API drift, anti-replay-window-vs-reorder (own outer-seq, never reuse inner counter), and congestion/bufferbloat. KEY FINDING for T10: the netns fixture emulates delay/jitter/loss but NO bandwidth cap, and throughput is CPU-bound, so it cannot exercise bufferbloat/pacing in-fixture — a REVISED assumption (needs a rate-limited fixture variant for P2). Reviewed opus+fable, R5 go-ahead. Filed D3 (fixed-sleep iperf3 readiness race, out-of-scope)."
+- sessionLogs: [".cq/logs/20260706-203000-a28d62545377df7ef.md",".cq/logs/20260706-203000-a66924e3eb38ae28b.md",".cq/logs/20260706-203000-a6aa433786a823bc2.md",".cq/logs/20260706-203000-a555730d6a692a960.md",".cq/logs/20260706-203000-ae0c2d5f6a0994fb7.md"]
+- resultCommit: d4781a6
 
 ### T10 — planned
 
