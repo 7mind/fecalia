@@ -4,9 +4,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/device"
 	"github.com/7mind/wanbond/internal/log"
 )
 
@@ -20,24 +25,63 @@ func main() {
 	}
 }
 
-// run is the testable entry point. The full command-line surface (config path,
-// role dispatch to edge/concentrator) is implemented in later tasks; for now it
-// reports the build version and exercises the structured logger so the skeleton
-// binary is runnable and its logging path is live.
+// run is the testable entry point: it parses the command line, loads the
+// configuration, brings the tunnel up for the configured role, and blocks until
+// a termination signal, then tears the tunnel down.
 func run(args []string) error {
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+	fs := flag.NewFlagSet("wanbond", flag.ContinueOnError)
+	configPath := fs.String("config", "", "path to the TOML configuration file (mode 0600)")
+	showVersion := fs.Bool("version", false, "print version and exit")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *showVersion {
 		fmt.Println("wanbond", version)
 		return nil
 	}
+	if *configPath == "" {
+		return fmt.Errorf("--config is required (see --version)")
+	}
 
-	lg, err := log.New("info", os.Stderr)
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+
+	lg, err := log.New(cfg.Log.Level, os.Stderr)
 	if err != nil {
 		return err
 	}
 	main := lg.Component("main")
-	main.Info("wanbond starting", "version", version)
-	defer main.Info("wanbond stopped")
+	main.Info("wanbond starting", "version", version, "role", string(cfg.Role))
 
-	fmt.Println("wanbond", version, "- config-driven WAN bonding tunnel (edge|concentrator)")
+	tun, err := device.Up(cfg, lg)
+	if err != nil {
+		return err
+	}
+	defer tun.Close()
+
+	main.Info("tunnel interface up", "interface", tun.Name(), "role", string(cfg.Role))
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case s := <-sig:
+		main.Info("shutting down", "signal", s.String())
+	case <-deviceStopped(tun):
+		main.Warn("tunnel device stopped unexpectedly")
+	}
 	return nil
+}
+
+// deviceStopped returns a channel that closes when the tunnel device tears down
+// on its own (an unrecoverable engine error), so run can exit rather than block
+// on a dead device.
+func deviceStopped(t *device.Tunnel) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		t.Wait()
+		close(done)
+	}()
+	return done
 }
