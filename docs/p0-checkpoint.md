@@ -102,8 +102,10 @@ Drafted follow-up for when P2 planning begins:
 > (T21's synthetic unit-level pacing test is unaffected). Add a P2 harness task: a
 > bandwidth-capped fixture variant (per-path `netem rate` or `tbf`/`htb`
 > bottleneck on the edge veth, sized so the link is the bottleneck with CPU
-> headroom to spare), and make T21/T23 acceptance run against it. Sequence it
-> before T21 and T23 within M6.
+> headroom to spare), and make T23's aggregation e2e — plus a new
+> T21 empirical-pace-sizing clause/check that derives the per-path pace from a
+> measured BDP — run against it. Sequence it before T23 within M6. T21's unit
+> acceptance is NOT blocked and proceeds independently.
 
 This checkpoint does not re-plan the DAG; P1 (and P3-P5) proceed unchanged, and
 P2's single prerequisite is captured as the follow-up above to be actioned when
