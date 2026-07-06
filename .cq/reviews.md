@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 18
+  item: 20
 archives: []
 ---
 
@@ -135,6 +135,17 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["tasks:T12","goals:G1"]
 
+### R18 — go-ahead
+
+- createdAt: 2026-07-06T23:43:22.065Z
+- updatedAt: 2026-07-06T23:43:22.065Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T15 (active-backup send scheduler with transparent failover: internal/sched Scheduler interface + ActiveBackup, wired into multipath Bind Send) reconciled go-ahead (opus+fable panel, 2 rounds). R1: BOTH confirmed the UNIT-level acceptance is met non-vacuously (all-egress-on-primary; failover within the detection window driven by a REAL telemetry.Liveness on a fake clock; no-thrash under a flapping trace incl. active-dies-mid-dwell) and the T12 concurrency model is preserved (Pick() under s.mu, lock order m.mu->s.mu acyclic, receive fast path + atomic dst untouched, -race clean). opus approve; fable DISAPPROVE with 2 autonomously-fixable doc/contract criticisms: (1) the PathHealth doc endorsed bare *telemetry.Liveness as a concurrent source, but Liveness.State() is an unguarded field read (only *telemetry.Prober's State() is mutex-guarded) — wiring bare Liveness live would be a data race; (2) the Send comment falsely claimed equivalence with pre-T15 remote handling (the removed pickPathLocked fell through remoteless paths; the new code fails the send on the single scheduler-chosen path). Fixed 406b007 (docs-only): PathHealth doc now requires an internally-synchronized source (*Prober); Send comment states the real behavioural narrowing + residual remoteless-Up window. R2 BOTH approve: both corrections verified accurate against source (Prober.State mutex probe.go:175-179; Liveness.State unguarded liveness.go:125; pre-T15 fall-through confirmed at c27d0e4~1); delta comment-only; gates green (build/vet/gofmt/test -race/golangci-lint 0/e2e-compile). Merged 9c4fe4e (rebased onto main). THREE out-of-scope items tracked separately: probe-transport wiring gap (both reviewers HIGH; sched.AlwaysUp placeholder; real on-wire failover inert until wired) -> NEW TASK T37 (blocks T20; added to T16/T20 dependsOn); concentrator-side failover remote-learning gap (opus MEDIUM) -> D11 (owned by T37); Liveness.State() unsynchronized (opus LOW / fable criticism) -> resolved by the doc fix (only *Prober used concurrently; T37 enforces)."
+- criticism: ["[r1 fable, resolved 406b007] PathHealth doc endorsed unsynchronized bare *telemetry.Liveness as a concurrent source (race) — corrected to require *telemetry.Prober","[r1 fable, resolved 406b007] Send comment falsely claimed pre-T15 remote-handling equivalence — corrected to state the deliberate narrowing + residual remoteless-Up window"]
+- new_questions: []
+- ledgerRefs: ["tasks:T15","goals:G1","tasks:T37"]
+
 ## M10
 
 ### R9 — go-ahead
@@ -220,3 +231,16 @@ archives: []
 - criticism: ["[r1 fable, resolved 623e031] reproduced panic: short parity payload -> PutUint32 out-of-range; + silent-truncate/fabricate on oversized data; + unbounded group state","[r2 opus, resolved dd4118f] DataCount O(m)-loop DoS — no upper bound before the missing-scan/alloc; reject DataCount>maxShards-K early","[r2 fable, resolved dd4118f] vacuous oversized-data test (passed pre-fix incidentally) + unvalidated shard Index (unbounded per-group memory + one-index group poisoning) — discriminating test + Offer/observeParity index bounds + >=m drop-not-wedge"]
 - new_questions: []
 - ledgerRefs: ["tasks:T14","goals:G1"]
+
+## M9
+
+### R19 — go-ahead
+
+- createdAt: 2026-07-06T23:45:11.596Z
+- updatedAt: 2026-07-06T23:45:11.596Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T19 (expose amnezia obfuscation params end-to-end + fold in D1/D2) reconciled go-ahead (opus+fable panel, 2 rounds). R1: opus approve, fable DISAPPROVE (2 criticisms) — fable RAN the e2e on real hardware (llm-ubuntu-0: matched profile handshake + ping + iperf3 147.5 Mbit/s + junk soak stable; mismatched fails closed) confirming acceptance + D1 correct, but found the D2 amneziaGuard UNSOUND: verified against amneziawg-go v1.0.4 that (*Device).Close calls resetProtocol() UNCONDITIONALLY (device.go:440, resets the package-global message types to WireGuard defaults), so (1) the guard's same-profile refcount admission let closing the first engine revert globals under a live second same-profile engine, and (2) plain-WireGuard engines bypassed the guard entirely yet their Close also reset globals under a live amnezia tunnel. Fixed 17a909c: guard rewritten to PROCESS-EXCLUSIVITY tracking all live engines (plainLive int + configLive bool) — a configured engine admitted only when no other engine is live (same-profile refcount dropped); no engine may start while a configured engine is live; plain engines coexist freely (reset-to-default idempotent). Also folded opus's low out-of-scope defect: Amnezia.validate now rejects the 148+s1 == 92+s2 junk-size collision at config LOAD using the engine's exported MessageInitiationSize/MessageResponseSize constants (mirrors IpcSet's own reject). R2 BOTH approve: exclusivity invariant complete (every interleaving placing a second engine beside a live configured one refused — same-profile, plain->config, config->plain — all test-pinned); release exactly-once via sync.Once, deferred release registered only after acquire succeeds (no spurious slot-clear), plainLive decrement symmetric, no leak/double-release/deadlock; Close runs dev.Close (resetProtocol) BEFORE freeing the slot so a successor's IpcSet strictly follows; s1/s2 uses the fork's real 148/92 constants. Gates green (build/vet/gofmt/test -race/golangci-lint 0/e2e-compile). Merged ca5d638 (rebased onto main; device.go conflict with T15's buildScheduler resolved preserving both guard-acquire-before-IpcSet + scheduler wiring). Resolves D1 + D2."
+- criticism: ["[r1 fable, resolved 17a909c] D2 guard unsound — same-profile refcount admission let Close->resetProtocol revert globals under a live second engine; tightened to process-exclusivity (same-profile second configured engine now refused)","[r1 fable, resolved 17a909c] plain-WireGuard engines bypassed the guard but their Close also resets globals under a live amnezia tunnel — guard now tracks all engines; both plain/configured orderings refused, plain+plain allowed"]
+- new_questions: []
+- ledgerRefs: ["tasks:T19","goals:G1","defects:D1","defects:D2"]

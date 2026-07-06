@@ -116,10 +116,10 @@ archives:
 - dependsOn: ["T11"]
 - ledgerRefs: ["goals:G1"]
 
-### T15 — wip
+### T15 — done
 
 - createdAt: 2026-07-01T23:40:01.204Z
-- updatedAt: 2026-07-06T23:11:42.708Z
+- updatedAt: 2026-07-06T23:43:08.288Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Active-backup scheduler with transparent failover
@@ -184,10 +184,10 @@ archives:
 - dependsOn: ["T12","T13","T15"]
 - ledgerRefs: ["goals:G1"]
 
-### T37 — planned
+### T37 — wip
 
 - createdAt: 2026-07-06T23:36:14.588Z
-- updatedAt: 2026-07-06T23:36:14.588Z
+- updatedAt: 2026-07-06T23:46:23.001Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Per-path probe transport: drive T13 Prober/Liveness over the multipath Bind"
@@ -295,10 +295,10 @@ archives:
 
 ## M9
 
-### T19 — wip
+### T19 — done
 
 - createdAt: 2026-07-01T23:40:16.740Z
-- updatedAt: 2026-07-06T23:11:43.511Z
+- updatedAt: 2026-07-06T23:44:54.463Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Expose amnezia obfuscation params (Jc/Jmin/Jmax, S1/S2, H1-H4) end-to-end

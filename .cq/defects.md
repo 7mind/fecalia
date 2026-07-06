@@ -10,10 +10,10 @@ archives: []
 
 ## M4
 
-### D1 — root-caused
+### D1 — resolved
 
 - createdAt: 2026-07-06T20:02:54.250Z
-- updatedAt: 2026-07-06T20:06:52.806Z
+- updatedAt: 2026-07-06T23:45:16.073Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Partial amnezia config emits zeroed h1..h4 and would silently misconfigure obfuscation
@@ -22,11 +22,12 @@ archives: []
 - suggestedFix: "In T19, add an Amnezia validation rule: when the block is configured, require the full obfuscation set to be internally consistent (and default magic headers to 1..4 when omitted rather than 0), so a partial config fails fast at load."
 - ledgerRefs: ["tasks:T8","goals:G1","tasks:T19"]
 - rootCause: "Confirmed against source (in-tree, no explorer needed). internal/device/device.go writeAmnezia() gates on `configured := any-field-non-zero` and then emits ALL nine keys (jc/jmin/jmax/s1/s2/h1..h4), so a partial block emits zeros for the unset fields. internal/config/config.go Amnezia.validate() checks ONLY `0 <= jmin <= jmax` — no all-or-nothing / non-zero-magic-header invariant. Net: a partial amnezia config is accepted and emitted inconsistently. Unexercised at P0 (amnezia all-zero → writeAmnezia early-returns → plain WireGuard). Fix folded into task T19 (amnezia end-to-end); D1 ledgerRefs tasks:T19 so it auto-resolves on T19 merge-back per implement §7.4."
+- fix: "Resolved by T19 (merged ca5d638): Amnezia.validate now enforces all-or-nothing (jc/jmin/jmax/s1/s2 all >0 when the block is configured) + distinct magic headers, and applyDefaults (called from normalize) fills H1-H4 with the standard 1..4 message-type headers when omitted (amneziawg-go treats headers <=4 as 'use the standard type'). A partial/inconsistent amnezia profile now FAILS FAST at config load instead of the two ends silently deriving different profiles. Verified faithful to amneziawg-go v1.0.4 semantics by both T19 reviewers and by the matched/mismatched e2e on real hardware."
 
-### D2 — root-caused
+### D2 — resolved
 
 - createdAt: 2026-07-06T20:03:00.651Z
-- updatedAt: 2026-07-06T20:06:57.704Z
+- updatedAt: 2026-07-06T23:45:20.405Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: amneziawg-go stores amnezia message-type magic headers in package-level globals
@@ -35,6 +36,7 @@ archives: []
 - suggestedFix: "Before/at T19: document + assert the single-engine-per-process invariant in internal/device, or evaluate vendoring/patching the fork to move the message-type magic headers into per-Device state."
 - ledgerRefs: ["tasks:T8","goals:G1","tasks:T19"]
 - rootCause: "Confirmed against vendored engine source (I read amneziawg-go@v1.0.4 device/device.go handlePostConfig, lines 585-720). The message-type magic headers MessageInitiationType/MessageResponseType/MessageCookieReplyType/MessageTransportType are package-level vars (noise-protocol.go) reassigned by handlePostConfig on every configured IpcSet apply (device.go:685/688 etc.), and resetProtocol() (device.go:585) also mutates them process-wide. So obfuscation magic headers are process-global, not per-Device: two engines in one process share the last-applied values. Upstream dependency property; not fixable in T8. Mitigation (document/assert single-engine-per-process, or vendor-patch to per-Device state) folded into T19; D2 ledgerRefs tasks:T19 so it auto-resolves on T19 merge-back per implement §7.4."
+- fix: "Resolved by T19 (merged ca5d638): documented the amneziawg-go single-engine-per-process constraint (message-type magic headers are package-global vars, reset unconditionally by (*Device).Close->resetProtocol) and added globalAmneziaGuard enforcing PROCESS-EXCLUSIVITY — a configured (amnezia) engine is admitted only when no other engine is live; no engine may start while a configured engine is live; plain engines coexist. Acquire-before-IpcSet, release exactly-once via sync.Once (deferred release only after acquire succeeds), leak-free. The initial T19 delivery had an unsound same-profile-refcount + plain-bypass gap (found by the fable review, verified against the fork's unconditional resetProtocol); the merged rework tightened it to sound exclusivity with both orderings test-pinned. Verified by both reviewers."
 
 ### D3 — root-caused
 
