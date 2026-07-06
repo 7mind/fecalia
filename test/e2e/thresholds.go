@@ -2,6 +2,8 @@
 
 package e2e
 
+import "time"
+
 // Acceptance thresholds (Q1). These are the single source of truth for the
 // per-phase verification criteria; every e2e assertion reads them from here so
 // retuning after real-link measurements is a one-line change. Values are the
@@ -42,3 +44,17 @@ var P3InjectedLossRates = []float64{0.05, 0.15}
 // masking, adaptive total overhead bytes must be <= the P3 fixed-FEC baseline
 // bytes. The comparison is performed in the P4 e2e test against a recorded
 // baseline run rather than a constant here.
+
+// Per-path liveness detection (T13). Path liveness is entirely ours — the inner
+// WireGuard keepalive is per-peer, not per-path — so a blackholed uplink under a
+// live peer is detected only by these probes. PLivenessDownAfter is the silence
+// (no authenticated probe echo) after which an up path is marked down;
+// PLivenessProbeInterval is the probe cadence; detection latency is therefore
+// bounded by DownAfter plus roughly one interval, and the e2e asserts the
+// blackholed path is marked down within PLivenessDetectBudget.
+const (
+	PLivenessProbeInterval = 200 * time.Millisecond
+	PLivenessDownAfter     = 2 * time.Second
+	PLivenessUpSuccesses   = 3
+	PLivenessDetectBudget  = PLivenessDownAfter + 1500*time.Millisecond
+)
