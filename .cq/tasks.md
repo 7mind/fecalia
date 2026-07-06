@@ -366,10 +366,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-220000-ab78416a54b9fd747.md",".cq/logs/20260706-220000-a9d08b86138121cb3.md",".cq/logs/20260706-220000-a297f9214a676fd4c.md",".cq/logs/20260706-214500-a81aea62fc7e86149.md"]
 - resultCommit: ebf95d5
 
-### T32 — wip
+### T32 — done
 
 - createdAt: 2026-07-06T21:43:40.746Z
-- updatedAt: 2026-07-06T22:17:32.946Z
+- updatedAt: 2026-07-06T22:27:51.213Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Idempotent real-host provisioning + concentrator tunnel-interface firewall rule
@@ -378,6 +378,9 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T31"]
 - ledgerRefs: ["goals:G1"]
+- completion: "DONE (merged 9694c36). test/realhosts/provision.go: idempotent Provision (check-then-act, sentinel-guarded runStep w/ post-install re-verify) ensuring iperf3+gcc+Go 1.26.x per host (arch-detected via uname -m) + a concentrator-only `iptables -I INPUT -i wanbond0 -j ACCEPT` inserted before OCI's REJECT (-C-guarded, no dup). `just realhosts-provision` target. TestRealProvision provisions both hosts, asserts version probes + idempotent second pass (no changes) + exactly one wanbond0 ACCEPT before REJECT — RAN LIVE on o3+llm (PASS ~10-11s, both passes already-present). Reviewed opus+fable (R11 go-ahead, unanimous, both re-ran live). Filed D7 (rule not reboot-persistent -> T22) + D8 (pre-existing o3 INPUT-chain duplicates from manual P0 bring-up)."
+- sessionLogs: [".cq/logs/20260706-222500-a272f5360504eaf37.md",".cq/logs/20260706-222500-a2fa37e32b9886c2c.md",".cq/logs/20260706-222500-a097aa48cda8e782e.md"]
+- resultCommit: 9694c36
 
 ### T33 — planned
 
@@ -420,10 +423,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-220000-aa4ce7b7518ab1cfd.md",".cq/logs/20260706-220000-a5b2b9b863a40779d.md",".cq/logs/20260706-221500-a139ea4c25eeab49c.md",".cq/logs/20260706-221500-aacca56552aa07ae9.md"]
 - resultCommit: 2a6e61d
 
-### T36 — planned
+### T36 — wip
 
 - createdAt: 2026-07-06T21:44:19.623Z
-- updatedAt: 2026-07-06T21:44:19.623Z
+- updatedAt: 2026-07-06T22:20:46.637Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Record controlled-loss single-flow TCP collapse baseline for P3/P4 FEC comparison

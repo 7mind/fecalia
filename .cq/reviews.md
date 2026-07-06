@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 10
+  item: 11
 archives: []
 ---
 
@@ -138,3 +138,15 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["tasks:T35","goals:G1"]
 - sessionLogs: [".cq/logs/20260706-220000-aa4ce7b7518ab1cfd.md",".cq/logs/20260706-220000-a5b2b9b863a40779d.md",".cq/logs/20260706-221500-a139ea4c25eeab49c.md",".cq/logs/20260706-221500-aacca56552aa07ae9.md"]
+
+### R11 — go-ahead
+
+- createdAt: 2026-07-06T22:27:40.143Z
+- updatedAt: 2026-07-06T22:27:40.143Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T32 (idempotent real-host provisioning + concentrator firewall) reconciled go-ahead (opus+fable panel, UNANIMOUS r1). Both independently RE-RAN TestRealProvision LIVE (opus corroborated; fable PASS 11.25s) and verified: genuine check-then-act idempotency (every mutation predicate-guarded via command -v / go-version-grep / iptables -C, post-install re-verify; second pass no-op, Changed()==false); SAFE (additive `iptables -I INPUT -i wanbond0 -j ACCEPT` before REJECT cannot sever SSH; scoped `rm -rf /usr/local/go` gated behind go-absent + curl-fails-closed; NO OCI lifecycle ops); no shell-injection (constants + validated uname-m arch enum); correct -C/-I insert-before-REJECT; build-tag hygiene (//go:build realhosts excluded from untagged/e2e). Acceptance met operationally. Filed 2 out-of-scope defects: D7 (firewall rule not reboot-persistent, medium -> T22 install doc + persistence step), D8 (pre-existing o3 INPUT-chain duplicates from this session's manual P0 bring-up, low -> host cleanup)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T32","goals:G1"]
+- sessionLogs: [".cq/logs/20260706-222500-a272f5360504eaf37.md",".cq/logs/20260706-222500-a2fa37e32b9886c2c.md",".cq/logs/20260706-222500-a097aa48cda8e782e.md"]
