@@ -20,12 +20,12 @@ archives:
 
 ## M4
 
-### T8 — blocked
+### T8 — done
 
 - createdAt: 2026-07-01T23:39:01.889Z
-- updatedAt: 2026-07-06T15:46:25.122Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T20:03:39.446Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Embed amneziawg-go with pass-through Bind; bring tunnel up edge↔concentrator
 - description: Import github.com/amnezia-vpn/amneziawg-go as a library; bring up the device engine with TUN and a trivial single-UDP-socket pass-through conn.Bind (Open/Close/Send/ParseEndpoint/BatchSize/receive funcs); wire keys/peers/amnezia params from the TOML config; one binary drives both roles. Keep the Bind behind a small internal interface so swapping to upstream wireguard-go stays cheap (API-drift hedge). No bonding logic yet.
 - acceptance: Package compiles against the pinned amneziawg-go version; a unit test round-trips a datagram through Send + the receive callback on loopback; `sudo go test -tags e2e ./test/e2e -run TestP0PassThrough` completes the WG handshake and passes ping + an iperf3 TCP transfer between the edge and concentrator namespaces through the tunnel.
@@ -33,7 +33,9 @@ archives:
 - dependsOn: ["T4","T5","T6","T7"]
 - ledgerRefs: ["goals:G1"]
 - tags: ["blocked-on-hardware","partially-done"]
-- completion: "PARTIAL (sandbox slice done, commit bbdf04a): amneziawg-go v1.0.4 embedded; internal/bind isolates the engine behind type aliases (portability hedge); Passthrough pass-through Bind implemented over net.UDPConn (not the engine's StdNetBind, whose recvmmsg/GSO fast path is brittle under sandbox socket restrictions — a real P0 finding for T9); TestPassthroughLoopback round-trips a datagram through Send + receive callback on loopback. go build/vet/test/golangci-lint green; nix build produces the static binary. REMAINING (hardware, gated on Q11): wire amneziawg-go device to TUN + the Bind, drive both roles from config, and the tunnel e2e TestP0PassThrough (WG handshake + ping + iperf3). Needs host root + /dev/net/tun."
+- completion: "DONE (commits 99a102a + 86b0749). internal/device brings the tunnel up (create TUN, wire the pass-through Bind into the embedded amneziawg-go engine, apply WireGuard/amnezia params via UAPI, both roles from one config); cmd/wanbond does config-driven role dispatch + signal-driven shutdown (fail-loud on unexpected engine death); test/e2e/TestP0PassThrough builds the binary, generates X25519 keypairs (stdlib crypto/ecdh), runs concentrator (peer netns via nsenter) + edge, addresses both TUNs, and verifies WG handshake + ping + iperf3 through the tunnel. amnezia UAPI keys emitted only when configured → P0 runs plain WireGuard (amnezia e2e deferred to T19). Verified on ubuntu@o3.7mind.io (real /dev/net/tun + root, aarch64): full e2e suite green (TestFixture, TestP0PassThrough handshake+ping+iperf3, TestThresholds), passing under -race; local go build/vet/test/golangci-lint/gofmt green; nix build produces the static binary (vendorHash updated for new amneziawg-go transitive deps). Reviewed by opus+fable panel: R4 go-ahead after fixing 4 round-1 criticisms. Filed 2 out-of-scope amnezia defects (D1, D2) deferred to T19."
+- sessionLogs: [".cq/logs/20260706-200109-a1fd7a439122cc6ad.md",".cq/logs/20260706-200109-aa8173f2778caf84c.md",".cq/logs/20260706-200109-ac0148457e0d74922.md",".cq/logs/20260706-200109-a61cae3e31e0f7460.md"]
+- resultCommit: 86b0749
 
 ### T9 — planned
 
