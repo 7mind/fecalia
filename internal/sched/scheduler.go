@@ -18,10 +18,20 @@ type Scheduler interface {
 }
 
 // PathHealth is the per-path liveness the scheduler consumes: the read side of
-// the T13 telemetry liveness state machine. *telemetry.Prober and
-// *telemetry.Liveness both satisfy it, so the scheduler reads exactly the
+// the T13 telemetry liveness state machine, so the scheduler reads exactly the
 // up/down verdict T13 already computes (with its own probe-loss hysteresis)
 // rather than duplicating detection here.
+//
+// Concurrency contract: Pick runs on the Bind send path CONCURRENTLY with the
+// probe/timer goroutines that mutate liveness, so a production PathHealth MUST
+// be INTERNALLY SYNCHRONIZED. *telemetry.Prober satisfies this — its State()
+// takes the Prober's mutex (probe.go). A bare *telemetry.Liveness does NOT: it
+// is not independently synchronized (probe.go: "must be reached only through
+// the Prober") and its State() is an unguarded field read (liveness.go), so
+// wiring a live, probe-driven *Liveness directly here is a data race — use a
+// *Prober or an explicitly-locked adapter instead. (The sched unit tests drive
+// a raw *Liveness on a single goroutine with no concurrent writer, which is not
+// a race and is fine for testing.)
 type PathHealth interface {
 	State() telemetry.PathState
 }

@@ -272,9 +272,20 @@ func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
 // path's id) and writes it to that path's remote. The egress path is chosen by
 // the injected scheduler (T15): the active-backup policy returns the preferred
 // primary while it is up and the failover backup otherwise. The scheduler
-// selects by path priority/liveness only; the Bind additionally requires the
-// chosen path to have a known remote, failing the send otherwise (matching the
-// pre-T15 "no remote → no send" behaviour) rather than silently dropping.
+// selects by path priority/liveness only; the Bind additionally requires THAT
+// ONE chosen path to have a known remote, failing the send otherwise rather
+// than silently dropping.
+//
+// Behavioural change from pre-T15: this is a deliberate NARROWING. The removed
+// pickPathLocked iterated the paths and skipped any healthy-but-remoteless one,
+// falling through to the next healthy path WITH a known remote, so a send failed
+// only when NO path had a remote. Now the scheduler owns selection and returns a
+// single index; the Bind does NOT fall through, because a Bind-level fall-through
+// would bypass the scheduler's hysteresis (failover/failback). The residual
+// window this opens: if the scheduler's chosen path is reported Up but its remote
+// is not yet learned — e.g. a concentrator/hub restart, or a T16 NAT-rebind
+// before the first inbound packet re-teaches the remote — the send fails until
+// that path's remote is learned, even if another path has a known remote.
 //
 // Critical-section discipline: path selection and framing run under m.mu (the
 // send Codec is shared and stateful — D5's single keystream requires sequential,
