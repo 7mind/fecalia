@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 4
+  item: 5
 archives: []
 ---
 
@@ -61,3 +61,16 @@ archives: []
 - ledgerRefs: ["goals:G1","tasks:T8"]
 - blockingQuestions: ["Q11"]
 - handoffReasons: ["drained: this run landed the sandbox-verifiable P0 slice (T8 partial: amneziawg-go embed + pass-through Bind + loopback test, all verified)","answers-required: T8 blocked on open question Q11 (hardware gate for the P0-P5 tunnel e2e)","user-action-required: the remaining P0 acceptance (device+TUN wiring + tunnel e2e) and all downstream P1-P5 e2e need host root + /dev/net/tun (Starlink+5G edge + concentrator VPS); a fresh session also restores the proper worktree-isolated multi-agent flow"]
+
+### HO5 — mixed
+
+- createdAt: 2026-07-06T21:34:03.165Z
+- updatedAt: 2026-07-06T21:34:03.165Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "MIXED: major work landed AND now blocked on Q12/Q13. LANDED (done+merged, all opus+fable reviewed, hardware-verified): T8 P0 tunnel bring-up (internal/device + config-driven cmd/wanbond + TestP0PassThrough; verified on o3 incl -race; R4), T9 TestP0Baseline + docs/p0-findings.md (7 source-cited pitfall areas; R5), T10 docs/p0-checkpoint.md P0->P1 gate (A1-A6 confirmed/carried-forward, A7 revised -> P2 needs a bandwidth-capped fixture; R6), T11 internal/frame outer bonding codec (XChaCha20-obfuscated 4 frame kinds, PSK-auth CONTROL/PROBE, Encrypt-then-MAC; R7). Defects D1-D5 all root-caused (amnezia D1/D2->T19; iperf readiness D3; anti-replay D4->T13; hot-path Codec D5->T12). REAL-HOST VALIDATION (user-directed): the P0 tunnel runs over the REAL internet between o3 (concentrator, public 89.168.124.91) and llm-ubuntu-0 (edge, symmetric NAT) -- WG handshake + NAT traversal + ping 29ms + iperf3. Throughput investigation: tunnel carries ~150-170 Mbit/s (=raw path 171-313), NOT CPU-bound (o3 wanbond ~24%); single-flow TCP is loss-x-RTT limited (Mathis) -- exactly the long-fat-lossy-network problem the FEC phases fix. FOLLOW-UP (user-directed): appended a real cross-network two-host e2e tier + controlled-loss/FEC baseline to G1, re-opened to clarifying; planner filed Q12 + Q13. BLOCKED: G1 in clarifying gates ALL P1-P5 implementation (T12+) until Q12/Q13 are answered and the additive scope is planned. NEXT: answer Q12 (real-host tier assertions GATE vs REPORT-ONLY; recommendation report-only) and Q13 (NEW cross-cutting testing milestone vs fold-in; recommendation new milestone -- note H/M3 harness milestone is archived so the fixture extension needs an active milestone regardless) -- both carry recommendations so you can answer 'as recommended' -- then run /cq:plan:advance G1 to emit the additive plan, then /cq:advance resumes P1 (T12 multipath Bind, where the D5 hot-path Codec refactor + SO_RCVBUF/batched-I/O fold-in land)."
+- flow: advance
+- ledgerRefs: ["goals:G1","tasks:T8","tasks:T9","tasks:T10","tasks:T11","tasks:T12","questions:Q12","questions:Q13"]
+- blockingQuestions: ["Q12","Q13"]
+- handoffReasons: ["drained","answers-required"]
+- sessionLogs: [".cq/logs/20260706-213000-ab3af77c823b6030b.md",".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-204500-a8e8aba6f76f5085b.md",".cq/logs/20260706-203000-a28d62545377df7ef.md",".cq/logs/20260706-200109-a1fd7a439122cc6ad.md"]

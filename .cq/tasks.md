@@ -71,18 +71,21 @@ archives:
 
 ## M5
 
-### T11 — planned
+### T11 — done
 
 - createdAt: 2026-07-01T23:39:30.788Z
-- updatedAt: 2026-07-01T23:39:30.788Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T21:11:15.883Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Outer bonding frame codec + PSK-authenticated control/probe frames
 - description: "Wire codec for the outer frame types: DATA (outer-seq, path-id, fec-group, flags) wrapping opaque WG datagrams; PARITY; PROBE; CONTROL. No plaintext magic constants or fixed offsets (requirement 6 groundwork). CONTROL/PROBE authenticated with the config PSK via a vetted AEAD/HMAC library (not hand-rolled); DATA headers unauthenticated by design (DoS-grade risk accepted). Own outer-seq space — never reuse the inner WG counter."
 - acceptance: Unit round-trip tests for all four frame types preserve fields; tampered or PSK-mismatched CONTROL/PROBE frames are rejected; a decoder fuzz/property test runs clean without panic; a byte-histogram test asserts no byte position is constant across encodings of random payloads.
 - suggestedModel: frontier
 - dependsOn: ["T10"]
 - ledgerRefs: ["goals:G1"]
+- completion: "DONE (merged 9464e91). internal/frame: typed closed-sum codec for the 4 outer frame kinds (Data/Parity/Probe/Control). Wire format `nonce(24B XChaCha20) || obf(body) [|| HMAC-SHA256/16 tag]`: fresh crypto/rand nonce per frame, body XOR'd with a PSK-derived (HKDF-SHA256, domain-separated) keystream so no byte position is constant (requirement-6 groundwork); CONTROL/PROBE Encrypt-then-MAC authenticated (tamper/PSK-mismatch -> ErrAuth), DATA/PARITY unauthenticated by design (inner WG authenticates). DATA carries own outer-seq/path-id/fec-group/flags; payload opaque. Deps: crypto/hkdf (stdlib 1.26) + x/crypto/chacha20 (promoted to direct; go.sum + vendorHash unchanged). Full gate green + 20s fuzz clean + nix build OK. Reviewed opus+fable, R7 go-ahead (unanimous r1). Filed D4 (anti-replay -> T13) + D5 (hot-path Codec refactor -> T12)."
+- sessionLogs: [".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-211500-a8aeb19256ab53115.md",".cq/logs/20260706-211500-a28cc8d9376a6a85b.md"]
+- resultCommit: "9464e91"
 
 ### T12 — planned
 

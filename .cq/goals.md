@@ -10,12 +10,12 @@ archives: []
 
 ## M1
 
-### G1 — planned
+### G1 — clarifying
 
 - createdAt: 2026-07-01T23:11:54.649Z
-- updatedAt: 2026-07-02T00:17:50.776Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T21:28:03.596Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - title: "wanbond: 2-WAN bonding tunnel with adaptive FEC on amneziawg-go + custom conn.Bind — implementation and test harness"
 - description: |
     Plan the implementation and test harness for `wanbond`, per the full project prompt in `fec-prompt.md` (repo root — authoritative source; summarized here).
@@ -37,6 +37,18 @@ archives: []
     NON-GOALS: not a general SD-WAN product; no GUI; not >3 links initially; path pinning external; no TCP/TLS fallback transport; no protocol mimicry; base-library decision closed (kcp-go, quic-go, plain wireguard-go rejected in favor of amneziawg-go + custom Bind).
     
     LIBRARIES: amneziawg-go (base, decided); klauspost/reedsolomon (RS FEC).
+    
+    ## Follow-up (2026-07-06): Real cross-network two-host e2e tier + controlled-loss/FEC baseline
+    
+    ADDITIVE scope (do NOT invalidate or reorder existing P1-P5 tasks T11-T30). Grounded in P0 hardware validation this session.
+    
+    EVIDENCE / CONTEXT (established — planner need not re-ask): Two real remote hosts now exist in DIFFERENT networks, reachable over SSH with key /run/agenix/llm-ssh-key: (a) o3.7mind.io — aarch64, 1 vCPU, PUBLIC inbound-reachable UDP endpoint (89.168.124.91) → CONCENTRATOR; (b) llm-ubuntu-0.pgtr.7mind.io — amd64, 4 vCPU, behind a SYMMETRIC NAT (not inbound-reachable) → EDGE (initiates; concentrator learns the NAT'd endpoint — real CGNAT traversal). The P0 pass-through tunnel was validated between them over the real internet (WG handshake + NAT traversal + ping ~29ms + iperf3). MEASURED: tunnel carries ~150-170 Mbit/s (UDP 148, 8×TCP 169) ≈ raw path (171-313); NOT CPU-bound (o3 wanbond ~24% of one core); single-flow TCP collapses to ~18-48 Mbit/s from ~0.1-0.8% loss over the 29ms RTT (Mathis) — the long-fat-lossy-network problem FEC (P3/P4) fixes. Per-host provisioning: apt install iperf3 gcc + Go 1.26.4 tarball to /usr/local/go; concentrator MUST allow tunnel-interface traffic (OCI ships `-A INPUT -j REJECT --reject-with icmp-host-prohibited` that blocks TCP on the tunnel; ICMP slips through).
+    
+    NEW SCOPE (design decisions pre-answered, so planning need not clarify these):
+    1. REAL cross-network two-host e2e tier: SSH-orchestrated from the repo, behind a dedicated `realhosts` build tag (separate from the netns `e2e` tag), OPT-IN / manual-run only (NOT default CI; run via a Justfile target). Host addresses/roles/SSH-key from env (WANBOND_EDGE_HOST / WANBOND_CONC_HOST / WANBOND_CONC_PUBLIP / WANBOND_SSH_KEY), defaulting to the two hosts above. COMPLEMENTS (not replaces) the netns fixture. Start with the P0 single-uplink smoke test (handshake + ping + iperf3: single-flow, 8×parallel, UDP goodput/loss); extend to multipath/failover/FEC as those phases land; provision hosts idempotently + set the concentrator firewall rule.
+    2. CONTROLLED-LOSS / FEC BASELINE: induce known loss (netem) and record single-flow-TCP collapse as the quantitative baseline P3/P4 FEC recovery is measured against. UNIFY with the A7 checkpoint follow-up drafted in docs/p0-checkpoint.md (T10): the fixture (netns and/or a virtual-interface topology on the real edge host) must gain BOTH a bandwidth cap (netem rate / tbf/htb) AND a controlled-loss knob, so bufferbloat/pacing (T21/T23) AND FEC recovery (T25/T29) are measurable. Supersede/merge the A7 follow-up; do not duplicate it.
+    3. MULTIPATH over the real hosts (the full picture): give the edge two paths to the one concentrator via virtual interfaces + policy routing (shared physical uplink, distinct source IPs/4-tuples) for FUNCTIONAL bonding/failover validation once T12+ land. Truly-independent asymmetric/intermittent links are the FINAL real-hardware step — explicitly OUT OF SCOPE for now.
+    4. FOLD-IN scope notes on existing tasks (no new task): T12 (multipath Bind) should set a large SO_RCVBUF and adopt batched send/recv (GSO/GRO best-effort per-path) to match pure-WireGuard StdNetBind (confirmed P0 §2 efficiency gap — pass-through Bind uses default socket buffers); T22 (systemd/install doc) must document the concentrator tunnel-interface firewall requirement.
 - sessionLogs: [".cq/logs/20260701-231505-aacec84bd6a7748f4.md",".cq/logs/20260701-234215-a533f3a14c0afe112.md",".cq/logs/20260701-234215-a2ee01f9272ece9de.md"]
 - rawLogs: [".cq/logs/raw/20260701-231505-aacec84bd6a7748f4.jsonl",".cq/logs/raw/20260701-234215-a533f3a14c0afe112.jsonl",".cq/logs/raw/20260701-234215-a2ee01f9272ece9de.jsonl"]
 - milestones: ["M2","M3","M4","M5","M6","M7","M8","M9"]

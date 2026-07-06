@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 6
+  item: 7
 archives: []
 ---
 
@@ -86,3 +86,17 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["tasks:T10","goals:G1"]
 - sessionLogs: [".cq/logs/20260706-204500-a8e8aba6f76f5085b.md",".cq/logs/20260706-204500-a7e6b677426ce0802.md",".cq/logs/20260706-204500-a134692db4129bffa.md",".cq/logs/20260706-204500-ab8cf7484251a3d93.md",".cq/logs/20260706-204500-a9f5d5eb7770fd58d.md"]
+
+## M5
+
+### R7 — go-ahead
+
+- createdAt: 2026-07-06T21:11:02.142Z
+- updatedAt: 2026-07-06T21:11:02.142Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T11 reconciled go-ahead (opus+fable panel, round 1 unanimous approve). Both independently re-ran the full gate (build/vet/gofmt/golangci-lint 0 issues, 143k-exec/15-20s FuzzDecode clean, nix build OK) and audited the crypto: HKDF-SHA256 domain-separated subkeys, Encrypt-then-MAC ordering with the nonce inside the MAC, HMAC-SHA256 truncated to 16B compared constant-time (hmac.Equal), fresh crypto/rand 24B XChaCha20 nonce per frame. All 4 acceptance clauses met with GENUINE (non-vacuous) tests: DeepEqual round-trip all kinds incl. empty payloads; exhaustive per-byte tamper test (ErrAuth across the MAC-covered region, no mutation accepted as authentic CONTROL/PROBE); 256-sample/kind byte-histogram (no constant offset); fuzz no-panic. Kind-byte-downgrade-to-forgeable-DATA adjudication verified sound. Filed 2 out-of-scope defects: D4 (no outer-layer anti-replay for CONTROL/PROBE -> T13 handler), D5 (per-frame HKDF/double-ChaCha20 hot-path cost -> cached Codec refactor at T12)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T11","goals:G1"]
+- sessionLogs: [".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-211500-a8aeb19256ab53115.md",".cq/logs/20260706-211500-a28cc8d9376a6a85b.md"]
