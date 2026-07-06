@@ -209,42 +209,58 @@ counters.
 
 Measured by `TestP0Baseline` (`test/e2e/baseline_test.go`), which for each
 uplink records idle RTT, saturated tunnel throughput, and RTT sampled WHILE a
-saturating iperf3 runs (the standing-queue latency inflation). The verdict
-below follows from the measured idle-vs-loaded delta.
+saturating iperf3 runs (the standing-queue latency inflation). Measured on the
+netns/netem fixture on real hardware (aarch64, 1 vCPU); a representative run:
 
-Measured numbers (substitute the hardware run's figures for the `<FILL: ...>`
-placeholders):
+| Path     | Idle RTT (tunnel) | RTT under saturating load | Bufferbloat Δ | Saturated throughput |
+| -------- | ----------------- | ------------------------- | ------------- | -------------------- |
+| starlink | 44.8 ms | 46.6 ms | +1.8 ms | 18.9 Mbit/s |
+| cellular | 64.3 ms | 64.2 ms | −0.1 ms | 43.5 Mbit/s |
 
-| Path     | Idle RTT | RTT under saturating load | Bufferbloat Δ | Saturated throughput |
-| -------- | -------- | ------------------------- | ------------- | -------------------- |
-| starlink | `<FILL: starlink idle>` ms | `<FILL: starlink loaded>` ms | `<FILL: starlink Δ>` ms | `<FILL: starlink Mbit/s>` Mbit/s |
-| cellular | `<FILL: cellular idle>` ms | `<FILL: cellular loaded>` ms | `<FILL: cellular Δ>` ms | `<FILL: cellular Mbit/s>` Mbit/s |
+(Underlay idle RTT — netem delay only, no tunnel — was 42.7 ms starlink /
+64.1 ms cellular, so the pass-through tunnel itself adds only ~0–2 ms. Tunnel
+throughput is noisy run-to-run, 12–46 Mbit/s across runs, because it is
+CPU-bound: single userspace-WG core on one vCPU, one syscall per datagram
+per section 1 — not link-bound.)
 
-Reading: `RTT idle ≈ <FILL: starlink idle>ms → under load ≈
-<FILL: starlink loaded>ms` on starlink, and `RTT idle ≈ <FILL: cellular idle>ms
-→ under load ≈ <FILL: cellular loaded>ms` on cellular.
+Reading — **the in-fixture bufferbloat Δ is negligible (≈ 0–2 ms), NOT the large
+inflation one might expect.** This is a genuine and important finding about the
+FIXTURE, not evidence that pacing is unnecessary: the emulated paths impose
+delay, jitter, and loss (`test/e2e/netns.go:69` — netem `delay`/`jitter`, and
+`InjectLoss` at `:135`) but **no bandwidth cap**. With no rate-limited
+bottleneck, and with the real bottleneck being userspace crypto on one vCPU
+(which back-pressures via the TUN read rather than by growing a deep UDP egress
+queue), no standing queue forms — so no bufferbloat manifests. The P0 fixture as
+built therefore **cannot exercise bufferbloat/pacing**; that is a harness gap,
+not an all-clear.
 
-Mechanism: neither the netem fixture nor the P0 `Passthrough` rate-limits or
-paces egress (`Passthrough.Send` writes as fast as the engine offers,
-`internal/bind/bind.go:99-116`; there is no in-flight bound anywhere in P0).
-Saturating a path with no pacing lets TCP fill the path's queue, building a
-STANDING queue whose depth adds directly to RTT — classic bufferbloat. The
-expected and (per the table) observed result is a large RTT inflation under
-load relative to idle.
+**Verdict — the bonding scheduler must still pace egress / bound in-flight bytes
+per path, but this claim is NOT yet demonstrated in-fixture and rests on three
+grounds:**
 
-**Verdict — the bonding scheduler MUST pace egress / bound in-flight bytes per
-path.** Justification from the measurement: the idle→loaded RTT inflation shows
-an unpaced path builds a standing queue, so the scheduler cannot treat "socket
-accepted the write" as "path has capacity." It must bound in-flight bytes per
-path (a per-path congestion/BDP estimate) and pace egress to that estimate.
-This matters doubly for bonding: when a fast and a slow path are bonded, an
-unbounded slow path accumulates a deep queue and inflicts HEAD-OF-LINE
-BLOCKING on the resequencer (section 6 — the reorder buffer stalls waiting for
-the slow path's backlog), amplifying the single-path bufferbloat. Pacing /
-in-flight bounding per path is therefore a prerequisite for the scheduler
-(T-sched) and the resequencer (T18), not an optimization. The exact per-path
-in-flight bound should be derived from each path's measured RTT and throughput
-(the numbers in the table above).
+1. **Real-link buffer depth (external evidence).** Starlink and consumer 5G/LTE
+   uplinks are well-documented bufferbloat sources — carrier and CPE buffers
+   hold hundreds of ms under load. The fixture's delay-only emulation omits
+   exactly this. The real-link manual checklist (`docs/manual-checklist.md` →
+   `## P0`) must measure loaded RTT on the actual uplinks; that is where the
+   inflation will appear.
+2. **Head-of-line blocking when bonding a fast + slow path.** Independent of
+   single-path bufferbloat, an unbounded slow path accumulates a queue and
+   stalls the resequencer (section 6 — the reorder buffer waits on the slow
+   path's backlog). Bounding in-flight bytes per path caps this stall.
+3. **Correctness of "socket accepted the write" ≠ "path has capacity."** The
+   scheduler cannot use write-acceptance as a capacity signal; it needs a
+   per-path congestion/BDP estimate to place packets, which is the same state a
+   pacer needs.
+
+**Action for P1/P2 (blocks a real pacing decision):** add a rate-limited fixture
+variant — netem `rate`, or a `tbf`/`htb` bottleneck qdisc on the edge veth — so
+`TestP0Baseline` (or a P2 successor) can actually build a standing queue and
+measure the idle→loaded inflation, then size the per-path in-flight bound from
+the measured BDP. Until that exists, the pacing requirement is a design
+commitment justified by grounds 1–3, not by an in-fixture measurement. This is
+recorded for the T10 checkpoint as a REVISED assumption (the fixture must gain a
+bandwidth bottleneck before P2 aggregation/pacing can be tuned).
 
 ---
 
@@ -254,5 +270,7 @@ The emulated numbers above are the netns/netem counterpart of the manual
 real-link P0 checks. Run the real-link baseline per the checklist:
 `docs/manual-checklist.md` → section **## P0 — spike / baseline** (tunnel comes
 up, ping + TCP pass through, record single-path baseline throughput per uplink
-with iperf3). Record the hardware figures there and substitute them into the
-`<FILL: ...>` cells above.
+with iperf3). The real-link run is also where the section-7 bufferbloat gap gets
+resolved: unlike the delay-only fixture, real Starlink/5G uplinks have deep
+buffers, so record loaded RTT there to see the inflation the fixture cannot
+produce.

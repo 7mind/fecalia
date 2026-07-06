@@ -13,6 +13,10 @@ import (
 	"time"
 )
 
+// bloatPort is the iperf3 port for the under-load (bufferbloat) measurement,
+// distinct from the default 5201 the clean-throughput run uses.
+const bloatPort = 5202
+
 // TestP0Baseline records the single-path P0 baseline the P0-findings doc's
 // pacing/bufferbloat section (section 7) reports. For EACH emulated uplink it
 // brings the pass-through tunnel up over THAT path, then measures three numbers:
@@ -137,8 +141,13 @@ level = "error"
 // RTT and the idle RTT is the bufferbloat inflation.
 func (top *Topology) rttUnderLoad(t *testing.T, serverIP, pingIP string, secs int) (mbps, loadedRTTms float64) {
 	t.Helper()
-	top.startProc(t, "iperf3-bloat-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP)
-	time.Sleep(500 * time.Millisecond) // allow the server to bind and listen
+	// Use a port distinct from the default (5201) the clean-throughput measurement
+	// just used: rebinding 5201 immediately can hit the prior socket's TIME_WAIT
+	// and leave the fresh one-shot server not listening (client -> "connection
+	// refused"). A separate port sidesteps that entirely.
+	port := strconv.Itoa(bloatPort)
+	top.startProc(t, "iperf3-bloat-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP, "-p", port)
+	time.Sleep(800 * time.Millisecond) // allow the server to bind and listen
 
 	// Run the saturating client in the background; capture output/err only (no
 	// t.Fatalf off the test goroutine — that is illegal in Go's testing).
@@ -148,7 +157,7 @@ func (top *Topology) rttUnderLoad(t *testing.T, serverIP, pingIP string, secs in
 	}
 	ch := make(chan clientResult, 1)
 	go func() {
-		out, err := exec.Command("iperf3", "-c", serverIP, "-t", strconv.Itoa(secs), "-J").CombinedOutput()
+		out, err := exec.Command("iperf3", "-c", serverIP, "-p", port, "-t", strconv.Itoa(secs), "-J").CombinedOutput()
 		ch <- clientResult{out: out, err: err}
 	}()
 
