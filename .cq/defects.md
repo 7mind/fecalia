@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 8
+  item: 11
 archives: []
 ---
 
@@ -64,10 +64,10 @@ archives: []
 - ledgerRefs: ["tasks:T11","goals:G1","tasks:T13"]
 - rootCause: "Confirmed by the T11 review (source-cited): internal/frame.Decode verifies the CONTROL/PROBE HMAC but keeps NO per-peer state, so a captured valid frame replays with a passing MAC. Correct by design for a stateless codec (T11 exposes Probe.ProbeSeq / Probe.TimestampNanos / Control.ControlType as the freshness material). Fix deferred to T13 (probe/liveness + control state machine): track a per-peer ProbeSeq high-water mark and/or reject stale TimestampNanos. D4 ledgerRefs tasks:T13 so it auto-resolves on T13 merge-back."
 
-### D5 — root-caused
+### D5 — resolved
 
 - createdAt: 2026-07-06T21:10:30.046Z
-- updatedAt: 2026-07-06T21:32:47.546Z
+- updatedAt: 2026-07-06T23:12:48.163Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: frame codec re-derives HKDF subkeys and double-inits ChaCha20 per call (per-datagram hot path)
@@ -76,6 +76,7 @@ archives: []
 - suggestedFix: "At T12 integration, introduce a codec state built once from the PSK (e.g. type Codec struct{obfKey, authKey []byte} with NewCodec(psk) + methods): derive subkeys once, reuse one cipher/keystream per Decode (de-obfuscate kind byte and body from a single keystream), and consider a dst-append buffer-reuse API once T12 defines the datapath throughput target."
 - ledgerRefs: ["tasks:T11","goals:G1","tasks:T12"]
 - rootCause: "Confirmed by the T11 review (source-cited): internal/frame Encode/Decode call subkeys(psk) (two HKDF-SHA256 derivations) per invocation and Decode double-inits XChaCha20 (peek + full-body) per frame + per-frame allocations — wasteful in the per-datagram hot path. Correct output, but not built for the datapath. Fix deferred to T12 (where the codec is first wired into the datapath): introduce a Codec state built once from the PSK (NewCodec(psk), derive subkeys once, single keystream per Decode, dst-append buffer reuse). D5 ledgerRefs tasks:T12 so it auto-resolves on T12 merge-back. Reinforced by this session's real-host finding that the pass-through path is efficiency-sensitive (though not the current bottleneck)."
+- fix: "Resolved by T12 (merged 6675ead): internal/frame gained NewCodec(psk) building HKDF subkeys ONCE, with Codec.Encode/Decode using a single keystream per operation and a dst-append API; the multipath Bind constructs the Codec once and reuses it on the per-datagram hot path instead of re-deriving subkeys + double-initing ChaCha20 per frame. Verified intact (single-keystream) by the T12 r3 review panel."
 
 ### D6 — open
 
@@ -88,6 +89,32 @@ archives: []
 - severity: medium
 - suggestedFix: Add a direction/role bit to frame.Probe (or a distinct KindProbeEcho) COVERED BY THE HMAC; the prober accepts only echo-role frames, the reflector only probe-role frames. Do this in the frame codec (adjacent to D5/T12) or a dedicated follow-up; then T13's liveness/anti-replay consumes the role.
 - ledgerRefs: ["tasks:T13","goals:G1","tasks:T18"]
+
+### D9 — root-caused
+
+- createdAt: 2026-07-06T22:50:59.274Z
+- updatedAt: 2026-07-06T22:50:59.274Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Per-path remote learned from unauthenticated DATA frames enables blind traffic-redirect DoS
+- description: "Filed by the T12 review panel (fable), file-and-defer. internal/bind/multipath.go receiver() calls ps.setRemote(srcAP) for every decoded DATA frame. DATA frames are unauthenticated by design (frame.go wire model); for a blind attacker spraying random datagrams at a path socket's public port, a random payload decodes to a valid KindData frame with probability ~1/256 (uniform kind byte after keystream XOR, header length permitting) — each success redirects that path's return traffic to the attacker's source address until the next legitimate packet re-learns it. Inner WireGuard keeps confidentiality/integrity, so impact is DoS-grade (per-path traffic blackholing on the concentrator). OUT OF SCOPE for T12: the accepted P1 threat model explicitly tolerates DoS-grade DATA forgery, and the authenticated path-probe machinery that can gate remote-learning arrives with T15. Severity medium."
+- severity: medium
+- rootCause: "Confirmed by the T12 review (source-cited): multipath.go receiver() unconditionally calls ps.setRemote(srcAP) on every decoded DATA frame, and DATA frames carry no authentication (T11 codec authenticates only CONTROL/PROBE). Correct for the T12 datapath (P1 threat model tolerates DoS-grade DATA forgery); the gating fix depends on T15's authenticated PROBE frames. Deferred to T15."
+- suggestedFix: When T15 lands authenticated PROBE frames, gate per-path remote learning — or at least remote CHANGES away from a configured/confirmed address — on authenticated traffic, mirroring wireguard-go (which updates a peer endpoint only from crypto-verified packets); alternatively confirm a learned remote only after the inner WG datagram authenticates.
+- ledgerRefs: ["tasks:T12","goals:G1","tasks:T15"]
+
+### D10 — root-caused
+
+- createdAt: 2026-07-06T23:09:43.617Z
+- updatedAt: 2026-07-06T23:09:43.617Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Config validation accepts duplicate path source_addr, causing EADDRINUSE at bind Open
+- description: Filed by the T12 review panel (opus+fable, both independently) — file-and-defer. internal/config/config.go validate() enforces unique path NAMES but not unique SourceAddr values. internal/bind/multipath.go Open binds each path to (SourceAddr, port); the concentrator's Open(listen_port) and every re-Open after Down/Up (the engine passes the previously-bound port back, so ALL paths rebind that fixed port) then fail with EADDRINUSE on the second ListenUDP for two paths sharing a source_addr. Fail-fast and diagnosable (clear bind error, no silent corruption), but a misconfiguration that should be rejected at config LOAD, not at bring-up. Pre-existing validation gap, NOT introduced by T12's diff. Severity low.
+- severity: low
+- rootCause: "Confirmed against source by both T12 reviewers: config.validate() tracks a seen-set for path names only (not SourceAddr); bind Open binds (SourceAddr, port) per path, so duplicate source_addr with a fixed listen port collides at the second ListenUDP (EADDRINUSE). Fails loudly at bring-up rather than at config load."
+- suggestedFix: In config validate(), track seen SourceAddr values alongside names and reject duplicates with a per-path error naming both conflicting paths. Small, self-contained; can fold into T15 (scheduler, next to touch the path set) or a direct config-hardening follow-up.
+- ledgerRefs: ["tasks:T12","goals:G1"]
 
 ## M10
 

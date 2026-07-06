@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 11
+  item: 16
 archives: []
 ---
 
@@ -113,6 +113,28 @@ archives: []
 - ledgerRefs: ["tasks:T11","goals:G1"]
 - sessionLogs: [".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-211500-a8aeb19256ab53115.md",".cq/logs/20260706-211500-a28cc8d9376a6a85b.md"]
 
+### R12 — go-ahead
+
+- createdAt: 2026-07-06T22:49:02.209Z
+- updatedAt: 2026-07-06T22:49:02.209Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T13 (per-path probes + liveness state machine) reconciled go-ahead (opus+fable panel, multi-round). R1 fable disapprove — 5 valid criticisms: (1) liveness silence-hysteresis reset, (2) anti-replay must be PathID-keyed not global (ErrPathMismatch), (3) per-path loss must derive from the probe ProbeSeq stream NOT the connection-global outer-seq (striping/attach would read as loss; ConnLoss is the correctly-scoped connection metric), (4) concurrency contract (mutexes; Estimator holds no clock/does no I/O), (5) threshold-doc. All fixed in ea9e197. R2 fable disapprove — self-contradictory threshold invariant (comment claimed PLivenessDetectBudget<P1RecoverySeconds i.e. 3.5s<3s); fixed 9bef9cf by restating the invariant on the analytical detect term (DownAfter+ProbeInterval=2.2s < 3s) and labeling DetectBudget as the deliberately-larger e2e assertion deadline. R2 opus disapprove — stale Estimate/Loss/defaultLossWindow docs still said Loss derives from outer-seq DATA, contradicting the #3 redesign; fixed 792bf79. R3 fable approve — both doc fixes verified against code (ObserveProbeEcho/ProbeSeq wiring at probe.go:143; invariant matches constants). Opus r2 confirmed all 5 reworked defects correct + regression-free (-race -count=3 clean, 25 tests green). Merged be0da9f (fast-forward; rebased on main, build/vet/gofmt/test/lint green)."
+- criticism: ["[r1 fable, resolved ea9e197] liveness silence-hysteresis not reset on recovery","[r1 fable, resolved ea9e197] anti-replay global not PathID-keyed — added guards map[uint8]*AntiReplay + ErrPathMismatch","[r1 fable, resolved ea9e197] per-path loss derived from connection-global outer-seq — moved to probe ProbeSeq stream (ObserveProbeEcho); ConnLoss for connection-scoped outer-seq","[r1 fable, resolved ea9e197] concurrency contract underspecified — mutexes + no-clock/no-IO Estimator doc","[r2 fable, resolved 9bef9cf] self-contradictory threshold invariant (3.5s<3s) — restated on analytical detect term (2.2s<3s); DetectBudget labeled as e2e assertion deadline","[r2 opus, resolved 792bf79] stale Estimate/Loss/defaultLossWindow docs claimed outer-seq DATA loss — corrected to probe-echo ProbeSeq gaps"]
+- new_questions: []
+- ledgerRefs: ["tasks:T13","goals:G1"]
+
+### R15 — go-ahead
+
+- createdAt: 2026-07-06T23:09:35.930Z
+- updatedAt: 2026-07-06T23:09:35.930Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T12 (multipath conn.Bind: per-path sockets behind one virtual endpoint + MTU accounting + D5 frame.Codec) reconciled go-ahead (opus+fable panel, 3 rounds). R1 opus disapprove — reproduced a data race on the shared virtual-endpoint dst (write under m.mu vs lockless engine Dst* reads); fixed 6937d7c via atomic.Pointer[netip.AddrPort]. R2 opus approve (race fix confirmed, regression test trips DATA RACE on revert), fable DISAPPROVE (CRITICAL) — reproduced a bind-lifecycle defect: amneziawg-go v1.0.4 upLocked->BindUpdate->closeBindLocked calls bind.Close() unconditionally BEFORE every Open(port); facet (a) Close set m.closed=true and Open never reset it -> Send returned net.ErrClosed forever after device.Up() (tunnel could never transmit a handshake); facet (b) m.paths never cleared -> re-Open returned ErrBindAlreadyOpen. Also hot-path lock contention (virtualEndpoint took m.mu per recv; Send held m.mu across the WriteToUDPAddrPort syscall). Fixed f15fe59: removed the sticky closed flag (closed == no bound sockets, mirroring conn.StdNetBind), Close clears m.paths+sendCodec and Open rebuilds sockets from retained defs on the engine-supplied port; lock-free virtualEndpoint fast path (atomic dstValid double-checked pin); WriteToUDPAddrPort moved out of m.mu with fresh per-datagram buffers (Encode copies out of codec scratch, no aliasing). R3 BOTH approve: all 3 new tests (TestMultipathEngineLifecycleCloseThenOpen facet-a, TestMultipathReopenAfterClose facet-b, unprivileged TestMultipathEngineUpCanTransmit via tuntest channel-TUN + real awgdevice.Device) demonstrated fail-before at 6937d7c / pass-after at f15fe59 under -race; no aliasing on the unlocked send path; TestMultipathVirtualEndpointDstRace still race-clean; no regression to virtual-endpoint identity, outer-seq/path-id framing, D5 single-keystream Codec, InnerMTU=1401, SO_RCVBUF ~7MiB. Full gate green (build/vet/gofmt/test -race/golangci-lint 0; e2e compiles). D5 auto-resolves (NewCodec landed). Out-of-scope defects filed: D9 (unauthenticated-DATA remote-learn DoS -> T15), D10 (duplicate path source_addr not validated -> EADDRINUSE). Merged 6675ead (rebased onto main)."
+- criticism: ["[r1 opus, resolved 6937d7c] data race on shared virtual-endpoint dst — atomic.Pointer","[r2 fable, resolved f15fe59, CRITICAL] bind-lifecycle: engine Close-before-Open left sticky closed=true (Send->ErrClosed forever) + m.paths uncleared (re-Open->ErrBindAlreadyOpen); fixed to StdNetBind semantics + 2 lifecycle regressions + unprivileged engine-integration test","[r2 fable, resolved f15fe59] hot-path lock contention — lock-free virtualEndpoint fast path + WriteToUDPAddrPort moved out of m.mu with fresh per-datagram buffers"]
+- new_questions: []
+- ledgerRefs: ["tasks:T12","goals:G1"]
+
 ## M10
 
 ### R9 — go-ahead
@@ -150,3 +172,25 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["tasks:T32","goals:G1"]
 - sessionLogs: [".cq/logs/20260706-222500-a272f5360504eaf37.md",".cq/logs/20260706-222500-a2fa37e32b9886c2c.md",".cq/logs/20260706-222500-a097aa48cda8e782e.md"]
+
+### R13 — go-ahead
+
+- createdAt: 2026-07-06T22:52:47.344Z
+- updatedAt: 2026-07-06T22:52:47.344Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T36 (controlled-loss single-flow-TCP-collapse FEC baseline: netns fec_baseline_test.go + docs/fec-baseline.md) reconciled go-ahead (opus+fable panel, 2 rounds). R1 fable disapprove — 4 valid criticisms: (1) unpinned congestion control (BBR would not collapse under loss, defeating the Mathis baseline); (2) measured sum_sent not sum_received (sender-side overcounts goodput on a lossy link); (3) vacuity hole (sweep could pass trivially if loss never applied); (4) doc citation malformed. All fixed (rework, merged 6ebc288). R2 BOTH approve, independently verified: --congestion cubic pinned on the iperf3 client via fail-fast runOut (fecCongestionControl); fecIperf3RecvMbps reads end.sum_received; non-vacuity enforced by three runtime guards (fecLossSweep[0]!=0 Fatalf + positive-baseline Fatalf + collapse gate frac<0.5 that FAILS not passes if loss unapplied; InjectLoss itself Fatalf's on tc error — no silent no-op); citation now points to the G1 follow-up + HO5 carrying the exact figures. o3 re-run numbers 45.1 (0% loss) -> 7.3/5.4/3.7 Mbit/s (fractions 0.16/0.12/0.08) are internally consistent and Mathis 1/sqrt(p)-conformant, zero placeholders. Report-only honored (asserts the pre-FEC collapse problem manifests; does NOT gate FEC recovery — the baseline T25/T29 is measured against). Full check (build/vet/gofmt/e2e-compile/golangci-lint) green. Merged 6ebc288 (fast-forward, rebased on main)."
+- criticism: ["[r1 fable, resolved] unpinned CC — BBR masks loss; pinned --congestion cubic on the sender","[r1 fable, resolved] measured sum_sent not sum_received — switched to end.sum_received (receiver goodput) via T36-local fecIperf3RecvMbps","[r1 fable, resolved] vacuity hole — added fecLossSweep[0]==0 anchor Fatalf + positive-baseline Fatalf + substantive frac<0.5 collapse gate","[r1 fable, resolved] doc citation malformed — cite G1 follow-up + HO5 with the exact live figures; Mathis stated as upper bound goodput<=MSS/(RTT*sqrt(p))"]
+- new_questions: []
+- ledgerRefs: ["tasks:T36","goals:G1"]
+
+### R14 — go-ahead
+
+- createdAt: 2026-07-06T23:01:30.519Z
+- updatedAt: 2026-07-06T23:01:30.519Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T33 (real-host P0 single-uplink smoke: test/realhosts/smoke_test.go, //go:build realhosts) reconciled go-ahead (opus+fable panel, 2 rounds). R1: opus approve (genuine through-tunnel verification — inner-IP ping for handshake + iperf3 -B bound to inner IP; safe teardown; report-only; no injection; live run passed RTT 31.6ms, TCP 24.3/91.0, UDP), fable disapprove with 4 objective criticisms: (1) teardown contract overclaimed — conc.toml/edge.toml (WG keys+PSK) + synced tree under smokeRemoteDir persisted after the run; (2) writeRemoteFile chmod-after-write left a world-readable window; (3) tar sync shipped untracked .claude/.codegraph/.worktrees/result (incl. other agents' worktrees) to the remote hosts; (4) UDP metric mislabeled the sender offered rate as goodput. All 4 fixed in b4ba329 (rebased to e34e0ac on merge). R2 BOTH approve: removeRemoteDir t.Cleanup registered on both hosts before every secret write — LIFO ordering tears daemons/iperf down (synchronous systemctl stop) BEFORE rm -rf, and fires on Fatalf/panic; umask 077 creates secret files at 0600 before any byte lands; tar excludes anchored/additive; UDP goodput=sendMbps*(1-lost_percent/100) with the correct JSON field, report-only. No injection (constant path). Static gates green (build/vet/vet-realhosts/gofmt/test/lint 0); live realhosts tier not runnable from the review workers (verified statically). Merged e34e0ac (rebased onto main)."
+- criticism: ["[r1 fable, resolved b4ba329] teardown overclaim — secret configs + synced tree persisted; added removeRemoteDir t.Cleanup on both hosts (LIFO-safe vs daemon teardown)","[r1 fable, resolved b4ba329] chmod-after-write world-readable window — umask 077 && cat > path && chmod 600","[r1 fable, resolved b4ba329] tar shipped untracked agent state — excludes .claude/.codegraph/.worktrees/result","[r1 fable, resolved b4ba329] UDP metric mislabeled offered rate as goodput — compute sendMbps*(1-lost_percent/100)"]
+- new_questions: []
+- ledgerRefs: ["tasks:T33","goals:G1"]

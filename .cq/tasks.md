@@ -87,10 +87,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-211500-a8aeb19256ab53115.md",".cq/logs/20260706-211500-a28cc8d9376a6a85b.md"]
 - resultCommit: "9464e91"
 
-### T12 — wip
+### T12 — done
 
 - createdAt: 2026-07-01T23:39:43.724Z
-- updatedAt: 2026-07-06T22:01:13.719Z
+- updatedAt: 2026-07-06T23:09:18.418Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Multi-path conn.Bind: per-path sockets behind one virtual endpoint + MTU accounting"
@@ -103,10 +103,10 @@ archives:
 - dependsOn: ["T11"]
 - ledgerRefs: ["goals:G1","defects:D5"]
 
-### T13 — wip
+### T13 — done
 
 - createdAt: 2026-07-01T23:39:47.454Z
-- updatedAt: 2026-07-06T22:01:12.892Z
+- updatedAt: 2026-07-06T22:48:38.578Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Per-path quality probes and liveness state machine
@@ -116,12 +116,12 @@ archives:
 - dependsOn: ["T11"]
 - ledgerRefs: ["goals:G1"]
 
-### T15 — planned
+### T15 — wip
 
 - createdAt: 2026-07-01T23:40:01.204Z
-- updatedAt: 2026-07-01T23:40:01.204Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T23:11:42.708Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Active-backup scheduler with transparent failover
 - description: "Send-side scheduler v1: a single active path (Starlink-preferred) carries traffic; on a path-down signal from telemetry, instant switch to the backup path; switch-back with hysteresis on recovery (no thrash). Data-thrift by construction (backup idle until needed). Expose hooks the later weighted/FEC-aware scheduler extends. This is the P1 MVP core."
 - acceptance: "Unit test: with two paths up all data egresses the active path; a path-down event switches egress to the backup within the configured detection window; recovery does not thrash the selection."
@@ -186,10 +186,10 @@ archives:
 
 ## M7
 
-### T14 — blocked
+### T14 — wip
 
 - createdAt: 2026-07-01T23:39:51.257Z
-- updatedAt: 2026-07-06T22:11:12.910Z
+- updatedAt: 2026-07-06T22:54:03.106Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "RS FEC engine: grouping, parity-emission deadline, recovery"
@@ -228,12 +228,12 @@ archives:
 
 ## M6
 
-### T17 — planned
+### T17 — wip
 
 - createdAt: 2026-07-01T23:40:09.142Z
-- updatedAt: 2026-07-01T23:40:09.142Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T22:54:04.162Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Prometheus /metrics endpoint (localhost) with per-path telemetry
 - description: "Per Q7: a localhost-bound HTTP /metrics endpoint with a per-path registry — tx/rx bytes, loss, RTT, jitter, throughput, path state, plus FEC counters (registered now, populated in P3). This is the assertion surface for P2-P4 e2e acceptance. Binding to a non-loopback address is refused by default."
 - acceptance: "Integration test: GET http://127.0.0.1:<port>/metrics returns per-path gauges/counters for bytes, loss, RTT and throughput matching fixture traffic; a non-loopback bind is refused; a harness scrape helper is committed."
@@ -282,12 +282,12 @@ archives:
 
 ## M9
 
-### T19 — planned
+### T19 — wip
 
 - createdAt: 2026-07-01T23:40:16.740Z
-- updatedAt: 2026-07-01T23:40:16.740Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T23:11:43.511Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Expose amnezia obfuscation params (Jc/Jmin/Jmax, S1/S2, H1-H4) end-to-end
 - description: Plumb the amnezia junk/obfuscation params from TOML config into the embedded engine on both roles as defense-in-depth; confirm junk packets arriving at the multi-path Bind are tolerated (P0 finding). Protocol mimicry stays out of scope (non-goal).
 - acceptance: "e2e with non-default params set identically on both ends: the tunnel handshakes and passes traffic; with mismatched params the handshake fails closed; junk packets do not destabilize the Bind (no errors/wedge in a soak run)."
@@ -382,10 +382,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-222500-a272f5360504eaf37.md",".cq/logs/20260706-222500-a2fa37e32b9886c2c.md",".cq/logs/20260706-222500-a097aa48cda8e782e.md"]
 - resultCommit: 9694c36
 
-### T33 — planned
+### T33 — done
 
 - createdAt: 2026-07-06T21:43:47.637Z
-- updatedAt: 2026-07-06T21:43:47.637Z
+- updatedAt: 2026-07-06T23:01:17.104Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Real-host P0 single-uplink smoke: handshake, ping, iperf3 single/8-parallel/UDP"
@@ -423,10 +423,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-220000-aa4ce7b7518ab1cfd.md",".cq/logs/20260706-220000-a5b2b9b863a40779d.md",".cq/logs/20260706-221500-a139ea4c25eeab49c.md",".cq/logs/20260706-221500-aacca56552aa07ae9.md"]
 - resultCommit: 2a6e61d
 
-### T36 — wip
+### T36 — done
 
 - createdAt: 2026-07-06T21:44:19.623Z
-- updatedAt: 2026-07-06T22:20:46.637Z
+- updatedAt: 2026-07-06T22:52:34.024Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Record controlled-loss single-flow TCP collapse baseline for P3/P4 FEC comparison
