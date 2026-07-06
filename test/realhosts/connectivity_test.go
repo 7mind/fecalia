@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// connectivityTimeout bounds a single `uname` round-trip (connect + trivial
-// remote command). Generous relative to ConnectTimeout to tolerate a cold SSH
-// session.
+// connectivityTimeout is the shared budget for one host's connectivity check
+// (both `uname` round-trips run under the same context). Generous relative to
+// ConnectTimeout to tolerate a cold SSH session.
 const connectivityTimeout = 30 * time.Second
 
 // TestRealConnectivity is the report-only entry point of the real-host tier: it

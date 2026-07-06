@@ -26,11 +26,11 @@ test:
 # Privileged end-to-end suite: netns/netem + TUN tunnel bring-up. Requires root
 # (CAP_NET_ADMIN + /dev/net/tun); run on real or emulated hardware, not CI.
 e2e:
-    sudo -E go test -tags e2e ./test/e2e/...
+    sudo -E go test -tags e2e ./test/e2e/... -count=1
 
 # Run one named e2e phase test, e.g. `just e2e-run TestP1Failover`.
 e2e-run TEST:
-    sudo -E go test -tags e2e ./test/e2e/... -run {{TEST}} -v
+    sudo -E go test -tags e2e ./test/e2e/... -run {{TEST}} -count=1 -v
 
 # Opt-in real-host e2e tier: drive the two standing worker machines (edge behind
 # symmetric NAT, aarch64 concentrator) over SSH. Report-only — it records host
@@ -38,4 +38,4 @@ e2e-run TEST:
 # /run/agenix/llm-ssh-key); no root required. NEVER part of `just test` or CI.
 # Run all: `just realhosts`; one test: `just realhosts TestRealConnectivity`.
 realhosts TEST="":
-    go test -tags realhosts ./test/realhosts/... {{ if TEST != "" { "-run " + TEST } else { "" } }} -v
+    go test -tags realhosts ./test/realhosts/... {{ if TEST != "" { "-run " + TEST } else { "" } }} -count=1 -v
