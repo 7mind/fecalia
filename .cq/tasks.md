@@ -87,10 +87,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-211500-a8aeb19256ab53115.md",".cq/logs/20260706-211500-a28cc8d9376a6a85b.md"]
 - resultCommit: "9464e91"
 
-### T12 — planned
+### T12 — wip
 
 - createdAt: 2026-07-01T23:39:43.724Z
-- updatedAt: 2026-07-06T21:44:54.180Z
+- updatedAt: 2026-07-06T22:01:13.719Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Multi-path conn.Bind: per-path sockets behind one virtual endpoint + MTU accounting"
@@ -103,12 +103,12 @@ archives:
 - dependsOn: ["T11"]
 - ledgerRefs: ["goals:G1","defects:D5"]
 
-### T13 — planned
+### T13 — wip
 
 - createdAt: 2026-07-01T23:39:47.454Z
-- updatedAt: 2026-07-01T23:39:47.454Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T22:01:12.892Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Per-path quality probes and liveness state machine
 - description: PSK-authenticated probe frames measuring per-path RTT/loss/jitter, plus outer-seq gap accounting for passive loss estimation; a path up/down state machine with configurable detection thresholds. Path liveness is entirely ours (WG keepalive is per-peer, not per-path).
 - acceptance: "Estimator unit tests on synthetic traces converge to injected RTT/loss/jitter within tolerance; a forged/tampered probe is rejected; e2e: a blackholed path is marked down within the configured detection threshold and the transition is logged with per-path fields."
@@ -186,12 +186,12 @@ archives:
 
 ## M7
 
-### T14 — planned
+### T14 — wip
 
 - createdAt: 2026-07-01T23:39:51.257Z
-- updatedAt: 2026-07-01T23:39:51.257Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T22:05:53.281Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "RS FEC engine: grouping, parity-emission deadline, recovery"
 - description: "Reed-Solomon over opaque outer DATA frames using klauspost/reedsolomon: group frames by fec-group, emit K parity frames within a configurable grouping deadline (bounding grouping latency), receiver recovers up to K losses per group. Content-agnostic (operates on ciphertext). Pure library layer with a fake clock — no datapath wiring yet."
 - acceptance: "Unit tests: for random drop patterns of <=K frames per group, all data frames are recovered; a property test shows parity is emitted within the configured deadline even for partially filled groups (asserted with a fake clock); measured overhead equals the configured parity ratio."
@@ -350,10 +350,10 @@ archives:
 
 ## M10
 
-### T31 — planned
+### T31 — done
 
 - createdAt: 2026-07-06T21:43:33.259Z
-- updatedAt: 2026-07-06T21:43:33.259Z
+- updatedAt: 2026-07-06T22:09:01.471Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Add realhosts e2e tier: build tag, SSH runner, env-var host config, Justfile target"
@@ -361,6 +361,9 @@ archives:
 - acceptance: "`go build ./...` and `go test ./...` (no tag) compile nothing under test/realhosts/; `go vet -tags realhosts ./test/realhosts/...` passes; `just realhosts TestRealConnectivity` executes the SSH connectivity check against the default hosts and records both hosts' uname/arch. Report-only per Q12: the run executing and recording results IS the acceptance; it gates nothing."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G1"]
+- completion: "DONE (merged ebf95d5). test/realhosts/ behind a dedicated `realhosts` build tag (fully separate from netns `e2e`): runner.go = env-driven Host/Config (WANBOND_EDGE_HOST/CONC_HOST/CONC_PUBLIP/SSH_KEY defaults) + SSH Runner (`ssh -F none -i <key> -o StrictHostKeyChecking=accept-new -o ConnectTimeout ubuntu@host`); connectivity_test.go = report-only TestRealConnectivity (uname both hosts); opt-in `just realhosts [TEST]` Justfile target. Real SSH run verified: edge=x86_64, concentrator=aarch64. Reviewed opus+fable (R9 go-ahead) after fixing fable's 2 r1 criticisms (added -count=1 to all 3 test recipes to defeat go-test cache replay; fixed a comment). Also closed the pre-existing e2e/e2e-run cache-replay hazard in the same fix."
+- sessionLogs: [".cq/logs/20260706-220000-ab78416a54b9fd747.md",".cq/logs/20260706-220000-a9d08b86138121cb3.md",".cq/logs/20260706-220000-a297f9214a676fd4c.md",".cq/logs/20260706-214500-a81aea62fc7e86149.md"]
+- resultCommit: ebf95d5
 
 ### T32 — planned
 
@@ -401,10 +404,10 @@ archives:
 - dependsOn: ["T33","T12","T15","T20"]
 - ledgerRefs: ["goals:G1","tasks:T12","tasks:T15","tasks:T20"]
 
-### T35 — planned
+### T35 — wip
 
 - createdAt: 2026-07-06T21:44:12.747Z
-- updatedAt: 2026-07-06T21:44:12.747Z
+- updatedAt: 2026-07-06T21:52:43.808Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Extend netns fixture with per-path bandwidth cap and controlled-loss knobs

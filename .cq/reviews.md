@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 8
+  item: 9
 archives: []
 ---
 
@@ -112,3 +112,17 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["tasks:T11","goals:G1"]
 - sessionLogs: [".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-211500-a8aeb19256ab53115.md",".cq/logs/20260706-211500-a28cc8d9376a6a85b.md"]
+
+## M10
+
+### R9 — go-ahead
+
+- createdAt: 2026-07-06T22:08:37.223Z
+- updatedAt: 2026-07-06T22:08:37.223Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T31 (realhosts e2e tier) reconciled go-ahead (opus+fable panel). R1: opus approve, fable disapprove (2 valid criticisms — `just realhosts` replayed the go-test cache without -count=1, reproduced empirically; connectivityTimeout comment misstated its scope). Both fixed in ebf95d5 (added -count=1 to the realhosts recipe AND the pre-existing e2e/e2e-run recipes, closing the cache-replay defect; corrected the comment). R2: fable approve (confirmed via `just --dry-run` that all three recipes carry -count=1; comment matches behavior; checks green). Build-tag separation complete (every test/realhosts file //go:build realhosts; untagged + `-tags e2e` builds exclude it); SSH runner safe (`-F none` bypass, correct env defaults, no injection/leak/destructive ops); report-only + opt-in confirmed; real SSH connectivity run verified (edge=x86_64, concentrator=aarch64)."
+- criticism: ["[r1 fable, resolved r2] `just realhosts` omitted -count=1 — go-test cache replayed a stale PASS; fixed on all three recipes","[r1 fable, resolved r2] connectivityTimeout comment misstated single-vs-shared ctx scope; corrected"]
+- new_questions: []
+- ledgerRefs: ["tasks:T31","goals:G1"]
+- sessionLogs: [".cq/logs/20260706-220000-ab78416a54b9fd747.md",".cq/logs/20260706-220000-a9d08b86138121cb3.md",".cq/logs/20260706-220000-a297f9214a676fd4c.md"]
