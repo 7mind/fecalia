@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 11
+  item: 12
 archives: []
 ---
 
@@ -93,15 +93,15 @@ archives: []
 ### D9 — root-caused
 
 - createdAt: 2026-07-06T22:50:59.274Z
-- updatedAt: 2026-07-06T22:50:59.274Z
+- updatedAt: 2026-07-06T23:36:53.291Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Per-path remote learned from unauthenticated DATA frames enables blind traffic-redirect DoS
 - description: "Filed by the T12 review panel (fable), file-and-defer. internal/bind/multipath.go receiver() calls ps.setRemote(srcAP) for every decoded DATA frame. DATA frames are unauthenticated by design (frame.go wire model); for a blind attacker spraying random datagrams at a path socket's public port, a random payload decodes to a valid KindData frame with probability ~1/256 (uniform kind byte after keystream XOR, header length permitting) — each success redirects that path's return traffic to the attacker's source address until the next legitimate packet re-learns it. Inner WireGuard keeps confidentiality/integrity, so impact is DoS-grade (per-path traffic blackholing on the concentrator). OUT OF SCOPE for T12: the accepted P1 threat model explicitly tolerates DoS-grade DATA forgery, and the authenticated path-probe machinery that can gate remote-learning arrives with T15. Severity medium."
 - severity: medium
 - rootCause: "Confirmed by the T12 review (source-cited): multipath.go receiver() unconditionally calls ps.setRemote(srcAP) on every decoded DATA frame, and DATA frames carry no authentication (T11 codec authenticates only CONTROL/PROBE). Correct for the T12 datapath (P1 threat model tolerates DoS-grade DATA forgery); the gating fix depends on T15's authenticated PROBE frames. Deferred to T15."
-- suggestedFix: When T15 lands authenticated PROBE frames, gate per-path remote learning — or at least remote CHANGES away from a configured/confirmed address — on authenticated traffic, mirroring wireguard-go (which updates a peer endpoint only from crypto-verified packets); alternatively confirm a learned remote only after the inner WG datagram authenticates.
-- ledgerRefs: ["tasks:T12","goals:G1","tasks:T15"]
+- suggestedFix: Gate per-path remote learning on AUTHENTICATED traffic when the probe transport lands (T37) — or at least remote CHANGES away from a configured/confirmed address — mirroring wireguard-go (updates a peer endpoint only from crypto-verified packets). T37 introduces authenticated inbound probe/echo frames and the per-path remote-learning from them (see D11), which is the correct gating point; the unauthenticated-DATA setRemote should then be removed or restricted. (Originally scoped to T15; the authenticated-probe transport is T37.)
+- ledgerRefs: ["tasks:T12","goals:G1","tasks:T37"]
 
 ### D10 — root-caused
 
@@ -115,6 +115,19 @@ archives: []
 - rootCause: "Confirmed against source by both T12 reviewers: config.validate() tracks a seen-set for path names only (not SourceAddr); bind Open binds (SourceAddr, port) per path, so duplicate source_addr with a fixed listen port collides at the second ListenUDP (EADDRINUSE). Fails loudly at bring-up rather than at config load."
 - suggestedFix: In config validate(), track seen SourceAddr values alongside names and reject duplicates with a per-path error naming both conflicting paths. Small, self-contained; can fold into T15 (scheduler, next to touch the path set) or a direct config-hardening follow-up.
 - ledgerRefs: ["tasks:T12","goals:G1"]
+
+### D11 — root-caused
+
+- createdAt: 2026-07-06T23:36:49.481Z
+- updatedAt: 2026-07-06T23:36:49.481Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Concentrator-side failover drops: PROBE frames do not populate per-path learned remotes"
+- description: Filed by the T15 review panel (opus). internal/bind/multipath.go receiver() calls ps.setRemote(srcAP) ONLY for DATA frames (PROBE/CONTROL/PARITY are dropped before setRemote). A backup path on the concentrator therefore learns its return remote only from inbound DATA, not from probes. Once the probe transport (T37) lands, a backup path can be reported StateUp purely from probe echoes while getRemote() is still false; when the scheduler fails egress over to it, multipath Send returns errNoHealthyPath and return traffic drops until the peer happens to send DATA on that path. Client/edge side is unaffected (ParseEndpoint seeds every path's remote from the configured peer endpoint). Out of scope for T15 (unit tests configure remotes; AlwaysUp keeps egress on the primary), but it defeats concentrator-side transparent failover in T20. Severity medium.
+- severity: medium
+- rootCause: "Confirmed by the T15 review against source: multipath.go receiver() gates ps.setRemote(srcAP) on KindData only, so a concentrator backup path learns its remote solely from inbound DATA. A probe-only StateUp path has getRemote()==false, so scheduler failover to it yields errNoHealthyPath. Fix is co-located with the probe-transport wiring (T37), which introduces authenticated inbound probe/echo frames that CAN safely populate the remote."
+- suggestedFix: In T37, learn ps.setRemote(srcAP) from AUTHENTICATED probe/echo frames too (or seed backup remotes from config), so a StateUp-via-probe path always has a usable remote before it becomes active. This authenticated remote-learning is the same mechanism that gates D9's unauthenticated-DATA remote-learn DoS.
+- ledgerRefs: ["tasks:T15","tasks:T37","goals:G1"]
 
 ## M10
 

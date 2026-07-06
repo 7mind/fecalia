@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 37
+  item: 38
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -132,27 +132,27 @@ archives:
 ### T16 — planned
 
 - createdAt: 2026-07-01T23:40:04.937Z
-- updatedAt: 2026-07-01T23:40:04.937Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T23:36:18.937Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Edge public-IP change survival (per-path re-roaming)
 - description: "Handle the mobile case: the edge's public IP changes on a path (NAT rebinding / carrier CGNAT churn). The concentrator's Bind re-learns that path's real endpoint from authenticated probe/control traffic without disturbing the other path or the WG session."
 - acceptance: "e2e: re-address the edge-side veth of one path mid-transfer — that path recovers and the TCP transfer completes without reset; the other path is unaffected."
 - suggestedModel: standard
-- dependsOn: ["T12","T13"]
+- dependsOn: ["T12","T13","T37"]
 - ledgerRefs: ["goals:G1"]
 
 ### T20 — planned
 
 - createdAt: 2026-07-01T23:40:28.766Z
-- updatedAt: 2026-07-01T23:40:28.766Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T23:36:16.570Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P1 e2e: failover survives WAN death within 3s"
 - description: "e2e test driving the active-backup path: start a long-lived TCP flow (SSH-like / iperf3) through the tunnel, then kill the active WAN namespace mid-transfer and assert the flow survives with no connection reset and throughput recovers. Uses the P1RecoverySeconds constant from the harness table."
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP1Failover` kills the active path mid-iperf3; the TCP connection is NOT reset and throughput is restored within P1RecoverySeconds (3s), asserted against the harness constants; repeated flap does not wedge the tunnel."
 - suggestedModel: standard
-- dependsOn: ["T15","T16"]
+- dependsOn: ["T15","T16","T37"]
 - ledgerRefs: ["goals:G1"]
 
 ### T22 — planned
@@ -184,12 +184,25 @@ archives:
 - dependsOn: ["T12","T13","T15"]
 - ledgerRefs: ["goals:G1"]
 
+### T37 — planned
+
+- createdAt: 2026-07-06T23:36:14.588Z
+- updatedAt: 2026-07-06T23:36:14.588Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Per-path probe transport: drive T13 Prober/Liveness over the multipath Bind"
+- description: "DISCOVERED PREREQUISITE (filed during T15 implement-review by both opus+fable, 2026-07-06). T13 built the probe/liveness LOGIC (Prober, Liveness, Reflector, estimator) and T15 built the active-backup scheduler consuming per-path liveness, but NOTHING drives probes over the wire: no send/receive loop emits PROBE frames on the per-path sockets, reflects inbound probes on the peer, or feeds echoes into per-path *telemetry.Prober (HandleEcho/Tick). Consequently device.buildScheduler injects sched.AlwaysUp for every path (documented placeholder) and real on-wire failover is INERT. This task wires the transport: a per-path, timer-driven probe loop over the multipath Bind (emit frame KindProbe per path via the Prober; Reflect inbound KindProbe in the Bind receiver; HandleEcho on echoes; Tick per path), then replace the AlwaysUp slice in device.buildScheduler with the live per-path *telemetry.Prober instances (the mutex-guarded PathHealth sources). MUST ALSO close the concentrator-side failover gap (D-concentrator-remote-learn): the Bind receiver currently learns a path's return remote ONLY from DATA frames, so a backup path can be StateUp via probe echoes yet getRemote() is false -> Send returns errNoHealthyPath on failover; learn ps.setRemote(srcAP) from AUTHENTICATED probe/echo frames too (this also provides the authenticated-remote-learning that gates D9's unauthenticated-DATA remote-learn DoS). Preserve the T12 concurrency model (lock-free receive fast path, atomic dst, syscall-outside-mutex) and use only synchronized PathHealth sources (*Prober, not bare Liveness)."
+- acceptance: "Unit/integration: a fake-clock per-path probe loop emits PROBE frames at the configured cadence, reflects inbound probes, and feeds echoes into each path's Prober so Liveness transitions Up/Down drive the scheduler; a blackholed path (probes stop echoing) is marked Down within the T13 detection window and the scheduler fails egress over; the concentrator learns a backup path's remote from an authenticated probe BEFORE that path becomes active (getRemote() true on a probe-only path). Wired into device.Up replacing AlwaysUp. e2e wiring readiness for T20 (compiles under -tags e2e). No data race under -race (only *Prober used as concurrent PathHealth)."
+- suggestedModel: frontier
+- dependsOn: ["T13","T15"]
+- ledgerRefs: ["goals:G1","tasks:T20","tasks:T16"]
+
 ## M7
 
-### T14 — wip
+### T14 — done
 
 - createdAt: 2026-07-01T23:39:51.257Z
-- updatedAt: 2026-07-06T22:54:03.106Z
+- updatedAt: 2026-07-06T23:39:51.172Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "RS FEC engine: grouping, parity-emission deadline, recovery"
@@ -228,10 +241,10 @@ archives:
 
 ## M6
 
-### T17 — wip
+### T17 — done
 
 - createdAt: 2026-07-01T23:40:09.142Z
-- updatedAt: 2026-07-06T22:54:04.162Z
+- updatedAt: 2026-07-06T23:16:35.684Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Prometheus /metrics endpoint (localhost) with per-path telemetry

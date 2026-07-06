@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 16
+  item: 18
 archives: []
 ---
 
@@ -194,3 +194,29 @@ archives: []
 - criticism: ["[r1 fable, resolved b4ba329] teardown overclaim — secret configs + synced tree persisted; added removeRemoteDir t.Cleanup on both hosts (LIFO-safe vs daemon teardown)","[r1 fable, resolved b4ba329] chmod-after-write world-readable window — umask 077 && cat > path && chmod 600","[r1 fable, resolved b4ba329] tar shipped untracked agent state — excludes .claude/.codegraph/.worktrees/result","[r1 fable, resolved b4ba329] UDP metric mislabeled offered rate as goodput — compute sendMbps*(1-lost_percent/100)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T33","goals:G1"]
+
+## M6
+
+### R16 — go-ahead
+
+- createdAt: 2026-07-06T23:16:48.230Z
+- updatedAt: 2026-07-06T23:16:48.230Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T17 (localhost Prometheus /metrics endpoint with per-path telemetry: internal/metrics) reconciled go-ahead (opus+fable panel, 2 rounds). R1: opus approve (loopback guard fail-closed across IP-literal/wildcard/empty-host/IPv6/hostname-to-routable; per-path RTT/jitter/loss/state read verbatim from telemetry.Estimate/PathState via a Source at scrape time; dedicated prometheus.NewRegistry, no globals; metric names/types Prometheus-valid; non-vacuous HTTP-scrape value assertions; FEC counters registered-now/zero honest; gates green incl. nix build/vendorHash), fable DISAPPROVE — 1 valid criticism: check-then-act TOCTOU in the loopback guard's hostname branch (requireLoopback validated via net.LookupIP but net.Listen re-resolved independently, so a divergent/attacker-influenced resolver could bind a routable interface despite the pre-check). Fixed c59851b: fail-closed act-then-verify — after net.Listen, verifyLoopbackBind(ln.Addr()) asserts the KERNEL-reported bound address IsLoopback, closes the listener + returns ErrNonLoopbackBind otherwise (resolver-independent); pre-Listen requireLoopback retained as belt-and-braces. R2 BOTH approve: verify runs inside NewServer BEFORE the Server exists / any Serve, so no bind-then-serve window; error path closes the listener (no fd leak); comma-ok assertion rejects non-*net.TCPAddr without panic (UnixAddr-tested); new tests (TestVerifyLoopbackBind 6 subcases + TestHostnameBindVerifiedLoopback via real localhost:0) non-vacuous; delta confined to server.go/server_test.go, r1 properties untouched. Full gate green (build/vet/gofmt/test -race/golangci-lint 0). Merged 429c760 (rebased onto main; prometheus dep vendorHash unchanged). Minor non-blocking: a test subcase mislabels 127.255.255.254 as 'low'."
+- criticism: ["[r1 fable, resolved c59851b] loopback-guard TOCTOU — requireLoopback (LookupIP) then net.Listen re-resolved independently; fixed with fail-closed post-bind verifyLoopbackBind(ln.Addr()) on the kernel-bound address + listener cleanup"]
+- new_questions: []
+- ledgerRefs: ["tasks:T17","goals:G1"]
+
+## M7
+
+### R17 — go-ahead
+
+- createdAt: 2026-07-06T23:40:07.289Z
+- updatedAt: 2026-07-06T23:40:07.289Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T14 (RS FEC engine: internal/fec grouping + parity-emission deadline + recovery, klauspost/reedsolomon v1.14.1) reconciled go-ahead (opus+fable panel, 3 rounds). [Re-dispatched fresh after 2 earlier infra-deaths; module proxy confirmed reachable.] R1: opus approve (RS geometry, metadata-carrier invariant, deadline clock-purity, ≤K recovery, overhead ratio all verified non-vacuous; 1 out-of-scope defect: unbounded decoder group map), fable DISAPPROVE — reproduced a PANIC (observeParity accepted a parity payload shorter than the 4-byte length prefix -> encodeDataShard PutUint32 index-out-of-range; remotely triggerable once T24 wires input) + silent-truncate/fabricate on oversized data + unbounded group state. Rework 623e031: reject short parity + oversized data (errors not panic), markDone buffer release + Forget + wraparound-safe SetRetainWindow eviction. R2: opus approve (filed adjacent DataCount O(m)-loop DoS: DataCount~2^31 -> multi-billion-iteration scan/alloc), fable DISAPPROVE — the oversized-data test was VACUOUS (passed pre-fix via an incidental decodeDataShard error) + unvalidated shard Index upper bounds left single-group memory unbounded (~6.4MB probed) and let one out-of-range index PERMANENTLY POISON a recoverable group. Rework dd4118f: discriminate the oversized-data test on the specific maybeReconstruct guard error; reject data Index>=maxShards-K at Offer + parity Index outside [0,K); drop within-bound >=m shards instead of wedging; reject DataCount>maxShards-K before the O(m) scan (44.8s->instant). R3 BOTH approve: all fixes verified fail-before/pass-after by mutation (guard-removed decoder + grafting r3 tests onto 623e031); >=m drop loses no recoverable data (RS only addresses 0..m-1; m is the pinned wire authority); DataCount bound matches Config.validate; full 19-test fec suite + -race + golangci-lint 0 green. Pure library (no datapath wiring, that is T24). Merged 51af100 (rebased onto main; go.mod/go.sum/flake.nix reconciled to the union of reedsolomon+prometheus with a regenerated vendorHash sha256-Y48M+39z...)."
+- criticism: ["[r1 fable, resolved 623e031] reproduced panic: short parity payload -> PutUint32 out-of-range; + silent-truncate/fabricate on oversized data; + unbounded group state","[r2 opus, resolved dd4118f] DataCount O(m)-loop DoS — no upper bound before the missing-scan/alloc; reject DataCount>maxShards-K early","[r2 fable, resolved dd4118f] vacuous oversized-data test (passed pre-fix incidentally) + unvalidated shard Index (unbounded per-group memory + one-index group poisoning) — discriminating test + Offer/observeParity index bounds + >=m drop-not-wedge"]
+- new_questions: []
+- ledgerRefs: ["tasks:T14","goals:G1"]
