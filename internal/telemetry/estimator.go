@@ -13,20 +13,24 @@ const (
 	rttAlpha = 0.125
 	rttBeta  = 0.25
 
-	// defaultLossWindow is the sequence-space width of the passive loss estimator
-	// when a caller passes a non-positive window.
+	// defaultLossWindow is the sequence-space width of the windowed loss estimator
+	// (per-path over probe-echo ProbeSeq gaps; connection-scoped over the outer-seq
+	// in ConnLoss) when a caller passes a non-positive window.
 	defaultLossWindow = 512
 )
 
-// Estimate is a point-in-time snapshot of a path's measured quality. RTT and
-// Jitter derive from active probe echoes; Loss derives from passive outer-seq
-// gap accounting over the DATA stream.
+// Estimate is a point-in-time snapshot of a path's measured quality. RTT,
+// Jitter, and Loss all derive from the path's ACTIVE probe stream: RTT/Jitter
+// from probe-echo timings, and Loss from gaps in the probe-echo ProbeSeq (NOT
+// the connection-global outer DATA sequence — see the Estimator doc below and
+// ConnLoss).
 type Estimate struct {
 	// RTT is the smoothed round-trip time.
 	RTT time.Duration
 	// Jitter is the smoothed absolute deviation of RTT samples (RFC 6298 RTTVAR).
 	Jitter time.Duration
-	// Loss is the passive loss fraction in [0,1] over the current sequence window.
+	// Loss is the per-path loss fraction in [0,1] over the current probe-echo
+	// ProbeSeq window.
 	Loss float64
 }
 
