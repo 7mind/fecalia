@@ -48,6 +48,15 @@ type Path struct {
 	SourceAddr netip.Addr `toml:"-"`
 	// SourceAddrRaw is the TOML string form of SourceAddr; parsed in normalize.
 	SourceAddrRaw string `toml:"source_addr"`
+	// DestAddr is the OPTIONAL per-path concentrator endpoint ("ip:port") the
+	// edge sends this path's datagrams to. It is unset on the concentrator (which
+	// learns edge endpoints from traffic) and optional on the edge: when a single
+	// public concentrator IP fronts all uplinks (the common source-routed case)
+	// the peer's wireguard endpoint is reused for every path; when the paths reach
+	// the concentrator on distinct addresses, set dest_addr per path.
+	DestAddr netip.AddrPort `toml:"-"`
+	// DestAddrRaw is the TOML string form of DestAddr; parsed in normalize.
+	DestAddrRaw string `toml:"dest_addr"`
 }
 
 // WireGuard holds the inner tunnel's key material.
@@ -127,14 +136,20 @@ func (k Key) Bytes() [keyLen]byte { return k.bytes }
 func (c *Config) normalize() error {
 	for i := range c.Paths {
 		p := &c.Paths[i]
-		if p.SourceAddrRaw == "" {
-			continue
+		if p.SourceAddrRaw != "" {
+			addr, err := netip.ParseAddr(p.SourceAddrRaw)
+			if err != nil {
+				return fmt.Errorf("path %q: invalid source_addr %q: %w", p.Name, p.SourceAddrRaw, err)
+			}
+			p.SourceAddr = addr
 		}
-		addr, err := netip.ParseAddr(p.SourceAddrRaw)
-		if err != nil {
-			return fmt.Errorf("path %q: invalid source_addr %q: %w", p.Name, p.SourceAddrRaw, err)
+		if p.DestAddrRaw != "" {
+			dst, err := netip.ParseAddrPort(p.DestAddrRaw)
+			if err != nil {
+				return fmt.Errorf("path %q: invalid dest_addr %q: %w", p.Name, p.DestAddrRaw, err)
+			}
+			p.DestAddr = dst
 		}
-		p.SourceAddr = addr
 	}
 	return nil
 }

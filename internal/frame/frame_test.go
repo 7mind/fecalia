@@ -60,6 +60,122 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCodecRoundTrip exercises the reusable Codec (defect D5): one Codec,
+// constructed once, encodes and decodes every sample frame, and its Encode/Decode
+// agree with the package-level one-shot wrappers.
+func TestCodecRoundTrip(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	enc, err := NewCodec(psk)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	dec, err := NewCodec(psk)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	for i, want := range sampleFrames() {
+		raw, err := enc.Encode(nil, want)
+		if err != nil {
+			t.Fatalf("frame %d: codec encode: %v", i, err)
+		}
+		got, err := dec.Decode(raw)
+		if err != nil {
+			t.Fatalf("frame %d: codec decode: %v", i, err)
+		}
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("frame %d: codec round-trip mismatch:\n want %#v\n got  %#v", i, want, got)
+		}
+		// The package-level wrapper must accept a Codec-produced frame too.
+		if got2, err := Decode(psk, raw); err != nil || !reflect.DeepEqual(want, got2) {
+			t.Fatalf("frame %d: package Decode of codec output: got %#v err %v", i, got2, err)
+		}
+	}
+}
+
+// TestCodecEncodeBufferReuse confirms the dst-append API reuses one buffer across
+// encodes without corrupting output: each frame appended to a growing scratch
+// slice decodes back to itself.
+func TestCodecEncodeBufferReuse(t *testing.T) {
+	psk := testPSK(t, 0x77)
+	c, err := NewCodec(psk)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	buf := make([]byte, 0, 16)
+	for i, want := range sampleFrames() {
+		out, err := c.Encode(buf[:0], want)
+		if err != nil {
+			t.Fatalf("frame %d: encode: %v", i, err)
+		}
+		buf = out // reuse the (possibly grown) backing array next iteration
+		got, err := c.Decode(out)
+		if err != nil {
+			t.Fatalf("frame %d: decode: %v", i, err)
+		}
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("frame %d: reuse round-trip mismatch:\n want %#v\n got  %#v", i, want, got)
+		}
+	}
+}
+
+// TestCodecReuseDecodeStability decodes many frames through ONE Codec to catch any
+// scratch-buffer aliasing: an earlier decode's returned payload must survive a
+// later decode intact.
+func TestCodecReuseDecodeStability(t *testing.T) {
+	psk := testPSK(t, 0x33)
+	c, err := NewCodec(psk)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	first := Data{OuterSeq: 1, PathID: 1, Payload: []byte("first-payload-value")}
+	rawFirst, _ := c.Encode(nil, first)
+	got1, err := c.Decode(rawFirst)
+	if err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	firstPayload := got1.(Data).Payload
+
+	// Decode an unrelated, longer frame through the SAME codec.
+	second := Data{OuterSeq: 2, PathID: 2, Payload: bytes.Repeat([]byte{0xAB}, 200)}
+	rawSecond, _ := c.Encode(nil, second)
+	if _, err := c.Decode(rawSecond); err != nil {
+		t.Fatalf("decode second: %v", err)
+	}
+
+	// The first decode's payload must be unchanged (not aliased into scratch).
+	if !bytes.Equal(firstPayload, []byte("first-payload-value")) {
+		t.Fatalf("first payload corrupted by a later decode: %q", firstPayload)
+	}
+}
+
+// TestCodecPSKMismatch: an authenticated frame from one Codec is rejected by a
+// Codec built from a different PSK.
+func TestCodecPSKMismatch(t *testing.T) {
+	a, err := NewCodec(testPSK(t, 0x11))
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	b, err := NewCodec(testPSK(t, 0x22))
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	raw, err := a.Encode(nil, Control{ControlType: 1, Payload: []byte("secret")})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := b.Decode(raw); err == nil {
+		t.Fatal("cross-PSK authenticated frame accepted")
+	}
+}
+
+// TestNewCodecRejectsUnsetPSK: the constructor fails fast on an unset PSK.
+func TestNewCodecRejectsUnsetPSK(t *testing.T) {
+	var unset config.Key
+	if _, err := NewCodec(unset); err == nil {
+		t.Fatal("NewCodec accepted an unset PSK")
+	}
+}
+
 // TestAuthenticatedFramesCarryTag confirms CONTROL/PROBE append a tag and
 // DATA/PARITY do not.
 func TestAuthenticatedFramesCarryTag(t *testing.T) {

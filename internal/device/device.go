@@ -1,6 +1,6 @@
 // Package device brings a wanbond tunnel up from a validated configuration: it
 // creates the TUN interface, drives the embedded amneziawg-go engine over the
-// pass-through Bind, and applies the WireGuard (and, when configured, amnezia
+// multipath Bind, and applies the WireGuard (and, when configured, amnezia
 // obfuscation) parameters via the engine's UAPI. It owns ONLY the tunnel engine
 // — interface addressing and routing are left to the operator (systemd/wg-quick
 // style), so the daemon stays free of privileged shell-outs. The interface name
@@ -24,20 +24,22 @@ import (
 // collides (it never does across the edge and concentrator network namespaces).
 const defaultTUNName = "wanbond0"
 
-// defaultMTU is the tunnel MTU. 1420 is the standard WireGuard value (1500 minus
-// the outer IPv4+UDP+WG headers); the bonding/FEC phases revisit it (P1 MTU
-// accounting) but P0 pass-through uses the plain WireGuard figure.
-const defaultMTU = 1420
+// defaultMTU is the tunnel (TUN) MTU. It is the P1 bonded figure: the default
+// path MTU minus the IP+UDP, outer DATA-frame, and WireGuard transport overheads,
+// so a full-MTU inner packet never fragments on the wire (see internal/bind
+// mtu.go and docs/p1-mtu.md). This is smaller than the plain-WireGuard 1420
+// because the bonding layer adds its own outer DATA frame per datagram.
+var defaultMTU = bind.InnerMTU(bind.DefaultPathMTU)
 
 // Tunnel is a running wanbond tunnel: the amneziawg engine, its TUN, and the
-// pass-through Bind. Close tears all three down.
+// multipath Bind. Close tears all three down.
 type Tunnel struct {
 	dev  *awgdevice.Device
 	tun  tun.Device
 	name string
 }
 
-// Up creates the TUN, wires the pass-through Bind into the amneziawg engine,
+// Up creates the TUN, wires the multipath Bind into the amneziawg engine,
 // applies the crypto configuration from cfg, and brings the device up. The same
 // path drives both roles; the role only changes which UAPI fields cfg carries
 // (the concentrator sets listen_port; the edge sets each peer's endpoint).
@@ -54,7 +56,12 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		return nil, fmt.Errorf("device: read TUN name: %w", err)
 	}
 
-	dev := awgdevice.NewDevice(tunDev, bind.NewPassthrough(), engineLogger(clg, cfg.Log.Level))
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK)
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: build multipath bind: %w", err)
+	}
+	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level))
 
 	uapi, err := uapiConfig(cfg)
 	if err != nil {

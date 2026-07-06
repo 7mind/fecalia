@@ -57,6 +57,19 @@ const (
 	infoAuth = "wanbond outer-frame authentication v1"
 )
 
+// DataOverhead is the number of bytes a KindData frame adds on top of its opaque
+// payload on the wire: the clear nonce plus the DATA header (kind || outer-seq ||
+// path-id || fec-group || flags). DATA frames are unauthenticated (see the wire
+// model above), so they carry no tag; this figure is therefore exact and is what
+// the multipath Bind subtracts from the path MTU when sizing the inner tunnel
+// (see internal/bind mtu.go).
+const DataOverhead = nonceLen + // clear nonce
+	1 + // kind discriminant
+	8 + // outer-seq (uint64)
+	1 + // path-id (uint8)
+	4 + // fec-group (uint32)
+	1 // flags (uint8)
+
 // Kind is the outer frame discriminant. Values are nonzero so a zeroed buffer
 // never decodes to a valid kind.
 type Kind uint8
@@ -173,36 +186,67 @@ var ErrMalformed = errors.New("frame: malformed input")
 // (tampered ciphertext or PSK mismatch).
 var ErrAuth = errors.New("frame: authentication failed")
 
-// Encode serializes f into a self-contained wire frame under the given PSK. It
-// fails only if the PSK is unset or the system CSPRNG is unavailable.
-func Encode(psk config.Key, f Frame) ([]byte, error) {
+// Codec is a reusable, PSK-bound frame encoder/decoder. It derives the HKDF
+// obfuscation and authentication subkeys ONCE at construction and reuses them
+// (plus per-call scratch buffers) across every Encode/Decode, and it inits the
+// XChaCha20 keystream exactly once per frame. This resolves defect D5: the old
+// package-level Encode/Decode re-derived both subkeys with HKDF-SHA256 and
+// double-init'd ChaCha20 (once in peekByte, once for the full body) on EVERY
+// frame — prohibitive on the per-datagram datapath the multipath Bind drives.
+//
+// A Codec is NOT safe for concurrent use: its scratch buffers are shared across
+// calls. Construct one per goroutine (the Bind gives each per-path receive loop
+// its own Codec and guards the shared send Codec with the Bind mutex).
+type Codec struct {
+	obfKey     []byte
+	authKey    []byte
+	encScratch []byte // reused body buffer for Encode
+	decScratch []byte // reused body buffer for Decode
+}
+
+// NewCodec derives the PSK-bound subkeys once and returns a reusable Codec. It
+// fails only if the PSK is unset.
+func NewCodec(psk config.Key) (*Codec, error) {
 	obfKey, authKey, err := subkeys(psk)
 	if err != nil {
 		return nil, err
 	}
+	return &Codec{obfKey: obfKey, authKey: authKey}, nil
+}
 
-	body := f.appendBody(nil)
+// Encode appends the wire encoding of f to dst and returns the extended slice,
+// letting the caller reuse one buffer across sends (pass dst[:0]). It fails only
+// if the system CSPRNG is unavailable.
+func (c *Codec) Encode(dst []byte, f Frame) ([]byte, error) {
+	// Build the plaintext body (kind || header || payload) in reusable scratch.
+	c.encScratch = f.appendBody(c.encScratch[:0])
+	body := c.encScratch
 
-	nonce := make([]byte, nonceLen)
+	start := len(dst)
+	dst = append(dst, make([]byte, nonceLen)...)
+	nonce := dst[start : start+nonceLen]
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("frame: read nonce: %w", err)
 	}
 
-	obfuscate(obfKey, nonce, body)
-
-	out := make([]byte, 0, nonceLen+len(body)+tagLen)
-	out = append(out, nonce...)
-	out = append(out, body...)
+	// Obfuscate the body in scratch, then append it; a single keystream init.
+	obfuscate(c.obfKey, nonce, body)
+	dst = append(dst, body...)
 
 	if f.Kind().authenticated() {
-		out = append(out, tag(authKey, nonce, body)...)
+		// After the append above, nonce and obfBody are contiguous in dst's
+		// (possibly reallocated) backing array; tag over nonce||obfBody.
+		nonce = dst[start : start+nonceLen]
+		obfBody := dst[start+nonceLen:]
+		dst = append(dst, tag(c.authKey, nonce, obfBody)...)
 	}
-	return out, nil
+	return dst, nil
 }
 
-// Decode parses a wire frame under the given PSK. It verifies the MAC of
-// authenticated frames and rejects tampered or PSK-mismatched ones. It never
-// panics on malformed input.
+// Decode parses a wire frame. It verifies the MAC of authenticated frames and
+// rejects tampered or PSK-mismatched ones. It never panics on malformed input.
+// The returned frame's payload is a fresh copy, so the caller may reuse raw and
+// the Codec's scratch immediately.
 //
 // Authentication guarantee: a frame is accepted as an authenticated kind
 // (CONTROL/PROBE) only if its MAC verifies under the PSK, so tampered or
@@ -212,11 +256,7 @@ func Encode(psk config.Key, f Frame) ([]byte, error) {
 // break, because DATA/PARITY are forgeable by design (the inner WireGuard layer
 // authenticates the real payload). No mutation can make a frame decode as an
 // authentic CONTROL/PROBE.
-func Decode(psk config.Key, raw []byte) (Frame, error) {
-	obfKey, authKey, err := subkeys(psk)
-	if err != nil {
-		return nil, err
-	}
+func (c *Codec) Decode(raw []byte) (Frame, error) {
 	// Need at least the nonce plus one body byte (the kind discriminant).
 	if len(raw) < nonceLen+1 {
 		return nil, fmt.Errorf("%w: %d bytes, need >= %d", ErrMalformed, len(raw), nonceLen+1)
@@ -225,9 +265,19 @@ func Decode(psk config.Key, raw []byte) (Frame, error) {
 	nonce := raw[:nonceLen]
 	rest := raw[nonceLen:]
 
-	// Recover the (obfuscated) kind byte to learn whether a tag is present and
-	// where the body ends, without trusting any plaintext offset.
-	kind := Kind(peekByte(obfKey, nonce, rest[0]))
+	// One keystream for the whole decode: init the cipher once, consume the
+	// first keystream byte to recover the (obfuscated) kind, then continue the
+	// SAME keystream over the remaining body. This avoids the old peekByte's
+	// second ChaCha20 init.
+	cipher, err := chacha20.NewUnauthenticatedCipher(c.obfKey, nonce)
+	if err != nil {
+		// obfKey is subkeyLen and nonce is nonceLen, so init cannot fail; a
+		// failure indicates a programmer error.
+		panic(fmt.Sprintf("frame: chacha20 init: %v", err))
+	}
+	kindByte := []byte{rest[0]}
+	cipher.XORKeyStream(kindByte, kindByte)
+	kind := Kind(kindByte[0])
 	if !kind.valid() {
 		return nil, fmt.Errorf("%w: unknown kind %d", ErrMalformed, uint8(kind))
 	}
@@ -239,21 +289,43 @@ func Decode(psk config.Key, raw []byte) (Frame, error) {
 		}
 		obfBody = rest[:len(rest)-tagLen]
 		gotTag := rest[len(rest)-tagLen:]
-		wantTag := tag(authKey, nonce, obfBody)
+		wantTag := tag(c.authKey, nonce, obfBody)
 		if !hmac.Equal(gotTag, wantTag) {
 			return nil, ErrAuth
 		}
 	}
 
-	body := make([]byte, len(obfBody))
-	copy(body, obfBody)
-	obfuscate(obfKey, nonce, body)
-
-	// body[0] is the kind byte again; it must agree with the peeked kind.
-	if Kind(body[0]) != kind {
-		return nil, fmt.Errorf("%w: kind byte inconsistent", ErrMalformed)
+	// Reconstruct the plaintext body in reusable scratch. Byte 0 is the kind we
+	// already recovered; the remaining bytes continue the same keystream.
+	c.decScratch = append(c.decScratch[:0], obfBody...)
+	body := c.decScratch
+	body[0] = kindByte[0]
+	if len(body) > 1 {
+		cipher.XORKeyStream(body[1:], body[1:])
 	}
 	return decodeBody(kind, body[1:])
+}
+
+// Encode serializes f into a self-contained wire frame under the given PSK. It
+// is a convenience wrapper that builds a one-shot Codec; the per-datagram
+// datapath uses a long-lived Codec instead (see Codec / defect D5). It fails
+// only if the PSK is unset or the system CSPRNG is unavailable.
+func Encode(psk config.Key, f Frame) ([]byte, error) {
+	c, err := NewCodec(psk)
+	if err != nil {
+		return nil, err
+	}
+	return c.Encode(nil, f)
+}
+
+// Decode parses a wire frame under the given PSK. It is a convenience wrapper
+// that builds a one-shot Codec; hot paths reuse a long-lived Codec instead.
+func Decode(psk config.Key, raw []byte) (Frame, error) {
+	c, err := NewCodec(psk)
+	if err != nil {
+		return nil, err
+	}
+	return c.Decode(raw)
 }
 
 // decodeBody parses the header+payload region (the body after the kind byte).
@@ -324,14 +396,6 @@ func obfuscate(obfKey, nonce, body []byte) {
 		panic(fmt.Sprintf("frame: chacha20 init: %v", err))
 	}
 	c.XORKeyStream(body, body)
-}
-
-// peekByte recovers a single obfuscated body byte without consuming the shared
-// keystream used for the full-body decode.
-func peekByte(obfKey, nonce []byte, b byte) byte {
-	buf := []byte{b}
-	obfuscate(obfKey, nonce, buf)
-	return buf[0]
 }
 
 // tag computes the truncated Encrypt-then-MAC authentication tag over
