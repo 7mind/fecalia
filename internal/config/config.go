@@ -79,6 +79,12 @@ type Peer struct {
 
 // Amnezia holds the amneziawg-go obfuscation parameters. They must match on both
 // ends for the handshake to succeed; they are defense-in-depth only.
+//
+// The block is "all-or-nothing": either every junk/size knob is left zero (plain
+// WireGuard) or the whole obfuscation set (jc, jmin, jmax, s1, s2) is specified.
+// A PARTIAL block silently produces an obfuscation profile the two ends cannot
+// agree on, so validate rejects it at load (defect D1). The four magic headers
+// (h1-h4) default to the standard message-type values 1..4 when omitted.
 type Amnezia struct {
 	Jc   int    `toml:"jc"`
 	Jmin int    `toml:"jmin"`
@@ -89,6 +95,34 @@ type Amnezia struct {
 	H2   uint32 `toml:"h2"`
 	H3   uint32 `toml:"h3"`
 	H4   uint32 `toml:"h4"`
+}
+
+// defaultMagicHeaders are the standard WireGuard message-type headers: initiation,
+// response, cookie-reply, and transport. amneziawg-go treats any magic header <= 4
+// as "use the standard type", so 1..4 is the canonical "headers not obfuscated"
+// profile. wanbond emits them explicitly (rather than 0) so a configured amnezia
+// block always carries a complete, self-consistent set of magic headers.
+var defaultMagicHeaders = [4]uint32{1, 2, 3, 4}
+
+// Configured reports whether the amnezia block carries any obfuscation parameter.
+// An all-zero block leaves the engine in plain WireGuard mode.
+func (a Amnezia) Configured() bool {
+	return a.Jc != 0 || a.Jmin != 0 || a.Jmax != 0 || a.S1 != 0 || a.S2 != 0 ||
+		a.H1 != 0 || a.H2 != 0 || a.H3 != 0 || a.H4 != 0
+}
+
+// applyDefaults fills in the standard magic headers (1..4) when the block is
+// configured but no header was given, so the UAPI renderer emits an explicit,
+// complete header set instead of h1=0..h4=0. It is a no-op for an unconfigured
+// block and for one that already sets any header (a partial header set is left
+// intact so validate can reject it).
+func (a *Amnezia) applyDefaults() {
+	if !a.Configured() {
+		return
+	}
+	if a.H1 == 0 && a.H2 == 0 && a.H3 == 0 && a.H4 == 0 {
+		a.H1, a.H2, a.H3, a.H4 = defaultMagicHeaders[0], defaultMagicHeaders[1], defaultMagicHeaders[2], defaultMagicHeaders[3]
+	}
 }
 
 // Metrics configures the localhost Prometheus endpoint.
@@ -151,6 +185,7 @@ func (c *Config) normalize() error {
 			p.DestAddr = dst
 		}
 	}
+	c.Amnezia.applyDefaults()
 	return nil
 }
 
@@ -201,10 +236,41 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// validate checks the amnezia junk-size ordering invariant.
+// validate enforces the amnezia obfuscation invariants (defect D1). An
+// unconfigured block is valid (plain WireGuard). A configured block must specify
+// the WHOLE junk/size set and carry a consistent magic-header set, so a partial
+// or inconsistent obfuscation profile FAILS FAST at load rather than producing a
+// silently mismatched tunnel that never handshakes.
+//
+// This runs after applyDefaults, so an omitted magic-header set has already been
+// filled with the standard 1..4 values; the header check below therefore only
+// fires for a genuinely partial header set (some given, some left zero).
 func (a Amnezia) validate() error {
-	if a.Jmin < 0 || a.Jmax < 0 || a.Jmin > a.Jmax {
-		return fmt.Errorf("amnezia: require 0 <= jmin <= jmax, got jmin=%d jmax=%d", a.Jmin, a.Jmax)
+	if !a.Configured() {
+		return nil
+	}
+	// All-or-nothing: enabling amnezia at all requires the full junk/size set, so
+	// both ends are forced to specify the same complete profile. A partial block
+	// (e.g. jc/jmin/jmax set but s1/s2 omitted) would leave the ends deriving
+	// different profiles and the handshake would fail closed with no diagnostic.
+	if a.Jc <= 0 || a.Jmin <= 0 || a.Jmax <= 0 || a.S1 <= 0 || a.S2 <= 0 {
+		return fmt.Errorf("amnezia: incomplete obfuscation set — when configured, jc, jmin, jmax, s1 and s2 must all be > 0 (got jc=%d jmin=%d jmax=%d s1=%d s2=%d)",
+			a.Jc, a.Jmin, a.Jmax, a.S1, a.S2)
+	}
+	if a.Jmin > a.Jmax {
+		return fmt.Errorf("amnezia: require jmin <= jmax, got jmin=%d jmax=%d", a.Jmin, a.Jmax)
+	}
+	// Magic headers must be distinct: the receive path classifies a datagram's
+	// message type by its header value, so two equal headers make two message
+	// types indistinguishable. An all-zero header set is left for applyDefaults;
+	// any non-zero header requires a complete, distinct set (a partial set leaves
+	// zeros here and is caught as a duplicate).
+	if a.H1 != 0 || a.H2 != 0 || a.H3 != 0 || a.H4 != 0 {
+		if a.H1 == a.H2 || a.H1 == a.H3 || a.H1 == a.H4 ||
+			a.H2 == a.H3 || a.H2 == a.H4 || a.H3 == a.H4 {
+			return fmt.Errorf("amnezia: magic headers must be a complete, distinct set, got h1=%d h2=%d h3=%d h4=%d",
+				a.H1, a.H2, a.H3, a.H4)
+		}
 	}
 	return nil
 }

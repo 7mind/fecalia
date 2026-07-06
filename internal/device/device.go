@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"sync"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
@@ -40,6 +41,69 @@ type Tunnel struct {
 	dev  *awgdevice.Device
 	tun  tun.Device
 	name string
+	// amnezia is the obfuscation profile this tunnel holds against the
+	// process-global amnezia guard (see amneziaGuard); Close releases it.
+	amnezia     config.Amnezia
+	releaseOnce sync.Once
+}
+
+// SINGLE-ENGINE-PER-PROCESS INVARIANT (defect D2).
+//
+// amneziawg-go stores the amnezia magic-header message types in PACKAGE-GLOBAL
+// variables — device.MessageInitiationType, MessageResponseType,
+// MessageCookieReplyType, MessageTransportType — which (*device.Device).IpcSet
+// assigns in handlePostConfig and (*device.Device).Close restores to their
+// defaults in resetProtocol. Those globals are shared by every Device in the
+// process. Bringing up a SECOND in-process engine with a DIFFERENT amnezia
+// profile would overwrite the first engine's message-type framing; even closing
+// a second, unrelated engine would reset the globals out from under a live
+// amnezia tunnel. This is an upstream property of the fork, not a wanbond bug, so
+// wanbond ASSERTS the invariant rather than vendor-patching amneziawg-go: at most
+// one amnezia-configured engine may be live per process. wanbond runs exactly one
+// tunnel per process, so the guard only ever trips on genuine misuse.
+type amneziaGuard struct {
+	mu    sync.Mutex
+	count int            // number of live amnezia-configured engines
+	cfg   config.Amnezia // the profile they share (config.Amnezia is comparable)
+}
+
+// globalAmneziaGuard enforces the single-amnezia-engine-per-process invariant for
+// every Tunnel brought up in this process.
+var globalAmneziaGuard amneziaGuard
+
+// acquire registers an about-to-start engine's amnezia profile. A plain-WireGuard
+// engine (unconfigured amnezia) never touches the global message-type state, so it
+// is always admitted. A configured engine is refused when a DISTINCT amnezia
+// profile is already live in this process.
+func (g *amneziaGuard) acquire(a config.Amnezia) error {
+	if !a.Configured() {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.count > 0 && g.cfg != a {
+		return fmt.Errorf("device: refusing to start a second in-process amnezia engine with a distinct obfuscation profile: " +
+			"amneziawg-go keeps the magic-header message types in process-global state, so at most one amnezia configuration can be live per process (D2)")
+	}
+	g.count++
+	g.cfg = a
+	return nil
+}
+
+// release drops an engine's hold on the guard. It is a no-op for an unconfigured
+// (plain-WireGuard) engine.
+func (g *amneziaGuard) release(a config.Amnezia) {
+	if !a.Configured() {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.count > 0 {
+		g.count--
+	}
+	if g.count == 0 {
+		g.cfg = config.Amnezia{}
+	}
 }
 
 // Up creates the TUN, wires the multipath Bind into the amneziawg engine,
@@ -58,6 +122,21 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: read TUN name: %w", err)
 	}
+
+	// Claim the single-amnezia-engine-per-process invariant (D2) BEFORE IpcSet
+	// assigns amneziawg-go's process-global message-type state. On any failure
+	// below, ok stays false and the deferred release returns the hold; the
+	// successful path transfers the hold to the returned Tunnel.
+	if err := globalAmneziaGuard.acquire(cfg.Amnezia); err != nil {
+		_ = tunDev.Close()
+		return nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			globalAmneziaGuard.release(cfg.Amnezia)
+		}
+	}()
 
 	scheduler, err := buildScheduler(cfg, clg)
 	if err != nil {
@@ -85,8 +164,9 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		return nil, fmt.Errorf("device: bring up: %w", err)
 	}
 
+	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
-	return &Tunnel{dev: dev, tun: tunDev, name: name}, nil
+	return &Tunnel{dev: dev, tun: tunDev, name: name, amnezia: cfg.Amnezia}, nil
 }
 
 // defaultFailbackDwell is how long a recovered higher-priority path must stay up
@@ -120,8 +200,13 @@ func (t *Tunnel) Name() string { return t.name }
 // engine error).
 func (t *Tunnel) Wait() { <-t.dev.Wait() }
 
-// Close brings the device down and releases the TUN and Bind. Idempotent.
-func (t *Tunnel) Close() { t.dev.Close() }
+// Close brings the device down and releases the TUN and Bind. Idempotent. It also
+// releases this tunnel's hold on the single-amnezia-engine-per-process guard
+// exactly once, so a later Up may reconfigure the process-global amnezia state.
+func (t *Tunnel) Close() {
+	t.dev.Close()
+	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })
+}
 
 // engineLogger adapts the amneziawg engine's logger onto wanbond's structured
 // logger under a "wg" component. The engine is verbose only when the daemon runs
@@ -140,9 +225,11 @@ func engineLogger(lg log.Logger, level string) *awgdevice.Logger {
 
 // uapiConfig renders cfg into the newline-delimited UAPI set string the engine's
 // IpcSet consumes. Keys are lowercase hex (UAPI's on-the-wire encoding), NOT the
-// base64 form the TOML carries. Amnezia obfuscation keys are emitted only when at
-// least one is configured; an all-zero Amnezia block leaves the engine in plain
-// WireGuard mode (amnezia parameters are wired end-to-end in a later phase).
+// base64 form the TOML carries. Amnezia obfuscation keys are emitted only when the
+// block is configured; an all-zero Amnezia block leaves the engine in plain
+// WireGuard mode. The same amnezia parameters are applied on BOTH roles (edge and
+// concentrator) as defense-in-depth — they must match end to end for the handshake
+// to succeed (config validation makes each end specify a complete profile, D1).
 func uapiConfig(cfg *config.Config) (string, error) {
 	var b strings.Builder
 
@@ -176,18 +263,14 @@ func uapiConfig(cfg *config.Config) (string, error) {
 // keepaliveSeconds is the edge's persistent-keepalive interval.
 const keepaliveSeconds = 25
 
-// writeAmnezia emits the amneziawg obfuscation UAPI keys, but only when the block
-// is configured (any non-zero field). Emitting an all-zero block would NOT break
-// the handshake — the engine treats magic-header values <= 4 as "use the default
-// message types" and leaves obfuscation off when no junk/size field is set. The
-// guard's purpose is to avoid needlessly driving the engine's UAPI amnezia path,
-// which assigns amneziawg's PROCESS-GLOBAL message-type state on every configured
-// apply (a single-engine-per-process constraint tracked for the T19 amnezia
-// wiring); when amnezia is unused, wanbond leaves that global state untouched.
+// writeAmnezia emits the nine amneziawg obfuscation UAPI keys, but only when the
+// block is configured. When amnezia is unused, wanbond leaves the engine's
+// PROCESS-GLOBAL message-type state untouched (see the amneziaGuard invariant).
+// Config validation guarantees a configured block is complete and self-consistent
+// (D1), and applyDefaults has already filled the standard magic headers (1..4)
+// when they were omitted, so the emitted set never carries an h*=0 sentinel.
 func writeAmnezia(b *strings.Builder, a config.Amnezia) {
-	configured := a.Jc != 0 || a.Jmin != 0 || a.Jmax != 0 || a.S1 != 0 || a.S2 != 0 ||
-		a.H1 != 0 || a.H2 != 0 || a.H3 != 0 || a.H4 != 0
-	if !configured {
+	if !a.Configured() {
 		return
 	}
 	fmt.Fprintf(b, "jc=%d\njmin=%d\njmax=%d\ns1=%d\ns2=%d\nh1=%d\nh2=%d\nh3=%d\nh4=%d\n",

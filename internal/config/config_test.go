@@ -56,6 +56,8 @@ allowed_ips = ["0.0.0.0/0"]
 jc = 4
 jmin = 8
 jmax = 80
+s1 = 15
+s2 = 92
 
 [metrics]
 listen = "127.0.0.1:9095"
@@ -105,6 +107,11 @@ func TestLoadValidEdge(t *testing.T) {
 	}
 	if c.Amnezia.Jmax != 80 {
 		t.Errorf("amnezia jmax = %d, want 80", c.Amnezia.Jmax)
+	}
+	// The fixture omits h1-h4, so Load must default them to the standard 1..4
+	// message-type headers (defect D1), never leave them at 0.
+	if got := [4]uint32{c.Amnezia.H1, c.Amnezia.H2, c.Amnezia.H3, c.Amnezia.H4}; got != [4]uint32{1, 2, 3, 4} {
+		t.Errorf("amnezia magic headers = %v, want defaulted [1 2 3 4]", got)
 	}
 }
 
