@@ -62,9 +62,14 @@ var P3InjectedLossRates = []float64{0.05, 0.15}
 // 0.2s = 2.2s, leaving ~0.8s of the 3s budget for the scheduler's reroute — the
 // send-side switch is a data-structure update (sub-millisecond), so 2s DownAfter
 // is comfortably compatible with the 3s P1 recovery budget. The invariant to
-// preserve when retuning: PLivenessDetectBudget < P1RecoverySeconds, with headroom
-// for the reroute. Tighten DownAfter (at the cost of more probe traffic and a
-// higher false-down risk on a jittery link) if the reroute term ever grows.
+// preserve when retuning is on the ANALYTICAL detect term, not the assertion
+// deadline: PLivenessDownAfter + PLivenessProbeInterval (+ the reroute headroom)
+// < P1RecoverySeconds. NOTE PLivenessDetectBudget below is deliberately LARGER
+// than P1RecoverySeconds (3.5s vs 3s): it is the e2e ASSERTION DEADLINE — the
+// analytical worst-case detect (~2.2s) plus ~1.3s of harness slack so the
+// blackhole e2e is not flaky — NOT the failover-composition term. Tighten
+// DownAfter (at the cost of more probe traffic and a higher false-down risk on a
+// jittery link) if the reroute term ever grows.
 const (
 	PLivenessProbeInterval = 200 * time.Millisecond
 	PLivenessDownAfter     = 2 * time.Second
