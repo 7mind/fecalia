@@ -22,7 +22,22 @@ type Decoder struct {
 	cfg    Config
 	codecs map[int]reedsolomon.Encoder
 	groups map[GroupID]*groupState
+
+	// retainWindow bounds memory: groupState for a group more than this many
+	// GroupIDs behind the highest offered group is evicted (see tooOld). 0 disables
+	// the window entirely, leaving eviction to explicit Forget calls.
+	retainWindow  int
+	highWater     GroupID
+	haveHighWater bool
 }
+
+// defaultRetainWindow bounds decoder memory out of the box: without eviction the
+// groups map grows without bound — done groups retain buffers, and a group whose
+// parity is entirely lost (M never learned) buffers its data forever, and GroupID
+// (uint32) wraparound would eventually collide with stale retained state. The T24
+// datapath tunes this window via SetRetainWindow to match its reordering/latency
+// budget; the default merely guarantees the mechanism is on and memory is bounded.
+const defaultRetainWindow = 4096
 
 type groupState struct {
 	dataCount int // M; -1 until a parity shard is seen
@@ -39,9 +54,10 @@ func NewDecoder(cfg Config) (*Decoder, error) {
 		return nil, err
 	}
 	return &Decoder{
-		cfg:    cfg,
-		codecs: make(map[int]reedsolomon.Encoder),
-		groups: make(map[GroupID]*groupState),
+		cfg:          cfg,
+		codecs:       make(map[int]reedsolomon.Encoder),
+		groups:       make(map[GroupID]*groupState),
+		retainWindow: defaultRetainWindow,
 	}, nil
 }
 
@@ -59,6 +75,65 @@ func (d *Decoder) state(g GroupID) *groupState {
 	return gs
 }
 
+// markDone marks a group complete and releases its per-shard buffers: a done group
+// never reconstructs again (Offer short-circuits on gs.done), so retaining its
+// data/parity maps would only leak memory.
+func (gs *groupState) markDone() {
+	gs.done = true
+	gs.data = nil
+	gs.parity = nil
+}
+
+// Forget drops all retained state for a group, releasing its buffers. The T24
+// datapath calls this once it knows no further shards for the group can arrive (or
+// that the group is no longer worth recovering). Offering a shard for a forgotten,
+// still-in-window group simply rebuilds fresh state.
+func (d *Decoder) Forget(g GroupID) {
+	delete(d.groups, g)
+}
+
+// SetRetainWindow configures the sliding retained-group window: groupState for a
+// group more than n GroupIDs behind the highest offered group is evicted on the
+// next advance of the high-water mark. n <= 0 disables the window (eviction then
+// happens only via Forget). This is the eviction MECHANISM; the T24 datapath
+// chooses the window/low-water POLICY to fit its reordering and latency budget.
+func (d *Decoder) SetRetainWindow(n int) {
+	d.retainWindow = n
+}
+
+// tooOld reports whether group g has fallen behind the high-water mark by more than
+// the retained-group window. The comparison is uint32-wraparound-safe (it measures
+// signed distance), so GroupID rollover does not resurrect stale groups.
+func (d *Decoder) tooOld(g GroupID) bool {
+	if d.retainWindow <= 0 || !d.haveHighWater {
+		return false
+	}
+	behind := int32(d.highWater - g)
+	return behind > int32(d.retainWindow)
+}
+
+// advanceHighWater folds g into the high-water mark and, when the mark actually
+// advances, evicts every retained group that has fallen outside the window.
+func (d *Decoder) advanceHighWater(g GroupID) {
+	advanced := false
+	if !d.haveHighWater {
+		d.highWater = g
+		d.haveHighWater = true
+		advanced = true
+	} else if int32(g-d.highWater) > 0 {
+		d.highWater = g
+		advanced = true
+	}
+	if !advanced || d.retainWindow <= 0 {
+		return
+	}
+	for id := range d.groups {
+		if d.tooOld(id) {
+			delete(d.groups, id)
+		}
+	}
+}
+
 // Offer feeds one surviving shard into its group and returns any data payloads
 // that became recoverable as a result — data frames that were NOT directly
 // received but were reconstructed from parity. Directly-received data shards are
@@ -67,7 +142,13 @@ func (d *Decoder) state(g GroupID) *groupState {
 // that point every still-missing data index is reconstructed and returned once,
 // and the group is marked complete. Offering to a completed group returns nil.
 func (d *Decoder) Offer(s Shard) ([]Recovered, error) {
-	gs := d.state(s.GroupID())
+	g := s.GroupID()
+	if d.tooOld(g) {
+		return nil, nil // group already evicted; a very-late shard for it is unrecoverable by design
+	}
+	d.advanceHighWater(g)
+
+	gs := d.state(g)
 	if gs.done {
 		return nil, nil
 	}
@@ -89,7 +170,7 @@ func (d *Decoder) Offer(s Shard) ([]Recovered, error) {
 		return nil, fmt.Errorf("fec: unknown shard type %T", s)
 	}
 
-	return d.maybeReconstruct(s.GroupID(), gs)
+	return d.maybeReconstruct(g, gs)
 }
 
 // observeParity records a parity shard and pins/checks the group's cardinality
@@ -97,6 +178,13 @@ func (d *Decoder) Offer(s Shard) ([]Recovered, error) {
 func (gs *groupState) observeParity(p ParityShard) error {
 	if p.DataCount < 1 {
 		return fmt.Errorf("fec: parity for group %d carries invalid DataCount %d", p.Group, p.DataCount)
+	}
+	// A parity payload IS one RS shard, so its length is the group's uniform shard
+	// length. Reject a payload too short to hold a data shard's length prefix:
+	// trusting it would pin shardLen < lenPrefixLen and later panic encodeDataShard
+	// (fec.go). The library must not trust wire-derived geometry.
+	if len(p.Payload) < lenPrefixLen {
+		return fmt.Errorf("fec: parity for group %d has payload %d bytes, shorter than the %d-byte length prefix", p.Group, len(p.Payload), lenPrefixLen)
 	}
 	if gs.dataCount == -1 {
 		gs.dataCount = p.DataCount
@@ -128,7 +216,7 @@ func (d *Decoder) maybeReconstruct(g GroupID, gs *groupState) ([]Recovered, erro
 		}
 	}
 	if len(missing) == 0 {
-		gs.done = true // all data present; nothing to recover
+		gs.markDone() // all data present; nothing to recover
 		return nil, nil
 	}
 
@@ -149,6 +237,14 @@ func (d *Decoder) maybeReconstruct(g GroupID, gs *groupState) ([]Recovered, erro
 
 	shards := make([][]byte, m+d.cfg.ParityShards)
 	for idx, payload := range gs.data {
+		// encodeDataShard's precondition is shardLen >= lenPrefixLen+len(payload).
+		// A wire-derived data payload that overruns the group's shard length would
+		// otherwise be silently truncated while its length prefix records the full
+		// length, feeding RS inconsistent bytes and fabricating recovered payloads.
+		// Fail fast instead of trusting the geometry.
+		if lenPrefixLen+len(payload) > gs.shardLen {
+			return nil, fmt.Errorf("fec: data shard %d payload (%d bytes) does not fit group %d shard length %d", idx, len(payload), g, gs.shardLen)
+		}
 		shards[idx] = encodeDataShard(payload, gs.shardLen)
 	}
 	for j, pb := range gs.parity {
@@ -171,7 +267,7 @@ func (d *Decoder) maybeReconstruct(g GroupID, gs *groupState) ([]Recovered, erro
 		}
 		recovered = append(recovered, Recovered{Group: g, Index: idx, Payload: payload})
 	}
-	gs.done = true
+	gs.markDone()
 	return recovered, nil
 }
 
