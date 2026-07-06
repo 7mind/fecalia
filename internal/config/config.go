@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
 
 // Role selects which end of the tunnel this process runs as. It is an explicit,
@@ -259,6 +261,19 @@ func (a Amnezia) validate() error {
 	}
 	if a.Jmin > a.Jmax {
 		return fmt.Errorf("amnezia: require jmin <= jmax, got jmin=%d jmax=%d", a.Jmin, a.Jmax)
+	}
+	// Junk sizes must not collide: amneziawg-go classifies an incoming datagram's
+	// message type by its on-the-wire length, so the obfuscated initiation packet
+	// (MessageInitiationSize + s1) and response packet (MessageResponseSize + s2)
+	// must differ in length. A colliding s1/s2 pair passes config load but is
+	// rejected later by the engine's IpcSet ("new init size == new response size");
+	// reject it here so the collision fails fast at load, at the right locus. The
+	// engine's own MessageInitiationSize (148) and MessageResponseSize (92)
+	// constants are used so this check tracks the vendored fork if it ever changes.
+	if awgdevice.MessageInitiationSize+a.S1 == awgdevice.MessageResponseSize+a.S2 {
+		return fmt.Errorf("amnezia: junk sizes collide — obfuscated init size %d (%d+s1) must differ from response size %d (%d+s2); adjust s1/s2",
+			awgdevice.MessageInitiationSize+a.S1, awgdevice.MessageInitiationSize,
+			awgdevice.MessageResponseSize+a.S2, awgdevice.MessageResponseSize)
 	}
 	// Magic headers must be distinct: the receive path classifies a datagram's
 	// message type by its header value, so two equal headers make two message

@@ -71,6 +71,18 @@ func TestAmneziaValidate(t *testing.T) {
 			in:      Amnezia{Jc: 4, Jmin: 8, Jmax: 80, S1: 15, S2: 92, H1: 9, H2: 9, H3: 3, H4: 4},
 			wantErr: "distinct",
 		},
+		{
+			// 148 + s1 == 92 + s2  =>  163 == 163: the obfuscated init and response
+			// packets would be the same length, which the engine's IpcSet rejects.
+			name:    "colliding junk sizes rejected (148+s1 == 92+s2)",
+			in:      Amnezia{Jc: 4, Jmin: 8, Jmax: 80, S1: 15, S2: 71},
+			wantErr: "junk sizes collide",
+		},
+		{
+			// One byte off the collision (163 vs 164) is accepted.
+			name: "near-collision junk sizes accepted",
+			in:   Amnezia{Jc: 4, Jmin: 8, Jmax: 80, S1: 15, S2: 72},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

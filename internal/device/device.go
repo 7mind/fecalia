@@ -11,8 +11,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
 	"sync"
+	"time"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
@@ -51,58 +51,76 @@ type Tunnel struct {
 //
 // amneziawg-go stores the amnezia magic-header message types in PACKAGE-GLOBAL
 // variables — device.MessageInitiationType, MessageResponseType,
-// MessageCookieReplyType, MessageTransportType — which (*device.Device).IpcSet
-// assigns in handlePostConfig and (*device.Device).Close restores to their
-// defaults in resetProtocol. Those globals are shared by every Device in the
-// process. Bringing up a SECOND in-process engine with a DIFFERENT amnezia
-// profile would overwrite the first engine's message-type framing; even closing
-// a second, unrelated engine would reset the globals out from under a live
-// amnezia tunnel. This is an upstream property of the fork, not a wanbond bug, so
-// wanbond ASSERTS the invariant rather than vendor-patching amneziawg-go: at most
-// one amnezia-configured engine may be live per process. wanbond runs exactly one
-// tunnel per process, so the guard only ever trips on genuine misuse.
+// MessageCookieReplyType, MessageTransportType. (*device.Device).IpcSet assigns
+// them (in handlePostConfig) from a configured engine's profile, and
+// (*device.Device).Close restores them to the WireGuard defaults (in
+// resetProtocol) UNCONDITIONALLY — closing ANY engine, plain or configured,
+// reverts the process-global message types to their defaults.
+//
+// Two consequences make a CONFIGURED (amnezia) engine require PROCESS
+// EXCLUSIVITY:
+//   - a second configured engine would overwrite the first engine's message-type
+//     framing at IpcSet; and even with the SAME profile, closing the first engine
+//     runs resetProtocol and reverts the globals to defaults under the second,
+//     still-live engine, silently dropping its tunnel to plain-WireGuard framing.
+//   - closing ANY other engine — a PLAIN (unconfigured) one included — runs
+//     resetProtocol and resets the globals out from under a live configured engine.
+//
+// So the rule wanbond ASSERTS (rather than vendor-patching the fork) is:
+//   - a configured engine may come up only when NO other engine is live, and
+//   - no engine (plain or configured) may come up while a configured engine is live.
+//
+// PLAIN engines may coexist with each other: they never set the globals, and
+// resetProtocol on their Close only restores the defaults they already use, so it
+// is idempotent among them. wanbond runs exactly one tunnel per process, so the
+// guard only ever trips on genuine misuse.
 type amneziaGuard struct {
-	mu    sync.Mutex
-	count int            // number of live amnezia-configured engines
-	cfg   config.Amnezia // the profile they share (config.Amnezia is comparable)
+	mu         sync.Mutex
+	plainLive  int  // number of live plain-WireGuard (unconfigured) engines
+	configLive bool // whether a configured (amnezia) engine is live (at most one)
 }
 
 // globalAmneziaGuard enforces the single-amnezia-engine-per-process invariant for
 // every Tunnel brought up in this process.
 var globalAmneziaGuard amneziaGuard
 
-// acquire registers an about-to-start engine's amnezia profile. A plain-WireGuard
-// engine (unconfigured amnezia) never touches the global message-type state, so it
-// is always admitted. A configured engine is refused when a DISTINCT amnezia
-// profile is already live in this process.
+// acquire registers an about-to-start engine against the process-exclusivity rule
+// (see amneziaGuard). A configured (amnezia) engine is admitted only when NO other
+// engine is live. A plain engine is admitted only when no configured engine is
+// live; plain engines may coexist with one another. The caller must release the
+// SAME profile exactly once when the engine is torn down (plain engines included —
+// release is no longer a no-op for them).
 func (g *amneziaGuard) acquire(a config.Amnezia) error {
-	if !a.Configured() {
-		return nil
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.count > 0 && g.cfg != a {
-		return fmt.Errorf("device: refusing to start a second in-process amnezia engine with a distinct obfuscation profile: " +
-			"amneziawg-go keeps the magic-header message types in process-global state, so at most one amnezia configuration can be live per process (D2)")
+	if a.Configured() {
+		if g.configLive || g.plainLive > 0 {
+			return fmt.Errorf("device: refusing to start an amnezia-configured engine while another engine is live: " +
+				"amneziawg-go keeps the magic-header message types in process-global state and resets them to defaults on ANY engine's Close, " +
+				"so a configured engine requires process exclusivity — at most one, with no other engine alongside it (D2)")
+		}
+		g.configLive = true
+		return nil
 	}
-	g.count++
-	g.cfg = a
+	if g.configLive {
+		return fmt.Errorf("device: refusing to start a second engine while an amnezia-configured engine is live: " +
+			"closing this engine would reset amneziawg-go's process-global message types to defaults under the live amnezia tunnel (D2)")
+	}
+	g.plainLive++
 	return nil
 }
 
-// release drops an engine's hold on the guard. It is a no-op for an unconfigured
-// (plain-WireGuard) engine.
+// release drops an engine's hold on the guard. A configured engine clears the
+// single configured slot; a plain engine decrements the live plain count.
 func (g *amneziaGuard) release(a config.Amnezia) {
-	if !a.Configured() {
-		return
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.count > 0 {
-		g.count--
+	if a.Configured() {
+		g.configLive = false
+		return
 	}
-	if g.count == 0 {
-		g.cfg = config.Amnezia{}
+	if g.plainLive > 0 {
+		g.plainLive--
 	}
 }
 
