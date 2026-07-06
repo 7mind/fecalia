@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 30
+  item: 37
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -90,15 +90,18 @@ archives:
 ### T12 — planned
 
 - createdAt: 2026-07-01T23:39:43.724Z
-- updatedAt: 2026-07-01T23:39:43.724Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T21:44:54.180Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Multi-path conn.Bind: per-path sockets behind one virtual endpoint + MTU accounting"
-- description: "Replace the pass-through Bind: one UDP socket per configured path bound to its source address; WG sees a single stable virtual endpoint per peer while the Bind privately maps real per-path endpoints; honor the batched send/recv + GSO/GRO findings from P0. MTU accounting for outer header + WG overhead (no fragmentation / ICMP black holes); write the MSS-clamping guidance doc section."
-- acceptance: "Unit tests for virtual-endpoint identity and per-path endpoint bookkeeping; e2e: traffic flows over each path individually when the other is disabled; a max-MTU-sized transfer shows no IP fragmentation in a fixture capture; computed inner MTU = path MTU - (outer header + WG overhead) asserted against a fixture; MSS guidance committed."
+- description: |
+    Replace the pass-through Bind: one UDP socket per configured path bound to its source address; WG sees a single stable virtual endpoint per peer while the Bind privately maps real per-path endpoints; honor the batched send/recv + GSO/GRO findings from P0. MTU accounting for outer header + WG overhead (no fragmentation / ICMP black holes); write the MSS-clamping guidance doc section.
+    
+    FOLLOW-UP SCOPE (2026-07-06, from the G1 follow-up + P0 real-host throughput investigation): (a) set a LARGE SO_RCVBUF per path (like pure-WireGuard StdNetBind's ~7MB via SetReadBuffer) and adopt batched send/recv (GSO/GRO best-effort per-path with the engine's runtime-disable discipline) to close the confirmed P0 §2 efficiency gap — the pass-through Bind used DEFAULT socket buffers, which the real-host run showed adds loss under load (though single-flow TCP over the lossy WAN, not the Bind, was the primary throughput limiter). (b) ADDRESS DEFECT D5 (hot-path Codec) here, since this is where internal/frame is first wired into the per-datagram datapath: build a frame.Codec state ONCE from the PSK (NewCodec: derive HKDF subkeys once, single keystream per Decode, dst-append buffer reuse) instead of re-deriving subkeys + double-initing ChaCha20 per frame.
+- acceptance: "Unit tests for virtual-endpoint identity and per-path endpoint bookkeeping; e2e: traffic flows over each path individually when the other is disabled; a max-MTU-sized transfer shows no IP fragmentation in a fixture capture; computed inner MTU = path MTU - (outer header + WG overhead) asserted against a fixture; MSS guidance committed; each per-path socket sets a large SO_RCVBUF; the datapath uses a once-constructed frame.Codec (resolves D5)."
 - suggestedModel: frontier
 - dependsOn: ["T11"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","defects:D5"]
 
 ### T13 — planned
 
@@ -155,12 +158,15 @@ archives:
 ### T22 — planned
 
 - createdAt: 2026-07-01T23:40:41.392Z
-- updatedAt: 2026-07-01T23:40:41.392Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T21:45:00.320Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: systemd units, cross-compile matrix, install doc + P1 manual checklist
-- description: "Per Q6: systemd unit files for the edge and concentrator roles; a CI/release step cross-compiling CGO_ENABLED=0 for linux/amd64 and linux/arm64; an install/ops doc referencing the 0600 config path; and the scripted P1 manual checklist for the real Starlink+5G+VPS setup appended to docs/manual-checklist.md. No packaging beyond the binary + nix."
-- acceptance: "`just release` (or make) produces static binaries for linux/amd64 and linux/arm64 (`file` reports statically linked, correct arch); `systemd-analyze verify` passes on both unit files; install doc and P1 checklist committed."
+- description: |
+    Per Q6: systemd unit files for the edge and concentrator roles; a CI/release step cross-compiling CGO_ENABLED=0 for linux/amd64 and linux/arm64; an install/ops doc referencing the 0600 config path; and the scripted P1 manual checklist for the real Starlink+5G+VPS setup appended to docs/manual-checklist.md. No packaging beyond the binary + nix.
+    
+    FOLLOW-UP SCOPE (2026-07-06, from P0 real-host validation): the install/ops doc MUST document the CONCENTRATOR tunnel-interface firewall requirement — the concentrator must ACCEPT traffic on the wanbond tunnel interface (e.g. `iptables -I INPUT -i <tun> -j ACCEPT`) ahead of any default REJECT. OCI images ship `-A INPUT -j REJECT --reject-with icmp-host-prohibited`, which blocks tunnel TCP while ICMP (ping) slips through — producing a confusing 'No route to host' on TCP-through-the-tunnel (hit during P0 real-host testing). Document this as a required concentrator deployment step.
+- acceptance: "`just release` (or make) produces static binaries for linux/amd64 and linux/arm64 (`file` reports statically linked, correct arch); `systemd-analyze verify` passes on both unit files; install doc and P1 checklist committed; the install doc documents the concentrator tunnel-interface firewall ACCEPT requirement (OCI default REJECT caveat)."
 - suggestedModel: fast
 - dependsOn: ["T20"]
 - ledgerRefs: ["goals:G1"]
@@ -341,3 +347,81 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T27"]
 - ledgerRefs: ["goals:G1"]
+
+## M10
+
+### T31 — planned
+
+- createdAt: 2026-07-06T21:43:33.259Z
+- updatedAt: 2026-07-06T21:43:33.259Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Add realhosts e2e tier: build tag, SSH runner, env-var host config, Justfile target"
+- description: "Create test/realhosts/ behind a dedicated `realhosts` build tag, fully SEPARATE from the netns `e2e` tag (`go test ./...` and `-tags e2e` must compile none of it). Provide an SSH orchestration helper (exec-over-ssh with captured stdout/stderr, and sync of a per-arch-built wanbond binary — GOARCH=arm64 for the concentrator, amd64 for the edge, or build natively on each host) driven by env vars WANBOND_EDGE_HOST / WANBOND_CONC_HOST / WANBOND_CONC_PUBLIP / WANBOND_SSH_KEY, defaulting to llm-ubuntu-0.pgtr.7mind.io (edge, behind symmetric NAT), o3.7mind.io (concentrator), 89.168.124.91, and /run/agenix/llm-ssh-key. SSH must bypass the broken system ssh_config (use `-F none`). Add an opt-in Justfile target (e.g. `just realhosts [TEST]`) mirroring the existing `e2e`/`e2e-run` style; NEVER part of default `just test`/CI. Include a minimal connectivity test (run a trivial command on both hosts via the runner) so the tier is exercisable before any tunnel test exists. COMPLEMENTS the netns fixture; replaces nothing. Per Q12 the whole tier is REPORT-ONLY."
+- acceptance: "`go build ./...` and `go test ./...` (no tag) compile nothing under test/realhosts/; `go vet -tags realhosts ./test/realhosts/...` passes; `just realhosts TestRealConnectivity` executes the SSH connectivity check against the default hosts and records both hosts' uname/arch. Report-only per Q12: the run executing and recording results IS the acceptance; it gates nothing."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G1"]
+
+### T32 — planned
+
+- createdAt: 2026-07-06T21:43:40.746Z
+- updatedAt: 2026-07-06T21:43:40.746Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Idempotent real-host provisioning + concentrator tunnel-interface firewall rule
+- description: "Extend the realhosts tier with an idempotent provisioning step (from the harness and/or a `just realhosts-provision` target) that ensures on both hosts: iperf3 + gcc installed (apt), Go 1.26.x at /usr/local/go. On the CONCENTRATOR, ensure an iptables rule ACCEPTing traffic on the wanbond tunnel interface, inserted BEFORE OCI's default `-A INPUT -j REJECT --reject-with icmp-host-prohibited` (which blocks TCP over the tunnel while ICMP slips through — this exact symptom was hit at P0), and NOT duplicated on re-run. Every step checks current state before mutating (obey the remote-worker caution rules: no destructive ops, never sever own SSH access, NEVER deprovision the o3 OCI instance)."
+- acceptance: Running provisioning twice succeeds and the second run reports no changes (idempotent); afterwards `go version`/`iperf3 --version`/`gcc --version` succeed over SSH on both hosts, and the concentrator's iptables shows exactly one tunnel-interface ACCEPT rule ordered before the OCI REJECT. Report-only per Q12.
+- suggestedModel: standard
+- dependsOn: ["T31"]
+- ledgerRefs: ["goals:G1"]
+
+### T33 — planned
+
+- createdAt: 2026-07-06T21:43:47.637Z
+- updatedAt: 2026-07-06T21:43:47.637Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Real-host P0 single-uplink smoke: handshake, ping, iperf3 single/8-parallel/UDP"
+- description: "First real tunnel test in the realhosts tier, re-validating the P0 pass-through (T8) + baseline (T9) over the REAL internet: deploy wanbond to both hosts, concentrator listening on the public IP, NAT'd edge initiates (real CGNAT traversal — concentrator learns the NAT'd endpoint); verify WG handshake, ping the peer inner address recording RTT (~29ms observed), then iperf3 through the tunnel in three modes: single-flow TCP, 8x-parallel TCP, UDP (goodput + loss). Record all measurements (+ raw iperf3 JSON) to a results artifact for comparison against the session-measured ~150-170 Mbit/s tunnel figures. Clean up remote processes on exit incl. on failure."
+- acceptance: "`just realhosts TestRealP0Smoke` executes end-to-end against the default hosts: handshake completes, ping RTT recorded, and all three iperf3 measurements (single TCP, 8x-parallel TCP, UDP goodput/loss) recorded. Per Q12 the acceptance is that the run executes and records results — no throughput threshold gates it and it blocks NO phase task (T8/T9) or milestone (M4)."
+- suggestedModel: standard
+- dependsOn: ["T32","T8","T9"]
+- ledgerRefs: ["goals:G1","tasks:T8","tasks:T9"]
+
+### T34 — planned
+
+- createdAt: 2026-07-06T21:44:02.745Z
+- updatedAt: 2026-07-06T21:44:02.745Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Real-host multipath/failover validation via virtual interfaces + policy routing
+- description: "Give the NAT'd edge host TWO paths to the ONE concentrator over its single physical uplink: two virtual interfaces (macvlan or secondary addresses) with distinct source IPs + `ip rule`/policy routing, so wanbond's two configured paths use distinct 4-tuples through the NAT (concentrator sees two real per-path endpoints behind one virtual endpoint). Run FUNCTIONAL bonding/failover validation over the real internet once the P1 multipath stack lands (validates T12 multipath Bind, T15 active-backup scheduler, T20 failover e2e): both paths establish probes/handshake, traffic observed on both (telemetry recorded), and blackholing the active path (drop its ip rule / down its interface) mid-flow keeps a long-lived TCP transfer alive; record failover timing. Truly-independent asymmetric/intermittent physical links are EXPLICITLY OUT OF SCOPE (final real-hardware step, later)."
+- acceptance: "`just realhosts TestRealMultipathFailover` executes against a wanbond build with P1 multipath support: two distinct-source-IP paths establish, traffic observed on both (telemetry recorded), and after disabling the active path the in-flight TCP session survives with failover time recorded. Report-only per Q12: executing and recording IS the acceptance; it never gates P1/M5 completion or archiving."
+- suggestedModel: frontier
+- dependsOn: ["T33","T12","T15","T20"]
+- ledgerRefs: ["goals:G1","tasks:T12","tasks:T15","tasks:T20"]
+
+### T35 — planned
+
+- createdAt: 2026-07-06T21:44:12.747Z
+- updatedAt: 2026-07-06T21:44:12.747Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Extend netns fixture with per-path bandwidth cap and controlled-loss knobs
+- description: "Extend test/e2e/netns.go (netns `e2e` tag): pathSpec gains an optional per-path bandwidth cap (netem rate, or a tbf/htb bottleneck qdisc on the edge veth) AND a controlled-loss knob (netem loss X%), both optional so existing P0/P1 tests run unchanged on the uncapped/lossless default topology. Size caps so the LINK, not the single-core userspace-WG crypto, is the bottleneck (P0 measured throughput CPU-bound; a cap well below the CPU-bound rate leaves headroom) — this lets a standing queue form (bufferbloat/pacing, T21/T23) and known loss be injected (FEC recovery, T25/T29) at a link-bound rate. This UNIFIES and SUPERSEDES the A7/T10 drafted follow-up in docs/p0-checkpoint.md (single rate+loss knob, no duplicate/parallel follow-up filed): update that drafted-follow-up note to point at THIS task so T23's aggregation e2e and T21's empirical BDP pace-sizing run against this capped variant when P2 begins."
+- acceptance: "A self-test under `just e2e-run` demonstrates both knobs operationally: (a) with a per-path cap well below the CPU-bound throughput, iperf3 through that path measures within a stated tolerance of the cap (link-bound, not CPU-bound); (b) with X% configured loss, measured UDP loss falls in the expected band around X%. Existing e2e tests still pass unmodified on the default (uncapped, lossless) topology; docs/p0-checkpoint.md's A7 drafted-follow-up note is updated to reference this task (superseded/merged, not duplicated)."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G1","tasks:T10","tasks:T21","tasks:T23","tasks:T25","tasks:T29"]
+
+### T36 — planned
+
+- createdAt: 2026-07-06T21:44:19.623Z
+- updatedAt: 2026-07-06T21:44:19.623Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Record controlled-loss single-flow TCP collapse baseline for P3/P4 FEC comparison
+- description: "Using the capped+lossy fixture (T35), quantify the long-fat-lossy-network problem FEC must fix (real-internet evidence: single-flow TCP collapsed to ~18-48 Mbit/s from ~0.1-0.8% loss over 29ms RTT, per Mathis): at a fixed bandwidth cap and RTT, sweep configured netem loss (e.g. 0 / 0.5 / 1 / 2 %) and record single-flow TCP goodput through the tunnel at each point. Persist the table (loss rate -> absolute throughput + fraction of the 0%-loss figure) in a committed doc (docs/fec-baseline.md) with the exact fixture parameters, so P3 fixed-FEC (T25) and P4 adaptive-FEC (T29) recovery e2e are measured against the SAME topology and these numbers. This baseline PRECEDES and feeds T25/T29 (it is the pre-FEC reference); it does not depend on them."
+- acceptance: "`just e2e-run TestFECBaselineCollapse` executes the sweep and writes/updates docs/fec-baseline.md; the test asserts the collapse is actually observed (single-flow TCP throughput at >=1% configured loss falls materially below the 0%-loss capped figure, e.g. <50%), proving the fixture reproduces the phenomenon P3/P4 FEC recovery is later measured against."
+- suggestedModel: standard
+- dependsOn: ["T35"]
+- ledgerRefs: ["goals:G1","tasks:T25","tasks:T29"]

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 7
+  item: 8
 archives: []
 ---
 
@@ -48,6 +48,18 @@ archives: []
 - ledgerRefs: ["goals:G1"]
 - sessionLogs: [".cq/logs/20260702-001700-aebb6055cd61166dd.md",".cq/logs/20260702-001700-a89072ddab484d8b1.md"]
 - rawLogs: [".cq/logs/raw/20260702-001700-aebb6055cd61166dd.jsonl",".cq/logs/raw/20260702-001700-a89072ddab484d8b1.jsonl"]
+
+### R8 — go-ahead
+
+- createdAt: 2026-07-06T21:49:25.265Z
+- updatedAt: 2026-07-06T21:49:25.265Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "G1 additive follow-up plan (M10 'RH' + T31-T36 + T12/T22 fold-ins): reconciled go-ahead (opus+fable panel, UNANIMOUS, round 1). Both verified: DAG acyclic and correctly sequenced (intra-M10 T31->T32->T33->T34 and T35->T36; cross-plan advisory edges T33->T8/T9 done, T34->T12/T15/T20 correctly defers real-host multipath behind P1's landing via T20's transitive closure; T36 depends on T35 ONLY, correctly excluding T25/T29 since the pre-FEC baseline precedes and feeds the FEC e2e). Q12 report-only honored (all four real-host tasks T31-T34 gate nothing; T35/T36 are hard-gated netns-e2e fixture tasks). Q13 honored (all under one new cross-cutting M10). Additive-only (locked T11-T30 untouched; T12/T22 carry only appended FOLLOW-UP SCOPE notes with unchanged dependsOn). T35 supersedes (not duplicates) the A7/T10 checkpoint follow-up. T34's virtual-interface + policy-routing approach (two distinct 4-tuples through the symmetric NAT from one uplink) is technically sound, asymmetric/intermittent correctly deferred. Grounding verified against the repo (test/e2e/netns.go pathSpec, docs/p0-checkpoint.md A7 note, Justfile e2e targets, OCI REJECT caveat)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["goals:G1"]
+- sessionLogs: [".cq/logs/20260706-214500-aa9cec28670132772.md",".cq/logs/20260706-214500-a9ccb92569816f8ec.md"]
 
 ## M4
 

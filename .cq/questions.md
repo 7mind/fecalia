@@ -119,29 +119,31 @@ archives:
 - ledgerRefs: ["goals:G1"]
 - answer: as recommended
 
-### Q12 — open
+### Q12 — answered
 
 - createdAt: 2026-07-06T21:31:13.293Z
-- updatedAt: 2026-07-06T21:31:13.293Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-06T21:36:03.601Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Real-host e2e tier — gating vs report-only: when the SSH-orchestrated `realhosts` tier runs a phase's assertions (P0 single-uplink smoke now; multipath/failover/FEC as those phases land), should a PASS be REQUIRED for that phase's task/milestone to be considered done (a hard completion gate that holds the phase milestone un-archivable until real hardware validates), or is it REPORT-ONLY supplementary verification — with the netns `e2e` tier remaining the sole automated completion gate and each real-host run recorded as a separate confirmation?"
 - context: The `realhosts` tier is opt-in/manual (explicitly NOT CI) and depends on intermittently-available real hardware (o3 + llm-ubuntu-0). Whether a real-host pass gates phase completion determines each phase task's `acceptance` wording and whether the phase milestones M4-M9 can archive on netns e2e alone. Coupling completion to intermittent hardware would stall the DAG; decoupling keeps every phase shippable on the reproducible emulation while real-host runs confirm separately. This is orthogonal to the already-settled 'not in CI' decision — it is about task/milestone completion semantics, not CI.
 - suggestions: ["Report-only: netns `e2e` remains the sole automated completion gate; real-host `realhosts` runs are supplementary confirmations recorded in a report/checklist, never blocking a task or milestone","Hard gate: a phase is not done until its real-host assertions pass on the two hosts","Hybrid: report-only during development, but a single final 'real-host acceptance' task must pass before the whole goal is closed"]
 - recommendation: Option (a) report-only — matches the opt-in/manual, hardware-dependent nature; phases stay verifiable and archivable on the reproducible netns fixture, while the real-host tier provides real-network confirmation without stalling the DAG.
 - ledgerRefs: ["goals:G1"]
+- answer: as recommended
 
-### Q13 — open
+### Q13 — answered
 
 - createdAt: 2026-07-06T21:31:20.997Z
-- updatedAt: 2026-07-06T21:31:20.997Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-06T21:36:24.605Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Structural placement of the additive verification scope: should the real-host `realhosts` e2e tier PLUS the fixture loss/rate-limit extension (controlled-loss knob + bandwidth cap, unifying/superseding the A7-T10 checkpoint follow-up) live under a NEW dedicated cross-cutting 'real-host + impairment validation' work milestone, whose tasks depend on the phase milestones they validate (real-host smoke after P0/M4; real-host multipath/failover after P1/M5; loss/FEC baseline with P3/M7) — or be folded task-by-task into the existing active phase milestones P0-P5 (M4-M9)?"
 - context: The original netns-harness milestone H (M3) that owns the fixture task T7 is already ARCHIVED, so the fixture loss/rate-limit extension cannot be added there — it needs a new task under an active milestone regardless of this choice. A separate cross-cutting milestone keeps each phase milestone archivable on its own netns e2e (real-host + impairment work tracked independently); folding in keeps everything phase-local but couples each phase milestone's archival to the new real-host/impairment work. This decides how many work milestones I append to the goal's `fields.milestones` and where each new task attaches. Existing P1-P5 tasks T11-T30 are untouched (additive only) either way. This pairs with the gating question above (report-only leans naturally toward a separate milestone).
 - suggestions: ["New dedicated cross-cutting milestone (e.g. 'RH' — real-host + impairment validation), with tasks depending on the phase milestones they validate","Fold each new task into its corresponding existing phase milestone (M4-M9)","New milestone for the real-host tier, but place the loss/rate-limit fixture extension into the FEC phase (P3/M7), where the baseline is consumed"]
 - recommendation: Option (a) new cross-cutting milestone — the scope is inherently cross-phase (smoke -> multipath -> FEC baseline) and is mostly test-infrastructure; isolating it keeps the phase milestones archivable on netns e2e (consistent with a report-only default) while giving the additive real-host/impairment work its own home.
 - ledgerRefs: ["goals:G1"]
+- answer: as recommended
 
 ## M4
 

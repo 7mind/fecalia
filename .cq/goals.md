@@ -10,10 +10,10 @@ archives: []
 
 ## M1
 
-### G1 — clarifying
+### G1 — planned
 
 - createdAt: 2026-07-01T23:11:54.649Z
-- updatedAt: 2026-07-06T21:28:03.596Z
+- updatedAt: 2026-07-06T21:50:25.966Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - title: "wanbond: 2-WAN bonding tunnel with adaptive FEC on amneziawg-go + custom conn.Bind — implementation and test harness"
@@ -49,7 +49,7 @@ archives: []
     2. CONTROLLED-LOSS / FEC BASELINE: induce known loss (netem) and record single-flow-TCP collapse as the quantitative baseline P3/P4 FEC recovery is measured against. UNIFY with the A7 checkpoint follow-up drafted in docs/p0-checkpoint.md (T10): the fixture (netns and/or a virtual-interface topology on the real edge host) must gain BOTH a bandwidth cap (netem rate / tbf/htb) AND a controlled-loss knob, so bufferbloat/pacing (T21/T23) AND FEC recovery (T25/T29) are measurable. Supersede/merge the A7 follow-up; do not duplicate it.
     3. MULTIPATH over the real hosts (the full picture): give the edge two paths to the one concentrator via virtual interfaces + policy routing (shared physical uplink, distinct source IPs/4-tuples) for FUNCTIONAL bonding/failover validation once T12+ land. Truly-independent asymmetric/intermittent links are the FINAL real-hardware step — explicitly OUT OF SCOPE for now.
     4. FOLD-IN scope notes on existing tasks (no new task): T12 (multipath Bind) should set a large SO_RCVBUF and adopt batched send/recv (GSO/GRO best-effort per-path) to match pure-WireGuard StdNetBind (confirmed P0 §2 efficiency gap — pass-through Bind uses default socket buffers); T22 (systemd/install doc) must document the concentrator tunnel-interface firewall requirement.
-- sessionLogs: [".cq/logs/20260701-231505-aacec84bd6a7748f4.md",".cq/logs/20260701-234215-a533f3a14c0afe112.md",".cq/logs/20260701-234215-a2ee01f9272ece9de.md"]
+- sessionLogs: [".cq/logs/20260701-231505-aacec84bd6a7748f4.md",".cq/logs/20260701-234215-a533f3a14c0afe112.md",".cq/logs/20260701-234215-a2ee01f9272ece9de.md",".cq/logs/20260706-214500-ae9330abac00e2f49.md",".cq/logs/20260706-214500-a325701e6205544bb.md"]
 - rawLogs: [".cq/logs/raw/20260701-231505-aacec84bd6a7748f4.jsonl",".cq/logs/raw/20260701-234215-a533f3a14c0afe112.jsonl",".cq/logs/raw/20260701-234215-a2ee01f9272ece9de.jsonl"]
-- milestones: ["M2","M3","M4","M5","M6","M7","M8","M9"]
+- milestones: ["M2","M3","M4","M5","M6","M7","M8","M9","M10"]
 - grounding: Plan locked via decision K1 after a 3-round opus+fable review panel (R1/R2 revise → R3 go-ahead). 8 phase milestones M2-M9 (scaffolding S, harness H, P0 spike, P1 failover, P2 aggregation, P3 fixed FEC, P4 adaptive FEC, P5 DPI); 30 tasks T1-T30. All Q1-Q8 answers are binding constraints wired into the tasks.

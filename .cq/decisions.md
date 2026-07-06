@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 1
+  item: 2
 archives: []
 ---
 
@@ -21,4 +21,17 @@ archives: []
 - alternatives: "Two candidate DAGs were generated: opus (7 milestones, W0-combined scaffolding+harness, 29 tasks) and fable (8 milestones, split S/H, simulation-first adaptive controller, 3-task P5, 26 tasks). Synthesis took fable's base (cleaner S/H split, correct frontier/standard/fast tiers, simulation-first P4, fuller dev shell) and folded in opus's explicit per-phase e2e verification tasks and FEC encoder/integration split. Base-library alternatives (kcp-go, quic-go, plain wireguard-go) were rejected upstream in fec-prompt.md."
 - landsIn: ["M2","M3","M4","M5","M6","M7","M8","M9"]
 - sourceRefs: ["goals:G1","reviews:R1","reviews:R2","reviews:R3"]
+- ledgerRefs: ["goals:G1"]
+
+### K2 — locked
+
+- createdAt: 2026-07-06T21:50:17.132Z
+- updatedAt: 2026-07-06T21:50:17.132Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "G1 additive follow-up plan locked: milestone M10 'RH — real-host + impairment validation' (6 tasks T31-T36) + T12/T22 fold-ins"
+- rationale: "Multi-planner synthesis (opus + fable candidates) folded into one additive DAG, approved UNANIMOUSLY by the opus+fable plan-reviewer panel round 1 (R8 go-ahead, 0 criticisms). Leg 1 (real-host tier, REPORT-ONLY per answered Q12): T31 realhosts scaffolding (dedicated `realhosts` build tag + SSH runner + env-var host config + Justfile target + connectivity test) -> T32 idempotent provisioning (go/iperf3/gcc) + concentrator tunnel-interface firewall rule -> T33 real-host P0 single-uplink smoke (handshake + ping + iperf3 single/8x/UDP over the real internet) -> T34 real-host multipath/failover via virtual interfaces + policy routing (two 4-tuples through the symmetric NAT; gated behind P1 T12/T15/T20; asymmetric/intermittent links out of scope). Leg 2 (netns fixture, hard-gated): T35 per-path bandwidth-cap + controlled-loss knobs (supersedes the A7/T10 checkpoint follow-up) -> T36 single-flow-TCP-collapse FEC baseline (docs/fec-baseline.md, the pre-FEC reference T25/T29 measure recovery against). Fold-in scope notes: T12 += large SO_RCVBUF + batched send/recv (GSO/GRO best-effort) + the D5 hot-path frame.Codec refactor; T22 += concentrator firewall doc requirement. Synthesis took fable's finer 6-task decomposition (cleaner scaffolding/provisioning split, correct baseline dependency) and folded in opus's advisory cross-plan dependsOn onto phase tasks for correct DAG sequencing."
+- alternatives: "Opus candidate: 5 tasks (harness combined scaffolding+provisioning+firewall; baseline dependsOn T25 — INCORRECT, baseline precedes FEC). Fable candidate: 6 tasks (scaffolding/provisioning split; baseline deps fixture only — correct). Synthesis used fable's base + opus's advisory phase-task dependsOn (T33->T8/T9, T34->T12/T15/T20), corrected the baseline to depend on T35 only."
+- landsIn: ["M10"]
+- sourceRefs: ["goals:G1","reviews:R8"]
 - ledgerRefs: ["goals:G1"]
