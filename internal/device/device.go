@@ -138,8 +138,13 @@ func uapiConfig(cfg *config.Config) (string, error) {
 const keepaliveSeconds = 25
 
 // writeAmnezia emits the amneziawg obfuscation UAPI keys, but only when the block
-// is configured (any non-zero field). Emitting all-zero keys would override the
-// engine's plain-WireGuard defaults (h1..h4 = 1..4) and break the handshake.
+// is configured (any non-zero field). Emitting an all-zero block would NOT break
+// the handshake — the engine treats magic-header values <= 4 as "use the default
+// message types" and leaves obfuscation off when no junk/size field is set. The
+// guard's purpose is to avoid needlessly driving the engine's UAPI amnezia path,
+// which assigns amneziawg's PROCESS-GLOBAL message-type state on every configured
+// apply (a single-engine-per-process constraint tracked for the T19 amnezia
+// wiring); when amnezia is unused, wanbond leaves that global state untouched.
 func writeAmnezia(b *strings.Builder, a config.Amnezia) {
 	configured := a.Jc != 0 || a.Jmin != 0 || a.Jmax != 0 || a.S1 != 0 || a.S2 != 0 ||
 		a.H1 != 0 || a.H2 != 0 || a.H3 != 0 || a.H4 != 0

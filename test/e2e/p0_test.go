@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -156,11 +157,30 @@ func writeConfig(t *testing.T, path, body string) string {
 	return path
 }
 
+// lockedBuffer is a bytes.Buffer safe for concurrent Write (by exec.Cmd's output
+// copier goroutine) and String (by the test's diagnostic log() calls).
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // proc is a background process with captured combined output.
 type proc struct {
 	cmd    *exec.Cmd
 	name   string
-	output *bytes.Buffer
+	output *lockedBuffer
 }
 
 func (p *proc) log() string { return p.output.String() }
@@ -172,23 +192,26 @@ func (p *proc) log() string { return p.output.String() }
 func (top *Topology) startProc(t *testing.T, name string, argv ...string) *proc {
 	t.Helper()
 	cmd := exec.Command(argv[0], argv[1:]...)
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
+	out := &lockedBuffer{}
+	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s (%v): %v", name, argv, err)
 	}
-	p := &proc{cmd: cmd, name: name, output: &buf}
+	p := &proc{cmd: cmd, name: name, output: out}
 	t.Cleanup(func() {
 		if cmd.Process == nil {
 			return
 		}
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		done := make(chan struct{})
-		go func() { _, _ = cmd.Process.Wait(); close(done) }()
+		// cmd.Wait (not Process.Wait) reaps the child AND waits for the output
+		// copier goroutines, so no write races the final log() read.
+		go func() { _ = cmd.Wait(); close(done) }()
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			_ = cmd.Process.Kill()
+			<-done
 		}
 	})
 	return p

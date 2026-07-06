@@ -29,18 +29,18 @@ func main() {
 // configuration, brings the tunnel up for the configured role, and blocks until
 // a termination signal, then tears the tunnel down.
 func run(args []string) error {
-	fs := flag.NewFlagSet("wanbond", flag.ContinueOnError)
-	configPath := fs.String("config", "", "path to the TOML configuration file (mode 0600)")
-	showVersion := fs.Bool("version", false, "print version and exit")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *showVersion {
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Println("wanbond", version)
 		return nil
 	}
+
+	fs := flag.NewFlagSet("wanbond", flag.ContinueOnError)
+	configPath := fs.String("config", "", "path to the TOML configuration file (mode 0600)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	if *configPath == "" {
-		return fmt.Errorf("--config is required (see --version)")
+		return fmt.Errorf("--config is required (or `wanbond version`)")
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -68,10 +68,12 @@ func run(args []string) error {
 	select {
 	case s := <-sig:
 		main.Info("shutting down", "signal", s.String())
+		return nil
 	case <-deviceStopped(tun):
-		main.Warn("tunnel device stopped unexpectedly")
+		// Unrecoverable engine teardown: fail loud so the exit status reflects it
+		// and a supervisor (systemd Restart=on-failure) restarts the daemon.
+		return fmt.Errorf("tunnel device stopped unexpectedly")
 	}
-	return nil
 }
 
 // deviceStopped returns a channel that closes when the tunnel device tears down
