@@ -23,7 +23,7 @@ archives:
 ### T8 — blocked
 
 - createdAt: 2026-07-01T23:39:01.889Z
-- updatedAt: 2026-07-02T22:11:26.275Z
+- updatedAt: 2026-07-06T15:46:25.122Z
 - author: fable-5
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - headline: Embed amneziawg-go with pass-through Bind; bring tunnel up edge↔concentrator
@@ -32,7 +32,8 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T4","T5","T6","T7"]
 - ledgerRefs: ["goals:G1"]
-- tags: ["blocked-on-hardware"]
+- tags: ["blocked-on-hardware","partially-done"]
+- completion: "PARTIAL (sandbox slice done, commit bbdf04a): amneziawg-go v1.0.4 embedded; internal/bind isolates the engine behind type aliases (portability hedge); Passthrough pass-through Bind implemented over net.UDPConn (not the engine's StdNetBind, whose recvmmsg/GSO fast path is brittle under sandbox socket restrictions — a real P0 finding for T9); TestPassthroughLoopback round-trips a datagram through Send + receive callback on loopback. go build/vet/test/golangci-lint green; nix build produces the static binary. REMAINING (hardware, gated on Q11): wire amneziawg-go device to TUN + the Bind, drive both roles from config, and the tunnel e2e TestP0PassThrough (WG handshake + ping + iperf3). Needs host root + /dev/net/tun."
 
 ### T9 — planned
 

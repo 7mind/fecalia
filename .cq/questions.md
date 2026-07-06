@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 10
+  item: 11
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -121,12 +121,23 @@ archives:
 
 ## M4
 
-### Q10 — open
+### Q10 — answered
 
 - createdAt: 2026-07-02T22:11:25.112Z
-- updatedAt: 2026-07-02T22:11:25.112Z
-- author: fable-5
+- updatedAt: 2026-07-06T15:37:03.395Z
+- author: user
 - session: 0047802a-1b44-4fcc-8198-d12359610ad6
 - question: "P0 (embed amneziawg-go) approach decision — the sandbox boundary is reached. T8's acceptance is the actual amneziawg tunnel bring-up (WG handshake + ping + iperf3 through the tunnel), which requires /dev/net/tun + CAP_NET_ADMIN. /dev/net/tun is ABSENT in this sandbox (verified), so P0's acceptance and everything gated behind the P0 checkpoint (T10) cannot be verified here. Two ways to proceed, please pick: (a) I implement the SANDBOX-VERIFIABLE portion of P0 now — add amneziawg-go as a dependency, write the pass-through conn.Bind, and unit-test a datagram round-trip through Send + the receive callback on UDP loopback (no TUN) — leaving ONLY the tunnel e2e (T8 acceptance) + baseline (T9) + checkpoint (T10) for the hardware phase; OR (b) defer ALL of P0 to the hardware phase. STRONG RECOMMENDATION regardless: run P0+ from a FRESH Claude Code session on/with host access — a fresh session also restores the proper worktree-isolated multi-agent implement flow (worker + independent review + tiered models), which is unavailable in THIS session (startup-snapshot limitation, per Q9), and is the right vehicle for the substantial P0-P5 work. Answer (a) or (b), and confirm when host root + /dev/net/tun are available, to re-open T8 and resume."
 - context: "Completed & verified in-sandbox this run: entire S milestone (T1-T5: module/layout, Nix flake, golangci-lint+CI, TOML config with 0600, structured logging) and H milestone (T6 e2e layering + Q1 constants + manual checklist; T7 netns/netem two-path fixture — both archived). All built/vetted/tested/linted green via nix-provided Go; the netns fixture verified via userns (no real root). Remaining P0-P5 (T8-T30, 23 tasks) is the tunnel/scheduler/FEC/DPI work whose acceptance ultimately needs the real tunnel (TUN) and the hosts. Plan locked (decision K1)."
+- ledgerRefs: ["tasks:T8","goals:G1"]
+- answer: "Proceed with option (a): re-invoked /cq:advance under the standing 'implement what we can in the sandbox' directive. Implement the sandbox-verifiable slice of P0 now — embed amneziawg-go, write the pass-through conn.Bind behind the portable interface, and unit-test the datagram round-trip on UDP loopback — leaving ONLY the actual tunnel e2e (WG handshake + ping + iperf3 through TUN) for the hardware phase."
+
+### Q11 — open
+
+- createdAt: 2026-07-06T15:46:12.658Z
+- updatedAt: 2026-07-06T15:46:12.658Z
+- author: fable-5
+- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- question: "Hardware gate for the P0-P5 tunnel e2e. The sandbox-verifiable slice of P0 (T8) is DONE and committed: amneziawg-go v1.0.4 embedded, pass-through conn.Bind over net.UDPConn, loopback round-trip unit test green. What REMAINS for T8 (and is gated here) is the actual tunnel: wire the amneziawg-go device to a TUN + the Bind, drive both roles from config, and run TestP0PassThrough (WG handshake + ping + iperf3 through the tunnel edge<->concentrator). That requires host root + /dev/net/tun, which are absent in this sandbox. Provide host access (your Starlink+5G edge + concentrator VPS, or any Linux host with root + /dev/net/tun) — ideally from a FRESH Claude Code session, which also restores the proper worktree-isolated multi-agent implement flow (per Q9) — then answer this to re-open T8 and drive P0-P5 to completion."
+- context: "Landed this run: T8 partial (commit bbdf04a) — internal/bind isolates the engine behind type aliases; Passthrough is implemented directly over net.UDPConn because the engine's StdNetBind recvmmsg/GSO fast path misbehaves under sandbox socket restrictions (a genuine P0 conn.Bind finding that seeds T9's findings doc). go build/vet/test/golangci-lint green; nix build produces the static binary. Everything downstream (T9 baseline, T10 checkpoint, and all of P1-P5) is gated behind the working tunnel, hence behind this hardware gate."
 - ledgerRefs: ["tasks:T8","goals:G1"]

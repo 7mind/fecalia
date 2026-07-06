@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 3
+  item: 4
 archives: []
 ---
 
@@ -49,3 +49,15 @@ archives: []
 - ledgerRefs: ["goals:G1","tasks:T8"]
 - blockingQuestions: ["Q10"]
 - handoffReasons: ["drained: investigate + plan drained earlier; this run implemented and verified the full sandbox-doable foundation (S+H milestones, 7 tasks, both archived)","answers-required: T8/P0 blocked on open question Q10 (implement sandbox-verifiable P0 code now vs defer all P0 to hardware; + strong recommendation to resume in a fresh session for the proper worker flow)","user-action-required: P0-P5 e2e acceptance needs host root + /dev/net/tun (Starlink+5G edge + concentrator VPS); provide host access to verify the tunnel/scheduler/FEC/DPI phases"]
+
+### HO4 — mixed
+
+- createdAt: 2026-07-06T15:46:44.822Z
+- updatedAt: 2026-07-06T15:46:44.822Z
+- author: fable-5
+- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- summary: "/cq:advance (resume): Q10 resolved toward option (a) by the re-invocation under the standing 'implement what we can in the sandbox' directive; implemented and verified the sandbox slice of P0. LANDED (commit bbdf04a): amneziawg-go v1.0.4 embedded; internal/bind isolates the engine behind type aliases (portability hedge); pass-through conn.Bind implemented over net.UDPConn (NOT the engine's StdNetBind, whose recvmmsg/GSO fast path is brittle under sandbox socket restrictions — a genuine P0 finding for T9); TestPassthroughLoopback round-trips a datagram through Send + receive callback on loopback. go build/vet/test/golangci-lint green; nix build produces the static binary (vendorHash updated). STOPPED: T8's REMAINING acceptance (device+TUN wiring + tunnel e2e TestP0PassThrough) needs host root + /dev/net/tun (absent) — blocked on Q11. Everything downstream (T9-T10 and P1-P5) is gated behind the working tunnel. MIXED: P0 bind slice landed; P0 completion blocked on Q11/hardware."
+- flow: advance
+- ledgerRefs: ["goals:G1","tasks:T8"]
+- blockingQuestions: ["Q11"]
+- handoffReasons: ["drained: this run landed the sandbox-verifiable P0 slice (T8 partial: amneziawg-go embed + pass-through Bind + loopback test, all verified)","answers-required: T8 blocked on open question Q11 (hardware gate for the P0-P5 tunnel e2e)","user-action-required: the remaining P0 acceptance (device+TUN wiring + tunnel e2e) and all downstream P1-P5 e2e need host root + /dev/net/tun (Starlink+5G edge + concentrator VPS); a fresh session also restores the proper worktree-isolated multi-agent flow"]
