@@ -17,9 +17,9 @@ amnezia defects filed during P0 (D1, D2).
 | A1 | **Virtual-endpoint identity** — N real paths hide behind ONE stable `conn.Endpoint` the engine sees per peer; the Bind stripes/fails-over internally and the engine never sees per-packet endpoint churn | §3 | **CONFIRMED** | T12, T16, T30 |
 | A2 | **Batched I/O + GSO/GRO** — `BatchSize()` may rise toward `IdealBatchSize=128` in the multipath Bind; GSO/GRO is best-effort per-path with the engine's runtime-disable discipline | §1, §2 | **CONFIRMED** | T12 |
 | A3 | **Anti-replay vs reorder** — WG's inner anti-replay window is finite (8128 msgs); the bonding layer carries its OWN outer-seq and resequences BEFORE WG, never reusing/perturbing the inner counter | §6 | **CONFIRMED** | T11, T18 |
-| A4 | **Junk-at-Bind is transport-opaque** — amnezia junk/magic-header packets reach the Bind as ordinary datagrams; the Bind passes them opaquely and the outer codec routes by its own framing, never sniffing WG type | §4 | **CONFIRMED** (with added T19 scope — see below) | T11, T19 |
+| A4 | **Junk-at-Bind is transport-opaque** — amnezia junk/magic-header packets reach the Bind as ordinary datagrams; the Bind passes them opaquely and the outer codec routes by its own framing, never sniffing WG type | §4 | **CONFIRMED (source analysis)** — P0 e2e ran plain WireGuard (amnezia UAPI keys emitted only when configured; unexercised at P0 per T8/D1), so no junk traversed the Bind operationally; opacity holds by construction (`Passthrough` never inspects the payload); operational soak deferred to T19. Added T19 scope — see below | T11, T19 |
 | A5 | **Fork isolation** — the `conn.Bind`/`Endpoint`/`ReceiveFunc` contract is byte-identical to upstream wireguard-go and isolated behind one file's type aliases | §5 | **CONFIRMED** | (cross-cutting) |
-| A6 | **MTU accounting** — inner MTU = path MTU − (outer bonding header + WG overhead); no fragmentation / ICMP black holes | §1, §2 | **CONFIRMED** | T12 |
+| A6 | **MTU accounting** — inner MTU = path MTU − (outer bonding header + WG overhead); no fragmentation / ICMP black holes | — (not measured at P0) | **CARRIED FORWARD (design requirement)** — P0's pass-through Bind adds no outer header, so nothing was measured; the design requirement is not contradicted by any P0 finding and is verified by T12's own acceptance (inner-MTU arithmetic asserted against a fixture capture) | T12 |
 | A7 | **Congestion / bufferbloat & pacing** — the scheduler must pace egress / bound in-flight bytes per path | §7 | **REVISED** | T21, T23 |
 
 ## The one REVISED assumption (A7) and its impact
@@ -36,20 +36,29 @@ demonstrable in-fixture**.
 
 Impact on the P2 tasks:
 
-- **T21 (weighted aggregation + data-thrift + send-pacing).** Its acceptance
-  clause *"with pacing enabled, per-path egress rate does not exceed the
-  configured/derived pace and no unbounded send backlog accumulates under
-  sustained overload"* **cannot be verified in the current fixture** — with no
-  bottleneck link and a CPU-bound path, sustained overload never builds the
-  backlog the assertion targets.
+- **T21 (weighted aggregation + data-thrift + send-pacing).** Its acceptance is
+  prefixed *"Unit tests:"* — the pacing clause ("per-path egress rate does not
+  exceed the configured/derived pace and no unbounded send backlog accumulates
+  under sustained overload") is a SYNTHETIC unit test (offered-load and pace
+  driven in-memory) and **stands as-is today** — it does not need the netns
+  fixture. What the fixture gap defers for T21 is only the **empirical sizing**
+  of the per-path pace / in-flight bound from a *measured* BDP (findings §7
+  action): that measurement needs a link-bound (not CPU-bound) path, i.e. the
+  capped fixture. So T21's unit acceptance is NOT sequenced behind the fixture;
+  only its real-BDP tuning is.
 - **T23 (P2 e2e: bonded throughput ≥ 85% of the sum of per-path throughputs).**
-  Also affected: with per-path throughput CPU-bound rather than link-bound,
-  "the sum of the two paths' individual throughputs" is dominated by the shared
-  single-core crypto bottleneck, not the emulated links, so bonding may not sum
-  cleanly and the 85% assertion is not meaningfully measurable.
+  This is the HARD-gated clause: T23's acceptance is an in-fixture e2e, and with
+  per-path throughput CPU-bound rather than link-bound, "the sum of the two
+  paths' individual throughputs" is dominated by the shared single-core crypto
+  bottleneck, not the emulated links, so bonding may not sum cleanly and the 85%
+  assertion is not meaningfully measurable without a bandwidth-capped fixture.
+  (T23's sibling data-thrift clause — "5G bytes < 1% while Starlink healthy" — is
+  routing policy, measurable today, and is NOT affected.)
 
-**Neither task is invalidated** — both remain correctly scoped. The gap is a
-**harness prerequisite**: P2 must gain a **bandwidth-capped fixture variant** (a
+**Neither task is invalidated** — both remain correctly scoped, and T21's
+unit-level work proceeds immediately. The gap is a **harness prerequisite** for
+T23's e2e (and T21's empirical pace-sizing): P2 must gain a **bandwidth-capped
+fixture variant** (a
 `netem rate` or a `tbf`/`htb` bottleneck qdisc on the edge veth, ideally with a
 per-path cap and enough CPU headroom that the link — not the crypto — is the
 bottleneck) so that (a) each path is link-bound and aggregation is measurable,
@@ -69,8 +78,9 @@ drafted follow-up below.
 
 ## Verdict
 
-**GO-AHEAD for P1 (milestone M5).** Every P1 design assumption (A1-A6) is
-confirmed by the P0 spike; the P1 task DAG (T11 frame codec → T12 multipath Bind
+**GO-AHEAD for P1 (milestone M5).** Every P1 design assumption is confirmed by the
+P0 spike (A1-A5) or carried forward unrevised and uncontradicted (A6 — unmeasured
+at P0, verified by T12's own MTU acceptance); the P1 task DAG (T11 frame codec → T12 multipath Bind
 → T13 probes → T15 active-backup scheduler → T16 re-roaming → T20 failover e2e →
 T22 packaging, plus T30 runtime path set) is sound as planned. T11 may start.
 
@@ -79,14 +89,17 @@ adaptive-FEC, and DPI phases are unaffected by the A7 finding (they assert
 recovery/entropy/classification, not pacing or aggregate bandwidth).
 
 **GO-AHEAD-WITH-PREREQUISITE for P2 (milestone M6).** T17 (/metrics) and T18
-(resequencer) are unaffected and may proceed. T21 and T23 must be preceded by the
-bandwidth-capped fixture variant (A7). Drafted follow-up for when P2 planning
-begins:
+(resequencer) are unaffected and may proceed. T21's unit-level acceptance
+(including the synthetic pacing/backlog test) also proceeds now; only **T23's
+in-fixture aggregation e2e** — and T21's *empirical* per-path pace-sizing from a
+measured BDP — must be preceded by the bandwidth-capped fixture variant (A7).
+Drafted follow-up for when P2 planning begins:
 
 > `/cq:plan:follow-up G1` — P0 checkpoint (T10) revised assumption A7: the
 > netns/netem fixture emulates delay/jitter/loss but no bandwidth cap, and P0
-> tunnel throughput is CPU-bound, so bufferbloat/pacing (T21) and bonded-vs-sum
-> aggregation (T23) cannot be verified in it. Add a P2 harness task: a
+> tunnel throughput is CPU-bound, so T23's bonded-vs-sum aggregation e2e and the
+> empirical BDP-based sizing of T21's per-path pace cannot be measured in it
+> (T21's synthetic unit-level pacing test is unaffected). Add a P2 harness task: a
 > bandwidth-capped fixture variant (per-path `netem rate` or `tbf`/`htb`
 > bottleneck on the edge veth, sized so the link is the bottleneck with CPU
 > headroom to spare), and make T21/T23 acceptance run against it. Sequence it
