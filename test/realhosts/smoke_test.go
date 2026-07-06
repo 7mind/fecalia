@@ -73,9 +73,15 @@ func TestRealP0Smoke(t *testing.T) {
 	provision(t, r, cfg.Conc, ProvisionOpts{TunnelIface: tunnelIface})
 
 	// 2. Sync the repo and build wanbond natively on each host (arch matches host).
+	//    Register removal of smokeRemoteDir immediately after each sync so the
+	//    synced repo, the native binary, and the secret configs written into it in
+	//    step 5 are torn down on exit — including on failure/panic. Key material
+	//    must not outlive the tunnel it secures.
 	root := repoRoot(t)
 	syncAndBuild(t, r, cfg.Edge, root)
+	t.Cleanup(func() { removeRemoteDir(t, r, cfg.Edge) })
 	syncAndBuild(t, r, cfg.Conc, root)
+	t.Cleanup(func() { removeRemoteDir(t, r, cfg.Conc) })
 
 	// 3. Key material: an X25519 keypair per end plus a shared PSK (base64), same
 	//    scheme as the netns e2e fixture.
@@ -237,7 +243,9 @@ func syncAndBuild(t *testing.T, r *Runner, host Host, root string) {
 	ssh := exec.CommandContext(syncCtx, "ssh", r.sshArgs(host, remoteCmd)...)
 	tar := exec.CommandContext(syncCtx, "tar", "czf", "-",
 		"--exclude=./.git", "--exclude=./.cq", "--exclude=./.direnv",
-		"--exclude=./.github", "--exclude=./wanbond", "-C", root, ".")
+		"--exclude=./.github", "--exclude=./wanbond",
+		"--exclude=./.claude", "--exclude=./.codegraph",
+		"--exclude=./.worktrees", "--exclude=./result", "-C", root, ".")
 
 	tarOut, err := tar.StdoutPipe()
 	if err != nil {
@@ -286,13 +294,15 @@ func primaryIP(t *testing.T, r *Runner, host Host) string {
 	return ip
 }
 
-// writeRemoteFile pipes content to path on host and chmods it 0600 (the exact
-// mode config.Load requires), failing the test on error.
+// writeRemoteFile pipes content to path on host at mode 0600 (the exact mode
+// config.Load requires), failing the test on error. `umask 077` narrows the
+// creation mode BEFORE any secret bytes are written, so the file is never
+// briefly world-readable; the trailing chmod is belt-and-braces.
 func writeRemoteFile(t *testing.T, r *Runner, host Host, path, content string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
 	defer cancel()
-	remoteCmd := "cat > " + path + " && chmod 600 " + path
+	remoteCmd := "umask 077 && cat > " + path + " && chmod 600 " + path
 	cmd := exec.CommandContext(ctx, "ssh", r.sshArgs(host, remoteCmd)...)
 	cmd.Stdin = strings.NewReader(content)
 	var stderr strings.Builder
@@ -423,7 +433,8 @@ type tcpMeasurement struct {
 	retransmits int
 }
 
-// udpMeasurement is one UDP iperf3 result.
+// udpMeasurement is one UDP iperf3 result. mbps is the goodput derived from the
+// sender rate and the measured loss (see iperfUDP), not the raw offered rate.
 type udpMeasurement struct {
 	mbps     float64
 	lossPct  float64
@@ -431,8 +442,9 @@ type udpMeasurement struct {
 }
 
 // iperfReport is the subset of iperf3 -J output this tier records. sum_sent
-// carries the sender totals for TCP; sum carries the UDP summary (goodput,
-// loss, jitter).
+// carries the sender totals for TCP; sum carries the UDP summary, whose
+// bits_per_second is the sender's offered rate (goodput is derived from
+// lost_percent in iperfUDP), alongside jitter and loss.
 type iperfReport struct {
 	End struct {
 		SumSent struct {
@@ -476,14 +488,19 @@ func iperfTCP(t *testing.T, r *Runner, host Host, serverIP string, parallel int)
 }
 
 // iperfUDP runs a 10s UDP transfer from host to serverIP at the given target
-// bitrate and returns the goodput, loss percentage, and jitter.
+// bitrate and returns the goodput, loss percentage, and jitter. In iperf3's UDP
+// client JSON, end.sum.bits_per_second is the SENDER's offered rate (it tracks
+// the -b target), not receiver goodput, so true goodput is derived by applying
+// the measured loss: send_rate * (1 - lost_percent/100).
 func iperfUDP(t *testing.T, r *Runner, host Host, serverIP, bitrate string) udpMeasurement {
 	t.Helper()
 	args := fmt.Sprintf("-c %s -t 10 -u -b %s", serverIP, bitrate)
 	rep := runIperfJSON(t, r, host, args)
+	sendMbps := rep.End.Sum.BitsPerSecond / 1e6
+	lossPct := rep.End.Sum.LostPercent
 	return udpMeasurement{
-		mbps:     rep.End.Sum.BitsPerSecond / 1e6,
-		lossPct:  rep.End.Sum.LostPercent,
+		mbps:     sendMbps * (1 - lossPct/100),
+		lossPct:  lossPct,
 		jitterMs: rep.End.Sum.JitterMs,
 	}
 }
@@ -518,6 +535,18 @@ func delLink(t *testing.T, r *Runner, host Host, dev string) {
 	defer cancel()
 	if _, err := r.Run(ctx, host, "sudo ip link del "+dev+" 2>/dev/null; true"); err != nil {
 		t.Logf("cleanup: %s: del link %s: %v", host.Role, dev, err)
+	}
+}
+
+// removeRemoteDir deletes smokeRemoteDir on host, discarding the synced repo,
+// the native binary, and the secret configs (WireGuard private keys + PSK) so
+// no key material persists past the run. Best-effort (see stopUnit).
+func removeRemoteDir(t *testing.T, r *Runner, host Host) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	if _, err := r.Run(ctx, host, "rm -rf "+smokeRemoteDir); err != nil {
+		t.Logf("cleanup: %s: remove %s: %v", host.Role, smokeRemoteDir, err)
 	}
 }
 
