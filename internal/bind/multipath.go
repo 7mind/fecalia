@@ -76,6 +76,15 @@ func (ps *pathState) getRemote() (netip.AddrPort, bool) {
 // under the shared virtual endpoint. It replaces bind.Passthrough behind the
 // same conn.Bind seam (device wiring is unchanged).
 //
+// Lifecycle: the sockets live for the duration of an Open→Close span, NOT the
+// Multipath's whole life. The amneziawg engine calls Close() before every Open()
+// (device.upLocked → BindUpdate → closeBindLocked, and on IpcSet listen_port /
+// route-change events) and cycles Close↔Open on Down/Up, so — exactly like
+// conn.StdNetBind — Open creates the per-path sockets and Close tears them down
+// AND clears the path state so the next Open rebuilds from scratch. The "closed"
+// state is simply "no bound sockets" (len(paths)==0); there is no separate sticky
+// flag that a later Open would have to reset.
+//
 // T12 scope: the path policy is "first healthy path with a known remote" — the
 // real weighted scheduler is T15. No FEC/resequencing yet (P2/P3), but every
 // DATA frame carries its outer-seq and path-id so T18/T24 can consume them.
@@ -86,14 +95,12 @@ type Multipath struct {
 	mu        sync.Mutex
 	paths     []*pathState
 	sendCodec *frame.Codec
-	sendBuf   []byte // reusable Encode buffer, guarded by mu
 	virt      *udpEndpoint
 	// defaultRemote is the fallback per-path remote (the peer's wireguard
 	// endpoint) applied to any path without its own dest_addr. It may be set by
 	// ParseEndpoint BEFORE Open, so it is stored here and applied at Open time.
 	defaultRemote    netip.AddrPort
 	hasDefaultRemote bool
-	closed           bool
 
 	outerSeq atomic.Uint64
 }
@@ -128,6 +135,14 @@ func NewMultipath(paths []config.Path, psk config.Key) (*Multipath, error) {
 // carries a dest_addr — or, failing that, the peer's wireguard endpoint learned
 // via ParseEndpoint — starts with a known remote; the rest are learned from
 // inbound traffic.
+//
+// Open is the sole creator of the per-path sockets: the engine's bring-up path
+// calls Close() first (on the still-unopened bind) and then Open(), so building
+// the sockets HERE — not in NewMultipath — is what makes that Close→Open sequence
+// (and every subsequent Down→Up) work. The engine passes the previously-bound
+// port back on a re-Open; each path binds to it on its own distinct source
+// address, and the first path's bound port is returned so the engine keeps a
+// stable listen port across the cycle (matching conn.StdNetBind).
 func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -224,7 +239,15 @@ func (m *Multipath) receiver(ps *pathState) ReceiveFunc {
 // peer. On the concentrator (which has no configured endpoint) its destination
 // is pinned ONCE to the first learned source; thereafter every path returns the
 // identical pointer so the engine sees one peer, never per-packet churn.
+//
+// Hot-path note: the destination, once pinned, never changes, and it is published
+// through an atomic.Pointer (see udpEndpoint). So the common case takes a
+// lock-free fast path — every received datagram would otherwise contend m.mu with
+// in-flight Sends. The mutex is acquired only to pin the FIRST learned source.
 func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
+	if m.virt.dstValid() {
+		return m.virt
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.virt.dstValid() {
@@ -235,33 +258,49 @@ func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
 
 // Send wraps each buffer in an outer DATA frame (fresh outer-seq + the chosen
 // path's id) and writes it to that path's remote. The path policy is T12's simple
-// "first healthy path with a known remote"; encoding uses the shared send Codec
-// guarded by the Bind mutex.
+// "first healthy path with a known remote".
+//
+// Critical-section discipline: path selection and framing run under m.mu (the
+// send Codec is shared and stateful — D5's single keystream requires sequential,
+// mutex-guarded Encode), but each datagram is encoded into its OWN fresh buffer
+// so it outlives the lock, and the WriteToUDPAddrPort syscalls run WITHOUT m.mu
+// held. A receive goroutine pinning the virtual endpoint therefore never blocks
+// behind an in-flight transmit syscall.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	if _, ok := ep.(*udpEndpoint); !ok {
 		return conn.ErrWrongEndpointType
 	}
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed {
+	if len(m.paths) == 0 {
+		m.mu.Unlock()
 		return errClosed
 	}
 	ps := m.pickPathLocked()
 	if ps == nil {
+		m.mu.Unlock()
 		return errNoHealthyPath
 	}
 	remote, ok := ps.getRemote()
 	if !ok {
+		m.mu.Unlock()
 		return errNoHealthyPath
 	}
+	c := ps.conn
+	wires := make([][]byte, 0, len(bufs))
 	for _, b := range bufs {
 		seq := m.outerSeq.Add(1)
-		wire, err := m.sendCodec.Encode(m.sendBuf[:0], frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
+		wire, err := m.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
 		if err != nil {
+			m.mu.Unlock()
 			return err
 		}
-		m.sendBuf = wire
-		if _, err := ps.conn.WriteToUDPAddrPort(wire, remote); err != nil {
+		wires = append(wires, wire)
+	}
+	m.mu.Unlock()
+
+	for _, wire := range wires {
+		if _, err := c.WriteToUDPAddrPort(wire, remote); err != nil {
 			return err
 		}
 	}
@@ -305,16 +344,22 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 	return m.virt, nil
 }
 
-// Close closes every per-path socket; outstanding receive calls return an error.
+// Close tears down every per-path socket and CLEARS the bind's path state so a
+// subsequent Open fully rebuilds it. The amneziawg engine drives exactly this
+// lifecycle — device.upLocked → BindUpdate → closeBindLocked calls Close() before
+// every Open(), and a Down/Up cycles Close after Open — so Close must leave the
+// bind reopenable (matching conn.StdNetBind, whose closed state is simply "no
+// sockets"). Outstanding receive calls return an error as their socket closes.
 func (m *Multipath) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.closed = true
 	return m.closeSocketsLocked()
 }
 
-// closeSocketsLocked closes all path sockets, returning the first error. Caller
-// holds m.mu. Idempotent.
+// closeSocketsLocked closes all path sockets and resets the bind to the unopened
+// state (paths and send Codec cleared), returning the first close error. Caller
+// holds m.mu. Idempotent: safe on an already-closed or never-opened bind — which
+// is exactly what the engine's pre-open Close relies on.
 func (m *Multipath) closeSocketsLocked() error {
 	var firstErr error
 	for _, ps := range m.paths {
@@ -324,6 +369,8 @@ func (m *Multipath) closeSocketsLocked() error {
 			}
 		}
 	}
+	m.paths = nil
+	m.sendCodec = nil
 	return firstErr
 }
 
