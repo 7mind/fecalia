@@ -186,10 +186,10 @@ archives:
 
 ## M7
 
-### T14 — wip
+### T14 — blocked
 
 - createdAt: 2026-07-01T23:39:51.257Z
-- updatedAt: 2026-07-06T22:05:53.281Z
+- updatedAt: 2026-07-06T22:11:12.910Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "RS FEC engine: grouping, parity-emission deadline, recovery"
@@ -198,6 +198,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T11"]
 - ledgerRefs: ["goals:G1"]
+- completion: "NOT STARTED — blocked on an INFRASTRUCTURE issue, not a task problem. Two consecutive implement-worker dispatches for T14 (agents a9855678ac296e2f9, a79b995486bf06b3d) DIED on startup with 0 tool-uses (~5-10s), each returning spurious injected-context/system-reminder fragments instead of doing any work. This is a subagent-dispatch/API failure specific to this run, not a fault in the task. Per the implement-flow ill-loop rule (two dead rounds) I stopped re-dispatching. RE-DISPATCH T14 fresh on the next /cq:advance run (a fresh session/context). The task itself is unchanged and ready (deps T11 done): implement internal/fec RS FEC engine (klauspost/reedsolomon) over opaque frames with a fake-clock grouping deadline + recovery, pure library + unit tests."
 
 ### T24 — planned
 
@@ -365,10 +366,10 @@ archives:
 - sessionLogs: [".cq/logs/20260706-220000-ab78416a54b9fd747.md",".cq/logs/20260706-220000-a9d08b86138121cb3.md",".cq/logs/20260706-220000-a297f9214a676fd4c.md",".cq/logs/20260706-214500-a81aea62fc7e86149.md"]
 - resultCommit: ebf95d5
 
-### T32 — planned
+### T32 — wip
 
 - createdAt: 2026-07-06T21:43:40.746Z
-- updatedAt: 2026-07-06T21:43:40.746Z
+- updatedAt: 2026-07-06T22:17:32.946Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Idempotent real-host provisioning + concentrator tunnel-interface firewall rule
@@ -404,10 +405,10 @@ archives:
 - dependsOn: ["T33","T12","T15","T20"]
 - ledgerRefs: ["goals:G1","tasks:T12","tasks:T15","tasks:T20"]
 
-### T35 — wip
+### T35 — done
 
 - createdAt: 2026-07-06T21:44:12.747Z
-- updatedAt: 2026-07-06T21:52:43.808Z
+- updatedAt: 2026-07-06T22:20:00.486Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Extend netns fixture with per-path bandwidth cap and controlled-loss knobs
@@ -415,6 +416,9 @@ archives:
 - acceptance: "A self-test under `just e2e-run` demonstrates both knobs operationally: (a) with a per-path cap well below the CPU-bound throughput, iperf3 through that path measures within a stated tolerance of the cap (link-bound, not CPU-bound); (b) with X% configured loss, measured UDP loss falls in the expected band around X%. Existing e2e tests still pass unmodified on the default (uncapped, lossless) topology; docs/p0-checkpoint.md's A7 drafted-follow-up note is updated to reference this task (superseded/merged, not duplicated)."
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G1","tasks:T10","tasks:T21","tasks:T23","tasks:T25","tasks:T29"]
+- completion: "DONE (merged 2a6e61d; worker cb05397 + review-fix 7383ca0). test/e2e/netns.go pathSpec gains OPTIONAL per-path rateMbit (netem rate cap) + lossPct (netem loss) knobs, both defaulting to 0 so DefaultPaths + all existing P0/P1 e2e tests run UNCHANGED (netemArgs/netemArgsWithLoss refactor byte-identical for the zero case; SetupWithPaths; InjectLoss preserves the cap). New TestFixtureImpairment (e2e) proves both knobs over raw veth links: capped-path TCP ~link-bound near 50 Mbit/s cap, lossy-path ICMP loss ~configured %. HARDWARE-VERIFIED on o3: 5/5 PASS (cap 52.9 Mbit/s; loss ~10%). docs/p0-checkpoint.md A7 note superseded/unified into T35 (single rate+loss knob, no duplicate follow-up). Reviewed opus+fable (R10 go-ahead) after fixing fable's r1 criticisms (flaky iperf3-UDP loss -> robust ping/ICMP loss; doc default mislabel). This delivers the bandwidth-capped + controlled-loss fixture that T21/T23 (bufferbloat/pacing) and T25/T29 (FEC recovery) + T36 (FEC baseline) need."
+- sessionLogs: [".cq/logs/20260706-220000-aa4ce7b7518ab1cfd.md",".cq/logs/20260706-220000-a5b2b9b863a40779d.md",".cq/logs/20260706-221500-a139ea4c25eeab49c.md",".cq/logs/20260706-221500-aacca56552aa07ae9.md"]
+- resultCommit: 2a6e61d
 
 ### T36 — planned
 

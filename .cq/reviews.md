@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 9
+  item: 10
 archives: []
 ---
 
@@ -126,3 +126,15 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["tasks:T31","goals:G1"]
 - sessionLogs: [".cq/logs/20260706-220000-ab78416a54b9fd747.md",".cq/logs/20260706-220000-a9d08b86138121cb3.md",".cq/logs/20260706-220000-a297f9214a676fd4c.md"]
+
+### R10 — go-ahead
+
+- createdAt: 2026-07-06T22:19:45.944Z
+- updatedAt: 2026-07-06T22:19:45.944Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T35 (netns fixture bandwidth-cap + controlled-loss knobs) reconciled go-ahead (opus+fable panel, 2 rounds). R1: opus approve; fable disapprove (2 valid criticisms — lossy-path self-test flaky ~8% because iperf3's TCP control channel shared the 10%-lossy link -> backoff stalls distorted the loss; A7 doc note mislabeled 50 Mbit/s as a pathSpec default). Both fixed in 7383ca0: loss measurement moved to ping/ICMP (netem loss is edge-egress, so a dropped echo-request directly reflects the configured drop rate, no control channel to stall; 500 probes, 5-18% band ~+-3.7sigma escape 1e-4); doc reworded. HARDWARE-VERIFIED on o3: TestFixtureImpairment 5/5 PASS all ~10.07s (flake gone; earlier flaky runs took +26s). R2: fable approve (confirmed edge-egress reasoning, statistical soundness, doc fix, full check suite green). Backward-compat byte-identical (rateMbit/lossPct default 0), capped-path iperf3 assertion untouched, A7 follow-up superseded into T35 (no duplicate)."
+- criticism: ["[r1 fable, resolved r2] TestFixtureImpairment lossy-path flaky ~8% (iperf3 TCP control channel on the lossy link) — switched to ping/ICMP loss (verified 5/5 on o3)","[r1 fable, resolved r2] docs/p0-checkpoint.md A7 note mislabeled 50 Mbit/s as a default — reworded (defaults are 0; 50 is the self-test cap)"]
+- new_questions: []
+- ledgerRefs: ["tasks:T35","goals:G1"]
+- sessionLogs: [".cq/logs/20260706-220000-aa4ce7b7518ab1cfd.md",".cq/logs/20260706-220000-a5b2b9b863a40779d.md",".cq/logs/20260706-221500-a139ea4c25eeab49c.md",".cq/logs/20260706-221500-aacca56552aa07ae9.md"]
