@@ -56,6 +56,17 @@ func NewServer(addr string, src Source, logger log.Logger) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("metrics: listen on %q: %w", addr, err)
 	}
+	// Act-then-verify: net.Listen performs its OWN address resolution,
+	// independent of the requireLoopback pre-check above. For a hostname listen
+	// address a resolver whose answers differ between the two lookups (TOCTOU)
+	// could get the endpoint bound to a routable interface even though the
+	// pre-check passed. Assert the address the kernel actually bound is
+	// loopback and fail closed otherwise — this removes any dependence on
+	// resolver trust.
+	if err := verifyLoopbackBind(ln.Addr()); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{
@@ -130,6 +141,24 @@ func requireLoopback(addr string) error {
 		if !ip.IsLoopback() {
 			return fmt.Errorf("%w: host %q resolves to non-loopback %s", ErrNonLoopbackBind, host, ip)
 		}
+	}
+	return nil
+}
+
+// verifyLoopbackBind is the fail-closed, act-then-verify half of the loopback
+// guard: it asserts that the address the kernel ACTUALLY bound (ln.Addr()) is a
+// loopback TCP address, independent of any DNS resolution. Because net.Listen
+// resolves a hostname listen address itself — a second, independent lookup from
+// requireLoopback's — verifying the concrete bound address is the only check
+// that a resolver cannot subvert. A non-TCP or non-loopback bound address
+// yields ErrNonLoopbackBind so the caller can close the listener and refuse.
+func verifyLoopbackBind(a net.Addr) error {
+	tcp, ok := a.(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("%w: bound to non-TCP address %v", ErrNonLoopbackBind, a)
+	}
+	if !tcp.IP.IsLoopback() {
+		return fmt.Errorf("%w: bound to non-loopback %s", ErrNonLoopbackBind, tcp.IP)
 	}
 	return nil
 }
