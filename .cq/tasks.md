@@ -53,18 +53,21 @@ archives:
 - sessionLogs: [".cq/logs/20260706-203000-a28d62545377df7ef.md",".cq/logs/20260706-203000-a66924e3eb38ae28b.md",".cq/logs/20260706-203000-a6aa433786a823bc2.md",".cq/logs/20260706-203000-a555730d6a692a960.md",".cq/logs/20260706-203000-ae0c2d5f6a0994fb7.md"]
 - resultCommit: d4781a6
 
-### T10 — planned
+### T10 — done
 
 - createdAt: 2026-07-01T23:39:23.370Z
-- updatedAt: 2026-07-01T23:39:23.370Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-06T20:49:29.185Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P0 findings checkpoint gating P1: confirm or revise P1-P5 assumptions"
 - description: "Explicit gate (per Q8): review docs/p0-findings.md against every planned P1-P5 task; enumerate each design assumption (virtual-endpoint identity, batched I/O shape, reorder margins, junk-packet handling) as confirmed or revised. If any P1+ task is invalidated, draft the /cq:plan:follow-up request describing the needed re-plan; otherwise record explicit go-ahead. P0 total is timeboxed to ~2-3 days."
 - acceptance: A committed docs/p0-checkpoint.md lists each assumption with a confirmed/revised verdict and either a go-ahead statement or a drafted follow-up request; no P1 task starts before this note exists.
 - suggestedModel: frontier
 - dependsOn: ["T9"]
 - ledgerRefs: ["goals:G1"]
+- completion: "DONE (commit 3f55920 + review fixes 36a9f6e/2ab0fdb). docs/p0-checkpoint.md is the Q8 P0->P1 gate: assumption ledger A1-A7 each with a confirmed/revised verdict grounded in docs/p0-findings.md and cross-checked against the T11-T30 DAG. CONFIRMED: A1 virtual-endpoint identity (T12/T16/T30), A2 batched I/O+GSO/GRO (T12), A3 anti-replay-vs-reorder/own-outer-seq (T11/T18), A4 junk-at-Bind opacity (source analysis; T11/T19), A5 fork isolation; CARRIED-FORWARD: A6 MTU accounting (unmeasured at P0, verified by T12 acceptance); REVISED: A7 bufferbloat/pacing — the netns fixture has no bandwidth cap and P0 throughput is CPU-bound, so T23's aggregation e2e + T21's empirical BDP pace-sizing need a bandwidth-capped fixture variant (drafted /cq:plan:follow-up). VERDICT: GO-AHEAD for P1 (M5) and P3-P5 (M7-M9); GO-AHEAD-WITH-PREREQUISITE for P2 (M6). Reviewed opus+fable, R6 go-ahead (3 rounds). T11 may start."
+- sessionLogs: [".cq/logs/20260706-204500-a8e8aba6f76f5085b.md",".cq/logs/20260706-204500-a7e6b677426ce0802.md",".cq/logs/20260706-204500-a134692db4129bffa.md",".cq/logs/20260706-204500-ab8cf7484251a3d93.md",".cq/logs/20260706-204500-a9f5d5eb7770fd58d.md"]
+- resultCommit: 2ab0fdb
 
 ## M5
 
