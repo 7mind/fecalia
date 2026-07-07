@@ -46,6 +46,13 @@ func (m *Multipath) emitProbes() {
 		}
 		t.pr.Tick()
 	}
+	// Eager failover nudge (defect D18): recompute the scheduler's active egress path
+	// each probe cadence so a liveness DOWN switches egress even when no application
+	// Send is driving Pick. This is the timer-driven companion to the receive-tick
+	// nudge (see tickLivenessFromReceive) — under CPU starvation this loop's ticker
+	// lags, which is why the receive-tick path carries the guarantee, but when the
+	// loop does run it keeps the selection fresh independent of egress traffic.
+	m.nudgeSchedulerActive()
 }
 
 // StartProbeLoop launches the probe cadence goroutine: it calls emitProbes every
