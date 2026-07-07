@@ -1,0 +1,592 @@
+package sched
+
+import (
+	"fmt"
+	"math"
+	"sync"
+	"time"
+
+	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/telemetry"
+)
+
+// WeightedConfig tunes the weighted-aggregation scheduler. The device builds it
+// from config.SchedulerConfig; sched holds its own struct so the package does not
+// depend on config. Every field is validated by NewWeighted (fail-fast at the
+// composition root), mirroring the config-boundary validation.
+type WeightedConfig struct {
+	// PerPathCapacity is the reference per-path capacity in frame-selection slots per
+	// second: the denominator the aggregation load-gate compares offered load against,
+	// and (when Pacing is on) the per-path token-bucket refill rate. There is no
+	// measured BDP (P0 §7), so capacity is expressed in the only unit the scheduler
+	// observes — Pick() invocations per second. Must be > 0.
+	PerPathCapacity float64
+	// EngageFraction engages aggregation once smoothed offered load exceeds
+	// EngageFraction*PerPathCapacity. In (0,1].
+	EngageFraction float64
+	// DisengageFraction collapses aggregation to primary-only once smoothed offered
+	// load stays below DisengageFraction*PerPathCapacity for CollapseDwell. In
+	// [0,EngageFraction): the gap is the hysteresis band that keeps the metered path
+	// from dribbling on/off around a single threshold (data-thrift, requirement 2).
+	DisengageFraction float64
+	// CollapseDwell is the sustained-low-load dwell before collapsing to primary-only
+	// (the temporal half of the hysteresis, mirroring the active-backup failback dwell).
+	CollapseDwell time.Duration
+	// LoadTau is the time constant of the exponentially-weighted offered-load rate
+	// estimator. Must be > 0.
+	LoadTau time.Duration
+
+	// Pacing turns per-path send-pacing on. When false the token buckets are bypassed
+	// (a documented no-op: P0 §7 could not empirically size the pace in the unmetered
+	// fixture), but PerPathCapacity still drives the aggregation gate.
+	Pacing bool
+	// PacingBurst is the per-path token-bucket burst in frame slots. Must be > 0 when
+	// Pacing is on.
+	PacingBurst float64
+
+	// WeightRTTFloor floors RTT in the weight formula so a cold path (no RTT samples
+	// yet, near-zero RTT) cannot be handed unbounded weight. Must be > 0.
+	WeightRTTFloor time.Duration
+	// WeightLossFloor floors the loss term under the square root so a zero-loss path
+	// gets a large-but-finite weight and two zero-loss paths split by inverse-RTT
+	// alone. Must be > 0.
+	WeightLossFloor float64
+}
+
+func (c WeightedConfig) validate() error {
+	if c.PerPathCapacity <= 0 {
+		return fmt.Errorf("sched: weighted PerPathCapacity must be > 0, got %g", c.PerPathCapacity)
+	}
+	if c.EngageFraction <= 0 || c.EngageFraction > 1 {
+		return fmt.Errorf("sched: weighted EngageFraction must be in (0,1], got %g", c.EngageFraction)
+	}
+	if c.DisengageFraction < 0 || c.DisengageFraction >= c.EngageFraction {
+		return fmt.Errorf("sched: weighted DisengageFraction must be in [0,EngageFraction=%g), got %g", c.EngageFraction, c.DisengageFraction)
+	}
+	if c.CollapseDwell < 0 {
+		return fmt.Errorf("sched: weighted CollapseDwell must be >= 0, got %s", c.CollapseDwell)
+	}
+	if c.LoadTau <= 0 {
+		return fmt.Errorf("sched: weighted LoadTau must be > 0, got %s", c.LoadTau)
+	}
+	if c.Pacing && c.PacingBurst <= 0 {
+		return fmt.Errorf("sched: weighted PacingBurst must be > 0 when pacing is enabled, got %g", c.PacingBurst)
+	}
+	if c.WeightRTTFloor <= 0 {
+		return fmt.Errorf("sched: weighted WeightRTTFloor must be > 0, got %s", c.WeightRTTFloor)
+	}
+	if c.WeightLossFloor <= 0 {
+		return fmt.Errorf("sched: weighted WeightLossFloor must be > 0, got %g", c.WeightLossFloor)
+	}
+	return nil
+}
+
+// FECPolicy is the P3+ forward-error-correction extension seam. Given the path a
+// frame was scheduled onto and the current eligible set, it returns ADDITIONAL path
+// indices the frame should ALSO egress on for redundancy (e.g. a repair copy on a
+// second path). This is a documented hook, NOT an implementation: the current
+// single-path Scheduler.Pick returns one index, so wiring redundant transmission
+// requires the P3 Bind change that fans a frame out to several sockets. Until then
+// a nil policy adds no redundancy and RedundantPaths returns nothing, so the seam is
+// inert but present and unit-tested.
+type FECPolicy interface {
+	RedundantPaths(chosen int, eligible []int) []int
+}
+
+// WeightedScheduler is the T21 send-side scheduler: a weighted-aggregation policy
+// that, under load, stripes a single flow across every eligible path in proportion
+// to a per-path RTT/loss-derived weight, and at low load COLLAPSES to the primary
+// (index 0) so the metered backup path stays ~idle (data-thrift, requirement 2). It
+// engages the backup only once offered load exceeds one path's capacity and
+// disengages with hysteresis (a two-threshold band plus a collapse dwell) so the
+// metered path never dribbles on/off. Per-path send-pacing (token buckets) bounds
+// each path's egress rate so aggregation does not build a standing queue that
+// inflates latency-under-load (P0 §7); pacing is a config no-op when disabled.
+//
+// It reads per-path liveness from PathHealth (the T13 up/down verdict) and per-path
+// quality from PathQuality (the T13 Estimate: RTT/loss). In production BOTH are the
+// SAME *telemetry.Prober per path; the unit tests drive synthetic sources.
+//
+// Weight formula (Mathis-style throughput proxy). A single steady-state TCP flow's
+// bandwidth is ∝ 1/(RTT·√p) (Mathis et al.); used here as a RELATIVE path-quality
+// proxy it directs more of the aggregate flow onto the path a flow would run faster
+// on. Per eligible path:
+//
+//	w_i = 1 / ( max(RTT_i, RTTFloor) · sqrt(Loss_i + LossFloor) )
+//
+// normalized over the eligible set. RTTFloor bounds a cold/zero-RTT path; LossFloor
+// keeps a zero-loss path finite (two zero-loss paths then split by inverse-RTT
+// alone). There is no measured bandwidth to use (Estimate is RTT/Jitter/Loss only,
+// P0 §7), so an RTT/loss proxy is the honest choice.
+//
+// Concurrency mirrors ActiveBackup: every field is guarded by s.mu; the send path
+// recomputes under the lock and never calls back into the Bind, so a Bind holding
+// its own send lock across Pick cannot deadlock.
+//
+// Statefulness and the T40 nudge. Pick is STATEFUL — it advances the offered-load
+// meter, the aggregation gate, the pacing buckets, and the smooth-weighted-round-
+// robin credits, so ONE Pick == ONE frame. The eager-failover nudge (defect D18)
+// must therefore NOT call Pick (it would steal a distribution slot and skew the
+// weights); it calls Recompute, which refreshes only the liveness-derived eligible/
+// active set and logs any active-path transition, touching NONE of that per-frame
+// distribution state.
+type WeightedScheduler struct {
+	health  []PathHealth  // index = priority; [0] is the preferred primary
+	quality []PathQuality // parallel to health; element may be nil (neutral weight)
+	clock   telemetry.Clock
+	cfg     WeightedConfig
+	log     log.Logger
+	fec     FECPolicy // P3+ redundancy seam; nil = no FEC
+
+	mu sync.Mutex
+
+	// Offered-load meter: an exponentially-weighted event-rate estimator (each Pick is
+	// one event; the estimate converges to the offered Pick rate in events/sec).
+	loadRate float64
+	haveLoad bool
+	lastLoad time.Time
+
+	// Aggregation gate (hysteresis).
+	aggregating bool
+	belowSince  time.Time // when load first fell below the disengage threshold; zero == not pending
+
+	// Smooth-weighted-round-robin credits, parallel to health (global path index).
+	current []float64
+
+	// Per-path pacing token buckets, parallel to health.
+	tokens   []float64
+	lastFill time.Time
+	haveFill bool
+
+	// Active-primary cache: the best eligible path, for eager-failover transition
+	// logging (parity with ActiveBackup). -1 == none.
+	active int
+}
+
+// compile-time proof WeightedScheduler is a (dynamic) Scheduler.
+var (
+	_ Scheduler        = (*WeightedScheduler)(nil)
+	_ DynamicScheduler = (*WeightedScheduler)(nil)
+)
+
+// NewWeighted builds the weighted-aggregation scheduler over parallel health and
+// quality slices in priority order (index 0 = preferred primary). health and quality
+// must be the same length; a quality element MAY be nil (that path then gets a
+// neutral weight until a real PathQuality is wired). It fails fast on an empty or
+// length-mismatched set, a nil health element, a nil dependency, or an invalid config.
+func NewWeighted(health []PathHealth, quality []PathQuality, cfg WeightedConfig, clock telemetry.Clock, logger log.Logger) (*WeightedScheduler, error) {
+	if len(health) == 0 {
+		return nil, fmt.Errorf("sched: at least one path health source is required")
+	}
+	if len(quality) != len(health) {
+		return nil, fmt.Errorf("sched: quality set (%d) must be one entry per health source (%d)", len(quality), len(health))
+	}
+	for i, h := range health {
+		if h == nil {
+			return nil, fmt.Errorf("sched: path %d health source is nil", i)
+		}
+	}
+	if clock == nil {
+		return nil, fmt.Errorf("sched: clock is required")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("sched: logger is required")
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return &WeightedScheduler{
+		health:  append([]PathHealth(nil), health...),
+		quality: append([]PathQuality(nil), quality...),
+		clock:   clock,
+		cfg:     cfg,
+		log:     logger.Component("sched"),
+		current: make([]float64, len(health)),
+		tokens:  fullBuckets(len(health), cfg.PacingBurst),
+		active:  -1,
+	}, nil
+}
+
+// SetFEC installs the P3+ redundancy policy (nil clears it). It is the documented
+// extension point for FEC-aware path selection; the current single-path Pick does
+// not consult it (redundant transmission needs the P3 Bind fan-out), but
+// RedundantPaths exposes it so a P3 Bind can query the additional paths per frame.
+func (s *WeightedScheduler) SetFEC(fec FECPolicy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fec = fec
+}
+
+// RedundantPaths reports the ADDITIONAL path indices a frame scheduled onto chosen
+// should also egress on, per the installed FECPolicy over the current eligible set.
+// It returns nil when no policy is installed (no FEC). It is the P3 hook a redundant-
+// transmission Bind would call alongside Pick; today it is a documented, unit-tested
+// seam with no in-tree caller on the hot path.
+func (s *WeightedScheduler) RedundantPaths(chosen int) []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fec == nil {
+		return nil
+	}
+	return s.fec.RedundantPaths(chosen, s.eligibleLocked())
+}
+
+// Pick selects the path for the NEXT frame and advances all per-frame distribution
+// state (offered-load meter, aggregation gate, pacing buckets, round-robin credits).
+// It returns a negative value when no path is eligible OR when every eligible path
+// is paced out (the frame is dropped rather than queued — pacing bounds egress and,
+// by dropping the overflow, bounds the send backlog). It is safe for concurrent
+// callers.
+func (s *WeightedScheduler) Pick() int {
+	now := s.clock.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.recomputeLocked(now)   // liveness refresh + eager-failover log
+	s.observeLoadLocked(now) // this Pick is one offered frame
+	s.updateGateLocked(now)  // engage/disengage aggregation (hysteresis)
+	s.refillLocked(now)      // top up pacing buckets
+
+	eligible := s.eligibleLocked()
+	if len(eligible) == 0 {
+		return -1
+	}
+	if !s.aggregating {
+		// Data-thrift: at low load only the primary (best eligible) carries traffic;
+		// the metered backup stays idle. A path-down excludes it from eligible, so
+		// eligible[0] is the surviving highest-priority path — failover is preserved.
+		return s.serveLocked(eligible[0])
+	}
+	weights := s.weightsLocked(eligible)
+	return s.selectAggregatingLocked(eligible, weights)
+}
+
+// Recompute refreshes only the liveness-derived eligible/active set from the current
+// PathHealth and logs any active-path transition. It advances NONE of the per-frame
+// distribution state (load meter, gate, pacing, round-robin credits), so the eager-
+// failover nudge (defect D18/T40) drives an egress-lull failover recompute through it
+// WITHOUT stealing a weighted-distribution slot the way a spurious Pick would. It is
+// safe for concurrent callers.
+func (s *WeightedScheduler) Recompute() {
+	now := s.clock.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recomputeLocked(now)
+}
+
+// recomputeLocked refreshes the active-primary cache (best eligible path) and logs a
+// transition on change. Caller holds s.mu.
+func (s *WeightedScheduler) recomputeLocked(_ time.Time) {
+	best := s.bestEligibleLocked()
+	s.setActiveLocked(best)
+}
+
+// serveLocked applies pacing to a single chosen path: it returns idx when the frame
+// is admitted, or -1 when pacing is on and the path has no token (the frame is
+// dropped, bounding egress and backlog). Caller holds s.mu.
+func (s *WeightedScheduler) serveLocked(idx int) int {
+	if s.tryConsumeLocked(idx) {
+		return idx
+	}
+	return -1
+}
+
+// selectAggregatingLocked picks a path proportional to weight (smooth weighted round
+// robin) and applies pacing. When the round-robin's ideal pick is paced out it falls
+// through to any other eligible path that still has a token, so aggregate egress is
+// bounded by the SUM of the per-path paces; when every eligible path is paced out it
+// returns -1 (drop). Caller holds s.mu.
+func (s *WeightedScheduler) selectAggregatingLocked(eligible []int, weights []float64) int {
+	ideal := s.swrrPickLocked(eligible, weights)
+	if s.tryConsumeLocked(ideal) {
+		return ideal
+	}
+	for _, gi := range eligible {
+		if gi == ideal {
+			continue
+		}
+		if s.tryConsumeLocked(gi) {
+			return gi
+		}
+	}
+	return -1
+}
+
+// swrrPickLocked is nginx's smooth weighted round-robin over the eligible set: it
+// advances each eligible path's credit by its weight, picks the max-credit path, and
+// subtracts the total weight from the winner. Over many calls the selection frequency
+// of each path converges to its weight share, interleaved smoothly rather than
+// bursted. Caller holds s.mu; weights is aligned to eligible order.
+func (s *WeightedScheduler) swrrPickLocked(eligible []int, weights []float64) int {
+	var total float64
+	for _, w := range weights {
+		total += w
+	}
+	best := -1
+	var bestCur float64
+	for k, gi := range eligible {
+		s.current[gi] += weights[k]
+		if best < 0 || s.current[gi] > bestCur {
+			best = gi
+			bestCur = s.current[gi]
+		}
+	}
+	s.current[best] -= total
+	return best
+}
+
+// weightsLocked computes the normalized Mathis-style weight for each eligible path
+// from its PathQuality Estimate (RTT/loss). A nil quality source (or an all-zero
+// Estimate) yields the floored neutral weight, so an unwired path splits evenly.
+// Caller holds s.mu; the result is aligned to eligible order and sums to 1.
+func (s *WeightedScheduler) weightsLocked(eligible []int) []float64 {
+	w := make([]float64, len(eligible))
+	var sum float64
+	rttFloor := float64(s.cfg.WeightRTTFloor)
+	for k, gi := range eligible {
+		var est telemetry.Estimate
+		if q := s.quality[gi]; q != nil {
+			est = q.Estimate()
+		}
+		rtt := float64(est.RTT)
+		if rtt < rttFloor {
+			rtt = rttFloor
+		}
+		loss := est.Loss
+		if loss < 0 {
+			loss = 0
+		}
+		wi := 1.0 / (rtt * math.Sqrt(loss+s.cfg.WeightLossFloor))
+		w[k] = wi
+		sum += wi
+	}
+	if sum <= 0 {
+		// Degenerate (should not happen given the floors): fall back to equal weights.
+		for k := range w {
+			w[k] = 1.0 / float64(len(w))
+		}
+		return w
+	}
+	for k := range w {
+		w[k] /= sum
+	}
+	return w
+}
+
+// observeLoadLocked folds one offered frame into the exponentially-weighted event-
+// rate estimator. Each event adds 1/tau (per-second units) after decaying the prior
+// estimate by exp(-dt/tau); the steady-state estimate converges to the offered rate
+// in events/sec. It is robust to dt==0 (many Picks at one clock instant just add
+// without decay). Caller holds s.mu.
+func (s *WeightedScheduler) observeLoadLocked(now time.Time) {
+	tau := s.cfg.LoadTau.Seconds()
+	if !s.haveLoad {
+		s.haveLoad = true
+		s.lastLoad = now
+		s.loadRate = 0
+	} else {
+		dt := now.Sub(s.lastLoad).Seconds()
+		if dt < 0 {
+			dt = 0
+		}
+		s.loadRate *= math.Exp(-dt / tau)
+		s.lastLoad = now
+	}
+	s.loadRate += 1.0 / tau
+}
+
+// updateGateLocked engages or disengages aggregation from the smoothed offered load,
+// with hysteresis: engage the instant load exceeds EngageFraction*capacity; collapse
+// back to primary-only only after load stays below DisengageFraction*capacity for
+// CollapseDwell. The two-threshold band plus the dwell keep the metered path from
+// flapping on/off around a single point (requirement 2). Caller holds s.mu.
+func (s *WeightedScheduler) updateGateLocked(now time.Time) {
+	engage := s.cfg.EngageFraction * s.cfg.PerPathCapacity
+	disengage := s.cfg.DisengageFraction * s.cfg.PerPathCapacity
+	if !s.aggregating {
+		if s.loadRate > engage {
+			s.aggregating = true
+			s.belowSince = time.Time{}
+			s.log.Info("scheduler aggregation change", "to", "aggregating", "load_fps", s.loadRate)
+		}
+		return
+	}
+	if s.loadRate < disengage {
+		if s.belowSince.IsZero() {
+			s.belowSince = now
+		}
+		if now.Sub(s.belowSince) >= s.cfg.CollapseDwell {
+			s.aggregating = false
+			s.belowSince = time.Time{}
+			s.log.Info("scheduler aggregation change", "to", "collapsed", "load_fps", s.loadRate)
+		}
+		return
+	}
+	// Load rose back above the disengage threshold: reset the collapse dwell.
+	s.belowSince = time.Time{}
+}
+
+// refillLocked tops up every per-path token bucket by PerPathCapacity·elapsed, capped
+// at PacingBurst. The first call seeds every bucket full. It is a no-op accountant
+// when pacing is disabled (tryConsumeLocked always admits), but the buckets are still
+// maintained so toggling pacing needs no re-seed. Caller holds s.mu.
+func (s *WeightedScheduler) refillLocked(now time.Time) {
+	if !s.haveFill {
+		s.haveFill = true
+		s.lastFill = now
+		for i := range s.tokens {
+			s.tokens[i] = s.cfg.PacingBurst
+		}
+		return
+	}
+	dt := now.Sub(s.lastFill).Seconds()
+	if dt < 0 {
+		dt = 0
+	}
+	add := s.cfg.PerPathCapacity * dt
+	for i := range s.tokens {
+		s.tokens[i] += add
+		if s.tokens[i] > s.cfg.PacingBurst {
+			s.tokens[i] = s.cfg.PacingBurst
+		}
+	}
+	s.lastFill = now
+}
+
+// tryConsumeLocked spends one token from path idx's bucket, reporting whether the
+// frame is admitted. With pacing disabled it always admits (the buckets are inert).
+// Caller holds s.mu.
+func (s *WeightedScheduler) tryConsumeLocked(idx int) bool {
+	if !s.cfg.Pacing {
+		return true
+	}
+	if s.tokens[idx] >= 1 {
+		s.tokens[idx]--
+		return true
+	}
+	return false
+}
+
+// eligibleLocked returns the global indices of paths reporting StateUp, in priority
+// order. Caller holds s.mu.
+func (s *WeightedScheduler) eligibleLocked() []int {
+	e := make([]int, 0, len(s.health))
+	for i := range s.health {
+		if s.health[i].State() == telemetry.StateUp {
+			e = append(e, i)
+		}
+	}
+	return e
+}
+
+// bestEligibleLocked returns the lowest-index path reporting StateUp, or -1.
+func (s *WeightedScheduler) bestEligibleLocked() int {
+	for i := range s.health {
+		if s.health[i].State() == telemetry.StateUp {
+			return i
+		}
+	}
+	return -1
+}
+
+// setActiveLocked stores the active-primary index and logs a transition only when it
+// changes, so a saturated send path does not log on every Pick. The message matches
+// ActiveBackup's ("scheduler active path change") so downstream log parsing (the e2e
+// failover harness) reads either policy identically.
+func (s *WeightedScheduler) setActiveLocked(idx int) {
+	if s.active == idx {
+		return
+	}
+	from := s.active
+	s.active = idx
+	s.log.Info("scheduler active path change", "from", from, "to", idx, "reason", "weighted recompute")
+}
+
+// AddPath admits h as a new lowest-priority path and returns its index (the new
+// tail). Its quality source is h itself when h also satisfies PathQuality (the
+// production *Prober does); otherwise the path gets a neutral weight. Appending at the
+// tail leaves every existing index unchanged and the new path only carries traffic
+// once aggregation engages, so a runtime admission never disturbs the surviving
+// paths' distribution (T30). It is safe for concurrent callers.
+func (s *WeightedScheduler) AddPath(h PathHealth) (int, error) {
+	if h == nil {
+		return 0, fmt.Errorf("sched: cannot add a nil path health source")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.health = append(s.health, h)
+	s.quality = append(s.quality, asQuality(h))
+	s.current = append(s.current, 0)
+	s.tokens = append(s.tokens, s.cfg.PacingBurst)
+	return len(s.health) - 1, nil
+}
+
+// RemovePath drops the path at index i (shifting higher indices down by one) and
+// clears the cached active selection so the next Pick/Recompute re-derives it from
+// live liveness. The round-robin credits are positional and compacted with the path
+// list; a brief re-warm of the smoothing after a membership change is harmless. It is
+// safe for concurrent callers.
+func (s *WeightedScheduler) RemovePath(i int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i < 0 || i >= len(s.health) {
+		return fmt.Errorf("sched: remove path index %d out of range [0,%d)", i, len(s.health))
+	}
+	s.health = append(s.health[:i], s.health[i+1:]...)
+	s.quality = append(s.quality[:i], s.quality[i+1:]...)
+	s.current = append(s.current[:i], s.current[i+1:]...)
+	s.tokens = append(s.tokens[:i], s.tokens[i+1:]...)
+	s.active = -1
+	return nil
+}
+
+// SetPaths replaces the entire health list (priority order, index 0 = preferred
+// primary), rebuilding the parallel quality slice from the new sources, resetting the
+// round-robin credits and pacing buckets, and collapsing aggregation to primary-only
+// so the next Pick re-derives everything from live liveness. The Bind calls it on
+// every Open to re-align the scheduler with the freshly-rebuilt path slice (T30). It
+// fails fast on an empty set or a nil element, matching NewWeighted. It is safe for
+// concurrent callers.
+func (s *WeightedScheduler) SetPaths(health []PathHealth) error {
+	if len(health) == 0 {
+		return fmt.Errorf("sched: at least one path health source is required")
+	}
+	for i, h := range health {
+		if h == nil {
+			return fmt.Errorf("sched: path %d health source is nil", i)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.health = append([]PathHealth(nil), health...)
+	s.quality = make([]PathQuality, len(health))
+	for i, h := range health {
+		s.quality[i] = asQuality(h)
+	}
+	s.current = make([]float64, len(health))
+	s.tokens = fullBuckets(len(health), s.cfg.PacingBurst)
+	s.haveFill = false
+	s.aggregating = false
+	s.belowSince = time.Time{}
+	s.active = -1
+	return nil
+}
+
+// asQuality returns h as a PathQuality when it also implements that interface (the
+// production *telemetry.Prober does — one source drives both liveness and weight), or
+// nil so the path gets a neutral weight.
+func asQuality(h PathHealth) PathQuality {
+	if q, ok := h.(PathQuality); ok {
+		return q
+	}
+	return nil
+}
+
+// fullBuckets returns n token buckets each seeded to burst.
+func fullBuckets(n int, burst float64) []float64 {
+	t := make([]float64, n)
+	for i := range t {
+		t[i] = burst
+	}
+	return t
+}

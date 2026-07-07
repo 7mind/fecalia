@@ -431,20 +431,53 @@ func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*tele
 	}
 	probers := make([]*telemetry.Prober, len(cfg.Paths))
 	health := make([]sched.PathHealth, len(cfg.Paths))
+	quality := make([]sched.PathQuality, len(cfg.Paths))
 	for i := range cfg.Paths {
 		probers[i] = newProber(cfg.Paths[i].Name, uint8(i))
 		health[i] = probers[i]
+		quality[i] = probers[i]
 	}
-	scheduler, err := sched.NewActiveBackup(
-		health,
-		sched.Config{FailbackAfter: defaultFailbackDwell},
-		clock,
-		lg,
-	)
+	// Policy is a config choice: active-backup (P1, default) or the T21 weighted-
+	// aggregation policy. Both consume the SAME per-path *Prober set — a *Prober
+	// satisfies BOTH PathHealth (liveness) and PathQuality (RTT/loss Estimate) — so the
+	// probe transport drives the very liveness/quality the scheduler selects on, and the
+	// swap is behind config with no Bind change.
+	scheduler, err := selectScheduler(cfg, health, quality, clock, lg)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return scheduler, probers, newProber, nil
+}
+
+// selectScheduler builds the send scheduler the configured policy names, over the
+// per-path health (and, for the weighted policy, quality) sources. active-backup is
+// the P1 default; weighted is T21. The weighted knobs are validated at config load,
+// so translating them here cannot fail on range — only NewWeighted's structural
+// checks (which the wiring satisfies) apply.
+func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sched.PathQuality, clock telemetry.Clock, lg log.Logger) (sched.Scheduler, error) {
+	switch cfg.Scheduler.Policy {
+	case config.PolicyWeighted:
+		sc := cfg.Scheduler
+		return sched.NewWeighted(health, quality, sched.WeightedConfig{
+			PerPathCapacity:   sc.PerPathCapacityFPS,
+			EngageFraction:    sc.EngageFraction,
+			DisengageFraction: sc.DisengageFraction,
+			CollapseDwell:     sc.CollapseDwell,
+			LoadTau:           sc.LoadTau,
+			Pacing:            sc.PacingEnabled,
+			PacingBurst:       sc.PacingBurstFrames,
+			WeightRTTFloor:    sc.WeightRTTFloor,
+			WeightLossFloor:   sc.WeightLossFloor,
+		}, clock, lg)
+	default:
+		// active-backup (and the empty default, normalized to it at config load).
+		return sched.NewActiveBackup(
+			health,
+			sched.Config{FailbackAfter: defaultFailbackDwell},
+			clock,
+			lg,
+		)
+	}
 }
 
 // Name is the created TUN interface name (for external addressing/routing).

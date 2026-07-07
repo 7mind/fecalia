@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
@@ -31,13 +32,121 @@ const keyLen = 32
 // Config is the whole wanbond configuration, shared by both roles and parsed
 // from a single TOML file.
 type Config struct {
-	Role      Role      `toml:"role"`
-	Paths     []Path    `toml:"paths"`
-	WireGuard WireGuard `toml:"wireguard"`
-	Amnezia   Amnezia   `toml:"amnezia"`
-	PSK       Key       `toml:"psk"`
-	Metrics   Metrics   `toml:"metrics"`
-	Log       Log       `toml:"log"`
+	Role      Role            `toml:"role"`
+	Paths     []Path          `toml:"paths"`
+	WireGuard WireGuard       `toml:"wireguard"`
+	Amnezia   Amnezia         `toml:"amnezia"`
+	PSK       Key             `toml:"psk"`
+	Metrics   Metrics         `toml:"metrics"`
+	Log       Log             `toml:"log"`
+	Scheduler SchedulerConfig `toml:"scheduler"`
+}
+
+// SchedulerPolicy selects the send-side path-selection policy the multipath Bind
+// runs. It is a bounded enum: the P1 active-backup failover (default) or the T21
+// weighted-aggregation policy. The policy is an explicit config choice — active-
+// backup stays selectable so the P1 behaviour is never removed, only extended.
+type SchedulerPolicy string
+
+const (
+	// PolicyActiveBackup is the P1 single-active-path failover scheduler: all egress
+	// on the highest-priority live path, every other path idle (data-thrift by
+	// construction). It is the default when [scheduler] is omitted.
+	PolicyActiveBackup SchedulerPolicy = "active-backup"
+	// PolicyWeighted is the T21 weighted-aggregation scheduler: under load a single
+	// flow is striped across both paths in proportion to per-path RTT/loss-derived
+	// weight, collapsing to the primary at low load (5G stays ~idle) with hysteresis,
+	// and per-path send-pacing to bound bufferbloat.
+	PolicyWeighted SchedulerPolicy = "weighted"
+)
+
+func (p SchedulerPolicy) valid() bool {
+	return p == PolicyActiveBackup || p == PolicyWeighted
+}
+
+// Weighted-aggregation policy defaults (T21). They are applied when [scheduler]
+// selects the weighted policy but leaves a knob at its zero value, so a minimal
+// `policy = "weighted"` block is usable without hand-tuning every threshold. They
+// are conservative bring-up values; the empirical per-path pace is sized from a
+// measured BDP in a bandwidth-capped fixture (P0 findings §7, deferred to T35/T23),
+// so the shipped default leaves pacing DISABLED and only bounds distribution.
+const (
+	// defaultPerPathCapacityFPS is the reference per-path capacity, in frame-selection
+	// slots per second, that the aggregation load-gate compares offered load against
+	// AND (when pacing is enabled) the per-path token-bucket refill rate. It is a
+	// synthetic proxy for path capacity: there is no measured BDP (P0 §7), so capacity
+	// is expressed in the only unit the scheduler sees — Pick() invocations per second.
+	defaultPerPathCapacityFPS = 10000.0
+	// defaultEngageFraction engages aggregation once offered load exceeds this
+	// fraction of one path's capacity — i.e. a single path is nearly saturated.
+	defaultEngageFraction = 0.9
+	// defaultDisengageFraction collapses back to primary-only once offered load falls
+	// below this fraction of one path's capacity. It is strictly below the engage
+	// fraction: the gap is the hysteresis band that stops the 5G path from dribbling
+	// on/off around a single threshold (requirement 2, data-thrift).
+	defaultDisengageFraction = 0.5
+	// defaultCollapseDwell is how long offered load must stay continuously below the
+	// disengage fraction before aggregation collapses to primary-only — the temporal
+	// half of the hysteresis, mirroring the active-backup failback dwell so a brief
+	// lull does not repeatedly park then re-engage the metered path.
+	defaultCollapseDwell = 2 * time.Second
+	// defaultLoadTau is the time constant of the exponentially-weighted offered-load
+	// rate estimator. It smooths the instantaneous Pick() arrival rate so the gate
+	// reacts to sustained load, not single-frame bursts.
+	defaultLoadTau = 200 * time.Millisecond
+	// defaultPacingBurstFrames is the per-path token-bucket burst (in frame slots)
+	// when pacing is enabled: the bucket admits up to this many frames instantaneously
+	// before the refill rate binds, absorbing normal jitter without inflating a queue.
+	defaultPacingBurstFrames = 64.0
+	// defaultWeightRTTFloor floors the RTT in the weight formula so a path reporting a
+	// near-zero RTT (cold estimator, no samples yet) cannot be handed unbounded weight.
+	defaultWeightRTTFloor = 1 * time.Millisecond
+	// defaultWeightLossFloor floors the loss term under the square root so a zero-loss
+	// path gets a large-but-finite weight and two zero-loss paths split by inverse-RTT
+	// alone rather than both diverging.
+	defaultWeightLossFloor = 1e-3
+)
+
+// SchedulerConfig selects and tunes the send scheduler. When the [scheduler] block
+// is omitted the policy defaults to active-backup and every weighted knob is
+// ignored, so existing configs keep the P1 behaviour unchanged. The weighted knobs
+// are validated (and defaulted) only when the weighted policy is selected.
+type SchedulerConfig struct {
+	// Policy selects the scheduler; defaults to active-backup when empty.
+	Policy SchedulerPolicy `toml:"policy"`
+
+	// PerPathCapacityFPS is the reference per-path capacity in frame-selection slots
+	// per second: the denominator the aggregation load-gate compares offered load
+	// against, and the per-path pacing refill rate when PacingEnabled. Must be > 0
+	// under the weighted policy.
+	PerPathCapacityFPS float64 `toml:"per_path_capacity_fps"`
+	// EngageFraction engages aggregation when offered load exceeds
+	// EngageFraction*PerPathCapacityFPS. Must be in (0,1].
+	EngageFraction float64 `toml:"engage_fraction"`
+	// DisengageFraction collapses aggregation to primary-only once offered load stays
+	// below DisengageFraction*PerPathCapacityFPS for CollapseDwell. Must be in
+	// [0,EngageFraction) — strictly below EngageFraction so the two form a hysteresis
+	// band.
+	DisengageFraction float64 `toml:"disengage_fraction"`
+	// CollapseDwell is the sustained-low-load dwell before collapsing to primary-only
+	// (hysteresis). Must be >= 0.
+	CollapseDwell time.Duration `toml:"collapse_dwell"`
+	// LoadTau is the offered-load rate estimator's time constant. Must be > 0.
+	LoadTau time.Duration `toml:"load_tau"`
+
+	// PacingEnabled turns per-path send-pacing on. When false the token buckets are
+	// bypassed (a documented no-op — P0 §7 could not empirically size the pace in the
+	// unmetered fixture), but PerPathCapacityFPS still drives the aggregation gate.
+	PacingEnabled bool `toml:"pacing_enabled"`
+	// PacingBurstFrames is the per-path token-bucket burst in frame slots. Must be > 0
+	// when PacingEnabled.
+	PacingBurstFrames float64 `toml:"pacing_burst_frames"`
+
+	// WeightRTTFloor floors RTT in the weight formula (must be > 0 under weighted).
+	WeightRTTFloor time.Duration `toml:"weight_rtt_floor"`
+	// WeightLossFloor floors the loss term under the square root (must be > 0 under
+	// weighted).
+	WeightLossFloor float64 `toml:"weight_loss_floor"`
 }
 
 // Path is one physical WAN uplink. The edge binds each path's UDP socket to
@@ -188,6 +297,82 @@ func (c *Config) normalize() error {
 		}
 	}
 	c.Amnezia.applyDefaults()
+	c.Scheduler.applyDefaults()
+	return nil
+}
+
+// applyDefaults selects active-backup when no policy is given and, only under the
+// weighted policy, fills any weighted knob left at its zero value with its default.
+// It is a no-op for the active-backup policy: those weighted knobs are inert there,
+// so leaving them zero keeps the config surface for a P1 deployment empty.
+func (s *SchedulerConfig) applyDefaults() {
+	if s.Policy == "" {
+		s.Policy = PolicyActiveBackup
+	}
+	if s.Policy != PolicyWeighted {
+		return
+	}
+	if s.PerPathCapacityFPS == 0 {
+		s.PerPathCapacityFPS = defaultPerPathCapacityFPS
+	}
+	if s.EngageFraction == 0 {
+		s.EngageFraction = defaultEngageFraction
+	}
+	if s.DisengageFraction == 0 {
+		s.DisengageFraction = defaultDisengageFraction
+	}
+	if s.CollapseDwell == 0 {
+		s.CollapseDwell = defaultCollapseDwell
+	}
+	if s.LoadTau == 0 {
+		s.LoadTau = defaultLoadTau
+	}
+	if s.PacingBurstFrames == 0 {
+		s.PacingBurstFrames = defaultPacingBurstFrames
+	}
+	if s.WeightRTTFloor == 0 {
+		s.WeightRTTFloor = defaultWeightRTTFloor
+	}
+	if s.WeightLossFloor == 0 {
+		s.WeightLossFloor = defaultWeightLossFloor
+	}
+}
+
+// validate enforces the scheduler policy invariants. active-backup needs no tuning.
+// The weighted policy fails fast on any out-of-range knob so a mis-tuned
+// aggregation policy is rejected at load rather than misbehaving at runtime (the
+// hysteresis band, in particular, is only a band when disengage < engage).
+func (s SchedulerConfig) validate() error {
+	if !s.Policy.valid() {
+		return fmt.Errorf("scheduler.policy must be %q or %q, got %q", PolicyActiveBackup, PolicyWeighted, s.Policy)
+	}
+	if s.Policy != PolicyWeighted {
+		return nil
+	}
+	if s.PerPathCapacityFPS <= 0 {
+		return fmt.Errorf("scheduler.per_path_capacity_fps must be > 0 under the weighted policy, got %g", s.PerPathCapacityFPS)
+	}
+	if s.EngageFraction <= 0 || s.EngageFraction > 1 {
+		return fmt.Errorf("scheduler.engage_fraction must be in (0,1], got %g", s.EngageFraction)
+	}
+	if s.DisengageFraction < 0 || s.DisengageFraction >= s.EngageFraction {
+		return fmt.Errorf("scheduler.disengage_fraction must be in [0,engage_fraction=%g) to form a hysteresis band, got %g", s.EngageFraction, s.DisengageFraction)
+	}
+	if s.CollapseDwell < 0 {
+		return fmt.Errorf("scheduler.collapse_dwell must be >= 0, got %s", s.CollapseDwell)
+	}
+	if s.LoadTau <= 0 {
+		return fmt.Errorf("scheduler.load_tau must be > 0, got %s", s.LoadTau)
+	}
+	if s.PacingEnabled && s.PacingBurstFrames <= 0 {
+		return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled, got %g", s.PacingBurstFrames)
+	}
+	if s.WeightRTTFloor <= 0 {
+		return fmt.Errorf("scheduler.weight_rtt_floor must be > 0 under the weighted policy, got %s", s.WeightRTTFloor)
+	}
+	if s.WeightLossFloor <= 0 {
+		return fmt.Errorf("scheduler.weight_loss_floor must be > 0 under the weighted policy, got %g", s.WeightLossFloor)
+	}
 	return nil
 }
 
@@ -233,6 +418,9 @@ func (c *Config) validate() error {
 		return errors.New("psk is required (authenticates outer control/probe frames)")
 	}
 	if err := c.Amnezia.validate(); err != nil {
+		return err
+	}
+	if err := c.Scheduler.validate(); err != nil {
 		return err
 	}
 	return nil

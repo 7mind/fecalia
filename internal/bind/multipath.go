@@ -530,8 +530,16 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 // wanted here; Send remains the sole reader of the selection for actual routing. Pick
 // is internally synchronized and never calls back into the Bind, so this is safe to
 // call from a receive goroutine or the probe loop without m.mu.
+//
+// It calls Recompute, NOT Pick: the nudge wants only the liveness-driven active-set
+// recompute (and its logged transition), and a weighted/aggregating scheduler's Pick
+// is STATEFUL — a spurious Pick here would consume a distribution slot and skew the
+// per-path weight split. Recompute is the non-consuming half that refreshes the
+// eligible/active set without touching distribution/pacing/load state, so the T40
+// eager-failover guarantee holds for BOTH the active-backup and the weighted policy
+// (defect D18).
 func (m *Multipath) nudgeSchedulerActive() {
-	m.scheduler.Pick()
+	m.scheduler.Recompute()
 }
 
 // newReceiveFunc returns the SINGLE engine-facing ReceiveFunc: it drains the shared
