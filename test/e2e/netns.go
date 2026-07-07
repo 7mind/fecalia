@@ -77,6 +77,12 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 	top.run("ip", "link", "set", "lo", "up")
 	top.nsenter("ip", "link", "set", "lo", "up")
 	for _, p := range top.paths {
+		// Idempotent pre-delete: the veth names are FIXED per path, so a prior subtest's
+		// teardown racing the kernel's async netns/veth reap can leave the edge veth behind,
+		// making `ip link add` fail with EEXIST ("File exists"). Deleting the pair first
+		// (ignore-if-absent) makes Setup robust to reused fixed names across sequential
+		// subtests. Deleting the edge end removes its peer too.
+		_ = top.tryRun("ip", "link", "del", p.edgeVeth)
 		top.run("ip", "link", "add", p.edgeVeth, "type", "veth", "peer", "name", p.concVeth)
 		top.run("ip", "link", "set", p.concVeth, "netns", pid)
 		top.run("ip", "addr", "add", p.edgeIP+"/24", "dev", p.edgeVeth)
