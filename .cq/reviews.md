@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 24
+  item: 25
 archives: []
 ---
 
@@ -178,6 +178,17 @@ archives: []
 - criticism: ["[r1 fable, resolved 349065b] unconditional device binding regressed same-interface multi-path configs (EADDRINUSE, empirically reproduced) — made device-bind conditional on exactly-one-path-per-interface","[r1 fable, resolved 349065b] unconditional device binding voided source_addr pinning on multi-address interfaces — gated on familyCount==1"]
 - new_questions: []
 - ledgerRefs: ["tasks:T16","goals:G1"]
+
+### R24 — go-ahead
+
+- createdAt: 2026-07-07T13:30:00.904Z
+- updatedAt: 2026-07-07T13:30:00.904Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T30 (runtime path add/remove + SIGHUP config reload) reconciled go-ahead (opus+fable panel, 4 rounds — each caught a real reproduced fault). Architecture: a RECEIVE FAN-IN — the Bind owns one readLoop per path feeding the shared T18 resequencer, and Open returns a SINGLE engine-facing drainer ReceiveFunc, so a path added at runtime gets a Bind reader WITHOUT the engine spawning a goroutine (WG session/virtual endpoint untouched). AddPath/RemovePath + DynamicScheduler + SIGHUP reload; per-path prober moved to pathState (shared-slice race fix). R1: opus approve, fable DISAPPROVE — escalated opus's 'latent' defect to blocking: runtime mutations desync the scheduler across the bind's DOCUMENTED Close->Open cycle (a runtime-added path leaves a frozen-StateUp scheduler entry at index>=len(m.paths) -> Pick pins to it -> every Send errNoHealthyPath = TOTAL EGRESS OUTAGE; a removed boot path is resurrected with no scheduler entry -> silent failover loss); + race-test vacuity (silent break masks AddPath errors), cross-goroutine t.Fatalf in e2e, silent reload diff-drops. Fixed 8d81f2b: AddPath/RemovePath keep m.defs+m.probers index-aligned with m.paths, Open reconciles the scheduler via new DynamicScheduler.SetPaths; race-test Fatalf; e2e channel-assert + explicit zero-reset; reload logs a warning per ignored change. R2: fable approve, opus DISAPPROVE — reproduced a NEW defect the r2 fix EXPOSED: PathID collision after remove->reopen->add (Open reset nextPathID=len(paths) while survivors kept higher stamps -> a runtime add re-mints a colliding PathID -> two live paths at same (PathID,SessionID) corrupt the peer Reflector's per-PathID anti-replay/challenge -> probe loss/false-DOWN). Fixed 347df43: nextPathID is a monotonic high-water carried across Open (>= max live stamp+1, never lowered; uint8-exhaustion fail-fast), ps.id reconciled to the immutable prober stamp (survivor never renumbered, DATA/PROBE agree); + folded fable's low defect (NewMultipath rejects newProber!=nil && probers==nil). R3: opus approve, fable DISAPPROVE — stale per-Open-span exhaustion doc comment + error string contradict the new cross-span invariant + misdirect the operator remedy. Fixed c917310 (+ struct-field comment). R4: fable DISAPPROVE on one residual comment inaccuracy ('256 AddPath admissions' vs actual 256-minus-initial-N); addressed VERBATIM per fable's supplied wording at merge (comment-only; opus-approved logic byte-identical). Crux concurrency verified sound throughout (fan-in no lost-wakeup, Close teardown leak-free, dynamic-set under m.mu, race test -count up to 8). Merged c3fa6e2 — rebased onto main resolving the multipath.go conflict between T30's receive FAN-IN and T16's conditional device-binding in Open (kept T16's planPathBinds/bindDevs bind-plan + dropped the T30 fan-in's now-unused per-path fns accumulator); full race suite (bind/sched/device/telemetry/reseq/frame) + crux race x3 + golangci-lint 0 + e2e-compile all green post-merge. NOTE: AddPath source-IP-binds a runtime path (net.ListenUDP, no device-binding) — acceptable (device-bind roam-survival is a boot-path concern; runtime-add is a distinct feature)."
+- criticism: ["[r1 fable, resolved 8d81f2b] runtime mutations desync scheduler across Close->Open -> total egress outage / silent failover loss; +race-test vacuity, e2e cross-goroutine Fatalf, silent reload diff-drops","[r2 opus, resolved 347df43] PathID collision after remove->reopen->add (nextPathID reset to len while survivors kept higher stamps) -> corrupts peer per-PathID anti-replay/challenge; fixed via monotonic high-water + prober-stamp reconcile","[r3 fable, resolved c917310] stale per-Open-span exhaustion doc/error-string contradicting the cross-span high-water + misdirecting the operator remedy","[r4 fable, resolved at merge verbatim] residual comment inaccuracy: '256 AddPath admissions' (actual capacity 256 minus initial-Open path count)"]
+- new_questions: []
+- ledgerRefs: ["tasks:T30","goals:G1"]
 
 ## M10
 

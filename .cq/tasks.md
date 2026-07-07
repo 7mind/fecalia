@@ -142,10 +142,10 @@ archives:
 - dependsOn: ["T12","T13","T37"]
 - ledgerRefs: ["goals:G1"]
 
-### T20 — planned
+### T20 — wip
 
 - createdAt: 2026-07-01T23:40:28.766Z
-- updatedAt: 2026-07-06T23:36:16.570Z
+- updatedAt: 2026-07-07T13:30:21.968Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P1 e2e: failover survives WAN death within 3s"
@@ -171,10 +171,10 @@ archives:
 - dependsOn: ["T20"]
 - ledgerRefs: ["goals:G1"]
 
-### T30 — wip
+### T30 — done
 
 - createdAt: 2026-07-01T23:54:17.561Z
-- updatedAt: 2026-07-07T11:57:46.389Z
+- updatedAt: 2026-07-07T13:29:38.170Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Runtime path add/remove (dynamic path set + config reload)
