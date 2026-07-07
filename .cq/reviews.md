@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 22
+  item: 23
 archives: []
 ---
 
@@ -156,6 +156,17 @@ archives: []
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T37","goals:G1","defects:D9","defects:D11","defects:D12"]
+
+### R22 — go-ahead
+
+- createdAt: 2026-07-07T11:54:50.397Z
+- updatedAt: 2026-07-07T11:54:50.397Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T38 (probe anti-replay session epoch, fixes D12 peer-restart liveness deadlock) reconciled go-ahead (opus+fable panel, 2 rounds; the v1 design was REPLACED). R1: opus approve, fable DISAPPROVE — fable REPRODUCED a session-seizure bypass in the v1 peer-chosen-random-SessionID design: the Reflector adopted ANY authenticated probe bearing a never-observed SessionID as current + reset the high-water, but UNPREDICTABILITY IS NOT FRESHNESS — a passive eavesdropper (no PSK) obtains never-seen authenticated probes (responder restart wipes in-memory state; probes lost-in-transit reach the attacker not the responder; prior boots) and replaying ONE seized current, permanently locking out the legit peer (a DoS worse than the D12 deadlock it fixes); v1 also grew guards[(pathID,SessionID)] unbounded. [opus's v1 approve MISSED this — it wrongly assumed never-seen => freshly-PSK-minted.] REDESIGN (667f568, merged c64d794): RESPONDER-CONTRIBUTED CHALLENGE. Session-epoch reset is gated on the peer echoing the responder's confidential, MAC-covered, per-adoption-ROTATED issuedChallenge (drawn non-zero, inside obf(body) — only a PSK holder can read it), so a replay (which cannot know the live challenge) can NEVER authorize a reset. acceptLocked: S==session -> D4 strict-monotonic; S!=session & C==issuedChallenge -> adopt+reset+rotate+reflect; S!=session & C!=issuedChallenge -> reflect-only (bootstrap), no reset. Genuine restart recovers via a bounded 2-round handshake (~2 probe intervals + RTT, within the T13 detection window / WG budget). Memory O(paths) (paths map[uint8]*reflectorPath ≤256, NO retired-set). R2 BOTH approve: opus traced every acceptLocked branch (only the challenge-gated branch mutates high-water; forgeries die at frame.Decode's MAC); fable RE-RAN its r1 seizure reproduction + 3 fresh attack tests (wrong-challenge/rotation/stale-echo-rollback) — all fail to seize/stall. Verified: challenge confidential+unforgeable; rotation blocks captured-adoption-probe re-adoption; prober updates learnedChallenge only AFTER guard.Accept (no backward-roll stall); non-zero draw excludes the Challenge=0 bootstrap sentinel; no new redraw-flood/amplification DoS; D4 + T37 (IsEcho/reflection/remote-learning) preserved; SessionID+Challenge MAC-covered (TestTamperedRejected extended); -race clean. Merged c64d794 (rebased onto main; multipath.go/probe_test.go conflict with T18 resolved preserving BOTH the resequencer wiring and the challenge/reflect handling; full suite + -race + e2e-compile green). Resolves D12."
+- criticism: ["[r1 fable, REDESIGNED 667f568] v1 session-seizure bypass — peer-chosen-random SessionID: a replayed never-observed authenticated probe seized `current` and permanently locked out the legit peer (unpredictability != freshness). Replaced with a responder-contributed confidential rotating challenge gating the epoch reset.","[r1 fable, resolved 667f568] v1 unbounded guards[(pathID,SessionID)] retired-set — eliminated (O(paths), no retired-set) by the challenge design"]
+- new_questions: []
+- ledgerRefs: ["tasks:T38","goals:G1","defects:D12"]
 
 ## M10
 

@@ -80,10 +80,10 @@ archives: []
 - rootCause: "Confirmed by the T11 review (source-cited): internal/frame Encode/Decode call subkeys(psk) (two HKDF-SHA256 derivations) per invocation and Decode double-inits XChaCha20 (peek + full-body) per frame + per-frame allocations — wasteful in the per-datagram hot path. Correct output, but not built for the datapath. Fix deferred to T12 (where the codec is first wired into the datapath): introduce a Codec state built once from the PSK (NewCodec(psk), derive subkeys once, single keystream per Decode, dst-append buffer reuse). D5 ledgerRefs tasks:T12 so it auto-resolves on T12 merge-back. Reinforced by this session's real-host finding that the pass-through path is efficiency-sensitive (though not the current bottleneck)."
 - fix: "Resolved by T12 (merged 6675ead): internal/frame gained NewCodec(psk) building HKDF subkeys ONCE, with Codec.Encode/Decode using a single keystream per operation and a dst-append API; the multipath Bind constructs the Codec once and reuses it on the per-datagram hot path instead of re-deriving subkeys + double-initing ChaCha20 per frame. Verified intact (single-keystream) by the T12 r3 review panel."
 
-### D6 — open
+### D6 — resolved
 
 - createdAt: 2026-07-06T22:26:02.141Z
-- updatedAt: 2026-07-06T22:26:02.141Z
+- updatedAt: 2026-07-07T11:56:52.680Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Probe frame has no direction/role bit — a bounced outbound probe is a valid echo
@@ -91,6 +91,7 @@ archives: []
 - severity: medium
 - suggestedFix: Add a direction/role bit to frame.Probe (or a distinct KindProbeEcho) COVERED BY THE HMAC; the prober accepts only echo-role frames, the reflector only probe-role frames. Do this in the frame codec (adjacent to D5/T12) or a dedicated follow-up; then T13's liveness/anti-replay consumes the role.
 - ledgerRefs: ["tasks:T13","goals:G1","tasks:T18"]
+- fix: "Resolved by T37 (merged 03c8651): frame.Probe gained an IsEcho direction/role bit INSIDE the MAC-covered body. A prober emits PROBE (IsEcho=false); the reflector reflects it as ECHO (IsEcho=true); the originator's HandleEcho accepts ONLY IsEcho=true frames as echoes. An on-path adversary that bounces the prober's own outbound probe bytes back verbatim leaves IsEcho=false, so it is NOT accepted as an echo and liveness does not falsely stay Up; flipping IsEcho requires the PSK (MAC-covered) so it is unforgeable. The T37 review panel confirmed the direction discriminant is unspoofable and reflect-of-reflect is broken by the IsEcho guard — exactly D6's proposed fix (a HMAC-covered direction/role bit). Anti-replay freshness of echoes is further hardened by D4 (per-path ProbeSeq) and T38 (session epoch)."
 
 ### D9 — resolved
 
@@ -133,10 +134,10 @@ archives: []
 - ledgerRefs: ["tasks:T15","tasks:T37","goals:G1"]
 - fix: "Resolved by T37 (merged 03c8651): the Bind receiver now learns ps.setRemote(srcAP) from AUTHENTICATED probe/echo frames, and reflection runs independently of getRemote/scheduler, so a concentrator backup path acquires a usable return remote from probe traffic BEFORE it becomes active. A probe-only StateUp path has getRemote()==true, so scheduler failover to it no longer returns errNoHealthyPath. Verified by both T37 reviewers + the blackhole->failover test's post-failover Send."
 
-### D12 — root-caused
+### D12 — resolved
 
 - createdAt: 2026-07-07T00:15:10.403Z
-- updatedAt: 2026-07-07T00:15:10.403Z
+- updatedAt: 2026-07-07T11:54:56.190Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Probe anti-replay has no session epoch — peer restart deadlocks liveness until seq catches up
@@ -145,13 +146,14 @@ archives: []
 - rootCause: "Confirmed by the T37 review against source: the D4 anti-replay high-water is a strict-monotonic in-memory counter with no session/boot identity, so a peer that restarts (seq from 0) is indistinguishable from a replay attacker to the surviving peer, which rejects the entire fresh probe stream until the counter organically exceeds the stale high-water. The fix is a wire/protocol change (session epoch), hence a separate task, not a T37 rework."
 - suggestedFix: Carry a random per-boot session id in the Probe frame (INSIDE the MAC-covered body) and key the Reflector's anti-replay by (sessionId, pathID), resetting the high-water when a NEW sessionId is first observed on a path; the originator's HandleEcho guard resets likewise on its own boot. Preserves strict-monotonic replay protection WITHIN a session while accepting a restarted peer's seq-from-0 stream. Owned by task T38.
 - ledgerRefs: ["tasks:T37","tasks:T38","goals:G1"]
+- fix: "Resolved by T38 (merged c64d794). A responder-contributed challenge establishes peer freshness: the Reflector issues a confidential, MAC-covered, per-adoption-rotated non-zero issuedChallenge (inside obf(body), readable only with the PSK); a session-epoch RESET is authorized ONLY when a probe echoes the current issuedChallenge — which a replay attacker cannot know. A genuinely restarted peer bootstraps in a bounded 2-round handshake (round 1 challenge-0 reflected -> learns challenge; round 2 echoes it -> adopted, high-water reset), recovering within the T13 detection window instead of the minutes-to-hours D12 deadlock. Memory is O(paths) (no retired-session set). NOTE: the FIRST T38 design (peer-chosen random SessionID) was itself unsound — the fable review reproduced a session-seizure bypass (unpredictability != freshness: a replayed never-observed probe seized the session and locked out the legit peer); the merged responder-challenge redesign closes it, verified by both reviewers re-running the seizure reproduction (now fails to seize)."
 
 ## M10
 
-### D7 — open
+### D7 — root-caused
 
 - createdAt: 2026-07-06T22:27:16.368Z
-- updatedAt: 2026-07-06T22:27:16.368Z
+- updatedAt: 2026-07-07T11:57:39.985Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Concentrator tunnel-interface ACCEPT rule is not reboot-persistent
@@ -159,11 +161,12 @@ archives: []
 - severity: medium
 - suggestedFix: Add a provisioning step (and document in T22's install doc) that persists the concentrator INPUT rule across reboots — `netfilter-persistent save` after insertion, or an idempotent edit of /etc/iptables/rules.v4, or a small systemd unit that re-applies on boot — guarded by a state check so re-runs stay no-ops; extend TestRealProvision to assert the persisted set.
 - ledgerRefs: ["tasks:T32","goals:G1","tasks:T22"]
+- rootCause: "Confirmed by the T32 review against the live o3 host: T32's provision inserts `iptables -I INPUT -i wanbond0 -j ACCEPT` into the RUNTIME chain only; OCI Ubuntu restores /etc/iptables/rules.v4 at boot, so a reboot drops the rule and inbound tunnel TCP hits the default REJECT again. Fix DEFERRED to T22 (install doc + reboot-persistence provisioning step) per ledgerRefs tasks:T22 — documented and ready-to-implement, not separately investigable."
 
-### D8 — open
+### D8 — root-caused
 
 - createdAt: 2026-07-06T22:27:25.373Z
-- updatedAt: 2026-07-06T22:27:25.373Z
+- updatedAt: 2026-07-07T11:57:44.064Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Pre-existing duplicate rules in the o3 concentrator INPUT chain
@@ -171,3 +174,4 @@ archives: []
 - severity: low
 - suggestedFix: In the reboot-persistence follow-up, deduplicate the o3 INPUT chain to one canonical rule set (single 51820 ACCEPT, single OCI default block) before persisting, with a before/after `iptables -S INPUT` capture. This is a one-time host cleanup on o3, not a repo change.
 - ledgerRefs: ["tasks:T32","goals:G1"]
+- rootCause: "Confirmed by the T32 review: the duplicate rules in o3's INPUT chain PREDATE T32 (whose -C-guarded insert cannot duplicate) — residue of this session's earlier NON-idempotent manual iptables inserts during P0 real-host bring-up. o3 HOST STATE ONLY, not a code defect (low). One-time dedup deferred to the reboot-persistence follow-up (with D7/T22) — a host cleanup action, not separately investigable."

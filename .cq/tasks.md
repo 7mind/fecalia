@@ -129,10 +129,10 @@ archives:
 - dependsOn: ["T12","T13"]
 - ledgerRefs: ["goals:G1"]
 
-### T16 — planned
+### T16 — wip
 
 - createdAt: 2026-07-01T23:40:04.937Z
-- updatedAt: 2026-07-06T23:36:18.937Z
+- updatedAt: 2026-07-07T11:57:45.517Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Edge public-IP change survival (per-path re-roaming)
@@ -171,12 +171,12 @@ archives:
 - dependsOn: ["T20"]
 - ledgerRefs: ["goals:G1"]
 
-### T30 — planned
+### T30 — wip
 
 - createdAt: 2026-07-01T23:54:17.561Z
-- updatedAt: 2026-07-02T00:05:13.417Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T11:57:46.389Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Runtime path add/remove (dynamic path set + config reload)
 - description: "Per the FUNCTIONAL requirement 'Path up/down + add/remove' and 'design for N': allow adding or removing a path from the active bonded set at runtime (e.g. SIGHUP config reload or a control-socket command), beyond the up/down liveness of T13. Adding a path opens its per-path socket, begins probing, and admits it to the scheduler once healthy; removing a path drains and closes it. Must not disturb existing paths, in-flight resequencing, or the WG session (single virtual endpoint preserved)."
 - acceptance: "Unit + e2e tests: starting with one path, adding a second at runtime brings it into the scheduler once its probes report healthy and traffic begins using it, with zero reset of an in-flight TCP flow; removing a path drains and closes it while the flow continues on the remaining path; the WG session and the other path are undisturbed throughout."
@@ -197,10 +197,10 @@ archives:
 - dependsOn: ["T13","T15"]
 - ledgerRefs: ["goals:G1","tasks:T20","tasks:T16"]
 
-### T38 — wip
+### T38 — done
 
 - createdAt: 2026-07-07T00:15:22.349Z
-- updatedAt: 2026-07-07T00:15:58.087Z
+- updatedAt: 2026-07-07T11:54:30.968Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Probe anti-replay session epoch: survive peer restart without a liveness deadlock"
