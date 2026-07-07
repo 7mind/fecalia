@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"net/netip"
@@ -121,9 +122,9 @@ func TestMultipathReflectsProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode probe: %v", err)
 	}
-	out := make([]byte, 2048)
-	if n, delivered := m.handleInbound(m.paths[0], raw, peerAP, out); delivered || n != 0 {
-		t.Fatalf("probe delivered up the stack (n=%d delivered=%v), want dropped from the WG path", n, delivered)
+	m.handleInbound(m.paths[0], raw, peerAP)
+	if it, ok := m.resequencer.Load().Pop(); ok {
+		t.Fatalf("probe delivered up the WG path (payload %q), want dropped", it.Payload)
 	}
 
 	// The path learned the probe source as its remote — authenticated learning.
@@ -160,9 +161,9 @@ func TestMultipathRemoteLearnedFromProbeNotData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode data: %v", err)
 	}
-	out := make([]byte, 2048)
-	if n, delivered := m.handleInbound(m.paths[0], dataRaw, dataSrc, out); !delivered || n != 2 {
-		t.Fatalf("DATA handleInbound = (n=%d delivered=%v), want (2,true)", n, delivered)
+	m.handleInbound(m.paths[0], dataRaw, dataSrc)
+	if it, ok := m.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("wg")) {
+		t.Fatalf("DATA not resequenced up the WG path: ok=%v payload=%q, want %q", ok, it.Payload, "wg")
 	}
 	if _, ok := m.paths[0].getRemote(); ok {
 		t.Fatal("path learned a remote from an unauthenticated DATA frame: D9 not resolved")
@@ -174,9 +175,7 @@ func TestMultipathRemoteLearnedFromProbeNotData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode probe: %v", err)
 	}
-	if _, delivered := m.handleInbound(m.paths[0], probeRaw, probeSrc, out); delivered {
-		t.Fatalf("probe delivered up the stack, want dropped")
-	}
+	m.handleInbound(m.paths[0], probeRaw, probeSrc)
 	if remote, ok := m.paths[0].getRemote(); !ok || remote != probeSrc {
 		t.Fatalf("path remote = %v (ok=%v), want %v learned from the probe", remote, ok, probeSrc)
 	}
@@ -207,10 +206,7 @@ func TestMultipathEchoFeedsProber(t *testing.T) {
 	clk.advance(testProbeRTT)
 
 	src := netip.MustParseAddrPort("192.0.2.30:6000")
-	out := make([]byte, 2048)
-	if _, delivered := m.handleInbound(m.paths[0], echo, src, out); delivered {
-		t.Fatalf("echo delivered up the stack, want consumed by the prober")
-	}
+	m.handleInbound(m.paths[0], echo, src)
 	if got := probers[0].Estimate().RTT; got != testProbeRTT {
 		t.Fatalf("prober RTT after echo = %v, want %v (echo not fed into the prober)", got, testProbeRTT)
 	}
@@ -275,7 +271,6 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 	}
 	reflector := telemetry.NewReflector(psk)
 	codec, _ := frame.NewCodec(psk)
-	out := make([]byte, 2048)
 
 	// echoPath reads the probe the last emitProbes sent on path p and, when echo is
 	// true, reflects it back into the path's prober; otherwise it drops it (a
@@ -293,9 +288,7 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reflect path %d: %v", p, err)
 		}
-		if _, delivered := m.handleInbound(m.paths[p], reflected, peerAPs[p], out); delivered {
-			t.Fatalf("echo on path %d delivered up the stack", p)
-		}
+		m.handleInbound(m.paths[p], reflected, peerAPs[p])
 	}
 
 	// Bring both paths Up: UpAfterSuccesses healthy rounds, echoing both.

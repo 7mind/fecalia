@@ -7,11 +7,13 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -33,6 +35,26 @@ const multipathBatchSize = 1
 // maxDatagram bounds a single received outer datagram. It comfortably exceeds a
 // full-MTU inner packet plus every outer/WG/amnezia-junk overhead.
 const maxDatagram = 65535
+
+// Receive-resequencer tuning (T18), sized against P0 findings §6.
+//
+// resequencerWindow is the maximum span of outer-seq positions the receive
+// resequencer buffers while it waits for an out-of-order frame. WG's inner RFC
+// 6479 anti-replay window is 8128 messages (docs/p0-findings.md §6); the window
+// here sits ~4x below that, so even a worst-case burst of reordered/held frames
+// stays comfortably inside the inner filter's tolerance while spanning far more
+// packets than the measured ~19 ms emulated cross-path skew (and the larger,
+// more variable real Starlink/5G skew) needs at realistic per-path rates.
+//
+// resequencerTimeout bounds how long a head-of-line-blocked run is held for a
+// missing (presumed-lost) lower frame before that gap is skipped and the run
+// released. It caps the added latency — and the stall a slow/lossy path can
+// impose on the whole bond (P0 §7 head-of-line concern) — to a few multiples of
+// a Starlink RTT (~45 ms) rather than holding a gap forever.
+const (
+	resequencerWindow  = 2048
+	resequencerTimeout = 250 * time.Millisecond
+)
 
 var (
 	errNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
@@ -120,6 +142,17 @@ type Multipath struct {
 	hasDefaultRemote bool
 
 	outerSeq atomic.Uint64
+
+	// resequencer is the shared T18 receive resequencing buffer. Every path's
+	// decoded DATA frame is pushed through it (by outer-seq) and delivered up the
+	// WG path IN ORDER, so WG's inner anti-replay window never sees multipath
+	// reorder. It is (re)created per Open — matching the socket lifecycle, and
+	// re-pinning its release point after a reconnect — and published atomically so
+	// the per-path receive goroutines read it WITHOUT m.mu, preserving T12's
+	// lock-free receive fast path. Its own mutex is disjoint from m.mu, so it adds
+	// no contention to Send and is never held across a syscall. PROBE handling
+	// (T37) never touches it.
+	resequencer atomic.Pointer[reseq.Resequencer]
 }
 
 // compile-time proof that Multipath satisfies the engine's Bind contract.
@@ -196,6 +229,11 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		return nil, 0, err
 	}
 
+	// A fresh resequencer per Open: its release point re-pins to the first frame
+	// received after this bring-up, so a Close→Open cycle (or reconnect) never
+	// wedges on a stale high-water outer-seq.
+	m.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+
 	fns := make([]ReceiveFunc, 0, len(m.defs))
 	actualPort := port
 	for i := range m.defs {
@@ -236,40 +274,51 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	return fns, actualPort, nil
 }
 
-// receiver returns the ReceiveFunc for one path socket. It reads outer datagrams
-// and dispatches each through handleInbound; only a DATA frame is delivered up
-// under the shared virtual endpoint, so the loop keeps reading (processing probe
-// reflections/echoes as side effects) until a DATA frame arrives rather than
-// returning a zero-length batch. The read buffer is private to this closure, so
-// the per-path Codec's scratch is never shared across goroutines.
+// receiver returns the ReceiveFunc for one path socket. Each call first drains
+// any DATA the shared resequencer has released IN ORDER (so a burst unblocked by
+// one read is delivered across successive calls without waiting for the next
+// datagram), and otherwise reads the socket and dispatches through handleInbound.
+// PROBE frames are processed as side effects (reflection / echo-to-prober) and
+// never delivered up this path, so the loop keeps going until a resequenced DATA
+// frame is ready rather than returning a zero-length batch. The read buffer is
+// private to this closure, so the per-path Codec's scratch is never shared across
+// goroutines.
 func (m *Multipath) receiver(ps *pathState) ReceiveFunc {
 	readBuf := make([]byte, maxDatagram)
 	return func(packets [][]byte, sizes []int, eps []Endpoint) (int, error) {
 		for {
+			// Deliver any in-order resequenced DATA before blocking on a read. The
+			// item carries the outer source of the frame that produced it, so the
+			// virtual endpoint pins correctly even when the frame was buffered and
+			// released out of arrival order.
+			if it, ok := m.resequencer.Load().Pop(); ok {
+				if len(it.Payload) > len(packets[0]) {
+					continue // oversize inner datagram: drop, keep draining
+				}
+				sizes[0] = copy(packets[0], it.Payload)
+				eps[0] = m.virtualEndpoint(it.Src)
+				return 1, nil
+			}
 			n, srcAP, err := ps.conn.ReadFromUDPAddrPort(readBuf)
 			if err != nil {
 				return 0, err
 			}
-			sz, delivered := m.handleInbound(ps, readBuf[:n], srcAP, packets[0])
-			if !delivered {
-				continue // PROBE reflected/echo-consumed, or dropped: read again
-			}
-			sizes[0] = sz
-			eps[0] = m.virtualEndpoint(srcAP)
-			return 1, nil
+			m.handleInbound(ps, readBuf[:n], srcAP)
 		}
 	}
 }
 
-// handleInbound decodes one received outer datagram and dispatches it by kind,
-// returning the delivered inner length and whether a DATA frame was placed into
-// out (to hand up under the virtual endpoint). It is the single per-frame receive
-// action, factored out of receiver so the probe transport is exercisable without
-// spinning receive goroutines.
+// handleInbound decodes one received outer datagram and dispatches it by kind. It
+// is the single per-frame receive action, factored out of receiver so the probe
+// transport is exercisable without spinning receive goroutines. Delivery up the
+// WG path is deferred to the resequencer (Pop, in receiver): a DATA frame is not
+// handed up here but pushed into the shared resequencer to be released in
+// outer-seq order.
 //
-//   - DATA: the inner WireGuard datagram is copied into out and delivered. The
-//     path's remote is NOT learned here — remote-learning is authenticated-only
-//     (see below), so a forged DATA frame cannot steer a path's return endpoint.
+//   - DATA: the decoded inner datagram is pushed into the resequencer keyed by
+//     the frame's outer-seq (delivered later, in order, via Pop). The path's
+//     remote is NOT learned here — remote-learning is authenticated-only (see
+//     below), so a forged DATA frame cannot steer a path's return endpoint.
 //   - PROBE, IsEcho=false: an authenticated peer probe. Its source is learned as
 //     the path's remote (D11: a probe-only backup path gets a usable return remote
 //     before any DATA flows) and it is reflected straight back to that source via
@@ -284,19 +333,22 @@ func (m *Multipath) receiver(ps *pathState) ReceiveFunc {
 // frames — Decode has already verified the tag for the PROBE kind — which is what
 // resolves D9: an attacker who forges an unauthenticated DATA frame can no longer
 // repoint a path's return endpoint.
-func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPort, out []byte) (int, bool) {
+//
+// FEC seam (T24): DATA ingestion via resequencer.Observe is keyed purely on
+// outer-seq, so an FEC decoder can slot in BEFORE the resequencer with no change
+// here — PARITY (dropped today) will feed the decoder, which reconstructs missing
+// DATA frames and calls Observe with their ORIGINAL outer-seq, identical to a
+// natively-received frame.
+func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPort) {
 	fr, err := ps.codec.Decode(raw)
 	if err != nil {
-		return 0, false // drop malformed / PSK-mismatched outer frames
+		return // drop malformed / PSK-mismatched outer frames
 	}
 	switch f := fr.(type) {
 	case frame.Data:
-		inner := f.Payload
-		if len(inner) > len(out) {
-			return 0, false // cannot fit; drop (should not happen within MTU budget)
-		}
-		copy(out, inner)
-		return len(inner), true
+		// Decode already returned a fresh copy of the payload (it aliases nothing
+		// else), so the resequencer may take ownership of it directly.
+		m.resequencer.Load().Observe(f.OuterSeq, f.Payload, srcAP)
 	case frame.Probe:
 		// Authenticated (the PROBE MAC verified in Decode): learn the return remote
 		// from it, below the engine's virtual endpoint (no roaming churn).
@@ -307,7 +359,7 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 				// leaves liveness untouched; the error is a per-frame drop, not fatal.
 				_ = m.probers[ps.id].HandleEcho(raw)
 			}
-			return 0, false
+			return
 		}
 		if m.reflector != nil {
 			if echo, rerr := m.reflector.Reflect(raw); rerr == nil {
@@ -316,9 +368,8 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 				_, _ = ps.conn.WriteToUDPAddrPort(echo, srcAP)
 			}
 		}
-		return 0, false
 	default:
-		return 0, false // PARITY/CONTROL are not delivered up this path (P2/P3)
+		// PARITY/CONTROL are not delivered up this path (P2/P3).
 	}
 }
 
