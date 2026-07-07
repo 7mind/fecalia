@@ -1,0 +1,148 @@
+package adaptivefec
+
+import (
+	"fmt"
+	"math"
+	"time"
+)
+
+// MaxShards mirrors the Reed-Solomon field limit enforced in internal/fec
+// (maxShards) and restated in internal/config (maxFECShards): a coding group
+// carries at most 256 shards (data + parity) total over GF(2^8). It is mirrored
+// here — with this cross-reference rather than an import — so the controller can
+// fail-fast on an out-of-field parity bound without coupling to the datapath.
+const MaxShards = 256
+
+// Documented default control-law constants. They are the SINGLE SOURCE OF TRUTH
+// for the tuning the simulation harness exercises; DefaultConfig assembles them.
+// Every value is named and justified rather than appearing as a magic number in
+// the algorithm.
+const (
+	// DefaultDataShards is K, the fixed number of data shards per coding group the
+	// controller sizes parity for. Chosen to match a typical FEC group.
+	DefaultDataShards = 10
+
+	// DefaultMaxParity caps M at 100% overhead (M == K): beyond a 1:1 parity ratio
+	// the marginal recovery per byte of overhead is poor, so the loop saturates
+	// there rather than spending unbounded bandwidth under pathological loss.
+	DefaultMaxParity = 10
+
+	// DefaultAlpha is the EWMA weight of the newest loss sample. 0.3 keeps ~3-4
+	// samples of memory: heavy enough to reject single-sample telemetry noise, light
+	// enough to react to a genuine sustained shift within a few probe intervals.
+	DefaultAlpha = 0.3
+
+	// DefaultRaiseThreshold is the smoothed-loss level (5%) at/above which the loop
+	// starts adding parity. Below it, occasional loss is cheaper to absorb via
+	// retransmit/latency than to mask with standing redundancy.
+	DefaultRaiseThreshold = 0.05
+
+	// DefaultLowerThreshold is the smoothed-loss level (2%) at/below which the loop
+	// is eligible to shed parity. The gap to RaiseThreshold is the hysteresis
+	// deadband: loss wandering between 2% and 5% neither raises nor lowers M.
+	DefaultLowerThreshold = 0.02
+
+	// DefaultSafetyFactor is the headroom over the mean loss the parity is sized to
+	// mask. 1.5 sizes each group to tolerate 1.5x the smoothed loss, covering the
+	// binomial variance by which an individual group exceeds the mean.
+	DefaultSafetyFactor = 1.5
+
+	// DefaultMaxStep bounds |ΔM| per RateInterval. A single spike can move M by at
+	// most 2 parity shards per interval, so redundancy slews rather than jumps.
+	DefaultMaxStep = 2
+
+	// DefaultRateInterval is the minimum wall time between two M changes. Combined
+	// with MaxStep it caps the redundancy slew rate at MaxStep shards per 500ms.
+	DefaultRateInterval = 500 * time.Millisecond
+
+	// DefaultDwell is how long smoothed loss must stay at/below LowerThreshold before
+	// the first decrease. 3s of quiet is required to shed parity, so a brief lull in
+	// a lossy period does not prematurely strip protection (raise fast, lower slow).
+	DefaultDwell = 3 * time.Second
+)
+
+// Config parameterizes the adaptive FEC controller. All fields are validated at
+// construction (fail-fast): a mis-tuned band or an out-of-field parity bound is
+// rejected by NewController rather than producing undefined control behavior at
+// runtime.
+type Config struct {
+	// DataShards is K, the fixed group size the controller sizes parity for. >= 1.
+	DataShards int
+	// MaxParity is the upper bound on the emitted M. >= 1 and DataShards+MaxParity
+	// <= MaxShards (the Reed-Solomon field limit).
+	MaxParity int
+	// Alpha is the EWMA weight of the newest loss sample, in (0,1]. Smaller = more
+	// smoothing.
+	Alpha float64
+	// RaiseThreshold is the smoothed-loss level at/above which M may rise. In
+	// (LowerThreshold, 1).
+	RaiseThreshold float64
+	// LowerThreshold is the smoothed-loss level at/below which M may fall. In
+	// [0, RaiseThreshold). The gap to RaiseThreshold is the hysteresis deadband.
+	LowerThreshold float64
+	// SafetyFactor is the headroom multiplier on the smoothed loss the parity is
+	// sized to mask. >= 1.
+	SafetyFactor float64
+	// MaxStep bounds |ΔM| applied per RateInterval. >= 1.
+	MaxStep int
+	// RateInterval is the minimum time between two M changes. > 0.
+	RateInterval time.Duration
+	// Dwell is the minimum time smoothed loss must stay at/below LowerThreshold
+	// before the first decrease. >= 0.
+	Dwell time.Duration
+}
+
+// DefaultConfig returns a Config populated from the documented default control
+// constants.
+func DefaultConfig() Config {
+	return Config{
+		DataShards:     DefaultDataShards,
+		MaxParity:      DefaultMaxParity,
+		Alpha:          DefaultAlpha,
+		RaiseThreshold: DefaultRaiseThreshold,
+		LowerThreshold: DefaultLowerThreshold,
+		SafetyFactor:   DefaultSafetyFactor,
+		MaxStep:        DefaultMaxStep,
+		RateInterval:   DefaultRateInterval,
+		Dwell:          DefaultDwell,
+	}
+}
+
+// Validate enforces the control-law invariants, failing fast so a mis-tuned
+// controller is rejected at construction rather than misbehaving at runtime.
+func (c Config) Validate() error {
+	if c.DataShards < 1 {
+		return fmt.Errorf("adaptivefec: DataShards (K) must be >= 1, got %d", c.DataShards)
+	}
+	if c.MaxParity < 1 {
+		return fmt.Errorf("adaptivefec: MaxParity must be >= 1, got %d", c.MaxParity)
+	}
+	if c.DataShards+c.MaxParity > MaxShards {
+		return fmt.Errorf("adaptivefec: DataShards+MaxParity must be <= %d (Reed-Solomon field limit), got %d", MaxShards, c.DataShards+c.MaxParity)
+	}
+	if !(c.Alpha > 0 && c.Alpha <= 1) || math.IsNaN(c.Alpha) {
+		return fmt.Errorf("adaptivefec: Alpha must be in (0,1], got %g", c.Alpha)
+	}
+	if math.IsNaN(c.LowerThreshold) || c.LowerThreshold < 0 {
+		return fmt.Errorf("adaptivefec: LowerThreshold must be >= 0, got %g", c.LowerThreshold)
+	}
+	if math.IsNaN(c.RaiseThreshold) || c.RaiseThreshold >= 1 {
+		return fmt.Errorf("adaptivefec: RaiseThreshold must be < 1, got %g", c.RaiseThreshold)
+	}
+	if c.LowerThreshold >= c.RaiseThreshold {
+		return fmt.Errorf("adaptivefec: LowerThreshold (%g) must be < RaiseThreshold (%g) so the hysteresis deadband is non-empty", c.LowerThreshold, c.RaiseThreshold)
+	}
+	if math.IsNaN(c.SafetyFactor) || math.IsInf(c.SafetyFactor, 0) || c.SafetyFactor < 1 {
+		return fmt.Errorf("adaptivefec: SafetyFactor must be a finite value >= 1, got %g", c.SafetyFactor)
+	}
+	if c.MaxStep < 1 {
+		return fmt.Errorf("adaptivefec: MaxStep must be >= 1, got %d", c.MaxStep)
+	}
+	if c.RateInterval <= 0 {
+		return fmt.Errorf("adaptivefec: RateInterval must be > 0, got %s", c.RateInterval)
+	}
+	if c.Dwell < 0 {
+		return fmt.Errorf("adaptivefec: Dwell must be >= 0, got %s", c.Dwell)
+	}
+	return nil
+}
