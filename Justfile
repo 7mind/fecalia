@@ -9,6 +9,14 @@ default:
 build:
     go build ./...
 
+# Cross-compile static release binaries (CGO_ENABLED=0, stripped, version
+# stamped from git) for linux/amd64 and linux/arm64 into dist/. `file` reports
+# them statically linked; see docs/install.md for the deployment steps.
+release:
+    mkdir -p dist
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" -o dist/wanbond-linux-amd64 ./cmd/wanbond
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" -o dist/wanbond-linux-arm64 ./cmd/wanbond
+
 # Vet + lint.
 lint:
     go vet ./...
