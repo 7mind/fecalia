@@ -29,6 +29,7 @@ func TestNewControllerRejectsInvalidConfig(t *testing.T) {
 		"raise>=1":              func(c *Config) { c.RaiseThreshold = 1.0 },
 		"lower>=raise":          func(c *Config) { c.LowerThreshold = 0.06; c.RaiseThreshold = 0.05 },
 		"safety<1":              func(c *Config) { c.SafetyFactor = 0.9 },
+		"safetyInf":             func(c *Config) { c.SafetyFactor = math.Inf(1) },
 		"maxStep<1":             func(c *Config) { c.MaxStep = 0 },
 		"rateInterval<=0":       func(c *Config) { c.RateInterval = 0 },
 		"dwell<0":               func(c *Config) { c.Dwell = -time.Second },

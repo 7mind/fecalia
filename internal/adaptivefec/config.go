@@ -132,8 +132,8 @@ func (c Config) Validate() error {
 	if c.LowerThreshold >= c.RaiseThreshold {
 		return fmt.Errorf("adaptivefec: LowerThreshold (%g) must be < RaiseThreshold (%g) so the hysteresis deadband is non-empty", c.LowerThreshold, c.RaiseThreshold)
 	}
-	if math.IsNaN(c.SafetyFactor) || c.SafetyFactor < 1 {
-		return fmt.Errorf("adaptivefec: SafetyFactor must be >= 1, got %g", c.SafetyFactor)
+	if math.IsNaN(c.SafetyFactor) || math.IsInf(c.SafetyFactor, 0) || c.SafetyFactor < 1 {
+		return fmt.Errorf("adaptivefec: SafetyFactor must be a finite value >= 1, got %g", c.SafetyFactor)
 	}
 	if c.MaxStep < 1 {
 		return fmt.Errorf("adaptivefec: MaxStep must be >= 1, got %d", c.MaxStep)
