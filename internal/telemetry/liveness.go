@@ -55,6 +55,32 @@ type LivenessConfig struct {
 	UpAfterSuccesses int
 }
 
+// Default per-path liveness detection timing (T13/T37/T39). These are the SINGLE
+// SOURCE OF TRUTH for probe cadence and up/down hysteresis. The daemon
+// (internal/device) builds its ProberConfig from them and runs its probe loop at
+// DefaultProbeInterval; the e2e acceptance table (test/e2e/thresholds.go) derives
+// its PLiveness* budget from them. Neither can silently diverge from the timing the
+// daemon actually runs, which is the D16 reconciliation: one place to retune.
+//
+//   - DefaultDownAfter is the silence that marks an UP path DOWN.
+//   - DefaultProbeInterval is the probe emission AND liveness Tick cadence; detection
+//     latency is therefore bounded by DownAfter + one interval.
+//   - DefaultUpSuccesses is the consecutive echoes that bring a DOWN path UP.
+//   - DefaultLossWindow (0) takes the estimator's default trailing window.
+//
+// DownAfter spans DefaultProbeInterval*6, so SIX consecutive lost echoes are needed
+// before a false DOWN — the D13 jitter-safety margin. T39 tightened the pair from
+// 1500ms/250ms to 1200ms/200ms to WIDEN the P1 3s-recovery margin while KEEPING
+// that six-lost-echo false-down tolerance exactly (the ratio is unchanged). Detection
+// latency drops from ~1.75s to ~1.4s worst case, and the receive-path liveness sweep
+// (bind, D15) makes that detection robust to probe-loop-ticker starvation under load.
+const (
+	DefaultProbeInterval = 200 * time.Millisecond
+	DefaultDownAfter     = 1200 * time.Millisecond
+	DefaultUpSuccesses   = 3
+	DefaultLossWindow    = 0
+)
+
 // Liveness is the per-path up/down state machine. It is driven by two events:
 // RecordEcho on every authenticated probe echo, and Tick on a periodic timer.
 // It starts Down and requires UpAfterSuccesses echoes before declaring Up, so a

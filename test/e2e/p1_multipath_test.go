@@ -120,6 +120,15 @@ func TestMultipathNoFragmentation(t *testing.T) {
 // on its own address. It addresses both TUNs and returns the running processes.
 func setupMultipathTunnel(t *testing.T, top *Topology, bin string, paths []pathSpec) (edge, conc *proc) {
 	t.Helper()
+	return setupMultipathTunnelLevel(t, top, bin, paths, "error")
+}
+
+// setupMultipathTunnelLevel is setupMultipathTunnel with an explicit daemon log
+// level. The P1 failover measurement (TestP1Failover) runs both daemons at "info"
+// so the scheduler's per-direction "active path change" transitions are captured in
+// each process's log for the root-cause evidence; every other caller uses "error".
+func setupMultipathTunnelLevel(t *testing.T, top *Topology, bin string, paths []pathSpec, level string) (edge, conc *proc) {
+	t.Helper()
 
 	edgePriv, edgePub := genKey(t)
 	concPriv, concPub := genKey(t)
@@ -147,8 +156,8 @@ endpoint = "%s:%d"
 allowed_ips = ["%s/32"]
 
 [log]
-level = "error"
-`, psk, edgePaths.String(), edgePriv, concPub, primary.concIP, listenPort, concInner))
+level = %q
+`, psk, edgePaths.String(), edgePriv, concPub, primary.concIP, listenPort, concInner, level))
 
 	concCfg := writeConfig(t, filepath.Join(dir, "conc.toml"), fmt.Sprintf(`role = "concentrator"
 psk = "%s"
@@ -162,8 +171,8 @@ public_key = "%s"
 allowed_ips = ["%s/32"]
 
 [log]
-level = "error"
-`, psk, concPaths.String(), concPriv, listenPort, edgePub, edgeInner))
+level = %q
+`, psk, concPaths.String(), concPriv, listenPort, edgePub, edgeInner, level))
 
 	conc = top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", concCfg)
 	edge = top.startProc(t, "edge", bin, "--config", edgeCfg)

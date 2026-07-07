@@ -207,7 +207,9 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 
 	// The engine has opened the bind (dev.Up → BindUpdate → Open), so the per-path
 	// sockets exist: start the probe cadence now. Close stops it before dev.Close.
-	stopProbes := mpBind.StartProbeLoop(defaultProbeInterval)
+	// The interval is the SINGLE-SOURCE-OF-TRUTH telemetry default, which also arms
+	// the bind's receive-path liveness sweep throttle (D15).
+	stopProbes := mpBind.StartProbeLoop(telemetry.DefaultProbeInterval)
 
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
@@ -389,20 +391,11 @@ func diffPaths(live []string, desired []config.Path) (add []config.Path, remove 
 
 // defaultFailbackDwell is how long a recovered higher-priority path must stay up
 // before egress fails BACK to it, damping flap-induced thrash (T15 hysteresis).
+// Unlike the probe-cadence/liveness thresholds (which are the shared
+// telemetry.Default* single source of truth, D16), the failback dwell is not part
+// of the failover-recovery budget — failover to a backup is instant — so it stays a
+// device-local constant.
 const defaultFailbackDwell = 5 * time.Second
-
-// Probe cadence and liveness detection defaults (T13/T37). The interval is the
-// PROBE emission period; DownAfter is the silence that marks an up path down and
-// UpAfterSuccesses the consecutive echoes that bring a down path up. DownAfter is
-// several intervals so a single lost echo never flaps a path, and detection
-// latency stays within DownAfter plus one interval. LossWindow=0 takes the
-// estimator's default trailing window.
-const (
-	defaultProbeInterval    = 250 * time.Millisecond
-	defaultProbeDownAfter   = 1500 * time.Millisecond
-	defaultProbeUpSuccesses = 3
-	defaultProbeLossWindow  = 0
-)
 
 // buildScheduler constructs one live *telemetry.Prober per path and the P1
 // active-backup send scheduler over them, in cfg.Paths' configured priority order
@@ -415,10 +408,10 @@ const (
 func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, bind.ProberFactory, error) {
 	clock := telemetry.SystemClock{}
 	proberCfg := telemetry.ProberConfig{
-		LossWindow: defaultProbeLossWindow,
+		LossWindow: telemetry.DefaultLossWindow,
 		Liveness: telemetry.LivenessConfig{
-			DownAfter:        defaultProbeDownAfter,
-			UpAfterSuccesses: defaultProbeUpSuccesses,
+			DownAfter:        telemetry.DefaultDownAfter,
+			UpAfterSuccesses: telemetry.DefaultUpSuccesses,
 		},
 	}
 	// One random per-boot session id shared by every path's Prober (it identifies

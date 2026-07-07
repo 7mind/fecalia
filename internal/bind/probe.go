@@ -64,6 +64,9 @@ func (m *Multipath) StartProbeLoop(interval time.Duration) (stop func()) {
 	if m.probers == nil || interval <= 0 {
 		return func() {}
 	}
+	// Arm the receive-path liveness sweep at the same cadence (D15): a receiver may
+	// now advance liveness when the timer goroutine below is starved under load.
+	m.sweepIntervalNanos.Store(int64(interval))
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(interval)

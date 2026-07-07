@@ -2,7 +2,11 @@
 
 package e2e
 
-import "time"
+import (
+	"time"
+
+	"github.com/7mind/wanbond/internal/telemetry"
+)
 
 // Acceptance thresholds (Q1). These are the single source of truth for the
 // per-phase verification criteria; every e2e assertion reads them from here so
@@ -45,34 +49,58 @@ var P3InjectedLossRates = []float64{0.05, 0.15}
 // bytes. The comparison is performed in the P4 e2e test against a recorded
 // baseline run rather than a constant here.
 
-// Per-path liveness detection (T13). Path liveness is entirely ours — the inner
+// Per-path liveness detection (T13/T39). Path liveness is entirely ours — the inner
 // WireGuard keepalive is per-peer, not per-path — so a blackholed uplink under a
-// live peer is detected only by these probes. PLivenessDownAfter is the silence
-// (no authenticated probe echo) after which an up path is marked down;
-// PLivenessProbeInterval is the probe cadence; detection latency is therefore
-// bounded by DownAfter plus roughly one interval, and the e2e asserts the
-// blackholed path is marked down within PLivenessDetectBudget.
+// live peer is detected only by these probes. These are NOT independent constants:
+// they are ALIASES of the daemon's telemetry.Default* timing, so the e2e asserts
+// against the exact cadence the daemon runs. This is the D16 reconciliation — there
+// is one source of truth (internal/telemetry), not two tables that drift apart.
+// PLivenessDownAfter is the silence (no authenticated probe echo) after which an up
+// path is marked down; PLivenessProbeInterval is the probe/Tick cadence; detection
+// latency is therefore bounded by DownAfter plus roughly one interval, and the e2e
+// asserts a blackholed path is marked down within PLivenessDetectBudget.
 //
-// Relationship to P1RecoverySeconds (the 3s failover-recovery budget). The two
-// budgets compose: killing a WAN must restore the surviving flow within
-// P1RecoverySeconds, and that clock is (path marked down) + (scheduler fails the
-// path out and reroutes). This liveness machine owns only the first term; marking
-// a path down is what TRIGGERS failover (the T12 scheduler drops a down path from
-// its active set). Worst-case detection is DownAfter + one probe interval ≈ 2.0s +
-// 0.2s = 2.2s, leaving ~0.8s of the 3s budget for the scheduler's reroute — the
-// send-side switch is a data-structure update (sub-millisecond), so 2s DownAfter
-// is comfortably compatible with the 3s P1 recovery budget. The invariant to
-// preserve when retuning is on the ANALYTICAL detect term, not the assertion
-// deadline: PLivenessDownAfter + PLivenessProbeInterval (+ the reroute headroom)
-// < P1RecoverySeconds. NOTE PLivenessDetectBudget below is deliberately LARGER
-// than P1RecoverySeconds (3.5s vs 3s): it is the e2e ASSERTION DEADLINE — the
-// analytical worst-case detect (~2.2s) plus ~1.3s of harness slack so the
-// blackhole e2e is not flaky — NOT the failover-composition term. Tighten
-// DownAfter (at the cost of more probe traffic and a higher false-down risk on a
-// jittery link) if the reroute term ever grows.
+// Relationship to P1RecoverySeconds (the 3s failover-recovery budget). Killing the
+// ACTIVE WAN must restore the surviving flow within P1RecoverySeconds in BOTH
+// directions. Recovery in EACH direction is (that side marks the path down) +
+// (its scheduler reroutes, a sub-ms data-structure update). Crucially, failover is
+// BIDIRECTIONAL and the two ends detect INDEPENDENTLY: the edge must mark the path
+// down to reroute egress, AND the concentrator must mark it down to reroute its
+// replies (D15/D16 — the earlier note budgeted only the edge term). Both detection
+// clocks start at the kill and run CONCURRENTLY, so end-to-end bidirectional
+// recovery is governed by the SLOWER of the two ends, not their sum:
+//
+//	recovery ≈ max(edgeDetect, concDetect) + reroute
+//	         ≈ (DownAfter + one interval) + reroute        [the two ends are symmetric]
+//	         = PLivenessFailoverBudget
+//
+// PLivenessFailoverBudget ≈ 1.4s is the NO-LOAD analytical floor (detect + one
+// interval + reroute). The remaining ~1.6s up to the 3s deadline is the margin for
+// CPU-scheduling jitter under a saturating flow — the D15 tail. Two T39 changes
+// bought that margin back after the tail was found at ~3.1s: DownAfter was tightened
+// 1500ms→1200ms and the interval 250ms→200ms (floor 1.75s→1.4s) WITHOUT reducing the
+// six-lost-echo false-down tolerance (the ratio is unchanged); and the bind now
+// advances liveness off the always-scheduled receive path too (D15), so a starved
+// probe-loop timer no longer delays the concentrator-side detect. The correctness
+// invariant when retuning is PLivenessFailoverBudget < P1RecoverySeconds, and the
+// operational target is that MEASURED recovery under saturating load stays below
+// P1RecoverySeconds every run — TestP1Failover is the guard.
+//
+// NOTE PLivenessDetectBudget is deliberately LARGER than PLivenessFailoverBudget: it
+// is the SINGLE-PATH blackhole ASSERTION DEADLINE for TestLivenessBlackhole (detect
+// worst-case + harness slack so that pump-loop e2e is not flaky), NOT the
+// failover-composition term.
 const (
-	PLivenessProbeInterval = 200 * time.Millisecond
-	PLivenessDownAfter     = 2 * time.Second
-	PLivenessUpSuccesses   = 3
-	PLivenessDetectBudget  = PLivenessDownAfter + 1500*time.Millisecond
+	PLivenessProbeInterval = telemetry.DefaultProbeInterval
+	PLivenessDownAfter     = telemetry.DefaultDownAfter
+	PLivenessUpSuccesses   = telemetry.DefaultUpSuccesses
+	// PLivenessFailoverBudget is the analytical per-direction failover-recovery
+	// bound (detect + one interval + reroute headroom). Both directions are symmetric
+	// and detect concurrently, so it bounds end-to-end BIDIRECTIONAL recovery. It MUST
+	// stay below P1RecoverySeconds; TestP1Failover asserts measured recovery against
+	// P1RecoverySeconds and reports its margin against this budget.
+	PLivenessFailoverBudget = PLivenessDownAfter + 2*PLivenessProbeInterval
+	// PLivenessDetectBudget is the single-path blackhole assertion deadline (harness
+	// slack added on top of the analytical detect), NOT the failover budget.
+	PLivenessDetectBudget = PLivenessDownAfter + 1500*time.Millisecond
 )

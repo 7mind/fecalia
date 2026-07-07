@@ -196,6 +196,20 @@ type Multipath struct {
 	readersWG     sync.WaitGroup
 	openPort      uint16
 	nextPathID    uint16
+
+	// Receive-path liveness sweep (T39, defect D15). Liveness DOWN-detection normally
+	// rides StartProbeLoop's single wall-clock ticker goroutine (emitProbes → Tick).
+	// Under heavy CPU load — e.g. the concentrator absorbing a saturating forward flood
+	// on 4 vCPU — that timer goroutine can be scheduled with ~1s jitter, delaying a
+	// path-DOWN transition (and thus the reply-direction failover) past the P1 budget.
+	// The per-path receive goroutines, in contrast, are the goroutines the inbound
+	// traffic is ALREADY scheduling, so driving Tick from them re-evaluates liveness
+	// even when the timer goroutine is starved. sweepIntervalNanos is the probe
+	// interval (0 until StartProbeLoop arms it — a bind without the probe transport
+	// never sweeps); lastSweepNanos is the wall-clock high-water throttling the sweep
+	// to at most once per interval so the receive hot path stays cheap.
+	sweepIntervalNanos atomic.Int64
+	lastSweepNanos     atomic.Int64
 }
 
 // compile-time proof that Multipath satisfies the engine's Bind contract.
@@ -424,12 +438,66 @@ func (m *Multipath) readLoop(ps *pathState, deliver chan<- struct{}) {
 			return // socket closed: this path was removed, or the bind was closed
 		}
 		m.handleInbound(ps, readBuf[:n], srcAP)
+		// Advance liveness off the receive path (throttled): a live signal on THIS path
+		// is what lets a DIFFERENT, silent path be marked DOWN promptly even when the
+		// probe-loop ticker is starved under load (D15). The peer probes every path
+		// (and floods the survivor after it roams), so the surviving path's reader
+		// supplies exactly that signal.
+		m.tickLivenessFromReceive(time.Now())
 		// Non-blocking poke: a single buffered slot coalesces bursts; the drainer
 		// re-checks the resequencer on every wake, so a coalesced poke loses nothing.
 		select {
 		case deliver <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// tickLivenessFromReceive re-evaluates EVERY path's liveness from a receive
+// goroutine, throttled to at most once per probe interval (T39, defect D15). It is
+// the starvation-robust companion to StartProbeLoop's timer-driven Tick: the timer
+// goroutine can be delayed ~1s under CPU saturation, but the receive goroutines are
+// scheduled by the very traffic that must trigger failover, so liveness advances
+// regardless. Ticking is monotone-safe: Tick only marks an UP path DOWN once its
+// silence STRICTLY exceeds DownAfter and never brings a path UP (that needs
+// RecordEcho), so a more frequent Tick can only make a genuine DOWN transition land
+// sooner — never a premature/false one — and the failback hysteresis (owned by the
+// scheduler) is untouched. No-op when the probe transport is absent (interval unset).
+func (m *Multipath) tickLivenessFromReceive(now time.Time) {
+	interval := m.sweepIntervalNanos.Load()
+	if interval == 0 {
+		return // no probe transport / loop not started: nothing to Tick
+	}
+	n := now.UnixNano()
+	last := m.lastSweepNanos.Load()
+	if n-last < interval {
+		return // throttled: this interval's sweep was already taken
+	}
+	if !m.lastSweepNanos.CompareAndSwap(last, n) {
+		return // another receive goroutine won this interval's sweep
+	}
+	// Snapshot the prober set under m.mu (a runtime AddPath/RemovePath mutates it),
+	// then Tick OUTSIDE the lock so a transition's log write never runs under m.mu.
+	// TryLock, NOT Lock: Close holds m.mu WHILE it waits on readersWG for the readers to
+	// exit, so a reader that BLOCKED here on m.mu would deadlock that shutdown. The sweep
+	// is opportunistic and throttled, so when the lock is contended (a concurrent
+	// Close/AddPath/RemovePath/Send) simply skipping this interval is harmless — the
+	// probe-loop ticker and the next receive still advance liveness. This preserves
+	// Close's invariant that a reader never blocks on m.mu. The lock, when taken, is held
+	// at most once per interval (~5/s) for a bounded snapshot, so it adds negligible
+	// contention to Send and does not disturb the lock-free receive fast path.
+	if !m.mu.TryLock() {
+		return
+	}
+	probers := make([]*telemetry.Prober, 0, len(m.paths))
+	for _, ps := range m.paths {
+		if ps.prober != nil {
+			probers = append(probers, ps.prober)
+		}
+	}
+	m.mu.Unlock()
+	for _, pr := range probers {
+		pr.Tick()
 	}
 }
 
