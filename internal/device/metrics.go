@@ -88,6 +88,7 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 func (s *metricsSource) FEC() metrics.FECSnapshot {
 	f := s.provider.FECSnapshot()
 	return metrics.FECSnapshot{
+		DataPackets:          f.DataFrames,
 		RepairPackets:        f.ParityFrames,
 		RecoveredPackets:     f.Recovered,
 		UnrecoverablePackets: f.Unrecoverable,

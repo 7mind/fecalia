@@ -925,11 +925,18 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		// that actually reached the socket. Send serialized the path choice under m.mu, so
 		// ps is fixed here and this is the sole writer of ps.txBytes for this frame.
 		ps.txBytes.Add(uint64(len(w.b)))
-		if w.parity && fs != nil {
-			// Parity-overhead accounting (T24), counted only once the parity frame reached
-			// the socket so the /metrics overhead reflects bytes actually spent.
-			fs.parityFrames.Add(1)
-			fs.parityBytes.Add(uint64(len(w.b)))
+		if fs != nil {
+			// FEC frame accounting (T24/T25), counted only once the frame reached the socket
+			// so the /metrics overhead ratio reflects wire cost actually spent. Parity and
+			// DATA are charged to disjoint counters; their ratio ParityFrames/DataFrames is
+			// the fixed-ratio overhead the P3 e2e asserts against M/K. fs != nil only when FEC
+			// is enabled, so a plain (FEC-off) datapath increments neither counter.
+			if w.parity {
+				fs.parityFrames.Add(1)
+				fs.parityBytes.Add(uint64(len(w.b)))
+			} else {
+				fs.dataFrames.Add(1)
+			}
 		}
 	}
 	return nil
@@ -1047,6 +1054,7 @@ func (m *Multipath) FECSnapshot() FECStats {
 
 	var out FECStats
 	if fs != nil {
+		out.DataFrames = fs.dataFrames.Load()
 		out.ParityFrames = fs.parityFrames.Load()
 		out.ParityBytes = fs.parityBytes.Load()
 	}

@@ -172,7 +172,7 @@ func TestFECPlaceholdersRegistered(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 
-	for _, name := range []string{MetricFECRepair, MetricFECRecovered, MetricFECUnrecoverable} {
+	for _, name := range []string{MetricFECData, MetricFECRepair, MetricFECRecovered, MetricFECUnrecoverable} {
 		if !exp.Has(name) {
 			t.Errorf("FEC placeholder %s not registered", name)
 			continue
@@ -193,6 +193,7 @@ func TestFECPlaceholdersRegistered(t *testing.T) {
 // the pre-T24 constant zero — the exposition reads the FEC plane, not a placeholder.
 func TestExpositionFECCounters(t *testing.T) {
 	src := fakeSource{fec: FECSnapshot{
+		DataPackets:          300,
 		RepairPackets:        120,
 		RecoveredPackets:     7,
 		UnrecoverablePackets: 2,
@@ -210,6 +211,7 @@ func TestExpositionFECCounters(t *testing.T) {
 		name string
 		want float64
 	}{
+		{MetricFECData, 300},
 		{MetricFECRepair, 120},
 		{MetricFECRecovered, 7},
 		{MetricFECUnrecoverable, 2},
