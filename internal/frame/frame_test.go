@@ -274,8 +274,15 @@ func TestPSKMismatchRejected(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := Decode(pskB, raw); err == nil {
-			t.Fatalf("kind %d: PSK-mismatched frame accepted", f.Kind())
+		// A wrong-PSK AUTHENTICATED frame must never decode as a valid frame of the
+		// SAME kind: its HMAC cannot pass under the wrong authKey. Note Decode CAN
+		// return err==nil ~2/256 of the time even here — the wrong obfKey de-obfuscates
+		// the body to garbage whose uniformly-random kind byte occasionally lands on the
+		// UNAUTHENTICATED KindData/KindParity, which carry no MAC by design (D9 threat
+		// model; inner WireGuard authenticates real DATA). That is expected, not an auth
+		// failure, so assert on the decoded KIND, not merely on err (defect D17).
+		if f2, err := Decode(pskB, raw); err == nil && f2.Kind() == f.Kind() {
+			t.Fatalf("kind %d: PSK-mismatched authenticated frame accepted as the same kind", f.Kind())
 		}
 	}
 }
