@@ -1,10 +1,10 @@
 package telemetry
 
 import (
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -13,18 +13,28 @@ import (
 	"github.com/7mind/wanbond/internal/log"
 )
 
-// NewSessionID draws a random 64-bit per-boot probe session identity from the
-// system CSPRNG (T38, defect D12). One value is drawn per process boot and shared
-// across every path's Prober; it identifies the boot so a peer restart presents a
-// SessionID the surviving responder has never seen, resetting that peer's
-// anti-replay high-water (see Reflector). It fails only if the CSPRNG is
-// unavailable. A random (not sequential) id is used deliberately: an attacker must
-// not be able to predict or roll the id forward, and unpredictability is what lets
-// the responder treat a never-before-seen SessionID as a genuine liveness proof.
-func NewSessionID() (uint64, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+// NewSessionID draws a 64-bit per-boot probe session identity from rand (the
+// injected CSPRNG — crypto/rand.Reader in production; T38, defect D12). One value
+// is drawn per process boot and shared across every path's Prober; it TAGS the
+// boot's probe stream so a peer restart presents a distinct SessionID. Note the
+// SessionID alone is NOT a freshness proof (a captured probe carries a never-seen
+// SessionID too): the responder's session-epoch reset is gated on the
+// responder-contributed Challenge, not on the SessionID being novel (see
+// Reflector). It fails only if the CSPRNG cannot deliver 8 bytes.
+func NewSessionID(rand io.Reader) (uint64, error) {
+	v, err := readUint64(rand)
+	if err != nil {
 		return 0, fmt.Errorf("telemetry: read session id: %w", err)
+	}
+	return v, nil
+}
+
+// readUint64 draws a big-endian uint64 from r, failing only if r cannot deliver 8
+// bytes. It is the shared draw for both session ids and reflector challenges.
+func readUint64(r io.Reader) (uint64, error) {
+	var b [8]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return 0, err
 	}
 	return binary.BigEndian.Uint64(b[:]), nil
 }
@@ -104,16 +114,21 @@ type Prober struct {
 	mu      sync.Mutex
 	nextSeq uint64
 	guard   AntiReplay
-	est     *Estimator
-	live    *Liveness
+	// learnedChallenge is the last issued challenge this Prober learned from a fresh
+	// echo; it is stamped into subsequent probes so the responder can verify liveness
+	// and (after a restart) adopt this session. Zero until the first echo is seen.
+	learnedChallenge uint64
+	est              *Estimator
+	live             *Liveness
 }
 
-// NewProber builds a Prober for one path. sessionID is this node's random
-// per-boot session identity (see NewSessionID); it is stamped into every probe
-// this Prober emits and, on the responder, keys the anti-replay reset that lets a
-// restarted peer's paths recover (T38, defect D12). All Probers of one boot share
-// the same sessionID (it identifies the boot, not the path). The logger is used
-// (path-tagged) for liveness transition logging.
+// NewProber builds a Prober for one path. sessionID is this node's per-boot
+// session identity (see NewSessionID); it is stamped into every probe this Prober
+// emits to TAG the boot's stream (T38, defect D12). The responder's session-epoch
+// reset that lets a restarted peer's paths recover is gated on the
+// responder-contributed challenge this Prober echoes back, not on the sessionID
+// alone. All Probers of one boot share the same sessionID (it identifies the boot,
+// not the path). The logger is used (path-tagged) for liveness transition logging.
 func NewProber(
 	pathName string,
 	pathID uint8,
@@ -145,6 +160,9 @@ func (p *Prober) SendProbe() ([]byte, error) {
 		ProbeSeq:       p.nextSeq,
 		TimestampNanos: p.clock.Now().UnixNano(),
 		SessionID:      p.sessionID,
+		// Echo back the responder's last-issued challenge (zero until we have seen an
+		// echo) so the responder can verify our liveness and adopt this session.
+		Challenge: p.learnedChallenge,
 	}
 	p.nextSeq++
 	return frame.Encode(p.psk, probe)
@@ -189,6 +207,11 @@ func (p *Prober) HandleEcho(raw []byte) error {
 	if !p.guard.Accept(probe.ProbeSeq) {
 		return ErrReplay
 	}
+	// Record the responder's live issued challenge from this FRESH echo so our
+	// subsequent probes prove liveness and (after a restart) get us re-adopted. Only
+	// fresh echoes update it, so a replayed old echo can never roll the learned
+	// challenge backward and stall re-adoption.
+	p.learnedChallenge = probe.Challenge
 	rtt := p.clock.Now().Sub(time.Unix(0, probe.TimestampNanos))
 	if rtt < 0 {
 		// A negative sample can only come from clock skew between send and receive;
@@ -222,71 +245,85 @@ func (p *Prober) State() PathState {
 	return p.live.State()
 }
 
-// sessionPath is the composite anti-replay key: one strict-monotonic ProbeSeq
-// high-water per (originator session, path). See Reflector.
-type sessionPath struct {
-	pathID    uint8
-	sessionID uint64
+// reflectorPath is the Reflector's bounded per-path state: exactly one entry per
+// PathID, so memory is O(paths) with NO retired-session set. It holds the
+// currently-adopted originator session, its strict-monotonic within-session
+// anti-replay high-water, and the LIVE issued challenge peers must echo back to
+// authorize a session-epoch reset.
+type reflectorPath struct {
+	session   uint64     // the adopted originator SessionID (meaningful once adopted)
+	guard     AntiReplay // ProbeSeq high-water for the currently-adopted session
+	challenge uint64     // issuedChallenge: the live freshness token, rotated on every adoption
+	adopted   bool       // whether any session has been adopted on this path yet
 }
 
-// Reflector is the responder side of the probe exchange. Reflect authenticates
-// an inbound probe, rejects replays per originating path (D4), and returns a fresh
-// authenticated encoding of the same probe (verbatim ProbeSeq and TimestampNanos,
-// but with IsEcho set) so the initiator can compute the round-trip from its own
-// send timestamp and its transport can tell the echo apart from a peer probe. The
-// responder never manufactures a timestamp, so it needs no synchronized clock.
+// Reflector is the responder side of the probe exchange. Reflect authenticates an
+// inbound probe and returns a fresh authenticated ECHO of it (verbatim ProbeSeq /
+// TimestampNanos / SessionID, IsEcho set, and the path's live issued challenge
+// stamped into Challenge) so the initiator can compute the round-trip AND learn the
+// challenge. The responder never manufactures a timestamp, so it needs no
+// synchronized clock.
 //
-// A single Reflector serves EVERY path, and each path carries its own ProbeSeq
-// space (both start at 0), so the anti-replay high-water is keyed by (SessionID,
-// PathID). The SessionID is the originator's random per-boot identity carried
-// inside the MAC-covered probe body (T38, defect D12):
+// Freshness is RESPONDER-CONTRIBUTED (T38 redesign, defect D12). Each path holds a
+// random issuedChallenge that the Reflector delivers inside every echo (confidential
+// + MAC-covered, so only the live PSK-holding peer can read it). A probe authorizes
+// a session-epoch reset ONLY if it echoes back that live challenge — which a replay
+// attacker, who never sees the current challenge, can never do. Unpredictability of
+// a SessionID is therefore NOT treated as freshness: a novel SessionID alone resets
+// nothing; only a live-challenge echo does. Per inbound PROBE with SessionID S and
+// echoed Challenge C on a path whose live state is (session, high-water,
+// issuedChallenge):
 //
-//   - WITHIN a session (SessionID == the path's current session): strict-monotonic
-//     replay rejection is preserved exactly as before (D4). A replayed/stale
-//     ProbeSeq is rejected.
-//   - A BRAND-NEW SessionID never seen on the path (peer reboot): adopted as the
-//     path's new current session, its high-water reset to accept the ProbeSeq=0
-//     stream. This is what unblocks a restarted peer whose nextSeq reset to 0 —
-//     without it the surviving Reflector would reject every fresh probe against the
-//     prior session's high-water until the counter organically passed it (D12).
-//   - Anti-rollback rule: a SessionID that was seen before but is NOT the path's
-//     current session is RETIRED, and any probe bearing it is rejected as ErrReplay
-//     — it can never again force a reset. The reset is therefore gated on the
-//     SessionID being one no prior traffic carried. Because the SessionID lives
-//     inside the MAC-covered body, only the live peer (holding the PSK) can mint a
-//     frame under a SessionID no eavesdropper has captured; an attacker is confined
-//     to replaying captured frames, all of which carry already-retired SessionIDs.
-//     A live peer's fresh, unseen, authenticated SessionID is thus the liveness
-//     proof that gates the reset, and a superseded session is never revived.
+//   - S == the adopted session: strict-monotonic within-session replay rejection
+//     (D4). A fresh ProbeSeq is accepted and reflected; a stale/replayed one is
+//     rejected (ErrReplay, and NOT reflected — no echo oracle for a known duplicate).
+//   - S != the adopted session AND C == issuedChallenge: a genuine peer that received
+//     our live echo. Adopt S as the new epoch and reset the high-water so its
+//     seq-from-0 stream is accepted (the D12 restart recovery), then ROTATE
+//     issuedChallenge so this very adoption probe can never be replayed later to
+//     re-adopt a superseded session.
+//   - S != the adopted session AND C != issuedChallenge: EITHER a replay attacker
+//     (stale/zero challenge — cannot seize the epoch) OR a freshly-restarted peer
+//     that has not yet learned our challenge. Do NOT adopt/reset, but STILL reflect
+//     the current issuedChallenge so a genuine peer learns it and is adopted on its
+//     next probe. A replayed frame is thus harmless: reflected 1:1, never seizing.
 //
-// Memory: r.guards holds one AntiReplay per (SessionID, PathID) ever observed —
-// one extra entry per genuine peer reboot per path (a rare event on the
-// minutes-to-hours scale), which also serves as the "retired session" set that
-// enforces the anti-rollback rule above.
+// Recovery after a genuine peer restart takes ~2 probe intervals + RTT (the
+// bootstrap probe learns the challenge; the next probe carries it and is adopted) —
+// well within the T13 detection window.
 //
-// Concurrency: Reflect may be called from all per-path receive goroutines at
-// once; it is guarded by an internal mutex.
+// Memory is O(paths): the paths map is keyed by the uint8 PathID (at most 256
+// entries) and each entry is fixed-size, with no per-session accumulation.
+//
+// Concurrency: Reflect may be called from all per-path receive goroutines at once;
+// it is guarded by an internal mutex. The injected rand source is read only under
+// that mutex.
 type Reflector struct {
-	psk config.Key
+	psk  config.Key
+	rand io.Reader
 
-	mu      sync.Mutex
-	current map[uint8]uint64            // pathID -> the path's live (current) SessionID
-	guards  map[sessionPath]*AntiReplay // (pathID, SessionID) -> per-session high-water; keys are EVERY session ever seen
+	mu    sync.Mutex
+	paths map[uint8]*reflectorPath
 }
 
-// NewReflector builds a Reflector authenticating under psk.
-func NewReflector(psk config.Key) *Reflector {
+// NewReflector builds a Reflector authenticating under psk and drawing its per-path
+// issued challenges from rand (crypto/rand.Reader in production; a deterministic
+// reader in tests). rand is injected rather than referenced as a package global so
+// the challenge stream is controllable under test (no-globals/DI).
+func NewReflector(psk config.Key, rand io.Reader) *Reflector {
 	return &Reflector{
-		psk:     psk,
-		current: make(map[uint8]uint64),
-		guards:  make(map[sessionPath]*AntiReplay),
+		psk:   psk,
+		rand:  rand,
+		paths: make(map[uint8]*reflectorPath),
 	}
 }
 
 // Reflect decodes and re-encodes one probe as its echo. It returns frame.ErrAuth
-// for a forged/tampered probe, an error for a non-probe frame, and ErrReplay for
-// a ProbeSeq replayed/stale within its session or a probe bearing a retired
-// (superseded) SessionID (anti-rollback — see Reflector).
+// for a forged/tampered probe, an error for a non-probe frame, ErrReplay for a
+// ProbeSeq replayed/stale within the adopted session, and a wrapped error if the
+// CSPRNG cannot deliver a challenge. Every other authenticated probe — including a
+// cross-session probe that does NOT carry the live challenge — is reflected; it
+// simply does not reset the epoch.
 func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	f, err := frame.Decode(r.psk, raw)
 	if err != nil {
@@ -298,44 +335,82 @@ func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	}
 
 	r.mu.Lock()
-	fresh := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq)
+	issued, reflect, err := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq, probe.Challenge)
 	r.mu.Unlock()
-
-	if !fresh {
+	if err != nil {
+		return nil, err
+	}
+	if !reflect {
 		return nil, ErrReplay
 	}
-	// Mark the reflection as an echo so the originator's transport routes it into
-	// its Prober (HandleEcho) rather than reflecting it again. ProbeSeq and
-	// TimestampNanos are preserved verbatim so the originator computes the RTT from
-	// its own send timestamp.
+	// Mark the reflection as an echo so the originator's transport routes it into its
+	// Prober (HandleEcho) rather than reflecting it again, and stamp the path's live
+	// issued challenge so the peer can prove liveness on its next probe. ProbeSeq /
+	// TimestampNanos / SessionID are preserved verbatim.
 	probe.IsEcho = true
+	probe.Challenge = issued
 	return frame.Encode(r.psk, probe)
 }
 
-// acceptLocked applies the (SessionID, PathID)-keyed anti-replay decision for one
-// probe and reports whether it is fresh. The caller holds r.mu. See Reflector for
-// the full rule set (within-session monotonicity, new-session reset, anti-rollback
-// on retired sessions).
-func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq uint64) bool {
-	key := sessionPath{pathID: pathID, sessionID: sessionID}
-	curSession, hasCurrent := r.current[pathID]
+// acceptLocked applies the responder-contributed-challenge decision for one probe.
+// It reports the issued challenge to stamp into the echo, whether to reflect at all
+// (reflect=false => a within-session duplicate, surfaced as ErrReplay), and any
+// CSPRNG error. The caller holds r.mu. See Reflector for the full rule set.
+func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChallenge uint64) (issued uint64, reflect bool, err error) {
+	st, ok := r.paths[pathID]
+	if !ok {
+		ch, derr := r.drawChallenge()
+		if derr != nil {
+			return 0, false, derr
+		}
+		st = &reflectorPath{challenge: ch}
+		r.paths[pathID] = st
+	}
+
 	switch {
-	case hasCurrent && sessionID == curSession:
-		// Current live session: strict-monotonic replay rejection (D4). The guard
-		// for the current session always exists (created when it was adopted).
-		return r.guards[key].Accept(probeSeq)
-	case r.guards[key] != nil:
-		// Seen before but not current => retired/superseded. Replaying it (a
-		// rollback attempt) must never force a reset.
-		return false
+	case st.adopted && sessionID == st.session:
+		// Current live session: strict-monotonic within-session replay rejection (D4).
+		if !st.guard.Accept(probeSeq) {
+			return 0, false, nil // known duplicate/stale: reject, do not reflect
+		}
+		return st.challenge, true, nil
+	case echoedChallenge == st.challenge:
+		// Cross-session probe echoing our LIVE challenge: a genuine peer that received
+		// our echo. Adopt the new epoch, reset the high-water for its seq-from-0 stream,
+		// then ROTATE the challenge so this adoption probe can never be replayed later
+		// to re-adopt a superseded session.
+		st.session = sessionID
+		st.adopted = true
+		st.guard = AntiReplay{}
+		st.guard.Accept(probeSeq)
+		ch, derr := r.drawChallenge()
+		if derr != nil {
+			return 0, false, derr
+		}
+		st.challenge = ch
+		return st.challenge, true, nil
 	default:
-		// Brand-new SessionID never seen on this path: a live peer proved liveness
-		// with a fresh MAC-authenticated identity no replay could carry. Adopt it as
-		// the path's current session and reset the high-water to accept its stream.
-		guard := &AntiReplay{}
-		accepted := guard.Accept(probeSeq)
-		r.guards[key] = guard
-		r.current[pathID] = sessionID
-		return accepted
+		// Cross-session probe WITHOUT our live challenge: a replay attacker (which can
+		// never carry the current challenge) or a not-yet-bootstrapped restarted peer.
+		// Never adopt/reset; still reflect the live challenge so a genuine peer learns
+		// it and is adopted on its next probe.
+		return st.challenge, true, nil
+	}
+}
+
+// drawChallenge draws a fresh NON-ZERO issued challenge from the injected rand
+// source. Zero is excluded so it can never collide with a peer's "no challenge
+// learned yet" sentinel (a just-restarted peer's bootstrap probe carries
+// Challenge=0), which would otherwise let that bootstrap probe be adopted without
+// proving liveness. It fails only if the CSPRNG is unavailable.
+func (r *Reflector) drawChallenge() (uint64, error) {
+	for {
+		v, err := readUint64(r.rand)
+		if err != nil {
+			return 0, fmt.Errorf("telemetry: draw challenge: %w", err)
+		}
+		if v != 0 {
+			return v, nil
+		}
 	}
 }

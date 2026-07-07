@@ -135,17 +135,33 @@ type Parity struct {
 //
 // SessionID is the originator's random per-boot session identity (T38, defect
 // D12). It sits inside the MAC-covered body (adjacent to IsEcho), so an attacker
-// can neither forge nor flip it. The responder reflects it verbatim. It lets the
-// responder's anti-replay high-water key by (SessionID, PathID) and RESET when a
-// peer reboots (a genuinely new, MAC-authenticated SessionID) instead of
-// dead-locking the restarted peer against the prior session's high-water; the
-// originator likewise rejects echoes that do not carry its own current SessionID.
+// can neither forge nor flip it. The responder reflects it verbatim. It TAGS the
+// session (which boot the probe stream belongs to); on its own it is NOT proof of
+// freshness (a captured probe carries a "never-seen" SessionID too), so the
+// session-epoch reset is gated on the Challenge below, never on the SessionID
+// merely being novel.
+//
+// Challenge is the responder-contributed freshness token (T38 redesign, defect
+// D12). Like SessionID it lives inside obf(body) under the MAC, so it is both
+// confidential (only a PSK holder can read it) and unforgeable. Its meaning is
+// keyed by IsEcho:
+//
+//   - On an ECHO (IsEcho=true, emitted by the Reflector): Challenge is the
+//     responder's CURRENT per-path issued challenge — a fresh random value the
+//     originator must echo back to prove liveness.
+//   - On a PROBE (IsEcho=false, emitted by the originator): Challenge is the last
+//     issued challenge the originator learned from an echo (zero before it has
+//     seen any). The responder adopts a new session epoch (resetting its
+//     anti-replay high-water) ONLY when this equals its live issued challenge, so
+//     a replayed probe — which can never carry the responder's current challenge —
+//     can never seize the epoch or lock out the live peer.
 type Probe struct {
 	PathID         uint8
 	ProbeSeq       uint64
 	TimestampNanos int64
 	IsEcho         bool
 	SessionID      uint64
+	Challenge      uint64
 	Payload        []byte
 }
 
@@ -189,6 +205,7 @@ func (f Probe) appendBody(dst []byte) []byte {
 	dst = binary.BigEndian.AppendUint64(dst, uint64(f.TimestampNanos))
 	dst = append(dst, boolByte(f.IsEcho))
 	dst = binary.BigEndian.AppendUint64(dst, f.SessionID)
+	dst = binary.BigEndian.AppendUint64(dst, f.Challenge)
 	return append(dst, f.Payload...)
 }
 
@@ -383,10 +400,11 @@ func decodeBody(kind Kind, b []byte) (Frame, error) {
 		ts, e3 := r.u64()
 		echo, e4 := r.u8()
 		sessionID, e5 := r.u64()
-		if err := firstErr(e1, e2, e3, e4, e5); err != nil {
+		challenge, e6 := r.u64()
+		if err := firstErr(e1, e2, e3, e4, e5, e6); err != nil {
 			return nil, err
 		}
-		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, SessionID: sessionID, Payload: r.rest()}, nil
+		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, SessionID: sessionID, Challenge: challenge, Payload: r.rest()}, nil
 	case KindControl:
 		ctype, e1 := r.u8()
 		if err := firstErr(e1); err != nil {

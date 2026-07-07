@@ -51,3 +51,24 @@ func discardLogger(t testing.TB) log.Logger {
 	}
 	return l
 }
+
+// testRand is a deterministic io.Reader standing in for the CSPRNG in tests: it
+// yields reproducible, distinct, non-zero 64-bit draws so a Reflector's issued
+// challenges and any drawn session ids are stable across runs. It is a splitmix64
+// stream. It is NOT safe for concurrent use, which is fine: the Reflector reads it
+// only under its own mutex.
+type testRand struct{ state uint64 }
+
+func newTestRand() *testRand { return &testRand{state: 0x9E3779B97F4A7C15} }
+
+func (r *testRand) Read(p []byte) (int, error) {
+	for i := range p {
+		r.state += 0x9E3779B97F4A7C15
+		z := r.state
+		z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+		z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+		z ^= z >> 31
+		p[i] = byte(z)
+	}
+	return len(p), nil
+}

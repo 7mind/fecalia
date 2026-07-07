@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -198,7 +199,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		defs:      append([]config.Path(nil), paths...),
 		scheduler: scheduler,
 		probers:   probers,
-		reflector: telemetry.NewReflector(psk),
+		reflector: telemetry.NewReflector(psk, rand.Reader),
 		virt:      &udpEndpoint{},
 	}, nil
 }

@@ -49,7 +49,7 @@ func TestLivenessBlackhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build logger: %v", err)
 	}
-	sessionID, err := telemetry.NewSessionID()
+	sessionID, err := telemetry.NewSessionID(rand.Reader)
 	if err != nil {
 		t.Fatalf("new session id: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestProbeReflectorHelper(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	refl := telemetry.NewReflector(psk)
+	refl := telemetry.NewReflector(psk, rand.Reader)
 	buf := make([]byte, 64*1024)
 	for {
 		n, from, err := conn.ReadFromUDP(buf)

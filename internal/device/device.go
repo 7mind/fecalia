@@ -8,6 +8,7 @@
 package device
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -236,7 +237,7 @@ func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*tele
 	// One random per-boot session id shared by every path's Prober (it identifies
 	// this boot, not the path): a peer restart presents a new session id that resets
 	// the surviving responder's anti-replay high-water so liveness recovers (T38, D12).
-	sessionID, err := telemetry.NewSessionID()
+	sessionID, err := telemetry.NewSessionID(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -2,6 +2,7 @@ package bind
 
 import (
 	"bytes"
+	"crypto/rand"
 	"io"
 	"net"
 	"net/netip"
@@ -202,7 +203,7 @@ func TestMultipathEchoFeedsProber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send probe: %v", err)
 	}
-	reflector := telemetry.NewReflector(psk)
+	reflector := telemetry.NewReflector(psk, rand.Reader)
 	echo, err := reflector.Reflect(probeRaw)
 	if err != nil {
 		t.Fatalf("reflect: %v", err)
@@ -273,7 +274,7 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 		peerAPs[i] = peerAP
 		m.paths[i].setRemote(peerAP)
 	}
-	reflector := telemetry.NewReflector(psk)
+	reflector := telemetry.NewReflector(psk, rand.Reader)
 	codec, _ := frame.NewCodec(psk)
 
 	// echoPath reads the probe the last emitProbes sent on path p and, when echo is
