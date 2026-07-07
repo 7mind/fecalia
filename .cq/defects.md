@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 15
+  item: 17
 archives: []
 ---
 
@@ -173,6 +173,32 @@ archives: []
 - rootCause: "Confirmed by the T16 review: e2e Setup creates fixed-name veths (wbAe/wbBe) but Teardown returns before the prior namespace/holder-process is fully reaped, so a back-to-back run finds the leftover link (RTNETLINK File exists). Pre-existing (adjacent to D3's fixed-sleep test-hardening class)."
 - suggestedFix: Make Setup idempotent (delete any leftover wbAe/wbBe links before creating) OR make Teardown synchronously wait for the holder process + link removal before returning. Pick up with the D3 test-hardening pass.
 - ledgerRefs: ["goals:G1"]
+
+### D15 — root-caused
+
+- createdAt: 2026-07-07T14:02:24.568Z
+- updatedAt: 2026-07-07T14:02:24.568Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: End-to-end failover recovery intermittently exceeds the 3s P1 budget (reply-direction detection not in the budget composition)
+- description: "Filed by the T20 review (fable), REPRODUCED on hardware (llm-ubuntu-0 amd64/4vCPU): TestP1Failover cycle-0 recovery exceeded ~3.1s in 4 of 14 runs — the P1 milestone acceptance ('throughput restored within P1RecoverySeconds=3s after killing the active WAN') is operationally UNMET ~30% of the time. Instrumented (info log): the EDGE daemon marks the killed path down at kill+~1.7s (silence_ms 1696-1711) and switches egress at kill+~1.9s, yet no end-to-end reply arrives within 3s even with a 0.4s measurement quantum (2/6 still >3.1s) — so the residual >1.2s sits between the edge egress switch and BIDIRECTIONAL traffic resumption, most plausibly the CONCENTRATOR-side (reply-direction) path-down detection composing with edge-side recovery. thresholds.go's composition analysis budgets ONLY the edge-side detect term (DownAfter + one interval + sub-ms reroute) and ignores the reply direction; with the daemon's DownAfter=1500ms + interval=250ms giving ~1.75s per-side detection, the margin to 3s is too thin once BOTH directions must fail over (and under iperf3 CPU load the probe/Tick timing jitters). This is a PRODUCT defect in the failover machinery (T13 liveness timing / T15 scheduler / T37 probe transport), NOT the T20 test. Severity HIGH — blocks the P1 milestone acceptance."
+- severity: high
+- rootCause: "Partially root-caused on hardware by the T20 review: bidirectional failover = max(edge-side detect, concentrator-side detect) + reroute; each side's detect is DownAfter(1500ms)+up-to-one-interval(250ms) ≈ 1.75s measured from the last echo, leaving only ~1.25s margin to the 3s budget. Under CPU-loaded netns conditions the two sides' detection composes and the timing jitters past 3s in a minority of runs. Owned by T39 (investigate the exact reply-direction tail + tighten timing)."
+- suggestedFix: "In T39: reproduce with BOTH daemons at info level and synchronized timestamps; measure the concentrator's down-detection + reply-path switch latency relative to the kill; then either tighten DownAfter/interval so max(edge,conc) detection + reroute fits 3s with comfortable margin, and/or make the reply-path switch piggyback on the edge's roam (the first authenticated packet on the new path should immediately redirect replies rather than waiting a full independent DownAfter). Reconcile thresholds.go's composition comment to budget BOTH directions."
+- ledgerRefs: ["tasks:T20","tasks:T39","goals:G1"]
+
+### D16 — root-caused
+
+- createdAt: 2026-07-07T14:02:31.334Z
+- updatedAt: 2026-07-07T14:02:31.334Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: thresholds.go PLiveness constants + composition comment drifted from the daemon's actual defaults
+- description: "Filed by the T20 review (fable). test/e2e/thresholds.go declares PLivenessProbeInterval=200ms / PLivenessDownAfter=2s and its P1 composition analysis reasons from those values ('2.0s + 0.2s = 2.2s'), but the daemon the failover e2e actually runs uses internal/device/device.go defaults: defaultProbeInterval=250ms, defaultProbeDownAfter=1500ms, defaultProbeUpSuccesses=3, defaultFailbackDwell=5s. The 'single source of truth' claim in thresholds.go does not hold for the daemon path, risking a wrong retune. Pre-existing (untouched by the T20 diff). Severity low."
+- severity: low
+- rootCause: "Confirmed by the T20 review: the telemetry-component e2e constants (PLiveness*) and the daemon's device.go probe-timing defaults are two independent sets; the standalone liveness test uses the former, the failover daemon uses the latter, and thresholds.go's composition comment reasons from the former while claiming to be the single source of truth for the failover budget."
+- suggestedFix: "In T39: either have the e2e daemon config set its probe timings FROM the thresholds constants (make thresholds.go authoritative), or split the constants into 'prober-component e2e' vs 'daemon defaults' and have the composition comment reference the daemon's actual values (and both failover directions)."
+- ledgerRefs: ["tasks:T20","tasks:T39","goals:G1"]
 
 ## M10
 

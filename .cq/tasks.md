@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 39
+  item: 40
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -145,14 +145,14 @@ archives:
 ### T20 — wip
 
 - createdAt: 2026-07-01T23:40:28.766Z
-- updatedAt: 2026-07-07T13:30:21.968Z
+- updatedAt: 2026-07-07T14:02:53.192Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P1 e2e: failover survives WAN death within 3s"
 - description: "e2e test driving the active-backup path: start a long-lived TCP flow (SSH-like / iperf3) through the tunnel, then kill the active WAN namespace mid-transfer and assert the flow survives with no connection reset and throughput recovers. Uses the P1RecoverySeconds constant from the harness table."
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP1Failover` kills the active path mid-iperf3; the TCP connection is NOT reset and throughput is restored within P1RecoverySeconds (3s), asserted against the harness constants; repeated flap does not wedge the tunnel."
 - suggestedModel: standard
-- dependsOn: ["T15","T16","T37"]
+- dependsOn: ["T15","T16","T37","T39"]
 - ledgerRefs: ["goals:G1"]
 
 ### T22 — planned
@@ -209,6 +209,19 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T37"]
 - ledgerRefs: ["goals:G1","defects:D12"]
+
+### T39 — planned
+
+- createdAt: 2026-07-07T14:02:51.949Z
+- updatedAt: 2026-07-07T14:02:51.949Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Meet the P1 3s failover budget in BOTH directions (fix the reply-direction recovery tail)
+- description: "DISCOVERED by the T20 hardware review (D15, HIGH): the merged failover machinery does NOT reliably meet the P1 acceptance (throughput restored within P1RecoverySeconds=3s after killing the active WAN) — 4/14 hardware runs of TestP1Failover exceeded ~3.1s end-to-end recovery. The edge detects DOWN at kill+~1.7s and switches egress at kill+~1.9s, but BIDIRECTIONAL traffic (the reply direction) doesn't resume within 3s: the concentrator-side path-down detection composes with the edge-side, and the daemon's DownAfter=1500ms + interval=250ms (~1.75s per-side detection) leaves too thin a margin, jittering past 3s under CPU load. thresholds.go budgets only the edge-side term. FIX: (1) root-cause the exact reply-direction tail on hardware (both daemons at info log, synchronized timestamps, measure concentrator down-detection + reply-path switch vs the kill); (2) make failover reliably < 3s with comfortable margin — tighten DownAfter/interval for faster detection AND/OR make the reply-path switch piggyback on the edge's roam (the first authenticated packet arriving on the new path should immediately redirect the concentrator's replies to it, rather than waiting a full independent concentrator-side DownAfter); (3) reconcile thresholds.go (D16) so the composition analysis budgets BOTH directions and the daemon's actual probe timings are the single source of truth. Preserve no-thrash (failback hysteresis) and the false-down safety on jittery links. This is the PRODUCT work that makes P1 meet its core acceptance; T20 (the e2e) is reworked separately and depends on this."
+- acceptance: On the reference hardware host (llm-ubuntu-0), a sound-measurement failover e2e (sub-100ms recovery measurement, strict < budget) passes RELIABLY (e.g. >=15/15 or >=19/20 runs) with end-to-end recovery < P1RecoverySeconds in BOTH directions after killing the active WAN; the root cause of the prior >3s tail is documented; thresholds.go's composition analysis budgets both directions and matches the daemon's actual timings; unit tests for any changed timing/scheduler logic pass under -race; no failover thrash regression.
+- suggestedModel: frontier
+- dependsOn: ["T13","T15","T37"]
+- ledgerRefs: ["goals:G1","tasks:T20","defects:D15","defects:D16"]
 
 ## M7
 
