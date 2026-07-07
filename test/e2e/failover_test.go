@@ -5,6 +5,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -167,9 +168,14 @@ func TestP1FailoverRepeatedFlap(t *testing.T) {
 	const (
 		flapCycles = 3
 		// flapFailoverPoll bounds how long we wait to OBSERVE both ends' failover
-		// switch after a kill; it exceeds P1RecoverySeconds so a marginally-late run
-		// is still measured (then asserted against the budget) rather than lost.
-		flapFailoverPoll = time.Duration(P1RecoverySeconds)*time.Second + time.Second
+		// switch after a kill. It is set WELL ABOVE P1RecoverySeconds (not budget+1s)
+		// so a heavily-late failover is still OBSERVED and MEASURED — then asserted
+		// against the budget with its true magnitude via the per-cycle Errorf below —
+		// rather than lost to an unmeasured non-observation Fatalf. The old budget+1s
+		// (4s) window was the T20-review measurement gap: a genuine >4s recovery tail
+		// fell OUTSIDE it and was reported as "never switched" (an unmeasured Fatalf)
+		// instead of "switched late by N ms" (a measured, magnitude-bearing failure).
+		flapFailoverPoll = time.Duration(P1RecoverySeconds)*time.Second + 5*time.Second
 		// flapFailbackPoll bounds the wait for both ends to fail egress BACK to the
 		// primary after a restore: the 5s FailbackAfter dwell + up-detect (3×200ms) +
 		// margin for the D15 under-load detection tail. If failback does not complete
@@ -252,19 +258,23 @@ func TestP1FailoverRepeatedFlap(t *testing.T) {
 		edgeSwitch, concSwitch, ok := waitBothSwitchTo(edge, conc, killAt, backupPathIdx, flapFailoverPoll)
 		if !ok {
 			top.Restore(primary.name)
-			t.Fatalf("cycle %d: both ends did not fail over to the backup within %v (edge=%s conc=%s) — no scheduler transition logged after the kill\n--- edge ---\n%s\n--- conc ---\n%s",
-				cycle, flapFailoverPoll, latencyStr(edgeSwitch), latencyStr(concSwitch), edge.log(), conc.log())
+			t.Fatalf("cycle %d: both ends did not fail over to the backup within %v (edge=%s conc=%s %s) — no scheduler transition logged after the kill\n--- edge ---\n%s\n--- conc ---\n%s",
+				cycle, flapFailoverPoll, latencyStr(edgeSwitch), latencyStr(concSwitch), readLoadAvg(), edge.log(), conc.log())
 		}
 		recovery := edgeSwitch
 		if concSwitch > recovery {
 			recovery = concSwitch
 		}
-		t.Logf("FLAP_CYCLE=%d RECOVERY_MS=%d budget_ms=%d edge_switch_ms=%d conc_switch_ms=%d",
+		// Record host load on the metric line: the repeated-flap tail is sensitive to
+		// shared-VM CPU contention (4 vCPU, possibly multi-tenant), so every per-cycle
+		// measurement carries the load that produced it — that is what lets a genuine
+		// product tail be told apart from host-contention noise in the run log (D18).
+		t.Logf("FLAP_CYCLE=%d RECOVERY_MS=%d budget_ms=%d edge_switch_ms=%d conc_switch_ms=%d %s",
 			cycle, recovery.Milliseconds(), int64(P1RecoverySeconds)*1000,
-			edgeSwitch.Milliseconds(), concSwitch.Milliseconds())
+			edgeSwitch.Milliseconds(), concSwitch.Milliseconds(), readLoadAvg())
 		if recovery >= time.Duration(P1RecoverySeconds)*time.Second {
-			t.Errorf("cycle %d: bidirectional recovery %v exceeded P1 budget %ds (edge_switch=%v conc_switch=%v)",
-				cycle, recovery, P1RecoverySeconds, edgeSwitch, concSwitch)
+			t.Errorf("cycle %d: bidirectional recovery %v exceeded P1 budget %ds (edge_switch=%v conc_switch=%v %s)",
+				cycle, recovery, P1RecoverySeconds, edgeSwitch, concSwitch, readLoadAvg())
 		}
 
 		// Restore the primary; the next iteration's precondition wait confirms failback.
@@ -452,4 +462,25 @@ func latencyStr(d time.Duration) string {
 		return "n/a"
 	}
 	return fmt.Sprintf("%d", d.Milliseconds())
+}
+
+// readLoadAvg returns the host's 1/5/15-minute load averages as a compact
+// "load=1min,5min,15min" token (or "load=?" if /proc/loadavg is unreadable). The
+// repeated-flap failover tail is sensitive to shared-VM CPU contention — the e2e host
+// runs on 4 vCPU and may be multi-tenant — so every per-cycle metric line and every
+// budget-exceeded/non-observation failure stamps the load that accompanied it. That
+// is the robustness the D18 investigation added: a future over-budget cycle is
+// self-classifying from the log alone (a high load average points at host contention;
+// a low one at a genuine product regression) instead of needing an out-of-band host
+// snapshot that no longer exists by the time the failure is read.
+func readLoadAvg() string {
+	b, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return "load=?"
+	}
+	f := strings.Fields(string(b))
+	if len(f) < 3 {
+		return "load=?"
+	}
+	return fmt.Sprintf("load=%s,%s,%s", f[0], f[1], f[2])
 }

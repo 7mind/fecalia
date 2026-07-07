@@ -499,6 +499,39 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	for _, pr := range probers {
 		pr.Tick()
 	}
+	// Eager failover nudge (defect D18, the repeated-flap wedge). The active-backup
+	// selection is otherwise recomputed ONLY inside the scheduler's Pick, which the
+	// Bind calls ONLY from Send — so failover is pull-based: it happens only when the
+	// engine hands down an egress datagram. When the ACTIVE path dies during an egress
+	// LULL that is fatal: a repeated-flap kill landing on the just-restored primary
+	// before the saturating flow re-fills it (the failback and the next kill overlap)
+	// leaves both TCP directions stalled on the now-dead path, so NO Send occurs, so
+	// Pick is never called, so egress is never switched to the healthy backup — the
+	// bond wedges on the dead path until the 25s WG keepalive finally drives a Send.
+	// The receive tick is the starvation-robust signal that ALREADY detected the DOWN
+	// (it just Ticked the path down above); recomputing the scheduler from it makes the
+	// switch EAGER — bounded by the detection window (~DownAfter + one interval) rather
+	// than by the next application Send. Pick recomputes purely against current liveness
+	// and the clock and the failback dwell is time-based, so a more frequent recompute
+	// can only make a genuine transition land sooner — never a premature/false failover,
+	// and never a shortened anti-thrash hysteresis. It takes ONLY the scheduler's own
+	// lock (never m.mu), so it adds no receive-path m.mu contention and cannot invert
+	// the Send-path m.mu→scheduler lock order.
+	m.nudgeSchedulerActive()
+}
+
+// nudgeSchedulerActive forces the scheduler to recompute its active egress path
+// against current liveness, independent of any application Send. It is the eager-
+// failover companion to the Send-driven Pick: driven from the liveness-detection
+// paths (the receive tick and the probe loop) it switches egress to a healthy backup
+// the moment the active path is detected DOWN, so a dead active path with stalled
+// egress does not wedge the bond until the next Send (defect D18). The returned index
+// is intentionally discarded — only the recompute (and its logged transition) is
+// wanted here; Send remains the sole reader of the selection for actual routing. Pick
+// is internally synchronized and never calls back into the Bind, so this is safe to
+// call from a receive goroutine or the probe loop without m.mu.
+func (m *Multipath) nudgeSchedulerActive() {
+	m.scheduler.Pick()
 }
 
 // newReceiveFunc returns the SINGLE engine-facing ReceiveFunc: it drains the shared
