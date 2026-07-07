@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 23
+  item: 24
 archives: []
 ---
 
@@ -167,6 +167,17 @@ archives: []
 - criticism: ["[r1 fable, REDESIGNED 667f568] v1 session-seizure bypass — peer-chosen-random SessionID: a replayed never-observed authenticated probe seized `current` and permanently locked out the legit peer (unpredictability != freshness). Replaced with a responder-contributed confidential rotating challenge gating the epoch reset.","[r1 fable, resolved 667f568] v1 unbounded guards[(pathID,SessionID)] retired-set — eliminated (O(paths), no retired-set) by the challenge design"]
 - new_questions: []
 - ledgerRefs: ["tasks:T38","goals:G1","defects:D12"]
+
+### R23 — go-ahead
+
+- createdAt: 2026-07-07T12:57:34.605Z
+- updatedAt: 2026-07-07T12:57:34.605Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T16 (edge public-IP change survival / per-path re-roaming) reconciled go-ahead (opus+fable panel, 2 rounds). T37 already relearns the concentrator's per-path remote from AUTHENTICATED probes; T16 found + fixed the EDGE-side gap: a source-IP-pinned socket fails ENETUNREACH when its own address changes, so re-roam device-binds each path socket to its interface (SO_BINDTODEVICE + wildcard source, best-effort with source-IP fallback for loopback/unprivileged/non-Linux). Re-roam vs peer-restart distinction verified (same SessionID -> within-session, no T38 epoch reset, anti-replay high-water persists; outer-seq monotonic -> no T18 resequencer resync; virt endpoint pinned once -> WG session preserved). R1: opus approve (all invariants hold; filed the same-interface EADDRINUSE as a LOW UNVERIFIED defect), fable DISAPPROVE — EMPIRICALLY reproduced (unshare -Urn) 2 regressions from UNCONDITIONAL device binding: (1) two paths' sources on ONE interface with a fixed port fail Open with EADDRINUSE (device-bind collides + source-IP fallback ALSO collides with the wildcard+device socket) — a legal config that worked pre-T16; (2) wildcard+device silently VOIDS the source_addr pin on a multi-address interface (kernel route-based source selection). Fixed 349065b: device binding is now CONDITIONAL — device-bind ONLY when the interface holds EXACTLY ONE address of the source family AND EXACTLY ONE path claims that interface (selectDeviceBinds/planPathBinds, pure + injected resolver); else source-IP-bind (pre-T16 behavior). The single-path-per-interface single-address uplink (the real mobile scenario) still device-binds so roam survives. R2 BOTH approve: opus verified the selection gates close both criticisms by construction; fable EMPIRICALLY re-ran the repro (fails at 4ab7681 / passes at 349065b) AND ran the acceptance e2e on real hardware (llm-ubuntu-0: primary re-roamed 10.100.1.1->.111 mid-transfer, recovered, transfer completed 15.1 Mbit/s NO reset, other path undisturbed; full -tags e2e suite green twice). Gates green (build/vet/gofmt/test -race/golangci-lint 0/e2e-compile). Merged 349065b (fast-forward). 2 low out-of-scope defects filed (D13 IPv6-link-local-never-device-binds coverage gap; D14 e2e-harness back-to-back teardown race)."
+- criticism: ["[r1 fable, resolved 349065b] unconditional device binding regressed same-interface multi-path configs (EADDRINUSE, empirically reproduced) — made device-bind conditional on exactly-one-path-per-interface","[r1 fable, resolved 349065b] unconditional device binding voided source_addr pinning on multi-address interfaces — gated on familyCount==1"]
+- new_questions: []
+- ledgerRefs: ["tasks:T16","goals:G1"]
 
 ## M10
 

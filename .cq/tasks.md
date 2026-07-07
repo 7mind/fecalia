@@ -129,10 +129,10 @@ archives:
 - dependsOn: ["T12","T13"]
 - ledgerRefs: ["goals:G1"]
 
-### T16 — wip
+### T16 — done
 
 - createdAt: 2026-07-01T23:40:04.937Z
-- updatedAt: 2026-07-07T11:57:45.517Z
+- updatedAt: 2026-07-07T12:57:18.675Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Edge public-IP change survival (per-path re-roaming)

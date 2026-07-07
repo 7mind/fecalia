@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 13
+  item: 15
 archives: []
 ---
 
@@ -147,6 +147,32 @@ archives: []
 - suggestedFix: Carry a random per-boot session id in the Probe frame (INSIDE the MAC-covered body) and key the Reflector's anti-replay by (sessionId, pathID), resetting the high-water when a NEW sessionId is first observed on a path; the originator's HandleEcho guard resets likewise on its own boot. Preserves strict-monotonic replay protection WITHIN a session while accepting a restarted peer's seq-from-0 stream. Owned by task T38.
 - ledgerRefs: ["tasks:T37","tasks:T38","goals:G1"]
 - fix: "Resolved by T38 (merged c64d794). A responder-contributed challenge establishes peer freshness: the Reflector issues a confidential, MAC-covered, per-adoption-rotated non-zero issuedChallenge (inside obf(body), readable only with the PSK); a session-epoch RESET is authorized ONLY when a probe echoes the current issuedChallenge — which a replay attacker cannot know. A genuinely restarted peer bootstraps in a bounded 2-round handshake (round 1 challenge-0 reflected -> learns challenge; round 2 echoes it -> adopted, high-water reset), recovering within the T13 detection window instead of the minutes-to-hours D12 deadlock. Memory is O(paths) (no retired-session set). NOTE: the FIRST T38 design (peer-chosen random SessionID) was itself unsound — the fable review reproduced a session-seizure bypass (unpredictability != freshness: a replayed never-observed probe seized the session and locked out the legit peer); the merged responder-challenge redesign closes it, verified by both reviewers re-running the seizure reproduction (now fails to seize)."
+
+### D13 — root-caused
+
+- createdAt: 2026-07-07T12:57:43.704Z
+- updatedAt: 2026-07-07T12:57:43.704Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: IPv6 path sources never qualify for device binding (link-local counts toward familyCount)
+- description: "Filed by the T16 review panel (fable), file-and-defer. internal/bind/pathsock.go interfaceInfo counts EVERY same-family address, and an up interface virtually always carries a kernel fe80::/10 link-local — so a GLOBAL v6 source sees familyCount>=2 and selectDeviceBinds always falls back to source-IP binding (verified empirically in a netns). Consequence: v6 uplink paths never get T16 re-roam survival (they degrade to the pin-preserving pre-T16 source-IP bind, which is CORRECT but does not survive a same-address readdress). T16's acceptance (v4 fixture) is met; this is a v6 coverage limitation, low severity."
+- severity: low
+- rootCause: "Confirmed empirically by the T16 review (netns): interfaceInfo's family-count includes link-local, so any global-v6 source on a normal interface (global + fe80:: link-local) has familyCount>=2 and never device-binds."
+- suggestedFix: For a GLOBAL (non-link-local) v6 source, EXCLUDE link-local addresses from familyCount — the kernel never source-selects a link-local for a global destination, so device binding still provably preserves the source_addr pin and v6 re-roam survival is restored.
+- ledgerRefs: ["tasks:T16","goals:G1"]
+
+### D14 — root-caused
+
+- createdAt: 2026-07-07T12:58:05.119Z
+- updatedAt: 2026-07-07T12:58:05.119Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: e2e harness Setup races prior invocation teardown (transient RTNETLINK 'File exists' on veth create)
+- description: "Filed by the T16 review panel (fable), file-and-defer. Pre-existing harness behavior in test/e2e/netns.go (NOT introduced by any recent diff): when `go test -tags e2e ./test/e2e` invocations run BACK-TO-BACK on the same host, Setup can fail with `ip link add wbAe type veth peer name wbAc: RTNETLINK answers: File exists`, cascading to mass instant failures. Observed twice consecutively on llm-ubuntu-0 immediately after a prior run; unreproducible on a quiescent host (two subsequent full-suite runs green). Suggests asynchronous teardown (holder-process kill / namespace reaping) racing the next Setup. Low severity (test-infra flake, not a product defect)."
+- severity: low
+- rootCause: "Confirmed by the T16 review: e2e Setup creates fixed-name veths (wbAe/wbBe) but Teardown returns before the prior namespace/holder-process is fully reaped, so a back-to-back run finds the leftover link (RTNETLINK File exists). Pre-existing (adjacent to D3's fixed-sleep test-hardening class)."
+- suggestedFix: Make Setup idempotent (delete any leftover wbAe/wbBe links before creating) OR make Teardown synchronously wait for the holder process + link removal before returning. Pick up with the D3 test-hardening pass.
+- ledgerRefs: ["goals:G1"]
 
 ## M10
 
