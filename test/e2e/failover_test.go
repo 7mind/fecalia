@@ -75,6 +75,15 @@ func TestP1Failover(t *testing.T) {
 	if err := load.Start(); err != nil {
 		t.Fatalf("start load flow: %v", err)
 	}
+	// Reap the saturating flow on EVERY exit path, not just load.Wait() on success: a
+	// Fatalf before Wait would otherwise leak an uncapped ~70s --bidir iperf3 that keeps
+	// saturating the (shared) e2e host and contaminates subsequent/concurrent runs (D21).
+	// Kill after a completed Wait is a harmless no-op.
+	t.Cleanup(func() {
+		if load.Process != nil {
+			_ = load.Process.Kill()
+		}
+	})
 
 	// Let the flow ramp and both ends reach steady state on the primary, then kill the
 	// active WAN and stamp the instant.
