@@ -36,12 +36,16 @@ const (
 	// capping the release point a single trusted frame can skip to (K-1) windows.
 	resyncFactor = 4
 
-	// resyncCorroborate (C) is how many CONSECUTIVE out-of-band frames, whose
-	// seqs mutually span less than one window, must be observed before the release
+	// resyncCorroborate (C) is how many out-of-band frames carrying DISTINCT seqs
+	// that mutually span less than one window must be observed before the release
 	// point is re-pinned. A genuine peer restart (1,2,3,...) or a consistent
-	// long-outage forward jump emits connected seqs that trivially corroborate;
-	// uniformly-random junk seqs, each independent in 2^64, corroborate only with
-	// probability ~(window/2^64)^(C-1) ~ 1e-32 for C=3 and window=2048 — so junk
+	// long-outage forward jump emits connected, distinct seqs that trivially
+	// corroborate. A repeated identical seq does NOT advance the count: a single
+	// junk or forged datagram re-delivered — a network duplicate, or a forger
+	// replaying one datagram — contributes only ONE distinct seq, so it can never
+	// self-corroborate. Corroboration therefore requires C INDEPENDENT junk seqs to
+	// land mutually within one window; each is independent in 2^64, so that occurs
+	// with probability ~(window/2^64)^(C-1) ~ 1e-32 for C=3 and window=2048 — junk
 	// never triggers a resync, while a real discontinuity resyncs after losing at
 	// most C-1 frames. Any in-band (near-current) frame resets the run, so ordinary
 	// traffic interspersed with rare junk never accumulates a false corroboration.
@@ -95,9 +99,10 @@ type slot struct {
 //     advance one seq at a time across a gap of up to 2^64 under the mutex.
 //   - Discontinuity resilience: an unauthenticated frame whose seq lies farther
 //     than resyncFactor*window from next never moves the release point on its own.
-//     A genuine peer restart or long outage — a run of consecutive frames whose
-//     seqs mutually fall within one window — re-pins (resyncs) the release point
-//     within a bounded number of frames; uniformly-random junk seqs do not.
+//     A genuine peer restart or long outage — a run of frames carrying DISTINCT
+//     seqs that mutually fall within one window — re-pins (resyncs) the release
+//     point within a bounded number of frames; uniformly-random junk seqs, and a
+//     single junk/forged seq re-delivered any number of times, do not.
 //
 // Concurrency: every method is guarded by one mutex, so the shared instance is
 // safe for the multipath Bind's per-path receive goroutines. The mutex is held
@@ -129,13 +134,15 @@ type Resequencer struct {
 	waiting  bool
 	deadline time.Time
 
-	// Discontinuity/resync guard: the current run of consecutive out-of-band
-	// (suspect) frames. resyncN counts the run; [resyncLo, resyncHi] is its seq
-	// span. When resyncN reaches resyncCorroborate the run is deemed a real
-	// discontinuity and the release point re-pins (see tryResync).
-	resyncN  int
-	resyncLo uint64
-	resyncHi uint64
+	// Discontinuity/resync guard: the current run of out-of-band (suspect) frames.
+	// resyncSeqs holds the DISTINCT suspect seqs seen in the run (a repeated
+	// identical seq does not advance corroboration); [resyncLo, resyncHi] is the
+	// run's seq span. When resyncSeqs reaches resyncCorroborate distinct seqs the
+	// run is deemed a real discontinuity and the release point re-pins (see
+	// tryResync). It holds at most resyncCorroborate seqs, so memory stays bounded.
+	resyncSeqs []uint64
+	resyncLo   uint64
+	resyncHi   uint64
 
 	// Diagnostics (read via the accessors; useful for the bounded-memory asserts).
 	highWater   int    // max occupied slots ever held
@@ -374,19 +381,27 @@ func (r *Resequencer) arm(now time.Time) {
 }
 
 // tryResync feeds one out-of-band (suspect) seq into the discontinuity guard. It
-// re-pins the release point ONLY after resyncCorroborate consecutive suspect
-// frames whose seqs mutually span less than one window (a genuine peer restart or
-// long outage emits connected seqs that corroborate; uniformly-random junk seqs,
-// each independent in 2^64, do not). It returns true and performs the resync when
-// the corroboration threshold is met — re-pinning next to the triggering seq so
-// the caller places it as the new head and delivery resumes immediately, without
-// a phantom gap or an extra timeout — and false while still collecting or when the
-// seq fails to corroborate the current run. Caller holds r.mu.
+// re-pins the release point ONLY after resyncCorroborate DISTINCT suspect seqs
+// whose values mutually span less than one window (a genuine peer restart or long
+// outage emits connected, distinct seqs that corroborate; uniformly-random junk
+// seqs, each independent in 2^64, do not, and a single junk/forged seq re-delivered
+// contributes only ONE distinct value so it can never self-corroborate). It
+// returns true and performs the resync when the corroboration threshold is met —
+// re-pinning next to the triggering seq so the caller places it as the new head
+// and delivery resumes immediately, without a phantom gap or an extra timeout —
+// and false while still collecting or when the seq fails to corroborate the
+// current run. Caller holds r.mu.
 func (r *Resequencer) tryResync(seq uint64) bool {
-	if r.resyncN == 0 || r.spanExceeds(seq) {
+	if len(r.resyncSeqs) == 0 || r.spanExceeds(seq) {
 		// Start (or restart) the run at this seq: it does not corroborate the
 		// current run, so it becomes the anchor of a fresh one.
-		r.resyncLo, r.resyncHi, r.resyncN = seq, seq, 1
+		r.resyncLo, r.resyncHi = seq, seq
+		r.resyncSeqs = append(r.resyncSeqs[:0], seq)
+		return false
+	}
+	if r.runContains(seq) {
+		// A repeated identical seq does NOT advance corroboration: a lone junk or
+		// forged datagram re-delivered must not count as independent corroboration.
 		return false
 	}
 	if seq < r.resyncLo {
@@ -395,13 +410,25 @@ func (r *Resequencer) tryResync(seq uint64) bool {
 	if seq > r.resyncHi {
 		r.resyncHi = seq
 	}
-	r.resyncN++
-	if r.resyncN < resyncCorroborate {
+	r.resyncSeqs = append(r.resyncSeqs, seq)
+	if len(r.resyncSeqs) < resyncCorroborate {
 		return false
 	}
 	// Corroborated discontinuity: re-pin to the triggering seq and resume delivery.
 	r.resync(seq)
 	return true
+}
+
+// runContains reports whether seq is already one of the distinct suspect seqs in
+// the current corroboration run. The run holds at most resyncCorroborate seqs, so
+// this scan is O(C). Caller holds r.mu.
+func (r *Resequencer) runContains(seq uint64) bool {
+	for _, s := range r.resyncSeqs {
+		if s == seq {
+			return true
+		}
+	}
+	return false
 }
 
 // spanExceeds reports whether adding seq to the current corroboration run would
@@ -435,7 +462,7 @@ func (r *Resequencer) resync(base uint64) {
 
 // resyncReset abandons the current corroboration run. Caller holds r.mu.
 func (r *Resequencer) resyncReset() {
-	r.resyncN = 0
+	r.resyncSeqs = r.resyncSeqs[:0]
 	r.resyncLo = 0
 	r.resyncHi = 0
 }

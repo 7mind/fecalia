@@ -535,6 +535,70 @@ func TestJunkSeqsDoNotCorroborate(t *testing.T) {
 	}
 }
 
+// TestTriplicatedJunkSeqDoesNotCorroborate reproduces fable r2: three deliveries
+// of a SINGLE out-of-band seq (a network-duplicated or forger-replayed junk
+// datagram — identical seq, span 0 < window) must NOT corroborate a
+// discontinuity. The corroboration run requires resyncCorroborate DISTINCT seqs;
+// a repeated identical seq does not advance it. Before the fix the run counted
+// consecutive frames without dedup, so this yielded Resyncs==1.
+func TestTriplicatedJunkSeqDoesNotCorroborate(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(8, time.Hour, clk)
+
+	// Establish a low release point with a legit run: next becomes 6.
+	for seq := uint64(1); seq <= 5; seq++ {
+		r.Observe(seq, payloadOf(seq), testSrc)
+		_ = drain(r)
+	}
+
+	// One junk seq far above the release point (suspect band), delivered 3 times.
+	const junk = uint64(1) << 61
+	for i := 0; i < 3; i++ {
+		r.Observe(junk, payloadOf(junk), testSrc)
+		_ = drain(r)
+	}
+	if s := r.Stats(); s.Resyncs != 0 {
+		t.Fatalf("resyncs = %d, want 0 (one repeated junk seq must not corroborate)", s.Resyncs)
+	}
+
+	// The legit stream is not blackholed: the next in-order frame still delivers.
+	r.Observe(6, payloadOf(6), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{6}) {
+		t.Fatalf("post-junk delivery = %v, want [6] (no blackhole)", got)
+	}
+}
+
+// TestFewerThanCDistinctSuspectSeqsDoNotResync is the boundary case: a set of
+// FEWER than resyncCorroborate DISTINCT suspect seqs, even repeated and even
+// mutually within one window, must not reach the corroboration threshold. Before
+// the fix the repeats padded the consecutive count to C and forced a resync.
+func TestFewerThanCDistinctSuspectSeqsDoNotResync(t *testing.T) {
+	clk := newFakeClock()
+	const window = 8
+	r := reseq.New(window, time.Hour, clk)
+
+	for seq := uint64(1); seq <= 5; seq++ {
+		r.Observe(seq, payloadOf(seq), testSrc)
+		_ = drain(r)
+	}
+
+	// Two DISTINCT suspect seqs (fewer than C=3), mutually within one window
+	// (span 3 < 8), each delivered twice — 2 distinct seqs never reach C=3.
+	const a = uint64(1) << 61
+	const b = a + 3
+	for _, s := range []uint64{a, b, a, b} {
+		r.Observe(s, payloadOf(s), testSrc)
+		_ = drain(r)
+	}
+	if st := r.Stats(); st.Resyncs != 0 {
+		t.Fatalf("resyncs = %d, want 0 (only 2 distinct suspect seqs, C=3)", st.Resyncs)
+	}
+	r.Observe(6, payloadOf(6), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{6}) {
+		t.Fatalf("post-suspect delivery = %v, want [6] (no blackhole)", got)
+	}
+}
+
 // TestPropertyNoLossCompleteness is the completeness half of the property: with
 // NO loss and a window that comfortably exceeds the bounded reorder distance, and
 // no permanent gaps, EVERY frame is delivered exactly once in order — nothing
