@@ -299,10 +299,10 @@ archives: []
 
 ## M6
 
-### D22 — open
+### D22 — root-caused
 
 - createdAt: 2026-07-07T19:17:17.204Z
-- updatedAt: 2026-07-07T19:17:17.204Z
+- updatedAt: 2026-07-07T19:38:38.990Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Weighted-scheduler pacer sheds WireGuard control frames (handshakes/keepalives) indiscriminately under overload
@@ -310,3 +310,4 @@ archives: []
 - description: "Filed by the T21 review (fable), file-and-defer (out of scope for T21). With pacing enabled, EVERY datagram — data, handshake init/response, keepalive — shares the same per-path Pick() token buckets, so under sustained overload control frames are dropped with the same probability as bulk data (~80% at 5x overload), delaying rekey (mitigated only by WG's 5s REKEY_TIMEOUT retries within the 90s attempt window). Pick() has NO frame-type visibility — a control-frame bypass/priority class needs Bind/interface plumbing, which belongs with the empirical pacing-sizing work (T23 bufferbloat/pacing, T35 load-cap), NOT T21. Pacing ships DISABLED by default so there is no default-config exposure. RELATED sizing note for the same follow-up: the T21 default per_path_capacity_fps=10000 (~115 Mbit/s at full MTU) means the aggregation gate may never engage on realistic slow uplinks until sized from measured BDP."
 - suggestedFix: "In the pacing follow-up (T23/T35): classify WG control frames (handshake/keepalive) at the Bind and exempt or priority-class them (a small reserved per-path token budget or a control-frame bypass), and size per_path_capacity from measured BDP rather than a frame-count default. Requires Bind/interface frame-type plumbing that Pick() alone cannot provide."
 - ledgerRefs: ["tasks:T21","tasks:T23","goals:G1"]
+- rootCause: "Established by the T21 review (fable): the weighted pacer's per-path Pick() token buckets are frame-type-blind, so under sustained overload WG control frames (handshake/keepalive) are shed at the same probability as bulk data. Pick() has no frame-type visibility — a control-frame bypass/priority class requires Bind/interface frame-type plumbing that does not exist yet. DEFERRED: pacing ships DISABLED by default (no default exposure), and the fix belongs with future pacing-hardening/sizing work (needs the Bind to classify frame types + BDP-based capacity sizing, related to T35 load-cap). No owning task fixes it today; re-seed a pacing-hardening task when pacing is enabled by default or empirically sized."
