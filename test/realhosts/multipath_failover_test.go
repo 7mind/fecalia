@@ -38,9 +38,10 @@ const (
 	mpBackupPathIdx  = 1
 
 	// Policy-routing tables and rule preferences for the two edge source IPs. Each
-	// path's source IP is routed via its own table so the ACTIVE path's egress can
-	// be blackholed in isolation (replace its table's default with a blackhole)
-	// without touching the backup — the real-host analogue of the netns Blackhole.
+	// path's source IP is routed via its own table (a faithful copy of the main
+	// table) so the ACTIVE path's egress to the concentrator can be blackholed in
+	// isolation (a SCOPED concPubIP/32 blackhole in its table) without touching the
+	// backup or the control channel — the real-host analogue of the netns Blackhole.
 	mpPrimaryTable    = 5210
 	mpBackupTable     = 5211
 	mpPrimaryRulePref = 5210
@@ -77,6 +78,7 @@ type edgePathPlan struct {
 	prefixLen int    // uplink subnet prefix length
 	primaryIP string // the edge's primary source IP (path 0)
 	altIP     string // the secondary source IP added for path 1
+	concPubIP string // the concentrator public IP the scoped blackhole targets
 }
 
 // TestRealMultipathFailover is the T34 real-host multipath/failover validation. It
@@ -223,11 +225,18 @@ level = "info"
 	flow, flowOut := startSpanningFlow(t, r, cfg.Edge, smokeConcInner, mpLoadSeconds)
 
 	// 12. Let the flow ramp and both ends settle on the primary, then blackhole the
-	//     ACTIVE path's egress and stamp T0.
+	//     ACTIVE path's egress to the concentrator and stamp T0. T0 is read from the
+	//     EDGE's clock — the SAME clock that stamps the daemon's slog timestamps — so
+	//     the failover latency is measured in ONE clock domain. Using runner-host
+	//     time.Now() against edge slog time would corrupt the latency under NTP skew,
+	//     and an edge clock lagging the runner could push a genuine transition before
+	//     the marker (rec.Time.After filter fails -> spurious -1). Capture it right
+	//     before the kill so the marker never trails the transition it precedes.
 	time.Sleep(mpRampBefore)
-	killAt := time.Now()
-	blackholeEdgePath(t, r, cfg.Edge, mpPrimaryTable)
-	t.Logf("blackholed ACTIVE path %q (table %d) at T0", mpPrimaryPathName, mpPrimaryTable)
+	killAt := edgeClockNow(t, r, cfg.Edge)
+	blackholeEdgePath(t, r, cfg.Edge, plan, mpPrimaryTable)
+	t.Logf("blackholed ACTIVE path %q egress to %s (table %d) at edge-T0=%s",
+		mpPrimaryPathName, plan.concPubIP, mpPrimaryTable, killAt.Format(time.RFC3339Nano))
 
 	// 13. Await the spanning flow, then restore the primary's egress (so the next run
 	//     starts clean; the teardown also restores it defensively).
@@ -235,8 +244,9 @@ level = "info"
 	restoreEdgePath(t, r, cfg.Edge, plan, mpPrimaryTable)
 
 	// 14. Edge-side failover latency: the earliest "scheduler active path change" to
-	//     the backup index logged after the kill. The reroute is a sub-ms update, so
-	//     the transition timestamp IS the recovery instant.
+	//     the backup index logged after the edge-clock T0 marker. Both the marker and
+	//     the transition timestamp come from the edge clock (single domain); the
+	//     reroute is a sub-ms update, so the transition timestamp IS the recovery instant.
 	journal := readDaemonJournal(t, r, cfg.Edge, smokeUnit)
 	failover := schedulerSwitchAfter(journal, killAt, mpBackupPathIdx)
 	if failover < 0 {
@@ -310,6 +320,7 @@ echo "$IFACE $SRC $GW $PREFIX"`, concPubIP)
 		prefixLen: prefixLen,
 		primaryIP: src,
 		altIP:     deriveEdgeAltIP(t, src),
+		concPubIP: concPubIP,
 	}
 }
 
@@ -352,15 +363,21 @@ func (p edgePathPlan) defaultRoute() string {
 }
 
 // setupEdgeTwoPaths adds the secondary source address to the uplink and installs a
-// per-source-IP policy-routing table for each path (primary + alt), so each path's
-// egress can be blackholed independently later. Idempotent (addr replace, rule
-// del-then-add, route replace) and fully torn down via a t.Cleanup registered here.
+// per-source-IP policy-routing table for each path (primary + alt). Each table is a
+// FAITHFUL COPY of the main table's routes (on-link subnet, link-local/metadata,
+// then this path's default) — NOT a default-only table — so `ip rule from <src>
+// lookup <table>` never strips primary-sourced access to host-specific routes. Only
+// a SCOPED blackhole of the concentrator /32 (blackholeEdgePath) later diverts
+// path-0, leaving management SSH (dest = the control host, never concPubIP) intact
+// in every state. Idempotent (addr replace, rule del-then-add, route replace) and
+// fully torn down via a t.Cleanup registered here.
 func setupEdgeTwoPaths(t *testing.T, r *Runner, edge Host, plan edgePathPlan) {
 	t.Helper()
 
 	// Teardown FIRST (registered before any mutation) so a partial setup still cleans
-	// up. Restores both tables' defaults, drops the rules+tables, and removes the
-	// secondary address. Best-effort: logs, never fails the test.
+	// up. Dropping the rules returns primary-/alt-sourced traffic to the main table;
+	// flushing the tables removes the copies + any residual blackhole; the secondary
+	// address is removed. Best-effort: logs, never fails the test.
 	t.Cleanup(func() {
 		teardown := strings.Join([]string{
 			delRule(plan.primaryIP, mpPrimaryTable, mpPrimaryRulePref),
@@ -377,30 +394,51 @@ func setupEdgeTwoPaths(t *testing.T, r *Runner, edge Host, plan edgePathPlan) {
 		}
 	})
 
+	// `set -e` so a genuine failure of a CRITICAL step (addr add, rule add, default
+	// route) aborts and surfaces; the per-route copy and the rule-del are made
+	// tolerant (|| true) so pre-existing state or an odd main-table route never
+	// spuriously aborts an otherwise-good setup.
 	setup := strings.Join([]string{
-		// Secondary source address on the same uplink.
+		"set -e",
+		// Secondary source address on the same uplink (gives path-1 its distinct IP).
 		fmt.Sprintf("sudo ip addr replace %s/%d dev %s", plan.altIP, plan.prefixLen, plan.iface),
-		// Primary path table + rule.
+		// Per-source rules: primary -> table 5210, alt -> table 5211.
 		addRule(plan.primaryIP, mpPrimaryTable, mpPrimaryRulePref),
-		fmt.Sprintf("sudo ip route replace default %s table %d", plan.defaultRoute(), mpPrimaryTable),
-		// Backup path table + rule.
 		addRule(plan.altIP, mpBackupTable, mpBackupRulePref),
-		fmt.Sprintf("sudo ip route replace default %s table %d", plan.defaultRoute(), mpBackupTable),
-	}, " && ")
+		// Faithful copies of the main table into both path tables.
+		plan.copyMainRoutes(mpPrimaryTable),
+		plan.copyMainRoutes(mpBackupTable),
+	}, "\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
 	defer cancel()
 	if _, err := r.Run(ctx, edge, setup); err != nil {
 		t.Fatalf("edge: two-path setup failed: %v", err)
 	}
-	t.Logf("edge: two-path routing up (primary %s -> table %d, backup %s -> table %d)",
+	t.Logf("edge: two-path routing up (primary %s -> table %d, backup %s -> table %d; tables mirror main)",
 		plan.primaryIP, mpPrimaryTable, plan.altIP, mpBackupTable)
 }
 
+// copyMainRoutes renders a shell snippet that mirrors the main routing table's
+// non-default unicast routes into `table` (best-effort per route), then installs
+// this path's default. Copying the on-link subnet, link-local (169.254/16), and
+// metadata routes — not just a bare default — keeps primary-/alt-sourced traffic
+// reaching host-specific destinations (gateway ARP, cloud metadata, same-subnet
+// neighbours including the control host) exactly as the main table would, so the
+// only behaviour a path table changes is the later scoped concentrator blackhole.
+func (p edgePathPlan) copyMainRoutes(table int) string {
+	return fmt.Sprintf(`sudo ip route show table main | while read -r R; do
+  case "$R" in default*|blackhole*|unreachable*|prohibit*|throw*|nexthop*) continue;; esac
+  sudo ip route replace table %d $R 2>/dev/null || true
+done
+sudo ip route replace default %s table %d`, table, p.defaultRoute(), table)
+}
+
 // addRule renders an idempotent `ip rule add from <ip> lookup <table>` (delete any
-// prior identical rule first so a re-run never stacks duplicates).
+// prior identical rule first so a re-run never stacks duplicates). The del tolerates
+// a missing rule (|| true) so it does not trip the setup script's `set -e`.
 func addRule(ip string, table, pref int) string {
-	return fmt.Sprintf("sudo ip rule del from %s lookup %d pref %d 2>/dev/null; sudo ip rule add from %s lookup %d pref %d",
+	return fmt.Sprintf("sudo ip rule del from %s lookup %d pref %d 2>/dev/null || true; sudo ip rule add from %s lookup %d pref %d",
 		ip, table, pref, ip, table, pref)
 }
 
@@ -409,27 +447,55 @@ func delRule(ip string, table, pref int) string {
 	return fmt.Sprintf("sudo ip rule del from %s lookup %d pref %d 2>/dev/null", ip, table, pref)
 }
 
-// blackholeEdgePath replaces the given path table's default route with a blackhole,
-// dropping all egress sourced from that path's IP (its probes stop echoing -> the
-// edge marks the path down -> the scheduler fails over). Fatal on SSH error.
-func blackholeEdgePath(t *testing.T, r *Runner, edge Host, table int) {
+// blackholeEdgePath installs a SCOPED blackhole of the concentrator /32 in the given
+// path's source table, so ONLY that path's egress to the concentrator is dropped (its
+// probes stop echoing -> the edge marks the path down -> the scheduler fails over).
+// It deliberately does NOT blackhole the table's default: management SSH (dest = the
+// control host, never concPubIP) and every other primary-sourced flow keep routing
+// via the table's mirrored routes, so the control channel — and the iperf3-over-SSH
+// report riding it — survive the kill. A more specific /32 wins the longest-prefix
+// match over the mirrored default. Fatal on SSH error.
+func blackholeEdgePath(t *testing.T, r *Runner, edge Host, plan edgePathPlan, table int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
 	defer cancel()
-	if _, err := r.Run(ctx, edge, fmt.Sprintf("sudo ip route replace blackhole default table %d", table)); err != nil {
-		t.Fatalf("edge: blackhole table %d failed: %v", table, err)
+	cmd := fmt.Sprintf("sudo ip route replace blackhole %s/32 table %d", plan.concPubIP, table)
+	if _, err := r.Run(ctx, edge, cmd); err != nil {
+		t.Fatalf("edge: blackhole %s in table %d failed: %v", plan.concPubIP, table, err)
 	}
 }
 
-// restoreEdgePath restores a blackholed path table's normal default route.
-// Best-effort: logs, never fails the test (the teardown restores it too).
+// restoreEdgePath removes the scoped concentrator blackhole so the path's traffic to
+// the concentrator falls back to the table's mirrored default. Best-effort: logs,
+// never fails the test (the teardown flushes the table too).
 func restoreEdgePath(t *testing.T, r *Runner, edge Host, plan edgePathPlan, table int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
 	defer cancel()
-	if _, err := r.Run(ctx, edge, fmt.Sprintf("sudo ip route replace default %s table %d", plan.defaultRoute(), table)); err != nil {
+	cmd := fmt.Sprintf("sudo ip route del blackhole %s/32 table %d 2>/dev/null; true", plan.concPubIP, table)
+	if _, err := r.Run(ctx, edge, cmd); err != nil {
 		t.Logf("edge: restore table %d: %v", table, err)
 	}
+}
+
+// edgeClockNow reads the EDGE's wall clock (epoch milliseconds) over SSH and returns
+// it as a time.Time. The daemon's slog timestamps are stamped by this SAME clock, so
+// a failover latency measured as (edge slog transition − this marker) stays in a
+// single clock domain, immune to runner<->edge NTP skew. GNU date's %3N yields the
+// millisecond fraction appended to %s.
+func edgeClockNow(t *testing.T, r *Runner, edge Host) time.Time {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
+	defer cancel()
+	res, err := r.Run(ctx, edge, "date -u +%s%3N")
+	if err != nil {
+		t.Fatalf("edge: read edge clock failed: %v", err)
+	}
+	ms, err := strconv.ParseInt(strings.TrimSpace(res.Stdout), 10, 64)
+	if err != nil {
+		t.Fatalf("edge: parse edge clock %q: %v", res.Stdout, err)
+	}
+	return time.UnixMilli(ms).UTC()
 }
 
 // startSpanningFlow starts a single-stream iperf3 TCP client on the edge (to
