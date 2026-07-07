@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 34
+  item: 35
 archives: []
 ---
 
@@ -457,3 +457,23 @@ archives: []
 - criticism: ["[r1 fable, resolved 17a909c] D2 guard unsound — same-profile refcount admission let Close->resetProtocol revert globals under a live second engine; tightened to process-exclusivity (same-profile second configured engine now refused)","[r1 fable, resolved 17a909c] plain-WireGuard engines bypassed the guard but their Close also resets globals under a live amnezia tunnel — guard now tracks all engines; both plain/configured orderings refused, plain+plain allowed"]
 - new_questions: []
 - ledgerRefs: ["tasks:T19","goals:G1","defects:D1","defects:D2"]
+
+## M8
+
+### R34 — go-ahead
+
+- createdAt: 2026-07-07T23:53:53.177Z
+- updatedAt: 2026-07-07T23:53:53.177Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T27 (adaptive FEC controller with hysteresis, simulation-tested) reconciled GO-AHEAD (opus by-construction + fable stability panel; 1 fix). Merged e9e578b. New PURE package internal/adaptivefec, isolated from the datapath (integration deferred). Control law: EWMA-smoothed loss (alpha 0.3); redundancy map M=ceil(K·e/(1-e)), e=SafetyFactor(1.5)·loss, K=10, MaxParity=10 (guarded: e>=1 short-circuits to MaxParity before the (1-e) division — no blow-up/negative-M at high loss); three-region hysteresis (raise >=5% monotone-up via max(m,map), deadband 2-5% hold, lower <=2% collapse-to-0); slew |ΔM|<=2 per 500ms; 3s lower-dwell (raise fast, lower slow). Zero-at-zero via the lower band (the worker self-caught that ceil pins the EWMA tail at M=1). Virtual-clock simulation harness; 5 mechanism-mutations each break exactly one assertion.
+    
+    opus (by-construction) APPROVE: high-loss (1-e)<=0 risk guarded by the e>=1->MaxParity early return; tolerance invariant M/(K+M)>=SafetyFactor·loss holds; RS bound DataShards+MaxParity<=256 validated; three regions partition the input (LowerThreshold<RaiseThreshold strict, no gap/overlap); EWMA first-sample seeding correct; determinism + import-isolation confirmed (no fec/telemetry/config/bind/device import); 11/11 tests, vet + -race clean.
+    
+    fable (stability) verified EMPIRICALLY stable: 0 changes over 2000-sample dither traces straddling BOTH band edges (no chatter); 0 changes after convergence over 20k samples × 5 loss levels (6/10/15/30/50% — exact convergence, NO limit cycle, slew short-circuits when target==m); dwell-bounded sawtooth (0.43-0.85 changes/s) under period~2×Dwell oscillation (per-spec raise-fast/lower-slow, not per-RateInterval flap); correct saturation at MaxParity for loss up to +Inf via the e>=1 guard. Mutation testing kills all mechanism removals + off-tunings (alpha 2x, dwell 0.5x, safety drop); only 2 tiny parameter drifts survive (tolerance slack, not vacuity). fable R1 DISAPPROVE (1 criticism): Validate rejected NaN but not +Inf for SafetyFactor → SafetyFactor=+Inf reached implementation-defined int(math.Ceil(NaN)) in redundancyMap(0) (e=0*Inf=NaN falls through both guards; worst case M=MaxParity at zero loss on a platform converting NaN positive). FIXED (076d865): reject non-finite SafetyFactor (math.IsInf) + a safetyInf reject test case. Documented law consequence (not a fault): loss dropping 30%→6% steady (above raise band, never <=2%) leaves M pinned — exactly the task-stated 'raise band → only increase' rule.
+    
+    NOTE: the datapath integration (feed telemetry.Estimate.Loss, apply M to the FEC encoder, optionally feed the scheduler) is a separate deferred task; SmoothedLoss()/Overhead() are exposed read-only for that future wiring but intentionally not connected. The T21 weighted scheduler already loss-weights paths, so the controller owns only the parity ratio.
+- criticism: ["[r1 fable, resolved 076d865] Config.Validate rejected NaN but not +Inf for SafetyFactor → SafetyFactor=+Inf reached an implementation-defined int(math.Ceil(NaN)) conversion in redundancyMap(0) — added math.IsInf rejection (finite >= 1) + a safetyInf reject-invalid test case, matching the file's fail-fast contract"]
+- new_questions: []
+- ledgerRefs: ["tasks:T27","goals:G1"]

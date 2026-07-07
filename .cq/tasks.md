@@ -375,18 +375,18 @@ archives:
 
 ## M8
 
-### T27 — planned
+### T27 — done
 
 - createdAt: 2026-07-01T23:41:16.490Z
-- updatedAt: 2026-07-01T23:41:16.490Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T23:53:57.901Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Adaptive FEC controller with hysteresis (simulation-tested)
 - description: "Control loop adjusting FEC parity ratio (and scheduler weights) from measured per-path loss, with hysteresis and rate limiting — stability is the crux risk. Build a deterministic simulation harness (synthetic loss traces, no network) and test the controller in ISOLATION before touching the datapath: redundancy low when links are clean, scaling up under sustained loss, without thrash under noisy telemetry."
 - acceptance: "Simulation tests: parity ratio rises with sustained loss and falls when loss clears; under a loss signal oscillating around a threshold the change rate is bounded by the hysteresis/rate-limit (no flap); converges to a steady ratio for steady loss; at 0% loss steady-state parity overhead is ~0."
 - suggestedModel: frontier
 - dependsOn: ["T25"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","reviews:R34"]
 
 ### T29 — planned
 
