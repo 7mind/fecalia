@@ -99,6 +99,32 @@ const (
 	// header/ACK gap between the netem cap (outer IP datagram) and the measured DATA-frame
 	// wire throughput leaves ample margin under 0.9.
 	p2SoloSaturationFraction = 0.9
+
+	// p2StripingCapacityFPS is the FIXTURE-SCALED aggregation gate for the FUNCTIONAL
+	// bonded-striping subtest (TestP2Aggregation/bonded-striping) — separate from the ratio
+	// path's p2PerPathCapacityFPS=3000, which is unchanged. The striping subtest proves the
+	// weighted scheduler drives two REAL per-path UDP sockets concurrently end-to-end; it must
+	// therefore reliably ENGAGE aggregation even on the CPU/PPS-bound single-host fixture,
+	// where the delivered frame rate is low. Aggregation engages once the smoothed offered
+	// frame rate exceeds EngageFraction(0.9)*capacity = 0.9*40 = 36 fps. The WORST observed
+	// in-fixture delivered rate is ~54 fps (the 0.6 Mbit/s low end at ~1400-B frames; the
+	// range runs ~54–1160 fps at 0.6–13 Mbit/s per the hardware run). 36 < 54, so a saturating
+	// flow's offered load clears the engage threshold with margin on every measured venue and
+	// the backup socket is reliably opened — WITHOUT any throughput-ratio assertion, so the
+	// subtest is robust to the fixture's CPU-boundedness. Pacing is OFF (config default), so a
+	// low capacity only lowers the engage/disengage thresholds; it never sheds frames.
+	p2StripingCapacityFPS = 40.0
+
+	// p2StripingMinRxBytes is the per-path far-end DATA-carriage floor for the striping
+	// subtest. The concentrator's rx counter (readLoop) counts ALL received outer bytes —
+	// including the per-path liveness PROBES/echoes the peer sends on EVERY path — so a bare
+	// "conc rx > 0" is VACUOUS (satisfied by probes with zero DATA striping). Probe+echo
+	// traffic over the ~p2WindowSecs (7 s) window is < ~20 KB/path (a few frames/s of small
+	// probes, both directions). This 50 KB floor sits far above that noise yet far below the
+	// DATA a saturating striped flow delivers on the backup even at the low in-fixture rates
+	// (hundreds of KB to MBs over the window), so clearing it PROVES real DATA reassembly on
+	// that far-end socket, not probe chatter.
+	p2StripingMinRxBytes = 50_000
 )
 
 // TestP2Aggregation is the P2 acceptance (T23): under saturating load the bonded
@@ -164,6 +190,18 @@ func TestP2Aggregation(t *testing.T) {
 		}
 	})
 
+	// The FUNCTIONAL aggregation proof, robust to the fixture's CPU/PPS-boundedness (makes
+	// NO throughput-ratio assertion). It is the only test anywhere that exercises the socket
+	// datapath seam "weighted Pick -> two per-path UDP sockets under concurrent load -> far
+	// end reassembles on both": the sched unit tests only prove Pick-INDEX distribution (never
+	// leaving the scheduler), and P1 multipath is active-backup (one socket at a time). With a
+	// fixture-scaled gate that reliably engages (p2StripingCapacityFPS), it asserts the edge
+	// striped DATA onto BOTH sockets AND the concentrator reassembled DATA from both. Unlike
+	// the ratio subtest it PASSES in-fixture — it is what the hardware run must go green on.
+	t.Run("bonded-striping", func(t *testing.T) {
+		runBondedStriping(t, bin)
+	})
+
 	t.Run("data-thrift", func(t *testing.T) {
 		runDataThrift(t, bin)
 	})
@@ -191,7 +229,7 @@ func runSoloSaturated(t *testing.T, bin, name string) float64 {
 	t.Helper()
 	spec := p2Path(name)
 	top := SetupWithPaths(t, []pathSpec{spec})
-	edge, conc := setupP2Tunnel(t, top, bin, []pathSpec{spec})
+	edge, conc := setupP2Tunnel(t, top, bin, []pathSpec{spec}, p2PerPathCapacityFPS)
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("solo %s: tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", name, edge.log(), conc.log())
 	}
@@ -212,7 +250,7 @@ func runBondedSaturated(t *testing.T, bin string) float64 {
 	t.Helper()
 	paths := p2Paths()
 	top := SetupWithPaths(t, paths)
-	edge, conc := setupP2Tunnel(t, top, bin, paths)
+	edge, conc := setupP2Tunnel(t, top, bin, paths, p2PerPathCapacityFPS)
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("bonded: tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 	}
@@ -237,6 +275,72 @@ func runBondedSaturated(t *testing.T, bin string) float64 {
 	return tputs["starlink"] + tputs["cellular"]
 }
 
+// runBondedStriping is the FUNCTIONAL two-path-carriage proof (no throughput ratio, robust
+// to a CPU/PPS-bound fixture). It brings BOTH paths up with a fixture-scaled aggregation
+// gate (p2StripingCapacityFPS) that reliably engages under the low in-fixture frame rate,
+// drives a saturating flow, and asserts — over a steady-state window — that:
+//
+//   - the edge sent DATA on BOTH per-path sockets (tx counters count DATA frames only, NOT
+//     the liveness probes/echoes written outside the Send counter, so a positive BACKUP tx
+//     PROVES the weighted scheduler striped DATA onto the second socket — it is not merely
+//     probe traffic); and
+//   - the concentrator RECEIVED and reassembled DATA from BOTH sockets — measured as the
+//     per-path rx DELTA exceeding p2StripingMinRxBytes, a floor set above probe/echo noise
+//     (conc rx counts probes too, so a bare rx>0 would be vacuous).
+//
+// Together these exercise the end-to-end socket datapath seam the unit tests and the P1
+// active-backup e2e never reach: weighted Pick -> two concurrent UDP sockets -> far-end
+// resequenced reassembly on both.
+func runBondedStriping(t *testing.T, bin string) {
+	t.Helper()
+	paths := p2Paths()
+	top := SetupWithPaths(t, paths)
+	edge, conc := setupP2Tunnel(t, top, bin, paths, p2StripingCapacityFPS)
+	if !top.pingUntil(concInner, 15*time.Second) {
+		t.Fatalf("striping: tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
+	}
+
+	top.startSaturatingLoad(t)
+	time.Sleep(p2WindowSettle) // let the flow ramp and the aggregation gate engage
+
+	ctxB, cancelB := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelB()
+	edgeBefore := fetchMetrics(t, ctxB, p2MetricsURL)
+	concBefore := fetchMetricsInNetns(t, top.pid, p2MetricsURL)
+
+	time.Sleep(p2WindowSecs * time.Second)
+
+	ctxA, cancelA := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelA()
+	edgeAfter := fetchMetrics(t, ctxA, p2MetricsURL)
+	concAfter := fetchMetricsInNetns(t, top.pid, p2MetricsURL)
+
+	// Edge striped DATA onto BOTH sockets under concurrent load (tx = DATA frames only).
+	starTx := deltaPathValue(t, edgeBefore, edgeAfter, metrics.MetricTxBytes, "starlink")
+	cellTx := deltaPathValue(t, edgeBefore, edgeAfter, metrics.MetricTxBytes, "cellular")
+	t.Logf("bonded-striping: edge DATA tx over window — starlink=%.0f B, cellular(backup)=%.0f B", starTx, cellTx)
+	if starTx <= 0 {
+		t.Fatalf("edge sent 0 DATA bytes on the primary under saturating load — no flow\n--- edge ---\n%s", edge.log())
+	}
+	if cellTx <= 0 {
+		t.Fatalf("edge sent 0 DATA bytes on the BACKUP (cellular) socket under saturating load — the weighted scheduler did not stripe DATA onto the second socket (aggregation never engaged at gate %.0f fps)\n--- edge ---\n%s",
+			p2StripingCapacityFPS, edge.log())
+	}
+
+	// Far end reassembled DATA from BOTH sockets (rx delta above the probe-noise floor).
+	starRx := deltaPathValue(t, concBefore, concAfter, metrics.MetricRxBytes, "starlink")
+	cellRx := deltaPathValue(t, concBefore, concAfter, metrics.MetricRxBytes, "cellular")
+	t.Logf("bonded-striping: conc rx over window — starlink=%.0f B, cellular(backup)=%.0f B (floor %d B)", starRx, cellRx, p2StripingMinRxBytes)
+	if starRx < p2StripingMinRxBytes {
+		t.Fatalf("concentrator received only %.0f B DATA on the primary over the window (< %d floor) — far end did not reassemble the primary's traffic\n--- conc ---\n%s",
+			starRx, p2StripingMinRxBytes, conc.log())
+	}
+	if cellRx < p2StripingMinRxBytes {
+		t.Fatalf("concentrator received only %.0f B on the BACKUP socket over the window (< %d floor = probe noise) — far end reassembled no DATA from the second path; concurrent two-path carriage unproven\n--- conc ---\n%s",
+			cellRx, p2StripingMinRxBytes, conc.log())
+	}
+}
+
 // runDataThrift drives a SUB-capacity flow while the primary is healthy and asserts the
 // metered backup carries < P2MeteredMaxByteFraction of the DATA (tx) bytes, all read from
 // the edge /metrics. It measures the DELTA over the flow window (not cumulative counters)
@@ -245,7 +349,7 @@ func runDataThrift(t *testing.T, bin string) {
 	t.Helper()
 	paths := p2Paths()
 	top := SetupWithPaths(t, paths)
-	edge, conc := setupP2Tunnel(t, top, bin, paths)
+	edge, conc := setupP2Tunnel(t, top, bin, paths, p2PerPathCapacityFPS)
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("thrift: tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 	}
@@ -295,12 +399,7 @@ func runDataThrift(t *testing.T, bin string) {
 // every run, so they do not skew the wire-vs-wire comparison.
 func (top *Topology) measureSaturatedWireThroughput(t *testing.T, names []string) map[string]float64 {
 	t.Helper()
-	top.startProc(t, "iperf3-load-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", concInner)
-	time.Sleep(500 * time.Millisecond)
-
-	// The load runs in the background (startProc registers its own terminating cleanup);
-	// we sample /metrics across a steady-state window inside its lifetime.
-	top.startProc(t, "iperf3-load", "iperf3", "-c", concInner, "-t", strconv.Itoa(p2LoadSecs))
+	top.startSaturatingLoad(t)
 
 	time.Sleep(p2WindowSettle)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -321,6 +420,16 @@ func (top *Topology) measureSaturatedWireThroughput(t *testing.T, names []string
 		out[name] = (txd + rxd) * 8 / elapsed / 1e6
 	}
 	return out
+}
+
+// startSaturatingLoad launches a one-shot concentrator-side iperf3 server and a saturating
+// TCP upload from the edge (p2LoadSecs), both in the background with their own terminating
+// cleanup. Callers sample /metrics across a steady-state window inside the flow's lifetime.
+func (top *Topology) startSaturatingLoad(t *testing.T) {
+	t.Helper()
+	top.startProc(t, "iperf3-load-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", concInner)
+	time.Sleep(500 * time.Millisecond)
+	top.startProc(t, "iperf3-load", "iperf3", "-c", concInner, "-t", strconv.Itoa(p2LoadSecs))
 }
 
 // deltaPathValue returns after-before for a per-path counter series, failing if either
@@ -414,8 +523,10 @@ func p2Paths() []pathSpec {
 // setupP2Tunnel brings up the edge+concentrator tunnel over paths with the WEIGHTED
 // scheduler (so aggregation engages under load) and the /metrics endpoint enabled on both
 // ends. It mirrors setupMultipathTunnel's addressing/bring-up but adds the [scheduler] and
-// [metrics] config blocks T23 needs.
-func setupP2Tunnel(t *testing.T, top *Topology, bin string, paths []pathSpec) (edge, conc *proc) {
+// [metrics] config blocks T23 needs. perPathCapacityFPS sizes the weighted aggregation gate:
+// the ratio/thrift paths pass p2PerPathCapacityFPS; the functional striping subtest passes
+// the low p2StripingCapacityFPS so aggregation reliably engages on the CPU/PPS-bound fixture.
+func setupP2Tunnel(t *testing.T, top *Topology, bin string, paths []pathSpec, perPathCapacityFPS float64) (edge, conc *proc) {
 	t.Helper()
 
 	edgePriv, edgePub := genKey(t)
@@ -429,10 +540,10 @@ func setupP2Tunnel(t *testing.T, top *Topology, bin string, paths []pathSpec) (e
 	}
 	primary := paths[0]
 
-	// The weighted scheduler with an aggregation gate sized to the emulated per-path cap
-	// (see p2PerPathCapacityFPS). Pacing is left OFF so the LINKS, not a token bucket, are
-	// the throughput bottleneck; the gate alone engages/collapses aggregation.
-	schedBlock := fmt.Sprintf("[scheduler]\npolicy = \"weighted\"\nper_path_capacity_fps = %.1f\n\n", p2PerPathCapacityFPS)
+	// The weighted scheduler with an aggregation gate sized by the caller (perPathCapacityFPS).
+	// Pacing is left OFF so the LINKS, not a token bucket, are the throughput bottleneck; the
+	// gate alone engages/collapses aggregation.
+	schedBlock := fmt.Sprintf("[scheduler]\npolicy = \"weighted\"\nper_path_capacity_fps = %.1f\n\n", perPathCapacityFPS)
 	metricsBlock := fmt.Sprintf("[metrics]\nlisten = %q\n\n", p2MetricsListen)
 
 	dir := t.TempDir()
