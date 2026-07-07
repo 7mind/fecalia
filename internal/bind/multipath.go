@@ -239,8 +239,11 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	actualPort := port
 	for i := range m.defs {
 		def := m.defs[i]
-		laddr := &net.UDPAddr{IP: net.IP(def.SourceAddr.AsSlice()), Port: int(port)}
-		c, err := net.ListenUDP("udp", laddr)
+		// Bind the path socket to its interface where possible (SO_BINDTODEVICE),
+		// falling back to the specific source IP — so a mid-session source-address
+		// change (a re-roam / NAT rebind, T16) does not break the socket. See
+		// listenPath.
+		c, err := listenPath(def.SourceAddr, port)
 		if err != nil {
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: open path %q on %s: %w", def.Name, def.SourceAddr, err)
