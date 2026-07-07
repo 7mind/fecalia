@@ -155,10 +155,10 @@ archives:
 - dependsOn: ["T15","T16","T37","T39","T40"]
 - ledgerRefs: ["goals:G1","tasks:T40","reviews:R26"]
 
-### T22 — planned
+### T22 — done
 
 - createdAt: 2026-07-01T23:40:41.392Z
-- updatedAt: 2026-07-06T21:45:00.320Z
+- updatedAt: 2026-07-07T18:20:29.107Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: systemd units, cross-compile matrix, install doc + P1 manual checklist
@@ -169,7 +169,7 @@ archives:
 - acceptance: "`just release` (or make) produces static binaries for linux/amd64 and linux/arm64 (`file` reports statically linked, correct arch); `systemd-analyze verify` passes on both unit files; install doc and P1 checklist committed; the install doc documents the concentrator tunnel-interface firewall ACCEPT requirement (OCI default REJECT caveat)."
 - suggestedModel: fast
 - dependsOn: ["T20"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","reviews:R27","defects:D7"]
 
 ### T30 — done
 

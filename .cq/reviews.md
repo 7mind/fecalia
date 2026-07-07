@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 27
+  item: 28
 archives: []
 ---
 
@@ -220,6 +220,17 @@ archives: []
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T40","tasks:T20","defects:D18","defects:D21","goals:G1"]
+
+### R27 — go-ahead
+
+- createdAt: 2026-07-07T18:20:27.444Z
+- updatedAt: 2026-07-07T18:20:27.444Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T22 (systemd units + static cross-compile release + install doc + P1 checklist) go-ahead after 1 fix round. Merged 38c8756. opus reviewer verified by construction + by execution: `just release` produces dist/wanbond-linux-{amd64,arm64} both ELF statically-linked correct-arch stripped (CGO_ENABLED=0 clean — amneziawg-go/tun is pure-Go AF_NETLINK, no cgo); both systemd units pass `systemd-analyze verify` (only host-path artifacts on the NixOS build host); hardening (CAP_NET_ADMIN + DeviceAllow=/dev/net/tun rw + RestrictAddressFamilies AF_NETLINK + SystemCallFilter=@system-service, ProtectSystem=strict does not touch /dev) does NOT block TUN creation; SIGHUP ExecReload maps to a signal main.go handles; install-doc config keys all match internal/config, 0600-exact matches load.go requiredMode, tunnel-interface ACCEPT rule matches test/realhosts/provision.go byte-for-byte. R1 DISAPPROVE (1 criticism): docs/install.md §4 recommended `ExecStartPost=ip address add … dev wanbond0` which RACES daemon TUN creation under Type=exec (wanbond0 absent at execve → 'Cannot find device' → un-prefixed ExecStartPost fails the unit → Restart=on-failure crash-loop; no sd_notify readiness). FIXED 73f34e7: replaced with a race-free systemd-networkd .network file ([Match] Name=wanbond0 / [Network] Address=…) that applies addressing when the interface appears, plus an explicit warning against the racing ExecStartPost. Doc-only fix, gate unaffected (no .go touched); release re-verified static+correct-arch on the merged tree."
+- criticism: ["[r1 opus, resolved 73f34e7] docs/install.md §4 ExecStartPost `ip address add dev wanbond0` raced daemon TUN creation under Type=exec → fail/crash-loop — replaced with race-free systemd-networkd .network addressing + a warning against the ExecStartPost approach"]
+- new_questions: []
+- ledgerRefs: ["tasks:T22","goals:G1"]
 
 ## M10
 
