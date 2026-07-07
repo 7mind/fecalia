@@ -217,6 +217,64 @@ func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
 	r.arm(now)
 }
 
+// ObserveRecovered ingests a payload the FEC decoder reconstructed from parity (T24).
+// Unlike Observe it NEVER moves or re-pins the release point: a recovered frame is a
+// REPAIR for a past gap, so if it has already fallen below the release point it is
+// dropped as too-late, and it can neither window-advance nor corroborate a resync — so
+// FEC recovery can never CAUSE the burst loss it exists to prevent (a late batch of K
+// recovered seqs below `next` must not be able to dump the live buffer via a backward
+// resync). It returns whether the frame was PLACED (landed at or above the release
+// point and will be delivered in order); a dropped-late recovered frame returns false,
+// which the datapath uses to keep the /metrics recovered counter honest — counting
+// frames actually delivered ahead of the release point, not merely reconstructed.
+func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.AddrPort) bool {
+	now := r.clock.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.started {
+		r.started = true
+		r.next = seq
+	}
+	r.expire(now)
+
+	// The placement window is EXACTLY [next, next+window). A recovered frame below next
+	// is too late (drop, and — crucially — never feed the resync guard). One at or beyond
+	// next+window would require a window-advance we refuse to perform for a reconstructed
+	// frame, since that would skip live seqs on the strength of a repair. Neither branch
+	// touches next or the corroboration run.
+	if seq < r.next {
+		if r.next-seq > r.window {
+			r.dropSuspect++
+		} else {
+			r.dropLate++
+		}
+		return false
+	}
+	if seq-r.next >= r.window {
+		r.dropLate++
+		return false
+	}
+
+	cell := &r.ring[seq%r.window]
+	if cell.occupied && cell.seq == seq {
+		r.dropDup++
+		return false // already buffered (a received frame or a prior recovery)
+	}
+	cell.seq = seq
+	cell.src = src
+	cell.payload = payload
+	cell.occupied = true
+	r.buf++
+	if r.buf > r.highWater {
+		r.highWater = r.buf
+	}
+
+	r.drain()
+	r.arm(now)
+	return true
+}
+
 // admit classifies seq against the release window and the discontinuity guard and
 // decides whether the frame should be buffered. It returns true when seq now lies
 // inside [next, next+window) and should be placed; false (having bumped the

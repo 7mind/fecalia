@@ -156,6 +156,18 @@ type SchedulerConfig struct {
 // it until the size threshold fills.
 const defaultFECDeadline = 5 * time.Millisecond
 
+// maxFECDeadline bounds the FEC group-close deadline at load time (T24, defect #4). It
+// MUST stay at or below the multipath Bind's authoritative bound (bind.maxFECDeadline =
+// resequencerTimeout/2 = 125ms): a group flushed by the deadline emits its parity
+// `deadline` after opening, and the reconstructed frames must reach the receive
+// resequencer BEFORE it skips the gap (its 250ms per-gap timeout) — otherwise recovery
+// is structurally too late (the gap is skipped, the recovered frame dropped as past the
+// release point) while /metrics would still count it reconstructed. Rejecting an
+// over-large deadline at load makes that coupling fail-fast and explicit rather than
+// silently defeating FEC. Kept in lockstep with bind.maxFECDeadline (the packages
+// cannot import each other, so the value is mirrored with this cross-reference).
+const maxFECDeadline = 125 * time.Millisecond
+
 // maxFECShards mirrors the Reed-Solomon field limit enforced in internal/fec: a
 // coding group carries at most 256 shards (data + parity) total over GF(2^8). It
 // is restated here so config load fails fast on an over-large ratio at the right
@@ -215,6 +227,9 @@ func (f FEC) validate() error {
 	}
 	if f.Deadline <= 0 {
 		return fmt.Errorf("fec.deadline must be > 0 when FEC is enabled, got %s", f.Deadline)
+	}
+	if f.Deadline > maxFECDeadline {
+		return fmt.Errorf("fec.deadline must be <= %s (safely below the receive resequencer's per-gap timeout so deadline-flushed recovery lands before the gap is skipped), got %s", maxFECDeadline, f.Deadline)
 	}
 	return nil
 }

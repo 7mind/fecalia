@@ -42,6 +42,17 @@ import (
 // both ends and never travels the wire (see the wire mapping above).
 const fecSeqPrefixLen = 8
 
+// maxFECDeadline is the authoritative upper bound on the FEC group-close deadline,
+// coupling it to the receive resequencer's per-gap timeout (T24, defect #4). A group
+// flushed by the deadline emits its parity `deadline` after the group opened; the
+// reconstructed frames must reach the resequencer BEFORE it skips the gap
+// (resequencerTimeout after the gap forms), or recovery is structurally too late — the
+// gap is skipped first and the recovered frame dropped as past the release point. Held
+// at half the resequencer timeout, the deadline leaves the other half for propagation
+// and reconstruction. config validation enforces a matching load-time bound; this is
+// the authoritative guard for any fec.Config built directly.
+const maxFECDeadline = resequencerTimeout / 2
+
 // fecRetainGroups bounds the decoder's retained-group window (SetRetainWindow): a
 // group more than this many group-ids behind the newest offered group is evicted,
 // which is also when an incomplete group is finally accounted unrecoverable. It is
@@ -64,11 +75,17 @@ type fecSender struct {
 }
 
 // fecReceiver is the receive-side FEC state: the recovery decoder guarded by its own
-// mutex (the per-path readLoop goroutines feed it concurrently) plus the recovery
-// counters, which live inside the decoder and are read via Stats.
+// mutex (the per-path readLoop goroutines feed it concurrently). deliveredRecovered is
+// the HONEST recovery count for /metrics — data frames a reconstruction actually
+// delivered to the resequencer AHEAD of its release point (not merely reconstructed:
+// a frame rebuilt after the resequencer already skipped its gap is dropped as late and
+// must not be counted, else /metrics overstates recovery). It is an atomic so the
+// snapshot reads it lock-free.
 type fecReceiver struct {
 	mu  sync.Mutex
 	dec *fec.Decoder
+
+	deliveredRecovered atomic.Uint64
 }
 
 // offer feeds one surviving shard into the decoder and returns any data payloads it

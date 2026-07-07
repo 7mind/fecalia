@@ -362,6 +362,119 @@ func TestDecoderEvictionWraparoundSafe(t *testing.T) {
 	}
 }
 
+// TestDecoderJunkGroupDoesNotPoisonRecovery is the fix witness for the high-water
+// poisoning defect: a SINGLE forged shard carrying an implausibly-high wire GroupID
+// (DATA is unauthenticated, so junk decodes as a valid kind ~1/256 with a random
+// group) must NOT evict the live groups or blackhole subsequent real ones. On the
+// pre-fix decoder the junk id set the high-water to 2e9, evicted group 0, and made the
+// next real group tooOld — so recovery returned 0. The corroborate-before-trust guard
+// drops the lone junk id and keeps recovering.
+func TestDecoderJunkGroupDoesNotPoisonRecovery(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2, Deadline: testDeadline}
+	d, err := NewDecoder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SetRetainWindow(8)
+	enc, err := NewEncoder(cfg, newFakeClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(101))
+
+	// Establish a real frontier: group 0, lossless.
+	data0, parity0 := admitAll(t, enc, randomPayloads(rng, cfg.DataShards))
+	for _, s := range allShards(data0, parity0) {
+		if _, err := d.Offer(s); err != nil {
+			t.Fatalf("establish offer: %v", err)
+		}
+	}
+
+	// A single forged DATA shard with a random-high wire GroupID.
+	if _, err := d.Offer(DataShard{Group: 2_000_000_000, Index: 0, Payload: []byte("junk")}); err != nil {
+		t.Fatalf("junk offer: %v", err)
+	}
+
+	// The NEXT real group (group 1), losing K within budget, must still recover.
+	data1, parity1 := admitAll(t, enc, randomPayloads(rng, cfg.DataShards))
+	var recovered []Recovered
+	for _, s := range allShards(data1, parity1) {
+		if ds, ok := s.(DataShard); ok && ds.Index < cfg.ParityShards {
+			continue // drop K recoverable data frames
+		}
+		rec, err := d.Offer(s)
+		if err != nil {
+			t.Fatalf("post-junk offer: %v", err)
+		}
+		recovered = append(recovered, rec...)
+	}
+	if len(recovered) != cfg.ParityShards {
+		t.Fatalf("recovered %d frames after a single junk high-group offer, want %d (the junk id poisoned the decoder)", len(recovered), cfg.ParityShards)
+	}
+}
+
+// TestDecoderResumesAfterEncoderReopen is the fix witness for the NON-adversarial half
+// of the poisoning defect: a sender-side Close→Open rebuilds the encoder and resets its
+// nextGroup to 0, so the peer decoder — whose high-water is far above 0 — would mark
+// every post-reopen group tooOld and blackhole recovery forever. The reset lands as a
+// corroborated backward discontinuity, so recovery resumes after at most
+// groupResyncCorroborate-1 groups.
+func TestDecoderResumesAfterEncoderReopen(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2, Deadline: testDeadline}
+	d, err := NewDecoder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SetRetainWindow(8)
+
+	// Run the high-water well past the window (as a long-lived sender would).
+	for g := 0; g <= 15; g++ {
+		if _, err := d.Offer(DataShard{Group: GroupID(g), Index: 0, Payload: []byte{1}}); err != nil {
+			t.Fatalf("pre-reopen offer %d: %v", g, err)
+		}
+	}
+
+	// Sender reopens: a FRESH encoder restarts group ids at 0.
+	enc, err := NewEncoder(cfg, newFakeClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(202))
+	var groups [][]DataShard
+	var parities [][]ParityShard
+	for g := 0; g < groupResyncCorroborate; g++ {
+		ds, ps := admitAll(t, enc, randomPayloads(rng, cfg.DataShards))
+		groups = append(groups, ds)
+		parities = append(parities, ps)
+	}
+
+	// The first groupResyncCorroborate-1 reopened groups only build corroboration
+	// (their shards are dropped as suspect). Offer one shard of each.
+	for g := 0; g < groupResyncCorroborate-1; g++ {
+		if _, err := d.Offer(groups[g][0]); err != nil {
+			t.Fatalf("reopen corroboration offer %d: %v", g, err)
+		}
+	}
+
+	// The corroborating group (the C-th distinct low id) resyncs the frontier; its full
+	// shard set, losing K within budget, must now recover.
+	last := groupResyncCorroborate - 1
+	var recovered []Recovered
+	for _, s := range allShards(groups[last], parities[last]) {
+		if ds, ok := s.(DataShard); ok && ds.Index < cfg.ParityShards {
+			continue // drop K recoverable data frames
+		}
+		rec, err := d.Offer(s)
+		if err != nil {
+			t.Fatalf("post-reopen offer: %v", err)
+		}
+		recovered = append(recovered, rec...)
+	}
+	if len(recovered) != cfg.ParityShards {
+		t.Fatalf("recovered %d frames after an encoder reopen, want %d (post-reopen groups were blackholed as tooOld)", len(recovered), cfg.ParityShards)
+	}
+}
+
 // TestDecoderRecoveredCounter asserts Stats().Recovered counts exactly the data
 // shards reconstructed from parity (never the directly-received ones), across two
 // groups: one lossless (nothing recovered) and one losing K frames (all K recovered).

@@ -73,6 +73,21 @@ const DataOverhead = nonceLen + // clear nonce
 	1 + // fec-index (uint8): shard position within the FEC group (T24)
 	1 // flags (uint8)
 
+// ParityOverhead is the number of bytes a KindParity frame adds on top of its
+// shard payload on the wire: the clear nonce plus the PARITY header (kind ||
+// fec-group || parity-index || data-count || path-id). PARITY, like DATA, is
+// unauthenticated and carries no tag, so this figure is exact. The multipath Bind
+// uses it to size the FEC parity-overhead MTU penalty (T24): a full-size parity
+// frame is 5 bytes larger on the wire than a full-size DATA frame carrying the same
+// inner payload, so with FEC enabled the inner MTU is reduced so BOTH fit the path
+// MTU without fragmentation (see internal/bind mtu.go).
+const ParityOverhead = nonceLen + // clear nonce
+	1 + // kind discriminant
+	4 + // fec-group (uint32)
+	2 + // parity-index (uint16)
+	1 + // data-count (uint8)
+	1 // path-id (uint8)
+
 // Kind is the outer frame discriminant. Values are nonzero so a zeroed buffer
 // never decodes to a valid kind.
 type Kind uint8

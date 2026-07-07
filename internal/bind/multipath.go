@@ -307,6 +307,13 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		if err := fecCfg.Validate(); err != nil {
 			return nil, fmt.Errorf("bind: invalid FEC configuration: %w", err)
 		}
+		if fecCfg.Deadline > maxFECDeadline {
+			// A deadline this large makes every deadline-flushed group's recovery
+			// structurally late: the resequencer skips the gap (resequencerTimeout) before
+			// the parity-derived frames land, so recovery never delivers. Reject it rather
+			// than ship a bond whose FEC silently cannot help (defect #4).
+			return nil, fmt.Errorf("bind: fec deadline %s exceeds the max %s (must stay safely below the resequencer's %s per-gap timeout so deadline-flushed recovery lands before the gap is skipped)", fecCfg.Deadline, maxFECDeadline, resequencerTimeout)
+		}
 	}
 	return &Multipath{
 		psk:       psk,
@@ -724,7 +731,7 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
 			recovered, _ := fr.offer(shard)
 			rq.Observe(f.OuterSeq, f.Payload, srcAP)
-			m.observeRecovered(rq, recovered, srcAP)
+			m.observeRecovered(fr, rq, recovered, srcAP)
 		} else {
 			rq.Observe(f.OuterSeq, f.Payload, srcAP)
 		}
@@ -737,7 +744,7 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 		if fr := m.fecRecv.Load(); fr != nil {
 			shard := fec.ParityShard{Group: fec.GroupID(f.FECGroup), Index: int(f.ParityIndex), DataCount: int(f.DataCount), Payload: f.Payload}
 			recovered, _ := fr.offer(shard)
-			m.observeRecovered(m.resequencer.Load(), recovered, srcAP)
+			m.observeRecovered(fr, m.resequencer.Load(), recovered, srcAP)
 		}
 	case frame.Probe:
 		// Authenticated (the PROBE MAC verified in Decode): learn the return remote
@@ -766,18 +773,25 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 }
 
 // observeRecovered feeds every FEC-reconstructed data frame into the resequencer at
-// its ORIGINAL outer-seq (recovered from the shard's coded bytes), so a frame lost in
-// transit and rebuilt from parity resequences identically to a natively-received
-// frame — filling the exact gap the resequencer would otherwise time out on. A
+// its ORIGINAL outer-seq (recovered from the shard's coded bytes) via the NON-resyncing
+// ObserveRecovered path, so a frame rebuilt from parity resequences identically to a
+// natively-received frame — filling the exact gap the resequencer would otherwise time
+// out on — WITHOUT a late batch of recovered seqs being able to move the release point
+// or dump the live buffer (recovery must never cause loss). Only frames actually placed
+// AHEAD of the release point advance the honest delivered-recovery counter; a frame
+// rebuilt after the resequencer already skipped its gap is dropped as late and not
+// counted, so /metrics reflects delivered recovery, not mere reconstruction. A
 // malformed recovered shard (too short to hold the outer-seq prefix) is dropped: it
 // signals an encoder/decoder mismatch, not a deliverable frame.
-func (m *Multipath) observeRecovered(rq *reseq.Resequencer, recovered []fec.Recovered, srcAP netip.AddrPort) {
+func (m *Multipath) observeRecovered(fr *fecReceiver, rq *reseq.Resequencer, recovered []fec.Recovered, srcAP netip.AddrPort) {
 	for _, rec := range recovered {
 		seq, inner, err := splitFECShardPayload(rec.Payload)
 		if err != nil {
 			continue
 		}
-		rq.Observe(seq, inner, srcAP)
+		if rq.ObserveRecovered(seq, inner, srcAP) {
+			fr.deliveredRecovered.Add(1)
+		}
 	}
 }
 
@@ -1037,9 +1051,13 @@ func (m *Multipath) FECSnapshot() FECStats {
 		out.ParityBytes = fs.parityBytes.Load()
 	}
 	if fr != nil {
-		st := fr.stats()
-		out.Recovered = st.Recovered
-		out.Unrecoverable = st.Unrecoverable
+		// Recovered is the HONEST delivered count (frames placed ahead of the release
+		// point), NOT the decoder's raw reconstruction count — a frame rebuilt after the
+		// resequencer skipped its gap is reconstructed but never delivered, so counting it
+		// would overstate recovery on /metrics. Unrecoverable is the decoder's repair-
+		// failure count (groups evicted still incomplete).
+		out.Recovered = fr.deliveredRecovered.Load()
+		out.Unrecoverable = fr.stats().Unrecoverable
 	}
 	return out
 }

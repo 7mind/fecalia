@@ -17,6 +17,13 @@ const maxShards = 256
 // covers any datagram this codec will ever wrap.
 const lenPrefixLen = 4
 
+// ShardFramingOverhead is the fixed per-shard framing this codec adds on top of the
+// caller's payload before Reed-Solomon coding — the big-endian length prefix. A
+// parity shard's wire payload is ShardFramingOverhead + the group's largest coded
+// data payload, so the multipath Bind uses it (with the outer parity/data header
+// delta) to size the FEC MTU penalty (T24).
+const ShardFramingOverhead = lenPrefixLen
+
 // Config parameterizes a Reed-Solomon FEC group: DataShards (N) opaque DATA
 // frames are grouped and protected by ParityShards (K) parity frames, so the
 // receiver recovers up to K arbitrary losses per group. Deadline bounds grouping

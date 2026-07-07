@@ -74,13 +74,15 @@ func TestMultipathInnerMTU(t *testing.T) {
 	top := Setup(t)
 	setupMultipathTunnel(t, top, bin, DefaultPaths)
 
-	want := bind.InnerMTU(bind.DefaultPathMTU)
+	// This fixture runs the daemon with FEC OFF (DefaultPaths carries no [fec] block),
+	// so the TUN MTU is the FEC-off inner budget.
+	want := bind.InnerMTU(bind.DefaultPathMTU, false)
 	got := top.linkMTU(t, tunDev, false)
 	if got != want {
 		t.Fatalf("edge %s MTU = %d, want computed inner MTU %d", tunDev, got, want)
 	}
 	t.Logf("multipath inner MTU: %s MTU = %d (= %d path MTU − %d IP/UDP − %d DATA frame − %d WG)",
-		tunDev, got, bind.DefaultPathMTU, bind.IPv4UDPOverhead, 39, bind.WGTransportOverhead)
+		tunDev, got, bind.DefaultPathMTU, bind.IPv4UDPOverhead, 40, bind.WGTransportOverhead)
 }
 
 // TestMultipathNoFragmentation sends a max-inner-MTU payload with the DF bit set
@@ -97,7 +99,7 @@ func TestMultipathNoFragmentation(t *testing.T) {
 		t.Fatalf("tunnel never came up\n%s", edge.log())
 	}
 
-	inner := bind.InnerMTU(bind.DefaultPathMTU)
+	inner := bind.InnerMTU(bind.DefaultPathMTU, false)
 	// ICMP echo payload that exactly fills the inner MTU: inner − 20 (IP) − 8 (ICMP).
 	payload := inner - 28
 

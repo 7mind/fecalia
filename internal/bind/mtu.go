@@ -1,6 +1,9 @@
 package bind
 
-import "github.com/7mind/wanbond/internal/frame"
+import (
+	"github.com/7mind/wanbond/internal/fec"
+	"github.com/7mind/wanbond/internal/frame"
+)
 
 // MTU accounting for the bonded datapath.
 //
@@ -43,14 +46,39 @@ const (
 	WGTransportOverhead = 16 + 16
 )
 
+// FECParityMTUPenalty is the extra bytes a full-size FEC PARITY frame occupies on the
+// wire over a DATA frame carrying the same-size inner payload (T24). A parity frame is
+// nonce + PARITY header + shard payload, where the shard payload is the codec's length
+// prefix + the FEC outer-seq prefix + the largest coded inner payload; a data frame is
+// nonce + DATA header + that same inner payload. So the delta is:
+//
+//	(ParityOverhead + ShardFramingOverhead + fecSeqPrefixLen) - DataOverhead  ==  5 bytes.
+//
+// When FEC is enabled the inner MTU is reduced by this penalty so a full-MTU DATA frame
+// AND its group's PARITY frame both fit the path MTU — otherwise parity exceeds the
+// path MTU by exactly this much and IP-fragments or is EMSGSIZE/PMTUD-blackholed, which
+// silently kills the very redundancy FEC exists to provide on bulk full-size traffic.
+const FECParityMTUPenalty = frame.ParityOverhead + fec.ShardFramingOverhead + fecSeqPrefixLen - frame.DataOverhead
+
 // InnerMTU returns the largest inner (TUN) MTU that avoids IP fragmentation over
 // an IPv4 underlay of the given path MTU: pathMTU minus the IP+UDP, outer DATA
-// frame, and WireGuard transport overheads.
-func InnerMTU(pathMTU int) int {
-	return pathMTU - IPv4UDPOverhead - frame.DataOverhead - WGTransportOverhead
+// frame, and WireGuard transport overheads. fecEnabled additionally reserves the
+// parity-over-data delta so a full-size parity frame also fits (see
+// FECParityMTUPenalty); pass false when FEC is off to keep the pre-T24 budget.
+func InnerMTU(pathMTU int, fecEnabled bool) int {
+	return pathMTU - IPv4UDPOverhead - frame.DataOverhead - WGTransportOverhead - fecPenalty(fecEnabled)
 }
 
 // InnerMTU6 is InnerMTU for an IPv6 underlay.
-func InnerMTU6(pathMTU int) int {
-	return pathMTU - IPv6UDPOverhead - frame.DataOverhead - WGTransportOverhead
+func InnerMTU6(pathMTU int, fecEnabled bool) int {
+	return pathMTU - IPv6UDPOverhead - frame.DataOverhead - WGTransportOverhead - fecPenalty(fecEnabled)
+}
+
+// fecPenalty is the inner-MTU reduction to reserve for FEC parity, or 0 when FEC is
+// off.
+func fecPenalty(fecEnabled bool) int {
+	if fecEnabled {
+		return FECParityMTUPenalty
+	}
+	return 0
 }

@@ -209,6 +209,13 @@ func TestLoadRejects(t *testing.T) {
 			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 250\nparity_shards = 10\n",
 			want: "Reed-Solomon field limit",
 		},
+		{
+			name: "fec deadline exceeds resequencer budget",
+			mode: 0o600,
+			// go-toml/v2 decodes a duration as integer nanoseconds; 500ms = 5e8 ns > 125ms.
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = 500000000\n",
+			want: "fec.deadline must be <=",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

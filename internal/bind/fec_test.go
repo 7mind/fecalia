@@ -49,17 +49,24 @@ type capturedFrame struct {
 	fr  frame.Frame
 }
 
-// sendAndCapture drives sender.Send over payloads (one datagram each), then drains
-// EVERY outer datagram the sender egressed onto the peer socket and decodes it. The
-// sender's single path must already point at peer. It reads until a short deadline
-// with no further datagram, so it captures the DATA frames plus any FEC PARITY the
-// group-fill emitted; tests using it configure a long FEC deadline so the async
-// deadline-tick never injects extra parity mid-capture.
-func sendAndCapture(t testing.TB, sender *Multipath, peer *net.UDPConn, codec *frame.Codec, payloads [][]byte) []capturedFrame {
+// sendAndCapture drives sender.Send over payloads in batches of groupSize (one Send
+// call per FEC group), then drains EVERY outer datagram the sender egressed onto the
+// peer socket and decodes it. The sender's single path must already point at peer.
+// Sending a whole group's payloads in ONE Send admits them under a single m.mu hold, so
+// the group fills (size-close) atomically and the async deadline-tick — which only ever
+// TryLocks m.mu — can never split a group mid-capture: captures are deterministic even
+// with a realistic (sub-resequencer-timeout) FEC deadline. It reads until a short
+// deadline with no further datagram, so it captures the DATA frames plus the FEC PARITY
+// each group-fill emitted.
+func sendAndCapture(t testing.TB, sender *Multipath, peer *net.UDPConn, codec *frame.Codec, payloads [][]byte, groupSize int) []capturedFrame {
 	t.Helper()
-	for i, p := range payloads {
-		if err := sender.Send([][]byte{p}, sender.virt); err != nil {
-			t.Fatalf("send %d: %v", i, err)
+	for i := 0; i < len(payloads); i += groupSize {
+		end := i + groupSize
+		if end > len(payloads) {
+			end = len(payloads)
+		}
+		if err := sender.Send(payloads[i:end], sender.virt); err != nil {
+			t.Fatalf("send batch [%d:%d): %v", i, end, err)
 		}
 	}
 	var out []capturedFrame
@@ -132,6 +139,13 @@ func drainExact(t testing.TB, fn ReceiveFunc, want int, timeout time.Duration) [
 	return out
 }
 
+// testFECDeadline is a realistic group-close deadline for the bind FEC tests: well
+// below the datapath bound (maxFECDeadline, half the resequencer timeout), so the
+// configuration is one NewMultipath accepts. Determinism does not rely on the deadline
+// being large — sendAndCapture fills each group atomically in one Send — so a
+// production-shaped value is used.
+const testFECDeadline = 50 * time.Millisecond
+
 // payloadStream returns n distinct, non-trivial inner datagrams so a transparency /
 // ordering assertion cannot pass by accident (each payload is unique).
 func payloadStream(n int) [][]byte {
@@ -154,8 +168,7 @@ func TestMultipathFECTransparentAndOverhead(t *testing.T) {
 		groups       = 3
 	)
 	psk := testKey(t, 0x24)
-	// A long deadline keeps the async tick out of this size-close capture.
-	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: time.Hour}
+	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: testFECDeadline}
 	sender := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
 	if _, _, err := sender.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -174,7 +187,7 @@ func TestMultipathFECTransparentAndOverhead(t *testing.T) {
 		t.Fatalf("codec: %v", err)
 	}
 	payloads := payloadStream(dataShards * groups)
-	captured := sendAndCapture(t, sender, peer, codec, payloads)
+	captured := sendAndCapture(t, sender, peer, codec, payloads, dataShards)
 
 	var data []frame.Data
 	var parity []frame.Parity
@@ -255,7 +268,7 @@ func TestMultipathFECRecoversWithinBudget(t *testing.T) {
 		groups       = 3
 	)
 	psk := testKey(t, 0x25)
-	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: time.Hour}
+	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: testFECDeadline}
 
 	// Sender produces a real FEC-coded wire stream.
 	sender := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
@@ -274,7 +287,7 @@ func TestMultipathFECRecoversWithinBudget(t *testing.T) {
 		t.Fatalf("codec: %v", err)
 	}
 	payloads := payloadStream(dataShards * groups)
-	captured := sendAndCapture(t, sender, peer, codec, payloads)
+	captured := sendAndCapture(t, sender, peer, codec, payloads, dataShards)
 
 	// Receiver runs the FEC decode + resequencing integration under test.
 	rx := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
@@ -339,7 +352,7 @@ func TestMultipathFECUnrecoverableDoesNotStall(t *testing.T) {
 		groups       = 3
 	)
 	psk := testKey(t, 0x26)
-	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: time.Hour}
+	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: testFECDeadline}
 
 	sender := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
 	if _, _, err := sender.Open(0); err != nil {
@@ -357,7 +370,7 @@ func TestMultipathFECUnrecoverableDoesNotStall(t *testing.T) {
 		t.Fatalf("codec: %v", err)
 	}
 	payloads := payloadStream(dataShards * groups)
-	captured := sendAndCapture(t, sender, peer, codec, payloads)
+	captured := sendAndCapture(t, sender, peer, codec, payloads, dataShards)
 
 	rx := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
 	fns, _, err := rx.Open(0)
@@ -476,5 +489,84 @@ func TestMultipathFECDeadlineEmitsPartialGroupParity(t *testing.T) {
 	}
 	if snap := sender.FECSnapshot(); snap.ParityFrames != parityShards {
 		t.Fatalf("FECSnapshot.ParityFrames = %d, want %d after deadline flush", snap.ParityFrames, parityShards)
+	}
+}
+
+// TestMultipathFECLateRecoveryNotCountedDelivered is the fix witness for the honest-
+// recovery-counter defect (T24 #4): a group reconstructed AFTER the resequencer already
+// skipped its gap is reconstructed but never delivered (its seqs fell below the release
+// point), so /metrics must count it 0 — recovered means delivered ahead of the release
+// point, not merely reconstructed. It also proves the coupling with #2: the late
+// recovered frames reach the resequencer via the NON-resyncing path and are simply
+// dropped.
+func TestMultipathFECLateRecoveryNotCountedDelivered(t *testing.T) {
+	const (
+		dataShards   = 4
+		parityShards = 2
+	)
+	psk := testKey(t, 0x28)
+	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: testFECDeadline}
+
+	sender := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
+	if _, _, err := sender.Open(0); err != nil {
+		t.Fatalf("sender Open: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen peer: %v", err)
+	}
+	defer peer.Close()
+	sender.paths[0].setRemote(peer.LocalAddr().(*net.UDPAddr).AddrPort())
+	codec, err := frame.NewCodec(psk)
+	if err != nil {
+		t.Fatalf("codec: %v", err)
+	}
+	payloads := payloadStream(dataShards * 2) // groups 0 and 1
+	captured := sendAndCapture(t, sender, peer, codec, payloads, dataShards)
+
+	rx := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
+	fns, _, err := rx.Open(0)
+	if err != nil {
+		t.Fatalf("rx Open: %v", err)
+	}
+	t.Cleanup(func() { _ = rx.Close() })
+	src := netip.MustParseAddrPort("127.0.0.1:9999")
+
+	// Feed group 0 fully; feed group 1's surviving DATA (drop shard indices 0,1 = seqs
+	// 5,6) but HOLD BACK group 1's parity, so the group 1 gap cannot yet be repaired.
+	var heldParity []capturedFrame
+	for _, c := range captured {
+		if d, ok := c.fr.(frame.Data); ok && d.FECGroup == 1 && d.FECIndex <= 1 {
+			continue // seqs 5,6 lost in transit
+		}
+		if p, ok := c.fr.(frame.Parity); ok && p.FECGroup == 1 {
+			heldParity = append(heldParity, c)
+			continue
+		}
+		feedInbound(rx, c, src)
+	}
+
+	// Drain the survivors: group 0 (seqs 1-4) + group 1's two received frames (7,8). The
+	// gap at 5,6 is SKIPPED after the resequencer timeout, advancing the release point
+	// past them — that is what makes the imminent recovery structurally late.
+	delivered := drainExact(t, fns[0], 6, 3*time.Second)
+	if len(delivered) != 6 {
+		t.Fatalf("delivered %d survivors before recovery, want 6 (gap 5,6 must be skipped)", len(delivered))
+	}
+
+	// NOW deliver group 1's parity: the decoder reconstructs seqs 5,6, but the release
+	// point has already advanced past them.
+	for _, c := range heldParity {
+		feedInbound(rx, c, src)
+	}
+
+	// The decoder DID reconstruct the two lost data shards ...
+	if got := rx.fecRecv.Load().stats().Recovered; got != parityShards {
+		t.Fatalf("decoder reconstructed %d shards, want %d", got, parityShards)
+	}
+	// ... but they were delivered too late, so the honest /metrics recovered count is 0.
+	if snap := rx.FECSnapshot(); snap.Recovered != 0 {
+		t.Fatalf("FECSnapshot.Recovered = %d, want 0 (reconstructed-but-late must not count as delivered)", snap.Recovered)
 	}
 }

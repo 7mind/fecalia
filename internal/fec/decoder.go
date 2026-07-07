@@ -30,6 +30,22 @@ type Decoder struct {
 	highWater     GroupID
 	haveHighWater bool
 
+	// Discontinuity guard over the (UNAUTHENTICATED) wire GroupID, mirroring the
+	// resequencer's suspect/corroborate design (internal/reseq/reseq.go). DATA/PARITY
+	// frames are forgeable, so junk decodes as a valid kind ~1/256 carrying a
+	// uniformly-random GroupID; a single such frame must NOT be trusted to move the
+	// high-water arbitrarily (which would evict every live group and blackhole all
+	// subsequent real groups as tooOld). A GroupID implausibly far from the high-water
+	// is SUSPECT: it neither advances the high-water nor is buffered until
+	// groupResyncCorroborate DISTINCT suspect ids mutually within one retain window
+	// corroborate a genuine discontinuity (a peer encoder reopen resets nextGroup to 0,
+	// emitting a connected run of low ids that corroborates; independent junk ids, each
+	// uniform in 2^32, do not). resyncGroups holds the current run's distinct ids;
+	// [resyncLo,resyncHi] is its span.
+	resyncGroups []GroupID
+	resyncLo     GroupID
+	resyncHi     GroupID
+
 	// recovered counts data shards reconstructed from parity (never directly
 	// received); unrecoverable counts data shards a group lost for good — its
 	// cardinality was known (a parity frame was seen) yet fewer than M shards
@@ -39,6 +55,22 @@ type Decoder struct {
 	recovered     uint64
 	unrecoverable uint64
 }
+
+// GroupID discontinuity-guard tuning, mirroring reseq's resyncFactor/resyncCorroborate.
+const (
+	// groupResyncFactor bounds how far AHEAD of the high-water a single frame is
+	// trusted to advance it. The encoder emits group ids strictly sequentially, so a
+	// legitimate forward step is tiny (a handful, from fully-lost intervening groups);
+	// a jump of groupResyncFactor retain-windows or more is SUSPECT and a single such
+	// frame never advances the high-water. This is the group-space analogue of reseq's
+	// forward-jump bound.
+	groupResyncFactor = 4
+	// groupResyncCorroborate is how many DISTINCT suspect group ids mutually within one
+	// retain window must be observed before the high-water re-pins. A peer encoder
+	// reopen (ids restart at 0) emits a connected run that corroborates after losing at
+	// most groupResyncCorroborate-1 groups; uniformly-random junk ids never corroborate.
+	groupResyncCorroborate = 3
+)
 
 // DecoderStats is a snapshot of the decoder's cumulative recovery counters.
 type DecoderStats struct {
@@ -156,19 +188,49 @@ func (d *Decoder) tooOld(g GroupID) bool {
 	return behind > int32(d.retainWindow)
 }
 
-// advanceHighWater folds g into the high-water mark and, when the mark actually
-// advances, evicts every retained group that has fallen outside the window.
-func (d *Decoder) advanceHighWater(g GroupID) {
-	advanced := false
+// admitGroup decides whether a shard for group g may be processed, updating the
+// high-water and eviction frontier from a TRUSTED view of the wire GroupID. It
+// returns true when g is a plausible current/recent group (place the shard) and
+// false when g is SUSPECT and dropped (a lone junk/forged id awaiting corroboration).
+// A plausible forward step advances the high-water and evicts stale groups; an
+// in-window straggler is processed without moving the frontier; an implausibly far
+// id (a random junk group, or the low ids of a peer encoder reopen) is routed through
+// the corroboration guard so no single frame can poison the decoder. Mirrors
+// reseq.admit.
+func (d *Decoder) admitGroup(g GroupID) bool {
 	if !d.haveHighWater {
 		d.highWater = g
 		d.haveHighWater = true
-		advanced = true
-	} else if int32(g-d.highWater) > 0 {
-		d.highWater = g
-		advanced = true
+		return true
 	}
-	if !advanced || d.retainWindow <= 0 {
+	ahead := int32(g - d.highWater) // >0 ahead, <0 behind, uint32-wraparound-safe
+	if ahead > 0 {
+		if d.retainWindow > 0 && uint32(ahead) >= uint32(groupResyncFactor*d.retainWindow) {
+			// Implausibly far ahead: a single frame must not leap the frontier here (it
+			// would evict every live group). Corroborate before trusting.
+			return d.tryGroupResync(g)
+		}
+		// Plausible forward step: advance the frontier and evict groups outside the window.
+		d.groupResyncReset()
+		d.highWater = g
+		d.evictStale()
+		return true
+	}
+	// g at or behind the high-water.
+	if d.tooOld(g) {
+		// Far behind the window: an ordinary straggler is impossibly late, but a peer
+		// encoder reopen (ids reset to 0) lands here — corroborate a genuine reset rather
+		// than blackholing every post-reopen group as tooOld.
+		return d.tryGroupResync(g)
+	}
+	d.groupResyncReset() // in-window near-current traffic breaks any suspect run
+	return true
+}
+
+// evictStale drops every retained group that has fallen outside the retain window,
+// accounting each as unrecoverable. Caller has just advanced the high-water.
+func (d *Decoder) evictStale() {
+	if d.retainWindow <= 0 {
 		return
 	}
 	for id, gs := range d.groups {
@@ -177,6 +239,80 @@ func (d *Decoder) advanceHighWater(g GroupID) {
 			delete(d.groups, id)
 		}
 	}
+}
+
+// tryGroupResync feeds one suspect group id into the discontinuity guard, re-pinning
+// the high-water ONLY after groupResyncCorroborate DISTINCT suspect ids mutually span
+// less than one retain window (a peer reopen's connected low-id run corroborates;
+// uniformly-random junk ids, each independent in 2^32, do not, and a single id
+// re-delivered contributes only ONE distinct value). It returns true and performs the
+// resync on the corroborating id (so the caller places it as the new frontier), false
+// while still collecting. Mirrors reseq.tryResync.
+func (d *Decoder) tryGroupResync(g GroupID) bool {
+	if len(d.resyncGroups) == 0 || d.groupSpanExceeds(g) {
+		d.resyncLo, d.resyncHi = g, g
+		d.resyncGroups = append(d.resyncGroups[:0], g)
+		return false
+	}
+	if d.groupRunContains(g) {
+		return false // a re-delivered id is not independent corroboration
+	}
+	if g < d.resyncLo {
+		d.resyncLo = g
+	}
+	if g > d.resyncHi {
+		d.resyncHi = g
+	}
+	d.resyncGroups = append(d.resyncGroups, g)
+	if len(d.resyncGroups) < groupResyncCorroborate {
+		return false
+	}
+	d.groupResync(g)
+	return true
+}
+
+// groupSpanExceeds reports whether adding g to the current suspect run would make its
+// id span reach or exceed one retain window (so g does not corroborate the run).
+func (d *Decoder) groupSpanExceeds(g GroupID) bool {
+	if d.retainWindow <= 0 {
+		return true // no window: nothing corroborates, so a junk id never resyncs
+	}
+	lo, hi := d.resyncLo, d.resyncHi
+	if g < lo {
+		lo = g
+	}
+	if g > hi {
+		hi = g
+	}
+	return uint64(hi-lo) >= uint64(d.retainWindow)
+}
+
+// groupRunContains reports whether g is already one of the distinct suspect ids in the
+// current run. The run holds at most groupResyncCorroborate ids, so this is O(C).
+func (d *Decoder) groupRunContains(g GroupID) bool {
+	for _, s := range d.resyncGroups {
+		if s == g {
+			return true
+		}
+	}
+	return false
+}
+
+// groupResync re-pins the high-water to base after a corroborated discontinuity,
+// discarding all buffered groups (they belong to the pre-discontinuity epoch). The
+// discarded groups are NOT accounted unrecoverable: a peer reset (or a corroborated
+// junk run) is not a repair failure, and counting it would inflate the /metrics loss.
+func (d *Decoder) groupResync(base GroupID) {
+	d.groups = make(map[GroupID]*groupState)
+	d.highWater = base
+	d.groupResyncReset()
+}
+
+// groupResyncReset abandons the current suspect run.
+func (d *Decoder) groupResyncReset() {
+	d.resyncGroups = d.resyncGroups[:0]
+	d.resyncLo = 0
+	d.resyncHi = 0
 }
 
 // Offer feeds one surviving shard into its group and returns any data payloads
@@ -188,10 +324,12 @@ func (d *Decoder) advanceHighWater(g GroupID) {
 // and the group is marked complete. Offering to a completed group returns nil.
 func (d *Decoder) Offer(s Shard) ([]Recovered, error) {
 	g := s.GroupID()
-	if d.tooOld(g) {
-		return nil, nil // group already evicted; a very-late shard for it is unrecoverable by design
+	if !d.admitGroup(g) {
+		// SUSPECT wire GroupID (a lone junk/forged id, or a not-yet-corroborated
+		// reopen): drop the shard without touching the frontier so one forged frame
+		// cannot evict live groups or blackhole subsequent real ones.
+		return nil, nil
 	}
-	d.advanceHighWater(g)
 
 	gs := d.state(g)
 	if gs.done {
