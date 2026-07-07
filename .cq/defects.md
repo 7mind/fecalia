@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 23
+  item: 24
 archives: []
 ---
 
@@ -311,3 +311,16 @@ archives: []
 - suggestedFix: "In the pacing follow-up (T23/T35): classify WG control frames (handshake/keepalive) at the Bind and exempt or priority-class them (a small reserved per-path token budget or a control-frame bypass), and size per_path_capacity from measured BDP rather than a frame-count default. Requires Bind/interface frame-type plumbing that Pick() alone cannot provide."
 - ledgerRefs: ["tasks:T21","tasks:T23","goals:G1"]
 - rootCause: "Established by the T21 review (fable): the weighted pacer's per-path Pick() token buckets are frame-type-blind, so under sustained overload WG control frames (handshake/keepalive) are shed at the same probability as bulk data. Pick() has no frame-type visibility — a control-frame bypass/priority class requires Bind/interface frame-type plumbing that does not exist yet. DEFERRED: pacing ships DISABLED by default (no default exposure), and the fix belongs with future pacing-hardening/sizing work (needs the Bind to classify frame types + BDP-based capacity sizing, related to T35 load-cap). No owning task fixes it today; re-seed a pacing-hardening task when pacing is enabled by default or empirically sized."
+
+### D23 — root-caused
+
+- createdAt: 2026-07-07T20:14:07.686Z
+- updatedAt: 2026-07-07T20:14:07.686Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Fixture comments misattribute the real-internet 150-170 Mbit/s figure as the in-fixture 1-vCPU crypto ceiling
+- severity: medium
+- description: "Found by the T23 review (fable), file-and-defer, PRE-EXISTING (introduced by T35 commit 83aa799, propagated since; NOT introduced by T23 which only repeats it in one new comment). test/e2e/netns.go:21, test/e2e/fixture_impairment_test.go:11-12,63, test/e2e/fec_baseline_test.go:18, and docs/p0-checkpoint.md:72 all state the netns fixture's CPU-bound tunnel throughput is '~150-170 Mbit/s on a 1-vCPU host'. That figure was actually measured over the REAL INTERNET between two hosts with ONE daemon each (.cq/goals.md G1 evidence: 'NOT CPU-bound, o3 wanbond ~24% of one core'), whereas the recorded IN-FIXTURE measurement on the 1-vCPU host is 12-46 Mbit/s CPU-bound (docs/p0-findings.md:216-225) — both daemons sharing one core. Every capped-fixture sizing decision derived from the 150-170 premise (T35's 50 Mbit default, the FEC baseline cap, T23's 40 Mbit P2 caps) inherits an unsupported margin claim for the 1-vCPU host."
+- rootCause: "Provenance traced by fable: the 150-170 Mbit/s number is a cross-host real-internet single-daemon-per-host measurement (G1 evidence) mis-copied into netns-fixture comments as if it were the in-fixture (both-daemons-one-core) CPU-bound ceiling. The real in-fixture 1-vCPU ceiling is 12-46 Mbit/s (p0-findings). Introduced by T35 (83aa799)."
+- suggestedFix: "Sweep the four locations: replace the figure with the per-host MEASURED in-fixture ceilings (12-46 Mbit/s on the 1-vCPU aarch64 host per p0-findings; measure once on the 4-vCPU amd64 host and record it), and state that capped-fixture tests require 2*cap (aggregation) or cap (single-path) below the EXECUTING host's measured in-fixture ceiling. Pairs naturally with T35/T23 capped-fixture work."
+- ledgerRefs: ["tasks:T23","tasks:T35","goals:G1"]
