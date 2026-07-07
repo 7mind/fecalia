@@ -174,10 +174,10 @@ archives: []
 - suggestedFix: Make Setup idempotent (delete any leftover wbAe/wbBe links before creating) OR make Teardown synchronously wait for the holder process + link removal before returning. Pick up with the D3 test-hardening pass.
 - ledgerRefs: ["goals:G1"]
 
-### D15 — root-caused
+### D15 — resolved
 
 - createdAt: 2026-07-07T14:02:24.568Z
-- updatedAt: 2026-07-07T14:02:24.568Z
+- updatedAt: 2026-07-07T15:47:04.765Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: End-to-end failover recovery intermittently exceeds the 3s P1 budget (reply-direction detection not in the budget composition)
@@ -186,11 +186,12 @@ archives: []
 - rootCause: "Partially root-caused on hardware by the T20 review: bidirectional failover = max(edge-side detect, concentrator-side detect) + reroute; each side's detect is DownAfter(1500ms)+up-to-one-interval(250ms) ≈ 1.75s measured from the last echo, leaving only ~1.25s margin to the 3s budget. Under CPU-loaded netns conditions the two sides' detection composes and the timing jitters past 3s in a minority of runs. Owned by T39 (investigate the exact reply-direction tail + tighten timing)."
 - suggestedFix: "In T39: reproduce with BOTH daemons at info level and synchronized timestamps; measure the concentrator's down-detection + reply-path switch latency relative to the kill; then either tighten DownAfter/interval so max(edge,conc) detection + reroute fits 3s with comfortable margin, and/or make the reply-path switch piggyback on the edge's roam (the first authenticated packet on the new path should immediately redirect replies rather than waiting a full independent DownAfter). Reconcile thresholds.go's composition comment to budget BOTH directions."
 - ledgerRefs: ["tasks:T20","tasks:T39","goals:G1"]
+- fix: "Resolved by T39 (merged c79a95b). Root cause: the concentrator's single probe-loop Tick goroutine was starved under iperf3 CPU load (GOMAXPROCS saturation, ~1s scheduling jitter), delaying its independent reply-direction path-DOWN detection past 3s. Fix: tickLivenessFromReceive advances liveness off the always-scheduled per-path RECEIVE goroutines (throttled <=once/interval via atomic CAS, TryLock-safe against Close/readersWG), so detection no longer depends on the starved timer; plus a timing tighten 1500/250->1200/200ms (same 6:1 false-down tolerance). Independently HARDWARE-VALIDATED on llm-ubuntu-0 under saturating bidir load: implementer 42/42 recoveries <3s (worst 2464ms), fable 16/16 (recovery max 2099ms, reply-direction conc_switch max 1970ms) — vs the prior 4/14 >3.1s. Bidirectional failover now reliably meets the P1 3s budget with ~900ms margin."
 
-### D16 — root-caused
+### D16 — resolved
 
 - createdAt: 2026-07-07T14:02:31.334Z
-- updatedAt: 2026-07-07T14:02:31.334Z
+- updatedAt: 2026-07-07T15:47:09.100Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: thresholds.go PLiveness constants + composition comment drifted from the daemon's actual defaults
@@ -199,6 +200,7 @@ archives: []
 - rootCause: "Confirmed by the T20 review: the telemetry-component e2e constants (PLiveness*) and the daemon's device.go probe-timing defaults are two independent sets; the standalone liveness test uses the former, the failover daemon uses the latter, and thresholds.go's composition comment reasons from the former while claiming to be the single source of truth for the failover budget."
 - suggestedFix: "In T39: either have the e2e daemon config set its probe timings FROM the thresholds constants (make thresholds.go authoritative), or split the constants into 'prober-component e2e' vs 'daemon defaults' and have the composition comment reference the daemon's actual values (and both failover directions)."
 - ledgerRefs: ["tasks:T20","tasks:T39","goals:G1"]
+- fix: "Resolved by T39 (merged c79a95b): the daemon (internal/device/device.go) and test/e2e/thresholds.go now BOTH read one telemetry.Default* set (DefaultProbeInterval=200ms, DefaultDownAfter=1200ms, DefaultUpSuccesses=3) — single source of truth, no drift. thresholds.go's P1 composition analysis now budgets BOTH failover directions (recovery ≈ max(edgeDetect, concDetect) + reroute) rather than only the edge-side term, and its prose is internally consistent with the constants (worst-case detect = DownAfter + one interval = 1.4s; PLivenessFailoverBudget = 1.6s with one interval of headroom; ~1.4s jitter margin to the 3s deadline). Verified against liveness.go's strict-'>' Tick by both T39 reviewers."
 
 ### D17 — resolved
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 25
+  item: 26
 archives: []
 ---
 
@@ -189,6 +189,17 @@ archives: []
 - criticism: ["[r1 fable, resolved 8d81f2b] runtime mutations desync scheduler across Close->Open -> total egress outage / silent failover loss; +race-test vacuity, e2e cross-goroutine Fatalf, silent reload diff-drops","[r2 opus, resolved 347df43] PathID collision after remove->reopen->add (nextPathID reset to len while survivors kept higher stamps) -> corrupts peer per-PathID anti-replay/challenge; fixed via monotonic high-water + prober-stamp reconcile","[r3 fable, resolved c917310] stale per-Open-span exhaustion doc/error-string contradicting the cross-span high-water + misdirecting the operator remedy","[r4 fable, resolved at merge verbatim] residual comment inaccuracy: '256 AddPath admissions' (actual capacity 256 minus initial-Open path count)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T30","goals:G1"]
+
+### R25 — go-ahead
+
+- createdAt: 2026-07-07T15:46:58.773Z
+- updatedAt: 2026-07-07T15:46:58.773Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T39 (meet the P1 3s failover budget in BOTH directions; fixes D15 HIGH + D16) reconciled go-ahead (opus+fable panel, 2 rounds). ROOT CAUSE (found on hardware): bidirectional failover needs BOTH ends to independently mark the killed path DOWN via their probe-liveness Tick, which rode ONE wall-clock ticker goroutine (StartProbeLoop->emitProbes); on the concentrator (iperf3 server absorbing the forward flood on 4 vCPU) that goroutine was scheduled with ~1s jitter under GOMAXPROCS saturation, delaying the reply-direction switch past 3s in ~30% of runs. FIX: tickLivenessFromReceive — a throttled (atomic-CAS, <=once/interval) liveness sweep driven off the per-path RECEIVE goroutines (scheduled by the very traffic that must trigger failover), so DOWN-detection no longer waits on a starved timer; uses TryLock (NOT Lock) to preserve Close's 'a reader never blocks on m.mu' invariant (Close holds m.mu while waiting on readersWG — a Lock would deadlock); ticks OUTSIDE the lock. Monotone-safe: Tick only marks an UP path DOWN once silence STRICTLY exceeds DownAfter and never brings a path UP, so a more frequent tick only lands a GENUINE DOWN sooner, never a false one; failback hysteresis untouched. Plus a modest timing tighten (1500/250 -> 1200/200ms) keeping the identical 6:1 six-lost-echo false-down tolerance. D16 reconciled: device.go + thresholds.go now read one telemetry.Default* source of truth, and the composition analysis budgets BOTH directions (max(edge,conc)). New sound TestP1Failover (failover_test.go) measures per-direction recovery from each daemon's scheduler-transition log timestamp (sub-ms, un-confounded — an ICMP-gap probe is unusable: it shares the netem queue with the saturating flow and measures congestion, not failover) + a data-plane iperf-bidir survival cross-check, strict < P1RecoverySeconds. R1: fable disapprove (the new concurrent sweep had NO -race unit coverage — no-op in bind unit tests since sweepIntervalNanos==0 unless StartProbeLoop runs; exercised only by the non-race e2e; acceptance requires -race unit tests) + filed D17 (TestPSKMismatchRejected flake); opus disapprove (thresholds D16 budget prose ~1.4s contradicted the 1.6s constant). Fixed dda1ce9: 3 -race bind sweep tests (throttle-coalesces-to-one; starved-timer receive-driven DOWN; no-deadlock-vs-Close), each MUTATION-VERIFIED non-vacuous (throttle off -> 64 Ticks; TryLock->Lock -> Close hangs + 5s guard fires); thresholds prose reconciled to the 1.6s constant (1.4s detect + 1-interval headroom, 1.4s jitter margin). R2 BOTH approve (concurrency crux -race-clean, Prober.mu serializes Liveness, no lock-order inversion; prose consistent). HARDWARE: implementer 42/42 <3s (worst 2464ms), fable independent 16/16 (recovery max 2099ms, conc_switch max 1970ms) — D15 CLOSED (vs the prior 4/14 >3.1s). Merged c79a95b. Resolves D15 + D16. D17 (out-of-scope frame test flake) separately diagnosed as a test-assertion bug (crypto sound) + resolved af31005."
+- criticism: ["[r1 fable, resolved dda1ce9] the new concurrent receive-tick sweep (tickLivenessFromReceive: CAS throttle + TryLock deadlock-avoidance) had NO -race unit coverage — added 3 mutation-verified non-vacuous -race bind tests","[r1 opus, resolved dda1ce9] thresholds.go D16 budget prose (~1.4s budget/~1.6s margin) contradicted the 1.6s constant — reconciled to 1.4s detect + headroom = 1.6s budget, 1.4s margin"]
+- new_questions: []
+- ledgerRefs: ["tasks:T39","goals:G1","defects:D15","defects:D16"]
 
 ## M10
 
