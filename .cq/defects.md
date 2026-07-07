@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 22
+  item: 23
 archives: []
 ---
 
@@ -296,3 +296,17 @@ archives: []
 - suggestedFix: In the reboot-persistence follow-up, deduplicate the o3 INPUT chain to one canonical rule set (single 51820 ACCEPT, single OCI default block) before persisting, with a before/after `iptables -S INPUT` capture. This is a one-time host cleanup on o3, not a repo change.
 - ledgerRefs: ["tasks:T32","goals:G1"]
 - rootCause: "Confirmed by the T32 review: the duplicate rules in o3's INPUT chain PREDATE T32 (whose -C-guarded insert cannot duplicate) — residue of this session's earlier NON-idempotent manual iptables inserts during P0 real-host bring-up. o3 HOST STATE ONLY, not a code defect (low). One-time dedup deferred to the reboot-persistence follow-up (with D7/T22) — a host cleanup action, not separately investigable."
+
+## M6
+
+### D22 — open
+
+- createdAt: 2026-07-07T19:17:17.204Z
+- updatedAt: 2026-07-07T19:17:17.204Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Weighted-scheduler pacer sheds WireGuard control frames (handshakes/keepalives) indiscriminately under overload
+- severity: medium
+- description: "Filed by the T21 review (fable), file-and-defer (out of scope for T21). With pacing enabled, EVERY datagram — data, handshake init/response, keepalive — shares the same per-path Pick() token buckets, so under sustained overload control frames are dropped with the same probability as bulk data (~80% at 5x overload), delaying rekey (mitigated only by WG's 5s REKEY_TIMEOUT retries within the 90s attempt window). Pick() has NO frame-type visibility — a control-frame bypass/priority class needs Bind/interface plumbing, which belongs with the empirical pacing-sizing work (T23 bufferbloat/pacing, T35 load-cap), NOT T21. Pacing ships DISABLED by default so there is no default-config exposure. RELATED sizing note for the same follow-up: the T21 default per_path_capacity_fps=10000 (~115 Mbit/s at full MTU) means the aggregation gate may never engage on realistic slow uplinks until sized from measured BDP."
+- suggestedFix: "In the pacing follow-up (T23/T35): classify WG control frames (handshake/keepalive) at the Bind and exempt or priority-class them (a small reserved per-path token budget or a control-frame bypass), and size per_path_capacity from measured BDP rather than a frame-count default. Requires Bind/interface frame-type plumbing that Pick() alone cannot provide."
+- ledgerRefs: ["tasks:T21","tasks:T23","goals:G1"]
