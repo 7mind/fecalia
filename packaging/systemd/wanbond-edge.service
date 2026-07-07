@@ -1,0 +1,47 @@
+# wanbond edge role: the mobile Linux box that bonds the WAN uplinks.
+# Install: cp wanbond-edge.service /etc/systemd/system/ && systemctl daemon-reload
+# Config:  /etc/wanbond/edge.toml, root-owned, mode 0600 EXACTLY (the daemon
+#          refuses anything else — the file holds the WG private key and PSK).
+# See docs/install.md for addressing/routing drop-ins and firewall requirements.
+
+[Unit]
+Description=wanbond bonded WAN tunnel (edge role)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/wanbond/edge.toml
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/wanbond --config /etc/wanbond/edge.toml
+# SIGHUP re-reads the config and applies the path diff (add/remove uplinks)
+# without tearing down the live tunnel.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+
+# The daemon needs only CAP_NET_ADMIN (TUN device creation); it does no
+# interface addressing or routing itself (see docs/install.md).
+CapabilityBoundingSet=CAP_NET_ADMIN
+DeviceAllow=/dev/net/tun rw
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

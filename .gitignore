@@ -13,3 +13,4 @@ coverage.txt
 *.pcap
 *.pcapng
 .codegraph/
+/dist/
