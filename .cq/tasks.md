@@ -267,10 +267,10 @@ archives:
 - dependsOn: ["T13"]
 - ledgerRefs: ["goals:G1"]
 
-### T18 — wip
+### T18 — done
 
 - createdAt: 2026-07-01T23:40:12.907Z
-- updatedAt: 2026-07-07T00:15:56.598Z
+- updatedAt: 2026-07-07T01:18:13.278Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Receive resequencing buffer (bounded window + timeout)

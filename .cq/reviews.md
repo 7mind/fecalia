@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 21
+  item: 22
 archives: []
 ---
 
@@ -229,6 +229,17 @@ archives: []
 - criticism: ["[r1 fable, resolved c59851b] loopback-guard TOCTOU — requireLoopback (LookupIP) then net.Listen re-resolved independently; fixed with fail-closed post-bind verifyLoopbackBind(ln.Addr()) on the kernel-bound address + listener cleanup"]
 - new_questions: []
 - ledgerRefs: ["tasks:T17","goals:G1"]
+
+### R21 — go-ahead
+
+- createdAt: 2026-07-07T01:18:31.605Z
+- updatedAt: 2026-07-07T01:18:31.605Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T18 (receive resequencing buffer, internal/reseq: bounded-window + timeout, wired into the multipath Bind before WG delivery) reconciled go-ahead (opus+fable panel, 3 rounds). R1: BOTH disapprove — the sound core (ordering/dedup/window/timeout/bounded-ring/-race/PROBE-isolation/T24-FEC-seam) was verified correct, but Observe unconditionally trusted the by-design-UNAUTHENTICATED outer-seq: (a) advanceTo was O(jump) under r.mu, so a forged/garbage far-future OuterSeq (DATA decodes as KindData p~1/256) spun ~2^62 iterations — reproduced PERMANENT hard-lock of all receive goroutines; (b) head-of-line timeout wasn't re-based across gaps (expire->arm with waiting=true) — dropped in-window reordered frames; (c) a wild-high seq OR a peer restart (outerSeq resets to 1) irreversibly advanced the release point — permanent tunnel blackhole (regression vs pre-T18). opus also filed the availability-amplification angle as a defect. Rework 978f763: advanceTo capped to O(window) + arithmetic gap-close; expire clears waiting before arm; a discontinuity/resync guard (K=resyncFactor=4, C=resyncCorroborate=3) re-pins ONLY after C corroborating suspect frames mutually spanning <window — junk seqs (independent in 2^64) don't corroborate, a genuine restart/long-outage does; subsumes the availability defect (a forged advance is bounded to (K-1)*window and self-heals). R2: opus approve; fable DISAPPROVE — the corroboration run counted CONSECUTIVE not DISTINCT seqs, so 3 copies of ONE junk frame (span 0) self-corroborated a spurious resync (reproduced Resyncs==1), defeating the documented junk-immunity invariant. Rework c73d197: require C DISTINCT suspect seqs (resyncSeqs + runContains); genuine restart (1,2,3) and outage (base,base+1,base+2) emit distinct seqs so both legit paths preserved; bounded at C, mutex-guarded. R3 BOTH approve: duplicate-seq hole closed with fail-first evidence (both new tests fail at 978f763 with Resyncs==1, pass at c73d197); resyncSeqs bounded + race-free; O(window) advance + per-gap timeout intact; full gate + -race green. Delivers strictly-monotonic outer-seq order so WG's RFC6479 inner anti-replay never sees multipath reorder. Merged c73d197. Residual active-forger disruption on the unauthenticated DATA channel is transient/self-healing and within the accepted P1 DoS-tolerant threat model (T11: DATA headers unauthenticated by design); the complete fix (outer-header auth) is out of scope."
+- criticism: ["[r1 both, resolved 978f763] advanceTo O(jump) mutex spin — forged far-future OuterSeq permanent hard-lock; capped to O(window)+arithmetic","[r1 opus, resolved 978f763] head-of-line timeout not re-based across gaps — dropped in-window reordered frames; expire clears waiting before arm","[r1 fable + opus-defect, resolved 978f763] wild-seq / peer-restart release-point discontinuity — permanent blackhole; discontinuity/resync guard (K=4,C=3), bounded + self-healing","[r2 fable, resolved c73d197] corroboration run accepted DUPLICATE seqs — 3 copies of one junk frame forced a spurious resync; require C DISTINCT suspect seqs"]
+- new_questions: []
+- ledgerRefs: ["tasks:T18","goals:G1"]
 
 ## M7
 
