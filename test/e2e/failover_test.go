@@ -213,6 +213,16 @@ func TestP1FailoverRepeatedFlap(t *testing.T) {
 	if err := load.Start(); err != nil {
 		t.Fatalf("start load flow: %v", err)
 	}
+	// Reap the saturating flow on EVERY exit path, not just the load.Wait() on success:
+	// an early Fatalf (a failover non-observation or a failback wedge) before Wait would
+	// otherwise leak an uncapped ~70s --bidir iperf3 that keeps saturating the shared e2e
+	// host and contaminates subsequent/concurrent runs (D21). Kill after a completed Wait
+	// is a harmless no-op.
+	t.Cleanup(func() {
+		if load.Process != nil {
+			_ = load.Process.Kill()
+		}
+	})
 
 	// Let the flow ramp and both ends reach steady state on the primary before cycle 1.
 	time.Sleep(flapRampBefore)
