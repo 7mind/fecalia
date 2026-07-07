@@ -265,18 +265,18 @@ archives:
 - dependsOn: ["T14","T18","T21"]
 - ledgerRefs: ["goals:G1","tasks:T14","tasks:T18","reviews:R32"]
 
-### T25 — planned
+### T25 — done
 
 - createdAt: 2026-07-01T23:41:00.459Z
-- updatedAt: 2026-07-01T23:41:00.459Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T23:28:39.484Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P3 e2e: recovery at injected loss with bounded overhead"
 - description: e2e test injecting uniform netem loss and asserting FEC recovery and overhead against /metrics, using the harness constants (P3InjectedLossRates, P3MinRecoveredFraction, P3MaxOverheadFactor). Appends the P3 manual checklist.
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP3FixedFEC`: at 5% and at 15% uniform injected loss, >=95% of lost data frames recovered without retransmit, and FEC overhead <= 2x the configured parity ratio; both read from /metrics; P3 manual checklist appended."
 - suggestedModel: standard
 - dependsOn: ["T24"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T24","reviews:R33","defects:D24"]
 
 ## M6
 

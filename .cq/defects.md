@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 24
+  item: 25
 archives: []
 ---
 
@@ -324,3 +324,18 @@ archives: []
 - rootCause: "Provenance traced by fable: the 150-170 Mbit/s number is a cross-host real-internet single-daemon-per-host measurement (G1 evidence) mis-copied into netns-fixture comments as if it were the in-fixture (both-daemons-one-core) CPU-bound ceiling. The real in-fixture 1-vCPU ceiling is 12-46 Mbit/s (p0-findings). Introduced by T35 (83aa799)."
 - suggestedFix: "Sweep the four locations: replace the figure with the per-host MEASURED in-fixture ceilings (12-46 Mbit/s on the 1-vCPU aarch64 host per p0-findings; measure once on the 4-vCPU amd64 host and record it), and state that capped-fixture tests require 2*cap (aggregation) or cap (single-path) below the EXECUTING host's measured in-fixture ceiling. Pairs naturally with T35/T23 capped-fixture work."
 - ledgerRefs: ["tasks:T23","tasks:T35","goals:G1"]
+
+## M7
+
+### D24 — root-caused
+
+- createdAt: 2026-07-07T22:37:34.260Z
+- updatedAt: 2026-07-07T22:37:34.260Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: FEC unrecoverable /metrics counter under-reports at traffic quiescence (recovery overstated after an incident)
+- severity: low
+- description: Found by the T25 review (fable), file-and-defer, PRE-EXISTING (T24 decoder design, not introduced by T25). The FEC decoder accounts a failed group as `unrecoverable` ONLY when the high-water advances past the retain window (fecRetainGroups=512; internal/fec/decoder.go evictStale ~232-242), and the high-water advances only when NEW groups are offered. When traffic stops or a link stalls, the last ~512 groups' repair failures are NEVER folded into wanbond_fec_unrecoverable_packets_total, so an operator scraping /metrics after an incident sees recovery OVERSTATED exactly when it matters (the recovered fraction reads high because the denominator's failures are still retained, not counted). Also affected the T25 e2e measurement (fixed test-side there by a trailing lossless drain that advances the high-water before the after-scrape).
+- rootCause: "Group-count-only eviction: unrecoverable is counted at 512-group eviction, triggered solely by high-water advance on newly-offered groups. At quiescence the retained-but-doomed tail groups are never evicted → never counted. No time-based eviction and no snapshot-time accounting of retained-incomplete-past-deadline groups."
+- suggestedFix: "Account retained-incomplete groups whose deadline/window has definitively passed at Stats()/snapshot time (without evicting them from the reconstruction buffer), OR add time-based eviction alongside the 512-group window so a stalled tail is folded into unrecoverable after its recovery deadline. Care: only count a group once it is definitively unrecoverable (past the point more parity could arrive), to avoid premature/double counting. Pairs with the adaptive-FEC observability work (T29) or a dedicated FEC-metrics hardening task."
+- ledgerRefs: ["tasks:T24","tasks:T25","goals:G1"]

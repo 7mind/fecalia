@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 33
+  item: 34
 archives: []
 ---
 
@@ -424,6 +424,26 @@ archives: []
 - criticism: ["[r1 fable, resolved a97836d, REPRODUCED] decoder GroupID high-water poisoning: one unauthenticated junk frame (~1/256) or a sender Close->Open disabled FEC recovery for the Open span -> corroborate-before-trust discontinuity guard (single frame can't move the frontier; self-heals; no stall)","[r1 fable, resolved a97836d, REPRODUCED] late-recovered frames (parity delayed >window under real skew) corroborated a backward resync that dumped the live resequencer buffer -> FEC caused the loss it should prevent -> reseq.ObserveRecovered non-resyncing path, recovered frames below release point never reach corroboration","[r1 opus+fable, resolved a97836d] PARITY frames exceed path MTU by 5 bytes at full inner MTU (InnerMTU budgeted only DATA) -> FEC inert on bulk full-size traffic -> FEC-aware inner-MTU budget (FECParityMTUPenalty=5)","[r1 fable, resolved a97836d] fec.deadline unbounded (>resequencerTimeout made recovery structurally late) + /metrics counted reconstructed not delivered -> deadline bounded to resequencerTimeout/2 (config+bind) + delivered-only recovered counter"]
 - new_questions: []
 - ledgerRefs: ["tasks:T24","tasks:T14","tasks:T18","goals:G1"]
+
+### R33 — go-ahead
+
+- createdAt: 2026-07-07T23:28:34.739Z
+- updatedAt: 2026-07-07T23:28:34.739Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T25 (P3 e2e: FEC recovery at injected loss + bounded overhead) reconciled GO-AHEAD (opus counter-wiring + fable measurement-validity panel; 1 rework round + a hardware-found scrape fix). Merged 0128cc4. TestP3FixedFEC asserts, at 5% + 15% uniform netem loss: recovered-fraction (recovered/(recovered+unrecoverable) from CONCENTRATOR /metrics) >= 0.95 + frame overhead (repair/data from EDGE /metrics) <= 2*(M/K), + data-plane survival. K=10/M=6 (binomial-proven ~0.983 @15%; corrected the spec's K=10/M=4 = 0.882). Added production counter wanbond_fec_data_packets_total (overhead denominator; opus approved: atomic off m.mu, mirrors T24 parity counter, FEC-off=0).
+    
+    fable R1 DISAPPROVE (2 criticisms + D24): the recovered-fraction DENOMINATOR was invalidated by decoder eviction lag — unrecoverable is accounted only when a group falls >fecRetainGroups=512 behind the high-water, and the after-scrape had no trailing traffic, so the loss window's last 512 groups' failures were invisible → structurally recovered/recovered=1.0 at the sample floor, ~64% blind at realistic rates (a 70%-masking FEC would pass). FIXED (4765456): a trailing LOSSLESS drain (>6400 data frames → >=640 group-advances > 512 eviction threshold) forces every loss-window group's failure into unrecoverable BEFORE the after-scrape; accounting floor tightened 0.5→0.8.
+    
+    HARDWARE root-cause (the critical step): the first hardware run showed conc recovered=0 unrecoverable=0 despite loss+parity. Investigation (instrumented on llm-ubuntu-0) REFUTED both the late-recovery and parity-not-decoding hypotheses: the concentrator decoder reconstructs AND delivers IN TIME (15%: 3685 delivered/164 unrecoverable/only 67 late = fraction 0.957; 5%: 16313/127) — the FEC PRODUCT IS CORRECT. The bug was in the TEST scrape: fetchMetricsInNetns read the EDGE not the concentrator — net/http dials on a BACKGROUND goroutine that escaped the setns'd calling thread back to the root netns, hitting the edge's identically-bound 127.0.0.1 /metrics. FIXED (07be52b): the netns switch moved into the custom DialContext where socket() runs (LockOSThread-pinned, thread discarded on exit). fable FINAL APPROVE: denominator complete + real teeth (0.957 vs 0.95 bar), DialContext fix correct (loopback literal → one socket, fresh client, edge scrape untouched), overhead+survival sound.
+    
+    HARDWARE GREEN: TestP3FixedFEC PASS both (5%: fraction 0.9923/overhead 0.6003; 15%: 0.9792/0.6066). 
+    
+    P2/T23 IMPLICATION: the same scrape fix corrected T23's P2 concentrator cross-check, which had been reading the EDGE's rx (its conc-rx 50KB floor was a probe-noise floor not edge-tuned, so it passed; T23's airtight edge-tx-both-sockets striping proof was ALWAYS valid). P2 now genuinely reads the concentrator (bonded-striping conc rx 6.06/4.86 MB) and still PASSES — T23's concurrent-two-path-carriage conclusion holds and is now doubly-confirmed. D24 (FEC unrecoverable under-reports at quiescence, pre-existing T24) filed root-caused/deferred.
+- criticism: ["[r1 fable, resolved 4765456] recovered-fraction denominator invalidated by decoder eviction lag (unrecoverable only counted at 512-group eviction; no post-load high-water advance) → structurally 1.0 at the sample floor, can't fail near 0.95 — fixed by a trailing lossless drain (>512 group-advances) that forces eviction+accounting before the after-scrape + floor 0.5→0.8","[hardware root-cause, resolved 07be52b] the concentrator scrape read the EDGE daemon (net/http background-goroutine dial escaped the setns'd calling thread to the root netns, both daemons bind identical 127.0.0.1 /metrics) → conc recovered read as 0 — fixed by moving the netns switch into the DialContext where socket() runs; ALSO strengthened T23/P2's concentrator cross-check (was reading the edge)"]
+- new_questions: []
+- ledgerRefs: ["tasks:T25","tasks:T24","tasks:T23","goals:G1","defects:D24"]
 
 ## M9
 
