@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 40
+  item: 41
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -145,14 +145,14 @@ archives:
 ### T20 — wip
 
 - createdAt: 2026-07-01T23:40:28.766Z
-- updatedAt: 2026-07-07T14:02:53.192Z
+- updatedAt: 2026-07-07T16:41:14.259Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P1 e2e: failover survives WAN death within 3s"
 - description: "e2e test driving the active-backup path: start a long-lived TCP flow (SSH-like / iperf3) through the tunnel, then kill the active WAN namespace mid-transfer and assert the flow survives with no connection reset and throughput recovers. Uses the P1RecoverySeconds constant from the harness table."
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP1Failover` kills the active path mid-iperf3; the TCP connection is NOT reset and throughput is restored within P1RecoverySeconds (3s), asserted against the harness constants; repeated flap does not wedge the tunnel."
 - suggestedModel: standard
-- dependsOn: ["T15","T16","T37","T39"]
+- dependsOn: ["T15","T16","T37","T39","T40"]
 - ledgerRefs: ["goals:G1"]
 
 ### T22 — planned
@@ -222,6 +222,19 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T13","T15","T37"]
 - ledgerRefs: ["goals:G1","tasks:T20","defects:D15","defects:D16"]
+
+### T40 — wip
+
+- createdAt: 2026-07-07T16:41:13.102Z
+- updatedAt: 2026-07-07T16:41:43.163Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Make repeated-flap failover reliably meet the 3s budget (fix D18 tail + sound flap test)
+- description: "DISCOVERED by the T20 flap hardware review (D18): TestP1FailoverRepeatedFlap passes only ~12/15 on llm-ubuntu-0 — 3 GENUINE per-cycle recovery tails >3s (3476ms, 3151ms, one >4s lost) under REPEATED flap + sustained saturating bidir load, vs 0/46 for single-kill TestP1Failover. The cycle-1 fix, non-wedge, and no-reset all held 15/15; this is a per-cycle recovery-latency tail specific to the repeated-flap-under-saturation scenario. Builds on the T20 flap test (commit c495839, branch worktree-agent-a7db8aae02129b7c4 — the flap test LOGIC is opus-approved: cycle-1 current-active check, cycles>=2 windowed, non-vacuous). This task makes repeated-flap failover RELIABLE: (1) INVESTIGATE on hardware — run the flap MANY times with host load recorded to separate a real product tail from shared-VM (4-vCPU) contention noise; instrument per-kill probe-loop-tick vs receive-tick latency across consecutive cycles. (2) If PRODUCT (hypothesis: during a failover transition the surviving path's inbound flow momentarily pauses, so NEITHER the starved probe timer NOR T39's receive-path tick advances liveness for a window): bound that gap — e.g. advance liveness from the OUTBOUND/Send path too (Send IS scheduled during the reroute), emit probes more aggressively on a detected active-path change, or a scheduler nudge on Pick — preserving false-down safety + no-thrash. (3) Fix the T20 test measurement (fable criticism): widen flapFailoverPoll from P1RecoverySeconds+1s (4s) to ~8-10s so an over-budget failover is MEASURED (fails through the per-cycle budget Errorf) rather than lost to an unmeasured non-observation Fatalf. (4) If the tail is confirmed pure shared-VM noise, document it and make the test robust (record host load; the core single-kill P1 budget stands). Resolves D18 and completes the T20 flap acceptance."
+- acceptance: On llm-ubuntu-0, TestP1FailoverRepeatedFlap passes RELIABLY (>=19/20 runs) with every cycle's recovery < P1RecoverySeconds in both directions (or, if the residual tail is proven to be shared-VM noise, documented as such with host-load evidence and the test made robust to it); the flapFailoverPoll window measures over-budget tails rather than losing them; the D18 root cause (product-vs-noise) is documented; non-wedge + no-reset + cycle-1 non-vacuity preserved; unit tests for any changed liveness/scheduler logic pass under -race; no single-kill/thrash regression (TestP1Failover still 60/60-class).
+- suggestedModel: frontier
+- dependsOn: ["T15","T37","T39"]
+- ledgerRefs: ["goals:G1","tasks:T20","defects:D18"]
 
 ## M7
 

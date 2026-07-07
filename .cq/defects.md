@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 18
+  item: 19
 archives: []
 ---
 
@@ -215,6 +215,19 @@ archives: []
 - ledgerRefs: ["tasks:T11","goals:G1"]
 - rootCause: "ROOT-CAUSED (opus, in-session diagnosis, evidence): NOT a security bug — a TEST-ASSERTION bug. testPSK is deterministic (pskA seed 0x11, pskB 0x22, distinct); Encode uses a fresh random NONCE per frame. Over 20000 Decode(pskB, Encode(pskA, Control)) trials, 152 (0.76% ≈ 2/256) returned err==nil, and ALL 152 decoded to KindData(1) or KindParity(2) — the UNAUTHENTICATED kinds; ZERO decoded as the authenticated Probe(3)/Control(4). Mechanism: under the wrong PSK the body de-obfuscates to garbage with a uniformly-random kind byte; ~2/256 of the time it is DATA/PARITY, which Decode legitimately returns WITHOUT a MAC check (DATA/PARITY are unauthenticated by design; D9 threat model tolerates DoS-grade DATA forgery; inner WireGuard authenticates real DATA). The genuine auth property — a wrong-PSK frame can NEVER be accepted as a valid AUTHENTICATED Control/Probe — HELD in all 20000 trials (the 16-byte HMAC is sound). So TestPSKMismatchRejected's assertion (err==nil => fail) is too strong: it also fires on the expected ~2/256 garbage-decodes-to-unauthenticated-kind case. Fix is a one-line test correction."
 - fix: "Resolved directly (test-only fix, merged af31005 on main). NOT a security bug — the crypto is sound (0/20000 wrong-PSK decodes ever yielded a valid AUTHENTICATED Control/Probe; the 16-byte HMAC holds). TestPSKMismatchRejected's assertion was too strong (err==nil => fail): a wrong-PSK decode legitimately returns err==nil ~2/256 of the time when the garbage-deobfuscated random kind byte lands on the UNAUTHENTICATED KindData/KindParity (which carry no MAC by design; D9 threat model). Fixed the assertion to require err==nil AND decoded-kind == encoded-authenticated-kind before failing, with a comment documenting the ~2/256 garbage-to-unauthenticated-kind rationale. Verified stable: 500 -race runs pass. This also keeps T39's -race acceptance gate reliable (the flake no longer intermittently breaks `go test -race ./...`)."
+
+### D18 — root-caused
+
+- createdAt: 2026-07-07T16:40:13.519Z
+- updatedAt: 2026-07-07T16:40:13.519Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: P1 failover recovery tail intermittently exceeds 3s under REPEATED flap on hardware (~7% per kill)
+- description: "Filed by the T20 flap review (fable), REPRODUCED on llm-ubuntu-0 (4 vCPU, the T39 evidence host): 3 of 15 TestP1FailoverRepeatedFlap runs at c495839 failed on GENUINE budget exceedances — cycle-1 recovery 3476ms (both ends), cycle-2 recovery 3151ms (edge), and one cycle-2 failover not observed within the 4s window (magnitude lost). ~6.7% per-kill (3/45 kills) vs 0/46 for SINGLE-kill TestP1Failover (T39's 42/42+16/16 + 2/2 this session all <3s). The cycle-1 fix + non-wedge + no-reset held 15/15; this is purely a per-cycle recovery-latency tail specific to the REPEATED-flap-under-sustained-saturating-bidirectional-load scenario. The core single-WAN-death P1 acceptance (the actual requirement) is MET; this is a stringency tail under a pathological 3-kills-in-65s stress. Severity high (fable) — but note the core P1 is met and the tunnel always recovers/fails-back."
+- severity: high
+- rootCause: "HYPOTHESIS (needs hardware confirmation, owned by T40): T39's fix advances liveness off the RECEIVE path so DOWN-detection doesn't wait on the CPU-starved probe-loop timer — but the receive-path tick requires INBOUND traffic on the surviving path. During a failover TRANSITION the flow momentarily pauses (the sender is mid-reroute), so for a brief window NEITHER the starved timer NOR the receive path advances liveness, and under repeated flap + sustained saturation that window occasionally pushes the concentrator-side detection past 3s. The consistent ~3.1-3.5s magnitude (not random) argues for a systematic near-boundary gap rather than pure shared-VM noise, but VM contention on the 4-vCPU shared host may compound it — both must be confirmed/excluded."
+- suggestedFix: "In T40: (1) run TestP1FailoverRepeatedFlap MANY times with HOST LOAD recorded to separate a product tail from shared-VM noise; instrument per-kill probe-loop-tick + receive-tick latency across consecutive cycles. (2) If product: bound the transition-window gap — e.g. emit probes more aggressively on a detected active-path change, have the scheduler nudge liveness on Pick, or ensure the receive-path tick fires from the OUTBOUND/Send path too (Send is scheduled during the reroute). (3) Validate the flap passes RELIABLY (>=19/20) on hardware."
+- ledgerRefs: ["tasks:T20","tasks:T39","tasks:T40","goals:G1"]
 
 ## M10
 
