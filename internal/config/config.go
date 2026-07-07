@@ -40,6 +40,7 @@ type Config struct {
 	Metrics   Metrics         `toml:"metrics"`
 	Log       Log             `toml:"log"`
 	Scheduler SchedulerConfig `toml:"scheduler"`
+	FEC       FEC             `toml:"fec"`
 }
 
 // SchedulerPolicy selects the send-side path-selection policy the multipath Bind
@@ -147,6 +148,90 @@ type SchedulerConfig struct {
 	// WeightLossFloor floors the loss term under the square root (must be > 0 under
 	// weighted).
 	WeightLossFloor float64 `toml:"weight_loss_floor"`
+}
+
+// FEC group-close deadline default (T24). Applied only when [fec] is enabled but
+// leaves the deadline at its zero value, so a minimal `enabled = true` block emits
+// parity for a partially-filled group promptly under low load rather than stranding
+// it until the size threshold fills.
+const defaultFECDeadline = 5 * time.Millisecond
+
+// maxFECDeadline bounds the FEC group-close deadline at load time (T24, defect #4). It
+// MUST stay at or below the multipath Bind's authoritative bound (bind.maxFECDeadline =
+// resequencerTimeout/2 = 125ms): a group flushed by the deadline emits its parity
+// `deadline` after opening, and the reconstructed frames must reach the receive
+// resequencer BEFORE it skips the gap (its 250ms per-gap timeout) — otherwise recovery
+// is structurally too late (the gap is skipped, the recovered frame dropped as past the
+// release point) while /metrics would still count it reconstructed. Rejecting an
+// over-large deadline at load makes that coupling fail-fast and explicit rather than
+// silently defeating FEC. Kept in lockstep with bind.maxFECDeadline (the packages
+// cannot import each other, so the value is mirrored with this cross-reference).
+const maxFECDeadline = 125 * time.Millisecond
+
+// maxFECShards mirrors the Reed-Solomon field limit enforced in internal/fec: a
+// coding group carries at most 256 shards (data + parity) total over GF(2^8). It
+// is restated here so config load fails fast on an over-large ratio at the right
+// locus, with the same bound the codec enforces internally.
+const maxFECShards = 256
+
+// FEC configures the fixed-ratio Reed-Solomon forward-error-correction plane (T24).
+// It is DISABLED by default (like pacing), so an existing config with no [fec] block
+// runs the datapath exactly as before — FEC transparent, no parity on the wire. When
+// enabled, each group of DataShards (K) inner datagrams is protected by ParityShards
+// (M) parity frames, letting the receiver reconstruct up to M lost data frames per
+// group at a fixed M/K parity overhead.
+type FEC struct {
+	// Enabled turns the FEC plane on. When false every other field is ignored and the
+	// datapath carries no parity.
+	Enabled bool `toml:"enabled"`
+	// DataShards is K: the number of inner datagrams grouped before parity is emitted.
+	// Must be >= 1 when enabled.
+	DataShards int `toml:"data_shards"`
+	// ParityShards is M: the parity frames emitted per group and the maximum number of
+	// per-group data losses the receiver can recover. Must be >= 1 when enabled.
+	ParityShards int `toml:"parity_shards"`
+	// Deadline bounds grouping latency: a partially-filled group is flushed (parity
+	// emitted over its current data frames) once this much time has elapsed since its
+	// first frame. Defaults to defaultFECDeadline when enabled and left zero; must be
+	// > 0 after defaulting.
+	Deadline time.Duration `toml:"deadline"`
+}
+
+// applyDefaults fills the group-close deadline when FEC is enabled and the deadline
+// was left at zero. It is a no-op for a disabled block, so a config that never turns
+// FEC on keeps an empty [fec] surface.
+func (f *FEC) applyDefaults() {
+	if !f.Enabled {
+		return
+	}
+	if f.Deadline == 0 {
+		f.Deadline = defaultFECDeadline
+	}
+}
+
+// validate enforces the FEC ratio invariants, failing fast so a mis-tuned parity
+// ratio is rejected at load rather than panicking the codec at runtime. A disabled
+// block needs no tuning. The bounds mirror internal/fec's own Config.validate.
+func (f FEC) validate() error {
+	if !f.Enabled {
+		return nil
+	}
+	if f.DataShards < 1 {
+		return fmt.Errorf("fec.data_shards must be >= 1 when FEC is enabled, got %d", f.DataShards)
+	}
+	if f.ParityShards < 1 {
+		return fmt.Errorf("fec.parity_shards must be >= 1 when FEC is enabled, got %d", f.ParityShards)
+	}
+	if f.DataShards+f.ParityShards > maxFECShards {
+		return fmt.Errorf("fec.data_shards + fec.parity_shards must be <= %d (Reed-Solomon field limit), got %d", maxFECShards, f.DataShards+f.ParityShards)
+	}
+	if f.Deadline <= 0 {
+		return fmt.Errorf("fec.deadline must be > 0 when FEC is enabled, got %s", f.Deadline)
+	}
+	if f.Deadline > maxFECDeadline {
+		return fmt.Errorf("fec.deadline must be <= %s (safely below the receive resequencer's per-gap timeout so deadline-flushed recovery lands before the gap is skipped), got %s", maxFECDeadline, f.Deadline)
+	}
+	return nil
 }
 
 // Path is one physical WAN uplink. The edge binds each path's UDP socket to
@@ -298,6 +383,7 @@ func (c *Config) normalize() error {
 	}
 	c.Amnezia.applyDefaults()
 	c.Scheduler.applyDefaults()
+	c.FEC.applyDefaults()
 	return nil
 }
 
@@ -421,6 +507,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.Scheduler.validate(); err != nil {
+		return err
+	}
+	if err := c.FEC.validate(); err != nil {
 		return err
 	}
 	return nil

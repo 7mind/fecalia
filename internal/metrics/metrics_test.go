@@ -17,9 +17,11 @@ import (
 // asserted against known values.
 type fakeSource struct {
 	paths []PathSnapshot
+	fec   FECSnapshot
 }
 
 func (f fakeSource) Paths() []PathSnapshot { return f.paths }
+func (f fakeSource) FEC() FECSnapshot      { return f.fec }
 
 func testLogger(t *testing.T) log.Logger {
 	t.Helper()
@@ -182,6 +184,44 @@ func TestFECPlaceholdersRegistered(t *testing.T) {
 		}
 		if v != 0 {
 			t.Errorf("FEC placeholder %s = %v, want 0", name, v)
+		}
+	}
+}
+
+// TestExpositionFECCounters drives the collector with a live-shaped FEC snapshot and
+// asserts the three connection-scoped FEC series carry the injected values (T24), not
+// the pre-T24 constant zero — the exposition reads the FEC plane, not a placeholder.
+func TestExpositionFECCounters(t *testing.T) {
+	src := fakeSource{fec: FECSnapshot{
+		RepairPackets:        120,
+		RecoveredPackets:     7,
+		UnrecoverablePackets: 2,
+	}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		want float64
+	}{
+		{MetricFECRepair, 120},
+		{MetricFECRecovered, 7},
+		{MetricFECUnrecoverable, 2},
+	}
+	for _, c := range checks {
+		got, ok := exp.Value(c.name)
+		if !ok {
+			t.Errorf("FEC series %s missing", c.name)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

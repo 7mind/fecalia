@@ -39,7 +39,7 @@ func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	return NewMultipath(paths, psk, scheduler, nil, nil)
+	return NewMultipath(paths, psk, scheduler, nil, nil, nil)
 }
 
 // testKey builds a valid 32-byte config.Key seeded by b.
@@ -408,7 +408,7 @@ func TestMultipathSendPacerSheddingDistinct(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := NewMultipath(loopbackPaths(1), psk, stubScheduler{pick: tc.pick}, nil, nil)
+			m, err := NewMultipath(loopbackPaths(1), psk, stubScheduler{pick: tc.pick}, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("NewMultipath: %v", err)
 			}
@@ -537,7 +537,7 @@ func TestNewMultipathRejectsUnpairedProberFactory(t *testing.T) {
 		t.Fatalf("build scheduler: %v", err)
 	}
 	factory := func(name string, id uint8) *telemetry.Prober { return nil }
-	if _, err := NewMultipath(paths, psk, scheduler, nil, factory); err == nil {
+	if _, err := NewMultipath(paths, psk, scheduler, nil, factory, nil); err == nil {
 		t.Fatal("NewMultipath(newProber!=nil, probers==nil) succeeded, want rejection")
 	}
 }

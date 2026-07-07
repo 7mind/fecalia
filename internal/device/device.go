@@ -22,6 +22,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/sched"
@@ -37,12 +38,16 @@ const metricsShutdownTimeout = 2 * time.Second
 // collides (it never does across the edge and concentrator network namespaces).
 const defaultTUNName = "wanbond0"
 
-// defaultMTU is the tunnel (TUN) MTU. It is the P1 bonded figure: the default
-// path MTU minus the IP+UDP, outer DATA-frame, and WireGuard transport overheads,
-// so a full-MTU inner packet never fragments on the wire (see internal/bind
-// mtu.go and docs/p1-mtu.md). This is smaller than the plain-WireGuard 1420
-// because the bonding layer adds its own outer DATA frame per datagram.
-var defaultMTU = bind.InnerMTU(bind.DefaultPathMTU)
+// tunMTU is the tunnel (TUN) MTU for a config: the default path MTU minus the
+// IP+UDP, outer DATA-frame, and WireGuard transport overheads, so a full-MTU inner
+// packet never fragments on the wire (see internal/bind mtu.go and docs/p1-mtu.md).
+// This is smaller than the plain-WireGuard 1420 because the bonding layer adds its
+// own outer DATA frame per datagram; with FEC enabled it is a further
+// bind.FECParityMTUPenalty smaller so a full-size PARITY frame also fits the path MTU
+// (T24) rather than fragmenting.
+func tunMTU(cfg *config.Config) int {
+	return bind.InnerMTU(bind.DefaultPathMTU, cfg.FEC.Enabled)
+}
 
 // Tunnel is a running wanbond tunnel: the amneziawg engine, its TUN, and the
 // multipath Bind. Close tears all three down.
@@ -168,7 +173,7 @@ func (g *amneziaGuard) release(a config.Amnezia) {
 func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	clg := lg.Component("device")
 
-	tunDev, err := tun.CreateTUN(defaultTUNName, defaultMTU)
+	tunDev, err := tun.CreateTUN(defaultTUNName, tunMTU(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("device: create TUN: %w", err)
 	}
@@ -202,7 +207,7 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber)
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber, fecConfig(cfg.FEC))
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -497,6 +502,21 @@ func diffPaths(live []string, desired []config.Path) (add []config.Path, remove 
 // of the failover-recovery budget — failover to a backup is instant — so it stays a
 // device-local constant.
 const defaultFailbackDwell = 5 * time.Second
+
+// fecConfig maps the validated [fec] config block onto the fec.Config the multipath
+// Bind consumes (T24), or returns nil when FEC is disabled so the Bind runs the
+// datapath with no parity plane. The ratio was already range-checked in config
+// validation; the Bind re-validates defensively.
+func fecConfig(f config.FEC) *fec.Config {
+	if !f.Enabled {
+		return nil
+	}
+	return &fec.Config{
+		DataShards:   f.DataShards,
+		ParityShards: f.ParityShards,
+		Deadline:     f.Deadline,
+	}
+}
 
 // buildScheduler constructs one live *telemetry.Prober per path and the P1
 // active-backup send scheduler over them, in cfg.Paths' configured priority order

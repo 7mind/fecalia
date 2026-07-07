@@ -9,11 +9,12 @@ import (
 )
 
 // trafficProvider is the read seam the metrics adapter consumes: the multipath Bind's
-// per-path traffic+telemetry snapshot (T23). *bind.Multipath satisfies it; a fake
-// satisfies it in the adapter's unit test, so the mapping and rate derivation are
-// testable without a running engine.
+// per-path traffic+telemetry snapshot (T23) and its connection-scoped FEC counters
+// (T24). *bind.Multipath satisfies it; a fake satisfies it in the adapter's unit test,
+// so the mapping and rate derivation are testable without a running engine.
 type trafficProvider interface {
 	PathSnapshots() []bind.PathTraffic
+	FECSnapshot() bind.FECStats
 }
 
 // metricsSource adapts the multipath Bind onto metrics.Source: at every scrape it
@@ -78,4 +79,17 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 		}
 	}
 	return out
+}
+
+// FEC implements metrics.Source: it reads the Bind's connection-scoped FEC counters
+// (T24) verbatim at scrape time. Unlike the per-path throughput, the FEC counters are
+// cumulative and need no rate derivation or prior-sample state, so this is a direct
+// pass-through of the Bind's lock-free snapshot.
+func (s *metricsSource) FEC() metrics.FECSnapshot {
+	f := s.provider.FECSnapshot()
+	return metrics.FECSnapshot{
+		RepairPackets:        f.ParityFrames,
+		RecoveredPackets:     f.Recovered,
+		UnrecoverablePackets: f.Unrecoverable,
+	}
 }

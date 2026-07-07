@@ -653,3 +653,70 @@ func TestPropertyNoLossCompleteness(t *testing.T) {
 		}
 	}
 }
+
+// TestObserveRecoveredNeverResyncsOrDumps is the fix witness for the "late-recovered
+// frames dump the buffer" defect (T24 #2): a batch of FEC-reconstructed seqs that have
+// fallen far below the release point — the exact pattern that, offered via Observe,
+// mutually corroborates a BACKWARD resync and discards the whole live buffer (see
+// TestPeerRestartResync) — must, via ObserveRecovered, be dropped as too-late with NO
+// resync and NO buffer dump. Recovery must never be able to CAUSE the burst loss it
+// exists to prevent.
+func TestObserveRecoveredNeverResyncsOrDumps(t *testing.T) {
+	clk := newFakeClock()
+	const window = 8
+	r := reseq.New(window, time.Hour, clk)
+
+	// Establish a high release point, then buffer a live run ahead of a head gap.
+	for seq := uint64(100); seq < 108; seq++ {
+		r.Observe(seq, payloadOf(seq), testSrc)
+	}
+	_ = drain(r) // next == 108
+	for _, seq := range []uint64{109, 110, 111} {
+		r.Observe(seq, payloadOf(seq), testSrc)
+	}
+	if b := r.Buffered(); b != 3 {
+		t.Fatalf("setup: buffered = %d, want 3", b)
+	}
+
+	// Feed several DISTINCT recovered seqs far below the release point — mutually within
+	// one window, so via Observe they would corroborate a backward resync and dump the
+	// buffer. Via ObserveRecovered each must be dropped (placed == false).
+	for _, seq := range []uint64{1, 2, 3, 4} {
+		if placed := r.ObserveRecovered(seq, payloadOf(seq), testSrc); placed {
+			t.Fatalf("recovered seq %d far below the release point was placed, want dropped", seq)
+		}
+	}
+	if s := r.Stats(); s.Resyncs != 0 {
+		t.Fatalf("resyncs = %d, want 0 (recovered frames must never move the release point)", s.Resyncs)
+	}
+	if b := r.Buffered(); b != 3 {
+		t.Fatalf("buffered = %d after late recovered frames, want 3 (the live buffer was dumped)", b)
+	}
+
+	// The live run still delivers once its own gap times out — recovery did not cost it.
+	clk.advance(2 * time.Hour)
+	got := drain(r)
+	if len(got) != 3 || got[0] != 109 || got[2] != 111 {
+		t.Fatalf("live run after late recoveries = %v, want [109 110 111]", got)
+	}
+}
+
+// TestObserveRecoveredFillsGapInOrder is the positive half: a recovered frame that
+// lands AT or above the release point fills its gap and is placed (returns true), so a
+// TIMELY reconstruction resequences exactly like a natively-received frame.
+func TestObserveRecoveredFillsGapInOrder(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(8, time.Hour, clk)
+
+	r.Observe(1, payloadOf(1), testSrc)
+	_ = drain(r)                        // next == 2
+	r.Observe(3, payloadOf(3), testSrc) // buffered; head gap at 2
+
+	if placed := r.ObserveRecovered(2, payloadOf(2), testSrc); !placed {
+		t.Fatal("recovered seq 2 filling the head gap was not placed")
+	}
+	got := drain(r)
+	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Fatalf("delivery after gap-filling recovery = %v, want [2 3]", got)
+	}
+}

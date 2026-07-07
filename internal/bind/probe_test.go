@@ -68,7 +68,7 @@ func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk 
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	m, err := NewMultipath(paths, psk, scheduler, probers, newProber)
+	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, nil)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
