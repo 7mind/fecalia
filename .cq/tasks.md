@@ -210,10 +210,10 @@ archives:
 - dependsOn: ["T37"]
 - ledgerRefs: ["goals:G1","defects:D12"]
 
-### T39 — planned
+### T39 — wip
 
 - createdAt: 2026-07-07T14:02:51.949Z
-- updatedAt: 2026-07-07T14:02:51.949Z
+- updatedAt: 2026-07-07T14:03:18.957Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Meet the P1 3s failover budget in BOTH directions (fix the reply-direction recovery tail)

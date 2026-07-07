@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 17
+  item: 18
 archives: []
 ---
 
@@ -199,6 +199,20 @@ archives: []
 - rootCause: "Confirmed by the T20 review: the telemetry-component e2e constants (PLiveness*) and the daemon's device.go probe-timing defaults are two independent sets; the standalone liveness test uses the former, the failover daemon uses the latter, and thresholds.go's composition comment reasons from the former while claiming to be the single source of truth for the failover budget."
 - suggestedFix: "In T39: either have the e2e daemon config set its probe timings FROM the thresholds constants (make thresholds.go authoritative), or split the constants into 'prober-component e2e' vs 'daemon defaults' and have the composition comment reference the daemon's actual values (and both failover directions)."
 - ledgerRefs: ["tasks:T20","tasks:T39","goals:G1"]
+
+### D17 — resolved
+
+- createdAt: 2026-07-07T15:19:14.078Z
+- updatedAt: 2026-07-07T15:22:56.706Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: TestPSKMismatchRejected intermittently accepts a wrong-PSK frame under -race (~1/40) — auth false-accept or non-deterministic test PSKs
+- description: "Filed by the T39 review (fable), OUT OF SCOPE for T39 (frame package / T11, untouched by the T39 diff). During `go test -race ./internal/...`, internal/frame TestPSKMismatchRejected failed ONCE at frame_test.go:278 — 'kind 4: PSK-mismatched frame accepted' (a Control frame encoded under PSK-A decoded successfully under PSK-B) — then passed 40 consecutive re-runs. A wrong-key frame must ALWAYS fail the MAC; even a rare accept is an authentication concern. NOTE: the frame codec uses HMAC-SHA256 truncated to 16 bytes (128-bit) compared constant-time (verified in the T11 review R7), so a random tag COLLISION would be ~2^-128, NOT 1/40 — the ~1/40 rate strongly implies the TEST occasionally derives EQUAL/colliding PSKs (non-deterministic key generation) rather than a real crypto bypass, but this MUST be confirmed to rule out an actual auth false-accept path in Decode's MAC verification. Severity HIGH until disproven."
+- severity: low
+- suggestedFix: "In TestPSKMismatchRejected, assert the wrong-PSK decode does not yield a frame of the SAME AUTHENTICATED KIND it was encoded as: `if f2, err := Decode(pskB, raw); err == nil && f2.Kind() == f.Kind() { t.Fatalf(...) }` (a wrong-PSK Control/Probe must never decode as a valid Control/Probe; a garbage decode landing on the unauthenticated DATA/PARITY kind is EXPECTED and correct, not an auth failure). Document the ~2/256 rationale in a comment."
+- ledgerRefs: ["tasks:T11","goals:G1"]
+- rootCause: "ROOT-CAUSED (opus, in-session diagnosis, evidence): NOT a security bug — a TEST-ASSERTION bug. testPSK is deterministic (pskA seed 0x11, pskB 0x22, distinct); Encode uses a fresh random NONCE per frame. Over 20000 Decode(pskB, Encode(pskA, Control)) trials, 152 (0.76% ≈ 2/256) returned err==nil, and ALL 152 decoded to KindData(1) or KindParity(2) — the UNAUTHENTICATED kinds; ZERO decoded as the authenticated Probe(3)/Control(4). Mechanism: under the wrong PSK the body de-obfuscates to garbage with a uniformly-random kind byte; ~2/256 of the time it is DATA/PARITY, which Decode legitimately returns WITHOUT a MAC check (DATA/PARITY are unauthenticated by design; D9 threat model tolerates DoS-grade DATA forgery; inner WireGuard authenticates real DATA). The genuine auth property — a wrong-PSK frame can NEVER be accepted as a valid AUTHENTICATED Control/Probe — HELD in all 20000 trials (the 16-byte HMAC is sound). So TestPSKMismatchRejected's assertion (err==nil => fail) is too strong: it also fires on the expected ~2/256 garbage-decodes-to-unauthenticated-kind case. Fix is a one-line test correction."
+- fix: "Resolved directly (test-only fix, merged af31005 on main). NOT a security bug — the crypto is sound (0/20000 wrong-PSK decodes ever yielded a valid AUTHENTICATED Control/Probe; the 16-byte HMAC holds). TestPSKMismatchRejected's assertion was too strong (err==nil => fail): a wrong-PSK decode legitimately returns err==nil ~2/256 of the time when the garbage-deobfuscated random kind byte lands on the UNAUTHENTICATED KindData/KindParity (which carry no MAC by design; D9 threat model). Fixed the assertion to require err==nil AND decoded-kind == encoded-authenticated-kind before failing, with a comment documenting the ~2/256 garbage-to-unauthenticated-kind rationale. Verified stable: 500 -race runs pass. This also keeps T39's -race acceptance gate reliable (the flake no longer intermittently breaks `go test -race ./...`)."
 
 ## M10
 
