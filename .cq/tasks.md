@@ -319,18 +319,18 @@ archives:
 - dependsOn: ["T15","T18"]
 - ledgerRefs: ["goals:G1","reviews:R29","defects:D22"]
 
-### T23 — planned
+### T23 — done
 
 - createdAt: 2026-07-01T23:40:45.709Z
-- updatedAt: 2026-07-01T23:54:07.640Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T20:51:37.087Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P2 e2e: bonded throughput and 5G-idle assertions via /metrics"
 - description: e2e test asserting aggregation and data-thrift against the /metrics endpoint under the netns profiles, using the harness constants (P2BondedMinFraction, P2MeteredMaxByteFraction). Appends the P2 manual checklist.
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP2Aggregation`: under saturating load, bonded throughput >= 85% of the sum of the two paths' individual throughputs; while Starlink is healthy, 5G bytes < 1% of total; both read from /metrics; P2 manual checklist appended."
 - suggestedModel: standard
 - dependsOn: ["T21","T17"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T17","reviews:R30","reviews:R31","defects:D22","defects:D23"]
 
 ## M9
 

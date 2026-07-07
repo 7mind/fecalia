@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 30
+  item: 32
 archives: []
 ---
 
@@ -353,6 +353,42 @@ archives: []
 - criticism: ["[r1 fable, resolved 4b430a6] CRITICAL data-thrift leak (requirement-2 regression), reproduced: aggregation gate stayed engaged across idle after an abruptly-ending overload → next low-rate burst striped onto metered backup (20/40 frames) — fixed via idle-gap-forces-collapse + belowSince backdating + regression test (mutation-verified 13/40 without fix)","[r1 fable, resolved 4b430a6] unwired/all-zero-Estimate path got the floored MAXIMUM weight (~20:1 siphon) contradicting its 'neutral' doc — now mean-of-measured with safe all-neutral fallback, doc corrected","[r1 fable, resolved 4b430a6] paced-out frame surfaced as errNoHealthyPath (indistinguishable from total outage in engine logs) — added distinct PickPaced(-2) sentinel + errPacerShedding + coalesced shedding log"]
 - new_questions: []
 - ledgerRefs: ["tasks:T21","goals:G1","defects:D22"]
+
+### R30 — go-ahead
+
+- createdAt: 2026-07-07T20:20:22.920Z
+- updatedAt: 2026-07-07T20:20:22.920Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T23 (live /metrics surface + P2 aggregation e2e) reconciled GO-AHEAD (opus by-construction + fable measurement-validity panel; 1 rework round). Merged cbad91f. Closed the T17→T23 gap: T17 built the internal/metrics package but nothing wired it into the daemon or fed a Source over real traffic. T23 added lock-free atomic per-path tx/rx OUTER-wire byte counters in the Bind (Send tx / readLoop rx, off the m.mu-free path) + PathSnapshots(); a metrics.Source adapter deriving throughput from counter deltas; the metrics.Server wired into the daemon Tunnel lifecycle (loopback-only, started only when [metrics].listen set, closed first, rebound on reload); fixed an amnezia-guard double-release on the new Up error path (releaseOnce). TestP2Aggregation (weighted scheduler, per-path rate-capped) asserts bonded wire throughput >= P2BondedMinFraction(0.85) of the solo-sum + metered 5G tx < P2MeteredMaxByteFraction(0.01) while primary healthy, both from /metrics.
+    
+    opus (by-construction) APPROVE: byte counters lock-free/race-clean (Send counts only successful writes off the m.mu-free path; PathSnapshots reads Estimate/State outside m.mu — T39/T40 discipline preserved, no lock inversion); amnezia guard acquired-once/released-once across the new metrics-failure Up path (ok=true + releaseOnce, no leak, full teardown); metrics lifecycle loopback-enforced + Close-first-before-Bind-teardown + reload-rebind via a stable Source (no use-after-free); throughput derivation guarded (first-scrape 0, backward-counter 0, no div-by-zero). Full -race/vet/lint/e2e-compile green.
+    
+    fable (measurement-validity) DISAPPROVE r1 (2 criticisms + D23 filed): (1) the bonded>=0.85*(soloA+soloB) assertion is only well-defined when each SOLO run is LINK-bound, but nothing asserted it — on the recorded CPU-bound 1-vCPU host (12-46 Mbit/s in-fixture, p0-findings) the assertion is either vacuously passable (want=35.7 < 40 single-path cap) or a misdiagnosed failure. (2) the crypto-ceiling comment misattributed the real-internet cross-host 150-170 Mbit/s figure as the in-fixture 1-vCPU ceiling. Strictest-wins → disapprove.
+    
+    FIXED (d77731f, test-only — product wiring untouched): (1) runSoloSaturated now asserts each solo >= 0.9*p2RateMbit (link-bound) with a loud CPU-bound Fatalf diagnostic; this makes want = 0.85*(soloA+soloB) >= 0.85*2*0.9*cap = 1.53*cap > 1*cap (single-path), so NO single path can satisfy the bonded assertion — killing both the vacuous-pass and false-fail modes. (2) comment corrected to cite in-fixture 12-46 Mbit/s CPU-bound data + the executing-host requirement (2*cap below the host's measured in-fixture ceiling; 1-vCPU doesn't qualify at 40Mbit, 4-vCPU amd64 is the target). Arithmetic verified (1.53>1). D22 (pacer sheds WG control frames) + D23 (pre-existing 150-170 misattribution from T35, 4 locations) filed root-caused/deferred. Hardware P2 run pending on the 4-vCPU host.
+- criticism: ["[r1 fable, resolved d77731f] bonded>=0.85*sum aggregation assertion lacked the solo-is-link-bound precondition it requires — vacuous-pass/misdiagnosed-fail on a CPU-bound host; added a >= 0.9*cap link-bound Fatalf guard that also forces want=1.53*cap > single-path cap","[r1 fable, resolved d77731f] crypto-ceiling comment misattributed the real-internet cross-host 150-170 Mbit/s figure as the in-fixture 1-vCPU ceiling — corrected to the recorded in-fixture 12-46 Mbit/s + the executing-host requirement"]
+- new_questions: []
+- ledgerRefs: ["tasks:T23","tasks:T17","goals:G1","defects:D22","defects:D23"]
+
+### R31 — go-ahead
+
+- createdAt: 2026-07-07T20:51:30.572Z
+- updatedAt: 2026-07-07T20:51:30.572Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T23 P2 e2e HARDWARE-DRIVEN follow-up chain (post-R30 merge), reconciled GO-AHEAD with hardware green. The P2 aggregation e2e went through 3 hardware-driven iterations on llm-ubuntu-0 (4-vCPU amd64) after the initial merge:
+    
+    (1) FIRST hardware run: the link-bound precondition (added in R30) FATAL'd — solo throughput 13.2/2.9 Mbit/s << the 40-cap. Investigated: single-flow measurement. Tried parallel streams (-P 8) → throughput got WORSE (13.2→4.2), REFUTING the single-flow-collapse hypothesis and proving the single-host netns fixture is PACKET-PROCESSING/CPU-bound (both userspace-WG daemons + load + netem share cores), NOT congestion-bound. Conclusion: bonding two paths on ONE shared-CPU host cannot exceed the single-path ceiling by their sum — the bonded-THROUGHPUT ratio is not measurable in-fixture.
+    (2) RESTRUCTURE (53952f3): bonded-ratio subtest now SKIPS with measured evidence when not link-bound (environmental limit, not product defect), stays ENFORCED on any link-bound venue; data-thrift stays enforced. fable focused-review APPROVED the skip as honest (teeth intact, non-vacuity preserved) but found a COVERAGE GAP: the far-end both-paths cross-check lived inside the skipped subtest → nothing proved concurrent two-path socket carriage (unit tests cover only Pick-index distribution; P1 is active-backup).
+    (3) STRIPING SUBTEST (6a3cb6c): added TestP2Aggregation/bonded-striping — fixture-scaled gate p2StripingCapacityFPS=40 (engage 36 fps < ~54 fps worst observed rate) so aggregation reliably engages on the CPU-bound fixture; asserts edge DATA tx>0 on BOTH sockets (DATA-only counter — airtight striping proof) + conc rx delta>=50KB on BOTH paths (floor above liveness-probe noise, closing a self-caught vacuity). No throughput-ratio assertion → robust to CPU-boundedness. Also fixed a fixture veth-reuse race (SetupWithPaths now idempotently pre-deletes the fixed-name edge veth) that the 4th sequential heavy topology exposed (`ip link add: File exists`).
+    
+    HARDWARE GREEN (full sequential run, llm-ubuntu-0): TestP2Aggregation PASS — solo-starlink/cellular PASS, bonded-aggregation SKIP (ratio, evidence), bonded-striping PASS (edge DATA tx starlink=6.5MB + cellular-backup=5.0MB → scheduler striped onto the 2nd socket; conc rx 203KB/158KB both>50KB → far-end reassembled DATA on both paths), data-thrift PASS (cellular tx=0 B, fraction 0.0000 < 0.01). P2 aggregation is now validated end-to-end: concurrent two-path carriage PROVEN in-fixture, 5G-idle PROVEN, proportionality by unit tests, throughput-ratio enforced-on-link-bound-venue + deferred to real independent-links hardware. D23 (pre-existing 150-170 misattribution) unchanged.
+- criticism: ["[fable focused-review, resolved 6a3cb6c] the bonded-ratio skip removed the only e2e proof of concurrent two-path socket carriage (far-end cross-check was inside the skipped subtest) — added TestP2Aggregation/bonded-striping (fixture-scaled gate, edge-DATA-tx-both-sockets + conc-rx-both-paths>=50KB, no throughput ratio), hardware-green","[hardware, resolved 6a3cb6c] fixture veth-reuse race: the added 4th sequential topology hit `ip link add <fixed-veth>: File exists` when a prior subtest's async netns/veth reap lagged — SetupWithPaths now idempotently pre-deletes the fixed-name edge veth"]
+- new_questions: []
+- ledgerRefs: ["tasks:T23","goals:G1"]
 
 ## M7
 
