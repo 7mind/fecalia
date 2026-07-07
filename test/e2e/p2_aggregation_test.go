@@ -23,21 +23,36 @@ import (
 // per-path rate cap and the inner MTU, and are the levers the on-hardware operator
 // retunes if the fixture's achievable frame rate differs from the emulation.
 //
-// WHY A RATE CAP IS MANDATORY (the T23 well-definedness note). Without a per-path
-// bandwidth cap the fixture's bottleneck is the single userspace WireGuard crypto core
-// (~150-170 Mbit/s on one vCPU), NOT the links — and that one crypto engine is SHARED by
-// both paths. Bonding two uncapped paths therefore does NOT raise throughput (the CPU
-// ceiling is unchanged), so "sum of the two paths' individual throughputs" is ill-defined
-// and the aggregation ratio would be vacuous (~0.5, always failing). Capping each path
-// well BELOW the crypto ceiling makes the LINK the bottleneck: a solo capped path
-// saturates at ~its cap, and a bonded run can approach the SUM of the two caps while the
-// aggregate stays under the crypto ceiling. Only then is the >= P2BondedMinFraction ratio
-// a real aggregation measurement rather than a CPU-ceiling artefact.
+// WHY A RATE CAP IS MANDATORY (the T23 well-definedness note). The fixture's bottleneck
+// is the single userspace WireGuard crypto core — one syscall per datagram on one vCPU,
+// SHARED by both paths — NOT the emulated links. So bonding two UNCAPPED paths does not
+// raise throughput (the CPU ceiling is unchanged), making "sum of the two paths'
+// individual throughputs" ill-defined and the aggregation ratio vacuous. Capping each
+// path well BELOW that in-fixture CPU ceiling makes the LINK the bottleneck: a solo capped
+// path saturates at ~its cap, and a bonded run can approach the SUM of the two caps while
+// the aggregate stays under the ceiling. Only then is the >= P2BondedMinFraction ratio a
+// real aggregation measurement rather than a CPU-ceiling artefact.
+//
+// IN-FIXTURE CEILING IS LOW — MIND THE EXECUTING HOST. The recorded in-fixture,
+// CPU-bound saturated throughput is 12–46 Mbit/s per path on the 1-vCPU aarch64 host
+// (docs/p0-findings.md §"Saturated throughput": 18.9 starlink / 43.5 cellular, "12–46
+// Mbit/s across runs … CPU-bound … not link-bound", both daemons sharing one core). Do
+// NOT confuse this with the ~150–170 Mbit/s figure quoted elsewhere — that is the
+// REAL-INTERNET cross-host measurement (one daemon per host, .cq/goals.md G1), a
+// different regime that does NOT bound this in-namespace test. OPERATIONAL REQUIREMENT:
+// 2*p2RateMbit must sit below the EXECUTING host's MEASURED in-fixture ceiling. At 40
+// Mbit caps (80 Mbit aggregate) the 1-vCPU aarch64 host does NOT qualify (its ~12–46
+// Mbit/s ceiling is below 80, and even a solo 40-Mbit cap is not reliably reachable); the
+// intended target is the 4-vCPU amd64 host, whose in-fixture ceiling should be measured
+// and recorded. The per-solo precondition assert in runSoloSaturated enforces this at
+// runtime: if a solo path does not saturate its cap, the aggregation assertion is not
+// well-defined on this host and the test fails LOUD with an actionable diagnostic.
 const (
 	// p2RateMbit is the per-path netem egress cap. Two paths => ~2*p2RateMbit aggregate,
-	// which MUST stay below the host's single-core WG crypto ceiling for aggregation to
-	// show. 40+40=80 Mbit/s clears a ~150 Mbit/s ceiling with margin; raise on a faster
-	// host only while keeping 2*p2RateMbit under that host's measured ceiling.
+	// which MUST stay below the executing host's MEASURED in-fixture CPU-bound ceiling for
+	// aggregation to show (see the note above — the 1-vCPU aarch64 host's ~12–46 Mbit/s
+	// ceiling does not clear 80 Mbit; the 4-vCPU amd64 host is the target). Lower this on a
+	// weaker host until each solo path can saturate it (the runSoloSaturated precondition).
 	p2RateMbit = 40
 
 	// p2MetricsListen is the loopback /metrics endpoint both daemons bind (each in its own
@@ -68,6 +83,18 @@ const (
 	// (5G/cellular) path carries < P2MeteredMaxByteFraction of DATA bytes.
 	p2ThriftBitrate = "12M"
 	p2ThriftSecs    = 12
+
+	// p2SoloSaturationFraction is the fraction of the per-path cap a SOLO run must reach for
+	// the fixture to count as LINK-bound (not CPU-bound) on the executing host — the
+	// precondition that makes the bonded >= P2BondedMinFraction*(soloA+soloB) assertion
+	// well-defined. It doubles as the guard against a vacuous pass: with each solo floored at
+	// p2SoloSaturationFraction*p2RateMbit, the bonded target want = P2BondedMinFraction *
+	// (soloA+soloB) >= 0.85 * 2 * 0.9 * p2RateMbit = 1.53 * p2RateMbit, which STRICTLY EXCEEDS
+	// the single-path cap p2RateMbit (1.53 > 1). So NO single path — capped at p2RateMbit —
+	// can ever satisfy the bonded assertion; only genuine two-path aggregation can. The ~0.98
+	// header/ACK gap between the netem cap (outer IP datagram) and the measured DATA-frame
+	// wire throughput leaves ample margin under 0.9.
+	p2SoloSaturationFraction = 0.9
 )
 
 // TestP2Aggregation is the P2 acceptance (T23): under saturating load the bonded
@@ -124,6 +151,16 @@ func TestP2Aggregation(t *testing.T) {
 // runSoloSaturated brings the tunnel up over a SINGLE rate-capped path with the weighted
 // scheduler + /metrics, saturates it, and returns that path's steady-state OUTER-wire
 // throughput (Mbit/s) read from the edge /metrics byte counters.
+//
+// It ASSERTS the solo run is LINK-bound: the measured throughput must reach at least
+// p2SoloSaturationFraction of the cap. This is the precondition that makes the downstream
+// bonded >= P2BondedMinFraction*(soloA+soloB) comparison well-defined. Without it, a
+// CPU-bound host (the 1-vCPU aarch64 fixture tops out ~12–46 Mbit/s per docs/p0-findings.md,
+// BELOW the 40-Mbit cap) produces a low solo baseline that either (a) makes want <
+// single-path cap, so a bonded run showing ZERO aggregation passes vacuously, or (b) starves
+// the weighted gate (offered fps < engage) so aggregation never engages and is misreported as
+// a P2BondedMinFraction shortfall. Failing LOUD here — not Skip — is deliberate: an operator
+// running this on the wrong host must see an actionable failure, not a green skip.
 func runSoloSaturated(t *testing.T, bin, name string) float64 {
 	t.Helper()
 	spec := p2Path(name)
@@ -132,8 +169,16 @@ func runSoloSaturated(t *testing.T, bin, name string) float64 {
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("solo %s: tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", name, edge.log(), conc.log())
 	}
-	tputs := top.measureSaturatedWireThroughput(t, []string{name})
-	return tputs[name]
+	tput := top.measureSaturatedWireThroughput(t, []string{name})[name]
+
+	if floor := p2SoloSaturationFraction * p2RateMbit; tput < floor {
+		t.Fatalf("P2 fixture is CPU-bound, not link-bound on this host: solo path %q reached %.1f Mbit/s < %.1f (%.2f*%d Mbit cap) — "+
+			"the bonded >= %.2f*sum aggregation assertion is only well-defined when each solo path saturates its LINK cap. "+
+			"Run on a host with more CPU headroom (the 1-vCPU aarch64 host tops out ~12–46 Mbit/s in-fixture per docs/p0-findings.md; "+
+			"the 4-vCPU amd64 host is the intended target) or lower p2RateMbit below this host's measured in-fixture ceiling.\n--- edge ---\n%s",
+			name, tput, floor, p2SoloSaturationFraction, p2RateMbit, P2BondedMinFraction, edge.log())
+	}
+	return tput
 }
 
 // runBondedSaturated brings the tunnel up over BOTH rate-capped paths with the weighted
