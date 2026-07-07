@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 26
+  item: 27
 archives: []
 ---
 
@@ -200,6 +200,26 @@ archives: []
 - criticism: ["[r1 fable, resolved dda1ce9] the new concurrent receive-tick sweep (tickLivenessFromReceive: CAS throttle + TryLock deadlock-avoidance) had NO -race unit coverage — added 3 mutation-verified non-vacuous -race bind tests","[r1 opus, resolved dda1ce9] thresholds.go D16 budget prose (~1.4s budget/~1.6s margin) contradicted the 1.6s constant — reconciled to 1.4s detect + headroom = 1.6s budget, 1.4s margin"]
 - new_questions: []
 - ledgerRefs: ["tasks:T39","goals:G1","defects:D15","defects:D16"]
+
+### R26 — go-ahead
+
+- createdAt: 2026-07-07T18:04:11.185Z
+- updatedAt: 2026-07-07T18:04:11.185Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T40 (fix D18 repeated-flap wedge + sound flap acceptance) reconciled GO-AHEAD (opus by-construction + fable validation-soundness panel; strictest-wins → unanimous, 0 criticisms / 0 questions / 0 defects). Merged d4047a7 (delta 00c1124..20b955c).
+    
+    ROOT CAUSE (D18): failover was PULL-BASED — scheduler.Pick() ran ONLY from the Send path, so a repeated-flap kill during an egress lull (both TCP dirs stalled, no Send) left the bond wedged on the dead path until the 25s WG keepalive (~1/6 per-kill wedge at load). FIX: nudgeSchedulerActive() calls Pick() from the receive-liveness tick (tickLivenessFromReceive) AND the probe emitter (emitProbes), making failover EAGER/liveness-driven — a DOWN detected off receive/probe immediately triggers the switch without an application Send. Also lands the repeated-flap e2e acceptance (TestP1FailoverRepeatedFlap), the D21 flap-test load-flow leak reap, a widened OBSERVATION window (flapFailoverPoll=P1RecoverySeconds+5s; 3s budget still asserted per cycle), and +147 lines of -race sweep unit tests.
+    
+    opus (by-construction): nudge is lock-order-safe — takes only the scheduler s.mu, both call sites run after m.mu.Unlock (multipath.go:498, probe.go:38), so the Send-path m.mu->s.mu order is never inverted and Close/readersWG cannot deadlock (T39 TryLock invariant untouched). Pick/setActiveLocked idempotent (no-op + no log when active unchanged), failback dwell preserved. -race sweep tests proven NON-VACUOUS by nudge-revert (TestSweepDrivesEagerFailover + throttle-count both fail).
+    
+    fable (validation-soundness): widened flapFailoverPoll is observation-only; 3s per-cycle budget still asserted (failover_test.go:286) from daemon scheduler-transition timestamps (real latency); measured 1027-1364ms at the eager-detect floor discriminates fixed-from-masked. The no-Send D18 condition is exercised DETERMINISTICALLY by TestSweepDrivesEagerFailover (zero Sends, hour FailbackAfter pins the tick as the only mover) — overlay-verified to FAIL on pre-fix c495839 ('the tick did not eagerly fail over', multipath_sweep_test.go:276) and pass fixed. Failback asserted per cycle both ends. Load 0.6-1.9 >= the 0.55 repro point. Re-ran build/vet/fmt/lint/test -race green.
+    
+    HARDWARE (llm-ubuntu-0, amd64, bidirectional saturating load): flap 22/22 PASS (0 wedged, 0 budget-exceeded, max 1364ms vs 3000ms); single-kill 10/10 PASS (1135-1320ms, all < 1600ms failover budget). Resolves D18 + D21; completes the T20 flap acceptance.
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T40","tasks:T20","defects:D18","defects:D21","goals:G1"]
 
 ## M10
 

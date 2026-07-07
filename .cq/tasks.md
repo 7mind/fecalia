@@ -142,10 +142,10 @@ archives:
 - dependsOn: ["T12","T13","T37"]
 - ledgerRefs: ["goals:G1"]
 
-### T20 — wip
+### T20 — done
 
 - createdAt: 2026-07-01T23:40:28.766Z
-- updatedAt: 2026-07-07T16:41:14.259Z
+- updatedAt: 2026-07-07T18:04:52.526Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "P1 e2e: failover survives WAN death within 3s"
@@ -153,7 +153,7 @@ archives:
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP1Failover` kills the active path mid-iperf3; the TCP connection is NOT reset and throughput is restored within P1RecoverySeconds (3s), asserted against the harness constants; repeated flap does not wedge the tunnel."
 - suggestedModel: standard
 - dependsOn: ["T15","T16","T37","T39","T40"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T40","reviews:R26"]
 
 ### T22 — planned
 
@@ -223,10 +223,10 @@ archives:
 - dependsOn: ["T13","T15","T37"]
 - ledgerRefs: ["goals:G1","tasks:T20","defects:D15","defects:D16"]
 
-### T40 — wip
+### T40 — done
 
 - createdAt: 2026-07-07T16:41:13.102Z
-- updatedAt: 2026-07-07T16:41:43.163Z
+- updatedAt: 2026-07-07T18:04:50.518Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Make repeated-flap failover reliably meet the 3s budget (fix D18 tail + sound flap test)
@@ -234,7 +234,7 @@ archives:
 - acceptance: On llm-ubuntu-0, TestP1FailoverRepeatedFlap passes RELIABLY (>=19/20 runs) with every cycle's recovery < P1RecoverySeconds in both directions (or, if the residual tail is proven to be shared-VM noise, documented as such with host-load evidence and the test made robust to it); the flapFailoverPoll window measures over-budget tails rather than losing them; the D18 root cause (product-vs-noise) is documented; non-wedge + no-reset + cycle-1 non-vacuity preserved; unit tests for any changed liveness/scheduler logic pass under -race; no single-kill/thrash regression (TestP1Failover still 60/60-class).
 - suggestedModel: frontier
 - dependsOn: ["T15","T37","T39"]
-- ledgerRefs: ["goals:G1","tasks:T20","defects:D18"]
+- ledgerRefs: ["goals:G1","tasks:T20","defects:D18","defects:D21","reviews:R26"]
 
 ## M7
 
