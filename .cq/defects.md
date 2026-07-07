@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 21
+  item: 22
 archives: []
 ---
 
@@ -255,6 +255,19 @@ archives: []
 - rootCause: "Confirmed by the T20 review from the bind-package timeout goroutine dump: TestMultipathEngineUpCanTransmit's helper does an unbuffered channel send (engine_test.go:~99) with no done-channel escape, so after the test returns and the receiver is gone the producer goroutine blocks forever on the send."
 - suggestedFix: "Use a buffered channel (cap 1) or a `select { case ch<-v: case <-done: }` at engine_test.go:~99 so the producer can always exit when the test ends. Test-only change; fold into the D19 fix or a test-hardening pass."
 - ledgerRefs: ["tasks:T30","goals:G1"]
+
+### D21 — root-caused
+
+- createdAt: 2026-07-07T17:23:27.568Z
+- updatedAt: 2026-07-07T17:23:27.568Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Failover e2e tests leak a saturating iperf3 load flow on every early t.Fatalf path (contaminates subsequent/co-tenant runs)
+- description: "Filed by the T40 review (fable). In BOTH TestP1Failover (MERGED on main, from T39) and TestP1FailoverRepeatedFlap (T40/T20 branch), the load client is started with `load := exec.Command(\"iperf3\", ..., \"-t\", loadSecs, \"--bidir\"); load.Start()` and is reaped ONLY by `load.Wait()` on the SUCCESS path — no t.Cleanup registers load.Process.Kill(). Any early Fatalf (bond-never-up, failover non-observation, or a failback wedge) returns WITHOUT calling Wait(), leaking an uncapped ~70s bidirectional iperf3 that keeps SATURATING the shared 4-vCPU host and contaminates subsequent runs AND concurrent tenants. Directly observed mid-campaign (a 101s-old orphaned `iperf3 -c ... -t 70 --bidir`). THIS is the source of the multi-tenant contention that confounded the D15/D18 hardware measurements throughout this session. Severity medium (test-hygiene, but it materially undermines every multi-run flap/failover hardware validation and pollutes the shared host)."
+- severity: medium
+- rootCause: "Confirmed by the T40 review: the load iperf3 client is only reaped on the test's success path (load.Wait()); every early-return Fatalf (and there are several) leaves the ~70s saturating --bidir flow running detached, so a failed run's flow overlaps and slows the next run (and any co-tenant). No t.Cleanup kills load.Process."
+- suggestedFix: "Immediately after load.Start() in BOTH tests, register `t.Cleanup(func(){ if load.Process != nil { _ = load.Process.Kill() } })` so a failed run cannot leak a saturating flow. Fix the MERGED TestP1Failover copy on main directly (de-contaminates future hardware runs) and the flap-test copy in the T40 rework."
+- ledgerRefs: ["tasks:T39","tasks:T40","goals:G1"]
 
 ## M10
 
