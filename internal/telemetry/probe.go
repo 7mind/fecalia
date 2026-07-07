@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,6 +12,22 @@ import (
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
 )
+
+// NewSessionID draws a random 64-bit per-boot probe session identity from the
+// system CSPRNG (T38, defect D12). One value is drawn per process boot and shared
+// across every path's Prober; it identifies the boot so a peer restart presents a
+// SessionID the surviving responder has never seen, resetting that peer's
+// anti-replay high-water (see Reflector). It fails only if the CSPRNG is
+// unavailable. A random (not sequential) id is used deliberately: an attacker must
+// not be able to predict or roll the id forward, and unpredictability is what lets
+// the responder treat a never-before-seen SessionID as a genuine liveness proof.
+func NewSessionID() (uint64, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, fmt.Errorf("telemetry: read session id: %w", err)
+	}
+	return binary.BigEndian.Uint64(b[:]), nil
+}
 
 // ErrReplay is returned when a probe's ProbeSeq is at or below the per-path
 // high-water mark — a replayed or stale probe (defect D4). It is distinct from
@@ -23,6 +41,15 @@ var ErrReplay = errors.New("telemetry: probe sequence replayed or stale")
 // counted as this path's heartbeat, or a single live path could mask every other
 // path's death.
 var ErrPathMismatch = errors.New("telemetry: probe PathID does not match this path")
+
+// ErrSessionMismatch is returned by HandleEcho when an echo's SessionID does not
+// match this Prober's own per-boot session id (T38, defect D12). Every probe this
+// Prober sends is stamped with its SessionID and the responder reflects it
+// verbatim, so a genuine echo of THIS boot's probe always carries it. An echo
+// carrying a different SessionID is a stale echo of a previous boot's probe (still
+// in flight across a local restart) or a replay of one; rejecting it keeps a fresh
+// Prober's high-water from being advanced by a prior session's ProbeSeq.
+var ErrSessionMismatch = errors.New("telemetry: probe SessionID does not match this session")
 
 // AntiReplay is a monotonic ProbeSeq high-water filter. Accept advances the mark
 // and returns true only for a strictly increasing sequence, so a captured probe
@@ -68,10 +95,11 @@ type ProberConfig struct {
 // and anti-replay filter it owns are not independently synchronized and must be
 // reached only through the Prober.
 type Prober struct {
-	pathName string
-	pathID   uint8
-	psk      config.Key
-	clock    Clock
+	pathName  string
+	pathID    uint8
+	sessionID uint64
+	psk       config.Key
+	clock     Clock
 
 	mu      sync.Mutex
 	nextSeq uint64
@@ -80,23 +108,29 @@ type Prober struct {
 	live    *Liveness
 }
 
-// NewProber builds a Prober for one path. The logger is used (path-tagged) for
-// liveness transition logging.
+// NewProber builds a Prober for one path. sessionID is this node's random
+// per-boot session identity (see NewSessionID); it is stamped into every probe
+// this Prober emits and, on the responder, keys the anti-replay reset that lets a
+// restarted peer's paths recover (T38, defect D12). All Probers of one boot share
+// the same sessionID (it identifies the boot, not the path). The logger is used
+// (path-tagged) for liveness transition logging.
 func NewProber(
 	pathName string,
 	pathID uint8,
+	sessionID uint64,
 	psk config.Key,
 	cfg ProberConfig,
 	clock Clock,
 	logger log.Logger,
 ) *Prober {
 	return &Prober{
-		pathName: pathName,
-		pathID:   pathID,
-		psk:      psk,
-		clock:    clock,
-		est:      NewEstimator(cfg.LossWindow),
-		live:     NewLiveness(pathName, cfg.Liveness, clock, logger),
+		pathName:  pathName,
+		pathID:    pathID,
+		sessionID: sessionID,
+		psk:       psk,
+		clock:     clock,
+		est:       NewEstimator(cfg.LossWindow),
+		live:      NewLiveness(pathName, cfg.Liveness, clock, logger),
 	}
 }
 
@@ -110,6 +144,7 @@ func (p *Prober) SendProbe() ([]byte, error) {
 		PathID:         p.pathID,
 		ProbeSeq:       p.nextSeq,
 		TimestampNanos: p.clock.Now().UnixNano(),
+		SessionID:      p.sessionID,
 	}
 	p.nextSeq++
 	return frame.Encode(p.psk, probe)
@@ -118,7 +153,8 @@ func (p *Prober) SendProbe() ([]byte, error) {
 // HandleEcho processes one received echo frame. It rejects, without touching
 // liveness or the RTT estimate: forged/tampered echoes (frame.Decode fails the
 // HMAC -> ErrAuth), non-probe frames, echoes for another path (ErrPathMismatch),
-// and replayed/stale ProbeSeq (ErrReplay, defect D4). A genuine echo's ProbeSeq
+// echoes stamped with a foreign SessionID (ErrSessionMismatch, a stale cross-boot
+// echo — T38/D12), and replayed/stale ProbeSeq (ErrReplay, defect D4). A genuine echo's ProbeSeq
 // is folded into the per-path loss estimate whether or not it is fresh (a
 // duplicate is idempotent, a reorder fills its gap), but only a FRESH echo yields
 // a new RTT sample and a liveness heartbeat.
@@ -133,6 +169,14 @@ func (p *Prober) HandleEcho(raw []byte) error {
 	}
 	if probe.PathID != p.pathID {
 		return ErrPathMismatch
+	}
+	// The SessionID is immutable after construction, so it is read without the lock.
+	// A genuine echo of one of THIS boot's probes always carries our own SessionID
+	// (we stamped it; the responder reflected it verbatim). A mismatch is a stale
+	// cross-boot echo or a replay of one — reject it before it can advance this
+	// boot's high-water or liveness.
+	if probe.SessionID != p.sessionID {
+		return ErrSessionMismatch
 	}
 
 	p.mu.Lock()
@@ -178,6 +222,13 @@ func (p *Prober) State() PathState {
 	return p.live.State()
 }
 
+// sessionPath is the composite anti-replay key: one strict-monotonic ProbeSeq
+// high-water per (originator session, path). See Reflector.
+type sessionPath struct {
+	pathID    uint8
+	sessionID uint64
+}
+
 // Reflector is the responder side of the probe exchange. Reflect authenticates
 // an inbound probe, rejects replays per originating path (D4), and returns a fresh
 // authenticated encoding of the same probe (verbatim ProbeSeq and TimestampNanos,
@@ -185,27 +236,57 @@ func (p *Prober) State() PathState {
 // send timestamp and its transport can tell the echo apart from a peer probe. The
 // responder never manufactures a timestamp, so it needs no synchronized clock.
 //
-// A single Reflector serves EVERY path, so its anti-replay high-water is keyed by
-// PathID: each path carries its own ProbeSeq space (both start at 0), and sharing
-// one high-water would reject a second path's opening probes as replays.
+// A single Reflector serves EVERY path, and each path carries its own ProbeSeq
+// space (both start at 0), so the anti-replay high-water is keyed by (SessionID,
+// PathID). The SessionID is the originator's random per-boot identity carried
+// inside the MAC-covered probe body (T38, defect D12):
+//
+//   - WITHIN a session (SessionID == the path's current session): strict-monotonic
+//     replay rejection is preserved exactly as before (D4). A replayed/stale
+//     ProbeSeq is rejected.
+//   - A BRAND-NEW SessionID never seen on the path (peer reboot): adopted as the
+//     path's new current session, its high-water reset to accept the ProbeSeq=0
+//     stream. This is what unblocks a restarted peer whose nextSeq reset to 0 —
+//     without it the surviving Reflector would reject every fresh probe against the
+//     prior session's high-water until the counter organically passed it (D12).
+//   - Anti-rollback rule: a SessionID that was seen before but is NOT the path's
+//     current session is RETIRED, and any probe bearing it is rejected as ErrReplay
+//     — it can never again force a reset. The reset is therefore gated on the
+//     SessionID being one no prior traffic carried. Because the SessionID lives
+//     inside the MAC-covered body, only the live peer (holding the PSK) can mint a
+//     frame under a SessionID no eavesdropper has captured; an attacker is confined
+//     to replaying captured frames, all of which carry already-retired SessionIDs.
+//     A live peer's fresh, unseen, authenticated SessionID is thus the liveness
+//     proof that gates the reset, and a superseded session is never revived.
+//
+// Memory: r.guards holds one AntiReplay per (SessionID, PathID) ever observed —
+// one extra entry per genuine peer reboot per path (a rare event on the
+// minutes-to-hours scale), which also serves as the "retired session" set that
+// enforces the anti-rollback rule above.
 //
 // Concurrency: Reflect may be called from all per-path receive goroutines at
 // once; it is guarded by an internal mutex.
 type Reflector struct {
 	psk config.Key
 
-	mu     sync.Mutex
-	guards map[uint8]*AntiReplay
+	mu      sync.Mutex
+	current map[uint8]uint64            // pathID -> the path's live (current) SessionID
+	guards  map[sessionPath]*AntiReplay // (pathID, SessionID) -> per-session high-water; keys are EVERY session ever seen
 }
 
 // NewReflector builds a Reflector authenticating under psk.
 func NewReflector(psk config.Key) *Reflector {
-	return &Reflector{psk: psk, guards: make(map[uint8]*AntiReplay)}
+	return &Reflector{
+		psk:     psk,
+		current: make(map[uint8]uint64),
+		guards:  make(map[sessionPath]*AntiReplay),
+	}
 }
 
 // Reflect decodes and re-encodes one probe as its echo. It returns frame.ErrAuth
 // for a forged/tampered probe, an error for a non-probe frame, and ErrReplay for
-// a ProbeSeq replayed/stale on its originating path.
+// a ProbeSeq replayed/stale within its session or a probe bearing a retired
+// (superseded) SessionID (anti-rollback — see Reflector).
 func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	f, err := frame.Decode(r.psk, raw)
 	if err != nil {
@@ -217,12 +298,7 @@ func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	}
 
 	r.mu.Lock()
-	guard := r.guards[probe.PathID]
-	if guard == nil {
-		guard = &AntiReplay{}
-		r.guards[probe.PathID] = guard
-	}
-	fresh := guard.Accept(probe.ProbeSeq)
+	fresh := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq)
 	r.mu.Unlock()
 
 	if !fresh {
@@ -234,4 +310,32 @@ func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	// its own send timestamp.
 	probe.IsEcho = true
 	return frame.Encode(r.psk, probe)
+}
+
+// acceptLocked applies the (SessionID, PathID)-keyed anti-replay decision for one
+// probe and reports whether it is fresh. The caller holds r.mu. See Reflector for
+// the full rule set (within-session monotonicity, new-session reset, anti-rollback
+// on retired sessions).
+func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq uint64) bool {
+	key := sessionPath{pathID: pathID, sessionID: sessionID}
+	curSession, hasCurrent := r.current[pathID]
+	switch {
+	case hasCurrent && sessionID == curSession:
+		// Current live session: strict-monotonic replay rejection (D4). The guard
+		// for the current session always exists (created when it was adopted).
+		return r.guards[key].Accept(probeSeq)
+	case r.guards[key] != nil:
+		// Seen before but not current => retired/superseded. Replaying it (a
+		// rollback attempt) must never force a reset.
+		return false
+	default:
+		// Brand-new SessionID never seen on this path: a live peer proved liveness
+		// with a fresh MAC-authenticated identity no replay could carry. Adopt it as
+		// the path's current session and reset the high-water to accept its stream.
+		guard := &AntiReplay{}
+		accepted := guard.Accept(probeSeq)
+		r.guards[key] = guard
+		r.current[pathID] = sessionID
+		return accepted
+	}
 }

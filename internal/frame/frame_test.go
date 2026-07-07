@@ -33,8 +33,8 @@ func sampleFrames() []Frame {
 		Data{OuterSeq: 0, PathID: 0, FECGroup: 0, Flags: 0, Payload: nil},
 		Parity{FECGroup: 0x11223344, ParityIndex: 0x7F0E, PathID: 2, Payload: []byte{0xFF, 0x00, 0x10, 0x20}},
 		Parity{FECGroup: 1, ParityIndex: 0, PathID: 0, Payload: nil},
-		Probe{PathID: 1, ProbeSeq: 42, TimestampNanos: 1_700_000_000_123_456_789, Payload: []byte("probe")},
-		Probe{PathID: 0, ProbeSeq: 0, TimestampNanos: -1, Payload: nil},
+		Probe{PathID: 1, ProbeSeq: 42, TimestampNanos: 1_700_000_000_123_456_789, SessionID: 0x0102030405060708, Payload: []byte("probe")},
+		Probe{PathID: 0, ProbeSeq: 0, TimestampNanos: -1, SessionID: 0, Payload: nil},
 		Control{ControlType: 9, Payload: []byte("control payload")},
 		Control{ControlType: 0, Payload: nil},
 	}
@@ -208,7 +208,8 @@ func TestAuthenticatedFramesCarryTag(t *testing.T) {
 // TestTamperedRejected verifies the authentication guarantee for CONTROL/PROBE
 // frames: no single-byte mutation is ever accepted AS an authenticated frame,
 // and every mutation in the MAC-covered region (everything after the kind byte,
-// including the tag) fails the MAC check with ErrAuth.
+// including the tag) fails the MAC check with ErrAuth. The PROBE case carries a
+// non-zero SessionID (T38) so those body bytes are exercised as MAC-covered too.
 //
 // The one place a mutation is "accepted" is a flip of the kind byte itself that
 // re-labels the frame as an unauthenticated kind (DATA/PARITY). That is not a
@@ -220,7 +221,7 @@ func TestAuthenticatedFramesCarryTag(t *testing.T) {
 func TestTamperedRejected(t *testing.T) {
 	psk := testPSK(t, 0x5A)
 	for _, f := range []Frame{
-		Probe{PathID: 1, ProbeSeq: 7, TimestampNanos: 123, Payload: []byte("liveness")},
+		Probe{PathID: 1, ProbeSeq: 7, TimestampNanos: 123, SessionID: 0xDEADBEEFCAFEF00D, Payload: []byte("liveness")},
 		Control{ControlType: 4, Payload: []byte("rekey now")},
 	} {
 		raw, err := Encode(psk, f)
@@ -265,7 +266,7 @@ func TestPSKMismatchRejected(t *testing.T) {
 	pskA := testPSK(t, 0x11)
 	pskB := testPSK(t, 0x22)
 	for _, f := range []Frame{
-		Probe{PathID: 1, ProbeSeq: 7, TimestampNanos: 123, Payload: []byte("liveness")},
+		Probe{PathID: 1, ProbeSeq: 7, TimestampNanos: 123, SessionID: 0xDEADBEEFCAFEF00D, Payload: []byte("liveness")},
 		Control{ControlType: 4, Payload: []byte("rekey now")},
 	} {
 		raw, err := Encode(pskA, f)
@@ -297,7 +298,7 @@ func TestByteHistogramNoConstantPosition(t *testing.T) {
 		case KindParity:
 			return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), PathID: uint8(rng.Intn(256)), Payload: payload}
 		case KindProbe:
-			return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), Payload: payload}
+			return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Payload: payload}
 		case KindControl:
 			return Control{ControlType: uint8(rng.Intn(256)), Payload: payload}
 		default:
@@ -370,7 +371,7 @@ func randomFrame(rng *rand.Rand) Frame {
 	case 1:
 		return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), PathID: uint8(rng.Intn(256)), Payload: payload}
 	case 2:
-		return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), Payload: payload}
+		return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Payload: payload}
 	default:
 		return Control{ControlType: uint8(rng.Intn(256)), Payload: payload}
 	}

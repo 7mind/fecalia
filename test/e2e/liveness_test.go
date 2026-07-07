@@ -49,7 +49,11 @@ func TestLivenessBlackhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build logger: %v", err)
 	}
-	prober := telemetry.NewProber("starlink", 1, psk, telemetry.ProberConfig{
+	sessionID, err := telemetry.NewSessionID()
+	if err != nil {
+		t.Fatalf("new session id: %v", err)
+	}
+	prober := telemetry.NewProber("starlink", 1, sessionID, psk, telemetry.ProberConfig{
 		Liveness: telemetry.LivenessConfig{
 			DownAfter:        PLivenessDownAfter,
 			UpAfterSuccesses: PLivenessUpSuccesses,

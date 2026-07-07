@@ -132,11 +132,20 @@ type Parity struct {
 // inbound frame: IsEcho=false is a peer probe to REFLECT, IsEcho=true is an echo
 // of our own probe to FEED into that path's Prober. Marking the echo also breaks
 // the otherwise-unbounded reflect-of-a-reflect loop (an echo is never reflected).
+//
+// SessionID is the originator's random per-boot session identity (T38, defect
+// D12). It sits inside the MAC-covered body (adjacent to IsEcho), so an attacker
+// can neither forge nor flip it. The responder reflects it verbatim. It lets the
+// responder's anti-replay high-water key by (SessionID, PathID) and RESET when a
+// peer reboots (a genuinely new, MAC-authenticated SessionID) instead of
+// dead-locking the restarted peer against the prior session's high-water; the
+// originator likewise rejects echoes that do not carry its own current SessionID.
 type Probe struct {
 	PathID         uint8
 	ProbeSeq       uint64
 	TimestampNanos int64
 	IsEcho         bool
+	SessionID      uint64
 	Payload        []byte
 }
 
@@ -179,6 +188,7 @@ func (f Probe) appendBody(dst []byte) []byte {
 	dst = binary.BigEndian.AppendUint64(dst, f.ProbeSeq)
 	dst = binary.BigEndian.AppendUint64(dst, uint64(f.TimestampNanos))
 	dst = append(dst, boolByte(f.IsEcho))
+	dst = binary.BigEndian.AppendUint64(dst, f.SessionID)
 	return append(dst, f.Payload...)
 }
 
@@ -372,10 +382,11 @@ func decodeBody(kind Kind, b []byte) (Frame, error) {
 		probeSeq, e2 := r.u64()
 		ts, e3 := r.u64()
 		echo, e4 := r.u8()
-		if err := firstErr(e1, e2, e3, e4); err != nil {
+		sessionID, e5 := r.u64()
+		if err := firstErr(e1, e2, e3, e4, e5); err != nil {
 			return nil, err
 		}
-		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, Payload: r.rest()}, nil
+		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, SessionID: sessionID, Payload: r.rest()}, nil
 	case KindControl:
 		ctype, e1 := r.u8()
 		if err := firstErr(e1); err != nil {

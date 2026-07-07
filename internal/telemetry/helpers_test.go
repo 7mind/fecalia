@@ -37,6 +37,10 @@ func testPSK(t testing.TB, seed byte) config.Key {
 	return k
 }
 
+// testSessionID is a fixed non-zero session id for tests that need one distinct
+// from a default-constructed (zero) probe's SessionID.
+const testSessionID uint64 = 0x1122334455667788
+
 // discardLogger is a Logger writing to io.Discard, for tests that do not inspect
 // log output.
 func discardLogger(t testing.TB) log.Logger {

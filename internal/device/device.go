@@ -233,10 +233,17 @@ func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*tele
 			UpAfterSuccesses: defaultProbeUpSuccesses,
 		},
 	}
+	// One random per-boot session id shared by every path's Prober (it identifies
+	// this boot, not the path): a peer restart presents a new session id that resets
+	// the surviving responder's anti-replay high-water so liveness recovers (T38, D12).
+	sessionID, err := telemetry.NewSessionID()
+	if err != nil {
+		return nil, nil, err
+	}
 	probers := make([]*telemetry.Prober, len(cfg.Paths))
 	health := make([]sched.PathHealth, len(cfg.Paths))
 	for i := range cfg.Paths {
-		probers[i] = telemetry.NewProber(cfg.Paths[i].Name, uint8(i), cfg.PSK, proberCfg, clock, lg)
+		probers[i] = telemetry.NewProber(cfg.Paths[i].Name, uint8(i), sessionID, cfg.PSK, proberCfg, clock, lg)
 		health[i] = probers[i]
 	}
 	scheduler, err := sched.NewActiveBackup(

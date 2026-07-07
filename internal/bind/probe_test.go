@@ -34,6 +34,10 @@ const (
 	testProbeDownAfter = 300 * time.Millisecond
 	testProbeUpSucc    = 3
 	testProbeRTT       = 10 * time.Millisecond
+	// testProbeSessionID is the fixed per-boot probe session id these bind tests
+	// stamp their Probers with (T38/D12); any consistent value works because each
+	// Prober handles only echoes of its own probes.
+	testProbeSessionID uint64 = 0xABCDEF0123456789
 )
 
 // newProbingMultipath builds a Multipath wired with one live *telemetry.Prober
@@ -53,7 +57,7 @@ func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk 
 	probers := make([]*telemetry.Prober, len(paths))
 	health := make([]sched.PathHealth, len(paths))
 	for i := range paths {
-		probers[i] = telemetry.NewProber(paths[i].Name, uint8(i), psk, cfg, clk, lg)
+		probers[i] = telemetry.NewProber(paths[i].Name, uint8(i), testProbeSessionID, psk, cfg, clk, lg)
 		health[i] = probers[i]
 	}
 	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Hour}, clk, lg)
