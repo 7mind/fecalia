@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 19
+  item: 21
 archives: []
 ---
 
@@ -228,6 +228,31 @@ archives: []
 - rootCause: "HYPOTHESIS (needs hardware confirmation, owned by T40): T39's fix advances liveness off the RECEIVE path so DOWN-detection doesn't wait on the CPU-starved probe-loop timer — but the receive-path tick requires INBOUND traffic on the surviving path. During a failover TRANSITION the flow momentarily pauses (the sender is mid-reroute), so for a brief window NEITHER the starved timer NOR the receive path advances liveness, and under repeated flap + sustained saturation that window occasionally pushes the concentrator-side detection past 3s. The consistent ~3.1-3.5s magnitude (not random) argues for a systematic near-boundary gap rather than pure shared-VM noise, but VM contention on the 4-vCPU shared host may compound it — both must be confirmed/excluded."
 - suggestedFix: "In T40: (1) run TestP1FailoverRepeatedFlap MANY times with HOST LOAD recorded to separate a product tail from shared-VM noise; instrument per-kill probe-loop-tick + receive-tick latency across consecutive cycles. (2) If product: bound the transition-window gap — e.g. emit probes more aggressively on a detected active-path change, have the scheduler nudge liveness on Pick, or ensure the receive-path tick fires from the OUTBOUND/Send path too (Send is scheduled during the reroute). (3) Validate the flap passes RELIABLY (>=19/20) on hardware."
 - ledgerRefs: ["tasks:T20","tasks:T39","tasks:T40","goals:G1"]
+
+### D19 — open
+
+- createdAt: 2026-07-07T16:45:28.384Z
+- updatedAt: 2026-07-07T16:45:28.384Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Flaky HANG: TestMultipathVirtualEndpointIdentity blocks until the package test timeout (lost-wakeup in the T30 receive fan-in)"
+- description: "Filed by the T20 review (fable), OUT OF SCOPE for T20 (its diff is e2e-only). internal/bind's TestMultipathVirtualEndpointIdentity (bind_test.go:~133) INTERMITTENTLY blocks FOREVER in Multipath.newReceiveFunc's drainer select (multipath.go:~543) waiting for a packet that never arrives, while the readLoop goroutine sits in UDP ReadFromUDPAddrPort (multipath.go:~436). Reproduced TWICE: once on a plain `just test` (hit the 600s package timeout -> unit gate RED) and once within 3 of 30 `-count=30` iterations. Pre-existing, in the T30 receive fan-in (readLoop -> resequencer -> single drainer). Intermittently REDS the unit gate and costs the full package timeout per hit — a real robustness/CI hazard. Severity medium."
+- severity: medium
+- suggestedFix: "INVESTIGATE (hypothesis, not confirmed): a lost-wakeup / ordering race between the virtual-endpoint send and the receive-func subscription — a packet SENT before the reader goroutine is registered/looping is dropped by the UDP socket, and nothing retries, so the drainer waits forever for a frame that will never come. Reproduce with `go test ./internal/bind -run TestMultipathVirtualEndpointIdentity -count=100 -timeout 120s -v`. Fix: add a bounded wait/retry on the send side (or fix the subscription-before-send ordering in the test/harness), and give the test its OWN short deadline so a hang fails fast instead of consuming the package timeout. Route via /cq:investigate if the root cause is in production readLoop/drainer wiring rather than the test."
+- ledgerRefs: ["tasks:T30","goals:G1"]
+
+### D20 — root-caused
+
+- createdAt: 2026-07-07T16:45:35.495Z
+- updatedAt: 2026-07-07T16:45:35.495Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Goroutine leak: TestMultipathEngineUpCanTransmit helper blocked on chan send outlives the test"
+- description: "Filed by the T20 review (fable), OUT OF SCOPE for T20. The internal/bind package-timeout goroutine dumps show multiple goroutines from EARLIER-completed TestMultipathEngineUpCanTransmit runs stuck >1 minute on a channel send at engine_test.go:~99 — the receiver is gone after the test ends, so each run LEAKS the producer goroutine. Pre-existing, harmless per run, but it accumulates under -count stress and pollutes hang diagnostics (it co-appeared in the D19 timeout dumps). Severity low (test-only)."
+- severity: low
+- rootCause: "Confirmed by the T20 review from the bind-package timeout goroutine dump: TestMultipathEngineUpCanTransmit's helper does an unbuffered channel send (engine_test.go:~99) with no done-channel escape, so after the test returns and the receiver is gone the producer goroutine blocks forever on the send."
+- suggestedFix: "Use a buffered channel (cap 1) or a `select { case ch<-v: case <-done: }` at engine_test.go:~99 so the producer can always exit when the test ends. Test-only change; fold into the D19 fix or a test-hardening pass."
+- ledgerRefs: ["tasks:T30","goals:G1"]
 
 ## M10
 
