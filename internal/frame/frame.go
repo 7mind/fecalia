@@ -59,15 +59,18 @@ const (
 
 // DataOverhead is the number of bytes a KindData frame adds on top of its opaque
 // payload on the wire: the clear nonce plus the DATA header (kind || outer-seq ||
-// path-id || fec-group || flags). DATA frames are unauthenticated (see the wire
-// model above), so they carry no tag; this figure is therefore exact and is what
-// the multipath Bind subtracts from the path MTU when sizing the inner tunnel
-// (see internal/bind mtu.go).
+// path-id || fec-group || fec-index || flags). DATA frames are unauthenticated
+// (see the wire model above), so they carry no tag; this figure is therefore exact
+// and is what the multipath Bind subtracts from the path MTU when sizing the inner
+// tunnel (see internal/bind mtu.go). The fec-index byte is carried on every DATA
+// frame — 0 and inert when FEC is disabled (T24) — so the codec's wire layout is
+// invariant to the FEC toggle.
 const DataOverhead = nonceLen + // clear nonce
 	1 + // kind discriminant
 	8 + // outer-seq (uint64)
 	1 + // path-id (uint8)
 	4 + // fec-group (uint32)
+	1 + // fec-index (uint8): shard position within the FEC group (T24)
 	1 // flags (uint8)
 
 // Kind is the outer frame discriminant. Values are nonzero so a zeroed buffer
@@ -105,20 +108,29 @@ type Frame interface {
 }
 
 // Data wraps a single opaque WireGuard datagram. OuterSeq is this codec's own
-// sequence space (never the inner WG counter); PathID/FECGroup/Flags feed the
-// multipath scheduler (T12), FEC (T14), and resequencer (T18).
+// sequence space (never the inner WG counter); PathID/FECGroup/FECIndex/Flags feed
+// the multipath scheduler (T12), FEC (T14/T24), and resequencer (T18). FECIndex is
+// the data shard's position within its FEC group (0..M-1); it is 0 and inert when
+// FEC is disabled. The receiver reconstructs the FEC data-shard bytes as
+// OuterSeq || Payload, so a shard recovered from parity carries its own outer-seq
+// (T24) — no separate per-group base state is needed to resequence a recovered
+// frame.
 type Data struct {
 	OuterSeq uint64
 	PathID   uint8
 	FECGroup uint32
+	FECIndex uint8
 	Flags    uint8
 	Payload  []byte
 }
 
-// Parity carries one FEC parity symbol for a fec-group.
+// Parity carries one FEC parity symbol for a fec-group. DataCount is the group
+// cardinality M (the number of data shards the parity protects); the decoder learns
+// M from any surviving parity frame, so it must ride the wire (T24).
 type Parity struct {
 	FECGroup    uint32
 	ParityIndex uint16
+	DataCount   uint8
 	PathID      uint8
 	Payload     []byte
 }
@@ -186,6 +198,7 @@ func (f Data) appendBody(dst []byte) []byte {
 	dst = binary.BigEndian.AppendUint64(dst, f.OuterSeq)
 	dst = append(dst, f.PathID)
 	dst = binary.BigEndian.AppendUint32(dst, f.FECGroup)
+	dst = append(dst, f.FECIndex)
 	dst = append(dst, f.Flags)
 	return append(dst, f.Payload...)
 }
@@ -194,6 +207,7 @@ func (f Parity) appendBody(dst []byte) []byte {
 	dst = append(dst, byte(KindParity))
 	dst = binary.BigEndian.AppendUint32(dst, f.FECGroup)
 	dst = binary.BigEndian.AppendUint16(dst, f.ParityIndex)
+	dst = append(dst, f.DataCount)
 	dst = append(dst, f.PathID)
 	return append(dst, f.Payload...)
 }
@@ -381,19 +395,21 @@ func decodeBody(kind Kind, b []byte) (Frame, error) {
 		seq, e1 := r.u64()
 		pathID, e2 := r.u8()
 		group, e3 := r.u32()
-		flags, e4 := r.u8()
-		if err := firstErr(e1, e2, e3, e4); err != nil {
+		fecIndex, e4 := r.u8()
+		flags, e5 := r.u8()
+		if err := firstErr(e1, e2, e3, e4, e5); err != nil {
 			return nil, err
 		}
-		return Data{OuterSeq: seq, PathID: pathID, FECGroup: group, Flags: flags, Payload: r.rest()}, nil
+		return Data{OuterSeq: seq, PathID: pathID, FECGroup: group, FECIndex: fecIndex, Flags: flags, Payload: r.rest()}, nil
 	case KindParity:
 		group, e1 := r.u32()
 		idx, e2 := r.u16()
-		pathID, e3 := r.u8()
-		if err := firstErr(e1, e2, e3); err != nil {
+		dataCount, e3 := r.u8()
+		pathID, e4 := r.u8()
+		if err := firstErr(e1, e2, e3, e4); err != nil {
 			return nil, err
 		}
-		return Parity{FECGroup: group, ParityIndex: idx, PathID: pathID, Payload: r.rest()}, nil
+		return Parity{FECGroup: group, ParityIndex: idx, DataCount: dataCount, PathID: pathID, Payload: r.rest()}, nil
 	case KindProbe:
 		pathID, e1 := r.u8()
 		probeSeq, e2 := r.u64()

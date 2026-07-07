@@ -9,16 +9,16 @@ import (
 // TestInnerMTUFixture pins the inner-MTU arithmetic to a fixture so a change to
 // any overhead term is caught. For a 1500-byte IPv4 path:
 //
-//	1500 − (20+8 IP/UDP) − 39 outer DATA frame − (16+16 WG) = 1401.
+//	1500 − (20+8 IP/UDP) − 40 outer DATA frame − (16+16 WG) = 1400.
 func TestInnerMTUFixture(t *testing.T) {
-	if frame.DataOverhead != 39 {
-		t.Fatalf("frame.DataOverhead = %d, want 39 (nonce 24 + kind 1 + seq 8 + path 1 + group 4 + flags 1)", frame.DataOverhead)
+	if frame.DataOverhead != 40 {
+		t.Fatalf("frame.DataOverhead = %d, want 40 (nonce 24 + kind 1 + seq 8 + path 1 + group 4 + fec-index 1 + flags 1)", frame.DataOverhead)
 	}
 
 	const (
 		pathMTU = 1500
-		// 1500 - 28 - 39 - 32
-		wantInner = 1401
+		// 1500 - 28 - 40 - 32
+		wantInner = 1400
 	)
 	if got := InnerMTU(pathMTU); got != wantInner {
 		t.Fatalf("InnerMTU(%d) = %d, want %d", pathMTU, got, wantInner)

@@ -191,6 +191,24 @@ func TestLoadRejects(t *testing.T) {
 			body: fill(strings.Replace(edgeConfig, "psk = \"%PSK%\"", "", 1)),
 			want: "psk is required",
 		},
+		{
+			name: "fec enabled without data_shards",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nparity_shards = 2\n",
+			want: "fec.data_shards must be >= 1",
+		},
+		{
+			name: "fec enabled without parity_shards",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\n",
+			want: "fec.parity_shards must be >= 1",
+		},
+		{
+			name: "fec ratio exceeds field limit",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 250\nparity_shards = 10\n",
+			want: "Reed-Solomon field limit",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -203,6 +221,40 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+// TestFECDefaultOff: omitting [fec] leaves FEC disabled so an existing config runs
+// the pre-T24 datapath unchanged, and every FEC knob stays at its zero value.
+func TestFECDefaultOff(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.FEC.Enabled {
+		t.Fatal("FEC must default to disabled when [fec] is omitted")
+	}
+	if c.FEC.DataShards != 0 || c.FEC.ParityShards != 0 || c.FEC.Deadline != 0 {
+		t.Fatalf("FEC knobs must stay zero when disabled, got %+v", c.FEC)
+	}
+}
+
+// TestFECEnabledDefaults: a minimal enabled [fec] block loads, keeps the given ratio,
+// and defaults the group-close deadline so `enabled = true` with just a ratio is
+// usable without hand-tuning the deadline.
+func TestFECEnabledDefaults(t *testing.T) {
+	body := fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.FEC.Enabled || c.FEC.DataShards != 8 || c.FEC.ParityShards != 3 {
+		t.Fatalf("FEC ratio not loaded: %+v", c.FEC)
+	}
+	if c.FEC.Deadline != defaultFECDeadline {
+		t.Fatalf("FEC deadline = %s, want defaulted %s", c.FEC.Deadline, defaultFECDeadline)
 	}
 }
 

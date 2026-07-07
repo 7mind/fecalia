@@ -36,6 +36,12 @@ type Config struct {
 	Deadline time.Duration
 }
 
+// Validate reports whether the configuration is a usable Reed-Solomon FEC ratio,
+// failing fast on an out-of-range shard count or a non-positive deadline. It is the
+// exported form of the same invariant NewEncoder/NewDecoder enforce, so a caller (the
+// multipath Bind, T24) can reject a bad ratio before constructing either.
+func (c Config) Validate() error { return c.validate() }
+
 func (c Config) validate() error {
 	if c.DataShards < 1 {
 		return fmt.Errorf("fec: DataShards must be >= 1, got %d", c.DataShards)

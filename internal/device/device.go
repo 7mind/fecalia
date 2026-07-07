@@ -22,6 +22,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/sched"
@@ -202,7 +203,7 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber)
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber, fecConfig(cfg.FEC))
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -497,6 +498,21 @@ func diffPaths(live []string, desired []config.Path) (add []config.Path, remove 
 // of the failover-recovery budget — failover to a backup is instant — so it stays a
 // device-local constant.
 const defaultFailbackDwell = 5 * time.Second
+
+// fecConfig maps the validated [fec] config block onto the fec.Config the multipath
+// Bind consumes (T24), or returns nil when FEC is disabled so the Bind runs the
+// datapath with no parity plane. The ratio was already range-checked in config
+// validation; the Bind re-validates defensively.
+func fecConfig(f config.FEC) *fec.Config {
+	if !f.Enabled {
+		return nil
+	}
+	return &fec.Config{
+		DataShards:   f.DataShards,
+		ParityShards: f.ParityShards,
+		Deadline:     f.Deadline,
+	}
+}
 
 // buildScheduler constructs one live *telemetry.Prober per path and the P1
 // active-backup send scheduler over them, in cfg.Paths' configured priority order

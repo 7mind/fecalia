@@ -29,10 +29,10 @@ func testPSK(t testing.TB, seed byte) config.Key {
 // non-empty and empty payloads.
 func sampleFrames() []Frame {
 	return []Frame{
-		Data{OuterSeq: 0xDEADBEEFCAFEBABE, PathID: 3, FECGroup: 0x01020304, Flags: 0xA5, Payload: []byte("opaque wireguard datagram bytes")},
-		Data{OuterSeq: 0, PathID: 0, FECGroup: 0, Flags: 0, Payload: nil},
-		Parity{FECGroup: 0x11223344, ParityIndex: 0x7F0E, PathID: 2, Payload: []byte{0xFF, 0x00, 0x10, 0x20}},
-		Parity{FECGroup: 1, ParityIndex: 0, PathID: 0, Payload: nil},
+		Data{OuterSeq: 0xDEADBEEFCAFEBABE, PathID: 3, FECGroup: 0x01020304, FECIndex: 0xC7, Flags: 0xA5, Payload: []byte("opaque wireguard datagram bytes")},
+		Data{OuterSeq: 0, PathID: 0, FECGroup: 0, FECIndex: 0, Flags: 0, Payload: nil},
+		Parity{FECGroup: 0x11223344, ParityIndex: 0x7F0E, DataCount: 0xB3, PathID: 2, Payload: []byte{0xFF, 0x00, 0x10, 0x20}},
+		Parity{FECGroup: 1, ParityIndex: 0, DataCount: 0, PathID: 0, Payload: nil},
 		Probe{PathID: 1, ProbeSeq: 42, TimestampNanos: 1_700_000_000_123_456_789, SessionID: 0x0102030405060708, Challenge: 0x1122334455667788, Payload: []byte("probe")},
 		Probe{PathID: 0, ProbeSeq: 0, TimestampNanos: -1, SessionID: 0, Challenge: 0, Payload: nil},
 		Control{ControlType: 9, Payload: []byte("control payload")},
@@ -302,9 +302,9 @@ func TestByteHistogramNoConstantPosition(t *testing.T) {
 	build := func(kind Kind, payload []byte) Frame {
 		switch kind {
 		case KindData:
-			return Data{OuterSeq: rng.Uint64(), PathID: uint8(rng.Intn(256)), FECGroup: rng.Uint32(), Flags: uint8(rng.Intn(256)), Payload: payload}
+			return Data{OuterSeq: rng.Uint64(), PathID: uint8(rng.Intn(256)), FECGroup: rng.Uint32(), FECIndex: uint8(rng.Intn(256)), Flags: uint8(rng.Intn(256)), Payload: payload}
 		case KindParity:
-			return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), PathID: uint8(rng.Intn(256)), Payload: payload}
+			return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), DataCount: uint8(rng.Intn(256)), PathID: uint8(rng.Intn(256)), Payload: payload}
 		case KindProbe:
 			return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Challenge: rng.Uint64(), Payload: payload}
 		case KindControl:
@@ -375,9 +375,9 @@ func randomFrame(rng *rand.Rand) Frame {
 	payload := randomBytes(rng)
 	switch rng.Intn(4) {
 	case 0:
-		return Data{OuterSeq: rng.Uint64(), PathID: uint8(rng.Intn(256)), FECGroup: rng.Uint32(), Flags: uint8(rng.Intn(256)), Payload: payload}
+		return Data{OuterSeq: rng.Uint64(), PathID: uint8(rng.Intn(256)), FECGroup: rng.Uint32(), FECIndex: uint8(rng.Intn(256)), Flags: uint8(rng.Intn(256)), Payload: payload}
 	case 1:
-		return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), PathID: uint8(rng.Intn(256)), Payload: payload}
+		return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), DataCount: uint8(rng.Intn(256)), PathID: uint8(rng.Intn(256)), Payload: payload}
 	case 2:
 		return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Challenge: rng.Uint64(), Payload: payload}
 	default:

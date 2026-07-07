@@ -13,6 +13,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
@@ -198,6 +199,18 @@ type Multipath struct {
 	// (T37) never touches it.
 	resequencer atomic.Pointer[reseq.Resequencer]
 
+	// FEC datapath (T24). fecCfg is the fixed-ratio Reed-Solomon configuration, nil
+	// when FEC is disabled — in which case the whole plane is inert and the datapath
+	// is byte-for-byte the pre-T24 behaviour. fecSend (the send-side encoder + parity
+	// counters) is (re)built per Open and accessed only under m.mu — on the Send path
+	// and the single deadline-tick goroutine (which TryLocks). fecRecv (the receive-
+	// side recovery decoder, self-guarded) is published atomically like resequencer so
+	// the per-path readLoop goroutines read it WITHOUT m.mu, preserving the lock-free
+	// receive fast path. Both are nil/empty when FEC is off. See fec.go.
+	fecCfg  *fec.Config
+	fecSend *fecSender
+	fecRecv atomic.Pointer[fecReceiver]
+
 	// Receive fan-in (T30). To let a path be added at runtime WITHOUT the engine
 	// spawning a new receive goroutine (it only builds its receive goroutines once,
 	// from the ReceiveFuncs Open returns), the per-path socket reads are decoupled
@@ -256,7 +269,13 @@ var _ Bind = (*Multipath)(nil)
 // slice would let AddPath append to a nil m.probers, breaking the m.paths/m.probers
 // alignment invariant and panicking on the next Open at m.probers[i]. Pass nil to
 // forbid runtime path addition.
-func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory) (*Multipath, error) {
+//
+// fecCfg is the fixed-ratio Reed-Solomon FEC configuration (T24). Pass nil to run the
+// datapath with FEC disabled (the pre-T24 behaviour, byte-for-byte); a non-nil,
+// pre-validated config turns the send-side parity encoder and receive-side recovery
+// decoder on. It is validated here (fail fast) so an invalid ratio is rejected at
+// construction rather than at the first Open.
+func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -284,6 +303,11 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 			return nil, fmt.Errorf("bind: prober %d is nil", i)
 		}
 	}
+	if fecCfg != nil {
+		if err := fecCfg.Validate(); err != nil {
+			return nil, fmt.Errorf("bind: invalid FEC configuration: %w", err)
+		}
+	}
 	return &Multipath{
 		psk:       psk,
 		defs:      append([]config.Path(nil), paths...),
@@ -292,6 +316,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		newProber: newProber,
 		reflector: telemetry.NewReflector(psk, rand.Reader),
 		virt:      &udpEndpoint{},
+		fecCfg:    fecCfg,
 	}, nil
 }
 
@@ -326,6 +351,27 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// received after this bring-up, so a Close→Open cycle (or reconnect) never
 	// wedges on a stale high-water outer-seq.
 	m.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+
+	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
+	// group state and the decoder's per-group buffers re-pin with the sockets, so a
+	// Close→Open cycle never reconstructs against a stale group. Both are torn down in
+	// closeSocketsLocked. A build error here is a programmer error (the ratio was
+	// validated in NewMultipath), so it fails the Open.
+	if m.fecCfg != nil {
+		enc, err := fec.NewEncoder(*m.fecCfg, fec.SystemClock{})
+		if err != nil {
+			_ = m.closeSocketsLocked()
+			return nil, 0, fmt.Errorf("bind: build FEC encoder: %w", err)
+		}
+		dec, err := fec.NewDecoder(*m.fecCfg)
+		if err != nil {
+			_ = m.closeSocketsLocked()
+			return nil, 0, fmt.Errorf("bind: build FEC decoder: %w", err)
+		}
+		dec.SetRetainWindow(fecRetainGroups)
+		m.fecSend = &fecSender{enc: enc}
+		m.fecRecv.Store(&fecReceiver{dec: dec})
+	}
 
 	// Resolve every path's interface up front and decide, per path, whether its
 	// socket may be device-bound (SO_BINDTODEVICE + wildcard — survives a T16
@@ -433,6 +479,15 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	for _, ps := range m.paths {
 		m.readersWG.Add(1)
 		go m.readLoop(ps, m.deliverSignal)
+	}
+	// Deadline-tick goroutine for FEC group close (T24): it flushes a partial group's
+	// parity on time under low load so a group is never stranded waiting for the size
+	// threshold. Tracked by readersWG (like the readers) so Close waits for it; it
+	// exits on recvClosed. It TryLocks m.mu, so it never blocks Close's readersWG.Wait
+	// held under m.mu.
+	if m.fecSend != nil {
+		m.readersWG.Add(1)
+		go m.fecTickLoop(m.fecCfg.Deadline, m.recvClosed)
 	}
 	return []ReceiveFunc{m.newReceiveFunc(m.deliverSignal, m.recvClosed)}, actualPort, nil
 }
@@ -659,7 +714,31 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 	case frame.Data:
 		// Decode already returned a fresh copy of the payload (it aliases nothing
 		// else), so the resequencer may take ownership of it directly.
-		m.resequencer.Load().Observe(f.OuterSeq, f.Payload, srcAP)
+		rq := m.resequencer.Load()
+		if fr := m.fecRecv.Load(); fr != nil {
+			// FEC on (T24): offer the data shard to the decoder BEFORE resequencing so a
+			// later parity frame can reconstruct any group-mate lost in transit, then
+			// deliver THIS received frame in its own right (the decoder never echoes a
+			// directly-received data shard back). The shard's coded bytes are
+			// OuterSeq || Payload — the same bytes the sender coded parity over.
+			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
+			recovered, _ := fr.offer(shard)
+			rq.Observe(f.OuterSeq, f.Payload, srcAP)
+			m.observeRecovered(rq, recovered, srcAP)
+		} else {
+			rq.Observe(f.OuterSeq, f.Payload, srcAP)
+		}
+	case frame.Parity:
+		// PARITY feeds the FEC decoder (T24); a group that has now accumulated enough
+		// shards reconstructs its missing data frames, each resequenced at its ORIGINAL
+		// outer-seq (carried in the recovered shard's coded bytes) so recovery composes
+		// with T18 exactly like a natively-received frame. With FEC off, PARITY is
+		// dropped (the pre-T24 behaviour).
+		if fr := m.fecRecv.Load(); fr != nil {
+			shard := fec.ParityShard{Group: fec.GroupID(f.FECGroup), Index: int(f.ParityIndex), DataCount: int(f.DataCount), Payload: f.Payload}
+			recovered, _ := fr.offer(shard)
+			m.observeRecovered(m.resequencer.Load(), recovered, srcAP)
+		}
 	case frame.Probe:
 		// Authenticated (the PROBE MAC verified in Decode): learn the return remote
 		// from it, below the engine's virtual endpoint (no roaming churn).
@@ -682,7 +761,23 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 			}
 		}
 	default:
-		// PARITY/CONTROL are not delivered up this path (P2/P3).
+		// CONTROL (and any unhandled kind) is not delivered up this path.
+	}
+}
+
+// observeRecovered feeds every FEC-reconstructed data frame into the resequencer at
+// its ORIGINAL outer-seq (recovered from the shard's coded bytes), so a frame lost in
+// transit and rebuilt from parity resequences identically to a natively-received
+// frame — filling the exact gap the resequencer would otherwise time out on. A
+// malformed recovered shard (too short to hold the outer-seq prefix) is dropped: it
+// signals an encoder/decoder mismatch, not a deliverable frame.
+func (m *Multipath) observeRecovered(rq *reseq.Resequencer, recovered []fec.Recovered, srcAP netip.AddrPort) {
+	for _, rec := range recovered {
+		seq, inner, err := splitFECShardPayload(rec.Payload)
+		if err != nil {
+			continue
+		}
+		rq.Observe(seq, inner, srcAP)
 	}
 }
 
@@ -765,29 +860,188 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return errNoHealthyPath
 	}
 	c := ps.conn
-	wires := make([][]byte, 0, len(bufs))
+	wires := make([]fecWire, 0, len(bufs))
 	for _, b := range bufs {
 		seq := m.outerSeq.Add(1)
+		if m.fecSend != nil {
+			// FEC on (T24): admit the inner datagram (coded as seq || inner) to the group
+			// encoder. The returned data shard rides a normal DATA frame carrying its FEC
+			// group + shard index; when this admission FILLS the group the encoder returns
+			// the group's parity shards, emitted here as KindParity frames on the SAME
+			// chosen path. Spreading parity onto a DIFFERENT path than its data (so one
+			// path outage cannot lose both) is a documented future refinement, deliberately
+			// NOT implemented here (see the T24 design notes).
+			ds, parity, err := m.fecSend.enc.Admit(fecShardPayload(seq, b))
+			if err != nil {
+				m.mu.Unlock()
+				return err
+			}
+			wire, err := m.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, FECGroup: uint32(ds.Group), FECIndex: uint8(ds.Index), Payload: b})
+			if err != nil {
+				m.mu.Unlock()
+				return err
+			}
+			wires = append(wires, fecWire{b: wire})
+			for _, par := range parity {
+				pw, err := m.encodeParityLocked(par, ps.id)
+				if err != nil {
+					m.mu.Unlock()
+					return err
+				}
+				wires = append(wires, fecWire{b: pw, parity: true})
+			}
+			continue
+		}
 		wire, err := m.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
 		if err != nil {
 			m.mu.Unlock()
 			return err
 		}
-		wires = append(wires, wire)
+		wires = append(wires, fecWire{b: wire})
+	}
+	fs := m.fecSend
+	m.mu.Unlock()
+
+	for _, w := range wires {
+		if _, err := c.WriteToUDPAddrPort(w.b, remote); err != nil {
+			return err
+		}
+		// Per-path egress-wire accounting (T23): count the OUTER frame bytes just written
+		// to this path (DATA and any FEC PARITY alike), lock-free and only for a datagram
+		// that actually reached the socket. Send serialized the path choice under m.mu, so
+		// ps is fixed here and this is the sole writer of ps.txBytes for this frame.
+		ps.txBytes.Add(uint64(len(w.b)))
+		if w.parity && fs != nil {
+			// Parity-overhead accounting (T24), counted only once the parity frame reached
+			// the socket so the /metrics overhead reflects bytes actually spent.
+			fs.parityFrames.Add(1)
+			fs.parityBytes.Add(uint64(len(w.b)))
+		}
+	}
+	return nil
+}
+
+// fecWire is one framed outgoing datagram tagged with whether it is an FEC parity
+// frame, so the write loop can charge parity-overhead accounting (T24) without a
+// second pass.
+type fecWire struct {
+	b      []byte
+	parity bool
+}
+
+// encodeParityLocked encodes one parity shard as a KindParity frame on the given
+// path. Caller holds m.mu (the send Codec is shared and stateful).
+func (m *Multipath) encodeParityLocked(par fec.ParityShard, pathID uint8) ([]byte, error) {
+	return m.sendCodec.Encode(nil, frame.Parity{
+		FECGroup:    uint32(par.Group),
+		ParityIndex: uint16(par.Index),
+		DataCount:   uint8(par.DataCount),
+		PathID:      pathID,
+		Payload:     par.Payload,
+	})
+}
+
+// fecTickLoop drives the FEC encoder's grouping deadline (T24): a partially-filled
+// group whose size threshold has not been reached is closed on time so its parity is
+// emitted rather than stranded until the next data frame. It ticks at the configured
+// deadline period and exits on recvClosed. It is tracked by readersWG so Close waits
+// for it. Like tickLivenessFromReceive it only ever TryLocks m.mu, so it can never
+// deadlock Close's readersWG.Wait (which runs while Close holds m.mu).
+func (m *Multipath) fecTickLoop(period time.Duration, closed <-chan struct{}) {
+	defer m.readersWG.Done()
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-closed:
+			return
+		case <-ticker.C:
+			m.fecFlushDeadline()
+		}
+	}
+}
+
+// fecFlushDeadline closes any FEC group whose grouping deadline has elapsed and emits
+// its parity on a scheduler-chosen path. It TryLocks m.mu: when the lock is contended
+// (a concurrent Send/Close/AddPath) it simply skips this tick — the next tick, or the
+// next size-triggered close, still emits the group's parity, and skipping preserves
+// Close's invariant that no readersWG goroutine blocks on m.mu. Framing runs under the
+// lock (the shared stateful send Codec); the socket writes run without it, mirroring
+// Send.
+func (m *Multipath) fecFlushDeadline() {
+	if !m.mu.TryLock() {
+		return
+	}
+	if m.fecSend == nil || len(m.paths) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	parity, err := m.fecSend.enc.Tick()
+	if err != nil || len(parity) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	// Route the parity like data through the scheduler (a first-integration choice; see
+	// Send). A shed/no-path verdict drops this group's parity — a degraded path is
+	// exactly when the datapath is under pressure, and a stranded partial group's parity
+	// is best-effort — so the group simply goes unprotected rather than blocking.
+	idx := m.scheduler.Pick()
+	if idx < 0 || idx >= len(m.paths) {
+		m.mu.Unlock()
+		return
+	}
+	ps := m.paths[idx]
+	remote, ok := ps.getRemote()
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	c := ps.conn
+	fs := m.fecSend
+	wires := make([][]byte, 0, len(parity))
+	for _, par := range parity {
+		pw, err := m.encodeParityLocked(par, ps.id)
+		if err != nil {
+			m.mu.Unlock()
+			return
+		}
+		wires = append(wires, pw)
 	}
 	m.mu.Unlock()
 
 	for _, wire := range wires {
 		if _, err := c.WriteToUDPAddrPort(wire, remote); err != nil {
-			return err
+			return
 		}
-		// Per-path egress-wire accounting (T23): count the OUTER DATA-frame bytes just
-		// written to this path, lock-free and only for a datagram that actually reached
-		// the socket. Send serialized the path choice under m.mu, so ps is fixed here and
-		// this is the sole writer of ps.txBytes for this frame.
 		ps.txBytes.Add(uint64(len(wire)))
+		fs.parityFrames.Add(1)
+		fs.parityBytes.Add(uint64(len(wire)))
 	}
-	return nil
+}
+
+// FECSnapshot returns a consistent snapshot of the connection-scoped FEC counters
+// (T24): the send-side parity overhead and the receive-side recovery outcome. It
+// follows the PathSnapshots discipline — grab the send/receive state pointers under
+// m.mu, then read the decoder's stats OUTSIDE m.mu (the decoder has its own mutex) —
+// so the scrape never blocks an in-flight Send. All zero when FEC is disabled or the
+// bind is closed.
+func (m *Multipath) FECSnapshot() FECStats {
+	m.mu.Lock()
+	fs := m.fecSend
+	fr := m.fecRecv.Load()
+	m.mu.Unlock()
+
+	var out FECStats
+	if fs != nil {
+		out.ParityFrames = fs.parityFrames.Load()
+		out.ParityBytes = fs.parityBytes.Load()
+	}
+	if fr != nil {
+		st := fr.stats()
+		out.Recovered = st.Recovered
+		out.Unrecoverable = st.Unrecoverable
+	}
+	return out
 }
 
 // ParseEndpoint records the peer's wireguard endpoint as the default per-path
@@ -852,6 +1106,12 @@ func (m *Multipath) closeSocketsLocked() error {
 	}
 	m.paths = nil
 	m.sendCodec = nil
+	// Drop the FEC send/receive state (T24) so the next Open rebuilds fresh group state,
+	// mirroring the send Codec and resequencer. The deadline-tick goroutine that reads
+	// m.fecSend is stopped by Close (recvClosed) and joined via readersWG before state is
+	// cleared, and it captured its own fecSender pointer, so niling here never races it.
+	m.fecSend = nil
+	m.fecRecv.Store(nil)
 	return firstErr
 }
 

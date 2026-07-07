@@ -15,6 +15,7 @@ import (
 type fakeProvider struct {
 	mu    sync.Mutex
 	paths []bind.PathTraffic
+	fec   bind.FECStats
 }
 
 func (f *fakeProvider) set(paths []bind.PathTraffic) {
@@ -23,10 +24,22 @@ func (f *fakeProvider) set(paths []bind.PathTraffic) {
 	f.paths = paths
 }
 
+func (f *fakeProvider) setFEC(fec bind.FECStats) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fec = fec
+}
+
 func (f *fakeProvider) PathSnapshots() []bind.PathTraffic {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]bind.PathTraffic(nil), f.paths...)
+}
+
+func (f *fakeProvider) FECSnapshot() bind.FECStats {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fec
 }
 
 // fakeClock is a manually-advanced Clock so the throughput derivation is deterministic.
@@ -75,6 +88,25 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 	// First scrape of each path has no prior sample, so throughput is zero.
 	if got[0].ThroughputBitsPerSecond != 0 || got[1].ThroughputBitsPerSecond != 0 {
 		t.Errorf("first-scrape throughput = %g/%g, want 0/0", got[0].ThroughputBitsPerSecond, got[1].ThroughputBitsPerSecond)
+	}
+}
+
+// TestMetricsSourceMapsFEC asserts the adapter passes the Bind's connection-scoped FEC
+// counters (T24) verbatim onto the metrics.FECSnapshot the exposition reads.
+func TestMetricsSourceMapsFEC(t *testing.T) {
+	prov := &fakeProvider{}
+	prov.setFEC(bind.FECStats{ParityFrames: 33, ParityBytes: 4096, Recovered: 5, Unrecoverable: 1})
+	src := newMetricsSource(prov, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.FEC()
+	if got.RepairPackets != 33 {
+		t.Errorf("RepairPackets = %d, want 33 (parity frames)", got.RepairPackets)
+	}
+	if got.RecoveredPackets != 5 {
+		t.Errorf("RecoveredPackets = %d, want 5", got.RecoveredPackets)
+	}
+	if got.UnrecoverablePackets != 1 {
+		t.Errorf("UnrecoverablePackets = %d, want 1", got.UnrecoverablePackets)
 	}
 }
 

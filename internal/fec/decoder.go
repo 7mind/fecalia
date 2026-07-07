@@ -29,6 +29,50 @@ type Decoder struct {
 	retainWindow  int
 	highWater     GroupID
 	haveHighWater bool
+
+	// recovered counts data shards reconstructed from parity (never directly
+	// received); unrecoverable counts data shards a group lost for good — its
+	// cardinality was known (a parity frame was seen) yet fewer than M shards
+	// survived, so the group is evicted from the retain window still incomplete.
+	// Both are cumulative over the decoder's life and read via Stats; the T24
+	// datapath surfaces them on /metrics.
+	recovered     uint64
+	unrecoverable uint64
+}
+
+// DecoderStats is a snapshot of the decoder's cumulative recovery counters.
+type DecoderStats struct {
+	// Recovered is the number of data shards reconstructed from parity.
+	Recovered uint64
+	// Unrecoverable is the number of data shards lost beyond repair capacity — the
+	// per-group missing count of a group evicted from the retain window before it
+	// could be completed (its M was known from a parity frame but < M shards
+	// survived). A group whose parity was ALSO entirely lost (M never learned) is
+	// not counted here: with no surviving parity the decoder has no information
+	// about the group's cardinality, and the loss is accounted downstream by the
+	// resequencer's gap timeout instead.
+	Unrecoverable uint64
+}
+
+// Stats returns a snapshot of the decoder's cumulative recovery counters.
+func (d *Decoder) Stats() DecoderStats {
+	return DecoderStats{Recovered: d.recovered, Unrecoverable: d.unrecoverable}
+}
+
+// accountEviction folds a group being dropped from the retain window into the
+// unrecoverable counter: a group whose cardinality M is known (a parity frame was
+// seen) but is not yet done was lost for good — fewer than M of its M+K shards
+// survived — so its still-missing data shards are counted unrecoverable. A done
+// group (all data present or already reconstructed) and a group whose M was never
+// learned contribute nothing. maybeReconstruct has already pruned any buffered data
+// index >= M once M was known, so len(gs.data) counts only in-range survivors.
+func (d *Decoder) accountEviction(gs *groupState) {
+	if gs.done || gs.dataCount == -1 {
+		return
+	}
+	if missing := gs.dataCount - len(gs.data); missing > 0 {
+		d.unrecoverable += uint64(missing)
+	}
 }
 
 // defaultRetainWindow bounds decoder memory out of the box: without eviction the
@@ -127,8 +171,9 @@ func (d *Decoder) advanceHighWater(g GroupID) {
 	if !advanced || d.retainWindow <= 0 {
 		return
 	}
-	for id := range d.groups {
+	for id, gs := range d.groups {
 		if d.tooOld(id) {
+			d.accountEviction(gs)
 			delete(d.groups, id)
 		}
 	}
@@ -294,6 +339,7 @@ func (d *Decoder) maybeReconstruct(g GroupID, gs *groupState) ([]Recovered, erro
 		}
 		recovered = append(recovered, Recovered{Group: g, Index: idx, Payload: payload})
 	}
+	d.recovered += uint64(len(recovered))
 	gs.markDone()
 	return recovered, nil
 }

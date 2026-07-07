@@ -361,3 +361,106 @@ func TestDecoderEvictionWraparoundSafe(t *testing.T) {
 		t.Fatal("tooOld should report the wrapped-around group as old")
 	}
 }
+
+// TestDecoderRecoveredCounter asserts Stats().Recovered counts exactly the data
+// shards reconstructed from parity (never the directly-received ones), across two
+// groups: one lossless (nothing recovered) and one losing K frames (all K recovered).
+func TestDecoderRecoveredCounter(t *testing.T) {
+	cfg := Config{DataShards: 5, ParityShards: 2, Deadline: testDeadline}
+	d, err := NewDecoder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := NewEncoder(cfg, newFakeClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(7))
+
+	// Group 0: lossless. Every data shard is directly received, so nothing is recovered.
+	data0, parity0 := admitAll(t, enc, randomPayloads(rng, cfg.DataShards))
+	for _, s := range allShards(data0, parity0) {
+		if _, err := d.Offer(s); err != nil {
+			t.Fatalf("offer lossless: %v", err)
+		}
+	}
+	if got := d.Stats().Recovered; got != 0 {
+		t.Fatalf("lossless group recovered counter = %d, want 0", got)
+	}
+
+	// Group 1: drop exactly K=2 data shards (indices 0,1); the two parity shards
+	// reconstruct both, so the recovered counter advances by exactly K.
+	data1, parity1 := admitAll(t, enc, randomPayloads(rng, cfg.DataShards))
+	shards := allShards(data1, parity1)
+	for _, s := range shards {
+		if ds, ok := s.(DataShard); ok && ds.Index < cfg.ParityShards {
+			continue // dropped in transit
+		}
+		if _, err := d.Offer(s); err != nil {
+			t.Fatalf("offer lossy: %v", err)
+		}
+	}
+	if got := d.Stats().Recovered; got != uint64(cfg.ParityShards) {
+		t.Fatalf("recovered counter = %d, want %d (exactly the K reconstructed shards)", got, cfg.ParityShards)
+	}
+	if d.Stats().Unrecoverable != 0 {
+		t.Fatalf("unrecoverable counter = %d, want 0 (loss was within budget)", d.Stats().Unrecoverable)
+	}
+}
+
+// TestDecoderUnrecoverableCounter asserts Stats().Unrecoverable counts the still-
+// missing data shards of a group evicted from the retain window before it could be
+// completed — a group that lost MORE than K frames (fewer than M shards survived).
+// The count is the per-group missing-data count, and it only lands once the group
+// slides out of the window (the point at which no further shard can arrive). It is a
+// mutation witness: a decoder that never accounted eviction would report 0.
+func TestDecoderUnrecoverableCounter(t *testing.T) {
+	cfg := Config{DataShards: 4, ParityShards: 2, Deadline: testDeadline}
+	d, err := NewDecoder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const window = 4
+	d.SetRetainWindow(window)
+	enc, err := NewEncoder(cfg, newFakeClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(11))
+
+	// Group 0 loses K+1 = 3 data shards: only 1 data + 2 parity = 3 < M=4 survive, so
+	// it can never reconstruct. Its parity IS received, so M is known and the missing
+	// count (3) is well-defined once the group is evicted.
+	data0, parity0 := admitAll(t, enc, randomPayloads(rng, cfg.DataShards))
+	const dropped = 3
+	for _, s := range allShards(data0, parity0) {
+		if ds, ok := s.(DataShard); ok && ds.Index < dropped {
+			continue
+		}
+		if _, err := d.Offer(s); err != nil {
+			t.Fatalf("offer group 0: %v", err)
+		}
+	}
+	// Not yet evicted: still inside the window, so no unrecoverable is accounted (a late
+	// shard could still, in principle, arrive).
+	if got := d.Stats().Unrecoverable; got != 0 {
+		t.Fatalf("unrecoverable accounted before eviction = %d, want 0", got)
+	}
+
+	// Push enough newer groups to slide group 0 out of the retain window, forcing its
+	// eviction and the unrecoverable accounting.
+	for g := 1; g <= window+2; g++ {
+		if _, err := d.Offer(DataShard{Group: GroupID(g), Index: 0, Payload: []byte{1}}); err != nil {
+			t.Fatalf("offer filler %d: %v", g, err)
+		}
+	}
+	if _, ok := d.groups[0]; ok {
+		t.Fatal("group 0 was not evicted from the retain window")
+	}
+	if got := d.Stats().Unrecoverable; got != dropped {
+		t.Fatalf("unrecoverable counter = %d, want %d (the group's missing data shards)", got, dropped)
+	}
+	if got := d.Stats().Recovered; got != 0 {
+		t.Fatalf("recovered counter = %d, want 0 (loss exceeded budget)", got)
+	}
+}
