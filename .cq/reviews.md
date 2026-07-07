@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 20
+  item: 21
 archives: []
 ---
 
@@ -145,6 +145,17 @@ archives: []
 - criticism: ["[r1 fable, resolved 406b007] PathHealth doc endorsed unsynchronized bare *telemetry.Liveness as a concurrent source (race) — corrected to require *telemetry.Prober","[r1 fable, resolved 406b007] Send comment falsely claimed pre-T15 remote-handling equivalence — corrected to state the deliberate narrowing + residual remoteless-Up window"]
 - new_questions: []
 - ledgerRefs: ["tasks:T15","goals:G1","tasks:T37"]
+
+### R20 — go-ahead
+
+- createdAt: 2026-07-07T00:14:37.750Z
+- updatedAt: 2026-07-07T00:14:37.750Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T37 (per-path probe transport driving T13 liveness over the multipath Bind) reconciled go-ahead (opus+fable panel, UNANIMOUS round 1). Both independently verified against source + tests: (1) the new frame.Probe.IsEcho wire bit is INSIDE the MAC-covered region — TestTamperedRejected flips every post-kind byte to ErrAuth, so the probe/echo discriminant is unspoofable without the PSK and cannot be flipped to convert echo<->probe; (2) D9 CLOSED — removed the unauthenticated-DATA setRemote; per-path remote is now learned ONLY from MAC-verified probe/echo frames (forged DATA can no longer repoint return traffic), with DATA->virt-endpoint pinning retained as a deliberate safe identity split (Send routes by per-path authenticated getRemote, never the virt address); (3) D11 CLOSED — concentrator learns a backup path's remote from an authenticated probe before it becomes active (probe-only path getRemote() true; post-failover Send usable); (4) reflection is authenticated-only + 1:1 + anti-replayed + IsEcho-guarded against reflect-of-reflect (no amplification/loop, attacker without PSK triggers nothing); (5) NO bring-up deadlock — emitProbes iterates m.paths independently of liveness so a Down path bootstraps to Up (cold Down->Up + blackhole->Down->failover both tested on a fake clock; bring-up ~UpAfterSuccesses*interval~=750ms << WG 5s handshake retransmit); (6) T12 concurrency preserved (emitProbes snapshots under m.mu then lock-free I/O mirroring Send; probers/reflector set once in NewMultipath; lock-free virt fast path + atomic dst untouched; -race clean); (7) anti-replay D4 non-vacuous. AlwaysUp replaced with live per-path *telemetry.Prober in device.buildScheduler. Full gate green (build/vet/gofmt/test -race/golangci-lint 0/e2e-compile). Merged 03c8651. Resolves D9 + D11. opus filed ONE out-of-scope HIGH defect (D12): probe anti-replay has no session epoch, so a peer RESTART deadlocks liveness (survivor's stale high-water rejects the restarted peer's seq-from-0 probes as replay) until seq catches up — out of T37's acceptance (cold bootstrap + blackhole, both from empty high-waters, pass); fix is a wire change owned by NEW task T38."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T37","goals:G1","defects:D9","defects:D11","defects:D12"]
 
 ## M10
 

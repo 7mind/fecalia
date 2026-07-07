@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 12
+  item: 13
 archives: []
 ---
 
@@ -92,10 +92,10 @@ archives: []
 - suggestedFix: Add a direction/role bit to frame.Probe (or a distinct KindProbeEcho) COVERED BY THE HMAC; the prober accepts only echo-role frames, the reflector only probe-role frames. Do this in the frame codec (adjacent to D5/T12) or a dedicated follow-up; then T13's liveness/anti-replay consumes the role.
 - ledgerRefs: ["tasks:T13","goals:G1","tasks:T18"]
 
-### D9 — root-caused
+### D9 — resolved
 
 - createdAt: 2026-07-06T22:50:59.274Z
-- updatedAt: 2026-07-06T23:36:53.291Z
+- updatedAt: 2026-07-07T00:14:42.208Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Per-path remote learned from unauthenticated DATA frames enables blind traffic-redirect DoS
@@ -104,6 +104,7 @@ archives: []
 - rootCause: "Confirmed by the T12 review (source-cited): multipath.go receiver() unconditionally calls ps.setRemote(srcAP) on every decoded DATA frame, and DATA frames carry no authentication (T11 codec authenticates only CONTROL/PROBE). Correct for the T12 datapath (P1 threat model tolerates DoS-grade DATA forgery); the gating fix depends on T15's authenticated PROBE frames. Deferred to T15."
 - suggestedFix: Gate per-path remote learning on AUTHENTICATED traffic when the probe transport lands (T37) — or at least remote CHANGES away from a configured/confirmed address — mirroring wireguard-go (updates a peer endpoint only from crypto-verified packets). T37 introduces authenticated inbound probe/echo frames and the per-path remote-learning from them (see D11), which is the correct gating point; the unauthenticated-DATA setRemote should then be removed or restricted. (Originally scoped to T15; the authenticated-probe transport is T37.)
 - ledgerRefs: ["tasks:T12","goals:G1","tasks:T37"]
+- fix: "Resolved by T37 (merged 03c8651): the unauthenticated-DATA ps.setRemote was REMOVED. Per-path return-remote learning now happens ONLY from MAC-verified probe/echo frames (frame.Decode authenticates PROBE). A blind attacker spraying forged DATA can no longer repoint a path's return traffic. DATA->virtual-endpoint pinning is retained (that is roaming identity, T16) but Send routes return traffic by the per-path authenticated getRemote, never the virt address, so DATA forgery cannot redirect traffic. Verified by both T37 reviewers + TestMultipathRemoteLearnedFromProbeNotData."
 
 ### D10 — root-caused
 
@@ -118,10 +119,10 @@ archives: []
 - suggestedFix: In config validate(), track seen SourceAddr values alongside names and reject duplicates with a per-path error naming both conflicting paths. Small, self-contained; can fold into T15 (scheduler, next to touch the path set) or a direct config-hardening follow-up.
 - ledgerRefs: ["tasks:T12","goals:G1"]
 
-### D11 — root-caused
+### D11 — resolved
 
 - createdAt: 2026-07-06T23:36:49.481Z
-- updatedAt: 2026-07-06T23:36:49.481Z
+- updatedAt: 2026-07-07T00:14:45.660Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Concentrator-side failover drops: PROBE frames do not populate per-path learned remotes"
@@ -130,6 +131,20 @@ archives: []
 - rootCause: "Confirmed by the T15 review against source: multipath.go receiver() gates ps.setRemote(srcAP) on KindData only, so a concentrator backup path learns its remote solely from inbound DATA. A probe-only StateUp path has getRemote()==false, so scheduler failover to it yields errNoHealthyPath. Fix is co-located with the probe-transport wiring (T37), which introduces authenticated inbound probe/echo frames that CAN safely populate the remote."
 - suggestedFix: In T37, learn ps.setRemote(srcAP) from AUTHENTICATED probe/echo frames too (or seed backup remotes from config), so a StateUp-via-probe path always has a usable remote before it becomes active. This authenticated remote-learning is the same mechanism that gates D9's unauthenticated-DATA remote-learn DoS.
 - ledgerRefs: ["tasks:T15","tasks:T37","goals:G1"]
+- fix: "Resolved by T37 (merged 03c8651): the Bind receiver now learns ps.setRemote(srcAP) from AUTHENTICATED probe/echo frames, and reflection runs independently of getRemote/scheduler, so a concentrator backup path acquires a usable return remote from probe traffic BEFORE it becomes active. A probe-only StateUp path has getRemote()==true, so scheduler failover to it no longer returns errNoHealthyPath. Verified by both T37 reviewers + the blackhole->failover test's post-failover Send."
+
+### D12 — root-caused
+
+- createdAt: 2026-07-07T00:15:10.403Z
+- updatedAt: 2026-07-07T00:15:10.403Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Probe anti-replay has no session epoch — peer restart deadlocks liveness until seq catches up
+- description: "Filed by the T37 review panel (opus). internal/telemetry/probe.go: Prober.nextSeq and the Reflector/AntiReplay high-water (guards[pathID]) are in-memory with NO per-session identity. When one peer RESTARTS, its nextSeq resets to 0 while the surviving peer's Reflector still holds the previous session's high-water N; every fresh probe (seq <= N) is rejected as ErrReplay, so no echoes are reflected, the restarted side's paths never reach StateUp, the scheduler's Pick() returns none, and no WireGuard handshake can be sent. Recovery only happens once nextSeq climbs past N (N probe intervals) — for a long prior session that is minutes-to-hours of full tunnel outage, precisely the failure a WAN-bonding VPN must not have. T37's live probe wiring EXPOSES this; it is outside T37's stated acceptance (cold bootstrap + blackhole failover, both starting from EMPTY high-waters, pass). Severity HIGH."
+- severity: high
+- rootCause: "Confirmed by the T37 review against source: the D4 anti-replay high-water is a strict-monotonic in-memory counter with no session/boot identity, so a peer that restarts (seq from 0) is indistinguishable from a replay attacker to the surviving peer, which rejects the entire fresh probe stream until the counter organically exceeds the stale high-water. The fix is a wire/protocol change (session epoch), hence a separate task, not a T37 rework."
+- suggestedFix: Carry a random per-boot session id in the Probe frame (INSIDE the MAC-covered body) and key the Reflector's anti-replay by (sessionId, pathID), resetting the high-water when a NEW sessionId is first observed on a path; the originator's HandleEcho guard resets likewise on its own boot. Preserves strict-monotonic replay protection WITHIN a session while accepting a restarted peer's seq-from-0 stream. Owned by task T38.
+- ledgerRefs: ["tasks:T37","tasks:T38","goals:G1"]
 
 ## M10
 

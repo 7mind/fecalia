@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 38
+  item: 39
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -184,10 +184,10 @@ archives:
 - dependsOn: ["T12","T13","T15"]
 - ledgerRefs: ["goals:G1"]
 
-### T37 — wip
+### T37 — done
 
 - createdAt: 2026-07-06T23:36:14.588Z
-- updatedAt: 2026-07-06T23:46:23.001Z
+- updatedAt: 2026-07-07T00:14:23.242Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Per-path probe transport: drive T13 Prober/Liveness over the multipath Bind"
@@ -196,6 +196,19 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T13","T15"]
 - ledgerRefs: ["goals:G1","tasks:T20","tasks:T16"]
+
+### T38 — wip
+
+- createdAt: 2026-07-07T00:15:22.349Z
+- updatedAt: 2026-07-07T00:15:58.087Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Probe anti-replay session epoch: survive peer restart without a liveness deadlock"
+- description: "DISCOVERED ROBUSTNESS DEFECT (D12, filed by the T37 review, HIGH). The per-path probe anti-replay (T13 D4: Prober.nextSeq + Reflector/AntiReplay high-water) is a strict-monotonic in-memory counter with no session/boot identity. After a peer RESTART, the restarted side's nextSeq resets to 0 while the surviving peer's Reflector retains the prior session's high-water N, so every fresh probe (seq<=N) is rejected as ErrReplay -> no echoes -> restarted side's paths never come Up -> scheduler Pick() returns none -> no WG handshake, for minutes-to-hours until the counter organically passes N. Fix: carry a random per-boot session id in the Probe frame INSIDE the MAC-covered body, and key the Reflector's anti-replay by (sessionId, pathID), resetting the high-water when a NEW authenticated sessionId is first observed on a path (with a monotonic-tiebreak / anti-rollback guard so an attacker cannot force-reset with an OLD replayed sessionId+low-seq); the originator's HandleEcho guard resets likewise on its own boot. Preserve strict-monotonic replay protection WITHIN a session. This is a wire-format change to frame.Probe (adjacent to T37's IsEcho bit) + the telemetry anti-replay keying."
+- acceptance: "Unit tests: within a session, replays are still rejected (D4 preserved); a peer-restart simulated by a NEW sessionId + seq-from-0 stream is ACCEPTED (high-water resets) so the restarted peer's paths come Up and failover/bring-up recovers within the T13 detection window (fake clock, no real sleeps); an OLD/replayed sessionId or a rollback attempt is REJECTED (no attacker-forced reset). The session id is authenticated (inside the MAC); the frame codec tamper/round-trip tests still pass. No data race under -race. Compiles under -tags e2e."
+- suggestedModel: frontier
+- dependsOn: ["T37"]
+- ledgerRefs: ["goals:G1","defects:D12"]
 
 ## M7
 
@@ -254,12 +267,12 @@ archives:
 - dependsOn: ["T13"]
 - ledgerRefs: ["goals:G1"]
 
-### T18 — planned
+### T18 — wip
 
 - createdAt: 2026-07-01T23:40:12.907Z
-- updatedAt: 2026-07-01T23:40:12.907Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T00:15:56.598Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Receive resequencing buffer (bounded window + timeout)
 - description: Bounded-window + timeout resequencer on the receive side, applied after unwrap (and later after FEC recovery) and BEFORE delivery to the WG engine, so WG's anti-replay window never sees pathological multipath reorder. Tune the initial window against the P0-measured Starlink jitter; verify the WG anti-replay window still has margin.
 - acceptance: "Unit/property tests: frames arriving out of order within the window are delivered in outer-seq order under synthetic reorder/duplication/loss traces; frames beyond window/timeout are released (not held forever); bounded memory; e2e: with both paths active, WG anti-replay drop count stays 0 under fixture jitter."
