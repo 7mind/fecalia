@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -458,50 +459,65 @@ func fetchMetrics(t *testing.T, ctx context.Context, url string) metrics.Exposit
 }
 
 // fetchMetricsInNetns scrapes a loopback /metrics endpoint that lives inside the
-// concentrator's network namespace, via metrics.Fetch. It runs the fetch on a goroutine
-// pinned (runtime.LockOSThread) to a thread that it moves into the peer netns with
-// unix.Setns; the goroutine then EXITS WITHOUT unlocking, so the Go runtime terminates
-// that now-namespace-polluted OS thread rather than returning it (dirty) to the pool. Only
-// the socket DIAL is namespace-sensitive and it happens synchronously inside metrics.Fetch
-// on this locked thread; once connected, the socket's namespace is fixed, so the HTTP
-// read/write may run anywhere. This is the standard Go idiom for a one-shot cross-netns
-// dial and needs no /run/netns mount.
+// concentrator's network namespace, via metrics.Fetch. The socket must be OPENED inside the
+// peer netns. The subtlety that a prior version got wrong (T25 root-cause): net/http does
+// its dial on a BACKGROUND goroutine (Transport.dialConnFor), so merely moving the CALLING
+// thread into the netns (LockOSThread+Setns, then Fetch) does NOT confine the socket — the
+// dial goroutine runs on a different, ROOT-netns thread and connects to whatever binds the
+// same loopback address in the ROOT netns. Because the edge daemon binds the IDENTICAL
+// 127.0.0.1:<port> /metrics in the root netns, the scrape silently read the EDGE endpoint
+// instead of the concentrator (its per-path series look plausible, so it passed unnoticed
+// until P3 asserted a concentrator-ONLY quantity — the FEC recovered/unrecoverable counters,
+// which are ~0 on the edge). The namespace switch therefore belongs in the custom
+// DialContext — the exact place the socket() syscall runs — on a thread pinned
+// (runtime.LockOSThread) and moved into the peer netns; that goroutine then EXITS WITHOUT
+// unlocking, so the Go runtime discards the now-namespace-polluted OS thread rather than
+// returning it (dirty) to the pool. Only the socket creation is namespace-sensitive; once
+// connected, the socket's namespace is fixed, so the HTTP read/write may run anywhere. This
+// needs no /run/netns mount.
 func fetchMetricsInNetns(t *testing.T, pid int, url string) metrics.Exposition {
 	t.Helper()
-	type result struct {
-		exp metrics.Exposition
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		runtime.LockOSThread() // deliberately never unlocked: goroutine exit kills the thread
+	nsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
 
-		nsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
-		f, err := os.Open(nsPath)
-		if err != nil {
-			done <- result{err: fmt.Errorf("open %s: %w", nsPath, err)}
-			return
+	dialInNetns := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		type result struct {
+			conn net.Conn
+			err  error
 		}
-		defer f.Close()
-		if err := unix.Setns(int(f.Fd()), unix.CLONE_NEWNET); err != nil {
-			done <- result{err: fmt.Errorf("setns into concentrator netns: %w", err)}
-			return
-		}
+		done := make(chan result, 1)
+		go func() {
+			runtime.LockOSThread() // deliberately never unlocked: goroutine exit kills the thread
 
-		// A dedicated client (no keep-alive) so the dial — the only netns-sensitive step —
-		// resolves on THIS locked thread inside the concentrator netns.
-		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		exp, err := metrics.Fetch(ctx, client, url)
-		done <- result{exp: exp, err: err}
-	}()
-
-	r := <-done
-	if r.err != nil {
-		t.Fatalf("scrape concentrator %s in netns: %v", url, r.err)
+			f, err := os.Open(nsPath)
+			if err != nil {
+				done <- result{err: fmt.Errorf("open %s: %w", nsPath, err)}
+				return
+			}
+			defer f.Close()
+			if err := unix.Setns(int(f.Fd()), unix.CLONE_NEWNET); err != nil {
+				done <- result{err: fmt.Errorf("setns into concentrator netns: %w", err)}
+				return
+			}
+			// The socket() syscall runs HERE, on this locked, peer-netns thread, so the
+			// connection is opened inside the concentrator's namespace. addr is a loopback
+			// IP literal (no DNS, single address), so net.Dialer opens exactly one socket on
+			// this goroutine — no background resolver/happy-eyeballs goroutine escapes it.
+			var d net.Dialer
+			c, err := d.DialContext(ctx, network, addr)
+			done <- result{conn: c, err: err}
+		}()
+		r := <-done
+		return r.conn, r.err
 	}
-	return r.exp
+
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, DialContext: dialInNetns}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exp, err := metrics.Fetch(ctx, client, url)
+	if err != nil {
+		t.Fatalf("scrape concentrator %s in netns: %v", url, err)
+	}
+	return exp
 }
 
 // p2Path returns the named DefaultPaths spec with the P2 per-path rate cap applied.

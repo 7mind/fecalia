@@ -237,8 +237,16 @@ func TestMultipathFECTransparentAndOverhead(t *testing.T) {
 	}
 
 	snap := sender.FECSnapshot()
+	if snap.DataFrames != uint64(dataShards*groups) {
+		t.Fatalf("FECSnapshot.DataFrames = %d, want %d (the fixed-ratio overhead denominator)", snap.DataFrames, dataShards*groups)
+	}
 	if snap.ParityFrames != uint64(parityShards*groups) {
 		t.Fatalf("FECSnapshot.ParityFrames = %d, want %d", snap.ParityFrames, parityShards*groups)
+	}
+	// The /metrics overhead ratio the P3 e2e asserts is ParityFrames/DataFrames; on full
+	// groups it equals the configured M/K exactly.
+	if snap.ParityFrames*uint64(dataShards) != snap.DataFrames*uint64(parityShards) {
+		t.Fatalf("overhead ratio ParityFrames/DataFrames = %d/%d != %d/%d (M/K)", snap.ParityFrames, snap.DataFrames, parityShards, dataShards)
 	}
 	if snap.ParityBytes == 0 {
 		t.Fatal("FECSnapshot.ParityBytes = 0, want > 0 (parity has wire cost)")

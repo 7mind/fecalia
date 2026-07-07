@@ -95,10 +95,13 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 // counters (T24) verbatim onto the metrics.FECSnapshot the exposition reads.
 func TestMetricsSourceMapsFEC(t *testing.T) {
 	prov := &fakeProvider{}
-	prov.setFEC(bind.FECStats{ParityFrames: 33, ParityBytes: 4096, Recovered: 5, Unrecoverable: 1})
+	prov.setFEC(bind.FECStats{DataFrames: 82, ParityFrames: 33, ParityBytes: 4096, Recovered: 5, Unrecoverable: 1})
 	src := newMetricsSource(prov, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.FEC()
+	if got.DataPackets != 82 {
+		t.Errorf("DataPackets = %d, want 82 (data frames)", got.DataPackets)
+	}
 	if got.RepairPackets != 33 {
 		t.Errorf("RepairPackets = %d, want 33 (parity frames)", got.RepairPackets)
 	}

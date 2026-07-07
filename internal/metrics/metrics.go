@@ -36,6 +36,7 @@ const (
 // data frames reconstructed from parity, unrecoverable = data frames lost beyond
 // repair capacity.
 const (
+	MetricFECData          = "wanbond_fec_data_packets_total"
 	MetricFECRepair        = "wanbond_fec_repair_packets_total"
 	MetricFECRecovered     = "wanbond_fec_recovered_packets_total"
 	MetricFECUnrecoverable = "wanbond_fec_unrecoverable_packets_total"
@@ -45,6 +46,9 @@ const (
 // reports (T24). It is sourced from the multipath Bind's FEC counters, read at scrape
 // time like the per-path snapshots. All zero when FEC is disabled.
 type FECSnapshot struct {
+	// DataPackets is the cumulative count of DATA frames the FEC encoder emitted — the
+	// denominator of the fixed-ratio overhead (RepairPackets/DataPackets tends to M/K).
+	DataPackets uint64
 	// RepairPackets is the cumulative count of parity frames emitted — the fixed-ratio
 	// FEC overhead in packets.
 	RepairPackets uint64
@@ -102,6 +106,7 @@ type collector struct {
 	throughput *prometheus.Desc
 	up         *prometheus.Desc
 
+	fecData          *prometheus.Desc
 	fecRepair        *prometheus.Desc
 	fecRecovered     *prometheus.Desc
 	fecUnrecoverable *prometheus.Desc
@@ -125,6 +130,7 @@ func NewCollector(src Source) prometheus.Collector {
 		throughput: desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
 		up:         desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
 
+		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", nil),
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", nil),
 		fecRecovered:     desc(fecSubsystem, "recovered_packets_total", "Data packets reconstructed via FEC.", nil),
 		fecUnrecoverable: desc(fecSubsystem, "unrecoverable_packets_total", "Data packets lost beyond FEC repair capacity.", nil),
@@ -141,6 +147,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.jitter
 	ch <- c.throughput
 	ch <- c.up
+	ch <- c.fecData
 	ch <- c.fecRepair
 	ch <- c.fecRecovered
 	ch <- c.fecUnrecoverable
@@ -159,6 +166,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), p.Name)
 	}
 	f := c.src.FEC()
+	ch <- prometheus.MustNewConstMetric(c.fecData, prometheus.CounterValue, float64(f.DataPackets))
 	ch <- prometheus.MustNewConstMetric(c.fecRepair, prometheus.CounterValue, float64(f.RepairPackets))
 	ch <- prometheus.MustNewConstMetric(c.fecRecovered, prometheus.CounterValue, float64(f.RecoveredPackets))
 	ch <- prometheus.MustNewConstMetric(c.fecUnrecoverable, prometheus.CounterValue, float64(f.UnrecoverablePackets))

@@ -70,6 +70,7 @@ const fecRetainGroups = 512
 type fecSender struct {
 	enc *fec.Encoder
 
+	dataFrames   atomic.Uint64
 	parityFrames atomic.Uint64
 	parityBytes  atomic.Uint64
 }
@@ -106,11 +107,16 @@ func (r *fecReceiver) stats() fec.DecoderStats {
 
 // FECStats is a consistent snapshot of the Bind's FEC counters (T24), the shape the
 // metrics.Source adapter maps onto the connection-scoped /metrics FEC series.
-// ParityFrames/ParityBytes are the send-side overhead (parity emitted); Recovered and
-// Unrecoverable are the receive-side outcome (data shards reconstructed from parity,
-// and data shards lost beyond repair capacity). FEC being connection-scoped, these
-// carry no path label.
+// DataFrames is the send-side DATA-frame count (the fixed-ratio overhead's
+// denominator); ParityFrames/ParityBytes are the send-side overhead (parity emitted);
+// Recovered and Unrecoverable are the receive-side outcome (data shards reconstructed
+// from parity, and data shards lost beyond repair capacity). FEC being
+// connection-scoped, these carry no path label. The frame overhead the operator cares
+// about is ParityFrames/DataFrames, which tends to ParityShards/DataShards (M/K) once
+// groups fill; both are counted only for frames that actually reached the socket, so
+// the ratio reflects wire cost actually spent.
 type FECStats struct {
+	DataFrames    uint64
 	ParityFrames  uint64
 	ParityBytes   uint64
 	Recovered     uint64
