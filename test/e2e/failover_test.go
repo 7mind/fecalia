@@ -151,11 +151,14 @@ const (
 // primary does not reclaim egress instantly: the scheduler debounces failback with a
 // 5s dwell (sched.Config.FailbackAfter), so a blind time.Sleep between cycles could
 // kill an already-idle backup and pass trivially. Instead, before every kill this test
-// WAITS — on the info-level "scheduler active path change" to-primary (to==0)
-// transition, in BOTH daemons' logs — for egress to have actually failed back to the
-// primary. That confirmation IS the anti-wedge proof for the previous cycle (the bond
-// returned to its preferred path) and the precondition that makes the next kill hit
-// the active path.
+// confirms — in BOTH daemons' logs — that egress sits on the primary. For cycles >= 2 it
+// waits for a FRESH to-primary "scheduler active path change" (to==0) logged after that
+// cycle's restore: that IS the genuine FAILBACK and the anti-wedge proof for the prior
+// cycle. Cycle 1 has no prior restore and the lossless primary logs its to-primary
+// selection only once at cold-start (before any post-setup instant, and never repeated),
+// so it instead reads the CURRENT active path — the most-recent transition's destination
+// — and asserts it is the primary. Either way the precondition guarantees the next kill
+// hits the active path.
 //
 // Both daemons run at INFO so those transitions are observable (as in TestP1Failover).
 // The per-cycle metric line `FLAP_CYCLE=<n> RECOVERY_MS=<ms>` is grep-able for a
@@ -169,9 +172,9 @@ func TestP1FailoverRepeatedFlap(t *testing.T) {
 		flapFailoverPoll = time.Duration(P1RecoverySeconds)*time.Second + time.Second
 		// flapFailbackPoll bounds the wait for both ends to fail egress BACK to the
 		// primary after a restore: the 5s FailbackAfter dwell + up-detect (3×200ms) +
-		// margin. If failback does not complete within this, the tunnel has wedged on
-		// the backup.
-		flapFailbackPoll = 10 * time.Second
+		// margin for the D15 under-load detection tail. If failback does not complete
+		// within this, the tunnel has wedged on the backup.
+		flapFailbackPoll = 12 * time.Second
 		flapRampBefore   = 2500 * time.Millisecond
 	)
 
@@ -185,7 +188,6 @@ func TestP1FailoverRepeatedFlap(t *testing.T) {
 
 	primary := DefaultPaths[primaryPathIdx]  // starlink — the active-backup primary
 	secondary := DefaultPaths[backupPathIdx] // cellular — the failover backup
-	testStart := time.Now()
 
 	// One saturating bidirectional flow spans EVERY cycle: it recreates the D15 CPU
 	// load and is the data-plane-survival proof — it must finish (exit 0) with positive
@@ -209,17 +211,33 @@ func TestP1FailoverRepeatedFlap(t *testing.T) {
 	// Let the flow ramp and both ends reach steady state on the primary before cycle 1.
 	time.Sleep(flapRampBefore)
 
-	// sinceRef is the reference instant after which we require a to-primary transition
-	// to confirm egress sits on the primary before the next kill. Initially it is the
-	// test start, so cycle 1 confirms the cold-start selection put egress on the primary
-	// (a from:-1→to:0 transition); thereafter it is the previous cycle's restore instant,
-	// so each confirmation is that cycle's genuine FAILBACK.
-	sinceRef := testStart
+	// sinceRef is the reference instant after which a to-primary transition confirms
+	// egress has (re)claimed the primary before the next kill. It is used only for
+	// cycles >= 2, where it is the PREVIOUS cycle's restore instant, so each confirmation
+	// is that cycle's genuine FAILBACK (a to-primary transition logged strictly after the
+	// restore). Cycle 1 does not use it — see the cycle-1 branch below — so its zero
+	// value is never read.
+	var sinceRef time.Time
 
 	for cycle := 1; cycle <= flapCycles; cycle++ {
 		// Precondition (non-vacuity): egress must be on the primary on BOTH ends before
-		// we kill it. This is also the anti-wedge assertion for the prior cycle.
-		if _, _, ok := waitBothSwitchTo(edge, conc, sinceRef, primaryPathIdx, flapFailbackPoll); !ok {
+		// we kill it, so the kill genuinely hits the ACTIVE path. This is also the
+		// anti-wedge assertion for the prior cycle.
+		if cycle == 1 {
+			// Cycle 1 cannot demand a FRESH to-primary transition: the cold-start
+			// selection to the primary (from:-1→to:0) is logged during bring-up, before
+			// any instant we could stamp after setup, and — DefaultPaths being lossless —
+			// the primary never re-flaps, so no further to-primary transition is ever
+			// logged. A windowed waitBothSwitchTo would therefore time out with a FALSE
+			// wedge before any kill. Instead assert the CURRENT active path is the primary
+			// by reading the most-recent transition's destination on both ends — robust to
+			// the cold-start transition predating any reference instant, and the true
+			// non-vacuity precondition (both ends are on the primary now).
+			if !waitBothActiveOn(edge, conc, primaryPathIdx, flapFailbackPoll) {
+				t.Fatalf("cycle 1: egress not on the primary on both ends within %v at start — cold-start selection never settled on the primary\n--- edge ---\n%s\n--- conc ---\n%s",
+					flapFailbackPoll, edge.log(), conc.log())
+			}
+		} else if _, _, ok := waitBothSwitchTo(edge, conc, sinceRef, primaryPathIdx, flapFailbackPoll); !ok {
 			t.Fatalf("cycle %d: egress never (re)claimed the primary on both ends within %v — tunnel wedged on the backup after the prior cycle\n--- edge ---\n%s\n--- conc ---\n%s",
 				cycle, flapFailbackPoll, edge.log(), conc.log())
 		}
@@ -297,6 +315,53 @@ func waitBothSwitchTo(edge, conc *proc, after time.Time, toIdx int, deadline tim
 		}
 		if time.Now().After(stop) {
 			return edgeLat, concLat, false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// currentActivePathIdx returns the destination index of the MOST-RECENT "scheduler
+// active path change" transition in a daemon's log, or -1 if none has been logged. It
+// is NOT windowed by an instant: it reports the scheduler's CURRENT active path
+// regardless of when that transition was logged. Cycle 1's precondition uses it to
+// confirm the cold-start selection put egress on the primary WITHOUT demanding a fresh
+// post-setup transition — the lossless primary logs its to-primary selection only once
+// at bring-up and never re-flaps, so no such fresh transition ever exists.
+func currentActivePathIdx(logText string) int {
+	idx := -1
+	var latest time.Time
+	for _, line := range strings.Split(logText, "\n") {
+		if !strings.Contains(line, "scheduler active path change") {
+			continue
+		}
+		var rec struct {
+			Time time.Time `json:"time"`
+			To   int       `json:"to"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		if idx < 0 || rec.Time.After(latest) {
+			latest = rec.Time
+			idx = rec.To
+		}
+	}
+	return idx
+}
+
+// waitBothActiveOn polls both daemons' logs until EACH reports its CURRENT active path
+// (the most-recent transition's destination) is toIdx, or the deadline elapses. Unlike
+// waitBothSwitchTo it asserts the PRESENT active path rather than a fresh transition
+// after some instant, so it confirms cycle 1's cold-start selection without requiring a
+// to-primary transition logged after a reference time.
+func waitBothActiveOn(edge, conc *proc, toIdx int, deadline time.Duration) bool {
+	stop := time.Now().Add(deadline)
+	for {
+		if currentActivePathIdx(edge.log()) == toIdx && currentActivePathIdx(conc.log()) == toIdx {
+			return true
+		}
+		if time.Now().After(stop) {
+			return false
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
