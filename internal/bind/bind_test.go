@@ -116,17 +116,23 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	}
 	fn := fns[0]
 
-	// Send a DATA frame to EACH path's socket; the Bind-owned readers read them and
-	// feed the shared resequencer, and the single drainer delivers both — under the
-	// SAME virtual endpoint. OuterSeq 0 then 1 keeps them in order across the paths.
+	// Send a DATA frame to EACH path's socket (OuterSeq i on path i); the Bind-owned
+	// readers read them and feed the shared resequencer, and the single drainer
+	// delivers both — under the SAME virtual endpoint.
+	//
+	// INTERLEAVE send+receive per path (defect D19): the two paths are read by
+	// INDEPENDENT reader goroutines with NO cross-path arrival ordering. If both
+	// frames were sent up front and OuterSeq 1 happened to be observed first, the
+	// resequencer would pin its release point to 1 and drop the later OuterSeq 0 as
+	// late — the second receive would then block forever. Sending OuterSeq i and
+	// receiving it before sending OuterSeq i+1 pins the release point deterministically
+	// (0 then 1), so both frames are delivered in order regardless of reader scheduling.
 	payload := []byte("opaque-wireguard-datagram")
+	var gotEps []Endpoint
 	for i := 0; i < 2; i++ {
 		dst := m.paths[i].conn.LocalAddr().(*net.UDPAddr)
 		sendDataTo(t, psk, dst, uint8(i), payload)
-	}
 
-	var gotEps []Endpoint
-	for i := 0; i < 2; i++ {
 		bufs := [][]byte{make([]byte, 2048)}
 		sizes := make([]int, 1)
 		eps := make([]Endpoint, 1)
