@@ -42,6 +42,11 @@ type Tunnel struct {
 	dev  *awgdevice.Device
 	tun  tun.Device
 	name string
+	// bind is the multipath Bind the engine drives; Reload calls its runtime
+	// AddPath/RemovePath to apply a config-reload path diff (T30).
+	bind *bind.Multipath
+	// log is the device-component logger, retained for Reload diagnostics.
+	log log.Logger
 	// stopProbes halts the per-path probe cadence loop (T37). Close calls it before
 	// tearing the engine down so emission stops before the sockets close. It is
 	// idempotent and never nil (a no-op when the bind runs without probers).
@@ -165,12 +170,12 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	// values back the scheduler's PathHealth AND the bind's probe transport, so the
 	// liveness the probe loop measures is exactly the liveness the scheduler selects
 	// on (T37 replaces the sched.AlwaysUp placeholder here).
-	scheduler, probers, err := buildScheduler(cfg, clg)
+	scheduler, probers, newProber, err := buildScheduler(cfg, clg)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers)
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -197,7 +202,58 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
-	return &Tunnel{dev: dev, tun: tunDev, name: name, stopProbes: stopProbes, amnezia: cfg.Amnezia}, nil
+	return &Tunnel{dev: dev, tun: tunDev, name: name, bind: mpBind, log: clg, stopProbes: stopProbes, amnezia: cfg.Amnezia}, nil
+}
+
+// Reload applies a reloaded configuration to the RUNNING tunnel by diffing its
+// path set against the live one and adding/removing paths at runtime (T30), WITHOUT
+// tearing the tunnel down: the WG session, the surviving paths, and in-flight
+// resequencing are all preserved. cfg is assumed already validated (config.Load
+// fails fast on a bad file, so a bad reload never reaches here and never disturbs
+// the running tunnel). Only the path set is diffed — the crypto/amnezia/role fields
+// are fixed for the life of the process and a reload does not re-key the engine.
+//
+// New paths are added BEFORE absent ones are removed, so a failed addition aborts
+// with every existing path still in service. Diffing is by name: a path present in
+// both sets is left untouched (its source/dest parameters are not re-read).
+func (t *Tunnel) Reload(cfg *config.Config) error {
+	add, remove := diffPaths(t.bind.PathNames(), cfg.Paths)
+	for _, def := range add {
+		if err := t.bind.AddPath(def); err != nil {
+			return fmt.Errorf("device: reload add path %q: %w", def.Name, err)
+		}
+		t.log.Info("reload: path added", "path", def.Name)
+	}
+	for _, name := range remove {
+		if err := t.bind.RemovePath(name); err != nil {
+			return fmt.Errorf("device: reload remove path %q: %w", name, err)
+		}
+		t.log.Info("reload: path removed", "path", name)
+	}
+	return nil
+}
+
+// diffPaths computes, by name, which desired paths are not yet live (to add) and
+// which live paths are no longer desired (to remove). It is a pure function so the
+// reload diff is unit-testable without a running engine.
+func diffPaths(live []string, desired []config.Path) (add []config.Path, remove []string) {
+	liveSet := make(map[string]struct{}, len(live))
+	for _, n := range live {
+		liveSet[n] = struct{}{}
+	}
+	desiredSet := make(map[string]struct{}, len(desired))
+	for _, p := range desired {
+		desiredSet[p.Name] = struct{}{}
+		if _, ok := liveSet[p.Name]; !ok {
+			add = append(add, p)
+		}
+	}
+	for _, n := range live {
+		if _, ok := desiredSet[n]; !ok {
+			remove = append(remove, n)
+		}
+	}
+	return add, remove
 }
 
 // defaultFailbackDwell is how long a recovered higher-priority path must stay up
@@ -225,7 +281,7 @@ const (
 // the bind so the probe transport drives the very same liveness the scheduler
 // selects on. This replaces the T15 sched.AlwaysUp placeholder with real on-wire
 // failover (T37).
-func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, error) {
+func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, bind.ProberFactory, error) {
 	clock := telemetry.SystemClock{}
 	proberCfg := telemetry.ProberConfig{
 		LossWindow: defaultProbeLossWindow,
@@ -237,14 +293,22 @@ func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*tele
 	// One random per-boot session id shared by every path's Prober (it identifies
 	// this boot, not the path): a peer restart presents a new session id that resets
 	// the surviving responder's anti-replay high-water so liveness recovers (T38, D12).
+	// A runtime-added path (T30) reuses the SAME session id, so its probes join this
+	// boot's stream and the peer's reflector adopts them without a challenge reset.
 	sessionID, err := telemetry.NewSessionID(rand.Reader)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	// newProber mints one path's Prober with the shared session/config/clock. It is
+	// the single construction point for boot-time AND runtime paths, so both measure
+	// liveness identically.
+	newProber := func(name string, id uint8) *telemetry.Prober {
+		return telemetry.NewProber(name, id, sessionID, cfg.PSK, proberCfg, clock, lg)
 	}
 	probers := make([]*telemetry.Prober, len(cfg.Paths))
 	health := make([]sched.PathHealth, len(cfg.Paths))
 	for i := range cfg.Paths {
-		probers[i] = telemetry.NewProber(cfg.Paths[i].Name, uint8(i), sessionID, cfg.PSK, proberCfg, clock, lg)
+		probers[i] = newProber(cfg.Paths[i].Name, uint8(i))
 		health[i] = probers[i]
 	}
 	scheduler, err := sched.NewActiveBackup(
@@ -254,9 +318,9 @@ func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*tele
 		lg,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return scheduler, probers, nil
+	return scheduler, probers, newProber, nil
 }
 
 // Name is the created TUN interface name (for external addressing/routing).

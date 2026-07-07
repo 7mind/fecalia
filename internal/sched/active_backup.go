@@ -51,8 +51,11 @@ type ActiveBackup struct {
 	pendingSince time.Time // when the current failback candidate first became eligible
 }
 
-// compile-time proof ActiveBackup is a Scheduler.
-var _ Scheduler = (*ActiveBackup)(nil)
+// compile-time proof ActiveBackup is a (dynamic) Scheduler.
+var (
+	_ Scheduler        = (*ActiveBackup)(nil)
+	_ DynamicScheduler = (*ActiveBackup)(nil)
+)
 
 // NewActiveBackup builds the active-backup scheduler over health (priority
 // order, index 0 = preferred primary). It fails fast on an empty health set or a
@@ -81,6 +84,68 @@ func NewActiveBackup(health []PathHealth, cfg Config, clock telemetry.Clock, log
 		active:  -1,
 		pending: -1,
 	}, nil
+}
+
+// AddPath admits h as a new lowest-priority path and returns its index (the new
+// tail). Appending at the tail leaves every existing index — including the cached
+// active/pending — unchanged, and the new path can only become active once every
+// higher-priority path is down, so a runtime admission never disturbs the active
+// selection of the surviving paths (T30). It is safe for concurrent callers.
+func (s *ActiveBackup) AddPath(h PathHealth) (int, error) {
+	if h == nil {
+		return 0, fmt.Errorf("sched: cannot add a nil path health source")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.health = append(s.health, h)
+	return len(s.health) - 1, nil
+}
+
+// RemovePath drops the health source at index i and repairs the cached selection
+// so the surviving paths are undisturbed (T30). The active/pending indices are
+// remapped by IDENTITY rather than by arithmetic: the survivor a cached index
+// pointed at keeps being pointed at after the slice compaction, and a cached
+// index that pointed at the removed path is cleared (-1). Clearing active makes
+// the next Pick fail egress over to the best remaining path; clearing pending
+// abandons an in-flight failback dwell whose candidate no longer exists. It is
+// safe for concurrent callers.
+func (s *ActiveBackup) RemovePath(i int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i < 0 || i >= len(s.health) {
+		return fmt.Errorf("sched: remove path index %d out of range [0,%d)", i, len(s.health))
+	}
+	// Capture the identities the cached indices point at BEFORE compaction, unless
+	// they point at the path being removed (then they are cleared).
+	var activeH, pendingH PathHealth
+	if s.active >= 0 && s.active != i {
+		activeH = s.health[s.active]
+	}
+	if s.pending >= 0 && s.pending != i {
+		pendingH = s.health[s.pending]
+	}
+	s.health = append(s.health[:i], s.health[i+1:]...)
+	s.active = indexOfHealth(s.health, activeH)
+	s.pending = indexOfHealth(s.health, pendingH)
+	if s.pending < 0 {
+		s.pendingSince = time.Time{}
+	}
+	return nil
+}
+
+// indexOfHealth returns the index of h in hs by identity, or -1 when h is nil or
+// absent. Interface equality is pointer identity for the concrete *Prober /
+// health values the scheduler holds.
+func indexOfHealth(hs []PathHealth, h PathHealth) int {
+	if h == nil {
+		return -1
+	}
+	for i := range hs {
+		if hs[i] == h {
+			return i
+		}
+	}
+	return -1
 }
 
 // Pick returns the index of the current active path, recomputing the selection

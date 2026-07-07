@@ -38,7 +38,7 @@ func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	return NewMultipath(paths, psk, scheduler, nil)
+	return NewMultipath(paths, psk, scheduler, nil, nil)
 }
 
 // testKey builds a valid 32-byte config.Key seeded by b.
@@ -103,40 +103,49 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
+	// The fan-in receive model (T30) returns a SINGLE engine-facing ReceiveFunc
+	// regardless of path count: the Bind owns one reader per path internally, and the
+	// one drainer delivers every path's frames under the one virtual endpoint.
 	fns, _, err := m.Open(0)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	if len(fns) != 2 {
-		t.Fatalf("got %d receive funcs, want 2", len(fns))
+	if len(fns) != 1 {
+		t.Fatalf("got %d receive funcs, want 1 (fan-in delivery)", len(fns))
 	}
+	fn := fns[0]
 
+	// Send a DATA frame to EACH path's socket; the Bind-owned readers read them and
+	// feed the shared resequencer, and the single drainer delivers both — under the
+	// SAME virtual endpoint. OuterSeq 0 then 1 keeps them in order across the paths.
 	payload := []byte("opaque-wireguard-datagram")
-	var gotEps []Endpoint
-	for i, fn := range fns {
+	for i := 0; i < 2; i++ {
 		dst := m.paths[i].conn.LocalAddr().(*net.UDPAddr)
 		sendDataTo(t, psk, dst, uint8(i), payload)
+	}
 
+	var gotEps []Endpoint
+	for i := 0; i < 2; i++ {
 		bufs := [][]byte{make([]byte, 2048)}
 		sizes := make([]int, 1)
 		eps := make([]Endpoint, 1)
 		n, err := fn(bufs, sizes, eps)
 		if err != nil {
-			t.Fatalf("path %d receive: %v", i, err)
+			t.Fatalf("receive %d: %v", i, err)
 		}
 		if n != 1 {
-			t.Fatalf("path %d: got n=%d, want 1", i, n)
+			t.Fatalf("receive %d: got n=%d, want 1", i, n)
 		}
 		if !bytes.Equal(bufs[0][:sizes[0]], payload) {
-			t.Fatalf("path %d: inner payload = %q, want %q", i, bufs[0][:sizes[0]], payload)
+			t.Fatalf("receive %d: inner payload = %q, want %q", i, bufs[0][:sizes[0]], payload)
 		}
 		gotEps = append(gotEps, eps[0])
 	}
 
-	// Virtual-endpoint identity: both paths returned the SAME endpoint object.
+	// Virtual-endpoint identity: both delivered frames carried the SAME endpoint.
 	if gotEps[0] != gotEps[1] {
-		t.Fatalf("per-path receives returned different endpoints (%v vs %v): virtual-endpoint identity violated",
+		t.Fatalf("deliveries returned different endpoints (%v vs %v): virtual-endpoint identity violated",
 			gotEps[0].DstToString(), gotEps[1].DstToString())
 	}
 }

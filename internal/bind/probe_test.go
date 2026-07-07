@@ -55,17 +55,20 @@ func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk 
 		LossWindow: 0,
 		Liveness:   telemetry.LivenessConfig{DownAfter: testProbeDownAfter, UpAfterSuccesses: testProbeUpSucc},
 	}
+	newProber := func(name string, id uint8) *telemetry.Prober {
+		return telemetry.NewProber(name, id, testProbeSessionID, psk, cfg, clk, lg)
+	}
 	probers := make([]*telemetry.Prober, len(paths))
 	health := make([]sched.PathHealth, len(paths))
 	for i := range paths {
-		probers[i] = telemetry.NewProber(paths[i].Name, uint8(i), testProbeSessionID, psk, cfg, clk, lg)
+		probers[i] = newProber(paths[i].Name, uint8(i))
 		health[i] = probers[i]
 	}
 	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Hour}, clk, lg)
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	m, err := NewMultipath(paths, psk, scheduler, probers)
+	m, err := NewMultipath(paths, psk, scheduler, probers, newProber)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}

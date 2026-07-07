@@ -17,6 +17,33 @@ type Scheduler interface {
 	Pick() int
 }
 
+// DynamicScheduler is a Scheduler whose path set can change at runtime (T30): a
+// path may be admitted or dropped WITHOUT rebuilding the scheduler or disturbing
+// the active selection of the surviving paths. The multipath Bind holds its
+// scheduler as a plain Scheduler and type-asserts to this richer interface only
+// when a runtime path add/remove is requested, so the Scheduler seam (and the
+// T21 weighted policy that will implement it) is preserved: a scheduler that
+// does not support dynamic membership simply cannot back a reloadable bind.
+//
+// The index space is the SAME priority-ordered index Pick returns, and the Bind
+// keeps its own path slice index-aligned with this scheduler's path list, so an
+// index returned by Pick always addresses the matching path. Both methods are
+// safe for concurrent callers.
+type DynamicScheduler interface {
+	Scheduler
+	// AddPath admits h as a NEW lowest-priority path (highest index) and returns
+	// that index. Appending at the tail cannot change any existing path's index
+	// nor steal the active selection from a higher-priority survivor: an
+	// active-backup policy only ever selects the new path once every
+	// higher-priority path is down. h must be non-nil.
+	AddPath(h PathHealth) (int, error)
+	// RemovePath drops the path at index i (shifting higher indices down by one)
+	// and repairs the cached selection so a surviving path keeps being selected
+	// and, if the dropped path was the active one, egress fails over to the best
+	// remaining path on the next Pick. i must be in range.
+	RemovePath(i int) error
+}
+
 // PathHealth is the per-path liveness the scheduler consumes: the read side of
 // the T13 telemetry liveness state machine, so the scheduler reads exactly the
 // up/down verdict T13 already computes (with its own probe-loss hysteresis)

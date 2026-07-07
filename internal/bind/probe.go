@@ -28,9 +28,12 @@ func (m *Multipath) emitProbes() {
 		ps *pathState
 		pr *telemetry.Prober
 	}
-	targets := make([]target, len(m.paths))
-	for i, ps := range m.paths {
-		targets[i] = target{ps: ps, pr: m.probers[ps.id]}
+	targets := make([]target, 0, len(m.paths))
+	for _, ps := range m.paths {
+		if ps.prober == nil {
+			continue
+		}
+		targets = append(targets, target{ps: ps, pr: ps.prober})
 	}
 	m.mu.Unlock()
 

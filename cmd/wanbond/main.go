@@ -63,17 +63,44 @@ func run(args []string) error {
 
 	main.Info("tunnel interface up", "interface", tun.Name(), "role", string(cfg.Role))
 
+	// SIGINT/SIGTERM terminate; SIGHUP reloads the config file to add/remove paths
+	// on the running tunnel (T30). SIGHUP is idiomatic for a daemon config reload and
+	// needs no extra socket or privilege.
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case s := <-sig:
-		main.Info("shutting down", "signal", s.String())
-		return nil
-	case <-deviceStopped(tun):
-		// Unrecoverable engine teardown: fail loud so the exit status reflects it
-		// and a supervisor (systemd Restart=on-failure) restarts the daemon.
-		return fmt.Errorf("tunnel device stopped unexpectedly")
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	stopped := deviceStopped(tun)
+	for {
+		select {
+		case s := <-sig:
+			if s == syscall.SIGHUP {
+				reloadTunnel(main, tun, *configPath)
+				continue
+			}
+			main.Info("shutting down", "signal", s.String())
+			return nil
+		case <-stopped:
+			// Unrecoverable engine teardown: fail loud so the exit status reflects it
+			// and a supervisor (systemd Restart=on-failure) restarts the daemon.
+			return fmt.Errorf("tunnel device stopped unexpectedly")
+		}
 	}
+}
+
+// reloadTunnel re-reads and validates the config file and applies its path diff to
+// the running tunnel. A bad reload (unreadable, insecure-mode, invalid, or a failed
+// path change) is LOGGED and the running tunnel is left intact — a reload must never
+// tear down a live session. config.Load performs the fail-fast validation.
+func reloadTunnel(lg log.Logger, tun *device.Tunnel, configPath string) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		lg.Error("config reload rejected; keeping running config", "error", err.Error())
+		return
+	}
+	if err := tun.Reload(cfg); err != nil {
+		lg.Error("config reload failed to apply; tunnel still running", "error", err.Error())
+		return
+	}
+	lg.Info("config reloaded")
 }
 
 // deviceStopped returns a channel that closes when the tunnel device tears down
