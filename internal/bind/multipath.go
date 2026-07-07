@@ -186,9 +186,11 @@ type Multipath struct {
 	// in order. A reader pokes deliverSignal after each datagram so the drainer wakes;
 	// recvClosed is closed by Close to release both the drainer and any reader parked
 	// on a delivery. openPort mirrors Open's bind port so a runtime-added path binds
-	// consistently; nextPathID hands out stable, monotonically-increasing path-ids
-	// (never reused within an Open span, so a surviving path is never renumbered and a
-	// freed id can never collide with the peer's per-path reflector state).
+	// consistently; nextPathID is a monotonic high-water that persists ACROSS Open
+	// spans (a Close->Open never lowers it; only a process restart resets it), so a
+	// surviving path is never renumbered and a freed id is never reused for the
+	// process lifetime, and thus can never collide with the peer's per-path reflector
+	// state.
 	deliverSignal chan struct{}
 	recvClosed    chan struct{}
 	readersWG     sync.WaitGroup
@@ -718,9 +720,14 @@ func (m *Multipath) closeSocketsLocked() error {
 // the single virtual endpoint is untouched, and the engine's receive set does not
 // change (the reader is the Bind's, not the engine's).
 //
-// Path-ids are handed out monotonically and never reused within an Open span, so a
-// surviving path is never renumbered; the id space (uint8) is exhausted only after
-// 256 admissions in one Open span, which fails fast rather than reusing an id and
+// Path-ids are handed out monotonically from a high-water counter that persists
+// ACROSS Open spans (a Close->Open cycle does NOT reset it -- only a process restart
+// does), so a surviving path is never renumbered and a reopened bond never re-mints
+// an id the peer still associates with old per-path reflector state; the uint8 id
+// space (256 ids) is therefore consumed CUMULATIVELY over the process lifetime by
+// the initial-Open admissions (the N configured paths take ids 0..N-1) PLUS every
+// runtime AddPath admission combined, and is exhausted once 256 distinct ids have
+// been minted over the daemon's life, which fails fast rather than reusing an id and
 // colliding with the peer's per-path reflector state.
 func (m *Multipath) AddPath(def config.Path) error {
 	m.mu.Lock()
@@ -744,7 +751,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 		}
 	}
 	if m.nextPathID > 255 {
-		return fmt.Errorf("bind: add path %q: path-id space exhausted (256 admissions this Open span)", def.Name)
+		return fmt.Errorf("bind: add path %q: path-id space exhausted (256 cumulative admissions over the process lifetime; an interface Down/Up does not reset it -- restart the daemon)", def.Name)
 	}
 	id := uint8(m.nextPathID)
 
