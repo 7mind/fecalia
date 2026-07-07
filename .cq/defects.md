@@ -229,10 +229,10 @@ archives: []
 - suggestedFix: "In T40: (1) run TestP1FailoverRepeatedFlap MANY times with HOST LOAD recorded to separate a product tail from shared-VM noise; instrument per-kill probe-loop-tick + receive-tick latency across consecutive cycles. (2) If product: bound the transition-window gap — e.g. emit probes more aggressively on a detected active-path change, have the scheduler nudge liveness on Pick, or ensure the receive-path tick fires from the OUTBOUND/Send path too (Send is scheduled during the reroute). (3) Validate the flap passes RELIABLY (>=19/20) on hardware."
 - ledgerRefs: ["tasks:T20","tasks:T39","tasks:T40","goals:G1"]
 
-### D19 — open
+### D19 — resolved
 
 - createdAt: 2026-07-07T16:45:28.384Z
-- updatedAt: 2026-07-07T16:45:28.384Z
+- updatedAt: 2026-07-07T17:07:04.706Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Flaky HANG: TestMultipathVirtualEndpointIdentity blocks until the package test timeout (lost-wakeup in the T30 receive fan-in)"
@@ -240,6 +240,8 @@ archives: []
 - severity: medium
 - suggestedFix: "INVESTIGATE (hypothesis, not confirmed): a lost-wakeup / ordering race between the virtual-endpoint send and the receive-func subscription — a packet SENT before the reader goroutine is registered/looping is dropped by the UDP socket, and nothing retries, so the drainer waits forever for a frame that will never come. Reproduce with `go test ./internal/bind -run TestMultipathVirtualEndpointIdentity -count=100 -timeout 120s -v`. Fix: add a bounded wait/retry on the send side (or fix the subscription-before-send ordering in the test/harness), and give the test its OWN short deadline so a hang fails fast instead of consuming the package timeout. Route via /cq:investigate if the root cause is in production readLoop/drainer wiring rather than the test."
 - ledgerRefs: ["tasks:T30","goals:G1"]
+- rootCause: "ROOT-CAUSED (opus, in-session, reproduced): a TEST bug, NOT a production lost-wakeup. TestMultipathVirtualEndpointIdentity sent OuterSeq 0 to path-0's socket and OuterSeq 1 to path-1's socket UP FRONT (sendDataTo encodes frame.Data{OuterSeq: uint64(pathID), PathID: pathID}), then received both. The two path sockets are read by INDEPENDENT readLoop goroutines with NO cross-path arrival ordering. The T18 resequencer pins its release point (next) to the FIRST-observed outer-seq; when path-1's reader won the race and Observed OuterSeq 1 first, next pinned to 1, OuterSeq 1 was delivered, and the later-Observed OuterSeq 0 (< next) was dropped as dropLate. The test's SECOND fn() call then blocked forever (250ms poll finds nothing; no third frame ever arrives) -> the whole package hit its timeout. The drainer/poke mechanism is sound (the poll backstop self-heals a lost poke); the frame was genuinely DROPPED, not stuck. Benign in production: continuous traffic + WG/TCP retransmit recover an early reorder-drop, and the per-Open first-seq re-pin stabilizes quickly."
+- fix: "Resolved directly (test-only, merged 5488f42 on main): INTERLEAVE send+receive per path in TestMultipathVirtualEndpointIdentity — send OuterSeq i, receive it (pinning next deterministically to 0, then advancing to 1), then send OuterSeq i+1. Removes the cross-path arrival race so both frames are delivered in order regardless of reader scheduling. Verified: 300 -race runs pass in ~1.9s (previously an intermittent 90s package timeout). No production code changed. D20 (goroutine leak in TestMultipathEngineUpCanTransmit) remains a separate low deferred test-hardening item."
 
 ### D20 — root-caused
 
