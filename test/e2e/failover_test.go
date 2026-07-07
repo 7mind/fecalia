@@ -127,6 +127,210 @@ func TestP1Failover(t *testing.T) {
 	}
 }
 
+// P1 active-backup priority indices: the scheduler's health slice is priority-
+// ordered, index 0 the preferred primary and index 1 the failover backup — matching
+// the config path order (DefaultPaths[0] primary, DefaultPaths[1] backup). The
+// "scheduler active path change" log records the destination index as its "to"
+// field, so a to==primaryPathIdx transition is a failback and to==backupPathIdx is a
+// failover.
+const (
+	primaryPathIdx = 0
+	backupPathIdx  = 1
+)
+
+// TestP1FailoverRepeatedFlap is the SECOND half of the T20 acceptance that
+// TestP1Failover (a single kill+restore) does not cover: "repeated flap does not
+// wedge the tunnel". It runs ONE long-lived saturating bidirectional bulk flow across
+// SEVERAL kill/restore cycles of the ACTIVE WAN and asserts the tunnel recovers every
+// cycle — within P1RecoverySeconds, both directions, measured the same sound
+// per-direction way as TestP1Failover — and that the single flow survives ALL cycles
+// with no WireGuard-session reset.
+//
+// Non-vacuity guard (the opus T20-r1 finding). A repeated-flap test is only meaningful
+// if each cycle genuinely kills the ACTIVE egress path. After a restore the recovered
+// primary does not reclaim egress instantly: the scheduler debounces failback with a
+// 5s dwell (sched.Config.FailbackAfter), so a blind time.Sleep between cycles could
+// kill an already-idle backup and pass trivially. Instead, before every kill this test
+// WAITS — on the info-level "scheduler active path change" to-primary (to==0)
+// transition, in BOTH daemons' logs — for egress to have actually failed back to the
+// primary. That confirmation IS the anti-wedge proof for the previous cycle (the bond
+// returned to its preferred path) and the precondition that makes the next kill hit
+// the active path.
+//
+// Both daemons run at INFO so those transitions are observable (as in TestP1Failover).
+// The per-cycle metric line `FLAP_CYCLE=<n> RECOVERY_MS=<ms>` is grep-able for a
+// pass-rate/distribution report over `-run TestP1FailoverRepeatedFlap -count=N`.
+func TestP1FailoverRepeatedFlap(t *testing.T) {
+	const (
+		flapCycles = 3
+		// flapFailoverPoll bounds how long we wait to OBSERVE both ends' failover
+		// switch after a kill; it exceeds P1RecoverySeconds so a marginally-late run
+		// is still measured (then asserted against the budget) rather than lost.
+		flapFailoverPoll = time.Duration(P1RecoverySeconds)*time.Second + time.Second
+		// flapFailbackPoll bounds the wait for both ends to fail egress BACK to the
+		// primary after a restore: the 5s FailbackAfter dwell + up-detect (3×200ms) +
+		// margin. If failback does not complete within this, the tunnel has wedged on
+		// the backup.
+		flapFailbackPoll = 10 * time.Second
+		flapRampBefore   = 2500 * time.Millisecond
+	)
+
+	bin := buildWanbond(t)
+	top := Setup(t)
+	edge, conc := setupMultipathTunnelLevel(t, top, bin, DefaultPaths, "info")
+
+	if !top.pingUntil(concInner, 15*time.Second) {
+		t.Fatalf("bond never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
+	}
+
+	primary := DefaultPaths[primaryPathIdx]  // starlink — the active-backup primary
+	secondary := DefaultPaths[backupPathIdx] // cellular — the failover backup
+	testStart := time.Now()
+
+	// One saturating bidirectional flow spans EVERY cycle: it recreates the D15 CPU
+	// load and is the data-plane-survival proof — it must finish (exit 0) with positive
+	// throughput both ways, proving the one WireGuard session (hence the flow) survived
+	// all the reroutes. Size its lifetime to the worst-case cycle budget so it is still
+	// running throughout the loop no matter how the per-cycle waits resolve.
+	loadWindow := flapRampBefore +
+		time.Duration(flapCycles)*(flapFailoverPoll+flapFailbackPoll+time.Second) +
+		4*time.Second
+	loadSecs := int(loadWindow.Seconds()) + 1
+
+	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", concInner)
+	time.Sleep(400 * time.Millisecond)
+	load := exec.Command("iperf3", "-c", concInner, "-t", strconv.Itoa(loadSecs), "--bidir", "-J")
+	loadOut := &lockedBuffer{}
+	load.Stdout, load.Stderr = loadOut, loadOut
+	if err := load.Start(); err != nil {
+		t.Fatalf("start load flow: %v", err)
+	}
+
+	// Let the flow ramp and both ends reach steady state on the primary before cycle 1.
+	time.Sleep(flapRampBefore)
+
+	// sinceRef is the reference instant after which we require a to-primary transition
+	// to confirm egress sits on the primary before the next kill. Initially it is the
+	// test start, so cycle 1 confirms the cold-start selection put egress on the primary
+	// (a from:-1→to:0 transition); thereafter it is the previous cycle's restore instant,
+	// so each confirmation is that cycle's genuine FAILBACK.
+	sinceRef := testStart
+
+	for cycle := 1; cycle <= flapCycles; cycle++ {
+		// Precondition (non-vacuity): egress must be on the primary on BOTH ends before
+		// we kill it. This is also the anti-wedge assertion for the prior cycle.
+		if _, _, ok := waitBothSwitchTo(edge, conc, sinceRef, primaryPathIdx, flapFailbackPoll); !ok {
+			t.Fatalf("cycle %d: egress never (re)claimed the primary on both ends within %v — tunnel wedged on the backup after the prior cycle\n--- edge ---\n%s\n--- conc ---\n%s",
+				cycle, flapFailbackPoll, edge.log(), conc.log())
+		}
+
+		// Kill the ACTIVE primary and stamp T0 for this cycle.
+		killAt := time.Now()
+		top.Blackhole(primary.name)
+
+		// Per-direction failover latency, read from each daemon's to-backup transition
+		// after this cycle's kill — the same sound, un-confounded measurement as
+		// TestP1Failover. End-to-end bidirectional recovery is the SLOWER of the two.
+		edgeSwitch, concSwitch, ok := waitBothSwitchTo(edge, conc, killAt, backupPathIdx, flapFailoverPoll)
+		if !ok {
+			top.Restore(primary.name)
+			t.Fatalf("cycle %d: both ends did not fail over to the backup within %v (edge=%s conc=%s) — no scheduler transition logged after the kill\n--- edge ---\n%s\n--- conc ---\n%s",
+				cycle, flapFailoverPoll, latencyStr(edgeSwitch), latencyStr(concSwitch), edge.log(), conc.log())
+		}
+		recovery := edgeSwitch
+		if concSwitch > recovery {
+			recovery = concSwitch
+		}
+		t.Logf("FLAP_CYCLE=%d RECOVERY_MS=%d budget_ms=%d edge_switch_ms=%d conc_switch_ms=%d",
+			cycle, recovery.Milliseconds(), int64(P1RecoverySeconds)*1000,
+			edgeSwitch.Milliseconds(), concSwitch.Milliseconds())
+		if recovery >= time.Duration(P1RecoverySeconds)*time.Second {
+			t.Errorf("cycle %d: bidirectional recovery %v exceeded P1 budget %ds (edge_switch=%v conc_switch=%v)",
+				cycle, recovery, P1RecoverySeconds, edgeSwitch, concSwitch)
+		}
+
+		// Restore the primary; the next iteration's precondition wait confirms failback.
+		restoreAt := time.Now()
+		top.Restore(primary.name)
+		sinceRef = restoreAt
+	}
+
+	// Final anti-wedge check: after the last restore the bond must return to the
+	// primary too (the loop's top-of-cycle check does not cover the last cycle).
+	if _, _, ok := waitBothSwitchTo(edge, conc, sinceRef, primaryPathIdx, flapFailbackPoll); !ok {
+		t.Errorf("after the final cycle egress never returned to the primary on both ends within %v — tunnel wedged on the backup\n--- edge ---\n%s\n--- conc ---\n%s",
+			flapFailbackPoll, edge.log(), conc.log())
+	}
+
+	// Data-plane survival across ALL cycles: the one flow that spanned every kill must
+	// have completed with traffic both ways and no reset.
+	loadErr := load.Wait()
+	fwd, rev := iperfBidirMbps(loadOut.String())
+	if loadErr != nil || fwd <= 0 || rev <= 0 {
+		t.Errorf("bulk flow did not survive %d failover cycles (exit err=%v, forward=%.1f Mbit/s, reverse=%.1f Mbit/s) — a WG-session reset?\n%s",
+			flapCycles, loadErr, fwd, rev, loadOut.String())
+	}
+
+	// Sanity: the backup path is still reachable (it carried the bond during each cycle).
+	if !top.Reachable(secondary.name, 3) {
+		t.Errorf("backup path %q unreachable after repeated flap", secondary.name)
+	}
+
+	t.Logf("repeated-flap: survived %d kill/restore cycles of the active WAN with one spanning flow (forward=%.1f Mbit/s reverse=%.1f Mbit/s), egress failed back to the primary each cycle",
+		flapCycles, fwd, rev)
+}
+
+// waitBothSwitchTo polls both daemons' logs until EACH has logged a "scheduler active
+// path change" whose destination is toIdx at some instant strictly after `after`, or
+// the deadline elapses. It returns the two per-daemon latencies from `after` to that
+// transition (or -1 for a daemon that never switched) and whether both were observed.
+// It is used both to MEASURE failover (toIdx = backupPathIdx, from the kill instant)
+// and to CONFIRM failback (toIdx = primaryPathIdx, from the restore instant) before the
+// next kill.
+func waitBothSwitchTo(edge, conc *proc, after time.Time, toIdx int, deadline time.Duration) (edgeLat, concLat time.Duration, ok bool) {
+	stop := time.Now().Add(deadline)
+	for {
+		edgeLat = switchToLatency(edge.log(), after, toIdx)
+		concLat = switchToLatency(conc.log(), after, toIdx)
+		if edgeLat >= 0 && concLat >= 0 {
+			return edgeLat, concLat, true
+		}
+		if time.Now().After(stop) {
+			return edgeLat, concLat, false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// switchToLatency returns the delay from `after` to the EARLIEST "scheduler active
+// path change" transition to destination index toIdx logged strictly after `after`, or
+// -1 if none. It is schedSwitchLatency refined by the transition's "to" field, so a
+// failover (to the backup) and a failback (to the primary) can be told apart in a log
+// that accumulates both across repeated cycles.
+func switchToLatency(logText string, after time.Time, toIdx int) time.Duration {
+	best := time.Duration(-1)
+	for _, line := range strings.Split(logText, "\n") {
+		if !strings.Contains(line, "scheduler active path change") {
+			continue
+		}
+		var rec struct {
+			Time time.Time `json:"time"`
+			To   int       `json:"to"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		if rec.To != toIdx || !rec.Time.After(after) {
+			continue
+		}
+		d := rec.Time.Sub(after)
+		if best < 0 || d < best {
+			best = d
+		}
+	}
+	return best
+}
+
 // schedSwitchLatency returns the delay from killAt to the first "scheduler active
 // path change" transition in a daemon's JSON log after the kill, or -1 if none is
 // found (the daemon log is slog JSON: {"time":...,"msg":"scheduler active path
