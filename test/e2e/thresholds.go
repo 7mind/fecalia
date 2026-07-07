@@ -72,13 +72,18 @@ var P3InjectedLossRates = []float64{0.05, 0.15}
 //
 //	recovery ≈ max(edgeDetect, concDetect) + reroute
 //	         ≈ (DownAfter + one interval) + reroute        [the two ends are symmetric]
-//	         = PLivenessFailoverBudget
+//	         = 1.2s + 0.2s + sub-ms ≈ 1.4s                 [worst-case detect, strict-'>' Tick]
+//	         < PLivenessFailoverBudget = 1.6s              [budget adds one interval of headroom]
 //
-// PLivenessFailoverBudget ≈ 1.4s is the NO-LOAD analytical floor (detect + one
-// interval + reroute). The remaining ~1.6s up to the 3s deadline is the margin for
-// CPU-scheduling jitter under a saturating flow — the D15 tail. Two T39 changes
+// So the NO-LOAD analytical recovery FLOOR is the detect term, DownAfter + one
+// interval = 1.4s (the strict-'>' Tick needs one full interval past DownAfter to
+// fire) plus a sub-ms reroute. PLivenessFailoverBudget = DownAfter + TWO intervals =
+// 1.6s deliberately carries ONE interval BEYOND that 1.4s detect as headroom — it is
+// a bound with slack, not the detect floor itself. The remaining ~1.4s up to the 3s
+// deadline (3.0s − 1.6s) is the margin for CPU-scheduling jitter under a saturating
+// flow — the D15 tail. Two T39 changes
 // bought that margin back after the tail was found at ~3.1s: DownAfter was tightened
-// 1500ms→1200ms and the interval 250ms→200ms (floor 1.75s→1.4s) WITHOUT reducing the
+// 1500ms→1200ms and the interval 250ms→200ms (detect floor 1.75s→1.4s) WITHOUT reducing the
 // six-lost-echo false-down tolerance (the ratio is unchanged); and the bind now
 // advances liveness off the always-scheduled receive path too (D15), so a starved
 // probe-loop timer no longer delays the concentrator-side detect. The correctness
@@ -94,10 +99,12 @@ const (
 	PLivenessProbeInterval = telemetry.DefaultProbeInterval
 	PLivenessDownAfter     = telemetry.DefaultDownAfter
 	PLivenessUpSuccesses   = telemetry.DefaultUpSuccesses
-	// PLivenessFailoverBudget is the analytical per-direction failover-recovery
-	// bound (detect + one interval + reroute headroom). Both directions are symmetric
-	// and detect concurrently, so it bounds end-to-end BIDIRECTIONAL recovery. It MUST
-	// stay below P1RecoverySeconds; TestP1Failover asserts measured recovery against
+	// PLivenessFailoverBudget is the analytical per-direction failover-recovery bound:
+	// the 1.4s worst-case detect (DownAfter + one interval, strict-'>' Tick) plus one
+	// interval of headroom, = DownAfter + 2 intervals = 1.6s (the sub-ms reroute is
+	// absorbed by that headroom). Both directions are symmetric and detect concurrently,
+	// so it bounds end-to-end BIDIRECTIONAL recovery. It MUST stay below P1RecoverySeconds
+	// (1.6s < 3s, a ~1.4s jitter margin); TestP1Failover asserts measured recovery against
 	// P1RecoverySeconds and reports its margin against this budget.
 	PLivenessFailoverBudget = PLivenessDownAfter + 2*PLivenessProbeInterval
 	// PLivenessDetectBudget is the single-path blackhole assertion deadline (harness
