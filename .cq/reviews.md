@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 32
+  item: 33
 archives: []
 ---
 
@@ -402,6 +402,28 @@ archives: []
 - criticism: ["[r1 fable, resolved 623e031] reproduced panic: short parity payload -> PutUint32 out-of-range; + silent-truncate/fabricate on oversized data; + unbounded group state","[r2 opus, resolved dd4118f] DataCount O(m)-loop DoS — no upper bound before the missing-scan/alloc; reject DataCount>maxShards-K early","[r2 fable, resolved dd4118f] vacuous oversized-data test (passed pre-fix incidentally) + unvalidated shard Index (unbounded per-group memory + one-index group poisoning) — discriminating test + Offer/observeParity index bounds + >=m drop-not-wedge"]
 - new_questions: []
 - ledgerRefs: ["tasks:T14","goals:G1"]
+
+### R32 — go-ahead
+
+- createdAt: 2026-07-07T22:12:06.078Z
+- updatedAt: 2026-07-07T22:12:06.078Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T24 (integrate fixed-ratio Reed-Solomon FEC into the datapath + FEC metrics) reconciled GO-AHEAD (opus by-construction + fable recovery-correctness panel; 1 rework round). Merged f61a008. FEC off by default: SEND admits each inner datagram to a per-Open encoder + emits KindParity on group close (size or a TryLock/readersWG deadline tick); RECEIVE offers DATA+PARITY to a per-Open decoder BEFORE the T18 resequencer, delivering reconstructed frames at their original outer-seq. DATA carries a fec-index byte, PARITY a data-count byte; coded shard = OuterSeq||inner (seq reconstructed both ends, self-describing recovery even if all data frames of a group are lost). FEC counters flow Bind->Source->/metrics. New [fec] config, fail-fast.
+    
+    ROUND 1 DISAPPROVE. opus found an MTU overflow; fable REPRODUCED two datapath faults + found two more (4 total):
+    (1) [reproduced] decoder GroupID high-water POISONING: DATA/PARITY unauthenticated, junk decodes as KindData ~1/256; one junk frame with a random-high uint32 group evicted all live groups + refused subsequent as tooOld -> recovery dead; same on a sender Close->Open (encoder group resets to 0, decoder keeps high-water).
+    (2) [reproduced] late-recovered frames DUMPED the resequencer buffer: recovered seqs >window below next corroborated a BACKWARD resync -> FEC recovery CAUSED burst loss (repro: 39 frames dumped).
+    (3) PARITY frames exceed path MTU by 5 bytes at full inner MTU (InnerMTU budgeted only DATA) -> FEC inert on bulk full-size traffic.
+    (4) fec.deadline unbounded + /metrics counted reconstructed-not-delivered -> recovery structurally late (dropped as late) while counter overstated.
+    
+    FIXED (a97836d), each mutation-verified + fable ROUND 2 APPROVE (0 findings, 3 scratch-copy mutations confirm the fix-witnesses fail pre-fix, -race green): (1) corroborate-before-trust GroupID discontinuity guard mirroring the resequencer suspect/corroborate (single junk never moves the frontier; 3 distinct mutually-close ids required; uniform-random junk essentially never corroborates; genuine forward-jump/reopen resyncs after <=2 groups; residual ~3.5e-7 admitted-jump window SELF-HEALS via backward corroboration -> no persistent poisoning, no frontier stall). (2) reseq.ObserveRecovered non-resyncing path (placement strictly [next,next+window), never touches next/resync run, ring-invariant preserved, dedup both directions). (3) FEC-aware inner-MTU budget FECParityMTUPenalty=5 (parity wire = exactly 1500; FEC-off unchanged; all callers updated v4+v6). (4) fec.deadline bounded to resequencerTimeout/2 at BOTH config-load and bind (NewMultipath); recovered counter counts DELIVERED-ahead-of-release-point, no double-count. Full -race suite + lint + e2e/realhosts compile green.
+    
+    Acceptance met: <=M loss reconstructs the full ordered payload + advances recovery; 0-loss transparent (overhead = ratio); >M unrecoverable (counted) without stalling. FEC operates on the UNAUTHENTICATED DATA/PARITY frames by design; the discontinuity guard is the robustness boundary against junk/reopen. NOTE: parity rides the same scheduler.Pick as its data (cross-path parity placement = future refinement, documented).
+- criticism: ["[r1 fable, resolved a97836d, REPRODUCED] decoder GroupID high-water poisoning: one unauthenticated junk frame (~1/256) or a sender Close->Open disabled FEC recovery for the Open span -> corroborate-before-trust discontinuity guard (single frame can't move the frontier; self-heals; no stall)","[r1 fable, resolved a97836d, REPRODUCED] late-recovered frames (parity delayed >window under real skew) corroborated a backward resync that dumped the live resequencer buffer -> FEC caused the loss it should prevent -> reseq.ObserveRecovered non-resyncing path, recovered frames below release point never reach corroboration","[r1 opus+fable, resolved a97836d] PARITY frames exceed path MTU by 5 bytes at full inner MTU (InnerMTU budgeted only DATA) -> FEC inert on bulk full-size traffic -> FEC-aware inner-MTU budget (FECParityMTUPenalty=5)","[r1 fable, resolved a97836d] fec.deadline unbounded (>resequencerTimeout made recovery structurally late) + /metrics counted reconstructed not delivered -> deadline bounded to resequencerTimeout/2 (config+bind) + delivered-only recovered counter"]
+- new_questions: []
+- ledgerRefs: ["tasks:T24","tasks:T14","tasks:T18","goals:G1"]
 
 ## M9
 

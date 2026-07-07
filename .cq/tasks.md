@@ -252,18 +252,18 @@ archives:
 - ledgerRefs: ["goals:G1"]
 - completion: "NOT STARTED — blocked on an INFRASTRUCTURE issue, not a task problem. Two consecutive implement-worker dispatches for T14 (agents a9855678ac296e2f9, a79b995486bf06b3d) DIED on startup with 0 tool-uses (~5-10s), each returning spurious injected-context/system-reminder fragments instead of doing any work. This is a subagent-dispatch/API failure specific to this run, not a fault in the task. Per the implement-flow ill-loop rule (two dead rounds) I stopped re-dispatching. RE-DISPATCH T14 fresh on the next /cq:advance run (a fresh session/context). The task itself is unchanged and ready (deps T11 done): implement internal/fec RS FEC engine (klauspost/reedsolomon) over opaque frames with a fake-clock grouping deadline + recovery, pure library + unit tests."
 
-### T24 — planned
+### T24 — done
 
 - createdAt: 2026-07-01T23:40:49.927Z
-- updatedAt: 2026-07-01T23:40:49.927Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T22:12:11.550Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Integrate fixed-ratio FEC into the datapath + FEC metrics
 - description: "Wire the RS engine into the datapath: send-side parity emission at the configured fixed ratio; receive-side recovery integrated BEFORE the resequencing buffer (reconstruct lost data frames from parity within a group, then hand recovered+received frames to resequencing and on to WG). Populate FEC overhead/recovered/unrecoverable counters on /metrics. Parity ratio from config."
 - acceptance: "Unit/integration test: a receive stream with <=K dropped frames per group reconstructs the missing frames and delivers the full ordered payload to WG; recovery counter and FEC-overhead gauge update on /metrics."
 - suggestedModel: frontier
 - dependsOn: ["T14","T18","T21"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T14","tasks:T18","reviews:R32"]
 
 ### T25 — planned
 
