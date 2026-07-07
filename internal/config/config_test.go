@@ -205,3 +205,77 @@ func TestLoadRejects(t *testing.T) {
 		})
 	}
 }
+
+// TestSchedulerPolicyDefault: omitting [scheduler] defaults the policy to
+// active-backup (P1 preserved) and leaves the weighted knobs inert/zero.
+func TestSchedulerPolicyDefault(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Scheduler.Policy != PolicyActiveBackup {
+		t.Fatalf("default scheduler policy = %q, want %q", c.Scheduler.Policy, PolicyActiveBackup)
+	}
+	if c.Scheduler.PerPathCapacityFPS != 0 {
+		t.Fatalf("weighted knobs must stay zero under active-backup, got capacity %g", c.Scheduler.PerPathCapacityFPS)
+	}
+}
+
+// TestSchedulerPolicyWeightedDefaults: a minimal weighted block loads and every
+// omitted weighted knob is filled with its default (so `policy = "weighted"` alone
+// is usable), forming a valid hysteresis band.
+func TestSchedulerPolicyWeightedDefaults(t *testing.T) {
+	body := fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Scheduler.Policy != PolicyWeighted {
+		t.Fatalf("policy = %q, want weighted", c.Scheduler.Policy)
+	}
+	if c.Scheduler.PerPathCapacityFPS <= 0 || c.Scheduler.EngageFraction <= 0 ||
+		c.Scheduler.DisengageFraction >= c.Scheduler.EngageFraction || c.Scheduler.LoadTau <= 0 ||
+		c.Scheduler.WeightRTTFloor <= 0 || c.Scheduler.WeightLossFloor <= 0 {
+		t.Fatalf("weighted defaults not applied coherently: %+v", c.Scheduler)
+	}
+}
+
+// TestSchedulerPolicyRejects: the weighted policy fails fast at load on an unknown
+// policy or a non-hysteretic threshold band.
+func TestSchedulerPolicyRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "unknown policy",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"round-robin\"\n",
+			want: "scheduler.policy must be",
+		},
+		{
+			name: "disengage not below engage",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nengage_fraction = 0.5\ndisengage_fraction = 0.6\n",
+			want: "hysteresis band",
+		},
+		{
+			name: "pacing enabled without burst",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\npacing_enabled = true\npacing_burst_frames = -1\n",
+			want: "pacing_burst_frames must be > 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, 0o600, tc.body)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}

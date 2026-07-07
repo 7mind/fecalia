@@ -182,6 +182,19 @@ func (s *ActiveBackup) Pick() int {
 	return s.active
 }
 
+// Recompute re-derives the active path from current liveness and the failback
+// dwell, exactly as Pick does, but discards the result. Active-backup's selection
+// is a single cached index recomputed purely from liveness and the clock, so Pick
+// is idempotent and Recompute IS Pick-without-the-return: the eager-failover nudge
+// (defect D18/T40) can drive an egress-lull failover recompute through it with no
+// behavioural difference from the old Pick-based nudge. It is safe for concurrent
+// callers.
+func (s *ActiveBackup) Recompute() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recomputeLocked(s.clock.Now())
+}
+
 // recomputeLocked re-derives the active path from current liveness and the
 // failback dwell. Caller holds s.mu.
 //

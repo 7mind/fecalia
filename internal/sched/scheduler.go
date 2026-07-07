@@ -4,6 +4,22 @@ import (
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
+// Negative Pick sentinels. Pick returns a NON-NEGATIVE path index when a datagram
+// should egress, and one of these when it should not. They are distinct so the Send
+// path can tell a genuine outage (no eligible path) apart from a transient pacer
+// shedding a frame while every path is healthy — the two must not read the same in
+// operator logs or the e2e log-grep harness.
+const (
+	// PickNone means no path is currently eligible (a total outage among this
+	// scheduler's paths). The Bind maps it to "no healthy path".
+	PickNone = -1
+	// PickPaced means eligible paths EXIST but every one is momentarily paced out, so
+	// this frame is shed (dropped) to bound egress and the send backlog. The paths are
+	// healthy — this is deliberate rate limiting, NOT an outage. Only a pacing-enabled
+	// weighted scheduler ever returns it.
+	PickPaced = -2
+)
+
 // Scheduler is the send-side path-selection policy the multipath Bind consults
 // for every outbound datagram. It is the extension seam for the send scheduler:
 // active-backup failover (ActiveBackup, the P1 MVP) is one implementation; the
@@ -12,9 +28,44 @@ import (
 type Scheduler interface {
 	// Pick returns the index of the path the next datagram must egress on, in
 	// the path priority order the scheduler was built over (index 0 = preferred
-	// primary). It returns a negative value when no path is currently eligible.
-	// Pick is safe for concurrent callers on the Bind's send path.
+	// primary). It returns a negative value when no datagram should be sent this
+	// call; the negative value is one of the Pick* sentinels (PickNone for no
+	// eligible path, PickPaced for a healthy-but-paced-out shed), so the caller can
+	// tell a genuine outage apart from deliberate rate limiting. Pick is safe for
+	// concurrent callers on the Bind's send path.
+	//
+	// Pick MAY be stateful: a weighted/aggregating scheduler advances its
+	// distribution bookkeeping (deficit/round-robin credits, pacing tokens, offered-
+	// load meter) on every call, so ONE Pick consumes ONE frame-selection slot.
+	// Callers that only want the liveness-derived active set refreshed — without
+	// perturbing distribution — MUST call Recompute, not Pick (see the T40 eager-
+	// failover nudge in the multipath Bind).
 	Pick() int
+
+	// Recompute refreshes the scheduler's liveness-derived selection state (which
+	// paths are eligible, which is the active primary) from the current PathHealth,
+	// and logs any active-path transition, WITHOUT selecting or consuming a frame
+	// slot: it advances no distribution/pacing/load state. It is the split-out
+	// "recompute the eligible/active set from liveness" half of the old Pick, so the
+	// eager-failover nudge (defect D18/T40) can drive an egress-lull failover recompute
+	// without stealing a weighted-distribution slot the way a spurious Pick would. For
+	// an idempotent scheduler (active-backup) it is exactly Pick without the return;
+	// for a stateful one (weighted) it is strictly the non-consuming subset. It is
+	// safe for concurrent callers and never calls back into the Bind.
+	Recompute()
+}
+
+// PathQuality is the per-path measured-quality source the weighted scheduler reads
+// to derive distribution weights: the read side of the T13 telemetry Estimate
+// (RTT/Jitter/Loss), ANALOGOUS to PathHealth but exposing the quality snapshot
+// rather than the up/down verdict. *telemetry.Prober satisfies BOTH PathHealth and
+// PathQuality (its Estimate() is mutex-guarded, so it meets the same concurrency
+// contract PathHealth documents), which is how one *Prober per path feeds liveness
+// AND weight to the scheduler. The weighted scheduler's unit tests drive a synthetic
+// PathQuality so the RTT/loss → weight formula is exercised on hand-built Estimates
+// with no real probe stream.
+type PathQuality interface {
+	Estimate() telemetry.Estimate
 }
 
 // DynamicScheduler is a Scheduler whose path set can change at runtime (T30): a
