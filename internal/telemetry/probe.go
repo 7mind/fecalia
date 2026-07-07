@@ -180,8 +180,9 @@ func (p *Prober) State() PathState {
 
 // Reflector is the responder side of the probe exchange. Reflect authenticates
 // an inbound probe, rejects replays per originating path (D4), and returns a fresh
-// authenticated encoding of the same probe (verbatim ProbeSeq and TimestampNanos)
-// so the initiator can compute the round-trip from its own send timestamp. The
+// authenticated encoding of the same probe (verbatim ProbeSeq and TimestampNanos,
+// but with IsEcho set) so the initiator can compute the round-trip from its own
+// send timestamp and its transport can tell the echo apart from a peer probe. The
 // responder never manufactures a timestamp, so it needs no synchronized clock.
 //
 // A single Reflector serves EVERY path, so its anti-replay high-water is keyed by
@@ -227,5 +228,10 @@ func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	if !fresh {
 		return nil, ErrReplay
 	}
+	// Mark the reflection as an echo so the originator's transport routes it into
+	// its Prober (HandleEcho) rather than reflecting it again. ProbeSeq and
+	// TimestampNanos are preserved verbatim so the originator computes the RTT from
+	// its own send timestamp.
+	probe.IsEcho = true
 	return frame.Encode(r.psk, probe)
 }

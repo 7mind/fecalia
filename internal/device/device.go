@@ -41,6 +41,10 @@ type Tunnel struct {
 	dev  *awgdevice.Device
 	tun  tun.Device
 	name string
+	// stopProbes halts the per-path probe cadence loop (T37). Close calls it before
+	// tearing the engine down so emission stops before the sockets close. It is
+	// idempotent and never nil (a no-op when the bind runs without probers).
+	stopProbes func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -156,12 +160,16 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		}
 	}()
 
-	scheduler, err := buildScheduler(cfg, clg)
+	// One live *telemetry.Prober per path drives on-wire liveness. The SAME prober
+	// values back the scheduler's PathHealth AND the bind's probe transport, so the
+	// liveness the probe loop measures is exactly the liveness the scheduler selects
+	// on (T37 replaces the sched.AlwaysUp placeholder here).
+	scheduler, probers, err := buildScheduler(cfg, clg)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler)
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -182,33 +190,65 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		return nil, fmt.Errorf("device: bring up: %w", err)
 	}
 
+	// The engine has opened the bind (dev.Up → BindUpdate → Open), so the per-path
+	// sockets exist: start the probe cadence now. Close stops it before dev.Close.
+	stopProbes := mpBind.StartProbeLoop(defaultProbeInterval)
+
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
-	return &Tunnel{dev: dev, tun: tunDev, name: name, amnezia: cfg.Amnezia}, nil
+	return &Tunnel{dev: dev, tun: tunDev, name: name, stopProbes: stopProbes, amnezia: cfg.Amnezia}, nil
 }
 
 // defaultFailbackDwell is how long a recovered higher-priority path must stay up
 // before egress fails BACK to it, damping flap-induced thrash (T15 hysteresis).
 const defaultFailbackDwell = 5 * time.Second
 
-// buildScheduler constructs the P1 active-backup send scheduler over cfg.Paths in
-// their configured priority order (index 0 = the preferred primary). Real
-// per-path liveness arrives once the probe-transport wiring lands (a follow-up
-// task drives *telemetry.Prober per path); until then every path is reported
-// statically Up, so the active-backup scheduler keeps all egress on the primary —
-// the data-thrift bring-up behaviour — and swapping the AlwaysUp sources for live
-// Probers activates failover with no further Bind or scheduler change.
-func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, error) {
-	health := make([]sched.PathHealth, len(cfg.Paths))
-	for i := range health {
-		health[i] = sched.AlwaysUp{}
+// Probe cadence and liveness detection defaults (T13/T37). The interval is the
+// PROBE emission period; DownAfter is the silence that marks an up path down and
+// UpAfterSuccesses the consecutive echoes that bring a down path up. DownAfter is
+// several intervals so a single lost echo never flaps a path, and detection
+// latency stays within DownAfter plus one interval. LossWindow=0 takes the
+// estimator's default trailing window.
+const (
+	defaultProbeInterval    = 250 * time.Millisecond
+	defaultProbeDownAfter   = 1500 * time.Millisecond
+	defaultProbeUpSuccesses = 3
+	defaultProbeLossWindow  = 0
+)
+
+// buildScheduler constructs one live *telemetry.Prober per path and the P1
+// active-backup send scheduler over them, in cfg.Paths' configured priority order
+// (index 0 = the preferred primary). The returned probers ARE the scheduler's
+// PathHealth sources (a *Prober is internally synchronized, satisfying the
+// PathHealth concurrency contract — a bare *Liveness would not) and are handed to
+// the bind so the probe transport drives the very same liveness the scheduler
+// selects on. This replaces the T15 sched.AlwaysUp placeholder with real on-wire
+// failover (T37).
+func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, error) {
+	clock := telemetry.SystemClock{}
+	proberCfg := telemetry.ProberConfig{
+		LossWindow: defaultProbeLossWindow,
+		Liveness: telemetry.LivenessConfig{
+			DownAfter:        defaultProbeDownAfter,
+			UpAfterSuccesses: defaultProbeUpSuccesses,
+		},
 	}
-	return sched.NewActiveBackup(
+	probers := make([]*telemetry.Prober, len(cfg.Paths))
+	health := make([]sched.PathHealth, len(cfg.Paths))
+	for i := range cfg.Paths {
+		probers[i] = telemetry.NewProber(cfg.Paths[i].Name, uint8(i), cfg.PSK, proberCfg, clock, lg)
+		health[i] = probers[i]
+	}
+	scheduler, err := sched.NewActiveBackup(
 		health,
 		sched.Config{FailbackAfter: defaultFailbackDwell},
-		telemetry.SystemClock{},
+		clock,
 		lg,
 	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return scheduler, probers, nil
 }
 
 // Name is the created TUN interface name (for external addressing/routing).
@@ -218,10 +258,15 @@ func (t *Tunnel) Name() string { return t.name }
 // engine error).
 func (t *Tunnel) Wait() { <-t.dev.Wait() }
 
-// Close brings the device down and releases the TUN and Bind. Idempotent. It also
-// releases this tunnel's hold on the single-amnezia-engine-per-process guard
-// exactly once, so a later Up may reconfigure the process-global amnezia state.
+// Close stops the probe loop, brings the device down, and releases the TUN and
+// Bind. Idempotent. It also releases this tunnel's hold on the single-amnezia-
+// engine-per-process guard exactly once, so a later Up may reconfigure the
+// process-global amnezia state. Probing is stopped BEFORE the engine tears the
+// bind's sockets down so no emission races the close.
 func (t *Tunnel) Close() {
+	if t.stopProbes != nil {
+		t.stopProbes()
+	}
 	t.dev.Close()
 	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })
 }

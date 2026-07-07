@@ -124,10 +124,19 @@ type Parity struct {
 }
 
 // Probe is an authenticated path probe used for RTT and liveness estimation.
+//
+// IsEcho is the request/response discriminant. A probe emitted by an originator
+// (telemetry.Prober.SendProbe) carries IsEcho=false; the responder reflects it
+// verbatim with IsEcho=true (telemetry.Reflector.Reflect). The two are otherwise
+// byte-for-body-identical, so the receiving transport needs this bit to route an
+// inbound frame: IsEcho=false is a peer probe to REFLECT, IsEcho=true is an echo
+// of our own probe to FEED into that path's Prober. Marking the echo also breaks
+// the otherwise-unbounded reflect-of-a-reflect loop (an echo is never reflected).
 type Probe struct {
 	PathID         uint8
 	ProbeSeq       uint64
 	TimestampNanos int64
+	IsEcho         bool
 	Payload        []byte
 }
 
@@ -169,7 +178,16 @@ func (f Probe) appendBody(dst []byte) []byte {
 	dst = append(dst, f.PathID)
 	dst = binary.BigEndian.AppendUint64(dst, f.ProbeSeq)
 	dst = binary.BigEndian.AppendUint64(dst, uint64(f.TimestampNanos))
+	dst = append(dst, boolByte(f.IsEcho))
 	return append(dst, f.Payload...)
+}
+
+// boolByte encodes a bool as a single wire byte (0 or 1).
+func boolByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (f Control) appendBody(dst []byte) []byte {
@@ -353,10 +371,11 @@ func decodeBody(kind Kind, b []byte) (Frame, error) {
 		pathID, e1 := r.u8()
 		probeSeq, e2 := r.u64()
 		ts, e3 := r.u64()
-		if err := firstErr(e1, e2, e3); err != nil {
+		echo, e4 := r.u8()
+		if err := firstErr(e1, e2, e3, e4); err != nil {
 			return nil, err
 		}
-		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), Payload: r.rest()}, nil
+		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, Payload: r.rest()}, nil
 	case KindControl:
 		ctype, e1 := r.u8()
 		if err := firstErr(e1); err != nil {

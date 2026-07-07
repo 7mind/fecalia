@@ -21,7 +21,9 @@ import (
 // newMultipath builds a Multipath over paths with a default active-backup
 // scheduler whose paths are all statically Up, so path selection reduces to the
 // preferred primary (index 0) — the T12 send behaviour these tests assert. The
-// scheduler's own failover/hysteresis logic is exercised in internal/sched.
+// scheduler's own failover/hysteresis logic is exercised in internal/sched. It
+// passes no probers, so the probe transport is inert here (exercised separately
+// in probe_test.go).
 func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath, error) {
 	t.Helper()
 	health := make([]sched.PathHealth, len(paths))
@@ -36,7 +38,7 @@ func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	return NewMultipath(paths, psk, scheduler)
+	return NewMultipath(paths, psk, scheduler, nil)
 }
 
 // testKey builds a valid 32-byte config.Key seeded by b.
@@ -89,8 +91,12 @@ func sendDataTo(t testing.TB, psk config.Key, dst *net.UDPAddr, pathID uint8, pa
 
 // TestMultipathVirtualEndpointIdentity is the core §3 invariant: N per-path
 // sockets deliver received datagrams under ONE stable virtual endpoint, so the
-// engine never observes per-packet endpoint churn. It also checks the per-path
-// endpoint bookkeeping: each path learns its sender's remote.
+// engine never observes per-packet endpoint churn.
+//
+// Note it does NOT assert per-path remote learning from these DATA frames: after
+// D9, remote-learning is authenticated-only (from PROBE/echo frames), so a DATA
+// frame no longer teaches a path its return remote — that is asserted in
+// probe_test.go (TestMultipathRemoteLearnedFromProbeNotData).
 func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	psk := testKey(t, 0x5A)
 	m, err := newMultipath(t, loopbackPaths(2), psk)
@@ -108,11 +114,9 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 
 	payload := []byte("opaque-wireguard-datagram")
 	var gotEps []Endpoint
-	var learned []netip.AddrPort
 	for i, fn := range fns {
 		dst := m.paths[i].conn.LocalAddr().(*net.UDPAddr)
-		clientAP := sendDataTo(t, psk, dst, uint8(i), payload)
-		learned = append(learned, clientAP)
+		sendDataTo(t, psk, dst, uint8(i), payload)
 
 		bufs := [][]byte{make([]byte, 2048)}
 		sizes := make([]int, 1)
@@ -134,17 +138,6 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	if gotEps[0] != gotEps[1] {
 		t.Fatalf("per-path receives returned different endpoints (%v vs %v): virtual-endpoint identity violated",
 			gotEps[0].DstToString(), gotEps[1].DstToString())
-	}
-
-	// Per-path bookkeeping: each path learned its own sender's remote.
-	for i := range m.paths {
-		remote, ok := m.paths[i].getRemote()
-		if !ok {
-			t.Fatalf("path %d did not learn a remote", i)
-		}
-		if remote != learned[i] {
-			t.Fatalf("path %d learned remote %v, want %v", i, remote, learned[i])
-		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/sched"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // socketRecvBuffer is the SO_RCVBUF requested on every per-path socket, matching
@@ -97,6 +98,17 @@ type Multipath struct {
 	defs      []config.Path
 	scheduler sched.Scheduler
 
+	// probers is the per-path probe initiator, indexed by path-id, shared with the
+	// scheduler (the SAME *telemetry.Prober values back its PathHealth). The probe
+	// loop (emitProbes) drives SendProbe/Tick on each; the receiver feeds inbound
+	// echoes into probers[ps.id].HandleEcho. It is nil when the bind runs without
+	// the probe transport (the T12 unit tests, which drive selection via AlwaysUp).
+	probers []*telemetry.Prober
+	// reflector answers inbound peer probes (IsEcho=false) with an authenticated
+	// echo. A single Reflector serves every path (its anti-replay is PathID-keyed)
+	// and it is internally synchronized, so the per-path receive goroutines share it.
+	reflector *telemetry.Reflector
+
 	mu        sync.Mutex
 	paths     []*pathState
 	sendCodec *frame.Codec
@@ -114,12 +126,19 @@ type Multipath struct {
 var _ Bind = (*Multipath)(nil)
 
 // NewMultipath returns a closed multipath Bind over the configured paths; call
-// Open to bind the per-path sockets. The PSK keys the outer DATA framing and must
-// be set (config validation guarantees it). The scheduler is the injected
-// send-side path-selection policy (T15) whose priority order MUST match the
-// paths slice order (index 0 = the preferred primary); it is a required
-// collaborator so the send path is never without a policy.
-func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler) (*Multipath, error) {
+// Open to bind the per-path sockets. The PSK keys the outer framing and must be
+// set (config validation guarantees it). The scheduler is the injected send-side
+// path-selection policy (T15) whose priority order MUST match the paths slice
+// order (index 0 = the preferred primary); it is a required collaborator so the
+// send path is never without a policy.
+//
+// probers is the per-path probe initiator that drives on-wire liveness (T13/T37).
+// When non-nil it MUST hold exactly one *telemetry.Prober per path, in path order,
+// and those SAME values MUST be the scheduler's PathHealth sources so the liveness
+// the probe loop measures is the liveness the scheduler selects on. Pass nil to
+// run the bind without the probe transport (the T12 unit tests drive selection via
+// sched.AlwaysUp instead). A Reflector is built from the PSK to answer peer probes.
+func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -133,10 +152,20 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	if scheduler == nil {
 		return nil, errors.New("bind: a send scheduler is required")
 	}
+	if probers != nil && len(probers) != len(paths) {
+		return nil, fmt.Errorf("bind: probers must have one entry per path (got %d, want %d)", len(probers), len(paths))
+	}
+	for i, pr := range probers {
+		if pr == nil {
+			return nil, fmt.Errorf("bind: prober %d is nil", i)
+		}
+	}
 	return &Multipath{
 		psk:       psk,
 		defs:      append([]config.Path(nil), paths...),
 		scheduler: scheduler,
+		probers:   probers,
+		reflector: telemetry.NewReflector(psk),
 		virt:      &udpEndpoint{},
 	}, nil
 }
@@ -207,11 +236,10 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	return fns, actualPort, nil
 }
 
-// receiver returns the ReceiveFunc for one path socket. It reads one outer
-// datagram, decodes it, and — for a DATA frame — learns the path's remote from
-// the datagram source and delivers the inner WG datagram under the shared virtual
-// endpoint. Non-DATA frames (PROBE/CONTROL/PARITY) and malformed inputs are
-// dropped for T12 (their handling is P2/P3), so the loop reads again rather than
+// receiver returns the ReceiveFunc for one path socket. It reads outer datagrams
+// and dispatches each through handleInbound; only a DATA frame is delivered up
+// under the shared virtual endpoint, so the loop keeps reading (processing probe
+// reflections/echoes as side effects) until a DATA frame arrives rather than
 // returning a zero-length batch. The read buffer is private to this closure, so
 // the per-path Codec's scratch is never shared across goroutines.
 func (m *Multipath) receiver(ps *pathState) ReceiveFunc {
@@ -222,28 +250,75 @@ func (m *Multipath) receiver(ps *pathState) ReceiveFunc {
 			if err != nil {
 				return 0, err
 			}
-			fr, derr := ps.codec.Decode(readBuf[:n])
-			if derr != nil {
-				continue // drop malformed / PSK-mismatched outer frames
+			sz, delivered := m.handleInbound(ps, readBuf[:n], srcAP, packets[0])
+			if !delivered {
+				continue // PROBE reflected/echo-consumed, or dropped: read again
 			}
-			data, ok := fr.(frame.Data)
-			if !ok {
-				continue // T12 delivers only DATA up the stack
-			}
-			// Per-path endpoint bookkeeping: learn where this path's peer is, so
-			// return traffic on this path goes back whence it came. This stays
-			// strictly below the engine's virtual endpoint (no roaming churn).
-			ps.setRemote(srcAP)
-
-			inner := data.Payload
-			if len(inner) > len(packets[0]) {
-				continue // cannot fit; drop (should not happen within MTU budget)
-			}
-			copy(packets[0], inner)
-			sizes[0] = len(inner)
+			sizes[0] = sz
 			eps[0] = m.virtualEndpoint(srcAP)
 			return 1, nil
 		}
+	}
+}
+
+// handleInbound decodes one received outer datagram and dispatches it by kind,
+// returning the delivered inner length and whether a DATA frame was placed into
+// out (to hand up under the virtual endpoint). It is the single per-frame receive
+// action, factored out of receiver so the probe transport is exercisable without
+// spinning receive goroutines.
+//
+//   - DATA: the inner WireGuard datagram is copied into out and delivered. The
+//     path's remote is NOT learned here — remote-learning is authenticated-only
+//     (see below), so a forged DATA frame cannot steer a path's return endpoint.
+//   - PROBE, IsEcho=false: an authenticated peer probe. Its source is learned as
+//     the path's remote (D11: a probe-only backup path gets a usable return remote
+//     before any DATA flows) and it is reflected straight back to that source via
+//     this path's socket (T13 Reflector). Reflection writes independently of the
+//     scheduler/getRemote so an echo returns even on a not-yet-active path.
+//   - PROBE, IsEcho=true: an authenticated echo of one of our own probes. Its
+//     source is learned as the remote too, and the raw echo is fed into this
+//     path's Prober (HandleEcho) to update RTT/loss and drive liveness.
+//   - anything else (PARITY/CONTROL/malformed): dropped.
+//
+// Remote-learning and reflection touch only authenticated (MAC-verified) PROBE
+// frames — Decode has already verified the tag for the PROBE kind — which is what
+// resolves D9: an attacker who forges an unauthenticated DATA frame can no longer
+// repoint a path's return endpoint.
+func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPort, out []byte) (int, bool) {
+	fr, err := ps.codec.Decode(raw)
+	if err != nil {
+		return 0, false // drop malformed / PSK-mismatched outer frames
+	}
+	switch f := fr.(type) {
+	case frame.Data:
+		inner := f.Payload
+		if len(inner) > len(out) {
+			return 0, false // cannot fit; drop (should not happen within MTU budget)
+		}
+		copy(out, inner)
+		return len(inner), true
+	case frame.Probe:
+		// Authenticated (the PROBE MAC verified in Decode): learn the return remote
+		// from it, below the engine's virtual endpoint (no roaming churn).
+		ps.setRemote(srcAP)
+		if f.IsEcho {
+			if int(ps.id) < len(m.probers) {
+				// A replay/forgery/wrong-path echo is rejected inside HandleEcho and
+				// leaves liveness untouched; the error is a per-frame drop, not fatal.
+				_ = m.probers[ps.id].HandleEcho(raw)
+			}
+			return 0, false
+		}
+		if m.reflector != nil {
+			if echo, rerr := m.reflector.Reflect(raw); rerr == nil {
+				// UDP writes are goroutine-safe, so this receive-goroutine reflection
+				// races no in-flight Send on the same socket.
+				_, _ = ps.conn.WriteToUDPAddrPort(echo, srcAP)
+			}
+		}
+		return 0, false
+	default:
+		return 0, false // PARITY/CONTROL are not delivered up this path (P2/P3)
 	}
 }
 
