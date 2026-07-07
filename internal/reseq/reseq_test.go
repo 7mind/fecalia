@@ -302,8 +302,23 @@ func TestPropertyReorderDupLoss(t *testing.T) {
 			}
 			step++
 		}
-		// Advance well past any pending timeout and flush the tail.
-		clk.advance(timeout + time.Second)
+		// Flush the tail. Each remaining head-of-line gap now gets its OWN full
+		// timeout (the per-gap-deadline fix — criticism 2), so a single frozen-clock
+		// advance no longer collapses every gap at once (that only worked when a
+		// buggy expire reused one already-elapsed deadline for all subsequent gaps).
+		// Advance the clock once per gap — modelling real wall-clock progress — until
+		// the buffer is fully drained. expire always advances past at least one gap
+		// when the deadline has elapsed, so this terminates in <= window iterations.
+		for r.Buffered() > 0 {
+			clk.advance(timeout + time.Second)
+			for {
+				it, ok := r.Pop()
+				if !ok {
+					break
+				}
+				feed(it)
+			}
+		}
 		for {
 			it, ok := r.Pop()
 			if !ok {
@@ -318,6 +333,205 @@ func TestPropertyReorderDupLoss(t *testing.T) {
 		if hw := r.HighWater(); uint64(hw) > window {
 			t.Fatalf("seed %d: high-water %d exceeds window %d", seed, hw, window)
 		}
+	}
+}
+
+// TestWildSeqNoHangNoBlackhole reproduces criticism 1 (advanceTo O(jump) hard
+// lock) AND criticism 3a (a single wild-high seq blackholing subsequent legit
+// traffic). A DATA frame is unauthenticated (frame.go: "DATA/PARITY forgeable by
+// design"), so a garbage datagram decoding as KindData yields a uniformly-random
+// uint64 OuterSeq. Observing seq 1 then seq 1<<62:
+//   - must NOT hang (the old advanceTo incremented next one seq at a time under
+//     the mutex, spinning ~2^62 iterations — a permanent hard lock);
+//   - must NOT advance the release point (a single unauthenticated frame cannot
+//     move next to a random point in 2^64, else all legitimate lower-seq traffic
+//     is dropped as late until the next Open — a one-frame blackhole).
+func TestWildSeqNoHangNoBlackhole(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(8, time.Hour, clk)
+
+	r.Observe(1, payloadOf(1), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{1}) {
+		t.Fatalf("head delivery = %v, want [1]", got)
+	}
+
+	// The wild seq must return promptly (O(window), not O(jump)). A watchdog turns
+	// the hard-lock regression into a fast test failure instead of a suite timeout.
+	done := make(chan struct{})
+	go func() {
+		r.Observe(uint64(1)<<62, payloadOf(1<<62), testSrc)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Observe(1<<62) did not return within 2s: advanceTo is O(jump) — hard lock")
+	}
+	if got := drain(r); len(got) != 0 {
+		t.Fatalf("wild seq delivered %v, want nothing", got)
+	}
+
+	// Legit traffic below the wild seq must still be delivered — the wild frame
+	// must not have advanced the release point.
+	var got []uint64
+	for _, seq := range []uint64{2, 3, 4} {
+		r.Observe(seq, payloadOf(seq), testSrc)
+		got = append(got, drain(r)...)
+	}
+	if !equalSeqs(got, []uint64{2, 3, 4}) {
+		t.Fatalf("post-wild-seq delivery = %v, want [2 3 4] (no blackhole)", got)
+	}
+	if s := r.Stats(); s.Resyncs != 0 {
+		t.Fatalf("resyncs = %d, want 0 (a lone wild seq must not resync)", s.Resyncs)
+	}
+}
+
+// TestPerGapTimeoutNotInherited reproduces criticism 2: after a head-of-line
+// timeout fires, a SECOND distinct gap must get its OWN full timeout, not inherit
+// the first gap's already-elapsed deadline. With the defect, expire() left
+// r.waiting true and re-armed with the stale deadline, so the second gap was
+// skipped with ~zero hold — dropping in-window reordered frames that arrived after
+// the earlier gap timed out.
+func TestPerGapTimeoutNotInherited(t *testing.T) {
+	clk := newFakeClock()
+	const timeout = 100 * time.Millisecond
+	r := reseq.New(64, timeout, clk)
+
+	var delivered []uint64
+
+	r.Observe(0, payloadOf(0), testSrc) // delivered, next=1
+	delivered = append(delivered, drain(r)...)
+
+	// First gap: head 1 missing, 2 buffers behind it, arming the hold clock.
+	r.Observe(2, payloadOf(2), testSrc)
+
+	clk.advance(150 * time.Millisecond) // past the FIRST gap's deadline
+	delivered = append(delivered, drain(r)...)
+
+	// Second gap: head 3 missing, 6 buffers behind it. With the defect the stale
+	// (already-elapsed) deadline makes the next drain skip 3,4,5 and advance next
+	// to 7 with ~zero hold, after which the reordered 4 and 5 are dropped as late.
+	r.Observe(6, payloadOf(6), testSrc)
+	delivered = append(delivered, drain(r)...) // fix: held (fresh deadline); defect: advances next to 7
+
+	// These in-window reordered frames must NOT be dropped: under the fix next is
+	// still 3 (the second gap is being held on its OWN deadline), so 4 and 5 land
+	// in-window.
+	r.Observe(4, payloadOf(4), testSrc)
+	r.Observe(5, payloadOf(5), testSrc)
+
+	clk.advance(150 * time.Millisecond) // past the SECOND gap's own deadline
+	delivered = append(delivered, drain(r)...)
+
+	want := []uint64{0, 2, 4, 5, 6}
+	if !equalSeqs(delivered, want) {
+		t.Fatalf("multi-gap delivery = %v, want %v (4,5 must not be dropped by an inherited deadline)", delivered, want)
+	}
+}
+
+// TestPeerRestartResync reproduces criticism 3b: a peer PROCESS RESTART resets its
+// outerSeq counter to 1 while the long-lived resequencer keeps next at the old
+// high-water. Without a resync guard every frame from the restarted peer is
+// dropped as late FOREVER (a regression vs pre-T18). A run of consecutive low-seq
+// frames must corroborate and re-pin the release point within a bounded number of
+// frames.
+func TestPeerRestartResync(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(8, 100*time.Millisecond, clk)
+
+	// Establish a high release point.
+	for seq := uint64(100); seq < 110; seq++ {
+		r.Observe(seq, payloadOf(seq), testSrc)
+		_ = drain(r)
+	}
+
+	// Peer restarts: outerSeq resets to 1,2,3,... — each is far below next=110.
+	var delivered []uint64
+	for seq := uint64(1); seq <= 6; seq++ {
+		r.Observe(seq, payloadOf(seq), testSrc)
+		delivered = append(delivered, drain(r)...)
+	}
+
+	// Delivery must resume within a bounded number of frames (the corroboration
+	// count), losing at most resyncCorroborate-1 frames.
+	if len(delivered) == 0 {
+		t.Fatalf("peer restart permanently blackholed: delivered nothing after restart")
+	}
+	if last := delivered[len(delivered)-1]; last != 6 {
+		t.Fatalf("post-restart delivery tail = %d, want 6 (delivery resumed)", last)
+	}
+	if len(delivered) < 3 {
+		t.Fatalf("post-restart delivered only %d frames %v, want resync within a bounded few", len(delivered), delivered)
+	}
+	if s := r.Stats(); s.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1 (one corroborated restart)", s.Resyncs)
+	}
+}
+
+// TestLongOutageForwardResync reproduces criticism 3c: a legitimate long outage
+// during which the peer keeps incrementing its outerSeq, so when it returns the
+// seqs jump far forward CONSISTENTLY. This must also resync (unlike a lone wild
+// seq) because consecutive forward frames corroborate.
+func TestLongOutageForwardResync(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(8, 100*time.Millisecond, clk)
+
+	for seq := uint64(1); seq <= 5; seq++ {
+		r.Observe(seq, payloadOf(seq), testSrc)
+		_ = drain(r)
+	}
+
+	const base = uint64(100000) // far beyond next+resyncFactor*window
+	var delivered []uint64
+	for i := uint64(0); i < 6; i++ {
+		r.Observe(base+i, payloadOf(base+i), testSrc)
+		delivered = append(delivered, drain(r)...)
+	}
+	if len(delivered) == 0 {
+		t.Fatalf("long-outage forward jump blackholed: delivered nothing")
+	}
+	if last := delivered[len(delivered)-1]; last != base+5 {
+		t.Fatalf("post-outage delivery tail = %d, want %d (resumed)", last, base+5)
+	}
+	if s := r.Stats(); s.Resyncs != 1 {
+		t.Fatalf("resyncs = %d, want 1", s.Resyncs)
+	}
+}
+
+// TestJunkSeqsDoNotCorroborate is the negative half of the discontinuity guard:
+// uniformly-random junk seqs interleaved with a legit ascending stream must NEVER
+// resync (each junk seq is independent in 2^64, so they do not mutually fall
+// within one window span) and must never blackhole the legit stream.
+func TestJunkSeqsDoNotCorroborate(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Hour, clk)
+
+	rng := rand.New(rand.NewSource(12345))
+	var delivered []uint64
+	const startLegit = uint64(1000)
+	for i := uint64(0); i < 300; i++ {
+		legit := startLegit + i
+		r.Observe(legit, payloadOf(legit), testSrc)
+		// A junk seq far above the current release point (suspect band), a fresh
+		// random value each time so no two corroborate.
+		junk := legit + (uint64(1) << 40) + rng.Uint64()%(uint64(1)<<50)
+		r.Observe(junk, payloadOf(junk), testSrc)
+		delivered = append(delivered, drain(r)...)
+	}
+	delivered = append(delivered, drain(r)...)
+
+	// Every legit frame delivered exactly once, in order — no junk-induced blackhole.
+	if uint64(len(delivered)) != 300 {
+		t.Fatalf("delivered %d legit frames, want 300 (junk must not blackhole)", len(delivered))
+	}
+	for i, seq := range delivered {
+		if seq != startLegit+uint64(i) {
+			t.Fatalf("delivered[%d] = %d, want %d", i, seq, startLegit+uint64(i))
+		}
+	}
+	if s := r.Stats(); s.Resyncs != 0 {
+		t.Fatalf("resyncs = %d, want 0 (independent junk seqs must not corroborate)", s.Resyncs)
 	}
 }
 
