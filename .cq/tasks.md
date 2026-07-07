@@ -447,10 +447,10 @@ archives:
 - dependsOn: ["T32","T8","T9"]
 - ledgerRefs: ["goals:G1","tasks:T8","tasks:T9"]
 
-### T34 — planned
+### T34 — done
 
 - createdAt: 2026-07-06T21:44:02.745Z
-- updatedAt: 2026-07-06T21:44:02.745Z
+- updatedAt: 2026-07-07T18:44:58.311Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Real-host multipath/failover validation via virtual interfaces + policy routing
@@ -458,7 +458,7 @@ archives:
 - acceptance: "`just realhosts TestRealMultipathFailover` executes against a wanbond build with P1 multipath support: two distinct-source-IP paths establish, traffic observed on both (telemetry recorded), and after disabling the active path the in-flight TCP session survives with failover time recorded. Report-only per Q12: executing and recording IS the acceptance; it never gates P1/M5 completion or archiving."
 - suggestedModel: frontier
 - dependsOn: ["T33","T12","T15","T20"]
-- ledgerRefs: ["goals:G1","tasks:T12","tasks:T15","tasks:T20"]
+- ledgerRefs: ["goals:G1","tasks:T12","tasks:T15","tasks:T20","reviews:R28"]
 
 ### T35 — done
 

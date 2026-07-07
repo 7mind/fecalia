@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 28
+  item: 29
 archives: []
 ---
 
@@ -291,6 +291,24 @@ archives: []
 - criticism: ["[r1 fable, resolved b4ba329] teardown overclaim — secret configs + synced tree persisted; added removeRemoteDir t.Cleanup on both hosts (LIFO-safe vs daemon teardown)","[r1 fable, resolved b4ba329] chmod-after-write world-readable window — umask 077 && cat > path && chmod 600","[r1 fable, resolved b4ba329] tar shipped untracked agent state — excludes .claude/.codegraph/.worktrees/result","[r1 fable, resolved b4ba329] UDP metric mislabeled offered rate as goodput — compute sendMbps*(1-lost_percent/100)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T33","goals:G1"]
+
+### R28 — go-ahead
+
+- createdAt: 2026-07-07T18:43:33.350Z
+- updatedAt: 2026-07-07T18:43:33.350Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T34 (real-host multipath/failover validation, realhosts tier) go-ahead after 1 fix round (2 review rounds). Merged 42caa3b. The test gives the NAT'd edge two source-IP paths (secondary uplink addr + per-source policy-routing tables) to the one concentrator endpoint, brings up the P1 multipath bond over the real internet, confirms both paths reach liveness up, blackholes the active path mid-flow, asserts a long-lived TCP transfer survives, records edge-side failover time. Report-only per Q12 (gates nothing).
+    
+    R1 opus DISAPPROVE (3 criticisms): (1) CRITICAL self-SSH-severance — the blackhole was a table-wide `default` in the primary path's table (5210), but path-0 binds the host's management-SSH source IP, so the blackhole would drop the SSH-reply channel → sever control SSH with NO in-band recovery (teardown runs over the severed SSH) → brick the standing shared host + leak routing state + force a false failure (the iperf3 -J report rides that SSH). (2) MEDIUM cross-host clock comparison (runner time.Now() vs edge slog timestamps → NTP-skew corruption + spurious failover<0 fail). (3) LOW default-only policy tables strip host-specific routes.
+    
+    FIXED (01810da): (a) scoped blackhole to `ip route replace blackhole <concPubIP>/32 table 5210` — only path-0's traffic TO THE CONCENTRATOR is dropped; management SSH (dest = control host ≠ concPubIP) keeps routing via the mirrored default; (b) copyMainRoutes makes tables 5210/5211 faithful mirrors of the main table (folds in #3); (2) single edge-clock domain via edgeClockNow (`date -u +%s%3N`) captured before the kill vs edge slog timestamps.
+    
+    R2 opus APPROVE (0 criticisms): full SSH-safety walk confirms `src=primaryIP,dst=controlHost` is never dropped in any of the four states (setup / blackholed / restored / teardown), copyMainRoutes faithful, teardown registered pre-mutation + idempotent + partial-state-safe, distinct-4-tuple property preserved, single-clock timing correct, vet+gofmt clean. Filed one LOW out-of-scope defect: the controlHost≠concPubIP precondition was documented but unguarded. ORCHESTRATOR HARDENING (1e3cea2): added assertControlHostNotConcentrator — a fail-fast guard that reads the edge's $SSH_CLIENT and aborts BEFORE any mutation if the edge sees the control SSH arriving from concPubIP (converts the precondition into a by-construction guard against the irreversible sever). Gate re-verified green with the guard.
+- criticism: ["[r1 opus, resolved 01810da] CRITICAL self-SSH-severance: table-wide `blackhole default table 5210` behind `ip rule from primaryIP` dropped the management-SSH reply channel (path-0 binds the host primary IP) → severed control SSH, no in-band recovery, bricked host + leaked routing state + false failure — scoped to `blackhole concPubIP/32` + faithful main-table mirrors so management SSH survives every state","[r1 opus, resolved 01810da] MEDIUM cross-host clock comparison (runner time.Now() vs edge slog timestamps) — replaced with a single edge-clock-domain T0 marker (date -u +%s%3N) vs edge slog time","[r1 opus, resolved 01810da] LOW default-only policy-routing tables strip host-specific routes — tables now faithfully mirror the main table's unicast routes","[r2 opus low/out-of-scope, hardened 1e3cea2] controlHost≠concPubIP precondition documented but unguarded — added a fail-fast $SSH_CLIENT guard before any mutation"]
+- new_questions: []
+- ledgerRefs: ["tasks:T34","goals:G1","defects:D7"]
 
 ## M6
 
