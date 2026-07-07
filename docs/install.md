@@ -139,20 +139,31 @@ systemctl enable --now wanbond-edge      # or wanbond-concentrator
 
 The daemon creates the TUN interface (`wanbond0`) and owns ONLY the tunnel
 engine — **it never assigns addresses or routes** (wg-quick style, no
-privileged shell-outs). Configure them with a systemd drop-in on each end,
-using the inner addresses from `allowed_ips`:
-
-```sh
-systemctl edit wanbond-edge    # or wanbond-concentrator
-```
+privileged shell-outs). Assign them with a **systemd-networkd `.network`
+file**, using the inner addresses from `allowed_ips`:
 
 ```ini
-[Service]
-ExecStartPost=/usr/sbin/ip address add 10.77.0.2/24 dev wanbond0
-ExecStartPost=/usr/sbin/ip link set wanbond0 up
+# /etc/systemd/network/10-wanbond0.network  (edge; concentrator: 10.77.0.1/24)
+[Match]
+Name=wanbond0
+
+[Network]
+Address=10.77.0.2/24
 ```
 
-(Concentrator: `10.77.0.1/24`. Adjust the binary path to `command -v ip`.)
+```sh
+systemctl enable --now systemd-networkd
+```
+
+Do **not** use a `[Service] ExecStartPost=ip address add … dev wanbond0`
+drop-in: the units are `Type=exec`, so systemd considers the service started
+the instant `execve()` returns — *before* the daemon has created `wanbond0` —
+and the `ExecStartPost` would run against a not-yet-existent interface, fail
+with "Cannot find device", and (being an un-prefixed `ExecStartPost`) fail the
+unit and trip the `Restart=on-failure` crash-loop. networkd is race-free: it
+watches for the interface and applies the address the moment `wanbond0`
+appears, whenever that is. (The daemon exposes no `sd_notify` readiness, so
+there is no ordering guarantee to hang an `ExecStartPost` on.)
 
 ## 5. Firewall
 
