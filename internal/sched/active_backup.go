@@ -133,6 +133,31 @@ func (s *ActiveBackup) RemovePath(i int) error {
 	return nil
 }
 
+// SetPaths replaces the entire health list with a defensive copy of health and
+// clears the cached selection (active/pending), so the next Pick re-derives the
+// active path from live liveness. The Bind calls it on every Open to re-align the
+// scheduler's membership with the freshly-rebuilt path slice, which is what makes a
+// runtime path add/remove survive a Close→Open cycle index-aligned (T30). It fails
+// fast on an empty set or a nil element, matching NewActiveBackup's contract. It is
+// safe for concurrent callers.
+func (s *ActiveBackup) SetPaths(health []PathHealth) error {
+	if len(health) == 0 {
+		return fmt.Errorf("sched: at least one path health source is required")
+	}
+	for i, h := range health {
+		if h == nil {
+			return fmt.Errorf("sched: path %d health source is nil", i)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.health = append([]PathHealth(nil), health...)
+	s.active = -1
+	s.pending = -1
+	s.pendingSince = time.Time{}
+	return nil
+}
+
 // indexOfHealth returns the index of h in hs by identity, or -1 when h is nil or
 // absent. Interface equality is pointer identity for the concrete *Prober /
 // health values the scheduler holds.

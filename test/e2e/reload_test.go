@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -59,13 +60,21 @@ func TestRuntimePathReload(t *testing.T) {
 	}
 
 	// Start a long-lived TCP flow across the tunnel; it must survive the add/remove
-	// with no reset.
-	flowDone := make(chan struct{})
+	// with ZERO reset (a TCP reset aborts the iperf3 client with a non-zero exit). The
+	// one-shot server and the t.Cleanup it registers run on the MAIN test goroutine —
+	// startProc/runOut may t.Fatalf, which is illegal off the test goroutine — and the
+	// client's result is sent back over a channel to be asserted on the main goroutine,
+	// mirroring baseline_test.go's rttUnderLoad.
+	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", concInner)
+	type flowResult struct {
+		out []byte
+		err error
+	}
+	flowCh := make(chan flowResult, 1)
 	go func() {
-		defer close(flowDone)
-		top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", concInner)
 		time.Sleep(500 * time.Millisecond)
-		_ = top.runOut("iperf3", "-c", concInner, "-t", "8")
+		out, err := exec.Command("iperf3", "-c", concInner, "-t", "8", "-J").CombinedOutput()
+		flowCh <- flowResult{out: out, err: err}
 	}()
 
 	// --- Add the cellular path at runtime via SIGHUP on both ends. ---
@@ -88,8 +97,21 @@ func TestRuntimePathReload(t *testing.T) {
 		t.Fatalf("bond lost connectivity after removing the cellular path at runtime\n--- edge ---\n%s", edge.log())
 	}
 
-	<-flowDone
-	t.Logf("runtime path reload: single-path up, +cellular via SIGHUP, -cellular via SIGHUP, flow undisturbed")
+	// ZERO-RESET acceptance, asserted EXPLICITLY on the main goroutine: the long-lived
+	// TCP flow that spanned the runtime add AND remove ran to completion. A TCP reset
+	// (the failure this test guards against) aborts iperf3 with a non-zero exit, so
+	// err==nil proves the connection was never reset, and a positive transferred rate
+	// proves data actually flowed across the whole reconfiguration window.
+	res := <-flowCh
+	if res.err != nil {
+		t.Fatalf("in-flight TCP flow did not survive the runtime path add/remove (a TCP reset aborts iperf3): %v\n%s\n--- edge ---\n%s",
+			res.err, res.out, edge.log())
+	}
+	mbps := parseIperfSentMbps(t, res.out)
+	if mbps <= 0 {
+		t.Fatalf("in-flight TCP flow transferred no data across the runtime add/remove:\n%s", res.out)
+	}
+	t.Logf("runtime path reload: single-path up, +cellular via SIGHUP, -cellular via SIGHUP; in-flight TCP flow survived with zero reset (%.1f Mbit/s)", mbps)
 }
 
 // edgeConfigBody renders the edge TOML for the given path set: one source-bound

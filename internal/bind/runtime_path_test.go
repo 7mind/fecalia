@@ -317,14 +317,17 @@ func TestMultipathRuntimePathSetRace(t *testing.T) {
 
 	// Mutator (inline): add then remove a distinct path repeatedly, overlapping the
 	// steady-state hot paths. Each iteration is add+remove, so no path is left behind.
+	// 200 iterations against a 255-id space (boot uses id 0, so ids 1..200 are minted)
+	// never exhausts the id space, so any AddPath error here is UNEXPECTED. Fatal on it
+	// rather than break: a silent break on iteration 0 would let this crux race guard
+	// pass VACUOUSLY with zero add/remove coverage (masking an AddPath regression).
 	for i := 0; i < 200; i++ {
 		name := "rt-" + strconv.Itoa(i)
 		if err := m.AddPath(config.Path{Name: name, SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
-			break // e.g. id-space exhaustion: stop mutating
+			t.Fatalf("AddPath(%s) on iteration %d: %v (unexpected — the id space is not exhausted at 200 iters)", name, i, err)
 		}
 		if err := m.RemovePath(name); err != nil {
-			t.Errorf("RemovePath(%s): %v", name, err)
-			break
+			t.Fatalf("RemovePath(%s) on iteration %d: %v", name, i, err)
 		}
 	}
 
@@ -333,4 +336,185 @@ func TestMultipathRuntimePathSetRace(t *testing.T) {
 	_ = m.Close() // releases the drainer and retires all readers
 	drain.Wait()
 	_ = peer0
+}
+
+// TestMultipathRuntimeRemoveSurvivesReopen is the T30 reopen-consistency regression
+// (review criticism 1b): a runtime RemovePath must SURVIVE the amneziawg Close→Open
+// lifecycle (Down/Up + IpcSet rebind). Before the fix, Open rebuilt m.paths from the
+// stale m.defs and RESURRECTED the removed path with no scheduler entry — a
+// probed-but-unselectable path that desynced the scheduler from the path slice. Now
+// m.defs/m.probers track the removal and Open reconciles the scheduler, so the
+// removed path stays gone and Pick still addresses the surviving path with no
+// errNoHealthyPath.
+func TestMultipathRuntimeRemoveSurvivesReopen(t *testing.T) {
+	psk := testKey(t, 0x34)
+	clk := newFakeClock()
+	m, probers, scheduler := newProbingMultipath(t, loopbackPaths(2), psk, clk) // "a","b"
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	refl := telemetry.NewReflector(psk, rand.Reader)
+	codec, _ := frame.NewCodec(psk)
+
+	// Bring both boot paths up.
+	peer0, ap0 := rawPeer(t)
+	peer1, ap1 := rawPeer(t)
+	m.paths[0].setRemote(ap0)
+	m.paths[1].setRemote(ap1)
+	for i := 0; i < testProbeUpSucc; i++ {
+		probeRound(t, m, clk, refl, codec, psk,
+			map[int]*net.UDPConn{0: peer0, 1: peer1}, map[int]netip.AddrPort{0: ap0, 1: ap1})
+	}
+	if probers[0].State() != telemetry.StateUp || probers[1].State() != telemetry.StateUp {
+		t.Fatalf("boot paths not both up: a=%v b=%v", probers[0].State(), probers[1].State())
+	}
+
+	// Remove the backup path "b" at runtime.
+	if err := m.RemovePath("b"); err != nil {
+		t.Fatalf("RemovePath: %v", err)
+	}
+
+	// --- Cycle Close→Open (the exact bind lifecycle amneziawg drives on Down/Up). ---
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+
+	// The removed path stays gone: exactly one path, and it is "a".
+	if len(m.paths) != 1 {
+		t.Fatalf("paths after reopen = %d, want 1 (removed path was resurrected from stale m.defs)", len(m.paths))
+	}
+	if m.paths[0].name != "a" {
+		t.Fatalf("surviving path after reopen = %q, want \"a\"", m.paths[0].name)
+	}
+
+	// Scheduler and path slice are consistent: Pick addresses the surviving path (a is
+	// still up — probers persist across reopen), never an out-of-range zombie index.
+	idx := scheduler.Pick()
+	if idx != 0 {
+		t.Fatalf("Pick after reopen = %d, want 0 (scheduler/path desync)", idx)
+	}
+	if idx >= len(m.paths) {
+		t.Fatalf("Pick returned out-of-range index %d for %d paths (frozen zombie entry)", idx, len(m.paths))
+	}
+
+	// No errNoHealthyPath: a Send egresses on the surviving path once its remote is
+	// re-seeded on the fresh socket.
+	m.paths[0].setRemote(ap0)
+	if err := m.Send([][]byte{[]byte("post-reopen")}, m.virt); err != nil {
+		t.Fatalf("Send after reopen = %v, want nil (no errNoHealthyPath)", err)
+	}
+}
+
+// TestMultipathRuntimeAddSurvivesReopen is the T30 reopen-consistency regression
+// (review criticism 1a): a runtime AddPath must SURVIVE the Close→Open lifecycle. Before
+// the fix, Open rebuilt m.paths from the stale m.defs (boot paths only), so the added
+// path's prober was still in the scheduler at index N with NO path to Tick it: its
+// liveness froze, Pick could pin to N, and Send's bounds check (N >= len(m.paths))
+// rejected every datagram — total egress outage. Now m.defs/m.probers track the add and
+// Open reconciles the scheduler, so the added path persists as a fully-wired, selectable
+// path with no frozen zombie entry.
+func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
+	psk := testKey(t, 0x35)
+	clk := newFakeClock()
+	m, probers, scheduler := newProbingMultipath(t, loopbackPaths(1), psk, clk) // "a"
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	refl := telemetry.NewReflector(psk, rand.Reader)
+	codec, _ := frame.NewCodec(psk)
+
+	peer0, ap0 := rawPeer(t)
+	m.paths[0].setRemote(ap0)
+	for i := 0; i < testProbeUpSucc; i++ {
+		probeRound(t, m, clk, refl, codec, psk, map[int]*net.UDPConn{0: peer0}, map[int]netip.AddrPort{0: ap0})
+	}
+
+	// Add a second path at runtime (starts down until its probes report healthy).
+	if err := m.AddPath(config.Path{Name: "runtime-b", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
+		t.Fatalf("AddPath: %v", err)
+	}
+	if len(m.paths) != 2 {
+		t.Fatalf("paths = %d, want 2 after add", len(m.paths))
+	}
+
+	// --- Cycle Close→Open. ---
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+
+	// The added path persists across the reopen at its slice index, with a live prober.
+	if len(m.paths) != 2 {
+		t.Fatalf("paths after reopen = %d, want 2 (runtime add did not survive)", len(m.paths))
+	}
+	if m.paths[1].name != "runtime-b" {
+		t.Fatalf("added path after reopen = %q, want \"runtime-b\"", m.paths[1].name)
+	}
+	if m.paths[1].prober == nil {
+		t.Fatal("added path lost its prober across the reopen")
+	}
+
+	// No frozen zombie: the added path (index 1) starts DOWN after reopen (fresh socket,
+	// no echoes yet), so Pick selects the primary (index 0, still up), NEVER an
+	// out-of-range index, and Send succeeds on the primary.
+	if idx := scheduler.Pick(); idx < 0 || idx >= len(m.paths) {
+		t.Fatalf("Pick after reopen = %d out of range [0,%d) (scheduler/path desync)", idx, len(m.paths))
+	} else if idx != 0 {
+		t.Fatalf("Pick after reopen = %d, want 0 (primary up, added path not yet healthy)", idx)
+	}
+	// Route this proof-of-egress Send to a throwaway sink so it does not pollute peer0's
+	// receive buffer (the probe reads below would otherwise mis-read the DATA frame),
+	// then restore the primary's real remote for the probe cadence.
+	sinkPeer, sinkAP := rawPeer(t)
+	m.paths[0].setRemote(sinkAP)
+	if err := m.Send([][]byte{[]byte("post-reopen")}, m.virt); err != nil {
+		t.Fatalf("Send after reopen = %v, want nil (frozen zombie would cause errNoHealthyPath)", err)
+	}
+	_ = sinkPeer
+	m.paths[0].setRemote(ap0)
+
+	// Prove the reopened added path is fully wired (selectable, its prober Ticked), not a
+	// zombie: bring it up alongside the primary (it must NOT steal egress), then
+	// blackhole the primary and confirm egress fails over onto the reopened added path.
+	peer1, ap1 := rawPeer(t)
+	m.paths[1].setRemote(ap1)
+	for i := 0; i < testProbeUpSucc; i++ {
+		probeRound(t, m, clk, refl, codec, psk,
+			map[int]*net.UDPConn{0: peer0, 1: peer1}, map[int]netip.AddrPort{0: ap0, 1: ap1})
+	}
+	if probers[0].State() != telemetry.StateUp {
+		t.Fatalf("primary state after reopen = %v, want up", probers[0].State())
+	}
+	if m.paths[1].prober.State() != telemetry.StateUp {
+		t.Fatalf("reopened added path state = %v, want up (its prober is not being Ticked — frozen zombie)", m.paths[1].prober.State())
+	}
+	if idx := scheduler.Pick(); idx != 0 {
+		t.Fatalf("Pick with both up = %d, want 0 (added path must not steal egress)", idx)
+	}
+	rounds := int(testProbeDownAfter/testProbeInterval) + 3
+	for i := 0; i < rounds; i++ {
+		m.emitProbes()
+		clk.advance(testProbeRTT)
+		readProbe(t, peer0, codec) // drain primary probe, no echo (blackhole)
+		probe := readProbe(t, peer1, codec)
+		raw, _ := frame.Encode(psk, probe)
+		echo, err := refl.Reflect(raw)
+		if err != nil {
+			t.Fatalf("reflect backup: %v", err)
+		}
+		m.handleInbound(m.paths[1], echo, ap1)
+		clk.advance(testProbeInterval - testProbeRTT)
+	}
+	if idx := scheduler.Pick(); idx != 1 {
+		t.Fatalf("Pick after primary blackhole = %d, want 1 (failover onto the reopened runtime-added path)", idx)
+	}
 }

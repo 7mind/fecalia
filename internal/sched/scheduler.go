@@ -42,6 +42,15 @@ type DynamicScheduler interface {
 	// and, if the dropped path was the active one, egress fails over to the best
 	// remaining path on the next Pick. i must be in range.
 	RemovePath(i int) error
+	// SetPaths replaces the ENTIRE path/health list with health (priority order,
+	// index 0 = preferred primary) and clears any cached selection, so the next
+	// Pick re-derives the active path from live liveness. The Bind calls it on
+	// every Open to re-align the scheduler's membership with the path slice it
+	// rebuilds from the current definitions — the single reconciliation point that
+	// makes a runtime path add/remove survive a Close→Open cycle index-aligned
+	// (T30). It is safe for concurrent callers; health must be non-empty and hold
+	// no nil element.
+	SetPaths(health []PathHealth) error
 }
 
 // PathHealth is the per-path liveness the scheduler consumes: the read side of

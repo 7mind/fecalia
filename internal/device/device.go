@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,14 @@ type Tunnel struct {
 	// bind is the multipath Bind the engine drives; Reload calls its runtime
 	// AddPath/RemovePath to apply a config-reload path diff (T30).
 	bind *bind.Multipath
+	// cfg is the configuration the RUNNING tunnel reflects: the boot config, its path
+	// set updated on each successful Reload to the current membership (survivors keep
+	// their original parameters — a membership-only reload does not re-apply modified
+	// path parameters or non-path fields). Reload diffs the next desired config against
+	// it to warn about changes it cannot apply. Guarded by reloadMu.
+	cfg *config.Config
+	// reloadMu serializes Reload against itself (SIGHUP handlers), guarding cfg.
+	reloadMu sync.Mutex
 	// log is the device-component logger, retained for Reload diagnostics.
 	log log.Logger
 	// stopProbes halts the per-path probe cadence loop (T37). Close calls it before
@@ -202,7 +211,7 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
-	return &Tunnel{dev: dev, tun: tunDev, name: name, bind: mpBind, log: clg, stopProbes: stopProbes, amnezia: cfg.Amnezia}, nil
+	return &Tunnel{dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg, stopProbes: stopProbes, amnezia: cfg.Amnezia}, nil
 }
 
 // Reload applies a reloaded configuration to the RUNNING tunnel by diffing its
@@ -216,7 +225,21 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 // New paths are added BEFORE absent ones are removed, so a failed addition aborts
 // with every existing path still in service. Diffing is by name: a path present in
 // both sets is left untouched (its source/dest parameters are not re-read).
+//
+// A membership-only reload CANNOT apply every kind of change: a same-name path whose
+// source/dest changed, a path REORDER (index 0 is the preferred primary, so a reorder
+// is a priority change), and every non-path field (psk, wireguard, amnezia, role, log,
+// metrics) are all out of scope for T30. Rather than silently diverge from the file,
+// Reload logs an EXPLICIT WARNING per ignored change (reloadWarnings) so the operator
+// knows exactly what was dropped; only the path-membership add/remove is applied.
 func (t *Tunnel) Reload(cfg *config.Config) error {
+	t.reloadMu.Lock()
+	defer t.reloadMu.Unlock()
+
+	for _, w := range reloadWarnings(t.cfg, cfg) {
+		t.log.Warn("reload: ignored config change (path-membership reload only)", "change", w)
+	}
+
 	add, remove := diffPaths(t.bind.PathNames(), cfg.Paths)
 	for _, def := range add {
 		if err := t.bind.AddPath(def); err != nil {
@@ -230,7 +253,115 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 		}
 		t.log.Info("reload: path removed", "path", name)
 	}
+	// Advance the running config to the membership now in service. Survivors keep their
+	// ORIGINAL parameters and all non-path fields stay as booted (the ignored changes
+	// were not applied), so a subsequent identical reload re-warns about a still-diverged
+	// file rather than silently accepting it.
+	t.cfg = runningConfig(t.cfg, add, remove)
 	return nil
+}
+
+// reloadWarnings compares the desired config against the currently-running one and
+// returns one human-readable warning per change a path-membership-only reload (T30)
+// cannot apply: a modified same-name path (source/dest), a path reorder, and any
+// non-path field. Membership add/remove is NOT reported here — it is applied. Full
+// modify-support is out of scope; SILENCE is not — the operator must be told what was
+// ignored. It is a pure function so the warning set is unit-testable.
+func reloadWarnings(live, desired *config.Config) []string {
+	var w []string
+
+	if live.Role != desired.Role {
+		w = append(w, fmt.Sprintf("role %q -> %q", live.Role, desired.Role))
+	}
+	if !reflect.DeepEqual(live.PSK, desired.PSK) {
+		w = append(w, "psk changed")
+	}
+	if !reflect.DeepEqual(live.WireGuard, desired.WireGuard) {
+		w = append(w, "wireguard section changed")
+	}
+	if !reflect.DeepEqual(live.Amnezia, desired.Amnezia) {
+		w = append(w, "amnezia section changed")
+	}
+	if !reflect.DeepEqual(live.Log, desired.Log) {
+		w = append(w, "log section changed")
+	}
+	if !reflect.DeepEqual(live.Metrics, desired.Metrics) {
+		w = append(w, "metrics section changed")
+	}
+
+	// Same-name paths whose parameters changed: diffPaths matches by name only, so a
+	// modified source/dest on an existing path is otherwise silently dropped.
+	liveByName := make(map[string]config.Path, len(live.Paths))
+	for _, p := range live.Paths {
+		liveByName[p.Name] = p
+	}
+	for _, d := range desired.Paths {
+		l, ok := liveByName[d.Name]
+		if !ok {
+			continue // a genuinely new path is added, not ignored
+		}
+		if l.SourceAddr != d.SourceAddr || l.DestAddr != d.DestAddr {
+			w = append(w, fmt.Sprintf("path %q source/dest changed — the running path keeps its original binding", d.Name))
+		}
+	}
+
+	if reordered(live.Paths, desired.Paths) {
+		w = append(w, "path priority order changed (reorder) — the running order is unchanged")
+	}
+	return w
+}
+
+// reordered reports whether the paths common to BOTH slices appear in a different
+// relative order in desired than in live. The common subsequence has the same length
+// on both sides (it is the name intersection), so a positional mismatch is a reorder.
+func reordered(live, desired []config.Path) bool {
+	desiredNames := make(map[string]struct{}, len(desired))
+	for _, p := range desired {
+		desiredNames[p.Name] = struct{}{}
+	}
+	liveNames := make(map[string]struct{}, len(live))
+	for _, p := range live {
+		liveNames[p.Name] = struct{}{}
+	}
+	var liveCommon, desiredCommon []string
+	for _, p := range live {
+		if _, ok := desiredNames[p.Name]; ok {
+			liveCommon = append(liveCommon, p.Name)
+		}
+	}
+	for _, p := range desired {
+		if _, ok := liveNames[p.Name]; ok {
+			desiredCommon = append(desiredCommon, p.Name)
+		}
+	}
+	for i := range liveCommon {
+		if liveCommon[i] != desiredCommon[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// runningConfig advances the running config to the membership the bind now serves:
+// the survivors (live paths not removed, keeping their ORIGINAL parameters and order)
+// followed by the added paths (their new parameters). Non-path fields are carried over
+// unchanged — a membership-only reload does not re-apply them. It mirrors the m.defs
+// order the bind rebuilds on a Close→Open (survivors-in-order, then appended adds).
+func runningConfig(live *config.Config, add []config.Path, remove []string) *config.Config {
+	removeSet := make(map[string]struct{}, len(remove))
+	for _, n := range remove {
+		removeSet[n] = struct{}{}
+	}
+	paths := make([]config.Path, 0, len(live.Paths)+len(add))
+	for _, p := range live.Paths {
+		if _, gone := removeSet[p.Name]; !gone {
+			paths = append(paths, p)
+		}
+	}
+	paths = append(paths, add...)
+	running := *live
+	running.Paths = paths
+	return &running
 }
 
 // diffPaths computes, by name, which desired paths are not yet live (to add) and

@@ -117,3 +117,47 @@ func TestActiveBackupRemoveDoesNotThrashFailback(t *testing.T) {
 		t.Fatalf("Pick after removing the pending candidate = %d, want 0 (backup, now sole path)", got)
 	}
 }
+
+// TestActiveBackupSetPathsReconciles is the T30 reopen-reconcile invariant: SetPaths
+// replaces the whole membership and clears the cached selection, so after the Bind
+// rebuilds its path slice on a Close→Open the scheduler is re-aligned to the CURRENT
+// paths and the next Pick re-derives from live liveness rather than a stale cached
+// index.
+func TestActiveBackupSetPathsReconciles(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	s := newSched(t, clock, time.Second, primary, backup)
+	if got := s.Pick(); got != 0 {
+		t.Fatalf("initial Pick = %d, want 0", got)
+	}
+
+	// Reconcile to a NEW membership (stands in for the path slice the Bind rebuilds from
+	// m.probers on reopen): a single, down path.
+	reopened := &fakeHealth{s: telemetry.StateDown}
+	if err := s.SetPaths([]PathHealth{reopened}); err != nil {
+		t.Fatalf("SetPaths: %v", err)
+	}
+	if got := s.Pick(); got != -1 {
+		t.Fatalf("Pick after reconcile to a single down path = %d, want -1 (cached active cleared)", got)
+	}
+	reopened.up()
+	if got := s.Pick(); got != 0 {
+		t.Fatalf("Pick after the reconciled path came up = %d, want 0", got)
+	}
+
+	// The old health sources are no longer consulted: bringing the reconciled path down
+	// yields no eligible path even though the old primary/backup remain up.
+	reopened.down()
+	if got := s.Pick(); got != -1 {
+		t.Fatalf("Pick = %d, want -1 (stale pre-reconcile paths must not be selectable)", got)
+	}
+
+	// Fail-fast contract: empty set and nil element are rejected, membership unchanged.
+	if err := s.SetPaths(nil); err == nil {
+		t.Fatal("SetPaths(nil) succeeded, want error")
+	}
+	if err := s.SetPaths([]PathHealth{nil}); err == nil {
+		t.Fatal("SetPaths([nil]) succeeded, want error")
+	}
+}

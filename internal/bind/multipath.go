@@ -339,6 +339,29 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	m.nextPathID = uint16(len(m.paths))
 	m.sendCodec = sendCodec
 
+	// Reconcile the scheduler's membership with the path slice just rebuilt from
+	// m.defs. A runtime AddPath/RemovePath (T30) keeps m.defs, m.probers, AND the
+	// live scheduler in lockstep during an Open span; re-pinning the scheduler's
+	// health list to the CURRENT probers HERE — index-aligned with m.paths, since
+	// m.paths[i].prober == m.probers[i] by construction above — is the single
+	// reconciliation point that makes that runtime membership survive this
+	// Close→Open cycle without a scheduler/path desync (no frozen zombie health
+	// entry, no resurrected removed path). Only meaningful with the probe transport:
+	// a bind without probers cannot change membership at runtime (AddPath is
+	// refused), so its scheduler is left exactly as built.
+	if m.probers != nil {
+		if dyn, ok := m.scheduler.(sched.DynamicScheduler); ok {
+			health := make([]sched.PathHealth, len(m.probers))
+			for i, pr := range m.probers {
+				health[i] = pr
+			}
+			if err := dyn.SetPaths(health); err != nil {
+				_ = m.closeSocketsLocked()
+				return nil, 0, fmt.Errorf("bind: reconcile scheduler on open: %w", err)
+			}
+		}
+	}
+
 	// Stand up the receive fan-in: one Bind-owned reader per path feeding the shared
 	// resequencer, and a single engine-facing drainer. Both channels are recreated
 	// per Open so a Close→Open cycle starts clean.
@@ -392,6 +415,21 @@ func (m *Multipath) readLoop(ps *pathState, deliver chan<- struct{}) {
 // A single drainer also delivers with ZERO added reorder (only it calls Pop), which
 // is stricter than T12's per-path receivers.
 func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct{}) ReceiveFunc {
+	// One reusable poll timer per drainer, NOT a fresh time.After timer per park: the
+	// drainer parks on every empty receive, and a per-park 250 ms timer — retained by
+	// the runtime timer heap until it fires even after the park is over — added
+	// avoidable allocation and GC pressure on the receive hot path (opus low defect).
+	// The ReceiveFunc is driven by a single engine goroutine, so the timer has no
+	// concurrent user; Stop+drain then Reset per park reuses the one allocation.
+	timer := time.NewTimer(resequencerTimeout)
+	stopTimer := func() {
+		timer.Stop()
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	stopTimer() // start inert; armed only while parked
 	return func(packets [][]byte, sizes []int, eps []Endpoint) (int, error) {
 		for {
 			// Deliver any in-order resequenced DATA. The item carries the outer source
@@ -405,10 +443,14 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 				eps[0] = m.virtualEndpoint(it.Src)
 				return 1, nil
 			}
+			timer.Reset(resequencerTimeout)
 			select {
 			case <-deliver:
-			case <-time.After(resequencerTimeout):
+				stopTimer()
+			case <-timer.C:
+				// Poll fired; its channel is already drained by this receive.
 			case <-closed:
+				stopTimer()
 				return 0, errClosed
 			}
 		}
@@ -711,8 +753,24 @@ func (m *Multipath) AddPath(def config.Path) error {
 		return err
 	}
 	if schedIdx != len(m.paths)-1 {
-		return fmt.Errorf("bind: scheduler/path index skew after add: sched=%d bind=%d", schedIdx, len(m.paths)-1)
+		// Defensive, currently unreachable (AddPath appends at the scheduler tail):
+		// roll the admission back COMPLETELY — drop the just-added scheduler entry,
+		// pop the appended path, and close its socket — mirroring the sibling error
+		// branch above so a skew never leaks a half-admitted path or an orphaned
+		// scheduler entry.
+		bindIdx := len(m.paths) - 1
+		_ = dyn.RemovePath(schedIdx)
+		m.paths = m.paths[:len(m.paths)-1]
+		_ = c.Close()
+		return fmt.Errorf("bind: scheduler/path index skew after add: sched=%d bind=%d", schedIdx, bindIdx)
 	}
+	// Durable membership: record the def and prober so a subsequent Close→Open
+	// rebuilds THIS path (Open reconstructs m.paths from m.defs and re-pins the
+	// scheduler from m.probers). Kept index-aligned with m.paths under m.mu, so the
+	// runtime add survives a reopen instead of vanishing — or leaving a frozen
+	// scheduler health entry with no path to Tick it (total-egress-outage defect).
+	m.defs = append(m.defs, def)
+	m.probers = append(m.probers, ps.prober)
 	m.nextPathID++
 
 	m.readersWG.Add(1)
@@ -758,6 +816,15 @@ func (m *Multipath) RemovePath(name string) error {
 		return err
 	}
 	m.paths = append(m.paths[:idx], m.paths[idx+1:]...)
+	// Drop the SAME index from the durable membership so a subsequent Close→Open does
+	// NOT resurrect the removed path from m.defs (which would reappear probed-but-
+	// unselectable), and Open's scheduler reconcile is not fed a stale prober. All
+	// three slices are kept index-aligned under m.mu, so idx addresses this path in
+	// each (m.probers is nil only on a bind that forbids runtime membership).
+	m.defs = append(m.defs[:idx], m.defs[idx+1:]...)
+	if m.probers != nil {
+		m.probers = append(m.probers[:idx], m.probers[idx+1:]...)
+	}
 	// Closing the socket unblocks and retires the path's reader; it is NOT waited on
 	// here (it never touches the path slice, and any last in-flight frame it Observes
 	// is delivered normally), so a removal never blocks the caller behind a read.

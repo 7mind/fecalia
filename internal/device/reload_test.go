@@ -2,6 +2,7 @@ package device
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/7mind/wanbond/internal/config"
@@ -63,6 +64,93 @@ func TestDiffPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReloadWarnings pins the T30 operability contract (review criticism 4): a
+// membership-only reload logs an EXPLICIT warning for every change it cannot apply —
+// a modified same-name path, a path reorder, and any non-path field — while a pure
+// add/remove is applied silently (no warning).
+func TestReloadWarnings(t *testing.T) {
+	base := func() *config.Config {
+		return &config.Config{Role: config.RoleEdge, Paths: []config.Path{path("a"), path("b")}}
+	}
+	modPath := func(name, addr string) config.Path {
+		return config.Path{Name: name, SourceAddr: netip.MustParseAddr(addr)}
+	}
+
+	cases := []struct {
+		name    string
+		desired func() *config.Config
+		want    string // substring the single expected warning must contain; "" = expect none
+	}{
+		{"identical", base, ""},
+		{"membership add/remove only", func() *config.Config {
+			c := base()
+			c.Paths = []config.Path{path("a"), path("c")} // remove b, add c
+			return c
+		}, ""},
+		{"modified path source", func() *config.Config {
+			c := base()
+			c.Paths = []config.Path{path("a"), modPath("b", "10.0.0.9")}
+			return c
+		}, `path "b"`},
+		{"reordered paths", func() *config.Config {
+			c := base()
+			c.Paths = []config.Path{path("b"), path("a")}
+			return c
+		}, "reorder"},
+		{"role changed", func() *config.Config {
+			c := base()
+			c.Role = config.RoleConcentrator
+			return c
+		}, "role"},
+		{"log changed", func() *config.Config {
+			c := base()
+			c.Log = config.Log{Level: "debug"}
+			return c
+		}, "log"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := reloadWarnings(base(), tc.desired())
+			if tc.want == "" {
+				if len(w) != 0 {
+					t.Fatalf("want no warnings, got %v", w)
+				}
+				return
+			}
+			if !containsSubstr(w, tc.want) {
+				t.Fatalf("want a warning containing %q, got %v", tc.want, w)
+			}
+		})
+	}
+}
+
+// TestRunningConfigTracksMembership pins that the running config advances to the
+// membership actually in service — survivors (original params/order) then added
+// paths — so a subsequent reload diffs against the true running state (T30).
+func TestRunningConfigTracksMembership(t *testing.T) {
+	live := &config.Config{Role: config.RoleEdge, Paths: []config.Path{path("a"), path("b")}}
+	got := runningConfig(live, []config.Path{path("c")}, []string{"b"})
+	if !equalStrings(names(got.Paths), []string{"a", "c"}) {
+		t.Fatalf("running paths = %v, want [a c]", names(got.Paths))
+	}
+	if got.Role != config.RoleEdge {
+		t.Fatalf("running role = %q, want edge (non-path fields carried over)", got.Role)
+	}
+	// The original config's path slice is not mutated.
+	if !equalStrings(names(live.Paths), []string{"a", "b"}) {
+		t.Fatalf("runningConfig mutated the input paths: %v", names(live.Paths))
+	}
+}
+
+func containsSubstr(ws []string, sub string) bool {
+	for _, w := range ws {
+		if strings.Contains(w, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func names(ps []config.Path) []string {
