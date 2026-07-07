@@ -88,6 +88,20 @@ type pathState struct {
 	// what keeps echo handling race-free while paths are added/removed at runtime (T30).
 	prober *telemetry.Prober
 
+	// txBytes/rxBytes are cumulative OUTER-wire byte counters for this path, the
+	// per-path traffic accounting the /metrics exposition reports (T23). txBytes counts
+	// the DATA-frame wire bytes this path egresses on the Send hot path; rxBytes counts
+	// every outer datagram this path's readLoop receives (DATA, PROBE, and echo alike —
+	// the true received wire volume). They are atomics so the send/receive hot paths
+	// increment them WITHOUT taking m.mu (lock-free), and the scrape/snapshot path reads
+	// them with a plain atomic Load; a single writer per counter (Send holds m.mu while
+	// choosing the path, and each path has exactly one readLoop) means the Add is
+	// uncontended in the common case. "Bytes on Starlink vs 5G" — the data-thrift signal
+	// (requirement 2) — is exactly txBytes: when the weighted scheduler collapses to the
+	// primary under sub-capacity load, the backup path's Send count stays ~flat.
+	txBytes atomic.Uint64
+	rxBytes atomic.Uint64
+
 	mu        sync.Mutex
 	remote    netip.AddrPort
 	hasRemote bool
@@ -444,6 +458,10 @@ func (m *Multipath) readLoop(ps *pathState, deliver chan<- struct{}) {
 		if err != nil {
 			return // socket closed: this path was removed, or the bind was closed
 		}
+		// Per-path received-wire accounting (T23): count the OUTER datagram this path
+		// pulled off its socket before dispatch, lock-free. This goroutine is the sole
+		// writer of ps.rxBytes, so the atomic Add is uncontended.
+		ps.rxBytes.Add(uint64(n))
 		m.handleInbound(ps, readBuf[:n], srcAP)
 		// Advance liveness off the receive path (throttled): a live signal on THIS path
 		// is what lets a DIFFERENT, silent path be marked DOWN promptly even when the
@@ -763,6 +781,11 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		if _, err := c.WriteToUDPAddrPort(wire, remote); err != nil {
 			return err
 		}
+		// Per-path egress-wire accounting (T23): count the OUTER DATA-frame bytes just
+		// written to this path, lock-free and only for a datagram that actually reached
+		// the socket. Send serialized the path choice under m.mu, so ps is fixed here and
+		// this is the sole writer of ps.txBytes for this frame.
+		ps.txBytes.Add(uint64(len(wire)))
 	}
 	return nil
 }
@@ -999,6 +1022,57 @@ func (m *Multipath) PathNames() []string {
 		names[i] = ps.name
 	}
 	return names
+}
+
+// PathTraffic is a consistent per-path traffic+telemetry snapshot (T23): the OUTER-
+// wire byte counters fused with the path's telemetry quality Estimate and liveness
+// State (read verbatim from its Prober). It is the shape the metrics.Source adapter
+// maps into a metrics.PathSnapshot; the Bind reports raw cumulative byte counters and
+// the Estimate/State — it does NOT compute a rate here (the adapter derives throughput
+// from the byte-counter delta across scrapes). Estimate/State are the telemetry
+// zero-values on a bind without the probe transport (no prober).
+type PathTraffic struct {
+	Name     string
+	TxBytes  uint64
+	RxBytes  uint64
+	Estimate telemetry.Estimate
+	State    telemetry.PathState
+}
+
+// PathSnapshots returns a consistent per-path traffic+telemetry snapshot for the
+// currently-active paths, in priority order — the read side the metrics exposition
+// (T23) scrapes. Concurrency: it acquires m.mu ONLY to copy out each path's name, its
+// two atomic byte counters, and its prober pointer, then RELEASES m.mu BEFORE calling
+// the (independently-synchronized) prober's Estimate()/State(). This mirrors
+// tickLivenessFromReceive's discipline — the lock is held for a bounded, syscall-free,
+// O(paths) copy and never across a prober call or a log write — so the scrape never
+// blocks an in-flight Send behind the prober's own mutex, and the lock-free send/
+// receive byte-counter Adds are undisturbed (they take no lock at all). The counters
+// are read as a point-in-time atomic Load: tx and rx of one path may reflect Adds a
+// nanosecond apart, which is immaterial to a cumulative-counter exposition.
+func (m *Multipath) PathSnapshots() []PathTraffic {
+	type ref struct {
+		name   string
+		tx, rx uint64
+		prober *telemetry.Prober
+	}
+	m.mu.Lock()
+	refs := make([]ref, len(m.paths))
+	for i, ps := range m.paths {
+		refs[i] = ref{name: ps.name, tx: ps.txBytes.Load(), rx: ps.rxBytes.Load(), prober: ps.prober}
+	}
+	m.mu.Unlock()
+
+	out := make([]PathTraffic, len(refs))
+	for i, r := range refs {
+		pt := PathTraffic{Name: r.name, TxBytes: r.tx, RxBytes: r.rx}
+		if r.prober != nil {
+			pt.Estimate = r.prober.Estimate()
+			pt.State = r.prober.State()
+		}
+		out[i] = pt
+	}
+	return out
 }
 
 // SetMark is a no-op for T12: per-path SO_MARK is a scheduler concern (T15), and

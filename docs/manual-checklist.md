@@ -101,3 +101,56 @@ numbers next to each item.
       no-op: journal logs `config reloaded`, tunnel stays up, flow unaffected.
 - [ ] `systemctl restart wanbond-edge` recovers the tunnel within seconds;
       a NEW flow passes end to end afterwards.
+
+## P2 — scripted real-setup run (aggregation + data-thrift)
+
+Scripted counterpart of the P2 summary above for the real deployment. Requires the
+P1 setup already validated (both uplinks up, both daemons running from `0600`
+configs, `/metrics` reachable on `127.0.0.1:9090` each end) AND the edge configured
+with the weighted-aggregation scheduler so bonding engages under load:
+
+```toml
+[scheduler]
+policy = "weighted"
+# per_path_capacity_fps sizes the aggregation gate to ~one uplink's frame rate;
+# tune it to the slower uplink's sustained frame rate (bytes/s ÷ inner MTU).
+```
+
+Inner addresses assume concentrator `10.77.0.1`, edge `10.77.0.2`. `THRU()` below is
+`curl -s http://127.0.0.1:9090/metrics | grep wanbond_path_throughput`; `TX(path)` is
+`... | grep wanbond_path_tx_bytes_total | grep <path>`. Record date, `wanbond version`,
+and observed numbers.
+
+### Baseline: per-uplink solo throughput
+- [ ] Record each uplink's SOLO saturated throughput: bring the tunnel up with only
+      Starlink configured, run `iperf3 -c 10.77.0.1 -t 20`, and read the Starlink
+      `wanbond_path_throughput_bits_per_second` from `/metrics`. Repeat with only 5G.
+      Record `T_starlink` and `T_5g` (Mbit/s, from `/metrics`).
+
+### Aggregation under saturating load
+- [ ] Bring the tunnel up with BOTH uplinks. Start a saturating flow:
+      concentrator `iperf3 -s -B 10.77.0.1`; edge `iperf3 -c 10.77.0.1 -t 30`.
+- [ ] Mid-flow, read BOTH paths' `wanbond_path_throughput_bits_per_second` from the
+      edge `/metrics` and sum them: `T_bonded`. Confirm both paths are non-zero
+      (aggregation engaged, not single-path fallback).
+- [ ] Cross-check the far end: the concentrator `/metrics` shows
+      `wanbond_path_rx_bytes_total` climbing on BOTH paths.
+- [ ] Assert `T_bonded ≥ P2BondedMinFraction × (T_starlink + T_5g)` (0.85). Record the
+      measured fraction.
+
+### Data-thrift: metered path stays idle while primary is healthy
+- [ ] With both uplinks healthy, run a SUB-capacity flow that fits Starlink alone
+      (e.g. edge `iperf3 -c 10.77.0.1 -t 30 -b <~40% of T_starlink>`).
+- [ ] Sample `wanbond_path_tx_bytes_total` for both paths at the start and end of the
+      flow; take the DELTA over the window.
+- [ ] Assert the 5G delta is `< P2MeteredMaxByteFraction × (Starlink + 5G deltas)`
+      (0.01) — the metered uplink carried effectively no bytes. Record the fraction.
+- [ ] Confirm `wanbond_path_up{path="starlink"}` was `1` throughout (the thrift
+      guarantee is conditioned on a healthy primary).
+
+### Aggregation teardown discipline
+- [ ] Stop the saturating flow; within a few seconds the edge journal / `/metrics`
+      show egress collapsing back to Starlink only (5G tx flat again).
+- [ ] `systemctl reload wanbond-edge` after changing `[metrics] listen`: journal logs
+      `metrics endpoint rebound`; the new address serves `/metrics`, the old one stops;
+      the tunnel and any running flow are unaffected.
