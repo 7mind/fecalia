@@ -11,31 +11,27 @@ import (
 
 // listenPath binds one path's UDP socket to port on the path's source.
 //
-// It PREFERS binding the socket to the source's INTERFACE (SO_BINDTODEVICE) with
-// a wildcard local address, rather than pinning the specific source IP. That is
-// what makes an edge's path survive a public-IP change mid-session (a re-roam /
-// NAT rebind — T16): when the interface's address changes, a device-bound socket
-// keeps sending, now sourced from the interface's NEW address, and the far side's
-// Bind re-learns that source from the next authenticated probe (T37). A socket
-// pinned to the OLD source IP would instead fail every send with ENETUNREACH once
-// that address is removed, and the path could never recover without a re-Open
-// (which would reset the WireGuard session).
+// When dev is non-empty the socket is bound to that INTERFACE (SO_BINDTODEVICE)
+// with a wildcard local address instead of pinning the specific source IP. That
+// is what makes an edge's path survive a public-IP change mid-session (a re-roam
+// / NAT rebind — T16): when the interface's address changes, a device-bound
+// socket keeps sending, now sourced from the interface's NEW address, and the far
+// side's Bind re-learns that source from the next authenticated probe (T37). A
+// socket pinned to the OLD source IP would instead fail every send with
+// ENETUNREACH once that address is removed, and the path could never recover
+// without a re-Open (which would reset the WireGuard session).
 //
-// Device binding is BEST-EFFORT: when the source is loopback/unspecified, its
-// interface cannot be resolved, or SO_BINDTODEVICE is not permitted (it needs
-// CAP_NET_RAW; the daemon runs privileged, but the unit tests bind loopback
-// unprivileged), listenPath falls back to binding the specific source address —
-// the pre-T16 behaviour — so nothing regresses. For the single-address uplink
-// interfaces this is used on, "bind the device, source from its address" is
-// identical to "bind the source IP" until the address actually changes.
+// dev is chosen by planPathBinds / selectDeviceBinds and is non-empty ONLY when
+// device binding is provably equivalent to pinning the configured source_addr and
+// no other path contends for the device (see selectDeviceBinds). When dev is ""
+// the socket pins the specific source IP — the pre-T16 behaviour.
 //
-// Same-port coexistence: several paths may share one port (a re-Open passes the
-// engine's fixed listen port back for every path). Distinct SO_BINDTODEVICE
-// sockets on the same wildcard port do NOT collide (the kernel keys them by
-// device), so device binding does not reintroduce the per-path bind conflict that
-// distinct source IPs previously avoided.
-func listenPath(src netip.Addr, port uint16) (*net.UDPConn, error) {
-	if dev := interfaceForAddr(src); dev != "" {
+// Device binding is also BEST-EFFORT even when selected: SO_BINDTODEVICE needs
+// CAP_NET_RAW (the daemon runs privileged, but the unit tests bind loopback
+// unprivileged) and is Linux-only, so a device-bind failure falls back to
+// source-IP binding rather than failing Open.
+func listenPath(src netip.Addr, port uint16, dev string) (*net.UDPConn, error) {
+	if dev != "" {
 		if c, err := listenOnDevice(src, port, dev); err == nil {
 			return c, nil
 		}
@@ -45,19 +41,82 @@ func listenPath(src netip.Addr, port uint16) (*net.UDPConn, error) {
 	return net.ListenUDP("udp", laddr)
 }
 
-// interfaceForAddr returns the name of the non-loopback interface that currently
-// owns src, or "" when src is loopback/unspecified/invalid or no interface holds
-// it. It is the resolution step that lets a source-address config select a device
-// to bind, so the socket can outlive that address changing.
-func interfaceForAddr(src netip.Addr) string {
-	if !src.IsValid() || src.IsLoopback() || src.IsUnspecified() {
-		return ""
-	}
-	want := src.Unmap()
+// ifaceInfo is the resolution of a source address against the host's interfaces:
+// the non-loopback interface currently holding the address (dev, "" when none
+// does) and how many addresses of that source's family (IPv4 vs IPv6) the
+// interface carries. familyCount drives the device-bind decision — a device-bind
+// socket is only equivalent to the configured source pin when the interface holds
+// exactly one address of the family.
+type ifaceInfo struct {
+	dev         string
+	familyCount int
+}
+
+// planPathBinds resolves every path source against a SINGLE snapshot of the
+// host's interfaces and returns the per-path bind plan (see selectDeviceBinds):
+// index i holds the device to SO_BINDTODEVICE-bind path i to, or "" to pin path
+// i's specific source IP. A snapshot failure resolves every source to an empty
+// dev, so all paths fall back to source-IP binding.
+func planPathBinds(srcs []netip.Addr) []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return ""
+		ifaces = nil
 	}
+	return selectDeviceBinds(srcs, func(s netip.Addr) ifaceInfo {
+		return interfaceInfo(s, ifaces)
+	})
+}
+
+// selectDeviceBinds decides, per source address, whether its path socket may be
+// bound to the source's interface (SO_BINDTODEVICE + wildcard) or must pin the
+// specific source IP. Device binding — the T16 roam-surviving mode — is chosen
+// ONLY when it is provably equivalent to pinning the configured source_addr AND
+// no other path contends for the device:
+//
+//   - the source resolves to a non-loopback interface (dev != ""),
+//   - that interface carries exactly ONE address of the source's family, so a
+//     wildcard-on-device socket can only ever source from the configured address
+//     (a multi-address interface would let the kernel pick a DIFFERENT source via
+//     route-based selection, voiding source_addr's pin — Criticism 2), and
+//   - exactly ONE configured path resolves to that interface, because two
+//     wildcard+device sockets on the same port and device collide EADDRINUSE;
+//     source-IP binding keeps their two DISTINCT specific-IP sockets, which
+//     coexist on one port — the pre-T16 behaviour (Criticism 1).
+//
+// Every other path falls back to source-IP binding, exactly as before T16 (at the
+// cost of not surviving a same-address readdress for those paths — the pre-T16
+// status quo). The returned slice is parallel to srcs: a non-empty dev at i means
+// "device-bind path i to it"; "" means "source-IP-bind path i".
+func selectDeviceBinds(srcs []netip.Addr, resolve func(netip.Addr) ifaceInfo) []string {
+	infos := make([]ifaceInfo, len(srcs))
+	devPaths := make(map[string]int, len(srcs))
+	for i, s := range srcs {
+		infos[i] = resolve(s)
+		if infos[i].dev != "" {
+			devPaths[infos[i].dev]++
+		}
+	}
+	out := make([]string, len(srcs))
+	for i := range srcs {
+		info := infos[i]
+		if info.dev != "" && info.familyCount == 1 && devPaths[info.dev] == 1 {
+			out[i] = info.dev
+		}
+	}
+	return out
+}
+
+// interfaceInfo resolves src against ifaces (a single net.Interfaces snapshot):
+// it returns the non-loopback interface that currently owns src and the count of
+// same-family addresses on it. A loopback/unspecified/invalid src, or no owning
+// interface, yields an empty dev (familyCount 0). It is the resolution step that
+// lets a source-address config select a device to bind, so the socket can outlive
+// that address changing.
+func interfaceInfo(src netip.Addr, ifaces []net.Interface) ifaceInfo {
+	if !src.IsValid() || src.IsLoopback() || src.IsUnspecified() {
+		return ifaceInfo{}
+	}
+	want := src.Unmap()
 	for _, ifc := range ifaces {
 		if ifc.Flags&net.FlagLoopback != 0 {
 			continue
@@ -66,17 +125,30 @@ func interfaceForAddr(src netip.Addr) string {
 		if err != nil {
 			continue
 		}
+		owns := false
+		familyCount := 0
 		for _, a := range addrs {
 			ipn, ok := a.(*net.IPNet)
 			if !ok {
 				continue
 			}
-			if ip, ok := netip.AddrFromSlice(ipn.IP); ok && ip.Unmap() == want {
-				return ifc.Name
+			ip, ok := netip.AddrFromSlice(ipn.IP)
+			if !ok {
+				continue
+			}
+			ip = ip.Unmap()
+			if ip.Is4() == want.Is4() {
+				familyCount++
+			}
+			if ip == want {
+				owns = true
 			}
 		}
+		if owns {
+			return ifaceInfo{dev: ifc.Name, familyCount: familyCount}
+		}
 	}
-	return ""
+	return ifaceInfo{}
 }
 
 // listenOnDevice binds a UDP socket to the family-matched wildcard address on port

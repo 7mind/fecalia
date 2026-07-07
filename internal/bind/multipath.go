@@ -235,15 +235,26 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// wedges on a stale high-water outer-seq.
 	m.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
 
+	// Resolve every path's interface up front and decide, per path, whether its
+	// socket may be device-bound (SO_BINDTODEVICE + wildcard — survives a T16
+	// re-roam) or must pin the specific source IP (the pre-T16 behaviour, required
+	// when paths share an interface or the interface is multi-address, so distinct
+	// specific-IP sockets coexist on one port without an EADDRINUSE collision). See
+	// selectDeviceBinds.
+	srcs := make([]netip.Addr, len(m.defs))
+	for i := range m.defs {
+		srcs[i] = m.defs[i].SourceAddr
+	}
+	bindDevs := planPathBinds(srcs)
+
 	fns := make([]ReceiveFunc, 0, len(m.defs))
 	actualPort := port
 	for i := range m.defs {
 		def := m.defs[i]
-		// Bind the path socket to its interface where possible (SO_BINDTODEVICE),
-		// falling back to the specific source IP — so a mid-session source-address
-		// change (a re-roam / NAT rebind, T16) does not break the socket. See
-		// listenPath.
-		c, err := listenPath(def.SourceAddr, port)
+		// Device-bind this path when selectDeviceBinds proved it safe (so a
+		// mid-session source-address change / T16 re-roam does not break the socket),
+		// otherwise pin the specific source IP. See selectDeviceBinds / listenPath.
+		c, err := listenPath(def.SourceAddr, port, bindDevs[i])
 		if err != nil {
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: open path %q on %s: %w", def.Name, def.SourceAddr, err)
