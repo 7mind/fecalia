@@ -518,3 +518,87 @@ func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
 		t.Fatalf("Pick after primary blackhole = %d, want 1 (failover onto the reopened runtime-added path)", idx)
 	}
 }
+
+// TestMultipathRemoveReopenAddPathIDUnique is the T30 remove->reopen->add PathID
+// high-water regression (review criticism, reproduced). A removal opens a gap in the
+// stamp space while the survivor keeps its ORIGINAL higher prober PathID; before the
+// fix Open reset the id counter to len(m.paths), so the next runtime AddPath re-minted
+// a PathID that COLLIDED with the survivor's live stamp. Two live paths then emitted
+// probes at the same (PathID, SessionID); the peer's Reflector keys anti-replay and
+// the session challenge PER PathID, so the strict-monotonic replay filter dropped one
+// of the two independent ProbeSeq streams -> probe loss / false-DOWN on the collided
+// path. This asserts every live path carries a DISTINCT on-wire PathID (both its
+// prober stamp and its DATA-frame pathState.id) across remove->reopen->add, and that
+// the two agree per path. It FAILS on 8d81f2b (b and c both at PathID 1).
+func TestMultipathRemoveReopenAddPathIDUnique(t *testing.T) {
+	psk := testKey(t, 0x36)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk) // "a","b" -> stamps 0,1
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Survivor "b" carries prober PathID 1; removing "a" opens the gap at stamp 0.
+	if got := m.paths[1].prober.PathID(); got != 1 {
+		t.Fatalf("boot path b prober PathID = %d, want 1", got)
+	}
+	if err := m.RemovePath("a"); err != nil {
+		t.Fatalf("RemovePath: %v", err)
+	}
+
+	// Cycle Close->Open (the amneziawg Down/Up lifecycle) then admit a runtime path.
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	if len(m.paths) != 1 || m.paths[0].name != "b" {
+		t.Fatalf("after reopen paths = %v, want [b]", pathNamesOf(m))
+	}
+	// Survivor keeps its ORIGINAL stamp across the reopen (never renumbered), and its
+	// DATA-frame id agrees with the prober stamp.
+	if got := m.paths[0].prober.PathID(); got != 1 {
+		t.Fatalf("survivor b prober PathID after reopen = %d, want 1 (stamp must be stable)", got)
+	}
+	if m.paths[0].id != m.paths[0].prober.PathID() {
+		t.Fatalf("survivor DATA id %d != prober stamp %d after reopen", m.paths[0].id, m.paths[0].prober.PathID())
+	}
+
+	if err := m.AddPath(config.Path{Name: "c", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
+		t.Fatalf("AddPath: %v", err)
+	}
+	if len(m.paths) != 2 {
+		t.Fatalf("paths after add = %d, want 2", len(m.paths))
+	}
+
+	// Every live path must carry a DISTINCT on-wire PathID, and its DATA-frame id must
+	// equal its prober stamp so DATA and PROBE agree on the wire.
+	seenProber := map[uint8]string{}
+	seenData := map[uint8]string{}
+	for _, ps := range m.paths {
+		if ps.id != ps.prober.PathID() {
+			t.Fatalf("path %q DATA id %d != prober stamp %d", ps.name, ps.id, ps.prober.PathID())
+		}
+		if other, dup := seenProber[ps.prober.PathID()]; dup {
+			t.Fatalf("prober PathID collision: paths %q and %q both stamp PathID %d "+
+				"(two live paths at identical (PathID,SessionID) -> cross-stream probe-replay drops)",
+				other, ps.name, ps.prober.PathID())
+		}
+		seenProber[ps.prober.PathID()] = ps.name
+		if other, dup := seenData[ps.id]; dup {
+			t.Fatalf("DATA-frame id collision: paths %q and %q both use pathState.id %d", other, ps.name, ps.id)
+		}
+		seenData[ps.id] = ps.name
+	}
+}
+
+// pathNamesOf snapshots the active path names for a diagnostic message.
+func pathNamesOf(m *Multipath) []string {
+	out := make([]string, len(m.paths))
+	for i, ps := range m.paths {
+		out[i] = ps.name
+	}
+	return out
+}

@@ -466,3 +466,25 @@ func rcvBuf(t *testing.T, c *net.UDPConn) int {
 	}
 	return val
 }
+
+// TestNewMultipathRejectsUnpairedProberFactory pins the constructor pairing invariant
+// (fable low defect): a runtime-path factory (newProber) without a boot-time prober
+// slice would let AddPath append to a nil m.probers, desyncing m.paths from m.probers
+// and panicking on the next Open at m.probers[i]. NewMultipath must reject the pairing.
+func TestNewMultipathRejectsUnpairedProberFactory(t *testing.T) {
+	psk := testKey(t, 0x37)
+	paths := loopbackPaths(1)
+	health := []sched.PathHealth{sched.AlwaysUp{}}
+	lg, err := log.New("error", io.Discard)
+	if err != nil {
+		t.Fatalf("build logger: %v", err)
+	}
+	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
+	if err != nil {
+		t.Fatalf("build scheduler: %v", err)
+	}
+	factory := func(name string, id uint8) *telemetry.Prober { return nil }
+	if _, err := NewMultipath(paths, psk, scheduler, nil, factory); err == nil {
+		t.Fatal("NewMultipath(newProber!=nil, probers==nil) succeeded, want rejection")
+	}
+}

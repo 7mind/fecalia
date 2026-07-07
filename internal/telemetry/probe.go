@@ -245,6 +245,13 @@ func (p *Prober) State() PathState {
 	return p.live.State()
 }
 
+// PathID returns this path's stable on-wire probe stamp, set at construction and
+// immutable for the Prober's life (so it is read without the lock). It is the
+// canonical path identity the peer's Reflector keys anti-replay/session-challenge
+// on; the bind reconciles a path's DATA-frame id (pathState.id) to it across a
+// Close->Open cycle so DATA and PROBE agree and a survivor is never renumbered.
+func (p *Prober) PathID() uint8 { return p.pathID }
+
 // reflectorPath is the Reflector's bounded per-path state: exactly one entry per
 // PathID, so memory is O(paths) with NO retired-session set. It holds the
 // currently-adopted originator session, its strict-monotonic within-session

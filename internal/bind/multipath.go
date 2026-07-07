@@ -214,8 +214,10 @@ var _ Bind = (*Multipath)(nil)
 // sched.AlwaysUp instead). A Reflector is built from the PSK to answer peer probes.
 //
 // newProber is the factory the runtime path-add path (AddPath, T30) uses to mint a
-// prober for a newly-admitted path; it must be non-nil to allow AddPath and, for
-// consistency, should be paired with a non-nil probers (boot-time set). Pass nil to
+// prober for a newly-admitted path; it must be non-nil to allow AddPath and MUST be
+// paired with a non-nil probers (the boot-time set) — a factory without a boot-time
+// slice would let AddPath append to a nil m.probers, breaking the m.paths/m.probers
+// alignment invariant and panicking on the next Open at m.probers[i]. Pass nil to
 // forbid runtime path addition.
 func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory) (*Multipath, error) {
 	if len(paths) == 0 {
@@ -230,6 +232,12 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	}
 	if scheduler == nil {
 		return nil, errors.New("bind: a send scheduler is required")
+	}
+	if newProber != nil && probers == nil {
+		// A runtime-path factory without a boot-time prober slice would let AddPath append
+		// to a nil m.probers, desyncing m.paths from m.probers and panicking on the next
+		// Open at m.probers[i]. The two are paired by construction; enforce it here.
+		return nil, errors.New("bind: newProber requires a non-nil probers (boot-time set)")
 	}
 	if probers != nil && len(probers) != len(paths) {
 		return nil, fmt.Errorf("bind: probers must have one entry per path (got %d, want %d)", len(probers), len(paths))
@@ -320,6 +328,12 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		ps := &pathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c, codec: codec}
 		if m.probers != nil {
 			ps.prober = m.probers[i]
+			// Reconcile the DATA-frame path-id to the prober's IMMUTABLE stamp rather than
+			// to the slice index i: after a runtime RemovePath the survivor keeps its
+			// original (higher) stamp, so index-based numbering would renumber a live path
+			// AND diverge its DATA id from its PROBE stamp. Taking id from the prober keeps
+			// DATA and PROBE agreeing on the wire and a survivor's id stable across a reopen.
+			ps.id = ps.prober.PathID()
 		}
 		switch {
 		case def.DestAddr.IsValid():
@@ -333,10 +347,22 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		}
 	}
 
-	// Path-ids 0..N-1 are assigned above; runtime-added paths continue from N and
-	// are never reused within this Open span, so a surviving path is never renumbered.
+	// nextPathID is a MONOTONIC HIGH-WATER carried ACROSS Open spans, never decreased.
+	// Close does not reset it, and here it is only ever RAISED to at least max(existing
+	// path stamp)+1. Resetting it to len(m.paths) (the pre-fix behaviour) re-minted an id
+	// a survivor still held once a RemovePath had opened a gap in the stamp space below
+	// that survivor's stamp: the next runtime AddPath then collided with the live path at
+	// an identical (PathID, SessionID), and because the peer's Reflector keys anti-replay
+	// AND the session challenge PER PathID, the strict-monotonic replay filter dropped one
+	// of the two independent ProbeSeq streams -> probe loss / false-DOWN. Deriving the
+	// high-water from the (prober-stamped) ps.id covers both the probe-transport case and
+	// the T12 no-prober case (where ps.id == i, so the high-water is len(m.paths)).
 	m.openPort = port
-	m.nextPathID = uint16(len(m.paths))
+	for _, ps := range m.paths {
+		if uint16(ps.id)+1 > m.nextPathID {
+			m.nextPathID = uint16(ps.id) + 1
+		}
+	}
 	m.sendCodec = sendCodec
 
 	// Reconcile the scheduler's membership with the path slice just rebuilt from
