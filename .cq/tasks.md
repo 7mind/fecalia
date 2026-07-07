@@ -306,18 +306,18 @@ archives:
 - dependsOn: ["T12"]
 - ledgerRefs: ["goals:G1"]
 
-### T21 — planned
+### T21 — done
 
 - createdAt: 2026-07-01T23:40:32.685Z
-- updatedAt: 2026-07-01T23:54:06.453Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-07T19:37:31.732Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Weighted aggregation scheduler + data-thrift policy
 - description: "Extend the scheduler from active-backup to weighted aggregation: under load a single flow uses both paths distributed by per-path weight derived from internal telemetry (capacity/RTT/loss/backlog from T13); at low load it collapses to Starlink-preferred so metered 5G stays ~idle (requirement 2 must not regress), engaging 5G only on demand with hysteresis. Include send-pacing / bufferbloat control per the P0 findings (T9): pace egress per path so aggregation does not build standing queues that inflate latency-under-load (make pacing a no-op if T9 concludes it is unnecessary). FEC-aware hooks for P3+. Policy thresholds in config."
 - acceptance: "Unit tests: under offered load exceeding one path, frames are distributed across both paths proportional to weights (within tolerance); with load below one path's capacity, distribution collapses to the primary (5G ~idle); a path-down event still fails over correctly (P1 preserved); with pacing enabled, per-path egress rate does not exceed the configured/derived pace and no unbounded send backlog accumulates under sustained overload."
 - suggestedModel: frontier
 - dependsOn: ["T15","T18"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","reviews:R29","defects:D22"]
 
 ### T23 — planned
 

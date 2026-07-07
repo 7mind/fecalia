@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 29
+  item: 30
 archives: []
 ---
 
@@ -333,6 +333,26 @@ archives: []
 - criticism: ["[r1 both, resolved 978f763] advanceTo O(jump) mutex spin — forged far-future OuterSeq permanent hard-lock; capped to O(window)+arithmetic","[r1 opus, resolved 978f763] head-of-line timeout not re-based across gaps — dropped in-window reordered frames; expire clears waiting before arm","[r1 fable + opus-defect, resolved 978f763] wild-seq / peer-restart release-point discontinuity — permanent blackhole; discontinuity/resync guard (K=4,C=3), bounded + self-healing","[r2 fable, resolved c73d197] corroboration run accepted DUPLICATE seqs — 3 copies of one junk frame forced a spurious resync; require C DISTINCT suspect seqs"]
 - new_questions: []
 - ledgerRefs: ["tasks:T18","goals:G1"]
+
+### R29 — go-ahead
+
+- createdAt: 2026-07-07T19:37:27.178Z
+- updatedAt: 2026-07-07T19:37:27.178Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T21 (weighted-aggregation scheduler + data-thrift policy) reconciled GO-AHEAD (opus by-construction + fable adversarial panel; 2 rework rounds). Merged 7cb0a86. WeightedScheduler (Scheduler+DynamicScheduler): Mathis-proxy 1/(RTT·√Loss) weights + nginx SWRR distribution under load; data-thrift collapse to primary at low load (metered 5G ~idle) with hysteretic engage/disengage band + dwell; per-path token-bucket pacing; FEC seam. Active-backup stays default; selected at device composition root; existing P1 configs load unchanged.
+    
+    T40 eager-failover PRESERVED for both policies: added a non-consuming Recompute() to the Scheduler interface (nudge sites repointed Pick()→Recompute() so a stateful weighted Pick is never spent on the liveness nudge); weighted routing reads live liveness fresh each Pick (never a stale active snapshot). opus verified byte-identical ActiveBackup.Recompute, lock order strictly m.mu→s.mu (scheduler never re-enters Bind), weight math + SWRR + pacing bound sound.
+    
+    R1: opus APPROVE (0 findings); fable DISAPPROVE (3 criticisms + D22 filed). fable REPRODUCED a data-thrift leak (requirement-2 regression): the aggregation gate only advanced inside Pick(), so an abruptly-ending overload kept the gate engaged across idle, striping the next low-rate burst onto the metered backup (20/40 frames). Strictest-wins → disapprove.
+    
+    FIXED (4b430a6): (1) updateGateLocked now credits the inter-Pick idle gap — gap>=CollapseDwell forces immediate collapse + belowSince backdated to now-gap + EWMA decays across the gap; new TestWeightedCollapsesAfterOverloadIdle asserts backup=0 (mutation-verified 13/40 leak without fix). (2) unwired/all-zero-Estimate path now gets the MEAN of measured weights (was the floored MAXIMUM → ~20:1 siphon), doc corrected, safe all-neutral fallback. (3) distinct PickPaced(-2) vs PickNone(-1) sentinel + errPacerShedding + coalesced 'pacer shedding' log so shedding is distinguishable from outage.
+    
+    R2 fable APPROVE (0 findings): probed the general case (backup frames 35→17→0 as gap grows 0→500ms, monotonic, zero at dwell — not just the one repro), verified neutral-weight edge cases (no div-by-zero/NaN), confirmed the sole Pick consumer (Multipath.Send) handles both sentinels distinctly, all 3 regression tests fail pre-fix for the right reason, no regression, vet/gofmt/lint/-race/full-suite green. Assumption surfaced (non-blocking): load/capacity in frames/sec not bytes (Pick carries no size; no measured BDP) — acceptable P2 approximation, byte-rate sizing deferred to T35/T23. D22 (pacer sheds WG control frames under overload) filed file-and-defer to T23/T35.
+- criticism: ["[r1 fable, resolved 4b430a6] CRITICAL data-thrift leak (requirement-2 regression), reproduced: aggregation gate stayed engaged across idle after an abruptly-ending overload → next low-rate burst striped onto metered backup (20/40 frames) — fixed via idle-gap-forces-collapse + belowSince backdating + regression test (mutation-verified 13/40 without fix)","[r1 fable, resolved 4b430a6] unwired/all-zero-Estimate path got the floored MAXIMUM weight (~20:1 siphon) contradicting its 'neutral' doc — now mean-of-measured with safe all-neutral fallback, doc corrected","[r1 fable, resolved 4b430a6] paced-out frame surfaced as errNoHealthyPath (indistinguishable from total outage in engine logs) — added distinct PickPaced(-2) sentinel + errPacerShedding + coalesced shedding log"]
+- new_questions: []
+- ledgerRefs: ["tasks:T21","goals:G1","defects:D22"]
 
 ## M7
 
