@@ -117,6 +117,15 @@ func TestRealMultipathFailover(t *testing.T) {
 	plan := resolveEdgePathPlan(t, r, cfg.Edge, cfg.ConcPubIP)
 	t.Logf("edge uplink: iface=%s primary=%s alt=%s gateway=%q prefix=/%d",
 		plan.iface, plan.primaryIP, plan.altIP, plan.gateway, plan.prefixLen)
+	// SAFETY GUARD (irreversible failure mode): the scoped blackhole is
+	// `blackhole concPubIP/32` in the primary path's table, matched by
+	// `ip rule from primaryIP`. Management SSH survives ONLY because its
+	// reply destination (the control host as the edge sees it) is never
+	// concPubIP. If the edge observes the control connection arriving FROM
+	// concPubIP, that reply would hit the /32 and sever the control channel
+	// with no in-band recovery — bricking the standing shared host. Fail fast
+	// BEFORE any mutation rather than trust the topology assumption.
+	assertControlHostNotConcentrator(t, r, cfg.Edge, plan.concPubIP)
 	setupEdgeTwoPaths(t, r, cfg.Edge, plan)
 
 	// 4. Key material (X25519 per end + shared PSK), same scheme as the P0 smoke.
@@ -284,6 +293,30 @@ level = "info"
 // resolveEdgePathPlan probes the edge for its uplink device, primary source IP,
 // default gateway, and subnet prefix (all toward the concentrator's public IP),
 // and picks the secondary source IP (envEdgeAltIP or derived from the primary).
+// assertControlHostNotConcentrator fails the test BEFORE any routing mutation if
+// the edge observes the management-SSH connection arriving from concPubIP. In
+// that (unsupported) topology the scoped `blackhole concPubIP/32` would drop the
+// SSH-reply channel itself, severing control with no in-band recovery. It reads
+// the first field of the edge's $SSH_CLIENT (the client IP the edge routes
+// replies to) over the same control SSH the test relies on.
+func assertControlHostNotConcentrator(t *testing.T, r *Runner, edge Host, concPubIP string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
+	defer cancel()
+	res, err := r.Run(ctx, edge, `printf '%s' "${SSH_CLIENT%% *}"`)
+	if err != nil {
+		t.Fatalf("edge: could not read SSH_CLIENT to verify control-host safety: %v", err)
+	}
+	clientIP := strings.TrimSpace(res.Stdout)
+	if clientIP == "" {
+		t.Fatalf("edge: empty SSH_CLIENT — cannot verify the control host is not the concentrator; refusing to install the scoped blackhole")
+	}
+	if clientIP == concPubIP {
+		t.Fatalf("edge sees the control SSH arriving from the concentrator IP %s — the scoped blackhole would sever management SSH and brick the host; aborting before any mutation", concPubIP)
+	}
+	t.Logf("control-host safety: edge sees SSH from %s (!= concentrator %s) — scoped blackhole is SSH-safe", clientIP, concPubIP)
+}
+
 func resolveEdgePathPlan(t *testing.T, r *Runner, edge Host, concPubIP string) edgePathPlan {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), smokeSSHTimeout)
