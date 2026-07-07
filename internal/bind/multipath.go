@@ -59,6 +59,13 @@ const (
 
 var (
 	errNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
+	// errPacerShedding is returned by Send when the scheduler shed the datagram for
+	// pacing (PickPaced) while paths are healthy — deliberate rate limiting, NOT an
+	// outage. It is DISTINCT from errNoHealthyPath so operator logs and the e2e
+	// log-grep harness can tell shedding from total path failure (the drop behavior is
+	// identical to the pre-existing no-path case; only the diagnostic differs). The
+	// coalesced, rate-limited "pacer shedding" record is emitted by the scheduler.
+	errPacerShedding = errors.New("bind: datagram shed by send pacer (paths healthy, rate limited)")
 	errClosed        = net.ErrClosed
 )
 
@@ -721,6 +728,14 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return errClosed
 	}
 	idx := m.scheduler.Pick()
+	if idx == sched.PickPaced {
+		// The scheduler shed this datagram for pacing while paths are healthy: drop it
+		// (same as no-path), but surface a DISTINCT error so the diagnostic is not
+		// conflated with a total outage. The rate-limited log is emitted at the source
+		// (the scheduler), so no per-drop logging happens here on the hot path.
+		m.mu.Unlock()
+		return errPacerShedding
+	}
 	if idx < 0 || idx >= len(m.paths) {
 		m.mu.Unlock()
 		return errNoHealthyPath

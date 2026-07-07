@@ -3,6 +3,7 @@ package bind
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -379,6 +380,52 @@ func TestMultipathSendNoHealthyPath(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	if err := m.Send([][]byte{[]byte("x")}, m.virt); err == nil {
 		t.Fatal("Send with no remote-bearing path succeeded, want error")
+	}
+}
+
+// stubScheduler returns a fixed Pick value (and a no-op Recompute), to exercise
+// Send's negative-sentinel mapping without a live liveness machine.
+type stubScheduler struct{ pick int }
+
+func (s stubScheduler) Pick() int  { return s.pick }
+func (s stubScheduler) Recompute() {}
+
+// TestMultipathSendPacerSheddingDistinct: a PickPaced shed (paths healthy, rate
+// limited) maps to errPacerShedding, DISTINCT from the errNoHealthyPath a PickNone
+// outage yields, so operator logs and the e2e log-grep harness can tell deliberate
+// pacer shedding from total path failure (criticism #3). The drop behavior is
+// identical (Send returns an error and the datagram is not sent) — only the error, and
+// thus the diagnostic, differs.
+func TestMultipathSendPacerSheddingDistinct(t *testing.T) {
+	psk := testKey(t, 0x5A)
+	cases := []struct {
+		name string
+		pick int
+		want error
+	}{
+		{"paced shed", sched.PickPaced, errPacerShedding},
+		{"no eligible path", sched.PickNone, errNoHealthyPath},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := NewMultipath(loopbackPaths(1), psk, stubScheduler{pick: tc.pick}, nil, nil)
+			if err != nil {
+				t.Fatalf("NewMultipath: %v", err)
+			}
+			if _, _, err := m.Open(0); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			t.Cleanup(func() { _ = m.Close() })
+			err = m.Send([][]byte{[]byte("x")}, m.virt)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Send with pick=%d returned %v, want %v", tc.pick, err, tc.want)
+			}
+			// The shed error must NOT be conflated with the outage error (distinct
+			// sentinels), so a paced shed never reads as no-healthy-path.
+			if tc.pick == sched.PickPaced && errors.Is(err, errNoHealthyPath) {
+				t.Fatal("pacer shedding conflated with no-healthy-path outage")
+			}
+		})
 	}
 }
 

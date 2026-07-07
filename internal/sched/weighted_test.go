@@ -135,10 +135,12 @@ func TestWeightedCollapsesToPrimaryAtLowLoad(t *testing.T) {
 	}
 }
 
-// TestWeightedHysteresisBand exercises the engage/disengage hysteresis: once
-// aggregating, a drop below the disengage threshold does NOT immediately collapse —
-// it must persist for CollapseDwell. This is what stops the metered path from
-// dribbling on/off around a single threshold.
+// TestWeightedHysteresisBand exercises the engage/disengage hysteresis under
+// CONTINUOUS pumping (no large idle gaps, which are covered separately by the
+// abrupt-stop test): (1) an offered rate BETWEEN the disengage and engage thresholds
+// keeps aggregation engaged indefinitely — the two-threshold band holds, no dribble;
+// (2) a sustained drop BELOW the disengage threshold collapses only after CollapseDwell
+// of low load, not on the first low sample.
 func TestWeightedHysteresisBand(t *testing.T) {
 	clock := newFakeClock()
 	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
@@ -151,32 +153,105 @@ func TestWeightedHysteresisBand(t *testing.T) {
 		t.Fatal("setup: expected aggregating")
 	}
 
-	// Let load decay below the disengage threshold by idling the clock, then pump a
-	// LOW offered rate. It must remain aggregating until CollapseDwell of sustained
-	// low load elapses.
-	clock.advance(2 * time.Second) // load decays to ~0 (< disengage)
-	// First low-load Pick starts the collapse dwell but does not collapse yet.
-	s.Pick()
-	if !s.aggregating {
-		t.Fatal("collapsed on the first low-load sample, want the dwell to hold aggregation")
-	}
-	const lowDt = 20 * time.Millisecond // 50 fps, well below disengage (500 fps)
-	collapsedAt := -1
-	for i := 0; i < 200; i++ {
-		clock.advance(lowDt)
+	// Phase 1 — in-band pumping (~700 fps, between disengage 500 and engage 900). Small
+	// per-Pick gaps, so no idle-gap shortcut; the band must HOLD aggregation throughout
+	// and never seed the collapse dwell.
+	const bandDt = 1428 * time.Microsecond // ~700 fps
+	for i := 0; i < 1500; i++ {            // ~2.1s of sim time, >> CollapseDwell
 		s.Pick()
+		clock.advance(bandDt)
 		if !s.aggregating {
-			collapsedAt = i
-			break
+			t.Fatalf("collapsed at in-band load (~700 fps, step %d) — the hysteresis band must hold aggregation", i)
 		}
 	}
-	if collapsedAt < 0 {
+	if !s.belowSince.IsZero() {
+		t.Fatal("collapse dwell seeded while load was in-band (above disengage), want it clear")
+	}
+
+	// Phase 2 — sustained below-band pumping (~50 fps, below disengage), small gaps. It
+	// must collapse, but only after >= CollapseDwell of sustained low load, and NOT on
+	// the first below-band sample.
+	const lowDt = 20 * time.Millisecond // 50 fps << 500 fps disengage; 20ms << 500ms dwell
+	startLow := clock.now
+	// belowSince is backdated to when load actually dropped below disengage, so the
+	// dwell is measured from THAT instant (captured at seeding), not from the clock time
+	// of the sample that noticed it.
+	belowSinceSeed := time.Time{}
+	collapsedAt := time.Time{}
+	for i := 0; i < 400; i++ {
+		s.Pick()
+		if belowSinceSeed.IsZero() && !s.belowSince.IsZero() {
+			belowSinceSeed = s.belowSince
+		}
+		if !s.aggregating {
+			collapsedAt = clock.now
+			break
+		}
+		clock.advance(lowDt)
+	}
+	if collapsedAt.IsZero() {
 		t.Fatal("never collapsed under sustained low load, want collapse after the dwell")
 	}
-	// It must have taken at least CollapseDwell of low load to collapse (hysteresis),
-	// not collapsed on the first sample.
-	if elapsed := time.Duration(collapsedAt+1) * lowDt; elapsed < cfg.CollapseDwell {
-		t.Fatalf("collapsed after %s of low load, want >= CollapseDwell %s", elapsed, cfg.CollapseDwell)
+	if belowSinceSeed.IsZero() {
+		t.Fatal("collapse dwell never seeded, cannot have honored the dwell")
+	}
+	if collapsedAt.Equal(startLow) {
+		t.Fatal("collapsed on the very first below-band sample, want the dwell to hold aggregation")
+	}
+	// The dwell must have been honored: at least CollapseDwell elapsed from when load
+	// dropped below disengage (belowSince) to the collapse.
+	if held := collapsedAt.Sub(belowSinceSeed); held < cfg.CollapseDwell {
+		t.Fatalf("collapsed %s after load dropped below disengage, want >= CollapseDwell %s", held, cfg.CollapseDwell)
+	}
+}
+
+// TestWeightedCollapsesAfterOverloadIdle is the criticism-#1 regression: an overload
+// that stops ABRUPTLY (load still above disengage on the final frame, so the collapse
+// dwell was never seeded) followed by a long idle span must NOT keep the gate engaged.
+// Idle time is the strongest evidence of low load, so the FIRST frame of the next
+// low-rate burst must already be collapsed to primary-only — the metered backup must
+// carry ZERO frames. Without the idle-aware fix the first ~CollapseDwell of the burst
+// dribbles onto the backup (data-thrift leak, requirement 2).
+func TestWeightedCollapsesAfterOverloadIdle(t *testing.T) {
+	clock := newFakeClock()
+	// 2:1 weights so any striping is unmistakable on the backup.
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	backup := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 20 * time.Millisecond}}
+	s := newWeighted(t, clock, weightedCfg(), primary, backup)
+
+	// Overload -> aggregating, with the load left solidly above disengage and the
+	// collapse dwell UNSEEDED (the abrupt-stop precondition).
+	const hiDt = 100 * time.Microsecond // 10 000 fps
+	driveUntilAggregating(t, s, clock, hiDt)
+	for i := 0; i < 2000; i++ { // solidify: load well above disengage
+		s.Pick()
+		clock.advance(hiDt)
+	}
+	if !s.aggregating || !s.belowSince.IsZero() {
+		t.Fatalf("setup: want aggregating with unseeded dwell, got aggregating=%v belowSince-zero=%v", s.aggregating, s.belowSince.IsZero())
+	}
+
+	// Abrupt stop: a long idle span.
+	clock.advance(60 * time.Second)
+
+	// Next low-rate burst: 40 frames at 100 fps (below engage, will not re-aggregate).
+	const burstDt = 10 * time.Millisecond
+	var count [2]int
+	for i := 0; i < 40; i++ {
+		idx := s.Pick()
+		if idx >= 0 {
+			count[idx]++
+		}
+		clock.advance(burstDt)
+	}
+	if count[1] != 0 {
+		t.Fatalf("backup carried %d of 40 frames in the post-idle low burst, want 0 (idle must force collapse; data-thrift leak otherwise)", count[1])
+	}
+	if s.aggregating {
+		t.Fatal("still aggregating after the post-idle low burst, want collapsed to primary-only")
+	}
+	if count[0] == 0 {
+		t.Fatal("primary carried no frames, want all 40")
 	}
 }
 
@@ -371,6 +446,69 @@ func TestWeightedWeightFormula(t *testing.T) {
 	}
 	if sum := w[0] + w[1]; math.Abs(sum-1) > 1e-9 {
 		t.Fatalf("weights not normalized: sum = %.6f, want 1", sum)
+	}
+}
+
+// TestWeightedUnwiredPathIsNeutral is the criticism-#2 regression: a health-only path
+// (admitted via AddPath with no PathQuality, so an all-zero Estimate) must get the
+// NEUTRAL weight, not the floored MAXIMUM. Before the fix the floors (RTT->1ms,
+// loss->0) handed such a path ~20x the weight of a real 20ms-RTT path, letting an
+// unwired path siphon the dominant share. It must instead split evenly.
+func TestWeightedUnwiredPathIsNeutral(t *testing.T) {
+	clock := newFakeClock()
+	measured := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 20 * time.Millisecond}}
+	s := newWeighted(t, clock, weightedCfg(), measured)
+
+	// Admit a HEALTH-ONLY path (fakeHealth implements State but NOT Estimate), so its
+	// quality is nil — exactly the AddPath seam the criticism flags.
+	if _, err := s.AddPath(&fakeHealth{s: telemetry.StateUp}); err != nil {
+		t.Fatalf("AddPath: %v", err)
+	}
+
+	s.mu.Lock()
+	w := s.weightsLocked([]int{0, 1})
+	s.mu.Unlock()
+	// Neutral => the unwired path (1) equals the single measured path (0): ~0.5 each.
+	if w[1] > w[0]+1e-9 {
+		t.Fatalf("unwired path weight %.4f exceeds measured path weight %.4f — it is siphoning, not neutral", w[1], w[0])
+	}
+	if diff := w[0] - w[1]; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("weights = %v, want the unwired path neutral (~equal to the measured path)", w)
+	}
+}
+
+// TestWeightedPickSentinelsDistinct verifies Pick's two negative returns are distinct
+// (criticism #3 at the scheduler seam): a healthy-but-paced-out frame yields PickPaced,
+// a genuine outage yields PickNone.
+func TestWeightedPickSentinelsDistinct(t *testing.T) {
+	clock := newFakeClock()
+	p0 := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	p1 := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	cfg.Pacing = true
+	cfg.PacingBurst = 4
+	s := newWeighted(t, clock, cfg, p0, p1)
+
+	const dt = 200 * time.Microsecond // 5000 fps >> pace, so buckets drain and shed
+	driveUntilAggregating(t, s, clock, dt)
+	sawPaced := false
+	for i := 0; i < 20000; i++ {
+		if s.Pick() == PickPaced {
+			sawPaced = true
+			break
+		}
+		clock.advance(dt)
+	}
+	if !sawPaced {
+		t.Fatal("never observed PickPaced under sustained pacing overload, want the shed sentinel")
+	}
+
+	// A genuine outage returns PickNone, NOT PickPaced.
+	p0.down()
+	p1.down()
+	clock.advance(time.Second)
+	if got := s.Pick(); got != PickNone {
+		t.Fatalf("Pick with all paths down = %d, want PickNone (%d), distinct from PickPaced (%d)", got, PickNone, PickPaced)
 	}
 }
 

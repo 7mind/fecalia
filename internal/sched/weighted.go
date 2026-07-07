@@ -161,7 +161,18 @@ type WeightedScheduler struct {
 	// Active-primary cache: the best eligible path, for eager-failover transition
 	// logging (parity with ActiveBackup). -1 == none.
 	active int
+
+	// Pacer-shedding log rate limiter: under sustained overload shedding is per-frame
+	// (thousands/s), so the "pacer shedding" diagnostic is coalesced to at most one
+	// record per shedLogInterval, carrying the count shed since the last record.
+	shedCount   int
+	lastShedLog time.Time
 }
+
+// shedLogInterval bounds how often the pacer-shedding diagnostic is emitted, so a
+// sustained overload logs a periodic coalesced record rather than one line per
+// dropped frame.
+const shedLogInterval = 1 * time.Second
 
 // compile-time proof WeightedScheduler is a (dynamic) Scheduler.
 var (
@@ -242,23 +253,42 @@ func (s *WeightedScheduler) Pick() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.recomputeLocked(now)   // liveness refresh + eager-failover log
-	s.observeLoadLocked(now) // this Pick is one offered frame
-	s.updateGateLocked(now)  // engage/disengage aggregation (hysteresis)
-	s.refillLocked(now)      // top up pacing buckets
+	// Capture the inter-sample idle gap BEFORE observeLoadLocked advances lastLoad: a
+	// long gap since the previous offered frame is itself the strongest evidence of low
+	// load, and the collapse hysteresis must count it (criticism #1 — otherwise an
+	// abrupt overload stop leaves the gate engaged across the whole idle span and the
+	// next low burst dribbles onto the metered path).
+	gap := s.loadGapLocked(now)
+	s.recomputeLocked(now)       // liveness refresh + eager-failover log
+	s.observeLoadLocked(now)     // this Pick is one offered frame (decays across the gap)
+	s.updateGateLocked(now, gap) // engage/disengage aggregation (hysteresis, idle-aware)
+	s.refillLocked(now)          // top up pacing buckets
 
 	eligible := s.eligibleLocked()
 	if len(eligible) == 0 {
-		return -1
+		return PickNone
 	}
 	if !s.aggregating {
 		// Data-thrift: at low load only the primary (best eligible) carries traffic;
 		// the metered backup stays idle. A path-down excludes it from eligible, so
 		// eligible[0] is the surviving highest-priority path — failover is preserved.
-		return s.serveLocked(eligible[0])
+		return s.serveLocked(now, eligible[0])
 	}
 	weights := s.weightsLocked(eligible)
-	return s.selectAggregatingLocked(eligible, weights)
+	return s.selectAggregatingLocked(now, eligible, weights)
+}
+
+// loadGapLocked returns the wall-clock gap since the previous offered-load sample, or
+// 0 before the first sample. Caller holds s.mu.
+func (s *WeightedScheduler) loadGapLocked(now time.Time) time.Duration {
+	if !s.haveLoad {
+		return 0
+	}
+	gap := now.Sub(s.lastLoad)
+	if gap < 0 {
+		gap = 0
+	}
+	return gap
 }
 
 // Recompute refreshes only the liveness-derived eligible/active set from the current
@@ -282,21 +312,22 @@ func (s *WeightedScheduler) recomputeLocked(_ time.Time) {
 }
 
 // serveLocked applies pacing to a single chosen path: it returns idx when the frame
-// is admitted, or -1 when pacing is on and the path has no token (the frame is
-// dropped, bounding egress and backlog). Caller holds s.mu.
-func (s *WeightedScheduler) serveLocked(idx int) int {
+// is admitted, or PickPaced when pacing is on and the path has no token (the frame is
+// shed — dropped, bounding egress and backlog — and the shedding diagnostic is
+// rate-limited). Caller holds s.mu.
+func (s *WeightedScheduler) serveLocked(now time.Time, idx int) int {
 	if s.tryConsumeLocked(idx) {
 		return idx
 	}
-	return -1
+	return s.shedLocked(now)
 }
 
 // selectAggregatingLocked picks a path proportional to weight (smooth weighted round
 // robin) and applies pacing. When the round-robin's ideal pick is paced out it falls
 // through to any other eligible path that still has a token, so aggregate egress is
 // bounded by the SUM of the per-path paces; when every eligible path is paced out it
-// returns -1 (drop). Caller holds s.mu.
-func (s *WeightedScheduler) selectAggregatingLocked(eligible []int, weights []float64) int {
+// sheds the frame (PickPaced). Caller holds s.mu.
+func (s *WeightedScheduler) selectAggregatingLocked(now time.Time, eligible []int, weights []float64) int {
 	ideal := s.swrrPickLocked(eligible, weights)
 	if s.tryConsumeLocked(ideal) {
 		return ideal
@@ -309,7 +340,24 @@ func (s *WeightedScheduler) selectAggregatingLocked(eligible []int, weights []fl
 			return gi
 		}
 	}
-	return -1
+	return s.shedLocked(now)
+}
+
+// shedLocked records one paced-out (shed) frame and emits the coalesced "pacer
+// shedding" diagnostic at most once per shedLogInterval. It returns PickPaced so the
+// Send path can map the drop to a distinct, non-outage error/log (criticism #3): the
+// paths are healthy, this is deliberate rate limiting. Caller holds s.mu.
+func (s *WeightedScheduler) shedLocked(now time.Time) int {
+	s.shedCount++
+	if s.lastShedLog.IsZero() || now.Sub(s.lastShedLog) >= shedLogInterval {
+		s.log.Info("scheduler pacer shedding",
+			"shed_frames", s.shedCount,
+			"load_fps", s.loadRate,
+		)
+		s.lastShedLog = now
+		s.shedCount = 0
+	}
+	return PickPaced
 }
 
 // swrrPickLocked is nginx's smooth weighted round-robin over the eligible set: it
@@ -336,17 +384,29 @@ func (s *WeightedScheduler) swrrPickLocked(eligible []int, weights []float64) in
 }
 
 // weightsLocked computes the normalized Mathis-style weight for each eligible path
-// from its PathQuality Estimate (RTT/loss). A nil quality source (or an all-zero
-// Estimate) yields the floored neutral weight, so an unwired path splits evenly.
-// Caller holds s.mu; the result is aligned to eligible order and sums to 1.
+// from its PathQuality Estimate (RTT/loss). A path with NO usable quality — a nil
+// quality source, or an all-zero Estimate (RTT==0: no probe sample yet) — is treated
+// as genuinely NEUTRAL: it receives the MEAN of the measured paths' weights, so an
+// unwired/cold path splits evenly rather than dominating. This matters because the
+// floors would otherwise hand an all-zero Estimate the MAXIMUM weight (RTT floored to
+// WeightRTTFloor, zero loss), letting a health-only path admitted via AddPath siphon
+// the dominant share — the opposite of neutral. When every eligible path is neutral,
+// all get equal weight. Caller holds s.mu; the result is aligned to eligible order and
+// sums to 1.
 func (s *WeightedScheduler) weightsLocked(eligible []int) []float64 {
 	w := make([]float64, len(eligible))
-	var sum float64
+	measured := make([]bool, len(eligible))
 	rttFloor := float64(s.cfg.WeightRTTFloor)
+	var sumMeasured float64
+	nMeasured := 0
 	for k, gi := range eligible {
-		var est telemetry.Estimate
-		if q := s.quality[gi]; q != nil {
-			est = q.Estimate()
+		q := s.quality[gi]
+		if q == nil {
+			continue // unwired: neutral, filled below
+		}
+		est := q.Estimate()
+		if est.RTT <= 0 {
+			continue // no RTT sample yet (cold estimator): neutral, filled below
 		}
 		rtt := float64(est.RTT)
 		if rtt < rttFloor {
@@ -358,10 +418,24 @@ func (s *WeightedScheduler) weightsLocked(eligible []int) []float64 {
 		}
 		wi := 1.0 / (rtt * math.Sqrt(loss+s.cfg.WeightLossFloor))
 		w[k] = wi
-		sum += wi
+		measured[k] = true
+		sumMeasured += wi
+		nMeasured++
+	}
+	// Neutral weight: the mean of the measured weights (so a neutral path splits evenly
+	// with the measured set, never outweighing it); equal weights when nothing measured.
+	neutral := 1.0
+	if nMeasured > 0 {
+		neutral = sumMeasured / float64(nMeasured)
+	}
+	var sum float64
+	for k := range w {
+		if !measured[k] {
+			w[k] = neutral
+		}
+		sum += w[k]
 	}
 	if sum <= 0 {
-		// Degenerate (should not happen given the floors): fall back to equal weights.
 		for k := range w {
 			w[k] = 1.0 / float64(len(w))
 		}
@@ -399,8 +473,20 @@ func (s *WeightedScheduler) observeLoadLocked(now time.Time) {
 // with hysteresis: engage the instant load exceeds EngageFraction*capacity; collapse
 // back to primary-only only after load stays below DisengageFraction*capacity for
 // CollapseDwell. The two-threshold band plus the dwell keep the metered path from
-// flapping on/off around a single point (requirement 2). Caller holds s.mu.
-func (s *WeightedScheduler) updateGateLocked(now time.Time) {
+// flapping on/off around a single point (requirement 2). gap is the wall-clock idle
+// span since the previous offered frame.
+//
+// Idle time IS low load (criticism #1). The gate only advances on a Pick, so an
+// overload that stops ABRUPTLY (load still above disengage on the last frame) would
+// otherwise stay engaged across an arbitrarily long idle span and stripe the first
+// ~CollapseDwell of the NEXT low burst onto the metered backup — a data-thrift leak.
+// Two provisions close it: (a) an idle gap that alone reaches CollapseDwell forces an
+// immediate collapse, since a gap that long is itself proof of sustained low load; and
+// (b) belowSince is BACKDATED to when load actually dropped (the previous sample,
+// now-gap) rather than seeded at this post-idle frame, so the dwell counts the idle.
+// The load EWMA decays across gap in observeLoadLocked, so a post-idle frame reads
+// ~0 and the collapse fires on the FIRST frame of the next burst. Caller holds s.mu.
+func (s *WeightedScheduler) updateGateLocked(now time.Time, gap time.Duration) {
 	engage := s.cfg.EngageFraction * s.cfg.PerPathCapacity
 	disengage := s.cfg.DisengageFraction * s.cfg.PerPathCapacity
 	if !s.aggregating {
@@ -411,14 +497,23 @@ func (s *WeightedScheduler) updateGateLocked(now time.Time) {
 		}
 		return
 	}
+	// (a) A single idle gap of at least the dwell is conclusive: collapse now.
+	if gap >= s.cfg.CollapseDwell {
+		s.aggregating = false
+		s.belowSince = time.Time{}
+		s.log.Info("scheduler aggregation change", "to", "collapsed", "reason", "idle gap", "gap", gap.String())
+		return
+	}
 	if s.loadRate < disengage {
 		if s.belowSince.IsZero() {
-			s.belowSince = now
+			// (b) Backdate to when load dropped: the previous sample (now-gap), not this
+			// post-idle frame, so the idle span counts toward the dwell.
+			s.belowSince = now.Add(-gap)
 		}
 		if now.Sub(s.belowSince) >= s.cfg.CollapseDwell {
 			s.aggregating = false
 			s.belowSince = time.Time{}
-			s.log.Info("scheduler aggregation change", "to", "collapsed", "load_fps", s.loadRate)
+			s.log.Info("scheduler aggregation change", "to", "collapsed", "reason", "sustained low load", "load_fps", s.loadRate)
 		}
 		return
 	}
@@ -504,10 +599,12 @@ func (s *WeightedScheduler) setActiveLocked(idx int) {
 
 // AddPath admits h as a new lowest-priority path and returns its index (the new
 // tail). Its quality source is h itself when h also satisfies PathQuality (the
-// production *Prober does); otherwise the path gets a neutral weight. Appending at the
-// tail leaves every existing index unchanged and the new path only carries traffic
-// once aggregation engages, so a runtime admission never disturbs the surviving
-// paths' distribution (T30). It is safe for concurrent callers.
+// production *Prober does); a health-ONLY source (no PathQuality) is recorded with a
+// nil quality and weightsLocked then gives it the NEUTRAL (mean) weight, so it splits
+// evenly and never siphons the dominant share. Appending at the tail leaves every
+// existing index unchanged and the new path only carries traffic once aggregation
+// engages, so a runtime admission never disturbs the surviving paths' distribution
+// (T30). It is safe for concurrent callers.
 func (s *WeightedScheduler) AddPath(h PathHealth) (int, error) {
 	if h == nil {
 		return 0, fmt.Errorf("sched: cannot add a nil path health source")

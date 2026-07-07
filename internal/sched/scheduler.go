@@ -4,6 +4,22 @@ import (
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
+// Negative Pick sentinels. Pick returns a NON-NEGATIVE path index when a datagram
+// should egress, and one of these when it should not. They are distinct so the Send
+// path can tell a genuine outage (no eligible path) apart from a transient pacer
+// shedding a frame while every path is healthy — the two must not read the same in
+// operator logs or the e2e log-grep harness.
+const (
+	// PickNone means no path is currently eligible (a total outage among this
+	// scheduler's paths). The Bind maps it to "no healthy path".
+	PickNone = -1
+	// PickPaced means eligible paths EXIST but every one is momentarily paced out, so
+	// this frame is shed (dropped) to bound egress and the send backlog. The paths are
+	// healthy — this is deliberate rate limiting, NOT an outage. Only a pacing-enabled
+	// weighted scheduler ever returns it.
+	PickPaced = -2
+)
+
 // Scheduler is the send-side path-selection policy the multipath Bind consults
 // for every outbound datagram. It is the extension seam for the send scheduler:
 // active-backup failover (ActiveBackup, the P1 MVP) is one implementation; the
@@ -12,8 +28,11 @@ import (
 type Scheduler interface {
 	// Pick returns the index of the path the next datagram must egress on, in
 	// the path priority order the scheduler was built over (index 0 = preferred
-	// primary). It returns a negative value when no path is currently eligible.
-	// Pick is safe for concurrent callers on the Bind's send path.
+	// primary). It returns a negative value when no datagram should be sent this
+	// call; the negative value is one of the Pick* sentinels (PickNone for no
+	// eligible path, PickPaced for a healthy-but-paced-out shed), so the caller can
+	// tell a genuine outage apart from deliberate rate limiting. Pick is safe for
+	// concurrent callers on the Bind's send path.
 	//
 	// Pick MAY be stateful: a weighted/aggregating scheduler advances its
 	// distribution bookkeeping (deficit/round-robin credits, pacing tokens, offered-
