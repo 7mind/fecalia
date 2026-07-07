@@ -8,6 +8,7 @@
 package device
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -22,9 +23,15 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
+
+// metricsShutdownTimeout bounds the graceful shutdown of the /metrics endpoint on
+// Close (and on a reload that rebinds it). The endpoint is loopback-only with no
+// long-lived scrapes, so this is comfortably generous.
+const metricsShutdownTimeout = 2 * time.Second
 
 // defaultTUNName is the requested interface name; the kernel honours it unless it
 // collides (it never does across the edge and concentrator network namespaces).
@@ -64,6 +71,17 @@ type Tunnel struct {
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
 	releaseOnce sync.Once
+
+	// metricsSrc is the live metrics.Source over the Bind; it is stable for the tunnel's
+	// life (the Bind pointer never changes), so a reload that rebinds the endpoint reuses
+	// the SAME Source — its derived-throughput last-sample state survives the rebind.
+	metricsSrc metrics.Source
+	// metricsSrv is the running /metrics endpoint, nil when [metrics].listen is empty.
+	// It is (re)assigned by applyMetricsLocked and read by Close; both hold reloadMu, so
+	// a SIGHUP-driven rebind never races shutdown. metricsListen mirrors the address it
+	// is bound to so a reload can detect a listen change without inspecting the server.
+	metricsSrv    *metrics.Server
+	metricsListen string
 }
 
 // SINGLE-ENGINE-PER-PROCESS INVARIANT (defect D2).
@@ -211,9 +229,76 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	// the bind's receive-path liveness sweep throttle (D15).
 	stopProbes := mpBind.StartProbeLoop(telemetry.DefaultProbeInterval)
 
+	t := &Tunnel{
+		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
+		stopProbes: stopProbes, amnezia: cfg.Amnezia,
+		// The Source reads live per-path counters/telemetry from the Bind and derives
+		// throughput from the byte-counter delta between scrapes (see metricsSource). It is
+		// built unconditionally (cheap) so a reload that later turns [metrics].listen ON has
+		// a Source ready; the endpoint itself is started only when a listen is configured.
+		metricsSrc: newMetricsSource(mpBind, telemetry.SystemClock{}),
+	}
+
+	// Stand up the /metrics endpoint when configured. A non-loopback listen is refused
+	// by metrics.NewServer (fail fast) — surface it as an Up failure rather than booting
+	// a tunnel that silently exposes per-path operational data off-host.
+	t.reloadMu.Lock()
+	err = t.applyMetricsLocked(cfg.Metrics.Listen)
+	t.reloadMu.Unlock()
+	if err != nil {
+		// The tunnel is fully constructed and holds the amnezia guard, so transfer that
+		// ownership to it (ok=true) BEFORE tearing it down: t.Close releases the guard via
+		// releaseOnce, and suppressing the !ok defer avoids a double release. t.Close also
+		// stops the probe loop and closes the engine/TUN.
+		ok = true
+		t.Close()
+		return nil, fmt.Errorf("device: start metrics endpoint: %w", err)
+	}
+
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
-	return &Tunnel{dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg, stopProbes: stopProbes, amnezia: cfg.Amnezia}, nil
+	return t, nil
+}
+
+// applyMetricsLocked reconciles the running /metrics endpoint to listen: it starts the
+// endpoint when one is desired and none runs, stops it when listen is empty, and rebinds
+// (stop old, start new) when the address changed. It is idempotent for an unchanged
+// address. The Source is reused across a rebind so its derived-throughput state is not
+// reset. The caller MUST hold reloadMu (Up and Reload both do), which also serializes it
+// against Close reading metricsSrv. On a NewServer/refuse error the previous server is
+// left running untouched, so a bad reload never drops a working endpoint.
+func (t *Tunnel) applyMetricsLocked(listen string) error {
+	if listen == t.metricsListen {
+		return nil
+	}
+	if listen == "" {
+		t.stopMetricsLocked()
+		return nil
+	}
+	srv, err := metrics.NewServer(listen, t.metricsSrc, t.log)
+	if err != nil {
+		return err
+	}
+	t.stopMetricsLocked()
+	srv.Start()
+	t.metricsSrv = srv
+	t.metricsListen = listen
+	return nil
+}
+
+// stopMetricsLocked gracefully shuts the running endpoint down (if any) and clears the
+// bookkeeping. Caller holds reloadMu.
+func (t *Tunnel) stopMetricsLocked() {
+	if t.metricsSrv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
+	defer cancel()
+	if err := t.metricsSrv.Close(ctx); err != nil {
+		t.log.Warn("metrics endpoint shutdown error", "error", err.Error())
+	}
+	t.metricsSrv = nil
+	t.metricsListen = ""
 }
 
 // Reload applies a reloaded configuration to the RUNNING tunnel by diffing its
@@ -242,6 +327,20 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 		t.log.Warn("reload: ignored config change (path-membership reload only)", "change", w)
 	}
 
+	// Rebind the /metrics endpoint if its listen address changed (T23). This is one of
+	// the few non-path fields a reload DOES apply: the endpoint is external to the WG
+	// session and the Bind, so restarting it disturbs neither. applyMetricsLocked reuses
+	// the tunnel's stable Source (its derived-throughput state survives), and on a refuse
+	// (e.g. a newly non-loopback address) leaves the previous endpoint running and fails
+	// the reload — the running tunnel is never disturbed. Applied BEFORE the path diff so
+	// a metrics-refuse aborts before any membership change.
+	if cfg.Metrics.Listen != t.metricsListen {
+		if err := t.applyMetricsLocked(cfg.Metrics.Listen); err != nil {
+			return fmt.Errorf("device: reload metrics endpoint: %w", err)
+		}
+		t.log.Info("reload: metrics endpoint rebound", "listen", cfg.Metrics.Listen)
+	}
+
 	add, remove := diffPaths(t.bind.PathNames(), cfg.Paths)
 	for _, def := range add {
 		if err := t.bind.AddPath(def); err != nil {
@@ -258,8 +357,10 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	// Advance the running config to the membership now in service. Survivors keep their
 	// ORIGINAL parameters and all non-path fields stay as booted (the ignored changes
 	// were not applied), so a subsequent identical reload re-warns about a still-diverged
-	// file rather than silently accepting it.
+	// file rather than silently accepting it. Metrics.Listen is carried to the applied
+	// value so a subsequent reload diffs against the endpoint actually running.
 	t.cfg = runningConfig(t.cfg, add, remove)
+	t.cfg.Metrics.Listen = t.metricsListen
 	return nil
 }
 
@@ -287,9 +388,9 @@ func reloadWarnings(live, desired *config.Config) []string {
 	if !reflect.DeepEqual(live.Log, desired.Log) {
 		w = append(w, "log section changed")
 	}
-	if !reflect.DeepEqual(live.Metrics, desired.Metrics) {
-		w = append(w, "metrics section changed")
-	}
+	// NOTE: a Metrics change is NOT warned here — unlike the other non-path fields, the
+	// reload APPLIES it by rebinding the /metrics endpoint (see Reload). Warning about a
+	// change that is honoured would misinform the operator.
 
 	// Same-name paths whose parameters changed: diffPaths matches by name only, so a
 	// modified source/dest on an existing path is otherwise silently dropped.
@@ -493,6 +594,12 @@ func (t *Tunnel) Wait() { <-t.dev.Wait() }
 // process-global amnezia state. Probing is stopped BEFORE the engine tears the
 // bind's sockets down so no emission races the close.
 func (t *Tunnel) Close() {
+	// Shut the scrape endpoint FIRST so no in-flight /metrics scrape reads the Bind while
+	// the engine tears its sockets down. reloadMu serializes this against a concurrent
+	// SIGHUP-driven rebind.
+	t.reloadMu.Lock()
+	t.stopMetricsLocked()
+	t.reloadMu.Unlock()
 	if t.stopProbes != nil {
 		t.stopProbes()
 	}
