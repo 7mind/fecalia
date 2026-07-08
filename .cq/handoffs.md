@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 7
+  item: 8
 archives: []
 ---
 
@@ -98,3 +98,20 @@ archives: []
     
     GOAL STATE: G1 is `planned` with every task done; the flow does not auto-complete goals. NOTE: completed milestones M5-M9 cannot be archived while their deferred root-caused defects remain non-terminal (expected). NO further autonomous action is possible — to continue, EITHER create a goal / run /cq:plan:follow-up G1 to action the deferred hardening defects (D25/D22/D14 are the most substantive), OR mark G1 done if the P1-P5 scope is complete as delivered.
 - ledgerRefs: ["goals:G1","reviews:R26","reviews:R29","reviews:R30","reviews:R31","reviews:R32","reviews:R33","reviews:R34","reviews:R35","reviews:R36","reviews:R37","defects:D25","defects:D22","defects:D14"]
+
+### HO7 — drained
+
+- createdAt: 2026-07-08T08:03:58.958Z
+- updatedAt: 2026-07-08T08:03:58.958Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- flow: advance
+- summary: |
+    DRAINED (re-confirmed) — this /cq:advance invocation re-derived the ledger and found it unchanged since HO6: all three predicates FALSE (P-investigate/P-plan/P-implement) with no open questions. The intervening /cq:plan:follow-up G1 added NO scope (invoked with an empty remainder → stopped and asked the user, no mutation), so the goal DAG remains fully drained: all 33 G1 tasks done (P1 failover MVP + real-host multipath, P2 aggregation, P3 fixed FEC, P4 adaptive FEC, M9 obfuscation/DPI-resistance) — each opus+fable-reviewed and hardware-validated where applicable; main @ bb0e26e, final full gate GREEN (build/vet/gofmt/go test ./.../golangci-lint/e2e+realhosts compile).
+    
+    End-of-run sweeps this invocation: (1) MILESTONE archive sweep — nothing eligible: M2/M3 already archived; the coordination milestone M1 is guarded open (goal G1 is `planned`, non-terminal — goals never auto-close); work milestones M4-M10 each still carry non-terminal ROOT-CAUSED deferred defects, which legitimately keep them open pending a fix round. (2) WORKTREE/branch cleanup — removed one merged stale branch (worktree-agent-ae638531e8d8d815d @ be0da9f, T13 review, fully merged); preserved worktree-agent-af77aeeacf7eb7555 @ 6221f9f per the hard safety guard (an unmerged worktree-agent branch with no terminal-task binding is never force-removed — it is the pre-consolidation T40 branch whose work was superseded by the merged eager-failover chain, harmless to keep).
+    
+    DEFECTS unchanged: 14 resolved, 14 root-caused + DEFERRED (D3/D4/D7/D8/D10/D13/D14/D20 + D22/D23/D24/D25/D26/D28) — none actionable by the autonomous flow (root-caused is excluded from P-investigate; they need a user-created goal or /cq:plan:follow-up to become fix tasks). The most substantive hardening candidates remain D25 (pin the undocumented klauspost RS prefix-consistency property + partial-group test), D22 (pacer sheds WG control frames under overload), D14 (fixture teardown race).
+    
+    NO further autonomous action is possible. To continue: EITHER mark G1 `done` if the delivered P1-P5 scope is complete; OR add new capability scope via /cq:plan:follow-up G1 <scope text>; OR turn the deferred hardening defects into fix tasks (a defect-driven plan round). Nothing is blocked on an open question or a user environment action — this is a clean drained terminus.
+- ledgerRefs: ["goals:G1","defects:D25","defects:D22","defects:D14"]
