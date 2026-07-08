@@ -54,7 +54,7 @@ func newAdaptiveProbingMultipath(t testing.TB, n int, psk config.Key, clk teleme
 		t.Fatalf("build scheduler: %v", err)
 	}
 	fc, ac := adaptiveFECConfigs()
-	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, &fc, &ac)
+	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, &fc, &ac, config.Amnezia{})
 	if err != nil {
 		t.Fatalf("NewMultipath(adaptive): %v", err)
 	}
