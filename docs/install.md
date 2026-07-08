@@ -202,11 +202,36 @@ provider whose default firewall ends INPUT with REJECT/DROP (e.g. firewalld
 zones): treat "tunnel ACCEPT ahead of the default reject" as a required
 concentrator deployment step.
 
-Persist the rules across reboots with your distro's mechanism
-(`netfilter-persistent save` on Debian/Ubuntu, `service iptables save` or a
-firewalld permanent rule on EL). Note the rule references the tunnel interface
-by name, so it only matches while `wanbond0` exists; inserting it at boot
-(before the daemon starts) is harmless.
+### Concentrator: persist the rules across reboots — REQUIRED
+
+`iptables -I` mutates only the **runtime** chain. On OCI Ubuntu the
+`netfilter-persistent` boot service **restores `/etc/iptables/rules.v4`**, so a
+reboot silently discards any runtime-only rule and the tunnel ACCEPT (and the
+UDP-port ACCEPT) revert to the default REJECT with no signal until
+re-provisioned (defect D7). The rules **must** therefore be written to the boot
+rules file. On Debian/Ubuntu:
+
+```sh
+sudo apt-get install -y iptables-persistent   # provides netfilter-persistent
+sudo netfilter-persistent save                # snapshots the runtime chain to /etc/iptables/rules.v4
+```
+
+(`service iptables save`, or a firewalld permanent rule, on EL.) Verify the
+tunnel ACCEPT survives by confirming it appears in the saved file:
+
+```sh
+sudo grep -- '-A INPUT -i wanbond0 -j ACCEPT' /etc/iptables/rules.v4
+```
+
+The rule references the tunnel interface by name, so it only matches while
+`wanbond0` exists; restoring it at boot (before the daemon starts) is harmless.
+
+This save is **idempotent** — re-running it against an unchanged chain is a
+no-op — and the real-host provisioning (`test/realhosts`,
+`Provision`/`TestRealProvision`, run via `just realhosts-provision`) performs
+and asserts exactly these steps automatically: it installs
+`iptables-persistent`, inserts the runtime rule, runs `netfilter-persistent
+save`, and re-inspects that the rule is present in `/etc/iptables/rules.v4`.
 
 ### Edge
 
