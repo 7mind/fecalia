@@ -161,6 +161,13 @@ type Multipath struct {
 	defs      []config.Path
 	scheduler sched.Scheduler
 
+	// classify maps each outbound datagram to its pacer traffic class from the inner
+	// WireGuard message type, parameterized by the tunnel's Amnezia obfuscation profile
+	// so a WireGuard control frame (handshake/keepalive) is recognised — and pacing-
+	// exempted — under advanced security too, not only in vanilla mode (defect D22). It
+	// is immutable after construction and holds no lock, so Send reads it off m.mu.
+	classify wgClassifier
+
 	// probers is the BOOT-TIME per-path probe initiator set, in path order, shared
 	// with the scheduler (the SAME *telemetry.Prober values back its PathHealth). At
 	// Open each is bound onto its pathState (ps.prober), and thereafter the hot paths
@@ -288,7 +295,15 @@ var _ Bind = (*Multipath)(nil)
 // controller resizes the FEC encoder's parity — it is meaningless with the plane off)
 // and reinterprets fecCfg.ParityShards as the controller's parity ceiling. It is
 // validated here (fail fast) so a mis-tuned control law is rejected at construction.
-func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config) (*Multipath, error) {
+//
+// amnezia is the tunnel's AmneziaWG obfuscation profile (config.Amnezia). It
+// parameterizes the send-path frame-type classifier so a WireGuard control frame is
+// recognised and pacing-exempted under advanced security — custom magic headers and
+// handshake junk prefixes — as well as in vanilla mode (defect D22). Pass the zero value
+// for a vanilla (unobfuscated) tunnel; the classifier then uses the default type words
+// and no junk prefix. It does NOT need to match the config's validated state — an
+// all-zero profile is exactly the vanilla classifier.
+func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config, amnezia config.Amnezia) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -351,6 +366,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		psk:         psk,
 		defs:        append([]config.Path(nil), paths...),
 		scheduler:   scheduler,
+		classify:    newWGClassifier(amnezia),
 		probers:     probers,
 		newProber:   newProber,
 		reflector:   telemetry.NewReflector(psk, rand.Reader),
@@ -924,12 +940,21 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return conn.ErrWrongEndpointType
 	}
 
+	// Classify the batch by inner WireGuard message type (defect D22): a handshake or
+	// keepalive is passed to the scheduler as ClassControl so a pacing scheduler exempts
+	// it from the per-path data token buckets and bulk overload cannot shed it and starve
+	// rekey. The classifier is parameterized by the tunnel's Amnezia profile, so it works
+	// under advanced-security obfuscation (custom magic headers + handshake junk), not
+	// only vanilla WireGuard. It reads only the (possibly junk-shifted) type word off the
+	// lock.
+	class := m.classify.classifyBatch(bufs)
+
 	m.mu.Lock()
 	if len(m.paths) == 0 {
 		m.mu.Unlock()
 		return errClosed
 	}
-	idx := m.scheduler.Pick()
+	idx := m.scheduler.Pick(class)
 	if idx == sched.PickPaced {
 		// The scheduler shed this datagram for pacing while paths are healthy: drop it
 		// (same as no-path), but surface a DISTINCT error so the diagnostic is not
@@ -1090,8 +1115,10 @@ func (m *Multipath) fecFlushDeadline() {
 	// Route the parity like data through the scheduler (a first-integration choice; see
 	// Send). A shed/no-path verdict drops this group's parity — a degraded path is
 	// exactly when the datapath is under pressure, and a stranded partial group's parity
-	// is best-effort — so the group simply goes unprotected rather than blocking.
-	idx := m.scheduler.Pick()
+	// is best-effort — so the group simply goes unprotected rather than blocking. FEC
+	// parity is bulk redundancy, so it is paced as ClassData (defect D22): only WireGuard
+	// control frames earn the pacing exemption.
+	idx := m.scheduler.Pick(sched.ClassData)
 	if idx < 0 || idx >= len(m.paths) {
 		m.mu.Unlock()
 		return

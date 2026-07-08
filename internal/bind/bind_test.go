@@ -39,7 +39,7 @@ func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	return NewMultipath(paths, psk, scheduler, nil, nil, nil, nil)
+	return NewMultipath(paths, psk, scheduler, nil, nil, nil, nil, config.Amnezia{})
 }
 
 // testKey builds a valid 32-byte config.Key seeded by b.
@@ -387,8 +387,8 @@ func TestMultipathSendNoHealthyPath(t *testing.T) {
 // Send's negative-sentinel mapping without a live liveness machine.
 type stubScheduler struct{ pick int }
 
-func (s stubScheduler) Pick() int  { return s.pick }
-func (s stubScheduler) Recompute() {}
+func (s stubScheduler) Pick(_ sched.FrameClass) int { return s.pick }
+func (s stubScheduler) Recompute()                  {}
 
 // TestMultipathSendPacerSheddingDistinct: a PickPaced shed (paths healthy, rate
 // limited) maps to errPacerShedding, DISTINCT from the errNoHealthyPath a PickNone
@@ -408,7 +408,7 @@ func TestMultipathSendPacerSheddingDistinct(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := NewMultipath(loopbackPaths(1), psk, stubScheduler{pick: tc.pick}, nil, nil, nil, nil)
+			m, err := NewMultipath(loopbackPaths(1), psk, stubScheduler{pick: tc.pick}, nil, nil, nil, nil, config.Amnezia{})
 			if err != nil {
 				t.Fatalf("NewMultipath: %v", err)
 			}
@@ -537,7 +537,7 @@ func TestNewMultipathRejectsUnpairedProberFactory(t *testing.T) {
 		t.Fatalf("build scheduler: %v", err)
 	}
 	factory := func(name string, id uint8) *telemetry.Prober { return nil }
-	if _, err := NewMultipath(paths, psk, scheduler, nil, factory, nil, nil); err == nil {
+	if _, err := NewMultipath(paths, psk, scheduler, nil, factory, nil, nil, config.Amnezia{}); err == nil {
 		t.Fatal("NewMultipath(newProber!=nil, probers==nil) succeeded, want rejection")
 	}
 }

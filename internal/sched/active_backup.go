@@ -175,7 +175,9 @@ func indexOfHealth(hs []PathHealth, h PathHealth) int {
 
 // Pick returns the index of the current active path, recomputing the selection
 // against live path health and the clock. It is safe for concurrent callers.
-func (s *ActiveBackup) Pick() int {
+// class is ignored: active-backup has no pacer, so every frame class is treated
+// identically (defect D22's control-frame exemption is a pacing concern).
+func (s *ActiveBackup) Pick(_ FrameClass) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.recomputeLocked(s.clock.Now())
