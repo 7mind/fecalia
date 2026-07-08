@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 47
+  item: 49
 archives: []
 ---
 
@@ -611,3 +611,21 @@ archives: []
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T46 (D26) implement-review: APPROVE (verdict=approve). Binomial residual model + inversion verified by hand AND execution: binomialResidual(K=10,loss=0.05,m=1)=0.009874 (~1%, exceeds 0.5% P4 bound → D26 confirmed); m=2→0.00126≤0.005 so residualTargetParity(0.05)=2 (matches task's sanity value). Parity map monotone non-decreasing + zero-at-zero + non-vacuous (0,1,2,3,4,4,6,7,9 across loss 0→0.6; convergence test exercises M=4). Minimality asserted (M-1 misses target, no off-by-one). Mutual exclusivity fail-fast at BOTH layers (config.FEC.validate() + adaptivefec.Config.Validate): rejects NaN, out-of-range, both-set, neither-set; config-load defaults SafetyFactor only when both unset (no spurious trip). Legacy safety_factor path preserved. docs/install.md accurate, no overclaiming. Full gate green. 0 criticisms, 0 questions. Merged to main at 93ae69e."
 - ledgerRefs: ["tasks:T46","defects:D26"]
+
+### R48 — go-ahead
+
+- createdAt: 2026-07-08T21:42:01.926Z
+- updatedAt: 2026-07-08T21:42:01.926Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T49 (D23) implement-review: APPROVE (verdict=approve). All 5 sweep locations (netns.go:21, fixture_impairment_test.go:11-12/63, fec_baseline_test.go:18, p0-checkpoint.md:72) cite per-host MEASURED in-fixture ceilings; every figure traces to a real measurement — 1-vCPU 12-46 Mbit/s verified vs docs/p0-findings.md:224, 4-vCPU ~13 single-path / ~47 adaptive / ~86.85 fixed matches this run's measurement. Diff is comment/string/markdown ONLY (no code constant capMbit/fecCapMbit or logic changed — confirmed by filtering all non-comment Go lines: empty). grep '150-170' clean; the sole en-dash residual (p2_aggregation_test.go:45) CORRECTLY frames 150–170 as the real-internet cross-host measurement (not a misattribution, not on the sweep list). Honesty reframing confirmed: false 'cap well below ceiling' replaced with 'link-bound only where ceiling exceeds cap; crypto-bound on 1-vCPU'. Gate green (build/vet/vet-e2e/test). 0 criticisms, 0 questions. Merged to main at ff26620."
+- ledgerRefs: ["tasks:T49","defects:D23"]
+
+### R49 — go-ahead
+
+- createdAt: 2026-07-08T21:43:25.156Z
+- updatedAt: 2026-07-08T21:43:25.156Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T45 (D25/D24) implement-review: APPROVE (verdict=approve). All three test witnesses reproduced FAIL-FIRST via matrix/fold perturbation (non-vacuous): D24 disabling accountExpired → unrecoverable=0 want 3; D25 invariant forcing ceiling codec to Cauchy → RS(1,2)parity[1]!=RS(1,8)parity[1]; D25 partial-group forcing encoder to Cauchy vs default-ceiling decoder → reconstruction corruption. Invariant uses the EXACT reedsolomon.New(m,k) default call the datapath uses (encoder.go:243, decoder.go:578). Double-count PREVENTED: accountEviction + accountExpired both guard on gs.accounted; count-at-quiescence-then-evict path confirmed total=3 not 6. Disabled path (recoveryDeadline==0 default) preserves prior window accounting (dedicated test + full suite green, no regression). Stats() read-with-side-effects serialized with Offer under fecReceiver.mu (-race clean on fec+bind). Bind wires Deadline+resequencerTimeout (Deadline<maxFECDeadline<resequencerTimeout). Late-reconstruction cross-counter edge shown harmless (/metrics uses deliveredRecovered, not raw dec.recovered). Full gate + -race green. 0 criticisms, 0 questions. Merged to main at 6f5aa48."
+- ledgerRefs: ["tasks:T45","defects:D25","defects:D24"]

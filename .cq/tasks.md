@@ -540,10 +540,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G1","defects:D4"]
 
-### T45 — planned
+### T45 — done
 
 - createdAt: 2026-07-08T21:03:37.449Z
-- updatedAt: 2026-07-08T21:16:58.859Z
+- updatedAt: 2026-07-08T21:43:26.635Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "FEC codec hardening: partial-m x partial-k byte-exact property test + PIN klauspost prefix-stability; count retained-past-deadline groups at Stats() (D25, D24)"
@@ -614,10 +614,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G1","defects:D7","defects:D8"]
 
-### T49 — planned
+### T49 — done
 
 - createdAt: 2026-07-08T21:04:27.960Z
-- updatedAt: 2026-07-08T21:04:27.960Z
+- updatedAt: 2026-07-08T21:42:03.425Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "D23 doc/comment sweep: measure the real 4-vCPU in-fixture ceiling, then replace the mis-attributed 150-170 Mbit/s figure in all locations (measure-then-sweep, per Q15)"

@@ -321,10 +321,10 @@ archives: []
 - rootCause: "Established by the T21 review (fable): the weighted pacer's per-path Pick() token buckets are frame-type-blind, so under sustained overload WG control frames (handshake/keepalive) are shed at the same probability as bulk data. Pick() has no frame-type visibility — a control-frame bypass/priority class requires Bind/interface frame-type plumbing that does not exist yet. DEFERRED: pacing ships DISABLED by default (no default exposure), and the fix belongs with future pacing-hardening/sizing work (needs the Bind to classify frame types + BDP-based capacity sizing, related to T35 load-cap). No owning task fixes it today; re-seed a pacing-hardening task when pacing is enabled by default or empirically sized."
 - dependsOn: ["T47"]
 
-### D23 — root-caused
+### D23 — resolved
 
 - createdAt: 2026-07-07T20:14:07.686Z
-- updatedAt: 2026-07-08T21:05:02.792Z
+- updatedAt: 2026-07-08T21:42:04.626Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Fixture comments misattribute the real-internet 150-170 Mbit/s figure as the in-fixture 1-vCPU crypto ceiling
@@ -337,10 +337,10 @@ archives: []
 
 ## M7
 
-### D24 — root-caused
+### D24 — resolved
 
 - createdAt: 2026-07-07T22:37:34.260Z
-- updatedAt: 2026-07-08T21:04:54.798Z
+- updatedAt: 2026-07-08T21:43:29.112Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: FEC unrecoverable /metrics counter under-reports at traffic quiescence (recovery overstated after an incident)
@@ -353,10 +353,10 @@ archives: []
 
 ## M8
 
-### D25 — root-caused
+### D25 — resolved
 
 - createdAt: 2026-07-08T00:36:55.771Z
-- updatedAt: 2026-07-08T21:04:52.785Z
+- updatedAt: 2026-07-08T21:43:28.074Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Adaptive-FEC varying-M correctness rests on an undocumented klauspost prefix-stability default; partial groups untested
