@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 27
+  item: 29
 archives: []
 ---
 
@@ -367,3 +367,32 @@ archives: []
 - rootCause: The redundancy map is parameterized by a bare SafetyFactor multiplier + fixed hysteresis bands, none derived from a target-residual SLA; the defaults were chosen for stability (T27), not to hit a specific residual bound.
 - suggestedFix: Derive the redundancy map from a TARGET-RESIDUAL parameter (invert the binomial residual for M given K and smoothed loss), OR ship a documented SafetyFactor/RaiseThreshold table per residual SLA in the ops/install docs. Consider making the residual target (not the bare multiplier) the config surface. Pairs with the adaptive-FEC ops documentation.
 - ledgerRefs: ["tasks:T29","tasks:T27","goals:G1"]
+
+## M9
+
+### D27 — resolved
+
+- createdAt: 2026-07-08T01:11:04.386Z
+- updatedAt: 2026-07-08T01:37:13.415Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "TestCodecPSKMismatch flaky (~0.8%): cross-PSK frame accepted when deobfuscated kind lands on unauthenticated DATA/PARITY"
+- severity: medium
+- description: "Found by the T26 review (fable), file-and-defer, PRE-EXISTING on main (reproduced 8/1000 on the base tree; NOT caused by T26). internal/frame/frame_test.go:167 TestCodecPSKMismatch: Codec.Decode under a WRONG PSK deobfuscates the kind byte to a random value; with p~2/256 it lands on KindData/KindParity, which skip tag verification BY DESIGN (unauthenticated DATA/PARITY — accepted DoS-grade forgery, the inner WG layer authenticates), so Decode returns a garbage frame with NIL error. The test unconditionally asserts a non-nil error, contradicting the documented wire model, so `go test ./...` (`just test`, the gate every implement-worker runs) is INTERMITTENTLY red at ~0.8%/run. Same class as D17 (TestPSKMismatchRejected, fixed af31005) but a DIFFERENT test that still has the vacuous assertion. Because it makes the shared gate flaky, it warrants a near-term fix even though it is out of T26 scope."
+- rootCause: "Same as D17: DATA/PARITY are unauthenticated by design, so a wrong-PSK decode legitimately returns err==nil ~2/256 of the time when the garbage kind byte lands on an unauthenticated kind. TestCodecPSKMismatch asserts err!=nil unconditionally, which is false ~0.8% of the time."
+- suggestedFix: "Mirror the D17 fix (af31005): on err==nil, assert the decoded frame is an UNAUTHENTICATED kind (KindData/KindParity) with garbage payload (never the original CONTROL/PROBE), OR drive Decode with fixed nonces covering both branches deterministically. Crypto is sound; this is a test-assertion bug that flakes the shared gate."
+- ledgerRefs: ["tasks:T26","defects:D17","goals:G1"]
+- fix: RESOLVED. Reproduced the ~0.8% flake (several failures in 1000 runs), then fixed TestCodecPSKMismatch (internal/frame/frame_test.go) to assert on the decoded KIND rather than err — a cross-PSK decode must never yield a valid frame of the same AUTHENTICATED kind (mirrors the D17 fix af31005; err==nil ~2/256 is legitimate when the garbage kind byte lands on unauthenticated DATA/PARITY). Verified 0/5000 failures (was flaky). Crypto sound; test-assertion bug only. Committed on main.
+
+### D28 — root-caused
+
+- createdAt: 2026-07-08T01:33:40.193Z
+- updatedAt: 2026-07-08T01:33:40.193Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "`just lint` never lints e2e-tagged test sources (no --build-tags e2e)"
+- severity: low
+- description: Found by the T26 review (fable), PRE-EXISTING harness gap. The Justfile lint target runs `go vet ./...` + `golangci-lint run` WITHOUT `--build-tags e2e`, so test/e2e/*.go (all -tags e2e sources) is excluded from vet+lint entirely. A T26 unused-function was invisible to `just lint` and only surfaced under `golangci-lint run --build-tags e2e ./test/e2e/`; any future e2e-only lint defect (unused symbol, shadowing, etc.) will be equally invisible to the standard gate. This is why implement-workers' green `golangci-lint run` gate can miss e2e-tagged issues.
+- rootCause: The lint/vet targets omit the e2e build tag, so the Go toolchain never compiles the e2e-tagged files during lint (build-tag-gated files are skipped unless the tag is set).
+- suggestedFix: Add `--build-tags e2e` to the golangci-lint invocation (and `go vet -tags e2e ./test/e2e/...`) in the Justfile lint target, OR add a dedicated `lint-e2e` target invoked by `just lint`, so e2e-tagged sources are vetted+linted. Also fold `-tags realhosts` similarly if those sources need coverage.
+- ledgerRefs: ["tasks:T26","goals:G1"]

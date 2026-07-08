@@ -347,18 +347,18 @@ archives:
 - dependsOn: ["T8","T12"]
 - ledgerRefs: ["goals:G1"]
 
-### T26 — planned
+### T26 — done
 
 - createdAt: 2026-07-01T23:41:04.532Z
-- updatedAt: 2026-07-01T23:41:04.532Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-08T01:38:34.638Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Automated wire-format audit: entropy + fixed-offset check"
 - description: "Harness tool capturing tunnel pcaps in the fixture across multiple sessions (with FEC/parity and amnezia junk active), then asserting the requirement-6 properties programmatically: no byte position holds a constant value across sessions/packets, and mean per-packet payload entropy exceeds a named threshold constant. Failure output pinpoints the offending offset."
 - acceptance: A tagged e2e test captures >=5 fresh sessions and the audit reports zero constant byte positions and mean per-packet payload entropy above the named constant; a deliberately-planted constant byte makes the test fail with the offset reported.
 - suggestedModel: standard
 - dependsOn: ["T24","T19"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T24","reviews:R36","defects:D28"]
 
 ### T28 — planned
 

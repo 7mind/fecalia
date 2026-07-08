@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 36
+  item: 37
 archives: []
 ---
 
@@ -457,6 +457,26 @@ archives: []
 - criticism: ["[r1 fable, resolved 17a909c] D2 guard unsound — same-profile refcount admission let Close->resetProtocol revert globals under a live second engine; tightened to process-exclusivity (same-profile second configured engine now refused)","[r1 fable, resolved 17a909c] plain-WireGuard engines bypassed the guard but their Close also resets globals under a live amnezia tunnel — guard now tracks all engines; both plain/configured orderings refused, plain+plain allowed"]
 - new_questions: []
 - ledgerRefs: ["tasks:T19","goals:G1","defects:D1","defects:D2"]
+
+### R36 — go-ahead
+
+- createdAt: 2026-07-08T01:38:29.665Z
+- updatedAt: 2026-07-08T01:38:29.665Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T26 (automated wire-format audit: entropy + fixed-offset check, requirement 6) reconciled GO-AHEAD (opus by-construction + fable adversarial-teeth panel; 2 rework rounds + hardware). Merged 7f052e2. New pure package internal/wireaudit: classic-libpcap+Eth/IPv4/UDP parser (no gopacket, IPv4-total-length padding strip, IPv4-fragment guard) + the audit; e2e wrapper captures >=5 fresh amnezia+FEC sessions via tcpdump.
+    
+    opus (by-construction) APPROVE: parser bounds-safe (truncated record errors, no panic), returns ONLY udp[8:] (wanbond payload, not the constant IP/UDP header fields), Shannon entropy correct, single-valued detector + determinism correct.
+    
+    fable (adversarial teeth) R1 DISAPPROVE (4 criticisms): DECISIVE — the constant-offset detector flagged only SINGLE-valued offsets + entropy skipped <1024B frames, so a plaintext-header regression (kind byte {1..4} at offset 24 across the DATA/PARITY/PROBE/junk mix + structured seq) passed BOTH checks (multi-valued → not flagged; large frame still ~7.8 entropy) — a green audit on a DPI-signaturable wire (false assurance). Plus: mean-only entropy diluted a leaking subset; under-sampled offsets passed silently; udpPayload ignored IPv4 fragments. FIXED (2337abc): (1) OffsetDistributionOK per-offset value-entropy check (>=6.5 bits/byte, 512-sample floor, ~1.1-bit margin vs MLE bias) — the {1..4} escape now measures 1.32 bits → caught with 5.18-bit margin; (2) per-frame floor (6.0) + p5 quantile (7.0); (3) coverage reporting (contiguous judged prefix + CoverageOK); (4) fragment guard. All 4 mutation-verified. R2 DISAPPROVE (1 hygiene): orphaned dead code plantAndAssertDetected (unused under -tags e2e, invisible to `just lint` — D28) → deleted (fb413eb). fable r2 verified all 4 blind-spot fixes SOUND (escape caught, judged region provably prefix-contiguous so CoverageOK(1024) closes the reopening, floors false-fail-free per frame.go, fragment masks RFC-791-correct).
+    
+    CAPTURE FIX (hardware): first run gave 0-byte pcaps — tcpdump 4.99.4 SEGFAULTS with -Z root (exit 139, core dump); dropped -Z root (default privilege drop works; savefile world-readable) → 1fc4f09.
+    
+    HARDWARE GREEN (llm-ubuntu-0): TestWireFormatAudit PASS — 5 sessions / 385201 frames, FULL coverage (1472 offsets judged, 0 under-sampled), NO single-valued offset, ALL 1472 offsets clear 6.5 bits/byte value entropy (NO false-fail on the real keystream-uniform wire), mean entropy 7.87 (min 7.81 / p5 7.85); both planted signatures caught on the real wire (constant offset 10=0x5a; low-cardinality 4-value 2.0 bits vs 6.5). Requirement-6 empirically validated with a teeth-verified audit. D28 (just lint omits -tags e2e, low) filed; D27 (pre-existing flaky TestCodecPSKMismatch, medium) fixed+resolved out-of-band (de-flaked the shared gate).
+- criticism: ["[r1 fable, resolved 2337abc] DECISIVE: constant-offset detector caught only SINGLE-valued offsets + entropy skipped <1024B → a low-cardinality plaintext-header signature (kind byte {1..4} at offset 24) passed BOTH checks (false assurance on a DPI-signaturable wire) — added a per-offset value-distribution entropy check (>=6.5 bits, 512-sample floor); the escape now measures 1.32 bits, caught with 5.18-bit margin","[r1 fable, resolved 2337abc] mean-only entropy diluted a leaking subset (up to ~8% plaintext large frames) + under-sampled offsets passed silently + udpPayload ignored IPv4 fragments — added per-frame/p5 entropy floors, coverage reporting (contiguous judged prefix + CoverageOK), and a fragment guard; all mutation-verified","[r2 fable, resolved fb413eb] orphaned dead code plantAndAssertDetected (unused under -tags e2e, invisible to `just lint` — filed D28) — deleted","[hardware, resolved 1fc4f09] tcpdump -Z root segfaults on 4.99.x → 0-byte pcaps — dropped -Z root (default privilege drop; world-readable savefile)"]
+- new_questions: []
+- ledgerRefs: ["tasks:T26","tasks:T24","goals:G1","defects:D27","defects:D28"]
 
 ## M8
 
