@@ -38,10 +38,10 @@ archives: []
 - rootCause: "Confirmed against vendored engine source (I read amneziawg-go@v1.0.4 device/device.go handlePostConfig, lines 585-720). The message-type magic headers MessageInitiationType/MessageResponseType/MessageCookieReplyType/MessageTransportType are package-level vars (noise-protocol.go) reassigned by handlePostConfig on every configured IpcSet apply (device.go:685/688 etc.), and resetProtocol() (device.go:585) also mutates them process-wide. So obfuscation magic headers are process-global, not per-Device: two engines in one process share the last-applied values. Upstream dependency property; not fixable in T8. Mitigation (document/assert single-engine-per-process, or vendor-patch to per-Device state) folded into T19; D2 ledgerRefs tasks:T19 so it auto-resolves on T19 merge-back per implement §7.4."
 - fix: "Resolved by T19 (merged ca5d638): documented the amneziawg-go single-engine-per-process constraint (message-type magic headers are package-global vars, reset unconditionally by (*Device).Close->resetProtocol) and added globalAmneziaGuard enforcing PROCESS-EXCLUSIVITY — a configured (amnezia) engine is admitted only when no other engine is live; no engine may start while a configured engine is live; plain engines coexist. Acquire-before-IpcSet, release exactly-once via sync.Once (deferred release only after acquire succeeds), leak-free. The initial T19 delivery had an unsound same-profile-refcount + plain-bypass gap (found by the fable review, verified against the fork's unconditional resetProtocol); the merged rework tightened it to sound exclusivity with both orderings test-pinned. Verified by both reviewers."
 
-### D3 — root-caused
+### D3 — resolved
 
 - createdAt: 2026-07-06T20:28:18.949Z
-- updatedAt: 2026-07-08T21:04:43.288Z
+- updatedAt: 2026-07-08T21:39:15.464Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: e2e iperf3 server readiness uses fixed sleeps instead of polling for listen
@@ -54,10 +54,10 @@ archives: []
 
 ## M5
 
-### D4 — root-caused
+### D4 — resolved
 
 - createdAt: 2026-07-06T21:10:23.780Z
-- updatedAt: 2026-07-08T21:04:51.289Z
+- updatedAt: 2026-07-08T21:39:19.680Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Outer CONTROL/PROBE frames have no anti-replay at the codec layer
@@ -109,10 +109,10 @@ archives: []
 - ledgerRefs: ["tasks:T12","goals:G1","tasks:T37"]
 - fix: "Resolved by T37 (merged 03c8651): the unauthenticated-DATA ps.setRemote was REMOVED. Per-path return-remote learning now happens ONLY from MAC-verified probe/echo frames (frame.Decode authenticates PROBE). A blind attacker spraying forged DATA can no longer repoint a path's return traffic. DATA->virtual-endpoint pinning is retained (that is roaming identity, T16) but Send routes return traffic by the per-path authenticated getRemote, never the virt address, so DATA forgery cannot redirect traffic. Verified by both T37 reviewers + TestMultipathRemoteLearnedFromProbeNotData."
 
-### D10 — root-caused
+### D10 — resolved
 
 - createdAt: 2026-07-06T23:09:43.617Z
-- updatedAt: 2026-07-08T21:04:48.291Z
+- updatedAt: 2026-07-08T21:36:58.422Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Config validation accepts duplicate path source_addr, causing EADDRINUSE at bind Open
@@ -151,10 +151,10 @@ archives: []
 - ledgerRefs: ["tasks:T37","tasks:T38","goals:G1"]
 - fix: "Resolved by T38 (merged c64d794). A responder-contributed challenge establishes peer freshness: the Reflector issues a confidential, MAC-covered, per-adoption-rotated non-zero issuedChallenge (inside obf(body), readable only with the PSK); a session-epoch RESET is authorized ONLY when a probe echoes the current issuedChallenge — which a replay attacker cannot know. A genuinely restarted peer bootstraps in a bounded 2-round handshake (round 1 challenge-0 reflected -> learns challenge; round 2 echoes it -> adopted, high-water reset), recovering within the T13 detection window instead of the minutes-to-hours D12 deadlock. Memory is O(paths) (no retired-session set). NOTE: the FIRST T38 design (peer-chosen random SessionID) was itself unsound — the fable review reproduced a session-seizure bypass (unpredictability != freshness: a replayed never-observed probe seized the session and locked out the legit peer); the merged responder-challenge redesign closes it, verified by both reviewers re-running the seizure reproduction (now fails to seize)."
 
-### D13 — root-caused
+### D13 — resolved
 
 - createdAt: 2026-07-07T12:57:43.704Z
-- updatedAt: 2026-07-08T21:04:49.856Z
+- updatedAt: 2026-07-08T21:36:59.940Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: IPv6 path sources never qualify for device binding (link-local counts toward familyCount)
@@ -165,10 +165,10 @@ archives: []
 - ledgerRefs: ["tasks:T16","goals:G1"]
 - dependsOn: ["T43"]
 
-### D14 — root-caused
+### D14 — resolved
 
 - createdAt: 2026-07-07T12:58:05.119Z
-- updatedAt: 2026-07-08T21:04:44.786Z
+- updatedAt: 2026-07-08T21:39:16.963Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: e2e harness Setup races prior invocation teardown (transient RTNETLINK 'File exists' on veth create)
@@ -248,10 +248,10 @@ archives: []
 - rootCause: "ROOT-CAUSED (opus, in-session, reproduced): a TEST bug, NOT a production lost-wakeup. TestMultipathVirtualEndpointIdentity sent OuterSeq 0 to path-0's socket and OuterSeq 1 to path-1's socket UP FRONT (sendDataTo encodes frame.Data{OuterSeq: uint64(pathID), PathID: pathID}), then received both. The two path sockets are read by INDEPENDENT readLoop goroutines with NO cross-path arrival ordering. The T18 resequencer pins its release point (next) to the FIRST-observed outer-seq; when path-1's reader won the race and Observed OuterSeq 1 first, next pinned to 1, OuterSeq 1 was delivered, and the later-Observed OuterSeq 0 (< next) was dropped as dropLate. The test's SECOND fn() call then blocked forever (250ms poll finds nothing; no third frame ever arrives) -> the whole package hit its timeout. The drainer/poke mechanism is sound (the poll backstop self-heals a lost poke); the frame was genuinely DROPPED, not stuck. Benign in production: continuous traffic + WG/TCP retransmit recover an early reorder-drop, and the per-Open first-seq re-pin stabilizes quickly."
 - fix: "Resolved directly (test-only, merged 5488f42 on main): INTERLEAVE send+receive per path in TestMultipathVirtualEndpointIdentity — send OuterSeq i, receive it (pinning next deterministically to 0, then advancing to 1), then send OuterSeq i+1. Removes the cross-path arrival race so both frames are delivered in order regardless of reader scheduling. Verified: 300 -race runs pass in ~1.9s (previously an intermittent 90s package timeout). No production code changed. D20 (goroutine leak in TestMultipathEngineUpCanTransmit) remains a separate low deferred test-hardening item."
 
-### D20 — root-caused
+### D20 — resolved
 
 - createdAt: 2026-07-07T16:45:35.495Z
-- updatedAt: 2026-07-08T21:04:46.293Z
+- updatedAt: 2026-07-08T21:39:18.476Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Goroutine leak: TestMultipathEngineUpCanTransmit helper blocked on chan send outlives the test"
@@ -367,10 +367,10 @@ archives: []
 - ledgerRefs: ["tasks:T29","tasks:T24","goals:G1"]
 - dependsOn: ["T45"]
 
-### D26 — root-caused
+### D26 — resolved
 
 - createdAt: 2026-07-08T00:37:04.757Z
-- updatedAt: 2026-07-08T21:04:56.291Z
+- updatedAt: 2026-07-08T21:41:05.546Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Adaptive-FEC DEFAULT tuning (SafetyFactor 1.5, RaiseThreshold 5%) cannot meet a sub-1% residual SLA

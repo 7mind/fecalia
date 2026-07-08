@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 43
+  item: 47
 archives: []
 ---
 
@@ -575,3 +575,39 @@ archives: []
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T48 (D7 repo-side) implement-review: APPROVE (verdict=approve). Reboot-persistence provisioning correctly state-guarded — greps canonical `-A INPUT -i wanbond0 -j ACCEPT` in /etc/iptables/rules.v4 (true no-op on re-run, neither always-reapply nor always-skip); step order insert→save preserves OCI REJECT ordering. TestRealProvision asserts Persisted + AcceptCount==1 + BeforeReject non-vacuously (Persisted computed by real SSH grep, not a constant). install.md documents safe insert-then-save order + idempotency + verification grep. realhosts vet+build and non-privileged build/vet/test all green (go1.26.4). Manual dedup/reboot/o3-apply is tag-gated OUT of `just test` — never auto-executed. 0 criticisms, 0 questions. Merged to main at ea8cda5. NOTE: only D7's repo-side portion resolves on merge; D7 live-apply + D8 remain OPEN pending the recorded manual o3 ops."
 - ledgerRefs: ["tasks:T48","defects:D7","defects:D8"]
+
+### R44 — go-ahead
+
+- createdAt: 2026-07-08T21:36:55.461Z
+- updatedAt: 2026-07-08T21:36:55.461Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T43 (D10/D13) implement-review: APPROVE (verdict=approve). D10: config.validate() rejects duplicate source_addr at load (names both paths + shared addr); non-vacuous (TestLoadRejectsDuplicateSourceAddr fails pre-fix with got-nil). D13: extracted familyBindCount seam excludes fe80::/10 link-local for a global v6 source (global v6 now qualifies for device bind); v4 + link-local-source unchanged, non-vacuous. Full gate green. Reviewer found ONE out-of-scope gap (dup guard keyed on raw netip.Addr missed v4 vs v4-mapped-v6 spelling of same addr); FOLDED INTO T43 (not deferred): guard now keys on SourceAddr.Unmap(), new TestLoadRejectsDuplicateSourceAddrV4MappedV6 fails pre-fix passes post — so that gap is resolved WITHIN T43, not a separate open defect. Merged to main at 693c222."
+- ledgerRefs: ["tasks:T43","defects:D10","defects:D13"]
+
+### R45 — go-ahead
+
+- createdAt: 2026-07-08T21:39:05.745Z
+- updatedAt: 2026-07-08T21:39:05.745Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T42 (D3/D14/D20) implement-review: APPROVE (verdict=approve). Verified under DEFAULT CGO (real nix gcc): build/vet/e2e-compile/test all green, go mod tidy clean (goleak direct dep). D20 leak gate NON-VACUOUS — scratch-reverting the select+done escape makes goleak.VerifyNone FAIL flagging the parked chan-send producer at engine_test.go; VerifyNone correctly ordered LAST (defer LIFO after done-close + dev.Close). D3 waitIperfListen LISTEN-polls via `nsenter ss -ltn` (never connects, preserves one-shot -1 server), wired at both iperf3Mbps + rttUnderLoad. D14 no-op VERIFIED legitimate: base T23 idempotent edge-veth pre-delete + synchronous Kill+Wait cover the diagnosed root cause. 0 criticisms, 0 questions. Merged to main at 072aa69."
+- ledgerRefs: ["tasks:T42","defects:D3","defects:D14","defects:D20"]
+
+### R46 — go-ahead
+
+- createdAt: 2026-07-08T21:39:11.027Z
+- updatedAt: 2026-07-08T21:39:11.027Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T44 (D4) implement-review: APPROVE (verdict=approve). SECURITY-verified. The new Seq is genuinely inside the MAC-covered obfBody (Encode tags nonce||obfBody incl. Seq); TestControlWireContract flips every Seq wire byte and requires ErrAuth — an attacker cannot forge/advance Seq. AntiReplay.Accept rejects seq<=high (strictly monotonic, no off-by-one, no accept-on-equal; first Seq incl 0 admitted). ControlGuard keys high-water per control type (per-type independence tested). Repro NON-VACUOUS: no-op Admit → TestControlReplayRejected fails at control_test.go:71 with the exact expected message. PROBE anti-replay pre-exists (T38/D12) and is untouched/unregressed. NO live inbound CONTROL consumer left unguarded (handleInbound drops CONTROL at default; no other frame.Control consumer in internal/ or cmd/). DATA/PARITY-unauthenticated property untouched. Full gate green. 0 criticisms, 0 questions. Merged to main."
+- ledgerRefs: ["tasks:T44","defects:D4"]
+
+### R47 — go-ahead
+
+- createdAt: 2026-07-08T21:41:04.664Z
+- updatedAt: 2026-07-08T21:41:04.664Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T46 (D26) implement-review: APPROVE (verdict=approve). Binomial residual model + inversion verified by hand AND execution: binomialResidual(K=10,loss=0.05,m=1)=0.009874 (~1%, exceeds 0.5% P4 bound → D26 confirmed); m=2→0.00126≤0.005 so residualTargetParity(0.05)=2 (matches task's sanity value). Parity map monotone non-decreasing + zero-at-zero + non-vacuous (0,1,2,3,4,4,6,7,9 across loss 0→0.6; convergence test exercises M=4). Minimality asserted (M-1 misses target, no off-by-one). Mutual exclusivity fail-fast at BOTH layers (config.FEC.validate() + adaptivefec.Config.Validate): rejects NaN, out-of-range, both-set, neither-set; config-load defaults SafetyFactor only when both unset (no spurious trip). Legacy safety_factor path preserved. docs/install.md accurate, no overclaiming. Full gate green. 0 criticisms, 0 questions. Merged to main at 93ae69e."
+- ledgerRefs: ["tasks:T46","defects:D26"]

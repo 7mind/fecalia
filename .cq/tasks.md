@@ -490,10 +490,10 @@ archives:
 
 ## M11
 
-### T42 — planned
+### T42 — done
 
 - createdAt: 2026-07-08T21:03:02.311Z
-- updatedAt: 2026-07-08T21:16:27.555Z
+- updatedAt: 2026-07-08T21:39:12.492Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Harden e2e/netns test harness: LISTEN-poll readiness, idempotent Setup/synchronous Teardown, engine_test goroutine leak (D3, D14, D20)"
@@ -511,10 +511,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G1","defects:D3","defects:D14","defects:D20"]
 
-### T43 — planned
+### T43 — done
 
 - createdAt: 2026-07-08T21:03:12.810Z
-- updatedAt: 2026-07-08T21:03:12.810Z
+- updatedAt: 2026-07-08T21:36:57.036Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Config/bind path-source correctness: reject duplicate source_addr at config load; exclude link-local from v6 device-bind family count (D10, D13)"
@@ -528,10 +528,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G1","defects:D10","defects:D13"]
 
-### T44 — planned
+### T44 — done
 
 - createdAt: 2026-07-08T21:03:21.434Z
-- updatedAt: 2026-07-08T21:03:21.434Z
+- updatedAt: 2026-07-08T21:39:13.985Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Add per-peer anti-replay to outer CONTROL/PROBE handling (ProbeSeq high-water + stale-timestamp rejection) (D4)
@@ -559,10 +559,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G1","defects:D25","defects:D24"]
 
-### T46 — planned
+### T46 — done
 
 - createdAt: 2026-07-08T21:03:49.934Z
-- updatedAt: 2026-07-08T21:17:07.861Z
+- updatedAt: 2026-07-08T21:41:04.755Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Adaptive-FEC: derive redundancy from a new target_residual config parameter (D26, per Q16 option i)"
