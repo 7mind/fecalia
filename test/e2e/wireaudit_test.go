@@ -349,13 +349,16 @@ func (c *pcapCapture) stop(t *testing.T) {
 
 // startPcap launches tcpdump writing a classic-pcap savefile of the UDP traffic on
 // the given port over veth (in the current/edge network namespace), packet-buffered
-// so the file is complete on stop. It stays root (-Z root) so no privilege-drop user
-// is required, and waits auditCaptureAttachDelay for the capture to attach before
-// returning. Requires CAP_NET_RAW (the e2e TestMain namespace / sudo provides it).
+// so the file is complete on stop, and waits auditCaptureAttachDelay for the capture
+// to attach before returning. Requires CAP_NET_RAW (the e2e TestMain namespace / sudo
+// provides it). It uses tcpdump's DEFAULT privilege drop (to the unprivileged "tcpdump"
+// user), NOT -Z root: on tcpdump 4.99.x, -Z root segfaults on startup (leaving a 0-byte
+// savefile). tcpdump opens the -w file as root before dropping, so the root-owned temp
+// dir is writable, and the savefile is world-readable so the test (root) can read it back.
 func (top *Topology) startPcap(t *testing.T, veth string, port int, file string) *pcapCapture {
 	t.Helper()
 	out := &lockedBuffer{}
-	cmd := exec.Command("tcpdump", "-i", veth, "-n", "-p", "-U", "-Z", "root", "-w", file, "udp", "port", strconv.Itoa(port))
+	cmd := exec.Command("tcpdump", "-i", veth, "-n", "-p", "-U", "-w", file, "udp", "port", strconv.Itoa(port))
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start tcpdump on %s: %v", veth, err)
