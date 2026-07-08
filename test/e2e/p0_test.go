@@ -248,12 +248,17 @@ func (top *Topology) pingUntil(ip string, d time.Duration) bool {
 	return false
 }
 
+// iperfDefaultPort is iperf3's default server port (5201), used by iperf3Mbps,
+// which starts its server without an explicit -p. The under-load measurement uses
+// the distinct bloatPort instead.
+const iperfDefaultPort = 5201
+
 // iperf3Mbps runs a one-shot iperf3 TCP transfer to serverIP (inside the peer
 // netns) for secs seconds and returns the sender throughput in Mbit/s.
 func (top *Topology) iperf3Mbps(t *testing.T, serverIP string, secs int) float64 {
 	t.Helper()
 	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP)
-	time.Sleep(500 * time.Millisecond) // allow the server to bind and listen
+	top.waitIperfListen(t, iperfDefaultPort) // poll for LISTEN (never connect: server is one-shot)
 
 	out := top.runOut("iperf3", "-c", serverIP, "-t", strconv.Itoa(secs), "-J")
 	var r struct {

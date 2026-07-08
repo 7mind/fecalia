@@ -147,7 +147,7 @@ func (top *Topology) rttUnderLoad(t *testing.T, serverIP, pingIP string, secs in
 	// refused"). A separate port sidesteps that entirely.
 	port := strconv.Itoa(bloatPort)
 	top.startProc(t, "iperf3-bloat-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP, "-p", port)
-	time.Sleep(800 * time.Millisecond) // allow the server to bind and listen
+	top.waitIperfListen(t, bloatPort) // poll for LISTEN (never connect: server is one-shot)
 
 	// Run the saturating client in the background; capture output/err only (no
 	// t.Fatalf off the test goroutine — that is illegal in Go's testing).
