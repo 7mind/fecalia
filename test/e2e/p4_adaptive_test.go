@@ -67,6 +67,14 @@ const (
 	// ratios and residual to mean anything (mirrors p3MinDataFrames); below it the fixture
 	// delivered too few frames and the test FAILS loudly rather than passing vacuously.
 	p4MinDataFrames = 2000
+
+	// p4MinRecovered is the minimum concentrator recovered-packets DELTA the window must
+	// carry: the injected 5% loss over >= p4MinDataFrames DATA frames yields ~100 erasures,
+	// of which a masking plane recovers most, so a real loss window recovers well over this
+	// floor. Below it, the loss did not reach the decoder as recovered erasures (unapplied
+	// netem, or an under-provisioned send side) and a low residual would be vacuous. Set well
+	// below the ~hundreds expected so it fails only on a genuine near-zero, not on variance.
+	p4MinRecovered = 20
 )
 
 // p4Path is the single emulated uplink for P4: same profile as p3Path (20ms one-way delay,
@@ -94,9 +102,13 @@ type p4Result struct {
 // baseline's — the "same masking for less overhead" claim. Both phases read from /metrics.
 //
 // The two phases run sequentially (the shared veth names forbid two live topologies), each
-// standing up and tearing down its own fixture. The overhead comparison is gated on masking-
-// equality: it is only meaningful once BOTH phases meet the residual bound, so a phase that
-// fails to mask fails the test at that phase rather than yielding a vacuous comparison.
+// standing up and tearing down its own fixture. Division of assertions: each PHASE subtest
+// guards only its own validity — bring-up, positive goodput, sample size, and the loss-took-
+// effect guards (edge probe loss ~ injected rate, concentrator recovered > 0) — and returns
+// its measured residual + overhead bytes. The PARENT then does the acceptance: it asserts
+// BOTH phases' residuals meet P4ResidualLossMax (the masking-equality gate) and only then
+// compares the overhead bytes. So a phase that fails to MASK does not fail inside the phase;
+// it is caught by the parent's residual asserts below, which run after both phases complete.
 func TestP4AdaptiveFEC(t *testing.T) {
 	bin := buildWanbond(t)
 
@@ -158,10 +170,14 @@ func runP4Phase(t *testing.T, bin string, adaptive bool) p4Result {
 
 	// Window start: the SEND-side byte counters (overhead numerator/denominator) are charged
 	// as frames reach the socket, so a delta across the transfer is exactly the parity/data
-	// bytes the edge emitted while loss was injected and the controller was at steady M.
+	// bytes the edge emitted while loss was injected and the controller was at steady M. The
+	// concentrator (decoder) recovered counter is scraped here too, so its window delta proves
+	// the injected loss reached the decoder as recoverable erasures (the loss-took-effect guard
+	// below) — the P4 counterpart of P3's p3LostAccountingFloor teeth.
 	ctxB, cancelB := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelB()
 	edgeBefore := fetchMetrics(t, ctxB, p4MetricsURL)
+	concBefore := fetchMetricsInNetns(t, top.pid, p4MetricsURL)
 
 	goodput := top.fecIperf3RecvMbps(t, concInner, p4LoadSecs)
 
@@ -184,6 +200,11 @@ func runP4Phase(t *testing.T, bin string, adaptive bool) p4Result {
 	if !ok {
 		t.Fatalf("p4 %s: concentrator /metrics missing %s", label, metrics.MetricFECResidualLoss)
 	}
+	recovered := deltaValue(t, concBefore, concAfter, metrics.MetricFECRecovered)
+	edgeLoss, okLoss := edgeAfter.PathValue(metrics.MetricLoss, p4Path.name)
+	if !okLoss {
+		t.Fatalf("p4 %s: edge /metrics missing %s{path=%q}", label, metrics.MetricLoss, p4Path.name)
+	}
 
 	// Data-plane survival (no reset / without retransmit).
 	if goodput <= 0 {
@@ -199,10 +220,29 @@ func runP4Phase(t *testing.T, bin string, adaptive bool) p4Result {
 		t.Fatalf("p4 %s: DATA byte counter did not advance (%.0f) — overhead-bytes denominator empty", label, dataBytes)
 	}
 
+	// LOSS-TOOK-EFFECT guards (anti-vacuity, mirroring P3's rigor). Without these a silently-
+	// unapplied netem — 0 real loss -> adaptive M=0, overhead 0, residual 0 — would pass the
+	// residual/overhead assertions VACUOUSLY. Two independent, complementary proofs that the
+	// injected loss actually reached the datapath as erasures:
+	//   (1) FEC-INDEPENDENT: the edge's per-path probe loss ~ the injected rate. This proves
+	//       netem applied even if FEC did nothing, so it cannot be fooled by a stuck M=0.
+	//   (2) DECODER-SIDE: the concentrator's recovered-packets delta > 0 — real erasures
+	//       reached the decoder and FEC rebuilt them. For the adaptive phase a zero here with
+	//       (1) still passing localizes the fault to the controller (M stuck at 0 / raise band
+	//       not engaging), NOT the fixture.
+	if edgeLoss < P4SteadyLossRate*0.4 || edgeLoss > P4SteadyLossRate*3 {
+		t.Fatalf("p4 %s: edge probe loss %.4f outside [%.4f,%.4f] around the injected %.4f — the netem loss did not take effect as expected; residual/overhead would be measured on the wrong loss (vacuous)",
+			label, edgeLoss, P4SteadyLossRate*0.4, P4SteadyLossRate*3, P4SteadyLossRate)
+	}
+	if recovered < p4MinRecovered {
+		t.Fatalf("p4 %s: concentrator recovered only %.0f packets (< %d) while edge probe loss reads %.4f — injected loss did not reach the decoder as recovered erasures. If edge loss is ~%.2f the fixture is fine and the FEC send side under-provisioned (adaptive M stuck at 0 / raise band not engaging — raise fec.safety_factor or the injected loss); a low residual here would be vacuous",
+			label, recovered, p4MinRecovered, edgeLoss, P4SteadyLossRate)
+	}
+
 	overheadBytes := repairBytes / dataBytes
 	overheadFrame := parityFrames / dataFrames
-	t.Logf("p4 %s: residual=%.4f | edge data=%.0f parity=%.0f dataBytes=%.0f repairBytes=%.0f | overheadBytes=%.4f frameOverhead=%.3f | goodput=%.2fMbit/s",
-		label, residual, dataFrames, parityFrames, dataBytes, repairBytes, overheadBytes, overheadFrame, goodput)
+	t.Logf("p4 %s: residual=%.4f edgeLoss=%.4f recovered=%.0f | edge data=%.0f parity=%.0f dataBytes=%.0f repairBytes=%.0f | overheadBytes=%.4f frameOverhead=%.3f | goodput=%.2fMbit/s",
+		label, residual, edgeLoss, recovered, dataFrames, parityFrames, dataBytes, repairBytes, overheadBytes, overheadFrame, goodput)
 
 	return p4Result{
 		adaptive:      adaptive,
