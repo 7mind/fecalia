@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 2
+  item: 3
 archives: []
 ---
 
@@ -34,4 +34,14 @@ archives: []
 - alternatives: "Opus candidate: 5 tasks (harness combined scaffolding+provisioning+firewall; baseline dependsOn T25 — INCORRECT, baseline precedes FEC). Fable candidate: 6 tasks (scaffolding/provisioning split; baseline deps fixture only — correct). Synthesis used fable's base + opus's advisory phase-task dependsOn (T33->T8/T9, T34->T12/T15/T20), corrected the baseline to depend on T35 only."
 - landsIn: ["M10"]
 - sourceRefs: ["goals:G1","reviews:R8"]
+- ledgerRefs: ["goals:G1"]
+
+### K3 — locked
+
+- createdAt: 2026-07-08T21:20:01.918Z
+- updatedAt: 2026-07-08T21:20:01.918Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "plan review: approved — hardening round (M11 / T42-T50)"
+- rationale: "Reviewer go-ahead R40: re-review confirms all three R39 criticisms resolved with no new defect; 14/14 deferred defects mapped 1:1 to fix tasks, Q14-16 wired. Locks the M11 hardening milestone and its fix-task DAG T42-T50 as the accepted plan."
 - ledgerRefs: ["goals:G1"]

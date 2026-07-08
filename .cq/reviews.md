@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 38
+  item: 43
 archives: []
 ---
 
@@ -60,6 +60,28 @@ archives: []
 - new_questions: []
 - ledgerRefs: ["goals:G1"]
 - sessionLogs: [".cq/logs/20260706-214500-aa9cec28670132772.md",".cq/logs/20260706-214500-a9ccb92569816f8ec.md"]
+
+### R39 — revise
+
+- createdAt: 2026-07-08T21:12:20.921Z
+- updatedAt: 2026-07-08T21:12:20.921Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "revise: hardening plan T42-T50 is well-grounded (every load-bearing citation verified against source: pathsock.go interfaceInfo/familyCount L115-141, baseline_test.go rttUnderLoad 800ms sleep L150, engine_test.go:99 unbuffered send, fixture_impairment_test.go:11-15,63 misattribution, reedsolomon v1.14.1, DefaultSafetyFactor=1.5, fecRetainGroups=512, evictStale L232), complete (14/14 defects mapped 1:1, no drop/overlap), and consistent with Q14/Q15/Q16. Two planner-fixable defects block go-ahead: (1) T42/D20 acceptance is vacuous - a leaked goroutine cannot fail `go test`; (2) T48 would mark D8/live-D7 resolved on a repo merge though they are host-only manual ops."
+- new_questions: []
+- criticism: ["T42 / D20 acceptance is not operational (vacuous gate). A producer goroutine blocked forever on the unbuffered `ctun.Outbound <-` send at internal/bind/engine_test.go:99 does NOT fail `go test -run TestMultipathEngineUpCanTransmit -count=20`: a passing Go test emits no end-of-run goroutine dump, the test binary exits and kills the leaked goroutine, and there is no deadlock panic because other (test-runtime) goroutines remain live. The stated gate ('shows no leaked/blocked goroutines in the end-of-run dump') therefore cannot observe the D20 leak, so the fix is not actually verified. Require an explicit leak assertion in the test - goleak.VerifyNone(t) (uber-go/goleak) or a runtime.NumGoroutine() before/after delta with a settle window - that FAILS on the pre-fix unbuffered send and PASSES on the buffered/select+done fix.","T48 / D8 (and the live-apply half of D7) resolution bookkeeping is inconsistent. The round's rule is 'each fix task drives its defects to resolved on merge', but D8 is explicitly 'o3 HOST STATE ONLY, not a repo change' and the live iptables dedup + apply + reboot-persist is a MANUAL report-only ops step (correctly carved out of the automated gate per Q14). A repo-only merge that lands the persistence-provisioning code + doc + TestRealProvision would auto-resolve D8 (and the live-apply portion of D7) while o3 still carries the duplicate / non-persistent INPUT rules - the ledger would show them resolved while the host remains in the defective state. Amend the T48 acceptance to state that only the repo-side artifacts resolve on merge, and that D8 and the live-apply portion of D7 are driven to resolved by the RECORDED manual ops action (the before/after `iptables -S INPUT` capture + post-reboot confirmation), not by the repo merge.","T45 <-> T46 ordering (minor). T45 installs the build-time klauspost generator-matrix prefix-stability assertion + the partial-m x partial-k byte-exact property test that make ANY varying-M group provably decodable against the fixed ceiling decoder; T46 (target_residual) newly widens the range of M the adaptive encoder emits. There is no dependsOn edge or note ensuring T45's guarantee is in place before T46's derived-M range is produced. Add an ordering note (or a dependsOn T45 on T46) so a widened M range is never emitted without the byte-exact decode guarantee proven. (The varying-M mechanism pre-exists per D25, so this is a safety/ordering clarification rather than a new coupling.)"]
+- ledgerRefs: ["goals:G1"]
+
+### R40 — go-ahead
+
+- createdAt: 2026-07-08T21:19:13.764Z
+- updatedAt: 2026-07-08T21:19:13.764Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "go-ahead: re-review confirms all three R39 criticisms resolved with no new defect. T42/D20 now has a non-vacuous operational leak gate (goleak VerifyTestMain/VerifyNone or NumGoroutine before/after delta that MUST fail on the unbuffered send at engine_test.go:99 and pass post-fix; -count run explicitly demoted to non-gate). T48/D7+D8 now splits an automated repo-side gate (provisioning+doc+TestRealProvision, the only portion resolving on merge) from a report-only manual ops step with exact operator commands; D8 + D7 live-apply are explicitly non-terminal on merge, resolved only by the recorded iptables -S INPUT captures + post-reboot confirmation, and M11's description matches. T45<->T46 advisory ordering recorded reciprocally on both tasks and M11, consistent with the advisory-not-hard-dependency model. Plan already found sound (14/14 defects 1:1, Q14-16 wired); scoped re-review found no regression."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G1"]
 
 ## M4
 
@@ -533,3 +555,23 @@ archives: []
 - criticism: ["[r1 fable, resolved 5eee851] the residual-loss instrument (the P4 equal-masking signal) had ZERO non-vacuity coverage — a dead-low gauge or silently-unapplied netem passed P4 vacuously (no P3-style loss-took-effect teeth) — added a two-sided-mutation-verified bind-level residual test (0.25 unmasked/0.0 masked) + a per-phase loss-took-effect guard (edge probe loss ~= rate AND conc recovered-delta >= 20)","[r1 fable, resolved 5eee851] misleading TestP4AdaptiveFEC gating comment (claimed phases gate masking; actually the parent asserts both residuals then compares overhead) — corrected to match behavior","[r1 fable, resolved via hardware run] acceptance names a passing e2e run but the gate was compile-only — hardware-ran on llm-ubuntu-0: PASS (adaptive 0.40 overhead / 0.0000 residual vs fixed 0.60 / 0.0043)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T29","tasks:T27","tasks:T24","goals:G1","defects:D25","defects:D26"]
+
+## M11
+
+### R42 — go-ahead
+
+- createdAt: 2026-07-08T21:32:40.901Z
+- updatedAt: 2026-07-08T21:32:40.901Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T50 (D28) implement-review: APPROVE (verdict=approve). Justfile lint recipe now vets+lints e2e- and realhosts-tagged sources (go vet -tags + golangci-lint --build-tags); tagless passes preserved and run first. Negative control reproduced by reviewer: bare tagless golangci-lint reports 0 issues on an unused //go:build e2e symbol, while `just lint` FAILS (exit 1) flagging it. Clean-tree lint green; go build/vet/test all pass. 0 criticisms, 0 questions. Merged to main at 96a0501."
+- ledgerRefs: ["tasks:T50","defects:D28"]
+
+### R43 — go-ahead
+
+- createdAt: 2026-07-08T21:32:47.431Z
+- updatedAt: 2026-07-08T21:32:47.431Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T48 (D7 repo-side) implement-review: APPROVE (verdict=approve). Reboot-persistence provisioning correctly state-guarded — greps canonical `-A INPUT -i wanbond0 -j ACCEPT` in /etc/iptables/rules.v4 (true no-op on re-run, neither always-reapply nor always-skip); step order insert→save preserves OCI REJECT ordering. TestRealProvision asserts Persisted + AcceptCount==1 + BeforeReject non-vacuously (Persisted computed by real SSH grep, not a constant). install.md documents safe insert-then-save order + idempotency + verification grep. realhosts vet+build and non-privileged build/vet/test all green (go1.26.4). Manual dedup/reboot/o3-apply is tag-gated OUT of `just test` — never auto-executed. 0 criticisms, 0 questions. Merged to main at ea8cda5. NOTE: only D7's repo-side portion resolves on merge; D7 live-apply + D8 remain OPEN pending the recorded manual o3 ops."
+- ledgerRefs: ["tasks:T48","defects:D7","defects:D8"]

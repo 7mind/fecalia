@@ -41,7 +41,7 @@ archives: []
 ### D3 — root-caused
 
 - createdAt: 2026-07-06T20:28:18.949Z
-- updatedAt: 2026-07-06T20:33:26.289Z
+- updatedAt: 2026-07-08T21:04:43.288Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: e2e iperf3 server readiness uses fixed sleeps instead of polling for listen
@@ -50,13 +50,14 @@ archives: []
 - suggestedFix: Add a shared helper that polls a bounded TCP connect to the iperf3 server port until it accepts (with a deadline) and use it in both iperf3Mbps and rttUnderLoad instead of the fixed sleeps.
 - ledgerRefs: ["tasks:T9","goals:G1"]
 - rootCause: "Confirmed (in-tree). test/e2e/p0_test.go iperf3Mbps and test/e2e/baseline_test.go rttUnderLoad start a one-shot (`iperf3 -s -1`) server then sleep a FIXED interval (500ms/800ms) before the client connects; there is no readiness check, so a slow bind under load races the client into 'connection refused'. Note the suggestedFix's naive 'poll a TCP connect to the server port' is UNSAFE here: a probe connect would consume the `-1` server's single accept and make the real client fail. Correct fix: poll for the LISTEN socket without connecting — `nsenter -t <pid> -n ss -ltn 'sport = :<port>'` (or read /proc/net/tcp in the netns) until the port is LISTENING, in a shared helper used by both call sites. DEFERRED as out-of-scope test-hardening (does not affect the P0 acceptance, which passes; the T9 bufferbloat instance was already de-flaked via a distinct port). Standalone test-robustness item, not tied to a product task; to be picked up by a future test-hardening pass or a direct /cq:investigate follow-up."
+- dependsOn: ["T42"]
 
 ## M5
 
 ### D4 — root-caused
 
 - createdAt: 2026-07-06T21:10:23.780Z
-- updatedAt: 2026-07-06T21:32:42.684Z
+- updatedAt: 2026-07-08T21:04:51.289Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Outer CONTROL/PROBE frames have no anti-replay at the codec layer
@@ -65,6 +66,7 @@ archives: []
 - suggestedFix: In the probe/liveness + control handling layer (T13), track a per-peer ProbeSeq high-water mark and/or reject stale TimestampNanos, and apply replay rejection to security-relevant ControlType messages.
 - ledgerRefs: ["tasks:T11","goals:G1","tasks:T13"]
 - rootCause: "Confirmed by the T11 review (source-cited): internal/frame.Decode verifies the CONTROL/PROBE HMAC but keeps NO per-peer state, so a captured valid frame replays with a passing MAC. Correct by design for a stateless codec (T11 exposes Probe.ProbeSeq / Probe.TimestampNanos / Control.ControlType as the freshness material). Fix deferred to T13 (probe/liveness + control state machine): track a per-peer ProbeSeq high-water mark and/or reject stale TimestampNanos. D4 ledgerRefs tasks:T13 so it auto-resolves on T13 merge-back."
+- dependsOn: ["T44"]
 
 ### D5 — resolved
 
@@ -110,7 +112,7 @@ archives: []
 ### D10 — root-caused
 
 - createdAt: 2026-07-06T23:09:43.617Z
-- updatedAt: 2026-07-06T23:09:43.617Z
+- updatedAt: 2026-07-08T21:04:48.291Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Config validation accepts duplicate path source_addr, causing EADDRINUSE at bind Open
@@ -119,6 +121,7 @@ archives: []
 - rootCause: "Confirmed against source by both T12 reviewers: config.validate() tracks a seen-set for path names only (not SourceAddr); bind Open binds (SourceAddr, port) per path, so duplicate source_addr with a fixed listen port collides at the second ListenUDP (EADDRINUSE). Fails loudly at bring-up rather than at config load."
 - suggestedFix: In config validate(), track seen SourceAddr values alongside names and reject duplicates with a per-path error naming both conflicting paths. Small, self-contained; can fold into T15 (scheduler, next to touch the path set) or a direct config-hardening follow-up.
 - ledgerRefs: ["tasks:T12","goals:G1"]
+- dependsOn: ["T43"]
 
 ### D11 — resolved
 
@@ -151,7 +154,7 @@ archives: []
 ### D13 — root-caused
 
 - createdAt: 2026-07-07T12:57:43.704Z
-- updatedAt: 2026-07-07T12:57:43.704Z
+- updatedAt: 2026-07-08T21:04:49.856Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: IPv6 path sources never qualify for device binding (link-local counts toward familyCount)
@@ -160,11 +163,12 @@ archives: []
 - rootCause: "Confirmed empirically by the T16 review (netns): interfaceInfo's family-count includes link-local, so any global-v6 source on a normal interface (global + fe80:: link-local) has familyCount>=2 and never device-binds."
 - suggestedFix: For a GLOBAL (non-link-local) v6 source, EXCLUDE link-local addresses from familyCount — the kernel never source-selects a link-local for a global destination, so device binding still provably preserves the source_addr pin and v6 re-roam survival is restored.
 - ledgerRefs: ["tasks:T16","goals:G1"]
+- dependsOn: ["T43"]
 
 ### D14 — root-caused
 
 - createdAt: 2026-07-07T12:58:05.119Z
-- updatedAt: 2026-07-07T12:58:05.119Z
+- updatedAt: 2026-07-08T21:04:44.786Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: e2e harness Setup races prior invocation teardown (transient RTNETLINK 'File exists' on veth create)
@@ -173,6 +177,7 @@ archives: []
 - rootCause: "Confirmed by the T16 review: e2e Setup creates fixed-name veths (wbAe/wbBe) but Teardown returns before the prior namespace/holder-process is fully reaped, so a back-to-back run finds the leftover link (RTNETLINK File exists). Pre-existing (adjacent to D3's fixed-sleep test-hardening class)."
 - suggestedFix: Make Setup idempotent (delete any leftover wbAe/wbBe links before creating) OR make Teardown synchronously wait for the holder process + link removal before returning. Pick up with the D3 test-hardening pass.
 - ledgerRefs: ["goals:G1"]
+- dependsOn: ["T42"]
 
 ### D15 — resolved
 
@@ -246,7 +251,7 @@ archives: []
 ### D20 — root-caused
 
 - createdAt: 2026-07-07T16:45:35.495Z
-- updatedAt: 2026-07-07T16:45:35.495Z
+- updatedAt: 2026-07-08T21:04:46.293Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Goroutine leak: TestMultipathEngineUpCanTransmit helper blocked on chan send outlives the test"
@@ -255,6 +260,7 @@ archives: []
 - rootCause: "Confirmed by the T20 review from the bind-package timeout goroutine dump: TestMultipathEngineUpCanTransmit's helper does an unbuffered channel send (engine_test.go:~99) with no done-channel escape, so after the test returns and the receiver is gone the producer goroutine blocks forever on the send."
 - suggestedFix: "Use a buffered channel (cap 1) or a `select { case ch<-v: case <-done: }` at engine_test.go:~99 so the producer can always exit when the test ends. Test-only change; fold into the D19 fix or a test-hardening pass."
 - ledgerRefs: ["tasks:T30","goals:G1"]
+- dependsOn: ["T42"]
 
 ### D21 — resolved
 
@@ -274,7 +280,7 @@ archives: []
 ### D7 — root-caused
 
 - createdAt: 2026-07-06T22:27:16.368Z
-- updatedAt: 2026-07-07T11:57:39.985Z
+- updatedAt: 2026-07-08T21:04:59.294Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Concentrator tunnel-interface ACCEPT rule is not reboot-persistent
@@ -283,11 +289,12 @@ archives: []
 - suggestedFix: Add a provisioning step (and document in T22's install doc) that persists the concentrator INPUT rule across reboots — `netfilter-persistent save` after insertion, or an idempotent edit of /etc/iptables/rules.v4, or a small systemd unit that re-applies on boot — guarded by a state check so re-runs stay no-ops; extend TestRealProvision to assert the persisted set.
 - ledgerRefs: ["tasks:T32","goals:G1","tasks:T22"]
 - rootCause: "Confirmed by the T32 review against the live o3 host: T32's provision inserts `iptables -I INPUT -i wanbond0 -j ACCEPT` into the RUNTIME chain only; OCI Ubuntu restores /etc/iptables/rules.v4 at boot, so a reboot drops the rule and inbound tunnel TCP hits the default REJECT again. Fix DEFERRED to T22 (install doc + reboot-persistence provisioning step) per ledgerRefs tasks:T22 — documented and ready-to-implement, not separately investigable."
+- dependsOn: ["T48"]
 
 ### D8 — root-caused
 
 - createdAt: 2026-07-06T22:27:25.373Z
-- updatedAt: 2026-07-07T11:57:44.064Z
+- updatedAt: 2026-07-08T21:05:01.379Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Pre-existing duplicate rules in the o3 concentrator INPUT chain
@@ -296,13 +303,14 @@ archives: []
 - suggestedFix: In the reboot-persistence follow-up, deduplicate the o3 INPUT chain to one canonical rule set (single 51820 ACCEPT, single OCI default block) before persisting, with a before/after `iptables -S INPUT` capture. This is a one-time host cleanup on o3, not a repo change.
 - ledgerRefs: ["tasks:T32","goals:G1"]
 - rootCause: "Confirmed by the T32 review: the duplicate rules in o3's INPUT chain PREDATE T32 (whose -C-guarded insert cannot duplicate) — residue of this session's earlier NON-idempotent manual iptables inserts during P0 real-host bring-up. o3 HOST STATE ONLY, not a code defect (low). One-time dedup deferred to the reboot-persistence follow-up (with D7/T22) — a host cleanup action, not separately investigable."
+- dependsOn: ["T48"]
 
 ## M6
 
 ### D22 — root-caused
 
 - createdAt: 2026-07-07T19:17:17.204Z
-- updatedAt: 2026-07-07T19:38:38.990Z
+- updatedAt: 2026-07-08T21:04:57.792Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Weighted-scheduler pacer sheds WireGuard control frames (handshakes/keepalives) indiscriminately under overload
@@ -311,11 +319,12 @@ archives: []
 - suggestedFix: "In the pacing follow-up (T23/T35): classify WG control frames (handshake/keepalive) at the Bind and exempt or priority-class them (a small reserved per-path token budget or a control-frame bypass), and size per_path_capacity from measured BDP rather than a frame-count default. Requires Bind/interface frame-type plumbing that Pick() alone cannot provide."
 - ledgerRefs: ["tasks:T21","tasks:T23","goals:G1"]
 - rootCause: "Established by the T21 review (fable): the weighted pacer's per-path Pick() token buckets are frame-type-blind, so under sustained overload WG control frames (handshake/keepalive) are shed at the same probability as bulk data. Pick() has no frame-type visibility — a control-frame bypass/priority class requires Bind/interface frame-type plumbing that does not exist yet. DEFERRED: pacing ships DISABLED by default (no default exposure), and the fix belongs with future pacing-hardening/sizing work (needs the Bind to classify frame types + BDP-based capacity sizing, related to T35 load-cap). No owning task fixes it today; re-seed a pacing-hardening task when pacing is enabled by default or empirically sized."
+- dependsOn: ["T47"]
 
 ### D23 — root-caused
 
 - createdAt: 2026-07-07T20:14:07.686Z
-- updatedAt: 2026-07-07T20:14:07.686Z
+- updatedAt: 2026-07-08T21:05:02.792Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Fixture comments misattribute the real-internet 150-170 Mbit/s figure as the in-fixture 1-vCPU crypto ceiling
@@ -324,13 +333,14 @@ archives: []
 - rootCause: "Provenance traced by fable: the 150-170 Mbit/s number is a cross-host real-internet single-daemon-per-host measurement (G1 evidence) mis-copied into netns-fixture comments as if it were the in-fixture (both-daemons-one-core) CPU-bound ceiling. The real in-fixture 1-vCPU ceiling is 12-46 Mbit/s (p0-findings). Introduced by T35 (83aa799)."
 - suggestedFix: "Sweep the four locations: replace the figure with the per-host MEASURED in-fixture ceilings (12-46 Mbit/s on the 1-vCPU aarch64 host per p0-findings; measure once on the 4-vCPU amd64 host and record it), and state that capped-fixture tests require 2*cap (aggregation) or cap (single-path) below the EXECUTING host's measured in-fixture ceiling. Pairs naturally with T35/T23 capped-fixture work."
 - ledgerRefs: ["tasks:T23","tasks:T35","goals:G1"]
+- dependsOn: ["T49"]
 
 ## M7
 
 ### D24 — root-caused
 
 - createdAt: 2026-07-07T22:37:34.260Z
-- updatedAt: 2026-07-07T22:37:34.260Z
+- updatedAt: 2026-07-08T21:04:54.798Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: FEC unrecoverable /metrics counter under-reports at traffic quiescence (recovery overstated after an incident)
@@ -339,13 +349,14 @@ archives: []
 - rootCause: "Group-count-only eviction: unrecoverable is counted at 512-group eviction, triggered solely by high-water advance on newly-offered groups. At quiescence the retained-but-doomed tail groups are never evicted → never counted. No time-based eviction and no snapshot-time accounting of retained-incomplete-past-deadline groups."
 - suggestedFix: "Account retained-incomplete groups whose deadline/window has definitively passed at Stats()/snapshot time (without evicting them from the reconstruction buffer), OR add time-based eviction alongside the 512-group window so a stalled tail is folded into unrecoverable after its recovery deadline. Care: only count a group once it is definitively unrecoverable (past the point more parity could arrive), to avoid premature/double counting. Pairs with the adaptive-FEC observability work (T29) or a dedicated FEC-metrics hardening task."
 - ledgerRefs: ["tasks:T24","tasks:T25","goals:G1"]
+- dependsOn: ["T45"]
 
 ## M8
 
 ### D25 — root-caused
 
 - createdAt: 2026-07-08T00:36:55.771Z
-- updatedAt: 2026-07-08T00:36:55.771Z
+- updatedAt: 2026-07-08T21:04:52.785Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Adaptive-FEC varying-M correctness rests on an undocumented klauspost prefix-stability default; partial groups untested
@@ -354,11 +365,12 @@ archives: []
 - rootCause: The varying-M-decodes-at-ceiling invariant is an implementation detail of reedsolomon's default matrix, not a documented API guarantee, and the property test under-covers the (partial-m × partial-k) space the adaptive encoder actually generates.
 - suggestedFix: "Hardening task: (1) extend the property test to cover partial m in [1,DataShards] × k in [0,ceiling] with byte-exact recovery through the single ceiling decoder; (2) PIN the guarantee — either assert at build time that the constructed generator-matrix parity rows are a stable prefix as total-parity varies, or add a go.mod version-pin note + doc comment that reedsolomon must stay on a version whose default New() uses the Vandermonde buildMatrix, and re-verify on any reedsolomon upgrade."
 - ledgerRefs: ["tasks:T29","tasks:T24","goals:G1"]
+- dependsOn: ["T45"]
 
 ### D26 — root-caused
 
 - createdAt: 2026-07-08T00:37:04.757Z
-- updatedAt: 2026-07-08T00:37:04.757Z
+- updatedAt: 2026-07-08T21:04:56.291Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Adaptive-FEC DEFAULT tuning (SafetyFactor 1.5, RaiseThreshold 5%) cannot meet a sub-1% residual SLA
@@ -367,6 +379,7 @@ archives: []
 - rootCause: The redundancy map is parameterized by a bare SafetyFactor multiplier + fixed hysteresis bands, none derived from a target-residual SLA; the defaults were chosen for stability (T27), not to hit a specific residual bound.
 - suggestedFix: Derive the redundancy map from a TARGET-RESIDUAL parameter (invert the binomial residual for M given K and smoothed loss), OR ship a documented SafetyFactor/RaiseThreshold table per residual SLA in the ops/install docs. Consider making the residual target (not the bare multiplier) the config surface. Pairs with the adaptive-FEC ops documentation.
 - ledgerRefs: ["tasks:T29","tasks:T27","goals:G1"]
+- dependsOn: ["T46"]
 
 ## M9
 
@@ -384,10 +397,10 @@ archives: []
 - ledgerRefs: ["tasks:T26","defects:D17","goals:G1"]
 - fix: RESOLVED. Reproduced the ~0.8% flake (several failures in 1000 runs), then fixed TestCodecPSKMismatch (internal/frame/frame_test.go) to assert on the decoded KIND rather than err — a cross-PSK decode must never yield a valid frame of the same AUTHENTICATED kind (mirrors the D17 fix af31005; err==nil ~2/256 is legitimate when the garbage kind byte lands on unauthenticated DATA/PARITY). Verified 0/5000 failures (was flaky). Crypto sound; test-assertion bug only. Committed on main.
 
-### D28 — root-caused
+### D28 — resolved
 
 - createdAt: 2026-07-08T01:33:40.193Z
-- updatedAt: 2026-07-08T01:33:40.193Z
+- updatedAt: 2026-07-08T21:31:47.426Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "`just lint` never lints e2e-tagged test sources (no --build-tags e2e)"
@@ -396,3 +409,4 @@ archives: []
 - rootCause: The lint/vet targets omit the e2e build tag, so the Go toolchain never compiles the e2e-tagged files during lint (build-tag-gated files are skipped unless the tag is set).
 - suggestedFix: Add `--build-tags e2e` to the golangci-lint invocation (and `go vet -tags e2e ./test/e2e/...`) in the Justfile lint target, OR add a dedicated `lint-e2e` target invoked by `just lint`, so e2e-tagged sources are vetted+linted. Also fold `-tags realhosts` similarly if those sources need coverage.
 - ledgerRefs: ["tasks:T26","goals:G1"]
+- dependsOn: ["T50"]

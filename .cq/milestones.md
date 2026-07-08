@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 10
+  item: 11
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -87,3 +87,11 @@ archives:
 - updatedAt: 2026-07-06T21:43:06.588Z
 - title: RH — real-host + impairment validation
 - description: "Cross-cutting additive milestone (goal G1, 2026-07-06 follow-up; answered Q12 report-only + Q13 new-milestone). Two independent legs: (1) a REAL cross-network two-host e2e tier (SSH-orchestrated, `realhosts` build tag, opt-in/manual) validating the tunnel over the real internet between o3.7mind.io (concentrator, public IP) and llm-ubuntu-0 (edge, NAT) — REPORT-ONLY per Q12 (netns `e2e` stays the sole automated completion gate; real-host runs execute-and-record, never blocking a phase task/milestone); (2) a netns-fixture impairment extension (bandwidth cap + controlled-loss knobs, superseding the A7/T10 checkpoint follow-up) + the single-flow-TCP-collapse FEC baseline. Additive only — the locked P1-P5 DAG (T11-T30, M2-M9, K1) is untouched; cross-phase relationships are advisory task dependsOn/ledgerRefs."
+
+### M11 — open
+
+- createdAt: 2026-07-08T21:02:40.771Z
+- updatedAt: 2026-07-08T21:17:15.036Z
+- title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
+- description: "Additive hardening round for G1 (follow-up 2026-07-08). Resolves the 14 root-caused, file-and-defer defects accumulated across the completed P1-P5 build into REVIEWED fix tasks (opus+fable adversarial review; hardware-validate any touching the netns fixture or real hosts). No new product capability EXCEPT D26's target_residual config parameter (explicitly approved via Q16). Priority: the four MEDIUMs (D25, D22, D7, D23) first; the rest are low-sev correctness/hygiene. Tasks are technically independent (no cross-task file coupling) so they are all DAG-ready and can proceed in parallel worktrees; the MEDIUM-first ordering is advisory priority, not a hard dependency. Each fix task links its defect(s) via defects:<D> and drives them to resolved on merge. D8 (o3 host-state dedup) and the live-o3 apply/persist of D7 are manual, report-only ops steps (o3 is a TEST host; never deprovision it) that do NOT gate an implement-worker; per review R39 those two portions are non-terminal on merge and are driven to resolved only by the recorded manual ops action (before/after `iptables -S INPUT` capture + post-reboot confirmation on o3), while T48's repo merge resolves only D7's repo-side portion.\\n\\nORDERING NOTE (review R39, advisory): within Group B land T45 before T46 -- T45 proves any varying-M group decodes byte-exact at the fixed ceiling (build/test-time generator-matrix prefix-stability assertion + partial-m x partial-k byte-exact property test); T46 widens the emitted-M range, so its widened range should not be produced before T45's decode guarantee is in place. Advisory priority (the varying-M mechanism pre-exists per D25 and is already correct), consistent with the 'advisory, not hard dependency' model above."
+- dependsOn: ["M10"]
