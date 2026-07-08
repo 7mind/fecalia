@@ -30,6 +30,11 @@ func TestNewControllerRejectsInvalidConfig(t *testing.T) {
 		"lower>=raise":          func(c *Config) { c.LowerThreshold = 0.06; c.RaiseThreshold = 0.05 },
 		"safety<1":              func(c *Config) { c.SafetyFactor = 0.9 },
 		"safetyInf":             func(c *Config) { c.SafetyFactor = math.Inf(1) },
+		"targetResidualNaN":     func(c *Config) { c.TargetResidual = math.NaN() },
+		"targetResidual>=1":     func(c *Config) { c.TargetResidual = 1.0; c.SafetyFactor = 0 },
+		"targetResidualNeg":     func(c *Config) { c.TargetResidual = -0.1; c.SafetyFactor = 0 },
+		"targetResidualInf":     func(c *Config) { c.TargetResidual = math.Inf(1); c.SafetyFactor = 0 },
+		"targetResidual+safety": func(c *Config) { c.TargetResidual = 0.005 }, // SafetyFactor stays 1.5: mutually exclusive
 		"maxStep<1":             func(c *Config) { c.MaxStep = 0 },
 		"rateInterval<=0":       func(c *Config) { c.RateInterval = 0 },
 		"dwell<0":               func(c *Config) { c.Dwell = -time.Second },

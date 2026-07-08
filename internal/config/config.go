@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"time"
 
@@ -220,9 +221,20 @@ type FEC struct {
 	// the residual-loss LEVER: the controller sizes M so M/(K+M) >= SafetyFactor*loss, so a
 	// higher factor spends more parity to keep the post-recovery residual under a tighter
 	// bound against binomial per-group variance. Applies only in adaptive mode; defaults to
-	// defaultAdaptiveSafetyFactor (the simulation-proven controller default) when left zero,
-	// and must be >= 1. Ignored (and must stay zero) in fixed mode.
+	// defaultAdaptiveSafetyFactor (the simulation-proven controller default) when left zero
+	// AND target_residual is unset, and must be >= 1. Ignored (and must stay zero) in fixed
+	// mode, and mutually exclusive with target_residual (set one, not both).
 	SafetyFactor float64 `toml:"safety_factor"`
+	// TargetResidual is the adaptive controller's target POST-RECOVERY residual-loss SLA
+	// (a fraction in (0,1)) and the PRIMARY adaptive sizing surface (D26/T46): the
+	// controller derives the per-group parity M by inverting the binomial residual model
+	// E[max(0,D-M)]/K (D ~ Bin(K, smoothed loss)) to the smallest M meeting this target,
+	// capped at the parity ceiling (parity_shards). It SUPERSEDES safety_factor — set
+	// EITHER a residual SLA (target_residual, recommended: it maps an operator's loss
+	// budget directly to redundancy) OR the bare headroom multiplier (safety_factor), never
+	// both. Applies only in adaptive mode; unset (0) selects the safety_factor path. Must
+	// be in (0,1) when set. Ignored (and must stay zero) in fixed mode.
+	TargetResidual float64 `toml:"target_residual"`
 }
 
 // applyDefaults fills the group-close deadline when FEC is enabled and the deadline
@@ -235,7 +247,10 @@ func (f *FEC) applyDefaults() {
 	if f.Deadline == 0 {
 		f.Deadline = defaultFECDeadline
 	}
-	if f.Adaptive && f.SafetyFactor == 0 {
+	// The SafetyFactor default is applied only in the legacy sizing mode: when
+	// target_residual is set it is the primary surface and safety_factor stays inert
+	// (0), so defaulting it would spuriously trip the mutual-exclusion check.
+	if f.Adaptive && f.TargetResidual == 0 && f.SafetyFactor == 0 {
 		f.SafetyFactor = defaultAdaptiveSafetyFactor
 	}
 }
@@ -266,14 +281,24 @@ func (f FEC) validate() error {
 		return fmt.Errorf("fec.deadline must be <= %s (safely below the receive resequencer's per-gap timeout so deadline-flushed recovery lands before the gap is skipped), got %s", maxFECDeadline, f.Deadline)
 	}
 	if f.Adaptive {
-		// SafetyFactor is defaulted to defaultAdaptiveSafetyFactor when zero, so a value
-		// below 1 here is an explicit mis-set: the controller requires >= 1 (masking less
-		// than the mean loss is nonsensical), matching adaptivefec.Config.Validate.
-		if f.SafetyFactor < 1 {
+		if f.TargetResidual != 0 {
+			// Residual-SLA sizing mode (primary): target_residual governs and safety_factor
+			// stays inert, so setting both is an ambiguous mis-config — reject it. NaN is
+			// caught explicitly because every ordered comparison against it is false.
+			if math.IsNaN(f.TargetResidual) || f.TargetResidual <= 0 || f.TargetResidual >= 1 {
+				return fmt.Errorf("fec.target_residual must be a finite value in (0,1), got %g", f.TargetResidual)
+			}
+			if f.SafetyFactor != 0 {
+				return fmt.Errorf("fec.safety_factor and fec.target_residual are mutually exclusive; target_residual is the primary residual-SLA surface — set one, not both")
+			}
+		} else if f.SafetyFactor < 1 {
+			// SafetyFactor is defaulted to defaultAdaptiveSafetyFactor when zero, so a value
+			// below 1 here is an explicit mis-set: the controller requires >= 1 (masking less
+			// than the mean loss is nonsensical), matching adaptivefec.Config.Validate.
 			return fmt.Errorf("fec.safety_factor must be >= 1 in adaptive mode, got %g", f.SafetyFactor)
 		}
-	} else if f.SafetyFactor != 0 {
-		return fmt.Errorf("fec.safety_factor is only meaningful in adaptive mode (set fec.adaptive = true), got %g", f.SafetyFactor)
+	} else if f.SafetyFactor != 0 || f.TargetResidual != 0 {
+		return fmt.Errorf("fec.safety_factor / fec.target_residual are only meaningful in adaptive mode (set fec.adaptive = true), got safety_factor=%g target_residual=%g", f.SafetyFactor, f.TargetResidual)
 	}
 	return nil
 }

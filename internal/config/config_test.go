@@ -222,6 +222,36 @@ func TestLoadRejects(t *testing.T) {
 			body: fill(edgeConfig) + "\n[fec]\nadaptive = true\n",
 			want: "fec.adaptive = true requires fec.enabled = true",
 		},
+		{
+			name: "fec target_residual out of range (>= 1)",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 1.5\n",
+			want: "fec.target_residual must be a finite value in (0,1)",
+		},
+		{
+			name: "fec target_residual out of range (<= 0)",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = -0.01\n",
+			want: "fec.target_residual must be a finite value in (0,1)",
+		},
+		{
+			name: "fec target_residual non-finite (nan)",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = nan\n",
+			want: "fec.target_residual must be a finite value in (0,1)",
+		},
+		{
+			name: "fec target_residual and safety_factor both set",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 0.005\nsafety_factor = 2.0\n",
+			want: "mutually exclusive",
+		},
+		{
+			name: "fec target_residual in fixed (non-adaptive) mode",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 0.005\n",
+			want: "only meaningful in adaptive mode",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -326,6 +356,38 @@ func TestFECAdaptiveLoads(t *testing.T) {
 	}
 	if cf.FEC.Adaptive {
 		t.Fatal("adaptive must default to off for a fixed [fec] block")
+	}
+}
+
+// TestFECTargetResidualLoads: an adaptive [fec] block with target_residual set parses
+// the SLA, leaves safety_factor inert (0, NOT defaulted), so the residual-SLA sizing
+// mode (D26/T46) is the one the controller runs. A block with neither field keeps the
+// safety_factor default (the legacy path), proving the two are mutually exclusive at load.
+func TestFECTargetResidualLoads(t *testing.T) {
+	body := fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 0.005\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.FEC.TargetResidual != 0.005 {
+		t.Fatalf("target_residual = %g, want 0.005", c.FEC.TargetResidual)
+	}
+	if c.FEC.SafetyFactor != 0 {
+		t.Fatalf("safety_factor = %g, want 0 (inert when target_residual governs)", c.FEC.SafetyFactor)
+	}
+
+	// With neither field the legacy safety_factor default fills in (not target_residual).
+	legacy := writeConfig(t, 0o600, fill(edgeConfig)+"\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\n")
+	lc, err := Load(legacy)
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	if lc.FEC.TargetResidual != 0 {
+		t.Fatalf("legacy target_residual = %g, want 0", lc.FEC.TargetResidual)
+	}
+	if lc.FEC.SafetyFactor != defaultAdaptiveSafetyFactor {
+		t.Fatalf("legacy safety_factor = %g, want defaulted %g", lc.FEC.SafetyFactor, defaultAdaptiveSafetyFactor)
 	}
 }
 

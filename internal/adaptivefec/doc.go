@@ -29,6 +29,15 @@
 //     with e saturating to MaxParity as e->1. At p=0 the map yields exactly 0.
 //     SafetyFactor is the documented headroom over the mean.
 //
+//     Alternatively (and preferably) the map is parameterized by a TARGET RESIDUAL
+//     rather than a bare multiplier: when Config.TargetResidual is set the map picks
+//     the smallest M whose MODELED post-recovery residual E[max(0,D-M)]/K
+//     (D ~ Bin(K, p), see residual.go) is at/below the target, capped at MaxParity.
+//     This maps an operator's residual-loss SLA directly to redundancy; it
+//     SUPERSEDES SafetyFactor (the two are mutually exclusive). Both variants are
+//     zero-at-zero and monotone non-decreasing, so the mechanisms below are
+//     independent of which one is active.
+//
 //  3. HYSTERESIS (deadband). Two DISTINCT loss thresholds bracket a deadband:
 //     the controller only RAISES M when smoothed loss >= RaiseThreshold and only
 //     LOWERS M when smoothed loss <= LowerThreshold; inside the band it HOLDS.
