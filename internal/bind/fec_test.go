@@ -34,7 +34,7 @@ func newMultipathFEC(t testing.TB, paths []config.Path, psk config.Key, fecCfg *
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	m, err := NewMultipath(paths, psk, scheduler, nil, nil, fecCfg)
+	m, err := NewMultipath(paths, psk, scheduler, nil, nil, fecCfg, nil)
 	if err != nil {
 		t.Fatalf("NewMultipath(fec): %v", err)
 	}
@@ -426,6 +426,92 @@ func TestMultipathFECUnrecoverableDoesNotStall(t *testing.T) {
 	if snap.Recovered != 0 {
 		t.Fatalf("FECSnapshot.Recovered = %d, want 0 (a > M-loss group must not fabricate data)", snap.Recovered)
 	}
+}
+
+// TestMultipathFECResidualLossNonVacuous proves the post-FEC-recovery residual-loss gauge
+// (T29, FECSnapshot().ResidualLoss) actually MEASURES residual — the whole "equal masking"
+// leg of P4 rests on it, so a dead-low gauge (dropped Observe wiring or a Loss() defect)
+// must not read ~0 under real unmasked loss. It drives two hand-chosen receive streams
+// through the SAME K=4/M=2 datapath:
+//
+//   - UNMASKED: group 1 loses 3 (> M) DATA frames — unrecoverable — so its seqs are neither
+//     natively received nor reconstructed, and the gauge must read ~the drop rate (3 of the
+//     12 outer-seqs missing = 0.25), strictly > 0.
+//   - MASKED: group 1 loses exactly M=2 DATA frames — reconstructed from parity — so every
+//     outer-seq is present (natively or via recovery) and the gauge must read ~0.
+//
+// It is a two-sided mutation witness: breaking the NATIVE-seq Observe collapses the unmasked
+// case to 0 (>0 assertion fails); breaking the RECOVERED-seq Observe leaves the masked case's
+// reconstructed seqs unmarked, so it reads >0 (the ~0 assertion fails).
+func TestMultipathFECResidualLossNonVacuous(t *testing.T) {
+	const (
+		dataShards   = 4
+		parityShards = 2
+		groups       = 3
+	)
+	psk := testKey(t, 0x29)
+	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: parityShards, Deadline: testFECDeadline}
+
+	// One sender produces a real FEC-coded wire stream reused by both cases.
+	sender := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
+	if _, _, err := sender.Open(0); err != nil {
+		t.Fatalf("sender Open: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen peer: %v", err)
+	}
+	defer peer.Close()
+	sender.paths[0].setRemote(peer.LocalAddr().(*net.UDPAddr).AddrPort())
+	codec, err := frame.NewCodec(psk)
+	if err != nil {
+		t.Fatalf("codec: %v", err)
+	}
+	payloads := payloadStream(dataShards * groups) // outer-seqs 1..12; group g = seqs 4g+1..4g+4
+	captured := sendAndCapture(t, sender, peer, codec, payloads, dataShards)
+
+	// residualAfterDrops feeds a fresh receiver every captured frame EXCEPT group 1's DATA
+	// shard indices in dropIdx (its parity is always delivered), then returns the residual
+	// gauge. Groups 0 and 2 are always intact, so the residual window spans seqs 1..12 and a
+	// hole in group 1 is charged as residual.
+	residualAfterDrops := func(t *testing.T, dropIdx map[uint8]bool) float64 {
+		t.Helper()
+		rx := newMultipathFEC(t, loopbackPaths(1), psk, fecCfg)
+		if _, _, err := rx.Open(0); err != nil {
+			t.Fatalf("rx Open: %v", err)
+		}
+		t.Cleanup(func() { _ = rx.Close() })
+		src := netip.MustParseAddrPort("127.0.0.1:9999")
+		for _, c := range captured {
+			if d, ok := c.fr.(frame.Data); ok && d.FECGroup == 1 && dropIdx[d.FECIndex] {
+				continue // "lost" in transit
+			}
+			feedInbound(rx, c, src)
+		}
+		return rx.FECSnapshot().ResidualLoss
+	}
+
+	// UNMASKED: drop 3 of group 1's 4 data shards (> M=2). 1 data + 2 parity = 3 < K=4, so the
+	// group is unrecoverable and seqs 5,6,7 are pure loss. Residual = 3 missing / 12 span.
+	unmasked := residualAfterDrops(t, map[uint8]bool{0: true, 1: true, 2: true})
+	const wantUnmasked = 3.0 / 12.0
+	if unmasked <= 0 {
+		t.Fatalf("residual under UNMASKED loss = %.4f, want > 0 — the gauge is dead (Observe wiring dropped or Loss() broken); the P4 equal-masking leg would pass vacuously", unmasked)
+	}
+	if unmasked < 0.20 || unmasked > 0.30 {
+		t.Fatalf("residual under UNMASKED loss = %.4f, want ~%.4f (3 unrecovered of 12 seqs)", unmasked, wantUnmasked)
+	}
+
+	// MASKED: drop exactly M=2 of group 1's data shards (indices 0,1). 2 data + 2 parity = 4,
+	// so the group reconstructs seqs 5,6 and every outer-seq is present. Residual must be ~0 —
+	// this witnesses that the RECOVERED-seq Observe marks reconstructed frames present.
+	masked := residualAfterDrops(t, map[uint8]bool{0: true, 1: true})
+	if masked > 0.01 {
+		t.Fatalf("residual under MASKED (fully recovered) loss = %.4f, want ~0 — recovered frames were not marked present (recovered-seq Observe wiring broken)", masked)
+	}
+
+	t.Logf("residual gauge non-vacuous: unmasked=%.4f (want ~%.4f) masked=%.4f (want ~0)", unmasked, wantUnmasked, masked)
 }
 
 // TestMultipathFECDeadlineEmitsPartialGroupParity exercises the deadline-tick

@@ -216,6 +216,12 @@ func TestLoadRejects(t *testing.T) {
 			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = 500000000\n",
 			want: "fec.deadline must be <=",
 		},
+		{
+			name: "fec adaptive without enabled",
+			mode: 0o600,
+			body: fill(edgeConfig) + "\n[fec]\nadaptive = true\n",
+			want: "fec.adaptive = true requires fec.enabled = true",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +250,34 @@ func TestFECDefaultOff(t *testing.T) {
 	}
 	if c.FEC.DataShards != 0 || c.FEC.ParityShards != 0 || c.FEC.Deadline != 0 {
 		t.Fatalf("FEC knobs must stay zero when disabled, got %+v", c.FEC)
+	}
+}
+
+// TestFECAdaptiveLoads: an enabled [fec] block with adaptive = true loads, keeps the
+// ratio (now the controller's K / parity-ceiling), and reports adaptive on; fixed configs
+// leave it off (default).
+func TestFECAdaptiveLoads(t *testing.T) {
+	body := fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.FEC.Enabled || !c.FEC.Adaptive {
+		t.Fatalf("adaptive FEC not loaded: %+v", c.FEC)
+	}
+	if c.FEC.DataShards != 10 || c.FEC.ParityShards != 6 {
+		t.Fatalf("adaptive ratio not loaded: %+v", c.FEC)
+	}
+
+	// A fixed block leaves adaptive off.
+	fixed := writeConfig(t, 0o600, fill(edgeConfig)+"\n[fec]\nenabled = true\ndata_shards = 10\nparity_shards = 6\n")
+	cf, err := Load(fixed)
+	if err != nil {
+		t.Fatalf("Load fixed: %v", err)
+	}
+	if cf.FEC.Adaptive {
+		t.Fatal("adaptive must default to off for a fixed [fec] block")
 	}
 }
 
