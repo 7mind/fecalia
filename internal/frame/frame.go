@@ -193,8 +193,19 @@ type Probe struct {
 }
 
 // Control is an authenticated out-of-band control frame.
+//
+// Seq is a strictly-monotonic per-(peer, ControlType) sequence number: the
+// freshness material the STATEFUL control-handling layer (telemetry.ControlGuard)
+// uses to reject replays of a security-relevant control message (defect D4). The
+// codec (Decode) verifies only the PSK HMAC and keeps no per-peer state, so a
+// passively-captured valid control frame — e.g. a rekey — replays with a passing
+// MAC; the downstream guard tracks a per-type high-water on Seq and drops the
+// replay. Seq rides INSIDE obf(body) under the MAC (like Probe.ProbeSeq), so an
+// attacker can neither read it nor forge/advance it to smuggle a replay past the
+// guard.
 type Control struct {
 	ControlType uint8
+	Seq         uint64
 	Payload     []byte
 }
 
@@ -249,6 +260,7 @@ func boolByte(b bool) byte {
 func (f Control) appendBody(dst []byte) []byte {
 	dst = append(dst, byte(KindControl))
 	dst = append(dst, f.ControlType)
+	dst = binary.BigEndian.AppendUint64(dst, f.Seq)
 	return append(dst, f.Payload...)
 }
 
@@ -438,10 +450,11 @@ func decodeBody(kind Kind, b []byte) (Frame, error) {
 		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, SessionID: sessionID, Challenge: challenge, Payload: r.rest()}, nil
 	case KindControl:
 		ctype, e1 := r.u8()
-		if err := firstErr(e1); err != nil {
+		seq, e2 := r.u64()
+		if err := firstErr(e1, e2); err != nil {
 			return nil, err
 		}
-		return Control{ControlType: ctype, Payload: r.rest()}, nil
+		return Control{ControlType: ctype, Seq: seq, Payload: r.rest()}, nil
 	default:
 		// Unreachable: kind was validated by the caller.
 		return nil, fmt.Errorf("%w: unknown kind %d", ErrMalformed, uint8(kind))

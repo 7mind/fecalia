@@ -3,6 +3,7 @@ package frame
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"math/rand"
 	"reflect"
@@ -35,8 +36,8 @@ func sampleFrames() []Frame {
 		Parity{FECGroup: 1, ParityIndex: 0, DataCount: 0, PathID: 0, Payload: nil},
 		Probe{PathID: 1, ProbeSeq: 42, TimestampNanos: 1_700_000_000_123_456_789, SessionID: 0x0102030405060708, Challenge: 0x1122334455667788, Payload: []byte("probe")},
 		Probe{PathID: 0, ProbeSeq: 0, TimestampNanos: -1, SessionID: 0, Challenge: 0, Payload: nil},
-		Control{ControlType: 9, Payload: []byte("control payload")},
-		Control{ControlType: 0, Payload: nil},
+		Control{ControlType: 9, Seq: 0x1122334455667788, Payload: []byte("control payload")},
+		Control{ControlType: 0, Seq: 0, Payload: nil},
 	}
 }
 
@@ -269,6 +270,56 @@ func TestTamperedRejected(t *testing.T) {
 	}
 }
 
+// controlHeaderLen PINS the CONTROL wire contract the D4 anti-replay depends on: a
+// CONTROL body is exactly kind(1) || controlType(1) || seq(8) || payload. It is a
+// build-time invariant — a code change that drops or resizes the Seq breaks the
+// arithmetic here and fails TestControlWireContract, so the freshness material the
+// telemetry.ControlGuard relies on can never silently leave the wire (T44 / D4).
+const controlHeaderLen = 1 /*kind*/ + 1 /*controlType*/ + 8 /*seq*/
+
+// TestControlWireContract is the build-time invariant guarding the CONTROL wire
+// format the D4 anti-replay rests on (T44): the monotonic Seq occupies a fixed
+// position in the body AND rides inside the MAC-covered region. A regression that
+// drops the Seq, moves it, or excludes it from the authenticated body fails this
+// test — so a security-relevant control frame's replay-freshness material can never
+// silently regress off the authenticated wire (which would reopen D4 without any
+// other test noticing).
+func TestControlWireContract(t *testing.T) {
+	c := Control{ControlType: 4, Seq: 0x0102030405060708, Payload: []byte("rekey now")}
+
+	// Body layout: kind || controlType || seq(big-endian) || payload.
+	body := c.appendBody(nil)
+	if len(body) != controlHeaderLen+len(c.Payload) {
+		t.Fatalf("control body len %d, want %d (kind|type|seq|payload)", len(body), controlHeaderLen+len(c.Payload))
+	}
+	if Kind(body[0]) != KindControl {
+		t.Fatalf("control body[0] = %d, want KindControl (%d)", body[0], KindControl)
+	}
+	if body[1] != c.ControlType {
+		t.Fatalf("control body[1] = %d, want ControlType %d", body[1], c.ControlType)
+	}
+	if got := binary.BigEndian.Uint64(body[2:10]); got != c.Seq {
+		t.Fatalf("control Seq at body[2:10] = %#x, want %#x", got, c.Seq)
+	}
+
+	// The Seq must be MAC-covered: on the wire the body follows the clear nonce, so
+	// the Seq occupies wire offsets [nonceLen+2, nonceLen+10). Flipping any of those
+	// bytes must fail authentication — proving the guard's freshness material cannot
+	// be tampered without detection.
+	psk := testPSK(t, 0x5A)
+	raw, err := Encode(psk, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for off := nonceLen + 2; off < nonceLen+controlHeaderLen; off++ {
+		mutated := append([]byte(nil), raw...)
+		mutated[off] ^= 0x01
+		if _, err := Decode(psk, mutated); !errors.Is(err, ErrAuth) {
+			t.Fatalf("flip at Seq wire byte %d: got %v, want ErrAuth (Seq must be MAC-covered)", off, err)
+		}
+	}
+}
+
 // TestPSKMismatchRejected verifies that authenticated frames encoded under one
 // PSK are rejected when decoded under a different PSK.
 func TestPSKMismatchRejected(t *testing.T) {
@@ -316,7 +367,7 @@ func TestByteHistogramNoConstantPosition(t *testing.T) {
 		case KindProbe:
 			return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Challenge: rng.Uint64(), Payload: payload}
 		case KindControl:
-			return Control{ControlType: uint8(rng.Intn(256)), Payload: payload}
+			return Control{ControlType: uint8(rng.Intn(256)), Seq: rng.Uint64(), Payload: payload}
 		default:
 			t.Fatalf("unknown kind %d", kind)
 			return nil
@@ -389,7 +440,7 @@ func randomFrame(rng *rand.Rand) Frame {
 	case 2:
 		return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Challenge: rng.Uint64(), Payload: payload}
 	default:
-		return Control{ControlType: uint8(rng.Intn(256)), Payload: payload}
+		return Control{ControlType: uint8(rng.Intn(256)), Seq: rng.Uint64(), Payload: payload}
 	}
 }
 
