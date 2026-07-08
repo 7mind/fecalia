@@ -515,6 +515,13 @@ func (c *Config) validate() error {
 		return errors.New("at least one path is required")
 	}
 	seen := make(map[string]struct{}, len(c.Paths))
+	// seenSrc maps an already-claimed source_addr to the path that claimed it, so a
+	// second path reusing it can be rejected at LOAD naming both conflicting paths.
+	// The multipath bind Opens each path on (source_addr, listen_port), so two paths
+	// sharing a source_addr collide EADDRINUSE at the second ListenUDP (and on every
+	// re-Open after Down/Up, since the engine passes the fixed port back) — a
+	// misconfiguration that must fail fast at load, not at bring-up (defect D10).
+	seenSrc := make(map[netip.Addr]string, len(c.Paths))
 	for i, p := range c.Paths {
 		if p.Name == "" {
 			return fmt.Errorf("path %d: name is required", i)
@@ -526,6 +533,14 @@ func (c *Config) validate() error {
 		if !p.SourceAddr.IsValid() {
 			return fmt.Errorf("path %q: source_addr is required", p.Name)
 		}
+		// Compare the UNMAPPED form: "192.0.2.10" (Is4) and "::ffff:192.0.2.10"
+		// (Is4In6) are distinct under netip == yet bind the identical v4 socket, so
+		// the two spellings must collide in the guard exactly as they do at bind.
+		src := p.SourceAddr.Unmap()
+		if prev, dup := seenSrc[src]; dup {
+			return fmt.Errorf("paths %q and %q share source_addr %s; each path must bind a distinct source address (a shared source collides EADDRINUSE at the second bind)", prev, p.Name, p.SourceAddr)
+		}
+		seenSrc[src] = p.Name
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {
 		return errors.New("wireguard.private_key is required")
