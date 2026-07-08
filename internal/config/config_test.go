@@ -262,6 +262,29 @@ func TestLoadRejectsDuplicateSourceAddr(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsDuplicateSourceAddrV4MappedV6 closes the D10 residual gap: the
+// duplicate guard must catch two textual forms of the SAME address. "192.0.2.10"
+// parses to an Is4 address and "::ffff:192.0.2.10" to an Is4In6 one — distinct
+// under netip ==, but they bind the identical v4 socket and so collide EADDRINUSE
+// at runtime. The guard compares the UNMAPPED form so the pair is rejected at load.
+func TestLoadRejectsDuplicateSourceAddrV4MappedV6(t *testing.T) {
+	// cellular uses the v4-mapped-v6 spelling of starlink's v4 source_addr.
+	body := fill(strings.Replace(edgeConfig,
+		"name = \"cellular\"\nsource_addr = \"192.0.2.20\"",
+		"name = \"cellular\"\nsource_addr = \"::ffff:192.0.2.10\"", 1))
+	path := writeConfig(t, 0o600, body)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected v4/v4-mapped-v6 source_addr collision to be rejected at load, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"starlink", "cellular"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q must name conflicting path %q", msg, want)
+		}
+	}
+}
+
 // TestFECDefaultOff: omitting [fec] leaves FEC disabled so an existing config runs
 // the pre-T24 datapath unchanged, and every FEC knob stays at its zero value.
 func TestFECDefaultOff(t *testing.T) {

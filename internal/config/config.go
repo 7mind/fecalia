@@ -533,10 +533,14 @@ func (c *Config) validate() error {
 		if !p.SourceAddr.IsValid() {
 			return fmt.Errorf("path %q: source_addr is required", p.Name)
 		}
-		if prev, dup := seenSrc[p.SourceAddr]; dup {
+		// Compare the UNMAPPED form: "192.0.2.10" (Is4) and "::ffff:192.0.2.10"
+		// (Is4In6) are distinct under netip == yet bind the identical v4 socket, so
+		// the two spellings must collide in the guard exactly as they do at bind.
+		src := p.SourceAddr.Unmap()
+		if prev, dup := seenSrc[src]; dup {
 			return fmt.Errorf("paths %q and %q share source_addr %s; each path must bind a distinct source address (a shared source collides EADDRINUSE at the second bind)", prev, p.Name, p.SourceAddr)
 		}
-		seenSrc[p.SourceAddr] = p.Name
+		seenSrc[src] = p.Name
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {
 		return errors.New("wireguard.private_key is required")
