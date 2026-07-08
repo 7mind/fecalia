@@ -3,6 +3,7 @@ package fec
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/klauspost/reedsolomon"
 )
@@ -54,6 +55,21 @@ type Decoder struct {
 	// datapath surfaces them on /metrics.
 	recovered     uint64
 	unrecoverable uint64
+
+	// clock and recoveryDeadline drive quiescence-accurate unrecoverable accounting
+	// (D24). The group-count-only eviction folds an incomplete group into
+	// unrecoverable ONLY when the retain window's high-water advances past it, and the
+	// high-water advances only when NEW groups are offered. At quiescence (traffic
+	// stops, a link stalls) the last retainWindow doomed groups are never evicted, so
+	// unrecoverable under-reports and /metrics OVERSTATES recovery exactly after an
+	// incident. To fix this WITHOUT perturbing the reconstruction buffer, Stats folds in
+	// every retained-incomplete group whose recovery deadline has DEFINITIVELY passed
+	// (clock.Now()-firstSeen >= recoveryDeadline: past the point any further parity for
+	// the group could still arrive). recoveryDeadline == 0 disables this snapshot-time
+	// accounting, leaving the pure group-window behaviour (the default; the T24 datapath
+	// sets a non-zero deadline via SetRecoveryDeadline). clock defaults to SystemClock.
+	clock            Clock
+	recoveryDeadline time.Duration
 }
 
 // GroupID discontinuity-guard tuning, mirroring reseq's resyncFactor/resyncCorroborate.
@@ -86,8 +102,17 @@ type DecoderStats struct {
 	Unrecoverable uint64
 }
 
-// Stats returns a snapshot of the decoder's cumulative recovery counters.
+// Stats returns a snapshot of the decoder's cumulative recovery counters. Before
+// snapshotting it folds in every retained-incomplete group whose recovery deadline
+// has definitively passed (accountExpired, D24), so at quiescence — when no new
+// group is offered to advance the eviction high-water — a doomed tail group is
+// counted unrecoverable promptly rather than only once ~retainWindow later groups
+// arrive. Each group is counted exactly once (accountExpired marks it accounted, and
+// the later window eviction skips an already-accounted group). This makes Stats a
+// read-with-side-effects; the datapath serializes it with Offer under the receiver's
+// mutex, matching the decoder's single-writer discipline.
 func (d *Decoder) Stats() DecoderStats {
+	d.accountExpired()
 	return DecoderStats{Recovered: d.recovered, Unrecoverable: d.unrecoverable}
 }
 
@@ -99,7 +124,10 @@ func (d *Decoder) Stats() DecoderStats {
 // learned contribute nothing. maybeReconstruct has already pruned any buffered data
 // index >= M once M was known, so len(gs.data) counts only in-range survivors.
 func (d *Decoder) accountEviction(gs *groupState) {
-	if gs.done || gs.dataCount == -1 {
+	if gs.done || gs.dataCount == -1 || gs.accounted {
+		// gs.accounted: a quiescence snapshot (accountExpired) already folded this
+		// group's missing shards into unrecoverable once its recovery deadline passed;
+		// counting it again on window eviction would double-count.
 		return
 	}
 	if missing := gs.dataCount - len(gs.data); missing > 0 {
@@ -121,6 +149,14 @@ type groupState struct {
 	data      map[int][]byte
 	parity    map[int][]byte
 	done      bool
+
+	// firstSeen is the decoder-local instant the group's state was created (its first
+	// surviving shard arrived), the anchor for the recovery-deadline expiry check (D24).
+	firstSeen time.Time
+	// accounted records that accountExpired has already folded this group's missing
+	// shards into unrecoverable at quiescence, so the later window eviction must not
+	// count it again (count each group exactly once).
+	accounted bool
 }
 
 // NewDecoder validates cfg and returns a Decoder. Only ParityShards (K) is read
@@ -134,7 +170,28 @@ func NewDecoder(cfg Config) (*Decoder, error) {
 		codecs:       make(map[int]reedsolomon.Encoder),
 		groups:       make(map[GroupID]*groupState),
 		retainWindow: defaultRetainWindow,
+		clock:        SystemClock{},
 	}, nil
+}
+
+// SetClock injects the time source the quiescence-accurate unrecoverable accounting
+// reads (D24). Production passes SystemClock (the NewDecoder default); tests pass a
+// hand-advanced fake so recovery-deadline expiry is deterministic. It has no effect
+// unless SetRecoveryDeadline enables the accounting.
+func (d *Decoder) SetClock(clock Clock) {
+	d.clock = clock
+}
+
+// SetRecoveryDeadline sets how long after a group is first seen its recovery is still
+// possible; past it the group is DEFINITIVELY unrecoverable (no further parity can
+// arrive) and Stats folds a still-incomplete group into unrecoverable even at
+// quiescence, without evicting it from the reconstruction buffer (D24). d <= 0
+// disables the snapshot-time accounting, leaving pure group-window eviction. The T24
+// datapath sets this above the encoder grouping deadline plus the resequencer's
+// per-gap timeout, so a group is only ever counted after recovery could no longer
+// have helped.
+func (d *Decoder) SetRecoveryDeadline(deadline time.Duration) {
+	d.recoveryDeadline = deadline
 }
 
 func (d *Decoder) state(g GroupID) *groupState {
@@ -145,10 +202,41 @@ func (d *Decoder) state(g GroupID) *groupState {
 			shardLen:  -1,
 			data:      make(map[int][]byte),
 			parity:    make(map[int][]byte),
+			firstSeen: d.clock.Now(),
 		}
 		d.groups[g] = gs
 	}
 	return gs
+}
+
+// accountExpired folds every retained-incomplete group whose recovery deadline has
+// definitively passed into the unrecoverable counter, so the count is accurate at
+// quiescence rather than only when a later group's arrival evicts the doomed tail
+// (D24). A group is counted when its cardinality M is known (a parity frame was seen),
+// it is not done, it has not already been accounted, and clock.Now()-firstSeen has
+// reached recoveryDeadline — the point past which no further parity for the group can
+// arrive. It marks the group accounted but leaves it in the reconstruction buffer, so
+// the later window eviction (accountEviction) skips it rather than double-counting.
+// A no-op when recoveryDeadline == 0 (accounting disabled) or the decoder has no clock.
+func (d *Decoder) accountExpired() {
+	if d.recoveryDeadline <= 0 || d.clock == nil {
+		return
+	}
+	now := d.clock.Now()
+	for _, gs := range d.groups {
+		if gs.done || gs.dataCount == -1 || gs.accounted {
+			continue
+		}
+		if now.Sub(gs.firstSeen) < d.recoveryDeadline {
+			continue
+		}
+		if missing := gs.dataCount - len(gs.data); missing > 0 {
+			d.unrecoverable += uint64(missing)
+		}
+		// Mark accounted even when nothing was missing at this instant: the deadline has
+		// passed, so the group's outcome is final and it must not be revisited.
+		gs.accounted = true
+	}
 }
 
 // markDone marks a group complete and releases its per-shard buffers: a done group
