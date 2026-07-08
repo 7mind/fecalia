@@ -1,25 +1,37 @@
 // Package wireaudit implements the requirement-6 (DPI-resistance) wire-format
 // obfuscation audit. Given the outer UDP payloads (wanbond wire frames) captured
-// across MULTIPLE fresh tunnel sessions, it asserts two properties of the
-// obfuscated wire:
-//
-//  1. Constant-byte-position: NO byte offset holds a single constant value across
-//     the whole capture. A byte that is identical at the same offset in every
-//     packet of every session is a static DPI fingerprint. (A byte constant only
-//     WITHIN one session but varying across sessions is fine — it is not a
-//     cross-session signature — so the detector requires an offset be constant
-//     across frames drawn from >= MinSessionsPerOffset distinct sessions before it
-//     flags it.)
-//
-//  2. Payload entropy: the mean per-packet Shannon entropy of the large frames
-//     exceeds MeanEntropyThreshold bits/byte.
+// across MULTIPLE fresh tunnel sessions, it asserts that the obfuscated wire carries
+// no static or low-cardinality DPI signature and no low-entropy leak.
 //
 // The wanbond frame is nonce[24] || obf(body) [|| tag[16]] (see internal/frame):
 // the nonce is fresh random bytes, the body is XChaCha20-keystream-obfuscated, and
-// the tag is a truncated HMAC — so the frame is high-entropy and free of fixed
-// offsets BY DESIGN. This audit CONFIRMS that empirically over the real captured
-// wire; a genuine constant offset or a sub-threshold mean entropy is a real
+// the tag is a truncated HMAC — so EVERY byte offset is keystream-uniform (~8
+// bits/byte at thousands of samples) and every frame is high-entropy BY DESIGN.
+// This audit CONFIRMS that empirically over the real captured wire; a constant
+// offset, a low-cardinality offset, or a sub-threshold entropy is a real
 // requirement-6 defect, not a reason to relax the thresholds.
+//
+// The audit runs four complementary checks, deliberately overlapping so a single
+// blind spot cannot pass a signaturable wire:
+//
+//  1. Single-valued offset (ConstantByteOK): NO byte offset holds one constant value
+//     across the whole capture — a fully-static fingerprint.
+//
+//  2. Offset value-distribution (OffsetDistributionOK): the per-offset Shannon
+//     entropy of the byte VALUES seen at each well-sampled offset exceeds
+//     PerOffsetEntropyThreshold. This catches a LOW-CARDINALITY signature that the
+//     single-valued check misses — e.g. a plaintext kind discriminant in {1,2,3,4}
+//     (<= 2 bits), a per-session id byte (<= log2(sessions) bits), or a skewed
+//     counter high-byte — none of which are single-valued across the traffic mix.
+//
+//  3. Frame entropy (EntropyOK): the MEAN, the MINIMUM, and the 5th-percentile
+//     per-packet payload entropy over the large frames each clear their thresholds,
+//     so a small leaking SUBSET of plaintext frames cannot hide behind a healthy
+//     mean.
+//
+//  4. Coverage (CoverageOK / the Report coverage fields): the distribution check's
+//     fully-judged offset region spans the bulk-frame length, so a traffic-mix
+//     change cannot silently shrink the audited region and pass vacuously.
 //
 // The analysis is pure and unit-testable on synthetic frame sets without root or a
 // live capture; the privileged pcap capture lives in the -tags e2e test that feeds
@@ -29,6 +41,7 @@ package wireaudit
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -38,60 +51,89 @@ type Frame = []byte
 const (
 	// MinSessions is the minimum number of FRESH tunnel sessions (distinct
 	// session id / keys / nonces) the capture must cover. A cross-session constant
-	// byte is the fingerprint the audit hunts, so it needs several independent
-	// sessions to distinguish a true cross-session constant from a within-session
-	// artefact.
+	// or low-cardinality byte is the fingerprint the audit hunts, so it needs
+	// several independent sessions to distinguish a true cross-session signature
+	// from a within-session artefact.
 	MinSessions = 5
 
-	// MinSamplesPerOffset is the minimum number of captured frames that must reach
-	// a byte offset before the audit will judge that offset constant or varying.
-	// Frames are variable-length: an offset near the tail exists only in the
-	// largest packets, so a rarely-reached offset carries too few samples to judge.
-	// An offset seen in fewer than this many frames is UNDER-SAMPLED — reported as
-	// neither constant nor cleared — so a sparsely-present offset is never falsely
-	// flagged constant (nor falsely cleared).
+	// MinSamplesPerOffset is the minimum number of captured frames that must reach a
+	// byte offset before the SINGLE-VALUED (constant) check judges it. Frames are
+	// variable-length: an offset near the tail exists only in the largest packets, so
+	// a rarely-reached offset carries too few samples to judge. An offset seen in
+	// fewer than this many frames is UNDER-SAMPLED — reported as neither constant nor
+	// cleared. Determining "is this offset single-valued" needs only a modest sample.
 	MinSamplesPerOffset = 32
 
+	// MinSamplesPerOffsetDist is the (higher) minimum sample count an offset needs
+	// before its VALUE-DISTRIBUTION ENTROPY is judged. Entropy estimated from a byte
+	// histogram is biased LOW for small samples: the maximum-likelihood estimator
+	// underestimates by ~= (256-1)/(2*N*ln2) bits, so a uniform offset needs many
+	// samples to measure near 8. At N = 512 that bias is ~= 255/(2*512*ln2) ~= 0.36
+	// bits, so a keystream-uniform offset has expected empirical entropy ~= 7.64
+	// bits/byte — comfortably above PerOffsetEntropyThreshold. Below this floor the
+	// offset is UNDER-SAMPLED for the distribution check (counted in coverage, not
+	// judged) so a genuine uniform offset is never falsely flagged low-entropy.
+	MinSamplesPerOffsetDist = 512
+
 	// MinSessionsPerOffset is the minimum number of DISTINCT sessions whose frames
-	// must reach an offset before a single-value verdict counts as a cross-session
-	// fingerprint. Requiring >= 2 sessions means a byte that merely happens to be
-	// constant within ONE session (but is absent from, or varies in, the others) is
-	// never flagged — only a genuine cross-session constant is.
+	// must reach an offset before a verdict (single-valued OR low-entropy) counts. A
+	// byte that is merely constant/low-cardinality within ONE session (but is absent
+	// from, or varies in, the others) is not a cross-session fingerprint.
 	MinSessionsPerOffset = 2
 
+	// PerOffsetEntropyThreshold is the minimum per-offset value-distribution entropy
+	// (bits/byte) a well-sampled offset must exceed. A keystream-uniform offset with
+	// >= MinSamplesPerOffsetDist samples measures ~= 7.6 bits/byte (see the bias note
+	// above); this 6.5 threshold sits ~1.1 bits below that empirical expectation
+	// (margin for finite-sample variance) yet FAR above any low-cardinality
+	// signature: a {1..4} kind byte is <= 2 bits, a per-session id byte over
+	// MinSessions sessions is <= log2(5) ~= 2.3 bits, a near-constant counter
+	// high-byte is ~= 0 bits — all caught with wide margin.
+	PerOffsetEntropyThreshold = 6.5
+
 	// MinEntropyFrameLen is the smallest frame (in bytes) that contributes to the
-	// mean-entropy metric. Shannon entropy estimated from a finite byte histogram is
-	// biased LOW for small payloads: a payload of L uniform-random bytes cannot
-	// exercise all 256 symbols and its expected empirical entropy is depressed by
-	// the Miller-Madow finite-sample bias, ~= (256-1)/(2*L*ln2) bits below 8. So a
-	// small PROBE or amnezia-junk frame that is genuinely random still measures well
-	// under 8 bits/byte, and a naive "mean > 7.5" over ALL frames would FALSELY
-	// FAIL on them. Restricting the metric to frames >= 1024 bytes bounds that bias
-	// to ~= 255/(2*1024*ln2) ~= 0.18 bits, so a uniform-random 1024-byte payload has
-	// expected empirical entropy ~= 7.82 bits/byte — comfortably above the threshold.
+	// per-frame entropy metrics. Shannon entropy from a finite byte histogram is
+	// biased low for small payloads (a 32-byte frame reaches at most log2(32)=5
+	// bits/byte even if perfectly random), so a naive whole-capture mean would
+	// FALSELY FAIL on small PROBE/junk frames. Restricting to frames >= 1024 bytes
+	// bounds that bias to ~= 255/(2*1024*ln2) ~= 0.18 bits, so a uniform-random
+	// 1024-byte payload has expected empirical entropy ~= 7.82 bits/byte.
 	MinEntropyFrameLen = 1024
 
 	// MinEntropyFrameSamples is the minimum count of frames >= MinEntropyFrameLen the
-	// capture must carry before the mean-entropy assertion is statistically
-	// meaningful. Below it the mean is noise and the audit fails loud (drive more
+	// capture must carry before the frame-entropy assertions are statistically
+	// meaningful. Below it the metrics are noise and the audit fails loud (drive more
 	// bulk traffic) rather than passing vacuously.
 	MinEntropyFrameSamples = 100
 
 	// MeanEntropyThreshold is the mean per-packet payload entropy (bits/byte) the
-	// large frames must exceed. XChaCha20 keystream output is indistinguishable from
-	// uniform random, whose expected empirical entropy at MinEntropyFrameLen is
-	// ~= 7.82 bits/byte (see MinEntropyFrameLen); MTU-sized frames reach ~= 7.9. The
-	// 7.5 threshold sits ~0.3 bits below that empirical expectation (margin for
-	// finite-sample variance) yet far above any structured or low-entropy plaintext,
-	// so a genuinely-random payload never fails while a plaintext leak would.
+	// large frames must exceed. ~0.3 bits below the ~7.82 empirical expectation for
+	// uniform 1024-byte payloads (see MinEntropyFrameLen); far above any structured
+	// plaintext. The mean ALONE is dilutable by a small plaintext subset, so it is
+	// paired with the min and p5 floors below.
 	MeanEntropyThreshold = 7.5
+
+	// PerFrameEntropyFloor is a HARD per-frame floor: NO single large frame may fall
+	// below it. A fully-plaintext / low-entropy large frame (a structured or
+	// repetitive payload, ~2-5 bits/byte) is caught even if it is a tiny fraction of
+	// the capture that leaves the mean healthy. Uniform 1024-byte frames measure
+	// ~7.82 with negligible variance, so this 6.0 floor has ~1.8 bits of margin.
+	PerFrameEntropyFloor = 6.0
+
+	// LargeFrameEntropyP5Floor is the minimum 5th-percentile per-frame entropy over
+	// the large frames — a leaking SUBSET up to ~5% (individually above the hard
+	// PerFrameEntropyFloor but anomalously low) is caught here. Uniform large frames
+	// have p5 ~= 7.8, so this 7.0 floor clears with ~0.8 bits of margin.
+	LargeFrameEntropyP5Floor = 7.0
 
 	// entropyMaxBitsPerByte is the Shannon-entropy ceiling for a byte alphabet.
 	entropyMaxBitsPerByte = 8.0
+
+	// p5Percentile is the low quantile used for the frame-entropy subset-leak floor.
+	p5Percentile = 5.0
 )
 
-// ConstantOffset records one offending byte offset that held a single value across
-// the capture: the fingerprint the audit exists to catch.
+// ConstantOffset records one byte offset held to a single value across the capture.
 type ConstantOffset struct {
 	// Offset is the byte position (0-based) within the frame that was constant.
 	Offset int
@@ -103,53 +145,103 @@ type ConstantOffset struct {
 	Sessions int
 }
 
+// OffsetEntropy records one well-sampled byte offset whose value-distribution
+// entropy fell below PerOffsetEntropyThreshold: a low-cardinality DPI signature.
+type OffsetEntropy struct {
+	// Offset is the byte position (0-based) within the frame.
+	Offset int
+	// Entropy is the Shannon entropy (bits/byte) of the byte VALUES at Offset.
+	Entropy float64
+	// Distinct is how many distinct byte values appeared at Offset.
+	Distinct int
+	// Samples is how many frames reached Offset.
+	Samples int
+	// Sessions is how many distinct sessions contributed those samples.
+	Sessions int
+}
+
 // Report is the outcome of an audit over the captured sessions.
 type Report struct {
 	// Sessions is the number of distinct capture sessions supplied.
 	Sessions int
 	// TotalFrames is the total number of frames across all sessions.
 	TotalFrames int
-	// MaxFrameLen is the longest frame observed (the highest offset judged).
+	// MaxFrameLen is the longest frame observed (the highest offset that exists).
 	MaxFrameLen int
-	// ConstantOffsets holds every well-sampled, cross-session-constant offset. Empty
-	// means the constant-byte property holds.
+
+	// ConstantOffsets holds every well-sampled, cross-session single-valued offset.
 	ConstantOffsets []ConstantOffset
+	// LowEntropyOffsets holds every well-sampled offset whose value distribution fell
+	// below PerOffsetEntropyThreshold.
+	LowEntropyOffsets []OffsetEntropy
+
+	// JudgedOffsets is the count of offsets that received a value-distribution verdict
+	// (>= MinSamplesPerOffsetDist samples across >= MinSessionsPerOffset sessions).
+	JudgedOffsets int
+	// UnderSampledOffsets is the count of offsets that exist but did NOT get a
+	// distribution verdict (too few samples/sessions).
+	UnderSampledOffsets int
+	// HighestJudgedOffset is the largest offset that received a distribution verdict,
+	// or -1 if none did. It measures how far into the frame the audit actually reaches.
+	HighestJudgedOffset int
+
 	// MeanEntropy is the mean per-packet Shannon entropy (bits/byte) over frames
 	// >= MinEntropyFrameLen.
 	MeanEntropy float64
-	// EntropyFrameCount is how many frames >= MinEntropyFrameLen fed MeanEntropy.
+	// MinFrameEntropy is the minimum per-frame entropy over those large frames.
+	MinFrameEntropy float64
+	// P5FrameEntropy is the 5th-percentile per-frame entropy over those large frames.
+	P5FrameEntropy float64
+	// EntropyFrameCount is how many frames >= MinEntropyFrameLen fed the metrics above.
 	EntropyFrameCount int
 }
 
-// Audit runs both requirement-6 checks over frames grouped by session and returns
-// the combined report. The constant-byte check pools every frame of every session
-// (an offset is constant only if it holds one value across the whole pool); the
+// Audit runs every requirement-6 check over frames grouped by session and returns
+// the combined report. The offset checks pool every frame of every session; the
 // per-offset session set enforces the cross-session requirement.
 func Audit(sessions [][]Frame) Report {
-	rep := Report{Sessions: len(sessions)}
+	rep := Report{Sessions: len(sessions), HighestJudgedOffset: -1}
 	for _, sess := range sessions {
 		rep.TotalFrames += len(sess)
 	}
-	rep.ConstantOffsets, rep.MaxFrameLen = detectConstantOffsets(sessions)
-	rep.MeanEntropy, rep.EntropyFrameCount = meanEntropy(sessions)
+	oa := analyzeOffsets(sessions)
+	rep.MaxFrameLen = oa.maxLen
+	rep.ConstantOffsets = oa.constant
+	rep.LowEntropyOffsets = oa.lowEntropy
+	rep.JudgedOffsets = oa.judged
+	rep.UnderSampledOffsets = oa.underSampled
+	rep.HighestJudgedOffset = oa.highestJudged
+
+	fs := frameEntropyStats(sessions)
+	rep.MeanEntropy = fs.mean
+	rep.MinFrameEntropy = fs.min
+	rep.P5FrameEntropy = fs.p5
+	rep.EntropyFrameCount = fs.count
 	return rep
 }
 
-// offsetAcc accumulates, for one byte offset, whether every sampled value has been
-// identical, how many frames reached the offset, and which sessions contributed.
+// offsetAcc accumulates, for one byte offset, the full value histogram, the sample
+// count, and which sessions contributed.
 type offsetAcc struct {
-	first    byte
-	allSame  bool
-	seen     bool
+	hist     [256]int
 	samples  int
 	sessions map[int]struct{}
 }
 
-// detectConstantOffsets finds every byte offset that is (a) reached by at least
-// MinSamplesPerOffset frames, (b) reached by at least MinSessionsPerOffset distinct
-// sessions, and (c) held a single value across all of them. It returns those
-// offsets and the longest frame seen.
-func detectConstantOffsets(sessions [][]Frame) ([]ConstantOffset, int) {
+// offsetAnalysis is the per-offset pass result.
+type offsetAnalysis struct {
+	maxLen        int
+	constant      []ConstantOffset
+	lowEntropy    []OffsetEntropy
+	judged        int
+	underSampled  int
+	highestJudged int
+}
+
+// analyzeOffsets builds a value histogram per byte offset across the whole pool and
+// derives (a) single-valued offsets, (b) low-entropy (low-cardinality) offsets among
+// those with enough samples for a distribution verdict, and (c) coverage counts.
+func analyzeOffsets(sessions [][]Frame) offsetAnalysis {
 	maxLen := 0
 	for _, sess := range sessions {
 		for _, f := range sess {
@@ -158,45 +250,87 @@ func detectConstantOffsets(sessions [][]Frame) ([]ConstantOffset, int) {
 			}
 		}
 	}
+	res := offsetAnalysis{maxLen: maxLen, highestJudged: -1}
 	if maxLen == 0 {
-		return nil, 0
+		return res
 	}
 	accs := make([]offsetAcc, maxLen)
 	for si, sess := range sessions {
 		for _, f := range sess {
 			for off := 0; off < len(f); off++ {
 				a := &accs[off]
-				b := f[off]
-				if !a.seen {
-					a.seen = true
-					a.first = b
-					a.allSame = true
-					a.sessions = make(map[int]struct{})
-				} else if b != a.first {
-					a.allSame = false
-				}
+				a.hist[f[off]]++
 				a.samples++
+				if a.sessions == nil {
+					a.sessions = make(map[int]struct{})
+				}
 				a.sessions[si] = struct{}{}
 			}
 		}
 	}
-	var out []ConstantOffset
 	for off := 0; off < maxLen; off++ {
 		a := &accs[off]
-		if a.samples >= MinSamplesPerOffset && len(a.sessions) >= MinSessionsPerOffset && a.allSame {
-			out = append(out, ConstantOffset{
-				Offset:   off,
-				Value:    a.first,
-				Samples:  a.samples,
-				Sessions: len(a.sessions),
+		sess := len(a.sessions)
+		distinct, only := distinctInfo(&a.hist)
+
+		// Single-valued (fully-constant) check: modest sample floor.
+		if a.samples >= MinSamplesPerOffset && sess >= MinSessionsPerOffset && distinct == 1 {
+			res.constant = append(res.constant, ConstantOffset{
+				Offset: off, Value: only, Samples: a.samples, Sessions: sess,
 			})
 		}
+
+		// Value-distribution entropy check: higher sample floor so a uniform offset
+		// is not falsely flagged low-entropy by finite-sample bias.
+		if a.samples >= MinSamplesPerOffsetDist && sess >= MinSessionsPerOffset {
+			res.judged++
+			if off > res.highestJudged {
+				res.highestJudged = off
+			}
+			h := histEntropy(&a.hist, a.samples)
+			if h < PerOffsetEntropyThreshold {
+				res.lowEntropy = append(res.lowEntropy, OffsetEntropy{
+					Offset: off, Entropy: h, Distinct: distinct, Samples: a.samples, Sessions: sess,
+				})
+			}
+		} else {
+			res.underSampled++
+		}
 	}
-	return out, maxLen
+	return res
 }
 
-// shannonEntropy returns the Shannon entropy (bits/byte) of payload's byte
-// histogram. An empty payload has zero entropy.
+// distinctInfo returns the number of distinct byte values in a histogram and, when
+// exactly one value is present, that value.
+func distinctInfo(h *[256]int) (distinct int, only byte) {
+	for v := 0; v < 256; v++ {
+		if h[v] > 0 {
+			distinct++
+			only = byte(v)
+		}
+	}
+	return distinct, only
+}
+
+// histEntropy returns the Shannon entropy (bits/byte) of a byte-value histogram over
+// n total samples.
+func histEntropy(h *[256]int, n int) float64 {
+	if n == 0 {
+		return 0
+	}
+	nf := float64(n)
+	e := 0.0
+	for _, c := range h {
+		if c == 0 {
+			continue
+		}
+		p := float64(c) / nf
+		e -= p * math.Log2(p)
+	}
+	return e
+}
+
+// shannonEntropy returns the Shannon entropy (bits/byte) of payload's byte histogram.
 func shannonEntropy(payload []byte) float64 {
 	if len(payload) == 0 {
 		return 0
@@ -205,37 +339,55 @@ func shannonEntropy(payload []byte) float64 {
 	for _, b := range payload {
 		hist[b]++
 	}
-	n := float64(len(payload))
-	h := 0.0
-	for _, c := range hist {
-		if c == 0 {
-			continue
-		}
-		p := float64(c) / n
-		h -= p * math.Log2(p)
-	}
-	return h
+	return histEntropy(&hist, len(payload))
 }
 
-// meanEntropy averages shannonEntropy over every frame >= MinEntropyFrameLen and
-// returns the mean and the contributing frame count. Frames below the cutoff are
-// excluded (their finite-sample entropy bias would depress the mean regardless of
-// the ciphertext quality — see MinEntropyFrameLen).
-func meanEntropy(sessions [][]Frame) (float64, int) {
+// frameStats holds the per-frame entropy summary over the large frames.
+type frameStats struct {
+	mean, min, p5 float64
+	count         int
+}
+
+// frameEntropyStats computes the mean, minimum, and 5th-percentile per-frame entropy
+// over every frame >= MinEntropyFrameLen. Frames below the cutoff are excluded (their
+// finite-sample bias would depress the metrics regardless of ciphertext quality).
+func frameEntropyStats(sessions [][]Frame) frameStats {
+	var es []float64
 	var sum float64
-	count := 0
 	for _, sess := range sessions {
 		for _, f := range sess {
 			if len(f) >= MinEntropyFrameLen {
-				sum += shannonEntropy(f)
-				count++
+				h := shannonEntropy(f)
+				es = append(es, h)
+				sum += h
 			}
 		}
 	}
-	if count == 0 {
-		return 0, 0
+	if len(es) == 0 {
+		return frameStats{}
 	}
-	return sum / float64(count), count
+	sort.Float64s(es)
+	return frameStats{
+		mean:  sum / float64(len(es)),
+		min:   es[0],
+		p5:    percentile(es, p5Percentile),
+		count: len(es),
+	}
+}
+
+// percentile returns the p-th percentile (nearest-rank) of a sorted ascending slice.
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	rank := int(math.Ceil(p/100*float64(len(sorted)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(sorted) {
+		rank = len(sorted) - 1
+	}
+	return sorted[rank]
 }
 
 // SessionsOK reports whether the capture covered enough fresh sessions.
@@ -246,13 +398,13 @@ func (r Report) SessionsOK() (bool, string) {
 	return true, fmt.Sprintf("captured %d fresh sessions (>= %d)", r.Sessions, MinSessions)
 }
 
-// ConstantByteOK reports whether the constant-byte-position property holds. On
-// failure the message PINPOINTS every offending offset, its constant value, and its
-// sample/session coverage.
+// ConstantByteOK reports whether the single-valued-offset property holds. On failure
+// it PINPOINTS every offending offset and value; on success it reports coverage so a
+// green verdict is never silent about how much of the frame was judged.
 func (r Report) ConstantByteOK() (bool, string) {
 	if len(r.ConstantOffsets) == 0 {
-		return true, fmt.Sprintf("no constant byte position over %d frames (max frame len %d, min %d samples / %d sessions per offset)",
-			r.TotalFrames, r.MaxFrameLen, MinSamplesPerOffset, MinSessionsPerOffset)
+		return true, fmt.Sprintf("no single-valued byte offset over %d frames (max frame len %d; %d offsets fully judged, highest judged %d, %d under-sampled)",
+			r.TotalFrames, r.MaxFrameLen, r.JudgedOffsets, r.HighestJudgedOffset, r.UnderSampledOffsets)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d constant byte position(s) — DPI fingerprint:", len(r.ConstantOffsets))
@@ -263,26 +415,71 @@ func (r Report) ConstantByteOK() (bool, string) {
 	return false, b.String()
 }
 
-// EntropyOK reports whether the mean payload entropy clears the threshold with a
-// large-enough sample.
+// OffsetDistributionOK reports whether every well-sampled offset's value distribution
+// clears PerOffsetEntropyThreshold. On failure it PINPOINTS each low-entropy offset —
+// the low-cardinality signature the single-valued check misses.
+func (r Report) OffsetDistributionOK() (bool, string) {
+	if r.JudgedOffsets == 0 {
+		return false, fmt.Sprintf("no offset had >= %d samples across >= %d sessions — distribution unjudged; drive more bulk traffic",
+			MinSamplesPerOffsetDist, MinSessionsPerOffset)
+	}
+	if len(r.LowEntropyOffsets) == 0 {
+		return true, fmt.Sprintf("all %d judged offsets clear %.2f bits/byte value entropy (highest judged offset %d)",
+			r.JudgedOffsets, PerOffsetEntropyThreshold, r.HighestJudgedOffset)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d low-cardinality byte position(s) — DPI signature:", len(r.LowEntropyOffsets))
+	for _, o := range r.LowEntropyOffsets {
+		fmt.Fprintf(&b, " offset %d entropy %.3f bits/byte (%d distinct values over %d frames / %d sessions, threshold %.2f);",
+			o.Offset, o.Entropy, o.Distinct, o.Samples, o.Sessions, PerOffsetEntropyThreshold)
+	}
+	return false, b.String()
+}
+
+// EntropyOK reports whether the frame-entropy metrics clear their thresholds with a
+// large-enough sample: the mean, a hard per-frame floor (catches a fully-plaintext
+// frame), and the 5th-percentile floor (catches a small leaking subset).
 func (r Report) EntropyOK() (bool, string) {
 	if r.EntropyFrameCount < MinEntropyFrameSamples {
 		return false, fmt.Sprintf("only %d frames >= %d bytes (need >= %d) — entropy sample too small; drive more bulk traffic",
 			r.EntropyFrameCount, MinEntropyFrameLen, MinEntropyFrameSamples)
 	}
+	if r.MinFrameEntropy < PerFrameEntropyFloor {
+		return false, fmt.Sprintf("a large frame has entropy %.4f bits/byte < %.2f floor — a low-entropy (plaintext) frame is on the wire (min over %d frames >= %d bytes)",
+			r.MinFrameEntropy, PerFrameEntropyFloor, r.EntropyFrameCount, MinEntropyFrameLen)
+	}
+	if r.P5FrameEntropy < LargeFrameEntropyP5Floor {
+		return false, fmt.Sprintf("5th-percentile large-frame entropy %.4f bits/byte < %.2f floor — a low-entropy SUBSET is leaking (over %d frames >= %d bytes)",
+			r.P5FrameEntropy, LargeFrameEntropyP5Floor, r.EntropyFrameCount, MinEntropyFrameLen)
+	}
 	if r.MeanEntropy < MeanEntropyThreshold {
 		return false, fmt.Sprintf("mean payload entropy %.4f bits/byte < %.2f threshold (over %d frames >= %d bytes)",
 			r.MeanEntropy, MeanEntropyThreshold, r.EntropyFrameCount, MinEntropyFrameLen)
 	}
-	return true, fmt.Sprintf("mean payload entropy %.4f bits/byte >= %.2f (over %d frames >= %d bytes; max %.1f)",
-		r.MeanEntropy, MeanEntropyThreshold, r.EntropyFrameCount, MinEntropyFrameLen, entropyMaxBitsPerByte)
+	return true, fmt.Sprintf("frame entropy OK: mean %.4f, min %.4f (floor %.2f), p5 %.4f (floor %.2f) bits/byte over %d frames >= %d bytes (max %.1f)",
+		r.MeanEntropy, r.MinFrameEntropy, PerFrameEntropyFloor, r.P5FrameEntropy, LargeFrameEntropyP5Floor, r.EntropyFrameCount, MinEntropyFrameLen, entropyMaxBitsPerByte)
 }
 
-// OK reports whether ALL three checks pass, joining each check's message.
+// CoverageOK reports whether the distribution check's fully-judged offset region
+// reaches at least minJudgedOffset — a guard that a traffic-mix change has not
+// silently shrunk the audited region below the bulk-frame length.
+func (r Report) CoverageOK(minJudgedOffset int) (bool, string) {
+	if r.HighestJudgedOffset < minJudgedOffset {
+		return false, fmt.Sprintf("distribution check reached only offset %d (< %d required) — audited region too shallow; %d offsets judged, %d under-sampled (max frame %d)",
+			r.HighestJudgedOffset, minJudgedOffset, r.JudgedOffsets, r.UnderSampledOffsets, r.MaxFrameLen)
+	}
+	return true, fmt.Sprintf("distribution check covers offsets 0..%d (>= %d required; max frame %d, %d under-sampled tail offsets)",
+		r.HighestJudgedOffset, minJudgedOffset, r.MaxFrameLen, r.UnderSampledOffsets)
+}
+
+// OK reports whether every intrinsic check passes (Sessions, single-valued,
+// distribution, frame entropy), joining each check's message. Coverage is asserted
+// separately by the caller with its own minimum-offset expectation.
 func (r Report) OK() (bool, string) {
 	sOK, sMsg := r.SessionsOK()
 	cOK, cMsg := r.ConstantByteOK()
+	dOK, dMsg := r.OffsetDistributionOK()
 	eOK, eMsg := r.EntropyOK()
-	msg := strings.Join([]string{sMsg, cMsg, eMsg}, "\n")
-	return sOK && cOK && eOK, msg
+	msg := strings.Join([]string{sMsg, cMsg, dMsg, eMsg}, "\n")
+	return sOK && cOK && dOK && eOK, msg
 }

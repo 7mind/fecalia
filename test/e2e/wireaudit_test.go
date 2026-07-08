@@ -65,12 +65,23 @@ const (
 	// savefile before tcpdump is signalled.
 	auditCaptureFlushDelay = 400 * time.Millisecond
 
-	// auditPlantOffset is the byte offset at which the real-wire teeth check plants a
-	// constant. It sits inside the 24-byte nonce region, present in EVERY frame, so
+	// auditPlantOffset is the byte offset at which the real-wire teeth checks plant a
+	// signature. It sits inside the 24-byte nonce region, present in EVERY frame, so
 	// it is maximally sampled and unambiguously flagged.
 	auditPlantOffset = 10
 	auditPlantValue  = 0x5A
+
+	// auditMinCoverageOffset is the minimum highest-fully-judged offset the
+	// distribution check must reach: the bulk MTU-sized DATA frames span well past
+	// this, so falling short means a traffic-mix regression shrank the audited region.
+	// Tied to wireaudit.MinEntropyFrameLen — the large-frame region must be covered.
+	auditMinCoverageOffset = wireaudit.MinEntropyFrameLen
 )
+
+// auditLowCardValues is the 4-value round-robin the real-wire low-cardinality teeth
+// check plants: multi-valued (so the single-valued detector ignores it) yet ~2
+// bits/byte (so the per-offset distribution check must catch it).
+var auditLowCardValues = []byte{0x11, 0x22, 0x33, 0x44}
 
 // auditPath is the single emulated uplink for the wire-format audit: a low fixed
 // delay, no jitter, no loss — the audit inspects the OBFUSCATION of the wire, not
@@ -107,16 +118,28 @@ func TestWireFormatAudit(t *testing.T) {
 	}
 
 	rep := wireaudit.Audit(sessions)
-	t.Logf("audit over %d sessions / %d frames (max frame %d bytes): mean entropy %.4f over %d large frames",
-		rep.Sessions, rep.TotalFrames, rep.MaxFrameLen, rep.MeanEntropy, rep.EntropyFrameCount)
+	t.Logf("audit over %d sessions / %d frames (max frame %d bytes): mean entropy %.4f (min %.4f, p5 %.4f) over %d large frames; %d offsets judged (highest %d), %d under-sampled",
+		rep.Sessions, rep.TotalFrames, rep.MaxFrameLen, rep.MeanEntropy, rep.MinFrameEntropy, rep.P5FrameEntropy, rep.EntropyFrameCount,
+		rep.JudgedOffsets, rep.HighestJudgedOffset, rep.UnderSampledOffsets)
 
 	// Requirement-6 assertions. A failure here that is NOT the planted teeth below is
-	// a GENUINE obfuscation defect (a real constant offset or low entropy on the
-	// wire) — it must be reported and fixed at the codec, NOT masked by retuning.
+	// a GENUINE obfuscation defect (a real constant offset, a low-cardinality offset,
+	// or low entropy on the wire) — it must be reported and fixed at the codec, NOT
+	// masked by retuning.
 	if ok, msg := rep.SessionsOK(); !ok {
 		t.Fatalf("wire audit: %s", msg)
 	}
+	if ok, msg := rep.CoverageOK(auditMinCoverageOffset); !ok {
+		t.Fatalf("wire audit: %s", msg)
+	} else {
+		t.Log(msg)
+	}
 	if ok, msg := rep.ConstantByteOK(); !ok {
+		t.Fatalf("wire audit: REQUIREMENT-6 DEFECT — %s", msg)
+	} else {
+		t.Log(msg)
+	}
+	if ok, msg := rep.OffsetDistributionOK(); !ok {
 		t.Fatalf("wire audit: REQUIREMENT-6 DEFECT — %s", msg)
 	} else {
 		t.Log(msg)
@@ -127,10 +150,96 @@ func TestWireFormatAudit(t *testing.T) {
 		t.Log(msg)
 	}
 
-	// Teeth on the REAL captured wire: plant a constant byte at auditPlantOffset into
-	// a copy of every captured frame and confirm the audit now FAILS and pinpoints
-	// that offset. Proves the constant-byte detector is non-vacuous against real data.
-	plantAndAssertDetected(t, sessions)
+	// Teeth on the REAL captured wire. Two plants prove both offset detectors are
+	// non-vacuous against real data:
+	//   (a) a fully-CONSTANT byte  -> caught by the single-valued check;
+	//   (b) a 4-value LOW-CARDINALITY byte (multi-valued, ~2 bits) -> caught ONLY by
+	//       the per-offset distribution check — the decisive DPI-signature class.
+	plantConstantAndAssert(t, sessions)
+	plantLowCardinalityAndAssert(t, sessions)
+}
+
+// plantConstantAndAssert deep-copies the captured sessions, forces a CONSTANT byte at
+// auditPlantOffset across every frame, and asserts ConstantByteOK then reports that
+// exact offset — the single-valued detector's non-vacuity proof on real frames.
+func plantConstantAndAssert(t *testing.T, sessions [][]wireaudit.Frame) {
+	t.Helper()
+	planted := clonePlant(sessions, func(f []byte, _ int) {
+		if len(f) > auditPlantOffset {
+			f[auditPlantOffset] = auditPlantValue
+		}
+	})
+	rep := wireaudit.Audit(planted)
+	ok, msg := rep.ConstantByteOK()
+	if ok {
+		t.Fatalf("teeth: planted CONSTANT at offset %d NOT detected — the single-valued check is vacuous", auditPlantOffset)
+	}
+	if !offsetInConstants(rep.ConstantOffsets, auditPlantOffset, auditPlantValue) {
+		t.Fatalf("teeth: audit failed but did not pinpoint the planted constant offset %d; report: %s", auditPlantOffset, msg)
+	}
+	t.Logf("teeth OK (constant): %s", msg)
+}
+
+// plantLowCardinalityAndAssert deep-copies the captured sessions, forces a 4-value
+// round-robin byte at auditPlantOffset (multi-valued, ~2 bits), and asserts
+// OffsetDistributionOK catches it while ConstantByteOK does NOT — proving the
+// distribution check catches the low-cardinality DPI signature the single-valued
+// check misses (the decisive review finding).
+func plantLowCardinalityAndAssert(t *testing.T, sessions [][]wireaudit.Frame) {
+	t.Helper()
+	i := 0
+	planted := clonePlant(sessions, func(f []byte, _ int) {
+		if len(f) > auditPlantOffset {
+			f[auditPlantOffset] = auditLowCardValues[i%len(auditLowCardValues)]
+		}
+		i++
+	})
+	rep := wireaudit.Audit(planted)
+
+	if ok, _ := rep.ConstantByteOK(); !ok {
+		t.Fatalf("teeth: a 4-valued byte was flagged single-valued — the constant check over-fired")
+	}
+	ok, msg := rep.OffsetDistributionOK()
+	if ok {
+		t.Fatalf("teeth: planted LOW-CARDINALITY byte at offset %d NOT detected — the distribution check is vacuous", auditPlantOffset)
+	}
+	found := false
+	for _, o := range rep.LowEntropyOffsets {
+		if o.Offset == auditPlantOffset {
+			found = true
+			t.Logf("teeth OK (low-cardinality): offset %d entropy %.3f bits/byte (%d distinct over %d frames / %d sessions), threshold %.2f",
+				o.Offset, o.Entropy, o.Distinct, o.Samples, o.Sessions, wireaudit.PerOffsetEntropyThreshold)
+		}
+	}
+	if !found {
+		t.Fatalf("teeth: distribution check failed but did not pinpoint offset %d; report: %s", auditPlantOffset, msg)
+	}
+}
+
+// clonePlant deep-copies sessions and applies plant to each frame (idx is the frame's
+// index within its session), so the original captured frames are never mutated.
+func clonePlant(sessions [][]wireaudit.Frame, plant func(f []byte, idx int)) [][]wireaudit.Frame {
+	out := make([][]wireaudit.Frame, len(sessions))
+	for i, sess := range sessions {
+		cp := make([]wireaudit.Frame, len(sess))
+		for j, f := range sess {
+			nf := append([]byte(nil), f...)
+			plant(nf, j)
+			cp[j] = nf
+		}
+		out[i] = cp
+	}
+	return out
+}
+
+// offsetInConstants reports whether offset/value appears among the constant offsets.
+func offsetInConstants(cs []wireaudit.ConstantOffset, offset int, value byte) bool {
+	for _, c := range cs {
+		if c.Offset == offset && c.Value == value {
+			return true
+		}
+	}
+	return false
 }
 
 // plantAndAssertDetected deep-copies the captured sessions, forces a constant byte

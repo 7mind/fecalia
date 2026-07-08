@@ -25,8 +25,17 @@ const (
 
 	ipMinHeaderLen = 20
 	ipTotalLenOff  = 2
+	ipFlagsFragOff = 6 // 16-bit flags(3) + fragment-offset(13) field
 	ipProtoOff     = 9
 	ipProtoUDP     = 17
+
+	// ipFlagMoreFragments (MF) and ipFragOffsetMask isolate the fragmentation state
+	// of an IPv4 datagram. A packet with a non-zero fragment offset carries no UDP
+	// header (its first bytes are payload continuation), and a first fragment with MF
+	// set carries only a truncated payload — either would pool a garbage "frame" into
+	// the audit, so both are skipped.
+	ipFlagMoreFragments = 0x2000
+	ipFragOffsetMask    = 0x1FFF
 
 	udpHeaderLen = 8
 	udpSrcOff    = 0
@@ -47,9 +56,9 @@ const (
 // udpPort from a classic libpcap savefile with Ethernet link-layer framing (what
 // `tcpdump -i <veth> -w file udp port <p>` produces). Each returned Frame is a
 // fresh copy of one outer UDP payload — a wanbond wire frame. Non-IPv4, non-UDP,
-// and off-port packets are skipped. Ethernet padding on short frames is stripped by
-// bounding the payload with the IPv4 total-length field, so a padded 60-byte
-// minimum Ethernet frame does not contribute spurious trailing zero bytes.
+// fragmented, and off-port packets are skipped. Ethernet padding on short frames is
+// stripped by bounding the payload with the IPv4 total-length field, so a padded
+// 60-byte minimum Ethernet frame does not contribute spurious trailing zero bytes.
 func ParsePcap(data []byte, udpPort uint16) ([]Frame, error) {
 	if len(data) < pcapGlobalHeaderLen {
 		return nil, fmt.Errorf("wireaudit: pcap too short: %d bytes < %d-byte global header", len(data), pcapGlobalHeaderLen)
@@ -106,6 +115,14 @@ func udpPayload(pkt []byte, port uint16) ([]byte, bool) {
 		return nil, false
 	}
 	if ip[ipProtoOff] != ipProtoUDP {
+		return nil, false
+	}
+	// Skip any fragment: a non-first fragment (non-zero offset) has no UDP header, so
+	// its payload bytes would be misread as ports and a coincidental match would pool
+	// a garbage frame; a first fragment with MF set is truncated. wanbond frames fit
+	// the path MTU, so a fragmented UDP datagram here is never a real wanbond frame.
+	fragField := binary.BigEndian.Uint16(ip[ipFlagsFragOff : ipFlagsFragOff+2])
+	if fragField&ipFragOffsetMask != 0 || fragField&ipFlagMoreFragments != 0 {
 		return nil, false
 	}
 	totalLen := int(binary.BigEndian.Uint16(ip[ipTotalLenOff : ipTotalLenOff+2]))

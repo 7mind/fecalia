@@ -44,8 +44,14 @@ func TestRandomWireHasNoConstantOffset(t *testing.T) {
 	if ok, msg := rep.ConstantByteOK(); !ok {
 		t.Fatalf("ConstantByteOK on random wire: %s", msg)
 	}
+	if ok, msg := rep.OffsetDistributionOK(); !ok {
+		t.Fatalf("OffsetDistributionOK on random wire: %s", msg)
+	}
 	if ok, msg := rep.EntropyOK(); !ok {
 		t.Fatalf("EntropyOK on random wire: %s", msg)
+	}
+	if ok, msg := rep.CoverageOK(1024); !ok {
+		t.Fatalf("CoverageOK on random wire: %s", msg)
 	}
 	if ok, _ := rep.OK(); !ok {
 		t.Fatalf("random wire failed the combined audit")
@@ -54,6 +60,14 @@ func TestRandomWireHasNoConstantOffset(t *testing.T) {
 	// the threshold but strictly below the 8.0 ceiling.
 	if rep.MeanEntropy <= MeanEntropyThreshold || rep.MeanEntropy >= entropyMaxBitsPerByte {
 		t.Fatalf("mean entropy %.4f not in (%.2f, %.1f)", rep.MeanEntropy, MeanEntropyThreshold, entropyMaxBitsPerByte)
+	}
+	// Every well-sampled offset must clear the per-offset distribution threshold with
+	// margin: 200*MinSessions = 1000 samples/offset => bias ~0.18 bits => ~7.82.
+	if len(rep.LowEntropyOffsets) != 0 {
+		t.Fatalf("random wire has %d low-entropy offsets: %v", len(rep.LowEntropyOffsets), rep.LowEntropyOffsets)
+	}
+	if rep.HighestJudgedOffset != rep.MaxFrameLen-1 {
+		t.Fatalf("highest judged offset %d, want %d (all fixed-length offsets should be judged)", rep.HighestJudgedOffset, rep.MaxFrameLen-1)
 	}
 }
 
@@ -276,6 +290,237 @@ func TestSmallFramesExcludedFromEntropy(t *testing.T) {
 	}
 	if ok, msg := rep.EntropyOK(); !ok {
 		t.Fatalf("EntropyOK failed despite the small frames being excluded: %s", msg)
+	}
+}
+
+// TestLowCardinalityOffsetIsDetectedAndPinpointed is the TEETH of the per-offset
+// distribution check: a byte that is MULTI-valued (so the single-valued constant
+// check does NOT flag it) but low-cardinality — a 4-value round-robin — at a
+// well-sampled offset must be caught by OffsetDistributionOK and pinpointed. This is
+// the decisive gap the single-valued detector alone misses.
+func TestLowCardinalityOffsetIsDetectedAndPinpointed(t *testing.T) {
+	const plantOffset = 100
+	values := []byte{0x10, 0x20, 0x30, 0x40}
+
+	// 150 frames/session * MinSessions = 750 samples/offset (>= MinSamplesPerOffsetDist).
+	sessions := randSessions(MinSessions, 150, 1200)
+	i := 0
+	for _, sess := range sessions {
+		for _, f := range sess {
+			f[plantOffset] = values[i%len(values)]
+			i++
+		}
+	}
+
+	rep := Audit(sessions)
+
+	// The single-valued check must NOT flag it (it is 4-valued, not constant).
+	if ok, _ := rep.ConstantByteOK(); !ok {
+		t.Fatalf("ConstantByteOK flagged a 4-valued offset — should only flag single-valued")
+	}
+	// The distribution check MUST flag it and pinpoint the offset.
+	ok, msg := rep.OffsetDistributionOK()
+	if ok {
+		t.Fatalf("low-cardinality offset %d NOT detected — distribution check is vacuous", plantOffset)
+	}
+	found := false
+	for _, o := range rep.LowEntropyOffsets {
+		if o.Offset == plantOffset {
+			found = true
+			if o.Distinct != len(values) {
+				t.Errorf("offset %d distinct=%d, want %d", plantOffset, o.Distinct, len(values))
+			}
+			// 4 equiprobable values => 2.0 bits/byte.
+			if o.Entropy < 1.9 || o.Entropy > 2.1 {
+				t.Errorf("offset %d entropy %.4f, want ~2.0 bits", plantOffset, o.Entropy)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("distribution check failed but did not pinpoint offset %d; report: %s", plantOffset, msg)
+	}
+	if !contains(msg, "offset 100") {
+		t.Errorf("failure message does not pinpoint the offset: %q", msg)
+	}
+}
+
+// TestPlaintextKindByteEscapeIsCaught reproduces the reviewer's DECISIVE escape: an
+// obfuscation regression that leaks a plaintext WireGuard-style kind discriminant in
+// {1,2,3,4} at offset 24 escapes BOTH the single-valued check (it is multi-valued
+// across the DATA/PARITY/PROBE/CONTROL mix) AND the frame-entropy check (a ~16-byte
+// structured header over an encrypted MTU payload still measures > 7.5 bits/byte).
+// It asserts the audit now CATCHES it via the per-offset distribution check, with the
+// realistic SKEWED traffic mix, and records the measured numbers.
+func TestPlaintextKindByteEscapeIsCaught(t *testing.T) {
+	const kindOffset = 24
+	// Realistic skewed message-type mix: DATA dominates, then PARITY/PROBE/CONTROL.
+	mix := func(i int) byte {
+		switch r := i % 20; {
+		case r < 14: // 70% DATA
+			return 0x01
+		case r < 17: // 15% PARITY
+			return 0x02
+		case r < 19: // 10% PROBE
+			return 0x03
+		default: // 5% CONTROL
+			return 0x04
+		}
+	}
+
+	// MTU-sized frames with an otherwise-random (encrypted) body — only the kind byte
+	// leaks. 200 frames/session * MinSessions = 1000 samples at offset 24.
+	sessions := randSessions(MinSessions, 200, 1400)
+	i := 0
+	for _, sess := range sessions {
+		for _, f := range sess {
+			f[kindOffset] = mix(i)
+			i++
+		}
+	}
+
+	rep := Audit(sessions)
+
+	// The mean/min/p5 frame entropy stays healthy — the escape defeats check #3.
+	if ok, _ := rep.EntropyOK(); !ok {
+		t.Fatalf("setup invalid: a single leaked header byte should not drop frame entropy below threshold")
+	}
+	// The single-valued check stays green — the escape defeats check #1.
+	if ok, _ := rep.ConstantByteOK(); !ok {
+		t.Fatalf("setup invalid: a {1..4}-valued kind byte is not single-valued")
+	}
+	// The distribution check CATCHES it.
+	ok, msg := rep.OffsetDistributionOK()
+	if ok {
+		t.Fatalf("plaintext kind-byte escape NOT caught — the audit gives false assurance; %s", msg)
+	}
+	var kind OffsetEntropy
+	for _, o := range rep.LowEntropyOffsets {
+		if o.Offset == kindOffset {
+			kind = o
+		}
+	}
+	if kind.Offset != kindOffset {
+		t.Fatalf("distribution check did not pinpoint the kind byte at offset %d; report: %s", kindOffset, msg)
+	}
+	// Skewed 4-symbol distribution entropy H ~= 1.32 bits — far below the 6.5
+	// threshold. Record the numbers for the audit trail.
+	t.Logf("plaintext kind-byte escape CAUGHT: offset %d entropy %.4f bits/byte (%d distinct values over %d frames / %d sessions), threshold %.2f, margin %.2f bits",
+		kind.Offset, kind.Entropy, kind.Distinct, kind.Samples, kind.Sessions, PerOffsetEntropyThreshold, PerOffsetEntropyThreshold-kind.Entropy)
+	if kind.Entropy > 2.0 {
+		t.Errorf("kind-byte entropy %.4f exceeds 2 bits — skewed 4-symbol distribution should be ~1.3 bits", kind.Entropy)
+	}
+}
+
+// TestEntropySubsetLeakDetected is the TEETH of the frame-entropy p5 quantile: a
+// small SUBSET (~13%) of large frames drawn from a restricted alphabet (entropy
+// ~6.6 bits/byte, ABOVE the hard per-frame floor but below the p5 floor) leaves the
+// MEAN healthy yet must fail the audit via the 5th-percentile floor.
+func TestEntropySubsetLeakDetected(t *testing.T) {
+	rng := rand.New(rand.NewSource(23))
+	sessions := make([][]Frame, MinSessions)
+	for s := range sessions {
+		clean := randFrames(rng, 100, 1400) // full-entropy large frames
+		// Leak: 15 large frames over a 100-symbol alphabet => ~log2(100)=6.64 bits,
+		// above PerFrameEntropyFloor (6.0) but below LargeFrameEntropyP5Floor (7.0).
+		leak := make([]Frame, 15)
+		for i := range leak {
+			f := make([]byte, 1400)
+			for j := range f {
+				f[j] = byte(rng.Intn(100))
+			}
+			leak[i] = f
+		}
+		sessions[s] = append(clean, leak...)
+	}
+
+	rep := Audit(sessions)
+	if rep.MeanEntropy < MeanEntropyThreshold {
+		t.Fatalf("setup invalid: the subset should leave the MEAN (%.4f) above the threshold so the p5 floor is what catches it", rep.MeanEntropy)
+	}
+	if rep.MinFrameEntropy < PerFrameEntropyFloor {
+		t.Fatalf("setup invalid: leak entropy %.4f fell below the hard floor %.2f — this case must exercise the p5 floor, not the min floor", rep.MinFrameEntropy, PerFrameEntropyFloor)
+	}
+	ok, msg := rep.EntropyOK()
+	if ok {
+		t.Fatalf("entropy subset leak NOT detected — the p5 quantile floor is vacuous; mean=%.4f min=%.4f p5=%.4f", rep.MeanEntropy, rep.MinFrameEntropy, rep.P5FrameEntropy)
+	}
+	if !contains(msg, "5th-percentile") {
+		t.Errorf("failure not attributed to the p5 floor: %q", msg)
+	}
+}
+
+// TestFullyPlaintextFrameCaughtByMinFloor proves the hard per-frame floor catches a
+// single fully-low-entropy (plaintext) large frame that a healthy mean would hide.
+func TestFullyPlaintextFrameCaughtByMinFloor(t *testing.T) {
+	rng := rand.New(rand.NewSource(29))
+	sessions := make([][]Frame, MinSessions)
+	for s := range sessions {
+		clean := randFrames(rng, 200, 1400)
+		if s == 0 {
+			// One all-zero (0 bits/byte) large frame in the whole capture.
+			clean = append(clean, make([]byte, 1400))
+		}
+		sessions[s] = clean
+	}
+	rep := Audit(sessions)
+	if rep.MeanEntropy < MeanEntropyThreshold {
+		t.Fatalf("setup invalid: one plaintext frame in ~1000 should not drop the mean (%.4f) below threshold", rep.MeanEntropy)
+	}
+	ok, msg := rep.EntropyOK()
+	if ok {
+		t.Fatal("a fully-plaintext large frame was NOT caught by the per-frame floor")
+	}
+	if !contains(msg, "floor") {
+		t.Errorf("failure not attributed to a per-frame floor: %q", msg)
+	}
+}
+
+// TestCoverageGuardShallowRegion proves CoverageOK fails when the fully-judged offset
+// region does not reach the required depth (e.g. a traffic-mix change shrank frames),
+// and passes when it does.
+func TestCoverageGuardShallowRegion(t *testing.T) {
+	// All frames only 600 bytes long => offsets judged up to 599.
+	shallow := Audit(randSessions(MinSessions, 200, 600))
+	if ok, _ := shallow.CoverageOK(1024); ok {
+		t.Fatalf("CoverageOK accepted a region reaching only offset %d (< 1024)", shallow.HighestJudgedOffset)
+	}
+	if ok, msg := shallow.CoverageOK(500); !ok {
+		t.Fatalf("CoverageOK rejected a 600-byte region against a 500-offset floor: %s", msg)
+	}
+
+	deep := Audit(randSessions(MinSessions, 200, 1400))
+	if ok, msg := deep.CoverageOK(1024); !ok {
+		t.Fatalf("CoverageOK rejected a 1400-byte region against a 1024-offset floor: %s", msg)
+	}
+}
+
+// TestUnderSampledOffsetNotDistributionJudged verifies that an offset reached by
+// fewer than MinSamplesPerOffsetDist frames is NOT distribution-judged (so a genuine
+// uniform-but-thinly-sampled tail offset is never falsely flagged low-entropy), and
+// is counted in coverage instead.
+func TestUnderSampledOffsetNotDistributionJudged(t *testing.T) {
+	rng := rand.New(rand.NewSource(31))
+	sessions := make([][]Frame, MinSessions)
+	for s := range sessions {
+		// 200 short frames (len 100) — offset 50 gets 1000 samples (judged).
+		short := randFrames(rng, 200, 100)
+		// A handful of long frames (len 2000) with a CONSTANT byte at offset 1500:
+		// only 5*10 = 50 samples < MinSamplesPerOffsetDist, so it must NOT be flagged
+		// low-entropy despite entropy 0 there.
+		long := randFrames(rng, 10, 2000)
+		for _, f := range long {
+			f[1500] = 0x00
+		}
+		sessions[s] = append(short, long...)
+	}
+	rep := Audit(sessions)
+	for _, o := range rep.LowEntropyOffsets {
+		if o.Offset == 1500 {
+			t.Errorf("under-sampled offset 1500 (%d samples) flagged low-entropy — distribution min-sample rule failed", o.Samples)
+		}
+	}
+	if rep.UnderSampledOffsets == 0 {
+		t.Errorf("expected the deep tail offsets to be counted under-sampled, got 0")
 	}
 }
 

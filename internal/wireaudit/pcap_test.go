@@ -36,6 +36,25 @@ func buildEthIPUDP(srcPort, dstPort uint16, payload []byte, padding int) []byte 
 	return pkt
 }
 
+// buildEthIPFragment assembles an Ethernet/IPv4 packet with the raw 16-bit
+// flags/fragment-offset field set to fragField and the given IP payload (NOT a real
+// UDP datagram — a fragment carries opaque continuation bytes). proto is set to UDP
+// so only the fragment guard, not the proto check, can exclude it.
+func buildEthIPFragment(fragField uint16, payload []byte) []byte {
+	ip := make([]byte, ipMinHeaderLen)
+	ip[0] = 0x45
+	binary.BigEndian.PutUint16(ip[ipTotalLenOff:ipTotalLenOff+2], uint16(ipMinHeaderLen+len(payload)))
+	binary.BigEndian.PutUint16(ip[ipFlagsFragOff:ipFlagsFragOff+2], fragField)
+	ip[8] = 64
+	ip[ipProtoOff] = ipProtoUDP
+
+	eth := make([]byte, ethHeaderLen)
+	binary.BigEndian.PutUint16(eth[ethTypeOff:ethTypeOff+2], ethTypeIPv4)
+
+	pkt := append(eth, ip...)
+	return append(pkt, payload...)
+}
+
 // buildPcap wraps packets in a classic libpcap savefile with the given byte order
 // and Ethernet link type.
 func buildPcap(bo binary.ByteOrder, magic uint32, pkts [][]byte) []byte {
@@ -119,6 +138,55 @@ func TestParsePcapRejectsTruncatedRecord(t *testing.T) {
 	truncated := data[:len(data)-4]
 	if _, err := ParsePcap(truncated, port); err == nil {
 		t.Fatal("expected a truncation error")
+	}
+}
+
+// TestParsePcapSkipsFragments proves the fragment guard: a non-first fragment and a
+// first fragment with MF set — whose leading bytes are crafted to look like the
+// target ports — must NOT be pooled as frames, while an ordinary (unfragmented,
+// DF-set) UDP packet on the port still IS. Extra garbage 'frames' could only CLEAR a
+// genuine constant, so this closes a false-pass direction.
+func TestParsePcapSkipsFragments(t *testing.T) {
+	const port = 51820
+
+	// Fragment leading bytes = port,port so the pre-fix parser would have matched.
+	frag := make([]byte, 40)
+	binary.BigEndian.PutUint16(frag[0:2], port)
+	binary.BigEndian.PutUint16(frag[2:4], port)
+
+	realPayload := []byte("real-wanbond-frame")
+	pkts := [][]byte{
+		buildEthIPFragment(0x0001, frag),              // non-first fragment (offset != 0)
+		buildEthIPFragment(ipFlagMoreFragments, frag), // first fragment, MF set
+		buildEthIPUDP(port, 40000, realPayload, 0),    // ordinary UDP on the port
+	}
+	data := buildPcap(binary.LittleEndian, magicMicroLE, pkts)
+	frames, err := ParsePcap(data, port)
+	if err != nil {
+		t.Fatalf("ParsePcap: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1 (both fragments must be skipped)", len(frames))
+	}
+	if !bytes.Equal(frames[0], realPayload) {
+		t.Errorf("frame 0 = %q, want %q", frames[0], realPayload)
+	}
+}
+
+// TestParsePcapAcceptsDontFragment confirms the guard does NOT reject an ordinary
+// packet that merely has the Don't-Fragment (DF) bit set (0x4000) with zero offset.
+func TestParsePcapAcceptsDontFragment(t *testing.T) {
+	const port = 51820
+	pkt := buildEthIPUDP(port, 40000, []byte("df-frame"), 0)
+	// Set DF (0x4000) in the flags/frag field — neither MF nor a non-zero offset.
+	binary.BigEndian.PutUint16(pkt[ethHeaderLen+ipFlagsFragOff:ethHeaderLen+ipFlagsFragOff+2], 0x4000)
+	data := buildPcap(binary.LittleEndian, magicMicroLE, [][]byte{pkt})
+	frames, err := ParsePcap(data, port)
+	if err != nil {
+		t.Fatalf("ParsePcap: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1 (DF-set packet must be accepted)", len(frames))
 	}
 }
 
