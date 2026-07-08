@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/fec"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // FEC datapath integration (T24).
@@ -63,6 +66,24 @@ const maxFECDeadline = resequencerTimeout / 2
 // exceeds the resequencerWindow's reordering budget in group units.
 const fecRetainGroups = 512
 
+// fecResidualLossWindow is the trailing outer-seq width of the receive-side residual-
+// loss estimator (T29): the post-FEC-recovery loss the P4 acceptance bounds. It is
+// deliberately WIDER than the telemetry default (512) for two reasons: (1) resolution —
+// the P4 bound is 0.5%, so the window must resolve finer than 1/512≈0.2%; 8192 gives
+// ~0.012% granularity, well under the bound; (2) stability — averaging the residual over
+// ~thousands of groups smooths the per-group binomial variance into a steady-state figure.
+// It stays far below the resequencer window's reordering budget, and is wide enough that a
+// recovered frame arriving a group or two after its gap still retroactively fills it, so
+// genuinely-unrecovered seqs (whole-group and beyond-budget losses) are the only residual.
+const fecResidualLossWindow = 8192
+
+// adaptiveControlInterval throttles how often the FEC tick loop folds a fresh loss
+// sample into the adaptive controller (T29). It matches the probe cadence — the rate at
+// which per-path loss estimates actually refresh — so the controller's EWMA sees ~one
+// sample per probe interval as its tuning (internal/adaptivefec) assumes, regardless of
+// the (possibly much smaller) FEC group-close deadline the tick loop runs at.
+const adaptiveControlInterval = telemetry.DefaultProbeInterval
+
 // fecSender is the send-side FEC state: the group-forming encoder (accessed only
 // under the Bind's m.mu, on the Send path and the deadline-tick goroutine) plus the
 // parity-overhead counters the /metrics exposition reports. The counters are
@@ -70,7 +91,17 @@ const fecRetainGroups = 512
 type fecSender struct {
 	enc *fec.Encoder
 
+	// ctrl is the adaptive-FEC controller (T29), nil in fixed-ratio mode. It is driven
+	// (Observe) and read (Parity) ONLY from under the Bind's m.mu — the FEC tick loop's
+	// throttled drive and, transitively, the Send path — so it needs no lock of its own,
+	// matching the encoder's single-writer discipline. lastControlTick/haveControlTick
+	// throttle the drive to adaptiveControlInterval and are likewise m.mu-guarded.
+	ctrl            *adaptivefec.Controller
+	lastControlTick time.Time
+	haveControlTick bool
+
 	dataFrames   atomic.Uint64
+	dataBytes    atomic.Uint64
 	parityFrames atomic.Uint64
 	parityBytes  atomic.Uint64
 }
@@ -87,6 +118,14 @@ type fecReceiver struct {
 	dec *fec.Decoder
 
 	deliveredRecovered atomic.Uint64
+
+	// connLoss is the POST-FEC-RECOVERY residual-loss estimator (T29, the P4 signal):
+	// every natively-received DATA outer-seq AND every FEC-reconstructed outer-seq is
+	// Observed into it, so its Loss() fraction is exactly the connection-scoped loss that
+	// survived FEC — outer-seqs neither received nor recovered. It is internally
+	// synchronized (its own mutex), fed concurrently by the per-path readLoop goroutines
+	// exactly like the resequencer, and read lock-free-enough at scrape time.
+	connLoss *telemetry.ConnLoss
 }
 
 // offer feeds one surviving shard into the decoder and returns any data payloads it
@@ -117,10 +156,16 @@ func (r *fecReceiver) stats() fec.DecoderStats {
 // the ratio reflects wire cost actually spent.
 type FECStats struct {
 	DataFrames    uint64
+	DataBytes     uint64
 	ParityFrames  uint64
 	ParityBytes   uint64
 	Recovered     uint64
 	Unrecoverable uint64
+	// ResidualLoss is the current post-FEC-recovery connection loss fraction in [0,1]
+	// (T29): the share of outer-seqs neither natively received nor reconstructed from
+	// parity. It is the P4 acceptance signal — the loss FEC did not mask. Zero when FEC is
+	// disabled or no data has flowed.
+	ResidualLoss float64
 }
 
 // fecShardPayload builds the FEC data-shard coded bytes for outer-seq seq over the

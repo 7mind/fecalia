@@ -156,6 +156,15 @@ type SchedulerConfig struct {
 // it until the size threshold fills.
 const defaultFECDeadline = 5 * time.Millisecond
 
+// defaultAdaptiveSafetyFactor mirrors adaptivefec.DefaultSafetyFactor (1.5), the
+// simulation-proven controller default, restated here (with this cross-reference rather
+// than an import) so a minimal `adaptive = true` block gets the proven tuning without
+// coupling config to the controller package. NOTE: 1.5 sizes M for the mean loss with
+// modest variance headroom; a tight residual SLA under a specific loss/geometry may need a
+// higher factor (e.g. at 5% loss with K=10 the 1.5 default sizes M=1, ~1% residual — raise
+// this to lift M and drive the residual down).
+const defaultAdaptiveSafetyFactor = 1.5
+
 // maxFECDeadline bounds the FEC group-close deadline at load time (T24, defect #4). It
 // MUST stay at or below the multipath Bind's authoritative bound (bind.maxFECDeadline =
 // resequencerTimeout/2 = 125ms): a group flushed by the deadline emits its parity
@@ -188,13 +197,32 @@ type FEC struct {
 	// Must be >= 1 when enabled.
 	DataShards int `toml:"data_shards"`
 	// ParityShards is M: the parity frames emitted per group and the maximum number of
-	// per-group data losses the receiver can recover. Must be >= 1 when enabled.
+	// per-group data losses the receiver can recover. Must be >= 1 when enabled. In
+	// adaptive mode it is the CEILING (and the receiver's decoder cardinality) — the
+	// controller drives the per-group parity in [0,ParityShards] to track measured loss.
 	ParityShards int `toml:"parity_shards"`
 	// Deadline bounds grouping latency: a partially-filled group is flushed (parity
 	// emitted over its current data frames) once this much time has elapsed since its
 	// first frame. Defaults to defaultFECDeadline when enabled and left zero; must be
 	// > 0 after defaulting.
 	Deadline time.Duration `toml:"deadline"`
+	// Adaptive opts the send-side FEC into the closed-loop controller (T27/T29): the
+	// per-group parity count tracks the measured per-path loss instead of standing at
+	// the fixed ParityShards ratio, so a clean path spends near-zero overhead while a
+	// lossy one is masked. It is OFF by default, so an existing [fec] block keeps the
+	// fixed-ratio behaviour (T24) byte-for-byte. When true, ParityShards is reinterpreted
+	// as the controller's parity ceiling (see above); the receiver is unchanged because a
+	// group coded with fewer parity shards decodes against the ParityShards-ceiling codec
+	// unchanged (klauspost's parity is prefix-consistent).
+	Adaptive bool `toml:"adaptive"`
+	// SafetyFactor is the adaptive controller's headroom multiplier over the measured mean
+	// loss the per-group parity is sized to mask (adaptivefec.Config.SafetyFactor). It is
+	// the residual-loss LEVER: the controller sizes M so M/(K+M) >= SafetyFactor*loss, so a
+	// higher factor spends more parity to keep the post-recovery residual under a tighter
+	// bound against binomial per-group variance. Applies only in adaptive mode; defaults to
+	// defaultAdaptiveSafetyFactor (the simulation-proven controller default) when left zero,
+	// and must be >= 1. Ignored (and must stay zero) in fixed mode.
+	SafetyFactor float64 `toml:"safety_factor"`
 }
 
 // applyDefaults fills the group-close deadline when FEC is enabled and the deadline
@@ -207,6 +235,9 @@ func (f *FEC) applyDefaults() {
 	if f.Deadline == 0 {
 		f.Deadline = defaultFECDeadline
 	}
+	if f.Adaptive && f.SafetyFactor == 0 {
+		f.SafetyFactor = defaultAdaptiveSafetyFactor
+	}
 }
 
 // validate enforces the FEC ratio invariants, failing fast so a mis-tuned parity
@@ -214,6 +245,9 @@ func (f *FEC) applyDefaults() {
 // block needs no tuning. The bounds mirror internal/fec's own Config.validate.
 func (f FEC) validate() error {
 	if !f.Enabled {
+		if f.Adaptive {
+			return errors.New("fec.adaptive = true requires fec.enabled = true (adaptive FEC is meaningless with the plane off)")
+		}
 		return nil
 	}
 	if f.DataShards < 1 {
@@ -230,6 +264,16 @@ func (f FEC) validate() error {
 	}
 	if f.Deadline > maxFECDeadline {
 		return fmt.Errorf("fec.deadline must be <= %s (safely below the receive resequencer's per-gap timeout so deadline-flushed recovery lands before the gap is skipped), got %s", maxFECDeadline, f.Deadline)
+	}
+	if f.Adaptive {
+		// SafetyFactor is defaulted to defaultAdaptiveSafetyFactor when zero, so a value
+		// below 1 here is an explicit mis-set: the controller requires >= 1 (masking less
+		// than the mean loss is nonsensical), matching adaptivefec.Config.Validate.
+		if f.SafetyFactor < 1 {
+			return fmt.Errorf("fec.safety_factor must be >= 1 in adaptive mode, got %g", f.SafetyFactor)
+		}
+	} else if f.SafetyFactor != 0 {
+		return fmt.Errorf("fec.safety_factor is only meaningful in adaptive mode (set fec.adaptive = true), got %g", f.SafetyFactor)
 	}
 	return nil
 }

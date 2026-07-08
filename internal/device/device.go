@@ -20,6 +20,7 @@ import (
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
 
+	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/fec"
@@ -207,7 +208,7 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber, fecConfig(cfg.FEC))
+	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC))
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -516,6 +517,25 @@ func fecConfig(f config.FEC) *fec.Config {
 		ParityShards: f.ParityShards,
 		Deadline:     f.Deadline,
 	}
+}
+
+// adaptiveFECConfig maps the [fec] block onto the adaptive controller config the multipath
+// Bind drives (T29), or returns nil when FEC is disabled or the block did not opt into
+// adaptive mode — in which case the Bind runs the fixed-ratio plane (T24) unchanged. The
+// controller uses the simulation-proven default control law (internal/adaptivefec,
+// DefaultConfig), with only the group geometry pinned to the configured ratio: DataShards
+// (K) is the FEC data_shards and MaxParity (the parity CEILING) is the FEC parity_shards,
+// which the receiver's decoder is built at. The Bind re-validates and cross-checks these
+// against the FEC config defensively.
+func adaptiveFECConfig(f config.FEC) *adaptivefec.Config {
+	if !f.Enabled || !f.Adaptive {
+		return nil
+	}
+	c := adaptivefec.DefaultConfig()
+	c.DataShards = f.DataShards
+	c.MaxParity = f.ParityShards
+	c.SafetyFactor = f.SafetyFactor // defaulted to the controller default at config load
+	return &c
 }
 
 // buildScheduler constructs one live *telemetry.Prober per path and the P1

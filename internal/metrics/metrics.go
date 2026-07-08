@@ -40,6 +40,16 @@ const (
 	MetricFECRepair        = "wanbond_fec_repair_packets_total"
 	MetricFECRecovered     = "wanbond_fec_recovered_packets_total"
 	MetricFECUnrecoverable = "wanbond_fec_unrecoverable_packets_total"
+	// Byte-denominated FEC overhead (T29). The adaptive-vs-fixed overhead comparison the
+	// P4 acceptance makes is in BYTES (parity shards are max-shard-sized while DATA frames
+	// vary), so these expose the byte numerator/denominator the frame counters above cannot:
+	// overhead = repair_bytes / data_bytes.
+	MetricFECDataBytes   = "wanbond_fec_data_bytes_total"
+	MetricFECRepairBytes = "wanbond_fec_repair_bytes_total"
+	// MetricFECResidualLoss is the post-FEC-recovery connection loss fraction (T29): the
+	// share of outer-seqs neither natively received nor reconstructed from parity — the loss
+	// FEC did not mask. It is the P4 residual-loss acceptance signal.
+	MetricFECResidualLoss = "wanbond_fec_residual_loss_ratio"
 )
 
 // FECSnapshot is the current connection-scoped FEC signal set the exposition layer
@@ -57,6 +67,13 @@ type FECSnapshot struct {
 	// UnrecoverablePackets is the cumulative count of data frames lost beyond FEC repair
 	// capacity.
 	UnrecoverablePackets uint64
+	// DataBytes / RepairBytes are the cumulative DATA and parity frame WIRE bytes — the
+	// byte-denominated overhead numerator/denominator (T29): overhead = RepairBytes/DataBytes.
+	DataBytes   uint64
+	RepairBytes uint64
+	// ResidualLossRatio is the current post-FEC-recovery connection loss fraction in [0,1]
+	// (T29) — the loss FEC did not mask (the P4 acceptance signal). Zero when FEC is off.
+	ResidualLossRatio float64
 }
 
 // PathSnapshot is the current per-path signal set the exposition layer reports.
@@ -110,6 +127,9 @@ type collector struct {
 	fecRepair        *prometheus.Desc
 	fecRecovered     *prometheus.Desc
 	fecUnrecoverable *prometheus.Desc
+	fecDataBytes     *prometheus.Desc
+	fecRepairBytes   *prometheus.Desc
+	fecResidualLoss  *prometheus.Desc
 }
 
 // NewCollector builds the wanbond metrics collector over src. Register it into a
@@ -134,6 +154,9 @@ func NewCollector(src Source) prometheus.Collector {
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", nil),
 		fecRecovered:     desc(fecSubsystem, "recovered_packets_total", "Data packets reconstructed via FEC.", nil),
 		fecUnrecoverable: desc(fecSubsystem, "unrecoverable_packets_total", "Data packets lost beyond FEC repair capacity.", nil),
+		fecDataBytes:     desc(fecSubsystem, "data_bytes_total", "FEC DATA-frame wire bytes emitted (the byte overhead denominator).", nil),
+		fecRepairBytes:   desc(fecSubsystem, "repair_bytes_total", "FEC parity-frame wire bytes emitted (the byte overhead numerator).", nil),
+		fecResidualLoss:  desc(fecSubsystem, "residual_loss_ratio", "Post-FEC-recovery connection loss fraction in [0,1] (loss FEC did not mask).", nil),
 	}
 }
 
@@ -151,6 +174,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fecRepair
 	ch <- c.fecRecovered
 	ch <- c.fecUnrecoverable
+	ch <- c.fecDataBytes
+	ch <- c.fecRepairBytes
+	ch <- c.fecResidualLoss
 }
 
 // Collect reads the Source once and emits one const-metric per per-path series,
@@ -170,6 +196,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.fecRepair, prometheus.CounterValue, float64(f.RepairPackets))
 	ch <- prometheus.MustNewConstMetric(c.fecRecovered, prometheus.CounterValue, float64(f.RecoveredPackets))
 	ch <- prometheus.MustNewConstMetric(c.fecUnrecoverable, prometheus.CounterValue, float64(f.UnrecoverablePackets))
+	ch <- prometheus.MustNewConstMetric(c.fecDataBytes, prometheus.CounterValue, float64(f.DataBytes))
+	ch <- prometheus.MustNewConstMetric(c.fecRepairBytes, prometheus.CounterValue, float64(f.RepairBytes))
+	ch <- prometheus.MustNewConstMetric(c.fecResidualLoss, prometheus.GaugeValue, f.ResidualLossRatio)
 }
 
 // upValue maps a liveness verdict to the wanbond_path_up gauge value.

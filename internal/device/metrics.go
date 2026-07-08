@@ -92,5 +92,8 @@ func (s *metricsSource) FEC() metrics.FECSnapshot {
 		RepairPackets:        f.ParityFrames,
 		RecoveredPackets:     f.Recovered,
 		UnrecoverablePackets: f.Unrecoverable,
+		DataBytes:            f.DataBytes,
+		RepairBytes:          f.ParityBytes,
+		ResidualLossRatio:    f.ResidualLoss,
 	}
 }

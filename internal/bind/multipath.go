@@ -12,6 +12,7 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 
+	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
@@ -211,6 +212,13 @@ type Multipath struct {
 	fecSend *fecSender
 	fecRecv atomic.Pointer[fecReceiver]
 
+	// adaptiveCfg is the adaptive-FEC controller configuration (T29), nil in fixed-ratio
+	// mode. When both fecCfg and adaptiveCfg are non-nil, Open builds one adaptivefec
+	// Controller per span and attaches it to fecSend; the FEC tick loop then drives it
+	// from the measured per-path loss and resizes the encoder's per-group parity. It is
+	// immutable after construction, so the send/receive hot paths read it without a lock.
+	adaptiveCfg *adaptivefec.Config
+
 	// Receive fan-in (T30). To let a path be added at runtime WITHOUT the engine
 	// spawning a new receive goroutine (it only builds its receive goroutines once,
 	// from the ReceiveFuncs Open returns), the per-path socket reads are decoupled
@@ -275,7 +283,12 @@ var _ Bind = (*Multipath)(nil)
 // pre-validated config turns the send-side parity encoder and receive-side recovery
 // decoder on. It is validated here (fail fast) so an invalid ratio is rejected at
 // construction rather than at the first Open.
-func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config) (*Multipath, error) {
+// adaptiveCfg is the adaptive-FEC controller configuration (T29). Pass nil for the
+// fixed-ratio behaviour (T24); a non-nil config REQUIRES a non-nil fecCfg (the
+// controller resizes the FEC encoder's parity — it is meaningless with the plane off)
+// and reinterprets fecCfg.ParityShards as the controller's parity ceiling. It is
+// validated here (fail fast) so a mis-tuned control law is rejected at construction.
+func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -315,15 +328,35 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 			return nil, fmt.Errorf("bind: fec deadline %s exceeds the max %s (must stay safely below the resequencer's %s per-gap timeout so deadline-flushed recovery lands before the gap is skipped)", fecCfg.Deadline, maxFECDeadline, resequencerTimeout)
 		}
 	}
+	if adaptiveCfg != nil {
+		if fecCfg == nil {
+			return nil, errors.New("bind: adaptive FEC requires a FEC configuration (the controller resizes the FEC encoder's parity)")
+		}
+		if err := adaptiveCfg.Validate(); err != nil {
+			return nil, fmt.Errorf("bind: invalid adaptive FEC configuration: %w", err)
+		}
+		// The controller's parity ceiling (MaxParity) is the fixed FEC ParityShards both
+		// ends agree on: the receiver's decoder is built at fecCfg.ParityShards, and the
+		// encoder must never emit more parity than that ceiling (SetParity clamps to it).
+		// A mismatch would let the controller target a parity index the decoder rejects,
+		// so bind the two together at construction rather than trusting the caller.
+		if adaptiveCfg.MaxParity != fecCfg.ParityShards {
+			return nil, fmt.Errorf("bind: adaptive FEC parity ceiling (MaxParity=%d) must equal the FEC parity_shards (%d), which the receiver's decoder is built at", adaptiveCfg.MaxParity, fecCfg.ParityShards)
+		}
+		if adaptiveCfg.DataShards != fecCfg.DataShards {
+			return nil, fmt.Errorf("bind: adaptive FEC DataShards (%d) must equal the FEC data_shards (%d)", adaptiveCfg.DataShards, fecCfg.DataShards)
+		}
+	}
 	return &Multipath{
-		psk:       psk,
-		defs:      append([]config.Path(nil), paths...),
-		scheduler: scheduler,
-		probers:   probers,
-		newProber: newProber,
-		reflector: telemetry.NewReflector(psk, rand.Reader),
-		virt:      &udpEndpoint{},
-		fecCfg:    fecCfg,
+		psk:         psk,
+		defs:        append([]config.Path(nil), paths...),
+		scheduler:   scheduler,
+		probers:     probers,
+		newProber:   newProber,
+		reflector:   telemetry.NewReflector(psk, rand.Reader),
+		virt:        &udpEndpoint{},
+		fecCfg:      fecCfg,
+		adaptiveCfg: adaptiveCfg,
 	}, nil
 }
 
@@ -377,7 +410,26 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		}
 		dec.SetRetainWindow(fecRetainGroups)
 		m.fecSend = &fecSender{enc: enc}
-		m.fecRecv.Store(&fecReceiver{dec: dec})
+		// Adaptive mode (T29): a fresh controller per Open, re-pinned with the encoder so a
+		// Close→Open cycle starts the control law from M=0 (no standing redundancy until
+		// loss is observed) rather than inheriting a stale target. The controller cfg was
+		// validated in NewMultipath, so a build error here is a programmer error and fails
+		// the Open. The receive-side residual-loss estimator (post-FEC-recovery loss, the
+		// P4 signal) is likewise fresh per span.
+		if m.adaptiveCfg != nil {
+			ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, adaptivefec.SystemClock{})
+			if err != nil {
+				_ = m.closeSocketsLocked()
+				return nil, 0, fmt.Errorf("bind: build adaptive FEC controller: %w", err)
+			}
+			m.fecSend.ctrl = ctrl
+			// Adopt the controller's starting parity (0 — no standing redundancy until loss
+			// is observed) so the encoder and controller agree from t=0; the tick loop then
+			// sizes it to measured loss within the first control interval. Fixed mode leaves
+			// the encoder at its cfg.ParityShards default instead.
+			enc.SetParity(ctrl.Parity())
+		}
+		m.fecRecv.Store(&fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)})
 	}
 
 	// Resolve every path's interface up front and decide, per path, whether its
@@ -731,6 +783,12 @@ func (m *Multipath) handleInbound(ps *pathState, raw []byte, srcAP netip.AddrPor
 			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
 			recovered, _ := fr.offer(shard)
 			rq.Observe(f.OuterSeq, f.Payload, srcAP)
+			// Residual-loss accounting (T29): this outer-seq was natively delivered, so mark
+			// it present in the post-recovery loss estimator. A seq never marked here nor via
+			// a reconstruction below is loss that FEC did not mask.
+			if fr.connLoss != nil {
+				fr.connLoss.Observe(f.OuterSeq)
+			}
 			m.observeRecovered(fr, rq, recovered, srcAP)
 		} else {
 			rq.Observe(f.OuterSeq, f.Payload, srcAP)
@@ -788,6 +846,13 @@ func (m *Multipath) observeRecovered(fr *fecReceiver, rq *reseq.Resequencer, rec
 		seq, inner, err := splitFECShardPayload(rec.Payload)
 		if err != nil {
 			continue
+		}
+		// Residual-loss accounting (T29): FEC reconstructed this outer-seq, so it is NOT
+		// residual loss — mark it present in the post-recovery estimator even if the
+		// resequencer later drops it as late (that is a latency outcome, not a masking
+		// failure; the P4 residual bound measures loss FEC failed to mask).
+		if fr.connLoss != nil {
+			fr.connLoss.Observe(seq)
 		}
 		if rq.ObserveRecovered(seq, inner, srcAP) {
 			fr.deliveredRecovered.Add(1)
@@ -936,6 +1001,10 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 				fs.parityBytes.Add(uint64(len(w.b)))
 			} else {
 				fs.dataFrames.Add(1)
+				// DATA-frame wire bytes: the overhead-BYTES denominator (T29). The P4
+				// acceptance compares parity BYTES / data BYTES, so both are counted on the
+				// same only-once-it-reached-the-socket basis as the frame counters.
+				fs.dataBytes.Add(uint64(len(w.b)))
 			}
 		}
 	}
@@ -997,6 +1066,12 @@ func (m *Multipath) fecFlushDeadline() {
 		m.mu.Unlock()
 		return
 	}
+	// Adaptive drive (T29): fold a fresh loss sample into the controller and retarget the
+	// encoder's per-group parity BEFORE flushing, so a group closed by this tick already
+	// carries the current target. It is a no-op in fixed mode and self-throttles to the
+	// probe cadence. Runs under the same m.mu the flush holds — the single serialized FEC
+	// locus — so the controller (a state machine) is never touched concurrently.
+	m.driveAdaptiveControllerLocked()
 	parity, err := m.fecSend.enc.Tick()
 	if err != nil || len(parity) == 0 {
 		m.mu.Unlock()
@@ -1040,6 +1115,61 @@ func (m *Multipath) fecFlushDeadline() {
 	}
 }
 
+// driveAdaptiveControllerLocked folds one measured loss sample into the adaptive FEC
+// controller and retargets the encoder's per-group parity (T29). Caller holds m.mu, so
+// the controller — a state machine that is NOT safe for concurrent use — is driven from
+// this single serialized locus (the FEC tick loop), exactly as the encoder is. It is a
+// no-op in fixed-ratio mode (no controller) and self-throttles to adaptiveControlInterval
+// so the controller's EWMA sees ~one sample per probe interval regardless of the tick rate.
+//
+// WHICH LOSS drives the controller (design decision 1): the MAX raw probe-measured loss
+// (Estimate().Loss) across the currently-eligible (StateUp) paths. Parity must mask the
+// loss the DATA actually experiences; under active-backup only the primary carries data
+// and the max collapses to it, and under the weighted scheduler data is striped across the
+// eligible set, so sizing to the worst active path is the defensible, policy-agnostic
+// choice. It is deliberately the RAW per-path loss, NOT the post-recovery ConnLoss: feeding
+// the masked residual back would form a control loop that under-provisions precisely because
+// it is succeeding. A down/probeless path is excluded — it carries no data to protect.
+func (m *Multipath) driveAdaptiveControllerLocked() {
+	fs := m.fecSend
+	if fs.ctrl == nil {
+		return // fixed-ratio mode
+	}
+	now := time.Now()
+	if fs.haveControlTick && now.Sub(fs.lastControlTick) < adaptiveControlInterval {
+		return
+	}
+	fs.lastControlTick = now
+	fs.haveControlTick = true
+
+	loss, have := m.maxEligiblePathLossLocked()
+	if !have {
+		return // no eligible probed path this interval: hold the current target
+	}
+	fs.ctrl.Observe(loss)
+	fs.enc.SetParity(fs.ctrl.Parity())
+}
+
+// maxEligiblePathLossLocked returns the maximum raw probe-measured loss across the paths
+// that are currently StateUp and carry a prober, plus whether any such path exists. Caller
+// holds m.mu. It reads each prober's own mutex (State/Estimate) under m.mu; the prober is a
+// LEAF lock (it never calls back into the Bind), so this cannot invert the send-path
+// m.mu→scheduler→prober order the rest of the Bind takes.
+func (m *Multipath) maxEligiblePathLossLocked() (float64, bool) {
+	maxLoss := 0.0
+	have := false
+	for _, ps := range m.paths {
+		if ps.prober == nil || ps.prober.State() != telemetry.StateUp {
+			continue
+		}
+		if l := ps.prober.Estimate().Loss; !have || l > maxLoss {
+			maxLoss = l
+			have = true
+		}
+	}
+	return maxLoss, have
+}
+
 // FECSnapshot returns a consistent snapshot of the connection-scoped FEC counters
 // (T24): the send-side parity overhead and the receive-side recovery outcome. It
 // follows the PathSnapshots discipline — grab the send/receive state pointers under
@@ -1055,10 +1185,14 @@ func (m *Multipath) FECSnapshot() FECStats {
 	var out FECStats
 	if fs != nil {
 		out.DataFrames = fs.dataFrames.Load()
+		out.DataBytes = fs.dataBytes.Load()
 		out.ParityFrames = fs.parityFrames.Load()
 		out.ParityBytes = fs.parityBytes.Load()
 	}
 	if fr != nil {
+		if fr.connLoss != nil {
+			out.ResidualLoss = fr.connLoss.Loss()
+		}
 		// Recovered is the HONEST delivered count (frames placed ahead of the release
 		// point), NOT the decoder's raw reconstruction count — a frame rebuilt after the
 		// resequencer skipped its gap is reconstructed but never delivered, so counting it
