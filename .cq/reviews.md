@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 35
+  item: 36
 archives: []
 ---
 
@@ -477,3 +477,21 @@ archives: []
 - criticism: ["[r1 fable, resolved 076d865] Config.Validate rejected NaN but not +Inf for SafetyFactor → SafetyFactor=+Inf reached an implementation-defined int(math.Ceil(NaN)) conversion in redundancyMap(0) — added math.IsInf rejection (finite >= 1) + a safetyInf reject-invalid test case, matching the file's fail-fast contract"]
 - new_questions: []
 - ledgerRefs: ["tasks:T27","goals:G1"]
+
+### R35 — go-ahead
+
+- createdAt: 2026-07-08T00:47:52.770Z
+- updatedAt: 2026-07-08T00:47:52.770Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T29 (wire adaptive FEC controller into datapath + P4 e2e vs fixed baseline) reconciled GO-AHEAD (opus by-construction + fable measurement panel; 1 rework + hardware). Merged c7d6256. Adaptive FEC opt-in ([fec].adaptive; fixed default = byte-for-byte T24): FEC tick loop (single m.mu locus, probe-cadence throttle) drives the T27 controller from MAX raw probe loss across eligible paths, retargets encoder per-group parity via SetParity (M fixed once group opens). Decoder UNCHANGED — klauspost RS parity prefix-consistent (RS(K,m)==first m of RS(K,ceiling)). New [fec].safety_factor knob + byte-overhead + residual-loss /metrics.
+    
+    opus (by-construction) APPROVE: the load-bearing PREFIX-CONSISTENCY claim PROVEN against reedsolomon@v1.14.1 source (default buildMatrix = Vandermonde×top-inverse; coding-row data+j depends on (data,j) NOT total parity → parity shard j byte-identical for RS(m,k) and RS(m,ceiling)); M=0 short-circuits (no div-by-zero, decoder buffers data-only groups); single-locus controller concurrency (TryLock tick, readersWG, no m.mu inversion); bounded codec cache; residual estimator observes native+recovered seqs with NO control-loop feedback (controller uses raw probe loss); fixed/non-FEC preserved.
+    
+    fable (measurement) R1 DISAPPROVE (3 criticisms + D26): (1) acceptance names an e2e run that was compile-only — must hardware-run; (2) the residual-loss instrument (the whole equal-masking leg) had ZERO non-vacuity coverage — a dead-low gauge or unapplied netem passes vacuously (the T25-class hole; no P3-style loss-took-effect teeth); (3) misleading gating comment. FIXED (5eee851, test-only): (2a) TestMultipathFECResidualLossNonVacuous proves ResidualLoss measures residual (0.25 unmasked / 0.0 masked), TWO-SIDED mutation-verified against both Observe sites; (2b) runP4Phase asserts loss-took-effect per phase (edge probe loss ~= rate AND conc recovered-delta >= 20) so an unapplied netem fails loud + disambiguates a send-side M-stall; (3) comment corrected to match the parent-gates-masking-then-compares-overhead structure.
+    
+    HARDWARE GREEN (llm-ubuntu-0, 5% loss): TestP4AdaptiveFEC PASS — adaptive residual 0.0000 / overheadBytes 0.4011 (M≈4, edgeLoss 0.063, recovered 6525) vs fixed residual 0.0043 / overheadBytes 0.6026 (M=6); equal masking established (both <= 0.005) THEN adaptive overhead 0.40 <= fixed 0.60 = 67% of baseline. Adaptive masks BETTER for LESS overhead — the P4 thesis proven. The band-edge risk (5% == RaiseThreshold) did not bite (probe read 6.3%). safety_factor=4.0 in the test is a legitimate SLA lever (default 1.5 gives ~1% residual — D26). D25 (prefix-consistency pinning + partial-group test, medium) + D26 (adaptive default tuning vs 0.5% SLA, low) filed root-caused/deferred.
+- criticism: ["[r1 fable, resolved 5eee851] the residual-loss instrument (the P4 equal-masking signal) had ZERO non-vacuity coverage — a dead-low gauge or silently-unapplied netem passed P4 vacuously (no P3-style loss-took-effect teeth) — added a two-sided-mutation-verified bind-level residual test (0.25 unmasked/0.0 masked) + a per-phase loss-took-effect guard (edge probe loss ~= rate AND conc recovered-delta >= 20)","[r1 fable, resolved 5eee851] misleading TestP4AdaptiveFEC gating comment (claimed phases gate masking; actually the parent asserts both residuals then compares overhead) — corrected to match behavior","[r1 fable, resolved via hardware run] acceptance names a passing e2e run but the gate was compile-only — hardware-ran on llm-ubuntu-0: PASS (adaptive 0.40 overhead / 0.0000 residual vs fixed 0.60 / 0.0043)"]
+- new_questions: []
+- ledgerRefs: ["tasks:T29","tasks:T27","tasks:T24","goals:G1","defects:D25","defects:D26"]

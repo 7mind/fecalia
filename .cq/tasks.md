@@ -388,18 +388,18 @@ archives:
 - dependsOn: ["T25"]
 - ledgerRefs: ["goals:G1","reviews:R34"]
 
-### T29 — planned
+### T29 — done
 
 - createdAt: 2026-07-01T23:41:29.469Z
-- updatedAt: 2026-07-01T23:41:29.469Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-08T00:47:57.541Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Wire adaptive controller into datapath + P4 e2e vs fixed-FEC baseline
 - description: "Wire the simulation-proven adaptive controller into the live datapath and verify against the P3 fixed-ratio baseline in the fixture, per Q1: equal loss masking for less total overhead, plus a steady-state residual-loss check. Uses harness constants (P4ResidualLossMax; adaptive-overhead <= fixed-FEC baseline)."
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP4AdaptiveFEC`: for equal masking, adaptive total overhead bytes <= the P3 fixed-FEC baseline run; post-recovery residual loss <= 0.5% at steady 5% path loss; both read from /metrics; P4 manual checklist appended."
 - suggestedModel: standard
 - dependsOn: ["T27"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T27","tasks:T24","reviews:R35","defects:D25","defects:D26"]
 
 ## M10
 
