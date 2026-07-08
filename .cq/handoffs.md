@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 5
+  item: 7
 archives: []
 ---
 
@@ -74,3 +74,27 @@ archives: []
 - blockingQuestions: ["Q12","Q13"]
 - handoffReasons: ["drained","answers-required"]
 - sessionLogs: [".cq/logs/20260706-213000-ab3af77c823b6030b.md",".cq/logs/20260706-211500-ae614f805e5cb18d0.md",".cq/logs/20260706-204500-a8e8aba6f76f5085b.md",".cq/logs/20260706-203000-a28d62545377df7ef.md",".cq/logs/20260706-200109-a1fd7a439122cc6ad.md"]
+
+### HO6 — drained
+
+- createdAt: 2026-07-08T02:26:13.230Z
+- updatedAt: 2026-07-08T02:26:13.230Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- flow: advance
+- summary: |
+    DRAINED — /cq:advance drove goal G1's ENTIRE task DAG to quiescence. All THREE predicates FALSE (P-investigate/P-plan/P-implement) and no open questions. ALL 33 TASKS DONE, each adversarially reviewed (opus by-construction + fable, strictest-wins) and hardware-validated on the real testbed where applicable.
+    
+    SHIPPED THIS RUN (P1→P5 + real-host, all merged to main @ 0d6293e, final full gate GREEN — build/vet/gofmt/`go test ./...`/golangci-lint 0 issues/e2e+realhosts compile):
+    • P1 transparent-failover MVP: T40 eager (liveness-driven) failover resolving D18 pull-based-Pick wedge (hardware 42/42 flap + 16/16 single-kill, <3s recovery); T20 failover e2e; T22 packaging (systemd units + static amd64/arm64 cross-compile + install doc + firewall doc); T34 real-host cross-network multipath over the internet through symmetric NAT (1573ms failover, flow survived, host clean).
+    • P2 aggregation: T21 weighted-aggregation scheduler + data-thrift (metered 5G idle) with hysteresis + pacing (fable reproduced+fixed a data-thrift idle leak); T23 P2 e2e + live /metrics surface (hardware: concurrent two-path striping + 5G-idle proven; bonded-throughput ratio skip-with-evidence on the CPU-bound single-host fixture, enforced on link-bound venues).
+    • P3 fixed FEC: T24 Reed-Solomon datapath integration (fable reproduced 2 datapath faults — decoder GroupID poisoning + late-recovery buffer-dump — + opus MTU overflow, all fixed); T25 P3 loss-recovery e2e (hardware 0.99/0.98 recovery at 5/15% loss; root-caused a cross-netns scrape bug that also strengthened T23).
+    • P4 adaptive FEC: T27 hysteretic controller (simulation-tested, fable-verified stable — no chatter/limit-cycle); T29 datapath integration + P4 e2e (hardware: adaptive 0.40 overhead / 0.0000 residual beats fixed 0.60 / 0.0043 at equal masking — the adaptive thesis proven; prefix-consistency of RS parity proven against the reedsolomon source).
+    • M9 obfuscation/DPI-resistance (requirement 6): T26 automated wire-format audit (hardware 385k frames, 0 constant offsets, per-offset entropy teeth — fable caught+closed a false-assurance blind spot); T28 nDPI/Suricata non-classification (hardware: obfuscated payload = proto Unknown, positive-control detects real WG — fable reproduced+fixed an nDPI port-guess confound).
+    
+    The dual-panel strictest-wins discipline caught a real defect in nearly every task before merge (a self-defeating FEC, several vacuous/misdirected measurements, a self-severing e2e, a false-assurance security audit) — all reproduced and fixed. D27 (a pre-existing ~0.8% flaky shared-gate test) was reproduced + fixed out-of-band, de-flaking the gate.
+    
+    DEFECTS: 14 resolved. 14 root-caused + DEFERRED (file-and-defer; NONE actionable by the autonomous flow without a new goal/plan directive): D3, D4, D7, D8, D10, D13, D14, D20 (earlier-phase deferrals) and D22 (weighted pacer sheds WG control frames), D23 (fixture 150-170 Mbit/s misattribution from T35), D24 (FEC unrecoverable under-reports at quiescence), D25 (adaptive-FEC prefix-consistency rests on an undocumented klauspost default; partial groups untested — MEDIUM, worth pinning), D26 (adaptive default tuning can't meet a sub-1% residual SLA), D28 (just lint omits -tags e2e). These are future hardening; they need a user-created goal or /cq:plan:follow-up to become actionable.
+    
+    GOAL STATE: G1 is `planned` with every task done; the flow does not auto-complete goals. NOTE: completed milestones M5-M9 cannot be archived while their deferred root-caused defects remain non-terminal (expected). NO further autonomous action is possible — to continue, EITHER create a goal / run /cq:plan:follow-up G1 to action the deferred hardening defects (D25/D22/D14 are the most substantive), OR mark G1 done if the P1-P5 scope is complete as delivered.
+- ledgerRefs: ["goals:G1","reviews:R26","reviews:R29","reviews:R30","reviews:R31","reviews:R32","reviews:R33","reviews:R34","reviews:R35","reviews:R36","reviews:R37","defects:D25","defects:D22","defects:D14"]
