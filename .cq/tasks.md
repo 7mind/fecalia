@@ -578,10 +578,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G1","defects:D26"]
 
-### T47 — planned
+### T47 — done
 
 - createdAt: 2026-07-08T21:04:00.454Z
-- updatedAt: 2026-07-08T21:04:00.454Z
+- updatedAt: 2026-07-08T21:55:49.561Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Pacer: classify + priority/exempt WG control frames at the Bind; size per_path_capacity from measured BDP (D22)"

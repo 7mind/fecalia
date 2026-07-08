@@ -307,10 +307,10 @@ archives: []
 
 ## M6
 
-### D22 — root-caused
+### D22 — resolved
 
 - createdAt: 2026-07-07T19:17:17.204Z
-- updatedAt: 2026-07-08T21:04:57.792Z
+- updatedAt: 2026-07-08T21:55:51.037Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Weighted-scheduler pacer sheds WireGuard control frames (handshakes/keepalives) indiscriminately under overload

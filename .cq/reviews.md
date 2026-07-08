@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 49
+  item: 50
 archives: []
 ---
 
@@ -629,3 +629,12 @@ archives: []
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T45 (D25/D24) implement-review: APPROVE (verdict=approve). All three test witnesses reproduced FAIL-FIRST via matrix/fold perturbation (non-vacuous): D24 disabling accountExpired → unrecoverable=0 want 3; D25 invariant forcing ceiling codec to Cauchy → RS(1,2)parity[1]!=RS(1,8)parity[1]; D25 partial-group forcing encoder to Cauchy vs default-ceiling decoder → reconstruction corruption. Invariant uses the EXACT reedsolomon.New(m,k) default call the datapath uses (encoder.go:243, decoder.go:578). Double-count PREVENTED: accountEviction + accountExpired both guard on gs.accounted; count-at-quiescence-then-evict path confirmed total=3 not 6. Disabled path (recoveryDeadline==0 default) preserves prior window accounting (dedicated test + full suite green, no regression). Stats() read-with-side-effects serialized with Offer under fecReceiver.mu (-race clean on fec+bind). Bind wires Deadline+resequencerTimeout (Deadline<maxFECDeadline<resequencerTimeout). Late-reconstruction cross-counter edge shown harmless (/metrics uses deliveredRecovered, not raw dec.recovered). Full gate + -race green. 0 criticisms, 0 questions. Merged to main at 6f5aa48."
 - ledgerRefs: ["tasks:T45","defects:D25","defects:D24"]
+
+### R50 — go-ahead
+
+- createdAt: 2026-07-08T21:55:48.124Z
+- updatedAt: 2026-07-08T21:55:48.124Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T47 (D22) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE (classifier hardcoded vanilla-WG framing → misclassified all control frames as ClassData under AmneziaWG advanced-security, silently unfixing D22 in wanbond's primary obfuscated mode) is RESOLVED by the profile-aware classifier (commit 44cb705). Verified independently by BOTH the orchestrator and the re-review agent against amneziawg-go@v1.0.4: (1) effectiveMagic applies a configured magic header only when >4 (matches device.go L681-711 activation rule; h1→init/h2→response/h3→cookie/h4→transport); (2) s1/s2 junk-prefix applied to handshake init/response only, transport+cookie read at offset 0 (matches send.go L167/217/540 — transport is NOT junk-prefixed, keepalive stays 32B); (3) DATA-never-control SAFETY preserved — transport checked FIRST at offset 0 so a bulk transport frame (len>32) resolves to ClassData before any control branch (TestClassifyWireGuardAmneziaDataStaysData); (4) NON-VACUOUS — reverting to hardcoded-vanilla makes TestClassifyWireGuardAmneziaControlFrames FAIL 'ASec handshake initiation classified 0, want ClassControl'; (5) vanilla path unchanged (zero Amnezia profile → default type words + no junk); (6) class wired into the pacer exemption (classifyBatch→Pick(class)→ClassControl exemption weighted.go 321/339); config.Amnezia threaded cfg→NewMultipath→newWGClassifier, 4 test call-sites updated. Benign ~2^-32 junk-coincidence noted, fails SAFE (control occasionally paced, never data exempted). Full gate + build-tags e2e/realhosts + go test ./... green on merged main. 0 criticisms, 0 questions. Merged to main at 8938071."
+- ledgerRefs: ["tasks:T47","defects:D22"]
