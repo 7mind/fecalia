@@ -255,6 +255,37 @@ func (top *Topology) runOut(name string, args ...string) string {
 	return string(out)
 }
 
+// iperfListenTimeout bounds waitIperfListen: how long to wait for the one-shot
+// iperf3 server to reach the LISTEN state before failing the test.
+const iperfListenTimeout = 5 * time.Second
+
+// waitIperfListen polls, inside the concentrator network namespace, for a TCP
+// socket in the LISTEN state on the given port, and returns once it appears (or
+// fails the test at iperfListenTimeout). It reads kernel socket state via
+// `ss -ltn` and NEVER connects: the iperf3 servers here run one-shot (`-s -1`),
+// so a probe-connect would consume the server's single accept and break the real
+// client. It replaces the prior fixed sleeps at the iperf3Mbps and rttUnderLoad
+// call sites, which raced a slow bind under load into 'connection refused' (D3).
+func (top *Topology) waitIperfListen(t *testing.T, port int) {
+	t.Helper()
+	suffix := fmt.Sprintf(":%d", port)
+	deadline := time.Now().Add(iperfListenTimeout)
+	for time.Now().Before(deadline) {
+		// ss -ltn columns: State Recv-Q Send-Q Local-Address:Port Peer-Address:Port.
+		out, err := exec.Command("nsenter", "-t", strconv.Itoa(top.pid), "-n", "ss", "-ltn").CombinedOutput()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) >= 4 && strings.HasSuffix(fields[3], suffix) {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("iperf3 server never reached LISTEN on port %d within %s", port, iperfListenTimeout)
+}
+
 // nsenter runs a command inside the concentrator network namespace.
 func (top *Topology) nsenter(args ...string) {
 	top.t.Helper()

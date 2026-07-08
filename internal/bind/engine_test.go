@@ -12,6 +12,7 @@ import (
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun/tuntest"
+	"go.uber.org/goleak"
 
 	"github.com/7mind/wanbond/internal/frame"
 )
@@ -56,6 +57,13 @@ func ipv4Packet(src, dst [4]byte) []byte {
 // once Close clears state and Open rebuilds it. The defect class caught here is
 // exactly "Send returns ErrClosed after Up".
 func TestMultipathEngineUpCanTransmit(t *testing.T) {
+	// D20 leak gate: assert no goroutine outlives the test. Registered first so it
+	// runs LAST — after close(done), dev.Close, and peer.Close below — observing a
+	// fully quiesced package. Against the pre-fix bare `ctun.Outbound <-` send this
+	// FAILS, flagging the producer goroutine parked on the channel send; it passes
+	// once the send gains a done-channel escape.
+	defer goleak.VerifyNone(t)
+
 	psk := testKey(t, 0x7E) // outer DATA-frame PSK
 
 	// Stand-in remote (the concentrator's listen socket): the engine sends its
@@ -78,7 +86,10 @@ func TestMultipathEngineUpCanTransmit(t *testing.T) {
 		Errorf:   func(string, ...any) {},
 	}
 	dev := awgdevice.NewDevice(ctun.TUN(), m, silent)
-	t.Cleanup(dev.Close)
+	// defer (not t.Cleanup) so device shutdown is ordered BEFORE goleak.VerifyNone:
+	// t.Cleanup callbacks run after all deferred calls, which would make the leak
+	// check observe the device's own live goroutines.
+	defer dev.Close()
 
 	// Minimal edge UAPI: our private key, one peer with the stand-in endpoint and a
 	// catch-all allowed-ip. persistent_keepalive nudges the engine to transmit
@@ -95,8 +106,19 @@ func TestMultipathEngineUpCanTransmit(t *testing.T) {
 	}
 
 	// Feed an outbound packet so the engine routes it to the peer and initiates a
-	// handshake (→ Multipath.Send → the peer socket below).
-	go func() { ctun.Outbound <- ipv4Packet([4]byte{10, 0, 0, 1}, [4]byte{10, 0, 0, 2}) }()
+	// handshake (→ Multipath.Send → the peer socket below). The send races the
+	// device shutdown: tuntest's Outbound is unbuffered and "blocks forever on TUN
+	// close", so a bare `Outbound <-` would park the producer forever once the read
+	// loop is gone (the D20 leak, asserted absent by goleak.VerifyNone above). The
+	// done escape lets the producer exit when the test tears the device down.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case ctun.Outbound <- ipv4Packet([4]byte{10, 0, 0, 1}, [4]byte{10, 0, 0, 2}):
+		case <-done:
+		}
+	}()
 
 	if err := peer.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
