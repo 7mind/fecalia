@@ -14,6 +14,11 @@ archives:
     summary: "wanbond H (test harness) complete: netns/netem two-path fixture (Starlink-like 45ms+jitter / 5G-like 64ms stable; loss/blackhole/readdress knobs; PID-addressed peer ns, no /run needed) verified in-sandbox via userns; e2e suite layering behind the e2e build tag with sudo Justfile targets; Q1 acceptance-threshold constants table; per-phase manual checklist. T6-T7 done and verified."
     title: "wanbond H: netns/netem test harness"
     status: done
+  - id: M11
+    path: ./archive/milestones/M11.md
+    summary: "Deferred-defect hardening round complete: 9 fix tasks T42-T50 delivered (each opus+fable-reviewed, gated, -race-clean, merged to main), resolving 12 defects (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28). Highlights: T44 CONTROL-frame anti-replay (MAC-covered Seq + ControlGuard); T45 FEC prefix-stability invariant + quiescence-accurate unrecoverable counter; T46 target_residual adaptive-FEC SLA sizing (sanctioned new config surface per Q16); T47 AmneziaWG-profile-aware pacer control-frame exemption (caught+fixed a vanilla-only classifier blindness on re-review); T42 non-vacuous goroutine-leak gate; T43 duplicate source_addr + global-v6 device-bind fixes; T49 throughput-ceiling doc sweep to measured 4-vCPU numbers; T50 e2e/realhosts-tagged lint coverage; T48 reboot-persistent firewall provisioning (repo-side). D7 (live-apply) + D8 remain non-terminal pending the manual o3 iptables ops per Q14 (o3 is a test host)."
+    title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
+    status: done
 ---
 
 # milestones
@@ -87,11 +92,3 @@ archives:
 - updatedAt: 2026-07-06T21:43:06.588Z
 - title: RH — real-host + impairment validation
 - description: "Cross-cutting additive milestone (goal G1, 2026-07-06 follow-up; answered Q12 report-only + Q13 new-milestone). Two independent legs: (1) a REAL cross-network two-host e2e tier (SSH-orchestrated, `realhosts` build tag, opt-in/manual) validating the tunnel over the real internet between o3.7mind.io (concentrator, public IP) and llm-ubuntu-0 (edge, NAT) — REPORT-ONLY per Q12 (netns `e2e` stays the sole automated completion gate; real-host runs execute-and-record, never blocking a phase task/milestone); (2) a netns-fixture impairment extension (bandwidth cap + controlled-loss knobs, superseding the A7/T10 checkpoint follow-up) + the single-flow-TCP-collapse FEC baseline. Additive only — the locked P1-P5 DAG (T11-T30, M2-M9, K1) is untouched; cross-phase relationships are advisory task dependsOn/ledgerRefs."
-
-### M11 — open
-
-- createdAt: 2026-07-08T21:02:40.771Z
-- updatedAt: 2026-07-08T21:17:15.036Z
-- title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
-- description: "Additive hardening round for G1 (follow-up 2026-07-08). Resolves the 14 root-caused, file-and-defer defects accumulated across the completed P1-P5 build into REVIEWED fix tasks (opus+fable adversarial review; hardware-validate any touching the netns fixture or real hosts). No new product capability EXCEPT D26's target_residual config parameter (explicitly approved via Q16). Priority: the four MEDIUMs (D25, D22, D7, D23) first; the rest are low-sev correctness/hygiene. Tasks are technically independent (no cross-task file coupling) so they are all DAG-ready and can proceed in parallel worktrees; the MEDIUM-first ordering is advisory priority, not a hard dependency. Each fix task links its defect(s) via defects:<D> and drives them to resolved on merge. D8 (o3 host-state dedup) and the live-o3 apply/persist of D7 are manual, report-only ops steps (o3 is a TEST host; never deprovision it) that do NOT gate an implement-worker; per review R39 those two portions are non-terminal on merge and are driven to resolved only by the recorded manual ops action (before/after `iptables -S INPUT` capture + post-reboot confirmation on o3), while T48's repo merge resolves only D7's repo-side portion.\\n\\nORDERING NOTE (review R39, advisory): within Group B land T45 before T46 -- T45 proves any varying-M group decodes byte-exact at the fixed ceiling (build/test-time generator-matrix prefix-stability assertion + partial-m x partial-k byte-exact property test); T46 widens the emitted-M range, so its widened range should not be produced before T45's decode guarantee is in place. Advisory priority (the varying-M mechanism pre-exists per D25 and is already correct), consistent with the 'advisory, not hard dependency' model above."
-- dependsOn: ["M10"]

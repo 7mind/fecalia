@@ -3,7 +3,12 @@ ledger: reviews
 counters:
   milestone: 0
   item: 50
-archives: []
+archives:
+  - id: M11
+    path: ./archive/reviews/M11.md
+    summary: "Deferred-defect hardening round complete: 9 fix tasks T42-T50 delivered (each opus+fable-reviewed, gated, -race-clean, merged to main), resolving 12 defects (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28). Highlights: T44 CONTROL-frame anti-replay (MAC-covered Seq + ControlGuard); T45 FEC prefix-stability invariant + quiescence-accurate unrecoverable counter; T46 target_residual adaptive-FEC SLA sizing (sanctioned new config surface per Q16); T47 AmneziaWG-profile-aware pacer control-frame exemption (caught+fixed a vanilla-only classifier blindness on re-review); T42 non-vacuous goroutine-leak gate; T43 duplicate source_addr + global-v6 device-bind fixes; T49 throughput-ceiling doc sweep to measured 4-vCPU numbers; T50 e2e/realhosts-tagged lint coverage; T48 reboot-persistent firewall provisioning (repo-side). D7 (live-apply) + D8 remain non-terminal pending the manual o3 iptables ops per Q14 (o3 is a test host)."
+    title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
+    status: done
 ---
 
 # reviews
@@ -555,86 +560,3 @@ archives: []
 - criticism: ["[r1 fable, resolved 5eee851] the residual-loss instrument (the P4 equal-masking signal) had ZERO non-vacuity coverage — a dead-low gauge or silently-unapplied netem passed P4 vacuously (no P3-style loss-took-effect teeth) — added a two-sided-mutation-verified bind-level residual test (0.25 unmasked/0.0 masked) + a per-phase loss-took-effect guard (edge probe loss ~= rate AND conc recovered-delta >= 20)","[r1 fable, resolved 5eee851] misleading TestP4AdaptiveFEC gating comment (claimed phases gate masking; actually the parent asserts both residuals then compares overhead) — corrected to match behavior","[r1 fable, resolved via hardware run] acceptance names a passing e2e run but the gate was compile-only — hardware-ran on llm-ubuntu-0: PASS (adaptive 0.40 overhead / 0.0000 residual vs fixed 0.60 / 0.0043)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T29","tasks:T27","tasks:T24","goals:G1","defects:D25","defects:D26"]
-
-## M11
-
-### R42 — go-ahead
-
-- createdAt: 2026-07-08T21:32:40.901Z
-- updatedAt: 2026-07-08T21:32:40.901Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T50 (D28) implement-review: APPROVE (verdict=approve). Justfile lint recipe now vets+lints e2e- and realhosts-tagged sources (go vet -tags + golangci-lint --build-tags); tagless passes preserved and run first. Negative control reproduced by reviewer: bare tagless golangci-lint reports 0 issues on an unused //go:build e2e symbol, while `just lint` FAILS (exit 1) flagging it. Clean-tree lint green; go build/vet/test all pass. 0 criticisms, 0 questions. Merged to main at 96a0501."
-- ledgerRefs: ["tasks:T50","defects:D28"]
-
-### R43 — go-ahead
-
-- createdAt: 2026-07-08T21:32:47.431Z
-- updatedAt: 2026-07-08T21:32:47.431Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T48 (D7 repo-side) implement-review: APPROVE (verdict=approve). Reboot-persistence provisioning correctly state-guarded — greps canonical `-A INPUT -i wanbond0 -j ACCEPT` in /etc/iptables/rules.v4 (true no-op on re-run, neither always-reapply nor always-skip); step order insert→save preserves OCI REJECT ordering. TestRealProvision asserts Persisted + AcceptCount==1 + BeforeReject non-vacuously (Persisted computed by real SSH grep, not a constant). install.md documents safe insert-then-save order + idempotency + verification grep. realhosts vet+build and non-privileged build/vet/test all green (go1.26.4). Manual dedup/reboot/o3-apply is tag-gated OUT of `just test` — never auto-executed. 0 criticisms, 0 questions. Merged to main at ea8cda5. NOTE: only D7's repo-side portion resolves on merge; D7 live-apply + D8 remain OPEN pending the recorded manual o3 ops."
-- ledgerRefs: ["tasks:T48","defects:D7","defects:D8"]
-
-### R44 — go-ahead
-
-- createdAt: 2026-07-08T21:36:55.461Z
-- updatedAt: 2026-07-08T21:36:55.461Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T43 (D10/D13) implement-review: APPROVE (verdict=approve). D10: config.validate() rejects duplicate source_addr at load (names both paths + shared addr); non-vacuous (TestLoadRejectsDuplicateSourceAddr fails pre-fix with got-nil). D13: extracted familyBindCount seam excludes fe80::/10 link-local for a global v6 source (global v6 now qualifies for device bind); v4 + link-local-source unchanged, non-vacuous. Full gate green. Reviewer found ONE out-of-scope gap (dup guard keyed on raw netip.Addr missed v4 vs v4-mapped-v6 spelling of same addr); FOLDED INTO T43 (not deferred): guard now keys on SourceAddr.Unmap(), new TestLoadRejectsDuplicateSourceAddrV4MappedV6 fails pre-fix passes post — so that gap is resolved WITHIN T43, not a separate open defect. Merged to main at 693c222."
-- ledgerRefs: ["tasks:T43","defects:D10","defects:D13"]
-
-### R45 — go-ahead
-
-- createdAt: 2026-07-08T21:39:05.745Z
-- updatedAt: 2026-07-08T21:39:05.745Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T42 (D3/D14/D20) implement-review: APPROVE (verdict=approve). Verified under DEFAULT CGO (real nix gcc): build/vet/e2e-compile/test all green, go mod tidy clean (goleak direct dep). D20 leak gate NON-VACUOUS — scratch-reverting the select+done escape makes goleak.VerifyNone FAIL flagging the parked chan-send producer at engine_test.go; VerifyNone correctly ordered LAST (defer LIFO after done-close + dev.Close). D3 waitIperfListen LISTEN-polls via `nsenter ss -ltn` (never connects, preserves one-shot -1 server), wired at both iperf3Mbps + rttUnderLoad. D14 no-op VERIFIED legitimate: base T23 idempotent edge-veth pre-delete + synchronous Kill+Wait cover the diagnosed root cause. 0 criticisms, 0 questions. Merged to main at 072aa69."
-- ledgerRefs: ["tasks:T42","defects:D3","defects:D14","defects:D20"]
-
-### R46 — go-ahead
-
-- createdAt: 2026-07-08T21:39:11.027Z
-- updatedAt: 2026-07-08T21:39:11.027Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T44 (D4) implement-review: APPROVE (verdict=approve). SECURITY-verified. The new Seq is genuinely inside the MAC-covered obfBody (Encode tags nonce||obfBody incl. Seq); TestControlWireContract flips every Seq wire byte and requires ErrAuth — an attacker cannot forge/advance Seq. AntiReplay.Accept rejects seq<=high (strictly monotonic, no off-by-one, no accept-on-equal; first Seq incl 0 admitted). ControlGuard keys high-water per control type (per-type independence tested). Repro NON-VACUOUS: no-op Admit → TestControlReplayRejected fails at control_test.go:71 with the exact expected message. PROBE anti-replay pre-exists (T38/D12) and is untouched/unregressed. NO live inbound CONTROL consumer left unguarded (handleInbound drops CONTROL at default; no other frame.Control consumer in internal/ or cmd/). DATA/PARITY-unauthenticated property untouched. Full gate green. 0 criticisms, 0 questions. Merged to main."
-- ledgerRefs: ["tasks:T44","defects:D4"]
-
-### R47 — go-ahead
-
-- createdAt: 2026-07-08T21:41:04.664Z
-- updatedAt: 2026-07-08T21:41:04.664Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T46 (D26) implement-review: APPROVE (verdict=approve). Binomial residual model + inversion verified by hand AND execution: binomialResidual(K=10,loss=0.05,m=1)=0.009874 (~1%, exceeds 0.5% P4 bound → D26 confirmed); m=2→0.00126≤0.005 so residualTargetParity(0.05)=2 (matches task's sanity value). Parity map monotone non-decreasing + zero-at-zero + non-vacuous (0,1,2,3,4,4,6,7,9 across loss 0→0.6; convergence test exercises M=4). Minimality asserted (M-1 misses target, no off-by-one). Mutual exclusivity fail-fast at BOTH layers (config.FEC.validate() + adaptivefec.Config.Validate): rejects NaN, out-of-range, both-set, neither-set; config-load defaults SafetyFactor only when both unset (no spurious trip). Legacy safety_factor path preserved. docs/install.md accurate, no overclaiming. Full gate green. 0 criticisms, 0 questions. Merged to main at 93ae69e."
-- ledgerRefs: ["tasks:T46","defects:D26"]
-
-### R48 — go-ahead
-
-- createdAt: 2026-07-08T21:42:01.926Z
-- updatedAt: 2026-07-08T21:42:01.926Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T49 (D23) implement-review: APPROVE (verdict=approve). All 5 sweep locations (netns.go:21, fixture_impairment_test.go:11-12/63, fec_baseline_test.go:18, p0-checkpoint.md:72) cite per-host MEASURED in-fixture ceilings; every figure traces to a real measurement — 1-vCPU 12-46 Mbit/s verified vs docs/p0-findings.md:224, 4-vCPU ~13 single-path / ~47 adaptive / ~86.85 fixed matches this run's measurement. Diff is comment/string/markdown ONLY (no code constant capMbit/fecCapMbit or logic changed — confirmed by filtering all non-comment Go lines: empty). grep '150-170' clean; the sole en-dash residual (p2_aggregation_test.go:45) CORRECTLY frames 150–170 as the real-internet cross-host measurement (not a misattribution, not on the sweep list). Honesty reframing confirmed: false 'cap well below ceiling' replaced with 'link-bound only where ceiling exceeds cap; crypto-bound on 1-vCPU'. Gate green (build/vet/vet-e2e/test). 0 criticisms, 0 questions. Merged to main at ff26620."
-- ledgerRefs: ["tasks:T49","defects:D23"]
-
-### R49 — go-ahead
-
-- createdAt: 2026-07-08T21:43:25.156Z
-- updatedAt: 2026-07-08T21:43:25.156Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T45 (D25/D24) implement-review: APPROVE (verdict=approve). All three test witnesses reproduced FAIL-FIRST via matrix/fold perturbation (non-vacuous): D24 disabling accountExpired → unrecoverable=0 want 3; D25 invariant forcing ceiling codec to Cauchy → RS(1,2)parity[1]!=RS(1,8)parity[1]; D25 partial-group forcing encoder to Cauchy vs default-ceiling decoder → reconstruction corruption. Invariant uses the EXACT reedsolomon.New(m,k) default call the datapath uses (encoder.go:243, decoder.go:578). Double-count PREVENTED: accountEviction + accountExpired both guard on gs.accounted; count-at-quiescence-then-evict path confirmed total=3 not 6. Disabled path (recoveryDeadline==0 default) preserves prior window accounting (dedicated test + full suite green, no regression). Stats() read-with-side-effects serialized with Offer under fecReceiver.mu (-race clean on fec+bind). Bind wires Deadline+resequencerTimeout (Deadline<maxFECDeadline<resequencerTimeout). Late-reconstruction cross-counter edge shown harmless (/metrics uses deliveredRecovered, not raw dec.recovered). Full gate + -race green. 0 criticisms, 0 questions. Merged to main at 6f5aa48."
-- ledgerRefs: ["tasks:T45","defects:D25","defects:D24"]
-
-### R50 — go-ahead
-
-- createdAt: 2026-07-08T21:55:48.124Z
-- updatedAt: 2026-07-08T21:55:48.124Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T47 (D22) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE (classifier hardcoded vanilla-WG framing → misclassified all control frames as ClassData under AmneziaWG advanced-security, silently unfixing D22 in wanbond's primary obfuscated mode) is RESOLVED by the profile-aware classifier (commit 44cb705). Verified independently by BOTH the orchestrator and the re-review agent against amneziawg-go@v1.0.4: (1) effectiveMagic applies a configured magic header only when >4 (matches device.go L681-711 activation rule; h1→init/h2→response/h3→cookie/h4→transport); (2) s1/s2 junk-prefix applied to handshake init/response only, transport+cookie read at offset 0 (matches send.go L167/217/540 — transport is NOT junk-prefixed, keepalive stays 32B); (3) DATA-never-control SAFETY preserved — transport checked FIRST at offset 0 so a bulk transport frame (len>32) resolves to ClassData before any control branch (TestClassifyWireGuardAmneziaDataStaysData); (4) NON-VACUOUS — reverting to hardcoded-vanilla makes TestClassifyWireGuardAmneziaControlFrames FAIL 'ASec handshake initiation classified 0, want ClassControl'; (5) vanilla path unchanged (zero Amnezia profile → default type words + no junk); (6) class wired into the pacer exemption (classifyBatch→Pick(class)→ClassControl exemption weighted.go 321/339); config.Amnezia threaded cfg→NewMultipath→newWGClassifier, 4 test call-sites updated. Benign ~2^-32 junk-coincidence noted, fails SAFE (control occasionally paced, never data exempted). Full gate + build-tags e2e/realhosts + go test ./... green on merged main. 0 criticisms, 0 questions. Merged to main at 8938071."
-- ledgerRefs: ["tasks:T47","defects:D22"]

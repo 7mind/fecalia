@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 9
+  item: 10
 archives: []
 ---
 
@@ -135,3 +135,19 @@ archives: []
     TOOLING NOTE (not a wanbond defect): `cq log put` is currently BROKEN in this environment — the installed `cq` binary rejects the repo's cq.toml with 'tiers key "opus" is not a valid tier' (the stale binary expects the older tier-name→tokens [tiers] shape; the committed cq.toml uses the current token→tier-class classifier schema). So this round's planner session logs could NOT be persisted via `cq log put` (the command forbids a direct .cq/logs write). The planner's raw transcript remains at its native path ~/.claude/projects/-home-pavel-work-safe-fecalia/45fdce95-2af6-42cd-8ddd-0c9faabc56ef/subagents/agent-a114cc91b4029009d.jsonl. Recommend updating the `cq` CLI to match the current cq.toml schema (or vice-versa) to restore session-logging + the multi-agent panel config resolution.
 - blockingQuestions: ["Q14","Q15","Q16"]
 - ledgerRefs: ["goals:G1","defects:D25","defects:D22","defects:D7","defects:D23","defects:D26","defects:D24"]
+
+### HO10 — user-action-required
+
+- createdAt: 2026-07-08T21:59:39.985Z
+- updatedAt: 2026-07-08T21:59:39.985Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    /cq:advance run stop — BLOCKED-ON-USER-ACTION (hardening round landed in full; one manual o3 ops step remains).
+    
+    LANDED THIS RUN (deferred-defect hardening round, goal G1 / milestone M11 archived): planned + emitted the fix-task DAG (M11, T42-T50; decision K3 locked after opus plan-review R39 revise -> R40 go-ahead), then built all 9 tasks — each in an isolated worktree, adversarially reviewed (R42-R50; T47 caught a real AmneziaWG-classifier blindness on round 1, fixed + re-reviewed round 2), gated (build/vet/gofmt/go test) and -race-clean on the composed main, and merged. 12 defects RESOLVED: D3, D4, D10, D13, D14, D20, D22, D23, D24, D25, D26, D28. T49's measure-then-sweep used a real 4-vCPU in-fixture measurement on llm-ubuntu-0.
+    
+    BLOCKING USER ACTION (the ONLY remaining step; D7 live-apply + D8 are non-terminal by design per Q14 — o3 is a TEST host the agent cannot reach from its sandbox, and every repo-side step (T48: reboot-persistent provisioning + install-doc + TestRealProvision) is already merged). Operator runs ON o3 (89.168.124.91), in order: (1) `sudo iptables -S INPUT`  [capture BEFORE]; (2) dedup the INPUT chain to one canonical rule set (single `-p udp --dport 51820 -j ACCEPT`, single OCI default REJECT block; remove the duplicate/unreachable copies) [D8]; (3) apply+persist the tunnel ACCEPT rule via `sudo netfilter-persistent save` (or the idempotent /etc/iptables/rules.v4 edit) [D7 live-apply]; (4) `sudo reboot`; (5) after reboot `sudo iptables -S INPUT` [capture AFTER] and confirm the `-i wanbond0 -j ACCEPT` rule SURVIVED and inbound tunnel TCP is no longer REJECTed. NEVER deprovision/terminate o3. Then paste both captures + the post-reboot confirmation into the ledger to drive D7/D8 -> resolved, and re-run /cq:advance.
+- flow: advance
+- ledgerRefs: ["goals:G1","defects:D7","defects:D8","tasks:T48","tasks:T42","tasks:T43","tasks:T44","tasks:T45","tasks:T46","tasks:T47","tasks:T49","tasks:T50"]
+- handoffReasons: ["drained: the deferred-defect hardening round is otherwise complete — 12 defects resolved (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28); T42-T50 built, reviewed (R42-R50), gated, -race-clean, merged; milestone M11 archived; all three P-predicates FALSE","user-action-required: D7 (live-apply portion) + D8 blocked solely on the manual o3 iptables dedup/persist/reboot ops (exact commands in this summary); o3 is a test host unreachable from the agent sandbox (Q14); every autonomous/repo-side step (T48) is merged"]
