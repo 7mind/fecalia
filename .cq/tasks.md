@@ -360,18 +360,18 @@ archives:
 - dependsOn: ["T24","T19"]
 - ledgerRefs: ["goals:G1","tasks:T24","reviews:R36","defects:D28"]
 
-### T28 — planned
+### T28 — done
 
 - createdAt: 2026-07-01T23:41:20.541Z
-- updatedAt: 2026-07-01T23:41:20.541Z
-- author: fable-5
-- session: 0047802a-1b44-4fcc-8198-d12359610ad6
+- updatedAt: 2026-07-08T02:23:30.157Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: nDPI/Suricata non-classification check + document UDP-block limitation
 - description: "Run the captured fixture pcaps through nDPI and Suricata (provided by the dev shell) and assert neither classifies the flow as WireGuard or any identified VPN protocol. Document the known limitation: hostile networks blocking UDP wholesale have no in-scope mitigation (no TCP/TLS fallback — non-goal). Append the P5 real-link checklist."
 - acceptance: "`sudo go test -tags e2e ./test/e2e -run TestP5DPI`: the pcaps are analyzed by nDPI and Suricata; neither labels the flow as WireGuard/VPN (asserted on their output); the UDP-block limitation and the P5 manual checklist are documented."
 - suggestedModel: standard
 - dependsOn: ["T26"]
-- ledgerRefs: ["goals:G1"]
+- ledgerRefs: ["goals:G1","tasks:T26","reviews:R37"]
 
 ## M8
 

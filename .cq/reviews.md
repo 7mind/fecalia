@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 37
+  item: 38
 archives: []
 ---
 
@@ -477,6 +477,24 @@ archives: []
 - criticism: ["[r1 fable, resolved 2337abc] DECISIVE: constant-offset detector caught only SINGLE-valued offsets + entropy skipped <1024B → a low-cardinality plaintext-header signature (kind byte {1..4} at offset 24) passed BOTH checks (false assurance on a DPI-signaturable wire) — added a per-offset value-distribution entropy check (>=6.5 bits, 512-sample floor); the escape now measures 1.32 bits, caught with 5.18-bit margin","[r1 fable, resolved 2337abc] mean-only entropy diluted a leaking subset (up to ~8% plaintext large frames) + under-sampled offsets passed silently + udpPayload ignored IPv4 fragments — added per-frame/p5 entropy floors, coverage reporting (contiguous judged prefix + CoverageOK), and a fragment guard; all mutation-verified","[r2 fable, resolved fb413eb] orphaned dead code plantAndAssertDetected (unused under -tags e2e, invisible to `just lint` — filed D28) — deleted","[hardware, resolved 1fc4f09] tcpdump -Z root segfaults on 4.99.x → 0-byte pcaps — dropped -Z root (default privilege drop; world-readable savefile)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T26","tasks:T24","goals:G1","defects:D27","defects:D28"]
+
+### R37 — go-ahead
+
+- createdAt: 2026-07-08T02:23:17.584Z
+- updatedAt: 2026-07-08T02:23:17.584Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: |
+    T28 (nDPI/Suricata non-classification check + UDP-block limitation, requirement 6) reconciled GO-AHEAD (opus by-construction + fable non-vacuity panel; 1 rework + hardware). Merged 2b6ac3d. TestP5DPI captures the obfuscated wanbond flow (amnezia junk + FEC) and asserts neither ndpiReader nor suricata classifies it WireGuard/VPN by PAYLOAD. Non-vacuity: a committed genuine plain-WireGuard pcap asserted FIRST to be nDPI-classified WireGuard by DPI confidence (same payloadVPNFlow predicate the negative leg must be free of).
+    
+    opus (by-construction) APPROVE: every tool-failure path fails loud (ndpiReader/suricata non-zero/timeout/empty; tool-absent → Fatalf never Skip); positive control asserted first + hard on a byte-verified genuine WG fixture (init+resp+25 transport frames), non-bypassable.
+    
+    fable (non-vacuity) R1 DISAPPROVE (1 reproduced criticism): the negative nDPI leg captured on UDP 51820 (WireGuard's IANA port), and nDPI PORT-GUESSES WireGuard/category-VPN for ANY UDP flow on 51820 independent of payload (reproduced: random payload on 51820 → WireGuard [Match by port]; on 40000 → Unknown). The parser read only the confidence-LESS summary sections → the test would spuriously t.Fatalf a requirement-6 defect on the host EVEN WITH perfect obfuscation, conflating PORT-based classification with PAYLOAD DPI-resistance. FIXED (919014d): (a) parse ndpiReader -v 2 PER-FLOW Confidence — fail only on a payload/DPI-confidence WireGuard match, never a `Match by port` guess; (b) capture on a NON-registered port (40000) so the port-guess never fires and any WG/VPN label is a genuine payload leak. Positive control strengthened to assert a DPI-confidence match (symmetric with the negative). fable R2 APPROVE: extracted the FULL nDPI 5.0 confidence taxonomy from the production binary — `Match by port` is the ONLY excludable non-payload class that can fire in the fixture (Match-by-IP needs a public-IP DB, custom-rule/nBPF need unloaded rules; all DPI* classes are payload-derived); predicate FAIL-CLOSED on unknown confidences; anchored regex FPC-bracket-immune; port-40000 isolation empirically confirmed.
+    
+    HARDWARE GREEN (llm-ubuntu-0, nDPI+suricata provisioned): TestP5DPI PASS — positive control nDPI classified plain WG as WireGuard by DPI (payload) confidence; NEGATIVE the obfuscated wanbond flow on port 40000 = proto Unknown / no payload WireGuard-VPN classification (payload DPI-resistance PROVEN); suricata 1 flow decoded (>=1 vacuity guard fired), app_proto=failed, 0 alerts. Requirement-6 empirically validated with real DPI engines, non-vacuous. Docs: UDP-block limitation (no TCP/TLS fallback, non-goal) + the 51820 port-guess deployment note in install.md; P5 checklist appended.
+- criticism: ["[r1 fable, resolved 919014d, REPRODUCED] the negative nDPI leg captured on UDP 51820 where nDPI port-guesses WireGuard/VPN independent of payload (parser ignored confidence) → would spuriously fail requirement-6 on the host even with perfect obfuscation — fixed by parsing per-flow Confidence (fail only on payload/DPI match, not a port guess) + capturing on a non-registered port (40000) to isolate payload DPI-resistance"]
+- new_questions: []
+- ledgerRefs: ["tasks:T28","tasks:T26","goals:G1"]
 
 ## M8
 
