@@ -534,7 +534,11 @@ func adaptiveFECConfig(f config.FEC) *adaptivefec.Config {
 	c := adaptivefec.DefaultConfig()
 	c.DataShards = f.DataShards
 	c.MaxParity = f.ParityShards
-	c.SafetyFactor = f.SafetyFactor // defaulted to the controller default at config load
+	// Exactly one sizing mode is active (config load enforces mutual exclusion): in the
+	// residual-SLA mode f.SafetyFactor is 0 and f.TargetResidual drives M; in the legacy
+	// mode f.TargetResidual is 0 and f.SafetyFactor (defaulted at load) drives M.
+	c.SafetyFactor = f.SafetyFactor
+	c.TargetResidual = f.TargetResidual
 	return &c
 }
 

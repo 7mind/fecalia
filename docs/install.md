@@ -115,6 +115,44 @@ ends). Omit it entirely for plain WireGuard framing.
 Generate keys with standard WireGuard tooling (`wg genkey | tee k | wg pubkey`)
 and the PSK with `head -c 32 /dev/urandom | base64`.
 
+### Optional `[fec]` forward-error-correction plane
+
+FEC is **off** unless an `[fec]` block is present. A fixed-ratio block protects
+each group of `data_shards` (K) inner datagrams with `parity_shards` (M) parity
+frames at a constant M/K overhead:
+
+```toml
+[fec]
+enabled = true
+data_shards = 10
+parity_shards = 6        # in adaptive mode this is the parity CEILING
+# adaptive = true        # opt into the closed-loop controller (below)
+# target_residual = 0.005  # residual-loss SLA — the recommended adaptive surface
+# safety_factor = 4.0    # legacy headroom multiplier (mutually exclusive with target_residual)
+```
+
+With `adaptive = true` the send side runs the loss-tracking controller: the
+per-group parity floats in `[0, parity_shards]` to match measured path loss, so
+a clean path spends near-zero overhead. Two mutually-exclusive ways size that
+parity — **set exactly one**:
+
+- **`target_residual`** (recommended, the primary surface): the target
+  **post-recovery residual-loss** fraction in `(0,1)`. The controller derives the
+  minimum parity M whose modeled binomial residual `E[max(0,D-M)]/K`
+  (`D ~ Bin(K, smoothed loss)`) is at/below this target for the current loss and
+  K, capped at the `parity_shards` ceiling. It maps an operator's loss budget
+  directly to redundancy: e.g. `target_residual = 0.005` holds the post-recovery
+  loss at/below 0.5% (the P4 bound) as long as the ceiling allows. Raising the
+  ceiling (`parity_shards`) lets a tighter target be met under heavier loss.
+- **`safety_factor`** (legacy): a bare headroom multiplier ≥ 1 sizing M so
+  `M/(K+M) ≥ safety_factor × loss`. It does **not** map to a residual bound — an
+  operator must hand-tune it per (loss, K) to clear a given SLA (the reason
+  `target_residual` supersedes it). Defaults to 1.5 when adaptive and neither
+  field is set; note 1.5 sizes M=1 at 5% loss with K=10 (~1% residual), so a
+  sub-1% SLA needs a higher factor **or**, preferably, `target_residual`.
+
+Setting both `target_residual` and `safety_factor` is rejected at config load.
+
 ## 4. systemd units
 
 Unit files live in `packaging/systemd/`:

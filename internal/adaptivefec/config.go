@@ -44,7 +44,8 @@ const (
 
 	// DefaultSafetyFactor is the headroom over the mean loss the parity is sized to
 	// mask. 1.5 sizes each group to tolerate 1.5x the smoothed loss, covering the
-	// binomial variance by which an individual group exceeds the mean.
+	// binomial variance by which an individual group exceeds the mean. It applies
+	// only when TargetResidual is unset (the legacy SafetyFactor sizing mode).
 	DefaultSafetyFactor = 1.5
 
 	// DefaultMaxStep bounds |ΔM| per RateInterval. A single spike can move M by at
@@ -81,8 +82,17 @@ type Config struct {
 	// [0, RaiseThreshold). The gap to RaiseThreshold is the hysteresis deadband.
 	LowerThreshold float64
 	// SafetyFactor is the headroom multiplier on the smoothed loss the parity is
-	// sized to mask. >= 1.
+	// sized to mask. >= 1 in the SafetyFactor sizing mode (TargetResidual unset);
+	// MUST be 0 when TargetResidual is set (the two modes are mutually exclusive).
 	SafetyFactor float64
+	// TargetResidual, when set (> 0), selects the RESIDUAL-SLA sizing mode and is
+	// the PRIMARY parity surface: instead of the bare SafetyFactor multiplier the
+	// controller derives M by inverting the binomial residual model
+	// E[max(0,D-M)]/K (D ~ Bin(K, smoothed loss), see residual.go) to the smallest
+	// M whose modeled residual is <= TargetResidual, clamped to [0, MaxParity]. It
+	// SUPERSEDES SafetyFactor (which must be 0 when this is set). Must be in (0,1)
+	// when set; 0 selects the legacy SafetyFactor path.
+	TargetResidual float64
 	// MaxStep bounds |ΔM| applied per RateInterval. >= 1.
 	MaxStep int
 	// RateInterval is the minimum time between two M changes. > 0.
@@ -132,8 +142,20 @@ func (c Config) Validate() error {
 	if c.LowerThreshold >= c.RaiseThreshold {
 		return fmt.Errorf("adaptivefec: LowerThreshold (%g) must be < RaiseThreshold (%g) so the hysteresis deadband is non-empty", c.LowerThreshold, c.RaiseThreshold)
 	}
-	if math.IsNaN(c.SafetyFactor) || math.IsInf(c.SafetyFactor, 0) || c.SafetyFactor < 1 {
-		return fmt.Errorf("adaptivefec: SafetyFactor must be a finite value >= 1, got %g", c.SafetyFactor)
+	if math.IsNaN(c.TargetResidual) {
+		return fmt.Errorf("adaptivefec: TargetResidual must be a number, got NaN")
+	}
+	if c.TargetResidual != 0 {
+		// Residual-SLA sizing mode: TargetResidual governs and SafetyFactor is inert,
+		// so the two must not both be set (mutually exclusive, fail-fast).
+		if c.TargetResidual < 0 || c.TargetResidual >= 1 {
+			return fmt.Errorf("adaptivefec: TargetResidual must be in (0,1) when set, got %g", c.TargetResidual)
+		}
+		if c.SafetyFactor != 0 {
+			return fmt.Errorf("adaptivefec: SafetyFactor and TargetResidual are mutually exclusive (TargetResidual is the primary residual-SLA surface); leave SafetyFactor 0 when TargetResidual is set, got SafetyFactor=%g", c.SafetyFactor)
+		}
+	} else if math.IsNaN(c.SafetyFactor) || math.IsInf(c.SafetyFactor, 0) || c.SafetyFactor < 1 {
+		return fmt.Errorf("adaptivefec: SafetyFactor must be a finite value >= 1 (or set TargetResidual instead), got %g", c.SafetyFactor)
 	}
 	if c.MaxStep < 1 {
 		return fmt.Errorf("adaptivefec: MaxStep must be >= 1, got %d", c.MaxStep)

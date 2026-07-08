@@ -110,14 +110,22 @@ func (c *Controller) bandTarget(s float64, now time.Time) int {
 	}
 }
 
-// redundancyMap converts a smoothed loss fraction into the parity count M whose
-// group tolerates safety*loss, i.e. the smallest M with M/(K+M) >= safety*loss:
+// redundancyMap converts a smoothed loss fraction into the parity count M. In the
+// RESIDUAL-SLA mode (TargetResidual set) it delegates to residualTargetParity,
+// which inverts the binomial residual model to the smallest M meeting the target.
+// Otherwise it uses the legacy SafetyFactor map: the smallest M whose group
+// tolerates safety*loss, i.e. M/(K+M) >= safety*loss:
 //
 //	M = ceil( K * e / (1 - e) ),  e = safety*loss
 //
 // e saturates to MaxParity as e -> 1, and loss <= 0 maps to exactly 0 (zero
-// overhead when clean). The result is clamped to [0, MaxParity].
+// overhead when clean). The result is clamped to [0, MaxParity]. Both modes are
+// monotone non-decreasing and zero-at-zero, so the surrounding hysteresis and
+// slew machinery is identical regardless of which mode is active.
 func (c *Controller) redundancyMap(loss float64) int {
+	if c.cfg.TargetResidual > 0 {
+		return c.residualTargetParity(loss)
+	}
 	e := loss * c.cfg.SafetyFactor
 	if e <= 0 {
 		return 0
