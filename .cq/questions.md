@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 13
+  item: 16
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -144,6 +144,42 @@ archives:
 - recommendation: Option (a) new cross-cutting milestone — the scope is inherently cross-phase (smoke -> multipath -> FEC baseline) and is mostly test-infrastructure; isolating it keeps the phase milestones archivable on netns e2e (consistent with a report-only default) while giving the additive real-host/impairment work its own home.
 - ledgerRefs: ["goals:G1"]
 - answer: as recommended
+
+### Q14 — open
+
+- createdAt: 2026-07-08T08:25:57.082Z
+- updatedAt: 2026-07-08T08:25:57.082Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Group D (D7/D8) live-host scope: does resolving D7/D8 include performing the one-time mutations on the LIVE o3 concentrator host (dedup its INPUT chain per D8; apply + reboot-persist the wanbond0 ACCEPT rule per D7), or do the fix task(s) deliver only the REPO-SIDE artifacts — idempotent reboot-persistence provisioning code, the T22 install-doc update, and a TestRealProvision assertion — with the actual live-o3 mutation left as a separate manual op you run?"
+- context: "This sets the acceptance field of the Group D fix task(s). D8 is explicitly 'o3 HOST STATE ONLY, not a code defect' (a one-time iptables dedup on the running host); D7 has a repo part (persistence provisioning + doc + test) AND a live-host apply/persist part. Two constraints push toward repo-only automated acceptance: (1) implement-workers run in sandboxed local git worktrees and may not hold /run/agenix/llm-ssh-key or be permitted to mutate a production host; (2) the standing rule that o3 must NEVER be deprovisioned or rebooted into an unrecoverable state, so live iptables edits on it warrant human oversight. M10's realhosts tier is already Q12 report-only / opt-in / manual and never an automated completion gate — the hardening round would inherit that posture."
+- suggestions: ["Repo-side only: fix tasks deliver idempotent persistence provisioning + install-doc + a TestRealProvision that asserts the persisted set WHEN run against a host; the live-o3 dedup+persist (D8, and applying D7 on o3) is a separately-tracked one-time manual ops step you execute (recorded in the ledger), NOT an implement-worker acceptance gate","Include the live-o3 mutation in task acceptance (requires granting the validation step SSH access to o3 and an explicit exception to the no-touch-o3 posture)","Repo-side now; defer the live-o3 apply entirely to a later deploy, tracking D8 as ops-only / resolved-on-repo"]
+- recommendation: "Option (a): fix tasks are repo-side only and their acceptance is netns/unit-testable (idempotent provisioning + doc + TestRealProvision assertion); the one-time live-o3 dedup + reboot-persist is an ops step you run manually under the never-deprovision-o3 constraint, recorded but not gating an implement-worker. Preserves M10's report-only real-host posture."
+- ledgerRefs: ["goals:G1"]
+
+### Q15 — open
+
+- createdAt: 2026-07-08T08:26:06.097Z
+- updatedAt: 2026-07-08T08:26:06.097Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "D23 doc/comment sweep (Group E): should the D23 fix task FIRST run an in-fixture (both-daemons-sharing-one-core) netns throughput measurement on the 4-vCPU amd64 host (llm-ubuntu-0) and record that empirical ceiling — making the sweep depend on a real remote measurement — or sweep the four comment/doc locations NOW using the already-measured 1-vCPU figure (12-46 Mbit/s) plus an explicit 'TBD: measure' note for the 4-vCPU host, recording that number opportunistically later?"
+- context: "D23's authoritative suggestedFix says to replace the mis-copied 150-170 Mbit/s figure with per-host MEASURED in-fixture ceilings and to 'measure once on the 4-vCPU amd64 host and record it.' The 1-vCPU number (12-46 Mbit/s, docs/p0-findings.md:216-225) already exists; the 4-vCPU number does not. Obtaining it requires provisioning llm-ubuntu-0 and running the netns fixture there — a real-host step outside the implement-worker's local sandbox, and per M10/Q12 real-host runs are opt-in/manual/report-only. This decides whether D23 carries a blocking hardware-validation dependency or ships as a pure in-repo doc edit."
+- suggestions: ["Measure-then-sweep: provision llm-ubuntu-0, run the in-fixture measurement once, record the real 4-vCPU ceiling, THEN sweep all four locations with both real numbers (the measurement is a prerequisite step of the D23 task, hardware-validated, executed manually per the report-only posture)","Sweep-now: replace the figure with the 1-vCPU 12-46 Mbit/s number + the '2*cap below the executing host's measured in-fixture ceiling' rule now, leaving an explicit 'TBD-measure' marker for the 4-vCPU host to fill opportunistically","Sweep-now and omit the per-host 4-vCPU number entirely (state only the 1-vCPU measured ceiling + the general 2*cap rule)"]
+- recommendation: "Option (a) measure-then-sweep: the whole point of D23 is to stop propagating an unmeasured figure, so record the real 4-vCPU in-fixture ceiling before writing it into the docs. Execute the measurement manually on llm-ubuntu-0 (report-only, not an automated gate) and make '4-vCPU ceiling recorded' a hardware-validation acceptance of the D23 task."
+- ledgerRefs: ["goals:G1"]
+
+### Q16 — open
+
+- createdAt: 2026-07-08T08:26:14.295Z
+- updatedAt: 2026-07-08T08:26:14.295Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Group B / D26 resolution surface: the round's stated NON-GOAL is 'no new product capability — purely resolving hardening defects.' D26 offers two fixes — (i) derive the adaptive-FEC redundancy map from a NEW target-residual config parameter (inverting the binomial residual for M), which adds a runtime/config surface, or (ii) ship a DOCUMENTED SafetyFactor/RaiseThreshold-per-residual-SLA table (no code surface change). Which is in scope for this hardening round?"
+- context: "This sets D26's task type (code+test vs doc-only) and acceptance. Option (i) adds a `target_residual` knob + inversion logic — arguably a new product capability, in tension with the round's non-goal. Option (ii) closes the defect (operators can pick SafetyFactor for a target SLA) without new runtime surface. For reference, I plan to resolve the other Group-B defects per their suggestedFix without asking: D25 = extend the property test over partial-m x partial-k with byte-exact recovery through the single ceiling decoder AND pin the klauspost prefix-stability guarantee (build-time generator-matrix prefix assertion + a reedsolomon version-pin doc note); D24 = account retained-incomplete-past-deadline groups at Stats()/snapshot time so quiescence no longer overstates recovery. Flag if you want either scoped differently."
+- suggestions: ["Docs-table only (option ii): a documented SafetyFactor/RaiseThreshold-per-SLA table in the ops/install docs, staying within the 'no new product capability' non-goal","Add the target-residual config parameter (option i): accept a new config surface this round as the more principled fix","Docs-table now, and file a SEPARATE (non-hardening) feature goal for the target-residual config surface if you want it later"]
+- recommendation: "Option (a) docs-table only: resolves D26 within the round's explicit 'no new product capability' non-goal with no new runtime surface; if you later want the target-residual knob, that is a separate feature goal (option c)."
+- ledgerRefs: ["goals:G1"]
 
 ## M4
 

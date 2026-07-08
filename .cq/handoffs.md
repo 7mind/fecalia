@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 8
+  item: 9
 archives: []
 ---
 
@@ -115,3 +115,23 @@ archives: []
     
     NO further autonomous action is possible. To continue: EITHER mark G1 `done` if the delivered P1-P5 scope is complete; OR add new capability scope via /cq:plan:follow-up G1 <scope text>; OR turn the deferred hardening defects into fix tasks (a defect-driven plan round). Nothing is blocked on an open question or a user environment action — this is a clean drained terminus.
 - ledgerRefs: ["goals:G1","defects:D25","defects:D22","defects:D14"]
+
+### HO8 — answers-required
+
+- createdAt: 2026-07-08T08:29:11.944Z
+- updatedAt: 2026-07-08T08:29:11.944Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- flow: plan
+- summary: |
+    ANSWERS-REQUIRED — /cq:plan:follow-up G1 re-opened goal G1 with a NEW 'Deferred-defect hardening round' scope (the 14 root-caused, file-and-defer defects from the P1-P5 build: D3, D4, D7, D8, D10, D13, D14, D20, D22, D23, D24, D25, D26, D28, grouped A-E), transitioned G1 planned→planning→clarifying, and drove the plan-advance planner once. The planner read all 14 defects + the scope and filed THREE clarifying questions that genuinely gate a sound fix-task DAG (it deliberately did NOT ask milestone-placement/task-granularity — the scope delegates those — nor any whether-to-fix/disposition question, which the re-open settles):
+    
+    - Q14 (Group D, D7/D8 live-o3 scope): fix tasks deliver REPO-SIDE artifacts only — idempotent reboot-persistence provisioning + install-doc + a TestRealProvision assertion — with the one-time live-o3 INPUT-chain dedup + ACCEPT-rule persist tracked as a manual ops step you run (recommended, preserves the never-deprovision-o3 posture + M10 report-only semantics); vs including the live-host mutation in task acceptance.
+    - Q15 (D23 doc-sweep): measure-then-sweep — record the 4-vCPU in-fixture ceiling on llm-ubuntu-0 first, then sweep the four comment/doc locations with both real numbers (recommended, so D23 stops propagating an unmeasured figure); vs sweep-now with the 1-vCPU figure + a TBD marker.
+    - Q16 (D26 resolution surface): a DOCUMENTED SafetyFactor/target-residual-SLA table (recommended — closes the defect with NO new runtime surface, honoring the round's 'no new product capability' non-goal); vs a new target_residual config knob (a separate feature goal if you want it). The planner pre-committed (subject to override) D25 = partial-m×partial-k byte-exact property test + pin the klauspost prefix-stability guarantee, and D24 = account retained-past-deadline groups at Stats() so quiescence stops overstating recovery.
+    
+    All three carry a recommendation, so 'as recommended' answers each. NEXT: answer Q14/Q15/Q16 in the TUI/web, then run /cq:plan:advance G1 — the planner will ground, decide milestone placement + granularity, transition to planning, and emit the fix-task DAG (each task linking defects:<D>); then /cq:advance builds them.
+    
+    TOOLING NOTE (not a wanbond defect): `cq log put` is currently BROKEN in this environment — the installed `cq` binary rejects the repo's cq.toml with 'tiers key "opus" is not a valid tier' (the stale binary expects the older tier-name→tokens [tiers] shape; the committed cq.toml uses the current token→tier-class classifier schema). So this round's planner session logs could NOT be persisted via `cq log put` (the command forbids a direct .cq/logs write). The planner's raw transcript remains at its native path ~/.claude/projects/-home-pavel-work-safe-fecalia/45fdce95-2af6-42cd-8ddd-0c9faabc56ef/subagents/agent-a114cc91b4029009d.jsonl. Recommend updating the `cq` CLI to match the current cq.toml schema (or vice-versa) to restore session-logging + the multi-agent panel config resolution.
+- blockingQuestions: ["Q14","Q15","Q16"]
+- ledgerRefs: ["goals:G1","defects:D25","defects:D22","defects:D7","defects:D23","defects:D26","defects:D24"]
