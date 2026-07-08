@@ -242,44 +242,6 @@ func offsetInConstants(cs []wireaudit.ConstantOffset, offset int, value byte) bo
 	return false
 }
 
-// plantAndAssertDetected deep-copies the captured sessions, forces a constant byte
-// at auditPlantOffset across every frame, and asserts the audit then reports that
-// exact offset as constant — the non-vacuity (teeth) proof on real captured frames.
-func plantAndAssertDetected(t *testing.T, sessions [][]wireaudit.Frame) {
-	t.Helper()
-	planted := make([][]wireaudit.Frame, len(sessions))
-	for i, sess := range sessions {
-		cp := make([]wireaudit.Frame, len(sess))
-		for j, f := range sess {
-			nf := append([]byte(nil), f...)
-			if len(nf) > auditPlantOffset {
-				nf[auditPlantOffset] = auditPlantValue
-			}
-			cp[j] = nf
-		}
-		planted[i] = cp
-	}
-
-	rep := wireaudit.Audit(planted)
-	ok, msg := rep.ConstantByteOK()
-	if ok {
-		t.Fatalf("teeth: planted constant at offset %d NOT detected — the audit is vacuous", auditPlantOffset)
-	}
-	found := false
-	for _, c := range rep.ConstantOffsets {
-		if c.Offset == auditPlantOffset {
-			found = true
-			if c.Value != auditPlantValue {
-				t.Errorf("teeth: offset %d reported value 0x%02x, want 0x%02x", auditPlantOffset, c.Value, auditPlantValue)
-			}
-		}
-	}
-	if !found {
-		t.Fatalf("teeth: audit failed but did not pinpoint the planted offset %d; report: %s", auditPlantOffset, msg)
-	}
-	t.Logf("teeth OK: planted constant detected — %s", msg)
-}
-
 // captureAuditSession brings up one fresh amnezia+FEC tunnel session over auditPath,
 // captures the outer UDP payloads on the edge veth with tcpdump while a short bulk
 // transfer drives DATA/PARITY/PROBE/junk traffic, and returns the parsed wanbond
