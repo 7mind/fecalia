@@ -93,3 +93,75 @@ func TestSelectDeviceBinds(t *testing.T) {
 		})
 	}
 }
+
+// TestFamilyBindCount is the D13 regression for interfaceInfo's family-count rule.
+// An up interface virtually always carries a kernel fe80::/10 link-local alongside
+// its configured global v6 address; counting the link-local pushed familyCount>=2
+// so a GLOBAL v6 source never qualified for device binding (T16 re-roam survival).
+// The kernel never source-selects a link-local for a global destination, so the
+// link-local must be EXCLUDED from the count of a global v6 source — while a v4
+// source, and a link-local v6 source, count every same-family address unchanged.
+func TestFamilyBindCount(t *testing.T) {
+	addr := func(s string) netip.Addr { return netip.MustParseAddr(s) }
+	globalV6 := addr("2001:db8::10")
+	linkLocalV6 := addr("fe80::1")
+	otherGlobalV6 := addr("2001:db8::11")
+
+	tests := []struct {
+		name       string
+		want       netip.Addr
+		addrs      []netip.Addr
+		wantFamily int
+		wantOwns   bool
+	}{
+		{
+			// The defect case: a global v6 source alongside the kernel link-local.
+			// The link-local must not count, so familyCount == 1 and the source
+			// still qualifies for device binding.
+			name:       "global v6 with kernel link-local excludes link-local",
+			want:       globalV6,
+			addrs:      []netip.Addr{globalV6, linkLocalV6},
+			wantFamily: 1,
+			wantOwns:   true,
+		},
+		{
+			// Two GLOBAL v6 addresses genuinely contend: both count, so the source
+			// does not qualify (a wildcard+device socket could source from either).
+			name:       "two global v6 addresses both count",
+			want:       globalV6,
+			addrs:      []netip.Addr{globalV6, otherGlobalV6, linkLocalV6},
+			wantFamily: 2,
+			wantOwns:   true,
+		},
+		{
+			// A link-local v6 SOURCE is unaffected: every same-family (incl.
+			// link-local) address counts, exactly as before.
+			name:       "link-local v6 source counts link-locals",
+			want:       linkLocalV6,
+			addrs:      []netip.Addr{linkLocalV6, addr("fe80::2")},
+			wantFamily: 2,
+			wantOwns:   true,
+		},
+		{
+			// A v4 source is unaffected by the v6 rule; a coexisting v6 (of either
+			// scope) is a different family and never counts.
+			name:       "v4 source unaffected by v6 addresses",
+			want:       addr("192.0.2.10"),
+			addrs:      []netip.Addr{addr("192.0.2.10"), globalV6, linkLocalV6},
+			wantFamily: 1,
+			wantOwns:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			familyCount, owns := familyBindCount(tc.want, tc.addrs)
+			if familyCount != tc.wantFamily {
+				t.Errorf("familyCount = %d, want %d", familyCount, tc.wantFamily)
+			}
+			if owns != tc.wantOwns {
+				t.Errorf("owns = %v, want %v", owns, tc.wantOwns)
+			}
+		})
+	}
+}

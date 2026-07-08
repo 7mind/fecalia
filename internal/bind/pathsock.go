@@ -125,8 +125,7 @@ func interfaceInfo(src netip.Addr, ifaces []net.Interface) ifaceInfo {
 		if err != nil {
 			continue
 		}
-		owns := false
-		familyCount := 0
+		ips := make([]netip.Addr, 0, len(addrs))
 		for _, a := range addrs {
 			ipn, ok := a.(*net.IPNet)
 			if !ok {
@@ -136,19 +135,42 @@ func interfaceInfo(src netip.Addr, ifaces []net.Interface) ifaceInfo {
 			if !ok {
 				continue
 			}
-			ip = ip.Unmap()
-			if ip.Is4() == want.Is4() {
-				familyCount++
-			}
-			if ip == want {
-				owns = true
-			}
+			ips = append(ips, ip)
 		}
+		familyCount, owns := familyBindCount(want, ips)
 		if owns {
 			return ifaceInfo{dev: ifc.Name, familyCount: familyCount}
 		}
 	}
 	return ifaceInfo{}
+}
+
+// familyBindCount reports, for a source address want, how many of an interface's
+// addresses count toward the device-bind equivalence decision (see
+// selectDeviceBinds) and whether want itself is present. familyCount must equal 1
+// for a device-bind to be provably equivalent to pinning want: it counts the
+// same-family addresses the kernel could otherwise source-select from.
+//
+// For a GLOBAL (non-link-local) v6 source, fe80::/10 link-local addresses are
+// EXCLUDED from the count: an up interface virtually always carries a kernel
+// link-local alongside its configured global v6 address, but the kernel never
+// source-selects a link-local for a global destination, so a link-local co-resident
+// does not void the global source_addr pin — a wildcard+device socket still sources
+// only from the configured global address (defect D13). For a v4 source or a
+// link-local v6 source every same-family address is counted, unchanged: a
+// link-local-only interface, and any v4 interface, is unaffected.
+func familyBindCount(want netip.Addr, addrs []netip.Addr) (familyCount int, owns bool) {
+	excludeLinkLocal := !want.Is4() && !want.IsLinkLocalUnicast()
+	for _, ip := range addrs {
+		ip = ip.Unmap()
+		if ip.Is4() == want.Is4() && !(excludeLinkLocal && ip.IsLinkLocalUnicast()) {
+			familyCount++
+		}
+		if ip == want {
+			owns = true
+		}
+	}
+	return familyCount, owns
 }
 
 // listenOnDevice binds a UDP socket to the family-matched wildcard address on port

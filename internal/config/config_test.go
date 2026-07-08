@@ -237,6 +237,31 @@ func TestLoadRejects(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsDuplicateSourceAddr is the D10 regression. validate() enforced
+// unique path NAMES but not unique source_addr values; the multipath bind Opens
+// each path on (source_addr, port), so two paths sharing a source_addr collide
+// EADDRINUSE at the second ListenUDP (and on every re-Open after Down/Up, since the
+// engine passes the fixed listen port back). It must be rejected at config LOAD with
+// an error naming BOTH conflicting paths — not deferred to bring-up. A distinct
+// source_addr per path still loads (TestLoadValidEdge covers the .10/.20 fixture).
+func TestLoadRejectsDuplicateSourceAddr(t *testing.T) {
+	// Point the cellular path at starlink's source_addr so the two collide.
+	body := fill(strings.Replace(edgeConfig,
+		"name = \"cellular\"\nsource_addr = \"192.0.2.20\"",
+		"name = \"cellular\"\nsource_addr = \"192.0.2.10\"", 1))
+	path := writeConfig(t, 0o600, body)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected duplicate source_addr to be rejected at load, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"starlink", "cellular", "192.0.2.10"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q must name %q (both conflicting paths and the shared address)", msg, want)
+		}
+	}
+}
+
 // TestFECDefaultOff: omitting [fec] leaves FEC disabled so an existing config runs
 // the pre-T24 datapath unchanged, and every FEC knob stays at its zero value.
 func TestFECDefaultOff(t *testing.T) {
