@@ -229,6 +229,12 @@ func (e *Encoder) close() ([]ParityShard, error) {
 // k < cfg.ParityShards parity still decodes at the receiver, which is built at the
 // cfg.ParityShards ceiling: klauspost's Vandermonde parity is prefix-consistent, so
 // parity index j is identical whether the code is RS(m,k) or RS(m,ceiling).
+//
+// This prefix consistency is an UNDOCUMENTED property of reedsolomon's DEFAULT New()
+// matrix (Vandermonde x top-inverse), NOT a public API guarantee (D25). It is PINNED
+// two ways: the go.mod require note next to github.com/klauspost/reedsolomon, and
+// TestKlauspostParityPrefixStableInvariant, which fails loudly if a library upgrade
+// flips the default and would otherwise silently corrupt every recovered payload.
 func (e *Encoder) codec(m, k int) (reedsolomon.Encoder, error) {
 	key := codecKey{data: m, parity: k}
 	if c, ok := e.codecs[key]; ok {

@@ -409,6 +409,16 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			return nil, 0, fmt.Errorf("bind: build FEC decoder: %w", err)
 		}
 		dec.SetRetainWindow(fecRetainGroups)
+		// Quiescence-accurate unrecoverable accounting (D24): fold a doomed group into
+		// the unrecoverable counter once its recovery could no longer have helped, even
+		// when no newer group arrives to advance the retain-window eviction (a stalled
+		// link, or traffic that simply stops after an incident). Past fecRecoveryDeadline
+		// from a group's first-seen instant, its deadline-flushed parity has certainly
+		// arrived (encoder grouping deadline) AND the resequencer has certainly skipped
+		// its gap (resequencerTimeout), so any later reconstruction is delivered too late
+		// to matter — the group is definitively unrecoverable and safe to count.
+		dec.SetClock(fec.SystemClock{})
+		dec.SetRecoveryDeadline(m.fecCfg.Deadline + resequencerTimeout)
 		m.fecSend = &fecSender{enc: enc}
 		// Adaptive mode (T29): a fresh controller per Open, re-pinned with the encoder so a
 		// Close→Open cycle starts the control law from M=0 (no standing redundancy until
