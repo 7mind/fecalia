@@ -8,18 +8,24 @@ import (
 	"testing"
 )
 
-// Impairment self-test knobs. capMbit is deliberately well below the CPU-bound
-// tunnel throughput (P0 measured ~150-170 Mbit/s of userspace-WG crypto on a
-// 1-vCPU host), so a rate-capped raw path is LINK-bound and a standing queue can
-// form — the prerequisite for the bufferbloat/pacing (T21/T23) and FEC-recovery
-// (T25/T29) work this fixture enables.
+// Impairment self-test knobs. This self-test measures capMbit over the RAW veth
+// links (no tunnel, see TestFixtureImpairment below), so the emulated LINK — not
+// userspace-WG crypto — is trivially the bottleneck and a standing queue can form.
+// Reused THROUGH the tunnel (T21/T23 pacing, T25/T29 FEC-recovery), a cap is only
+// link-bound when it sits below the EXECUTING host's measured in-fixture tunnel
+// ceiling, which is CPU/PPS-bound (both daemons plus the load generator share the
+// host's cores), a lower bound that scales with core count and NOT a
+// link-throughput spec: ~12–46 Mbit/s single-flow on a 1-vCPU aarch64 host
+// (docs/p0-findings.md:216-225), ~13 Mbit/s single-path (up to ~47–87 Mbit/s FEC
+// single-flow) on a 4-vCPU amd64 host. Sizing rule: cap < ceiling for single-path,
+// 2×cap < ceiling for aggregation.
 const (
 	capMbit    = 50   // per-path bandwidth cap under test (Mbit/s)
 	lossTarget = 10.0 // config-time uniform loss under test (percent)
 
 	// Cap tolerance: netem-rate TCP goodput sits a little under the shaped rate
 	// (header overhead) and jitters run-to-run; accept a generous band centred on
-	// the cap. The point is link-bound ~= cap, NOT CPU-bound ~= 150.
+	// the cap. The point is link-bound ~= cap, NOT the tunnel's CPU/PPS-bound ceiling.
 	capLoMbit = 35.0
 	capHiMbit = 56.0
 
@@ -60,7 +66,8 @@ func TestFixtureImpairment(t *testing.T) {
 	top := SetupWithPaths(t, impairmentPaths)
 
 	// (a) Bandwidth cap. The qdisc must carry the rate, and the shaped TCP
-	// throughput must land near the cap — far below the ~150 Mbit/s CPU bound.
+	// throughput must land near the cap — the raw veth (no tunnel) is the medium, so
+	// the netem rate is the bottleneck regardless of the tunnel's CPU/PPS ceiling.
 	capped := top.path("capped")
 	if q := top.QdiscShow("capped"); !strings.Contains(q, "rate") {
 		t.Errorf("capped path qdisc missing rate cap: %q", strings.TrimSpace(q))
