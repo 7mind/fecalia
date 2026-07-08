@@ -17,10 +17,18 @@ release:
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" -o dist/wanbond-linux-amd64 ./cmd/wanbond
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" -o dist/wanbond-linux-arm64 ./cmd/wanbond
 
-# Vet + lint.
+# The e2e/realhosts sources are gated behind //go:build tags, so a tagless
+# vet/lint never compiles them and silently skips them (see D28). The tagged
+# passes below are additive — the tagless run still analyses the default build
+# exactly as before.
+# Vet + lint the default build plus the e2e- and realhosts-tagged sources.
 lint:
     go vet ./...
+    go vet -tags e2e ./test/e2e/...
+    go vet -tags realhosts ./test/realhosts/...
     golangci-lint run
+    golangci-lint run --build-tags e2e ./test/e2e/...
+    golangci-lint run --build-tags realhosts ./test/realhosts/...
 
 # Format check (fails if anything is unformatted).
 fmt-check:
