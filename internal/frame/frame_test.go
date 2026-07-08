@@ -159,12 +159,20 @@ func TestCodecPSKMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCodec: %v", err)
 	}
-	raw, err := a.Encode(nil, Control{ControlType: 1, Payload: []byte("secret")})
+	orig := Control{ControlType: 1, Payload: []byte("secret")}
+	raw, err := a.Encode(nil, orig)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if _, err := b.Decode(raw); err == nil {
-		t.Fatal("cross-PSK authenticated frame accepted")
+	// A wrong-PSK decode of an AUTHENTICATED frame must never yield a valid frame of
+	// the SAME (authenticated) kind: the HMAC cannot pass under the wrong authKey. Note
+	// Decode CAN return err==nil ~2/256 of the time — the wrong obfKey de-obfuscates the
+	// body to garbage whose uniformly-random kind byte occasionally lands on the
+	// UNAUTHENTICATED KindData/KindParity, which carry no MAC by design (inner WireGuard
+	// authenticates real DATA). That is expected, not an auth failure, so assert on the
+	// decoded KIND, not merely on err (defect D27, same class as D17).
+	if f2, err := b.Decode(raw); err == nil && f2.Kind() == orig.Kind() {
+		t.Fatal("cross-PSK authenticated frame accepted as the same (authenticated) kind")
 	}
 }
 
