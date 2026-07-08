@@ -28,8 +28,9 @@ var versionProbes = []string{
 // both real hosts, asserts each tool-version command succeeds over SSH, runs
 // provisioning a SECOND time and asserts the report shows no changes
 // (idempotency), and checks the concentrator carries exactly one tunnel ACCEPT
-// rule ordered before the OCI REJECT. Executing and recording IS the acceptance
-// (per Q12); it gates nothing.
+// rule ordered before the OCI REJECT AND persisted to the boot rules file so it
+// survives a reboot (defect D7). Executing and recording IS the acceptance (per
+// Q12); it gates nothing.
 func TestRealProvision(t *testing.T) {
 	cfg := LoadConfig()
 	r := NewRunner(cfg)
@@ -101,5 +102,8 @@ func TestRealProvision(t *testing.T) {
 	}
 	if !state.BeforeReject {
 		t.Errorf("concentrator: %s ACCEPT rule is not ordered before the REJECT rule", tunnelIface)
+	}
+	if !state.Persisted {
+		t.Errorf("concentrator: %s ACCEPT rule is not persisted to %s — it will not survive a reboot (D7)", tunnelIface, persistedRulesFile)
 	}
 }

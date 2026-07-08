@@ -21,6 +21,13 @@ const (
 	// (internal/device.defaultTUNName). The concentrator firewall step ACCEPTs
 	// INPUT traffic arriving on it.
 	tunnelIface = "wanbond0"
+
+	// persistedRulesFile is where the netfilter-persistent / iptables-persistent
+	// package stores the IPv4 ruleset it restores at boot. On OCI Ubuntu the boot
+	// restore from this file is what silently drops any rule inserted only into
+	// the runtime chain (defect D7), so the tunnel ACCEPT rule must be written
+	// here to survive a reboot.
+	persistedRulesFile = "/etc/iptables/rules.v4"
 )
 
 // Sentinels a remote predicate echoes so a genuine SSH-transport failure (which
@@ -164,7 +171,9 @@ func runStep(ctx context.Context, r *Runner, host Host, s step) (StepReport, err
 // gcc installed (apt) and Go goVersionFamily at /usr/local/go, plus — when
 // opts.TunnelIface is set (concentrator) — an INPUT ACCEPT rule for that tunnel
 // interface, inserted at the head of the chain so it precedes OCI's default
-// REJECT. Every step checks current state before mutating, so a second call on
+// REJECT AND persisted to persistedRulesFile so it survives a reboot (defect
+// D7: OCI Ubuntu restores that file at boot, silently dropping any runtime-only
+// rule). Every step checks current state before mutating, so a second call on
 // an already-provisioned host returns a report with Changed()==false.
 func Provision(ctx context.Context, r *Runner, host Host, opts ProvisionOpts) (ProvisionReport, error) {
 	report := ProvisionReport{Host: host}
@@ -186,14 +195,35 @@ func Provision(ctx context.Context, r *Runner, host Host, opts ProvisionOpts) (P
 	}
 	if opts.TunnelIface != "" {
 		iface := opts.TunnelIface
-		steps = append(steps, step{
-			name: "tunnel-firewall",
-			// -C exits 0 iff the exact rule already exists.
-			predicate: fmt.Sprintf("sudo iptables -C INPUT -i %s -j ACCEPT 2>/dev/null", iface),
-			// -I inserts at position 1 (chain head), guaranteeing the ACCEPT
-			// precedes OCI's appended (-A) REJECT rule.
-			install: fmt.Sprintf("sudo iptables -I INPUT -i %s -j ACCEPT", iface),
-		})
+		steps = append(steps,
+			step{
+				// The netfilter-persistent service (from the iptables-persistent
+				// package) is what restores persistedRulesFile at boot; it must be
+				// installed before the persist step below can save into that file.
+				name:      "iptables-persistent",
+				predicate: "command -v netfilter-persistent >/dev/null 2>&1",
+				install:   aptInstall("iptables-persistent"),
+			},
+			step{
+				name: "tunnel-firewall",
+				// -C exits 0 iff the exact rule already exists.
+				predicate: fmt.Sprintf("sudo iptables -C INPUT -i %s -j ACCEPT 2>/dev/null", iface),
+				// -I inserts at position 1 (chain head), guaranteeing the ACCEPT
+				// precedes OCI's appended (-A) REJECT rule.
+				install: fmt.Sprintf("sudo iptables -I INPUT -i %s -j ACCEPT", iface),
+			},
+			step{
+				// Persist the runtime rule so it survives a reboot (D7). The
+				// predicate matches the canonical `iptables-save` form of the rule
+				// (always emitted with -A) in persistedRulesFile, so once saved the
+				// step is a no-op on re-run; the install snapshots the whole current
+				// runtime chain — with the tunnel ACCEPT inserted by the step above —
+				// into persistedRulesFile.
+				name:      "tunnel-firewall-persist",
+				predicate: fmt.Sprintf("sudo grep -q -- '-A INPUT -i %s -j ACCEPT' %s 2>/dev/null", iface, persistedRulesFile),
+				install:   "sudo netfilter-persistent save",
+			},
+		)
 	}
 
 	for _, s := range steps {
@@ -214,12 +244,17 @@ type TunnelFirewallState struct {
 	// BeforeReject is true iff the first such ACCEPT rule precedes the first
 	// `-j REJECT` rule in the chain.
 	BeforeReject bool
+	// Persisted is true iff persistedRulesFile carries the tunnel ACCEPT rule,
+	// i.e. the rule will survive a reboot (defect D7). A runtime-only rule
+	// (Persisted==false) is silently dropped on the next boot.
+	Persisted bool
 	// Rules is the raw `iptables -S INPUT` output for diagnostics.
 	Rules []string
 }
 
 // InspectTunnelFirewall reads host's INPUT chain and reports how many tunnel
-// ACCEPT rules exist and whether the first precedes the REJECT rule.
+// ACCEPT rules exist, whether the first precedes the REJECT rule, and whether
+// the rule is persisted to persistedRulesFile (reboot-survivable).
 func InspectTunnelFirewall(ctx context.Context, r *Runner, host Host, iface string) (TunnelFirewallState, error) {
 	res, err := r.Run(ctx, host, "sudo iptables -S INPUT")
 	if err != nil {
@@ -243,5 +278,15 @@ func InspectTunnelFirewall(ctx context.Context, r *Runner, host Host, iface stri
 		}
 	}
 	state.BeforeReject = firstAccept != -1 && firstReject != -1 && firstAccept < firstReject
+
+	// Persistence: the tunnel ACCEPT rule must be present in persistedRulesFile
+	// (in its canonical `iptables-save` -A form) to survive a reboot. checkCmd
+	// keeps a false predicate distinguishable from an SSH-transport failure.
+	persistCheck := checkCmd(fmt.Sprintf("sudo grep -q -- '-A INPUT -i %s -j ACCEPT' %s 2>/dev/null", iface, persistedRulesFile))
+	pres, err := r.Run(ctx, host, persistCheck)
+	if err != nil {
+		return state, fmt.Errorf("%s (%s): persisted-rule check failed: %w", host.Role, host.target(), err)
+	}
+	state.Persisted = strings.Contains(pres.Stdout, sentinelPresent)
 	return state, nil
 }
