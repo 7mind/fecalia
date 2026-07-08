@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 25
+  item: 27
 archives: []
 ---
 
@@ -339,3 +339,31 @@ archives: []
 - rootCause: "Group-count-only eviction: unrecoverable is counted at 512-group eviction, triggered solely by high-water advance on newly-offered groups. At quiescence the retained-but-doomed tail groups are never evicted → never counted. No time-based eviction and no snapshot-time accounting of retained-incomplete-past-deadline groups."
 - suggestedFix: "Account retained-incomplete groups whose deadline/window has definitively passed at Stats()/snapshot time (without evicting them from the reconstruction buffer), OR add time-based eviction alongside the 512-group window so a stalled tail is folded into unrecoverable after its recovery deadline. Care: only count a group once it is definitively unrecoverable (past the point more parity could arrive), to avoid premature/double counting. Pairs with the adaptive-FEC observability work (T29) or a dedicated FEC-metrics hardening task."
 - ledgerRefs: ["tasks:T24","tasks:T25","goals:G1"]
+
+## M8
+
+### D25 — root-caused
+
+- createdAt: 2026-07-08T00:36:55.771Z
+- updatedAt: 2026-07-08T00:36:55.771Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Adaptive-FEC varying-M correctness rests on an undocumented klauspost prefix-stability default; partial groups untested
+- severity: medium
+- description: "Found by the T29 opus review, file-and-defer (current code CORRECT + proven, latent fragility). The adaptive datapath (T29) emits groups coded RS(K,m) with a varying m and decodes them against a FIXED RS(K,ceiling) decoder. This is byte-exact ONLY because reedsolomon@v1.14.1's DEFAULT buildMatrix (Vandermonde × top-inverse) makes coding-matrix row data+j depend on (data,j) but NOT on total parity — so parity shard j is identical for RS(m,k) and RS(m,ceiling). opus PROVED this against the pinned library source. BUT: (a) klauspost does NOT document parity-prefix-stability as a public API guarantee — a future minor-version bump flipping the default to Cauchy/PAR1/Jerasure/leopard, or enabling fastOneParity for k=1, would SILENTLY corrupt every reconstructed payload (wrong inner datagram delivered to WireGuard) with NO test catching it; (b) TestVaryingParityDecodesAtCeiling only round-trips FULL groups (m=DataShards=10) with varying k — partial (deadline-flushed) groups where m<DataShards AND k<ceiling simultaneously (which the adaptive datapath DOES produce) are never round-tripped through the ceiling decoder."
+- rootCause: The varying-M-decodes-at-ceiling invariant is an implementation detail of reedsolomon's default matrix, not a documented API guarantee, and the property test under-covers the (partial-m × partial-k) space the adaptive encoder actually generates.
+- suggestedFix: "Hardening task: (1) extend the property test to cover partial m in [1,DataShards] × k in [0,ceiling] with byte-exact recovery through the single ceiling decoder; (2) PIN the guarantee — either assert at build time that the constructed generator-matrix parity rows are a stable prefix as total-parity varies, or add a go.mod version-pin note + doc comment that reedsolomon must stay on a version whose default New() uses the Vandermonde buildMatrix, and re-verify on any reedsolomon upgrade."
+- ledgerRefs: ["tasks:T29","tasks:T24","goals:G1"]
+
+### D26 — root-caused
+
+- createdAt: 2026-07-08T00:37:04.757Z
+- updatedAt: 2026-07-08T00:37:04.757Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Adaptive-FEC DEFAULT tuning (SafetyFactor 1.5, RaiseThreshold 5%) cannot meet a sub-1% residual SLA
+- severity: low
+- description: "Found by the T29 fable review + flagged by the T29 implementer, file-and-defer, PRE-EXISTING (T27 control-law design). adaptivefec DefaultSafetyFactor=1.5 sizes M=1 at 5% loss with K=10, giving ~1% post-recovery residual (E[max(0,D-1)]/K, D~Bin(10,0.05)) — 2x the P4ResidualLossMax=0.5% bound. And DefaultRaiseThreshold=0.05 means steady loss anywhere below 5% (e.g. 3-4%) raises NO parity at all, so residual equals raw path loss. A deployment enabling `[fec] adaptive = true` with DEFAULTS and expecting P4-grade masking silently gets a much weaker SLA. The T29 config knob [fec].safety_factor works around it (the P4 e2e sets 4.0 → M~3 → residual <<0.5%), but nothing maps (target residual, K, loss) → SafetyFactor/M for an operator."
+- rootCause: The redundancy map is parameterized by a bare SafetyFactor multiplier + fixed hysteresis bands, none derived from a target-residual SLA; the defaults were chosen for stability (T27), not to hit a specific residual bound.
+- suggestedFix: Derive the redundancy map from a TARGET-RESIDUAL parameter (invert the binomial residual for M given K and smoothed loss), OR ship a documented SafetyFactor/RaiseThreshold table per residual SLA in the ops/install docs. Consider making the residual target (not the bare multiplier) the config surface. Pairs with the adaptive-FEC ops documentation.
+- ledgerRefs: ["tasks:T29","tasks:T27","goals:G1"]
