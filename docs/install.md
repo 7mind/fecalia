@@ -258,3 +258,23 @@ on that site; use a different access network or an out-of-scope UDP-encapsulatio
 tool upstream of wanbond. The manual P5 checklist (`docs/manual-checklist.md`)
 includes a step to confirm this failure mode is understood and, where a test
 network permits, observed.
+
+### DPI port-guessing on WireGuard's registered port 51820 (deployment note)
+
+nDPI (and DPI engines generally) will label **any** UDP flow on WireGuard's
+IANA-registered port **51820** as `WireGuard` / category `VPN` **by a port
+guess alone — regardless of payload** (nDPI reports this as `Confidence: Match
+by port`). This is a classification of the *port*, not the *wire format*: a
+random-payload UDP flow to `:51820` is labelled WireGuard, while the identical
+payload to a non-registered port is `Unknown`. wanbond's payload is verified
+indistinguishable from random by `TestWireFormatAudit` (T26) and by
+`TestP5DPI`, which reads nDPI's per-flow `Confidence` and only treats a
+**payload/content** match (`Confidence: DPI`) as a classification — a port
+guess is disregarded.
+
+Deployment consequence: `wireguard.listen_port` is operator-configurable, so on
+a hostile network that classifies by port, **prefer a non-registered UDP port**
+(any high, unassigned port) for the concentrator's `listen_port` and the edge's
+`endpoint`. This avoids the trivial port-based "VPN" label. It is a deployment
+consideration, not a payload weakness — the obfuscated payload itself does not
+identify the tunnel as WireGuard/VPN.

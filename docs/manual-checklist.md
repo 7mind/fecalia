@@ -194,11 +194,14 @@ date, `wanbond version`, the access-network description, and each tool's verdict
       Confirm `wanbond.pcap` is non-empty.
 
 ### nDPI — negative assertion (the requirement)
-- [ ] `ndpiReader -i wanbond.pcap`; in the **Detected protocols** block the wanbond
-      flow is classified **Unknown** (or QUIC/DNS/etc.) — and NOT WireGuard, OpenVPN,
-      IPsec, Tunnel, or any VPN protocol; the **Category statistics** show it NOT under
-      **VPN**. Record the reported protocol/category. A WireGuard/VPN classification
-      here is a requirement-6 DEFECT — file it; do not rationalise it away.
+- [ ] `ndpiReader -v 2 -i wanbond.pcap`; on the per-flow line for the wanbond flow the
+      `[Confidence: …]` field is **NOT** a payload/content match to WireGuard/VPN — a
+      `[proto: …/Unknown]` (or QUIC/DNS/etc.) is fine. **Ignore a `Confidence: Match by
+      port` "WireGuard/VPN" label if you captured on port 51820** — that is a port guess,
+      not a payload classification (see docs/install.md §Limitations); to remove the
+      ambiguity, deploy/capture on a **non-registered UDP port** so nDPI cannot
+      port-guess. A WireGuard/VPN label with `Confidence: DPI` (a PAYLOAD match) is a
+      requirement-6 DEFECT — file it; do not rationalise it away.
 
 ### Suricata — negative assertion
 - [ ] `suricata -r wanbond.pcap -l ./sur-neg -k none`; inspect `./sur-neg/eve.json`:
