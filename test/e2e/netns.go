@@ -18,7 +18,13 @@ import (
 // OPTIONAL config-time impairments: both default to zero, so the DefaultPaths
 // topology stays uncapped and lossless and every existing P0/P1 e2e test runs
 // unchanged. A non-zero rateMbit makes the LINK — not the single-core userspace
-// WG crypto (CPU-bound at ~150-170 Mbit/s on a 1-vCPU host) — the bottleneck, so
+// WG crypto — the bottleneck ONLY when rateMbit sits below the EXECUTING host's
+// measured in-fixture tunnel ceiling. That ceiling is CPU/PPS-bound (both daemons
+// plus the load generator share the host's cores), a lower bound that scales with
+// core count, NOT a link-throughput spec: ~12–46 Mbit/s single-flow on a 1-vCPU
+// aarch64 host (docs/p0-findings.md:216-225), ~13 Mbit/s single-path (up to
+// ~47–87 Mbit/s FEC single-flow) on a 4-vCPU amd64 host. Sizing rule: cap < ceiling
+// for single-path, 2×cap < ceiling for aggregation. Below the ceiling
 // a standing queue can form for bufferbloat/pacing (T21/T23) work; a non-zero
 // lossPct injects uniform egress loss at Setup time for FEC-recovery (T25/T29)
 // work.

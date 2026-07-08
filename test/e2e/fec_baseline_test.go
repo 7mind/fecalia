@@ -15,9 +15,15 @@ import (
 
 // FEC single-flow TCP collapse baseline parameters.
 //
-// The cap sits well below the CPU-bound tunnel throughput (P0 measured ~150-170
-// Mbit/s of userspace-WG crypto on a 1-vCPU host), so the LINK — not the crypto
-// — is the bottleneck; a fixed one-way delay then makes the loss×RTT product
+// For the LINK — not userspace-WG crypto — to be the bottleneck, the cap must sit
+// below the EXECUTING host's measured in-fixture tunnel ceiling. That ceiling is
+// CPU/PPS-bound (both daemons plus the load generator share the host's cores), a
+// lower bound that scales with core count, NOT a link-throughput spec: ~12–46
+// Mbit/s single-flow on a 1-vCPU aarch64 host (docs/p0-findings.md:216-225), and
+// ~47 Mbit/s (adaptive) / ~86.85 Mbit/s (fixed baseline) FEC single-flow goodput
+// on a 4-vCPU amd64 host. The 50-Mbit cap is therefore link-bound only on a host
+// whose ceiling exceeds it (the 4-vCPU amd64 host); on the 1-vCPU host it is
+// crypto-bound. A fixed one-way delay then makes the loss×RTT product
 // bite. The Mathis relation bounds single-flow TCP goodput at MSS/(RTT·sqrt(p)),
 // so at a FIXED cap and RTT, goodput falls roughly with 1/sqrt(loss): this
 // baseline quantifies exactly that collapse, which FEC recovery (T25/T29) is

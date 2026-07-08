@@ -69,8 +69,15 @@ and (b) a standing queue can form so pacing has something to bound.
 config-time controlled-loss knob (`netem loss`), both defaulting to zero so the
 DefaultPaths topology stays uncapped/lossless and every existing P0/P1 e2e test
 runs unchanged (`pathSpec.rateMbit`/`lossPct` default to 0 = uncapped/lossless);
-when a cap IS set it is sized well below the ~150 Mbit/s CPU bound (the self-test
-uses 50 Mbit/s) so the link is the bottleneck and a standing queue forms. T35's
+when a cap IS set it must be sized below the EXECUTING host's measured in-fixture
+tunnel ceiling so the link is the bottleneck and a standing queue forms. That
+ceiling is CPU/PPS-bound (both daemons plus the load generator share the host's
+cores), a lower bound that scales with core count and NOT a link-throughput spec:
+~12–46 Mbit/s single-flow on a 1-vCPU aarch64 host (`docs/p0-findings.md:216-225`),
+~13 Mbit/s single-path (up to ~47–87 Mbit/s FEC single-flow) on a 4-vCPU amd64
+host. The sizing rule is cap < ceiling for single-path and 2×cap < ceiling for
+aggregation; the self-test uses a 50 Mbit/s cap, link-bound only on a host whose
+ceiling exceeds it. T35's
 `TestFixtureImpairment` self-test proves both knobs operationally. The drafted
 follow-up below is **superseded by, and unified into, T35** — there is no
 duplicate/parallel fixture-cap knob; T23's aggregation e2e and T21's empirical
