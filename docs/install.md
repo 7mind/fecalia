@@ -224,3 +224,37 @@ address (`curl -s http://127.0.0.1:9090/metrics`). Logs go to stderr →
 The daemon sets the TUN MTU itself from the bonded-overhead budget (see
 `docs/p1-mtu.md`); do not override it. If an on-path MTU below the default
 1500 is in play, see the TCP MSS-clamp guidance in that document.
+
+## 8. Limitations
+
+### UDP-blocking networks defeat wanbond (no TCP/TLS fallback — by design)
+
+wanbond carries every path over **UDP** (WireGuard's transport). Its
+DPI-resistance goal is that a network which *inspects* traffic cannot
+distinguish the flow from ordinary UDP: the outer frame codec (amnezia
+obfuscation + the FEC-framed Bind) removes the WireGuard/VPN fingerprint, so a
+network doing protocol classification does not identify and block it. This is
+verified by the `TestP5DPI` / `TestWireFormatAudit` e2e checks (requirement 6):
+neither nDPI nor Suricata classifies the obfuscated flow as WireGuard or any
+identified VPN.
+
+Obfuscation does **not** help against a network that blocks UDP **wholesale** —
+dropping all UDP (or all UDP except DNS/QUIC to specific resolvers), regardless
+of payload. Against such a network wanbond cannot connect, and there is **no
+in-scope mitigation**:
+
+- There is **no TCP or TLS-tunnelled fallback transport**, and adding one is an
+  **explicit non-goal** for this project. wanbond's value is WAN *bonding* with
+  adaptive FEC over multiple real uplinks; a single TCP-over-TLS obfuscation
+  transport (the domain of tools like obfs4/shadowsocks/`udp2raw`) is a
+  different problem and is deliberately out of scope.
+- Wholesale-UDP-block is distinct from **DPI classification**: obfuscation
+  answers the latter (proven), not the former. A hostile network that lets *no*
+  UDP through cannot be defeated by making the UDP look innocuous.
+
+Operationally: if an uplink blocks UDP entirely, treat that uplink as
+unavailable for wanbond. If **every** uplink blocks UDP, wanbond is not usable
+on that site; use a different access network or an out-of-scope UDP-encapsulation
+tool upstream of wanbond. The manual P5 checklist (`docs/manual-checklist.md`)
+includes a step to confirm this failure mode is understood and, where a test
+network permits, observed.

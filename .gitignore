@@ -12,5 +12,9 @@
 coverage.txt
 *.pcap
 *.pcapng
+# Committed DPI positive-control fixture (a real plain-WireGuard capture) — the
+# *.pcap rule above ignores transient e2e captures, but this reference fixture is
+# tracked (see test/e2e/testdata/README.md).
+!test/e2e/testdata/plain-wireguard.pcap
 .codegraph/
 /dist/

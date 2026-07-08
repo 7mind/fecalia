@@ -154,3 +154,65 @@ and observed numbers.
 - [ ] `systemctl reload wanbond-edge` after changing `[metrics] listen`: journal logs
       `metrics endpoint rebound`; the new address serves `/metrics`, the old one stops;
       the tunnel and any running flow are unaffected.
+
+## P5 — scripted real-setup run (DPI resistance)
+
+Scripted counterpart of the P5 summary above for the real deployment. This is the
+manual, real-link mirror of the automated `TestP5DPI` (netns) check: it confirms that
+on a real access network the obfuscated wanbond flow is **not** classified as WireGuard
+or any identified VPN by nDPI or Suricata, and it exercises the UDP-block limitation
+(docs/install.md §8) as an understood failure mode — not a wanbond defect. Requires the
+P1 setup validated (both daemons up from `0600` configs) AND an `[amnezia]` obfuscation
+block set IDENTICALLY on both ends (obfuscation ON — plain WireGuard is trivially
+classified and is NOT what ships). Run the capture from a realistic *hostile-ish*
+network (hotel / guest / captive-portal Wi-Fi, or a lab uplink with a DPI appliance
+in path). Install `ndpi` (`ndpiReader`) and `suricata` on the capture host. Record
+date, `wanbond version`, the access-network description, and each tool's verdict.
+
+### Positive control FIRST (prove the detectors have teeth)
+- [ ] On the capture host, run the shipped positive-control capture through nDPI:
+      `ndpiReader -i test/e2e/testdata/plain-wireguard.pcap` and confirm the
+      **Detected protocols** block lists **WireGuard** (and category **VPN**). If it
+      does NOT, the tool/parse is broken and every "not classified" result below is
+      vacuous — fix the tooling before trusting the negative checks.
+- [ ] (Informational) Run the same capture through Suricata
+      (`suricata -r test/e2e/testdata/plain-wireguard.pcap -l ./sur-pos -k none`) and
+      note whether `eve.json` reports `app_proto: wireguard`. The stock Suricata config
+      ships no WireGuard app-layer parser, so `failed`/`unknown` here is EXPECTED —
+      nDPI carries the WireGuard-specific positive control; Suricata provides the
+      app-layer/anomaly negative check.
+
+### Connect + capture the obfuscated wanbond flow
+- [ ] From the hostile-ish network, bring the tunnel up (edge `systemctl start
+      wanbond-edge`); confirm handshake: edge `ping -c 3 10.77.0.1` succeeds. If the
+      network **blocks UDP wholesale**, the handshake will NOT complete — see the
+      UDP-block step below; that is the documented limitation, not a bug.
+- [ ] Capture the outer WAN UDP while driving representative traffic (a bulk transfer
+      + interactive traffic for ~30 s): on the edge uplink interface,
+      `tcpdump -i <wan-if> -n -p -U -w wanbond.pcap 'udp port 51820'`
+      (adjust the port to your `wireguard.listen_port` / concentrator endpoint).
+      Confirm `wanbond.pcap` is non-empty.
+
+### nDPI — negative assertion (the requirement)
+- [ ] `ndpiReader -i wanbond.pcap`; in the **Detected protocols** block the wanbond
+      flow is classified **Unknown** (or QUIC/DNS/etc.) — and NOT WireGuard, OpenVPN,
+      IPsec, Tunnel, or any VPN protocol; the **Category statistics** show it NOT under
+      **VPN**. Record the reported protocol/category. A WireGuard/VPN classification
+      here is a requirement-6 DEFECT — file it; do not rationalise it away.
+
+### Suricata — negative assertion
+- [ ] `suricata -r wanbond.pcap -l ./sur-neg -k none`; inspect `./sur-neg/eve.json`:
+      no flow's `app_proto` and no `alert.signature`/`alert.category` names WireGuard
+      or a VPN. Record the observed `app_proto` (expected: `failed`/`unknown`). A
+      WireGuard/VPN app-proto or alert is a requirement-6 DEFECT.
+
+### UDP-block limitation (understood failure mode, not a defect)
+- [ ] On a network (or a test firewall rule) that blocks UDP wholesale, confirm the
+      tunnel FAILS to connect (no handshake, `ping 10.77.0.1` fails) and the edge
+      journal shows only outbound handshake attempts with no response. Confirm this is
+      the EXPECTED behaviour: wanbond has no TCP/TLS fallback transport (explicit
+      non-goal, docs/install.md §8). Record that the flow does not silently downgrade
+      to an unobfuscated or plaintext fallback (there is none — it simply does not
+      connect).
+- [ ] Where a UDP-allowing network is available again, confirm the tunnel reconnects
+      once UDP egress is restored (no manual intervention beyond the network change).
