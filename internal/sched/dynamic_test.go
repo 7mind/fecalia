@@ -15,7 +15,7 @@ func TestActiveBackupAddPathLowestPriority(t *testing.T) {
 	clock := newFakeClock()
 	primary := &fakeHealth{s: telemetry.StateUp}
 	s := newSched(t, clock, time.Second, primary)
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 
@@ -28,17 +28,17 @@ func TestActiveBackupAddPathLowestPriority(t *testing.T) {
 	if idx != 1 {
 		t.Fatalf("AddPath index = %d, want 1 (appended as lowest priority)", idx)
 	}
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after admitting a down backup = %d, want 0 (survivor undisturbed)", got)
 	}
 
 	// It becomes selectable only once it is healthy AND the primary is down.
 	added.up()
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick with healthy backup but healthy primary = %d, want 0", got)
 	}
 	primary.down()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick with primary down = %d, want 1 (failover to the added path)", got)
 	}
 
@@ -56,7 +56,7 @@ func TestActiveBackupRemovePathActive(t *testing.T) {
 	backup := &fakeHealth{s: telemetry.StateUp}
 	third := &fakeHealth{s: telemetry.StateUp}
 	s := newSched(t, clock, time.Second, primary, backup, third)
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 
@@ -65,7 +65,7 @@ func TestActiveBackupRemovePathActive(t *testing.T) {
 	if err := s.RemovePath(1); err != nil {
 		t.Fatalf("RemovePath(1): %v", err)
 	}
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after removing a non-active path = %d, want 0 (survivor undisturbed)", got)
 	}
 
@@ -74,12 +74,12 @@ func TestActiveBackupRemovePathActive(t *testing.T) {
 	if err := s.RemovePath(0); err != nil {
 		t.Fatalf("RemovePath(0): %v", err)
 	}
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after removing the active path = %d, want 0 (the sole survivor)", got)
 	}
 	// third is the only path left and it is up.
 	third.down()
-	if got := s.Pick(); got >= 0 {
+	if got := s.Pick(ClassData); got >= 0 {
 		t.Fatalf("Pick with the sole survivor down = %d, want negative", got)
 	}
 
@@ -100,11 +100,11 @@ func TestActiveBackupRemoveDoesNotThrashFailback(t *testing.T) {
 	// Fail over to the backup, then let the primary recover so a failback dwell arms
 	// (pending = index 0, the primary).
 	primary.down()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick after primary down = %d, want 1", got)
 	}
 	primary.up()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick mid-dwell = %d, want 1 (debounced)", got)
 	}
 
@@ -113,7 +113,7 @@ func TestActiveBackupRemoveDoesNotThrashFailback(t *testing.T) {
 	if err := s.RemovePath(0); err != nil {
 		t.Fatalf("RemovePath(0): %v", err)
 	}
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after removing the pending candidate = %d, want 0 (backup, now sole path)", got)
 	}
 }
@@ -128,7 +128,7 @@ func TestActiveBackupSetPathsReconciles(t *testing.T) {
 	primary := &fakeHealth{s: telemetry.StateUp}
 	backup := &fakeHealth{s: telemetry.StateUp}
 	s := newSched(t, clock, time.Second, primary, backup)
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 
@@ -138,18 +138,18 @@ func TestActiveBackupSetPathsReconciles(t *testing.T) {
 	if err := s.SetPaths([]PathHealth{reopened}); err != nil {
 		t.Fatalf("SetPaths: %v", err)
 	}
-	if got := s.Pick(); got != -1 {
+	if got := s.Pick(ClassData); got != -1 {
 		t.Fatalf("Pick after reconcile to a single down path = %d, want -1 (cached active cleared)", got)
 	}
 	reopened.up()
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after the reconciled path came up = %d, want 0", got)
 	}
 
 	// The old health sources are no longer consulted: bringing the reconciled path down
 	// yields no eligible path even though the old primary/backup remain up.
 	reopened.down()
-	if got := s.Pick(); got != -1 {
+	if got := s.Pick(ClassData); got != -1 {
 		t.Fatalf("Pick = %d, want -1 (stale pre-reconcile paths must not be selectable)", got)
 	}
 

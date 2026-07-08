@@ -914,12 +914,18 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return conn.ErrWrongEndpointType
 	}
 
+	// Classify the batch by inner WireGuard message type (defect D22): a handshake or
+	// keepalive is passed to the scheduler as ClassControl so a pacing scheduler exempts
+	// it from the per-path data token buckets and bulk overload cannot shed it and starve
+	// rekey. Classification reads only the leading type word, so it stays off the lock.
+	class := classifyBatch(bufs)
+
 	m.mu.Lock()
 	if len(m.paths) == 0 {
 		m.mu.Unlock()
 		return errClosed
 	}
-	idx := m.scheduler.Pick()
+	idx := m.scheduler.Pick(class)
 	if idx == sched.PickPaced {
 		// The scheduler shed this datagram for pacing while paths are healthy: drop it
 		// (same as no-path), but surface a DISTINCT error so the diagnostic is not
@@ -1080,8 +1086,10 @@ func (m *Multipath) fecFlushDeadline() {
 	// Route the parity like data through the scheduler (a first-integration choice; see
 	// Send). A shed/no-path verdict drops this group's parity — a degraded path is
 	// exactly when the datapath is under pressure, and a stranded partial group's parity
-	// is best-effort — so the group simply goes unprotected rather than blocking.
-	idx := m.scheduler.Pick()
+	// is best-effort — so the group simply goes unprotected rather than blocking. FEC
+	// parity is bulk redundancy, so it is paced as ClassData (defect D22): only WireGuard
+	// control frames earn the pacing exemption.
+	idx := m.scheduler.Pick(sched.ClassData)
 	if idx < 0 || idx >= len(m.paths) {
 		m.mu.Unlock()
 		return

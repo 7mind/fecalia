@@ -310,7 +310,7 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 	if probers[0].State() != telemetry.StateUp || probers[1].State() != telemetry.StateUp {
 		t.Fatalf("after healthy exchange states = (%v,%v), want (up,up)", probers[0].State(), probers[1].State())
 	}
-	if idx := scheduler.Pick(); idx != 0 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 0 {
 		t.Fatalf("scheduler Pick = %d while both up, want the primary 0", idx)
 	}
 
@@ -331,7 +331,7 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 	if probers[1].State() != telemetry.StateUp {
 		t.Fatalf("backup path 1 state = %v, want up", probers[1].State())
 	}
-	if idx := scheduler.Pick(); idx != 1 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 1 {
 		t.Fatalf("scheduler Pick = %d after primary blackhole, want failover to backup 1", idx)
 	}
 

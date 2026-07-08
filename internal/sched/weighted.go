@@ -248,7 +248,7 @@ func (s *WeightedScheduler) RedundantPaths(chosen int) []int {
 // is paced out (the frame is dropped rather than queued — pacing bounds egress and,
 // by dropping the overflow, bounds the send backlog). It is safe for concurrent
 // callers.
-func (s *WeightedScheduler) Pick() int {
+func (s *WeightedScheduler) Pick(class FrameClass) int {
 	now := s.clock.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -272,10 +272,10 @@ func (s *WeightedScheduler) Pick() int {
 		// Data-thrift: at low load only the primary (best eligible) carries traffic;
 		// the metered backup stays idle. A path-down excludes it from eligible, so
 		// eligible[0] is the surviving highest-priority path — failover is preserved.
-		return s.serveLocked(now, eligible[0])
+		return s.serveLocked(now, eligible[0], class)
 	}
 	weights := s.weightsLocked(eligible)
-	return s.selectAggregatingLocked(now, eligible, weights)
+	return s.selectAggregatingLocked(now, eligible, weights, class)
 }
 
 // loadGapLocked returns the wall-clock gap since the previous offered-load sample, or
@@ -314,8 +314,13 @@ func (s *WeightedScheduler) recomputeLocked(_ time.Time) {
 // serveLocked applies pacing to a single chosen path: it returns idx when the frame
 // is admitted, or PickPaced when pacing is on and the path has no token (the frame is
 // shed — dropped, bounding egress and backlog — and the shedding diagnostic is
-// rate-limited). Caller holds s.mu.
-func (s *WeightedScheduler) serveLocked(now time.Time, idx int) int {
+// rate-limited). A ClassControl frame is pacing-EXEMPT (defect D22): it egresses on
+// idx unconditionally, spending no token and never shed, so bulk overload cannot
+// starve WireGuard rekey. Caller holds s.mu.
+func (s *WeightedScheduler) serveLocked(now time.Time, idx int, class FrameClass) int {
+	if class == ClassControl {
+		return idx
+	}
 	if s.tryConsumeLocked(idx) {
 		return idx
 	}
@@ -326,9 +331,14 @@ func (s *WeightedScheduler) serveLocked(now time.Time, idx int) int {
 // robin) and applies pacing. When the round-robin's ideal pick is paced out it falls
 // through to any other eligible path that still has a token, so aggregate egress is
 // bounded by the SUM of the per-path paces; when every eligible path is paced out it
-// sheds the frame (PickPaced). Caller holds s.mu.
-func (s *WeightedScheduler) selectAggregatingLocked(now time.Time, eligible []int, weights []float64) int {
+// sheds the frame (PickPaced). A ClassControl frame is pacing-EXEMPT (defect D22): it
+// egresses on the weight-ideal path spending no token and is never shed, so bulk
+// overload across every path cannot starve WireGuard rekey. Caller holds s.mu.
+func (s *WeightedScheduler) selectAggregatingLocked(now time.Time, eligible []int, weights []float64, class FrameClass) int {
 	ideal := s.swrrPickLocked(eligible, weights)
+	if class == ClassControl {
+		return ideal
+	}
 	if s.tryConsumeLocked(ideal) {
 		return ideal
 	}

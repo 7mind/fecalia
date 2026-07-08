@@ -12,6 +12,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -89,7 +90,7 @@ func TestMultipathAddPathAdmitsWhenHealthy(t *testing.T) {
 	if probers[0].State() != telemetry.StateUp {
 		t.Fatalf("primary state = %v, want up", probers[0].State())
 	}
-	if idx := scheduler.Pick(); idx != 0 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 0 {
 		t.Fatalf("Pick = %d, want 0 (primary active)", idx)
 	}
 
@@ -120,7 +121,7 @@ func TestMultipathAddPathAdmitsWhenHealthy(t *testing.T) {
 	}
 
 	// Down until healthy: the scheduler still selects the primary.
-	if idx := scheduler.Pick(); idx != 0 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 0 {
 		t.Fatalf("Pick = %d right after add, want 0 (added path not yet healthy)", idx)
 	}
 
@@ -154,7 +155,7 @@ func TestMultipathAddPathAdmitsWhenHealthy(t *testing.T) {
 	if probers[0].State() != telemetry.StateDown {
 		t.Fatalf("blackholed primary state = %v, want down", probers[0].State())
 	}
-	if idx := scheduler.Pick(); idx != 1 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 1 {
 		t.Fatalf("Pick = %d after primary blackhole, want 1 (failover to the runtime-added path)", idx)
 	}
 }
@@ -394,7 +395,7 @@ func TestMultipathRuntimeRemoveSurvivesReopen(t *testing.T) {
 
 	// Scheduler and path slice are consistent: Pick addresses the surviving path (a is
 	// still up — probers persist across reopen), never an out-of-range zombie index.
-	idx := scheduler.Pick()
+	idx := scheduler.Pick(sched.ClassData)
 	if idx != 0 {
 		t.Fatalf("Pick after reopen = %d, want 0 (scheduler/path desync)", idx)
 	}
@@ -466,7 +467,7 @@ func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
 	// No frozen zombie: the added path (index 1) starts DOWN after reopen (fresh socket,
 	// no echoes yet), so Pick selects the primary (index 0, still up), NEVER an
 	// out-of-range index, and Send succeeds on the primary.
-	if idx := scheduler.Pick(); idx < 0 || idx >= len(m.paths) {
+	if idx := scheduler.Pick(sched.ClassData); idx < 0 || idx >= len(m.paths) {
 		t.Fatalf("Pick after reopen = %d out of range [0,%d) (scheduler/path desync)", idx, len(m.paths))
 	} else if idx != 0 {
 		t.Fatalf("Pick after reopen = %d, want 0 (primary up, added path not yet healthy)", idx)
@@ -497,7 +498,7 @@ func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
 	if m.paths[1].prober.State() != telemetry.StateUp {
 		t.Fatalf("reopened added path state = %v, want up (its prober is not being Ticked — frozen zombie)", m.paths[1].prober.State())
 	}
-	if idx := scheduler.Pick(); idx != 0 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 0 {
 		t.Fatalf("Pick with both up = %d, want 0 (added path must not steal egress)", idx)
 	}
 	rounds := int(testProbeDownAfter/testProbeInterval) + 3
@@ -514,7 +515,7 @@ func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
 		m.handleInbound(m.paths[1], echo, ap1)
 		clk.advance(testProbeInterval - testProbeRTT)
 	}
-	if idx := scheduler.Pick(); idx != 1 {
+	if idx := scheduler.Pick(sched.ClassData); idx != 1 {
 		t.Fatalf("Pick after primary blackhole = %d, want 1 (failover onto the reopened runtime-added path)", idx)
 	}
 }

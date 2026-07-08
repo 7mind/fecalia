@@ -150,6 +150,50 @@ type SchedulerConfig struct {
 	WeightLossFloor float64 `toml:"weight_loss_floor"`
 }
 
+// BDPSizing is a per-path pacing sizing derived from a MEASURED path, in the
+// frame-selection-slot units the weighted scheduler pace uses (defect D22). It is the
+// empirical alternative to the synthetic frame-count defaults: CapacityFPS replaces
+// PerPathCapacityFPS and BurstFrames replaces PacingBurstFrames.
+type BDPSizing struct {
+	// CapacityFPS is the sustained per-path frame rate the measured bottleneck bandwidth
+	// supports (the token-bucket refill rate and aggregation-gate denominator).
+	CapacityFPS float64
+	// BurstFrames is the bandwidth-delay product expressed in frames (bandwidth x RTT,
+	// i.e. one RTT of in-flight frames): the token-bucket burst that absorbs one RTT of
+	// jitter without building a standing queue.
+	BurstFrames float64
+}
+
+// SizePacingFromBDP derives the weighted scheduler's per-path pacing parameters from a
+// measured path instead of the synthetic frame-count default (defect D22). The shipped
+// defaultPerPathCapacityFPS (10000, ~115 Mbit/s at full MTU) sits far above a realistic
+// slow uplink, so the aggregation gate may never engage and — with pacing enabled — the
+// pace never binds; deriving capacity from the measured bottleneck bandwidth fixes both.
+//
+// capacity_fps = bandwidth / (8 * avg wire frame bytes) — frames/s the link sustains.
+// burst_frames = capacity_fps * RTT — one RTT of in-flight frames (equivalently
+// BDP_bytes / avg wire frame bytes, since the bandwidth-delay product BDP = bandwidth * RTT).
+//
+// bandwidthBitsPerSec is the measured bottleneck bandwidth (bits/s), rtt the measured
+// path RTT, and avgWireFrameBytes the average on-wire outer-frame size (a full-MTU
+// datagram plus frame.DataOverhead is the conservative choice). It fails fast on a
+// non-positive input rather than emitting a nonsensical (zero/negative/Inf) sizing.
+func SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFrameBytes float64) (BDPSizing, error) {
+	if bandwidthBitsPerSec <= 0 {
+		return BDPSizing{}, fmt.Errorf("config: BDP sizing bandwidth must be > 0 bit/s, got %g", bandwidthBitsPerSec)
+	}
+	if rtt <= 0 {
+		return BDPSizing{}, fmt.Errorf("config: BDP sizing RTT must be > 0, got %s", rtt)
+	}
+	if avgWireFrameBytes <= 0 {
+		return BDPSizing{}, fmt.Errorf("config: BDP sizing average wire frame size must be > 0 bytes, got %g", avgWireFrameBytes)
+	}
+	const bitsPerByte = 8.0
+	capacityFPS := bandwidthBitsPerSec / (bitsPerByte * avgWireFrameBytes)
+	burstFrames := capacityFPS * rtt.Seconds()
+	return BDPSizing{CapacityFPS: capacityFPS, BurstFrames: burstFrames}, nil
+}
+
 // FEC group-close deadline default (T24). Applied only when [fec] is enabled but
 // leaves the deadline at its zero value, so a minimal `enabled = true` block emits
 // parity for a partially-filled group promptly under low load rather than stranding

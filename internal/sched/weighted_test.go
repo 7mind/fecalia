@@ -60,7 +60,7 @@ func newWeighted(t testing.TB, clock telemetry.Clock, cfg WeightedConfig, source
 func driveUntilAggregating(t testing.TB, s *WeightedScheduler, clock *fakeClock, dt time.Duration) {
 	t.Helper()
 	for i := 0; i < 200000; i++ {
-		s.Pick()
+		s.Pick(ClassData)
 		clock.advance(dt)
 		if s.aggregating {
 			return
@@ -86,7 +86,7 @@ func TestWeightedDistributesProportionalToWeights(t *testing.T) {
 	var count [2]int
 	const samples = 60000
 	for i := 0; i < samples; i++ {
-		idx := s.Pick()
+		idx := s.Pick(ClassData)
 		if idx >= 0 {
 			count[idx]++
 		}
@@ -118,7 +118,7 @@ func TestWeightedCollapsesToPrimaryAtLowLoad(t *testing.T) {
 	const dt = 10 * time.Millisecond // 100 fps offered << 900 fps engage threshold
 	var count [2]int
 	for i := 0; i < 5000; i++ {
-		idx := s.Pick()
+		idx := s.Pick(ClassData)
 		if idx >= 0 {
 			count[idx]++
 		}
@@ -158,7 +158,7 @@ func TestWeightedHysteresisBand(t *testing.T) {
 	// and never seed the collapse dwell.
 	const bandDt = 1428 * time.Microsecond // ~700 fps
 	for i := 0; i < 1500; i++ {            // ~2.1s of sim time, >> CollapseDwell
-		s.Pick()
+		s.Pick(ClassData)
 		clock.advance(bandDt)
 		if !s.aggregating {
 			t.Fatalf("collapsed at in-band load (~700 fps, step %d) — the hysteresis band must hold aggregation", i)
@@ -179,7 +179,7 @@ func TestWeightedHysteresisBand(t *testing.T) {
 	belowSinceSeed := time.Time{}
 	collapsedAt := time.Time{}
 	for i := 0; i < 400; i++ {
-		s.Pick()
+		s.Pick(ClassData)
 		if belowSinceSeed.IsZero() && !s.belowSince.IsZero() {
 			belowSinceSeed = s.belowSince
 		}
@@ -224,7 +224,7 @@ func TestWeightedCollapsesAfterOverloadIdle(t *testing.T) {
 	const hiDt = 100 * time.Microsecond // 10 000 fps
 	driveUntilAggregating(t, s, clock, hiDt)
 	for i := 0; i < 2000; i++ { // solidify: load well above disengage
-		s.Pick()
+		s.Pick(ClassData)
 		clock.advance(hiDt)
 	}
 	if !s.aggregating || !s.belowSince.IsZero() {
@@ -238,7 +238,7 @@ func TestWeightedCollapsesAfterOverloadIdle(t *testing.T) {
 	const burstDt = 10 * time.Millisecond
 	var count [2]int
 	for i := 0; i < 40; i++ {
-		idx := s.Pick()
+		idx := s.Pick(ClassData)
 		if idx >= 0 {
 			count[idx]++
 		}
@@ -265,17 +265,17 @@ func TestWeightedFailoverOnPathDown(t *testing.T) {
 
 	// Collapsed (low load): all traffic on the primary, then the primary dies ->
 	// egress fails over to the surviving backup.
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0 (primary, collapsed)", got)
 	}
 	primary.down()
 	clock.advance(time.Millisecond)
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick after primary DOWN = %d, want 1 (failover to backup)", got)
 	}
 	// With every path down, no eligible path.
 	backup.down()
-	if got := s.Pick(); got >= 0 {
+	if got := s.Pick(ClassData); got >= 0 {
 		t.Fatalf("Pick with all paths down = %d, want negative", got)
 	}
 
@@ -287,7 +287,7 @@ func TestWeightedFailoverOnPathDown(t *testing.T) {
 	driveUntilAggregating(t, s, clock, dt)
 	primary.down()
 	for i := 0; i < 2000; i++ {
-		if got := s.Pick(); got != 1 {
+		if got := s.Pick(ClassData); got != 1 {
 			t.Fatalf("Pick #%d after primary DOWN mid-aggregation = %d, want 1", i, got)
 		}
 		clock.advance(dt)
@@ -315,7 +315,7 @@ func TestWeightedPacingBoundsEgressAndBacklog(t *testing.T) {
 	var admit [2]int
 	drops := 0
 	for i := 0; i < steps; i++ {
-		idx := s.Pick()
+		idx := s.Pick(ClassData)
 		if idx < 0 {
 			drops++
 		} else {
@@ -493,7 +493,7 @@ func TestWeightedPickSentinelsDistinct(t *testing.T) {
 	driveUntilAggregating(t, s, clock, dt)
 	sawPaced := false
 	for i := 0; i < 20000; i++ {
-		if s.Pick() == PickPaced {
+		if s.Pick(ClassData) == PickPaced {
 			sawPaced = true
 			break
 		}
@@ -507,8 +507,73 @@ func TestWeightedPickSentinelsDistinct(t *testing.T) {
 	p0.down()
 	p1.down()
 	clock.advance(time.Second)
-	if got := s.Pick(); got != PickNone {
+	if got := s.Pick(ClassData); got != PickNone {
 		t.Fatalf("Pick with all paths down = %d, want PickNone (%d), distinct from PickPaced (%d)", got, PickNone, PickPaced)
+	}
+}
+
+// TestWeightedControlFrameExemptFromPacing reproduces defect D22: with pacing enabled
+// under sustained ~5x overload, a frame-type-blind pacer sheds WireGuard control frames
+// (handshake/keepalive) at the same probability as bulk data (~80% at 5x), delaying
+// rekey. The fix classes control frames ClassControl and EXEMPTS them from the per-path
+// token buckets: under the SAME overload that sheds bulk data heavily, a control frame
+// is NEVER shed (it always resolves to a healthy path index, never PickPaced).
+func TestWeightedControlFrameExemptFromPacing(t *testing.T) {
+	clock := newFakeClock()
+	p0 := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	p1 := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	cfg.Pacing = true
+	cfg.PacingBurst = 4
+	s := newWeighted(t, clock, cfg, p0, p1)
+
+	// capacity=1000 fps; offering a bulk frame every dt=200us is 5000 fps == 5x overload,
+	// so the per-path token buckets stay drained and bulk data is shed most of the time.
+	const dt = 200 * time.Microsecond
+	driveUntilAggregating(t, s, clock, dt)
+
+	dataShed := 0
+	const iterations = 20000
+	for i := 0; i < iterations; i++ {
+		// A control frame offered under the same overload must ALWAYS be admitted onto a
+		// healthy path — never shed (PickPaced) and never a false outage (PickNone).
+		if got := s.Pick(ClassControl); got == PickPaced || got == PickNone {
+			t.Fatalf("control frame shed under 5x overload: Pick(ClassControl) = %d, want a healthy path index (defect D22: pacer must exempt WG control frames)", got)
+		}
+		if s.Pick(ClassData) == PickPaced {
+			dataShed++
+		}
+		clock.advance(dt)
+	}
+	// The overload must be real: bulk data has to be shedding, otherwise the control-frame
+	// assertion above passes vacuously (no pacing pressure to be exempt from).
+	if dataShed == 0 {
+		t.Fatalf("no bulk-data frame shed in %d picks — the fixture is not overloaded, so the control-exemption check is vacuous", iterations)
+	}
+}
+
+// TestWeightedControlFrameExemptWhenCollapsed checks the exemption also holds on the
+// low-load / primary-only (non-aggregating) serve path, not just under aggregation:
+// with the primary's bucket forced empty, a bulk frame sheds but a control frame is
+// still admitted onto the primary.
+func TestWeightedControlFrameExemptWhenCollapsed(t *testing.T) {
+	clock := newFakeClock()
+	p0 := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	cfg.Pacing = true
+	cfg.PacingBurst = 2
+	s := newWeighted(t, clock, cfg, p0) // single path => never aggregates (serveLocked path)
+
+	// Drain the single path's bucket with bulk frames at one instant (no refill), then a
+	// bulk frame sheds while a control frame is still admitted onto the primary (index 0).
+	for i := 0; i < 10; i++ {
+		s.Pick(ClassData)
+	}
+	if got := s.Pick(ClassData); got != PickPaced {
+		t.Fatalf("bulk frame after draining the bucket = %d, want PickPaced (%d) — fixture not drained", got, PickPaced)
+	}
+	if got := s.Pick(ClassControl); got != 0 {
+		t.Fatalf("control frame on the collapsed/primary path = %d, want 0 (exempt from pacing, defect D22)", got)
 	}
 }
 
@@ -591,7 +656,7 @@ func TestWeightedSetPathsRealignsMembership(t *testing.T) {
 	if s.aggregating {
 		t.Fatal("SetPaths did not collapse aggregation")
 	}
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after SetPaths = %d, want 0 (sole path)", got)
 	}
 	if err := s.SetPaths(nil); err == nil {

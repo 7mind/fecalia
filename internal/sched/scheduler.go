@@ -20,6 +20,28 @@ const (
 	PickPaced = -2
 )
 
+// FrameClass tags an outbound datagram with the traffic class the pacer must treat
+// it as (defect D22). The multipath Bind classifies each frame from the inner
+// WireGuard message type and passes the class to Pick so a pacing scheduler can give
+// WireGuard control frames (handshake init/response, cookie reply, keepalive) a
+// different admission policy than bulk data. Pick() has no other frame-type
+// visibility, so this is the ONLY channel by which frame-type reaches the pacer.
+type FrameClass uint8
+
+const (
+	// ClassData is bulk/opaque data (a WireGuard transport datagram carrying tunnelled
+	// payload). It is fully paced: under a weighted scheduler with pacing enabled it is
+	// subject to the per-path token buckets and is shed (PickPaced) when they are empty.
+	ClassData FrameClass = iota
+	// ClassControl is a WireGuard control frame — handshake initiation/response, cookie
+	// reply, or keepalive. It is pacing-EXEMPT: a pacing scheduler never sheds it for an
+	// empty token bucket and never spends a data token for it, so sustained bulk overload
+	// cannot starve rekey (defect D22). Control frames originate from OUR OWN WireGuard
+	// engine on the send path (an attacker cannot inject them here), and WireGuard's own
+	// state machine bounds their rate, so exempting them from the data pace is safe.
+	ClassControl
+)
+
 // Scheduler is the send-side path-selection policy the multipath Bind consults
 // for every outbound datagram. It is the extension seam for the send scheduler:
 // active-backup failover (ActiveBackup, the P1 MVP) is one implementation; the
@@ -34,13 +56,18 @@ type Scheduler interface {
 	// tell a genuine outage apart from deliberate rate limiting. Pick is safe for
 	// concurrent callers on the Bind's send path.
 	//
+	// class is the frame's traffic class (defect D22): a pacing scheduler exempts
+	// ClassControl (WireGuard handshake/keepalive) from the data token buckets so
+	// bulk overload cannot shed control frames and starve rekey, while ClassData is
+	// fully paced. A non-pacing scheduler (active-backup) ignores class.
+	//
 	// Pick MAY be stateful: a weighted/aggregating scheduler advances its
 	// distribution bookkeeping (deficit/round-robin credits, pacing tokens, offered-
 	// load meter) on every call, so ONE Pick consumes ONE frame-selection slot.
 	// Callers that only want the liveness-derived active set refreshed — without
 	// perturbing distribution — MUST call Recompute, not Pick (see the T40 eager-
 	// failover nudge in the multipath Bind).
-	Pick() int
+	Pick(class FrameClass) int
 
 	// Recompute refreshes the scheduler's liveness-derived selection state (which
 	// paths are eligible, which is the active primary) from the current PathHealth,

@@ -387,8 +387,8 @@ func TestMultipathSendNoHealthyPath(t *testing.T) {
 // Send's negative-sentinel mapping without a live liveness machine.
 type stubScheduler struct{ pick int }
 
-func (s stubScheduler) Pick() int  { return s.pick }
-func (s stubScheduler) Recompute() {}
+func (s stubScheduler) Pick(_ sched.FrameClass) int { return s.pick }
+func (s stubScheduler) Recompute()                  {}
 
 // TestMultipathSendPacerSheddingDistinct: a PickPaced shed (paths healthy, rate
 // limited) maps to errPacerShedding, DISTINCT from the errNoHealthyPath a PickNone

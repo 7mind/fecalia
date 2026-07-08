@@ -54,7 +54,7 @@ func TestActiveBackupAllTrafficOnPrimary(t *testing.T) {
 	s := newSched(t, clock, time.Second, primary, backup)
 
 	for i := 0; i < 1000; i++ {
-		if got := s.Pick(); got != 0 {
+		if got := s.Pick(ClassData); got != 0 {
 			t.Fatalf("Pick #%d = %d, want 0 (all traffic on the primary while both paths are up)", i, got)
 		}
 		clock.advance(time.Millisecond)
@@ -70,11 +70,11 @@ func TestActiveBackupFailoverOnPrimaryDown(t *testing.T) {
 	backup := &fakeHealth{s: telemetry.StateUp}
 	s := newSched(t, clock, time.Second, primary, backup)
 
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	primary.down()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick after primary DOWN = %d, want 1 (failover to backup)", got)
 	}
 }
@@ -106,7 +106,7 @@ func TestActiveBackupFailoverWithinDetectionWindow(t *testing.T) {
 	}
 
 	s := newSched(t, clock, time.Second, primary, backup)
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0 (primary active)", got)
 	}
 
@@ -123,7 +123,7 @@ func TestActiveBackupFailoverWithinDetectionWindow(t *testing.T) {
 	if primary.State() != telemetry.StateUp {
 		t.Fatalf("primary went down at exactly DownAfter, want still up")
 	}
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick within detection window = %d, want 0 (no premature failover)", got)
 	}
 
@@ -136,7 +136,7 @@ func TestActiveBackupFailoverWithinDetectionWindow(t *testing.T) {
 	if primary.State() != telemetry.StateDown {
 		t.Fatalf("primary past DownAfter = %v, want down", primary.State())
 	}
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick after detection window = %d, want 1 (failover to backup)", got)
 	}
 }
@@ -154,11 +154,11 @@ func TestActiveBackupNoThrashUnderFlapping(t *testing.T) {
 	s := newSched(t, clock, failback, primary, backup)
 
 	// Start on the primary, then fail it -> egress moves to the backup.
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	primary.down()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick after primary down = %d, want 1", got)
 	}
 
@@ -169,12 +169,12 @@ func TestActiveBackupNoThrashUnderFlapping(t *testing.T) {
 	for cycle := 0; cycle < 5; cycle++ {
 		primary.up()
 		clock.advance(step)
-		if got := s.Pick(); got != 1 {
+		if got := s.Pick(ClassData); got != 1 {
 			t.Fatalf("cycle %d up-phase Pick = %d, want 1 (failback debounced, no thrash)", cycle, got)
 		}
 		primary.down()
 		clock.advance(step)
-		if got := s.Pick(); got != 1 {
+		if got := s.Pick(ClassData); got != 1 {
 			t.Fatalf("cycle %d down-phase Pick = %d, want 1", cycle, got)
 		}
 	}
@@ -182,15 +182,15 @@ func TestActiveBackupNoThrashUnderFlapping(t *testing.T) {
 	// Now the primary stabilises: continuously up. Just before the dwell elapses
 	// egress is still on the backup; once the dwell passes it fails back.
 	primary.up()
-	if got := s.Pick(); got != 1 { // dwell just (re)started
+	if got := s.Pick(ClassData); got != 1 { // dwell just (re)started
 		t.Fatalf("Pick at start of stable window = %d, want 1", got)
 	}
 	clock.advance(failback - time.Nanosecond)
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick just before dwell elapses = %d, want 1 (still holding backup)", got)
 	}
 	clock.advance(2 * time.Nanosecond)
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after dwell elapses = %d, want 0 (failback to recovered primary)", got)
 	}
 }
@@ -202,7 +202,7 @@ func TestActiveBackupNoEligiblePath(t *testing.T) {
 	primary := &fakeHealth{s: telemetry.StateDown}
 	backup := &fakeHealth{s: telemetry.StateDown}
 	s := newSched(t, clock, time.Second, primary, backup)
-	if got := s.Pick(); got >= 0 {
+	if got := s.Pick(ClassData); got >= 0 {
 		t.Fatalf("Pick with all paths down = %d, want negative (no eligible path)", got)
 	}
 }
@@ -219,18 +219,18 @@ func TestActiveBackupFailbackDeadActiveMovesImmediately(t *testing.T) {
 
 	// Fail over to the backup.
 	primary.down()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick after primary down = %d, want 1", got)
 	}
 	// Primary recovers (failback dwell begins, but it is an hour long)...
 	primary.up()
-	if got := s.Pick(); got != 1 {
+	if got := s.Pick(ClassData); got != 1 {
 		t.Fatalf("Pick mid-dwell = %d, want 1 (debounced)", got)
 	}
 	// ...and now the backup itself dies. The only eligible path is the primary, so
 	// egress must move there immediately despite the unelapsed dwell.
 	backup.down()
-	if got := s.Pick(); got != 0 {
+	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after backup died mid-dwell = %d, want 0 (immediate move to only eligible path)", got)
 	}
 }
