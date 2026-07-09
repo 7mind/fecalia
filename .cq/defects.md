@@ -277,28 +277,34 @@ archives: []
 
 ## M10
 
-### D7 — root-caused
+### D7 — resolved
 
 - createdAt: 2026-07-06T22:27:16.368Z
-- updatedAt: 2026-07-08T21:04:59.294Z
+- updatedAt: 2026-07-09T19:29:40.915Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Concentrator tunnel-interface ACCEPT rule is not reboot-persistent
-- description: Filed by the T32 review panel (opus+fable), file-and-defer. T32's provision inserts `iptables -I INPUT -i wanbond0 -j ACCEPT` into the RUNTIME chain only. The concentrator (o3, OCI Ubuntu) restores its INPUT chain from /etc/iptables/rules.v4 at boot, so a reboot silently drops the rule and inbound tunnel TCP hits OCI's default REJECT again — the exact fault T32 fixes reappears with no signal until re-provisioned. Out of scope for T32 (its acceptance asserts only the runtime chain state, report-only per Q12), but a standing testbed / real deployment needs the rule to survive reboots. Severity medium.
+- description: |
+    Filed by the T32 review panel (opus+fable), file-and-defer. T32's provision inserts `iptables -I INPUT -i wanbond0 -j ACCEPT` into the RUNTIME chain only. The concentrator (o3, OCI Ubuntu) restores its INPUT chain from /etc/iptables/rules.v4 at boot, so a reboot silently drops the rule and inbound tunnel TCP hits OCI's default REJECT again — the exact fault T32 fixes reappears with no signal until re-provisioned. Out of scope for T32 (its acceptance asserts only the runtime chain state, report-only per Q12), but a standing testbed / real deployment needs the rule to survive reboots. Severity medium.
+    
+    RESOLVED 2026-07-08 (live-o3 manual ops, executed by the orchestrator under explicit user authorization — the agent DOES have o3 SSH access via the llm key; the earlier 'cannot reach o3' handoff claim was an error). Repo-side (T48) already merged. Live: installed iptables-persistent, persisted the deduped INPUT chain via `netfilter-persistent save` → /etc/iptables/rules.v4, netfilter-persistent service `enabled`. Reboot-survival EMPIRICALLY CONFIRMED: `sudo systemctl reboot` (boot_id 5d97988a-c298-4934-9f19-31e36fc4ada0 → d01b9ff4-2dfe-42b9-87d7-18072c598ab2, uptime 9wk→0min = genuine reboot, back in ~15s); post-reboot `iptables -S INPUT` retains a SINGLE `-A INPUT -i wanbond0 -j ACCEPT` before the terminal REJECT, so inbound tunnel TCP is no longer REJECTed across reboots. SSH access preserved throughout (deadman-guarded, policy -P INPUT ACCEPT cushion). o3 NOT deprovisioned — clean in-OS reboot only.
 - severity: medium
 - suggestedFix: Add a provisioning step (and document in T22's install doc) that persists the concentrator INPUT rule across reboots — `netfilter-persistent save` after insertion, or an idempotent edit of /etc/iptables/rules.v4, or a small systemd unit that re-applies on boot — guarded by a state check so re-runs stay no-ops; extend TestRealProvision to assert the persisted set.
 - ledgerRefs: ["tasks:T32","goals:G1","tasks:T22"]
 - rootCause: "Confirmed by the T32 review against the live o3 host: T32's provision inserts `iptables -I INPUT -i wanbond0 -j ACCEPT` into the RUNTIME chain only; OCI Ubuntu restores /etc/iptables/rules.v4 at boot, so a reboot drops the rule and inbound tunnel TCP hits the default REJECT again. Fix DEFERRED to T22 (install doc + reboot-persistence provisioning step) per ledgerRefs tasks:T22 — documented and ready-to-implement, not separately investigable."
 - dependsOn: ["T48"]
 
-### D8 — root-caused
+### D8 — resolved
 
 - createdAt: 2026-07-06T22:27:25.373Z
-- updatedAt: 2026-07-08T21:05:01.379Z
+- updatedAt: 2026-07-09T19:29:49.541Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Pre-existing duplicate rules in the o3 concentrator INPUT chain
-- description: Filed by the T32 review panel (fable), file-and-defer. Live `iptables -S INPUT` on o3 shows the OCI default rule block DUPLICATED (two `-j REJECT --reject-with icmp-host-prohibited` with a full unreachable copy of ESTABLISHED/icmp/lo/ntp/ssh after the first REJECT) and three identical `-p udp --dport 51820 -j ACCEPT` rules. This PREDATES T32 (its -C-guarded insert cannot duplicate) — it is residue of earlier NON-idempotent rule insertion during this session's manual P0 real-host bring-up (the repeated `iptables -I INPUT ... 51820` probes). Dead/duplicate rules add audit noise and can mask future misconfiguration. Severity low; o3 host state only (not a code defect).
+- description: |
+    Filed by the T32 review panel (fable), file-and-defer. Live `iptables -S INPUT` on o3 shows the OCI default rule block DUPLICATED (two `-j REJECT --reject-with icmp-host-prohibited` with a full unreachable copy of ESTABLISHED/icmp/lo/ntp/ssh after the first REJECT) and three identical `-p udp --dport 51820 -j ACCEPT` rules. This PREDATES T32 (its -C-guarded insert cannot duplicate) — it is residue of earlier NON-idempotent rule insertion during this session's manual P0 real-host bring-up. Dead/duplicate rules add audit noise and can mask future misconfiguration. Severity low; o3 host state only (not a code defect).
+    
+    RESOLVED 2026-07-08 (live-o3 manual ops, orchestrator under user authorization). BEFORE `iptables -S INPUT`: 3× `-A INPUT -p udp --dport 51820 -j ACCEPT` + a dead duplicate OCI block (second RELATED,ESTABLISHED/icmp/lo/ntp(sport 123)/ssh(dport 22)/REJECT sitting AFTER the first terminal REJECT, hence unreachable). ACTION: deduped to one canonical set via surgical `iptables -D` (collapse 51820 to one; delete every rule after the first terminal REJECT), then `netfilter-persistent save`. AFTER (and post-reboot): single `--dport 51820 ACCEPT`, single `-i wanbond0 ACCEPT`, single terminal REJECT, dead block removed (wanbond0=1, 51820=1, INPUT REJECT=1). Survived the reboot (see D7). No functional change to reachable rules (SSH/wanbond0/wireguard/iperf3 preserved); pure removal of redundant + unreachable rules.
 - severity: low
 - suggestedFix: In the reboot-persistence follow-up, deduplicate the o3 INPUT chain to one canonical rule set (single 51820 ACCEPT, single OCI default block) before persisting, with a before/after `iptables -S INPUT` capture. This is a one-time host cleanup on o3, not a repo change.
 - ledgerRefs: ["tasks:T32","goals:G1"]
