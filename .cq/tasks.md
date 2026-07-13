@@ -495,10 +495,10 @@ archives:
 
 ## M13
 
-### T51 — planned
+### T51 — done
 
 - createdAt: 2026-07-13T13:41:17.887Z
-- updatedAt: 2026-07-13T13:41:17.887Z
+- updatedAt: 2026-07-13T14:26:03.397Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Make Bind Open() tolerant of not-yet-assignable source_addr (EADDRNOTAVAIL)

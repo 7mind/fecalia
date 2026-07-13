@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 54
+  item: 55
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -593,3 +593,14 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T53 (G2/W2 wire SizePacingFromBDP) implement-review: APPROVE (verdict=approve). deriveWeightedPacingFromBDP runs inside normalize() at config LOAD (config.go:603-651), sets PerPathCapacityFPS/PacingBurstFrames from SizePacingFromBDP replacing synthetic defaultPerPathCapacityFPS=10000. NON-VACUOUS: TestPacingDerivedFromDeclaredBandwidth computes want from SizePacingFromBDP(10e6,30ms,1500) (the 10Mbit BOTTLENECK path, not the 50Mbit) + asserts derived ~833 FPS strictly below the default. NO RUNTIME AUTO-TUNING (Q20 hard req): the ONLY writes to the pacing knobs in the whole tree are at config load (derive + applyDefaults); zero writes/ticker/goroutine in internal/sched adjusting them — derivation fixed at load, compliant. Pacing DEFAULT-DISABLED preserved (PacingEnabled zero-value false; early-return when disabled/non-weighted; declared bandwidth inert when off; no-declaration falls back to default). Fail-fast: parseBandwidth requires explicit SI bit/s suffix (rejects bare/empty), non-positive bw/RTT rejected, link_rtt required under pacing, all-or-nothing + raw-knob mutual exclusion; 8 reject sub-cases pass. Unit parsing correct ('50Mbit'->50e6, longest-suffix-first). Docs (install.md:153+, design.md) accurate. Single-shared-capacity->bottleneck pacing is a pre-existing T21 property (safe direction), not a T53 fault. Full gate green. 0 criticisms, 0 questions. Merged to main at c803cb5."
 - ledgerRefs: ["tasks:T53"]
+
+## M13
+
+### R55 — go-ahead
+
+- createdAt: 2026-07-13T14:26:02.129Z
+- updatedAt: 2026-07-13T14:26:02.129Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T51 (G2/W1 tolerant startup bind) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE had 2 reproduced blockers from the half-integrated m.deferred set (base Open-tolerance + Send/Pick middle-defer index-alignment + errno discrimination + hard guards were already correct); both now RESOLVED at b0e35f9. C1 (reload regression): PathNames() now returns the durable bound+deferred membership (m.defs) so diffPaths no longer sees a deferred path as an ADD, and AddPath defers EADDRNOTAVAIL SYMMETRICALLY with Open — no-op reload of a still-deferred path succeeds; TestPathNamesIncludesDeferred + TestAddPathDefersUnassignable fail pre-fix, pass post. C2 (RemovePath corruption): removeDurableLocked splices m.defs/m.probers by IDENTITY (name) + drops from m.deferred, live m.paths spliced by liveIdx; [first,mid(deferred),third] RemovePath('third') preserves mid + doesn't resurrect third across Close->Open; TestRemovePathAfterDeferredPreservesMembership fails pre-fix, passes post. NO REGRESSION: Open tolerance non-vacuous, EADDRINUSE/other fatal, zero-bindable fatal, prober-stamp path-id (DATA==PROBE), nextPathID high-water past deferred stamps, scheduler bound-only Pick alignment, T55 deferred-reconcile substrate preserved. Full gate + go test -race ./internal/bind/... green under nix develop. 0 criticisms, 0 questions. Merged to main at ba9eb65."
+- ledgerRefs: ["tasks:T51"]
