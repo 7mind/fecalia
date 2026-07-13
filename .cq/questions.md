@@ -379,98 +379,106 @@ archives:
 
 ## M19
 
-### Q29 — open
+### Q29 — answered
 
 - createdAt: 2026-07-13T21:20:01.422Z
-- updatedAt: 2026-07-13T21:20:01.422Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:31:52.450Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Default posture: is DNS/hostname endpoint resolution strictly OPT-IN with default IP-only, and does an existing IP-literal config stay byte-for-byte behavior-identical (no new code path taken when no hostname is configured)?"
 - context: "The goal's core DPI-resistance constraint is that a plaintext DNS query is a cleartext, on-path, pre-tunnel signal that names a blocklistable host — a regression against the thesis (design.md 'DPI resistance', requirement 6). This codebase already has a firm idiom for exactly this shape: FEC, pacing, adaptive-FEC, and the amnezia block are all default-off and leave the existing datapath byte-for-byte unchanged when unconfigured (config.go FEC L288, Amnezia L517). Confirming the posture pins whether resolution is gated behind an explicit opt-in and whether the IP-literal parse path (netip.ParseAddrPort at config.go:495, multipath.go:1327) must be preserved untouched for non-hostname configs."
 - suggestions: ["Opt-in, default IP-only; IP-literal path untouched (matches FEC/amnezia idiom)","On by default (any endpoint may be a hostname), IP still parsed fast-path","Opt-in AND require an explicit acknowledgement flag for the DPI trade-off"]
 - recommendation: Opt-in, default IP-only, IP-literal configs byte-for-byte identical — matches the goal's stated direction and the codebase's established default-off feature-block idiom.
 - ledgerRefs: ["goals:G5"]
+- answer: as recommended
 
-### Q30 — open
+### Q30 — answered
 
 - createdAt: 2026-07-13T21:20:12.483Z
-- updatedAt: 2026-07-13T21:20:12.483Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:32:04.021Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Load-time behavior when a configured hostname is NOT yet resolvable at boot (resolver/network not ready): hard-fail config.Load, or DEFER-and-reconcile mirroring the T55 tolerant-startup model — bring the tunnel up on any resolvable/IP endpoints and let a background loop resolve the name later?"
 - context: "The T55 tolerant-startup path is a precise, existing template: internal/bind/multipath.go:531-537 defers a path on EADDRNOTAVAIL into m.deferred, and StartReconcileLoop (internal/bind/reconcile.go:60-124, ~1s cadence) retries ListenUDP and promotes on success. An unresolvable hostname at boot is structurally the same situation. The datapath sends to a concrete netip.AddrPort (multipath ParseEndpoint/SetPeerRemote), so a name MUST resolve before any packet egresses on that endpoint — but hard-failing Load would violate the invariant 'do not hard-fail boot on a transient resolver outage'. The decision determines whether resolveEndpoints (config.go:484) may return a config with an as-yet-unresolved hostname placeholder, and whether a deferred-resolution reconcile loop is in scope."
 - suggestions: ["Defer-and-reconcile: boot succeeds, background loop resolves later (mirror T55)","Hard-resolve at config.Load, fail boot if any hostname does not resolve","Hybrid: hard-resolve if it is the ONLY/primary endpoint, defer if standbys exist"]
 - recommendation: "Defer-and-reconcile, mirroring T55: boot tolerantly, resolve off-path, and only start sending on that endpoint once resolved — preserves the tolerant-startup invariant and makes a single-hostname edge boot even before its resolver is up."
 - ledgerRefs: ["goals:G5"]
+- answer: as recommended
 
-### Q31 — open
+### Q31 — answered
 
 - createdAt: 2026-07-13T21:20:24.274Z
-- updatedAt: 2026-07-13T21:20:24.274Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:32:16.075Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Re-resolution loop — what TRIGGERS a re-resolve, at what CADENCE, and how does a changed IP repoint the bond? Specifically: (a) honor DNS record TTL, a fixed poll interval, on-liveness-loss, or a combination; (b) reuse bind.Multipath.SetPeerRemote to repoint; (c) suppress a no-op repoint when the resolved IP is UNCHANGED?"
 - context: "Re-resolution is the goal's actual value (a static IP behind a name is no better than the IP literal). The repoint machinery already exists: SetPeerRemote (multipath.go:1371) repoints every path's remote AND calls resequencer.Rebaseline() plus (via the hub-failover caller) a fresh WG re-handshake — this is deliberately DISRUPTIVE (defect D32: a hub switch restarts the sender's outer-seq, so the resequencer must re-baseline). Therefore repointing to the SAME IP would needlessly drop the session, so a change-detection guard is essential. Go's net.Resolver does not surface TTL directly (net.LookupIP discards it), so honoring TTL needs a resolver seam that exposes it or a fixed interval. The loop would wire in exactly like startHubFailover (device.go:260) with a stopResolution closure (device.go:664-682). The cadence + trigger choice sizes the reconnect latency after a DDNS IP change versus steady-state resolver load."
 - suggestions: ["Fixed poll interval + re-resolve on liveness-loss; reuse SetPeerRemote; skip if IP unchanged","Honor DNS TTL (needs a TTL-exposing resolver seam); re-resolve on expiry","On-liveness-loss ONLY (re-resolve when all paths to the name go DOWN), no timer"]
 - recommendation: Fixed poll interval (bounded, e.g. reconcile-cadence-scale) PLUS an immediate re-resolve on liveness-loss, repoint via SetPeerRemote ONLY when the resolved AddrPort actually changed. TTL-honoring is a nice-to-have gated on whether we add a TTL-exposing resolver seam.
 - ledgerRefs: ["goals:G5"]
+- answer: as recommended
 
-### Q32 — open
+### Q32 — answered
 
 - createdAt: 2026-07-13T21:20:34.322Z
-- updatedAt: 2026-07-13T21:20:34.322Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:32:49.555Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Multi-record handling: when a hostname resolves to SEVERAL A/AAAA records, do we pick the first, expand them into extra ordered endpoints (feeding hub-failover), or do happy-eyeballs? And what is the IPv4/IPv6 preference?"
 - context: "config.Peer.Endpoints is an ordered []netip.AddrPort that T57 hub-failover consumes as active(0)/standbys(1:) with WRAP round-robin (failover.go). A multi-record name maps naturally onto that list — but expanding one name into N ordered endpoints changes failover semantics (a re-resolve could add/remove standbys, and hubFailover holds an IMMUTABLE snapshot of endpoints with an active idx, so a changing record set races that snapshot — see the hub-failover-interaction question). Picking one address is simplest and keeps a 1:1 name->endpoint mapping. IPv4/IPv6 preference matters because a path's local bind family must match the remote family; the send path uses a single netip.AddrPort per path."
 - suggestions: ["Pick one (first, or first matching the path's address family); 1:1 name->endpoint","Expand all records into ordered endpoints feeding hub-failover","Happy-eyeballs (race v4/v6, keep the winner)"]
 - recommendation: "Pick a single address per name (prefer the family that matches available local paths; document the tie-break) for a clean 1:1 name->endpoint mapping. Expanding into the failover list is a larger, separable change with real interaction complexity — defer it unless explicitly wanted."
 - ledgerRefs: ["goals:G5"]
+- answer: Expand all records into ordered endpoints feeding hub-failover
 
-### Q33 — open
+### Q33 — answered
 
 - createdAt: 2026-07-13T21:20:50.526Z
-- updatedAt: 2026-07-13T21:20:50.526Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:33:10.820Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Resolver privacy: use the SYSTEM resolver (leaks a plaintext DNS query naming the concentrator), DoH/DoT (more machinery; still leaks SNI + timing to the DoH provider), or the system resolver with a DOCUMENTED DPI trade-off left to the operator? And what is the concrete SECURITY ACCEPTANCE TARGET this must meet?"
 - context: "This is the crux of the DPI-resistance tension (goal point c). wanbond's thesis is a high-entropy, unfingerprintable wire; a plaintext DNS lookup for the concentrator name is a pre-tunnel cleartext signal that names a blocklistable host and reveals timing over an unprotected channel. DoH/DoT reduce the on-path plaintext but add a TLS client dependency and still leak SNI/timing to (and trust in) the DoH resolver — and the existing p5_dpi_test.go wire audit only governs the TUNNEL wire, not a pre-tunnel resolver. Per this project's operationalism norm the plan needs a TESTABLE acceptance criterion, not 'is private': e.g. 'with DNS opt-in OFF, zero DNS traffic and the wire audit is unchanged'; 'with system resolver, the operator-facing docs state the exact leaked artifact (hostname in cleartext DNS)'. The choice sizes scope enormously (system resolver = small; DoH = a new subsystem)."
 - suggestions: ["System resolver + explicit documented DPI trade-off (smallest); default-off already contains the leak","System resolver now, design the seam so DoH/DoT can be added later without a datapath change","DoH/DoT in-scope now as a first-class private-resolver option"]
 - recommendation: System resolver via an injectable resolver SEAM, with a documented DPI trade-off and a testable acceptance target (opt-in OFF => zero DNS + wire audit unchanged; opt-in ON => operator docs state the exact cleartext artifact). Design the seam so DoH/DoT is a later drop-in, but do not build it now unless required.
 - ledgerRefs: ["goals:G5"]
+- answer: DoH/DoT in-scope now as a first-class private-resolver option
 
-### Q34 — open
+### Q34 — answered
 
 - createdAt: 2026-07-13T21:21:03.589Z
-- updatedAt: 2026-07-13T21:21:03.589Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:33:53.876Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Hub-failover interaction: may the ordered endpoints list MIX hostnames and IP literals? And how do re-resolution and an in-progress hub-failover switch COORDINATE — which endpoint does re-resolution target, and does a re-resolve override a failover selection or vice-versa?"
 - context: "This is the hardest composition concern and it is concrete, not speculative. hubFailover (internal/device/failover.go:72-97) holds endpoints []netip.AddrPort as an IMMUTABLE snapshot taken at construction, tracks the active idx, and BOTH controllers would call the same bind.Multipath.SetPeerRemote. If a re-resolution loop repoints endpoint[idx]'s AddrPort out from under hubFailover, its snapshot goes stale and the two can fight over the bond's remote (each SetPeerRemote also triggers a resequencer Rebaseline + re-handshake, so a fight = repeated session drops). Options: (a) re-resolution only ever repoints the CURRENTLY-ACTIVE endpoint and defers to failover for selection; (b) make the endpoint list mutable/owned by one coordinator; (c) forbid mixing (a hostname endpoint list is single-entry, so failover and DNS are mutually exclusive per peer). The answer decides whether failover.go's endpoints field must become resolvable/mutable or stays IP-only with DNS handled by a separate single-endpoint path."
 - suggestions: ["Allow mixing; ONE coordinator owns endpoint selection, re-resolution only rewrites the active entry's IP and never advances idx","Forbid mixing for v1: a hostname endpoint is single-entry only (DNS XOR multi-endpoint failover per peer)","Allow mixing; make hubFailover's endpoint list mutable and re-resolution updates entries in place under a shared lock"]
 - recommendation: "For v1, keep them decoupled: re-resolution only ever rewrites the ACTIVE endpoint's resolved IP (never advances the failover idx), and failover continues to own selection. Whether to also FORBID mixing hostnames into a multi-entry list for v1 (simplest, smallest blast radius) is the key sub-decision I need your call on."
 - ledgerRefs: ["goals:G5"]
+- answer: Allow mixing; make hubFailover's endpoint list mutable and re-resolution updates entries in place under a shared lock
 
-### Q35 — open
+### Q35 — answered
 
 - createdAt: 2026-07-13T21:21:15.533Z
-- updatedAt: 2026-07-13T21:21:15.533Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:34:05.655Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Config surface: introduce a NEW field for hostname endpoints (e.g. an explicit endpoint_hostname / endpoints_dns), or OVERLOAD the existing endpoint/endpoints fields to accept either an IP:port literal or a host:port name? How should validation distinguish the two forms and report errors?"
 - context: "Today Peer has Endpoint (legacy single) and EndpointsRaw (ordered []string), mutually exclusive, both normalized by resolveEndpoints (config.go:452-507) via netip.ParseAddrPort which REJECTS hostnames. Overloading keeps the surface small and lets a hostname sit anywhere in the ordered list, but it silently changes the semantics of the existing fields and couples the opt-in DPI gate to per-value parsing (harder to make DNS explicitly opt-in). A separate field makes the opt-in explicit and greppable and keeps the IP path's parse untouched, at the cost of a third mutually-exclusive input form. Validation must cleanly separate 'is this an IP:port or a host:port' (a bare ':port' split then ParseAddr-vs-treat-as-name) and give a clear error (e.g. reject a hostname when DNS is not opted in)."
 - suggestions: ["New explicit field/flag (opt-in is greppable; IP path untouched; hostname clearly gated)","Overload endpoint/endpoints to accept either form; a per-entry parse decides IP vs name","Overload, but require a peer-level dns=true flag before any hostname entry is accepted"]
 - recommendation: Overload endpoint/endpoints to accept either form BUT gate hostnames behind an explicit per-peer opt-in flag (so the default-off DPI posture stays explicit and greppable, the IP-literal path is unchanged, and a hostname without the flag is a clear validation error). Confirm you prefer this over a wholly separate field.
 - ledgerRefs: ["goals:G5"]
+- answer: as recommended
 
-### Q36 — open
+### Q36 — answered
 
 - createdAt: 2026-07-13T21:21:27.222Z
-- updatedAt: 2026-07-13T21:21:27.222Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:34:12.988Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Acceptance bar for 'done': is the required e2e proof a NETNS test where an edge dials the concentrator BY NAME (local hosts-file/resolver entry), the concentrator's IP CHANGES mid-session, and the edge re-resolves and reconnects with the tunnel surviving — plus injected-resolver unit tests for defer-on-lookup-failure and repoint-on-changed-IP? And is a report-only realhosts extension in or out of scope for v1?"
 - context: "The goal's testing direction names these, and the harness exists: test/e2e/failover_test.go already exercises a mid-session concentrator switch over netns, and p5_dpi_test.go audits the tunnel wire — so a DNS e2e is an incremental addition, not new infrastructure. The unit seams needed are an injected resolver (like the injected clock telemetry.Clock already used across failover/reconcile tests) and a fake clock for cadence. Pinning the acceptance bar is what makes the plan's tasks testable (operationalism): each task's 'done' should map to one of these observable checks. The realhosts (M10/Q12 report-only) discipline is explicitly 'if feasible' in the goal — I need to know whether to plan it as a task or leave it out of v1."
 - suggestions: ["Netns IP-change-survival e2e + injected-resolver/fake-clock unit tests are the v1 bar; realhosts report-only is optional/out","Same, PLUS a realhosts report-only DNS check as an in-scope task","Unit tests only for v1; netns e2e deferred"]
 - recommendation: Make the netns 'dial-by-name, IP changes mid-session, tunnel survives' e2e plus injected-resolver unit tests (defer-on-failure; repoint-on-change via SetPeerRemote with a fake clock) the v1 acceptance bar, and treat realhosts report-only as a stretch task included only if it adds signal cheaply. Confirm this bar.
 - ledgerRefs: ["goals:G5"]
+- answer: as recommended

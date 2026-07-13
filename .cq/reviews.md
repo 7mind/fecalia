@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 69
+  item: 71
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -655,3 +655,31 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T62 (hub-failover netns e2e) FINAL: APPROVE + HARDWARE-VALIDATED. Static review (round 1) approved the test as non-vacuous (iperf3 client in edge netns, server only in hub#2 netns, hub#1 L2-blackholed -> a transfer proves the standby switch + fresh re-handshake; guard test load-bearing via the 'hub failover:' journal-absence assertion; port 9099 collision-free; bounded/analytical waits). The e2e then did its JOB on hardware: it caught TWO real defects the unit tests + code review missed -- D32 (hub-failover data-plane: resequencer dropped the standby's handshake-response, tunnel never re-established) and D33 (fixture netns setup race). BOTH FIXED + hardware-confirmed: D32 (reseq re-baseline, c7f8421) -> StandbySwitch 13/13 PASS, RESUME_MS ~6.0-6.9s within the 10.2s window, traffic resumes via hub#2; D33 (retry the in-netns addr-add, merged into the test) -> 26/26 setups clean (0 failures vs prior ~13%). Merged to main (1f1cd04 test + c4e10a7 D33 fix). Full gate + go vet -tags e2e green. This task delivered exactly the pilot value of the report-only hardware tier: an e2e that surfaced a data-plane bug unit tests could not. 1 residual low-sev hardening defect (D34) filed + deferred (did not trigger in 39 hardware runs)."
 - ledgerRefs: ["tasks:T62"]
+
+## M19
+
+### R70 — revise
+
+- createdAt: 2026-07-13T22:02:58.906Z
+- updatedAt: 2026-07-13T22:03:38.920Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "Reconciled panel verdict (strictest-wins over 2 reviewers): [opus] go-ahead — plan is fine-grained, sequenced, testable, grounded, complete; [fable] revise — grounded and well-sequenced but two mechanism gaps need planner fixes (T74 first-resolve handshake path cannot work as written; T70 active-endpoint identity ambiguous under cross-spec AddrPort duplicates). Verdict: revise. No new questions; no out-of-scope defects from either reviewer."
+- new_questions: []
+- criticism: ["[fable] T74: the 'first successful resolve → SetPeerRemote + rehandshake kicks the first handshake' mechanism is insufficient after an endpoint-less tolerant boot. The engine peer's endpoint is populated exclusively by a UAPI endpoint= line routed through Multipath.ParseEndpoint (multipath.go:1324-1344) — SetPeerRemote (multipath.go:1371) only repoints bind path remotes and never hands the engine peer its (virtual) endpoint, so the rehandshake's SendHandshakeInitiation has no known endpoint to address and cannot transmit. Specify that the first resolve must also install the resolved endpoint on the engine peer via the UAPI/IpcSet path (or equivalent), and strengthen acceptance: the fake-rehandshake-counter check cannot detect this failure, and T77's e2e starts with a resolvable name, so the boot-unresolvable→first-resolve→handshake path is never proven — add it to T74's unit acceptance (assert the engine peer gains an endpoint / a handshake initiation actually egresses) or to T77's e2e scenario.","[fable] T70: tracking the ACTIVE endpoint 'by IDENTITY (its AddrPort value)' is ambiguous when two specs' expansions contain the same AddrPort — T67's duplicate detection only rejects textual host:port duplicates at load, so a hostname re-resolving to the same IP:port as a literal (or another hostname's record) elsewhere in the list yields duplicate values in the flattened failover order, and value-based idx re-mapping can silently match the wrong spec's entry. Specify the rule: dedup on flatten (documented precedence), or track the active entry as (specIdx, AddrPort), and add an acceptance case for a hostname resolving onto an existing literal standby."]
+- ledgerRefs: ["goals:G5"]
+- sessionLogs: [".cq/logs/20260713-220328-a45a9b222054d0d22.md",".cq/logs/20260713-220328-ab541f9aa587c0050.md"]
+- rawLogs: [".cq/logs/raw/20260713-220328-a45a9b222054d0d22.jsonl",".cq/logs/raw/20260713-220328-ab541f9aa587c0050.jsonl"]
+
+### R71 — go-ahead
+
+- createdAt: 2026-07-13T22:10:28.589Z
+- updatedAt: 2026-07-13T22:11:08.696Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "Reconciled panel verdict, round 2 (2 reviewers, unanimous): [opus] go-ahead — R70's two criticisms resolved with grounded, correct mechanisms and strengthened observable acceptance (T74 installs the engine endpoint via the UAPI/ParseEndpoint path before rehandshaking, asserting real egress; T70 tracks the active entry by spec-scoped (specIdx, AddrPort) identity with a cross-spec-duplicate acceptance case); [fable] go-ahead — both R70 criticisms confirmed resolved with code-verified mechanisms (device.go:706-726 + multipath.go:1327/1371), T77 now proves the boot-unresolvable path e2e; plan fine-grained, correctly sequenced, testable, grounded, complete against Q29-Q36. Verdict: go-ahead. No new questions, no criticism, no out-of-scope defects from either reviewer."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G5"]
+- sessionLogs: [".cq/logs/20260713-221057-abf3d4747c8c2d97a.md",".cq/logs/20260713-221057-ab6ff041b6c4fdf2b.md"]
+- rawLogs: [".cq/logs/raw/20260713-221057-abf3d4747c8c2d97a.jsonl",".cq/logs/raw/20260713-221057-ab6ff041b6c4fdf2b.jsonl"]

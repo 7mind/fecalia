@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 4
+  item: 5
 archives: []
 ---
 
@@ -57,3 +57,15 @@ archives: []
 - headline: "plan review: approved"
 - rationale: "R51 go-ahead (round 1, 0 criticism / 0 new_questions): the M13-M17 / T51-T66 production-readiness DAG is fine-grained, correctly sequenced, testable, grounded, and consistent with the Q17-Q20 answers (CONTROL dormant, multi-concentrator edge-side ordered-endpoint active-standby, non-blocking soak exit, pacing wired-from-declared-bandwidth + documented). This locks that DAG as the accepted plan for G2."
 - ledgerRefs: ["goals:G2"]
+
+## M19
+
+### K5 — locked
+
+- createdAt: 2026-07-13T22:11:45.922Z
+- updatedAt: 2026-07-13T22:11:45.922Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "plan review: approved"
+- rationale: "Unanimous reviewer go-ahead (R71, 2-reviewer panel round 2): plan for optional DNS concentrator endpoints judged fine-grained, correctly sequenced, testable, grounded, and complete against Q29-Q36."
+- ledgerRefs: ["goals:G5"]

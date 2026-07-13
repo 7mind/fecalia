@@ -134,12 +134,12 @@ archives: []
 
 ## M19
 
-### G5 — clarifying
+### G5 — planned
 
 - createdAt: 2026-07-13T21:17:03.895Z
-- updatedAt: 2026-07-13T21:22:19.649Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- updatedAt: 2026-07-13T22:12:41.925Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Optional DNS (hostname) concentrator endpoints
 - description: |
     GOAL: optional DNS (hostname) resolution for the edge's concentrator endpoint / ordered endpoints list, so an edge can dial a concentrator BY NAME — principally to support a concentrator with NO static IP (DDNS / a cloud instance whose public IP changes).
@@ -167,5 +167,7 @@ archives: []
     NON-GOALS: SRV records / service discovery; DNS on the concentrator side (it has no endpoint); any change to the obfuscation wire format; the edge-side simultaneous multi-concentrator aggregation feature (separate).
     
     TESTING DIRECTION: unit — resolveEndpoints resolves a hostname via an injected resolver seam and DEFERS (not hard-fails) on lookup failure; a re-resolution unit test repoints via SetPeerRemote when the injected resolver returns a changed IP (injected resolver + fake clock). netns e2e — an edge dials the concentrator BY NAME (a hosts-file / local resolver entry), the concentrator's IP changes mid-session, and the edge re-resolves and reconnects with the tunnel surviving. Report-only realhosts extension if feasible, per the M10/Q12 discipline.
-- sessionLogs: [".cq/logs/20260713-212207-a0e65d160c67b7983.md"]
-- rawLogs: [".cq/logs/raw/20260713-212207-a0e65d160c67b7983.jsonl"]
+- sessionLogs: [".cq/logs/20260713-212207-a0e65d160c67b7983.md",".cq/logs/20260713-215726-ad0c63b3749a28ff8.md",".cq/logs/20260713-215726-a3a1678fe42741a52.md",".cq/logs/20260713-220647-a5fce4a23176a911e.md",".cq/logs/20260713-221230-a1d2bf0c3d369b9bf.md"]
+- rawLogs: [".cq/logs/raw/20260713-212207-a0e65d160c67b7983.jsonl",".cq/logs/raw/20260713-215726-ad0c63b3749a28ff8.jsonl",".cq/logs/raw/20260713-215726-a3a1678fe42741a52.jsonl",".cq/logs/raw/20260713-220647-a5fce4a23176a911e.jsonl",".cq/logs/raw/20260713-221230-a1d2bf0c3d369b9bf.jsonl"]
+- milestones: ["M20","M21","M22"]
+- grounding: "Synthesized from 2 configured candidate planners (opus, fable; generate-N-then-judge per Q100/Q101; base = fable's candidate, with opus's bootstrap-IP fail-fast for DoH/DoT, a dedicated cross-controller -race interleave task, and active-endpoint-by-identity folded in). Repo facts shaping the plan: resolveEndpoints (internal/config/config.go:484) and Multipath.ParseEndpoint (internal/bind/multipath.go:1327) are IP-only today; the plan keeps ParseEndpoint IP-only — the device layer hands only resolved netip.AddrPort to the engine, so no hostname ever reaches the bind/datapath. hubFailover (internal/device/failover.go:72-97) holds an immutable []netip.AddrPort snapshot with an active idx; Q34's answer makes it a mutable spec-keyed set updated under its existing h.mu, with the active entry tracked by identity. SetPeerRemote (multipath.go:1371) unconditionally Rebaselines the resequencer (D32) — hence strict change-suppression on re-resolve. The T55 tolerant-startup template (internal/bind/multipath.go:531-537 deferred paths + internal/bind/reconcile.go:60 loop) is the defer-and-reconcile model for unresolvable-at-boot names; startHubFailover currently skips len(Endpoints)<2 peers, so wiring changes for single-hostname peers while single-IP-literal peers stay controller-less. Go's net.Resolver discards TTL — the seam exposes (minTTL, ttlOk) so DoH/DoT can honor TTL while system mode polls. Netns e2e caveat: /etc/hosts is not netns-scoped for the Go resolver, so the e2e runs an in-test UDP DNS responder inside the edge namespace. Q32 expands multi-record A/AAAA into the ordered failover list; Q33 puts DoH (RFC 8484) + DoT (RFC 7858) in scope as first-class private-resolver options with a bootstrap-IP fail-fast (no plaintext lookup of the resolver's own name); Q29/Q35 gate everything behind a per-peer opt-in with all-IP-literal configs byte-for-byte identical."

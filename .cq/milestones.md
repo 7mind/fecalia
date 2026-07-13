@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 19
+  item: 22
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -144,3 +144,26 @@ archives:
 - updatedAt: 2026-07-13T21:16:32.637Z
 - title: "Plan: DNS (hostname) concentrator endpoints"
 - description: "Coordination milestone for the plan-flow goal G5: optional DNS/hostname resolution for the edge's concentrator endpoint/endpoints (dial a concentrator by name; support a changing/DDNS concentrator IP via re-resolution + SetPeerRemote repoint), opt-in, default IP-only. Groups the goal, clarifying questions, reviews, approval decision. Edge-side; orthogonal to G4 (multi-peer concentrator)."
+
+### M20 — open
+
+- createdAt: 2026-07-13T21:53:32.463Z
+- updatedAt: 2026-07-13T21:53:32.463Z
+- title: "G5 DNS endpoints: config and resolver foundations"
+- description: "Work milestone 1/3 for goal G5 (optional DNS concentrator endpoints): the config surface (overloaded endpoint/endpoints behind an explicit per-peer DNS opt-in, Q35/Q29) and the resolver subsystem (injectable seam + system resolver + first-class DoH/DoT per Q33, plus the [dns] selection block)."
+
+### M21 — open
+
+- createdAt: 2026-07-13T21:53:41.434Z
+- updatedAt: 2026-07-13T21:53:41.434Z
+- title: G5 deferred resolution and re-resolution runtime
+- description: "Work milestone 2/3 for goal G5: make hubFailover's endpoint set mutable/spec-keyed under its lock (Q34), implement the re-resolution controller (poll + liveness-loss, change-suppressed SetPeerRemote repoint, Q31/Q32), and wire deferred boot-time resolution + the loop into the device lifecycle (Q30) keeping Multipath.ParseEndpoint IP-only."
+- dependsOn: ["M20"]
+
+### M22 — open
+
+- createdAt: 2026-07-13T21:53:50.514Z
+- updatedAt: 2026-07-13T21:53:50.514Z
+- title: G5 DNS verification, DPI posture, and docs
+- description: "Work milestone 3/3 for goal G5: the Q36 acceptance bar — DPI-posture guard tests (opt-in OFF ⇒ zero DNS + unchanged wire audit, Q29/Q33), the netns dial-by-name / mid-session-IP-change e2e, the cross-controller race coverage, the report-only realhosts stretch, and the AGENTS.md docs/example-config sync."
+- dependsOn: ["M21"]

@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 66
+  item: 79
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -587,3 +587,176 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T57"]
+
+## M20
+
+### T67 — planned
+
+- createdAt: 2026-07-13T21:54:04.076Z
+- updatedAt: 2026-07-13T21:54:04.076Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Accept hostname endpoints in config behind an explicit per-peer DNS opt-in
+- description: "Overload the existing `endpoint`/`endpoints` fields (Q35): in Peer.resolveEndpoints (internal/config/config.go:484) parse each entry first with netip.ParseAddrPort; on failure, split host:port and treat as a hostname (validate port range and hostname syntax). Introduce a typed per-entry representation — e.g. `EndpointSpec { Host string; Port uint16; Addr netip.AddrPort; IsName bool }` — stored in order on Peer (e.g. `Peer.EndpointSpecs`), while `Peer.Endpoints []netip.AddrPort` keeps holding the resolved/literal snapshot T57 consumes. Add an explicit per-peer opt-in flag (e.g. `dns = true`, greppable): a hostname entry without the flag is a clear validation error naming the flag (Q29 default-off DPI posture); the flag is edge-only (a concentrator declaring it is a config error, mirroring the existing endpoints rule). CRITICAL invariant: an all-IP-literal config MUST take exactly today's code path — netip.ParseAddrPort per entry, same errors, same duplicate detection, byte-for-byte behavior-identical (Q29). Duplicate detection extends to hostname entries (same host:port twice rejected). No resolution happens at config load (Q30 defers it to runtime)."
+- acceptance: "go test ./internal/config/... passes with new cases: (1) hostname entry + dns=true parses into an EndpointSpec with IsName=true; (2) hostname entry without dns=true fails Load with an error naming the opt-in flag; (3) mixed list of literals and names preserves order; (4) duplicate host:port rejected; (5) concentrator with dns=true rejected; (6) every pre-existing config test passes unchanged and an all-literal config populates Peer.Endpoints exactly as before."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G5"]
+
+### T68 — planned
+
+- createdAt: 2026-07-13T21:54:10.871Z
+- updatedAt: 2026-07-13T21:54:10.871Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Create the resolver seam package with a system-resolver implementation
+- description: "New package (e.g. internal/dnsresolve): a small `Resolver` interface, context-bounded, returning the full A+AAAA record set plus a minimum TTL when the transport exposes it — e.g. `Lookup(ctx, host) (addrs []netip.Addr, minTTL time.Duration, ttlOk bool, err error)` (ttlOk=false when the transport discards TTL). Provide the system-resolver implementation over net.Resolver (net.LookupNetIP-shape; TTL not exposed — return ttlOk=false, Q31 makes TTL a nice-to-have). The seam is the injection point every runtime and test consumer uses (Q33: designed so DoH/DoT drop in; Q36: unit tests inject a fake). Resolution ordering: return records deterministically (v4 and v6 both; consumers filter/order by local path family). Keep the package free of any device/bind dependency so it is import-cycle-safe from config, device, and tests. Provide a hand-written in-memory fake Resolver backed by a static host->addrs map (dual-tests dummy) for unit use across packages."
+- acceptance: "go test ./internal/dnsresolve/... passes: the fake Resolver satisfies the interface (compile-time var _ Resolver assertion) and resolves a mapped name to the expected ordered addrs while an unmapped name returns a non-nil error; the system implementation resolves localhost to loopback addrs in a hermetic test; context cancellation propagates (lookup returns promptly with ctx.Err())."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G5"]
+
+### T69 — planned
+
+- createdAt: 2026-07-13T21:54:23.234Z
+- updatedAt: 2026-07-13T21:54:23.234Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Implement a DoH (RFC 8484) resolver behind the seam
+- description: "First-class private-resolver option (Q33 answer). Implement DNS-over-HTTPS in internal/dnsresolve: encode A and AAAA queries with golang.org/x/net/dns/dnsmessage, POST (application/dns-message) to the configured DoH URL over net/http with a dedicated http.Client (bounded timeout, no proxy surprise, HTTP/2 ok), parse answers, extract per-record TTL and return minTTL with ttlOk=true. Certificate trust: standard system roots by default plus an injectable root-CA pool ONLY via an unexported constructor seam for tests — no production insecure-skip knob. Document (in the package) the residual leak: TLS SNI/timing to the DoH provider. Query both families; tolerate one family NXDOMAIN when the other answers."
+- acceptance: "go test ./internal/dnsresolve/... passes: a hermetic httptest.NewTLSServer DoH responder (dnsmessage-encoded) yields the expected A+AAAA set and minTTL; a malformed response, non-200, and timeout each surface a typed error; the test CA is injected via the test-only seam (no InsecureSkipVerify anywhere in the package)."
+- suggestedModel: standard
+- dependsOn: ["T68"]
+- ledgerRefs: ["goals:G5"]
+
+### T71 — planned
+
+- createdAt: 2026-07-13T21:54:44.129Z
+- updatedAt: 2026-07-13T21:54:44.129Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Implement a DoT (RFC 7858) resolver behind the seam
+- description: "Second private-resolver option (Q33 answer). Implement DNS-over-TLS in internal/dnsresolve: dial the configured server:853 with crypto/tls (server-name verification, system roots + the same injectable test-only CA seam as DoH), frame dnsmessage-encoded A/AAAA queries with the RFC 7858 2-byte length prefix, parse answers with per-record TTL (ttlOk=true). Reuse the shared dnsmessage encode/decode helpers introduced by the DoH task (extract them if needed — DRY across the two transports). Bounded per-lookup timeout via context; one connection per lookup is acceptable for v1 (lookups are seconds-cadence, not hot-path)."
+- acceptance: "go test ./internal/dnsresolve/... passes: a hermetic in-process TLS listener speaking length-prefixed DNS answers the query and the resolver returns the expected addrs+minTTL; a wrong-server-name cert fails verification; timeout and truncated-frame paths surface typed errors."
+- suggestedModel: standard
+- dependsOn: ["T69"]
+- ledgerRefs: ["goals:G5"]
+
+### T72 — planned
+
+- createdAt: 2026-07-13T21:54:56.902Z
+- updatedAt: 2026-07-13T21:54:56.902Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Add the [dns] config block selecting resolver mode, cadence, and timeouts"
+- description: "New top-level `[dns]` block in internal/config: `resolver = \"system\" | \"doh\" | \"dot\"` (default system), `doh_url` (required iff doh), `dot_server` (host:port, required iff dot), `poll_interval` (re-resolution cadence, duration string, sane default on the reconcile-cadence scale per Q31, validated > 0), `timeout` (per-lookup bound, default a few seconds). BOOTSTRAP-IP invariant (chicken-and-egg): the DoH/DoT server address must itself be reachable WITHOUT a DNS lookup — require the doh_url host / dot_server to be an IP literal, or require an explicit `bootstrap_ip` field when a hostname is used; validation FAILS FAST otherwise (a plaintext lookup of the private resolver's own name would defeat Q33's purpose). Validation: mode-specific required fields; reject DoH/DoT settings when resolver=system; an absent block is inert (system defaults) — the per-peer opt-in flag remains the sole gate, [dns] merely selects transport. Provide a constructor mapping the validated block onto the internal/dnsresolve implementations. Zero-value behavior: absent block == system resolver defaults, still gated by the per-peer flag."
+- acceptance: "go test ./internal/config/... passes a validation matrix: absent block yields system defaults; doh without doh_url fails; dot without dot_server fails; a hostname-form doh_url/dot_server without bootstrap_ip fails fast with a clear error; poll_interval <= 0 fails; a full valid doh and dot block each construct the matching dnsresolve implementation in a unit test."
+- suggestedModel: standard
+- dependsOn: ["T67","T71"]
+- ledgerRefs: ["goals:G5"]
+
+## M21
+
+### T70 — planned
+
+- createdAt: 2026-07-13T21:54:32.763Z
+- updatedAt: 2026-07-13T22:05:55.860Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Refactor hubFailover to a mutable, spec-keyed endpoint set updated under its lock
+- description: "Q34 answer: allow mixing hostnames and IP literals in the ordered endpoints list; make hubFailover's endpoint list MUTABLE with re-resolution updating entries in place under the shared lock. Refactor internal/device/failover.go: replace the immutable `endpoints []netip.AddrPort` snapshot (failover.go:72-97) with a spec-keyed structure — the ordered []config.EndpointSpec where each spec owns its current expansion ([]netip.AddrPort: a literal is a fixed single entry; a hostname is its latest resolved record set per Q32 multi-record expansion, family-filtered/ordered against the local paths' bind families with a documented deterministic tie-break). The flattened concatenation is the failover order; `idx` addresses the flattened list. Track the ACTIVE endpoint by SPEC-SCOPED identity — the pair (specIdx, AddrPort) — never a raw flattened index and never a bare AddrPort value (R70 fix): T67's load-time duplicate detection is textual host:port only, so at runtime a hostname may legitimately re-resolve onto the same AddrPort as another spec's literal or record, yielding duplicate values in the flattened order, and a bare value-based re-map could silently match the wrong spec's entry. Duplicate AddrPort values across DIFFERENT specs are therefore permitted in the flattened list (check() walks it unchanged); re-mapping after an in-place swap resolves the active pointer WITHIN its owning spec (its AddrPort survived that spec's swap → same entry, flattened idx re-computed), and only a change in the active spec's OWN expansion can move or repoint it. Add an update method, e.g. `updateResolution(specIdx int, addrs []netip.AddrPort)`, taking h.mu: it swaps that spec's expansion; the ACTIVE entry stays stable if its AddrPort survives the swap within that spec (re-map idx); if the active entry's AddrPort changed, repoint via ONE SetPeerRemote (multipath.go:1371, disruptive — Rebaseline + rehandshake per D32) and rehandshake; if unchanged, strictly no repoint (Q31 no-op suppression); standby-only changes never touch the bond. check() (failover.go:136) keeps its exact semantics over the flattened list. Also update the startHubFailover wiring (failover.go:205): construct a controller when the peer has ANY hostname spec OR >= 2 flattened endpoints; a single-IP-literal peer still constructs NO controller (byte-for-byte pre-G5 behavior, Q29). Do NOT wire the resolver here — this task only makes the set mutable and exposes the update API; keep every existing failover unit test passing."
+- acceptance: "go test ./internal/device/... -race passes: all existing failover_test.go tests unchanged; new fake-clock/fake-health/fake-remote cases prove (1) a standby-record swap causes zero SetPeerRemote calls; (2) an active-entry IP change causes exactly one SetPeerRemote + one rehandshake; (3) an unchanged active IP causes zero calls; (4) idx re-maps correctly when a spec's expansion grows/shrinks; (5) a single-IP-literal peer constructs no controller; (6) a hostname spec re-resolving onto the SAME AddrPort as another spec's literal standby leaves the active pointer on its own spec's entry (no spurious re-map, zero SetPeerRemote) and a subsequent failover advance still walks the flattened order correctly (R70 cross-spec duplicate case)."
+- suggestedModel: frontier
+- dependsOn: ["T67"]
+- ledgerRefs: ["goals:G5"]
+
+### T73 — planned
+
+- createdAt: 2026-07-13T21:55:14.470Z
+- updatedAt: 2026-07-13T21:55:14.470Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Implement the re-resolution controller: poll plus liveness-loss triggers, change-suppressed repoint"
+- description: "Q31 answer: fixed poll interval PLUS an immediate re-resolve on liveness loss; repoint only on actual change (suppression lives in T70's update method). New controller in internal/device (e.g. resolution.go), mirroring the hubFailover shape: pure constructor over injected collaborators (dnsresolve.Resolver, the mutable endpoint set's update API, the same hubHealth liveness plane, telemetry.Clock, poll interval from [dns]) so it is unit-testable with a fake resolver and fake clock (Q36). One evaluation step: for each hostname spec, Lookup with the configured timeout; on SUCCESS, family-filter/order and call updateResolution (change detection inside); on FAILURE, keep the previous expansion and retry next tick — a lookup failure NEVER tears down a working endpoint set and never hard-fails anything (Q30 tolerant model). Liveness-loss trigger: when every path to the ACTIVE endpoint is DOWN (same allDown sweep the failover controller uses), trigger an immediate out-of-band re-resolve of the active spec rather than waiting for the next tick; coordinate with hubFailover purely through the shared lock and the update API (Q34) so the two controllers cannot fight over the bond (each repoint is a single guarded SetPeerRemote). Resolution runs entirely off the send hot path (its own goroutine; results applied under the endpoint-set lock only). If minTTL is available (DoH/DoT, ttlOk=true), clamp the next poll to min(pollInterval, TTL) — the Q31 TTL nice-to-have, trivially available behind the seam. This controller runs even for a single-hostname peer (to track a changing IP), independent of hub-failover's >=2 guard."
+- acceptance: "go test ./internal/device/... -race passes with injected resolver + fake clock: (1) lookup failure at every tick leaves the endpoint set untouched and keeps retrying (no hard fail); (2) a changed active IP produces exactly one SetPeerRemote (observed via fake remote); (3) an unchanged IP produces none over many ticks; (4) all-paths-down triggers a re-resolve before the next poll tick; (5) TTL below poll interval shortens the next resolve delay."
+- suggestedModel: frontier
+- dependsOn: ["T70","T72"]
+- ledgerRefs: ["goals:G5"]
+
+### T74 — planned
+
+- createdAt: 2026-07-13T21:55:31.799Z
+- updatedAt: 2026-07-13T22:05:45.511Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Wire deferred boot-time resolution and the resolution loop into the device lifecycle
+- description: "Q30 answer: defer-and-reconcile, never hard-fail boot on an unresolvable name. In internal/device/device.go: (1) at Up, attempt one bounded initial resolve of each hostname spec (short timeout); build the engine/UAPI peer endpoint ONLY from a resolved flattened list — if NOTHING is resolved (single-hostname peer, resolver down), bring the tunnel up WITHOUT a peer endpoint (the concentrator side already runs endpoint-less, so the engine supports it) and let the loop complete the wiring on first success. FIRST-RESOLVE INSTALL PATH (R70 fix): SetPeerRemote (multipath.go:1371) only repoints bind path remotes — it NEVER populates the engine peer's endpoint, which is set exclusively by a UAPI `endpoint=` line routed through Multipath.ParseEndpoint (multipath.go:1324-1344); after an endpoint-less boot a bare rehandshake has no known endpoint, so SendHandshakeInitiation cannot transmit. Therefore on the FIRST successful resolve the device must (a) INSTALL the resolved endpoint on the engine peer via the UAPI/IpcSet path (an `endpoint=` line through the existing IpcSet machinery, or an equivalent device-level install that reaches ParseEndpoint with a resolved IP:port string), THEN (b) rehandshake — the initiation now has an addressable endpoint. Subsequent re-resolves of an already-installed peer take the normal SetPeerRemote repoint path (the engine's virtual endpoint stays stable per A1; only bind remotes move). (2) Start the re-resolution controller's loop like startHubFailover (device.go wiring at failover.go:205 / stopHubFailover at device.go:677): a device-lifecycle goroutine with an idempotent stopper stored on Tunnel (e.g. t.stopResolution) invoked in Close between stopHubFailover and dev.Close. (3) Multipath.ParseEndpoint (multipath.go:1327) stays IP-only — the device hands ONLY resolved netip.AddrPort strings to the engine, so no hostname ever reaches the bind and the datapath is untouched. (4) When DNS is not configured (no hostname specs), construct NO resolver and start NO loop — the wiring is provably inert for existing configs (Q29). Update Reload semantics only as far as correctness requires (a reload that changes endpoint specs restarts the loop); note anything larger as follow-up rather than expanding scope."
+- acceptance: "go test ./internal/device/... -race passes: (1) Up succeeds with a never-resolving fake resolver on a single-hostname peer (tolerant boot; UAPI get shows NO peer endpoint); (2) first successful resolve INSTALLS the engine peer endpoint and initiates a handshake — assert BOTH that the engine peer gains the endpoint (UAPI get reports endpoint=<resolved ip:port>) AND that a handshake initiation actually egresses toward the resolved address (initiation packet observed at the test bind); a fake-rehandshake-counter increment alone is NOT sufficient evidence (R70); (3) Close stops the loop with no goroutine leak under -race; (4) a config with zero hostname specs constructs no resolver and starts no loop (asserted via the wiring seam). Full go test ./... and go vet ./... pass."
+- suggestedModel: frontier
+- dependsOn: ["T73"]
+- ledgerRefs: ["goals:G5"]
+
+### T75 — planned
+
+- createdAt: 2026-07-13T21:55:46.889Z
+- updatedAt: 2026-07-13T21:55:46.889Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Add cross-controller -race interleave tests: re-resolution vs hub-failover coordination"
+- description: "Consolidated concurrency proof for the two controllers that co-own the mutable endpoint set (Q34): a test that INTERLEAVES re-resolution updates (updateResolution swapping expansions / repointing the active entry) with hubFailover.check() advances (all-paths-down failover) under `go test -race`, driven by the injected fake resolver, fake clock, and fake health/remote collaborators. Cover the contested schedules: a re-resolve landing while check() is mid-advance; a failover advance landing between a lookup and its updateResolution apply; and both controllers observing the same liveness-loss event (exactly ONE SetPeerRemote must win — no double-repoint, no lost update, no deadlock on h.mu). Also consolidate the seam-contract unit coverage Q36 names in one place: resolveEndpoints/boot defers (never hard-fails) on lookup failure; the loop repoints via SetPeerRemote only on a changed IP; an unchanged IP suppresses the repoint (no Rebaseline)."
+- acceptance: go test -race ./internal/config/... ./internal/device/... ./internal/dnsresolve/... passes, including a test that interleaves re-resolution and failover advance under -race with no reported race, no deadlock (bounded test time), and an assertion that a simultaneous liveness-loss event produces exactly one SetPeerRemote.
+- suggestedModel: standard
+- dependsOn: ["T73","T74"]
+- ledgerRefs: ["goals:G5"]
+
+## M22
+
+### T76 — planned
+
+- createdAt: 2026-07-13T21:55:53.025Z
+- updatedAt: 2026-07-13T21:55:53.025Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Add DPI-posture guard tests: opt-in OFF means zero DNS and an unchanged wire audit"
+- description: "Operationalize the Q29/Q33 security acceptance target. (1) Unit-level guard: with any all-IP-literal config, assert no dnsresolve.Resolver is constructed and no resolution goroutine starts (a tripwire fake resolver that fails the test if Lookup is ever called, injected at the wiring seam). (2) Wire-audit guard: the existing p5 DPI test (test/e2e p5_dpi_test.go) must pass unchanged on a DNS-disabled config — assert the tunnel wire is byte-identical in shape to pre-G5 (the audit already encodes this; the task is running and, if needed, extending it to assert zero port-53/DoH/DoT egress from the edge netns while DNS is off). (3) Documentation hook: the guard test names the exact leaked artifact per mode (system: cleartext DNS query naming the concentrator; DoH/DoT: TLS SNI + timing to the resolver) so the docs task can cite a tested statement."
+- acceptance: go test ./internal/device/... passes the tripwire-resolver case; the p5 DPI e2e (go test -tags e2e -run P5 on the e2e hosts) passes unchanged on a DNS-off config, extended with a zero-DNS-egress assertion for the edge namespace.
+- suggestedModel: standard
+- dependsOn: ["T74"]
+- ledgerRefs: ["goals:G5"]
+
+### T77 — planned
+
+- createdAt: 2026-07-13T21:56:00.076Z
+- updatedAt: 2026-07-13T22:06:03.741Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Add the netns e2e: dial-by-name, mid-session concentrator IP change, tunnel survives"
+- description: "The v1 acceptance bar (Q36). Extend the privileged netns e2e suite (build on test/e2e/failover_test.go's mid-session-switch harness): the edge config names the concentrator by HOSTNAME (dns opt-in on, system resolver). Name resolution inside the netns needs a netns-local answer source — /etc/hosts is not netns-scoped for the Go resolver, so run a minimal in-test UDP DNS responder inside the edge namespace (dnsmessage-based, reusing the package helpers) and point the edge at it (resolv.conf in a mount namespace, or the [dns] dot/doh server override if simpler — choose and document). Scenario: (0) the edge BOOTS while the name is UNRESOLVABLE (the in-test responder initially down/NXDOMAIN): the tunnel comes up endpoint-less (tolerant boot, no crash); (1) the responder starts answering, the edge's FIRST successful resolve installs the engine peer endpoint and the first handshake goes through — tunnel up, traffic flows (proves the boot-unresolvable → first-resolve → handshake path end-to-end, R70); (2) the concentrator's IP CHANGES mid-session (move the address in the conc namespace and update the DNS answer); (3) the edge re-resolves (poll or liveness-loss trigger) and repoints; (4) the tunnel SURVIVES — post-change traffic flows within a bounded window. Also assert the D32 regression guard: the resequencer re-baselines (traffic actually resumes, not just a handshake)."
+- acceptance: "go test -tags e2e -run DNS (or the chosen test name) passes as root on the e2e hosts (o3.7mind.io aarch64 + llm-ubuntu-0 amd64): edge boots with the name unresolvable and reaches tunnel-up only after the responder starts answering (first-resolve handshake proven, R70), then IP change mid-session, post-change ping/iperf traffic resumes within the poll+settle bound; the test is hermetic to the netns sandbox (no external DNS egress)."
+- suggestedModel: frontier
+- dependsOn: ["T74"]
+- ledgerRefs: ["goals:G5"]
+
+### T78 — planned
+
+- createdAt: 2026-07-13T21:56:10.379Z
+- updatedAt: 2026-07-13T21:56:10.379Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Realhosts report-only dial-by-name check (stretch)
+- description: "Q36: in scope only as a report-only stretch per the M10/Q12 discipline. Extend test/realhosts (runner.go harness): bring the standing two-host testbed up with the edge dialing the concentrator by its real DNS name (o3.7mind.io resolves to the standing ConcPubIP) with the dns opt-in enabled, and REPORT (never fail the suite on) the outcome: resolved address, time-to-first-handshake, and steady traffic. No mid-session IP change on real hosts (the public IP is fixed); this tier only proves the resolve-then-dial path against real resolvers and real NAT. Keep it strictly report-only: any failure logs a report line, exit status stays green, matching the existing realhosts discipline."
+- acceptance: go test -tags realhosts ./test/realhosts/... runs against the standing testbed and emits the dial-by-name report (resolution result + handshake + traffic outcome); an induced failure (bogus name) demonstrably does NOT fail the suite — it reports and passes.
+- suggestedModel: standard
+- dependsOn: ["T77"]
+- ledgerRefs: ["goals:G5"]
+
+### T79 — planned
+
+- createdAt: 2026-07-13T21:56:16.623Z
+- updatedAt: 2026-07-13T21:56:16.623Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Sync docs and example config: DNS endpoints, resolver privacy trade-offs"
+- description: "Per the repo rule (AGENTS.md: docs in sync with code in the same change-set) close the goal with a doc sweep: README.md and docs/design.md gain the DNS-endpoints section — opt-in posture and WHY default-off (the DPI thesis: a pre-tunnel cleartext signal naming a blocklistable host), the exact leaked artifact per resolver mode (system: plaintext query; DoH/DoT: SNI + timing to the provider — cite the tested statements from the DPI-posture task), defer-and-reconcile boot semantics, re-resolution cadence + liveness-loss trigger + change suppression, multi-record expansion feeding hub-failover, and the mixing rules with ordered endpoints. wanbond.example.toml gains a commented hostname-endpoint peer plus a full [dns] block (system, doh, dot variants, incl. the bootstrap-IP requirement). docs/install.md if it documents config fields. Verify the example still loads."
+- acceptance: "The example config parses: the existing example-config test (or a one-line addition to it) round-trips wanbond.example.toml through config.Load with the new block commented-in variant covered; README/design.md sections exist and name the per-mode leaked artifacts; go test ./... passes."
+- suggestedModel: fast
+- dependsOn: ["T76","T69","T71"]
+- ledgerRefs: ["goals:G5"]
