@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 15
+  item: 16
 archives: []
 ---
 
@@ -221,3 +221,15 @@ archives: []
 - blockingQuestions: ["Q37","Q38","Q39","Q40","Q41","Q42","Q43"]
 - sessionLogs: [".cq/logs/20260713-225618-a6491a1ae0266d482.md"]
 - rawLogs: [".cq/logs/raw/20260713-225618-a6491a1ae0266d482.jsonl"]
+
+### HO16 — drained
+
+- createdAt: 2026-07-13T23:41:02.296Z
+- updatedAt: 2026-07-13T23:41:02.296Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- summary: "/cq:plan:advance G6 (standalone) run to completion: G6 reached `planned`. Q37-Q43 were all answered, so the configured multi-planner path ran: 2 candidate planners (opus 7-milestone/16-task, fable 4-milestone/16-task) fanned out in CANDIDATE mode; synthesis took fable's candidate as base (surface-then-wiring splits of I5/I6, opt-in tun_persist, docs-coupled-to-packaging, two-sided I8 test, reference-sync sweep) and folded in opus's I7 acceptance (stable ifindex + NM-unmanaged) and NM-drop-in presence check; the orchestrator persisted work milestones M30-M33 + tasks T100-T115 and transitioned G6 to planning. Review loop (configured opus+fable panel, strictest-wins): R80 revise (3 criticisms: T115 dependsOn missing T101/T108; T115 scope missing runbook.md; T101 flaky scrape-ordering acceptance) → revision → R81 revise (2 residual same-class sequencing gaps: T115 needs T110/T111/T113; T111 needs T109) → revision → R82 unanimous go-ahead. Decision K7 locked; G6 `planned`; planning-lock commit dbf54ec. Auto-investigate worklist EMPTY by ledger query (no actionable defect carries goals:G6; the reviews filed zero defects; D35-D40 remain M28/investigate-flow-owned by design). NEXT: /cq:implement:start (or /cq:advance) to build M30-M33; separately /cq:investigate for D35-D40."
+- flow: plan
+- ledgerRefs: ["goals:G6","reviews:R80","reviews:R81","reviews:R82","decisions:K7"]
+- sessionLogs: [".cq/logs/20260713-232548-a382332a889496d5d.md",".cq/logs/20260713-232548-a795489b23fb6f794.md",".cq/logs/20260713-233100-a55a4e128f6f54f3a.md",".cq/logs/20260713-233100-af3f0626f4832a9e5.md",".cq/logs/20260713-233226-a31df891879aba85e.md",".cq/logs/20260713-233606-a6a7deec127907c4c.md",".cq/logs/20260713-233606-a00894726fc25d16c.md",".cq/logs/20260713-233719-a1999a2a1c65132fa.md",".cq/logs/20260713-233917-a89c1670ebd3cd89d.md",".cq/logs/20260713-233917-a5034ee3e9ef63fd4.md",".cq/logs/20260713-234017-aa1ce2b42795fdf8a.md"]
+- rawLogs: [".cq/logs/raw/20260713-232548-a382332a889496d5d.jsonl",".cq/logs/raw/20260713-232548-a795489b23fb6f794.jsonl",".cq/logs/raw/20260713-233100-a55a4e128f6f54f3a.jsonl",".cq/logs/raw/20260713-233100-af3f0626f4832a9e5.jsonl",".cq/logs/raw/20260713-233226-a31df891879aba85e.jsonl",".cq/logs/raw/20260713-233606-a6a7deec127907c4c.jsonl",".cq/logs/raw/20260713-233606-a00894726fc25d16c.jsonl",".cq/logs/raw/20260713-233719-a1999a2a1c65132fa.jsonl",".cq/logs/raw/20260713-233917-a89c1670ebd3cd89d.jsonl",".cq/logs/raw/20260713-233917-a5034ee3e9ef63fd4.jsonl",".cq/logs/raw/20260713-234017-aa1ce2b42795fdf8a.jsonl"]
