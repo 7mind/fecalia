@@ -73,6 +73,11 @@ type Tunnel struct {
 	// tearing the engine down so emission stops before the sockets close. It is
 	// idempotent and never nil (a no-op when the bind runs without probers).
 	stopProbes func()
+	// stopReconcile halts the background deferred-path reconcile loop (T55): it retries
+	// binding the paths a tolerant Open left DOWN as their addresses appear. Close calls
+	// it before tearing the engine down so no reconcile races the socket close. It is
+	// idempotent and never nil (a no-op when the bind runs without probers / never defers).
+	stopReconcile func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -234,10 +239,15 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	// The interval is the SINGLE-SOURCE-OF-TRUTH telemetry default, which also arms
 	// the bind's receive-path liveness sweep throttle (D15).
 	stopProbes := mpBind.StartProbeLoop(telemetry.DefaultProbeInterval)
+	// Start the background deferred-path reconciler alongside probing (T55): a path the
+	// tolerant Open left DOWN (its source_addr not yet assignable — a 5G modem without a
+	// lease at boot) is retried and promoted to a live path as its address appears,
+	// WITHOUT a tunnel restart. Close stops it before dev.Close, like the probe loop.
+	stopReconcile := mpBind.StartReconcileLoop(bind.DefaultReconcileInterval)
 
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
-		stopProbes: stopProbes, amnezia: cfg.Amnezia,
+		stopProbes: stopProbes, stopReconcile: stopReconcile, amnezia: cfg.Amnezia,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). It is
 		// built unconditionally (cheap) so a reload that later turns [metrics].listen ON has
@@ -646,6 +656,9 @@ func (t *Tunnel) Close() {
 	t.reloadMu.Unlock()
 	if t.stopProbes != nil {
 		t.stopProbes()
+	}
+	if t.stopReconcile != nil {
+		t.stopReconcile()
 	}
 	t.dev.Close()
 	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })

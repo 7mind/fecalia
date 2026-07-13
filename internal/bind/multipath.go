@@ -195,6 +195,13 @@ type Multipath struct {
 	// newProber mints a prober for a path admitted at runtime (T30); nil disables
 	// runtime path addition (a bind without the probe transport).
 	newProber ProberFactory
+	// deferredListen binds a reconciled deferred path's socket (T55 background
+	// reconcile). It is an injection seam: the default pins the source IP (net.ListenUDP,
+	// matching AddPath's runtime bind), and a test overrides it to drive the
+	// deferred→bound transition deterministically — a source_addr "becoming assignable"
+	// — without a real interface address having to appear on the host. Immutable after
+	// construction, never nil.
+	deferredListen func(src netip.Addr, port uint16) (*net.UDPConn, error)
 	// reflector answers inbound peer probes (IsEcho=false) with an authenticated
 	// echo. A single Reflector serves every path (its anti-replay is PathID-keyed)
 	// and it is internally synchronized, so the per-path receive goroutines share it.
@@ -385,16 +392,17 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		}
 	}
 	return &Multipath{
-		psk:         psk,
-		defs:        append([]config.Path(nil), paths...),
-		scheduler:   scheduler,
-		classify:    newWGClassifier(amnezia),
-		probers:     probers,
-		newProber:   newProber,
-		reflector:   telemetry.NewReflector(psk, rand.Reader),
-		virt:        &udpEndpoint{},
-		fecCfg:      fecCfg,
-		adaptiveCfg: adaptiveCfg,
+		psk:            psk,
+		defs:           append([]config.Path(nil), paths...),
+		scheduler:      scheduler,
+		classify:       newWGClassifier(amnezia),
+		probers:        probers,
+		newProber:      newProber,
+		deferredListen: defaultDeferredListen,
+		reflector:      telemetry.NewReflector(psk, rand.Reader),
+		virt:           &udpEndpoint{},
+		fecCfg:         fecCfg,
+		adaptiveCfg:    adaptiveCfg,
 	}, nil
 }
 
