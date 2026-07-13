@@ -337,8 +337,13 @@ space** and never touches the inner WireGuard counter (a core invariant).
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
 - `internal/dnsresolve` — the DNS resolution seam: a context-bounded `Resolver`
-  interface, a system implementation over `net.Resolver`, and an in-memory
-  `FakeResolver` for tests.
+  interface, a system implementation over `net.Resolver`, a DNS-over-HTTPS
+  (RFC 8484) implementation (`DoHResolver`, wire-encoded with
+  `golang.org/x/net/dns/dnsmessage`, POSTed over a dedicated `http.Client`
+  with standard system CA trust — no insecure-skip-verify knob), and an
+  in-memory `FakeResolver` for tests. `DoHResolver` queries both A and AAAA
+  and tolerates one family answering NXDOMAIN when the other resolves; the
+  residual leak is TLS SNI/timing to the configured DoH provider.
 
 ## Load-bearing invariants
 
