@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 13
+  item: 14
 archives: []
 ---
 
@@ -194,3 +194,15 @@ archives: []
 - blockingQuestions: ["Q29","Q30","Q31","Q32","Q33","Q34","Q35","Q36"]
 - sessionLogs: [".cq/logs/20260713-212207-a0e65d160c67b7983.md"]
 - rawLogs: [".cq/logs/raw/20260713-212207-a0e65d160c67b7983.jsonl"]
+
+### HO14 — drained
+
+- createdAt: 2026-07-13T22:13:12.471Z
+- updatedAt: 2026-07-13T22:13:12.471Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "Standalone /cq:plan:advance G5 run stop: DRAINED. G5 (optional DNS concentrator endpoints) advanced clarifying → planning → planned in one run. Multi-planner round (configured panel opus+fable, generate-N-then-judge): both candidates returned; fable's candidate chosen as base with opus fold-ins (DoH/DoT bootstrap-IP fail-fast, cross-controller -race interleave task, active-endpoint-by-identity); orchestrator persisted the synthesized plan as work milestones M20/M21/M22 + tasks T67-T79. Review round 1 (panel opus+fable, strictest-wins): R70 revise with 2 [fable] criticisms (T74 first-resolve handshake mechanism; T70 active-identity ambiguity under cross-spec AddrPort duplicates); planner revised T70/T74/T77 in place. Review round 2: R71 unanimous go-ahead; decision K5 locked; G5 reached planned. Auto-investigate phase: ledger query found ZERO actionable defects linked goals:G5 (no reviewer filed any) — no-op. Next: /cq:implement:start for M20/M21/M22, and the user closes building→done later."
+- flow: plan
+- ledgerRefs: ["goals:G5"]
+- sessionLogs: [".cq/logs/20260713-215726-ad0c63b3749a28ff8.md",".cq/logs/20260713-215726-a3a1678fe42741a52.md",".cq/logs/20260713-220328-a45a9b222054d0d22.md",".cq/logs/20260713-220328-ab541f9aa587c0050.md",".cq/logs/20260713-220647-a5fce4a23176a911e.md",".cq/logs/20260713-221057-abf3d4747c8c2d97a.md",".cq/logs/20260713-221057-ab6ff041b6c4fdf2b.md",".cq/logs/20260713-221230-a1d2bf0c3d369b9bf.md"]
+- rawLogs: [".cq/logs/raw/20260713-215726-ad0c63b3749a28ff8.jsonl",".cq/logs/raw/20260713-215726-a3a1678fe42741a52.jsonl",".cq/logs/raw/20260713-220328-a45a9b222054d0d22.jsonl",".cq/logs/raw/20260713-220328-ab541f9aa587c0050.jsonl",".cq/logs/raw/20260713-220647-a5fce4a23176a911e.jsonl",".cq/logs/raw/20260713-221057-abf3d4747c8c2d97a.jsonl",".cq/logs/raw/20260713-221057-ab6ff041b6c4fdf2b.jsonl",".cq/logs/raw/20260713-221230-a1d2bf0c3d369b9bf.jsonl"]
