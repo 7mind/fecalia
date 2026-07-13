@@ -559,10 +559,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G2"]
 
-### T56 — planned
+### T56 — done
 
 - createdAt: 2026-07-13T13:42:00.528Z
-- updatedAt: 2026-07-13T13:42:00.528Z
+- updatedAt: 2026-07-13T14:30:14.813Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Document the per-link bandwidth measurement + pacing tuning procedure

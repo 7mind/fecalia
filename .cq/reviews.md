@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 55
+  item: 56
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -593,6 +593,15 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T53 (G2/W2 wire SizePacingFromBDP) implement-review: APPROVE (verdict=approve). deriveWeightedPacingFromBDP runs inside normalize() at config LOAD (config.go:603-651), sets PerPathCapacityFPS/PacingBurstFrames from SizePacingFromBDP replacing synthetic defaultPerPathCapacityFPS=10000. NON-VACUOUS: TestPacingDerivedFromDeclaredBandwidth computes want from SizePacingFromBDP(10e6,30ms,1500) (the 10Mbit BOTTLENECK path, not the 50Mbit) + asserts derived ~833 FPS strictly below the default. NO RUNTIME AUTO-TUNING (Q20 hard req): the ONLY writes to the pacing knobs in the whole tree are at config load (derive + applyDefaults); zero writes/ticker/goroutine in internal/sched adjusting them — derivation fixed at load, compliant. Pacing DEFAULT-DISABLED preserved (PacingEnabled zero-value false; early-return when disabled/non-weighted; declared bandwidth inert when off; no-declaration falls back to default). Fail-fast: parseBandwidth requires explicit SI bit/s suffix (rejects bare/empty), non-positive bw/RTT rejected, link_rtt required under pacing, all-or-nothing + raw-knob mutual exclusion; 8 reject sub-cases pass. Unit parsing correct ('50Mbit'->50e6, longest-suffix-first). Docs (install.md:153+, design.md) accurate. Single-shared-capacity->bottleneck pacing is a pre-existing T21 property (safe direction), not a T53 fault. Full gate green. 0 criticisms, 0 questions. Merged to main at c803cb5."
 - ledgerRefs: ["tasks:T53"]
+
+### R56 — go-ahead
+
+- createdAt: 2026-07-13T14:30:13.816Z
+- updatedAt: 2026-07-13T14:30:13.816Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T56 (G2/W2 pacing tuning doc) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE had 1 criticism: docs/install.md §3a example said 1517B/frame (bogus — no repo constant) + presented 47.3 Mbit/s / 5.0ms as captured measurements though T52 is non-deterministic/report-only. FIXED at fdf5419 (docs/install.md only, one hunk): wire-frame size corrected to 1540B, independently verified (frame.DataOverhead = 24+1+8+1+4+1+1 = 40 + bind.DefaultPathMTU 1500 = 1540); the throughput/RTT examples reframed as explicit illustrative placeholders (<e.g. ~35-56>, <e.g. ~5>) preceded by prose that the bdp sub-test is report-only + non-deterministic. Rest of T56 already accurate + code-consistent (link_bandwidth/link_rtt keys/defaults/bottleneck-sizing/all-or-nothing validation all match config.go; extends T53's docs coherently; markdown anchors resolve). Docs-only, build/test green. 0 criticisms, 0 questions. Merged to main at b9f5983."
+- ledgerRefs: ["tasks:T56"]
 
 ## M13
 
