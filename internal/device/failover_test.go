@@ -93,6 +93,33 @@ func TestHubFailoverSwitchesOnHubLoss(t *testing.T) {
 	}
 }
 
+// TestHubFailoverPartialDownNoFailover pins the load-bearing acceptance property that
+// hub loss is EVERY path DOWN, distinct from a single-path failure (which the per-path
+// schedulers already handle). With a 2-endpoint list and the settle dwell fully elapsed
+// — so a broken "any path down" detector WOULD advance — one path UP and one path DOWN
+// must take NO hub-failover action: no remote switch, no re-handshake, no index move.
+// This is the case none of the both-Up / both-Down tests exercise; without it, a
+// regression of allDownLocked from all-down to any-down would pass the whole suite.
+func TestHubFailoverPartialDownNoFailover(t *testing.T) {
+	eps := mustEndpoints(t, "203.0.113.1:51820", "198.51.100.7:51820")
+	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateDown}}
+	rem := &recordingRemote{}
+	handshakes := 0
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	h := newHubFailover(eps, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+
+	// Settle dwell elapsed: an any-down detector would fire here; an all-down one must not.
+	clk.advance(testSettle + time.Second)
+	h.check()
+
+	if rem.calls != 0 || handshakes != 0 {
+		t.Fatalf("hub failover fired on a partial-down state (one path UP): remote switches=%d handshakes=%d — hub loss must require EVERY path down", rem.calls, handshakes)
+	}
+	if h.idx != 0 {
+		t.Fatalf("active index moved off 0 while a path was UP: %d (single-path loss must not advance the hub)", h.idx)
+	}
+}
+
 // TestHubFailoverSingleEndpointNoAction is the GUARD: a SINGLE-endpoint list must take
 // NO failover action even under sustained hub loss — no remote switch, no re-handshake,
 // no index movement — so a one-concentrator deployment behaves EXACTLY as pre-T57. It is
