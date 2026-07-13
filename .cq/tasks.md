@@ -593,10 +593,10 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T53"]
 
-### T63 — planned
+### T63 — done
 
 - createdAt: 2026-07-13T13:43:06.136Z
-- updatedAt: 2026-07-13T13:43:06.136Z
+- updatedAt: 2026-07-13T17:51:11.527Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Realhosts tier: mid-transfer WAN kill for link AND hub failover under real conditions"
@@ -606,10 +606,10 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T58","T57"]
 
-### T64 — planned
+### T64 — done
 
 - createdAt: 2026-07-13T13:43:11.499Z
-- updatedAt: 2026-07-13T13:43:11.499Z
+- updatedAt: 2026-07-13T17:51:12.416Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Realhosts tier: short report-only soak across the two standing hosts"
