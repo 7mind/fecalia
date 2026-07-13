@@ -587,10 +587,10 @@ archives:
 
 ## M15
 
-### T54 — planned
+### T54 — done
 
 - createdAt: 2026-07-13T13:41:37.377Z
-- updatedAt: 2026-07-13T13:41:37.377Z
+- updatedAt: 2026-07-13T15:20:07.621Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Config: edge-side ordered list of concentrator (peer) endpoints"

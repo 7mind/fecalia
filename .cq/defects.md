@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 30
+  item: 31
 archives: []
 ---
 
@@ -431,3 +431,16 @@ archives: []
 - rootCause: The runtime/reconcile bind path (reconcile.go defaultDeferredListen + AddPath) uses net.ListenUDP with a source-IP pin and does not route through the planPathBinds/selectDeviceBinds/listenPath device-bind decision that Open uses at boot. So runtime-added and reconcile-promoted paths never get SO_BINDTODEVICE, and thus never get T16 re-roam survival, unlike boot-bound paths.
 - suggestedFix: "In a separate task (a device-bind unification), route the runtime/reconcile bind through the same planPathBinds/listenPath device-bind decision Open uses (recompute bindDevs for the promoted/added path's source), so a promoted or runtime-added path gets the same re-roam resilience as a boot-bound one. Care: preserve the source_addr pin and the no-contended-device guard selectDeviceBinds enforces."
 - ledgerRefs: ["tasks:T55","goals:G2"]
+
+### D31 — root-caused
+
+- createdAt: 2026-07-13T15:09:47.360Z
+- updatedAt: 2026-07-13T15:09:47.360Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "T60 zero-bindable e2e assertion is environment-fragile: TEST-NET-1 source_addr is not reliably unbindable on real hosts (ip_nonlocal_bind/root)"
+- severity: low
+- description: "Found by hardware validation on llm-ubuntu-0 (amd64, main @ 96504d4). TestTolerantStartupDeferredPathPromotes PASSES on hardware (survivor up 14.7 Mbit/s, deferred modem5g promoted to 43.7 Mbit/s after its address is added — the W1 feature is validated). But TestTolerantStartupFastFailModes/zero_bindable_paths_is_fatal FAILS INCONSISTENTLY: run 1 the daemon exited fatally 'no configured path could bind (all 0 deferred)'; run 2 the daemon came UP (both TEST-NET-1 source_addrs BOUND) then logged 'Failed to send handshake initiation: bind: no healthy path with a known remote endpoint' and the test TIMED OUT (10s). So binding to 192.0.2.1/192.0.2.2 (TEST-NET-1) in the HOST root namespace under sudo is NOT reliably EADDRNOTAVAIL — almost certainly net.ipv4.ip_nonlocal_bind=1 (or a route) lets the non-local bind succeed, defeating the 'zero paths can bind' premise. The daemon behaviour is CORRECT in both cases; only the TEST's premise is fragile."
+- rootCause: TestTolerantStartupFastFailModes runs the binary in the HOST root namespace with TEST-NET-1 source_addrs, assuming they are unbindable (EADDRNOTAVAIL). On a host with net.ipv4.ip_nonlocal_bind=1 (or run as root with permissive bind), the non-local bind SUCCEEDS, so the paths bind, the daemon comes up (no remote -> handshake fails), and the expected fatal-Open never happens. The deferred-promote test is robust because it uses a real netns veth with the address genuinely withheld (netns default ip_nonlocal_bind=0 -> EADDRNOTAVAIL).
+- suggestedFix: "Make the zero-bindable assertion reliable regardless of host ip_nonlocal_bind: run it inside a netns (like TestTolerantStartupDeferredPathPromotes) where both paths' source_addrs are genuinely absent from the netns interfaces (netns default ip_nonlocal_bind=0 guarantees EADDRNOTAVAIL -> all deferred -> zero-bound -> fatal), OR explicitly assert/set ip_nonlocal_bind=0 for the test, OR force the failure via a reliably-unbindable mechanism. Keep the malformed-source_addr subtest as-is (it passed — it's a pure config-load check)."
+- ledgerRefs: ["tasks:T60","goals:G2"]

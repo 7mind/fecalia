@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 59
+  item: 60
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -640,3 +640,14 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T60 (G2/W1 startup-resilience netns e2e) implement-review: APPROVE (verdict=approve). Validates T51 tolerant-Open + T55 reconcile END-TO-END. Absent-then-added flow SOUND: deferEdgeAddr withholds the address on the correct edge namespace (same call path as Readdress), AddEdgeAddr adds it later; promotion waited via waitPathUp = bounded 100ms metrics-poll (NOT a fixed-sleep race) with an analytically-derived deadline matching the REAL bind.DefaultReconcileInterval + telemetry.DefaultUpSuccesses*DefaultProbeInterval constants; traffic-on-promoted-path proven by blackholing the survivor -> failover recovers only via the reconciled path (active-backup default). Zero-bindable fatal: exit!=0 + 'wanbond starting' present (proves Open() not config-load) + exact 'no configured path could bind' string (both confirmed in multipath.go/main.go). Malformed source_addr: rejected BEFORE 'wanbond starting' logs (matches main.go config.Load-before-log ordering) + 'invalid source_addr' string. Deterministic (bounded ctx/deadline, reuses pingUntil/iperf3Mbps/Blackhole/metrics.Fetch). SURGICAL: 2 files, netns.go additive (deferEdgeAddr zero-value-safe + AddEdgeAddr, no behavior change) + new tolerant_startup_test.go; NO production code touched; T16 roaming_test.go untouched. Non-privileged gate + e2e-tagged compile green; gofmt clean. Verified by compile + close code-reading (privileged netns run not executable in reviewer sandbox). 0 criticisms, 0 questions. Merged to main at 96504d4. HARDWARE VALIDATION (the privileged run) pending on llm-ubuntu-0."
 - ledgerRefs: ["tasks:T60"]
+
+## M15
+
+### R60 — go-ahead
+
+- createdAt: 2026-07-13T15:20:03.902Z
+- updatedAt: 2026-07-13T15:20:03.902Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T54 (edge-side ordered concentrator-endpoint config surface) implement-review: APPROVE (verdict=approve, 0 criticisms, 0 questions). Ordered `endpoints` list parses in TOML order into Peer.Endpoints []netip.AddrPort (order preserved index 0..2, verified by TestLoadEndpointsOrderedList). Legacy single `endpoint` normalizes to a one-element Endpoints list via resolveEndpoints() — behavior-identical, confirmed by TestLoadEndpointSingleBackwardCompat and device.go uapiConfig now reading Endpoints[0] uniformly for both forms. Fail-fast validation covers: endpoint/endpoints mutual exclusivity, unparseable host:port, duplicate entries, empty list on edge (falls through to existing 'endpoint is required'), and edge-only constraint rejecting endpoints on the concentrator role — each with a dedicated rejection-table case in config_test.go. Endpoints is IP:port-only (netip.ParseAddrPort, NO hostname resolution) — a documented constraint T57 must honor. Endpoints field exposed public for T57 (hub-loss switch). Docs (README/design/install) updated consistently with a correctly #-prefixed multi-line TOML example. Full non-privileged gate green: go build/vet/gofmt/test all clean. SURGICAL: config.go + device.go call site + tests + docs only; switch/re-handshake deferred to T57 as specified. Merged to main at e066524."
+- ledgerRefs: ["tasks:T54"]
