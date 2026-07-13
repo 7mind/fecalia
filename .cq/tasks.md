@@ -767,10 +767,10 @@ archives:
 
 ## M23
 
-### T80 — wip
+### T80 — done
 
 - createdAt: 2026-07-13T22:27:04.600Z
-- updatedAt: 2026-07-13T22:41:43.804Z
+- updatedAt: 2026-07-13T23:00:28.079Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-peer psk and name fields to config.Peer
@@ -778,6 +778,10 @@ archives:
 - acceptance: A new config unit test parses a 2-peer TOML with distinct per-peer `psk`+`name` values and a legacy single-peer TOML carrying only top-level `psk`; the single-peer parse is byte-identical to today (golden struct compare), and the multi-peer parse exposes each peer's psk/name. `go test ./internal/config/...` passes.
 - suggestedModel: standard
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 33e8e3f
+- completion: Per-peer psk/name fields added to config.Peer with legacy single-peer golden-shape guard; semantic rebase conflict vs T67 (EndpointSpecs non-nil empty slice in the golden) resolved by conflict-resolver; merged ff to main.
+- sessionLogs: [".cq/logs/20260713-224948-a49f5813151f3f0bf.md",".cq/logs/20260713-225437-a1850ae28a48e003a.md",".cq/logs/20260713-225437-ac6ebf9d1c27aa4bf.md"]
+- rawLogs: [".cq/logs/raw/20260713-224948-a49f5813151f3f0bf.jsonl",".cq/logs/raw/20260713-225437-a1850ae28a48e003a.jsonl",".cq/logs/raw/20260713-225437-ac6ebf9d1c27aa4bf.jsonl"]
 
 ### T81 — planned
 
