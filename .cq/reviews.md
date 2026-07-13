@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 58
+  item: 59
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -631,3 +631,12 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T55 (G2/W1 deferred-path background reconcile) implement-review: APPROVE (verdict=approve). All acceptance clauses verified operationally. TestReconcilePromotesDeferredPathToLive drives EADDRNOTAVAIL->armed via injected deferredListen seam, promotes into m.paths+scheduler+reader, proves end-to-end failover (blackhole primary->Pick=1->Send) — NON-VACUOUS; stamp continuity holds (promoted.prober==probers[1], id==probers[1].PathID()), reserved nextPathID raised past deferred stamps. CONCURRENCY: reconcileDeferred/promoteDeferredLocked run entirely under m.mu (serialize w/ Send/Close/AddPath/RemovePath); loop goroutine has idempotent done-channel stopper wired into Tunnel.Close before dev.Close; promoted readers tracked by readersWG so Close joins them; TestReconcileLoopStopsCleanly starts the real 1ms ticker + asserts goleak.VerifyNone (non-vacuous). TestReconcileSkipsPathRemovedBeforeBind confirms RemovePath retires a deferred entry (no resurrection). Index-skew rollback on promote mirrors AddPath. Poll chosen over netlink (vishvananda/netlink not a dep). Full gate + go test -race ./internal/bind/... + ./internal/device/... green. doc-sync present. 0 criticisms, 0 questions. Merged to main at a955083. Reviewer filed 1 low-sev OUT-OF-SCOPE defect (promoted/runtime paths forgo SO_BINDTODEVICE, pre-existing w/ AddPath) — recorded separately."
 - ledgerRefs: ["tasks:T55"]
+
+### R59 — go-ahead
+
+- createdAt: 2026-07-13T15:04:58.140Z
+- updatedAt: 2026-07-13T15:04:58.140Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T60 (G2/W1 startup-resilience netns e2e) implement-review: APPROVE (verdict=approve). Validates T51 tolerant-Open + T55 reconcile END-TO-END. Absent-then-added flow SOUND: deferEdgeAddr withholds the address on the correct edge namespace (same call path as Readdress), AddEdgeAddr adds it later; promotion waited via waitPathUp = bounded 100ms metrics-poll (NOT a fixed-sleep race) with an analytically-derived deadline matching the REAL bind.DefaultReconcileInterval + telemetry.DefaultUpSuccesses*DefaultProbeInterval constants; traffic-on-promoted-path proven by blackholing the survivor -> failover recovers only via the reconciled path (active-backup default). Zero-bindable fatal: exit!=0 + 'wanbond starting' present (proves Open() not config-load) + exact 'no configured path could bind' string (both confirmed in multipath.go/main.go). Malformed source_addr: rejected BEFORE 'wanbond starting' logs (matches main.go config.Load-before-log ordering) + 'invalid source_addr' string. Deterministic (bounded ctx/deadline, reuses pingUntil/iperf3Mbps/Blackhole/metrics.Fetch). SURGICAL: 2 files, netns.go additive (deferEdgeAddr zero-value-safe + AddEdgeAddr, no behavior change) + new tolerant_startup_test.go; NO production code touched; T16 roaming_test.go untouched. Non-privileged gate + e2e-tagged compile green; gofmt clean. Verified by compile + close code-reading (privileged netns run not executable in reviewer sandbox). 0 criticisms, 0 questions. Merged to main at 96504d4. HARDWARE VALIDATION (the privileged run) pending on llm-ubuntu-0."
+- ledgerRefs: ["tasks:T60"]

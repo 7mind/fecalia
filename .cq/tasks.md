@@ -520,10 +520,10 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T51"]
 
-### T60 — planned
+### T60 — done
 
 - createdAt: 2026-07-13T13:42:43.548Z
-- updatedAt: 2026-07-13T13:42:43.548Z
+- updatedAt: 2026-07-13T15:04:59.410Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "netns e2e: absent-then-added source_addr; zero-bindable fatal; malformed config-load error; no T16 regression"
