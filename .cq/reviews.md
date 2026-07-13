@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 68
+  item: 69
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -694,3 +694,12 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T65 (automate §P0 real-link baseline -> `just p0-baseline`) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): the just target ORCHESTRATES only the existing realhosts tests (-run '^(TestRealP0Smoke|TestRealAggregationBufferbloat|TestRealMidTransferWANKill)$' -- regex matches exactly the 3 funcs) and tees a timestamped report; NO absolute-number gate added (report-only/non-blocking per Q19); NO destructive step (underlying tests already o3-safe); all 4 env vars + /run/agenix/llm-ssh-key default exist in runner.go; manual-checklist §P0 anchor resolves; reports dir gitignored. build+gofmt clean, just -n p0-baseline expands. HARDWARE (llm-ubuntu-0 EDGE <-> o3 concentrator): `just p0-baseline` PASS 286s -- all 3 tests green, report emitted (test/realhosts/reports/p0-baseline-20260713T180022Z.log, 12880B). Baseline numbers: smoke RTT 32.8ms/TCP 29-53Mbit/UDP goodput 85Mbit; aggregation ratio 0.456 (shared-uplink), idle 31.8ms->loaded 207.5ms (bufferbloat 175.7ms, real-link congestion variability); LINK_FAILOVER 1487ms, HUB_FAILOVER 1706ms (resumed via standby portB 60.5Mbit -- confirms the D32-fixed hub-failover on the real link). Clean teardown both hosts, o3 firewall restored. Merged 929a15a."
 - ledgerRefs: ["tasks:T65"]
+
+### R69 — go-ahead
+
+- createdAt: 2026-07-13T18:19:13.473Z
+- updatedAt: 2026-07-13T18:19:13.473Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T66 (final G2 doc-sync + non-blocking pilot exit criterion) review: APPROVE (orchestrator verification; docs-only, terminal M17 task). Deliverable 1: docs/runbook.md §7 states the NON-BLOCKING exit criterion correctly (Q19) -- capped-fixture aggregation/bufferbloat (W2, TestFixtureImpairment netns) + report-only real-link baseline (W4, just p0-baseline) are SUFFICIENT to enter a supervised pilot; real-link numbers INFORMATIONAL (no Mbit/ms hard gate; a human makes the go/no-go); longer soak runs DURING the pilot, not as a pre-gate. Pointer in manual-checklist §P0. Deliverable 2: 7 stale 'not-yet-built' phrases fixed across README/design/install/manual-checklist/runbook (W1 reconcile T55, W2 pacing sizing T53/T56/T61, W3 hub failover+e2e T57/T62/T63), each verified against code by the worker; design.md 'Not yet built' now lists only genuinely-unbuilt items (live CONTROL protocol -- confirmed still dropped at multipath.go receive default; UDP-only non-goal; in-fixture CPU-bound measurement boundary). NO OVERCLAIM verified: design.md:402-405 explicitly documents the realhosts single-physical-uplink topology so the aggregation ratio is NOT presented as a bandwidth-aggregation guarantee; README marks aggregation 'not measured by the netns fixture'. Acceptance-grep: only legitimate hits remain (single-endpoint guard = correct behavior; p0-checkpoint.md frozen P0 history; design.md cross-refs to the retained section). Gate green (go build + gofmt, docs-only); all markdown links resolve. Merged to main."
+- ledgerRefs: ["tasks:T66"]

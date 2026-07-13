@@ -647,10 +647,10 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T58","T63"]
 
-### T66 — planned
+### T66 — done
 
 - createdAt: 2026-07-13T13:43:45.246Z
-- updatedAt: 2026-07-13T13:43:45.246Z
+- updatedAt: 2026-07-13T18:19:18.696Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Record non-blocking pilot exit criterion + full README/design.md/install.md/manual-checklist.md doc-sync
