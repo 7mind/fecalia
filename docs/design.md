@@ -137,10 +137,13 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   paths bind, `Open()` still fails fatally (no transport ⇒ no tunnel); a
   **malformed** `source_addr` remains a hard config-load error (`config.validate`
   rejects it at load); and any bind error that is **not** `EADDRNOTAVAIL`
-  (`EADDRINUSE`, permission) stays fatal. This makes startup symmetric with the
-  runtime model, where a SIGHUP-added bad path (`AddPath`) errors without disturbing
-  the tunnel. (The background reconcile that retries a deferred path as its address
-  appears is **not yet built** — see "Not yet built".)
+  (`EADDRINUSE`, permission) stays fatal. Startup and the runtime model are
+  symmetric: a SIGHUP reload that introduces a not-yet-assignable path *defers* it
+  the same way (`AddPath`), a reload that keeps a deferred path is a no-op for it
+  (`PathNames` reports the durable membership, deferred paths included), and a reload
+  that drops one retires it (`RemovePath`) — so a deferred path never regresses the
+  SIGHUP-no-op invariant. (The background reconcile that retries a deferred path as
+  its address appears is **not yet built** — see "Not yet built".)
 
 This package is also the **amnezia boundary** (`bind.go`, above).
 
