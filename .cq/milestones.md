@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 29
+  item: 33
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -220,3 +220,32 @@ archives:
 - updatedAt: 2026-07-13T22:49:37.801Z
 - title: "Plan: production-edge operability & full-tunnel hardening (wanbond-fixes.md I1-I8 + C1-C6)"
 - description: Coordination milestone for the plan-flow goal covering the IMPROVEMENTS (I1-I8) and DOCUMENTATION updates (C1-C6) from wanbond-fixes.md — the production lessons from the first real deploy (RPi/NM edge + o3 concentrator). The six companion defects from the same document are filed as D35-D40 under milestone M28 (defect intake); investigate-flow owns their root-causing, and their eventual fix tasks should compose with this goal's plan. Groups the goal, its clarifying questions, reviews, and approval decision.
+
+### M30 — open
+
+- createdAt: 2026-07-13T23:21:45.217Z
+- updatedAt: 2026-07-13T23:21:45.217Z
+- title: "G6-A Operability: link-up, session signal, diagnostics (I1-I4, I8)"
+- description: "Work milestone for goal G6 (synthesized opus+fable plan). Low-risk operability code with existing test hooks: wanbond0 link-up (I1), wanbond_session_established metric + session-up log (I2), actionable TUN-EIO diagnostics (I3), warmup no-healthy-path log downgrade (I4), and the Q39 bidirectional-standby-liveness netns verification (I8). All independently plannable per Q37."
+
+### M31 — open
+
+- createdAt: 2026-07-13T23:21:51.657Z
+- updatedAt: 2026-07-13T23:21:51.657Z
+- title: "G6-B Config: bind-mode toggle + thin full-tunnel (I5, I6)"
+- description: "Work milestone for goal G6 (synthesized opus+fable plan). The two config-surface features, each split surface-then-wiring so the TOML/validation contract is reviewable before behavior changes: per-path bind = source|device|auto with global default (I5, Q42), and thin full-tunnel mode=default-route — internal /1+/1 allowed_ips split at UAPI render + edge default-route wiring only (I6, Q41); literal-/0 pass-through gated on D35 by acceptance text only (Q37)."
+
+### M32 — open
+
+- createdAt: 2026-07-13T23:21:58.028Z
+- updatedAt: 2026-07-13T23:21:58.028Z
+- title: G6-C Persistence & packaged artifacts (I7, C1, C4)
+- description: "Work milestone for goal G6 (synthesized opus+fable plan). The Q38 belt-and-suspenders pair: opt-in persistent-TUN code (I7, tun_persist default false) plus the two Q40 packaged artifacts — NM unmanaged-devices conf.d drop-in and templated wanbond-addressing@.service oneshot — each with its coupled C1/C4 install.md section (AGENTS.md docs-with-code rule)."
+
+### M33 — open
+
+- createdAt: 2026-07-13T23:22:11.294Z
+- updatedAt: 2026-07-13T23:22:11.294Z
+- title: G6-D Full-tunnel & operations docs (C2, C3, C5, C6) + reference sync
+- description: "Work milestone for goal G6 (synthesized opus+fable plan). Standalone docs sequenced after the code they must reference: C2 (source_addr/device-bind collision + oif recipe + bind-mode pointer), C3+C6 (full-tunnel client-LAN recipe + concentrator NAT/forwarding checklist), C5 (reconverge window + restart guidance naming the I2 session metric), closing with the reference/example/design sync sweep so no new key or metric ships undocumented."
+- dependsOn: ["M30","M31","M32"]

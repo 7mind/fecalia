@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 77
+  item: 79
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -740,6 +740,19 @@ archives:
 - sessionLogs: [".cq/logs/20260713-225437-ae9e21e85de4600a9.md",".cq/logs/20260713-225437-a99ae9caf87cc11a3.md",".cq/logs/20260713-230228-a0fb43fc933a1f307.md",".cq/logs/20260713-230228-a50626c69a5974410.md"]
 - rawLogs: [".cq/logs/raw/20260713-225437-ae9e21e85de4600a9.jsonl",".cq/logs/raw/20260713-225437-a99ae9caf87cc11a3.jsonl",".cq/logs/raw/20260713-230228-a0fb43fc933a1f307.jsonl",".cq/logs/raw/20260713-230228-a50626c69a5974410.jsonl"]
 
+### R78 — go-ahead
+
+- createdAt: 2026-07-13T23:27:36.431Z
+- updatedAt: 2026-07-13T23:27:36.431Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T69 terminal reconciled panel verdict after 2 rounds: round 1 [opus+fable] disapprove with 4 unioned criticisms (double-NODATA empty-addrs-with-nil-error diverging from SystemResolver; unbounded response-body read; stale doc.go; short-read-prone test helper); round 2 (e690011) unanimous approve — all 4 resolved with fail-first-verified tests (NoDataError, io.LimitReader 64KiB cap, doc.go, io.ReadAll), gate green re-verified by both reviewers."
+- criticism: ["[opus+fable, round 1, RESOLVED] Lookup returned ([], nil) on double-NODATA, diverging from SystemResolver behind the same seam (unreachable guard at doh.go:127).","[fable, round 1, RESOLVED] unbounded io.ReadAll of the DoH response body → io.LimitReader cap with typed oversize rejection.","[fable, round 1, RESOLVED] stale doc.go still described DoH as a future transport.","[opus+fable, round 1, RESOLVED] readDoHQuestion single short-read-prone Read → io.ReadAll."]
+- new_questions: []
+- ledgerRefs: ["tasks:T69","goals:G5"]
+- sessionLogs: [".cq/logs/20260713-231830-a5122d18a9a011585.md",".cq/logs/20260713-231830-a15aa232e07b17d44.md",".cq/logs/20260713-232716-a256ad0c7fae40b3a.md",".cq/logs/20260713-232716-a73363906e9351cad.md"]
+- rawLogs: [".cq/logs/raw/20260713-231830-a5122d18a9a011585.jsonl",".cq/logs/raw/20260713-231830-a15aa232e07b17d44.jsonl",".cq/logs/raw/20260713-232716-a256ad0c7fae40b3a.jsonl",".cq/logs/raw/20260713-232716-a73363906e9351cad.jsonl"]
+
 ## M23
 
 ### R75 — go-ahead
@@ -767,3 +780,16 @@ archives:
 - ledgerRefs: ["tasks:T81","goals:G4"]
 - sessionLogs: [".cq/logs/20260713-231830-a8eef803232932fbf.md",".cq/logs/20260713-231830-a2082c0e624c73f95.md"]
 - rawLogs: [".cq/logs/raw/20260713-231830-a8eef803232932fbf.jsonl",".cq/logs/raw/20260713-231830-a2082c0e624c73f95.jsonl"]
+
+### R79 — go-ahead
+
+- createdAt: 2026-07-13T23:27:42.196Z
+- updatedAt: 2026-07-13T23:27:42.196Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T82 terminal reconciled panel verdict after 2 rounds: round 1 [opus] approve / [fable] disapprove (strictest-wins) on ONE criticism — the single-peer top-level-PSK-wins-over-set-per-peer-psk invariant was untested; round 2 (b69ed0d) unanimous approve — the invariant is pinned by a distinguishing, mutation-verified test (builds Config directly since T81's validate() rejects the shape at load), gate green."
+- criticism: ["[fable, round 1, RESOLVED] the single-peer psk-shadowing case (top-level wins over a set per-peer psk) had no distinguishing test; an implementation preferring p.PSK would have passed the suite."]
+- new_questions: []
+- ledgerRefs: ["tasks:T82","goals:G4"]
+- sessionLogs: [".cq/logs/20260713-231830-a91a4176a0efd8739.md",".cq/logs/20260713-231830-adb81d36d2064a300.md",".cq/logs/20260713-232716-acaab660e4b8c3626.md",".cq/logs/20260713-232716-a00c1b140b54c2482.md"]
+- rawLogs: [".cq/logs/raw/20260713-231830-a91a4176a0efd8739.jsonl",".cq/logs/raw/20260713-231830-adb81d36d2064a300.jsonl",".cq/logs/raw/20260713-232716-acaab660e4b8c3626.jsonl",".cq/logs/raw/20260713-232716-a00c1b140b54c2482.jsonl"]

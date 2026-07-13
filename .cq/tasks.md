@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 99
+  item: 115
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -622,10 +622,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-224948-acf8c70e1855d17a7.md",".cq/logs/20260713-230051-a5fe60c169d59c898.md",".cq/logs/20260713-225437-ae9e21e85de4600a9.md",".cq/logs/20260713-225437-a99ae9caf87cc11a3.md",".cq/logs/20260713-230228-a0fb43fc933a1f307.md",".cq/logs/20260713-230228-a50626c69a5974410.md"]
 - rawLogs: [".cq/logs/raw/20260713-224948-acf8c70e1855d17a7.jsonl",".cq/logs/raw/20260713-230051-a5fe60c169d59c898.jsonl",".cq/logs/raw/20260713-225437-ae9e21e85de4600a9.jsonl",".cq/logs/raw/20260713-225437-a99ae9caf87cc11a3.jsonl",".cq/logs/raw/20260713-230228-a0fb43fc933a1f307.jsonl",".cq/logs/raw/20260713-230228-a50626c69a5974410.jsonl"]
 
-### T69 — wip
+### T69 — done
 
 - createdAt: 2026-07-13T21:54:23.234Z
-- updatedAt: 2026-07-13T23:03:50.403Z
+- updatedAt: 2026-07-13T23:28:28.113Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Implement a DoH (RFC 8484) resolver behind the seam
@@ -634,6 +634,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T68"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 9323a16
+- completion: "DoHResolver (RFC 8484) landed behind the seam: dnsmessage A/AAAA POSTs, dedicated http.Client, minTTL+ttlOk, typed errors (NoDataError/NXDomain/Malformed/Status/Timeout), io.LimitReader response cap, test-only CA seam (no InsecureSkipVerify); 2 review rounds; merged ff to main."
+- sessionLogs: [".cq/logs/20260713-231437-a07657609e4ceabbd.md",".cq/logs/20260713-232253-a4f0126c89564ecfd.md",".cq/logs/20260713-231830-a5122d18a9a011585.md",".cq/logs/20260713-231830-a15aa232e07b17d44.md",".cq/logs/20260713-232716-a256ad0c7fae40b3a.md",".cq/logs/20260713-232716-a73363906e9351cad.md"]
+- rawLogs: [".cq/logs/raw/20260713-231437-a07657609e4ceabbd.jsonl",".cq/logs/raw/20260713-232253-a4f0126c89564ecfd.jsonl",".cq/logs/raw/20260713-231830-a5122d18a9a011585.jsonl",".cq/logs/raw/20260713-231830-a15aa232e07b17d44.jsonl",".cq/logs/raw/20260713-232716-a256ad0c7fae40b3a.jsonl",".cq/logs/raw/20260713-232716-a73363906e9351cad.jsonl"]
 
 ### T71 — planned
 
@@ -1045,3 +1049,209 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T97"]
 - ledgerRefs: ["goals:G4"]
+
+## M30
+
+### T100 — planned
+
+- createdAt: 2026-07-13T23:22:25.158Z
+- updatedAt: 2026-07-13T23:22:25.158Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Bring the wanbond0 link UP after TUN creation (I1)
+- description: In device.Up (internal/device/device.go), after the TUN is created, set IFF_UP on the interface (SIOCSIFFLAGS ioctl via golang.org/x/sys — no new dependency; the repo already targets Linux, see internal/bind/pathsock_linux.go). Addressing stays operator-owned (do NOT assign addresses). Teardown behavior unchanged. Log an INFO 'interface up' with the interface name. Removes the silent-dead-tunnel footgun where writes to a DOWN tun yield EIO (relates D39/NM flush; not a duplicate of the D39 fix).
+- acceptance: New netns e2e test (go test -tags e2e ./test/e2e) asserts wanbond0 reports UP immediately after device.Up on both roles with NO external `ip link set up`, and that the daemon assigns no address. go test ./... green; no regression in existing device/reload tests.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+### T101 — planned
+
+- createdAt: 2026-07-13T23:22:37.650Z
+- updatedAt: 2026-07-13T23:22:37.650Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Add wanbond_session_established metric, last-handshake age, and a 'session established' log line (I2)
+- description: "Add a WG-session signal to the metrics plane: a wanbond_session_established gauge (0/1) and wanbond_session_last_handshake_seconds (age), sourced at scrape time from the amneziawg engine (IpcGet last_handshake_time_sec, or peer lookup as deviceRehandshake in internal/device/failover.go:181 already does). Extend the metrics.Source seam (internal/metrics/metrics.go) with a session snapshot supplied by the device layer; the bind stays WG-unaware. Emit ONE INFO 'session established' log record on the 0→1 transition (poll at probe cadence or scrape-driven with a device-side edge detector). This is the signal that distinguishes 'still converging' from 'wedged' — D35/D36/D37 all presented identically without it."
+- acceptance: Unit tests cover metric registration and the 0→1 edge; netns e2e asserts wanbond_session_established transitions 0→1 after tunnel up (scraped via metrics.Fetch) with wanbond_path_up=1 observable before the session gauge flips, and the 'session established' record appears exactly once per session; go test ./... and -tags e2e suite green.
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G6"]
+
+### T102 — planned
+
+- createdAt: 2026-07-13T23:22:48.514Z
+- updatedAt: 2026-07-13T23:22:48.514Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Emit an actionable diagnostic on TUN write EIO instead of the raw input/output error (I3)
+- description: Where the TUN write error surfaces (the engine's tun read/write loop errors reach engineLogger in internal/device/device.go ~L687-697, and/or wrap tun.Device with a thin decorator), detect EIO, inspect the interface state (IFF_UP flags, MTU) and emit an actionable ERROR naming the probable cause and remedy, e.g. 'wanbond0 is DOWN — address & bring it up (install.md §4)'. Rate-limit so a write storm produces one diagnostic, not a flood. Keep the raw errno in the record for debugging.
+- acceptance: Unit test injecting EIO against a fake/DOWN TUN asserts the log record names the interface state and points at install.md §4, with the raw errno included, and that a burst of EIOs yields one rate-limited diagnostic. Relates D39 (diagnoses the D39 symptom) with no dependsOn on its fix. go test ./... green.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+### T103 — planned
+
+- createdAt: 2026-07-13T23:22:58.901Z
+- updatedAt: 2026-07-13T23:22:58.901Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Downgrade the startup no-healthy-path ERROR spam during the liveness warmup (I4)
+- description: "The engine's 'Failed to send handshake initiation: bind: no healthy path with a known remote endpoint' reaches the operator as ERROR via engineLogger (internal/device/device.go:687) wrapping errNoHealthyPath (internal/bind/multipath.go:64). Add a warmup-aware seam: until the FIRST path reaches liveness UP, surface these as a single coalesced INFO 'waiting for path liveness' line; after first path-up they stay ERROR (a genuine outage signal). Implementation choice: expose a bind-level 'ever had a live path' predicate the engine-logger adapter consults, or filter on the errNoHealthyPath sentinel during the warmup window."
+- acceptance: "Unit test: no-healthy-path records before first path-up yield exactly one INFO 'waiting for path liveness' and zero ERRORs; the same record after a path has been up logs at ERROR. Relates D37 (the wasted-first-init defect stays investigate-flow-owned; this only fixes log severity). go test ./... green; no spurious ERROR on a normal start in the netns e2e logs."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+### T104 — planned
+
+- createdAt: 2026-07-13T23:23:09.581Z
+- updatedAt: 2026-07-13T23:23:09.581Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "Netns verification: standby-path liveness is bidirectional (I8)"
+- description: "Per Q39, an in-goal verification task (not a refactor): add a netns e2e test that (a) asserts an idle 'up' standby path actually TRANSMITS — its tx byte counter (wanbond_path_tx_bytes_total / PathSnapshots) grows from probe emission while the primary carries data (the production observation was path_up{5g}=1 with tx{5g}=0); and (b) with the standby's EGRESS direction blocked one-way (nft/iptables drop in the netns fixture), asserts the standby transitions DOWN and is not selected by failover. If either check exposes a real fault (liveness proving only receive), commit the failing test as the repro and refile the finding as a defect linked to G6 — the fix is then out of this goal's scope."
+- acceptance: "New -tags e2e test exists and runs in the netns tier: passes proving bidirectional liveness, OR fails with the failure documented and refiled as a defects item linked goals:G6 capturing the reproduction (test kept as repro). Either outcome satisfies the task per Q39."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+## M31
+
+### T105 — planned
+
+- createdAt: 2026-07-13T23:23:19.962Z
+- updatedAt: 2026-07-13T23:23:19.962Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "Config surface: per-path bind mode with optional global default (I5 config)"
+- description: "Per Q42: add `bind = \"source\"|\"device\"|\"auto\"` to each [[paths]] block (internal/config/config.go Path struct) plus an optional top-level global default; per-path overrides global; default is `auto` (today's selectDeviceBinds behavior). config.validate rejects unknown values and normalizes empty to the global/auto default. Plain TOML — no versioning cost."
+- acceptance: "internal/config/config_test.go covers: default auto when omitted, per-path override beats global, unknown value fails fast at load with a message naming the path. go test ./... green."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+### T106 — planned
+
+- createdAt: 2026-07-13T23:23:31.897Z
+- updatedAt: 2026-07-13T23:23:31.897Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Honor the bind mode in path-socket planning (I5 wiring)
+- description: "Thread the resolved per-path bind mode into planPathBinds/selectDeviceBinds (internal/bind/pathsock.go): `source` forces source-IP pinning (never SO_BINDTODEVICE — the D38 topology's escape hatch), `device` forces device-bind for the path's interface (falling back to source with a WARN when the interface cannot be resolved or the setsockopt fails, matching the existing CAP fallback), `auto` keeps the current one-address-one-path heuristic byte-for-byte. Applies to Open, AddPath, and the deferred-path reconcile alike."
+- acceptance: Unit tests on selectDeviceBinds/planPathBinds cover all three modes including the forced-source case on a one-address interface (which auto would device-bind — the exact D38 trap) and the device-mode fallback path; auto mode reproduces the current planPathBinds output on the existing fixtures. Relates D38 without depending on its fix. go test ./... green.
+- suggestedModel: standard
+- dependsOn: ["T105"]
+- ledgerRefs: ["goals:G6"]
+
+### T107 — planned
+
+- createdAt: 2026-07-13T23:23:41.640Z
+- updatedAt: 2026-07-13T23:23:41.640Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "Full-tunnel config: accept 0.0.0.0/0 allowed_ips via internal /1+/1 split at UAPI render (I6 config)"
+- description: "Per Q41 (thin I6): add an edge-only peer/full-tunnel surface — `mode = \"default-route\"` on the peer (or equivalent) — and make the UAPI renderer (uapiConfig, internal/device/device.go) translate a configured `0.0.0.0/0` (and `::/0`) allowed_ips into the split `0.0.0.0/1 + 128.0.0.0/1` (`::/1 + 8000::/1`) internally, so the engine NEVER receives the literal /0 prefix that wedges the handshake. Config validation: mode is edge-only (rejected on the concentrator, mirroring the existing endpoint rules), and `mode = \"default-route\"` implies/permits the full-tunnel allowed_ips."
+- acceptance: "Unit test on the UAPI set string: a 0.0.0.0/0 config renders exactly the two /1 prefixes and never the literal /0; concentrator-role configs with the mode are rejected at load. Passing the literal /0 THROUGH to the engine unsplit remains gated on defect D35's root cause (acceptance reference only — no dependsOn; the split sidesteps the D35 wedge deterministically per the production bisect). go test ./... green."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+### T108 — planned
+
+- createdAt: 2026-07-13T23:23:50.937Z
+- updatedAt: 2026-07-13T23:23:50.937Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Edge default-route wiring under mode=default-route (I6 routes)
+- description: "When `mode = \"default-route\"` is active on the edge, after the interface is UP the daemon installs the default-route wiring into wanbond0 — the two /1 routes (wg-quick style, matching the internal allowed_ips split) — and removes them on Close. STRICT Q41 boundary: NO client-LAN policy routing, NO SNAT, NO concentrator ip_forward/MASQUERADE/FORWARD programming — those stay documented C3/C6 recipes. This is the daemon's first route programming (install.md §4 today states it never assigns routes) — keep it minimal, fail-fast, and confined to the mode being explicitly enabled; default behavior without the mode is byte-for-byte unchanged."
+- acceptance: "Netns e2e: with mode=default-route the edge's two /1 routes via wanbond0 exist while the daemon runs and are gone after Close; traffic to an arbitrary destination egresses through the tunnel; WITHOUT the mode, no route is ever installed (regression guard). go test -tags e2e ./test/e2e green."
+- suggestedModel: frontier
+- dependsOn: ["T107","T100"]
+- ledgerRefs: ["goals:G6"]
+
+## M32
+
+### T109 — planned
+
+- createdAt: 2026-07-13T23:24:00.782Z
+- updatedAt: 2026-07-13T23:24:00.782Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Persistent wanbond0 TUN across daemon restarts (I7 code)
+- description: "Per Q38 (belt-and-suspenders, code half): make wanbond0 survive daemon restarts so addresses/routes/rules referencing it are not dropped on every restart. Opt-in config key (e.g. top-level `tun_persist = true`, default false so existing teardown semantics are unchanged): on start, set TUNSETPERSIST (or adopt an already-existing persistent device by name); on Close, leave the persistent device in place (link stays, session state torn down). Document the interaction with D39/NM (a persistent device still needs the unmanaged-devices drop-in on NM hosts) in the key's reference entry. Beware the single-engine guard and reload paths (internal/device/device.go) — persistence must not break SIGHUP reload or the restart-on-failure supervisor flow."
+- acceptance: "Netns e2e: with tun_persist=true, an address assigned to wanbond0 survives a full daemon stop/start (the D5/I7 production failure mode) and the interface keeps the SAME ifindex across the restart; the persistent device does not become NM-managed (documented invariant; asserted where the fixture permits). With the default false, behavior is unchanged (device disappears on Close, existing e2e suite green). Relates D39 in acceptance only. go test ./... and -tags e2e green."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G6"]
+
+### T110 — planned
+
+- createdAt: 2026-07-13T23:24:11.417Z
+- updatedAt: 2026-07-13T23:24:11.417Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Ship the NetworkManager unmanaged-devices drop-in + install.md NM section (C1 + Q40 artifact)
+- description: "Add packaging/networkmanager/99-wanbond-unmanaged.conf containing `[keyfile] unmanaged-devices=interface-name:wanbond0`, and (coupled, per AGENTS.md docs-with-code) the C1 install.md §4 NetworkManager subsection: today the docs are networkd-only, but most edge boxes (RPi OS/Debian/Ubuntu desktop) run NM, which flushes the operator's address on link-up without this drop-in (the D39/D5 production failure). Docs state the copy destination (/etc/NetworkManager/conf.d/) and the `nmcli device set`/reload verification step."
+- acceptance: The drop-in file exists under packaging/ with valid NM keyfile syntax, and a lightweight packaging test/CI check asserts the file's presence and the unmanaged-devices key; install.md §4 gains the NM subsection referencing the shipped file (not a hand-typed inline recipe); validated against an NM host where practical (the production Pi validated the setting itself). Relates D39 in acceptance only.
+- suggestedModel: fast
+- ledgerRefs: ["goals:G6"]
+
+### T111 — planned
+
+- createdAt: 2026-07-13T23:24:22.830Z
+- updatedAt: 2026-07-13T23:24:22.830Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Ship the templated wanbond-addressing oneshot unit + C4 persistence recipe (Q40 artifact + C4)
+- description: "Add packaging/systemd/wanbond-addressing@.service: a templated oneshot (instance = role) with `PartOf=wanbond-%i.service`, `After=wanbond-%i.service`, that re-applies address + link-up + policy rules + per-table routes + nft SNAT from an operator-owned environment/script file after the daemon (re)starts. It MUST NOT race tun creation (the R27 lesson: a plain ExecStartPost under Type=exec runs before wanbond0 exists) — wait for the interface (ExecStartPre poll loop or BindsTo/After=sys-subsystem-net-devices-wanbond0.device). Coupled C4 doc section in install.md: the persistence recipe for non-networkd hosts, blessing this unit, explicitly warning that a plain ExecStartPost races tun creation, and noting the oneshot becomes optional-but-harmless once tun_persist is enabled."
+- acceptance: systemd-analyze verify passes on the unit (where available in CI/dev shell); the unit orders after interface existence, not just after execve (documented rationale referencing the R27 race); install.md C4 section references the shipped file and carries the race warning + the tun_persist cross-link. go test ./... unaffected.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G6"]
+
+## M33
+
+### T112 — planned
+
+- createdAt: 2026-07-13T23:24:31.926Z
+- updatedAt: 2026-07-13T23:24:31.926Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "Docs C2: source_addr + device-bind collision warning with the oif-rule recipe and bind-mode pointer"
+- description: "install.md: document that per-WAN pinning via `ip rule from <source_addr>` is silently defeated by the auto device-bind on one-address interfaces (the D38 production failure: wildcard-source socket falls to the main table, ENETUNREACH, silent path-down while `ping -I <source_ip>` works), give the `ip rule add oif <dev> table N` workaround recipe, and point at the new per-path `bind = \"source\"` toggle as the clean fix. This is the most common real edge topology (VLAN-per-WAN) and is currently undocumented."
+- acceptance: install.md section exists covering the symptom, the ip-rule recipe verbatim from the production deploy, and the bind= toggle cross-reference matching the shipped I5 field shape. Relates D38 in acceptance only. Docs lint clean.
+- suggestedModel: fast
+- dependsOn: ["T106"]
+- ledgerRefs: ["goals:G6"]
+
+### T113 — planned
+
+- createdAt: 2026-07-13T23:24:43.681Z
+- updatedAt: 2026-07-13T23:24:43.681Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "Docs C3+C6: full-tunnel client-LAN recipe + concentrator NAT/forwarding checklist"
+- description: "install.md: the end-to-end full-tunnel / route-a-client-LAN recipe — THE primary use case, entirely undocumented. Edge side: mode=default-route (or the manual /1+/1 split allowed_ips — never literal 0.0.0.0/0 until D35 is resolved), policy-route the client subnet to wanbond0 and SNAT to the tunnel IP (so the concentrator's `allowed_ips = <edge>/32` still matches) OR widen concentrator allowed_ips to the client subnet. Concentrator side, as an explicit C6 checklist subsection: ip_forward=1, `MASQUERADE -s <tunnel-net> -o <wan>`, and the FORWARD conntrack-ESTABLISHED accept (the shipped `-i wanbond0 ACCEPT` covers only the forward direction — default FORWARD REJECT drops return traffic without it), plus persistence via netfilter-persistent (existing §5 pattern). Reference the addressing oneshot for rule persistence across restarts."
+- acceptance: install.md gains the full-tunnel recipe section and the C6 checklist subsection (copy-pasteable, internally consistent); every command was validated on the production Pi/o3 deploy per wanbond-fixes.md; the recipe cross-references mode=default-route for the edge-automated part and marks the rest operator-owned (Q41 boundary). Relates D35 in acceptance only. Docs lint clean.
+- suggestedModel: standard
+- dependsOn: ["T108","T111"]
+- ledgerRefs: ["goals:G6"]
+
+### T114 — planned
+
+- createdAt: 2026-07-13T23:24:53.330Z
+- updatedAt: 2026-07-13T23:24:53.330Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "Docs C5: reconverge window + restart guidance using the session metric"
+- description: "install.md (operations/observability sections): document that until D36 is fixed, restarting ONE end can leave the tunnel down for minutes (stale-session peer does not promptly re-handshake) and that restarting BOTH ends ~together is the fast reconverge path (~25 s observed); present wanbond_session_established / the 'session established' log line as the operational 'is it up yet' check, distinguishing converging from wedged."
+- acceptance: install.md section exists, explicitly marked as interim-until-D36 (acceptance reference only, no dependsOn on the D36 fix) and names the exact metric/log line shipped by the I2 task. Docs lint clean.
+- suggestedModel: fast
+- dependsOn: ["T101"]
+- ledgerRefs: ["goals:G6"]
+
+### T115 — planned
+
+- createdAt: 2026-07-13T23:25:03.491Z
+- updatedAt: 2026-07-13T23:25:03.491Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Sync the config reference, wanbond.example.toml, design.md, and README for all new surfaces
+- description: "Per the AGENTS.md docs-in-sync rule, one sweep after the config-surface tasks land: install.md §3z exhaustive key reference + wanbond.example.toml gain `bind` (per-path + global default, default auto), the full-tunnel `mode = \"default-route\"` + 0.0.0.0/0-split semantics, and `tun_persist`; docs/design.md notes the new session-signal metric names and the default-route wiring as the one deliberate exception to 'the daemon never assigns routes'; README feature list updated if it enumerates config keys or metrics."
+- acceptance: Every new config key and metric introduced by this goal appears in §3z, wanbond.example.toml (commented-out with default, matching the existing style), and design.md; grep for each new key/metric name across docs/ and README returns the expected hits; no stale 'never assigns routes' claim survives unqualified.
+- suggestedModel: standard
+- dependsOn: ["T105","T107","T109"]
+- ledgerRefs: ["goals:G6"]
