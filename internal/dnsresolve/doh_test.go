@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -43,8 +44,8 @@ func readDoHQuestion(t *testing.T, r *http.Request) (dnsmessage.Message, dnsmess
 	if ct := r.Header.Get("Content-Type"); ct != dohMediaType {
 		t.Fatalf("DoH request Content-Type = %q, want %q", ct, dohMediaType)
 	}
-	body := make([]byte, r.ContentLength)
-	if _, err := r.Body.Read(body); err != nil && len(body) == 0 {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		t.Fatalf("reading DoH request body: %v", err)
 	}
 	var msg dnsmessage.Message
@@ -185,6 +186,33 @@ func TestDoHResolverToleratesFamilyNXDOMAIN(t *testing.T) {
 	}
 }
 
+// TestDoHResolverDoubleNODATAIsError covers the case where both families
+// answer NOERROR with zero records (NODATA, or a CNAME chain with no
+// A/AAAA target): Lookup must return a typed error rather than ([], nil),
+// matching SystemResolver's no-such-host behavior for the same situation.
+func TestDoHResolverDoubleNODATAIsError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		msg, _ := readDoHQuestion(t, r)
+		q := msg.Questions[0]
+		writeDoHAnswer(t, w, q, nil) // NOERROR, zero answers
+	}))
+	defer srv.Close()
+
+	r := newDoHTestResolver(t, srv, "/dns-query")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	addrs, _, _, err := r.Lookup(ctx, "nodata.example.com")
+	if err == nil {
+		t.Fatalf("Lookup: expected error for double-NODATA, got addrs=%v, nil error", addrs)
+	}
+	var noData *NoDataError
+	if !errors.As(err, &noData) {
+		t.Fatalf("Lookup: err = %v (%T), want *NoDataError", err, err)
+	}
+}
+
 func TestDoHResolverMalformedResponse(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readDoHQuestion(t, r)
@@ -201,6 +229,32 @@ func TestDoHResolverMalformedResponse(t *testing.T) {
 	_, _, _, err := r.Lookup(ctx, "example.com")
 	if err == nil {
 		t.Fatal("Lookup: expected error for malformed response, got nil")
+	}
+	var malformed *MalformedResponseError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("Lookup: err = %v (%T), want *MalformedResponseError", err, err)
+	}
+}
+
+// TestDoHResolverOversizedResponseIsError covers the io.LimitReader cap: a
+// body larger than the maximum possible DNS message size must fail typed
+// rather than being buffered in full.
+func TestDoHResolverOversizedResponseIsError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readDoHQuestion(t, r)
+		w.Header().Set("Content-Type", dohMediaType)
+		_, _ = w.Write(make([]byte, dohMaxMessageSize+1))
+	}))
+	defer srv.Close()
+
+	r := newDoHTestResolver(t, srv, "/dns-query")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, _, err := r.Lookup(ctx, "example.com")
+	if err == nil {
+		t.Fatal("Lookup: expected error for oversized response, got nil")
 	}
 	var malformed *MalformedResponseError
 	if !errors.As(err, &malformed) {

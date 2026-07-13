@@ -27,6 +27,12 @@ const dohMediaType = "application/dns-message"
 // the caller's context already carries.
 const dohTimeout = 5 * time.Second
 
+// dohMaxMessageSize is the maximum wire size of a DNS message (RFC 1035
+// SS4.2.2 / RFC 8484): the response body is capped to this to bound memory
+// use against a malicious or misbehaving DoH server, regardless of any
+// Content-Length header it claims.
+const dohMaxMessageSize = 65535
+
 // DoHResolver resolves hostnames via DNS-over-HTTPS (RFC 8484): it encodes A
 // and AAAA queries with golang.org/x/net/dns/dnsmessage, POSTs each to a
 // configured DoH URL, and extracts the answer addrs and minimum TTL.
@@ -91,14 +97,16 @@ func newDoHResolver(rawURL string, roots *x509.CertPool) (*DoHResolver, error) {
 // Lookup implements Resolver. It queries A and AAAA for host and merges the
 // results; a family that answers NXDOMAIN is tolerated as long as the other
 // family answers. Any other per-family error (transport failure, non-200,
-// malformed response) fails the whole lookup.
+// malformed response) fails the whole lookup. An empty final addr set — both
+// families NXDOMAIN, or a NOERROR/zero-answer (NODATA) response for both —
+// is also an error (NXDomainError or NoDataError respectively), never a
+// silent ([], nil).
 func (d *DoHResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, time.Duration, bool, error) {
 	var (
-		addrs      []netip.Addr
-		minTTL     time.Duration
-		haveTTL    bool
-		haveAnswer bool
-		nxdomain   error
+		addrs    []netip.Addr
+		minTTL   time.Duration
+		haveTTL  bool
+		nxdomain error
 	)
 
 	for _, qtype := range [...]dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
@@ -112,7 +120,6 @@ func (d *DoHResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, ti
 			return nil, 0, false, err
 		}
 
-		haveAnswer = true
 		addrs = append(addrs, famAddrs...)
 		if famHaveTTL && (!haveTTL || famMinTTL < minTTL) {
 			minTTL = famMinTTL
@@ -120,11 +127,18 @@ func (d *DoHResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, ti
 		}
 	}
 
-	if !haveAnswer {
+	// An empty FINAL addr set is a failure, not a success: it covers both a
+	// double-NXDOMAIN (below) and a NOERROR/zero-answer response (NODATA, or
+	// a CNAME with no A/AAAA target) from one or both families. Returning
+	// (nil, nil) here would diverge from SystemResolver, which surfaces a
+	// no-such-host error from net.Resolver.LookupNetIP in the same
+	// situation — callers must not see the two Resolver implementations
+	// behave differently behind the same seam.
+	if len(addrs) == 0 {
 		if nxdomain != nil {
 			return nil, 0, false, nxdomain
 		}
-		return nil, 0, false, fmt.Errorf("dnsresolve: DoH lookup for %q returned no answers", host)
+		return nil, 0, false, &NoDataError{URL: d.url, Host: host}
 	}
 
 	return addrs, minTTL, haveTTL, nil
@@ -157,12 +171,22 @@ func (d *DoHResolver) queryFamily(ctx context.Context, host string, qtype dnsmes
 		return nil, 0, false, &StatusError{URL: d.url, StatusCode: resp.StatusCode}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// Cap the read at dohMaxMessageSize+1: a DNS message can never legally
+	// exceed dohMaxMessageSize bytes, so reading one extra byte lets us
+	// detect and reject an oversized body without trusting an
+	// attacker-controlled Content-Length or buffering an unbounded stream.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, dohMaxMessageSize+1))
 	if err != nil {
 		if isTimeoutErr(err) {
 			return nil, 0, false, &TimeoutError{URL: d.url, Err: err}
 		}
 		return nil, 0, false, &MalformedResponseError{URL: d.url, Err: err}
+	}
+	if len(body) > dohMaxMessageSize {
+		return nil, 0, false, &MalformedResponseError{
+			URL: d.url,
+			Err: fmt.Errorf("response body exceeds max DNS message size of %d bytes", dohMaxMessageSize),
+		}
 	}
 
 	return parseDoHResponse(d.url, body, host, qtype)
@@ -300,4 +324,17 @@ type NXDomainError struct {
 
 func (e *NXDomainError) Error() string {
 	return fmt.Sprintf("dnsresolve: DoH %s: no such host %q", e.URL, e.Host)
+}
+
+// NoDataError reports a DoH provider answering NOERROR with an empty final
+// A+AAAA addr set for host (NODATA, or a CNAME chain with no A/AAAA
+// target). It is the DoH-transport counterpart of the no-such-host error
+// net.Resolver.LookupNetIP returns in the same situation.
+type NoDataError struct {
+	URL  string
+	Host string
+}
+
+func (e *NoDataError) Error() string {
+	return fmt.Sprintf("dnsresolve: DoH %s: no A/AAAA records for %q", e.URL, e.Host)
 }
