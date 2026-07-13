@@ -507,10 +507,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G2"]
 
-### T55 — planned
+### T55 — done
 
 - createdAt: 2026-07-13T13:41:52.923Z
-- updatedAt: 2026-07-13T13:41:52.923Z
+- updatedAt: 2026-07-13T14:45:32.641Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Background reconcile: retry binding deferred-DOWN paths as their addresses appear"

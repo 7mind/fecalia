@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 29
+  item: 30
 archives: []
 ---
 
@@ -416,3 +416,18 @@ archives: []
 - suggestedFix: Add `--build-tags e2e` to the golangci-lint invocation (and `go vet -tags e2e ./test/e2e/...`) in the Justfile lint target, OR add a dedicated `lint-e2e` target invoked by `just lint`, so e2e-tagged sources are vetted+linted. Also fold `-tags realhosts` similarly if those sources need coverage.
 - ledgerRefs: ["tasks:T26","goals:G1"]
 - dependsOn: ["T50"]
+
+## M13
+
+### D30 — root-caused
+
+- createdAt: 2026-07-13T14:45:31.520Z
+- updatedAt: 2026-07-13T14:45:31.520Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Promoted/runtime-added paths forgo SO_BINDTODEVICE, losing T16 re-roam survival until Close->Open
+- severity: low
+- description: "Filed by the T55 implement-review (opus), file-and-defer, PRE-EXISTING (shared with runtime AddPath, NOT introduced by T55). internal/bind/reconcile.go defaultDeferredListen (and AddPath) bind a reconciled/runtime-added path via plain net.ListenUDP pinning the SPECIFIC source IP, unlike Open's listenPath which may device-bind (SO_BINDTODEVICE + wildcard) a path that selectDeviceBinds proves safe. Consequence: a deferred path promoted by the background reconcile — like any AddPath-added path — does NOT survive a mid-session source-address change / T16 re-roam; its socket breaks and the path goes Down until the next full Close->Open re-binds it via listenPath."
+- rootCause: The runtime/reconcile bind path (reconcile.go defaultDeferredListen + AddPath) uses net.ListenUDP with a source-IP pin and does not route through the planPathBinds/selectDeviceBinds/listenPath device-bind decision that Open uses at boot. So runtime-added and reconcile-promoted paths never get SO_BINDTODEVICE, and thus never get T16 re-roam survival, unlike boot-bound paths.
+- suggestedFix: "In a separate task (a device-bind unification), route the runtime/reconcile bind through the same planPathBinds/listenPath device-bind decision Open uses (recompute bindDevs for the promoted/added path's source), so a promoted or runtime-added path gets the same re-roam resilience as a boot-bound one. Care: preserve the source_addr pin and the no-contended-device guard selectDeviceBinds enforces."
+- ledgerRefs: ["tasks:T55","goals:G2"]

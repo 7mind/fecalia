@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 57
+  item: 58
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -622,3 +622,12 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T51 (G2/W1 tolerant startup bind) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE had 2 reproduced blockers from the half-integrated m.deferred set (base Open-tolerance + Send/Pick middle-defer index-alignment + errno discrimination + hard guards were already correct); both now RESOLVED at b0e35f9. C1 (reload regression): PathNames() now returns the durable bound+deferred membership (m.defs) so diffPaths no longer sees a deferred path as an ADD, and AddPath defers EADDRNOTAVAIL SYMMETRICALLY with Open — no-op reload of a still-deferred path succeeds; TestPathNamesIncludesDeferred + TestAddPathDefersUnassignable fail pre-fix, pass post. C2 (RemovePath corruption): removeDurableLocked splices m.defs/m.probers by IDENTITY (name) + drops from m.deferred, live m.paths spliced by liveIdx; [first,mid(deferred),third] RemovePath('third') preserves mid + doesn't resurrect third across Close->Open; TestRemovePathAfterDeferredPreservesMembership fails pre-fix, passes post. NO REGRESSION: Open tolerance non-vacuous, EADDRINUSE/other fatal, zero-bindable fatal, prober-stamp path-id (DATA==PROBE), nextPathID high-water past deferred stamps, scheduler bound-only Pick alignment, T55 deferred-reconcile substrate preserved. Full gate + go test -race ./internal/bind/... green under nix develop. 0 criticisms, 0 questions. Merged to main at ba9eb65."
 - ledgerRefs: ["tasks:T51"]
+
+### R58 — go-ahead
+
+- createdAt: 2026-07-13T14:45:22.666Z
+- updatedAt: 2026-07-13T14:45:22.666Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T55 (G2/W1 deferred-path background reconcile) implement-review: APPROVE (verdict=approve). All acceptance clauses verified operationally. TestReconcilePromotesDeferredPathToLive drives EADDRNOTAVAIL->armed via injected deferredListen seam, promotes into m.paths+scheduler+reader, proves end-to-end failover (blackhole primary->Pick=1->Send) — NON-VACUOUS; stamp continuity holds (promoted.prober==probers[1], id==probers[1].PathID()), reserved nextPathID raised past deferred stamps. CONCURRENCY: reconcileDeferred/promoteDeferredLocked run entirely under m.mu (serialize w/ Send/Close/AddPath/RemovePath); loop goroutine has idempotent done-channel stopper wired into Tunnel.Close before dev.Close; promoted readers tracked by readersWG so Close joins them; TestReconcileLoopStopsCleanly starts the real 1ms ticker + asserts goleak.VerifyNone (non-vacuous). TestReconcileSkipsPathRemovedBeforeBind confirms RemovePath retires a deferred entry (no resurrection). Index-skew rollback on promote mirrors AddPath. Poll chosen over netlink (vishvananda/netlink not a dep). Full gate + go test -race ./internal/bind/... + ./internal/device/... green. doc-sync present. 0 criticisms, 0 questions. Merged to main at a955083. Reviewer filed 1 low-sev OUT-OF-SCOPE defect (promoted/runtime paths forgo SO_BINDTODEVICE, pre-existing w/ AddPath) — recorded separately."
+- ledgerRefs: ["tasks:T55"]
