@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
@@ -165,6 +167,16 @@ type BDPSizing struct {
 	BurstFrames float64
 }
 
+// defaultAvgWireFrameBytes is the conservative average on-wire outer-frame size used
+// when deriving the per-path pace from an operator-declared bandwidth at config load
+// (T53): a full IPv4 path MTU, since a full-MTU DATA datagram occupies about one path
+// MTU on the wire. It mirrors bind.DefaultPathMTU (1500) rather than importing it —
+// internal/bind imports internal/config, so config cannot import bind without a cycle
+// (the same mirror-with-cross-reference pattern as maxFECDeadline above). Sizing
+// capacity with the full-MTU frame is the conservative floor: smaller average frames
+// would yield a HIGHER frame rate, so this never over-paces a path.
+const defaultAvgWireFrameBytes = 1500.0
+
 // SizePacingFromBDP derives the weighted scheduler's per-path pacing parameters from a
 // measured path instead of the synthetic frame-count default (defect D22). The shipped
 // defaultPerPathCapacityFPS (10000, ~115 Mbit/s at full MTU) sits far above a realistic
@@ -193,6 +205,45 @@ func SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFr
 	capacityFPS := bandwidthBitsPerSec / (bitsPerByte * avgWireFrameBytes)
 	burstFrames := capacityFPS * rtt.Seconds()
 	return BDPSizing{CapacityFPS: capacityFPS, BurstFrames: burstFrames}, nil
+}
+
+// bandwidthUnit is a recognised link_bandwidth suffix and its bit/s multiplier.
+type bandwidthUnit struct {
+	suffix string
+	mult   float64
+}
+
+// bandwidthUnits are the accepted operator-facing bandwidth suffixes, longest-first so
+// "gbit" is matched before "bit". SI decimal multipliers (k/M/G = 1e3/1e6/1e9) over a
+// bit/s base; "bps" is accepted as an alias of "bit" (and "kbps"/"mbps"/"gbps" likewise).
+var bandwidthUnits = []bandwidthUnit{
+	{"gbit", 1e9}, {"gbps", 1e9},
+	{"mbit", 1e6}, {"mbps", 1e6},
+	{"kbit", 1e3}, {"kbps", 1e3},
+	{"bit", 1}, {"bps", 1},
+}
+
+// parseBandwidth parses an operator-declared link bandwidth such as "50Mbit", "1Gbit",
+// or "500kbit" into bits per second. It requires an explicit bit/s unit suffix so a
+// bare unitless number cannot be silently misread, and fails fast on an empty or
+// otherwise unparseable value — a mistyped bandwidth is rejected at config load.
+func parseBandwidth(s string) (float64, error) {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if lower == "" {
+		return 0, errors.New("empty bandwidth")
+	}
+	for _, u := range bandwidthUnits {
+		if !strings.HasSuffix(lower, u.suffix) {
+			continue
+		}
+		num := strings.TrimSpace(lower[:len(lower)-len(u.suffix)])
+		val, err := strconv.ParseFloat(num, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid number %q", num)
+		}
+		return val * u.mult, nil
+	}
+	return 0, fmt.Errorf("missing bit/s unit suffix (want e.g. %q)", "50Mbit")
 }
 
 // FEC group-close deadline default (T24). Applied only when [fec] is enabled but
@@ -366,6 +417,25 @@ type Path struct {
 	DestAddr netip.AddrPort `toml:"-"`
 	// DestAddrRaw is the TOML string form of DestAddr; parsed in normalize.
 	DestAddrRaw string `toml:"dest_addr"`
+	// LinkBandwidthBitsPerSec is the OPERATOR-DECLARED bottleneck bandwidth of this
+	// uplink in bits/s, parsed from LinkBandwidthRaw in normalize. It is used ONLY to
+	// size the weighted scheduler's per-path pace from the bandwidth-delay product
+	// (SizePacingFromBDP) when the weighted policy runs with pacing ENABLED (T53, Q20);
+	// it is OPERATOR-DECLARED, not runtime-measured — wanbond never auto-tunes it live.
+	// Zero means "not declared" (the synthetic default pace is kept).
+	LinkBandwidthBitsPerSec float64 `toml:"-"`
+	// LinkBandwidthRaw is the TOML string form of the declared bandwidth, e.g.
+	// "50Mbit" / "1Gbit" / "500kbit" (SI bit/s units; the "bit" suffix may be written
+	// "bps"). Parsed in normalize; a non-positive or unparseable value fails fast.
+	LinkBandwidthRaw string `toml:"link_bandwidth"`
+	// LinkRTT is the OPERATOR-DECLARED baseline RTT of this uplink, parsed from
+	// LinkRTTRaw in normalize. It is the delay term of the bandwidth-delay-product pace
+	// burst (one RTT of in-flight frames); required (> 0) when LinkBandwidth is set and
+	// pacing is enabled under the weighted policy, ignored otherwise.
+	LinkRTT time.Duration `toml:"-"`
+	// LinkRTTRaw is the TOML Go-duration string form of LinkRTT, e.g. "45ms". Parsed in
+	// normalize; an unparseable or non-positive value fails fast.
+	LinkRTTRaw string `toml:"link_rtt"`
 }
 
 // WireGuard holds the inner tunnel's key material.
@@ -493,10 +563,91 @@ func (c *Config) normalize() error {
 			}
 			p.DestAddr = dst
 		}
+		if p.LinkBandwidthRaw != "" {
+			bw, err := parseBandwidth(p.LinkBandwidthRaw)
+			if err != nil {
+				return fmt.Errorf("path %q: invalid link_bandwidth %q: %w", p.Name, p.LinkBandwidthRaw, err)
+			}
+			if bw <= 0 {
+				return fmt.Errorf("path %q: link_bandwidth must be > 0, got %q", p.Name, p.LinkBandwidthRaw)
+			}
+			p.LinkBandwidthBitsPerSec = bw
+		}
+		if p.LinkRTTRaw != "" {
+			rtt, err := time.ParseDuration(p.LinkRTTRaw)
+			if err != nil {
+				return fmt.Errorf("path %q: invalid link_rtt %q: %w", p.Name, p.LinkRTTRaw, err)
+			}
+			if rtt <= 0 {
+				return fmt.Errorf("path %q: link_rtt must be > 0, got %q", p.Name, p.LinkRTTRaw)
+			}
+			p.LinkRTT = rtt
+		}
 	}
 	c.Amnezia.applyDefaults()
+	// Derive the weighted pace from any operator-declared per-link bandwidth BEFORE
+	// applyDefaults, so it can (a) see the raw zero PerPathCapacityFPS to distinguish an
+	// explicit knob from the default and (b) set the derived capacity/burst that
+	// applyDefaults then leaves intact (it only fills a knob left at zero). Under a
+	// disabled or non-weighted pacing it is a no-op, so the synthetic default is kept.
+	if err := c.deriveWeightedPacingFromBDP(); err != nil {
+		return err
+	}
 	c.Scheduler.applyDefaults()
 	c.FEC.applyDefaults()
+	return nil
+}
+
+// deriveWeightedPacingFromBDP sizes the weighted scheduler's per-path pace from the
+// operator-declared per-link bandwidth (T53, Q20) via SizePacingFromBDP instead of the
+// synthetic defaultPerPathCapacityFPS. It runs only under the weighted policy with
+// pacing ENABLED and at least one declared link_bandwidth; otherwise a declared
+// bandwidth is inert (pacing ships DISABLED by default), so an unrelated config is
+// untouched. The value is OPERATOR-DECLARED and fixed at load — NOT runtime auto-tuning
+// (Q20 rejected a live control loop for the pilot).
+//
+// The scheduler carries a SINGLE reference per-path capacity applied to every path's
+// token bucket, so a heterogeneous link set is sized to the BOTTLENECK: the slowest
+// declared link governs the shared pace, because pacing any path faster than the
+// slowest link's capacity would let that link build the very standing queue pacing
+// exists to prevent. All paths must therefore declare a bandwidth (all-or-nothing) so
+// the bottleneck is well-defined across the whole path set.
+func (c *Config) deriveWeightedPacingFromBDP() error {
+	s := &c.Scheduler
+	if s.Policy != PolicyWeighted || !s.PacingEnabled {
+		return nil
+	}
+	declared := 0
+	for i := range c.Paths {
+		if c.Paths[i].LinkBandwidthBitsPerSec > 0 {
+			declared++
+		}
+	}
+	if declared == 0 {
+		return nil // no declared bandwidth: the synthetic default pace is preserved.
+	}
+	if declared != len(c.Paths) {
+		return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — the shared per-path pace is sized to the slowest declared link, which is undefined with a partial declaration", declared, len(c.Paths))
+	}
+	if s.PerPathCapacityFPS != 0 || s.PacingBurstFrames != 0 {
+		return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived pace) OR set the raw frame-slot knobs, not both")
+	}
+	var bottleneck BDPSizing
+	for i := range c.Paths {
+		p := &c.Paths[i]
+		if p.LinkRTT <= 0 {
+			return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under weighted pacing — it is the delay term of the bandwidth-delay-product burst", p.Name)
+		}
+		sz, err := SizePacingFromBDP(p.LinkBandwidthBitsPerSec, p.LinkRTT, defaultAvgWireFrameBytes)
+		if err != nil {
+			return fmt.Errorf("path %q: %w", p.Name, err)
+		}
+		if i == 0 || sz.CapacityFPS < bottleneck.CapacityFPS {
+			bottleneck = sz
+		}
+	}
+	s.PerPathCapacityFPS = bottleneck.CapacityFPS
+	s.PacingBurstFrames = bottleneck.BurstFrames
 	return nil
 }
 

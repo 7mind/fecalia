@@ -153,6 +153,42 @@ parity — **set exactly one**:
 
 Setting both `target_residual` and `safety_factor` is rejected at config load.
 
+### Optional `[scheduler]` weighted aggregation + pacing
+
+The send scheduler defaults to **active-backup** (one active path, instant
+failover). An optional `[scheduler]` block selects the **weighted-aggregation**
+policy and, off by default, per-path send-**pacing** (token buckets that bound
+bufferbloat under sustained load):
+
+```toml
+[scheduler]
+policy = "weighted"
+pacing_enabled = true     # OFF by default; when on, size the pace from the links below
+```
+
+When pacing is enabled you may declare each uplink's bandwidth and baseline RTT
+directly on its `[[paths]]` block; the daemon then sizes the per-path pace from the
+bandwidth-delay product at config load, instead of the synthetic default:
+
+```toml
+[[paths]]
+name = "starlink"
+source_addr = "192.168.1.10"
+link_bandwidth = "50Mbit"  # SI bit/s: k/M/G = 1e3/1e6/1e9 (e.g. "10Mbit", "1Gbit")
+link_rtt = "45ms"          # baseline RTT — the delay term of the pacing burst
+```
+
+- The declaration is **operator-declared, not auto-tuned**: the value is fixed at
+  load; wanbond does not adjust it live. Measure it once per link.
+- It is **all-or-nothing**: declare `link_bandwidth` (and `link_rtt`) on *every*
+  path or none. The shared per-path pace is sized to the **slowest declared link**
+  (the bottleneck), so a partial declaration is rejected.
+- A declared bandwidth with `pacing_enabled = false` (the default) is **inert** —
+  the synthetic default pace is kept and the tunnel behaves as before.
+- `link_bandwidth` is **mutually exclusive** with the raw `per_path_capacity_fps` /
+  `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
+  knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
+
 ## 4. systemd units
 
 Unit files live in `packaging/systemd/`:
