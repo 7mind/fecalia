@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 3
+  item: 4
 archives: []
 ---
 
@@ -96,3 +96,38 @@ archives: []
     DEFERRED-WORK PROVENANCE: this goal collects the deliberate boundaries recorded in docs/design.md 'Not yet built' + the production-readiness assessment (pacing not empirically sized; throughput aggregation unmeasured in-fixture; CONTROL unwired; single concentrator), PLUS the startup all-or-nothing path-bind resilience gap surfaced by the 2026-07-13 design review (CORE SCOPE 4, approach A). It does not re-open any resolved G1 defect.
 - grounding: "Grounded 2026-07-13 (opus-4.8[1m]). STARTUP FATAL-BIND (CORE SCOPE 4): internal/bind/multipath.go Open() loop L467-516 binds each path via listenPath L479; ANY error -> closeSocketsLocked+fatal return (EADDRNOTAVAIL included). The TOLERANT model to reuse is runtime AddPath L1336-1416 (binds, on failure rolls back path WITHOUT tearing down the tunnel). Path-down model = telemetry Liveness StateDown/StateUp (internal/telemetry/liveness.go, DownAfter~1200ms, UpAfterSuccesses=3); sched/weighted.go excludes Down paths from Pick. CONTROL dropped at bind default case (~L854) -> stays dormant (Q17). CONFIG: internal/config/config.go Path{SourceAddr netip.Addr, DestAddr netip.AddrPort} (per-path dest) + single defaultRemote (ParseEndpoint ~L1244); validate L579-644 rejects missing/duplicate/malformed source_addr at load (malformed stays fatal per guard b). PACING: SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFrameBytes float64)->BDPSizing{CapacityFPS,BurstFrames} L182-196 is a HELPER, NOT wired into config load; synthetic default defaultPerPathCapacityFPS=10000 (~115Mbit/s); WeightedConfig.Pacing / config PacingEnabled default FALSE; token bucket in sched/weighted.go tryConsumeLocked. PROBE plane: telemetry Prober/Reflector/Estimator drives per-path RTT/loss/jitter + failover. TESTS: test/e2e netns fixture (netns.go SetupWithPaths, tc/netem) + capped fixture TestFixtureImpairment (test/e2e/fixture_impairment_test.go, rateMbit/lossPct, T35); test/realhosts (-tags realhosts) runner.go SSH + provision.go against llm-ubuntu-0 (amd64 symmetric-NAT EDGE) + o3.7mind.io (aarch64 PUBLIC concentrator 89.168.124.91, live iptables OK, never deprovision). GATE: go build/vet/gofmt/test; just e2e (sudo netns); just realhosts (report-only, M10/Q12). DOCS to keep in sync (AGENTS.md): README.md, docs/design.md ('Not yet built' L232-251), docs/install.md, docs/manual-checklist.md. DECISIONS: Q17 CONTROL dormant (no milestone). Q18 multi-concentrator IN: model = edge-side ORDERED-ENDPOINT ACTIVE-STANDBY (edge holds N concentrator endpoints, detects all-paths-to-hub DOWN via PROBE/liveness, switches remote + WG re-handshake to next; NO hub-to-hub state handoff; mesh/anycast ruled out by SD-WAN non-goal). Q19 exit criterion NON-BLOCKING on soak. Q20 pacing = BOTH (wire SizePacingFromBDP from operator-declared per-link bandwidth + document measurement)."
 - milestones: ["M13","M14","M15","M16","M17"]
+
+## M18
+
+### G4 — clarifying
+
+- createdAt: 2026-07-13T20:56:20.857Z
+- updatedAt: 2026-07-13T21:01:25.591Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- title: Multi-peer (hub-and-spoke) concentrator support
+- description: |
+    GOAL: let one wanbond concentrator process terminate MANY edges concurrently — each edge bonded across its own uplinks, with per-peer isolation of resequencing/FEC/scheduling and correct per-peer return routing — while preserving all load-bearing invariants.
+    
+    MOTIVATION. Today a concentrator is single-peer-per-process. The config schema and the WireGuard engine already accept multiple [[wireguard.peers]] (config.validate only requires >=1; device.go uapiConfig ranges over all peers), but wanbond's multipath Bind is a single-tunnel bonding instance: internal/bind/multipath.go holds ONE virtual endpoint (m.virt, pinned to the first source it learns), ONE receive resequencer (m.resequencer, keyed purely by outer-seq with no peer separation), ONE send counter (m.outerSeq), ONE scheduler, ONE fecSend/fecRecv, ONE flat m.paths list, and ONE defaultRemote. So with two edges, their independent outer-seq spaces interleave into one resequencer release window (D32-class drops), the single virtual endpoint + per-path endpoint-learning clobber, and return traffic misroutes. Design rule A1 already SAYS 'one virtual endpoint per peer' — the code took the single-peer shortcut. The plural [[wireguard.peers]] schema is therefore misleading and should either work or be documented as unsupported.
+    
+    CHOSEN DIRECTION (to confirm/refine in planning): approach (2) — AUTHENTICATED path->peer binding, NOT a forgeable outer-frame tunnel id. The crux is that the Bind demuxes frames BELOW the crypto layer (it resequences/FEC-recovers before the engine decrypts), so it cannot use the engine's Noise peer identity, and DATA frames carry no peer id (frame.go: OuterSeq/PathID/FEC only) and are unauthenticated by design (invariant 4) — an outer tunnel id would be spoofable across edges (cross-peer resequencer-injection DoS). The recommended enabler is a PER-PEER PSK (move psk from top-level into [[wireguard.peers]]), so the PSK-HMAC PROBE/CONTROL plane authenticates the SPECIFIC peer and can establish a path->peer binding; DATA frames on that path then route to that peer's resequencer. Then de-singleton the Bind: make virt / resequencer / outerSeq / scheduler / fecSend / fecRecv / paths / defaultRemote / probers / reflector per-peer (a map[peer]peerState), with the engine-facing ReceiveFunc demuxing each frame to the right peerState and Send(bufs, endpoint) routing via an endpoint->peerState map.
+    
+    KNOWN REFACTOR SURFACE: internal/bind/multipath.go (the de-singleton + demux), internal/bind/bind.go (keep the conn-seam isolation), internal/reseq (per-peer instances), internal/sched + internal/fec + internal/telemetry (per-peer), internal/frame (only if a wire change proves necessary), internal/device/device.go (program the path->peer demux table from authenticated peer events; per-peer virtual endpoints to the engine), internal/config (per-peer psk + validation).
+    
+    INVARIANTS TO PRESERVE (do not break): A1 one-virtual-endpoint-per-peer (now literally per-peer); own outer-seq space per sender (never the inner WG counter); resequence before inner anti-replay; DATA/PARITY unauthenticated by design (do not add a forgeable demux that weakens this); PROBE/CONTROL PSK-HMAC authenticated with monotonic anti-replay; conn coupling stays isolated to internal/bind/bind.go; amnezia all-or-nothing + single-engine-per-process; reedsolomon prefix-stability (TestKlauspostParityPrefixStableInvariant) on any FEC touch.
+    
+    OPEN QUESTIONS FOR CLARIFICATION (planner should ask before designing):
+    - Scope: concentrator-side multi-peer only, or also edge talking to multiple DISTINCT concentrators simultaneously (different from the existing Q18 single-active-hub failover)? Recommend concentrator-only for this goal; edge-multi-hub is a separate feature.
+    - PSK model: per-peer PSK (recommended, enables authenticated demux) vs keep deployment-wide PSK + some other demux? What's the migration/back-compat story for existing single-peer configs (top-level psk)?
+    - Demux bootstrapping: how is a path attributed to a peer for the very FIRST frames, before any authenticated PROBE / before the WG handshake completes? (provisional/quarantine resequencer? gate DATA until an authenticated PROBE binds the path?)
+    - Roaming: when an edge's source rebinds (NAT), how does the path re-bind to the same peer without a window where frames misroute?
+    - Resource limits: max peers per concentrator; per-peer memory (a ~2048-frame resequencer ring + FEC state each); backpressure / eviction of idle peers; is there a configured cap?
+    - Security: can a malicious edge (that knows ITS psk) disrupt ANOTHER edge's tunnel? Threat-model the path->peer binding.
+    - Metrics: per-peer label on the /metrics series (wanbond_path_* etc.).
+    
+    NON-GOALS: mesh/anycast; edge-side simultaneous multi-concentrator aggregation; changing the single-engine-per-process model; any DPI/obfuscation change.
+    
+    TESTING DIRECTION: netns e2e with 2+ edges to one concentrator proving per-peer isolation (each edge's traffic resequences independently; one edge's loss/reorder/restart does not corrupt another's stream; return traffic routes to the correct edge); a per-peer resequencer unit test (two interleaved outer-seq streams stay separated); realhosts extension if feasible. Report-only real-link where absolute numbers apply, per the existing M10/Q12 discipline.
+- sessionLogs: [".cq/logs/20260713-210054-acde8de5f9cf22718.md"]
+- rawLogs: [".cq/logs/raw/20260713-210054-acde8de5f9cf22718.jsonl"]

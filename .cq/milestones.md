@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 17
+  item: 18
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -130,3 +130,10 @@ archives:
 - title: "G2/W3 — Multi-concentrator hub-failover (Q18: edge-side ordered-endpoint active-standby)"
 - description: "Q18 IN-SCOPE. Bring hub-termination redundancy into the pilot via edge-side ORDERED-ENDPOINT ACTIVE-STANDBY: the edge holds an ordered list of concentrator (Peer) endpoints, detects hub loss (ALL paths to the active concentrator DOWN via the PROBE/liveness plane), switches the peer remote and triggers a WireGuard re-handshake to the next endpoint. NO hub-to-hub state handoff (fresh WG session at the standby); mesh/anycast ruled out by the SD-WAN non-goal. Netns e2e + report-only realhosts validation. Depends on W1 (shares internal/bind/multipath.go). Work milestone for goal G2 (coordination milestone M12)."
 - dependsOn: ["M13"]
+
+### M18 — open
+
+- createdAt: 2026-07-13T20:55:43.837Z
+- updatedAt: 2026-07-13T20:55:43.837Z
+- title: "Plan: multi-peer (hub-and-spoke) concentrator"
+- description: "Coordination milestone for the plan-flow goal G3: let one wanbond concentrator process terminate MANY edges concurrently (per-peer isolation of resequencing/FEC/scheduling + authenticated path->peer demux). Groups the goal, its clarifying questions, reviews, and approval decision. Successor to G2 (production-readiness, complete)."

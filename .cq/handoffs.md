@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 11
+  item: 12
 archives: []
 ---
 
@@ -164,3 +164,18 @@ archives: []
 - flow: advance
 - ledgerRefs: ["goals:G2","defects:D30","defects:D34","tasks:T66"]
 - handoffReasons: ["drained"]
+
+## M18
+
+### HO12 — answers-required
+
+- createdAt: 2026-07-13T21:01:45.458Z
+- updatedAt: 2026-07-13T21:01:45.458Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "/cq:plan bootstrapped goal G4 'Multi-peer (hub-and-spoke) concentrator support' (milestone M18) into `clarifying`. The plan-advance planner grounded read-only against the cited code (verified all premises: config.Config.PSK is a single top-level key with no per-peer field; device.Up builds exactly ONE bind.NewMultipath so the datapath is structurally single-peer even though [[wireguard.peers]]/uapiConfig iterate all peers; found two reusable hooks — handleInbound already learns the return remote only from an authenticated PROBE, and reseq.Rebaseline exists) and filed 8 clarifying questions Q21-Q28 (open, linked goals:G4) covering: scope boundary (concentrator-only vs edge-multi-hub); per-peer-PSK model + config schema + single-peer back-compat; wire-format-change acceptability; demux bootstrapping (gate-vs-quarantine + trial-decode-across-peer-PSKs); roaming re-bind; concentrator resource limits/eviction/backpressure + per-peer memory; threat model for the path->peer binding; per-peer /metrics labels. Q24/Q26/Q27 (demux/limits/threat) form one cluster; Q22/Q28 (per-peer-PSK/metrics) may share a new per-peer config field — read the answers together. NEXT: user answers Q21-Q28 in the TUI/web, then runs /cq:plan:advance G4 to plan the task DAG. Blocked on user answers."
+- flow: plan
+- ledgerRefs: ["goals:G4"]
+- blockingQuestions: ["Q21","Q22","Q23","Q24","Q25","Q26","Q27","Q28"]
+- sessionLogs: [".cq/logs/20260713-210054-acde8de5f9cf22718.md"]
+- rawLogs: [".cq/logs/raw/20260713-210054-acde8de5f9cf22718.jsonl"]

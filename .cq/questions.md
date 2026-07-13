@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 20
+  item: 28
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -270,3 +270,101 @@ archives:
 - recommendation: Both (option c). Wire SizePacingFromBDP so config derives pacing from a declared per-link bandwidth the operator supplies (making correct pacing reachable without hand-computing BDP), and document the fixture/real-link measurement procedure that produces that bandwidth number. Prefer operator-declared bandwidth over fully automatic runtime auto-tuning for the pilot — auto-tuning adds control-loop risk that a supervised pilot does not yet justify.
 - ledgerRefs: ["goals:G2"]
 - answer: as recommended
+
+## M18
+
+### Q21 — open
+
+- createdAt: 2026-07-13T20:58:52.969Z
+- updatedAt: 2026-07-13T20:58:52.969Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Confirm the scope boundary: is this goal STRICTLY concentrator-side multi-peer (one concentrator process terminating N distinct edges, each a distinct WireGuard peer/pubkey), with NO change to the edge side? Specifically, (a) is edge-side simultaneous aggregation across multiple DISTINCT concentrators explicitly out of scope (it is different from the already-shipped T57/Q18 single-active-hub ordered-endpoint failover), and (b) is the existing single-edge NAT-roaming case (one peer whose source rebinds) considered ALREADY handled, so 'multi-peer' means genuinely distinct peers, not the roaming of one?"
+- context: "Grounded: device.Up builds ONE bind.NewMultipath(cfg.Paths, cfg.PSK, ...) for the whole process; the edge already has T57 hub-failover (config.Peer.Endpoints ordered list, reseq.Rebaseline, startHubFailover in device.go) which is single-ACTIVE, not simultaneous aggregation. config.validate already accepts >=1 [[wireguard.peers]] and device.uapiConfig ranges over all peers, but the Bind/reseq/scheduler are singletons. The scope answer decides whether ANY edge-side work is in the plan or the plan is concentrator-only de-singletoning."
+- suggestions: ["Concentrator-only multi-peer; edge unchanged; edge-multi-hub and single-edge-roaming both out of scope","Concentrator multi-peer PLUS edge-side simultaneous multi-concentrator aggregation","Something else (describe)"]
+- recommendation: Concentrator-only multi-peer for this goal; edge-side simultaneous multi-concentrator aggregation is a separate feature; single-edge roaming is already handled and is not what 'multi-peer' means here.
+- ledgerRefs: ["goals:G4"]
+
+### Q22 — open
+
+- createdAt: 2026-07-13T20:59:05.594Z
+- updatedAt: 2026-07-13T20:59:05.594Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Adopt a PER-PEER PSK (move psk into [[wireguard.peers]]) as the authenticated path->peer demux enabler? If yes, pin the exact config schema and back-compat rule: (a) does the top-level `psk` REMAIN fully supported as the single-peer default (so every existing single-peer config keeps working byte-for-byte), with a per-peer `psk` under [[wireguard.peers]] only REQUIRED once >1 peer is configured? (b) does validate REQUIRE the per-peer psks to be pairwise DISTINCT when >1 peer (equal psks would defeat authenticated demux)? (c) is the model symmetric on the edge (each edge configured with the single psk that matches its concentrator-side peer entry), i.e. no edge schema change beyond the value it already sets?"
+- context: "Grounded: config.Config.PSK is a single top-level Key (config.go:42), config.validate requires it (line 844), config.Peer has PublicKey/Endpoint(s)/AllowedIPs and NO psk field. multipath.NewMultipath takes one psk and builds ONE frame.Codec + telemetry.NewReflector(psk) + per-path telemetry.NewProber(...,cfg.PSK,...). The outer PSK-HMAC PROBE/CONTROL plane is the only authenticated signal below the crypto layer, so a per-peer PSK is what lets an authenticated PROBE identify WHICH peer a path belongs to. This decision drives internal/config schema+validation AND how the Bind is de-singletoned (map keyed by peer, each peerState with its own psk-derived codec/reflector)."
+- suggestions: ["Per-peer psk under [[wireguard.peers]]; top-level psk stays the single-peer default; per-peer required + pairwise-distinct only when >1 peer; edge unchanged","Per-peer psk ALWAYS required (drop top-level psk) — a clean break, no single-peer back-compat","Keep one deployment-wide psk + some non-PSK demux (describe how it stays unforgeable)"]
+- recommendation: "Per-peer psk under [[wireguard.peers]] as the enabler; keep top-level psk as the single-peer back-compat default; require per-peer psks present and pairwise-distinct when >1 peer; no edge schema change (the edge already sets exactly the psk matching its concentrator peer)."
+- ledgerRefs: ["goals:G4"]
+
+### Q23 — open
+
+- createdAt: 2026-07-13T20:59:15.592Z
+- updatedAt: 2026-07-13T20:59:15.592Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Is a DATA/PARITY outer-frame WIRE-FORMAT change acceptable for this goal, or is 'no wire change' a hard requirement? The chosen direction (authenticated path->peer binding) should need NO wire change: DATA/PARITY stay unauthenticated with no peer id, and demux is purely by the authenticated path->peer binding table. Confirm that (a) adding a peer-id field to the DATA header is explicitly REJECTED (it would be spoofable and reintroduce the cross-peer resequencer-injection DoS invariant-4 forbids), and (b) the plan must preserve byte-for-byte wire compatibility with already-deployed single-peer edges."
+- context: "Grounded: frame.Data carries OuterSeq/PathID/FECGroup/FECIndex/Flags and NO peer id; DATA/PARITY are unauthenticated by design (frame.go wire-model comment, invariant 4); only PROBE/CONTROL carry a PSK-HMAC tag. reseq's whole discontinuity/resync guard assumes DATA is forgeable. A wire change would ripple into frame.DataOverhead, mtu.go InnerMTU sizing, FEC shard coding (OuterSeq||Payload), and cross-version compat. Answering this fixes whether internal/frame is in the refactor surface at all."
+- suggestions: ["No wire change; DATA/PARITY unchanged; demux purely via authenticated path->peer binding (peer-id-in-DATA rejected); keep single-peer wire compat","A wire change IS acceptable if planning shows it is necessary (describe the compat story)"]
+- recommendation: No wire change. DATA/PARITY stay unauthenticated and peer-id-free; the peer is resolved by the authenticated path->peer binding, not by any outer-frame field. This preserves invariant 4 and wire compat with deployed edges.
+- ledgerRefs: ["goals:G4"]
+
+### Q24 — open
+
+- createdAt: 2026-07-13T20:59:27.135Z
+- updatedAt: 2026-07-13T20:59:27.135Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "How is an inbound path/source attributed to a peer for the VERY FIRST frames, before any authenticated PROBE has bound it (and before the WG handshake completes)? Two sub-decisions: (1) Bootstrap policy for early DATA on an unbound source — GATE (drop DATA until an authenticated PROBE under some peer's psk binds the source->peer, relying on WG handshake/keepalive retransmit), or QUARANTINE it in a provisional per-source resequencer that is adopted once the binding resolves? (2) Peer identification for an unbound authenticated frame — is it acceptable to TRIAL-DECODE an unbound PROBE against each configured peer's psk (O(peers) HMAC verifies) to discover which peer it belongs to, or is a cheaper binding hint required?"
+- context: "Grounded: multipath.handleInbound today learns a path's return remote ONLY from an authenticated PROBE (Probe case: ps.setRemote(srcAP)), never from DATA (the D9/D11 fix), and reflects peer probes via telemetry.Reflector. With per-peer psk each peerState has its own psk-derived Codec, so an unbound source's frame must be trial-decoded across peers' codecs to identify the peer. Trial-decode is an O(peers) cost + a potential CPU-DoS surface on spoofed unbound sources (ties to the resource-limit and threat-model questions). This decision shapes the demux table programming in device.go and the Bind receive path."
+- suggestions: ["Gate DATA until an authenticated PROBE binds source->peer; identify the peer by trial-decoding the PROBE across peer psks (bounded by max-peers)","Provisional quarantine resequencer per unbound source, adopted on first authenticated PROBE","A cheaper binding hint is required (describe)"]
+- recommendation: Gate DATA on an unbound source until an authenticated PROBE binds source->peer (WG retransmits cover the brief gap); identify the peer by trial-decoding the unbound PROBE across configured peer psks, with the cost bounded by the max-peers cap and unauthenticated floods dropped cheaply.
+- ledgerRefs: ["goals:G4"]
+
+### Q25 — open
+
+- createdAt: 2026-07-13T20:59:38.682Z
+- updatedAt: 2026-07-13T20:59:38.682Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: When an edge's source rebinds (NAT/roaming) so a path arrives from a NEW source address, how must the path re-bind to the SAME peer without a window where its frames misroute into another peer's resequencer? Is it acceptable that re-binding a moved source to its peer happens ONLY on a fresh authenticated PROBE (under that peer's psk) from the new source — accepting a brief drop/no-route window for that path's DATA until the PROBE re-binds it (covered by WG retransmit and the other still-bound paths of the same bonded edge) — or is a stronger continuity guarantee required?
+- context: "Grounded: today a single virt is pinned once to the first learned source (virtualEndpoint), and per-path remote is re-learned on each authenticated PROBE (handleInbound Probe case). The existing T16 re-roam and D11 machinery already re-learn a path's remote from authenticated probes. In the multi-peer world the RISK is that DATA from a moved source, arriving before its re-binding PROBE, could be attributed to the wrong peer's resequencer (cross-peer contamination). Gating re-bind on an authenticated PROBE keeps the binding unforgeable but opens a small window. This decides the roaming/re-bind logic in the demux table."
+- suggestions: ["Re-bind a moved source to its peer ONLY on a fresh authenticated PROBE from the new source; unbound/other DATA from that source is dropped (not misrouted) until then","Require a stronger zero-window continuity guarantee (describe the mechanism)"]
+- recommendation: Re-bind on the authenticated PROBE only; until the moved source re-binds, its DATA is dropped rather than attributed to any peer (never misrouted). WG retransmit and the edge's other still-bound paths cover the brief window, mirroring the existing D11/T16 re-learn discipline.
+- ledgerRefs: ["goals:G4"]
+
+### Q26 — open
+
+- createdAt: 2026-07-13T20:59:51.158Z
+- updatedAt: 2026-07-13T20:59:51.158Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Pin the concentrator resource-limit model: (a) is there a CONFIGURED max-peers cap, and what default (the per-peer footprint is a ~2048-frame resequencer ring PLUS per-peer FEC send/recv state PLUS per-peer scheduler/probers/reflector, so N peers multiply memory)? (b) what is the eviction policy for idle/dead peers — evict when the WG session is torn down / liveness has been DOWN past a timeout, or never (static peer set only)? (c) on cap exhaustion, REJECT a new peer's bootstrap, or evict the idlest? Note: is the concentrator peer set STATIC (only the configured [[wireguard.peers]] ever bind) or can peers appear dynamically within that configured set?"
+- context: "Grounded: resequencerWindow=2048 (multipath.go), and each peer needs its own resequencer (atomic.Pointer today), fecSend/fecRecv, scheduler, prober set, and reflector — all currently process-singletons. The configured peer set is bounded by [[wireguard.peers]] (config), so 'max peers' may simply be len(peers); but the demux/provisional state for UNbound sources needs its own bound (DoS). This decision sets the peerState map sizing, the eviction lifecycle wired from device.go peer events, and the backpressure branch."
+- suggestions: ["Static configured peer set only (cap = number of [[wireguard.peers]]); per-peer state torn down when that peer's WG session/liveness goes away; provisional unbound-source state separately capped","Configured max_peers cap with a default (state the number) + idle-eviction timeout","No cap / no eviction (reject if unsure)"]
+- recommendation: "Peers are the STATIC configured [[wireguard.peers]] set, so the steady-state cap is that count; size per-peer state lazily and tear it down when a peer's WG session/liveness is gone; cap the PROVISIONAL unbound-source demux state separately (small, drop-on-exhaustion) to bound the bootstrap DoS."
+- ledgerRefs: ["goals:G4"]
+
+### Q27 — open
+
+- createdAt: 2026-07-13T21:00:02.247Z
+- updatedAt: 2026-07-13T21:00:02.247Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "State the target THREAT MODEL for the path->peer binding so acceptance can test it: (1) With distinct per-peer PSKs, is the required guarantee 'a malicious edge that knows ITS OWN psk can disrupt ONLY its own tunnel, never another peer's resequencing/FEC/scheduling' (i.e. full cross-peer isolation, since it cannot forge an authenticated PROBE under a victim's psk)? (2) For an attacker with NO valid psk who floods spoofed/unbound source addresses, is the accepted bound 'unauthenticated frames are dropped cheaply and provisional demux state is capped, so the flood cannot exhaust memory/CPU or evict a live peer' — accepting only degraded bootstrap latency, never cross-peer corruption?"
+- context: "Grounded: DATA/PARITY are unforgeable-DATA by design (invariant 4); only an authenticated PROBE (PSK-HMAC, with monotonic anti-replay + the T38/D12 session challenge in telemetry) can bind a source to a peer. So cross-peer injection requires the victim's psk. The residual surfaces are (i) trial-decode CPU on unbound floods and (ii) provisional-state exhaustion / live-peer eviction — both tie to the demux-bootstrap and resource-limit questions. A written threat model turns the e2e 'one edge's loss/restart does not corrupt another' test into concrete adversary cases."
+- suggestions: ["Full cross-peer isolation under distinct psks; no-psk floods bounded to degraded bootstrap only (never corruption or live-peer eviction)","A weaker/different guarantee (describe)"]
+- recommendation: "Target full cross-peer isolation: with distinct per-peer psks a peer can disrupt only itself; an attacker without a valid psk is limited to (bounded, capped) bootstrap-latency degradation and can neither corrupt another peer's stream nor evict a live peer."
+- ledgerRefs: ["goals:G4"]
+
+### Q28 — open
+
+- createdAt: 2026-07-13T21:00:13.528Z
+- updatedAt: 2026-07-13T21:00:13.528Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "For /metrics: add a per-peer label to the wanbond_path_* (and the per-peer resequencer/FEC) series so an operator can attribute traffic/loss/recovery to a specific edge? If yes, what is the label KEYED on — a stable config-assigned peer name (recommended, human-readable, bounded), or the WG public key (globally stable but opaque and higher-cardinality-looking)? Confirm the cardinality increase (series multiply by peer count) is acceptable given it is bounded by the max-peers/static peer set, and whether existing single-peer series must stay label-compatible (e.g. omit the peer label, or emit a default, when only one peer)."
+- context: "Grounded: metrics.Source (newMetricsSource) reads per-PATH counters (txBytes/rxBytes atomics on pathState, prober RTT/loss, resequencer Stats) off the single Bind; there is no peer dimension today. Per-peer isolation makes per-peer scrape data the operator's primary signal ('is edge A's tunnel healthy independently of edge B'). config.Peer has no name field today, so keying on a peer name may require a small schema add (peer name/id). This decides the metrics.Source shape and any config surface for a peer identifier."
+- suggestions: ["Add a `peer` label keyed on a config-assigned peer name (add a name/id field to [[wireguard.peers]]); single-peer configs keep back-compatible series","Key the `peer` label on the WG public key (no new config field)","No per-peer labels for this goal (aggregate only)"]
+- recommendation: "Add a per-peer `peer` label keyed on a config-assigned peer name (small [[wireguard.peers]] name field); cardinality is bounded by the static peer set; keep single-peer series back-compatible (omit the label or emit a stable default when only one peer)."
+- ledgerRefs: ["goals:G4"]
