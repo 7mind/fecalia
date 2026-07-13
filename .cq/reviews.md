@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 71
+  item: 73
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -683,3 +683,31 @@ archives:
 - ledgerRefs: ["goals:G5"]
 - sessionLogs: [".cq/logs/20260713-221057-abf3d4747c8c2d97a.md",".cq/logs/20260713-221057-ab6ff041b6c4fdf2b.md"]
 - rawLogs: [".cq/logs/raw/20260713-221057-abf3d4747c8c2d97a.jsonl",".cq/logs/raw/20260713-221057-ab6ff041b6c4fdf2b.jsonl"]
+
+## M18
+
+### R72 — revise
+
+- createdAt: 2026-07-13T22:33:53.545Z
+- updatedAt: 2026-07-13T22:34:34.453Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "Reconciled panel verdict (strictest-wins over 2 reviewers): [opus] go-ahead — plan fine-grained, sequenced, testable, grounded, complete across Q21-Q28; [fable] revise — well-grounded but two planner-fixable gaps: M25's chain (T89/T90/T92) is missing a dependsOn edge to T86 (per-peer resequencer demux), and runtime path add/remove interacting with per-(peer,path) state has no task or acceptance. Verdict: revise. No new questions; no out-of-scope defects."
+- new_questions: []
+- criticism: ["[fable] Missing dependency edge: T89's acceptance ('DATA lands in B's resequencer only') — and transitively T90's and T92's cross-peer-resequencer assertions — require T86's per-peer resequencer demux, but T86 is not in T89's transitive dependsOn closure (T89→T88→{T84,T85}→T83; T86 is a sibling off T83). In DAG-parallel execution T89 can be picked before T86 merges, making its acceptance unimplementable. Add T86 to T89's dependsOn (or to T88's).","[fable] Runtime path add/remove is unaddressed in the multi-peer world: the repo has live dynamic-path machinery (internal/bind/runtime_path_test.go, tolerant_membership_test.go, bind.ProberFactory returned by buildScheduler at internal/device/device.go:577, the T30 deferred paths T83 itself names as shared socket state), and the ProberFactory today closes over the single cfg.PSK. No task or acceptance exercises adding/removing a path while >=2 peers are bound (each bound peer must gain/lose its per-(peer,path) prober/codec/remote). Add an acceptance clause to T83 or T93, or explicitly declare runtime path mutation out of scope for multi-peer."]
+- ledgerRefs: ["goals:G4"]
+- sessionLogs: [".cq/logs/20260713-223422-aac7874ad6597a588.md",".cq/logs/20260713-223422-a2693299e2689e645.md"]
+- rawLogs: [".cq/logs/raw/20260713-223422-aac7874ad6597a588.jsonl",".cq/logs/raw/20260713-223422-a2693299e2689e645.jsonl"]
+
+### R73 — go-ahead
+
+- createdAt: 2026-07-13T22:38:38.547Z
+- updatedAt: 2026-07-13T22:39:12.288Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "Reconciled panel verdict, round 2 (2 reviewers, unanimous): [opus] go-ahead — both R72 criticisms resolved and grounded (T89 now directly dependsOn T86 fixing the DAG-parallel unimplementable-acceptance hazard; T83 brings runtime path mutation in scope with a two-peer fan-out acceptance; T93 replaces the device.go:577/599 ProberFactory single-cfg.PSK closure with a per-peer factory); [fable] go-ahead — both criticisms verifiably resolved, all plan-cited repo facts match source, the 20-task DAG is fine-grained, correctly sequenced, operationally testable, grounded, and complete against Q21-Q28 and every named invariant (A1, D32, FEC prefix-stability, doc sync). Verdict: go-ahead. No new questions, no criticism, no out-of-scope defects."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G4"]
+- sessionLogs: [".cq/logs/20260713-223902-a91e747225a420952.md",".cq/logs/20260713-223902-ae3509c0ca48d6db5.md"]
+- rawLogs: [".cq/logs/raw/20260713-223902-a91e747225a420952.jsonl",".cq/logs/raw/20260713-223902-ae3509c0ca48d6db5.jsonl"]

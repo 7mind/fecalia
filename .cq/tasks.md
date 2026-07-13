@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 79
+  item: 99
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -760,3 +760,272 @@ archives:
 - suggestedModel: fast
 - dependsOn: ["T76","T69","T71"]
 - ledgerRefs: ["goals:G5"]
+
+## M23
+
+### T80 — planned
+
+- createdAt: 2026-07-13T22:27:04.600Z
+- updatedAt: 2026-07-13T22:27:04.600Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add per-peer psk and name fields to config.Peer
+- description: In internal/config, add `psk config.Key` (toml `psk`) and `name string` (toml `name`) to config.Peer. Keep top-level Config.PSK as the single-peer default (unchanged for existing configs). Normalize in normalize()/resolveEndpoints-adjacent code so a single-peer config with only top-level psk keeps its exact current shape. Do NOT touch the edge-side schema beyond the value it already sets. No datapath change in this task.
+- acceptance: A new config unit test parses a 2-peer TOML with distinct per-peer `psk`+`name` values and a legacy single-peer TOML carrying only top-level `psk`; the single-peer parse is byte-identical to today (golden struct compare), and the multi-peer parse exposes each peer's psk/name. `go test ./internal/config/...` passes.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G4"]
+
+### T81 — planned
+
+- createdAt: 2026-07-13T22:27:14.700Z
+- updatedAt: 2026-07-13T22:27:14.700Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Validate per-peer psk presence, distinctness, and single-peer back-compat
+- description: "Extend config.validate: when len(peers) > 1, require each peer's `psk` present and pairwise-distinct (equal psks defeat authenticated demux) and each peer `name` present and unique; when len(peers) == 1, accept top-level psk as the default and require no per-peer psk. Reject a per-peer psk that duplicates another peer's. ALSO reject an EDGE role config with >1 peer (concentrator-only scope, Q21 — the edge dials exactly one concentrator peer per process). Keep the rest of edge validation unchanged. Fail fast with precise messages."
+- acceptance: "Table-driven config.validate test: >1 peer with equal per-peer psks fails; >1 peer with a missing per-peer psk fails; duplicate peer names fail; edge role with 2 peers fails with a scope-explaining message; single-peer top-level-only passes; 2 peers with distinct psks+names pass. `go test ./internal/config/...` passes."
+- suggestedModel: standard
+- dependsOn: ["T80"]
+- ledgerRefs: ["goals:G4"]
+
+### T82 — planned
+
+- createdAt: 2026-07-13T22:27:18.375Z
+- updatedAt: 2026-07-13T22:27:18.375Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add config helper resolving each peer's effective PSK and identity
+- description: Add a config method/function returning, per configured peer, its effective PSK (top-level Config.PSK for the single-peer back-compat case; the peer's own psk when >1 peer) plus its stable name/id. This is the single source device.Up and the Bind consume so back-compat lives in exactly one place.
+- acceptance: "Unit test: for a single-peer config the helper returns the top-level psk; for a multi-peer config it returns each peer's own psk and its name/id; ordering is stable and matches cfg.WireGuard.Peers. `go test ./internal/config/...` passes."
+- suggestedModel: standard
+- dependsOn: ["T80"]
+- ledgerRefs: ["goals:G4"]
+
+## M24
+
+### T83 — planned
+
+- createdAt: 2026-07-13T22:27:30.808Z
+- updatedAt: 2026-07-13T22:35:42.097Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Introduce peerState and key Multipath state by peer
+- description: "In internal/bind, introduce a peerState type holding the fields that are singletons today: virt (*udpEndpoint), outerSeq, scheduler, fecSend/fecRecv, resequencer (atomic.Pointer), reflector, sendCodec, the peer's path/remote view, and probers. ALSO split pathState (multipath.go:81) into SHARED per-socket state (name, id, src, conn, readLoop, deferred-path machinery) and per-(peer,path) state (codec, remote/hasRemote, prober, txBytes/rxBytes) — concentrator sockets are SHARED across peers while each peer owns its return-path/remote view, so the decomposition must be explicit. RUNTIME PATH MUTATION IS IN SCOPE (R72): the live dynamic-path machinery (deferred paths, internal/bind/runtime_path_test.go, tolerant_membership_test.go) operates on the SHARED socket state, so adding or removing a shared path at runtime must instantiate/tear down the per-(peer,path) state (codec, remote/hasRemote, prober, txBytes/rxBytes) for EVERY currently-bound peer — design the split so this fan-out has a single owner and is exercised while >=2 peerStates exist. Change Multipath to hold the shared path list plus a map keyed by peer id/name plus the lookup maps needed later (endpoint->peer, source->peer placeholders). Construct EXACTLY ONE peerState on the single-peer path so behavior is byte-identical. Preserve the m.mu discipline and the lock-free receive fast path (resequencer/fecRecv stay atomic.Pointer per peer). Keep the conn seam isolated to internal/bind/bind.go."
+- acceptance: "`go build ./...` succeeds and the full existing internal/bind test suite passes unchanged (single-peer path proven behavior-preserving) — including the runtime-path suites (runtime_path_test.go, tolerant_membership_test.go). The former singleton fields are now reached through peerState; a grep shows no remaining process-global resequencer/outerSeq/scheduler on Multipath; per-(peer,path) state (remote/prober/tx/rx) is held off the shared socket state. A new unit test asserts that with two peerStates bound, adding a shared path at runtime creates per-(peer,path) state for BOTH peers and removing it tears down both peers' per-(peer,path) state, leaving each peer's remaining paths untouched."
+- suggestedModel: frontier
+- dependsOn: ["T82"]
+- ledgerRefs: ["goals:G4"]
+
+### T84 — planned
+
+- createdAt: 2026-07-13T22:27:42.661Z
+- updatedAt: 2026-07-13T22:27:42.661Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Derive per-peer frame Codec and Reflector from each peer PSK
+- description: Replace the single m.reflector/m.sendCodec with a per-peerState frame.Codec and telemetry.Reflector derived from that peer's effective PSK. Each path's receive Codec is the codec of the peer the path is bound to (a still-unbound path has no peer codec yet — that is the demux task's concern). Keep NewCodec/NewReflector PSK-derivation unchanged.
+- acceptance: "Unit test: two peerStates built from distinct psks produce codecs where one peer's Encode output fails the other's Decode (cross-psk frames are rejected) and each Reflector only authenticates probes under its own psk. `go test ./internal/bind/... ./internal/telemetry/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T83"]
+- ledgerRefs: ["goals:G4"]
+
+### T85 — planned
+
+- createdAt: 2026-07-13T22:27:47.208Z
+- updatedAt: 2026-07-13T22:27:47.208Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Route Send to a peerState via a per-peer virtual endpoint map
+- description: Give each peer a distinct virtual endpoint (*udpEndpoint) and build an endpoint->peerState map. Change Send(bufs, ep) to resolve the peerState from ep and use THAT peer's outerSeq, scheduler, fecSend, sendCodec, and path/remote set — instead of the process-global singletons. Preserve the classifier and the m.mu-held path pick + lock-free txBytes accounting (now per-(peer,path)). An unknown endpoint returns the existing wrong-endpoint/no-path error rather than misrouting.
+- acceptance: "Bind test with two peers each holding a distinct virt endpoint: Send to peer A's endpoint advances ONLY peer A's outerSeq and egresses on A's path set; Send to peer B's endpoint is fully independent; a Send to an unknown endpoint errors and touches no peer. `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T83"]
+- ledgerRefs: ["goals:G4"]
+
+### T86 — planned
+
+- createdAt: 2026-07-13T22:27:51.291Z
+- updatedAt: 2026-07-13T22:27:51.291Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Demux receive delivery to per-peer resequencer under per-peer virt endpoint
+- description: "Keep a SINGLE engine-facing ReceiveFunc but make it drain EACH peer's resequencer and stamp each delivered inner datagram with that peer's stable virtual endpoint (per-packet endpoint fill), so the engine attributes return traffic to the right peer and Send routes replies back via that peer's virt (A1: one virtual endpoint per peer). handleInbound feeds a decoded DATA/PARITY frame into the resequencer/fecRecv of the peer the arriving path is bound to."
+- acceptance: "Bind test: interleaved DATA for two bound peers is delivered up with per-packet endpoints matching each peer, and each peer's resequencer orders its own outer-seq stream independently (no cross-peer frames observed in either resequencer). `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T83"]
+- ledgerRefs: ["goals:G4"]
+
+### T87 — planned
+
+- createdAt: 2026-07-13T22:27:59.938Z
+- updatedAt: 2026-07-13T22:27:59.938Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Preserve per-peer resequencer lifecycle and D32 rebaseline
+- description: "Make the per-Open (re)creation of the resequencer and fecSend/fecRecv, and the SetPeerRemote/Rebaseline D32 fix, operate per peerState rather than process-globally: a rebaseline or reconnect on one peer must never touch another peer's release point. Keep the disjoint-mutex, never-held-across-syscall discipline per peer."
+- acceptance: "Per-peer resequencer unit test: two interleaved outer-seq streams stay separated across an Open cycle; a Rebaseline() triggered on peer A leaves peer B's `next`/release point untouched (the D32-class regression, now per-peer). `go test ./internal/bind/... ./internal/reseq/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T86"]
+- ledgerRefs: ["goals:G4"]
+
+## M25
+
+### T88 — planned
+
+- createdAt: 2026-07-13T22:28:09.005Z
+- updatedAt: 2026-07-13T22:28:09.005Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Bind source->peer only via authenticated PROBE with trial-decode across peer PSKs
+- description: "Build the authenticated path->peer binding: an inbound PROBE from an unbound source is trial-decoded against each configured peer's psk-derived codec/reflector (O(peers), bounded by the static peer count), and on the first successful MAC verification the source address is bound to that peer (source->peer map). Only an authenticated PROBE ever establishes a binding; unauthenticated frames verify under no psk and are dropped cheaply. No DATA/PARITY wire change; no peer id in DATA."
+- acceptance: "Unit test: a PROBE encoded under peer B's psk from a fresh source binds that source to B (and reflects an echo); a forged/garbage frame verifies under no peer psk and establishes no binding; trial-decode stops at the first matching psk. `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T84","T85"]
+- ledgerRefs: ["goals:G4"]
+
+### T89 — planned
+
+- createdAt: 2026-07-13T22:28:18.062Z
+- updatedAt: 2026-07-13T22:35:33.782Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Gate DATA/PARITY from unbound sources
+- description: In handleInbound, drop DATA/PARITY arriving from a source with no established source->peer binding (never attribute it to any peer's resequencer/fecRecv). Once an authenticated PROBE binds the source, subsequent DATA/PARITY from it route to that peer. Rely on WG handshake/keepalive retransmit to cover the brief pre-binding gap.
+- acceptance: "Test: DATA from an unbound source reaches NO resequencer (dropped); after an authenticated PROBE binds that source to peer B, subsequent DATA lands in B's resequencer only. `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T88","T86"]
+- ledgerRefs: ["goals:G4"]
+
+### T90 — planned
+
+- createdAt: 2026-07-13T22:28:29.503Z
+- updatedAt: 2026-07-13T22:28:29.503Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Re-bind a roamed source to its peer on a fresh authenticated PROBE
+- description: "Handle NAT/roaming: when a bound peer's traffic appears from a NEW source address, the new source re-binds to the SAME peer only on a fresh authenticated PROBE from it. Until then, DATA from the new source is dropped (never misrouted into another peer's resequencer). Mirror the existing D11/T16 authenticated-re-learn discipline, now per peer."
+- acceptance: "Roam test: peer B's source changes; B's DATA from the new source is dropped until an authenticated PROBE under B's psk re-binds it, after which it routes to B; throughout, peer A's resequencer never observes any of B's frames. `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T89"]
+- ledgerRefs: ["goals:G4"]
+
+### T91 — planned
+
+- createdAt: 2026-07-13T22:28:36.021Z
+- updatedAt: 2026-07-13T22:28:36.021Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Cap provisional unbound-source demux state; lazy peerState instantiation and dead-peer teardown
+- description: "Bound the bootstrap DoS surface and pin the per-peer lifecycle (Q26): cap the provisional/unbound-source tracking state (small, drop-on-exhaustion) separately from the steady-state peerState map, which is sized to the static configured peer set. Instantiate the HEAVY per-peer state (the ~2048-frame resequencer ring, FEC encoder/decoder, scheduler, per-(peer,path) probers) LAZILY on first authenticated source->peer binding rather than at Open; tear it down when that peer's WG session/liveness is gone (wired from device peer events), freeing the ring and FEC buffers; a torn-down configured peer re-instantiates cleanly on its next authenticated PROBE. On cap exhaustion, drop new unbound-source state; NOTHING ever evicts a LIVE peer."
+- acceptance: "Tests (fake clock where needed): a flood of many distinct spoofed unbound source addresses cannot grow demux state past the configured cap and cannot evict or disturb a live bound peer; peerState heavy fields are absent before first authenticated binding, instantiated on binding, torn down after session/liveness loss, and re-instantiate + pass traffic on re-bind; a live (Up) peer is never torn down regardless of other peers' churn. `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T89"]
+- ledgerRefs: ["goals:G4"]
+
+### T92 — planned
+
+- createdAt: 2026-07-13T22:28:47.652Z
+- updatedAt: 2026-07-13T22:28:47.652Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Enforce and test cross-peer isolation threat model
+- description: "Codify Q27: with distinct per-peer psks, a party knowing only peer B's psk can bind/disturb ONLY peer B and can never alter peer A's binding, resequencer, FEC, or scheduling; a party with no valid psk is limited to bounded, capped bootstrap-latency degradation and can neither corrupt a peer's stream nor evict a live peer. Add the adversary-case tests that make the e2e isolation claim concrete at the unit level (forged DATA floods on a bound source, replayed/mutated PROBEs, outer-seq discontinuity storms, FEC garbage — victim-peer stream integrity asserted before/during/after each attack)."
+- acceptance: "Threat-model test: frames authenticated under B's psk cannot move A's source->peer binding or inject into A's resequencer; unauthenticated floods cause no cross-peer corruption and no live-peer eviction; a forged PROBE under a WRONG psk from a bound source neither re-binds nor unbinds it. `go test ./internal/bind/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T90","T91"]
+- ledgerRefs: ["goals:G4"]
+
+## M26
+
+### T93 — planned
+
+- createdAt: 2026-07-13T22:28:58.271Z
+- updatedAt: 2026-07-13T22:35:48.942Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Wire per-peer prober sets, schedulers, and virtual endpoints in device.Up
+- description: "In internal/device, extend buildScheduler/Up so the concentrator builds per-peer wiring: one prober set + scheduler + stable virtual endpoint per configured peer (each peer's probers/reflector keyed on that peer's effective PSK from the config helper), and programs the Bind's receive demux from authenticated peer bindings. Make bind.ProberFactory per-peer (R72): today the factory returned by buildScheduler (internal/device/device.go:577) closes over the single cfg.PSK; replace it so a prober created for a (peer,path) pair keys on THAT peer's effective PSK, and so a RUNTIME-added path gains a prober per bound peer (and a removed path tears each bound peer's per-(peer,path) prober down) — the runtime path add/remove flow must work while >=2 peers are bound. Report each peer's stable virt endpoint to the engine (A1); map WG peer public keys to bind peer identities so uapiConfig (device.go:706) and the Bind agree on the peer set. Keep the single-peer path structurally identical to today. Keep startHubFailover edge-only and unchanged."
+- acceptance: "`go build ./...`; a device-level test brings up a 2-peer concentrator config yielding two peerStates each with its own prober set/scheduler/virt endpoint; a single-peer concentrator config produces exactly one peerState and unchanged wiring; uapiConfig golden output for existing single-peer fixtures is byte-identical. A runtime-path test adds a path while 2 peers are bound and asserts each bound peer gains a prober keyed on its OWN PSK for the new path, and path removal tears down each peer's per-(peer,path) prober; the existing runtime-path suites (internal/bind/runtime_path_test.go, tolerant_membership_test.go) still pass. `go test ./internal/device/...` passes."
+- suggestedModel: frontier
+- dependsOn: ["T85","T86","T88"]
+- ledgerRefs: ["goals:G4"]
+
+### T94 — planned
+
+- createdAt: 2026-07-13T22:29:07.891Z
+- updatedAt: 2026-07-13T22:29:07.891Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add per-peer label to /metrics path, resequencer, and FEC series
+- description: In internal/device/metrics.go + internal/metrics, add a `peer` label (keyed on the config peer name) to wanbond_path_* and the per-peer resequencer/FEC series, sourced from the per-peer snapshots. Keep single-peer exposition back-compatible (omit the label or emit a stable default) so existing single-peer scrapes/series are unchanged — pick ONE rule and document it in the metrics package comment. Per-path throughput derivation keys its last-sample map by (peer,path) so rates stay correct. Cardinality is bounded by the static peer set.
+- acceptance: "metrics adapter unit test: a 2-peer exposition carries distinct `peer` labels on path/resequencer/FEC series attributable to each edge with independent counters and correct per-(peer,path) rates; a single-peer exposition is byte-compatible with today's series. `go test ./internal/device/... ./internal/metrics/...` passes."
+- suggestedModel: standard
+- dependsOn: ["T93"]
+- ledgerRefs: ["goals:G4"]
+
+## M27
+
+### T95 — planned
+
+- createdAt: 2026-07-13T22:29:18.595Z
+- updatedAt: 2026-07-13T22:29:18.595Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add per-peer resequencer unit test for interleaved outer-seq isolation
+- description: "Add the focused unit test asserting two peers' independent outer-seq spaces never interleave into one release window (the core D32-class guarantee at unit level): feed two interleaved outer-seq streams and assert each peer's resequencer releases only its own stream in order, with no cross-peer drops/reorders."
+- acceptance: "`go test ./internal/bind/... -run PerPeerReseqIsolation` (or equivalent) passes: two interleaved streams stay fully separated; neither peer's resequencer records suspect/late drops caused by the other."
+- suggestedModel: standard
+- dependsOn: ["T87"]
+- ledgerRefs: ["goals:G4"]
+
+### T96 — planned
+
+- createdAt: 2026-07-13T22:29:22.171Z
+- updatedAt: 2026-07-13T22:29:22.171Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Re-run FEC prefix-stability and FEC suite after per-peer FEC split
+- description: "Confirm the per-peer fecSend/fecRecv split preserves the Reed-Solomon invariants: run TestKlauspostParityPrefixStableInvariant and the FEC datapath suite, and add a per-peer FEC recovery assertion (one peer's parity never reconstructs into another peer's decoder). Fix any regression surfaced."
+- acceptance: "`go test ./internal/... -run FEC` and TestKlauspostParityPrefixStableInvariant pass; a new assertion shows peer A's parity shards never feed peer B's decoder."
+- suggestedModel: standard
+- dependsOn: ["T87"]
+- ledgerRefs: ["goals:G4"]
+
+### T97 — planned
+
+- createdAt: 2026-07-13T22:29:36.024Z
+- updatedAt: 2026-07-13T22:29:36.024Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add netns e2e proving 2+ edges to one concentrator stay isolated
+- description: "Add a netns e2e (test/e2e, appropriate build tag) with 2+ edges each bonded across its own uplinks to one concentrator: assert each edge's traffic resequences independently; one edge's loss/reorder/restart does not corrupt another edge's stream; return traffic routes to the correct edge; edge A NAT-rebind (source move) recovers via PROBE re-bind while B is unaffected; and a spoofed unbound-source flood degrades only bootstrap latency without cross-peer corruption or live-peer eviction (the threat model, end to end). Scrape the concentrator /metrics and assert per-peer-labeled series for both names. Follow the existing thresholds.go discipline; report-only where absolute numbers apply (M10/Q12)."
+- acceptance: "`go test -tags e2e ./test/e2e -run MultiPeer` passes on both e2e hosts (aarch64 + amd64): two edges' inner streams verify independently; killing+restarting edge A leaves edge B's tunnel uninterrupted; per-peer /metrics attribute traffic to the correct edge; the existing single-peer e2e tests still pass unchanged."
+- suggestedModel: frontier
+- dependsOn: ["T92","T93","T94"]
+- ledgerRefs: ["goals:G4"]
+
+### T98 — planned
+
+- createdAt: 2026-07-13T22:29:48.172Z
+- updatedAt: 2026-07-13T22:29:48.172Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Sync AGENTS.md, design/install/README docs and example config for multi-peer
+- description: "Update docs in the same feature change (per AGENTS.md doc-sync rule): AGENTS.md invariants (A1 now literally one-virtual-endpoint-per-peer), docs/design.md (per-peer PSK enabler, authenticated path->peer demux, bootstrap/roaming/limits, threat model), docs/install.md + README.md (multi-peer concentrator operation, per-peer psk/name, single-peer back-compat), and wanbond.example.toml (a commented multi-peer stanza with per-peer psk+name). Explicitly document that the plural [[wireguard.peers]] concentrator schema is now supported."
+- acceptance: Docs describe the per-peer model, the demux/threat model, and the single-peer back-compat rule; wanbond.example.toml contains a working multi-peer example that parses via the config test suite; `go build ./...` and the docs/link checks are unaffected; grep finds no stale claim that the concentrator supports only one peer.
+- suggestedModel: fast
+- dependsOn: ["T97"]
+- ledgerRefs: ["goals:G4"]
+
+### T99 — planned
+
+- createdAt: 2026-07-13T22:29:52.474Z
+- updatedAt: 2026-07-13T22:29:52.474Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Run full suite and capture report-only 2-edge real-link check
+- description: Run the full go test suite green, and (per the M10/Q12 report-only discipline) capture a 2-edge realhosts run against the o3.7mind.io + llm-ubuntu-0 hosts if infra is available — absolute numbers report-only, asserting only per-peer isolation qualitatively (each edge healthy independently). If the two-host inventory cannot realize two genuinely distinct edges plus a concentrator, document precisely WHY (host/network topology constraint) and what inventory would suffice, instead of forcing a degenerate setup.
+- acceptance: "`go test ./...` is green; EITHER a report-only 2-edge real-link run is captured (per-peer isolation observed; numbers report-only) OR the deferral/infeasibility is documented with the concrete topology constraint and required inventory."
+- suggestedModel: standard
+- dependsOn: ["T97"]
+- ledgerRefs: ["goals:G4"]

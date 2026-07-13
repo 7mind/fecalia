@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 22
+  item: 27
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -167,3 +167,42 @@ archives:
 - title: G5 DNS verification, DPI posture, and docs
 - description: "Work milestone 3/3 for goal G5: the Q36 acceptance bar — DPI-posture guard tests (opt-in OFF ⇒ zero DNS + unchanged wire audit, Q29/Q33), the netns dial-by-name / mid-session-IP-change e2e, the cross-controller race coverage, the report-only realhosts stretch, and the AGENTS.md docs/example-config sync."
 - dependsOn: ["M21"]
+
+### M23 — open
+
+- createdAt: 2026-07-13T22:26:21.605Z
+- updatedAt: 2026-07-13T22:26:21.605Z
+- title: Per-peer PSK and peer-identity config surface
+- description: "Work milestone 1/5 for goal G4 (multi-peer concentrator): per-peer psk + name fields on [[wireguard.peers]] with top-level-psk single-peer back-compat, pairwise-distinctness validation, edge-role rejection, and the effective-PSK resolution helper (Q22/Q21/Q28)."
+
+### M24 — open
+
+- createdAt: 2026-07-13T22:26:28.802Z
+- updatedAt: 2026-07-13T22:26:28.802Z
+- title: "Bind: de-singleton the multipath datapath into per-peer state"
+- description: "Work milestone 2/5 for goal G4: structural, behavior-preserving de-singletoning of internal/bind/multipath.go — peerState (virt/outerSeq/scheduler/fec/resequencer/reflector/codec), the shared-socket vs per-(peer,path) pathState split, per-peer Send routing, single ReceiveFunc draining all peers under per-peer virtual endpoints (A1 literal), per-peer resequencer lifecycle + D32 rebaseline isolation."
+- dependsOn: ["M23"]
+
+### M25 — open
+
+- createdAt: 2026-07-13T22:26:38.032Z
+- updatedAt: 2026-07-13T22:26:38.032Z
+- title: Authenticated path->peer binding, bootstrap, roaming, and limits
+- description: "Work milestone 3/5 for goal G4: the security crux — source->peer binding established ONLY by an authenticated PROBE (trial-decoded across per-peer PSKs), DATA/PARITY gated on unbound sources, PROBE-only roam re-bind, capped provisional demux state with lazy per-peer instantiation + dead-peer teardown, and executable cross-peer isolation threat-model tests (Q23–Q27). No wire change."
+- dependsOn: ["M24"]
+
+### M26 — open
+
+- createdAt: 2026-07-13T22:26:45.887Z
+- updatedAt: 2026-07-13T22:26:45.887Z
+- title: Device wiring and per-peer metrics
+- description: "Work milestone 4/5 for goal G4: composition root — device.Up builds per-peer prober sets/schedulers/virtual endpoints from the effective-PSK helper and programs the Bind demux; /metrics gains a peer label keyed on the config peer name with single-peer back-compat (Q28). Edge role byte-identical (Q21)."
+- dependsOn: ["M25"]
+
+### M27 — open
+
+- createdAt: 2026-07-13T22:26:52.579Z
+- updatedAt: 2026-07-13T22:26:52.579Z
+- title: Multi-peer isolation tests, invariants, and docs
+- description: "Work milestone 5/5 for goal G4: verification at all altitudes — per-peer resequencer isolation unit test, 2+ edge netns e2e, FEC prefix-stability invariant re-check after the per-peer FEC split, docs/example-config sync per AGENTS.md, and the report-only 2-edge real-link check (M10/Q12 discipline)."
+- dependsOn: ["M26"]

@@ -99,12 +99,12 @@ archives: []
 
 ## M18
 
-### G4 — clarifying
+### G4 — planned
 
 - createdAt: 2026-07-13T20:56:20.857Z
-- updatedAt: 2026-07-13T21:01:25.591Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- updatedAt: 2026-07-13T22:40:39.203Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Multi-peer (hub-and-spoke) concentrator support
 - description: |
     GOAL: let one wanbond concentrator process terminate MANY edges concurrently — each edge bonded across its own uplinks, with per-peer isolation of resequencing/FEC/scheduling and correct per-peer return routing — while preserving all load-bearing invariants.
@@ -129,8 +129,10 @@ archives: []
     NON-GOALS: mesh/anycast; edge-side simultaneous multi-concentrator aggregation; changing the single-engine-per-process model; any DPI/obfuscation change.
     
     TESTING DIRECTION: netns e2e with 2+ edges to one concentrator proving per-peer isolation (each edge's traffic resequences independently; one edge's loss/reorder/restart does not corrupt another's stream; return traffic routes to the correct edge); a per-peer resequencer unit test (two interleaved outer-seq streams stay separated); realhosts extension if feasible. Report-only real-link where absolute numbers apply, per the existing M10/Q12 discipline.
-- sessionLogs: [".cq/logs/20260713-210054-acde8de5f9cf22718.md"]
-- rawLogs: [".cq/logs/raw/20260713-210054-acde8de5f9cf22718.jsonl"]
+- sessionLogs: [".cq/logs/20260713-210054-acde8de5f9cf22718.md",".cq/logs/20260713-223042-a2b09d2ae330ca1d8.md",".cq/logs/20260713-223042-a2c165322dcecdcd0.md",".cq/logs/20260713-223626-a79ddfeb2486cc79e.md",".cq/logs/20260713-224024-ac5e7e9c498fab1f8.md"]
+- rawLogs: [".cq/logs/raw/20260713-210054-acde8de5f9cf22718.jsonl",".cq/logs/raw/20260713-223042-a2b09d2ae330ca1d8.jsonl",".cq/logs/raw/20260713-223042-a2c165322dcecdcd0.jsonl",".cq/logs/raw/20260713-223626-a79ddfeb2486cc79e.jsonl",".cq/logs/raw/20260713-224024-ac5e7e9c498fab1f8.jsonl"]
+- milestones: ["M23","M24","M25","M26","M27"]
+- grounding: "Synthesized from 2 configured candidate planners (opus, fable; generate-N-then-judge per Q100/Q101; base = opus's 5-milestone/20-task candidate for its finer per-task testability, D32-per-peer isolation task, and the FEC prefix-stability invariant re-check the goal mandates; folded in from fable: the explicit pathState split into SHARED socket state vs per-(peer,path) codec/remote/prober/tx/rx — concentrator sockets are shared across peers — plus edge-role-with->1-peer rejection (Q21), uapiConfig golden byte-identity acceptance, (peer,path)-keyed metrics rate maps, and lazy per-peer state instantiation). Repo facts shaping the plan: internal/bind/multipath.go holds the process singletons (virt, resequencer atomic.Pointer, outerSeq, scheduler, fecSend/fecRecv, reflector, sendCodec, paths, defaultRemote, probers); Send(bufs, ep) picks path/outerSeq/fecSend under m.mu; handleInbound learns a path's return remote ONLY from an authenticated frame.Probe (ps.setRemote — the D9/D11 discipline); ONE engine-facing ReceiveFunc drains the shared resequencer. device.go buildScheduler builds one Prober per path and one NewMultipath; uapiConfig already ranges over all cfg.WireGuard.Peers (the plural schema exists but the Bind is single-peer). config.Config.PSK is top-level-only; config.Peer has no psk/name. metricsSource has no peer dimension. frame Codec / telemetry Reflector / Prober are all PSK-derived, so per-peer PSK naturally yields per-peer codec/reflector/probers, enabling authenticated trial-decode demux (Q24) with no wire change (Q23). Design keeps a SINGLE ReceiveFunc that stamps each delivered inner datagram with its peer's virtual endpoint (A1 literally per-peer) and demuxes Send via an endpoint->peerState map — no per-peer receive goroutines. Sharpest design point: the shared-socket vs per-(peer,path) path/remote model, isolated in M24/M25 where it is unit-testable before the e2e locks it in."
 
 ## M19
 

@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 5
+  item: 6
 archives: []
 ---
 
@@ -69,3 +69,15 @@ archives: []
 - headline: "plan review: approved"
 - rationale: "Unanimous reviewer go-ahead (R71, 2-reviewer panel round 2): plan for optional DNS concentrator endpoints judged fine-grained, correctly sequenced, testable, grounded, and complete against Q29-Q36."
 - ledgerRefs: ["goals:G5"]
+
+## M18
+
+### K6 — locked
+
+- createdAt: 2026-07-13T22:39:38.046Z
+- updatedAt: 2026-07-13T22:39:38.046Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "plan review: approved"
+- rationale: "Unanimous reviewer go-ahead (R73, round 2, opus+fable): both R72 criticisms resolved; 20-task DAG across M23-M27 judged fine-grained, sequenced, testable, grounded, complete."
+- ledgerRefs: ["goals:G4"]
