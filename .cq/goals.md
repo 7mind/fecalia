@@ -179,7 +179,7 @@ archives: []
 ### G6 — clarifying
 
 - createdAt: 2026-07-13T22:50:11.848Z
-- updatedAt: 2026-07-13T22:50:11.848Z
+- updatedAt: 2026-07-13T22:56:42.237Z
 - author: fable-5
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - title: "Production-edge operability & full-tunnel hardening: improvements + docs from the first real deploy (wanbond-fixes.md)"
@@ -215,3 +215,5 @@ archives: []
     TESTING DIRECTION: unit tests for the bind-mode toggle (I5) and metrics (I2); netns e2e for link-up (I1), session-established signal timing, and full-tunnel mode (I6, once D35 unwedges); realhosts/report-only where absolute behavior needs real WANs, per the M10/Q12 discipline. Doc recipes validated against a NetworkManager host where practical (the production Pi validated the current workarounds).
 - sourceRefs: ["wanbond-fixes.md","docs/install.md","docs/design.md"]
 - tags: ["production-deploy","operability","docs"]
+- sessionLogs: [".cq/logs/20260713-225618-a6491a1ae0266d482.md"]
+- rawLogs: [".cq/logs/raw/20260713-225618-a6491a1ae0266d482.jsonl"]

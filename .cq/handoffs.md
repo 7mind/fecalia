@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 14
+  item: 15
 archives: []
 ---
 
@@ -206,3 +206,18 @@ archives: []
 - ledgerRefs: ["goals:G5"]
 - sessionLogs: [".cq/logs/20260713-215726-ad0c63b3749a28ff8.md",".cq/logs/20260713-215726-a3a1678fe42741a52.md",".cq/logs/20260713-220328-a45a9b222054d0d22.md",".cq/logs/20260713-220328-ab541f9aa587c0050.md",".cq/logs/20260713-220647-a5fce4a23176a911e.md",".cq/logs/20260713-221057-abf3d4747c8c2d97a.md",".cq/logs/20260713-221057-ab6ff041b6c4fdf2b.md",".cq/logs/20260713-221230-a1d2bf0c3d369b9bf.md"]
 - rawLogs: [".cq/logs/raw/20260713-215726-ad0c63b3749a28ff8.jsonl",".cq/logs/raw/20260713-215726-a3a1678fe42741a52.jsonl",".cq/logs/raw/20260713-220328-a45a9b222054d0d22.jsonl",".cq/logs/raw/20260713-220328-ab541f9aa587c0050.jsonl",".cq/logs/raw/20260713-220647-a5fce4a23176a911e.jsonl",".cq/logs/raw/20260713-221057-abf3d4747c8c2d97a.jsonl",".cq/logs/raw/20260713-221057-ab6ff041b6c4fdf2b.jsonl",".cq/logs/raw/20260713-221230-a1d2bf0c3d369b9bf.jsonl"]
+
+## M29
+
+### HO15 — answers-required
+
+- createdAt: 2026-07-13T22:57:09.533Z
+- updatedAt: 2026-07-13T22:57:09.533Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- summary: "/cq:plan:advance G6 (standalone) stopped at awaiting-answers. First planner pass on the fresh clarifying goal G6 (wanbond-fixes.md production lessons: improvements I1-I8 + docs C1-C6) filed the initial clarifying batch Q37-Q43 under M29: (Q37) defect-gating/sequencing vs D35-D40, (Q38) I7 tun-persistence code vs docs-only, (Q39) I8 bidirectional-standby-liveness here vs investigate-flow, (Q40) NM drop-in + oneshot packaged vs docs-only, (Q41) I6 default-route automation boundary, (Q42) I5 bind-mode config surface, (Q43) batch scope all-in-one vs must-have-first. The configured planner panel (opus+fable) was not fanned out: a clarifying goal with unanswered scope questions yields no candidates, so the question-filing step ran as the default single-planner pass (opus). Auto-investigate worklist EMPTY by ledger query: no actionable defect carries goals:G6 (the companion intake defects D35-D40 under M28 are deliberately unlinked and owned by investigate-flow; D41 belongs to G4's implement round). NEXT: answer Q37-Q43 in the TUI/web, then re-run /cq:plan:advance G6; run /cq:investigate (or /cq:advance) separately to start root-causing D35-D40."
+- flow: plan
+- ledgerRefs: ["goals:G6"]
+- blockingQuestions: ["Q37","Q38","Q39","Q40","Q41","Q42","Q43"]
+- sessionLogs: [".cq/logs/20260713-225618-a6491a1ae0266d482.md"]
+- rawLogs: [".cq/logs/raw/20260713-225618-a6491a1ae0266d482.jsonl"]
