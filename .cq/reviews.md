@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 50
+  item: 52
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -560,3 +560,16 @@ archives:
 - criticism: ["[r1 fable, resolved 5eee851] the residual-loss instrument (the P4 equal-masking signal) had ZERO non-vacuity coverage — a dead-low gauge or silently-unapplied netem passed P4 vacuously (no P3-style loss-took-effect teeth) — added a two-sided-mutation-verified bind-level residual test (0.25 unmasked/0.0 masked) + a per-phase loss-took-effect guard (edge probe loss ~= rate AND conc recovered-delta >= 20)","[r1 fable, resolved 5eee851] misleading TestP4AdaptiveFEC gating comment (claimed phases gate masking; actually the parent asserts both residuals then compares overhead) — corrected to match behavior","[r1 fable, resolved via hardware run] acceptance names a passing e2e run but the gate was compile-only — hardware-ran on llm-ubuntu-0: PASS (adaptive 0.40 overhead / 0.0000 residual vs fixed 0.60 / 0.0043)"]
 - new_questions: []
 - ledgerRefs: ["tasks:T29","tasks:T27","tasks:T24","goals:G1","defects:D25","defects:D26"]
+
+## M12
+
+### R51 — go-ahead
+
+- createdAt: 2026-07-13T13:48:19.737Z
+- updatedAt: 2026-07-13T13:48:19.737Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "G2 plan-review ROUND 1: GO-AHEAD. Plan (M13-M17, 16 tasks) is fine-grained, correctly sequenced, testable, grounded, complete, and CONSISTENT with Q17-Q20. Coverage: CORE-1 pacing = T52(measure BDP)/T53(wire SizePacingFromBDP from operator-DECLARED bandwidth, NOT auto-tuning, pacing stays default-DISABLED)/T56(document)/T61(ENABLED pacing: relative bufferbloat reduction + WG-rekey/probe survives saturation, no absolute gate). CORE-2 real-link = T58(aggregation ratio + loaded-RTT, report-only)/T63(mid-transfer WAN-kill link AND hub failover)/T64(short soak), all report-only per M10/Q12, liveness-only, NO absolute-number gate. CORE-3 runbook = T59(rollout runbook)/T65(automate P0 baseline)/T66(non-blocking exit + doc-sync sweep) - distinct deliverables, not double-covered. CORE-4 startup = T51(tolerant bind: EADDRNOTAVAIL via errors.Is NOT string-match; EADDRINUSE/perm stay fatal; zero-bindable fatal; malformed stays config-load error)/T55(background reconcile, -race no-goroutine-leak, Close-clean)/T60(netns e2e: absent-then-added survivor+deferred-join, zero-bindable non-zero exit, malformed config-error, T16 no-regression). Q17 CONTROL DORMANT honored - NO control milestone/task. Q18 hub-failover = edge-side ordered-endpoint active-standby EXACTLY (T54 ordered list / T57 all-paths-to-active-hub-DOWN detection + switch remote + WG re-handshake, NO hub-to-hub state, single-endpoint no-op / T62 netns). Q19 exit NON-BLOCKING (T66). Q20 pacing BOTH+declared (T53+T56). Sequencing correct: M15->M13, M16->M14+M15, M17->M13-16; task edges sound (T55->T51, T60->T51/T55, T57->T54/T51 cross-ms, T61->T52/T53, T63->T58/T57, T66->all leaves). Doc-sync notes present on every behavior/config-changing task (T51,T55,T53,T54,T57). ADVERSARIAL CHECKS PASSED: (a) no split-brain - single-edge active-standby with fresh WG session at standby, no hub state handoff; (b) flapping bounded - liveness hysteresis (DownAfter~1200ms, UpAfterSuccesses=3), no failback specified (flap-safe), and T62 acceptance ('traffic resumes via hub#2') backstops any failure to reset per-path liveness against the new endpoint; (c) no runtime pacing auto-tuning (T53 declared-only); (d) no absolute-number gate on report-only realhosts tier. Minor non-blocking observations left to implementer latitude (each backstopped by an acceptance test): T53 RTT-input source for SizePacingFromBDP under-specified (operator-declared per Q20); T57 all-paths-to-active-hub-DOWN cannot distinguish hub loss from total edge-uplink loss, but that yields only bounded harmless endpoint churn (wrap/stop per config) and is validated positively by T62. OUT-OF-SCOPE PRE-EXISTING DEFECT (file-and-defer, medium): cq.toml has a malformed reviewer/alias token 'frontier' (missing ':') - get_reviewers errors ('token \"frontier\" is not \"<harness>:<model>\"'), forcing UNCONFIGURED single-reviewer fallback, and the tasks' suggestedModel aliases (frontier/standard/fast) may not resolve at implement dispatch until cq.toml maps 'frontier' to a full '<harness>:<model>' token. Independent of the G2 plan content. Verdict: go-ahead."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G2"]
