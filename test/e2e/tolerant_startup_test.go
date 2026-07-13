@@ -129,12 +129,24 @@ func TestTolerantStartupDeferredPathPromotes(t *testing.T) {
 // TestTolerantStartupFastFailModes asserts the two edges tolerance must NOT paper
 // over: zero bindable paths (every source_addr unassignable) is a FATAL Open, and a
 // malformed source_addr is rejected at config LOAD, before the daemon ever attempts a
-// bind. Neither needs the netns/veth topology: both source addresses are TEST-NET-1
-// (never assignable on any real interface) or simply invalid syntax.
+// bind. Both run in the test-process network namespace (the TestMain re-exec unshared
+// it); neither needs the veth topology, since both source addresses are TEST-NET-1
+// (RFC 5737, never assignable on any real interface) or simply invalid syntax.
 func TestTolerantStartupFastFailModes(t *testing.T) {
 	bin := buildWanbond(t)
 
 	t.Run("zero_bindable_paths_is_fatal", func(t *testing.T) {
+		// Determinism (hardware-robustness fix): the zero-bindable premise is that
+		// BOTH source_addrs fail to bind, which holds ONLY when a non-local bind returns
+		// EADDRNOTAVAIL. A host with net.ipv4.ip_nonlocal_bind=1 (or permissive root)
+		// lets a non-local bind SUCCEED, so the two TEST-NET-1 addresses would BIND and
+		// the daemon would come UP — the exact false-negative observed on llm-ubuntu-0.
+		// Pin the sysctl to 0 in this (unshared) netns so both binds deterministically
+		// fail regardless of the host's default, making "zero paths bind -> fatal Open"
+		// reliable. disableNonlocalBind fails the test loudly if it cannot pin the value,
+		// so a permissive environment surfaces as a failure, never a false pass.
+		disableNonlocalBind(t)
+
 		cfg := writeT60EdgeConfig(t, fmt.Sprintf(`[[paths]]
 name = "a"
 source_addr = "%s"

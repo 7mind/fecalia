@@ -91,6 +91,20 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 	pid := strconv.Itoa(top.pid)
 	top.run("ip", "link", "set", "lo", "up")
 	top.nsenter("ip", "link", "set", "lo", "up")
+	// Pin net.ipv4.ip_nonlocal_bind=0 in the edge (test-process) network namespace, so
+	// a path whose source_addr is NOT assigned to any interface deterministically fails
+	// to bind (EADDRNOTAVAIL) instead of succeeding. That non-local-bind FAILURE is the
+	// premise the tolerant-startup tests (T60) rest on: a not-yet-assignable source_addr
+	// must DEFER (T51) and a config where NO path can bind must fail Open. A host that
+	// leaves the sysctl at 1 (or runs permissively) lets a non-local bind SUCCEED, which
+	// silently voids both premises (observed nondeterministic on a real host: a deferred
+	// path binding instead of deferring, or a zero-bindable daemon coming up). A fresh
+	// netns SHOULD default to 0, but pin it explicitly rather than trust the default.
+	// This affects ONLY non-local binds, so every other e2e test — which binds real,
+	// assigned addresses — is byte-for-byte unaffected. The concentrator netns needs no
+	// pin: every concentrator source_addr (concIP) IS assigned there (deferEdgeAddr only
+	// withholds the EDGE address), so the concentrator never binds a non-local address.
+	disableNonlocalBind(top.t)
 	for _, p := range top.paths {
 		// Idempotent pre-delete: the veth names are FIXED per path, so a prior subtest's
 		// teardown racing the kernel's async netns/veth reap can leave the edge veth behind,
@@ -237,6 +251,36 @@ func (top *Topology) Readdress(name, newEdgeIP string) {
 func (top *Topology) AddEdgeAddr(name string) {
 	p := top.path(name)
 	top.run("ip", "addr", "add", p.edgeIP+"/24", "dev", p.edgeVeth)
+}
+
+// nonlocalBindProc is the per-netns sysctl controlling whether a socket may bind a
+// source address that is NOT assigned to any local interface. 0 (the value the
+// tolerant-startup tests pin) makes such a bind fail EADDRNOTAVAIL; 1 lets it
+// succeed. It is a plain proc file, so it is written/read directly rather than via
+// the `sysctl` binary (one fewer external dependency).
+const nonlocalBindProc = "/proc/sys/net/ipv4/ip_nonlocal_bind"
+
+// disableNonlocalBind pins ip_nonlocal_bind=0 in the CURRENT (edge/test) network
+// namespace and asserts the value took, failing the test loudly if it cannot be set.
+// A hard failure here — rather than proceeding — is deliberate: the tolerant-startup
+// premise (a non-local bind must fail) is silently voided if the sysctl stays at 1,
+// so an un-pinnable environment must surface as a test failure, never a false pass.
+// os.WriteFile targets THIS process's netns, which is the edge/test namespace (the
+// TestMain re-exec unshared it), exactly where the not-yet-assignable source_addr
+// binds live. Writing a per-netns net sysctl needs the same privilege the fixture's
+// veth/netem setup already requires, so anywhere the netns tier runs, this succeeds.
+func disableNonlocalBind(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(nonlocalBindProc, []byte("0\n"), 0o644); err != nil {
+		t.Fatalf("pin %s=0: %v (the tolerant-startup tests need a non-local bind to fail EADDRNOTAVAIL; without this a permissive host silently voids the premise)", nonlocalBindProc, err)
+	}
+	got, err := os.ReadFile(nonlocalBindProc)
+	if err != nil {
+		t.Fatalf("read back %s: %v", nonlocalBindProc, err)
+	}
+	if v := strings.TrimSpace(string(got)); v != "0" {
+		t.Fatalf("%s = %q after pin, want 0 — a non-local bind would still succeed and void the zero-bindable/deferred premise", nonlocalBindProc, v)
+	}
 }
 
 // QdiscShow returns `tc qdisc show` for the named path (for assertions/debug).
