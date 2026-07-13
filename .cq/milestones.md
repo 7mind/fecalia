@@ -24,6 +24,16 @@ archives:
     summary: "G2/W2 pacing empirical sizing + BDP config wiring COMPLETE (CORE SCOPE 1, Q20=both). T52 capped-fixture BDP measurement (report-only), T53 wired SizePacingFromBDP into config load from operator-declared per-link bandwidth (load-time only, NOT runtime auto-tuning; pacing default-DISABLED), T56 operator tuning procedure (docs/install.md §3a + design.md; 1540B/frame), T61 ENABLED-pacing bufferbloat + no-rekey-starvation e2e (relative gate). All 4 tasks done, 4 reviews go-ahead (opus), merged to main (c803cb5 T53, b9f5983 T56, 40205c1 T61). HARDWARE-VALIDATED on llm-ubuntu-0 (amd64 4-vCPU): bufferbloat 208.5ms(unpaced)→0.5ms(paced) at 4Mbit cap; BDP=33241B (21.6 frames @1540B), SizePacingFromBDP→capacityFPS=4179.9 burstFrames=21.6 @50Mbit/5.2ms. Numbers fed to the T65 pilot runbook."
     title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
     status: done
+  - id: M16
+    path: ./archive/milestones/M16.md
+    summary: "G2/W4 real-link validation tier COMPLETE (CORE SCOPE 2, report-only). T58 aggregation-ratio + loaded-RTT/bufferbloat, T63 mid-transfer LINK + HUB failover, T64 short soak — all across llm-ubuntu-0 (amd64 NAT edge) <-> o3 (aarch64 public concentrator), all HARDWARE-VALIDATED. 3 tasks done, 3 reviews go-ahead (opus). Key real-link results: aggregation ratio ~0.25-0.46 (shared-physical-uplink topology, ratio<=1 EXPECTED — NOT a bandwidth-aggregation guarantee); bufferbloat 21-176ms under saturation (real-link variability); LINK failover ~1.4-1.5s, HUB failover ~1.7-2.1s with traffic RESUMED via standby (confirms the D32-fixed hub-failover data plane on a REAL cross-network link, 60-90 Mbit/s); short soak survived a WG rekey (0 path-down flaps). All o3-safe (reversible udp-scoped iptables, never deprovisioned; firewall fully restored each run)."
+    title: "G2/W4 — Real-link validation tier (CORE SCOPE 2: aggregation + loaded-RTT + WAN-kill + short soak, report-only)"
+    status: done
+  - id: M17
+    path: ./archive/milestones/M17.md
+    summary: "G2/W5 pilot runbook + non-blocking exit criterion + full doc-sync COMPLETE (CORE SCOPE 3, Q19). T59 rollout runbook (docs/runbook.md — key/PSK gen, both-ends config, standby-concentrator via ordered endpoints + shared WG key, D7/D8 firewall persistence, /metrics health checks), T65 `just p0-baseline` automating the P0 real-link baseline (HARDWARE-VALIDATED: PASS 286s, report emitted), T66 recorded the non-blocking pilot exit criterion (runbook §7: capped-fixture W2 + report-only real-link W4 sufficient to enter a supervised pilot; soak runs DURING the pilot) + full doc-sync removing stale not-yet-built phrasing across README/design/install/manual-checklist/runbook. 3 tasks done, 3 reviews go-ahead. All metric/config claims verified against source; no overclaim (aggregation documented as report-only, single-uplink topology)."
+    title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
+    status: done
 ---
 
 # milestones
@@ -120,19 +130,3 @@ archives:
 - title: "G2/W3 — Multi-concentrator hub-failover (Q18: edge-side ordered-endpoint active-standby)"
 - description: "Q18 IN-SCOPE. Bring hub-termination redundancy into the pilot via edge-side ORDERED-ENDPOINT ACTIVE-STANDBY: the edge holds an ordered list of concentrator (Peer) endpoints, detects hub loss (ALL paths to the active concentrator DOWN via the PROBE/liveness plane), switches the peer remote and triggers a WireGuard re-handshake to the next endpoint. NO hub-to-hub state handoff (fresh WG session at the standby); mesh/anycast ruled out by the SD-WAN non-goal. Netns e2e + report-only realhosts validation. Depends on W1 (shares internal/bind/multipath.go). Work milestone for goal G2 (coordination milestone M12)."
 - dependsOn: ["M13"]
-
-### M16 — open
-
-- createdAt: 2026-07-13T13:36:58.845Z
-- updatedAt: 2026-07-13T13:36:58.845Z
-- title: "G2/W4 — Real-link validation tier (CORE SCOPE 2: aggregation + loaded-RTT + WAN-kill + short soak, report-only)"
-- description: "CORE SCOPE 2. Extend the -tags realhosts tier (runner.go SSH + provision.go) across the two standing hosts (llm-ubuntu-0 amd64 symmetric-NAT edge <-> o3 aarch64 public concentrator) with: throughput-aggregation (bonded-vs-sum ratio) + loaded-RTT/bufferbloat under load; a deliberate mid-transfer WAN kill for link AND hub failover under real conditions; and a SHORT report-only soak. All report-only per M10/Q12 (no absolute-number gate). Hardware-validated on the standing hosts; exercises W2 pacing and W3 hub-failover. Depends on W2 + W3. Work milestone for goal G2 (coordination milestone M12)."
-- dependsOn: ["M14","M15"]
-
-### M17 — open
-
-- createdAt: 2026-07-13T13:37:05.088Z
-- updatedAt: 2026-07-13T13:37:05.088Z
-- title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
-- description: CORE SCOPE 3 + Q19. Automate the manual-checklist section-P0 real-link baseline into a repeatable pre-pilot procedure; write a rollout runbook (config/key/PSK generation, concentrator firewall persistence D7/D8, /metrics monitoring, health checks, standby-concentrator setup); record the NON-BLOCKING pilot exit criterion (capped-fixture aggregation/bufferbloat + report-only real-link smoke are SUFFICIENT to proceed; soak runs DURING the supervised pilot, not as a pre-gate); and do a full README/design.md/install.md/manual-checklist.md doc-sync sweep per AGENTS.md. Depends on W1-W4. Work milestone for goal G2 (coordination milestone M12).
-- dependsOn: ["M13","M14","M15","M16"]

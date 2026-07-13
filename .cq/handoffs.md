@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 10
+  item: 11
 archives: []
 ---
 
@@ -151,3 +151,16 @@ archives: []
 - flow: advance
 - ledgerRefs: ["goals:G1","defects:D7","defects:D8","tasks:T48","tasks:T42","tasks:T43","tasks:T44","tasks:T45","tasks:T46","tasks:T47","tasks:T49","tasks:T50"]
 - handoffReasons: ["drained: the deferred-defect hardening round is otherwise complete — 12 defects resolved (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28); T42-T50 built, reviewed (R42-R50), gated, -race-clean, merged; milestone M11 archived; all three P-predicates FALSE","user-action-required: D7 (live-apply portion) + D8 blocked solely on the manual o3 iptables dedup/persist/reboot ops (exact commands in this summary); o3 is a test host unreachable from the agent sandbox (Q14); every autonomous/repo-side step (T48) is merged"]
+
+## M12
+
+### HO11 — drained
+
+- createdAt: 2026-07-13T18:21:51.773Z
+- updatedAt: 2026-07-13T18:21:51.773Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "DRAINED. Goal G2 (production-readiness / pre-pilot hardening) — ALL 16 tasks T51-T66 done + hardware-validated; P-investigate/P-plan/P-implement all FALSE. Delivered: W1 startup path-availability resilience (M13: tolerant bind + background reconcile, T51/T55/T60); W2 pacing empirical sizing + BDP config wiring (M14 archived: T52/T53/T56/T61, bufferbloat 208->0.5ms hardware); W3 multi-concentrator hub failover (M15: ordered-endpoint active-standby T54/T57 + netns e2e T62); W4 real-link validation tier (M16 archived: aggregation+bufferbloat T58, mid-transfer LINK+HUB WAN-kill T63, short soak T64 — all across llm-ubuntu-0<->o3); W5 pilot runbook + non-blocking exit criterion + full doc-sync (M17 archived: T59/T65/T66). HEADLINE: the T62 hardware e2e caught a HIGH-SEV data-plane defect (D32) that unit tests + code review missed — after a concentrator failover the switch+re-handshake completed on the wire but the edge's receive resequencer dropped the standby hub's handshake-response (its outer-seq restarts near 1, below the release point the prior hub's traffic advanced to). Root-caused via instrumented hardware capture, fixed (Resequencer.Rebaseline() on the hub switch, c7f8421), and confirmed: hub-failover now resumes traffic via the standby in ~1.7-2.1s over a REAL cross-network link (13/13 + real-link passes). A fixture setup race (D33) was also found+fixed (26/26 clean). NON-BLOCKING PILOT EXIT CRITERION recorded (runbook §7): capped-fixture aggregation/bufferbloat (W2) + report-only real-link baseline (`just p0-baseline`, W4) are SUFFICIENT to enter a supervised pilot; the longer soak runs DURING the pilot. REMAINING (non-blocking, for the user): (1) two DEFERRED root-caused low-sev hardening defects — D30 (promoted/runtime paths forgo SO_BINDTODEVICE, losing T16 re-roam survival; pre-existing) and D34 (post-rebaseline resequencer could re-anchor to a prior-hub straggler; self-healing, did NOT trigger in 39 hardware runs) — these need a post-pilot fix/defer decision and BLOCK archival of M13/M15 (M14/M16/M17 archived). (2) Goal G2 stays `building` — goals never auto-close; the user closes it when satisfied. No open questions; no blocking user action for the autonomous flow."
+- flow: advance
+- ledgerRefs: ["goals:G2","defects:D30","defects:D34","tasks:T66"]
+- handoffReasons: ["drained"]

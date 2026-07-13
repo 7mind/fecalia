@@ -14,6 +14,16 @@ archives:
     summary: "G2/W2 pacing empirical sizing + BDP config wiring COMPLETE (CORE SCOPE 1, Q20=both). T52 capped-fixture BDP measurement (report-only), T53 wired SizePacingFromBDP into config load from operator-declared per-link bandwidth (load-time only, NOT runtime auto-tuning; pacing default-DISABLED), T56 operator tuning procedure (docs/install.md §3a + design.md; 1540B/frame), T61 ENABLED-pacing bufferbloat + no-rekey-starvation e2e (relative gate). All 4 tasks done, 4 reviews go-ahead (opus), merged to main (c803cb5 T53, b9f5983 T56, 40205c1 T61). HARDWARE-VALIDATED on llm-ubuntu-0 (amd64 4-vCPU): bufferbloat 208.5ms(unpaced)→0.5ms(paced) at 4Mbit cap; BDP=33241B (21.6 frames @1540B), SizePacingFromBDP→capacityFPS=4179.9 burstFrames=21.6 @50Mbit/5.2ms. Numbers fed to the T65 pilot runbook."
     title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
     status: done
+  - id: M16
+    path: ./archive/reviews/M16.md
+    summary: "G2/W4 real-link validation tier COMPLETE (CORE SCOPE 2, report-only). T58 aggregation-ratio + loaded-RTT/bufferbloat, T63 mid-transfer LINK + HUB failover, T64 short soak — all across llm-ubuntu-0 (amd64 NAT edge) <-> o3 (aarch64 public concentrator), all HARDWARE-VALIDATED. 3 tasks done, 3 reviews go-ahead (opus). Key real-link results: aggregation ratio ~0.25-0.46 (shared-physical-uplink topology, ratio<=1 EXPECTED — NOT a bandwidth-aggregation guarantee); bufferbloat 21-176ms under saturation (real-link variability); LINK failover ~1.4-1.5s, HUB failover ~1.7-2.1s with traffic RESUMED via standby (confirms the D32-fixed hub-failover data plane on a REAL cross-network link, 60-90 Mbit/s); short soak survived a WG rekey (0 path-down flaps). All o3-safe (reversible udp-scoped iptables, never deprovisioned; firewall fully restored each run)."
+    title: "G2/W4 — Real-link validation tier (CORE SCOPE 2: aggregation + loaded-RTT + WAN-kill + short soak, report-only)"
+    status: done
+  - id: M17
+    path: ./archive/reviews/M17.md
+    summary: "G2/W5 pilot runbook + non-blocking exit criterion + full doc-sync COMPLETE (CORE SCOPE 3, Q19). T59 rollout runbook (docs/runbook.md — key/PSK gen, both-ends config, standby-concentrator via ordered endpoints + shared WG key, D7/D8 firewall persistence, /metrics health checks), T65 `just p0-baseline` automating the P0 real-link baseline (HARDWARE-VALIDATED: PASS 286s, report emitted), T66 recorded the non-blocking pilot exit criterion (runbook §7: capped-fixture W2 + report-only real-link W4 sufficient to enter a supervised pilot; soak runs DURING the pilot) + full doc-sync removing stale not-yet-built phrasing across README/design/install/manual-checklist/runbook. 3 tasks done, 3 reviews go-ahead. All metric/config claims verified against source; no overclaim (aggregation documented as report-only, single-uplink topology)."
+    title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
+    status: done
 ---
 
 # reviews
@@ -645,61 +655,3 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T62 (hub-failover netns e2e) FINAL: APPROVE + HARDWARE-VALIDATED. Static review (round 1) approved the test as non-vacuous (iperf3 client in edge netns, server only in hub#2 netns, hub#1 L2-blackholed -> a transfer proves the standby switch + fresh re-handshake; guard test load-bearing via the 'hub failover:' journal-absence assertion; port 9099 collision-free; bounded/analytical waits). The e2e then did its JOB on hardware: it caught TWO real defects the unit tests + code review missed -- D32 (hub-failover data-plane: resequencer dropped the standby's handshake-response, tunnel never re-established) and D33 (fixture netns setup race). BOTH FIXED + hardware-confirmed: D32 (reseq re-baseline, c7f8421) -> StandbySwitch 13/13 PASS, RESUME_MS ~6.0-6.9s within the 10.2s window, traffic resumes via hub#2; D33 (retry the in-netns addr-add, merged into the test) -> 26/26 setups clean (0 failures vs prior ~13%). Merged to main (1f1cd04 test + c4e10a7 D33 fix). Full gate + go vet -tags e2e green. This task delivered exactly the pilot value of the report-only hardware tier: an e2e that surfaced a data-plane bug unit tests could not. 1 residual low-sev hardening defect (D34) filed + deferred (did not trigger in 39 hardware runs)."
 - ledgerRefs: ["tasks:T62"]
-
-## M16
-
-### R64 — go-ahead
-
-- createdAt: 2026-07-13T17:27:05.128Z
-- updatedAt: 2026-07-13T17:27:05.128Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T58 (realhosts aggregation-ratio + loaded-RTT bufferbloat) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): report-only discipline holds (every t.Fatal/t.Error is liveness/structural -- link-up, handshake, both-paths-up, positive throughput, positive parsed RTT; NO Mbit/s/ratio/ms gate, M10/Q12-compliant); D21 no-leak satisfied (startLoadFlow -t20 + ctx-bounded + t.Cleanup kill/pkill; iperf server unit torn down; preClean before); aggregation isolation real (scoped-blackhole the OTHER path's table + bounded wait-for-'down'); loaded ping overlaps the saturating flow; emitted weighted+pacing edge TOML verified against config.normalize/deriveWeightedPacingFromBDP (capfps=8333/burst=500 from 100Mbit/60ms); no o3-destructive op; vet/gofmt/go test green. HARDWARE (llm-ubuntu-0 x86_64 EDGE <-> o3 aarch64 PUBLIC concentrator): PASS 143.65s -- real cross-network tunnel up, per-path 38.68/20.23 Mbit/s, bonded 14.47, ratio 0.246 (shared-physical-uplink artifact, ratio<=1 EXPECTED + documented), idle RTT 28.9ms -> loaded 50.5ms (bufferbloat delta 21.55ms with pacing). Clean teardown on both hosts, no leaked flows. NOTE for T65 runbook: the realhosts topology shares ONE physical uplink per host (two source-IPs), so bonding shows no aggregation gain -- a genuine two-WAN deployment (separate physical links) is where aggregation applies; the realhosts tier cannot replicate two separate physical uplinks. Merged to main (with T58 cherry-pick)."
-- ledgerRefs: ["tasks:T58"]
-
-### R65 — go-ahead
-
-- createdAt: 2026-07-13T17:50:50.521Z
-- updatedAt: 2026-07-13T17:50:50.521Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T63 (realhosts mid-transfer WAN-kill: LINK + HUB failover) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): o3 SAFETY verified -- all 4 o3 iptables rules (2 DNAT, INPUT ACCEPT, raw DROP) are udp+port-scoped (51830/31/32, never tcp/22) with reversing cleanup registered BEFORE install (so a killed test still restores o3); no reboot/OCI/disk op; edge LINK DROP scoped to udp -s primaryIP -d concPubIP (SSH doubly-unmatched) + assertControlHostNotConcentrator fail-fast. Report-only (all 13 fatals liveness/structural; LINK/HUB_FAILOVER_MS logged only). NON-VACUOUS: LINK -- same spanning TCP flow survives active-source-IP egress DROP on the proven-up backup; HUB -- raw-PREROUTING DROP of portA (before nat DNAT) so 51832 survives, confirms to_index==1 switch AND actual resumed traffic (ping+bounded iperf). D21 leak-free; log parsers match real emitters (sched active_backup.go:269, failover.go:168). HARDWARE (llm-ubuntu-0 EDGE <-> o3 concentrator): TestRealMidTransferWANKill PASS 99.26s -- link_failover PASS (LINK_FAILOVER_MS=1441, spanning flow survived 46.87Mbit/s); hub_failover PASS (HUB_FAILOVER_MS=2062, traffic RESUMED via standby port 51832 at 90.16Mbit/s -- confirms the D32-fixed hub-failover data plane on a REAL cross-network link). Clean teardown both hosts, o3 firewall fully restored. Merged c4f2c3c. Cosmetic-only DNAT-string DRY note (non-blocking)."
-- ledgerRefs: ["tasks:T63"]
-
-### R66 — go-ahead
-
-- createdAt: 2026-07-13T17:51:05.371Z
-- updatedAt: 2026-07-13T17:51:05.371Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T64 (realhosts short report-only soak) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): report-only discipline holds (every fatal liveness/structural; mbps<=0 is the positive-throughput liveness clause; no Mbit/s/RTT/loss gate); D21 bounded/no-leak (flow -t=150s + ctx soakFlowTimeout=240s + t.Cleanup cancel/kill/pkill; iperf server stopUnit; preClean + full teardown); sampling loop deadline-bounded + each sample ctx-bounded + non-fatal; all 12 new symbols T64-unique (0 clash with smoke/multipath/aggregation siblings); rekey/liveness check meaningful (150s window spans ~120s WG rekey; multi-pronged completion+final-ping+path-not-down); o3-safe; vet -tags realhosts/gofmt/go test green. HARDWARE (llm-ubuntu-0 EDGE <-> o3 concentrator): TestRealSoakShort PASS 186.76s -- 2m30s window spanning the WG rekey, weighted+paced; tunnel stayed UP the whole window (0 path-down flaps), final in-tunnel RTT 29.1ms. Real-link observation for T65 runbook: under sustained 8-stream saturation, per-interval throughput dipped to 0 with a transient loss/RTT spike for ~2 samples around the rekey window (70-120s) then recovered -- paths stayed up, tunnel survived (report-only, self-recovered; a real-link saturation+rekey variability datapoint, NOT a failure). Clean teardown both hosts. Merged 7b37064."
-- ledgerRefs: ["tasks:T64"]
-
-## M17
-
-### R67 — go-ahead
-
-- createdAt: 2026-07-13T18:06:09.644Z
-- updatedAt: 2026-07-13T18:06:09.644Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T59 (pre-pilot rollout runbook, docs/runbook.md) review: APPROVE. Adversarial review (opus, 0 criticisms/questions/defects): NO invented symbols -- all 12 wanbond_* /metrics names in the runbook series table exist in internal/metrics/metrics.go; every config key matches config.go toml tags; PSK gen correct (keyLen=32, base64, 'head -c 32 /dev/urandom | base64', 0600); standby-concentrator narrative (ordered endpoints, shared WG static key, fresh session/no hub-to-hub handoff, resequencer rebaseline, WRAP end-of-list, single-endpoint no-op) matches design.md:219 + failover.go verbatim; firewall D7/D8 (iptables -C dedup guard + netfilter-persistent save + rules.v4) matches provision.go:210-224; install.md §3z exists (runbook retargeted to reference it); all intra-repo markdown links resolve. Covers all 6 required topics (key/PSK gen, both-ends config, standby-concentrator, firewall persistence, pacing opt-in, /metrics+health). build+gofmt clean. Docs-only; indexed from README + install.md. Merged b51a289."
-- ledgerRefs: ["tasks:T59"]
-
-### R68 — go-ahead
-
-- createdAt: 2026-07-13T18:06:29.183Z
-- updatedAt: 2026-07-13T18:06:29.183Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T65 (automate §P0 real-link baseline -> `just p0-baseline`) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): the just target ORCHESTRATES only the existing realhosts tests (-run '^(TestRealP0Smoke|TestRealAggregationBufferbloat|TestRealMidTransferWANKill)$' -- regex matches exactly the 3 funcs) and tees a timestamped report; NO absolute-number gate added (report-only/non-blocking per Q19); NO destructive step (underlying tests already o3-safe); all 4 env vars + /run/agenix/llm-ssh-key default exist in runner.go; manual-checklist §P0 anchor resolves; reports dir gitignored. build+gofmt clean, just -n p0-baseline expands. HARDWARE (llm-ubuntu-0 EDGE <-> o3 concentrator): `just p0-baseline` PASS 286s -- all 3 tests green, report emitted (test/realhosts/reports/p0-baseline-20260713T180022Z.log, 12880B). Baseline numbers: smoke RTT 32.8ms/TCP 29-53Mbit/UDP goodput 85Mbit; aggregation ratio 0.456 (shared-uplink), idle 31.8ms->loaded 207.5ms (bufferbloat 175.7ms, real-link congestion variability); LINK_FAILOVER 1487ms, HUB_FAILOVER 1706ms (resumed via standby portB 60.5Mbit -- confirms the D32-fixed hub-failover on the real link). Clean teardown both hosts, o3 firewall restored. Merged 929a15a."
-- ledgerRefs: ["tasks:T65"]
-
-### R69 — go-ahead
-
-- createdAt: 2026-07-13T18:19:13.473Z
-- updatedAt: 2026-07-13T18:19:13.473Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T66 (final G2 doc-sync + non-blocking pilot exit criterion) review: APPROVE (orchestrator verification; docs-only, terminal M17 task). Deliverable 1: docs/runbook.md §7 states the NON-BLOCKING exit criterion correctly (Q19) -- capped-fixture aggregation/bufferbloat (W2, TestFixtureImpairment netns) + report-only real-link baseline (W4, just p0-baseline) are SUFFICIENT to enter a supervised pilot; real-link numbers INFORMATIONAL (no Mbit/ms hard gate; a human makes the go/no-go); longer soak runs DURING the pilot, not as a pre-gate. Pointer in manual-checklist §P0. Deliverable 2: 7 stale 'not-yet-built' phrases fixed across README/design/install/manual-checklist/runbook (W1 reconcile T55, W2 pacing sizing T53/T56/T61, W3 hub failover+e2e T57/T62/T63), each verified against code by the worker; design.md 'Not yet built' now lists only genuinely-unbuilt items (live CONTROL protocol -- confirmed still dropped at multipath.go receive default; UDP-only non-goal; in-fixture CPU-bound measurement boundary). NO OVERCLAIM verified: design.md:402-405 explicitly documents the realhosts single-physical-uplink topology so the aggregation ratio is NOT presented as a bandwidth-aggregation guarantee; README marks aggregation 'not measured by the netns fixture'. Acceptance-grep: only legitimate hits remain (single-endpoint guard = correct behavior; p0-checkpoint.md frozen P0 history; design.md cross-refs to the retained section). Gate green (go build + gofmt, docs-only); all markdown links resolve. Merged to main."
-- ledgerRefs: ["tasks:T66"]

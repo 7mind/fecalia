@@ -24,6 +24,16 @@ archives:
     summary: "G2/W2 pacing empirical sizing + BDP config wiring COMPLETE (CORE SCOPE 1, Q20=both). T52 capped-fixture BDP measurement (report-only), T53 wired SizePacingFromBDP into config load from operator-declared per-link bandwidth (load-time only, NOT runtime auto-tuning; pacing default-DISABLED), T56 operator tuning procedure (docs/install.md §3a + design.md; 1540B/frame), T61 ENABLED-pacing bufferbloat + no-rekey-starvation e2e (relative gate). All 4 tasks done, 4 reviews go-ahead (opus), merged to main (c803cb5 T53, b9f5983 T56, 40205c1 T61). HARDWARE-VALIDATED on llm-ubuntu-0 (amd64 4-vCPU): bufferbloat 208.5ms(unpaced)→0.5ms(paced) at 4Mbit cap; BDP=33241B (21.6 frames @1540B), SizePacingFromBDP→capacityFPS=4179.9 burstFrames=21.6 @50Mbit/5.2ms. Numbers fed to the T65 pilot runbook."
     title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
     status: done
+  - id: M16
+    path: ./archive/tasks/M16.md
+    summary: "G2/W4 real-link validation tier COMPLETE (CORE SCOPE 2, report-only). T58 aggregation-ratio + loaded-RTT/bufferbloat, T63 mid-transfer LINK + HUB failover, T64 short soak — all across llm-ubuntu-0 (amd64 NAT edge) <-> o3 (aarch64 public concentrator), all HARDWARE-VALIDATED. 3 tasks done, 3 reviews go-ahead (opus). Key real-link results: aggregation ratio ~0.25-0.46 (shared-physical-uplink topology, ratio<=1 EXPECTED — NOT a bandwidth-aggregation guarantee); bufferbloat 21-176ms under saturation (real-link variability); LINK failover ~1.4-1.5s, HUB failover ~1.7-2.1s with traffic RESUMED via standby (confirms the D32-fixed hub-failover data plane on a REAL cross-network link, 60-90 Mbit/s); short soak survived a WG rekey (0 path-down flaps). All o3-safe (reversible udp-scoped iptables, never deprovisioned; firewall fully restored each run)."
+    title: "G2/W4 — Real-link validation tier (CORE SCOPE 2: aggregation + loaded-RTT + WAN-kill + short soak, report-only)"
+    status: done
+  - id: M17
+    path: ./archive/tasks/M17.md
+    summary: "G2/W5 pilot runbook + non-blocking exit criterion + full doc-sync COMPLETE (CORE SCOPE 3, Q19). T59 rollout runbook (docs/runbook.md — key/PSK gen, both-ends config, standby-concentrator via ordered endpoints + shared WG key, D7/D8 firewall persistence, /metrics health checks), T65 `just p0-baseline` automating the P0 real-link baseline (HARDWARE-VALIDATED: PASS 286s, report emitted), T66 recorded the non-blocking pilot exit criterion (runbook §7: capped-fixture W2 + report-only real-link W4 sufficient to enter a supervised pilot; soak runs DURING the pilot) + full doc-sync removing stale not-yet-built phrasing across README/design/install/manual-checklist/runbook. 3 tasks done, 3 reviews go-ahead. All metric/config claims verified against source; no overclaim (aggregation documented as report-only, single-uplink topology)."
+    title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
+    status: done
 ---
 
 # tasks
@@ -577,85 +587,3 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T57"]
-
-## M16
-
-### T58 — done
-
-- createdAt: 2026-07-13T13:42:19.742Z
-- updatedAt: 2026-07-13T17:27:12.155Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: "Realhosts tier: throughput-aggregation ratio + loaded-RTT (bufferbloat) across the two standing hosts"
-- description: "Extend the -tags realhosts tier (test/realhosts runner.go SSH + provision.go) to run across llm-ubuntu-0 (amd64 symmetric-NAT EDGE) <-> o3.7mind.io (aarch64 PUBLIC concentrator 89.168.124.91) and record: (1) per-path throughput and BONDED-vs-SUM aggregation ratio; (2) LOADED RTT vs idle RTT (bufferbloat) under sustained transfer, with pacing enabled using the W2 per-link bandwidth config (exercises T53). Report-only per M10/Q12 -- print/emit the numbers, assert only liveness (tunnel came up, transfer completed), NO absolute-number gate. Reuses the standing hosts' llm SSH key path; must not deprovision o3. This is the measurement the CPU-bound netns fixture cannot produce."
-- acceptance: "`just realhosts` (go test -tags realhosts) runs against the two standing hosts, brings up the bonded tunnel, and emits per-path throughput, bonded-vs-sum ratio, and idle-vs-loaded RTT to the test log; the test passes on liveness (no absolute-throughput assertion). Hardware-validated: attach a captured run log. `go vet -tags realhosts ./test/realhosts` clean."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T53"]
-
-### T63 — done
-
-- createdAt: 2026-07-13T13:43:06.136Z
-- updatedAt: 2026-07-13T17:51:11.527Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: "Realhosts tier: mid-transfer WAN kill for link AND hub failover under real conditions"
-- description: "Extend the realhosts tier (building on T58) with a deliberate MID-TRANSFER kill: (1) LINK failover -- drop one WAN path (iptables on the edge host) mid-transfer and confirm the transfer continues over the survivor path; (2) HUB failover -- exercise the Q18 active-standby switch (T57) by making the active concentrator endpoint unreachable (iptables on o3, live-firewall OK, never deprovision) and confirm the edge fails over to a standby endpoint and the transfer resumes. Report-only (M10/Q12): assert transfer resumes/completes, emit failover timing, NO absolute-number gate. Uses the llm SSH key; must not deprovision o3."
-- acceptance: "`just realhosts` runs the WAN-kill sub-tests against the standing hosts: transfer survives a mid-transfer single-link kill; transfer survives a mid-transfer active-concentrator kill by switching to a standby endpoint; failover timings emitted to the log. Passes on liveness (transfer completes). Hardware-validated: attach the captured run log."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T58","T57"]
-
-### T64 — done
-
-- createdAt: 2026-07-13T13:43:11.499Z
-- updatedAt: 2026-07-13T17:51:12.416Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: "Realhosts tier: short report-only soak across the two standing hosts"
-- description: "Add a SHORT report-only soak to the realhosts tier (building on T58): sustained transfer over the bonded tunnel across llm-ubuntu-0 <-> o3 for a bounded duration (minutes, not hours -- the long soak runs DURING the supervised pilot per Q19, not as a pre-gate), sampling throughput, RTT, loss, and rekey/liveness health over the window. Report-only per M10/Q12: emit the time series / summary, assert only that the tunnel stayed up and the transfer completed (no absolute-number gate). Must not deprovision o3."
-- acceptance: "`just realhosts` runs the bounded soak: tunnel stays up for the full window, transfer completes, and per-sample throughput/RTT/loss/health are emitted to the log. Passes on liveness only. Hardware-validated: attach the captured soak log."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T58"]
-
-## M17
-
-### T59 — done
-
-- createdAt: 2026-07-13T13:42:26.004Z
-- updatedAt: 2026-07-13T18:06:37.729Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: "Rollout runbook: config/key/PSK generation, firewall persistence, monitoring, standby-concentrator setup"
-- description: "Write the pre-pilot ROLLOUT RUNBOOK (docs, per CORE SCOPE 3): concentrator + edge config generation, WireGuard key + PSK generation, the already-done concentrator firewall persistence (D7/D8, reboot-persistent deduped iptables on o3), /metrics monitoring + health checks, and the STANDBY-CONCENTRATOR setup that the Q18 ordered-endpoint list (T53/T54) now enables. Documents the shipped pacing config key (T53) and concentrator-endpoint list (T54). Doc task; keep README/docs/install.md consistent."
-- acceptance: docs/install.md (or a new docs/runbook) contains a complete rollout runbook covering key/PSK generation, both-ends config, firewall persistence, monitoring, and standby-concentrator configuration; an operator can provision a fresh edge+hub pair by following it. Markdown links resolve; README indexes it.
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T53","T54"]
-
-### T65 — done
-
-- createdAt: 2026-07-13T13:43:27.916Z
-- updatedAt: 2026-07-13T18:06:38.642Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: Automate the manual-checklist section-P0 real-link baseline into a repeatable pre-pilot procedure
-- description: Turn the docs/manual-checklist.md section-P0 real-link baseline (currently manual steps) into a repeatable, mostly-automated pre-pilot procedure, reusing the realhosts harness/tooling extended in T58/T63 (runner.go SSH + provision.go against llm-ubuntu-0 <-> o3). Provide a single invocation (a just target or script) that provisions both ends, brings up the tunnel, runs the aggregation + loaded-RTT + link/hub failover smoke, and emits a baseline report. Keep it report-only (Q19 non-blocking). Update docs/manual-checklist.md so the P0 section points at the automated procedure (documenting any steps that remain manual).
-- acceptance: "A single documented command runs the P0 baseline end-to-end against the standing hosts and emits a baseline report (aggregation ratio, loaded RTT, failover smoke); docs/manual-checklist.md P0 section is updated to reference it. Hardware-validated: attach the captured baseline report. `go vet -tags realhosts ./test/realhosts` clean."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T58","T63"]
-
-### T66 — done
-
-- createdAt: 2026-07-13T13:43:45.246Z
-- updatedAt: 2026-07-13T18:19:18.696Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: Record non-blocking pilot exit criterion + full README/design.md/install.md/manual-checklist.md doc-sync
-- description: "Final documentation sweep for G2 (CORE SCOPE 3 + Q19). (1) Record the NON-BLOCKING pilot exit criterion explicitly: capped-fixture aggregation/bufferbloat measurement (W2) + report-only real-link smoke (W4) are SUFFICIENT to proceed to a supervised pilot; the longer soak runs DURING the pilot, not as a pre-gate. (2) Full doc-sync per AGENTS.md across README.md, docs/design.md ('Not yet built' L232-251 -- move the now-built items: startup resilience, pacing sizing, hub failover, real-link tier), docs/install.md, docs/manual-checklist.md, so no doc still describes these as unbuilt/deferred and the pacing config key + concentrator-endpoint list + tolerant-startup behavior are all documented consistently. This is the last task; it reconciles the docs touched piecemeal by W1-W4 into a coherent whole."
-- acceptance: docs/design.md 'Not yet built' no longer lists the G2-delivered items; README/design.md/install.md/manual-checklist.md consistently document startup tolerance, pacing sizing+config key, hub failover+endpoint list, and the real-link tier; the non-blocking exit criterion is stated in the pilot section. `grep` for stale 'not yet built'/'unmeasured'/'single concentrator' phrasing returns nothing describing delivered work. Markdown links resolve.
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T56","T59","T65","T60","T61","T62","T63","T64"]
