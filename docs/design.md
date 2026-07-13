@@ -142,8 +142,26 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   the same way (`AddPath`), a reload that keeps a deferred path is a no-op for it
   (`PathNames` reports the durable membership, deferred paths included), and a reload
   that drops one retires it (`RemovePath`) — so a deferred path never regresses the
-  SIGHUP-no-op invariant. (The background reconcile that retries a deferred path as
-  its address appears is **not yet built** — see "Not yet built".)
+  SIGHUP-no-op invariant.
+- **reconciles a deferred path in the background** (`StartReconcileLoop`, T55). A
+  device-lifecycle goroutine (started after the first `Open`, stopped before `Close`
+  by the same `Tunnel.Close` that stops the probe loop — no goroutine leak) polls the
+  deferred set at `DefaultReconcileInterval` (1 s) and re-attempts each deferred
+  path's bind. When a path's `source_addr` **becomes assignable** (its interface/
+  address appears — the 5G modem finally got its DHCP lease), the reconcile **binds
+  and promotes** it to a live path: it enters `m.paths`, the scheduler (as a new
+  lowest-priority path), and its own reader, **reusing the preserved boot prober** so
+  the path keeps its reserved id-stamp (no renumber, no peer-reflector collision) —
+  so the tunnel starts using it WITHOUT a `Close→Open` restart, and the scheduler
+  promotes it to active by the SAME liveness path as any runtime `AddPath`. A path
+  that still cannot bind stays deferred and is retried; a path REMOVED before it binds
+  (`RemovePath`) is dropped from the deferred set and never promoted. Everything runs
+  under `m.mu`, so it serializes with `Send`/`Close`/`AddPath`/`RemovePath` and is a
+  no-op on a closed bind. **Mechanism:** a bounded periodic poll, chosen over
+  event-driven netlink route/addr subscription (`vishvananda/netlink AddrSubscribe`)
+  because netlink is not an existing dependency and the deferred set is normally empty
+  — so the steady-state tick is a single mutex-guarded length check. The full
+  absent-then-added path flow over a real interface is validated by a netns e2e (T60).
 
 This package is also the **amnezia boundary** (`bind.go`, above).
 
@@ -303,11 +321,6 @@ These are recorded design boundaries, not defects:
   bonding/FEC/failover/DPI; "bonded ≈ sum of links" and bufferbloat require real
   uplinks (see [manual-checklist.md](manual-checklist.md) §P0 and
   [p0-findings.md](p0-findings.md)).
-- **No background reconcile of a deferred path.** `Open()` tolerates a
-  not-yet-assignable `source_addr` by deferring the path (above), but the loop that
-  retries binding it as its interface/address appears — event-driven via netlink or
-  a bounded poll — is not yet wired. A deferred path therefore stays `Down` until
-  the next full `Close→Open` cycle re-attempts every path's bind.
 - **Single concentrator; UDP-only.** No tunnel-termination failover, no TCP/TLS
   fallback for wholesale-UDP-block networks. Both are explicit non-goals.
 
