@@ -283,6 +283,24 @@ func disableNonlocalBind(t *testing.T) {
 	}
 }
 
+// bringLoopbackUp brings the loopback interface UP in the CURRENT (edge/test)
+// network namespace. It is a second, INDEPENDENT precondition for a non-local bind
+// to fail EADDRNOTAVAIL: on this kernel the rejection fires only when at least one
+// interface is UP — empirically, with lo DOWN a bind to a non-local address SUCCEEDS
+// even at ip_nonlocal_bind=0 (kernel probe: lo-up+pin0 -> EADDRNOTAVAIL; lo-down+pin0
+// -> BIND_OK; lo-up+pin1 -> BIND_OK). So the zero-bindable premise needs BOTH lo UP
+// and the sysctl pinned to 0. SetupWithPaths already brings lo up for topology tests
+// (line above), which is why the zero-bindable subtest passed only when it happened to
+// run AFTER one; building no topology itself, it must bring lo up explicitly to hold
+// regardless of subtest execution order. Idempotent (setting an already-up lo up is a
+// no-op). Runs in this process's netns (the TestMain re-exec unshared it), like run().
+func bringLoopbackUp(t *testing.T) {
+	t.Helper()
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("bring lo up in the test netns: %v\n%s", err, out)
+	}
+}
+
 // QdiscShow returns `tc qdisc show` for the named path (for assertions/debug).
 func (top *Topology) QdiscShow(name string) string {
 	p := top.path(name)

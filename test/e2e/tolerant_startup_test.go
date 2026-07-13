@@ -136,15 +136,20 @@ func TestTolerantStartupFastFailModes(t *testing.T) {
 	bin := buildWanbond(t)
 
 	t.Run("zero_bindable_paths_is_fatal", func(t *testing.T) {
-		// Determinism (hardware-robustness fix): the zero-bindable premise is that
-		// BOTH source_addrs fail to bind, which holds ONLY when a non-local bind returns
-		// EADDRNOTAVAIL. A host with net.ipv4.ip_nonlocal_bind=1 (or permissive root)
-		// lets a non-local bind SUCCEED, so the two TEST-NET-1 addresses would BIND and
-		// the daemon would come UP — the exact false-negative observed on llm-ubuntu-0.
-		// Pin the sysctl to 0 in this (unshared) netns so both binds deterministically
-		// fail regardless of the host's default, making "zero paths bind -> fatal Open"
-		// reliable. disableNonlocalBind fails the test loudly if it cannot pin the value,
-		// so a permissive environment surfaces as a failure, never a false pass.
+		// Determinism (hardware-robustness fix): the zero-bindable premise is that BOTH
+		// source_addrs fail to bind, i.e. a bind to a non-local address returns
+		// EADDRNOTAVAIL. On this kernel that rejection needs TWO conditions, BOTH pinned
+		// here so the premise holds regardless of host default or subtest order:
+		//   (1) at least one interface UP — with lo DOWN a non-local bind SUCCEEDS even at
+		//       ip_nonlocal_bind=0 (empirical kernel probe on llm-ubuntu-0); this subtest
+		//       builds no topology, so it must bring lo up itself (bringLoopbackUp);
+		//   (2) net.ipv4.ip_nonlocal_bind=0 — a host at 1 lets a non-local bind succeed
+		//       (disableNonlocalBind, which fails loudly if it cannot pin the value).
+		// Together they make "no configured path can bind -> fatal Open" deterministic.
+		// The original fix pinned only (2) and mis-identified the variable, so the daemon
+		// came up (both TEST-NET-1 addresses bound) and the test hung — the false-negative
+		// observed on llm-ubuntu-0 when this subtest ran alone (lo down).
+		bringLoopbackUp(t)
 		disableNonlocalBind(t)
 
 		cfg := writeT60EdgeConfig(t, fmt.Sprintf(`[[paths]]
@@ -195,6 +200,13 @@ source_addr = "not-an-ip-address"
 // pathsBlock spliced in as the [[paths]] section(s) — the ONLY thing under test in
 // TestTolerantStartupFastFailModes. Neither subtest reaches the peer, so the
 // endpoint/allowed_ips values need not be routable.
+//
+// [log] level is "info" (NOT "error"): the zero-bindable subtest distinguishes a
+// fatal Open() from a config-load failure by asserting the "wanbond starting" marker
+// (main.Info, cmd/wanbond/main.go) IS present — that marker is logged at Info, so an
+// "error" level would suppress it and the assertion could never hold (the daemon runs
+// but logs nothing at Info). The malformed-source_addr subtest still sees NO
+// "wanbond starting" because config load fails BEFORE that log, independent of level.
 func writeT60EdgeConfig(t *testing.T, pathsBlock string) string {
 	t.Helper()
 	edgePriv, _ := genKey(t)
@@ -214,7 +226,7 @@ endpoint = "192.0.2.53:51820"
 allowed_ips = ["10.10.0.2/32"]
 
 [log]
-level = "error"
+level = "info"
 `, psk, pathsBlock, edgePriv, concPub))
 }
 
