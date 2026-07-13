@@ -141,8 +141,15 @@ Decides which path(s) a frame goes out. Two policies:
 
 **Pacing** (per-path token buckets) is a scheduler feature that is **off by
 default** and, when enabled, exempts WireGuard control frames from shedding so
-overload cannot starve rekey. See "Not yet built" for why pacing is not
-empirically sized.
+overload cannot starve rekey. When pacing is enabled the per-path pace can be
+sized from an **operator-declared** per-link bandwidth (`link_bandwidth` +
+`link_rtt` on each `[[paths]]`): at config load `SizePacingFromBDP` derives the
+scheduler's `per_path_capacity_fps` and `pacing_burst_frames` from the
+bandwidth-delay product, sized to the **slowest declared link** (the shared pace
+must not exceed the bottleneck). This is operator-*declared*, not runtime
+auto-tuning — the value is fixed at load. With pacing off (the default) a declared
+bandwidth is inert and the synthetic default pace is kept. See "Not yet built" for
+why pacing stays off by default.
 
 ### Per-path telemetry — `internal/telemetry`
 
@@ -238,11 +245,13 @@ These are recorded design boundaries, not defects:
   the Bind (`multipath.go` receive default case). It is the chokepoint a future
   out-of-band signalling layer (e.g. explicit rekey/state) must route through.
 - **Pacing not empirically sized.** `SizePacingFromBDP` derives per-path pacing
-  from a measured bandwidth-delay product, but it is a helper, not auto-wired; the
-  default per-path capacity is synthetic (~115 Mbit/s), well above realistic
-  uplinks. The netns fixture is CPU/PPS-bound and cannot produce the standing
-  queues needed to tune pacing — so it is disabled by default and must be tuned
-  from real-link measurement.
+  from a bandwidth-delay product. It is now wired into config load from an
+  operator-declared per-link bandwidth (`link_bandwidth`/`link_rtt`, T53), but
+  wanbond still ships pacing **disabled** by default and never auto-tunes the pace
+  live (Q20). Absent a declared bandwidth (or with pacing off) the default per-path
+  capacity is synthetic (~115 Mbit/s), well above realistic uplinks. The netns
+  fixture is CPU/PPS-bound and cannot produce the standing queues needed to
+  *validate* pacing — so the declared bandwidth must be measured on the real link.
 - **Throughput aggregation unmeasured in-fixture.** The fixture proves *functional*
   bonding/FEC/failover/DPI; "bonded ≈ sum of links" and bufferbloat require real
   uplinks (see [manual-checklist.md](manual-checklist.md) §P0 and
