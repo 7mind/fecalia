@@ -18,3 +18,4 @@ coverage.txt
 !test/e2e/testdata/plain-wireguard.pcap
 .codegraph/
 /dist/
+/.claude/
