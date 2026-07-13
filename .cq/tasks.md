@@ -552,10 +552,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G2"]
 
-### T57 — wip
+### T57 — done
 
 - createdAt: 2026-07-13T13:42:10.041Z
-- updatedAt: 2026-07-13T15:21:42.409Z
+- updatedAt: 2026-07-13T15:45:31.768Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Hub-loss detection + switch peer remote + WG re-handshake to next concentrator

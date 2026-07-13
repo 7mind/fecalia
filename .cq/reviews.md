@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 60
+  item: 61
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -618,3 +618,12 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T54 (edge-side ordered concentrator-endpoint config surface) implement-review: APPROVE (verdict=approve, 0 criticisms, 0 questions). Ordered `endpoints` list parses in TOML order into Peer.Endpoints []netip.AddrPort (order preserved index 0..2, verified by TestLoadEndpointsOrderedList). Legacy single `endpoint` normalizes to a one-element Endpoints list via resolveEndpoints() — behavior-identical, confirmed by TestLoadEndpointSingleBackwardCompat and device.go uapiConfig now reading Endpoints[0] uniformly for both forms. Fail-fast validation covers: endpoint/endpoints mutual exclusivity, unparseable host:port, duplicate entries, empty list on edge (falls through to existing 'endpoint is required'), and edge-only constraint rejecting endpoints on the concentrator role — each with a dedicated rejection-table case in config_test.go. Endpoints is IP:port-only (netip.ParseAddrPort, NO hostname resolution) — a documented constraint T57 must honor. Endpoints field exposed public for T57 (hub-loss switch). Docs (README/design/install) updated consistently with a correctly #-prefixed multi-line TOML example. Full non-privileged gate green: go build/vet/gofmt/test all clean. SURGICAL: config.go + device.go call site + tests + docs only; switch/re-handshake deferred to T57 as specified. Merged to main at e066524."
 - ledgerRefs: ["tasks:T54"]
+
+### R61 — go-ahead
+
+- createdAt: 2026-07-13T15:45:24.829Z
+- updatedAt: 2026-07-13T15:45:24.829Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T57 (edge-side hub-loss detection + peer-remote switch + WG re-handshake) implement-review: APPROVE after round-1 DISAPPROVE resolved. Adversarial review (opus) verified ALL six core concerns CORRECT: (1) Re-handshake API sound — dev.LookupPeer/peer.ExpireCurrentKeypairs/SendHandshakeInitiation all exist+exported in amneziawg-go@v1.0.4; ExpireCurrentKeypairs invalidates keypairs, clears handshake state, deletes index-table entry, AND backdates lastSentHandshake by RekeyTimeout+1s so the following SendHandshakeInitiation(false) clears the RekeyTimeout guard and emits a fresh initiation (no wedge); LookupPeer==nil handled. (2) Invariant A1 preserved — SetPeerRemote (multipath.go:1329) takes m.mu, updates defaultRemote, calls ps.setRemote on every path under ps.mu; never touches the engine virtual endpoint; lock order m.mu->ps.mu matches seed paths (no inversion); -race clean. (3) No boot false-positive — lastSwitch seeded to construction time + 3s settle dwell gates first advance; reachable hub UP in ~600ms<<3s. (4) Goroutine lifecycle clean — done channel + sync.Once-guarded close wired into Close; single-endpoint/concentrator/no-prober -> no-op stopper, no goroutine; -race clean. (5) Single-endpoint GUARD non-vacuous (removing len<2 fires 5 switches -> test fails). (6) WRAP policy bounded to one switch/dwell, re-arms. Round-1 sole blocker (CRITICISM): no test exercised a MIXED liveness state (one path Up, one Down) for the load-bearing 'hub loss = ALL down, distinct from single-path failover' property -> an allDownLocked all-down->any-down regression would pass the whole suite. RESOLVED: added TestHubFailoverPartialDownNoFailover (settle dwell elapsed so an any-down detector WOULD fire), MUTATION-VERIFIED it FAILS under the any-down regression and passes with correct logic. Full gate + go test -race ./internal/bind/... ./internal/device/... + go vet -tags e2e all green on merged main. Merged at 40ba4d8 + 7d309bd. Real cross-network netns e2e deferred to T62."
+- ledgerRefs: ["tasks:T57"]
