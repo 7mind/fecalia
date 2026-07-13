@@ -176,10 +176,10 @@ archives: []
 
 ## M29
 
-### G6 — planning
+### G6 — planned
 
 - createdAt: 2026-07-13T22:50:11.848Z
-- updatedAt: 2026-07-13T23:26:00.926Z
+- updatedAt: 2026-07-13T23:40:28.704Z
 - author: fable-5
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - title: "Production-edge operability & full-tunnel hardening: improvements + docs from the first real deploy (wanbond-fixes.md)"
@@ -215,7 +215,7 @@ archives: []
     TESTING DIRECTION: unit tests for the bind-mode toggle (I5) and metrics (I2); netns e2e for link-up (I1), session-established signal timing, and full-tunnel mode (I6, once D35 unwedges); realhosts/report-only where absolute behavior needs real WANs, per the M10/Q12 discipline. Doc recipes validated against a NetworkManager host where practical (the production Pi validated the current workarounds).
 - sourceRefs: ["wanbond-fixes.md","docs/install.md","docs/design.md"]
 - tags: ["production-deploy","operability","docs"]
-- sessionLogs: [".cq/logs/20260713-225618-a6491a1ae0266d482.md",".cq/logs/20260713-232548-a382332a889496d5d.md",".cq/logs/20260713-232548-a795489b23fb6f794.md"]
-- rawLogs: [".cq/logs/raw/20260713-225618-a6491a1ae0266d482.jsonl",".cq/logs/raw/20260713-232548-a382332a889496d5d.jsonl",".cq/logs/raw/20260713-232548-a795489b23fb6f794.jsonl"]
+- sessionLogs: [".cq/logs/20260713-225618-a6491a1ae0266d482.md",".cq/logs/20260713-232548-a382332a889496d5d.md",".cq/logs/20260713-232548-a795489b23fb6f794.md",".cq/logs/20260713-233226-a31df891879aba85e.md",".cq/logs/20260713-233719-a1999a2a1c65132fa.md",".cq/logs/20260713-234017-aa1ce2b42795fdf8a.md"]
+- rawLogs: [".cq/logs/raw/20260713-225618-a6491a1ae0266d482.jsonl",".cq/logs/raw/20260713-232548-a382332a889496d5d.jsonl",".cq/logs/raw/20260713-232548-a795489b23fb6f794.jsonl",".cq/logs/raw/20260713-233226-a31df891879aba85e.jsonl",".cq/logs/raw/20260713-233719-a1999a2a1c65132fa.jsonl",".cq/logs/raw/20260713-234017-aa1ce2b42795fdf8a.jsonl"]
 - milestones: ["M30","M31","M32","M33"]
 - grounding: "Synthesized from 2 configured candidate planners (opus, fable; generate-N-then-judge per Q100/Q101; base = fable's 4-milestone/16-task candidate for its surface-then-wiring splits of I5/I6, the opt-in tun_persist semantics, docs-coupled-to-packaging per AGENTS.md, the two-sided I8 test, and the closing reference-sync sweep; folded in from opus: I7 acceptance = stable ifindex across restart + persistent device stays NM-unmanaged, and the packaging presence-check assertion for the NM drop-in). Repo facts shaping the plan: wanbond0 is created via tun.CreateTUN in internal/device/device.go and never LinkSetUp'd nor TUNSETPERSIST'd (comes up DOWN, non-persistent); the no-healthy-path spam is errNoHealthyPath (internal/bind/multipath.go:64) surfacing at ERROR through the engineLogger adapter (device.go:687) — I4 needs a warmup seam there, not a blanket level change; no session/handshake metric exists (only probe-plane wanbond_path_up) — I2 sources handshake state from the engine (IpcGet last_handshake_time_sec / peer lookup as deviceRehandshake in internal/device/failover.go:181 does) through the metrics.Source seam so the bind stays WG-unaware; the bind decision is planPathBinds/selectDeviceBinds (internal/bind/pathsock.go) and I5's mode must apply to Open, AddPath, AND the deferred-path reconcile; config is plain TOML (no versioning cost); install.md §4 today states the daemon never assigns routes — T108 is the one deliberate, mode-gated exception and design.md must say so (T115). Binding answers: Q37 gate only I6's literal-/0 acceptance on D35 (all D35-D40 references are acceptance-text only, no dependsOn — those defects are investigate-flow-owned under M28 and deliberately unlinked); Q38 I7 = BOTH tun_persist code (T109) AND the C4 oneshot (T111); Q39 I8 = in-goal verification test (T104), refile-as-defect if it exposes a fault; Q40 packaged NM drop-in (T110) + templated oneshot (T111); Q41 thin I6 (internal /1+/1 split at UAPI render T107 + edge default-route wiring T108, NO SNAT/NAT programming); Q42 per-path bind=source|device|auto + global default (T105/T106); Q43 all C1-C6 + I1-I4 + thin I5/I6 in this goal."

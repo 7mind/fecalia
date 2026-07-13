@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 79
+  item: 82
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -793,3 +793,44 @@ archives:
 - ledgerRefs: ["tasks:T82","goals:G4"]
 - sessionLogs: [".cq/logs/20260713-231830-a91a4176a0efd8739.md",".cq/logs/20260713-231830-adb81d36d2064a300.md",".cq/logs/20260713-232716-acaab660e4b8c3626.md",".cq/logs/20260713-232716-a00c1b140b54c2482.md"]
 - rawLogs: [".cq/logs/raw/20260713-231830-a91a4176a0efd8739.jsonl",".cq/logs/raw/20260713-231830-adb81d36d2064a300.jsonl",".cq/logs/raw/20260713-232716-acaab660e4b8c3626.jsonl",".cq/logs/raw/20260713-232716-a00c1b140b54c2482.jsonl"]
+
+## M29
+
+### R80 — revise
+
+- createdAt: 2026-07-13T23:30:43.164Z
+- updatedAt: 2026-07-13T23:31:10.027Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- summary: "G6 plan (M30-M33, T100-T115) round-1 reconciled verdict: REVISE (opus revise + fable revise, strictest-wins). Both reviewers verified every grounding citation against source and confirmed Q37-Q43 compliance, fine granularity, and I1-I8/C1-C6 completeness; the round's findings are two DAG/scope gaps on the T115 sync sweep plus one flaky-by-design acceptance assertion on T101. No new user questions; no out-of-scope defects filed."
+- new_questions: []
+- criticism: ["[opus+fable] T115 (reference-sync sweep) dependsOn is [T105, T107, T109], but its acceptance requires outputs of tasks it does NOT depend on: the wanbond_session_established / last-handshake-age metric names shipped by T101, and design.md's note on the default-route wiring as the one deliberate exception to 'the daemon never assigns routes' — behavior landed by T108. A DAG-ready T115 can be scheduled before T101/T108 complete and would document unshipped or renamed surfaces ('grep for each new metric name across docs/' cannot pass). Add T101 and T108 to T115.dependsOn.","[opus] T115's sync scope is explicitly enumerated as 'install.md §3z + wanbond.example.toml + design.md + README' but omits docs/runbook.md, which install.md designates as the end-to-end operator provisioning procedure. This goal introduces THE primary, previously-undocumented use case (full-tunnel via mode=default-route) plus new NM-drop-in and addressing-oneshot provisioning steps; leaving the runbook silent on them defeats the AGENTS.md docs-in-sync mandate T115 itself invokes. Either add runbook.md to T115's sweep (pointing at the new C1/C3/C4 sections) or record an explicit rationale for excluding it.","[fable] T101's e2e acceptance asserts 'wanbond_path_up=1 observable before the session gauge flips' via metrics scraping. The ordering is structurally guaranteed (the handshake cannot send until a path is healthy — errNoHealthyPath, internal/bind/multipath.go:64), but in the netns tier the handshake completes milliseconds after first path-up (the ~25 s window is a production/WAN artifact), so a scrape-cadence observer will nondeterministically miss the path_up=1/session=0 intermediate state — a flaky-by-design assertion. Reword the acceptance to assert the ordering from log/transition timestamps (or a fixture that gates handshake completion), keeping the 0→1 transition and exactly-once log assertions as-is."]
+- ledgerRefs: ["goals:G6"]
+- sessionLogs: [".cq/logs/20260713-233100-a55a4e128f6f54f3a.md",".cq/logs/20260713-233100-af3f0626f4832a9e5.md"]
+- rawLogs: [".cq/logs/raw/20260713-233100-a55a4e128f6f54f3a.jsonl",".cq/logs/raw/20260713-233100-af3f0626f4832a9e5.jsonl"]
+
+### R81 — revise
+
+- createdAt: 2026-07-13T23:35:50.000Z
+- updatedAt: 2026-07-13T23:36:15.771Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- summary: "G6 plan round-2 reconciled verdict: REVISE (opus revise + fable revise, strictest-wins). ALL THREE R80 criticisms verified resolved by both reviewers (T115.dependsOn now carries T101+T108; T115 scope+acceptance cover docs/runbook.md, confirmed to exist as the operator provisioning procedure; T101 ordering asserted from log transition timestamps). Two residual same-class sequencing gaps remain — both 'documenting unshipped surfaces' edges the R80 standard itself established."
+- new_questions: []
+- criticism: ["[opus] T115's newly-added runbook.md sweep must 'reference the new C1/C3/C4 provisioning steps,' but those sections and their shipped file paths are landed by T110 (C1 NetworkManager drop-in + install.md §4 NM subsection), T111 (C4 addressing oneshot + install.md C4 section), and T113 (C3 full-tunnel recipe) — none of which appear in T115.dependsOn ([T101,T105,T107,T108,T109]). T110 and T111 are dependency-free and T113 depends only on [T108,T111], so T115 becomes DAG-ready once T101/T105/T107/T108/T109 finish and can be dispatched before T110/T111/T113 exist, writing runbook cross-references to unwritten provisioning sections — the same missing-prerequisite class R80's criticism 1 flagged, re-introduced by the criticism-2 fix. Add T110, T111, and T113 to T115.dependsOn.","[fable] T111's acceptance requires the install.md C4 section to carry the tun_persist cross-link, but T111 has no dependsOn on T109 — the task that introduces the key and fixes its final name (T109's description gives it only as 'e.g. top-level tun_persist'). A DAG-ready T111 can be scheduled before T109 and would document an unshipped or subsequently-renamed key — the exact documenting-unshipped-surfaces failure mode R80 established on T115, and inconsistent with the plan's own pattern (T114←T101 for the metric name; T112←T106 for the bind field shape). Fix: add T109 to T111.dependsOn, OR drop the tun_persist cross-link from T111's acceptance and let the T115 sweep (which already depends on T109) add it."]
+- ledgerRefs: ["goals:G6"]
+- sessionLogs: [".cq/logs/20260713-233606-a6a7deec127907c4c.md",".cq/logs/20260713-233606-a00894726fc25d16c.md"]
+- rawLogs: [".cq/logs/raw/20260713-233606-a6a7deec127907c4c.jsonl",".cq/logs/raw/20260713-233606-a00894726fc25d16c.jsonl"]
+
+### R82 — go-ahead
+
+- createdAt: 2026-07-13T23:39:03.366Z
+- updatedAt: 2026-07-13T23:39:27.775Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- summary: "G6 plan round-3 reconciled verdict: GO-AHEAD (opus go-ahead + fable go-ahead, unanimous). Both R81 criticisms verified resolved in the current task fields: T115.dependsOn = [T101,T105,T107,T108,T109,T110,T111,T113] (every surface the sync sweep documents now maps to a direct dependency) and T111.dependsOn = [T109] (the tun_persist cross-link orders behind the task that fixes the key name). Full DAG re-verified acyclic with a valid topological order (roots T100/T101/T102/T103/T104/T105/T107/T109/T110 → T106/T108/T111 → T112/T113/T114 → T115); no residual documenting-unshipped-surfaces edge; rubric satisfied (fine-grained: 16 single-concern tasks with surface/wiring splits; sequenced; testable: named tests / grep assertions / systemd-analyze verify / byte-for-byte regression guards; grounded: every citation verified in rounds 1-2, untouched by the round-3 deltas; complete: I1-I8 → T100-T109, C1-C6 → T110-T115); Q37-Q43 bindings and the D35-D40 acceptance-only composition preserved. Review history: R80 (revise, 3 criticisms) → R81 (revise, 2 criticisms) → R82 unanimous go-ahead."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G6"]
+- sessionLogs: [".cq/logs/20260713-233917-a89c1670ebd3cd89d.md",".cq/logs/20260713-233917-a5034ee3e9ef63fd4.md"]
+- rawLogs: [".cq/logs/raw/20260713-233917-a89c1670ebd3cd89d.jsonl",".cq/logs/raw/20260713-233917-a5034ee3e9ef63fd4.jsonl"]

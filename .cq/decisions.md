@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 6
+  item: 7
 archives: []
 ---
 
@@ -81,3 +81,15 @@ archives: []
 - headline: "plan review: approved"
 - rationale: "Unanimous reviewer go-ahead (R73, round 2, opus+fable): both R72 criticisms resolved; 20-task DAG across M23-M27 judged fine-grained, sequenced, testable, grounded, complete."
 - ledgerRefs: ["goals:G4"]
+
+## M29
+
+### K7 — locked
+
+- createdAt: 2026-07-13T23:39:53.160Z
+- updatedAt: 2026-07-13T23:39:53.160Z
+- author: "opus-4.8[1m]"
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "plan review: approved"
+- rationale: Reviewer go-ahead per R82 (unanimous opus+fable panel, empty new_questions/criticism). Plan M30-M33 / T100-T115 approved; DAG verified acyclic (R80 revise -> R81 revise -> R82 go-ahead). Locking to permit planning->planned.
+- ledgerRefs: ["goals:G6"]

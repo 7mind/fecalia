@@ -639,10 +639,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-231437-a07657609e4ceabbd.md",".cq/logs/20260713-232253-a4f0126c89564ecfd.md",".cq/logs/20260713-231830-a5122d18a9a011585.md",".cq/logs/20260713-231830-a15aa232e07b17d44.md",".cq/logs/20260713-232716-a256ad0c7fae40b3a.md",".cq/logs/20260713-232716-a73363906e9351cad.md"]
 - rawLogs: [".cq/logs/raw/20260713-231437-a07657609e4ceabbd.jsonl",".cq/logs/raw/20260713-232253-a4f0126c89564ecfd.jsonl",".cq/logs/raw/20260713-231830-a5122d18a9a011585.jsonl",".cq/logs/raw/20260713-231830-a15aa232e07b17d44.jsonl",".cq/logs/raw/20260713-232716-a256ad0c7fae40b3a.jsonl",".cq/logs/raw/20260713-232716-a73363906e9351cad.jsonl"]
 
-### T71 — planned
+### T71 — wip
 
 - createdAt: 2026-07-13T21:54:44.129Z
-- updatedAt: 2026-07-13T21:54:44.129Z
+- updatedAt: 2026-07-13T23:31:11.708Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Implement a DoT (RFC 7858) resolver behind the seam
@@ -827,10 +827,10 @@ archives:
 
 ## M24
 
-### T83 — planned
+### T83 — wip
 
 - createdAt: 2026-07-13T22:27:30.808Z
-- updatedAt: 2026-07-13T22:35:42.097Z
+- updatedAt: 2026-07-13T23:31:12.529Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Introduce peerState and key Multipath state by peer
@@ -1071,12 +1071,12 @@ archives:
 ### T101 — planned
 
 - createdAt: 2026-07-13T23:22:37.650Z
-- updatedAt: 2026-07-13T23:22:37.650Z
+- updatedAt: 2026-07-13T23:32:02.807Z
 - author: fable-5
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - headline: Add wanbond_session_established metric, last-handshake age, and a 'session established' log line (I2)
 - description: "Add a WG-session signal to the metrics plane: a wanbond_session_established gauge (0/1) and wanbond_session_last_handshake_seconds (age), sourced at scrape time from the amneziawg engine (IpcGet last_handshake_time_sec, or peer lookup as deviceRehandshake in internal/device/failover.go:181 already does). Extend the metrics.Source seam (internal/metrics/metrics.go) with a session snapshot supplied by the device layer; the bind stays WG-unaware. Emit ONE INFO 'session established' log record on the 0→1 transition (poll at probe cadence or scrape-driven with a device-side edge detector). This is the signal that distinguishes 'still converging' from 'wedged' — D35/D36/D37 all presented identically without it."
-- acceptance: Unit tests cover metric registration and the 0→1 edge; netns e2e asserts wanbond_session_established transitions 0→1 after tunnel up (scraped via metrics.Fetch) with wanbond_path_up=1 observable before the session gauge flips, and the 'session established' record appears exactly once per session; go test ./... and -tags e2e suite green.
+- acceptance: Unit tests cover metric registration and the 0→1 edge; netns e2e asserts wanbond_session_established transitions 0→1 after tunnel up (scraped via metrics.Fetch) and that the path-up-before-session-established ordering holds by comparing the path-up and session-established transition timestamps recorded in the logs — NOT by observing a path_up=1/session=0 intermediate scrape, which the netns tier reaches within milliseconds and a scrape-cadence observer would nondeterministically miss (the ~25 s gap is a production/WAN artifact); the 'session established' record appears exactly once per session; go test ./... and -tags e2e suite green.
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G6"]
 
@@ -1197,14 +1197,15 @@ archives:
 ### T111 — planned
 
 - createdAt: 2026-07-13T23:24:22.830Z
-- updatedAt: 2026-07-13T23:24:22.830Z
-- author: fable-5
+- updatedAt: 2026-07-13T23:36:56.893Z
+- author: "opus-4.8[1m]"
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - headline: Ship the templated wanbond-addressing oneshot unit + C4 persistence recipe (Q40 artifact + C4)
 - description: "Add packaging/systemd/wanbond-addressing@.service: a templated oneshot (instance = role) with `PartOf=wanbond-%i.service`, `After=wanbond-%i.service`, that re-applies address + link-up + policy rules + per-table routes + nft SNAT from an operator-owned environment/script file after the daemon (re)starts. It MUST NOT race tun creation (the R27 lesson: a plain ExecStartPost under Type=exec runs before wanbond0 exists) — wait for the interface (ExecStartPre poll loop or BindsTo/After=sys-subsystem-net-devices-wanbond0.device). Coupled C4 doc section in install.md: the persistence recipe for non-networkd hosts, blessing this unit, explicitly warning that a plain ExecStartPost races tun creation, and noting the oneshot becomes optional-but-harmless once tun_persist is enabled."
 - acceptance: systemd-analyze verify passes on the unit (where available in CI/dev shell); the unit orders after interface existence, not just after execve (documented rationale referencing the R27 race); install.md C4 section references the shipped file and carries the race warning + the tun_persist cross-link. go test ./... unaffected.
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- dependsOn: ["T109"]
 
 ## M33
 
@@ -1250,12 +1251,12 @@ archives:
 ### T115 — planned
 
 - createdAt: 2026-07-13T23:25:03.491Z
-- updatedAt: 2026-07-13T23:25:03.491Z
-- author: fable-5
+- updatedAt: 2026-07-13T23:36:55.912Z
+- author: "opus-4.8[1m]"
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - headline: Sync the config reference, wanbond.example.toml, design.md, and README for all new surfaces
-- description: "Per the AGENTS.md docs-in-sync rule, one sweep after the config-surface tasks land: install.md §3z exhaustive key reference + wanbond.example.toml gain `bind` (per-path + global default, default auto), the full-tunnel `mode = \"default-route\"` + 0.0.0.0/0-split semantics, and `tun_persist`; docs/design.md notes the new session-signal metric names and the default-route wiring as the one deliberate exception to 'the daemon never assigns routes'; README feature list updated if it enumerates config keys or metrics."
-- acceptance: Every new config key and metric introduced by this goal appears in §3z, wanbond.example.toml (commented-out with default, matching the existing style), and design.md; grep for each new key/metric name across docs/ and README returns the expected hits; no stale 'never assigns routes' claim survives unqualified.
+- description: "Per the AGENTS.md docs-in-sync rule, one sweep after the config-surface and behavior tasks land: install.md §3z exhaustive key reference + wanbond.example.toml gain `bind` (per-path + global default, default auto), the full-tunnel `mode = \"default-route\"` + 0.0.0.0/0-split semantics, and `tun_persist`; docs/design.md notes the new session-signal metric names (shipped by T101) and the default-route wiring (landed by T108) as the one deliberate exception to 'the daemon never assigns routes'; docs/runbook.md — install.md's designated end-to-end operator provisioning procedure — updated to cover the new provisioning steps this goal introduces: the C1 NetworkManager unmanaged-devices drop-in, the C3 full-tunnel client-LAN recipe, and the C4 addressing/persistence oneshot; README feature list updated if it enumerates config keys or metrics."
+- acceptance: Every new config key and metric introduced by this goal appears in §3z, wanbond.example.toml (commented-out with default, matching the existing style), and design.md; docs/runbook.md references the new C1/C3/C4 provisioning steps; grep for each new key/metric name across docs/ (including runbook.md) and README returns the expected hits; no stale 'never assigns routes' claim survives unqualified.
 - suggestedModel: standard
-- dependsOn: ["T105","T107","T109"]
+- dependsOn: ["T101","T105","T107","T108","T109","T110","T111","T113"]
 - ledgerRefs: ["goals:G6"]
