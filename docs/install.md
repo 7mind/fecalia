@@ -376,6 +376,204 @@ standing queues needed to validate pacing against real links. Real-link
 verification (this step) is essential: measure on your actual uplinks to confirm
 pacing meets your bufferbloat target.
 
+### 3z. Full configuration reference (all keys)
+
+This is the exhaustive key list — every configuration key wanbond reads, in one
+place. The example below is **edge-oriented**; concentrator-only keys are shown
+and marked `CONCENTRATOR-ONLY`. Required keys are shown live; optional/defaulted
+keys are shown **commented-out with their default value**. Uncommenting a key
+and leaving it at the shown value is a no-op. The per-section notes after the
+example capture the cross-field constraints a single example cannot express
+inline. All of these are enforced at config load (`config.Load`), which fails
+fast on the first violation — except the loopback and `allowed_ips` checks,
+noted below.
+
+```toml
+# ── top level ────────────────────────────────────────────────────────────────
+role = "edge"                      # REQUIRED. "edge" | "concentrator". Never
+                                   #   inferred from other keys.
+psk  = "<base64 32-byte PSK>"      # REQUIRED. 32 raw bytes, base64. Same value
+                                   #   on both ends; keys the PSK-HMAC that
+                                   #   authenticates outer PROBE/CONTROL frames.
+
+# ── paths: one [[paths]] block per WAN uplink; at least one is REQUIRED ───────
+[[paths]]
+name        = "starlink"           # REQUIRED. Stable, unique identifier.
+source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
+                                   #   UDP socket binds to. Must be unique across
+                                   #   paths (a shared source collides EADDRINUSE
+                                   #   at the second bind). No default.
+# dest_addr = "203.0.113.7:51820"  # OPTIONAL, edge-only meaning. Per-path
+                                   #   concentrator endpoint (ip:port). Omit when
+                                   #   one public IP fronts all uplinks (the
+                                   #   peer's endpoint is reused). No default.
+                                   #   Inert on the concentrator (it learns edge
+                                   #   endpoints from traffic).
+# link_bandwidth = "50Mbit"        # OPTIONAL. Operator-declared bottleneck
+                                   #   bandwidth. SI bit/s: k/M/G = 1e3/1e6/1e9
+                                   #   ("bit" may be written "bps"). Must be > 0.
+                                   #   Used ONLY under weighted policy + pacing;
+                                   #   inert otherwise. No default (undeclared).
+# link_rtt = "45ms"                # OPTIONAL. Operator-declared baseline RTT
+                                   #   (Go duration). REQUIRED (> 0) when
+                                   #   link_bandwidth is set under weighted
+                                   #   pacing; ignored otherwise. No default.
+
+# A second uplink (edge). Repeat the block per path.
+[[paths]]
+name        = "5g"
+source_addr = "192.168.2.10"
+
+# ── wireguard: inner tunnel key material ─────────────────────────────────────
+[wireguard]
+private_key = "<base64 32-byte private key>"  # REQUIRED (both roles).
+# listen_port = 51820              # CONCENTRATOR-ONLY: REQUIRED (> 0) there;
+                                   #   omit / leave 0 on the edge. uint16
+                                   #   (< 1024 needs CAP_NET_BIND_SERVICE).
+
+# ── wireguard peers: at least one [[wireguard.peers]] is REQUIRED ─────────────
+[[wireguard.peers]]
+public_key = "<base64 peer public key>"  # REQUIRED. base64 32-byte key.
+endpoint = "203.0.113.7:51820"     # EDGE: REQUIRED (this OR `endpoints`).
+                                   #   ip:port literal only, no DNS.
+                                   #   CONCENTRATOR: must be ABSENT (rejected) —
+                                   #   it roams the edge dynamically. Mutually
+                                   #   exclusive with `endpoints`.
+# endpoints = ["203.0.113.7:51820", "198.51.100.7:51820"]
+                                   # EDGE-ONLY ordered hub-failover list: [0] is
+                                   #   the active concentrator, the rest ordered
+                                   #   standbys. ip:port literals only, no DNS;
+                                   #   duplicates rejected. Mutually exclusive
+                                   #   with `endpoint` (which is its one-element
+                                   #   form). Rejected on the concentrator.
+allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
+                                   #   (enforced when the WG UAPI is built).
+
+# ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
+# ALL-OR-NOTHING: either omit the whole block, or set the entire
+# jc/jmin/jmax/s1/s2 set — IDENTICALLY on both ends. One engine per process.
+# [amnezia]
+# jc   = 4                         # junk packet count. > 0 when configured.
+# jmin = 40                        # min junk packet size. > 0; jmin <= jmax.
+# jmax = 70                        # max junk packet size. > 0.
+# s1   = 30                        # init-packet junk prefix size. > 0.
+# s2   = 40                        # response-packet junk prefix size. > 0.
+                                   #   Constraint: (148 + s1) != (92 + s2) — the
+                                   #   obfuscated init/response lengths must
+                                   #   differ. (no defaults: required when block
+                                   #   present.)
+# h1 = 1                           # magic header: initiation. Default 1..4 when
+# h2 = 2                           #   the block is configured but NO header is
+# h3 = 3                           #   given. When any is set, h1..h4 must be a
+# h4 = 4                           #   distinct set (values <= 4 mean "standard
+                                   #   message type").
+
+# ── scheduler: OPTIONAL. Omitted => active-backup, all knobs below ignored ────
+# [scheduler]
+# policy = "active-backup"         # "active-backup" (DEFAULT) | "weighted".
+                                   #   Every knob below applies ONLY to
+                                   #   "weighted"; under active-backup they are
+                                   #   inert and left unset.
+# per_path_capacity_fps = 10000.0  # DEFAULT 10000. Reference per-path capacity
+                                   #   (frame slots/s): aggregation-gate
+                                   #   denominator and pacing refill rate. > 0.
+# engage_fraction    = 0.9         # DEFAULT 0.9. Engage aggregation above
+                                   #   engage_fraction * capacity. In (0, 1].
+# disengage_fraction = 0.5         # DEFAULT 0.5. Collapse below
+                                   #   disengage_fraction * capacity. Must be in
+                                   #   [0, engage_fraction) — the hysteresis band.
+# collapse_dwell = "2s"            # DEFAULT 2s. Sustained-low dwell before
+                                   #   collapsing to primary-only. >= 0.
+# load_tau = "200ms"               # DEFAULT 200ms. Offered-load rate estimator
+                                   #   time constant. > 0.
+# pacing_enabled = false           # DEFAULT false. Turn on per-path send-pacing
+                                   #   (token buckets). Off => buckets bypassed.
+# pacing_burst_frames = 64.0       # DEFAULT 64. Token-bucket burst (frames).
+                                   #   > 0 when pacing_enabled.
+# weight_rtt_floor = "1ms"         # DEFAULT 1ms. RTT floor in the weight
+                                   #   formula. > 0.
+# weight_loss_floor = 0.001        # DEFAULT 1e-3. Loss floor under the sqrt in
+                                   #   the weight formula. > 0.
+
+# ── fec: OPTIONAL, OFF by default (no parity on the wire) ─────────────────────
+# [fec]
+# enabled = true                   # DEFAULT false. Turns the FEC plane on; when
+                                   #   false every field below is ignored.
+# data_shards = 10                 # K: inner datagrams per coding group. >= 1
+                                   #   when enabled. No default (required).
+# parity_shards = 6                # M: parity frames per group (and the adaptive
+                                   #   parity CEILING). >= 1 when enabled;
+                                   #   K + M <= 256. No default (required).
+# deadline = "5ms"                 # DEFAULT 5ms. Partial-group flush deadline.
+                                   #   > 0 and <= 125ms.
+# adaptive = false                 # DEFAULT false. Closed-loop parity controller
+                                   #   (parity tracks measured loss up to the
+                                   #   ceiling). Requires enabled = true.
+# target_residual = 0.005          # ADAPTIVE-ONLY, primary sizing surface:
+                                   #   post-recovery residual-loss SLA in (0, 1).
+                                   #   No default. Mutually exclusive with
+                                   #   safety_factor.
+# safety_factor = 1.5              # ADAPTIVE-ONLY, legacy headroom multiplier
+                                   #   >= 1. DEFAULTS to 1.5 when adaptive and
+                                   #   NEITHER field is set. Must stay 0 in fixed
+                                   #   mode. Mutually exclusive with
+                                   #   target_residual.
+
+# ── metrics: OPTIONAL. Omit the block => no /metrics endpoint is served ───────
+[metrics]
+listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8,
+                                   #   ::1, or a hostname resolving only to
+                                   #   loopback); any other address is REFUSED
+                                   #   when the endpoint binds (not at load).
+
+# ── log: OPTIONAL ────────────────────────────────────────────────────────────
+[log]
+level = "info"                     # DEFAULT "info" (empty => info). One of
+                                   #   debug | info | warn | error ("warning" is
+                                   #   accepted for warn). Unknown => fail-fast.
+```
+
+**Cross-field constraints and role applicability (not expressible inline):**
+
+- **Roles.** `role` is required and never inferred. Edge-only:
+  per-peer `endpoint`/`endpoints` (required on the edge, rejected on the
+  concentrator) and the pacing declarations (`dest_addr` is edge-only in effect,
+  but is not *rejected* on the concentrator — merely inert). Concentrator-only:
+  `wireguard.listen_port` (required there, unused on the edge).
+- **`endpoint` vs `endpoints`.** Mutually exclusive; `endpoint` is the
+  one-element form of `endpoints`. On the edge exactly one must be present; the
+  concentrator must set neither. Entries are `ip:port` literals only (no DNS),
+  de-duplicated.
+- **Distinct `source_addr`.** Each `[[paths]]` needs a unique, valid
+  `source_addr` (compared unmapped, so `192.0.2.10` and `::ffff:192.0.2.10`
+  collide). `name` must also be unique.
+- **`allowed_ips`.** At least one CIDR per peer; empty is rejected when the WG
+  configuration is assembled (not by `config.validate`).
+- **amnezia all-or-nothing.** An unconfigured (all-zero) block is plain
+  WireGuard. Once *any* of `jc/jmin/jmax/s1/s2/h1..h4` is set, the full
+  `jc,jmin,jmax,s1,s2` set must be `> 0`, `jmin <= jmax`, the init/response
+  lengths must not collide (`148+s1 != 92+s2`), and `h1..h4` must be a distinct
+  set (omitted headers default to `1..4`). The same profile must be set on both
+  ends. One obfuscation engine per process.
+- **`link_bandwidth` + `link_rtt` are a pair.** Both-or-neither, and
+  **all-or-nothing across every path**: declare on every `[[paths]]` block or
+  none (the shared pace is sized to the slowest declared link, undefined under a
+  partial declaration). They take effect **only** under
+  `scheduler.policy = "weighted"` with `pacing_enabled = true`; otherwise a
+  declared bandwidth is inert. When active they are **mutually exclusive** with
+  the raw `scheduler.per_path_capacity_fps` / `pacing_burst_frames` knobs —
+  declare link bandwidth *or* set the frame-slot knobs, not both.
+- **scheduler off-unless-present.** No `[scheduler]` block ⇒ `active-backup` and
+  every weighted knob ignored. Under `weighted`, omitted knobs take the defaults
+  shown; the hysteresis band requires `disengage_fraction < engage_fraction`.
+- **fec off-unless-present.** No `[fec]` block (or `enabled = false`) ⇒ no
+  parity on the wire. `adaptive = true` requires `enabled = true`. In adaptive
+  mode set **either** `target_residual` (recommended, `(0,1)`) **or**
+  `safety_factor` (`>= 1`), never both; both must stay 0 (unset) in fixed mode.
+- **metrics loopback-only.** `[metrics] listen` must be a loopback address (or a
+  hostname resolving entirely to loopback); a non-loopback bind is refused when
+  the endpoint starts. Omit the block to serve no metrics at all.
+
 ## 4. systemd units
 
 Unit files live in `packaging/systemd/`:
