@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 41
+  item: 42
 archives: []
 ---
 
@@ -583,3 +583,17 @@ archives: []
 - severity: low
 - suggestedFix: Use toml.NewDecoder(...).DisallowUnknownFields() (handling *toml.StrictMissingError for a precise message) so an unrecognized key fails config load; add a rejects-table case for a misspelled key.
 - ledgerRefs: ["tasks:T80","goals:G4"]
+
+## M24
+
+### D42 — open
+
+- createdAt: 2026-07-13T23:57:19.238Z
+- updatedAt: 2026-07-13T23:57:19.238Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Deferred AddPath desyncs per-peer probers from m.defs when >1 peer is bound (latent out-of-range panic in removeDurableLocked)
+- description: "internal/bind/multipath.go: AddPath's EADDRNOTAVAIL deferred branch appends the minted prober only to the primary peer's probers (via the peerState embed) while growing m.defs, but removeDurableLocked splices EVERY peer's probers at defIdx assuming each is index-aligned with m.defs. With >=2 bound peers and a deferred path, RemovePath of that path evaluates p.probers[defIdx+1:] past the shorter secondary slice (slice-bounds panic), and removing an earlier path splices the wrong prober silently. Unreachable today — no production code constructs a second peerState — and the omission is a documented later-G4 placeholder, so it was out of scope for T83. Filed from implement review of T83 round 1 ([fable] reviewer, file-and-defer per K13)."
+- severity: medium
+- suggestedFix: In the G4 task that implements the concentrator deferred-path fan-out (T85-T88 area), mint per-peer probers for deferred paths so every peer's probers stays m.defs-aligned; until then, fail fast by refusing deferral (returning the bind error) when len(m.peers) > 1, or assert the alignment invariant in removeDurableLocked.
+- ledgerRefs: ["tasks:T83","goals:G4"]

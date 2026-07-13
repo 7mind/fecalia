@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 83
+  item: 84
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -847,3 +847,18 @@ archives:
 - ledgerRefs: ["goals:G6"]
 - sessionLogs: [".cq/logs/20260713-233917-a89c1670ebd3cd89d.md",".cq/logs/20260713-233917-a5034ee3e9ef63fd4.md"]
 - rawLogs: [".cq/logs/raw/20260713-233917-a89c1670ebd3cd89d.jsonl",".cq/logs/raw/20260713-233917-a5034ee3e9ef63fd4.jsonl"]
+
+## M24
+
+### R84 — go-ahead
+
+- createdAt: 2026-07-13T23:57:49.652Z
+- updatedAt: 2026-07-13T23:57:49.652Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T83 round 1 reconciled panel verdict (opus + fable, unanimous approve, gate green incl. -race, zero existing-test edits): peerState/pathState split verified behavior-preserving — singleton fields genuinely relocated onto peerState (grep-clean on Multipath; handleInbound routes via ps.peer, not promotion); runtime add/remove fan-out single-owner with LIFO rollback; two-peer fan-out test proves per-(peer,path) create/teardown. One out-of-scope latent defect filed file-and-defer ([fable] D42: deferred AddPath probers/m.defs desync with >1 peer bound)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T83","goals:G4"]
+- sessionLogs: [".cq/logs/20260713-235735-a10456d6fb76f7f1c.md",".cq/logs/20260713-235735-aefa45ecf45cfffd3.md"]
+- rawLogs: [".cq/logs/raw/20260713-235735-a10456d6fb76f7f1c.jsonl",".cq/logs/raw/20260713-235735-aefa45ecf45cfffd3.jsonl"]

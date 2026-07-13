@@ -831,10 +831,10 @@ archives:
 
 ## M24
 
-### T83 — wip
+### T83 — done
 
 - createdAt: 2026-07-13T22:27:30.808Z
-- updatedAt: 2026-07-13T23:31:12.529Z
+- updatedAt: 2026-07-13T23:57:54.818Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Introduce peerState and key Multipath state by peer
@@ -843,6 +843,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T82"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: "55041e3"
+- completion: peerState introduced + pathState split into sharedPathState/peerPathState; Multipath embeds the primary peerState (promotion keeps single-peer datapath byte-identical, zero test edits); runtime shared-path add/remove fans per-(peer,path) state to every bound peer via a single owner with rollback; two-peer fan-out test; merged ff to main. Latent deferred-path multi-peer alignment gap filed as D42.
+- sessionLogs: [".cq/logs/20260713-235250-a01fcd30d435bc669.md",".cq/logs/20260713-235735-a10456d6fb76f7f1c.md",".cq/logs/20260713-235735-aefa45ecf45cfffd3.md"]
+- rawLogs: [".cq/logs/raw/20260713-235250-a01fcd30d435bc669.jsonl",".cq/logs/raw/20260713-235735-a10456d6fb76f7f1c.jsonl",".cq/logs/raw/20260713-235735-aefa45ecf45cfffd3.jsonl"]
 
 ### T84 — planned
 
