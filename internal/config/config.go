@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -467,20 +468,59 @@ type Peer struct {
 	// resolveEndpoints in normalize(). This is the shape T57's hub-failover
 	// switch consumes: Endpoints[0] is the active concentrator, Endpoints[1:]
 	// are the ordered standbys to fail over to in order when all paths to the
-	// active one are down.
+	// active one are down. A hostname entry (Q35) contributes NO element here at
+	// load time — resolution happens at runtime, not at config load (Q30) — so
+	// Endpoints only ever holds the literal-address entries, in order.
 	Endpoints []netip.AddrPort `toml:"-"`
+	// DNS is the explicit per-peer opt-in (Q29) for hostname endpoint entries: a
+	// hostname entry in endpoint/endpoints without dns = true is a config load
+	// error naming this flag. Default-off, so an existing IP-literal config never
+	// takes a new code path. Edge-only; a concentrator declaring dns = true is a
+	// config error, mirroring the endpoints-not-meaningful-for-concentrator rule.
+	DNS bool `toml:"dns"`
+	// EndpointSpecs is the ordered, typed per-entry parse of the endpoint/
+	// endpoints entries (Q35): each entry is either a literal address:port
+	// (IsName=false, Addr set — parsed with EXACTLY today's netip.ParseAddrPort
+	// path) or, when DNS opts in, a hostname:port (IsName=true, Host/Port set).
+	// Populated by resolveEndpoints in normalize(); order matches the TOML list.
+	EndpointSpecs []EndpointSpec `toml:"-"`
 	// AllowedIPs are the CIDR ranges routed to this peer.
 	AllowedIPs []string `toml:"allowed_ips"`
 }
 
+// EndpointSpec is one parsed peer endpoint entry (Q35). A literal address:port
+// entry parses via netip.ParseAddrPort and sets Addr (IsName=false); a
+// hostname:port entry (accepted only when the owning Peer opts in with
+// dns = true) sets Host/Port and IsName=true instead — no resolution happens at
+// config load (Q30 defers it to runtime).
+type EndpointSpec struct {
+	// Host is the hostname, set only when IsName is true.
+	Host string
+	// Port is the port for a hostname entry, set only when IsName is true.
+	Port uint16
+	// Addr is the parsed literal address:port, set only when IsName is false.
+	Addr netip.AddrPort
+	// IsName reports whether this entry is a hostname (true) or an IP literal
+	// (false).
+	IsName bool
+}
+
 // resolveEndpoints canonicalizes the peer's endpoint config into the ordered
-// Endpoints list (Q18): the legacy single Endpoint field and the new ordered
-// EndpointsRaw list are mutually exclusive input forms, but a bare `endpoint =
-// "..."` is normalized here to a ONE-ELEMENT Endpoints list — so it stays
-// behavior-identical to the pre-T54 single-defaultRemote config surface. Each
-// entry must parse as netip.AddrPort ("host:port"), the same format
-// bind.Multipath.ParseEndpoint requires of the UAPI endpoint string at
-// runtime, and duplicates within the list are rejected.
+// Endpoints list (Q18) and the ordered, typed EndpointSpecs list (Q35): the
+// legacy single Endpoint field and the new ordered EndpointsRaw list are
+// mutually exclusive input forms, but a bare `endpoint = "..."` is normalized
+// here to a ONE-ELEMENT list — so it stays behavior-identical to the pre-T54
+// single-defaultRemote config surface. Each entry is tried FIRST as a literal
+// netip.AddrPort ("host:port"), the same format bind.Multipath.ParseEndpoint
+// requires of the UAPI endpoint string at runtime — an all-literal config
+// takes EXACTLY this path, unchanged, with the same errors and the same
+// duplicate detection as before T67 (Q29). Only when that parse fails, AND the
+// host portion is not itself a malformed IP literal, is the entry split as
+// host:port and treated as a hostname, gated behind the peer's explicit DNS
+// opt-in (Q29); a hostname entry without the opt-in is a config error naming
+// the flag. No resolution happens here (Q30 defers it to runtime). Duplicates
+// are rejected within each of the two namespaces: a literal duplicating a
+// literal, or a hostname:port duplicating another hostname:port.
 func (p *Peer) resolveEndpoints() error {
 	if p.Endpoint != "" && len(p.EndpointsRaw) > 0 {
 		return errors.New("endpoint and endpoints are mutually exclusive; endpoint is the single-entry legacy form of endpoints")
@@ -490,19 +530,74 @@ func (p *Peer) resolveEndpoints() error {
 		raw = []string{p.Endpoint}
 	}
 	seen := make(map[netip.AddrPort]struct{}, len(raw))
+	seenNames := make(map[string]struct{}, len(raw))
 	endpoints := make([]netip.AddrPort, 0, len(raw))
+	specs := make([]EndpointSpec, 0, len(raw))
 	for _, s := range raw {
 		ap, err := netip.ParseAddrPort(s)
-		if err != nil {
+		if err == nil {
+			if _, dup := seen[ap]; dup {
+				return fmt.Errorf("duplicate endpoint %q", s)
+			}
+			seen[ap] = struct{}{}
+			endpoints = append(endpoints, ap)
+			specs = append(specs, EndpointSpec{Addr: ap})
+			continue
+		}
+		host, portStr, splitErr := net.SplitHostPort(s)
+		if splitErr != nil {
 			return fmt.Errorf("invalid endpoint %q: %w", s, err)
 		}
-		if _, dup := seen[ap]; dup {
+		// The host portion parses as an IP: this is a malformed IP-literal entry
+		// (e.g. a bad port), not a hostname — report the ORIGINAL ParseAddrPort
+		// error rather than diverting it into the hostname path, so every
+		// IP-shaped entry keeps today's exact error.
+		if _, ipErr := netip.ParseAddr(host); ipErr == nil {
+			return fmt.Errorf("invalid endpoint %q: %w", s, err)
+		}
+		if !p.DNS {
+			return fmt.Errorf("invalid endpoint %q: hostname endpoints require the peer's dns = true opt-in flag", s)
+		}
+		port, portErr := strconv.ParseUint(portStr, 10, 16)
+		if portErr != nil || port == 0 {
+			return fmt.Errorf("invalid endpoint %q: invalid port %q", s, portStr)
+		}
+		if hostErr := validateHostname(host); hostErr != nil {
+			return fmt.Errorf("invalid endpoint %q: %w", s, hostErr)
+		}
+		nameKey := host + ":" + portStr
+		if _, dup := seenNames[nameKey]; dup {
 			return fmt.Errorf("duplicate endpoint %q", s)
 		}
-		seen[ap] = struct{}{}
-		endpoints = append(endpoints, ap)
+		seenNames[nameKey] = struct{}{}
+		specs = append(specs, EndpointSpec{Host: host, Port: uint16(port), IsName: true})
 	}
 	p.Endpoints = endpoints
+	p.EndpointSpecs = specs
+	return nil
+}
+
+// validateHostname reports whether host is a syntactically valid DNS hostname
+// (RFC 1123 label rules): 1-253 characters total, each dot-separated label
+// 1-63 characters of letters/digits/hyphens, no leading or trailing hyphen.
+func validateHostname(host string) error {
+	if len(host) == 0 || len(host) > 253 {
+		return fmt.Errorf("hostname %q must be 1-253 characters", host)
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return fmt.Errorf("hostname label %q must be 1-63 characters", label)
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("hostname label %q must not start or end with a hyphen", label)
+		}
+		for _, r := range label {
+			alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			if !alnum && r != '-' {
+				return fmt.Errorf("hostname label %q contains invalid character %q", label, r)
+			}
+		}
+	}
 	return nil
 }
 
@@ -827,15 +922,25 @@ func (c *Config) validate() error {
 		if !peer.PublicKey.IsSet() {
 			return fmt.Errorf("wireguard peer %d: public_key is required", i)
 		}
-		if c.Role == RoleEdge && len(peer.Endpoints) == 0 {
+		// EndpointSpecs (not Endpoints) is the "any endpoint entry configured" check:
+		// a hostname-only peer contributes nothing to Endpoints at load time (Q30 —
+		// resolution is deferred to runtime) but must still count as configured.
+		if c.Role == RoleEdge && len(peer.EndpointSpecs) == 0 {
 			return fmt.Errorf("wireguard peer %d: endpoint is required for the edge role", i)
 		}
 		// The concentrator learns the edge's endpoint dynamically (roaming across
 		// NAT rebinds); an ordered failover endpoint list is meaningless for it, so
 		// reject rather than silently ignore a mis-targeted config (Q18 is edge-side
 		// only).
-		if c.Role == RoleConcentrator && len(peer.Endpoints) != 0 {
+		if c.Role == RoleConcentrator && len(peer.EndpointSpecs) != 0 {
 			return fmt.Errorf("wireguard peer %d: endpoint/endpoints is not meaningful for the concentrator role (it learns the edge's endpoint dynamically)", i)
+		}
+		// The DNS opt-in (Q29) is edge-only, mirroring the endpoints rule above: a
+		// concentrator learns the edge's endpoint dynamically, so a hostname
+		// endpoint config (and its dns = true opt-in) is meaningless there even
+		// when no endpoint/endpoints entries are present.
+		if c.Role == RoleConcentrator && peer.DNS {
+			return fmt.Errorf("wireguard peer %d: dns is not meaningful for the concentrator role (it learns the edge's endpoint dynamically)", i)
 		}
 	}
 	if c.Role == RoleConcentrator && c.WireGuard.ListenPort == 0 {

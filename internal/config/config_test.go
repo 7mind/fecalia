@@ -179,6 +179,75 @@ func TestLoadEndpointsOrderedList(t *testing.T) {
 	}
 }
 
+// TestLoadEndpointAllLiteralPopulatesEndpointSpecs is the T67 byte-for-byte
+// invariant (Q29): an all-IP-literal config must take EXACTLY today's code
+// path. EndpointSpecs must mirror Endpoints one-for-one (IsName=false, Addr
+// set), on top of Endpoints staying populated exactly as before T67 (already
+// covered by TestLoadEndpointsOrderedList).
+func TestLoadEndpointAllLiteralPopulatesEndpointSpecs(t *testing.T) {
+	body := fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+		`endpoints = ["203.0.113.5:51820", "198.51.100.7:51820"]`, 1))
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	peer := c.WireGuard.Peers[0]
+	want := []string{"203.0.113.5:51820", "198.51.100.7:51820"}
+	if got := len(peer.EndpointSpecs); got != len(want) {
+		t.Fatalf("EndpointSpecs length = %d, want %d", got, len(want))
+	}
+	for i, w := range want {
+		spec := peer.EndpointSpecs[i]
+		if spec.IsName {
+			t.Errorf("EndpointSpecs[%d].IsName = true, want false for literal %q", i, w)
+		}
+		if got := spec.Addr.String(); got != w {
+			t.Errorf("EndpointSpecs[%d].Addr = %q, want %q", i, got, w)
+		}
+	}
+}
+
+// TestLoadEndpointHostnameWithDNSOptIn covers acceptance cases (1) and (3): a
+// hostname entry with the peer's dns = true opt-in parses into an EndpointSpec
+// with IsName=true, Host/Port set, and a mixed list of literals and names
+// preserves TOML order in EndpointSpecs. Endpoints (the literal/resolved
+// snapshot T57 consumes) holds only the literal entries — Q30 defers hostname
+// resolution to runtime, so a name contributes nothing there at load time.
+func TestLoadEndpointHostnameWithDNSOptIn(t *testing.T) {
+	body := fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+		"dns = true\n"+`endpoints = ["203.0.113.5:51820", "concentrator.example.com:51820", "198.51.100.7:51821"]`, 1))
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	peer := c.WireGuard.Peers[0]
+	if got := len(peer.EndpointSpecs); got != 3 {
+		t.Fatalf("EndpointSpecs length = %d, want 3", got)
+	}
+	if spec := peer.EndpointSpecs[0]; spec.IsName || spec.Addr.String() != "203.0.113.5:51820" {
+		t.Errorf("EndpointSpecs[0] = %+v, want literal 203.0.113.5:51820", spec)
+	}
+	if spec := peer.EndpointSpecs[1]; !spec.IsName || spec.Host != "concentrator.example.com" || spec.Port != 51820 {
+		t.Errorf("EndpointSpecs[1] = %+v, want hostname concentrator.example.com:51820", spec)
+	}
+	if spec := peer.EndpointSpecs[2]; spec.IsName || spec.Addr.String() != "198.51.100.7:51821" {
+		t.Errorf("EndpointSpecs[2] = %+v, want literal 198.51.100.7:51821", spec)
+	}
+	// The hostname entry contributes nothing to Endpoints at load time (Q30): only
+	// the two literal entries, in order, show up there.
+	want := []string{"203.0.113.5:51820", "198.51.100.7:51821"}
+	if got := len(peer.Endpoints); got != len(want) {
+		t.Fatalf("Endpoints length = %d, want %d", got, len(want))
+	}
+	for i, w := range want {
+		if got := peer.Endpoints[i].String(); got != w {
+			t.Errorf("Endpoints[%d] = %q, want %q", i, got, w)
+		}
+	}
+}
+
 func TestLoadRejects(t *testing.T) {
 	cases := []struct {
 		name string
@@ -262,6 +331,36 @@ func TestLoadRejects(t *testing.T) {
 			mode: 0o600,
 			body: fill(strings.Replace(concentratorConfig, `allowed_ips = ["10.0.0.2/32"]`,
 				"allowed_ips = [\"10.0.0.2/32\"]\nendpoints = [\"203.0.113.5:51820\"]", 1)),
+			want: "not meaningful for the concentrator role",
+		},
+		{
+			// Acceptance case (2): a hostname entry without the peer's dns = true
+			// opt-in fails Load with an error naming the flag (Q29 default-off
+			// DPI posture).
+			name: "edge peer hostname endpoint without dns opt-in",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+				`endpoint = "concentrator.example.com:51820"`, 1)),
+			want: "dns = true",
+		},
+		{
+			// Acceptance case (4): duplicate detection extends to hostname entries
+			// — the same host:port twice is rejected, same error shape as a
+			// duplicate IP literal.
+			name: "edge peer duplicate hostname endpoint",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+				"dns = true\n"+`endpoints = ["concentrator.example.com:51820", "concentrator.example.com:51820"]`, 1)),
+			want: "duplicate endpoint",
+		},
+		{
+			// Acceptance case (5): the dns opt-in is edge-only, mirroring the
+			// endpoints-not-meaningful-for-concentrator rule, even when the
+			// concentrator declares no endpoint/endpoints entries at all.
+			name: "concentrator peer declares dns opt-in (edge-only surface)",
+			mode: 0o600,
+			body: fill(strings.Replace(concentratorConfig, `allowed_ips = ["10.0.0.2/32"]`,
+				"allowed_ips = [\"10.0.0.2/32\"]\ndns = true", 1)),
 			want: "not meaningful for the concentrator role",
 		},
 		{
