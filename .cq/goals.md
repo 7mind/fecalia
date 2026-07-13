@@ -68,10 +68,10 @@ archives: []
 
 ## M12
 
-### G2 — clarifying
+### G2 — planning
 
 - createdAt: 2026-07-13T12:27:36.017Z
-- updatedAt: 2026-07-13T12:57:34.746Z
+- updatedAt: 2026-07-13T13:43:54.542Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - title: "Production-readiness: real-link validation, pacing sizing, and pilot hardening"
@@ -94,3 +94,5 @@ archives: []
     NON-GOALS (keep EXCLUDED unless the answers above explicitly override): TCP/TLS fallback for wholesale-UDP-block networks (standing G1 non-goal); protocol mimicry; >3 links; a general SD-WAN product; GUI.
     
     DEFERRED-WORK PROVENANCE: this goal collects the deliberate boundaries recorded in docs/design.md 'Not yet built' + the production-readiness assessment (pacing not empirically sized; throughput aggregation unmeasured in-fixture; CONTROL unwired; single concentrator), PLUS the startup all-or-nothing path-bind resilience gap surfaced by the 2026-07-13 design review (CORE SCOPE 4, approach A). It does not re-open any resolved G1 defect.
+- grounding: "Grounded 2026-07-13 (opus-4.8[1m]). STARTUP FATAL-BIND (CORE SCOPE 4): internal/bind/multipath.go Open() loop L467-516 binds each path via listenPath L479; ANY error -> closeSocketsLocked+fatal return (EADDRNOTAVAIL included). The TOLERANT model to reuse is runtime AddPath L1336-1416 (binds, on failure rolls back path WITHOUT tearing down the tunnel). Path-down model = telemetry Liveness StateDown/StateUp (internal/telemetry/liveness.go, DownAfter~1200ms, UpAfterSuccesses=3); sched/weighted.go excludes Down paths from Pick. CONTROL dropped at bind default case (~L854) -> stays dormant (Q17). CONFIG: internal/config/config.go Path{SourceAddr netip.Addr, DestAddr netip.AddrPort} (per-path dest) + single defaultRemote (ParseEndpoint ~L1244); validate L579-644 rejects missing/duplicate/malformed source_addr at load (malformed stays fatal per guard b). PACING: SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFrameBytes float64)->BDPSizing{CapacityFPS,BurstFrames} L182-196 is a HELPER, NOT wired into config load; synthetic default defaultPerPathCapacityFPS=10000 (~115Mbit/s); WeightedConfig.Pacing / config PacingEnabled default FALSE; token bucket in sched/weighted.go tryConsumeLocked. PROBE plane: telemetry Prober/Reflector/Estimator drives per-path RTT/loss/jitter + failover. TESTS: test/e2e netns fixture (netns.go SetupWithPaths, tc/netem) + capped fixture TestFixtureImpairment (test/e2e/fixture_impairment_test.go, rateMbit/lossPct, T35); test/realhosts (-tags realhosts) runner.go SSH + provision.go against llm-ubuntu-0 (amd64 symmetric-NAT EDGE) + o3.7mind.io (aarch64 PUBLIC concentrator 89.168.124.91, live iptables OK, never deprovision). GATE: go build/vet/gofmt/test; just e2e (sudo netns); just realhosts (report-only, M10/Q12). DOCS to keep in sync (AGENTS.md): README.md, docs/design.md ('Not yet built' L232-251), docs/install.md, docs/manual-checklist.md. DECISIONS: Q17 CONTROL dormant (no milestone). Q18 multi-concentrator IN: model = edge-side ORDERED-ENDPOINT ACTIVE-STANDBY (edge holds N concentrator endpoints, detects all-paths-to-hub DOWN via PROBE/liveness, switches remote + WG re-handshake to next; NO hub-to-hub state handoff; mesh/anycast ruled out by SD-WAN non-goal). Q19 exit criterion NON-BLOCKING on soak. Q20 pacing = BOTH (wire SizePacingFromBDP from operator-declared per-link bandwidth + document measurement)."
+- milestones: ["M13","M14","M15","M16","M17"]

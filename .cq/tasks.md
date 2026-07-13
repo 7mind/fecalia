@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 50
+  item: 66
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -492,3 +492,217 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T35"]
 - ledgerRefs: ["goals:G1","tasks:T25","tasks:T29"]
+
+## M13
+
+### T51 — planned
+
+- createdAt: 2026-07-13T13:41:17.887Z
+- updatedAt: 2026-07-13T13:41:17.887Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Make Bind Open() tolerant of not-yet-assignable source_addr (EADDRNOTAVAIL)
+- description: "internal/bind/multipath.go Open() loop (L467-516, binds each path via listenPath L479) currently returns fatally on ANY per-path bind error, tearing down bring-up. Refactor so a WELL-FORMED source_addr that is merely not-yet-assignable (net.ListenUDP -> EADDRNOTAVAIL / 'cannot assign requested address') does NOT abort: bring the tunnel up on the paths that DO bind, and mark each unbindable path DOWN by reusing the runtime path-down model (telemetry Liveness StateDown, internal/telemetry/liveness.go) so sched/weighted.go Pick already excludes it. Mirror the rollback discipline of runtime AddPath (L1336-1416). HARD GUARDS enforced here: (a) if ZERO paths bind, Open() STILL fails fatally (no transport => no tunnel); (b) a MALFORMED source_addr stays a hard config-load error (config.validate L579-644 already rejects it -- do not move that check); (c) distinguish EADDRNOTAVAIL from other bind errors (EADDRINUSE / permission) which remain fatal. Detect EADDRNOTAVAIL via errors.Is on the syscall errno, not string matching. Behavior change => update docs/design.md startup/bind section + docs/manual-checklist.md."
+- acceptance: "New unit test in internal/bind exercises Open() with (i) one bindable + one EADDRNOTAVAIL path -> Open succeeds, unbindable path present and marked Down; (ii) all paths EADDRNOTAVAIL -> Open returns error; (iii) EADDRINUSE -> Open returns error. `go build ./... && go vet ./... && gofmt -l internal/bind` clean; `go test ./internal/bind/...` passes. Doc-sync: docs/design.md + docs/manual-checklist.md updated to describe tolerant startup bind."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G2"]
+
+### T55 — planned
+
+- createdAt: 2026-07-13T13:41:52.923Z
+- updatedAt: 2026-07-13T13:41:52.923Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Background reconcile: retry binding deferred-DOWN paths as their addresses appear"
+- description: Add a background reconciler that retries listenPath for paths left DOWN by the tolerant Open() (T51) once their well-formed source_addr becomes assignable. Planner's call between event-driven (subscribe to netlink route/addr updates, e.g. via vishvananda/netlink AddrSubscribe) and a bounded poll; prefer netlink if it stays within existing deps, else a bounded-interval poll with backoff. On successful (re)bind, promote the path using the SAME runtime path-up transition as AddPath/liveness (StateUp after UpAfterSuccesses) so the scheduler picks it up uniformly; on continued EADDRNOTAVAIL, stay DOWN and retry. Must not busy-loop, must stop cleanly on Close(), and must not touch paths that bound at startup. Behavior change => update docs/design.md startup/reconcile section.
+- acceptance: "Unit test: a path that starts DOWN (EADDRNOTAVAIL) transitions Up once a fake bind succeeds, exercised via an injected listen/clock seam; reconciler terminates on Close with no goroutine leak (go test -race). `go build ./... && go vet ./... && gofmt -l internal/bind` clean; `go test -race ./internal/bind/...` passes. Doc-sync: docs/design.md documents background path reconcile."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T51"]
+
+### T60 — planned
+
+- createdAt: 2026-07-13T13:42:43.548Z
+- updatedAt: 2026-07-13T13:42:43.548Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "netns e2e: absent-then-added source_addr; zero-bindable fatal; malformed config-load error; no T16 regression"
+- description: "Add a netns e2e (test/e2e, netns.go SetupWithPaths + tc/netem harness) validating the tolerant-startup feature (T51) + reconcile (T55): (1) start with a path whose source_addr's interface/address is ABSENT -> assert the tunnel comes up on the SURVIVOR path and carries traffic, the absent path is DOWN; (2) then ADD the missing address -> assert the deferred path is reconciled/joined and now carries traffic; (3) separately, ZERO bindable paths -> daemon exits fatally (no crash-loop-masking); (4) MALFORMED source_addr -> config-load error (fails before bind). Also assert the existing T16 device-bind / re-roam + source_addr-pin e2e still passes (no regression)."
+- acceptance: "`just e2e` (sudo netns) runs the new test: survivor-up-then-deferred-join passes; zero-bindable exits non-zero; malformed is rejected at config load; the pre-existing T16 e2e still passes in the same run. Test is deterministic across repeats."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T51","T55"]
+
+## M14
+
+### T52 — planned
+
+- createdAt: 2026-07-13T13:41:24.901Z
+- updatedAt: 2026-07-13T13:41:24.901Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Measure per-path BDP + standing-queue baseline via the capped impairment fixture
+- description: Using the bandwidth-capped fixture (test/e2e/fixture_impairment_test.go, TestFixtureImpairment / T35; rateMbit/lossPct knobs), drive sustained load at a declared per-path rate to create a standing queue, and measure per-path BDP (bandwidth x baseline RTT) and the bufferbloat delta (loaded RTT minus idle RTT) with pacing DISABLED. Produce a deterministic in-repo measurement (test helper or sub-test) that emits the measured BDP and queue delay so W2b's SizePacingFromBDP inputs are grounded in fixture numbers rather than the synthetic defaultPerPathCapacityFPS=10000 (~115 Mbit/s). Report-only numbers (no absolute-value assertion) but the measurement path itself must run deterministically.
+- acceptance: "`just e2e` (or `go test -tags e2e ./test/e2e -run TestFixtureImpairment...`) runs the new capped-rate measurement and prints per-path BDP + idle-vs-loaded RTT delta at a declared rate; the sub-test is deterministic (passes on repeat). `go vet ./... && gofmt -l test/e2e` clean."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+
+### T53 — planned
+
+- createdAt: 2026-07-13T13:41:32.390Z
+- updatedAt: 2026-07-13T13:41:32.390Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- description: "Wire the existing helper SizePacingFromBDP(bandwidthBitsPerSec, rtt, avgWireFrameBytes) -> BDPSizing{CapacityFPS,BurstFrames} (internal/config, L182-196) into config load. Add an OPERATOR-DECLARED per-link bandwidth field to the per-path config (internal/config/config.go Path{}); when present and pacing is enabled, derive CapacityFPS/BurstFrames from SizePacingFromBDP (using a measured/declared RTT input) instead of the synthetic defaultPerPathCapacityFPS. This is operator-declared, NOT runtime auto-tuning (Q20 = declared+document, no control loop). Pacing MUST continue to ship DISABLED by default (PacingEnabled default false unchanged); a declared bandwidth with pacing disabled has no effect. config.validate must accept the new field and reject a non-positive bandwidth. Config/behavior change => update docs/design.md pacing section + docs/install.md config reference."
+- headline: Wire SizePacingFromBDP into config load from operator-declared per-link bandwidth
+- acceptance: "New config field parsed + validated (unit test: declared bandwidth -> expected CapacityFPS/BurstFrames via SizePacingFromBDP; non-positive rejected; absent field -> synthetic default preserved; pacing still default-disabled). `go build ./... && go vet ./... && gofmt -l internal/config` clean; `go test ./internal/config/...` passes. Doc-sync: docs/design.md + docs/install.md document the new per-link bandwidth config key."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G2"]
+
+### T56 — planned
+
+- createdAt: 2026-07-13T13:42:00.528Z
+- updatedAt: 2026-07-13T13:42:00.528Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Document the per-link bandwidth measurement + pacing tuning procedure
+- description: "Write the operator-facing tuning procedure (Q20 = both: wire + document): how to measure a per-link bandwidth number (using the capped-fixture method from T52 and/or the real-link tier), how to set the per-link bandwidth config key added in T53, when to enable pacing, and how to confirm bufferbloat is controlled. Place in docs/design.md (pacing rationale) + docs/install.md (operator step-by-step); cross-link from README if it indexes tuning. State clearly that pacing ships DISABLED by default and is opt-in per deployment."
+- acceptance: docs/install.md contains a step-by-step per-link pacing tuning procedure referencing the config key from T53; docs/design.md explains the BDP-sizing rationale. `gofmt`/build unaffected (docs only); a reviewer can follow the procedure end-to-end without reading source. Markdown links resolve.
+- suggestedModel: fast
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T53"]
+
+### T61 — planned
+
+- createdAt: 2026-07-13T13:42:52.074Z
+- updatedAt: 2026-07-13T13:42:52.074Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Validate ENABLED pacing eliminates bufferbloat + does not starve WG rekey under overload
+- description: "Using the capped fixture (T52 measurement path) with pacing ENABLED and sized from the T53 config wiring, assert two properties under sustained overload: (1) BUFFERBLOAT CONTROL -- loaded-RTT with pacing enabled is materially lower than the pacing-disabled baseline standing queue (relative comparison, not an absolute threshold); (2) NO CONTROL-FRAME STARVATION -- a WireGuard rekey (inner handshake, ~2 min cadence, telemetry/probe frames) still completes while the data plane is saturated, i.e. pacing's token bucket (sched/weighted.go tryConsumeLocked) does not starve control/probe traffic. Report the numbers; the pass condition is the relative bufferbloat reduction + rekey/probe success, not an absolute rate."
+- acceptance: "`just e2e` runs the pacing-enabled sub-test: loaded-RTT (pacing on) < loaded-RTT (pacing off) at the same offered load; a rekey/probe completes during saturation (assert handshake/probe success, not just data throughput). Deterministic across repeats. `go vet ./... && gofmt -l` clean."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T52","T53"]
+
+## M15
+
+### T54 — planned
+
+- createdAt: 2026-07-13T13:41:37.377Z
+- updatedAt: 2026-07-13T13:41:37.377Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Config: edge-side ordered list of concentrator (peer) endpoints"
+- description: "Extend config (internal/config/config.go -- today a single defaultRemote via ParseEndpoint ~L1244) to hold an ORDERED list of concentrator/peer endpoints for the edge, first = active, rest = standby, per Q18 (edge-side ordered-endpoint active-standby). Parse + validate the list (each a well-formed host:port; reject empty/duplicate; a single-entry list preserves today's behavior exactly). No hub-to-hub state; the list is purely edge-side selection order. This task is config surface only -- the failover switch logic is the hub-loss-detection task. Config change => update docs/install.md config reference + docs/design.md concentrator section."
+- acceptance: "Unit test: multi-endpoint list parses in order; single-entry list is behavior-identical to the old single defaultRemote; empty/duplicate rejected by validate. `go build ./... && go vet ./... && gofmt -l internal/config` clean; `go test ./internal/config/...` passes. Doc-sync: docs/install.md + docs/design.md document the ordered concentrator-endpoint list."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+
+### T57 — planned
+
+- createdAt: 2026-07-13T13:42:10.041Z
+- updatedAt: 2026-07-13T13:42:10.041Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Hub-loss detection + switch peer remote + WG re-handshake to next concentrator
+- description: "Implement edge-side active-standby hub failover (Q18). Using the PROBE/liveness plane, detect HUB LOSS = ALL paths to the ACTIVE concentrator endpoint DOWN (distinct from single-path loss, which existing per-path failover already handles). On hub loss, advance to the next endpoint in the ordered list (T54), switch the peer remote (WireGuard endpoint) for every path to point at the standby concentrator, and trigger a WG re-handshake (fresh session; NO hub-to-hub state handoff). Re-arm detection against the new active endpoint; if it also fails, advance again (wrap/stop per config). Shares internal/bind/multipath.go with the startup-resilience change, so it is sequenced after T51 to avoid conflicting edits to the bind/path model. Guard: a single-endpoint list must behave exactly as today (no failover path taken). Behavior change => update docs/design.md concentrator-failover section + docs/manual-checklist.md."
+- acceptance: "Unit/component test: with a 2-endpoint list, forcing all paths to endpoint#1 DOWN switches the peer remote to endpoint#2 and initiates a re-handshake; single-endpoint list takes no failover action; detection re-arms on the new endpoint. `go build ./... && go vet ./... && gofmt -l internal/bind internal/config` clean; `go test ./internal/...` passes. Doc-sync: docs/design.md + docs/manual-checklist.md describe hub failover."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T54","T51"]
+
+### T62 — planned
+
+- createdAt: 2026-07-13T13:42:58.597Z
+- updatedAt: 2026-07-13T13:42:58.597Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "netns e2e: hub failover switches to standby concentrator and re-establishes the tunnel"
+- description: "Add a netns e2e (test/e2e) for Q18 hub failover (T57): stand up TWO concentrator endpoints and an edge with an ordered 2-endpoint list; establish the tunnel to endpoint#1; then force ALL paths to endpoint#1 DOWN (tc/netem drop or address removal at the hub side) and assert the edge switches its peer remote to endpoint#2, completes a WG re-handshake, and resumes carrying traffic through the standby. Assert a single-endpoint list takes NO failover action (control case). Deterministic."
+- acceptance: "`just e2e` (sudo netns) runs the hub-failover test: after all-paths-to-hub#1 down, traffic resumes via hub#2 within the liveness/failover window; single-endpoint control case shows no switch. Passes on repeat."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T57"]
+
+## M16
+
+### T58 — planned
+
+- createdAt: 2026-07-13T13:42:19.742Z
+- updatedAt: 2026-07-13T13:42:19.742Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Realhosts tier: throughput-aggregation ratio + loaded-RTT (bufferbloat) across the two standing hosts"
+- description: "Extend the -tags realhosts tier (test/realhosts runner.go SSH + provision.go) to run across llm-ubuntu-0 (amd64 symmetric-NAT EDGE) <-> o3.7mind.io (aarch64 PUBLIC concentrator 89.168.124.91) and record: (1) per-path throughput and BONDED-vs-SUM aggregation ratio; (2) LOADED RTT vs idle RTT (bufferbloat) under sustained transfer, with pacing enabled using the W2 per-link bandwidth config (exercises T53). Report-only per M10/Q12 -- print/emit the numbers, assert only liveness (tunnel came up, transfer completed), NO absolute-number gate. Reuses the standing hosts' llm SSH key path; must not deprovision o3. This is the measurement the CPU-bound netns fixture cannot produce."
+- acceptance: "`just realhosts` (go test -tags realhosts) runs against the two standing hosts, brings up the bonded tunnel, and emits per-path throughput, bonded-vs-sum ratio, and idle-vs-loaded RTT to the test log; the test passes on liveness (no absolute-throughput assertion). Hardware-validated: attach a captured run log. `go vet -tags realhosts ./test/realhosts` clean."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T53"]
+
+### T63 — planned
+
+- createdAt: 2026-07-13T13:43:06.136Z
+- updatedAt: 2026-07-13T13:43:06.136Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Realhosts tier: mid-transfer WAN kill for link AND hub failover under real conditions"
+- description: "Extend the realhosts tier (building on T58) with a deliberate MID-TRANSFER kill: (1) LINK failover -- drop one WAN path (iptables on the edge host) mid-transfer and confirm the transfer continues over the survivor path; (2) HUB failover -- exercise the Q18 active-standby switch (T57) by making the active concentrator endpoint unreachable (iptables on o3, live-firewall OK, never deprovision) and confirm the edge fails over to a standby endpoint and the transfer resumes. Report-only (M10/Q12): assert transfer resumes/completes, emit failover timing, NO absolute-number gate. Uses the llm SSH key; must not deprovision o3."
+- acceptance: "`just realhosts` runs the WAN-kill sub-tests against the standing hosts: transfer survives a mid-transfer single-link kill; transfer survives a mid-transfer active-concentrator kill by switching to a standby endpoint; failover timings emitted to the log. Passes on liveness (transfer completes). Hardware-validated: attach the captured run log."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T58","T57"]
+
+### T64 — planned
+
+- createdAt: 2026-07-13T13:43:11.499Z
+- updatedAt: 2026-07-13T13:43:11.499Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Realhosts tier: short report-only soak across the two standing hosts"
+- description: "Add a SHORT report-only soak to the realhosts tier (building on T58): sustained transfer over the bonded tunnel across llm-ubuntu-0 <-> o3 for a bounded duration (minutes, not hours -- the long soak runs DURING the supervised pilot per Q19, not as a pre-gate), sampling throughput, RTT, loss, and rekey/liveness health over the window. Report-only per M10/Q12: emit the time series / summary, assert only that the tunnel stayed up and the transfer completed (no absolute-number gate). Must not deprovision o3."
+- acceptance: "`just realhosts` runs the bounded soak: tunnel stays up for the full window, transfer completes, and per-sample throughput/RTT/loss/health are emitted to the log. Passes on liveness only. Hardware-validated: attach the captured soak log."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T58"]
+
+## M17
+
+### T59 — planned
+
+- createdAt: 2026-07-13T13:42:26.004Z
+- updatedAt: 2026-07-13T13:42:26.004Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Rollout runbook: config/key/PSK generation, firewall persistence, monitoring, standby-concentrator setup"
+- description: "Write the pre-pilot ROLLOUT RUNBOOK (docs, per CORE SCOPE 3): concentrator + edge config generation, WireGuard key + PSK generation, the already-done concentrator firewall persistence (D7/D8, reboot-persistent deduped iptables on o3), /metrics monitoring + health checks, and the STANDBY-CONCENTRATOR setup that the Q18 ordered-endpoint list (T53/T54) now enables. Documents the shipped pacing config key (T53) and concentrator-endpoint list (T54). Doc task; keep README/docs/install.md consistent."
+- acceptance: docs/install.md (or a new docs/runbook) contains a complete rollout runbook covering key/PSK generation, both-ends config, firewall persistence, monitoring, and standby-concentrator configuration; an operator can provision a fresh edge+hub pair by following it. Markdown links resolve; README indexes it.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T53","T54"]
+
+### T65 — planned
+
+- createdAt: 2026-07-13T13:43:27.916Z
+- updatedAt: 2026-07-13T13:43:27.916Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Automate the manual-checklist section-P0 real-link baseline into a repeatable pre-pilot procedure
+- description: Turn the docs/manual-checklist.md section-P0 real-link baseline (currently manual steps) into a repeatable, mostly-automated pre-pilot procedure, reusing the realhosts harness/tooling extended in T58/T63 (runner.go SSH + provision.go against llm-ubuntu-0 <-> o3). Provide a single invocation (a just target or script) that provisions both ends, brings up the tunnel, runs the aggregation + loaded-RTT + link/hub failover smoke, and emits a baseline report. Keep it report-only (Q19 non-blocking). Update docs/manual-checklist.md so the P0 section points at the automated procedure (documenting any steps that remain manual).
+- acceptance: "A single documented command runs the P0 baseline end-to-end against the standing hosts and emits a baseline report (aggregation ratio, loaded RTT, failover smoke); docs/manual-checklist.md P0 section is updated to reference it. Hardware-validated: attach the captured baseline report. `go vet -tags realhosts ./test/realhosts` clean."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T58","T63"]
+
+### T66 — planned
+
+- createdAt: 2026-07-13T13:43:45.246Z
+- updatedAt: 2026-07-13T13:43:45.246Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: Record non-blocking pilot exit criterion + full README/design.md/install.md/manual-checklist.md doc-sync
+- description: "Final documentation sweep for G2 (CORE SCOPE 3 + Q19). (1) Record the NON-BLOCKING pilot exit criterion explicitly: capped-fixture aggregation/bufferbloat measurement (W2) + report-only real-link smoke (W4) are SUFFICIENT to proceed to a supervised pilot; the longer soak runs DURING the pilot, not as a pre-gate. (2) Full doc-sync per AGENTS.md across README.md, docs/design.md ('Not yet built' L232-251 -- move the now-built items: startup resilience, pacing sizing, hub failover, real-link tier), docs/install.md, docs/manual-checklist.md, so no doc still describes these as unbuilt/deferred and the pacing config key + concentrator-endpoint list + tolerant-startup behavior are all documented consistently. This is the last task; it reconciles the docs touched piecemeal by W1-W4 into a coherent whole."
+- acceptance: docs/design.md 'Not yet built' no longer lists the G2-delivered items; README/design.md/install.md/manual-checklist.md consistently document startup tolerance, pacing sizing+config key, hub failover+endpoint list, and the real-link tier; the non-blocking exit criterion is stated in the pilot section. `grep` for stale 'not yet built'/'unmeasured'/'single concentrator' phrasing returns nothing describing delivered work. Markdown links resolve.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G2"]
+- dependsOn: ["T56","T59","T65","T60","T61","T62","T63","T64"]

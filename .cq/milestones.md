@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 12
+  item: 17
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -100,3 +100,41 @@ archives:
 - title: "G2 coordination: production-readiness — real-link validation, pacing, pilot hardening"
 - description: Coordination milestone for goal G2 (production-readiness / pre-pilot hardening). Follows G1 (P0-P5 build + 2026-07-08 deferred-defect hardening round, both complete; ledger drained). Holds G2 and its clarifying questions until planned.
 - dependsOn: ["M1"]
+
+### M13 — open
+
+- createdAt: 2026-07-13T13:36:41.213Z
+- updatedAt: 2026-07-13T13:36:41.213Z
+- title: "G2/W1 — Startup path-availability resilience (approach A: tolerant bind + background reconcile)"
+- description: "CORE SCOPE 4. Make internal/bind/multipath.go Open() tolerant of a well-formed-but-not-yet-assignable source_addr (EADDRNOTAVAIL): bring the tunnel up on paths that DO bind, mark unbindable ones DOWN (reuse runtime path-down model), and reconcile/retry in background as addresses appear. Hard guards: zero-bindable stays FATAL; malformed source_addr stays a config-load error; no T16 device-bind/re-roam regression. Validated by a netns e2e. Work milestone for goal G2 (coordination milestone M12)."
+
+### M14 — open
+
+- createdAt: 2026-07-13T13:36:44.185Z
+- updatedAt: 2026-07-13T13:36:44.185Z
+- title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
+- description: CORE SCOPE 1, Q20=both. Measure per-path BDP with the bandwidth-capped fixture (T35); wire SizePacingFromBDP into config load from an operator-declared per-link bandwidth (not runtime auto-tuning); validate ENABLED pacing eliminates bufferbloat under sustained load and does not starve WireGuard rekey; document the measurement/tuning procedure. Pacing continues to ship DISABLED by default. Work milestone for goal G2 (coordination milestone M12).
+
+### M15 — open
+
+- createdAt: 2026-07-13T13:36:51.219Z
+- updatedAt: 2026-07-13T13:36:51.219Z
+- title: "G2/W3 — Multi-concentrator hub-failover (Q18: edge-side ordered-endpoint active-standby)"
+- description: "Q18 IN-SCOPE. Bring hub-termination redundancy into the pilot via edge-side ORDERED-ENDPOINT ACTIVE-STANDBY: the edge holds an ordered list of concentrator (Peer) endpoints, detects hub loss (ALL paths to the active concentrator DOWN via the PROBE/liveness plane), switches the peer remote and triggers a WireGuard re-handshake to the next endpoint. NO hub-to-hub state handoff (fresh WG session at the standby); mesh/anycast ruled out by the SD-WAN non-goal. Netns e2e + report-only realhosts validation. Depends on W1 (shares internal/bind/multipath.go). Work milestone for goal G2 (coordination milestone M12)."
+- dependsOn: ["M13"]
+
+### M16 — open
+
+- createdAt: 2026-07-13T13:36:58.845Z
+- updatedAt: 2026-07-13T13:36:58.845Z
+- title: "G2/W4 — Real-link validation tier (CORE SCOPE 2: aggregation + loaded-RTT + WAN-kill + short soak, report-only)"
+- description: "CORE SCOPE 2. Extend the -tags realhosts tier (runner.go SSH + provision.go) across the two standing hosts (llm-ubuntu-0 amd64 symmetric-NAT edge <-> o3 aarch64 public concentrator) with: throughput-aggregation (bonded-vs-sum ratio) + loaded-RTT/bufferbloat under load; a deliberate mid-transfer WAN kill for link AND hub failover under real conditions; and a SHORT report-only soak. All report-only per M10/Q12 (no absolute-number gate). Hardware-validated on the standing hosts; exercises W2 pacing and W3 hub-failover. Depends on W2 + W3. Work milestone for goal G2 (coordination milestone M12)."
+- dependsOn: ["M14","M15"]
+
+### M17 — open
+
+- createdAt: 2026-07-13T13:37:05.088Z
+- updatedAt: 2026-07-13T13:37:05.088Z
+- title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
+- description: CORE SCOPE 3 + Q19. Automate the manual-checklist section-P0 real-link baseline into a repeatable pre-pilot procedure; write a rollout runbook (config/key/PSK generation, concentrator firewall persistence D7/D8, /metrics monitoring, health checks, standby-concentrator setup); record the NON-BLOCKING pilot exit criterion (capped-fixture aggregation/bufferbloat + report-only real-link smoke are SUFFICIENT to proceed; soak runs DURING the supervised pilot, not as a pre-gate); and do a full README/design.md/install.md/manual-checklist.md doc-sync sweep per AGENTS.md. Depends on W1-W4. Work milestone for goal G2 (coordination milestone M12).
+- dependsOn: ["M13","M14","M15","M16"]

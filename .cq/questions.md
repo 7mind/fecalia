@@ -210,11 +210,11 @@ archives:
 
 ## M12
 
-### Q17 — open
+### Q17 — answered
 
 - createdAt: 2026-07-13T12:28:44.292Z
-- updatedAt: 2026-07-13T13:21:10.195Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T13:28:33.895Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "CONTROL protocol: for the pilot, do we wire a LIVE out-of-band CONTROL protocol (explicit rekey / tunnel-state signalling) through the existing reserved Bind chokepoint, or keep the CONTROL primitive dormant/reserved?"
 - context: |
@@ -230,30 +230,33 @@ archives:
 - suggestions: ["Keep CONTROL dormant/reserved for the pilot (primitive stays ready, no live protocol shipped)","Wire a live out-of-band rekey/state-signalling CONTROL protocol into scope now"]
 - recommendation: "Keep CONTROL dormant/reserved for the pilot. Every job a control protocol would do is already covered (WireGuard's own inner rekey; the wired PROBE plane for liveness/failover; the Bind's endpoint learning for roaming/NAT) or is a static-config concern for a 2-link known-topology pilot (dynamic path push is the SD-WAN non-goal). The primitive is intentionally pre-built and anti-replay-guarded, so activating it later is cheap and non-breaking. FLIP TO 'IN SCOPE' ONLY IF a concrete near-term need exists: you want to add/remove/reweight paths CENTRALLY (from the concentrator) without editing edge config; OR a COORDINATED MAINTENANCE DRAIN (graceful 'stop using this path/tunnel' ahead of the liveness timeout); OR ends that NEGOTIATE FEC/pacing/MTU dynamically instead of by matched static config. If any of those is a pilot goal, answer 'in scope' and it becomes a clean milestone (define the message types + handler on top of the existing guard); otherwise 'keep dormant' loses nothing."
 - ledgerRefs: ["goals:G2"]
+- answer: as recommended
 
-### Q18 — open
+### Q18 — answered
 
 - createdAt: 2026-07-13T12:28:52.771Z
-- updatedAt: 2026-07-13T12:28:52.771Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T13:27:39.187Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "MULTI-CONCENTRATOR failover: does the pilot bring tunnel-termination redundancy (>1 concentrator, failover at the hub) into scope, or keep the single-concentrator model as a standing non-goal?"
 - context: Today the concentrator (o3, the public hub) is a single tunnel-termination point. Edge-side multipathing already provides link-level redundancy (multiple WAN paths bonded), but the hub itself is a single point of termination. Adding hub redundancy means concentrator discovery/selection, failover semantics, and state handoff between concentrators — a large additive design that touches the core data path. This decision determines whether the plan contains a multi-concentrator work milestone. It is currently a stated non-goal.
 - suggestions: ["Keep the single-concentrator model (hub redundancy remains a non-goal for the pilot)","Bring multi-concentrator / hub-failover redundancy into pilot scope"]
 - recommendation: Out of scope for the pilot. Edge multipathing already delivers the link redundancy wanbond exists to provide; concentrator HA is better handled as an operational/deployment concern (DNS/anycast/standby host in front of the hub) than as a wanbond protocol feature. Bring it into scope only if the pilot specifically requires surviving loss of the hub host itself.
 - ledgerRefs: ["goals:G2"]
+- answer: Bring multi-concentrator / hub-failover redundancy into pilot scope
 
-### Q19 — open
+### Q19 — answered
 
 - createdAt: 2026-07-13T12:29:01.762Z
-- updatedAt: 2026-07-13T12:29:01.762Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T13:28:16.529Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "PILOT GATING: must a REAL-LINK SOAK test gate the pilot go/no-go, or is the bandwidth-capped-fixture aggregation measurement + a report-only real-link smoke sufficient to proceed to a supervised pilot?"
 - context: This sets the exit criterion of the whole plan and shapes how much validation work is blocking vs. informational. A blocking soak gate (e.g. hours of sustained real-link transfer that must pass before pilot) adds a long-running, environment-sensitive step to the critical path and couples go/no-go to shared test-host availability. The alternative treats the capped-fixture aggregation/bufferbloat measurement (deterministic, in-repo) plus a short report-only real-link smoke as sufficient to PROCEED, and runs any longer soak DURING the supervised pilot rather than as a pre-gate. Per M10/Q12 the real-link tier is report-only discipline, which leans toward the non-blocking interpretation.
 - suggestions: ["Real-link smoke (report-only) + capped-fixture aggregation/bufferbloat measurement are sufficient to proceed; soak runs during the pilot","A real-link SOAK must pass as a blocking pre-pilot gate before go/no-go"]
 - recommendation: Real-link smoke + capped-fixture aggregation measurement are sufficient to PROCEED to a supervised pilot; run the soak DURING the pilot, not as a blocking pre-gate. The capped fixture gives deterministic, repeatable bufferbloat/pacing evidence; the real-link smoke confirms the two standing hosts bond and fail over; a soak's value is in sustained real traffic, which the supervised pilot itself provides while remaining observable and reversible.
 - ledgerRefs: ["goals:G2"]
+- answer: as recommended
 
 ### Q20 — answered
 
