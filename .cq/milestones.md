@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 27
+  item: 29
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -206,3 +206,17 @@ archives:
 - title: Multi-peer isolation tests, invariants, and docs
 - description: "Work milestone 5/5 for goal G4: verification at all altitudes — per-peer resequencer isolation unit test, 2+ edge netns e2e, FEC prefix-stability invariant re-check after the per-peer FEC split, docs/example-config sync per AGENTS.md, and the report-only 2-edge real-link check (M10/Q12 discipline)."
 - dependsOn: ["M26"]
+
+### M28 — open
+
+- createdAt: 2026-07-13T22:47:58.249Z
+- updatedAt: 2026-07-13T22:47:58.249Z
+- title: Production-deploy defect intake (wanbond-fixes.md, RPi/NM edge → o3)
+- description: "Intake milestone for the defects observed during the first REAL production-style deploy (edge = Raspberry Pi 4 / Debian / NetworkManager, two WAN uplinks as VLAN sub-interfaces eth0.231 Starlink / eth0.232 5G pinned by `ip rule from <source_addr>`; concentrator = o3 aarch64 OCI, public 89.168.124.91 NAT'd from private enp0s6 10.0.0.92; client LAN eth0.223 → bonded tunnel 10.77.0.0/24 → NAT out o3). All observed on real hardware/WANs; unit + realhosts-P0 tiers were green — every gap sits at the restart/re-handshake and operator/edge-plumbing boundary the testbed (2 source IPs on ONE interface, both ends always restarted together) does not exercise. Source: wanbond-fixes.md (repo root). Improvements/doc work from the same document is goal-tracked separately (see the wanbond-fixes goal milestone)."
+
+### M29 — open
+
+- createdAt: 2026-07-13T22:49:37.801Z
+- updatedAt: 2026-07-13T22:49:37.801Z
+- title: "Plan: production-edge operability & full-tunnel hardening (wanbond-fixes.md I1-I8 + C1-C6)"
+- description: Coordination milestone for the plan-flow goal covering the IMPROVEMENTS (I1-I8) and DOCUMENTATION updates (C1-C6) from wanbond-fixes.md — the production lessons from the first real deploy (RPi/NM edge + o3 concentrator). The six companion defects from the same document are filed as D35-D40 under milestone M28 (defect intake); investigate-flow owns their root-causing, and their eventual fix tasks should compose with this goal's plan. Groups the goal, its clarifying questions, reviews, and approval decision.

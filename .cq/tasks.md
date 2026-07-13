@@ -590,10 +590,10 @@ archives:
 
 ## M20
 
-### T67 — planned
+### T67 — done
 
 - createdAt: 2026-07-13T21:54:04.076Z
-- updatedAt: 2026-07-13T21:54:04.076Z
+- updatedAt: 2026-07-13T22:56:09.596Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Accept hostname endpoints in config behind an explicit per-peer DNS opt-in
@@ -601,11 +601,15 @@ archives:
 - acceptance: "go test ./internal/config/... passes with new cases: (1) hostname entry + dns=true parses into an EndpointSpec with IsName=true; (2) hostname entry without dns=true fails Load with an error naming the opt-in flag; (3) mixed list of literals and names preserves order; (4) duplicate host:port rejected; (5) concentrator with dns=true rejected; (6) every pre-existing config test passes unchanged and an all-literal config populates Peer.Endpoints exactly as before."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G5"]
+- resultCommit: c6f9235b8381b3db1bfa3b2aed0a7d538bcac0f8
+- completion: "Hostname endpoints accepted behind per-peer dns=true opt-in: EndpointSpec typed parse + Peer.EndpointSpecs/Peer.DNS; all-literal path byte-identical; 6 acceptance cases; merged ff to main."
+- sessionLogs: [".cq/logs/20260713-224948-a89a978a513c962f4.md",".cq/logs/20260713-225437-a7e364965f1c96b59.md",".cq/logs/20260713-225437-a11bd428159e547c9.md"]
+- rawLogs: [".cq/logs/raw/20260713-224948-a89a978a513c962f4.jsonl",".cq/logs/raw/20260713-225437-a7e364965f1c96b59.jsonl",".cq/logs/raw/20260713-225437-a11bd428159e547c9.jsonl"]
 
-### T68 — planned
+### T68 — wip
 
 - createdAt: 2026-07-13T21:54:10.871Z
-- updatedAt: 2026-07-13T21:54:10.871Z
+- updatedAt: 2026-07-13T22:41:42.348Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Create the resolver seam package with a system-resolver implementation
@@ -763,10 +767,10 @@ archives:
 
 ## M23
 
-### T80 — planned
+### T80 — wip
 
 - createdAt: 2026-07-13T22:27:04.600Z
-- updatedAt: 2026-07-13T22:27:04.600Z
+- updatedAt: 2026-07-13T22:41:43.804Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-peer psk and name fields to config.Peer

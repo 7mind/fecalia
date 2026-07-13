@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 34
+  item: 41
 archives: []
 ---
 
@@ -484,3 +484,102 @@ archives: []
 - suggestedFix: "Gate the post-rebaseline re-anchor on SOURCE IDENTITY: only a frame whose outer source matches the newly-configured standby endpoint may re-pin `next` after a Rebaseline (carry the expected standby AddrPort into the resequencer, or have the bind drop pre-switch-source frames for a brief window after SetPeerRemote). Alternatively reset/ignore the FEC decoder across a hub switch so no dead-hub reconstruction can re-anchor. Keep the trusted-control-event property (no wire-frame path may trigger a rebaseline)."
 - ledgerRefs: ["defects:D32","tasks:T57","goals:G2"]
 - rootCause: "Fully root-caused by the D32-fix adversarial review (opus). Rebaseline() sets started=false, and BOTH ingest paths (Observe reseq.go:187, ObserveRecovered reseq.go:236) re-pin `next` to the first arriving frame SOURCE-AGNOSTICALLY. So a prior-hub straggler (late native DATA or an in-flight FEC reconstruction from the dead hub) arriving between SetPeerRemote's Rebaseline() and the standby's handshake-response would re-anchor `next` to the stale HIGH prior-hub seq, re-routing the standby's low seq to admit()'s suspect branch (transient D32 recurrence). Bounded + self-healing (failover fires only after the prior hub is fully DOWN + silent, so stragglers are improbable; worst case degrades to the pre-fix slow tryResync path that self-heals in ~3*RekeyTimeout via the standby's increasing retransmit seqs). DID NOT trigger in 39 hardware runs (13 D32-validation + 26 D33-validation), so it is not pilot-blocking; the deterministic D32 drop is eliminated. Fix when scheduled: gate the post-rebaseline re-anchor on SOURCE IDENTITY (only a frame from the newly-configured standby endpoint may re-pin `next`), or reset/ignore the FEC decoder across a hub switch. Keep the trusted-control-event property (no wire path may trigger a rebaseline)."
+
+## M28
+
+### D35 — open
+
+- createdAt: 2026-07-13T22:48:19.299Z
+- updatedAt: 2026-07-13T22:48:19.299Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: allowed_ips = 0.0.0.0/0 wedges the WG handshake — full-tunnel config never establishes
+- severity: high
+- description: "[fixes-doc D1, S1 — production deploy, real hardware, bisected and confirmed.] With the concentrator peer's `allowed_ips = [\"0.0.0.0/0\"]` on the edge, the WG handshake NEVER completes — even fresh-restarting BOTH ends and waiting minutes (edge tx≈0; o3 rx floods to 2.3 MB with tx 9 KB, i.e. o3 receives but never answers; no handshake ever logged). Reverting the SAME peer to a concrete prefix (`10.77.0.1/32`) establishes in ~25 s, deterministically. The split default `[\"0.0.0.0/1\",\"128.0.0.0/1\"]` also works. The virtual-endpoint design (the engine never holds the real 89.168.124.91) rules out an endpoint routing loop, so the cause is a `0.0.0.0/0`-specific path — amneziawg-go allowed-ip trie or a wanbond special-case. This silently breaks the single most common full-tunnel config. Observed asymmetry suggests the RECEIVING side (o3) drops/never responds when the initiating peer carries the /0 allowed-ip — investigate the allowed-ips trie insert/lookup for the zero-length prefix and any wanbond handling of the peer allowed_ips."
+- suggestedFix: "Root-cause first (investigate-flow): reproduce in the netns e2e with allowed_ips=0.0.0.0/0 on the edge peer (expected to wedge identically), then bisect between amneziawg-go's allowed-ip trie and wanbond config/uapi plumbing. Once fixed, accept 0.0.0.0/0 natively (see the wanbond-fixes goal, improvement I6: optionally apply the /1+/1 split internally)."
+- sourceRefs: ["wanbond-fixes.md §A D1","wanbond-fixes.md §B I6","wanbond-fixes.md §C C3"]
+- tags: ["production-deploy","full-tunnel"]
+
+### D36 — open
+
+- createdAt: 2026-07-13T22:48:32.358Z
+- updatedAt: 2026-07-13T22:48:32.358Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "One-sided restart → multi-minute outage: peer holding the old WG session does not promptly re-handshake"
+- severity: high
+- description: "[fixes-doc D2, S1 — production deploy, confirmed repeatedly.] When EITHER end restarts, the peer still holding the old session does not promptly re-handshake; the tunnel stays down for MINUTES until a rekey timer fires. Restart edge → o3 stale → down for minutes; restart o3 → edge stale → down for minutes; only restarting BOTH ~together (both re-initiate from scratch) converges in ~25 s. For a WAN-failover product this is severe — any reboot of the Pi or the concentrator is a multi-minute client outage. NOTE the layer: this is the INNER WG session going stale, distinct from the already-resolved OUTER probe/liveness restart deadlock (defects:D12, fixed by the T38 responder-challenge session epoch) — outer paths recover, but the stale WG keypair on the surviving side is not superseded. Compounded by fixes-doc D3 (see the startup-handshake defect): the restarted side's first init fires before path liveness and is not aggressively retried."
+- suggestedFix: "Force a fresh handshake on startup AND on the first path-up edge, and/or have the receiver treat a new valid handshake initiation from a known static key as immediately superseding the current session (the kernel-WG behavior). Investigate what amneziawg-go does with an initiation from a peer with an established session, and whether wanbond's bind/virtual-endpoint layer delays or drops the initiation retransmits. Validate with a netns e2e: restart ONE end, assert reconvergence well under the WG rekey timeout (target: comparable to the ~25 s both-ends-fresh case)."
+- sourceRefs: ["wanbond-fixes.md §A D2","wanbond-fixes.md §C C5"]
+- ledgerRefs: ["defects:D12"]
+- tags: ["production-deploy","restart","re-handshake"]
+
+### D37 — open
+
+- createdAt: 2026-07-13T22:48:44.390Z
+- updatedAt: 2026-07-13T22:48:44.390Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Startup handshake fires before path liveness and is not re-driven off the first path-up edge
+- severity: medium
+- description: "[fixes-doc D3, S2 — production deploy.] On every start the edge logs one `Failed to send handshake initiation: bind: no healthy path with a known remote endpoint` (paths not up yet); paths transition Up ~0.6 s later — and then nothing: the first init is wasted and re-initiation is not visibly driven off the path-up edge, leaving the tunnel waiting on WG's own retransmit timers. Compounds the one-sided-restart outage (defects:D36). WG should (re)initiate the moment the first path becomes live. Related observability: the same startup window logs `no healthy path` at ERROR during the normal ~1 s liveness warmup (fixes-doc I4 — downgrade/rate-limit it; tracked in the wanbond-fixes goal)."
+- suggestedFix: "Drive a handshake (re)initiation off the first path StateUp transition (liveness edge → poke the engine to SendHandshakeInitiation / expire-and-retry), instead of relying on the engine's own back-off after a failed send. Validate in the netns e2e: from cold start, time-to-first-handshake should track path-up (+one RTT), not a retransmit timer."
+- sourceRefs: ["wanbond-fixes.md §A D3","wanbond-fixes.md §B I4"]
+- ledgerRefs: ["defects:D36"]
+- tags: ["production-deploy","startup","re-handshake"]
+
+### D38 — open
+
+- createdAt: 2026-07-13T22:48:59.152Z
+- updatedAt: 2026-07-13T22:48:59.152Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: Auto device-bind silently defeats `ip rule from <source_addr>` policy routing on single-address VLAN-per-WAN edges
+- severity: high
+- description: "[fixes-doc D4, S1 — production deploy; workaround applied on the Pi.] selectDeviceBinds (internal/bind/pathsock.go) picks SO_BINDTODEVICE (wildcard source) for a one-address/one-path interface — EXACTLY the VLAN-per-WAN edge topology (eth0.231/eth0.232, one address each, per-WAN pinning via `ip rule from <source_addr>`). A wildcard-source socket never matches `ip rule from <source_addr>`, so the route lookup falls through to `main` (which has no route to the concentrator via that VLAN) → ENETUNREACH → silent path-down, ZERO packets on the wire, while `ping -I <source_ip>` proves the WAN works. Worked around in production with `ip rule add oif <dev> table N`. The T16/R23 conditional device-bind gating (single-address + single-path interface) was designed for roam survival but is precisely the wrong choice under source-based policy routing — the two selection criteria collide. Related: defects:D30 (runtime-added paths never device-bind — the mirror-image gap)."
+- suggestedFix: "Two parts: (1) a config toggle to force source-IP binding per path or globally (`bind = \"source\"`) so source-policy-routing topologies can opt out of device-bind (fixes-doc I5; roam survival is moot there); consider making that mode the DEFAULT when the config implies source-routed WANs, or detecting the `from <source>` rule. (2) Document the collision + the `ip rule add oif <dev> table N` recipe until then (fixes-doc C2). Decide in plan-flow whether detection is feasible or the toggle suffices."
+- sourceRefs: ["wanbond-fixes.md §A D4","wanbond-fixes.md §B I5","wanbond-fixes.md §C C2"]
+- ledgerRefs: ["defects:D30","tasks:T16"]
+- tags: ["production-deploy","device-bind","policy-routing"]
+
+### D39 — open
+
+- createdAt: 2026-07-13T22:49:13.912Z
+- updatedAt: 2026-07-13T22:49:13.912Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: "wanbond0 left DOWN + unaddressed; NetworkManager flushes the operator's address → cryptic `TUN write: input/output error`"
+- severity: medium
+- description: "[fixes-doc D5, S2 — production deploy; workaround applied on the Pi.] The daemon creates the tun but never brings the link UP or addresses it. On a NetworkManager host (RPi OS / Debian / Ubuntu desktop — the common edge) the tun is auto-managed: NM FLUSHES the operator's address on link-up and the interface stays DOWN across daemon restarts. Writing into it then yields the cryptic `TUN write: input/output error`. Worked around with NM `unmanaged-devices=interface-name:wanbond0` + an addressing oneshot unit. Note the shipped docs (T22/R27, docs/install.md §4) cover only systemd-networkd addressing — the NM case is undocumented (fixes-doc C1). Fix direction split across: daemon brings the link UP itself (fixes-doc I1, low-risk; addressing stays operator-owned), actionable EIO diagnostics (fixes-doc I3), interface/route persistence across restarts (fixes-doc I7), and the NM + oneshot doc recipes (fixes-doc C1/C4) — the improvements/doc side is tracked in the wanbond-fixes goal; this defect item covers the DOWN-link/NM failure mode itself."
+- suggestedFix: "Minimum code fix: bring wanbond0 UP after creating it (link-up only; addressing remains operator-owned), and on TUN write EIO check link state/MTU and emit an actionable error (e.g. 'wanbond0 is DOWN — address & bring it up (install.md §4)'). Document NM unmanaged-devices + the PartOf oneshot pattern. Consider keeping the tun persistent across daemon restarts so addresses/routes/rules referencing it survive (I7)."
+- sourceRefs: ["wanbond-fixes.md §A D5","wanbond-fixes.md §B I1","wanbond-fixes.md §B I3","wanbond-fixes.md §B I7","wanbond-fixes.md §C C1","wanbond-fixes.md §C C4"]
+- ledgerRefs: ["tasks:T22"]
+- tags: ["production-deploy","networkmanager","tun"]
+
+### D40 — open
+
+- createdAt: 2026-07-13T22:49:25.742Z
+- updatedAt: 2026-07-13T22:49:25.742Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- headline: CAP_NET_RAW (pathsock comment) vs CAP_NET_ADMIN (shipped systemd units) mismatch for SO_BINDTODEVICE
+- severity: low
+- description: "[fixes-doc D6, S3 — production deploy.] internal/bind/pathsock.go says SO_BINDTODEVICE needs CAP_NET_RAW; the shipped systemd units (T22) grant only CAP_NET_ADMIN. Per the comment, device-bind should therefore always fall back — yet it bound successfully on o3, so the actual kernel requirement is version/context-dependent and the comment and the unit disagree. Reconcile: either grant CAP_NET_RAW in the units (if the requirement is real on any supported kernel) or fix the comment/fallback logic. (Historically SO_BINDTODEVICE required CAP_NET_RAW; kernels ≥ 5.7 allow it unprivileged — verify against the supported kernel range and encode the finding.)"
+- suggestedFix: "Determine the precise capability requirement across supported kernels (test as an unprivileged/capability-restricted service on Debian stable + Ubuntu LTS kernels), then align: unit AmbientCapabilities/CapabilityBoundingSet, the pathsock comment, and the fallback path. Update docs/install.md accordingly."
+- sourceRefs: ["wanbond-fixes.md §A D6"]
+- ledgerRefs: ["tasks:T22"]
+- tags: ["production-deploy","capabilities","systemd"]
+
+## M23
+
+### D41 — open
+
+- createdAt: 2026-07-13T22:55:09.949Z
+- updatedAt: 2026-07-13T22:55:09.949Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Config loader silently ignores unknown/misspelled TOML keys
+- description: "internal/config/load.go:34 decodes with non-strict toml.Unmarshal (go-toml/v2), so an unknown or misspelled key (e.g. `link_bandwith`, `nane`) is silently dropped even though Load's doc comment and docs/install.md describe the loader as fail-fast. Required keys are backstopped by validate(), but misspelled OPTIONAL keys become silently inert configuration. Pre-existing behavior, untouched by T80's diff. Filed from implement review of T80 round 1 ([fable] reviewer, file-and-defer per K13) as out-of-scope/pre-existing."
+- severity: low
+- suggestedFix: Use toml.NewDecoder(...).DisallowUnknownFields() (handling *toml.StrictMissingError for a precise message) so an unrecognized key fails config load; add a rejects-table case for a misspelled key.
+- ledgerRefs: ["tasks:T80","goals:G4"]

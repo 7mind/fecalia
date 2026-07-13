@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 5
+  item: 6
 archives: []
 ---
 
@@ -173,3 +173,45 @@ archives: []
 - rawLogs: [".cq/logs/raw/20260713-212207-a0e65d160c67b7983.jsonl",".cq/logs/raw/20260713-215726-ad0c63b3749a28ff8.jsonl",".cq/logs/raw/20260713-215726-a3a1678fe42741a52.jsonl",".cq/logs/raw/20260713-220647-a5fce4a23176a911e.jsonl",".cq/logs/raw/20260713-221230-a1d2bf0c3d369b9bf.jsonl"]
 - milestones: ["M20","M21","M22"]
 - grounding: "Synthesized from 2 configured candidate planners (opus, fable; generate-N-then-judge per Q100/Q101; base = fable's candidate, with opus's bootstrap-IP fail-fast for DoH/DoT, a dedicated cross-controller -race interleave task, and active-endpoint-by-identity folded in). Repo facts shaping the plan: resolveEndpoints (internal/config/config.go:484) and Multipath.ParseEndpoint (internal/bind/multipath.go:1327) are IP-only today; the plan keeps ParseEndpoint IP-only — the device layer hands only resolved netip.AddrPort to the engine, so no hostname ever reaches the bind/datapath. hubFailover (internal/device/failover.go:72-97) holds an immutable []netip.AddrPort snapshot with an active idx; Q34's answer makes it a mutable spec-keyed set updated under its existing h.mu, with the active entry tracked by identity. SetPeerRemote (multipath.go:1371) unconditionally Rebaselines the resequencer (D32) — hence strict change-suppression on re-resolve. The T55 tolerant-startup template (internal/bind/multipath.go:531-537 deferred paths + internal/bind/reconcile.go:60 loop) is the defer-and-reconcile model for unresolvable-at-boot names; startHubFailover currently skips len(Endpoints)<2 peers, so wiring changes for single-hostname peers while single-IP-literal peers stay controller-less. Go's net.Resolver discards TTL — the seam exposes (minTTL, ttlOk) so DoH/DoT can honor TTL while system mode polls. Netns e2e caveat: /etc/hosts is not netns-scoped for the Go resolver, so the e2e runs an in-test UDP DNS responder inside the edge namespace. Q32 expands multi-record A/AAAA into the ordered failover list; Q33 puts DoH (RFC 8484) + DoT (RFC 7858) in scope as first-class private-resolver options with a bootstrap-IP fail-fast (no plaintext lookup of the resolver's own name); Q29/Q35 gate everything behind a per-peer opt-in with all-IP-literal configs byte-for-byte identical."
+
+## M29
+
+### G6 — clarifying
+
+- createdAt: 2026-07-13T22:50:11.848Z
+- updatedAt: 2026-07-13T22:50:11.848Z
+- author: fable-5
+- session: cac93b81-5292-42e3-b77e-962544c75e54
+- title: "Production-edge operability & full-tunnel hardening: improvements + docs from the first real deploy (wanbond-fixes.md)"
+- description: |
+    GOAL: adopt the improvement and documentation lessons from the first REAL production-style deploy (wanbond-fixes.md, repo root — authoritative source): edge = Raspberry Pi 4 / Debian / NetworkManager, two WANs as VLAN sub-interfaces (eth0.231 Starlink / eth0.232 5G) pinned by `ip rule from <source_addr>`; concentrator = o3 (aarch64 OCI, public 89.168.124.91 NAT'd from private enp0s6); client LAN eth0.223 routed through the bonded tunnel (inner 10.77.0.0/24) and NAT'd out o3. The deploy REACHED the goal (0% loss, ~18-37 ms over the Starlink+5G bond, clients egressing via the concentrator's public IP) — every gap sits at the restart/re-handshake and operator/edge-plumbing boundary that the netns/realhosts testbeds do not exercise.
+    
+    COMPANION DEFECTS (filed separately under M28, investigate-flow owns root-causing; this goal must COMPOSE with their fixes, not duplicate them): D35 allowed_ips 0.0.0.0/0 wedges the handshake; D36 one-sided restart → multi-minute outage; D37 startup handshake not re-driven off path-up; D38 auto device-bind defeats source-policy routing; D39 wanbond0 left DOWN + NM address flush; D40 CAP_NET_RAW/CAP_NET_ADMIN mismatch.
+    
+    SCOPE — IMPROVEMENTS (fixes-doc I1-I8):
+    - I1 Daemon brings the wanbond0 link UP after creating it (low-risk; addressing stays operator-owned; relates D39).
+    - I2 Session/handshake state signal — the single biggest debugging obstacle: path_up=1 long before the WG session exists; add a `wanbond_session_established` (and/or last-handshake-age) metric + a 'session up' log line so 'still converging' is distinguishable from 'wedged' (D35/D36/D37 all presented identically).
+    - I3 Actionable error instead of raw `TUN write: input/output error` — on EIO check link state/MTU and name the remedy (relates D39).
+    - I4 Downgrade the startup `no healthy path` ERROR spam during the ~1 s liveness warmup (DEBUG/INFO or a single 'waiting for path liveness' line; relates D37).
+    - I5 Config toggle to force source-IP binding (opt out of device-bind), per-path or global `bind = "source"` — avoids the oif-rule workaround entirely (relates D38).
+    - I6 Native full-tunnel support — once D35 is fixed accept 0.0.0.0/0; better, apply the /1+/1 split internally or a `mode = "default-route"` that wires client routing (relates C3).
+    - I7 Interface/route persistence across daemon restarts — recreating wanbond0 drops every address/route/rule referencing it, forcing an external oneshot to rebuild them; keep the tun persistent across restarts or ship the oneshot (relates C4).
+    - I8 Verify standby-path liveness is BIDIRECTIONAL — observed path_up{5g}=1 with tx{5g}=0; confirm an 'up' standby can actually transmit before failover selects it (possible latent defect: probes/echoes may only prove one direction for an idle standby — if investigation confirms, refile as a defect).
+    
+    SCOPE — DOCUMENTATION (fixes-doc C1-C6; per AGENTS.md docs land with the code changes where coupled, standalone otherwise):
+    - C1 NetworkManager section in install.md §4 (`unmanaged-devices=interface-name:wanbond0`), today networkd-only.
+    - C2 source_addr + device-bind collision warning + the `ip rule add oif <dev> table N` recipe (until I5/D38 lands).
+    - C3 Full-tunnel / route-a-client-LAN recipe — THE primary use case, entirely undocumented: split allowed_ips (not 0.0.0.0/0 until D35); edge policy-route + SNAT-to-tunnel-IP (or widen concentrator allowed_ips); concentrator ip_forward + MASQUERADE + FORWARD conntrack-ESTABLISHED accept (the shipped `-i wanbond0 ACCEPT` covers only the forward direction).
+    - C4 Persistence recipe for non-networkd hosts — bless the `PartOf=` oneshot pattern (address + link-up + policy rules + per-table routes + nft SNAT after daemon start); warn that a plain ExecStartPost races tun creation (R27 already fixed one instance of that race in the networkd docs).
+    - C5 Expected reconverge window + restart guidance until D36 is fixed (restart both ends ~together; use the I2 session metric as the 'is it up yet' check).
+    - C6 Concentrator NAT/forwarding prerequisites checklist (ip_forward, MASQUERADE, FORWARD ESTABLISHED accept).
+    
+    WHAT WENT RIGHT (keep; do not regress): static single binary; one-binary-two-roles; 0600-config enforcement; per-path liveness/loss/RTT metrics; netns + realhosts test tiers; virtual-endpoint multipath design; the steady-state datapath.
+    
+    OPEN QUESTIONS FOR CLARIFICATION (planner should ask before designing): sequencing vs the D35-D40 investigations (which improvements are gated on a root cause — e.g. I6 on D35 — vs immediately plannable); whether I7 (tun persistence) is in scope for code or docs-only this round (C4); whether I8 belongs here or as a defect after a quick investigation; whether the NM/oneshot recipes should also ship as packaged unit files vs docs-only; how much of C3's client-LAN wiring should become the I6 `mode="default-route"` automation vs stay documented manual steps.
+    
+    NON-GOALS: TCP/TLS fallback; protocol mimicry; >3 links; general SD-WAN; GUI; re-opening resolved G1/G2 defects; duplicating the D35-D40 fixes themselves (compose with them).
+    
+    TESTING DIRECTION: unit tests for the bind-mode toggle (I5) and metrics (I2); netns e2e for link-up (I1), session-established signal timing, and full-tunnel mode (I6, once D35 unwedges); realhosts/report-only where absolute behavior needs real WANs, per the M10/Q12 discipline. Doc recipes validated against a NetworkManager host where practical (the production Pi validated the current workarounds).
+- sourceRefs: ["wanbond-fixes.md","docs/install.md","docs/design.md"]
+- tags: ["production-deploy","operability","docs"]

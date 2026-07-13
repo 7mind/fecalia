@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 73
+  item: 75
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -711,3 +711,33 @@ archives:
 - ledgerRefs: ["goals:G4"]
 - sessionLogs: [".cq/logs/20260713-223902-a91e747225a420952.md",".cq/logs/20260713-223902-ae3509c0ca48d6db5.md"]
 - rawLogs: [".cq/logs/raw/20260713-223902-a91e747225a420952.jsonl",".cq/logs/raw/20260713-223902-ae3509c0ca48d6db5.jsonl"]
+
+## M20
+
+### R74 — go-ahead
+
+- createdAt: 2026-07-13T22:54:59.681Z
+- updatedAt: 2026-07-13T22:54:59.681Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T67 round 1 reconciled panel verdict (opus + fable, unanimous approve, check green): hostname endpoints behind per-peer dns=true opt-in implemented surgically in internal/config; all 6 acceptance cases test-covered and passing; all-IP-literal path byte-for-byte preserved; validate() retarget to EndpointSpecs verified safe; doc-sync legitimately deferred to T79 per plan."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T67","goals:G5"]
+- sessionLogs: [".cq/logs/20260713-225437-a7e364965f1c96b59.md",".cq/logs/20260713-225437-a11bd428159e547c9.md"]
+- rawLogs: [".cq/logs/raw/20260713-225437-a7e364965f1c96b59.jsonl",".cq/logs/raw/20260713-225437-a11bd428159e547c9.jsonl"]
+
+## M23
+
+### R75 — go-ahead
+
+- createdAt: 2026-07-13T22:55:05.322Z
+- updatedAt: 2026-07-13T22:55:05.322Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T80 round 1 reconciled panel verdict (opus + fable, unanimous approve, check green): per-peer psk/name fields added surgically (12 lines + 138 test lines); 2-peer TOML exposure and legacy single-peer whole-Config DeepEqual golden both pass; gate independently re-run green by both reviewers. One out-of-scope pre-existing defect filed file-and-defer ([fable] non-strict TOML decode silently ignores unknown keys, load.go:34). Worker output json omitted the required `branch` field (contract breach logged; git state verified correct)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T80","goals:G4"]
+- sessionLogs: [".cq/logs/20260713-225437-a1850ae28a48e003a.md",".cq/logs/20260713-225437-ac6ebf9d1c27aa4bf.md"]
+- rawLogs: [".cq/logs/raw/20260713-225437-a1850ae28a48e003a.jsonl",".cq/logs/raw/20260713-225437-ac6ebf9d1c27aa4bf.jsonl"]
