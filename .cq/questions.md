@@ -485,86 +485,93 @@ archives:
 
 ## M29
 
-### Q37 — open
+### Q37 — answered
 
 - createdAt: 2026-07-13T22:54:57.160Z
-- updatedAt: 2026-07-13T22:54:57.160Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:07:56.630Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "Sequencing vs the D35-D40 investigations: which improvements do you consider HARD-GATED on a companion defect's root-cause/fix (so the plan must order them behind it), vs immediately plannable now assuming the D35-D40 fixes land independently? Specifically, should I6 (accept 0.0.0.0/0) be gated on D35, and should I3/I4's acceptance reference D37/D39?"
 - context: G6 must COMPOSE with D35-D40 (owned by investigate-flow under M28), not duplicate them. I6's '0.0.0.0/0' acceptance is the one clear hard dependency (D35 wedges the handshake on 0.0.0.0/0). I1 (link-up), I2 (session metric), I4 (log downgrade) and I5 (bind toggle) read as independently plannable now. Getting the gating right determines task dependsOn edges and whether this goal can reach `planned` before D35-D40 resolve.
 - suggestions: ["Gate ONLY I6's 0.0.0.0/0 acceptance on D35; keep the split-allowed_ips path and everything else (I1/I2/I3/I4/I5) unblocked and plannable now","Gate all defect-related improvements (I3->D39, I4->D37, I6->D35) behind their defects; plan only the fully-independent items this round","No gating: plan everything now, assume D35-D40 fixes are in place, express no cross-goal ordering"]
 - recommendation: Gate only I6's 0.0.0.0/0-acceptance on D35 (the split-allowed_ips full-tunnel path stays unblocked); plan I1/I2/I3/I4/I5 now as independent. I3/I4 IMPROVE the diagnostics around D37/D39 but do not require their fixes, so reference them in acceptance without a hard dependsOn.
 - ledgerRefs: ["goals:G6"]
+- answer: as recommended
 
-### Q38 — open
+### Q38 — answered
 
 - createdAt: 2026-07-13T22:55:06.138Z
-- updatedAt: 2026-07-13T22:55:06.138Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:08:19.229Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "I7 (interface/route persistence across daemon restarts): in scope as a CODE change this round, or docs-only (bless the C4 oneshot pattern) with persistent-tun deferred to a follow-up goal?"
 - context: Recreating wanbond0 on every restart drops every address/route/rule referencing it. The code fix (persistent TUN via TUNSETPERSIST or a keep-device lifecycle) is a substantial change to device creation/teardown and interacts with D39 (NM flush) and the addressing model. The docs-only path just blesses the `PartOf=` oneshot (C4) that rebuilds state after daemon start. These are very different effort/risk profiles and shape whether a device-lifecycle task exists in the DAG.
 - suggestions: ["Docs-only this round (ship/bless the C4 oneshot pattern); file a follow-up idea for persistent-tun code","Code this round: make wanbond0 persistent across restarts (persistent TUN), plus C4 docs as fallback for non-networkd hosts","Both: persistent-tun code AND the oneshot recipe documented as the belt-and-suspenders answer"]
 - recommendation: Docs-only this round via C4 (bless the `PartOf=` oneshot), and file a follow-up idea for persistent-TUN code. Persistent-tun touches device lifecycle + D39/NM interactions and is better done as its own investigated change than bundled into this operability/docs round.
 - ledgerRefs: ["goals:G6"]
+- answer: "Both: persistent-tun code AND the oneshot recipe documented as the belt-and-suspenders answer"
 
-### Q39 — open
+### Q39 — answered
 
 - createdAt: 2026-07-13T22:55:14.638Z
-- updatedAt: 2026-07-13T22:55:14.638Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:08:41.836Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "I8 (verify standby-path liveness is BIDIRECTIONAL — observed path_up{5g}=1 with tx{5g}=0): handle as a verification task INSIDE this goal, or hand to investigate-flow first as a suspected latent defect (refile/fix only if confirmed)?"
 - context: "The goal text itself flags 'possible latent defect: probes/echoes may only prove one direction for an idle standby — if investigation confirms, refile as a defect.' If failover can select a path that only proved RECEIVE, that is a correctness defect in path selection, not an improvement. Whether this becomes a G6 task or a separate defect determines if any code lands here."
 - suggestions: ["Hand to investigate-flow now (file a defect linked to G6); keep I8 out of this plan's code scope until a root cause is confirmed","Plan a verification task in G6 (add a bidirectional-liveness check/test); if it surfaces a real defect, refile then","Defer entirely: note as a known observation, no action this round"]
 - recommendation: File it now as an investigate-flow defect (it is a potential correctness fault in failover selection, tx=0 on an 'up' standby). Keep I8's fix out of this goal's code scope; this goal composes with the outcome. A cheap netns bidirectional-liveness test can live here regardless.
 - ledgerRefs: ["goals:G6"]
+- answer: Plan a verification task in G6 (add a bidirectional-liveness check/test); if it surfaces a real defect, refile then
 
-### Q40 — open
+### Q40 — answered
 
 - createdAt: 2026-07-13T22:55:23.705Z
-- updatedAt: 2026-07-13T22:55:23.705Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:08:50.519Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "C1 (NetworkManager unmanaged-devices) and C4 (addressing/persistence oneshot): docs-only, or ALSO ship packaged artifacts in the repo — a NM `unmanaged-devices` conf.d drop-in and/or a templated `wanbond-addressing@.service` oneshot unit alongside the existing systemd units?"
 - context: "Every NM edge box (RPi OS/Debian/Ubuntu desktop) needs the `unmanaged-devices=interface-name:wanbond0` drop-in or NM flushes the address (D39/D5). The oneshot that re-applies address+link-up+policy rules+routes+SNAT is load-bearing and a plain ExecStartPost races tun creation (R27 fixed one such race). Shipping these as real files vs prose changes the deliverable shape (packaging tasks + tests vs docs edits)."
 - suggestions: ["Docs-only: recipes in install.md, operator hand-assembles the drop-in and oneshot","Ship both: a NM conf.d drop-in file AND a templated oneshot unit in the repo/package, with docs pointing at them","Ship the NM drop-in only (cheap, high value); keep the oneshot documented because it is host-specific"]
 - recommendation: Ship both as packaged, version-controlled artifacts (NM conf.d drop-in + templated `wanbond-addressing@.service` oneshot with correct ordering to avoid the R27 tun-creation race), with C1/C4 docs referencing them. Docs alone repeat the exact footgun the doc is warning about.
 - ledgerRefs: ["goals:G6"]
+- answer: as recommended
 
-### Q41 — open
+### Q41 — answered
 
 - createdAt: 2026-07-13T22:55:32.642Z
-- updatedAt: 2026-07-13T22:55:32.642Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:09:10.401Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "I6 automation boundary vs C3/C6 documented manual steps: how much of the full-tunnel client-LAN plumbing should `mode=\"default-route\"` AUTOMATE from the daemon, vs stay documented recipes? Specifically, should the daemon program edge policy-route + SNAT-to-tunnel-IP and/or concentrator ip_forward + MASQUERADE + FORWARD-ESTABLISHED accept, or only the edge-side default-route into wanbond0 with the /1+/1 split?"
 - context: C3 is the primary, entirely-undocumented use case. Programming host nftables/forwarding and policy routing FROM the daemon is high-blast-radius and host-specific (nft vs iptables, table numbering, existing operator rules), whereas wiring the edge default route + internal allowed_ips split is contained. This decides whether I6 is a thin, contained feature or a large host-network-programming feature.
 - suggestions: ["Thin I6: daemon applies only the internal /1+/1 allowed_ips split and wires the edge default-route into wanbond0; client-LAN SNAT + concentrator NAT stay documented, validated recipes (C3/C6)","Full I6: daemon also programs edge policy-route + SNAT and concentrator MASQUERADE/forward/conntrack rules","Middle: daemon automates the edge side (default-route + SNAT) but leaves concentrator NAT/forwarding documented"]
 - recommendation: "Thin I6 (option 1): automate only the edge default-route + internal /1+/1 split; keep client-LAN SNAT and concentrator NAT/forwarding as documented, validated C3/C6 recipes. Daemon-programmed host nftables/policy-routing is high-blast-radius, host-specific, and likely to collide with operator-owned rules."
 - ledgerRefs: ["goals:G6"]
+- answer: as recommended
 
-### Q42 — open
+### Q42 — answered
 
 - createdAt: 2026-07-13T22:55:39.648Z
-- updatedAt: 2026-07-13T22:55:39.648Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:09:18.339Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "I5 config surface for forcing source-IP binding (opt out of device-bind): a per-path `bind = \"source\"` field on each `[[paths]]`, a single global toggle, or both (global default + per-path override)?"
 - context: "Config is plain TOML (internal/config/config.go — no baboon versioning cost to add a field). The existing per-path shape already carries `source_addr` on `[[paths]]`, and the device-bind decision (selectDeviceBinds) is per-source. A per-path field composes naturally with source_addr; a global toggle is simpler but coarser. This sets the config schema and the unit-test surface for I5."
 - suggestions: ["Per-path `bind = \"source\"|\"device\"|\"auto\"` on each [[paths]], defaulting to today's auto behavior","Single global toggle (e.g. [scheduler] or top-level bind_mode)","Both: a global default with an optional per-path override"]
 - recommendation: Per-path field with an optional global default (option 3, defaulting to today's `auto`). It matches the existing per-source `source_addr` shape, lets a mixed edge pin only the VLAN-per-WAN paths, and keeps the common case zero-config.
 - ledgerRefs: ["goals:G6"]
+- answer: as recommended
 
-### Q43 — open
+### Q43 — answered
 
 - createdAt: 2026-07-13T22:55:47.434Z
-- updatedAt: 2026-07-13T22:55:47.434Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T23:09:24.223Z
+- author: user
 - session: cac93b81-5292-42e3-b77e-962544c75e54
 - question: "Batch scope: deliver ALL of I1-I8 + C1-C6 in this single goal, or cut a must-have first round (observability + link-up + core docs) and defer the rest to a follow-up goal?"
 - context: This is a large, mixed batch (code + packaging + docs). Splitting reduces review/merge blast radius and lets the highest-value operability wins (link-up, session metric, log downgrade, the undocumented full-tunnel recipe) land fast, independent of the I5/I6/I7 design decisions above. This is a priority axis distinct from the defect-gating in the sequencing question.
 - suggestions: ["All-in-one: I1-I8 + C1-C6 in G6 (subject to the gating/scoping answers above)","Must-have first round in G6: I1, I2, I3, I4 + C1, C2, C3, C5, C6 (docs); defer I5, I6, I7, I8 to a follow-up goal","Something else — specify which items are must-have this round"]
 - recommendation: Keep all docs (C1-C6) + the low-risk code (I1, I2, I3, I4) plus I5 (thin, per your I5 answer) in this goal; land I6 as the thin edge-side variant if D35 timing allows, and defer I7-code and I8-fix to follow-ups. This front-loads the operability + full-tunnel-docs wins with minimal blast radius.
 - ledgerRefs: ["goals:G6"]
+- answer: as recommended

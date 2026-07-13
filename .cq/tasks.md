@@ -622,10 +622,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-224948-acf8c70e1855d17a7.md",".cq/logs/20260713-230051-a5fe60c169d59c898.md",".cq/logs/20260713-225437-ae9e21e85de4600a9.md",".cq/logs/20260713-225437-a99ae9caf87cc11a3.md",".cq/logs/20260713-230228-a0fb43fc933a1f307.md",".cq/logs/20260713-230228-a50626c69a5974410.md"]
 - rawLogs: [".cq/logs/raw/20260713-224948-acf8c70e1855d17a7.jsonl",".cq/logs/raw/20260713-230051-a5fe60c169d59c898.jsonl",".cq/logs/raw/20260713-225437-ae9e21e85de4600a9.jsonl",".cq/logs/raw/20260713-225437-a99ae9caf87cc11a3.jsonl",".cq/logs/raw/20260713-230228-a0fb43fc933a1f307.jsonl",".cq/logs/raw/20260713-230228-a50626c69a5974410.jsonl"]
 
-### T69 — planned
+### T69 — wip
 
 - createdAt: 2026-07-13T21:54:23.234Z
-- updatedAt: 2026-07-13T21:54:23.234Z
+- updatedAt: 2026-07-13T23:03:50.403Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Implement a DoH (RFC 8484) resolver behind the seam
@@ -787,10 +787,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-224948-a49f5813151f3f0bf.md",".cq/logs/20260713-225437-a1850ae28a48e003a.md",".cq/logs/20260713-225437-ac6ebf9d1c27aa4bf.md",".cq/logs/20260713-230051-a21afb20872f222c8.md"]
 - rawLogs: [".cq/logs/raw/20260713-224948-a49f5813151f3f0bf.jsonl",".cq/logs/raw/20260713-225437-a1850ae28a48e003a.jsonl",".cq/logs/raw/20260713-225437-ac6ebf9d1c27aa4bf.jsonl",".cq/logs/raw/20260713-230051-a21afb20872f222c8.jsonl"]
 
-### T81 — planned
+### T81 — done
 
 - createdAt: 2026-07-13T22:27:14.700Z
-- updatedAt: 2026-07-13T22:27:14.700Z
+- updatedAt: 2026-07-13T23:19:39.587Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Validate per-peer psk presence, distinctness, and single-peer back-compat
@@ -799,11 +799,15 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T80"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 4d886cd1119dd99a48931fc973d3f43bc9c2a34d
+- completion: "validate() extended for multi-peer: per-peer psk required + pairwise-distinct, unique names, edge-role >1-peer scope rejection, single-peer top-level back-compat (per-peer psk rejected as redundant); table-driven 6-case test; merged ff to main."
+- sessionLogs: [".cq/logs/20260713-231437-aa2524bb4945f774b.md",".cq/logs/20260713-231830-a8eef803232932fbf.md",".cq/logs/20260713-231830-a2082c0e624c73f95.md"]
+- rawLogs: [".cq/logs/raw/20260713-231437-aa2524bb4945f774b.jsonl",".cq/logs/raw/20260713-231830-a8eef803232932fbf.jsonl",".cq/logs/raw/20260713-231830-a2082c0e624c73f95.jsonl"]
 
-### T82 — planned
+### T82 — wip
 
 - createdAt: 2026-07-13T22:27:18.375Z
-- updatedAt: 2026-07-13T22:27:18.375Z
+- updatedAt: 2026-07-13T23:03:52.696Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add config helper resolving each peer's effective PSK and identity

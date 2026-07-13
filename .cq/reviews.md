@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 76
+  item: 77
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -754,3 +754,16 @@ archives:
 - ledgerRefs: ["tasks:T80","goals:G4"]
 - sessionLogs: [".cq/logs/20260713-225437-a1850ae28a48e003a.md",".cq/logs/20260713-225437-ac6ebf9d1c27aa4bf.md"]
 - rawLogs: [".cq/logs/raw/20260713-225437-a1850ae28a48e003a.jsonl",".cq/logs/raw/20260713-225437-ac6ebf9d1c27aa4bf.jsonl"]
+
+### R77 — go-ahead
+
+- createdAt: 2026-07-13T23:19:25.346Z
+- updatedAt: 2026-07-13T23:19:25.346Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T81 round 1 reconciled panel verdict (opus + fable, unanimous approve, check green): per-peer psk presence/pairwise-distinctness + unique-name validation, edge-role >1-peer scope rejection, single-peer top-level back-compat — all 6 acceptance cases in a table-driven test; the single-peer per-peer-psk rejection judged a sound fail-fast, back-compat-preserving choice by both reviewers."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T81","goals:G4"]
+- sessionLogs: [".cq/logs/20260713-231830-a8eef803232932fbf.md",".cq/logs/20260713-231830-a2082c0e624c73f95.md"]
+- rawLogs: [".cq/logs/raw/20260713-231830-a8eef803232932fbf.jsonl",".cq/logs/raw/20260713-231830-a2082c0e624c73f95.jsonl"]
