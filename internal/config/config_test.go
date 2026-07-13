@@ -129,6 +129,56 @@ func TestLoadValidConcentrator(t *testing.T) {
 	}
 }
 
+// TestLoadEndpointSingleBackwardCompat is the T54 backward-compat case: a bare
+// `endpoint = "..."` (the pre-T54 config surface) must normalize to a
+// ONE-ELEMENT Endpoints list holding exactly that address — behavior-identical
+// to the old single defaultRemote, and the shape T57's hub-failover switch
+// consumes (Endpoints[0] is always the active concentrator).
+func TestLoadEndpointSingleBackwardCompat(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	peer := c.WireGuard.Peers[0]
+	if got := len(peer.Endpoints); got != 1 {
+		t.Fatalf("Endpoints length = %d, want 1 (single endpoint form)", got)
+	}
+	if got := peer.Endpoints[0].String(); got != "203.0.113.5:51820" {
+		t.Errorf("Endpoints[0] = %q, want %q", got, "203.0.113.5:51820")
+	}
+}
+
+// TestLoadEndpointsOrderedList is the T54 core case (Q18 edge-side ordered-
+// endpoint active-standby): a multi-entry `endpoints` list must parse to an
+// Endpoints slice preserving TOML order, index 0 = the active/primary
+// concentrator and the rest ordered standbys — the shape T57 consumes to pick
+// the next endpoint on hub loss.
+func TestLoadEndpointsOrderedList(t *testing.T) {
+	body := fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+		`endpoints = ["203.0.113.5:51820", "198.51.100.7:51820", "203.0.113.9:51821"]`, 1))
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	peer := c.WireGuard.Peers[0]
+	want := []string{"203.0.113.5:51820", "198.51.100.7:51820", "203.0.113.9:51821"}
+	if got := len(peer.Endpoints); got != len(want) {
+		t.Fatalf("Endpoints length = %d, want %d", got, len(want))
+	}
+	for i, w := range want {
+		if got := peer.Endpoints[i].String(); got != w {
+			t.Errorf("Endpoints[%d] = %q, want %q (order must be preserved: index 0 is active, the rest ordered standbys)", i, got, w)
+		}
+	}
+	// The legacy single-endpoint field must stay unset when the ordered list form
+	// is used, so a caller cannot accidentally read a stale single Endpoint.
+	if peer.Endpoint != "" {
+		t.Errorf("Endpoint = %q, want empty when endpoints list is used", peer.Endpoint)
+	}
+}
+
 func TestLoadRejects(t *testing.T) {
 	cases := []struct {
 		name string
@@ -178,6 +228,41 @@ func TestLoadRejects(t *testing.T) {
 			mode: 0o600,
 			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`, "", 1)),
 			want: "endpoint is required",
+		},
+		{
+			name: "edge peer endpoint and endpoints both set",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+				"endpoint = \"203.0.113.5:51820\"\nendpoints = [\"198.51.100.1:51820\"]", 1)),
+			want: "mutually exclusive",
+		},
+		{
+			name: "edge peer endpoints unparseable entry",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+				`endpoints = ["203.0.113.5:51820", "not-a-host-port"]`, 1)),
+			want: "invalid endpoint",
+		},
+		{
+			name: "edge peer endpoints duplicate entry",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+				`endpoints = ["203.0.113.5:51820", "203.0.113.5:51820"]`, 1)),
+			want: "duplicate endpoint",
+		},
+		{
+			name: "edge peer endpoints empty list",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `endpoint = "203.0.113.5:51820"`,
+				`endpoints = []`, 1)),
+			want: "endpoint is required",
+		},
+		{
+			name: "concentrator peer declares endpoints (edge-only surface)",
+			mode: 0o600,
+			body: fill(strings.Replace(concentratorConfig, `allowed_ips = ["10.0.0.2/32"]`,
+				"allowed_ips = [\"10.0.0.2/32\"]\nendpoints = [\"203.0.113.5:51820\"]", 1)),
+			want: "not meaningful for the concentrator role",
 		},
 		{
 			name: "concentrator without listen_port",

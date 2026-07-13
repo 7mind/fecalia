@@ -71,6 +71,13 @@ private_key = "<base64 edge private key>"
 [[wireguard.peers]]
 public_key = "<base64 concentrator public key>"
 endpoint = "203.0.113.7:51820"     # required on the edge
+# endpoints = ["203.0.113.7:51820", "198.51.100.7:51820"]  # ordered hub-failover
+# form (Q18): first entry is the active/primary concentrator, the rest are
+# ordered standbys tried in order when the active one is lost. Mutually
+# exclusive with `endpoint` above — `endpoint` is just its one-element form,
+# so a single-concentrator deployment keeps using it unchanged. Edge-only;
+# T54 is config-surface only (parses + validates the list) — T57 implements
+# the loss detection and the actual switch/re-handshake to the next endpoint.
 allowed_ips = ["10.77.0.1/32"]     # concentrator's inner tunnel address
 
 [metrics]

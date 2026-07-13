@@ -321,8 +321,18 @@ These are recorded design boundaries, not defects:
   bonding/FEC/failover/DPI; "bonded ≈ sum of links" and bufferbloat require real
   uplinks (see [manual-checklist.md](manual-checklist.md) §P0 and
   [p0-findings.md](p0-findings.md)).
-- **Single concentrator; UDP-only.** No tunnel-termination failover, no TCP/TLS
-  fallback for wholesale-UDP-block networks. Both are explicit non-goals.
+- **Multi-concentrator hub-failover: config surface only so far, no switch yet.**
+  Q18 brought edge-side ORDERED-ENDPOINT ACTIVE-STANDBY hub failover into scope.
+  T54 adds the config surface: an edge peer's `[[wireguard.peers]]` block may
+  carry an ORDERED `endpoints` list (index 0 = active/primary concentrator, the
+  rest ordered standbys) instead of a single `endpoint` — the single form is
+  kept as its one-element case, so an existing single-concentrator config is
+  unaffected. The concentrator role is unchanged (it still learns edges
+  dynamically; declaring `endpoints` there is a config error). Detecting hub
+  loss (all paths to the active concentrator down) and switching the peer
+  remote to the next endpoint with a re-handshake is **not yet built** — that is
+  T57 (e2e in T62). UDP-only remains an explicit non-goal (no TCP/TLS fallback
+  for wholesale-UDP-block networks).
 
 ## References
 

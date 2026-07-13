@@ -449,11 +449,61 @@ type WireGuard struct {
 // Peer is one WireGuard peer.
 type Peer struct {
 	PublicKey Key `toml:"public_key"`
-	// Endpoint is the peer's tunnel address (edge -> concentrator); empty on the
-	// concentrator, which roams the edge's endpoint dynamically.
+	// Endpoint is the peer's SINGLE tunnel address (edge -> concentrator); the
+	// legacy single-endpoint config form, mutually exclusive with EndpointsRaw.
+	// Empty on the concentrator, which roams the edge's endpoint dynamically.
+	// A bare `endpoint = "..."` is normalized in resolveEndpoints to a one-
+	// element Endpoints list, so it stays behavior-identical to the pre-T54
+	// config surface.
 	Endpoint string `toml:"endpoint"`
+	// EndpointsRaw is the ORDERED list of concentrator (peer) endpoint address:port
+	// strings for the edge-side hub-failover config surface (Q18): index 0 is the
+	// active/primary concentrator, the rest are ordered standbys. Edge-only; a
+	// concentrator declaring it is a config error (validate). Mutually exclusive
+	// with the legacy Endpoint field.
+	EndpointsRaw []string `toml:"endpoints"`
+	// Endpoints is EndpointsRaw (or the single legacy Endpoint, as a one-element
+	// list) parsed to netip.AddrPort and de-duplicated; populated by
+	// resolveEndpoints in normalize(). This is the shape T57's hub-failover
+	// switch consumes: Endpoints[0] is the active concentrator, Endpoints[1:]
+	// are the ordered standbys to fail over to in order when all paths to the
+	// active one are down.
+	Endpoints []netip.AddrPort `toml:"-"`
 	// AllowedIPs are the CIDR ranges routed to this peer.
 	AllowedIPs []string `toml:"allowed_ips"`
+}
+
+// resolveEndpoints canonicalizes the peer's endpoint config into the ordered
+// Endpoints list (Q18): the legacy single Endpoint field and the new ordered
+// EndpointsRaw list are mutually exclusive input forms, but a bare `endpoint =
+// "..."` is normalized here to a ONE-ELEMENT Endpoints list — so it stays
+// behavior-identical to the pre-T54 single-defaultRemote config surface. Each
+// entry must parse as netip.AddrPort ("host:port"), the same format
+// bind.Multipath.ParseEndpoint requires of the UAPI endpoint string at
+// runtime, and duplicates within the list are rejected.
+func (p *Peer) resolveEndpoints() error {
+	if p.Endpoint != "" && len(p.EndpointsRaw) > 0 {
+		return errors.New("endpoint and endpoints are mutually exclusive; endpoint is the single-entry legacy form of endpoints")
+	}
+	raw := p.EndpointsRaw
+	if p.Endpoint != "" {
+		raw = []string{p.Endpoint}
+	}
+	seen := make(map[netip.AddrPort]struct{}, len(raw))
+	endpoints := make([]netip.AddrPort, 0, len(raw))
+	for _, s := range raw {
+		ap, err := netip.ParseAddrPort(s)
+		if err != nil {
+			return fmt.Errorf("invalid endpoint %q: %w", s, err)
+		}
+		if _, dup := seen[ap]; dup {
+			return fmt.Errorf("duplicate endpoint %q", s)
+		}
+		seen[ap] = struct{}{}
+		endpoints = append(endpoints, ap)
+	}
+	p.Endpoints = endpoints
+	return nil
 }
 
 // Amnezia holds the amneziawg-go obfuscation parameters. They must match on both
@@ -582,6 +632,11 @@ func (c *Config) normalize() error {
 				return fmt.Errorf("path %q: link_rtt must be > 0, got %q", p.Name, p.LinkRTTRaw)
 			}
 			p.LinkRTT = rtt
+		}
+	}
+	for i := range c.WireGuard.Peers {
+		if err := c.WireGuard.Peers[i].resolveEndpoints(); err != nil {
+			return fmt.Errorf("wireguard peer %d: %w", i, err)
 		}
 	}
 	c.Amnezia.applyDefaults()
@@ -772,8 +827,15 @@ func (c *Config) validate() error {
 		if !peer.PublicKey.IsSet() {
 			return fmt.Errorf("wireguard peer %d: public_key is required", i)
 		}
-		if c.Role == RoleEdge && peer.Endpoint == "" {
+		if c.Role == RoleEdge && len(peer.Endpoints) == 0 {
 			return fmt.Errorf("wireguard peer %d: endpoint is required for the edge role", i)
+		}
+		// The concentrator learns the edge's endpoint dynamically (roaming across
+		// NAT rebinds); an ordered failover endpoint list is meaningless for it, so
+		// reject rather than silently ignore a mis-targeted config (Q18 is edge-side
+		// only).
+		if c.Role == RoleConcentrator && len(peer.Endpoints) != 0 {
+			return fmt.Errorf("wireguard peer %d: endpoint/endpoints is not meaningful for the concentrator role (it learns the edge's endpoint dynamically)", i)
 		}
 	}
 	if c.Role == RoleConcentrator && c.WireGuard.ListenPort == 0 {

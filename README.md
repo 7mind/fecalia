@@ -148,8 +148,11 @@ deliberate boundaries you must plan around:
   on real uplinks first.
 - **No live CONTROL protocol** — the frame type and its anti-replay guard exist,
   but inbound CONTROL is currently dropped (reserved for future signalling).
-- **Single concentrator** — no tunnel-termination failover; edge multipathing is
-  the redundancy.
+- **Multi-concentrator hub-failover: config surface only, no switch yet** — an
+  edge peer may declare an ORDERED `endpoints` list (active concentrator + ordered
+  standbys); the single `endpoint` form still works unchanged (its one-element
+  case). Detecting hub loss and switching/re-handshaking to the next endpoint is
+  not yet built.
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
 - **DATA/PARITY frames are unauthenticated by design** (inner WireGuard

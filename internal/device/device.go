@@ -699,8 +699,14 @@ func uapiConfig(cfg *config.Config) (string, error) {
 	for i, peer := range cfg.WireGuard.Peers {
 		pub := peer.PublicKey.Bytes()
 		fmt.Fprintf(&b, "public_key=%s\n", hex.EncodeToString(pub[:]))
-		if peer.Endpoint != "" {
-			fmt.Fprintf(&b, "endpoint=%s\n", peer.Endpoint)
+		if len(peer.Endpoints) > 0 {
+			// Endpoints[0] is the active/primary concentrator (Q18 ordered-endpoint
+			// active-standby); it is populated from either the legacy single
+			// `endpoint` field or the new ordered `endpoints` list (config.Peer.
+			// resolveEndpoints), so both forms bring up the tunnel identically here.
+			// Switching to a standby endpoint on hub loss is T57's job, not this
+			// initial UAPI render.
+			fmt.Fprintf(&b, "endpoint=%s\n", peer.Endpoints[0])
 			// A keepalive keeps the edge->concentrator session warm and lets the
 			// concentrator relearn the edge endpoint after a NAT rebind; only the
 			// initiating (edge) side sets it.
