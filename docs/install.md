@@ -235,17 +235,21 @@ suite includes a deterministic bandwidth-measurement sub-test. From the repo roo
 go test -tags e2e -run TestFixtureImpairment -v ./test/e2e
 ```
 
-Toward the end of the output, you will see a `bdp` sub-test log:
+Toward the end of the output, you will see a `bdp` sub-test log (the numbers below
+are **illustrative placeholders** — the sub-test is report-only and its measured
+values vary run to run; read the actual figures from *your* run's log):
 
 ```
-path capped BDP: idle RTT=5.0ms loaded RTT=...ms (bufferbloat Δ=...ms) | 
-  achieved throughput=47.3 Mbit/s | BDP=... bytes (...frames @ 1517B/frame) | 
+path capped BDP: idle RTT=<e.g. ~5>ms loaded RTT=...ms (bufferbloat Δ=...ms) | 
+  achieved throughput=<e.g. ~35-56> Mbit/s | BDP=... bytes (...frames @ ≈1540B/frame) | 
   SizePacingFromBDP -> capacityFPS=... burstFrames=...
 ```
 
-The **achieved throughput** (47.3 Mbit/s in this example) is a measured point;
+The **achieved throughput** (whatever your run reports) is a measured point;
 the fixture builds a sustained queue by running iperf3 under a controlled bandwidth
-cap, so it measures the true link-limited throughput (not CPU-bound).
+cap, so it measures the true link-limited throughput (not CPU-bound). The per-frame
+size (`≈1540B`) is the full path MTU (1500) plus the outer-frame DATA overhead
+(40) that `SizePacingFromBDP` uses to convert bandwidth to a frame rate.
 
 ##### Option B: Measurement on the real deployment (manual)
 
