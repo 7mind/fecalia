@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 12
+  item: 13
 archives: []
 ---
 
@@ -179,3 +179,18 @@ archives: []
 - blockingQuestions: ["Q21","Q22","Q23","Q24","Q25","Q26","Q27","Q28"]
 - sessionLogs: [".cq/logs/20260713-210054-acde8de5f9cf22718.md"]
 - rawLogs: [".cq/logs/raw/20260713-210054-acde8de5f9cf22718.jsonl"]
+
+## M19
+
+### HO13 — answers-required
+
+- createdAt: 2026-07-13T21:22:33.569Z
+- updatedAt: 2026-07-13T21:22:33.569Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "/cq:plan bootstrapped goal G5 'Optional DNS (hostname) concentrator endpoints' (milestone M19) into `clarifying`. The plan-advance planner grounded read-only (verified: netip.ParseAddrPort rejects hostnames at config.go:495 + multipath.go:1327; metrics/server.go:133 proves DNS capability via net.LookupIP) and filed 8 clarifying questions Q29-Q36 (open, linked goals:G5) covering: opt-in/default-off posture + IP-literal byte-identity; defer-and-reconcile vs hard-resolve at load; re-resolution trigger/cadence/repoint + no-op suppression; multi-record A/AAAA + v4/v6 preference; resolver privacy + a testable security acceptance target; hub-failover interaction/coordination; config surface (overload vs new field); e2e/unit acceptance bar + realhosts scope. Two grounded findings sharpen the plan: (1) SetPeerRemote (multipath.go:1371) is deliberately disruptive (Rebaseline + re-handshake) so re-resolution MUST suppress no-op unchanged-IP repoints; (2) hubFailover holds an immutable endpoints snapshot with active idx and also calls SetPeerRemote, so an independent re-resolution loop repointing the active endpoint RACES the failover controller (Q34). Q34 (failover coordination) + Q35 (config surface) most shape the DAG blast radius. NEXT: user answers Q29-Q36 in the TUI/web, then runs /cq:plan:advance G5 to plan the task DAG. Blocked on user answers."
+- flow: plan
+- ledgerRefs: ["goals:G5"]
+- blockingQuestions: ["Q29","Q30","Q31","Q32","Q33","Q34","Q35","Q36"]
+- sessionLogs: [".cq/logs/20260713-212207-a0e65d160c67b7983.md"]
+- rawLogs: [".cq/logs/raw/20260713-212207-a0e65d160c67b7983.jsonl"]

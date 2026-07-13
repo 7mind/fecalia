@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 18
+  item: 19
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -137,3 +137,10 @@ archives:
 - updatedAt: 2026-07-13T20:55:43.837Z
 - title: "Plan: multi-peer (hub-and-spoke) concentrator"
 - description: "Coordination milestone for the plan-flow goal G3: let one wanbond concentrator process terminate MANY edges concurrently (per-peer isolation of resequencing/FEC/scheduling + authenticated path->peer demux). Groups the goal, its clarifying questions, reviews, and approval decision. Successor to G2 (production-readiness, complete)."
+
+### M19 — open
+
+- createdAt: 2026-07-13T21:16:32.637Z
+- updatedAt: 2026-07-13T21:16:32.637Z
+- title: "Plan: DNS (hostname) concentrator endpoints"
+- description: "Coordination milestone for the plan-flow goal G5: optional DNS/hostname resolution for the edge's concentrator endpoint/endpoints (dial a concentrator by name; support a changing/DDNS concentrator IP via re-resolution + SetPeerRemote repoint), opt-in, default IP-only. Groups the goal, clarifying questions, reviews, approval decision. Edge-side; orthogonal to G4 (multi-peer concentrator)."

@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 4
+  item: 5
 archives: []
 ---
 
@@ -131,3 +131,41 @@ archives: []
     TESTING DIRECTION: netns e2e with 2+ edges to one concentrator proving per-peer isolation (each edge's traffic resequences independently; one edge's loss/reorder/restart does not corrupt another's stream; return traffic routes to the correct edge); a per-peer resequencer unit test (two interleaved outer-seq streams stay separated); realhosts extension if feasible. Report-only real-link where absolute numbers apply, per the existing M10/Q12 discipline.
 - sessionLogs: [".cq/logs/20260713-210054-acde8de5f9cf22718.md"]
 - rawLogs: [".cq/logs/raw/20260713-210054-acde8de5f9cf22718.jsonl"]
+
+## M19
+
+### G5 — clarifying
+
+- createdAt: 2026-07-13T21:17:03.895Z
+- updatedAt: 2026-07-13T21:22:19.649Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- title: Optional DNS (hostname) concentrator endpoints
+- description: |
+    GOAL: optional DNS (hostname) resolution for the edge's concentrator endpoint / ordered endpoints list, so an edge can dial a concentrator BY NAME — principally to support a concentrator with NO static IP (DDNS / a cloud instance whose public IP changes).
+    
+    MOTIVATION. Today endpoint/endpoints are IP:port literals ONLY — enforced by netip.ParseAddrPort in config.Peer.resolveEndpoints (internal/config/config.go:495) and Multipath.ParseEndpoint (internal/bind/multipath.go:1327), both of which reject hostnames. This is a DELIBERATE boundary, not a capability gap: the codebase already resolves DNS elsewhere (internal/metrics/server.go:132,151 resolves a hostname listen address to enforce loopback). It is purely EDGE-side (the concentrator has no endpoint — it learns edges dynamically), and largely orthogonal to the multi-peer concentrator goal (G4).
+    
+    CHOSEN DIRECTION (to confirm/refine in planning): OPT-IN DNS endpoints, default IP-only. Three things must be solved to make it useful and safe:
+    - (a) RESOLUTION TIMING: the datapath sends to a concrete netip.AddrPort (per-path remote), so a hostname must resolve to an IP before any packet egresses. A one-time resolve at config load handles a static IP behind a name — but that is no better than putting the IP in the config. So resolution should DEFER/RECONCILE (like the W1 tolerant-startup model) rather than hard-fail config.Load when the resolver/network is not ready at boot.
+    - (b) RE-RESOLUTION (the actual value): WireGuard resolves an endpoint ONCE and never re-resolves (wg-quick re-resolves externally via a timer). To support a CHANGING concentrator IP, add a re-resolution loop that, on TTL / liveness-loss, re-resolves the hostname and — if the IP changed — repoints the bond via the EXISTING bind.Multipath.SetPeerRemote path (the same machinery T57 hub-failover uses). Without this loop, DNS is strictly worse than an IP literal (a startup dependency for no benefit).
+    - (c) DPI METADATA LEAK: wanbond's thesis is a high-entropy, unfingerprintable wire (amnezia obfuscation, no fixed offsets). A plaintext DNS query for the concentrator hostname is a cleartext, on-path-observable, PRE-tunnel signal that reveals a nameable/blocklistable host + timing over an unprotected channel — a real DPI-resistance regression. So DNS must be opt-in (default off), and the plan should decide DoH/DoT support vs system resolver vs a documented DPI trade-off.
+    
+    KNOWN REFACTOR SURFACE: internal/config (resolveEndpoints: accept + resolve or defer hostnames; keep the resolved netip.AddrPort shape T57 consumes; a raw-hostname field alongside; validation; keep IP-literal endpoints byte-for-byte behavior-identical), internal/bind/multipath.go (ParseEndpoint; re-resolution repoints via SetPeerRemote), internal/device/device.go (a re-resolution loop wired like startHubFailover / the T55 reconcile loop; startup tolerance for a not-yet-resolvable name), possibly internal/telemetry (trigger re-resolve on liveness loss). Compose with T57 hub-failover (each ordered endpoint could itself be a hostname).
+    
+    INVARIANTS / CONSTRAINTS TO PRESERVE: A1 one-virtual-endpoint-per-peer; the tolerant-startup model (do not hard-fail boot on a transient resolver outage); the DPI-resistance thesis (default IP-only; DNS opt-in); IP-literal endpoints stay byte-for-byte behavior-identical (no regression for existing configs); resolution never blocks the send hot path (resolve off-path, cache the result).
+    
+    OPEN QUESTIONS FOR CLARIFICATION (planner should ask before designing):
+    - Default posture: DNS opt-in with default IP-only (recommended), or on by default?
+    - Load-time behavior: hard-resolve-at-config-load, or defer-and-reconcile (recommended, mirrors W1 tolerant startup) when a name is not yet resolvable?
+    - Re-resolution trigger + cadence: honor DNS TTL, a fixed poll interval, on-liveness-loss, or a combination? What repoints the bond — reuse SetPeerRemote?
+    - Multi-record: a name can resolve to several A/AAAA records — pick first, expand into extra ordered endpoints (feeding hub-failover), or happy-eyeballs? IPv4/IPv6 preference?
+    - Resolver privacy: system resolver (leaks plaintext DNS), DoH/DoT (more machinery, still leaks SNI/timing), or document the DPI trade-off and leave it to the operator? What is the security acceptance target?
+    - Hub-failover interaction: may the ordered endpoints list mix hostnames and IP literals? How does re-resolution compose with an in-progress hub-failover switch (which endpoint is re-resolved, and does a re-resolve override a failover or vice-versa)?
+    - Config surface: new raw-hostname field vs overloading endpoint/endpoints to accept either form; how validation distinguishes and reports.
+    
+    NON-GOALS: SRV records / service discovery; DNS on the concentrator side (it has no endpoint); any change to the obfuscation wire format; the edge-side simultaneous multi-concentrator aggregation feature (separate).
+    
+    TESTING DIRECTION: unit — resolveEndpoints resolves a hostname via an injected resolver seam and DEFERS (not hard-fails) on lookup failure; a re-resolution unit test repoints via SetPeerRemote when the injected resolver returns a changed IP (injected resolver + fake clock). netns e2e — an edge dials the concentrator BY NAME (a hosts-file / local resolver entry), the concentrator's IP changes mid-session, and the edge re-resolves and reconnects with the tunnel surviving. Report-only realhosts extension if feasible, per the M10/Q12 discipline.
+- sessionLogs: [".cq/logs/20260713-212207-a0e65d160c67b7983.md"]
+- rawLogs: [".cq/logs/raw/20260713-212207-a0e65d160c67b7983.jsonl"]

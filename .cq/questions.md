@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 28
+  item: 36
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -273,98 +273,204 @@ archives:
 
 ## M18
 
-### Q21 — open
+### Q21 — answered
 
 - createdAt: 2026-07-13T20:58:52.969Z
-- updatedAt: 2026-07-13T20:58:52.969Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:07:54.714Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Confirm the scope boundary: is this goal STRICTLY concentrator-side multi-peer (one concentrator process terminating N distinct edges, each a distinct WireGuard peer/pubkey), with NO change to the edge side? Specifically, (a) is edge-side simultaneous aggregation across multiple DISTINCT concentrators explicitly out of scope (it is different from the already-shipped T57/Q18 single-active-hub ordered-endpoint failover), and (b) is the existing single-edge NAT-roaming case (one peer whose source rebinds) considered ALREADY handled, so 'multi-peer' means genuinely distinct peers, not the roaming of one?"
 - context: "Grounded: device.Up builds ONE bind.NewMultipath(cfg.Paths, cfg.PSK, ...) for the whole process; the edge already has T57 hub-failover (config.Peer.Endpoints ordered list, reseq.Rebaseline, startHubFailover in device.go) which is single-ACTIVE, not simultaneous aggregation. config.validate already accepts >=1 [[wireguard.peers]] and device.uapiConfig ranges over all peers, but the Bind/reseq/scheduler are singletons. The scope answer decides whether ANY edge-side work is in the plan or the plan is concentrator-only de-singletoning."
 - suggestions: ["Concentrator-only multi-peer; edge unchanged; edge-multi-hub and single-edge-roaming both out of scope","Concentrator multi-peer PLUS edge-side simultaneous multi-concentrator aggregation","Something else (describe)"]
 - recommendation: Concentrator-only multi-peer for this goal; edge-side simultaneous multi-concentrator aggregation is a separate feature; single-edge roaming is already handled and is not what 'multi-peer' means here.
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q22 — open
+### Q22 — answered
 
 - createdAt: 2026-07-13T20:59:05.594Z
-- updatedAt: 2026-07-13T20:59:05.594Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:08:21.925Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Adopt a PER-PEER PSK (move psk into [[wireguard.peers]]) as the authenticated path->peer demux enabler? If yes, pin the exact config schema and back-compat rule: (a) does the top-level `psk` REMAIN fully supported as the single-peer default (so every existing single-peer config keeps working byte-for-byte), with a per-peer `psk` under [[wireguard.peers]] only REQUIRED once >1 peer is configured? (b) does validate REQUIRE the per-peer psks to be pairwise DISTINCT when >1 peer (equal psks would defeat authenticated demux)? (c) is the model symmetric on the edge (each edge configured with the single psk that matches its concentrator-side peer entry), i.e. no edge schema change beyond the value it already sets?"
 - context: "Grounded: config.Config.PSK is a single top-level Key (config.go:42), config.validate requires it (line 844), config.Peer has PublicKey/Endpoint(s)/AllowedIPs and NO psk field. multipath.NewMultipath takes one psk and builds ONE frame.Codec + telemetry.NewReflector(psk) + per-path telemetry.NewProber(...,cfg.PSK,...). The outer PSK-HMAC PROBE/CONTROL plane is the only authenticated signal below the crypto layer, so a per-peer PSK is what lets an authenticated PROBE identify WHICH peer a path belongs to. This decision drives internal/config schema+validation AND how the Bind is de-singletoned (map keyed by peer, each peerState with its own psk-derived codec/reflector)."
 - suggestions: ["Per-peer psk under [[wireguard.peers]]; top-level psk stays the single-peer default; per-peer required + pairwise-distinct only when >1 peer; edge unchanged","Per-peer psk ALWAYS required (drop top-level psk) — a clean break, no single-peer back-compat","Keep one deployment-wide psk + some non-PSK demux (describe how it stays unforgeable)"]
 - recommendation: "Per-peer psk under [[wireguard.peers]] as the enabler; keep top-level psk as the single-peer back-compat default; require per-peer psks present and pairwise-distinct when >1 peer; no edge schema change (the edge already sets exactly the psk matching its concentrator peer)."
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q23 — open
+### Q23 — answered
 
 - createdAt: 2026-07-13T20:59:15.592Z
-- updatedAt: 2026-07-13T20:59:15.592Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:08:35.653Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Is a DATA/PARITY outer-frame WIRE-FORMAT change acceptable for this goal, or is 'no wire change' a hard requirement? The chosen direction (authenticated path->peer binding) should need NO wire change: DATA/PARITY stay unauthenticated with no peer id, and demux is purely by the authenticated path->peer binding table. Confirm that (a) adding a peer-id field to the DATA header is explicitly REJECTED (it would be spoofable and reintroduce the cross-peer resequencer-injection DoS invariant-4 forbids), and (b) the plan must preserve byte-for-byte wire compatibility with already-deployed single-peer edges."
 - context: "Grounded: frame.Data carries OuterSeq/PathID/FECGroup/FECIndex/Flags and NO peer id; DATA/PARITY are unauthenticated by design (frame.go wire-model comment, invariant 4); only PROBE/CONTROL carry a PSK-HMAC tag. reseq's whole discontinuity/resync guard assumes DATA is forgeable. A wire change would ripple into frame.DataOverhead, mtu.go InnerMTU sizing, FEC shard coding (OuterSeq||Payload), and cross-version compat. Answering this fixes whether internal/frame is in the refactor surface at all."
 - suggestions: ["No wire change; DATA/PARITY unchanged; demux purely via authenticated path->peer binding (peer-id-in-DATA rejected); keep single-peer wire compat","A wire change IS acceptable if planning shows it is necessary (describe the compat story)"]
 - recommendation: No wire change. DATA/PARITY stay unauthenticated and peer-id-free; the peer is resolved by the authenticated path->peer binding, not by any outer-frame field. This preserves invariant 4 and wire compat with deployed edges.
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q24 — open
+### Q24 — answered
 
 - createdAt: 2026-07-13T20:59:27.135Z
-- updatedAt: 2026-07-13T20:59:27.135Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:09:05.872Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "How is an inbound path/source attributed to a peer for the VERY FIRST frames, before any authenticated PROBE has bound it (and before the WG handshake completes)? Two sub-decisions: (1) Bootstrap policy for early DATA on an unbound source — GATE (drop DATA until an authenticated PROBE under some peer's psk binds the source->peer, relying on WG handshake/keepalive retransmit), or QUARANTINE it in a provisional per-source resequencer that is adopted once the binding resolves? (2) Peer identification for an unbound authenticated frame — is it acceptable to TRIAL-DECODE an unbound PROBE against each configured peer's psk (O(peers) HMAC verifies) to discover which peer it belongs to, or is a cheaper binding hint required?"
 - context: "Grounded: multipath.handleInbound today learns a path's return remote ONLY from an authenticated PROBE (Probe case: ps.setRemote(srcAP)), never from DATA (the D9/D11 fix), and reflects peer probes via telemetry.Reflector. With per-peer psk each peerState has its own psk-derived Codec, so an unbound source's frame must be trial-decoded across peers' codecs to identify the peer. Trial-decode is an O(peers) cost + a potential CPU-DoS surface on spoofed unbound sources (ties to the resource-limit and threat-model questions). This decision shapes the demux table programming in device.go and the Bind receive path."
 - suggestions: ["Gate DATA until an authenticated PROBE binds source->peer; identify the peer by trial-decoding the PROBE across peer psks (bounded by max-peers)","Provisional quarantine resequencer per unbound source, adopted on first authenticated PROBE","A cheaper binding hint is required (describe)"]
 - recommendation: Gate DATA on an unbound source until an authenticated PROBE binds source->peer (WG retransmits cover the brief gap); identify the peer by trial-decoding the unbound PROBE across configured peer psks, with the cost bounded by the max-peers cap and unauthenticated floods dropped cheaply.
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q25 — open
+### Q25 — answered
 
 - createdAt: 2026-07-13T20:59:38.682Z
-- updatedAt: 2026-07-13T20:59:38.682Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:09:25.514Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: When an edge's source rebinds (NAT/roaming) so a path arrives from a NEW source address, how must the path re-bind to the SAME peer without a window where its frames misroute into another peer's resequencer? Is it acceptable that re-binding a moved source to its peer happens ONLY on a fresh authenticated PROBE (under that peer's psk) from the new source — accepting a brief drop/no-route window for that path's DATA until the PROBE re-binds it (covered by WG retransmit and the other still-bound paths of the same bonded edge) — or is a stronger continuity guarantee required?
 - context: "Grounded: today a single virt is pinned once to the first learned source (virtualEndpoint), and per-path remote is re-learned on each authenticated PROBE (handleInbound Probe case). The existing T16 re-roam and D11 machinery already re-learn a path's remote from authenticated probes. In the multi-peer world the RISK is that DATA from a moved source, arriving before its re-binding PROBE, could be attributed to the wrong peer's resequencer (cross-peer contamination). Gating re-bind on an authenticated PROBE keeps the binding unforgeable but opens a small window. This decides the roaming/re-bind logic in the demux table."
 - suggestions: ["Re-bind a moved source to its peer ONLY on a fresh authenticated PROBE from the new source; unbound/other DATA from that source is dropped (not misrouted) until then","Require a stronger zero-window continuity guarantee (describe the mechanism)"]
 - recommendation: Re-bind on the authenticated PROBE only; until the moved source re-binds, its DATA is dropped rather than attributed to any peer (never misrouted). WG retransmit and the edge's other still-bound paths cover the brief window, mirroring the existing D11/T16 re-learn discipline.
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q26 — open
+### Q26 — answered
 
 - createdAt: 2026-07-13T20:59:51.158Z
-- updatedAt: 2026-07-13T20:59:51.158Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:09:53.940Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "Pin the concentrator resource-limit model: (a) is there a CONFIGURED max-peers cap, and what default (the per-peer footprint is a ~2048-frame resequencer ring PLUS per-peer FEC send/recv state PLUS per-peer scheduler/probers/reflector, so N peers multiply memory)? (b) what is the eviction policy for idle/dead peers — evict when the WG session is torn down / liveness has been DOWN past a timeout, or never (static peer set only)? (c) on cap exhaustion, REJECT a new peer's bootstrap, or evict the idlest? Note: is the concentrator peer set STATIC (only the configured [[wireguard.peers]] ever bind) or can peers appear dynamically within that configured set?"
 - context: "Grounded: resequencerWindow=2048 (multipath.go), and each peer needs its own resequencer (atomic.Pointer today), fecSend/fecRecv, scheduler, prober set, and reflector — all currently process-singletons. The configured peer set is bounded by [[wireguard.peers]] (config), so 'max peers' may simply be len(peers); but the demux/provisional state for UNbound sources needs its own bound (DoS). This decision sets the peerState map sizing, the eviction lifecycle wired from device.go peer events, and the backpressure branch."
 - suggestions: ["Static configured peer set only (cap = number of [[wireguard.peers]]); per-peer state torn down when that peer's WG session/liveness goes away; provisional unbound-source state separately capped","Configured max_peers cap with a default (state the number) + idle-eviction timeout","No cap / no eviction (reject if unsure)"]
 - recommendation: "Peers are the STATIC configured [[wireguard.peers]] set, so the steady-state cap is that count; size per-peer state lazily and tear it down when a peer's WG session/liveness is gone; cap the PROVISIONAL unbound-source demux state separately (small, drop-on-exhaustion) to bound the bootstrap DoS."
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q27 — open
+### Q27 — answered
 
 - createdAt: 2026-07-13T21:00:02.247Z
-- updatedAt: 2026-07-13T21:00:02.247Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:10:12.162Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "State the target THREAT MODEL for the path->peer binding so acceptance can test it: (1) With distinct per-peer PSKs, is the required guarantee 'a malicious edge that knows ITS OWN psk can disrupt ONLY its own tunnel, never another peer's resequencing/FEC/scheduling' (i.e. full cross-peer isolation, since it cannot forge an authenticated PROBE under a victim's psk)? (2) For an attacker with NO valid psk who floods spoofed/unbound source addresses, is the accepted bound 'unauthenticated frames are dropped cheaply and provisional demux state is capped, so the flood cannot exhaust memory/CPU or evict a live peer' — accepting only degraded bootstrap latency, never cross-peer corruption?"
 - context: "Grounded: DATA/PARITY are unforgeable-DATA by design (invariant 4); only an authenticated PROBE (PSK-HMAC, with monotonic anti-replay + the T38/D12 session challenge in telemetry) can bind a source to a peer. So cross-peer injection requires the victim's psk. The residual surfaces are (i) trial-decode CPU on unbound floods and (ii) provisional-state exhaustion / live-peer eviction — both tie to the demux-bootstrap and resource-limit questions. A written threat model turns the e2e 'one edge's loss/restart does not corrupt another' test into concrete adversary cases."
 - suggestions: ["Full cross-peer isolation under distinct psks; no-psk floods bounded to degraded bootstrap only (never corruption or live-peer eviction)","A weaker/different guarantee (describe)"]
 - recommendation: "Target full cross-peer isolation: with distinct per-peer psks a peer can disrupt only itself; an attacker without a valid psk is limited to (bounded, capped) bootstrap-latency degradation and can neither corrupt another peer's stream nor evict a live peer."
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
 
-### Q28 — open
+### Q28 — answered
 
 - createdAt: 2026-07-13T21:00:13.528Z
-- updatedAt: 2026-07-13T21:00:13.528Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-13T21:10:23.809Z
+- author: user
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - question: "For /metrics: add a per-peer label to the wanbond_path_* (and the per-peer resequencer/FEC) series so an operator can attribute traffic/loss/recovery to a specific edge? If yes, what is the label KEYED on — a stable config-assigned peer name (recommended, human-readable, bounded), or the WG public key (globally stable but opaque and higher-cardinality-looking)? Confirm the cardinality increase (series multiply by peer count) is acceptable given it is bounded by the max-peers/static peer set, and whether existing single-peer series must stay label-compatible (e.g. omit the peer label, or emit a default, when only one peer)."
 - context: "Grounded: metrics.Source (newMetricsSource) reads per-PATH counters (txBytes/rxBytes atomics on pathState, prober RTT/loss, resequencer Stats) off the single Bind; there is no peer dimension today. Per-peer isolation makes per-peer scrape data the operator's primary signal ('is edge A's tunnel healthy independently of edge B'). config.Peer has no name field today, so keying on a peer name may require a small schema add (peer name/id). This decides the metrics.Source shape and any config surface for a peer identifier."
 - suggestions: ["Add a `peer` label keyed on a config-assigned peer name (add a name/id field to [[wireguard.peers]]); single-peer configs keep back-compatible series","Key the `peer` label on the WG public key (no new config field)","No per-peer labels for this goal (aggregate only)"]
 - recommendation: "Add a per-peer `peer` label keyed on a config-assigned peer name (small [[wireguard.peers]] name field); cardinality is bounded by the static peer set; keep single-peer series back-compatible (omit the label or emit a stable default when only one peer)."
 - ledgerRefs: ["goals:G4"]
+- answer: as recommended
+
+## M19
+
+### Q29 — open
+
+- createdAt: 2026-07-13T21:20:01.422Z
+- updatedAt: 2026-07-13T21:20:01.422Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Default posture: is DNS/hostname endpoint resolution strictly OPT-IN with default IP-only, and does an existing IP-literal config stay byte-for-byte behavior-identical (no new code path taken when no hostname is configured)?"
+- context: "The goal's core DPI-resistance constraint is that a plaintext DNS query is a cleartext, on-path, pre-tunnel signal that names a blocklistable host — a regression against the thesis (design.md 'DPI resistance', requirement 6). This codebase already has a firm idiom for exactly this shape: FEC, pacing, adaptive-FEC, and the amnezia block are all default-off and leave the existing datapath byte-for-byte unchanged when unconfigured (config.go FEC L288, Amnezia L517). Confirming the posture pins whether resolution is gated behind an explicit opt-in and whether the IP-literal parse path (netip.ParseAddrPort at config.go:495, multipath.go:1327) must be preserved untouched for non-hostname configs."
+- suggestions: ["Opt-in, default IP-only; IP-literal path untouched (matches FEC/amnezia idiom)","On by default (any endpoint may be a hostname), IP still parsed fast-path","Opt-in AND require an explicit acknowledgement flag for the DPI trade-off"]
+- recommendation: Opt-in, default IP-only, IP-literal configs byte-for-byte identical — matches the goal's stated direction and the codebase's established default-off feature-block idiom.
+- ledgerRefs: ["goals:G5"]
+
+### Q30 — open
+
+- createdAt: 2026-07-13T21:20:12.483Z
+- updatedAt: 2026-07-13T21:20:12.483Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Load-time behavior when a configured hostname is NOT yet resolvable at boot (resolver/network not ready): hard-fail config.Load, or DEFER-and-reconcile mirroring the T55 tolerant-startup model — bring the tunnel up on any resolvable/IP endpoints and let a background loop resolve the name later?"
+- context: "The T55 tolerant-startup path is a precise, existing template: internal/bind/multipath.go:531-537 defers a path on EADDRNOTAVAIL into m.deferred, and StartReconcileLoop (internal/bind/reconcile.go:60-124, ~1s cadence) retries ListenUDP and promotes on success. An unresolvable hostname at boot is structurally the same situation. The datapath sends to a concrete netip.AddrPort (multipath ParseEndpoint/SetPeerRemote), so a name MUST resolve before any packet egresses on that endpoint — but hard-failing Load would violate the invariant 'do not hard-fail boot on a transient resolver outage'. The decision determines whether resolveEndpoints (config.go:484) may return a config with an as-yet-unresolved hostname placeholder, and whether a deferred-resolution reconcile loop is in scope."
+- suggestions: ["Defer-and-reconcile: boot succeeds, background loop resolves later (mirror T55)","Hard-resolve at config.Load, fail boot if any hostname does not resolve","Hybrid: hard-resolve if it is the ONLY/primary endpoint, defer if standbys exist"]
+- recommendation: "Defer-and-reconcile, mirroring T55: boot tolerantly, resolve off-path, and only start sending on that endpoint once resolved — preserves the tolerant-startup invariant and makes a single-hostname edge boot even before its resolver is up."
+- ledgerRefs: ["goals:G5"]
+
+### Q31 — open
+
+- createdAt: 2026-07-13T21:20:24.274Z
+- updatedAt: 2026-07-13T21:20:24.274Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Re-resolution loop — what TRIGGERS a re-resolve, at what CADENCE, and how does a changed IP repoint the bond? Specifically: (a) honor DNS record TTL, a fixed poll interval, on-liveness-loss, or a combination; (b) reuse bind.Multipath.SetPeerRemote to repoint; (c) suppress a no-op repoint when the resolved IP is UNCHANGED?"
+- context: "Re-resolution is the goal's actual value (a static IP behind a name is no better than the IP literal). The repoint machinery already exists: SetPeerRemote (multipath.go:1371) repoints every path's remote AND calls resequencer.Rebaseline() plus (via the hub-failover caller) a fresh WG re-handshake — this is deliberately DISRUPTIVE (defect D32: a hub switch restarts the sender's outer-seq, so the resequencer must re-baseline). Therefore repointing to the SAME IP would needlessly drop the session, so a change-detection guard is essential. Go's net.Resolver does not surface TTL directly (net.LookupIP discards it), so honoring TTL needs a resolver seam that exposes it or a fixed interval. The loop would wire in exactly like startHubFailover (device.go:260) with a stopResolution closure (device.go:664-682). The cadence + trigger choice sizes the reconnect latency after a DDNS IP change versus steady-state resolver load."
+- suggestions: ["Fixed poll interval + re-resolve on liveness-loss; reuse SetPeerRemote; skip if IP unchanged","Honor DNS TTL (needs a TTL-exposing resolver seam); re-resolve on expiry","On-liveness-loss ONLY (re-resolve when all paths to the name go DOWN), no timer"]
+- recommendation: Fixed poll interval (bounded, e.g. reconcile-cadence-scale) PLUS an immediate re-resolve on liveness-loss, repoint via SetPeerRemote ONLY when the resolved AddrPort actually changed. TTL-honoring is a nice-to-have gated on whether we add a TTL-exposing resolver seam.
+- ledgerRefs: ["goals:G5"]
+
+### Q32 — open
+
+- createdAt: 2026-07-13T21:20:34.322Z
+- updatedAt: 2026-07-13T21:20:34.322Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Multi-record handling: when a hostname resolves to SEVERAL A/AAAA records, do we pick the first, expand them into extra ordered endpoints (feeding hub-failover), or do happy-eyeballs? And what is the IPv4/IPv6 preference?"
+- context: "config.Peer.Endpoints is an ordered []netip.AddrPort that T57 hub-failover consumes as active(0)/standbys(1:) with WRAP round-robin (failover.go). A multi-record name maps naturally onto that list — but expanding one name into N ordered endpoints changes failover semantics (a re-resolve could add/remove standbys, and hubFailover holds an IMMUTABLE snapshot of endpoints with an active idx, so a changing record set races that snapshot — see the hub-failover-interaction question). Picking one address is simplest and keeps a 1:1 name->endpoint mapping. IPv4/IPv6 preference matters because a path's local bind family must match the remote family; the send path uses a single netip.AddrPort per path."
+- suggestions: ["Pick one (first, or first matching the path's address family); 1:1 name->endpoint","Expand all records into ordered endpoints feeding hub-failover","Happy-eyeballs (race v4/v6, keep the winner)"]
+- recommendation: "Pick a single address per name (prefer the family that matches available local paths; document the tie-break) for a clean 1:1 name->endpoint mapping. Expanding into the failover list is a larger, separable change with real interaction complexity — defer it unless explicitly wanted."
+- ledgerRefs: ["goals:G5"]
+
+### Q33 — open
+
+- createdAt: 2026-07-13T21:20:50.526Z
+- updatedAt: 2026-07-13T21:20:50.526Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Resolver privacy: use the SYSTEM resolver (leaks a plaintext DNS query naming the concentrator), DoH/DoT (more machinery; still leaks SNI + timing to the DoH provider), or the system resolver with a DOCUMENTED DPI trade-off left to the operator? And what is the concrete SECURITY ACCEPTANCE TARGET this must meet?"
+- context: "This is the crux of the DPI-resistance tension (goal point c). wanbond's thesis is a high-entropy, unfingerprintable wire; a plaintext DNS lookup for the concentrator name is a pre-tunnel cleartext signal that names a blocklistable host and reveals timing over an unprotected channel. DoH/DoT reduce the on-path plaintext but add a TLS client dependency and still leak SNI/timing to (and trust in) the DoH resolver — and the existing p5_dpi_test.go wire audit only governs the TUNNEL wire, not a pre-tunnel resolver. Per this project's operationalism norm the plan needs a TESTABLE acceptance criterion, not 'is private': e.g. 'with DNS opt-in OFF, zero DNS traffic and the wire audit is unchanged'; 'with system resolver, the operator-facing docs state the exact leaked artifact (hostname in cleartext DNS)'. The choice sizes scope enormously (system resolver = small; DoH = a new subsystem)."
+- suggestions: ["System resolver + explicit documented DPI trade-off (smallest); default-off already contains the leak","System resolver now, design the seam so DoH/DoT can be added later without a datapath change","DoH/DoT in-scope now as a first-class private-resolver option"]
+- recommendation: System resolver via an injectable resolver SEAM, with a documented DPI trade-off and a testable acceptance target (opt-in OFF => zero DNS + wire audit unchanged; opt-in ON => operator docs state the exact cleartext artifact). Design the seam so DoH/DoT is a later drop-in, but do not build it now unless required.
+- ledgerRefs: ["goals:G5"]
+
+### Q34 — open
+
+- createdAt: 2026-07-13T21:21:03.589Z
+- updatedAt: 2026-07-13T21:21:03.589Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Hub-failover interaction: may the ordered endpoints list MIX hostnames and IP literals? And how do re-resolution and an in-progress hub-failover switch COORDINATE — which endpoint does re-resolution target, and does a re-resolve override a failover selection or vice-versa?"
+- context: "This is the hardest composition concern and it is concrete, not speculative. hubFailover (internal/device/failover.go:72-97) holds endpoints []netip.AddrPort as an IMMUTABLE snapshot taken at construction, tracks the active idx, and BOTH controllers would call the same bind.Multipath.SetPeerRemote. If a re-resolution loop repoints endpoint[idx]'s AddrPort out from under hubFailover, its snapshot goes stale and the two can fight over the bond's remote (each SetPeerRemote also triggers a resequencer Rebaseline + re-handshake, so a fight = repeated session drops). Options: (a) re-resolution only ever repoints the CURRENTLY-ACTIVE endpoint and defers to failover for selection; (b) make the endpoint list mutable/owned by one coordinator; (c) forbid mixing (a hostname endpoint list is single-entry, so failover and DNS are mutually exclusive per peer). The answer decides whether failover.go's endpoints field must become resolvable/mutable or stays IP-only with DNS handled by a separate single-endpoint path."
+- suggestions: ["Allow mixing; ONE coordinator owns endpoint selection, re-resolution only rewrites the active entry's IP and never advances idx","Forbid mixing for v1: a hostname endpoint is single-entry only (DNS XOR multi-endpoint failover per peer)","Allow mixing; make hubFailover's endpoint list mutable and re-resolution updates entries in place under a shared lock"]
+- recommendation: "For v1, keep them decoupled: re-resolution only ever rewrites the ACTIVE endpoint's resolved IP (never advances the failover idx), and failover continues to own selection. Whether to also FORBID mixing hostnames into a multi-entry list for v1 (simplest, smallest blast radius) is the key sub-decision I need your call on."
+- ledgerRefs: ["goals:G5"]
+
+### Q35 — open
+
+- createdAt: 2026-07-13T21:21:15.533Z
+- updatedAt: 2026-07-13T21:21:15.533Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Config surface: introduce a NEW field for hostname endpoints (e.g. an explicit endpoint_hostname / endpoints_dns), or OVERLOAD the existing endpoint/endpoints fields to accept either an IP:port literal or a host:port name? How should validation distinguish the two forms and report errors?"
+- context: "Today Peer has Endpoint (legacy single) and EndpointsRaw (ordered []string), mutually exclusive, both normalized by resolveEndpoints (config.go:452-507) via netip.ParseAddrPort which REJECTS hostnames. Overloading keeps the surface small and lets a hostname sit anywhere in the ordered list, but it silently changes the semantics of the existing fields and couples the opt-in DPI gate to per-value parsing (harder to make DNS explicitly opt-in). A separate field makes the opt-in explicit and greppable and keeps the IP path's parse untouched, at the cost of a third mutually-exclusive input form. Validation must cleanly separate 'is this an IP:port or a host:port' (a bare ':port' split then ParseAddr-vs-treat-as-name) and give a clear error (e.g. reject a hostname when DNS is not opted in)."
+- suggestions: ["New explicit field/flag (opt-in is greppable; IP path untouched; hostname clearly gated)","Overload endpoint/endpoints to accept either form; a per-entry parse decides IP vs name","Overload, but require a peer-level dns=true flag before any hostname entry is accepted"]
+- recommendation: Overload endpoint/endpoints to accept either form BUT gate hostnames behind an explicit per-peer opt-in flag (so the default-off DPI posture stays explicit and greppable, the IP-literal path is unchanged, and a hostname without the flag is a clear validation error). Confirm you prefer this over a wholly separate field.
+- ledgerRefs: ["goals:G5"]
+
+### Q36 — open
+
+- createdAt: 2026-07-13T21:21:27.222Z
+- updatedAt: 2026-07-13T21:21:27.222Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "Acceptance bar for 'done': is the required e2e proof a NETNS test where an edge dials the concentrator BY NAME (local hosts-file/resolver entry), the concentrator's IP CHANGES mid-session, and the edge re-resolves and reconnects with the tunnel surviving — plus injected-resolver unit tests for defer-on-lookup-failure and repoint-on-changed-IP? And is a report-only realhosts extension in or out of scope for v1?"
+- context: "The goal's testing direction names these, and the harness exists: test/e2e/failover_test.go already exercises a mid-session concentrator switch over netns, and p5_dpi_test.go audits the tunnel wire — so a DNS e2e is an incremental addition, not new infrastructure. The unit seams needed are an injected resolver (like the injected clock telemetry.Clock already used across failover/reconcile tests) and a fake clock for cadence. Pinning the acceptance bar is what makes the plan's tasks testable (operationalism): each task's 'done' should map to one of these observable checks. The realhosts (M10/Q12 report-only) discipline is explicitly 'if feasible' in the goal — I need to know whether to plan it as a task or leave it out of v1."
+- suggestions: ["Netns IP-change-survival e2e + injected-resolver/fake-clock unit tests are the v1 bar; realhosts report-only is optional/out","Same, PLUS a realhosts report-only DNS check as an in-scope task","Unit tests only for v1; netns e2e deferred"]
+- recommendation: Make the netns 'dial-by-name, IP changes mid-session, tunnel survives' e2e plus injected-resolver unit tests (defer-on-failure; repoint-on-change via SetPeerRemote with a fake clock) the v1 acceptance bar, and treat realhosts report-only as a stretch task included only if it adds signal cheaply. Confirm this bar.
+- ledgerRefs: ["goals:G5"]
