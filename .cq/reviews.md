@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 52
+  item: 53
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -573,3 +573,14 @@ archives:
 - new_questions: []
 - criticism: []
 - ledgerRefs: ["goals:G2"]
+
+## M14
+
+### R53 — go-ahead
+
+- createdAt: 2026-07-13T14:01:09.503Z
+- updatedAt: 2026-07-13T14:01:09.503Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T52 (G2/W2 BDP measurement) implement-review: APPROVE (verdict=approve). The 'bdp' sub-test of TestFixtureImpairment derives BDP = bandwidth(bits/s) × BASELINE(idle) RTT with correct units (loadMbps*1e6 -> bits/s from parseIperfSentMbps; idleRTTms*time.Millisecond) and doc-matched avgWireFrameBytes (bind.DefaultPathMTU + frame.DataOverhead, per SizePacingFromBDP's own doc); loaded RTT used only for the separate bufferbloat delta. REPORT-ONLY honored (Q19/D23): only t.Fatalf guards are a pipeline-sanity loadMbps<=0 + a SizePacingFromBDP input-validation error — NO absolute throughput/BDP threshold assertion; measured numbers are t.Logf-only. Deterministic + bounded (reuses existing rttUnderLoad TIME_WAIT-safe one-shot iperf3 + RTT helpers; bdpLoadSecs=8, fixed sample counts, no unbounded loop). Full non-privileged gate green + go vet -tags e2e compiles; the sub-test needs root/netns to RUN (verified by compile + close read). 0 criticisms, 0 questions. Merged to main."
+- ledgerRefs: ["tasks:T52"]

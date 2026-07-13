@@ -535,10 +535,10 @@ archives:
 
 ## M14
 
-### T52 — planned
+### T52 — done
 
 - createdAt: 2026-07-13T13:41:24.901Z
-- updatedAt: 2026-07-13T13:41:24.901Z
+- updatedAt: 2026-07-13T14:01:10.299Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Measure per-path BDP + standing-queue baseline via the capped impairment fixture
