@@ -808,10 +808,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-231437-aa2524bb4945f774b.md",".cq/logs/20260713-231830-a8eef803232932fbf.md",".cq/logs/20260713-231830-a2082c0e624c73f95.md"]
 - rawLogs: [".cq/logs/raw/20260713-231437-aa2524bb4945f774b.jsonl",".cq/logs/raw/20260713-231830-a8eef803232932fbf.jsonl",".cq/logs/raw/20260713-231830-a2082c0e624c73f95.jsonl"]
 
-### T82 — wip
+### T82 — done
 
 - createdAt: 2026-07-13T22:27:18.375Z
-- updatedAt: 2026-07-13T23:03:52.696Z
+- updatedAt: 2026-07-13T23:30:31.892Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add config helper resolving each peer's effective PSK and identity
@@ -820,6 +820,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T80"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: fe7da10
+- completion: "Config.PeerIdentity{PSK,Name} + PeerIdentities() landed: single-peer resolves top-level PSK (shadowing invariant mutation-verified), multi-peer uses per-peer psk/name in Peers order, hex-pubkey-prefix name fallback; additive test conflict vs T81 resolved by conflict-resolver; merged ff to main."
+- sessionLogs: [".cq/logs/20260713-231437-ac3e53f3aafa4fc7e.md",".cq/logs/20260713-232253-a21e287f36bef9788.md",".cq/logs/20260713-231830-a91a4176a0efd8739.md",".cq/logs/20260713-231830-adb81d36d2064a300.md",".cq/logs/20260713-232716-acaab660e4b8c3626.md",".cq/logs/20260713-232716-a00c1b140b54c2482.md",".cq/logs/20260713-232951-a0223153774c695c8.md"]
+- rawLogs: [".cq/logs/raw/20260713-231437-ac3e53f3aafa4fc7e.jsonl",".cq/logs/raw/20260713-232253-a21e287f36bef9788.jsonl",".cq/logs/raw/20260713-231830-a91a4176a0efd8739.jsonl",".cq/logs/raw/20260713-231830-adb81d36d2064a300.jsonl",".cq/logs/raw/20260713-232716-acaab660e4b8c3626.jsonl",".cq/logs/raw/20260713-232716-a00c1b140b54c2482.jsonl",".cq/logs/raw/20260713-232951-a0223153774c695c8.jsonl"]
 
 ## M24
 
