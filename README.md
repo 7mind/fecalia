@@ -129,7 +129,7 @@ internal/reseq/         receive resequencer (bounded-window reorder)
 internal/fec/           Reed-Solomon FEC encoder/decoder
 internal/adaptivefec/   closed-loop parity controller (target-residual SLA)
 internal/config/        TOML load + fail-fast validation
-internal/dnsresolve/    DNS resolution seam (Resolver interface, system + DoH impls, test fake)
+internal/dnsresolve/    DNS resolution seam (Resolver interface, system + DoH + DoT impls, test fake)
 internal/device/        tunnel lifecycle (Up/Down/Reload), metrics wiring
 internal/metrics/       loopback Prometheus /metrics
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling

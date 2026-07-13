@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"strings"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -138,7 +137,7 @@ func (d *DoHResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, ti
 		if nxdomain != nil {
 			return nil, 0, false, nxdomain
 		}
-		return nil, 0, false, &NoDataError{URL: d.url, Host: host}
+		return nil, 0, false, &NoDataError{Endpoint: d.url, Host: host}
 	}
 
 	return addrs, minTTL, haveTTL, nil
@@ -146,7 +145,7 @@ func (d *DoHResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, ti
 
 // queryFamily runs a single A or AAAA query over DoH.
 func (d *DoHResolver) queryFamily(ctx context.Context, host string, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, bool, error) {
-	query, err := buildDoHQuery(host, qtype)
+	query, err := buildQuery(host, qtype)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("dnsresolve: encoding DoH query for %q: %w", host, err)
 	}
@@ -161,7 +160,7 @@ func (d *DoHResolver) queryFamily(ctx context.Context, host string, qtype dnsmes
 	resp, err := d.client.Do(req)
 	if err != nil {
 		if isTimeoutErr(err) {
-			return nil, 0, false, &TimeoutError{URL: d.url, Err: err}
+			return nil, 0, false, &TimeoutError{Endpoint: d.url, Err: err}
 		}
 		return nil, 0, false, fmt.Errorf("dnsresolve: DoH POST to %s failed: %w", d.url, err)
 	}
@@ -178,95 +177,18 @@ func (d *DoHResolver) queryFamily(ctx context.Context, host string, qtype dnsmes
 	body, err := io.ReadAll(io.LimitReader(resp.Body, dohMaxMessageSize+1))
 	if err != nil {
 		if isTimeoutErr(err) {
-			return nil, 0, false, &TimeoutError{URL: d.url, Err: err}
+			return nil, 0, false, &TimeoutError{Endpoint: d.url, Err: err}
 		}
-		return nil, 0, false, &MalformedResponseError{URL: d.url, Err: err}
+		return nil, 0, false, &MalformedResponseError{Endpoint: d.url, Err: err}
 	}
 	if len(body) > dohMaxMessageSize {
 		return nil, 0, false, &MalformedResponseError{
-			URL: d.url,
-			Err: fmt.Errorf("response body exceeds max DNS message size of %d bytes", dohMaxMessageSize),
+			Endpoint: d.url,
+			Err:      fmt.Errorf("response body exceeds max DNS message size of %d bytes", dohMaxMessageSize),
 		}
 	}
 
-	return parseDoHResponse(d.url, body, host, qtype)
-}
-
-// buildDoHQuery packs a single-question A/AAAA query. Per RFC 8484 SS4.1, it
-// uses a DNS ID of 0 to maximize HTTP cache friendliness.
-func buildDoHQuery(host string, qtype dnsmessage.Type) ([]byte, error) {
-	name, err := dnsmessage.NewName(fqdn(host))
-	if err != nil {
-		return nil, err
-	}
-	msg := dnsmessage.Message{
-		Header: dnsmessage.Header{
-			ID:               0,
-			RecursionDesired: true,
-		},
-		Questions: []dnsmessage.Question{
-			{Name: name, Type: qtype, Class: dnsmessage.ClassINET},
-		},
-	}
-	return msg.Pack()
-}
-
-// parseDoHResponse unpacks body and extracts the addrs and minimum TTL of
-// the qtype records it contains.
-func parseDoHResponse(dohURL string, body []byte, host string, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, bool, error) {
-	var msg dnsmessage.Message
-	if err := msg.Unpack(body); err != nil {
-		return nil, 0, false, &MalformedResponseError{URL: dohURL, Err: err}
-	}
-
-	if msg.RCode == dnsmessage.RCodeNameError {
-		return nil, 0, false, &NXDomainError{URL: dohURL, Host: host}
-	}
-	if msg.RCode != dnsmessage.RCodeSuccess {
-		return nil, 0, false, &MalformedResponseError{URL: dohURL, Err: fmt.Errorf("response RCode %v", msg.RCode)}
-	}
-
-	var addrs []netip.Addr
-	var minTTL time.Duration
-	haveTTL := false
-	for _, ans := range msg.Answers {
-		if ans.Header.Class != dnsmessage.ClassINET {
-			continue
-		}
-
-		var addr netip.Addr
-		switch res := ans.Body.(type) {
-		case *dnsmessage.AResource:
-			if qtype != dnsmessage.TypeA {
-				continue
-			}
-			addr = netip.AddrFrom4(res.A)
-		case *dnsmessage.AAAAResource:
-			if qtype != dnsmessage.TypeAAAA {
-				continue
-			}
-			addr = netip.AddrFrom16(res.AAAA)
-		default:
-			continue
-		}
-
-		addrs = append(addrs, addr)
-		ttl := time.Duration(ans.Header.TTL) * time.Second
-		if !haveTTL || ttl < minTTL {
-			minTTL = ttl
-			haveTTL = true
-		}
-	}
-
-	return addrs, minTTL, haveTTL, nil
-}
-
-// fqdn returns host with a trailing dot, as dnsmessage.Name requires.
-func fqdn(host string) string {
-	if strings.HasSuffix(host, ".") {
-		return host
-	}
-	return host + "."
+	return parseAnswer(d.url, body, host, qtype)
 }
 
 // isTimeoutErr reports whether err represents a request that exceeded its
@@ -287,54 +209,4 @@ type StatusError struct {
 
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("dnsresolve: DoH %s returned HTTP status %d", e.URL, e.StatusCode)
-}
-
-// MalformedResponseError reports a DoH response body that failed to decode
-// as a valid DNS message, or that decoded to an unexpected RCode.
-type MalformedResponseError struct {
-	URL string
-	Err error
-}
-
-func (e *MalformedResponseError) Error() string {
-	return fmt.Sprintf("dnsresolve: DoH %s returned a malformed response: %v", e.URL, e.Err)
-}
-
-func (e *MalformedResponseError) Unwrap() error { return e.Err }
-
-// TimeoutError reports a DoH request that did not complete within its
-// deadline.
-type TimeoutError struct {
-	URL string
-	Err error
-}
-
-func (e *TimeoutError) Error() string {
-	return fmt.Sprintf("dnsresolve: DoH %s request timed out: %v", e.URL, e.Err)
-}
-
-func (e *TimeoutError) Unwrap() error { return e.Err }
-
-// NXDomainError reports a DoH provider answering NXDOMAIN for one address
-// family. Lookup tolerates this as long as the other family answers.
-type NXDomainError struct {
-	URL  string
-	Host string
-}
-
-func (e *NXDomainError) Error() string {
-	return fmt.Sprintf("dnsresolve: DoH %s: no such host %q", e.URL, e.Host)
-}
-
-// NoDataError reports a DoH provider answering NOERROR with an empty final
-// A+AAAA addr set for host (NODATA, or a CNAME chain with no A/AAAA
-// target). It is the DoH-transport counterpart of the no-such-host error
-// net.Resolver.LookupNetIP returns in the same situation.
-type NoDataError struct {
-	URL  string
-	Host string
-}
-
-func (e *NoDataError) Error() string {
-	return fmt.Sprintf("dnsresolve: DoH %s: no A/AAAA records for %q", e.URL, e.Host)
 }
