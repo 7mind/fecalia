@@ -380,8 +380,27 @@ func startHubHolder(t *testing.T, base *Topology, edgePortVeth, hubCeth, hubIP s
 	base.run("ip", "link", "set", edgePortVeth, "master", hfBridge)
 	base.run("ip", "link", "set", edgePortVeth, "up")
 
+	// `ip link set <dev> netns <pid>` is asynchronous w.r.t. the in-namespace address
+	// setup, and — critically — the device becoming visible to `ip link show` does NOT
+	// guarantee the immediately-following `ip addr add` succeeds: the netns move's attribute
+	// propagation lags visibility, so `addr add` can still fail "Cannot find device" (D33 —
+	// both observed hardware signatures: never-visible-in-time, and visible-but-not-yet-
+	// addressable). Retry the ACTUAL addressing operation (bounded), not a link-show proxy,
+	// so setup waits for the device to be genuinely usable in the target netns. On the first
+	// success we break, so `addr add` never runs twice (no duplicate-address error).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := h.tryRun("nsenter", "-t", strconv.Itoa(pid), "-n", "ip", "addr", "add", hubIP+"/24", "dev", hubCeth)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("could not add %s/24 to veth %q in hub netns %d within 5s after the netns move: %v", hubIP, hubCeth, pid, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	h.nsenter("ip", "link", "set", "lo", "up")
-	h.nsenter("ip", "addr", "add", hubIP+"/24", "dev", hubCeth)
 	h.nsenter("ip", "link", "set", hubCeth, "up")
 	return h
 }
