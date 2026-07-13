@@ -336,6 +336,9 @@ space** and never touches the inner WireGuard counter (a core invariant).
 - `internal/wireaudit` — the requirement-6 DPI wire-format audit (pcap parse +
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
+- `internal/dnsresolve` — the DNS resolution seam: a context-bounded `Resolver`
+  interface, a system implementation over `net.Resolver`, and an in-memory
+  `FakeResolver` for tests.
 
 ## Load-bearing invariants
 
