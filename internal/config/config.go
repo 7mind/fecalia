@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -616,6 +617,47 @@ func validateHostname(host string) error {
 		}
 	}
 	return nil
+}
+
+// PeerIdentity is one configured WireGuard peer's effective outer-control PSK
+// and stable name/id (G4 multi-peer concentrator groundwork).
+type PeerIdentity struct {
+	// PSK is this peer's effective outer-control PSK: for a single-peer config
+	// it is the top-level Config.PSK (the pre-G4 back-compat default, unaffected
+	// by any per-peer psk); for a multi-peer config it is the peer's own PSK
+	// field.
+	PSK Key
+	// Name is this peer's stable identifier: its configured Name when set,
+	// otherwise a fallback derived from its public key (the first 8 bytes,
+	// lowercase hex — the same short-key form uapiConfig uses to name a peer
+	// in error messages), so every peer has a non-empty, stable id even when
+	// name is omitted.
+	Name string
+}
+
+// PeerIdentities returns, for each configured WireGuard peer in order, its
+// effective PSK and stable name/id (G4). This is the SINGLE place the
+// single-peer/multi-peer PSK back-compat decision is made: device.Up and the
+// Bind consume PeerIdentities instead of each re-deriving the effective PSK
+// from Config.PSK vs Peer.PSK. Order matches c.WireGuard.Peers.
+func (c Config) PeerIdentities() []PeerIdentity {
+	peers := c.WireGuard.Peers
+	ids := make([]PeerIdentity, len(peers))
+	for i, p := range peers {
+		psk := p.PSK
+		if len(peers) == 1 {
+			// Single-peer back-compat: the top-level psk remains the effective
+			// PSK regardless of whether a per-peer psk is also set.
+			psk = c.PSK
+		}
+		name := p.Name
+		if name == "" {
+			pub := p.PublicKey.Bytes()
+			name = hex.EncodeToString(pub[:8])
+		}
+		ids[i] = PeerIdentity{PSK: psk, Name: name}
+	}
+	return ids
 }
 
 // Amnezia holds the amneziawg-go obfuscation parameters. They must match on both

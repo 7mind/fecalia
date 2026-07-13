@@ -453,6 +453,74 @@ func TestPeerPSKAndNameValidation(t *testing.T) {
 	}
 }
 
+// TestPeerIdentitiesSinglePeerUsesTopLevelPSK is the T82 single-peer back-compat
+// case: a single-peer config's PeerIdentities must report the top-level
+// Config.PSK as the effective PSK, and a stable fallback name/id since the
+// legacy fixture sets no per-peer name.
+func TestPeerIdentitiesSinglePeerUsesTopLevelPSK(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(concentratorConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ids := c.PeerIdentities()
+	if got := len(ids); got != 1 {
+		t.Fatalf("PeerIdentities() len = %d, want 1", got)
+	}
+	if ids[0].PSK.Bytes() != mustKey(t, 3).Bytes() {
+		t.Errorf("single-peer PeerIdentities()[0].PSK does not match top-level psk")
+	}
+	if ids[0].Name == "" {
+		t.Error("single-peer PeerIdentities()[0].Name must be non-empty (fallback id) when peer.name is unset")
+	}
+}
+
+// TestPeerIdentitiesMultiPeerUsesOwnPSKAndName is the T82 multi-peer case: each
+// peer's PeerIdentities entry must report that peer's OWN psk and name, in the
+// order matching cfg.WireGuard.Peers.
+func TestPeerIdentitiesMultiPeerUsesOwnPSKAndName(t *testing.T) {
+	r := strings.NewReplacer(
+		"%PRIV%", testKey(1),
+		"%PUB1%", testKey(2),
+		"%PSK%", testKey(3),
+		"%PUB2%", testKey(4),
+		"%PEERPSK1%", testKey(5),
+		"%PEERPSK2%", testKey(6),
+	)
+	body := r.Replace(twoPeerConcentratorConfig)
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ids := c.PeerIdentities()
+	if got := len(ids); got != 2 {
+		t.Fatalf("PeerIdentities() len = %d, want 2", got)
+	}
+	// Order matches cfg.WireGuard.Peers.
+	if ids[0].Name != "edge-alpha" {
+		t.Errorf("PeerIdentities()[0].Name = %q, want %q", ids[0].Name, "edge-alpha")
+	}
+	if ids[1].Name != "edge-beta" {
+		t.Errorf("PeerIdentities()[1].Name = %q, want %q", ids[1].Name, "edge-beta")
+	}
+	if ids[0].PSK.Bytes() != mustKey(t, 5).Bytes() {
+		t.Errorf("PeerIdentities()[0].PSK does not match peer 0's own psk fixture value")
+	}
+	if ids[1].PSK.Bytes() != mustKey(t, 6).Bytes() {
+		t.Errorf("PeerIdentities()[1].PSK does not match peer 1's own psk fixture value")
+	}
+	if ids[0].PSK.Bytes() == ids[1].PSK.Bytes() {
+		t.Error("multi-peer PeerIdentities PSKs must be distinct per fixture, got equal")
+	}
+	// The top-level psk must NOT leak into a multi-peer identity.
+	if ids[0].PSK.Bytes() == mustKey(t, 3).Bytes() {
+		t.Error("multi-peer PeerIdentities()[0].PSK must not equal the top-level psk")
+	}
+}
+
 // TestLoadEndpointAllLiteralPopulatesEndpointSpecs is the T67 byte-for-byte
 // invariant (Q29): an all-IP-literal config must take EXACTLY today's code
 // path. EndpointSpecs must mirror Endpoints one-for-one (IsName=false, Addr
