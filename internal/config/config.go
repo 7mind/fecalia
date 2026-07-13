@@ -486,6 +486,18 @@ type Peer struct {
 	EndpointSpecs []EndpointSpec `toml:"-"`
 	// AllowedIPs are the CIDR ranges routed to this peer.
 	AllowedIPs []string `toml:"allowed_ips"`
+	// PSK is this peer's OPTIONAL per-peer override of the outer-control PSK
+	// (G4 multi-peer concentrator groundwork). When unset, the top-level
+	// Config.PSK remains the single-peer default and this field has no effect —
+	// a legacy single-peer config carrying only the top-level `psk` parses and
+	// behaves byte-identically to before this field existed. No code path
+	// consumes PSK yet (no datapath change in T80); it is parsed and exposed
+	// only.
+	PSK Key `toml:"psk"`
+	// Name is this peer's OPTIONAL human-readable identifier (G4 multi-peer
+	// concentrator groundwork), analogous to Path.Name. Unset by default and
+	// not yet consumed by any code path.
+	Name string `toml:"name"`
 }
 
 // EndpointSpec is one parsed peer endpoint entry (Q35). A literal address:port

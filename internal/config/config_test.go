@@ -2,8 +2,10 @@ package config
 
 import (
 	"encoding/base64"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -176,6 +178,146 @@ func TestLoadEndpointsOrderedList(t *testing.T) {
 	// is used, so a caller cannot accidentally read a stale single Endpoint.
 	if peer.Endpoint != "" {
 		t.Errorf("Endpoint = %q, want empty when endpoints list is used", peer.Endpoint)
+	}
+}
+
+// mustKey decodes b's fixture base64 into a Key the same way TOML unmarshaling
+// would, for building golden expected-struct values in tests.
+func mustKey(t *testing.T, b byte) Key {
+	t.Helper()
+	var k Key
+	if err := k.UnmarshalText([]byte(testKey(b))); err != nil {
+		t.Fatalf("mustKey: %v", err)
+	}
+	return k
+}
+
+// twoPeerConcentratorConfig (T80) is a concentrator config with two peers, each
+// carrying a distinct per-peer psk and name — the G4 multi-peer groundwork
+// surface. The top-level psk is still required (validate) and stays the
+// single-peer default; per-peer psk/name here are parsed and exposed only (no
+// datapath change in T80).
+const twoPeerConcentratorConfig = `
+role = "concentrator"
+psk = "%PSK%"
+
+[[paths]]
+name = "wan"
+source_addr = "203.0.113.5"
+
+[wireguard]
+private_key = "%PRIV%"
+listen_port = 51820
+
+[[wireguard.peers]]
+public_key = "%PUB1%"
+psk = "%PEERPSK1%"
+name = "edge-alpha"
+allowed_ips = ["10.0.0.2/32"]
+
+[[wireguard.peers]]
+public_key = "%PUB2%"
+psk = "%PEERPSK2%"
+name = "edge-beta"
+allowed_ips = ["10.0.0.3/32"]
+`
+
+// TestLoadPeerPSKName is the T80 core case: a 2-peer TOML with distinct
+// per-peer psk+name values must expose each peer's own psk and name.
+func TestLoadPeerPSKName(t *testing.T) {
+	r := strings.NewReplacer(
+		"%PRIV%", testKey(1),
+		"%PUB1%", testKey(2),
+		"%PSK%", testKey(3),
+		"%PUB2%", testKey(4),
+		"%PEERPSK1%", testKey(5),
+		"%PEERPSK2%", testKey(6),
+	)
+	body := r.Replace(twoPeerConcentratorConfig)
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := len(c.WireGuard.Peers); got != 2 {
+		t.Fatalf("peers = %d, want 2", got)
+	}
+	p0, p1 := c.WireGuard.Peers[0], c.WireGuard.Peers[1]
+	if p0.Name != "edge-alpha" {
+		t.Errorf("peer 0 name = %q, want %q", p0.Name, "edge-alpha")
+	}
+	if p1.Name != "edge-beta" {
+		t.Errorf("peer 1 name = %q, want %q", p1.Name, "edge-beta")
+	}
+	if !p0.PSK.IsSet() || p0.PSK.Bytes() != mustKey(t, 5).Bytes() {
+		t.Errorf("peer 0 psk does not match fixture value")
+	}
+	if !p1.PSK.IsSet() || p1.PSK.Bytes() != mustKey(t, 6).Bytes() {
+		t.Errorf("peer 1 psk does not match fixture value")
+	}
+	if p0.PSK.Bytes() == p1.PSK.Bytes() {
+		t.Error("peer psks must be distinct per fixture, got equal")
+	}
+	// The top-level psk stays the single-peer default, unaffected by per-peer psk.
+	if !c.PSK.IsSet() || c.PSK.Bytes() != mustKey(t, 3).Bytes() {
+		t.Errorf("top-level psk does not match fixture value")
+	}
+}
+
+// TestLoadSinglePeerLegacyPSKGoldenShape is the T80 backward-compat case: a
+// legacy single-peer config carrying only the top-level psk (no per-peer
+// psk/name) must parse to a Config byte-identical (golden struct compare via
+// reflect.DeepEqual) to what a hand-built expected value predicts — in
+// particular the new Peer.PSK/Peer.Name fields stay at their zero (unset)
+// value and every pre-existing field keeps its pre-T80 shape.
+func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(concentratorConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	want := &Config{
+		Role: RoleConcentrator,
+		Paths: []Path{
+			{
+				Name:          "wan",
+				SourceAddr:    netip.MustParseAddr("203.0.113.5"),
+				SourceAddrRaw: "203.0.113.5",
+			},
+		},
+		WireGuard: WireGuard{
+			PrivateKey: mustKey(t, 1),
+			ListenPort: 51820,
+			Peers: []Peer{
+				{
+					PublicKey:  mustKey(t, 2),
+					AllowedIPs: []string{"10.0.0.2/32"},
+					Endpoints:  []netip.AddrPort{},
+					// resolveEndpoints (T67) always assigns EndpointSpecs to a
+					// non-nil slice; a concentrator peer with no endpoint entries
+					// parses to the empty (non-nil) slice, not the nil zero value.
+					EndpointSpecs: []EndpointSpec{},
+					// PSK and Name are intentionally left at their zero value:
+					// the fixture sets neither, and normalize() must not
+					// backfill Peer.PSK from the top-level PSK.
+				},
+			},
+		},
+		PSK: mustKey(t, 3),
+		Scheduler: SchedulerConfig{
+			Policy: PolicyActiveBackup, // applyDefaults always fills this in.
+		},
+	}
+
+	if !reflect.DeepEqual(c, want) {
+		t.Errorf("parsed config does not match golden shape:\ngot:  %#v\nwant: %#v", c, want)
+	}
+	if c.WireGuard.Peers[0].PSK.IsSet() {
+		t.Error("legacy single-peer config must not have per-peer psk set")
+	}
+	if c.WireGuard.Peers[0].Name != "" {
+		t.Error("legacy single-peer config must not have per-peer name set")
 	}
 }
 
