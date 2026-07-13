@@ -565,10 +565,10 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T54","T51"]
 
-### T62 — planned
+### T62 — blocked
 
 - createdAt: 2026-07-13T13:42:58.597Z
-- updatedAt: 2026-07-13T13:42:58.597Z
+- updatedAt: 2026-07-13T16:20:33.139Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "netns e2e: hub failover switches to standby concentrator and re-establishes the tunnel"

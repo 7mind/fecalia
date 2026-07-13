@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 31
+  item: 33
 archives: []
 ---
 
@@ -444,3 +444,27 @@ archives: []
 - rootCause: "The first fix mis-identified the variable. TWO independent root causes: (A) The gating factor for whether a non-local bind returns EADDRNOTAVAIL is INTERFACE PRESENCE/STATE, not the ip_nonlocal_bind sysctl. Kernel probe on host: lo-UP+pin=0 -> EADDRNOTAVAIL; lo-UP+pin=1 -> BIND_OK; lo-DOWN+pin=0 -> BIND_OK. The zero_bindable_paths_is_fatal subtest builds NO topology and never brings lo up, so lo is DOWN -> the non-local 192.0.2.x binds SUCCEED -> daemon comes up -> handshake fails -> 10s timeout (line 159). Ordering-dependent: run after a topology test (lo up) -> binds fail; run alone (lo down) -> binds succeed. The sysctl pin is irrelevant. (B) PRE-EXISTING contradiction in the ORIGINAL T60 commit 4f3b1f1: the subtest asserts output contains 'wanbond starting' (logged at Info in main.go:56), but writeT60EdgeConfig sets [log] level='error' -> slog.LevelError suppresses Info -> even on the fast-fatal (lo up) path the subtest fails at line 164. Empirically confirmed: 10s-timeout runs emitted zero Info lines at level=error. So the subtest cannot pass in EITHER ordering: lo-down -> line 159 timeout; lo-up -> line 164 missing-startup."
 - suggestedFix: "RESOLVED at 62b0d97 (test/e2e/tolerant_startup_test.go + netns.go). Fix (A): bringLoopbackUp(t) brings lo UP in the subtest's netns so the non-local bind deterministically fails EADDRNOTAVAIL (interface presence, not the sysctl, was the gating variable); disableNonlocalBind pin kept as the second necessary condition. Fix (B): writeT60EdgeConfig [log] level='error'->'info' so the 'wanbond starting' Info marker is emitted (the assertion could never hold at error level). HARDWARE-CONFIRMED on llm-ubuntu-0 (amd64) pass 2: zero_bindable_paths_is_fatal PASS 5/5 across BOTH orderings (solo -count=3 'lo down' + combined 'lo up' + deferred-promote), INFO 'wanbond starting' present, exit 1 with 'no configured path could bind'; malformed_source_addr PASS 4/4; DeferredPathPromotes PASS 3/3 (~15-16s). No FAIL in any run. Daemon behavior was correct throughout; this was purely a test-correctness defect."
 - ledgerRefs: ["tasks:T60","goals:G2"]
+
+## M15
+
+### D32 — wip
+
+- createdAt: 2026-07-13T16:18:50.224Z
+- updatedAt: 2026-07-13T16:20:36.940Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "Hub failover: switch decision + outer PROBE liveness recover to standby hub#2, but inner WG data traffic does NOT resume via the standby within the window (hardware e2e)"
+- severity: high
+- description: "Found by T62 hardware e2e on llm-ubuntu-0 (amd64), commit 5ffc411 (main + T62 test; T57 hub-failover feature merged). TestHubFailoverStandbySwitch FAILS deterministically 3/3 clean-setup runs at hub_failover_test.go:150 ('tunnel did not resume via standby hub#2 within 10.2s of the hub#1 outage'). The observed sequence after hub#1 is killed (its bridge port down = L2 blackhole): (1) edge detects all-paths-down (path liveness up->down, scheduler no eligible path); (2) edge LOGS the 'hub failover:' WARN naming hub#2 (from_index:0 to_index:1 to_endpoint:'10.100.0.3:51820' endpoints:2) — the T57 controller advances + repoints as designed; (3) OUTER path liveness RECOVERS to UP on hub#2 ~2s after the kill (path liveness uplink down->up; scheduler active path change reason:failover) and stays up, no flapping; (4) YET base.pingUntil(concInner) — inner tunnel traffic, which can ONLY be carried by hub#2 since hub#1 is blackholed — NEVER succeeds for the remaining ~8s of the 10.2s window. So the outer PROBE/liveness plane repoints to hub#2 and the T57 re-handshake fires, but INNER encrypted WG data does not traverse to hub#2. HUB_FAILOVER_RESUME_MS never emitted (success-path-only). The single-endpoint guard PASSES (no spurious switch). Test topology is correctly configured (verified statically): both hubs run full concentrator daemons with the IDENTICAL WG private key and the edge as an allowed peer (allowed_ips=concInner); edge peer has endpoints=[hub1,hub2], public_key=hubPub. So this is NOT a hub-misconfiguration; the defect is in the DATA PLANE after SetPeerRemote/ExpireCurrentKeypairs+SendHandshakeInitiation. Hypothesis to confirm on hardware: the WG handshake to hub#2 does not COMPLETE (hub#2 never establishes the session) OR completes but data does not forward — hub daemon logs are suppressed (config level='error') so this needs an instrumented hardware re-run (hub#2 at level info/debug + tcpdump/counters) to determine whether hub#2 receives+completes the edge's re-handshake. This validates that T57's unit tests (mocked liveness + recordingRemote) proved the CONTROLLER LOGIC but not the actual end-to-end data re-establishment; the e2e caught the gap. Q18 (multi-concentrator hub failover) is IN-SCOPE for the pilot, so this must work."
+- ledgerRefs: ["tasks:T57","tasks:T62","goals:G2"]
+
+### D33 — open
+
+- createdAt: 2026-07-13T16:19:04.477Z
+- updatedAt: 2026-07-13T16:19:04.477Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "T62 hub-failover fixture has an intermittent netns setup race: `ip link set wbHfcN netns <pid>` vs immediate `nsenter ... ip addr add` -> 'Cannot find device wbHfcN' (~50% of setups)"
+- severity: medium
+- description: "Found by T62 hardware e2e on llm-ubuntu-0. startHubHolder/setupHubFailover (test/e2e/hub_failover_test.go ~lines 127/188/362) fails roughly half of all test SETUPS (both TestHubFailoverStandbySwitch and TestHubFailoverSingleEndpointGuard, both hub veths) with: 'nsenter -t <pid> -n ip addr add <ip>/24 dev wbHfcN: exit status 1 / Cannot find device \"wbHfcN\"'. Root cause: a race between `ip link set wbHfcN netns <pid>` (moving the veth end into the hub netns) and the IMMEDIATELY-following `nsenter ... ip addr add` on that device — the device move into the target netns is not yet visible when the addr-add runs. Verified NOT cross-run contamination: no leftover netns/holders/links persist after runs. This aborts the setup before any failover logic runs, so it does not corrupt the D32 verdict (that was obtained from clean-setup runs after retrying past the race), but the fixture is flaky and must be hardened (e.g. poll/wait for the device to appear in the target netns before addr-add, mirroring waitForNetns / waitLink patterns) for the test to be reliable/CI-usable. This is a TEST-infrastructure defect, distinct from the D32 data-plane defect."
+- ledgerRefs: ["tasks:T62","goals:G2"]
