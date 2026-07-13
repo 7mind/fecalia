@@ -38,6 +38,15 @@ type pathSpec struct {
 	jitterMs int
 	rateMbit int     // optional per-path bandwidth cap (netem rate); 0 = uncapped
 	lossPct  float64 // optional config-time uniform egress loss (netem loss); 0 = lossless
+
+	// deferEdgeAddr, when true, makes Setup create and bring up the edge veth WITHOUT
+	// assigning edgeIP to it: the interface exists (so tc/netem still applies and the
+	// link is up) but the configured source_addr is not yet owned by any interface —
+	// the well-formed-but-not-yet-assignable condition T51's tolerant Open() defers and
+	// T55's background reconcile later promotes (T60). AddEdgeAddr adds the withheld
+	// address later. Zero value (false) is the default for every existing path, so
+	// Setup's behaviour for DefaultPaths and every other caller is unchanged.
+	deferEdgeAddr bool
 }
 
 // DefaultPaths are the two emulated links: Starlink-like (low latency, jittery)
@@ -91,7 +100,9 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 		_ = top.tryRun("ip", "link", "del", p.edgeVeth)
 		top.run("ip", "link", "add", p.edgeVeth, "type", "veth", "peer", "name", p.concVeth)
 		top.run("ip", "link", "set", p.concVeth, "netns", pid)
-		top.run("ip", "addr", "add", p.edgeIP+"/24", "dev", p.edgeVeth)
+		if !p.deferEdgeAddr {
+			top.run("ip", "addr", "add", p.edgeIP+"/24", "dev", p.edgeVeth)
+		}
 		top.run("ip", "link", "set", p.edgeVeth, "up")
 		top.nsenter("ip", "addr", "add", p.concIP+"/24", "dev", p.concVeth)
 		top.nsenter("ip", "link", "set", p.concVeth, "up")
@@ -214,6 +225,18 @@ func (top *Topology) Readdress(name, newEdgeIP string) {
 	top.run("ip", "addr", "flush", "dev", p.edgeVeth)
 	top.run("ip", "addr", "add", newEdgeIP+"/24", "dev", p.edgeVeth)
 	top.run("ip", "link", "set", p.edgeVeth, "up")
+}
+
+// AddEdgeAddr adds the named path's configured edge-side address to its (already up)
+// edge veth, WITHOUT flushing any existing address first (T60). It is the companion
+// to a path built with deferEdgeAddr: that path's interface starts addressless, so
+// this simulates the address becoming assignable after boot (e.g. a 5G modem's DHCP
+// lease completing) for the T55 background reconciler to observe. Unlike Readdress —
+// which flushes THEN re-adds, for the T16 re-roam case where an address is replaced —
+// this only ADDS, because here there is nothing to flush.
+func (top *Topology) AddEdgeAddr(name string) {
+	p := top.path(name)
+	top.run("ip", "addr", "add", p.edgeIP+"/24", "dev", p.edgeVeth)
 }
 
 // QdiscShow returns `tc qdisc show` for the named path (for assertions/debug).
