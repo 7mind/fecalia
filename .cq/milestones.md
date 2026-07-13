@@ -19,6 +19,11 @@ archives:
     summary: "Deferred-defect hardening round complete: 9 fix tasks T42-T50 delivered (each opus+fable-reviewed, gated, -race-clean, merged to main), resolving 12 defects (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28). Highlights: T44 CONTROL-frame anti-replay (MAC-covered Seq + ControlGuard); T45 FEC prefix-stability invariant + quiescence-accurate unrecoverable counter; T46 target_residual adaptive-FEC SLA sizing (sanctioned new config surface per Q16); T47 AmneziaWG-profile-aware pacer control-frame exemption (caught+fixed a vanilla-only classifier blindness on re-review); T42 non-vacuous goroutine-leak gate; T43 duplicate source_addr + global-v6 device-bind fixes; T49 throughput-ceiling doc sweep to measured 4-vCPU numbers; T50 e2e/realhosts-tagged lint coverage; T48 reboot-persistent firewall provisioning (repo-side). D7 (live-apply) + D8 remain non-terminal pending the manual o3 iptables ops per Q14 (o3 is a test host)."
     title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
     status: done
+  - id: M14
+    path: ./archive/milestones/M14.md
+    summary: "G2/W2 pacing empirical sizing + BDP config wiring COMPLETE (CORE SCOPE 1, Q20=both). T52 capped-fixture BDP measurement (report-only), T53 wired SizePacingFromBDP into config load from operator-declared per-link bandwidth (load-time only, NOT runtime auto-tuning; pacing default-DISABLED), T56 operator tuning procedure (docs/install.md §3a + design.md; 1540B/frame), T61 ENABLED-pacing bufferbloat + no-rekey-starvation e2e (relative gate). All 4 tasks done, 4 reviews go-ahead (opus), merged to main (c803cb5 T53, b9f5983 T56, 40205c1 T61). HARDWARE-VALIDATED on llm-ubuntu-0 (amd64 4-vCPU): bufferbloat 208.5ms(unpaced)→0.5ms(paced) at 4Mbit cap; BDP=33241B (21.6 frames @1540B), SizePacingFromBDP→capacityFPS=4179.9 burstFrames=21.6 @50Mbit/5.2ms. Numbers fed to the T65 pilot runbook."
+    title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
+    status: done
 ---
 
 # milestones
@@ -107,13 +112,6 @@ archives:
 - updatedAt: 2026-07-13T13:36:41.213Z
 - title: "G2/W1 — Startup path-availability resilience (approach A: tolerant bind + background reconcile)"
 - description: "CORE SCOPE 4. Make internal/bind/multipath.go Open() tolerant of a well-formed-but-not-yet-assignable source_addr (EADDRNOTAVAIL): bring the tunnel up on paths that DO bind, mark unbindable ones DOWN (reuse runtime path-down model), and reconcile/retry in background as addresses appear. Hard guards: zero-bindable stays FATAL; malformed source_addr stays a config-load error; no T16 device-bind/re-roam regression. Validated by a netns e2e. Work milestone for goal G2 (coordination milestone M12)."
-
-### M14 — open
-
-- createdAt: 2026-07-13T13:36:44.185Z
-- updatedAt: 2026-07-13T13:36:44.185Z
-- title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
-- description: CORE SCOPE 1, Q20=both. Measure per-path BDP with the bandwidth-capped fixture (T35); wire SizePacingFromBDP into config load from an operator-declared per-link bandwidth (not runtime auto-tuning); validate ENABLED pacing eliminates bufferbloat under sustained load and does not starve WireGuard rekey; document the measurement/tuning procedure. Pacing continues to ship DISABLED by default. Work milestone for goal G2 (coordination milestone M12).
 
 ### M15 — open
 

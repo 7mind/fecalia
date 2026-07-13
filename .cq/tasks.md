@@ -19,6 +19,11 @@ archives:
     summary: "Deferred-defect hardening round complete: 9 fix tasks T42-T50 delivered (each opus+fable-reviewed, gated, -race-clean, merged to main), resolving 12 defects (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28). Highlights: T44 CONTROL-frame anti-replay (MAC-covered Seq + ControlGuard); T45 FEC prefix-stability invariant + quiescence-accurate unrecoverable counter; T46 target_residual adaptive-FEC SLA sizing (sanctioned new config surface per Q16); T47 AmneziaWG-profile-aware pacer control-frame exemption (caught+fixed a vanilla-only classifier blindness on re-review); T42 non-vacuous goroutine-leak gate; T43 duplicate source_addr + global-v6 device-bind fixes; T49 throughput-ceiling doc sweep to measured 4-vCPU numbers; T50 e2e/realhosts-tagged lint coverage; T48 reboot-persistent firewall provisioning (repo-side). D7 (live-apply) + D8 remain non-terminal pending the manual o3 iptables ops per Q14 (o3 is a test host)."
     title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
     status: done
+  - id: M14
+    path: ./archive/tasks/M14.md
+    summary: "G2/W2 pacing empirical sizing + BDP config wiring COMPLETE (CORE SCOPE 1, Q20=both). T52 capped-fixture BDP measurement (report-only), T53 wired SizePacingFromBDP into config load from operator-declared per-link bandwidth (load-time only, NOT runtime auto-tuning; pacing default-DISABLED), T56 operator tuning procedure (docs/install.md §3a + design.md; 1540B/frame), T61 ENABLED-pacing bufferbloat + no-rekey-starvation e2e (relative gate). All 4 tasks done, 4 reviews go-ahead (opus), merged to main (c803cb5 T53, b9f5983 T56, 40205c1 T61). HARDWARE-VALIDATED on llm-ubuntu-0 (amd64 4-vCPU): bufferbloat 208.5ms(unpaced)→0.5ms(paced) at 4Mbit cap; BDP=33241B (21.6 frames @1540B), SizePacingFromBDP→capacityFPS=4179.9 burstFrames=21.6 @50Mbit/5.2ms. Numbers fed to the T65 pilot runbook."
+    title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
+    status: done
 ---
 
 # tasks
@@ -533,58 +538,6 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T51","T55"]
 
-## M14
-
-### T52 — done
-
-- createdAt: 2026-07-13T13:41:24.901Z
-- updatedAt: 2026-07-13T14:01:10.299Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: Measure per-path BDP + standing-queue baseline via the capped impairment fixture
-- description: Using the bandwidth-capped fixture (test/e2e/fixture_impairment_test.go, TestFixtureImpairment / T35; rateMbit/lossPct knobs), drive sustained load at a declared per-path rate to create a standing queue, and measure per-path BDP (bandwidth x baseline RTT) and the bufferbloat delta (loaded RTT minus idle RTT) with pacing DISABLED. Produce a deterministic in-repo measurement (test helper or sub-test) that emits the measured BDP and queue delay so W2b's SizePacingFromBDP inputs are grounded in fixture numbers rather than the synthetic defaultPerPathCapacityFPS=10000 (~115 Mbit/s). Report-only numbers (no absolute-value assertion) but the measurement path itself must run deterministically.
-- acceptance: "`just e2e` (or `go test -tags e2e ./test/e2e -run TestFixtureImpairment...`) runs the new capped-rate measurement and prints per-path BDP + idle-vs-loaded RTT delta at a declared rate; the sub-test is deterministic (passes on repeat). `go vet ./... && gofmt -l test/e2e` clean."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-
-### T53 — done
-
-- createdAt: 2026-07-13T13:41:32.390Z
-- updatedAt: 2026-07-13T14:09:04.472Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- description: "Wire the existing helper SizePacingFromBDP(bandwidthBitsPerSec, rtt, avgWireFrameBytes) -> BDPSizing{CapacityFPS,BurstFrames} (internal/config, L182-196) into config load. Add an OPERATOR-DECLARED per-link bandwidth field to the per-path config (internal/config/config.go Path{}); when present and pacing is enabled, derive CapacityFPS/BurstFrames from SizePacingFromBDP (using a measured/declared RTT input) instead of the synthetic defaultPerPathCapacityFPS. This is operator-declared, NOT runtime auto-tuning (Q20 = declared+document, no control loop). Pacing MUST continue to ship DISABLED by default (PacingEnabled default false unchanged); a declared bandwidth with pacing disabled has no effect. config.validate must accept the new field and reject a non-positive bandwidth. Config/behavior change => update docs/design.md pacing section + docs/install.md config reference."
-- headline: Wire SizePacingFromBDP into config load from operator-declared per-link bandwidth
-- acceptance: "New config field parsed + validated (unit test: declared bandwidth -> expected CapacityFPS/BurstFrames via SizePacingFromBDP; non-positive rejected; absent field -> synthetic default preserved; pacing still default-disabled). `go build ./... && go vet ./... && gofmt -l internal/config` clean; `go test ./internal/config/...` passes. Doc-sync: docs/design.md + docs/install.md document the new per-link bandwidth config key."
-- suggestedModel: frontier
-- ledgerRefs: ["goals:G2"]
-
-### T56 — done
-
-- createdAt: 2026-07-13T13:42:00.528Z
-- updatedAt: 2026-07-13T14:30:14.813Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: Document the per-link bandwidth measurement + pacing tuning procedure
-- description: "Write the operator-facing tuning procedure (Q20 = both: wire + document): how to measure a per-link bandwidth number (using the capped-fixture method from T52 and/or the real-link tier), how to set the per-link bandwidth config key added in T53, when to enable pacing, and how to confirm bufferbloat is controlled. Place in docs/design.md (pacing rationale) + docs/install.md (operator step-by-step); cross-link from README if it indexes tuning. State clearly that pacing ships DISABLED by default and is opt-in per deployment."
-- acceptance: docs/install.md contains a step-by-step per-link pacing tuning procedure referencing the config key from T53; docs/design.md explains the BDP-sizing rationale. `gofmt`/build unaffected (docs only); a reviewer can follow the procedure end-to-end without reading source. Markdown links resolve.
-- suggestedModel: fast
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T53"]
-
-### T61 — done
-
-- createdAt: 2026-07-13T13:42:52.074Z
-- updatedAt: 2026-07-13T14:32:09.371Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- headline: Validate ENABLED pacing eliminates bufferbloat + does not starve WG rekey under overload
-- description: "Using the capped fixture (T52 measurement path) with pacing ENABLED and sized from the T53 config wiring, assert two properties under sustained overload: (1) BUFFERBLOAT CONTROL -- loaded-RTT with pacing enabled is materially lower than the pacing-disabled baseline standing queue (relative comparison, not an absolute threshold); (2) NO CONTROL-FRAME STARVATION -- a WireGuard rekey (inner handshake, ~2 min cadence, telemetry/probe frames) still completes while the data plane is saturated, i.e. pacing's token bucket (sched/weighted.go tryConsumeLocked) does not starve control/probe traffic. Report the numbers; the pass condition is the relative bufferbloat reduction + rekey/probe success, not an absolute rate."
-- acceptance: "`just e2e` runs the pacing-enabled sub-test: loaded-RTT (pacing on) < loaded-RTT (pacing off) at the same offered load; a rekey/probe completes during saturation (assert handshake/probe success, not just data throughput). Deterministic across repeats. `go vet ./... && gofmt -l` clean."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G2"]
-- dependsOn: ["T52","T53"]
-
 ## M15
 
 ### T54 — done
@@ -599,10 +552,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G2"]
 
-### T57 — planned
+### T57 — wip
 
 - createdAt: 2026-07-13T13:42:10.041Z
-- updatedAt: 2026-07-13T13:42:10.041Z
+- updatedAt: 2026-07-13T15:21:42.409Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Hub-loss detection + switch peer remote + WG re-handshake to next concentrator

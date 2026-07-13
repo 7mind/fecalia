@@ -9,6 +9,11 @@ archives:
     summary: "Deferred-defect hardening round complete: 9 fix tasks T42-T50 delivered (each opus+fable-reviewed, gated, -race-clean, merged to main), resolving 12 defects (D3,D4,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28). Highlights: T44 CONTROL-frame anti-replay (MAC-covered Seq + ControlGuard); T45 FEC prefix-stability invariant + quiescence-accurate unrecoverable counter; T46 target_residual adaptive-FEC SLA sizing (sanctioned new config surface per Q16); T47 AmneziaWG-profile-aware pacer control-frame exemption (caught+fixed a vanilla-only classifier blindness on re-review); T42 non-vacuous goroutine-leak gate; T43 duplicate source_addr + global-v6 device-bind fixes; T49 throughput-ceiling doc sweep to measured 4-vCPU numbers; T50 e2e/realhosts-tagged lint coverage; T48 reboot-persistent firewall provisioning (repo-side). D7 (live-apply) + D8 remain non-terminal pending the manual o3 iptables ops per Q14 (o3 is a test host)."
     title: Deferred-defect hardening round (D3/D4/D7/D8/D10/D13/D14/D20/D22/D23/D24/D25/D26/D28)
     status: done
+  - id: M14
+    path: ./archive/reviews/M14.md
+    summary: "G2/W2 pacing empirical sizing + BDP config wiring COMPLETE (CORE SCOPE 1, Q20=both). T52 capped-fixture BDP measurement (report-only), T53 wired SizePacingFromBDP into config load from operator-declared per-link bandwidth (load-time only, NOT runtime auto-tuning; pacing default-DISABLED), T56 operator tuning procedure (docs/install.md §3a + design.md; 1540B/frame), T61 ENABLED-pacing bufferbloat + no-rekey-starvation e2e (relative gate). All 4 tasks done, 4 reviews go-ahead (opus), merged to main (c803cb5 T53, b9f5983 T56, 40205c1 T61). HARDWARE-VALIDATED on llm-ubuntu-0 (amd64 4-vCPU): bufferbloat 208.5ms(unpaced)→0.5ms(paced) at 4Mbit cap; BDP=33241B (21.6 frames @1540B), SizePacingFromBDP→capacityFPS=4179.9 burstFrames=21.6 @50Mbit/5.2ms. Numbers fed to the T65 pilot runbook."
+    title: G2/W2 — Pacing empirical sizing + BDP config wiring (CORE SCOPE 1 + Q20 both)
+    status: done
 ---
 
 # reviews
@@ -573,44 +578,6 @@ archives:
 - new_questions: []
 - criticism: []
 - ledgerRefs: ["goals:G2"]
-
-## M14
-
-### R53 — go-ahead
-
-- createdAt: 2026-07-13T14:01:09.503Z
-- updatedAt: 2026-07-13T14:01:09.503Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T52 (G2/W2 BDP measurement) implement-review: APPROVE (verdict=approve). The 'bdp' sub-test of TestFixtureImpairment derives BDP = bandwidth(bits/s) × BASELINE(idle) RTT with correct units (loadMbps*1e6 -> bits/s from parseIperfSentMbps; idleRTTms*time.Millisecond) and doc-matched avgWireFrameBytes (bind.DefaultPathMTU + frame.DataOverhead, per SizePacingFromBDP's own doc); loaded RTT used only for the separate bufferbloat delta. REPORT-ONLY honored (Q19/D23): only t.Fatalf guards are a pipeline-sanity loadMbps<=0 + a SizePacingFromBDP input-validation error — NO absolute throughput/BDP threshold assertion; measured numbers are t.Logf-only. Deterministic + bounded (reuses existing rttUnderLoad TIME_WAIT-safe one-shot iperf3 + RTT helpers; bdpLoadSecs=8, fixed sample counts, no unbounded loop). Full non-privileged gate green + go vet -tags e2e compiles; the sub-test needs root/netns to RUN (verified by compile + close read). 0 criticisms, 0 questions. Merged to main."
-- ledgerRefs: ["tasks:T52"]
-
-### R54 — go-ahead
-
-- createdAt: 2026-07-13T14:09:03.479Z
-- updatedAt: 2026-07-13T14:09:03.479Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T53 (G2/W2 wire SizePacingFromBDP) implement-review: APPROVE (verdict=approve). deriveWeightedPacingFromBDP runs inside normalize() at config LOAD (config.go:603-651), sets PerPathCapacityFPS/PacingBurstFrames from SizePacingFromBDP replacing synthetic defaultPerPathCapacityFPS=10000. NON-VACUOUS: TestPacingDerivedFromDeclaredBandwidth computes want from SizePacingFromBDP(10e6,30ms,1500) (the 10Mbit BOTTLENECK path, not the 50Mbit) + asserts derived ~833 FPS strictly below the default. NO RUNTIME AUTO-TUNING (Q20 hard req): the ONLY writes to the pacing knobs in the whole tree are at config load (derive + applyDefaults); zero writes/ticker/goroutine in internal/sched adjusting them — derivation fixed at load, compliant. Pacing DEFAULT-DISABLED preserved (PacingEnabled zero-value false; early-return when disabled/non-weighted; declared bandwidth inert when off; no-declaration falls back to default). Fail-fast: parseBandwidth requires explicit SI bit/s suffix (rejects bare/empty), non-positive bw/RTT rejected, link_rtt required under pacing, all-or-nothing + raw-knob mutual exclusion; 8 reject sub-cases pass. Unit parsing correct ('50Mbit'->50e6, longest-suffix-first). Docs (install.md:153+, design.md) accurate. Single-shared-capacity->bottleneck pacing is a pre-existing T21 property (safe direction), not a T53 fault. Full gate green. 0 criticisms, 0 questions. Merged to main at c803cb5."
-- ledgerRefs: ["tasks:T53"]
-
-### R56 — go-ahead
-
-- createdAt: 2026-07-13T14:30:13.816Z
-- updatedAt: 2026-07-13T14:30:13.816Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T56 (G2/W2 pacing tuning doc) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE had 1 criticism: docs/install.md §3a example said 1517B/frame (bogus — no repo constant) + presented 47.3 Mbit/s / 5.0ms as captured measurements though T52 is non-deterministic/report-only. FIXED at fdf5419 (docs/install.md only, one hunk): wire-frame size corrected to 1540B, independently verified (frame.DataOverhead = 24+1+8+1+4+1+1 = 40 + bind.DefaultPathMTU 1500 = 1540); the throughput/RTT examples reframed as explicit illustrative placeholders (<e.g. ~35-56>, <e.g. ~5>) preceded by prose that the bdp sub-test is report-only + non-deterministic. Rest of T56 already accurate + code-consistent (link_bandwidth/link_rtt keys/defaults/bottleneck-sizing/all-or-nothing validation all match config.go; extends T53's docs coherently; markdown anchors resolve). Docs-only, build/test green. 0 criticisms, 0 questions. Merged to main at b9f5983."
-- ledgerRefs: ["tasks:T56"]
-
-### R57 — go-ahead
-
-- createdAt: 2026-07-13T14:32:08.362Z
-- updatedAt: 2026-07-13T14:32:08.362Z
-- author: "opus-4.8[1m]"
-- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
-- summary: "T61 (G2/W2 pacing bufferbloat e2e) implement-review: APPROVE (verdict=approve). test/e2e/pacing_test.go comparative bufferbloat gate is FRACTION-based (pacedBloatMs < unpacedBloatMs*0.7) with NO absolute-ms threshold (Q19/D23 compliant); the only absolute constant (pacingMinBloatMs=5ms) gates a t.Skipf-WITH-EVIDENCE precondition (real Skip, not a silent pass) when the fixture stays CPU/PPS-bound. Rekey-survival PROBE-liveness proxy VERIFIED structurally sound: ClassControl bypasses the token bucket (weighted.go serveLocked/selectAggregatingLocked) AND PROBE frames bypass the scheduler entirely (probe.go emitProbes writes straight to the socket) — so PROBE liveness is a legitimate 'does saturation starve the control plane' regression guard, not an inadequate rekey substitute (real WG rekey ~2min is too slow for a bounded e2e). link_rtt grounded in measured top.RTT (T52 precedent); all helpers reused per TestP2Aggregation/TestFixtureImpairment patterns; single new file. Non-privileged gate green + go vet/build -tags e2e compile clean (needs root/netns to RUN). No-docs decision sound (T53 already documents the config surface; T52 precedent). Cosmetic-only: metrics port 9096 dup w/ p3_fec_test (harmless — sequential exec + t.Cleanup). 0 criticisms, 0 questions. Merged to main at 40205c1."
-- ledgerRefs: ["tasks:T61"]
 
 ## M13
 
