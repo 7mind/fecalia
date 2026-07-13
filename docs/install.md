@@ -82,9 +82,9 @@ endpoint = "203.0.113.7:51820"     # required on the edge
 # form (Q18): first entry is the active/primary concentrator, the rest are
 # ordered standbys tried in order when the active one is lost. Mutually
 # exclusive with `endpoint` above — `endpoint` is just its one-element form,
-# so a single-concentrator deployment keeps using it unchanged. Edge-only;
-# T54 is config-surface only (parses + validates the list) — T57 implements
-# the loss detection and the actual switch/re-handshake to the next endpoint.
+# so a single-concentrator deployment keeps using it unchanged. Edge-only.
+# Hub failover (all-paths-down detection + switch/re-handshake to the next
+# endpoint) is implemented: T54 config surface + T57 switch.
 allowed_ips = ["10.77.0.1/32"]     # concentrator's inner tunnel address
 
 [metrics]

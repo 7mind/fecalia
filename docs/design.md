@@ -285,8 +285,10 @@ not a storm.
 **GUARD (must-hold invariant).** A **single-endpoint** list takes **no** failover
 action — no advance, no remote repoint, no re-handshake. A one-concentrator
 deployment (including the legacy single `endpoint` form, normalized to a
-one-element list) is therefore byte-for-byte the pre-T57 behaviour. The real-network
-netns e2e is T62.
+one-element list) is therefore byte-for-byte the pre-T57 behaviour. The switch and
+this guard are validated by the real-network netns e2e (`TestHubFailoverStandbySwitch`
++ `TestHubFailoverSingleEndpointGuard`, T62) and, over the real internet, by the
+realhosts mid-transfer WAN-kill tier (`TestRealMidTransferWANKill`, T63).
 
 ### Per-path telemetry — `internal/telemetry`
 
@@ -381,25 +383,35 @@ These are recorded design boundaries, not defects:
   anti-replay exist and are tested, but inbound CONTROL is currently dropped at
   the Bind (`multipath.go` receive default case). It is the chokepoint a future
   out-of-band signalling layer (e.g. explicit rekey/state) must route through.
-- **Pacing not empirically sized.** `SizePacingFromBDP` derives per-path pacing
-  from a bandwidth-delay product. It is now wired into config load from an
-  operator-declared per-link bandwidth (`link_bandwidth`/`link_rtt`, T53), but
-  wanbond still ships pacing **disabled** by default and never auto-tunes the pace
-  live (Q20). Absent a declared bandwidth (or with pacing off) the default per-path
-  capacity is synthetic (~115 Mbit/s), well above realistic uplinks. The netns
-  fixture is CPU/PPS-bound and cannot produce the standing queues needed to
-  *validate* pacing — so the declared bandwidth must be measured on the real link.
-- **Throughput aggregation unmeasured in-fixture.** The fixture proves *functional*
-  bonding/FEC/failover/DPI; "bonded ≈ sum of links" and bufferbloat require real
-  uplinks (see [manual-checklist.md](manual-checklist.md) §P0 and
-  [p0-findings.md](p0-findings.md)).
+- **Pacing ships disabled by default; no live auto-tuning (Q20).** Empirical
+  sizing *is* built: `SizePacingFromBDP` derives the per-path pace from an
+  operator-declared per-link bandwidth (`link_bandwidth`/`link_rtt`) at config
+  load (T53), and enabled-pacing was measured to eliminate bufferbloat both on the
+  bandwidth-capped netns fixture (T56/T61) and on the real-link tier (T58). What
+  stays a **deliberate boundary**: pacing is off unless `[scheduler] pacing_enabled
+  = true`, and the declared bandwidth is fixed at load — wanbond never re-derives
+  the pace live from runtime measurements (Q20 rejected a live control loop for the
+  pilot). Absent a declared bandwidth (or with pacing off) the default per-path
+  capacity is synthetic (~115 Mbit/s), well above realistic uplinks.
+- **In-fixture throughput/bufferbloat measurement is CPU-bound (a fixture
+  boundary).** The netns fixture proves *functional* bonding/FEC/failover/DPI but
+  is CPU/PPS-bound, so absolute "bonded ≈ sum of links" throughput and bufferbloat
+  are **not** measured there — they are measured on the **real-link tier**. The
+  capped-fixture BDP sub-test (T52) and the realhosts tier (`just p0-baseline` →
+  `TestRealAggregationBufferbloat` / `TestRealMidTransferWANKill`, T58/T63) record
+  the aggregation ratio and loaded-vs-idle RTT **report-only**. Note the realhosts
+  topology shares a single physical uplink, so the measured aggregation ratio is
+  ~≤1 — this is an informational, report-only measurement, not a bandwidth-
+  aggregation guarantee (see
+  [manual-checklist.md §P0](manual-checklist.md#p0--automated-real-link-baseline-realhosts-tier)
+  and [p0-findings.md](p0-findings.md)).
 - **Multi-concentrator hub-failover: UDP-only remains a non-goal.** Q18 brought
   edge-side ORDERED-ENDPOINT ACTIVE-STANDBY hub failover into scope; the config
-  surface (T54) and the switch (T57) are now built (see *Concentrator hub
-  failover* above). What stays out of scope: UDP-only is deliberate — there is no
-  TCP/TLS fallback for wholesale-UDP-block networks — and the endpoint list is
-  IP:port only (no DNS resolution). The real-network netns e2e for hub failover is
-  T62.
+  surface (T54), the switch (T57), the netns e2e (T62), and the real-link
+  mid-transfer WAN-kill tier (T63) are all built and validated (see *Concentrator
+  hub failover* above). What stays out of scope: UDP-only is deliberate — there is
+  no TCP/TLS fallback for wholesale-UDP-block networks — and the endpoint list is
+  IP:port only (no DNS resolution).
 
 ## References
 

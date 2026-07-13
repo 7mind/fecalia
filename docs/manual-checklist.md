@@ -111,6 +111,12 @@ decision, which stays a human judgement call, not an automated gate.
 - [ ] **The pilot-gate decision itself** is a NON-BLOCKING human call. The baseline
       informs it; it does not automate or gate it. Record the report path, date,
       and the go/no-go decision alongside the numbers.
+- [ ] **Exit criterion (Q19):** the capped-fixture aggregation/bufferbloat
+      measurement (netns, `TestFixtureImpairment`, W2) PLUS this report-only
+      real-link baseline (`just p0-baseline`, W4) are SUFFICIENT to proceed to a
+      SUPERVISED pilot. The longer soak runs DURING the pilot, NOT as a pre-gate.
+      Full statement:
+      [runbook.md §7 Pilot exit criterion](runbook.md#7-pilot-exit-criterion-non-blocking).
 
 ## P1 — scripted real-setup run (Starlink + 5G edge, VPS concentrator)
 
@@ -193,10 +199,10 @@ with an ORDERED list — `endpoints = ["<hubA ip:port>", "<hubB ip:port>"]` (ind
       by any interface), then `systemctl restart wanbond-edge`. The daemon comes up
       instead of crash-looping: journal shows the tunnel bound on the surviving
       uplink and the absent path recorded as deferred / `Down`; a NEW flow passes end
-      to end over the survivor. (Until the background reconcile ships, the deferred
-      path rejoins on the next `restart` once its address is back — bring the
-      interface UP and `systemctl restart wanbond-edge`, then confirm both paths
-      carry traffic.)
+      to end over the survivor. Then bring the interface back UP WITHOUT restarting:
+      the background reconcile (T55) re-binds and promotes the deferred path
+      automatically within ~1 s (`DefaultReconcileInterval`), with no `restart` — and
+      both paths then carry traffic.
 - [ ] With EVERY uplink's `source_addr` absent, `systemctl restart wanbond-edge`
       FAILS fast (journal shows a fatal "no configured path could bind" and the unit
       enters `failed` / restart-loops) — no transport means no tunnel.

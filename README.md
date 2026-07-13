@@ -143,21 +143,25 @@ docs/                   design, install, findings, manual checklist
 The P0–P5 build is functionally complete, reviewed, and hardened. Known,
 deliberate boundaries you must plan around:
 
-- **Pacing is off by default and not empirically sized** — enable + tune from a
-  measured bandwidth-delay product if your links have deep buffers (Starlink/5G
-  do).
-- **Throughput aggregation and bufferbloat are unmeasured in-fixture** — validate
-  on real uplinks first.
+- **Pacing is off by default (opt-in)** — enable it under `[scheduler]`
+  (`pacing_enabled = true`) and size it from operator-declared per-link
+  `link_bandwidth`/`link_rtt` (bandwidth-delay product); it was measured to
+  eliminate bufferbloat on the bandwidth-capped netns fixture and the real-link
+  tier. wanbond fixes the pace at config load and does not auto-tune it live (Q20).
+- **Throughput aggregation and bufferbloat are not measured by the netns fixture**
+  (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
+  them instead; validate on your own uplinks before a production rollout.
 - **No live CONTROL protocol** — the frame type and its anti-replay guard exist,
   but inbound CONTROL is currently dropped (reserved for future signalling).
-- **Multi-concentrator hub-failover: built; real-network e2e pending (T62)** — an
+- **Multi-concentrator hub-failover: built and validated** — an
   edge peer may declare an ORDERED `endpoints` list (active concentrator + ordered
   standbys); the single `endpoint` form still works unchanged (its one-element
-  case, which takes NO failover path). On HUB LOSS (every path to the active
+  case, which takes no failover action). On HUB LOSS (every path to the active
   concentrator down at once) the edge advances to the next endpoint, repoints the
-  bond, and re-handshakes a fresh session (round-robin/wrap at end of list). Scope
-  limits: endpoints are IP:port only (no DNS), and the real cross-network netns e2e
-  is T62 (the switch logic is covered by unit/component tests). See
+  bond, and re-handshakes a fresh session (round-robin/wrap at end of list). The
+  switch is covered by unit/component tests, the netns hub-failover e2e (T62), and
+  the real-link mid-transfer WAN-kill tier (T63). Scope limit: endpoints are
+  IP:port only (no DNS). See
   [docs/design.md §Concentrator hub failover](docs/design.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.

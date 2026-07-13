@@ -197,8 +197,9 @@ resequencer to the standby's first frame. End-of-list policy is **wrap**
 (round-robin), so a hub that recovers earlier in the list is retried and
 settled on within one cycle.
 
-> Status: the switch logic is covered by unit/component tests; the real
-> cross-network e2e is task T62 (see [README §Status & limitations](../README.md)).
+> Status: built and validated — the switch is covered by unit/component tests,
+> the netns hub-failover e2e (T62), and the real-link mid-transfer WAN-kill tier
+> (`TestRealMidTransferWANKill`, T63, reachable via `just p0-baseline`).
 
 ## 4. Concentrator firewall — open the port and PERSIST it
 
@@ -328,6 +329,35 @@ ping -c 3 10.77.0.1                         # from the edge: inner tunnel up
 # then confirm >1 path is carrying bytes (aggregation engaged under load):
 curl -s http://127.0.0.1:9090/metrics | grep '^wanbond_path_tx_bytes_total'
 ```
+
+## 7. Pilot exit criterion (non-blocking)
+
+The gate for proceeding to a **supervised pilot** is deliberately **non-blocking**
+on any long soak (Q19). Two measurements are **sufficient** to enter the pilot:
+
+1. **Capped-fixture aggregation + bufferbloat (netns, W2).** The bandwidth-capped
+   netns fixture builds a real standing queue and measures aggregation and
+   bufferbloat under it — `go test -tags e2e -run TestFixtureImpairment ./test/e2e`
+   (see [install.md §3a Option A](install.md#3a-tuning-per-link-bandwidth-and-pacing)).
+   It runs in the privileged netns tier.
+2. **Report-only real-link smoke / baseline (W4).** `just p0-baseline` brings the
+   tunnel up over the real internet between the two standing hosts and records the
+   aggregation ratio, loaded-vs-idle RTT, and link/hub-failover recovery gaps — see
+   [manual-checklist.md §P0 automated real-link baseline](manual-checklist.md#p0--automated-real-link-baseline-realhosts-tier).
+
+Together these two are **enough to proceed to a supervised pilot.** The real-link
+numbers are **INFORMATIONAL (report-only)** — no Mbit/s or millisecond threshold is
+a hard pass/fail gate; a human reads them and makes the go/no-go call. A non-zero
+exit from `just p0-baseline` means the run itself could not complete (a host was
+unreachable or the tunnel never came up), **not** that a performance number missed a
+target.
+
+The **longer soak runs DURING the supervised pilot, not as a pre-gate.** The
+reference short soak (`TestRealSoakShort`, ~2.5 min across a WG rekey — see the
+appendix) only confirms the tunnel survives a rekey; sustained multi-hour/multi-day
+soak is an **in-pilot** observation, gated on the live `wanbond_path_up` /
+`wanbond_fec_unrecoverable_packets_total` health checks in [§6](#6-monitoring-and-health-checks),
+never a blocker for entering the pilot.
 
 ## Appendix — reference figures measured on the test hosts
 
