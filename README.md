@@ -148,11 +148,15 @@ deliberate boundaries you must plan around:
   on real uplinks first.
 - **No live CONTROL protocol** — the frame type and its anti-replay guard exist,
   but inbound CONTROL is currently dropped (reserved for future signalling).
-- **Multi-concentrator hub-failover: config surface only, no switch yet** — an
+- **Multi-concentrator hub-failover: built; real-network e2e pending (T62)** — an
   edge peer may declare an ORDERED `endpoints` list (active concentrator + ordered
   standbys); the single `endpoint` form still works unchanged (its one-element
-  case). Detecting hub loss and switching/re-handshaking to the next endpoint is
-  not yet built.
+  case, which takes NO failover path). On HUB LOSS (every path to the active
+  concentrator down at once) the edge advances to the next endpoint, repoints the
+  bond, and re-handshakes a fresh session (round-robin/wrap at end of list). Scope
+  limits: endpoints are IP:port only (no DNS), and the real cross-network netns e2e
+  is T62 (the switch logic is covered by unit/component tests). See
+  [docs/design.md §Concentrator hub failover](docs/design.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
 - **DATA/PARITY frames are unauthenticated by design** (inner WireGuard

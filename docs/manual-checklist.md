@@ -99,6 +99,32 @@ numbers next to each item.
 - [ ] Flow survives; concentrator journal shows the path's endpoint roaming
       to the new address; ping gap ≤ 3 s.
 
+### Hub failover: active concentrator goes fully unreachable (T57)
+Distinct from the per-uplink drops above: here the *concentrator* is lost, so NO
+uplink can reach it and the edge must move to a STANDBY concentrator. Requires a
+SECOND concentrator VPS reachable from the edge, sharing the peer's SAME WireGuard
+static key (the standby presents the same peer identity). Configure the edge peer
+with an ORDERED list — `endpoints = ["<hubA ip:port>", "<hubB ip:port>"]` (index 0
+= hubA active, hubB standby); IP:port only, no hostnames.
+- [ ] Bring the tunnel up; confirm traffic flows via hubA (`ping -i 0.2 10.77.0.1`
+      steady; hubA journal shows the handshake + the edge endpoint learned).
+- [ ] Make hubA fully unreachable from the edge — stop `wanbond-concentrator` on
+      hubA, OR block its `listen_port` at hubA's firewall (a REAL hub outage, so
+      every path's liveness to hubA goes DOWN together, not just one uplink).
+- [ ] Within the hub-failover budget (all-paths-DOWN detection ≈ `DownAfter` +
+      the `hubFailoverSettle` 3 s dwell), the edge journal shows a
+      `hub failover: all paths to active concentrator down; switched endpoint`
+      line advancing to hubB, and hubB's journal shows a FRESH handshake (a new
+      session — no hub-to-hub state handoff). Record the observed gap.
+- [ ] The flow re-establishes over hubB. (A long-lived TCP flow tied to the old
+      session resets — a fresh session is deliberate; a NEW flow, or ping,
+      resumes.)
+- [ ] Single-concentrator GUARD: with the edge configured with only ONE endpoint
+      (legacy single `endpoint`, or a one-element `endpoints`), repeat the hub
+      outage — the edge must take NO failover action (no `hub failover` journal
+      line, no endpoint switch); behaviour is identical to pre-T57. Recovery
+      happens only when hubA itself returns.
+
 ### Startup with a not-yet-assignable path (tolerant bind)
 - [ ] Bring one uplink's interface DOWN (so its configured `source_addr` is not held
       by any interface), then `systemctl restart wanbond-edge`. The daemon comes up

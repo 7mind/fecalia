@@ -216,6 +216,66 @@ essential to validate that the declared bandwidth and RTT reflect the actual
 link properties; the netns fixture is CPU-bound and cannot build the standing
 queues pacing is designed to control (see [manual-checklist.md §P0](manual-checklist.md#p0--spike--baseline)).
 
+### Concentrator hub failover — `internal/device` (`failover.go`, T57)
+
+Two *different* failovers exist and must not be conflated:
+
+- **Per-path failover** (the scheduler, above): one uplink to the *active*
+  concentrator dies, egress moves to another uplink. Sub-second, transparent, the
+  WG session is untouched. This is the common case.
+- **Hub failover** (this section): the *concentrator itself* is unreachable —
+  **every** path's liveness to the active concentrator endpoint is DOWN
+  simultaneously (HUB LOSS). No surviving uplink can reach it, so switching
+  uplinks cannot help; the edge must move to a *standby concentrator*.
+
+An edge peer carries an **ordered** concentrator endpoint list
+(`config.Peer.Endpoints`, Q18/T54): index 0 is the active/primary hub, the rest
+are ordered standbys. Endpoints are **IP:port only — no DNS resolution** (the T54
+constraint). All hubs in the set share the peer's **single WireGuard static key**,
+so the same peer identity re-handshakes against whichever hub is active.
+
+The controller (`hubFailover`) runs a device-lifecycle monitor loop (started after
+`dev.Up`, stopped before `dev.Close`, alongside the probe/reconcile loops):
+
+1. **Detect** hub loss off the **existing per-path liveness plane** — the same
+   `telemetry.Prober` `State()` the schedulers select on — as *every* path
+   reporting `StateDown`. No second detector.
+2. **Advance** to the next endpoint in the ordered list and **repoint every
+   path's remote** at it via `bind.Multipath.SetPeerRemote` (a uniform override —
+   a hub switch retargets the whole bond; it supersedes any per-path `dest_addr`).
+   This changes only the per-path fan-out *beneath* the engine's single virtual
+   endpoint — **invariant A1 holds** (the engine still sees one peer, no
+   per-packet endpoint churn).
+3. **Re-handshake**: expire the peer's current keypairs (a **fresh** session —
+   **no hub-to-hub state handoff**) and send a fresh handshake initiation toward
+   the just-repointed standby. This is the only engine-*peer* coupling the
+   failover path takes; it lives in `internal/device` next to the rest of the
+   engine wiring (the `conn`-seam isolation of `bind.go` is unaffected).
+4. **Re-arm** against the new endpoint: probes now flow to it, so if it too is
+   fully down the controller advances again.
+
+**Settle dwell.** After a switch (and at boot for endpoint 0) the newly-selected
+endpoint gets a fixed dwell (`hubFailoverSettle`, 3 s) to prove itself LIVE before
+another advance is allowed. It comfortably exceeds the liveness UP-recovery latency
+(~3 echoes × 200 ms ≈ 600 ms once probes reach a reachable hub), so a still-DOWN
+reading caused merely by echoes not having returned yet cannot skip past a healthy
+standby, and it bounds the re-advance cadence (one switch / one handshake per dwell)
+while a whole hub fleet is down.
+
+**End-of-list policy: WRAP** (round-robin modulo the list length). Once the last
+standby is exhausted the controller cycles back to index 0 and keeps retrying every
+endpoint in order. Wrap is chosen over *stop* to preserve availability — a hub that
+recovers earlier in the list is retried and settled on within one cycle, whereas
+stopping at the last endpoint would strand the edge on a dead hub even after
+endpoint 0 came back. The settle dwell keeps the round-robin a slow, bounded retry,
+not a storm.
+
+**GUARD (must-hold invariant).** A **single-endpoint** list takes **no** failover
+action — no advance, no remote repoint, no re-handshake. A one-concentrator
+deployment (including the legacy single `endpoint` form, normalized to a
+one-element list) is therefore byte-for-byte the pre-T57 behaviour. The real-network
+netns e2e is T62.
+
 ### Per-path telemetry — `internal/telemetry`
 
 Measures per-path quality (RTT, loss, jitter) by exchanging authenticated PROBE
@@ -321,18 +381,13 @@ These are recorded design boundaries, not defects:
   bonding/FEC/failover/DPI; "bonded ≈ sum of links" and bufferbloat require real
   uplinks (see [manual-checklist.md](manual-checklist.md) §P0 and
   [p0-findings.md](p0-findings.md)).
-- **Multi-concentrator hub-failover: config surface only so far, no switch yet.**
-  Q18 brought edge-side ORDERED-ENDPOINT ACTIVE-STANDBY hub failover into scope.
-  T54 adds the config surface: an edge peer's `[[wireguard.peers]]` block may
-  carry an ORDERED `endpoints` list (index 0 = active/primary concentrator, the
-  rest ordered standbys) instead of a single `endpoint` — the single form is
-  kept as its one-element case, so an existing single-concentrator config is
-  unaffected. The concentrator role is unchanged (it still learns edges
-  dynamically; declaring `endpoints` there is a config error). Detecting hub
-  loss (all paths to the active concentrator down) and switching the peer
-  remote to the next endpoint with a re-handshake is **not yet built** — that is
-  T57 (e2e in T62). UDP-only remains an explicit non-goal (no TCP/TLS fallback
-  for wholesale-UDP-block networks).
+- **Multi-concentrator hub-failover: UDP-only remains a non-goal.** Q18 brought
+  edge-side ORDERED-ENDPOINT ACTIVE-STANDBY hub failover into scope; the config
+  surface (T54) and the switch (T57) are now built (see *Concentrator hub
+  failover* above). What stays out of scope: UDP-only is deliberate — there is no
+  TCP/TLS fallback for wholesale-UDP-block networks — and the endpoint list is
+  IP:port only (no DNS resolution). The real-network netns e2e for hub failover is
+  T62.
 
 ## References
 

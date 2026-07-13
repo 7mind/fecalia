@@ -78,6 +78,13 @@ type Tunnel struct {
 	// it before tearing the engine down so no reconcile races the socket close. It is
 	// idempotent and never nil (a no-op when the bind runs without probers / never defers).
 	stopReconcile func()
+	// stopHubFailover halts the edge-side hub-failover monitor loop (T57): it watches the
+	// per-path liveness plane and, on hub loss (all paths to the active concentrator DOWN),
+	// advances to the next ordered peer endpoint, repoints the bond's remote, and initiates
+	// a fresh WG re-handshake. Close calls it before tearing the engine down. It is
+	// idempotent and never nil (a no-op on the concentrator, or an edge with a single
+	// concentrator endpoint, or a bind without the probe transport).
+	stopHubFailover func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -244,10 +251,17 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	// lease at boot) is retried and promoted to a live path as its address appears,
 	// WITHOUT a tunnel restart. Close stops it before dev.Close, like the probe loop.
 	stopReconcile := mpBind.StartReconcileLoop(bind.DefaultReconcileInterval)
+	// Start the edge-side hub-failover monitor (T57): on hub loss (every path to the
+	// active concentrator DOWN) it advances to the next ordered peer endpoint, repoints the
+	// bond's remote, and re-handshakes. A no-op on the concentrator, a single-concentrator
+	// edge, or a bind without the probe transport. Started AFTER dev.Up so the engine peer
+	// the re-handshake looks up exists (IpcSet added it above). Close stops it before
+	// dev.Close, like the probe/reconcile loops.
+	stopHubFailover := startHubFailover(cfg, mpBind, probers, dev, clg)
 
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
-		stopProbes: stopProbes, stopReconcile: stopReconcile, amnezia: cfg.Amnezia,
+		stopProbes: stopProbes, stopReconcile: stopReconcile, stopHubFailover: stopHubFailover, amnezia: cfg.Amnezia,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). It is
 		// built unconditionally (cheap) so a reload that later turns [metrics].listen ON has
@@ -659,6 +673,9 @@ func (t *Tunnel) Close() {
 	}
 	if t.stopReconcile != nil {
 		t.stopReconcile()
+	}
+	if t.stopHubFailover != nil {
+		t.stopHubFailover()
 	}
 	t.dev.Close()
 	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })

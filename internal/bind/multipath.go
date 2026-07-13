@@ -1343,6 +1343,40 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 	return m.virt, nil
 }
 
+// SetPeerRemote repoints EVERY path's wire remote — and the default remote seeded onto
+// paths without their own dest_addr — at ap, the concentrator endpoint the edge now
+// sends to. It is the edge-side HUB-FAILOVER switch (T57): when every path's liveness to
+// the active concentrator is DOWN (hub loss), the device advances to the next ordered
+// peer endpoint (config.Peer.Endpoints) and calls this so every subsequent DATA and
+// PROBE frame egresses toward the STANDBY concentrator on every path.
+//
+// It repoints UNIFORMLY — overriding a path's own configured dest_addr too — because a
+// concentrator switch retargets the peer for the whole bond: the ordered endpoint list
+// is a per-CONCENTRATOR list (one address per hub), so on failover every path must reach
+// the same standby hub. (A per-path dest_addr addresses the ACTIVE concentrator's
+// multi-address fronting; a hub switch supersedes it. All hubs in the ordered set share
+// the peer's single WireGuard static key, so the same session identity re-handshakes
+// against whichever hub is active.)
+//
+// It does NOT touch the engine's single virtual endpoint (invariant A1): the engine
+// still sees one peer, and only the per-path fan-out BENEATH it is repointed — no
+// per-packet endpoint churn reaches the engine. Fresh-session semantics (dropping the
+// old hub's keypairs, no hub-to-hub state handoff) and the re-handshake initiation are
+// the device's job, driven right after this call.
+//
+// Concurrency mirrors ParseEndpoint: it takes m.mu to publish the new default and
+// repoint each path's remote (each ps.setRemote takes the path's own mutex). It is
+// safe on a CLOSED bind (no paths) — the new default remote is still recorded, so the
+// next Open seeds fresh paths with it.
+func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultRemote, m.hasDefaultRemote = ap, true
+	for _, ps := range m.paths {
+		ps.setRemote(ap)
+	}
+}
+
 // Close tears down every per-path socket and CLEARS the bind's path state so a
 // subsequent Open fully rebuilds it. The amneziawg engine drives exactly this
 // lifecycle — device.upLocked → BindUpdate → closeBindLocked calls Close() before
