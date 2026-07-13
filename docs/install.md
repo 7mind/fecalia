@@ -5,6 +5,13 @@ wanbond ships as a single static binary. One binary serves both roles — the
 (the public-IP VPS terminating the tunnel); the role is selected by the `role`
 key in the config file, never by which binary is invoked.
 
+> **Provisioning a fresh deployment end-to-end?** Follow the
+> **[pre-pilot rollout runbook](runbook.md)** — a top-to-bottom operator
+> procedure (key/PSK generation, both-ends config, standby-concentrator hub
+> failover, firewall persistence, pacing, and health checks) that ties the
+> sections below together. This document is the per-topic reference the runbook
+> points back into.
+
 ## 1. Build the release binaries
 
 From the repo root, inside the dev shell:

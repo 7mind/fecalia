@@ -55,7 +55,9 @@ just release        # static linux amd64+arm64 binaries into dist/
 ```
 
 Deploying the tunnel (build → install → config → systemd → firewall → metrics) is
-covered end-to-end in **[docs/install.md](docs/install.md)**. The short version:
+covered per-topic in **[docs/install.md](docs/install.md)**; to provision a fresh
+edge + concentrator (+ standby) from scratch, follow the operator-facing
+**[pre-pilot rollout runbook](docs/runbook.md)**. The short version:
 
 1. `just release`, then `install -m 0755 dist/wanbond-linux-<arch> /usr/local/bin/wanbond`.
 2. Write `/etc/wanbond/config.toml` (mode **0600** — the daemon refuses looser
@@ -170,7 +172,9 @@ See [docs/design.md §Security model](docs/design.md) and
 
 - **[docs/design.md](docs/design.md)** — architecture and exactly what we built on
   top of amneziawg-go.
-- **[docs/install.md](docs/install.md)** — full setup and operation.
+- **[docs/install.md](docs/install.md)** — full setup and operation (per-topic reference).
+- **[docs/runbook.md](docs/runbook.md)** — pre-pilot rollout runbook: provision a
+  fresh edge + concentrator (+ standby) from scratch, end to end.
 - **[docs/manual-checklist.md](docs/manual-checklist.md)** — manual per-phase and
   real-link verification checklist.
 - **[docs/p0-findings.md](docs/p0-findings.md)** / **[docs/p0-checkpoint.md](docs/p0-checkpoint.md)**
