@@ -606,10 +606,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-224948-a89a978a513c962f4.md",".cq/logs/20260713-225437-a7e364965f1c96b59.md",".cq/logs/20260713-225437-a11bd428159e547c9.md"]
 - rawLogs: [".cq/logs/raw/20260713-224948-a89a978a513c962f4.jsonl",".cq/logs/raw/20260713-225437-a7e364965f1c96b59.jsonl",".cq/logs/raw/20260713-225437-a11bd428159e547c9.jsonl"]
 
-### T68 — wip
+### T68 — done
 
 - createdAt: 2026-07-13T21:54:10.871Z
-- updatedAt: 2026-07-13T22:41:42.348Z
+- updatedAt: 2026-07-13T23:03:09.963Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Create the resolver seam package with a system-resolver implementation
@@ -617,6 +617,10 @@ archives:
 - acceptance: "go test ./internal/dnsresolve/... passes: the fake Resolver satisfies the interface (compile-time var _ Resolver assertion) and resolves a mapped name to the expected ordered addrs while an unmapped name returns a non-nil error; the system implementation resolves localhost to loopback addrs in a hermetic test; context cancellation propagates (lookup returns promptly with ctx.Err())."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 9f8e13d
+- completion: "internal/dnsresolve resolver seam landed: context-bounded Resolver interface (addrs, minTTL, ttlOk), SystemResolver over net.Resolver, FakeResolver dual-tests dummy; README + design.md package inventories synced (round-2 criticism fix); merged ff to main."
+- sessionLogs: [".cq/logs/20260713-224948-acf8c70e1855d17a7.md",".cq/logs/20260713-230051-a5fe60c169d59c898.md",".cq/logs/20260713-225437-ae9e21e85de4600a9.md",".cq/logs/20260713-225437-a99ae9caf87cc11a3.md",".cq/logs/20260713-230228-a0fb43fc933a1f307.md",".cq/logs/20260713-230228-a50626c69a5974410.md"]
+- rawLogs: [".cq/logs/raw/20260713-224948-acf8c70e1855d17a7.jsonl",".cq/logs/raw/20260713-230051-a5fe60c169d59c898.jsonl",".cq/logs/raw/20260713-225437-ae9e21e85de4600a9.jsonl",".cq/logs/raw/20260713-225437-a99ae9caf87cc11a3.jsonl",".cq/logs/raw/20260713-230228-a0fb43fc933a1f307.jsonl",".cq/logs/raw/20260713-230228-a50626c69a5974410.jsonl"]
 
 ### T69 — planned
 
@@ -770,7 +774,7 @@ archives:
 ### T80 — done
 
 - createdAt: 2026-07-13T22:27:04.600Z
-- updatedAt: 2026-07-13T23:00:28.079Z
+- updatedAt: 2026-07-13T23:01:08.347Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-peer psk and name fields to config.Peer
@@ -780,8 +784,8 @@ archives:
 - ledgerRefs: ["goals:G4"]
 - resultCommit: 33e8e3f
 - completion: Per-peer psk/name fields added to config.Peer with legacy single-peer golden-shape guard; semantic rebase conflict vs T67 (EndpointSpecs non-nil empty slice in the golden) resolved by conflict-resolver; merged ff to main.
-- sessionLogs: [".cq/logs/20260713-224948-a49f5813151f3f0bf.md",".cq/logs/20260713-225437-a1850ae28a48e003a.md",".cq/logs/20260713-225437-ac6ebf9d1c27aa4bf.md"]
-- rawLogs: [".cq/logs/raw/20260713-224948-a49f5813151f3f0bf.jsonl",".cq/logs/raw/20260713-225437-a1850ae28a48e003a.jsonl",".cq/logs/raw/20260713-225437-ac6ebf9d1c27aa4bf.jsonl"]
+- sessionLogs: [".cq/logs/20260713-224948-a49f5813151f3f0bf.md",".cq/logs/20260713-225437-a1850ae28a48e003a.md",".cq/logs/20260713-225437-ac6ebf9d1c27aa4bf.md",".cq/logs/20260713-230051-a21afb20872f222c8.md"]
+- rawLogs: [".cq/logs/raw/20260713-224948-a49f5813151f3f0bf.jsonl",".cq/logs/raw/20260713-225437-a1850ae28a48e003a.jsonl",".cq/logs/raw/20260713-225437-ac6ebf9d1c27aa4bf.jsonl",".cq/logs/raw/20260713-230051-a21afb20872f222c8.jsonl"]
 
 ### T81 — planned
 

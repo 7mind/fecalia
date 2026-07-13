@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 75
+  item: 76
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -726,6 +726,19 @@ archives:
 - ledgerRefs: ["tasks:T67","goals:G5"]
 - sessionLogs: [".cq/logs/20260713-225437-a7e364965f1c96b59.md",".cq/logs/20260713-225437-a11bd428159e547c9.md"]
 - rawLogs: [".cq/logs/raw/20260713-225437-a7e364965f1c96b59.jsonl",".cq/logs/raw/20260713-225437-a11bd428159e547c9.jsonl"]
+
+### R76 — go-ahead
+
+- createdAt: 2026-07-13T23:03:03.881Z
+- updatedAt: 2026-07-13T23:03:03.881Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T68 terminal reconciled panel verdict after 2 rounds: round 1 [opus] approve / [fable] disapprove (strictest-wins revise) on ONE criticism — docs/design.md Supporting-packages inventory omitted internal/dnsresolve; round 2 (docs-only fix b596b6b) unanimous approve, gate green re-verified by both reviewers, all acceptance clauses evidenced operationally."
+- criticism: ["[fable, round 1, RESOLVED in round 2] docs/design.md §'Supporting packages' was not updated to list the new internal/dnsresolve package while README.md's repo-layout list was — AGENTS.md's required docs-sync rule made this an objective, autonomously fixable omission."]
+- new_questions: []
+- ledgerRefs: ["tasks:T68","goals:G5"]
+- sessionLogs: [".cq/logs/20260713-225437-ae9e21e85de4600a9.md",".cq/logs/20260713-225437-a99ae9caf87cc11a3.md",".cq/logs/20260713-230228-a0fb43fc933a1f307.md",".cq/logs/20260713-230228-a50626c69a5974410.md"]
+- rawLogs: [".cq/logs/raw/20260713-225437-ae9e21e85de4600a9.jsonl",".cq/logs/raw/20260713-225437-a99ae9caf87cc11a3.jsonl",".cq/logs/raw/20260713-230228-a0fb43fc933a1f307.jsonl",".cq/logs/raw/20260713-230228-a50626c69a5974410.jsonl"]
 
 ## M23
 
