@@ -395,6 +395,10 @@ inline. All of these are enforced at config load (`config.Load`), which fails
 fast on the first violation — except the loopback and `allowed_ips` checks,
 noted below.
 
+> The same content ships as a copy-pasteable file at the repo root,
+> [`wanbond.example.toml`](../wanbond.example.toml): copy it, fill the
+> `<placeholders>`, and delete what you do not need.
+
 ```toml
 # ── top level ────────────────────────────────────────────────────────────────
 role = "edge"                      # REQUIRED. "edge" | "concentrator". Never

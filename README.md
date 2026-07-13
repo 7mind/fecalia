@@ -176,7 +176,10 @@ See [docs/design.md §Security model](docs/design.md) and
 
 - **[docs/design.md](docs/design.md)** — architecture and exactly what we built on
   top of amneziawg-go.
-- **[docs/install.md](docs/install.md)** — full setup and operation (per-topic reference).
+- **[docs/install.md](docs/install.md)** — full setup and operation (per-topic
+  reference); §3z is the exhaustive all-keys config reference.
+- **[wanbond.example.toml](wanbond.example.toml)** — copy-pasteable annotated
+  example config with every key, its default, and its constraints.
 - **[docs/runbook.md](docs/runbook.md)** — pre-pilot rollout runbook: provision a
   fresh edge + concentrator (+ standby) from scratch, end to end.
 - **[docs/manual-checklist.md](docs/manual-checklist.md)** — manual per-phase and
