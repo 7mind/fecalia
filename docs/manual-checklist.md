@@ -21,6 +21,13 @@ Prerequisites (all phases):
       [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing) if
       you plan to enable pacing).
 
+The manual items above are automated end to end by the **`just p0-baseline`**
+pre-pilot procedure against the two standing worker machines — see
+[§P0 — automated real-link baseline](#p0--automated-real-link-baseline-realhosts-tier)
+below. Run that command to capture the baseline report, then read/interpret the
+numbers by hand; the baseline is INFORMATIONAL (report-only), not a pass/fail
+gate.
+
 ## P1 — transparent failover
 - [ ] Start a long-lived TCP flow (SSH session or iperf3) over the tunnel.
 - [ ] Physically drop the active WAN (unplug / disable the Starlink uplink).
@@ -48,6 +55,62 @@ Prerequisites (all phases):
 - [ ] From a hostile-ish network (e.g. a hotel/guest Wi-Fi), the tunnel connects.
 - [ ] Capture the flow; nDPI / Suricata do not classify it as WireGuard or any
       identified VPN.
+
+## P0 — automated real-link baseline (realhosts tier)
+
+The **single, repeatable pre-pilot procedure** that replaces the manual §P0 steps
+above. It is a thin orchestration layer over the existing `realhosts` tier (which
+drives the two standing worker machines over SSH: the amd64 edge behind symmetric
+NAT ↔ the aarch64 concentrator on its public IP) — it does NOT re-implement any
+test logic. One command provisions both ends, natively builds `wanbond` on each,
+brings the tunnel up over the real internet path, runs the aggregation +
+loaded-RTT + link/hub-failover smoke, and TEES a timestamped baseline report.
+
+REPORT-ONLY / NON-BLOCKING (Q19): the orchestrated tests assert **liveness only**
+(handshake completed, both paths reached `up`, every iperf3 sample returned a
+positive rate, failover recovered) — **no Mbit/s or ms threshold gates the run**.
+The emitted numbers are informational input to the operator's pilot-gate
+decision, which stays a human judgement call, not an automated gate.
+
+### Run the baseline
+- [ ] From the dev shell (`nix develop`) at the repo root, run:
+
+      ```
+      WANBOND_SSH_KEY=/run/agenix/llm-ssh-key just p0-baseline
+      ```
+
+      `WANBOND_SSH_KEY` defaults to `/run/agenix/llm-ssh-key`, so on a host where
+      that key is already in place `just p0-baseline` alone suffices. Host
+      addresses/public IP default to the two standing workers and can be overridden
+      with `WANBOND_EDGE_HOST` / `WANBOND_CONC_HOST` / `WANBOND_CONC_PUBLIP`. No
+      root is required. The command is NEVER part of `just test` or CI.
+- [ ] The command orchestrates these EXISTING tests (`go test -tags realhosts
+      -run '^(TestRealP0Smoke|TestRealAggregationBufferbloat|TestRealMidTransferWANKill)$' -v`)
+      and tees the full `-v` output to
+      `test/realhosts/reports/p0-baseline-<UTC-timestamp>.log` (gitignored). A
+      **non-zero exit** means the run itself could not complete (a host was
+      unreachable or the tunnel never came up) — NOT that a performance number
+      missed a target.
+
+### What the baseline report contains
+- [ ] **`TestRealP0Smoke`** — single-uplink bring-up: WG handshake OK, ping avg
+      RTT (ms), and three iperf3 measurements (single-flow TCP Mbit/s + retransmits,
+      8×-parallel TCP Mbit/s + retransmits, UDP goodput/loss/jitter). See the
+      `=== P0 SMOKE RESULTS ===` block.
+- [ ] **`TestRealAggregationBufferbloat`** — per-path and bonded throughput and
+      their **aggregation ratio**, plus the **idle-vs-loaded RTT (bufferbloat)
+      delta** measured with a ping running inside a saturating transfer.
+- [ ] **`TestRealMidTransferWANKill`** — mid-transfer **LINK-failover** and
+      **HUB-failover** (T57) recovery: the observed gap/switch timings before the
+      flow resumes over the surviving link / standby concentrator.
+
+### What stays manual
+- [ ] **Reading and interpreting the numbers.** The command emits measurements; a
+      human decides whether the aggregation ratio, loaded-RTT delta, and failover
+      gaps look acceptable for the intended pilot.
+- [ ] **The pilot-gate decision itself** is a NON-BLOCKING human call. The baseline
+      informs it; it does not automate or gate it. Record the report path, date,
+      and the go/no-go decision alongside the numbers.
 
 ## P1 — scripted real-setup run (Starlink + 5G edge, VPS concentrator)
 

@@ -62,3 +62,32 @@ realhosts TEST="":
 # as `realhosts`. Thin wrapper over TestRealProvision. NEVER part of `just test`.
 realhosts-provision:
     go test -tags realhosts ./test/realhosts/... -run TestRealProvision -count=1 -v
+
+# P0 real-link baseline: the SINGLE repeatable pre-pilot procedure (docs/manual-
+# checklist.md §P0). A thin orchestration layer over three EXISTING realhosts
+# tests — it provisions both ends, brings the tunnel up, and records:
+#   - TestRealP0Smoke              single-uplink handshake + ping RTT + iperf3
+#                                  (single/8x-parallel TCP, UDP goodput/loss);
+#   - TestRealAggregationBufferbloat  per-path + bonded throughput and their
+#                                  aggregation ratio, plus idle-vs-loaded RTT
+#                                  bufferbloat delta under saturating load;
+#   - TestRealMidTransferWANKill   mid-transfer LINK failover and HUB failover
+#                                  (T57) recovery timings.
+# It TEES the full -v output to a timestamped baseline report under
+# test/realhosts/reports/ (gitignored). REPORT-ONLY (Q19): the underlying tests
+# assert LIVENESS ONLY — no Mbit/s or ms threshold gates the run; the numbers are
+# informational for the operator's (non-blocking) pilot-gate decision. Same SSH
+# key requirement as `realhosts` (WANBOND_SSH_KEY, default /run/agenix/llm-ssh-
+# key). NEVER part of `just test` or CI. A non-zero exit means the run itself
+# could not complete (host unreachable, tunnel never came up), NOT that a
+# performance number missed a target.
+p0-baseline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p test/realhosts/reports
+    report="test/realhosts/reports/p0-baseline-$(date -u +%Y%m%dT%H%M%SZ).log"
+    echo "wanbond P0 real-link baseline — $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee "$report"
+    go test -tags realhosts ./test/realhosts/... \
+        -run '^(TestRealP0Smoke|TestRealAggregationBufferbloat|TestRealMidTransferWANKill)$' \
+        -count=1 -v 2>&1 | tee -a "$report"
+    echo "baseline report: $report" | tee -a "$report"
