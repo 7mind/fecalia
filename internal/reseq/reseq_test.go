@@ -720,3 +720,81 @@ func TestObserveRecoveredFillsGapInOrder(t *testing.T) {
 		t.Fatalf("delivery after gap-filling recovery = %v, want [2 3]", got)
 	}
 }
+
+// TestRebaselineAdmitsStandbyLowSeqAfterHubSwitch reproduces defect D32 and proves
+// the fix. After the release point has advanced far past one window (a busy prior-hub
+// stream, as the pre-kill iperf3 baseline does on the real edge), a single LOW
+// outer-seq from a freshly-handshaking standby hub — a separate process whose
+// outer-seq restarts near 1 — lands in the SUSPECT branch, and a lone frame cannot
+// corroborate a resync (that needs resyncCorroborate distinct low seqs, which do not
+// arrive within the failover window), so it is DROPPED. Rebaseline() — the trusted
+// hub-switch signal — re-anchors the release point so the standby's first frame is
+// admitted immediately.
+func TestRebaselineAdmitsStandbyLowSeqAfterHubSwitch(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Prior hub: a busy contiguous stream advances the release point well past one
+	// window (next == priorHi afterwards).
+	const priorHi = 200
+	for s := uint64(0); s < priorHi; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r)
+
+	// Standby hub restarts its outer-seq near 1: that frame is >1 window below next, so
+	// admit() routes it to the SUSPECT branch and the lone frame is dropped (the D32
+	// repro precondition).
+	const standbySeq = 1
+	before := r.Stats().DroppedSuspect
+	r.Observe(standbySeq, payloadOf(standbySeq), testSrc)
+	if got := drain(r); len(got) != 0 {
+		t.Fatalf("standby low-seq frame was delivered WITHOUT a rebaseline: %v — D32 repro precondition broken", got)
+	}
+	if r.Stats().DroppedSuspect <= before {
+		t.Fatal("standby low-seq frame was not dropped as suspect (DroppedSuspect did not increase) — D32 repro precondition broken")
+	}
+
+	// The hub-failover switch calls Rebaseline: the DATA-frame sender provably changed to
+	// the operator-configured standby, so the next frame re-anchors the release point.
+	r.Rebaseline()
+	if s := r.Stats(); s.Rebaselines != 1 {
+		t.Fatalf("Rebaselines = %d, want 1", s.Rebaselines)
+	}
+
+	// Now the standby's stream is admitted and delivered in order.
+	r.Observe(standbySeq, payloadOf(standbySeq), testSrc)
+	r.Observe(standbySeq+1, payloadOf(standbySeq+1), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{standbySeq, standbySeq + 1}) {
+		t.Fatalf("after Rebaseline the standby stream delivered %v, want [%d %d]", got, standbySeq, standbySeq+1)
+	}
+}
+
+// TestRebaselineDiscardsBufferedPreSwitchFrames verifies Rebaseline drops the buffered
+// (pre-switch) frames — they belong to the dead prior hub's stream — while leaving the
+// already-released FIFO of prior legitimate deliveries intact.
+func TestRebaselineDiscardsBufferedPreSwitchFrames(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(64, time.Hour, clk)
+
+	r.Observe(0, payloadOf(0), testSrc) // delivered, next==1
+	r.Observe(2, payloadOf(2), testSrc) // buffered behind the head gap at 1
+	r.Observe(3, payloadOf(3), testSrc) // buffered
+	if r.Buffered() != 2 {
+		t.Fatalf("precondition: Buffered = %d, want 2", r.Buffered())
+	}
+	// The already-released item (seq 0) is still poppable.
+	if r.Pending() != 1 {
+		t.Fatalf("precondition: Pending = %d, want 1", r.Pending())
+	}
+
+	r.Rebaseline()
+	if r.Buffered() != 0 {
+		t.Fatalf("Rebaseline did not discard buffered pre-switch frames: Buffered = %d, want 0", r.Buffered())
+	}
+	// The prior legitimate delivery survives the rebaseline.
+	if got := drain(r); !equalSeqs(got, []uint64{0}) {
+		t.Fatalf("released FIFO after Rebaseline = %v, want [0] (prior deliveries must be untouched)", got)
+	}
+}

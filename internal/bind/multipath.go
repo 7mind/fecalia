@@ -1370,10 +1370,23 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 // next Open seeds fresh paths with it.
 func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.defaultRemote, m.hasDefaultRemote = ap, true
 	for _, ps := range m.paths {
 		ps.setRemote(ap)
+	}
+	rq := m.resequencer.Load()
+	m.mu.Unlock()
+
+	// A hub switch changes the DATA-frame SENDER identity: the standby concentrator is a
+	// separate process whose outer-seq restarts near 1, far below the release point the
+	// prior hub's stream advanced the shared resequencer's `next` to. Re-baseline it so the
+	// standby's FIRST frame (the WG handshake response) re-anchors the release point instead
+	// of being dropped as a suspect low seq — without this the tunnel never re-establishes
+	// after failover (defect D32). Done OUTSIDE m.mu (the resequencer has its own mutex;
+	// never nest it under m.mu). Nil on a closed bind (a resequencer is Stored per Open) —
+	// the next Open seeds a fresh one whose release point re-pins to its first frame anyway.
+	if rq != nil {
+		rq.Rebaseline()
 	}
 }
 

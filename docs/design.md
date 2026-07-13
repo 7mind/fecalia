@@ -251,7 +251,19 @@ The controller (`hubFailover`) runs a device-lifecycle monitor loop (started aft
    the just-repointed standby. This is the only engine-*peer* coupling the
    failover path takes; it lives in `internal/device` next to the rest of the
    engine wiring (the `conn`-seam isolation of `bind.go` is unaffected).
-4. **Re-arm** against the new endpoint: probes now flow to it, so if it too is
+4. **Re-baseline the receive resequencer**: the standby is a *separate process*
+   whose outer sequence restarts near 1 — far below the release point the prior
+   hub's high-rate stream advanced the shared `reseq.Resequencer` to. Its first
+   frame (the WG handshake *response*) would otherwise land in the resequencer's
+   *suspect* branch and be dropped, because the unauthenticated-DATA resync guard
+   needs several corroborating low seqs and a freshly re-handshaking standby emits
+   only ~one DATA frame per `RekeyTimeout` — so corroboration falls outside the
+   failover window and the tunnel never re-establishes. `SetPeerRemote` therefore
+   calls `Resequencer.Rebaseline`: because a hub switch is a **trusted control
+   event** (not a forgeable wire frame), the release point is re-anchored to the
+   standby's *first* frame immediately, discarding the dead hub's buffered frames
+   while leaving already-delivered frames untouched.
+5. **Re-arm** against the new endpoint: probes now flow to it, so if it too is
    fully down the controller advances again.
 
 **Settle dwell.** After a switch (and at boot for endpoint 0) the newly-selected

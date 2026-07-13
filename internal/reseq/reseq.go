@@ -152,6 +152,7 @@ type Resequencer struct {
 	skipped     uint64 // seqs skipped (treated lost) by window-advance or timeout
 	releasedN   uint64 // frames released for delivery
 	resyncs     uint64 // release-point re-pins after a corroborated discontinuity
+	rebaselines uint64 // release-point re-baselines forced by a trusted control event (hub failover)
 }
 
 // New returns a resequencer buffering at most window outer-seq positions and
@@ -525,6 +526,36 @@ func (r *Resequencer) resyncReset() {
 	r.resyncHi = 0
 }
 
+// Rebaseline discards the buffered (pre-switch) frames and UNPINS the release
+// point so the NEXT Observe re-anchors `next` to that frame's outer-seq, exactly as
+// if the stream had just started. It exists for the edge-side HUB FAILOVER (T57): a
+// concentrator switch changes the DATA-frame SENDER, and the standby is a separate
+// process whose outer-seq restarts near 1 — far below the release point the prior
+// hub's high-rate stream advanced `next` to. The unauthenticated tryResync path
+// cannot rescue this in time: it needs resyncCorroborate (3) distinct low seqs
+// within one window, but a freshly re-handshaking standby emits only ~1 DATA frame
+// (the handshake response) per RekeyTimeout, so corroboration falls outside the
+// failover window and the response is dropped as SUSPECT — the tunnel never
+// re-establishes (defect D32). Unlike a DATA frame (forgeable by design, hence the
+// corroboration guard), THIS re-pin is driven by a TRUSTED control event — the
+// operator-configured ordered-endpoint switch, above the unauthenticated wire — so
+// re-anchoring on the next single frame is sound. Buffered frames (from the dead
+// prior hub) are discarded in O(window); the already-released FIFO of prior
+// legitimate deliveries is untouched. Idempotent and safe before the first Observe
+// (started stays false). Takes r.mu; the caller must NOT hold it.
+func (r *Resequencer) Rebaseline() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.ring {
+		r.ring[i] = slot{}
+	}
+	r.buf = 0
+	r.started = false
+	r.waiting = false
+	r.resyncReset()
+	r.rebaselines++
+}
+
 // smallestBuffered scans the ring for the lowest occupied seq at or above next.
 // All occupied seqs lie in [next, next+window), so this is bounded by window and
 // runs only on the (rare) timeout path. Caller holds r.mu.
@@ -571,6 +602,7 @@ type Stats struct {
 	DroppedSuspect uint64 // out-of-band frames dropped while (not yet) corroborating
 	Skipped        uint64 // seqs skipped (lost) by window-advance or timeout
 	Resyncs        uint64 // release-point re-pins after a corroborated discontinuity
+	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (hub failover)
 }
 
 // Stats returns a snapshot of the cumulative counters.
@@ -584,5 +616,6 @@ func (r *Resequencer) Stats() Stats {
 		DroppedSuspect: r.dropSuspect,
 		Skipped:        r.skipped,
 		Resyncs:        r.resyncs,
+		Rebaselines:    r.rebaselines,
 	}
 }
