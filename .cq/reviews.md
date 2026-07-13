@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 66
+  item: 68
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -674,3 +674,23 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T64 (realhosts short report-only soak) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): report-only discipline holds (every fatal liveness/structural; mbps<=0 is the positive-throughput liveness clause; no Mbit/s/RTT/loss gate); D21 bounded/no-leak (flow -t=150s + ctx soakFlowTimeout=240s + t.Cleanup cancel/kill/pkill; iperf server stopUnit; preClean + full teardown); sampling loop deadline-bounded + each sample ctx-bounded + non-fatal; all 12 new symbols T64-unique (0 clash with smoke/multipath/aggregation siblings); rekey/liveness check meaningful (150s window spans ~120s WG rekey; multi-pronged completion+final-ping+path-not-down); o3-safe; vet -tags realhosts/gofmt/go test green. HARDWARE (llm-ubuntu-0 EDGE <-> o3 concentrator): TestRealSoakShort PASS 186.76s -- 2m30s window spanning the WG rekey, weighted+paced; tunnel stayed UP the whole window (0 path-down flaps), final in-tunnel RTT 29.1ms. Real-link observation for T65 runbook: under sustained 8-stream saturation, per-interval throughput dipped to 0 with a transient loss/RTT spike for ~2 samples around the rekey window (70-120s) then recovered -- paths stayed up, tunnel survived (report-only, self-recovered; a real-link saturation+rekey variability datapoint, NOT a failure). Clean teardown both hosts. Merged 7b37064."
 - ledgerRefs: ["tasks:T64"]
+
+## M17
+
+### R67 — go-ahead
+
+- createdAt: 2026-07-13T18:06:09.644Z
+- updatedAt: 2026-07-13T18:06:09.644Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T59 (pre-pilot rollout runbook, docs/runbook.md) review: APPROVE. Adversarial review (opus, 0 criticisms/questions/defects): NO invented symbols -- all 12 wanbond_* /metrics names in the runbook series table exist in internal/metrics/metrics.go; every config key matches config.go toml tags; PSK gen correct (keyLen=32, base64, 'head -c 32 /dev/urandom | base64', 0600); standby-concentrator narrative (ordered endpoints, shared WG static key, fresh session/no hub-to-hub handoff, resequencer rebaseline, WRAP end-of-list, single-endpoint no-op) matches design.md:219 + failover.go verbatim; firewall D7/D8 (iptables -C dedup guard + netfilter-persistent save + rules.v4) matches provision.go:210-224; install.md §3z exists (runbook retargeted to reference it); all intra-repo markdown links resolve. Covers all 6 required topics (key/PSK gen, both-ends config, standby-concentrator, firewall persistence, pacing opt-in, /metrics+health). build+gofmt clean. Docs-only; indexed from README + install.md. Merged b51a289."
+- ledgerRefs: ["tasks:T59"]
+
+### R68 — go-ahead
+
+- createdAt: 2026-07-13T18:06:29.183Z
+- updatedAt: 2026-07-13T18:06:29.183Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T65 (automate §P0 real-link baseline -> `just p0-baseline`) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): the just target ORCHESTRATES only the existing realhosts tests (-run '^(TestRealP0Smoke|TestRealAggregationBufferbloat|TestRealMidTransferWANKill)$' -- regex matches exactly the 3 funcs) and tees a timestamped report; NO absolute-number gate added (report-only/non-blocking per Q19); NO destructive step (underlying tests already o3-safe); all 4 env vars + /run/agenix/llm-ssh-key default exist in runner.go; manual-checklist §P0 anchor resolves; reports dir gitignored. build+gofmt clean, just -n p0-baseline expands. HARDWARE (llm-ubuntu-0 EDGE <-> o3 concentrator): `just p0-baseline` PASS 286s -- all 3 tests green, report emitted (test/realhosts/reports/p0-baseline-20260713T180022Z.log, 12880B). Baseline numbers: smoke RTT 32.8ms/TCP 29-53Mbit/UDP goodput 85Mbit; aggregation ratio 0.456 (shared-uplink), idle 31.8ms->loaded 207.5ms (bufferbloat 175.7ms, real-link congestion variability); LINK_FAILOVER 1487ms, HUB_FAILOVER 1706ms (resumed via standby portB 60.5Mbit -- confirms the D32-fixed hub-failover on the real link). Clean teardown both hosts, o3 firewall restored. Merged 929a15a."
+- ledgerRefs: ["tasks:T65"]

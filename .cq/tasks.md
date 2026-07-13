@@ -621,10 +621,10 @@ archives:
 
 ## M17
 
-### T59 — planned
+### T59 — done
 
 - createdAt: 2026-07-13T13:42:26.004Z
-- updatedAt: 2026-07-13T13:42:26.004Z
+- updatedAt: 2026-07-13T18:06:37.729Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Rollout runbook: config/key/PSK generation, firewall persistence, monitoring, standby-concentrator setup"
@@ -634,10 +634,10 @@ archives:
 - ledgerRefs: ["goals:G2"]
 - dependsOn: ["T53","T54"]
 
-### T65 — planned
+### T65 — done
 
 - createdAt: 2026-07-13T13:43:27.916Z
-- updatedAt: 2026-07-13T13:43:27.916Z
+- updatedAt: 2026-07-13T18:06:38.642Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: Automate the manual-checklist section-P0 real-link baseline into a repeatable pre-pilot procedure
