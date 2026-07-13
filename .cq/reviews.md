@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 53
+  item: 54
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -584,3 +584,12 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T52 (G2/W2 BDP measurement) implement-review: APPROVE (verdict=approve). The 'bdp' sub-test of TestFixtureImpairment derives BDP = bandwidth(bits/s) × BASELINE(idle) RTT with correct units (loadMbps*1e6 -> bits/s from parseIperfSentMbps; idleRTTms*time.Millisecond) and doc-matched avgWireFrameBytes (bind.DefaultPathMTU + frame.DataOverhead, per SizePacingFromBDP's own doc); loaded RTT used only for the separate bufferbloat delta. REPORT-ONLY honored (Q19/D23): only t.Fatalf guards are a pipeline-sanity loadMbps<=0 + a SizePacingFromBDP input-validation error — NO absolute throughput/BDP threshold assertion; measured numbers are t.Logf-only. Deterministic + bounded (reuses existing rttUnderLoad TIME_WAIT-safe one-shot iperf3 + RTT helpers; bdpLoadSecs=8, fixed sample counts, no unbounded loop). Full non-privileged gate green + go vet -tags e2e compiles; the sub-test needs root/netns to RUN (verified by compile + close read). 0 criticisms, 0 questions. Merged to main."
 - ledgerRefs: ["tasks:T52"]
+
+### R54 — go-ahead
+
+- createdAt: 2026-07-13T14:09:03.479Z
+- updatedAt: 2026-07-13T14:09:03.479Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T53 (G2/W2 wire SizePacingFromBDP) implement-review: APPROVE (verdict=approve). deriveWeightedPacingFromBDP runs inside normalize() at config LOAD (config.go:603-651), sets PerPathCapacityFPS/PacingBurstFrames from SizePacingFromBDP replacing synthetic defaultPerPathCapacityFPS=10000. NON-VACUOUS: TestPacingDerivedFromDeclaredBandwidth computes want from SizePacingFromBDP(10e6,30ms,1500) (the 10Mbit BOTTLENECK path, not the 50Mbit) + asserts derived ~833 FPS strictly below the default. NO RUNTIME AUTO-TUNING (Q20 hard req): the ONLY writes to the pacing knobs in the whole tree are at config load (derive + applyDefaults); zero writes/ticker/goroutine in internal/sched adjusting them — derivation fixed at load, compliant. Pacing DEFAULT-DISABLED preserved (PacingEnabled zero-value false; early-return when disabled/non-weighted; declared bandwidth inert when off; no-declaration falls back to default). Fail-fast: parseBandwidth requires explicit SI bit/s suffix (rejects bare/empty), non-positive bw/RTT rejected, link_rtt required under pacing, all-or-nothing + raw-knob mutual exclusion; 8 reject sub-cases pass. Unit parsing correct ('50Mbit'->50e6, longest-suffix-first). Docs (install.md:153+, design.md) accurate. Single-shared-capacity->bottleneck pacing is a pre-existing T21 property (safe direction), not a T53 fault. Full gate green. 0 criticisms, 0 questions. Merged to main at c803cb5."
+- ledgerRefs: ["tasks:T53"]

@@ -547,10 +547,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G2"]
 
-### T53 — planned
+### T53 — done
 
 - createdAt: 2026-07-13T13:41:32.390Z
-- updatedAt: 2026-07-13T13:41:32.390Z
+- updatedAt: 2026-07-13T14:09:04.472Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - description: "Wire the existing helper SizePacingFromBDP(bandwidthBitsPerSec, rtt, avgWireFrameBytes) -> BDPSizing{CapacityFPS,BurstFrames} (internal/config, L182-196) into config load. Add an OPERATOR-DECLARED per-link bandwidth field to the per-path config (internal/config/config.go Path{}); when present and pacing is enabled, derive CapacityFPS/BurstFrames from SizePacingFromBDP (using a measured/declared RTT input) instead of the synthetic defaultPerPathCapacityFPS. This is operator-declared, NOT runtime auto-tuning (Q20 = declared+document, no control loop). Pacing MUST continue to ship DISABLED by default (PacingEnabled default false unchanged); a declared bandwidth with pacing disabled has no effect. config.validate must accept the new field and reject a non-positive bandwidth. Config/behavior change => update docs/design.md pacing section + docs/install.md config reference."
