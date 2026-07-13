@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 1
+  item: 3
 archives: []
 ---
 
@@ -65,3 +65,31 @@ archives: []
 - rawLogs: [".cq/logs/raw/20260701-231505-aacec84bd6a7748f4.jsonl",".cq/logs/raw/20260701-234215-a533f3a14c0afe112.jsonl",".cq/logs/raw/20260701-234215-a2ee01f9272ece9de.jsonl"]
 - milestones: ["M2","M3","M4","M5","M6","M7","M8","M9","M10","M11"]
 - grounding: "Plan locked via decision K1 after a 3-round opus+fable review panel (R1/R2 revise → R3 go-ahead). 8 phase milestones M2-M9 (scaffolding S, harness H, P0 spike, P1 failover, P2 aggregation, P3 fixed FEC, P4 adaptive FEC, P5 DPI); 30 tasks T1-T30. All Q1-Q8 answers are binding constraints wired into the tasks. ## Hardening round (2026-07-08): the 14 root-caused file-and-defer defects (D3,D4,D7,D8,D10,D13,D14,D20,D22,D23,D24,D25,D26,D28) folded into 9 fix tasks under a NEW hardening milestone. Binding answers: Q14 -> o3 is a TEST host (live iptables edits/reboots OK; NEVER deprovision it; implement-workers cannot reach it from sandbox, so D7/D8 live-apply is a manual report-only ops step, not an automated gate). Q15 -> D23 measure-then-sweep (record real 4-vCPU in-fixture ceiling on llm-ubuntu-0 BEFORE the sweep). Q16 -> D26 adds a new target_residual config parameter (option i; new config surface explicitly approved despite the round's general no-new-capability non-goal). Fix detail is authoritative on each defect item; each fix task ledgerRefs its defects:<D> and drives them to resolved on merge."
+
+## M12
+
+### G2 — clarifying
+
+- createdAt: 2026-07-13T12:27:36.017Z
+- updatedAt: 2026-07-13T12:27:36.017Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- title: "Production-readiness: real-link validation, pacing sizing, and pilot hardening"
+- description: |
+    ADDITIVE goal following the completed P0-P5 build and the 2026-07-08 deferred-defect hardening round (G1). Turns the deliberate boundaries surfaced in the production-readiness assessment into a scoped PRE-PILOT hardening plan. Do NOT invalidate or reorder G1's completed work.
+    
+    CONTEXT (established this session; planner need not re-ask): the P0-P5 tunnel is functionally complete, opus+fable-reviewed, hardened; the ledger is drained (0 open defects/questions). Two standing REAL hosts exist in different networks, reachable via the llm SSH key (/run/agenix/llm-ssh-key): (a) llm-ubuntu-0.pgtr.7mind.io = amd64 4-vCPU behind SYMMETRIC NAT = EDGE; (b) o3.7mind.io = aarch64 1-vCPU PUBLIC 89.168.124.91 = CONCENTRATOR (o3 is a TEST host; live iptables/reboots OK; NEVER deprovision it; its firewall is already deduped + reboot-persistent per D7/D8). The netns e2e fixture is CPU/PPS-bound (~12-46 Mbit/s 1-vCPU, ~13 single-path / ~47-87 FEC 4-vCPU), so real-link THROUGHPUT AGGREGATION and BUFFERBLOAT are UNMEASURED. A bandwidth-capped impairment fixture exists (TestFixtureImpairment / T35). Pacing ships DISABLED and un-sized: SizePacingFromBDP (internal/config) is a helper, NOT auto-wired; default per-path capacity is synthetic (~115 Mbit/s).
+    
+    CORE SCOPE (the genuinely plannable 'open issues'):
+    1. PACING empirical sizing (relates D22): use the bandwidth-capped fixture to create standing queues; measure per-path BDP; either wire SizePacingFromBDP into config load/auto-tuning OR ship a documented per-link tuning procedure; validate that ENABLED pacing eliminates bufferbloat under sustained load and does NOT starve WireGuard control frames (rekey survives overload).
+    2. REAL-LINK VALIDATION (relates D23): extend the -tags realhosts tier with a throughput-aggregation + loaded-RTT (bufferbloat) + short soak test across the two standing hosts; record the bonded-vs-sum ratio and loaded RTT under load, and a deliberate mid-transfer WAN kill for failover under real conditions. These are the measurements the CPU-bound netns fixture cannot produce (report-only, per M10/Q12 discipline).
+    3. PILOT RUNBOOK: automate/streamline the manual-checklist section-P0 real-link baseline into a repeatable pre-pilot procedure, plus a rollout runbook (config/key/PSK generation, the already-done concentrator firewall persistence, /metrics monitoring, health checks). Keep README/docs/design.md/install.md in sync (per AGENTS.md).
+    
+    SCOPE DECISIONS TO CLARIFY (these gate the plan; answer before /cq:plan:advance):
+    - CONTROL protocol: wire a LIVE out-of-band CONTROL protocol (e.g. explicit rekey / tunnel-state signalling)? The CONTROL frame kind + MAC-covered Seq + telemetry.ControlGuard anti-replay already exist and are tested, but inbound CONTROL is currently DROPPED at the Bind (reserved chokepoint). Currently a non-goal - include, or keep dormant/reserved?
+    - MULTI-CONCENTRATOR failover: bring tunnel-termination redundancy (>1 concentrator, failover at the hub) into scope, or keep the single-concentrator model as a standing non-goal?
+    - PILOT GATING: must a REAL-LINK SOAK gate the pilot go/no-go, or is the bandwidth-capped-fixture aggregation measurement + a report-only real-link smoke sufficient to proceed?
+    
+    NON-GOALS (keep EXCLUDED unless the answers above explicitly override): TCP/TLS fallback for wholesale-UDP-block networks (standing G1 non-goal); protocol mimicry; >3 links; a general SD-WAN product; GUI.
+    
+    DEFERRED-WORK PROVENANCE: this goal collects the deliberate boundaries recorded in docs/design.md 'Not yet built' + the production-readiness assessment (pacing not empirically sized; throughput aggregation unmeasured in-fixture; CONTROL unwired; single concentrator). It does not re-open any resolved G1 defect.

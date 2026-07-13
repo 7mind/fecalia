@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 11
+  item: 12
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -92,3 +92,11 @@ archives:
 - updatedAt: 2026-07-06T21:43:06.588Z
 - title: RH — real-host + impairment validation
 - description: "Cross-cutting additive milestone (goal G1, 2026-07-06 follow-up; answered Q12 report-only + Q13 new-milestone). Two independent legs: (1) a REAL cross-network two-host e2e tier (SSH-orchestrated, `realhosts` build tag, opt-in/manual) validating the tunnel over the real internet between o3.7mind.io (concentrator, public IP) and llm-ubuntu-0 (edge, NAT) — REPORT-ONLY per Q12 (netns `e2e` stays the sole automated completion gate; real-host runs execute-and-record, never blocking a phase task/milestone); (2) a netns-fixture impairment extension (bandwidth cap + controlled-loss knobs, superseding the A7/T10 checkpoint follow-up) + the single-flow-TCP-collapse FEC baseline. Additive only — the locked P1-P5 DAG (T11-T30, M2-M9, K1) is untouched; cross-phase relationships are advisory task dependsOn/ledgerRefs."
+
+### M12 — open
+
+- createdAt: 2026-07-13T12:27:04.130Z
+- updatedAt: 2026-07-13T12:27:04.130Z
+- title: "G2 coordination: production-readiness — real-link validation, pacing, pilot hardening"
+- description: Coordination milestone for goal G2 (production-readiness / pre-pilot hardening). Follows G1 (P0-P5 build + 2026-07-08 deferred-defect hardening round, both complete; ledger drained). Holds G2 and its clarifying questions until planned.
+- dependsOn: ["M1"]

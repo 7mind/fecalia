@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 16
+  item: 20
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -207,3 +207,53 @@ archives:
 - context: "Landed this run: T8 partial (commit bbdf04a) — internal/bind isolates the engine behind type aliases; Passthrough is implemented directly over net.UDPConn because the engine's StdNetBind recvmmsg/GSO fast path misbehaves under sandbox socket restrictions (a genuine P0 conn.Bind finding that seeds T9's findings doc). go build/vet/test/golangci-lint green; nix build produces the static binary. Everything downstream (T9 baseline, T10 checkpoint, and all of P1-P5) is gated behind the working tunnel, hence behind this hardware gate."
 - ledgerRefs: ["tasks:T8","goals:G1"]
 - answer: you have ubuntu machine available at ubuntu@o3.7mind.io, that should work for first out-of-sandbox tests
+
+## M12
+
+### Q17 — open
+
+- createdAt: 2026-07-13T12:28:44.292Z
+- updatedAt: 2026-07-13T12:28:44.292Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "CONTROL protocol: for the pilot, do we wire a LIVE out-of-band CONTROL protocol (explicit rekey / tunnel-state signalling) through the existing reserved Bind chokepoint, or keep the CONTROL primitive dormant/reserved?"
+- context: The CONTROL frame kind + MAC-covered Seq + telemetry.ControlGuard anti-replay already exist and are tested, but inbound CONTROL is currently DROPPED at the Bind (a deliberate reserved chokepoint). Wiring a live protocol means designing the actual signalling semantics (what messages, what state transitions, how the hub and edge react) — a substantial additive design+build task with its own review surface. Keeping it dormant means the primitive stays ready but no wire protocol ships. This decision determines whether the plan contains a whole CONTROL-protocol work milestone or none. It is currently a stated non-goal in the description; this question confirms whether the pilot changes that.
+- suggestions: ["Keep CONTROL dormant/reserved for the pilot (primitive stays ready, no live protocol shipped)","Wire a live out-of-band rekey/state-signalling CONTROL protocol into scope now"]
+- recommendation: Keep dormant/reserved for the pilot. There is no concrete signalling need identified for the supervised pilot, WireGuard's own rekey already covers key rotation, and the chokepoint + anti-replay primitive is ready to activate the moment a real use case appears. Wire a live protocol only if you have a specific signalling requirement in mind.
+- ledgerRefs: ["goals:G2"]
+
+### Q18 — open
+
+- createdAt: 2026-07-13T12:28:52.771Z
+- updatedAt: 2026-07-13T12:28:52.771Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "MULTI-CONCENTRATOR failover: does the pilot bring tunnel-termination redundancy (>1 concentrator, failover at the hub) into scope, or keep the single-concentrator model as a standing non-goal?"
+- context: Today the concentrator (o3, the public hub) is a single tunnel-termination point. Edge-side multipathing already provides link-level redundancy (multiple WAN paths bonded), but the hub itself is a single point of termination. Adding hub redundancy means concentrator discovery/selection, failover semantics, and state handoff between concentrators — a large additive design that touches the core data path. This decision determines whether the plan contains a multi-concentrator work milestone. It is currently a stated non-goal.
+- suggestions: ["Keep the single-concentrator model (hub redundancy remains a non-goal for the pilot)","Bring multi-concentrator / hub-failover redundancy into pilot scope"]
+- recommendation: Out of scope for the pilot. Edge multipathing already delivers the link redundancy wanbond exists to provide; concentrator HA is better handled as an operational/deployment concern (DNS/anycast/standby host in front of the hub) than as a wanbond protocol feature. Bring it into scope only if the pilot specifically requires surviving loss of the hub host itself.
+- ledgerRefs: ["goals:G2"]
+
+### Q19 — open
+
+- createdAt: 2026-07-13T12:29:01.762Z
+- updatedAt: 2026-07-13T12:29:01.762Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "PILOT GATING: must a REAL-LINK SOAK test gate the pilot go/no-go, or is the bandwidth-capped-fixture aggregation measurement + a report-only real-link smoke sufficient to proceed to a supervised pilot?"
+- context: This sets the exit criterion of the whole plan and shapes how much validation work is blocking vs. informational. A blocking soak gate (e.g. hours of sustained real-link transfer that must pass before pilot) adds a long-running, environment-sensitive step to the critical path and couples go/no-go to shared test-host availability. The alternative treats the capped-fixture aggregation/bufferbloat measurement (deterministic, in-repo) plus a short report-only real-link smoke as sufficient to PROCEED, and runs any longer soak DURING the supervised pilot rather than as a pre-gate. Per M10/Q12 the real-link tier is report-only discipline, which leans toward the non-blocking interpretation.
+- suggestions: ["Real-link smoke (report-only) + capped-fixture aggregation/bufferbloat measurement are sufficient to proceed; soak runs during the pilot","A real-link SOAK must pass as a blocking pre-pilot gate before go/no-go"]
+- recommendation: Real-link smoke + capped-fixture aggregation measurement are sufficient to PROCEED to a supervised pilot; run the soak DURING the pilot, not as a blocking pre-gate. The capped fixture gives deterministic, repeatable bufferbloat/pacing evidence; the real-link smoke confirms the two standing hosts bond and fail over; a soak's value is in sustained real traffic, which the supervised pilot itself provides while remaining observable and reversible.
+- ledgerRefs: ["goals:G2"]
+
+### Q20 — open
+
+- createdAt: 2026-07-13T12:29:12.695Z
+- updatedAt: 2026-07-13T12:29:12.695Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- question: "PACING delivery shape (CORE SCOPE 1): once per-path BDP is measured from the capped fixture, do we AUTO-WIRE SizePacingFromBDP into config load so pacing is derived from a declared/measured per-link bandwidth, or ship a DOCUMENTED per-link manual tuning procedure (operator sets pacing by hand), or both?"
+- context: This is a delivery-shape choice WITHIN the already-agreed pacing scope (not a whether-to-do question) — the description itself frames item 1 as 'wire SizePacingFromBDP into config load/auto-tuning OR ship a documented per-link tuning procedure', and the answer changes the task DAG. Auto-wiring means new config-load code + tests that turn a per-link bandwidth number into BDP-sized pacing (correct-by-construction, but adds runtime surface and requires the operator to supply a measured link rate). A documented procedure means a docs/runbook task plus keeping pacing operator-driven (less code, but relies on manual tuning per deployment). Pacing currently ships disabled with a synthetic ~115 Mbit/s default and SizePacingFromBDP is an un-wired helper.
+- suggestions: ["Auto-wire SizePacingFromBDP into config load: operator supplies a measured per-link bandwidth, config derives BDP-sized pacing; ship with tests","Ship a documented per-link manual tuning procedure only (pacing stays operator-set by hand)","Both: wire the helper into config from a declared per-link bandwidth AND document how to measure that bandwidth"]
+- recommendation: Both (option c). Wire SizePacingFromBDP so config derives pacing from a declared per-link bandwidth the operator supplies (making correct pacing reachable without hand-computing BDP), and document the fixture/real-link measurement procedure that produces that bandwidth number. Prefer operator-declared bandwidth over fully automatic runtime auto-tuning for the pilot — auto-tuning adds control-loop risk that a supervised pilot does not yet justify.
+- ledgerRefs: ["goals:G2"]
