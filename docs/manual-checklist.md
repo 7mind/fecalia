@@ -17,6 +17,9 @@ Prerequisites (all phases):
 - [ ] Tunnel comes up edge ↔ concentrator (WG handshake completes).
 - [ ] `ping` and a TCP transfer pass through the tunnel.
 - [ ] Record single-path baseline throughput per uplink (iperf3).
+- [ ] *Optional: measure per-link bandwidth and RTT for pacing tuning* (see
+      [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing) if
+      you plan to enable pacing).
 
 ## P1 — transparent failover
 - [ ] Start a long-lived TCP flow (SSH session or iperf3) over the tunnel.

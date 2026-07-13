@@ -189,6 +189,182 @@ link_rtt = "45ms"          # baseline RTT — the delay term of the pacing burst
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
 
+### 3a. Tuning per-link bandwidth and pacing
+
+**Pacing ships DISABLED by default.** When enabled with `pacing_enabled = true`
+under the `[scheduler]` block, wanbond sizes the per-path send-pace from the
+bandwidth-delay product (BDP) — the product of each uplink's usable bandwidth and
+round-trip latency — to bound bufferbloat (excessive queueing) under sustained load.
+The declared bandwidth is **operator-measured, not auto-tuned**: you measure it once
+per link and enter it in the config.
+
+This section describes how to measure the required values (`link_bandwidth` and
+`link_rtt`), where to enter them, and how to verify pacing is effective.
+
+#### Step 1: Measure baseline (idle) round-trip time
+
+Measure the idle RTT on each path — the latency with light traffic:
+
+```sh
+# From the edge, ping the concentrator's tunnel address (e.g., 10.77.0.1).
+# Use -c 10 for a quick sample; ignore the first ping (ARP/cold cache).
+ping -c 10 10.77.0.1
+```
+
+Example output:
+```
+round-trip min/avg/max/stddev = 20.1/21.5/23.2/1.0 ms
+```
+
+Record the **average** RTT (here: 21.5 ms). If RTTs are highly variable, the path
+is jittery; take a longer sample (e.g. `-c 30`). Each path's idle RTT becomes the
+`link_rtt` value in the config. If paths have different RTTs, declare each path's
+own value separately.
+
+#### Step 2: Measure usable bandwidth per uplink
+
+You have two options:
+
+##### Option A: Measurement via the capped-fixture test (T52, netns)
+
+If you have access to a lab setup (or are developing/testing wanbond), the test
+suite includes a deterministic bandwidth-measurement sub-test. From the repo root:
+
+```sh
+# This runs the entire fixture-impairment suite, including the BDP sub-test:
+go test -tags e2e -run TestFixtureImpairment -v ./test/e2e
+```
+
+Toward the end of the output, you will see a `bdp` sub-test log:
+
+```
+path capped BDP: idle RTT=5.0ms loaded RTT=...ms (bufferbloat Δ=...ms) | 
+  achieved throughput=47.3 Mbit/s | BDP=... bytes (...frames @ 1517B/frame) | 
+  SizePacingFromBDP -> capacityFPS=... burstFrames=...
+```
+
+The **achieved throughput** (47.3 Mbit/s in this example) is a measured point;
+the fixture builds a sustained queue by running iperf3 under a controlled bandwidth
+cap, so it measures the true link-limited throughput (not CPU-bound).
+
+##### Option B: Measurement on the real deployment (manual)
+
+Measure each uplink independently with iperf3, one at a time:
+
+```sh
+# On the concentrator, start the iperf3 server:
+iperf3 -s -B 10.77.0.1
+
+# On the edge, run a sustained transfer to build a standing queue (8–10 seconds):
+# This measures the throughput the link will sustain under sustained load
+# and allows RTT to stabilize under queue pressure.
+iperf3 -c 10.77.0.1 -t 10
+```
+
+Example output:
+```
+Bitrate         Jitter  Lost/Total Datagrams
+...
+  50.2 Mbit/s  ...     ...
+```
+
+If using TCP (default), read the throughput from the final summary line.
+
+**Important:** Repeat this measurement for each uplink **separately** — bring up
+only one path at a time, or isolate it at the router layer. The measurement must
+reflect each link's independent capacity, not the bonded throughput.
+
+Also measure the RTT under load (as a sanity check on bufferbloat):
+
+```sh
+# While iperf3 is running (in another terminal on the edge):
+ping -i 0.2 10.77.0.1
+```
+
+Record the average RTT under load. If it is much higher than the idle RTT
+(e.g. idle 20 ms → loaded 200 ms), the path has severe bufferbloat; pacing will
+help control this (that is the whole point).
+
+#### Step 3: Enter the measured values in the config
+
+For each path, add `link_bandwidth` and `link_rtt` to the `[[paths]]` block:
+
+```toml
+[[paths]]
+name = "starlink"
+source_addr = "192.168.1.10"
+link_bandwidth = "50Mbit"    # from Step 2 measurement: 50.2 Mbit/s → round to 50Mbit
+link_rtt = "21ms"            # from Step 1: 21.5 ms idle RTT → round to 21ms
+
+[[paths]]
+name = "5g"
+source_addr = "192.168.2.10"
+link_bandwidth = "10Mbit"    # measured as slower
+link_rtt = "45ms"            # higher baseline latency
+```
+
+**Rules:**
+- **Declare on every path or none.** If you declare `link_bandwidth` on one path,
+  you must declare it on all (wanbond sizes pacing to the slowest link, the
+  bottleneck). Partial declarations are rejected at load.
+- **Round conservatively.** Round down if unsure (e.g., measure 49.8 Mbit/s →
+  declare `49Mbit` rather than `50Mbit`). Under-sized pacing is safe; over-sized
+  pacing may not bind and bufferbloat may occur.
+- **Use the `link_rtt` from Step 1**, not the loaded RTT from Step 2. The idle RTT
+  is the baseline delay the BDP calculation assumes; the loaded RTT tells you how
+  much bufferbloat exists.
+
+#### Step 4: Enable pacing and deploy
+
+Ensure the edge config has the weighted scheduler and pacing enabled:
+
+```toml
+[scheduler]
+policy = "weighted"
+pacing_enabled = true
+```
+
+Reload or restart the daemon:
+
+```sh
+systemctl reload wanbond-edge   # SIGHUP: re-reads config, applies path changes
+# or
+systemctl restart wanbond-edge  # full restart if config is invalid
+```
+
+Verify there are no errors in the journal:
+
+```sh
+journalctl -u wanbond-edge -n 20
+```
+
+A successful load will log `config loaded` (or, on reload, `config reloaded`);
+if the daemon rejects the config (e.g. inconsistent bandwidth declarations,
+unparseable values), the error message will say why.
+
+#### Step 5: Verify bufferbloat is controlled
+
+While running a sustained load (iperf3 from edge to concentrator), measure the
+RTT under pacing:
+
+```sh
+# Edge, run iperf3 traffic:
+iperf3 -c 10.77.0.1 -t 30
+
+# Edge, another terminal, sample RTT under load:
+ping -i 0.2 10.77.0.1
+```
+
+If pacing is working, the RTT under sustained load should be **close to the idle
+RTT** (ideally within 5–10 ms, depending on the link's buffering). Before pacing,
+you may have seen loaded RTT inflate to 100+ ms on a bufferbloated link; pacing
+bounds the queue so the inflation is minimal.
+
+**Note:** the test suite's netns fixture is CPU-bound and does not build the
+standing queues needed to validate pacing against real links. Real-link
+verification (this step) is essential: measure on your actual uplinks to confirm
+pacing meets your bufferbloat target.
+
 ## 4. systemd units
 
 Unit files live in `packaging/systemd/`:

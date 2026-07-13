@@ -151,6 +151,35 @@ auto-tuning — the value is fixed at load. With pacing off (the default) a decl
 bandwidth is inert and the synthetic default pace is kept. See "Not yet built" for
 why pacing stays off by default.
 
+**Sizing from the bandwidth-delay product.** The BDP algorithm (`SizePacingFromBDP`,
+internal/config) sizes the pacing parameters as follows:
+
+- **`capacity_fps`** (frames/second): `bandwidth_bits_per_sec / (8 * avg_wire_frame_bytes)`.
+  The rate at which the link sustains datagrams; frames arrive at this rate or the
+  token bucket drains.
+- **`burst_frames`** (frame count): `capacity_fps * rtt_seconds` ≡ `bandwidth * rtt / (8 * frame_size)`.
+  The maximum burst (number of frames) the bucket can hold — one RTT's worth of
+  in-flight data. Equivalently, the bandwidth-delay product (in bytes) divided by
+  the average wire-frame size.
+
+The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
+**`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
+milliseconds, e.g. `"21ms"`). The idle RTT is the baseline; pacing bounds the
+queue so RTT under load stays near the idle value, preventing bufferbloat
+(excessive delay inflation). If heterogeneous links are bonded (different
+bandwidths), the operator declares all of them; the scheduler uses the bottleneck
+(slowest link) to size the shared per-path pace, because any link can be the
+path for a given packet.
+
+**Conservative sizing.** The wire-frame size used in the denominator is the full
+path MTU (1500 bytes), the conservative floor for frame size. This produces a
+frame rate that never over-paces a path; smaller average frames (headers,
+fragmentation) would permit higher rates, but taking the worst case (full MTU)
+ensures the pacer does not let the link overfill. Measurement on real links is
+essential to validate that the declared bandwidth and RTT reflect the actual
+link properties; the netns fixture is CPU-bound and cannot build the standing
+queues pacing is designed to control (see [manual-checklist.md §P0](manual-checklist.md#p0--spike--baseline)).
+
 ### Per-path telemetry — `internal/telemetry`
 
 Measures per-path quality (RTT, loss, jitter) by exchanging authenticated PROBE
