@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 56
+  item: 57
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -602,6 +602,15 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T56 (G2/W2 pacing tuning doc) implement-review ROUND 2: APPROVE (verdict=approve). Round-1 DISAPPROVE had 1 criticism: docs/install.md §3a example said 1517B/frame (bogus — no repo constant) + presented 47.3 Mbit/s / 5.0ms as captured measurements though T52 is non-deterministic/report-only. FIXED at fdf5419 (docs/install.md only, one hunk): wire-frame size corrected to 1540B, independently verified (frame.DataOverhead = 24+1+8+1+4+1+1 = 40 + bind.DefaultPathMTU 1500 = 1540); the throughput/RTT examples reframed as explicit illustrative placeholders (<e.g. ~35-56>, <e.g. ~5>) preceded by prose that the bdp sub-test is report-only + non-deterministic. Rest of T56 already accurate + code-consistent (link_bandwidth/link_rtt keys/defaults/bottleneck-sizing/all-or-nothing validation all match config.go; extends T53's docs coherently; markdown anchors resolve). Docs-only, build/test green. 0 criticisms, 0 questions. Merged to main at b9f5983."
 - ledgerRefs: ["tasks:T56"]
+
+### R57 — go-ahead
+
+- createdAt: 2026-07-13T14:32:08.362Z
+- updatedAt: 2026-07-13T14:32:08.362Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T61 (G2/W2 pacing bufferbloat e2e) implement-review: APPROVE (verdict=approve). test/e2e/pacing_test.go comparative bufferbloat gate is FRACTION-based (pacedBloatMs < unpacedBloatMs*0.7) with NO absolute-ms threshold (Q19/D23 compliant); the only absolute constant (pacingMinBloatMs=5ms) gates a t.Skipf-WITH-EVIDENCE precondition (real Skip, not a silent pass) when the fixture stays CPU/PPS-bound. Rekey-survival PROBE-liveness proxy VERIFIED structurally sound: ClassControl bypasses the token bucket (weighted.go serveLocked/selectAggregatingLocked) AND PROBE frames bypass the scheduler entirely (probe.go emitProbes writes straight to the socket) — so PROBE liveness is a legitimate 'does saturation starve the control plane' regression guard, not an inadequate rekey substitute (real WG rekey ~2min is too slow for a bounded e2e). link_rtt grounded in measured top.RTT (T52 precedent); all helpers reused per TestP2Aggregation/TestFixtureImpairment patterns; single new file. Non-privileged gate green + go vet/build -tags e2e compile clean (needs root/netns to RUN). No-docs decision sound (T53 already documents the config surface; T52 precedent). Cosmetic-only: metrics port 9096 dup w/ p3_fec_test (harmless — sequential exec + t.Cleanup). 0 criticisms, 0 questions. Merged to main at 40205c1."
+- ledgerRefs: ["tasks:T61"]
 
 ## M13
 
