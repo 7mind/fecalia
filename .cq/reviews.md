@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 82
+  item: 83
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -752,6 +752,19 @@ archives:
 - ledgerRefs: ["tasks:T69","goals:G5"]
 - sessionLogs: [".cq/logs/20260713-231830-a5122d18a9a011585.md",".cq/logs/20260713-231830-a15aa232e07b17d44.md",".cq/logs/20260713-232716-a256ad0c7fae40b3a.md",".cq/logs/20260713-232716-a73363906e9351cad.md"]
 - rawLogs: [".cq/logs/raw/20260713-231830-a5122d18a9a011585.jsonl",".cq/logs/raw/20260713-231830-a15aa232e07b17d44.jsonl",".cq/logs/raw/20260713-232716-a256ad0c7fae40b3a.jsonl",".cq/logs/raw/20260713-232716-a73363906e9351cad.jsonl"]
+
+### R83 — go-ahead
+
+- createdAt: 2026-07-13T23:41:16.798Z
+- updatedAt: 2026-07-13T23:41:16.798Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T71 round 1 reconciled panel verdict (opus + fable, unanimous approve, check green incl. fresh -race runs): DoTResolver (RFC 7858) behind the seam with hermetic TLS-listener tests covering addrs+minTTL, wrong-server-name x509.HostnameError, timeout, truncated-frame; shared dnscodec extraction judged minimal and surgical; docs synced. Non-blocking notes: t.Fatal in a handler goroutine on an already-failing path; one-family-NXDOMAIN branch mirrors DoH's tested loop."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T71","goals:G5"]
+- sessionLogs: [".cq/logs/20260713-234055-af856789b6ff0a960.md",".cq/logs/20260713-234055-a0b4991b5647ea04b.md"]
+- rawLogs: [".cq/logs/raw/20260713-234055-af856789b6ff0a960.jsonl",".cq/logs/raw/20260713-234055-a0b4991b5647ea04b.jsonl"]
 
 ## M23
 

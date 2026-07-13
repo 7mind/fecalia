@@ -639,10 +639,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-231437-a07657609e4ceabbd.md",".cq/logs/20260713-232253-a4f0126c89564ecfd.md",".cq/logs/20260713-231830-a5122d18a9a011585.md",".cq/logs/20260713-231830-a15aa232e07b17d44.md",".cq/logs/20260713-232716-a256ad0c7fae40b3a.md",".cq/logs/20260713-232716-a73363906e9351cad.md"]
 - rawLogs: [".cq/logs/raw/20260713-231437-a07657609e4ceabbd.jsonl",".cq/logs/raw/20260713-232253-a4f0126c89564ecfd.jsonl",".cq/logs/raw/20260713-231830-a5122d18a9a011585.jsonl",".cq/logs/raw/20260713-231830-a15aa232e07b17d44.jsonl",".cq/logs/raw/20260713-232716-a256ad0c7fae40b3a.jsonl",".cq/logs/raw/20260713-232716-a73363906e9351cad.jsonl"]
 
-### T71 — wip
+### T71 — done
 
 - createdAt: 2026-07-13T21:54:44.129Z
-- updatedAt: 2026-07-13T23:31:11.708Z
+- updatedAt: 2026-07-13T23:41:21.379Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Implement a DoT (RFC 7858) resolver behind the seam
@@ -651,6 +651,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T69"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: c331261
+- completion: "DoTResolver (RFC 7858) landed behind the seam: tls :853 with server-name verification + test-CA seam, 2-byte length-prefix framing, addrs+minTTL (ttlOk=true), typed errors; shared dnscodec.go extracted from DoH (DRY); merged ff to main."
+- sessionLogs: [".cq/logs/20260713-234055-a4b1141d2bedfcafe.md",".cq/logs/20260713-234055-af856789b6ff0a960.md",".cq/logs/20260713-234055-a0b4991b5647ea04b.md"]
+- rawLogs: [".cq/logs/raw/20260713-234055-a4b1141d2bedfcafe.jsonl",".cq/logs/raw/20260713-234055-af856789b6ff0a960.jsonl",".cq/logs/raw/20260713-234055-a0b4991b5647ea04b.jsonl"]
 
 ### T72 — planned
 
