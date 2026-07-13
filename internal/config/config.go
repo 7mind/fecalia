@@ -625,7 +625,10 @@ type PeerIdentity struct {
 	// PSK is this peer's effective outer-control PSK: for a single-peer config
 	// it is the top-level Config.PSK (the pre-G4 back-compat default, unaffected
 	// by any per-peer psk); for a multi-peer config it is the peer's own PSK
-	// field.
+	// field. validate() rejects a per-peer psk when exactly one peer is
+	// configured, so the single-peer-with-distinct-per-peer-psk shape is not
+	// loadable via config.Load; this field still defends the invariant
+	// defensively for any Config value built directly.
 	PSK Key
 	// Name is this peer's stable identifier: its configured Name when set,
 	// otherwise a fallback derived from its public key (the first 8 bytes,

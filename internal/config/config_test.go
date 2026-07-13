@@ -476,6 +476,50 @@ func TestPeerIdentitiesSinglePeerUsesTopLevelPSK(t *testing.T) {
 	}
 }
 
+// TestPeerIdentitiesSinglePeerTopLevelPSKWinsOverDistinctPeerPSK pins the
+// distinguishing case of the single-peer back-compat rule: PeerIdentities'
+// doc comment claims the top-level Config.PSK wins "regardless of whether a
+// per-peer psk is also set". TestPeerIdentitiesSinglePeerUsesTopLevelPSK alone
+// does not pin this — its fixture carries no per-peer psk, so an
+// implementation that preferred p.PSK when set would still pass. Here the
+// single peer carries a psk DISTINCT from the top-level one; PeerIdentities
+// must still report the top-level value.
+//
+// validate() (owned by T81) now rejects a per-peer psk when exactly one peer
+// is configured, so this shape is no longer loadable via config.Load. The
+// helper is a pure function over Config, so the Config struct is built
+// directly here, bypassing Load/validate, to pin the invariant defensively.
+func TestPeerIdentitiesSinglePeerTopLevelPSKWinsOverDistinctPeerPSK(t *testing.T) {
+	topLevelPSK := mustKey(t, 3)
+	distinctPeerPSK := mustKey(t, 5)
+	if topLevelPSK.Bytes() == distinctPeerPSK.Bytes() {
+		t.Fatal("fixture setup: topLevelPSK and distinctPeerPSK must differ")
+	}
+
+	c := Config{
+		PSK: topLevelPSK,
+		WireGuard: WireGuard{
+			Peers: []Peer{
+				{
+					PublicKey: mustKey(t, 2),
+					PSK:       distinctPeerPSK,
+				},
+			},
+		},
+	}
+
+	ids := c.PeerIdentities()
+	if got := len(ids); got != 1 {
+		t.Fatalf("PeerIdentities() len = %d, want 1", got)
+	}
+	if ids[0].PSK.Bytes() != topLevelPSK.Bytes() {
+		t.Error("single-peer PeerIdentities()[0].PSK must be the top-level psk even when a distinct per-peer psk is also set")
+	}
+	if ids[0].PSK.Bytes() == distinctPeerPSK.Bytes() {
+		t.Error("single-peer PeerIdentities()[0].PSK must NOT be the per-peer psk")
+	}
+}
+
 // TestPeerIdentitiesMultiPeerUsesOwnPSKAndName is the T82 multi-peer case: each
 // peer's PeerIdentities entry must report that peer's OWN psk and name, in the
 // order matching cfg.WireGuard.Peers.
