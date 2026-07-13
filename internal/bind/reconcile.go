@@ -143,27 +143,34 @@ func (m *Multipath) promoteDeferredLocked(dyn sched.DynamicScheduler, dp deferre
 	}
 	// Reuse the boot prober's IMMUTABLE stamp for the DATA-frame path-id, exactly as Open
 	// and AddPath do, so DATA and PROBE agree on the wire and the promoted path is never
-	// renumbered.
-	ps := &pathState{name: dp.def.Name, id: dp.prober.PathID(), src: dp.def.SourceAddr, conn: c, codec: codec, prober: dp.prober}
+	// renumbered. The deferred-path machinery is single-peer today (the concentrator fan-out
+	// of a promoted deferred path is a later G4 task), so this attaches the primary peer's
+	// view over the freshly-bound shared socket.
+	shared := &sharedPathState{name: dp.def.Name, id: dp.prober.PathID(), src: dp.def.SourceAddr, conn: c}
+	ps := &peerPathState{sharedPathState: shared, peer: m.peerState, codec: codec, prober: dp.prober}
 	switch {
 	case dp.def.DestAddr.IsValid():
 		ps.setRemote(dp.def.DestAddr)
 	case m.hasDefaultRemote:
 		ps.setRemote(m.defaultRemote)
 	}
-	// Append to the path slice, then admit the prober to the scheduler as the new tail;
-	// both are index-aligned, so the scheduler's returned index must equal the new path's
-	// slice index. A mismatch would mis-route datagrams, so fail loudly and roll back.
+	// Append to the shared socket list + the peer's path slice, then admit the prober to the
+	// scheduler as the new tail; the peer's path slice and its scheduler are index-aligned,
+	// so the scheduler's returned index must equal the new path's slice index. A mismatch
+	// would mis-route datagrams, so fail loudly and roll back.
+	m.shared = append(m.shared, shared)
 	m.paths = append(m.paths, ps)
 	schedIdx, err := dyn.AddPath(ps.prober)
 	if err != nil {
 		m.paths = m.paths[:len(m.paths)-1]
+		m.shared = m.shared[:len(m.shared)-1]
 		return err
 	}
 	if schedIdx != len(m.paths)-1 {
 		bindIdx := len(m.paths) - 1
 		_ = dyn.RemovePath(schedIdx)
 		m.paths = m.paths[:len(m.paths)-1]
+		m.shared = m.shared[:len(m.shared)-1]
 		return fmt.Errorf("bind: scheduler/path index skew after deferred promote: sched=%d bind=%d", schedIdx, bindIdx)
 	}
 	// Spawn the promoted path's Bind-owned reader on the CURRENT Open span's delivery

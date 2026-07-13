@@ -25,7 +25,7 @@ func (m *Multipath) emitProbes() {
 		return
 	}
 	type target struct {
-		ps *pathState
+		ps *peerPathState
 		pr *telemetry.Prober
 	}
 	targets := make([]target, 0, len(m.paths))
