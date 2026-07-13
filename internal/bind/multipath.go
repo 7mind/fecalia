@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/conn"
@@ -109,6 +110,21 @@ type pathState struct {
 	hasRemote bool
 }
 
+// deferredPath is a configured path whose WELL-FORMED source_addr was not yet
+// assignable at Open (net.ListenUDP -> EADDRNOTAVAIL: no interface holds the
+// address, e.g. a 5G modem with no DHCP lease at boot). Rather than tear the whole
+// bond down, Open records the path here instead of binding it: the tunnel comes up
+// on the paths that DID bind, and this path stays DOWN — its prober, never fed an
+// echo, reports StateDown, which the scheduler excludes from Pick, exactly as the
+// runtime path-down model treats a live-but-silent path. It carries the boot-time
+// prober so the T55 background reconcile that retries the bind reuses the SAME
+// path-id stamp instead of minting a new one. prober is nil only on a bind without
+// the probe transport, which never defers (see Open).
+type deferredPath struct {
+	def    config.Path
+	prober *telemetry.Prober
+}
+
 func (ps *pathState) setRemote(ap netip.AddrPort) {
 	ps.mu.Lock()
 	ps.remote, ps.hasRemote = ap, true
@@ -188,6 +204,12 @@ type Multipath struct {
 	paths     []*pathState
 	sendCodec *frame.Codec
 	virt      *udpEndpoint
+	// deferred holds the configured paths whose well-formed source_addr was not yet
+	// assignable at the last Open (EADDRNOTAVAIL). They are NOT in m.paths or the
+	// scheduler — the tunnel runs on the paths that bound — but are recorded here,
+	// index-independent of m.paths, for the T55 background reconcile to retry as their
+	// addresses appear. Rebuilt from scratch on every Open; guarded by m.mu.
+	deferred []deferredPath
 	// defaultRemote is the fallback per-path remote (the peer's wireguard
 	// endpoint) applied to any path without its own dest_addr. It may be set by
 	// ParseEndpoint BEFORE Open, so it is stored here and applied at Open time.
@@ -470,7 +492,27 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	}
 	bindDevs := planPathBinds(srcs)
 
+	// A path whose WELL-FORMED source_addr is merely NOT-YET-ASSIGNABLE at boot
+	// (EADDRNOTAVAIL: no interface holds the address — a 5G modem without a DHCP
+	// lease, Starlink mid-obstruction) is DEFERRED rather than treated as fatal, so
+	// the bond comes up on the paths that DO bind (G2/W1, approach A). Tolerating it
+	// requires the runtime path-down machinery: the deferred path's prober stays
+	// StateDown so the scheduler excludes it, and a DynamicScheduler whose membership
+	// can be reconciled to only the bound paths. Absent the probe transport (the T12
+	// no-prober unit binds) or a dynamic scheduler there is no such Down model, so —
+	// exactly as AddPath refuses a runtime add without probers — every bind error
+	// stays fatal there. A MALFORMED source_addr never reaches here (config.validate
+	// rejects it at load), and any OTHER bind error (EADDRINUSE, permission) is fatal.
+	dyn, dynOK := m.scheduler.(sched.DynamicScheduler)
+	tolerateDefer := m.probers != nil && dynOK
+	m.deferred = nil
+
 	actualPort := port
+	firstBound := true
+	// boundProbers is index-aligned with m.paths (the paths that actually bound), so
+	// the scheduler reconcile below and Send's Pick->m.paths[idx] mapping stay aligned
+	// even when a middle path deferred. nil in the no-prober case (nothing to reconcile).
+	var boundProbers []*telemetry.Prober
 	for i := range m.defs {
 		def := m.defs[i]
 		// Device-bind this path when selectDeviceBinds proved it safe (so a
@@ -478,6 +520,14 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		// otherwise pin the specific source IP. See selectDeviceBinds / listenPath.
 		c, err := listenPath(def.SourceAddr, port, bindDevs[i])
 		if err != nil {
+			if tolerateDefer && errors.Is(err, syscall.EADDRNOTAVAIL) {
+				// Defer this path: record its def + boot prober (kept Down) for the T55
+				// background reconcile to retry, and leave the bond to come up on the rest.
+				// Mirrors AddPath's rollback discipline — a failed path never disturbs the
+				// tunnel — at the boot boundary.
+				m.deferred = append(m.deferred, deferredPath{def: def, prober: m.probers[i]})
+				continue
+			}
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: open path %q on %s: %w", def.Name, def.SourceAddr, err)
 		}
@@ -502,6 +552,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			// AND diverge its DATA id from its PROBE stamp. Taking id from the prober keeps
 			// DATA and PROBE agreeing on the wire and a survivor's id stable across a reopen.
 			ps.id = ps.prober.PathID()
+			boundProbers = append(boundProbers, ps.prober)
 		}
 		switch {
 		case def.DestAddr.IsValid():
@@ -510,9 +561,18 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			ps.setRemote(m.defaultRemote)
 		}
 		m.paths = append(m.paths, ps)
-		if i == 0 {
+		if firstBound {
 			actualPort = uint16(c.LocalAddr().(*net.UDPAddr).Port)
+			firstBound = false
 		}
+	}
+
+	// Hard guard (a): a bond with NO transport is impossible. If every configured path
+	// deferred, tolerance must NOT degrade to a zero-path bind — fail fatally, exactly
+	// as the pre-tolerance Open did when the sole path could not bind.
+	if len(m.paths) == 0 {
+		_ = m.closeSocketsLocked()
+		return nil, 0, fmt.Errorf("bind: no configured path could bind its source address (all %d deferred as not-yet-assignable)", len(m.deferred))
 	}
 
 	// nextPathID is a MONOTONIC HIGH-WATER carried ACROSS Open spans, never decreased.
@@ -531,28 +591,39 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			m.nextPathID = uint16(ps.id) + 1
 		}
 	}
+	// A DEFERRED path's boot prober already OWNS its path-id stamp; raise the
+	// high-water past it too, so a runtime AddPath arriving while the path is still
+	// deferred cannot mint that reserved id and collide with it once T55 binds it.
+	for _, dp := range m.deferred {
+		if dp.prober != nil {
+			if uint16(dp.prober.PathID())+1 > m.nextPathID {
+				m.nextPathID = uint16(dp.prober.PathID()) + 1
+			}
+		}
+	}
 	m.sendCodec = sendCodec
 
 	// Reconcile the scheduler's membership with the path slice just rebuilt from
 	// m.defs. A runtime AddPath/RemovePath (T30) keeps m.defs, m.probers, AND the
 	// live scheduler in lockstep during an Open span; re-pinning the scheduler's
-	// health list to the CURRENT probers HERE — index-aligned with m.paths, since
-	// m.paths[i].prober == m.probers[i] by construction above — is the single
+	// health list to the BOUND probers HERE — index-aligned with m.paths, since each
+	// bound path appended its ps.prober to boundProbers in order above — is the single
 	// reconciliation point that makes that runtime membership survive this
 	// Close→Open cycle without a scheduler/path desync (no frozen zombie health
-	// entry, no resurrected removed path). Only meaningful with the probe transport:
-	// a bind without probers cannot change membership at runtime (AddPath is
-	// refused), so its scheduler is left exactly as built.
-	if m.probers != nil {
-		if dyn, ok := m.scheduler.(sched.DynamicScheduler); ok {
-			health := make([]sched.PathHealth, len(m.probers))
-			for i, pr := range m.probers {
-				health[i] = pr
-			}
-			if err := dyn.SetPaths(health); err != nil {
-				_ = m.closeSocketsLocked()
-				return nil, 0, fmt.Errorf("bind: reconcile scheduler on open: %w", err)
-			}
+	// entry, no resurrected removed path). A DEFERRED path (not-yet-assignable
+	// source_addr) is deliberately EXCLUDED here: its prober is absent from the
+	// scheduler, so Pick can never select it, and Send's Pick->m.paths[idx] mapping
+	// stays index-aligned with the bound-only path slice. Only meaningful with the
+	// probe transport: a bind without probers cannot change membership at runtime
+	// (AddPath is refused) and never defers, so its scheduler is left exactly as built.
+	if m.probers != nil && dynOK {
+		health := make([]sched.PathHealth, len(boundProbers))
+		for i, pr := range boundProbers {
+			health[i] = pr
+		}
+		if err := dyn.SetPaths(health); err != nil {
+			_ = m.closeSocketsLocked()
+			return nil, 0, fmt.Errorf("bind: reconcile scheduler on open: %w", err)
 		}
 	}
 
@@ -1302,6 +1373,7 @@ func (m *Multipath) closeSocketsLocked() error {
 		}
 	}
 	m.paths = nil
+	m.deferred = nil
 	m.sendCodec = nil
 	// Drop the FEC send/receive state (T24) so the next Open rebuilds fresh group state,
 	// mirroring the send Codec and resequencer. The deadline-tick goroutine that reads
@@ -1349,19 +1421,39 @@ func (m *Multipath) AddPath(def config.Path) error {
 	if !def.SourceAddr.IsValid() {
 		return fmt.Errorf("bind: add path %q: source_addr is required", def.Name)
 	}
-	for _, ps := range m.paths {
-		if ps.name == def.Name {
-			return fmt.Errorf("bind: add path %q: a path with that name is already active", def.Name)
+	// Reject a duplicate against the DURABLE membership (m.defs), not just the live
+	// paths: a path that is present-but-DEFERRED is in m.defs but not m.paths, and
+	// re-adding it must be refused rather than minting a second entry for the same name.
+	for i := range m.defs {
+		if m.defs[i].Name == def.Name {
+			return fmt.Errorf("bind: add path %q: a path with that name is already configured", def.Name)
 		}
 	}
 	if m.nextPathID > 255 {
 		return fmt.Errorf("bind: add path %q: path-id space exhausted (256 cumulative admissions over the process lifetime; an interface Down/Up does not reset it -- restart the daemon)", def.Name)
 	}
 	id := uint8(m.nextPathID)
+	// Mint the prober up front so its id-stamp is consumed whether the path binds now
+	// or is deferred: a deferred path keeps its prober (Down, excluded from the
+	// scheduler) so a later bind (T55 / a Close→Open) reuses the SAME stamp.
+	prober := m.newProber(def.Name, id)
 
 	laddr := &net.UDPAddr{IP: net.IP(def.SourceAddr.AsSlice()), Port: int(m.openPort)}
 	c, err := net.ListenUDP("udp", laddr)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRNOTAVAIL) {
+			// Symmetric with Open's tolerant bind: a well-formed-but-not-yet-assignable
+			// source_addr is DEFERRED, not fatal. Record it in the durable membership and
+			// the deferred set (Down, absent from the scheduler) and return success, so a
+			// reload that introduces such a path does not fail the entire reload. AddPath
+			// already requires the probe transport + a DynamicScheduler (checked above),
+			// which is exactly the Down model Open's tolerance needs.
+			m.defs = append(m.defs, def)
+			m.probers = append(m.probers, prober)
+			m.deferred = append(m.deferred, deferredPath{def: def, prober: prober})
+			m.nextPathID++
+			return nil
+		}
 		return fmt.Errorf("bind: add path %q on %s: %w", def.Name, def.SourceAddr, err)
 	}
 	_ = c.SetReadBuffer(socketRecvBuffer)
@@ -1371,7 +1463,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 		return err
 	}
 
-	ps := &pathState{name: def.Name, id: id, src: def.SourceAddr, conn: c, codec: codec, prober: m.newProber(def.Name, id)}
+	ps := &pathState{name: def.Name, id: id, src: def.SourceAddr, conn: c, codec: codec, prober: prober}
 	switch {
 	case def.DestAddr.IsValid():
 		ps.setRemote(def.DestAddr)
@@ -1418,13 +1510,23 @@ func (m *Multipath) AddPath(def config.Path) error {
 // RemovePath drains and closes the named path at runtime (T30). It drops the path
 // from the scheduler FIRST (so no further datagram is scheduled onto it), unlinks it
 // from the path slice, and closes its socket — which retires its Bind-owned reader.
-// All under m.mu, so the two structures stay index-aligned for Send. In-flight state
-// is preserved: frames the path already pushed into the resequencer stay queued and
-// are delivered in outer-seq order (T18 resequencing is connection-global, keyed on
+// All under m.mu, so the structures stay coherent for Send. In-flight state is
+// preserved: frames the path already pushed into the resequencer stay queued and are
+// delivered in outer-seq order (T18 resequencing is connection-global, keyed on
 // outer-seq, NOT per-path, so a removal never resets it), the surviving paths and
 // their scheduling are untouched, and the single virtual endpoint / WG session is
-// undisturbed. The last remaining path cannot be removed (that would tear down the
-// virtual endpoint the engine holds).
+// undisturbed. The last remaining LIVE path cannot be removed (that would tear down
+// the virtual endpoint the engine holds).
+//
+// A DEFERRED path (present in the durable membership but not yet bound, because its
+// source_addr was not assignable at Open) has no socket, reader, or scheduler entry:
+// removing it merely drops it from the durable membership + deferred set, so a reload
+// that DROPS a still-deferred path retires it cleanly.
+//
+// Since a tolerant Open leaves m.defs/m.probers (durable, full length) LONGER than
+// m.paths (bound only), the durable-membership splice is keyed by IDENTITY (name),
+// NOT by the m.paths index — indexing m.defs by the m.paths position would splice the
+// wrong entry once a deferred path precedes the removed one.
 func (m *Multipath) RemovePath(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1435,48 +1537,84 @@ func (m *Multipath) RemovePath(name string) error {
 	if !ok {
 		return errors.New("bind: scheduler does not support runtime path membership")
 	}
-	if len(m.paths) == 1 {
-		return fmt.Errorf("bind: refusing to remove path %q: at least one path must remain", name)
-	}
-	idx := -1
-	for i, ps := range m.paths {
-		if ps.name == name {
-			idx = i
+	// Locate the path in the DURABLE membership by identity. m.defs/m.probers are
+	// full-length (bound + deferred); m.paths is the bound subset and may be shorter.
+	defIdx := -1
+	for i := range m.defs {
+		if m.defs[i].Name == name {
+			defIdx = i
 			break
 		}
 	}
-	if idx < 0 {
-		return fmt.Errorf("bind: remove path %q: no such active path", name)
+	if defIdx < 0 {
+		return fmt.Errorf("bind: remove path %q: no such configured path", name)
 	}
-	ps := m.paths[idx]
-	if err := dyn.RemovePath(idx); err != nil {
+	// Is it a LIVE (bound) path? If so it owns a socket + scheduler entry to retire.
+	liveIdx := -1
+	for i, ps := range m.paths {
+		if ps.name == name {
+			liveIdx = i
+			break
+		}
+	}
+	if liveIdx < 0 {
+		// A DEFERRED path: no transport to tear down — just drop it from the durable
+		// membership and the deferred set so it does not resurrect on the next Open.
+		m.removeDurableLocked(defIdx, name)
+		return nil
+	}
+	// Removing a bound path: refuse if it is the LAST live path (that tears down the
+	// virtual endpoint the engine holds). A deferred path carries no transport, so it
+	// does not count toward "at least one live path must remain".
+	if len(m.paths) == 1 {
+		return fmt.Errorf("bind: refusing to remove path %q: at least one live path must remain", name)
+	}
+	ps := m.paths[liveIdx]
+	if err := dyn.RemovePath(liveIdx); err != nil {
 		return err
 	}
-	m.paths = append(m.paths[:idx], m.paths[idx+1:]...)
-	// Drop the SAME index from the durable membership so a subsequent Close→Open does
-	// NOT resurrect the removed path from m.defs (which would reappear probed-but-
-	// unselectable), and Open's scheduler reconcile is not fed a stale prober. All
-	// three slices are kept index-aligned under m.mu, so idx addresses this path in
-	// each (m.probers is nil only on a bind that forbids runtime membership).
-	m.defs = append(m.defs[:idx], m.defs[idx+1:]...)
-	if m.probers != nil {
-		m.probers = append(m.probers[:idx], m.probers[idx+1:]...)
-	}
+	m.paths = append(m.paths[:liveIdx], m.paths[liveIdx+1:]...)
+	m.removeDurableLocked(defIdx, name)
 	// Closing the socket unblocks and retires the path's reader; it is NOT waited on
 	// here (it never touches the path slice, and any last in-flight frame it Observes
 	// is delivered normally), so a removal never blocks the caller behind a read.
 	return ps.conn.Close()
 }
 
-// PathNames returns the names of the currently-active paths, in priority order. The
-// device's config reload diffs the desired path set against this to decide what to
-// add or remove.
+// removeDurableLocked drops the path named name from the durable membership: m.defs
+// and m.probers at defIdx (kept index-aligned with each other), and the deferred set
+// by name (a no-op when the path was bound rather than deferred). Caller holds m.mu.
+// Keying the durable splice on defIdx (a name lookup) rather than the m.paths index is
+// what keeps m.defs/m.probers correct once a tolerant Open has made them longer than
+// m.paths — so a subsequent Close→Open rebuilds exactly the surviving membership and
+// neither resurrects the removed path nor loses a deferred one.
+func (m *Multipath) removeDurableLocked(defIdx int, name string) {
+	m.defs = append(m.defs[:defIdx], m.defs[defIdx+1:]...)
+	if m.probers != nil {
+		m.probers = append(m.probers[:defIdx], m.probers[defIdx+1:]...)
+	}
+	for i := range m.deferred {
+		if m.deferred[i].def.Name == name {
+			m.deferred = append(m.deferred[:i], m.deferred[i+1:]...)
+			break
+		}
+	}
+}
+
+// PathNames returns the names of the DURABLE configured membership — every path the
+// bond is configured for, in priority order, INCLUDING a path that is currently
+// DEFERRED because its source_addr is not yet assignable (it is in m.defs but not
+// m.paths). The device's config reload diffs the desired path set against this to
+// decide what to add or remove; returning the deferred paths here is what keeps a
+// no-op reload a no-op — a still-configured deferred path is NOT seen as a new add
+// (which AddPath would then reject on the same EADDRNOTAVAIL bind), so the
+// SIGHUP-no-op invariant holds across the whole deferred window.
 func (m *Multipath) PathNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	names := make([]string, len(m.paths))
-	for i, ps := range m.paths {
-		names[i] = ps.name
+	names := make([]string, len(m.defs))
+	for i, def := range m.defs {
+		names[i] = def.Name
 	}
 	return names
 }

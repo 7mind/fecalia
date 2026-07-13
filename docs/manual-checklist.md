@@ -96,6 +96,21 @@ numbers next to each item.
 - [ ] Flow survives; concentrator journal shows the path's endpoint roaming
       to the new address; ping gap ≤ 3 s.
 
+### Startup with a not-yet-assignable path (tolerant bind)
+- [ ] Bring one uplink's interface DOWN (so its configured `source_addr` is not held
+      by any interface), then `systemctl restart wanbond-edge`. The daemon comes up
+      instead of crash-looping: journal shows the tunnel bound on the surviving
+      uplink and the absent path recorded as deferred / `Down`; a NEW flow passes end
+      to end over the survivor. (Until the background reconcile ships, the deferred
+      path rejoins on the next `restart` once its address is back — bring the
+      interface UP and `systemctl restart wanbond-edge`, then confirm both paths
+      carry traffic.)
+- [ ] With EVERY uplink's `source_addr` absent, `systemctl restart wanbond-edge`
+      FAILS fast (journal shows a fatal "no configured path could bind" and the unit
+      enters `failed` / restart-loops) — no transport means no tunnel.
+- [ ] A MALFORMED `source_addr` in the config still fails at config load with a
+      validation error, distinct from the tolerated not-yet-assignable case.
+
 ### Teardown / restart discipline
 - [ ] `systemctl reload wanbond-edge` (SIGHUP) with an unchanged config is a
       no-op: journal logs `config reloaded`, tunnel stays up, flow unaffected.

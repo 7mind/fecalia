@@ -126,6 +126,24 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   the configured AmneziaWG obfuscation profile — custom `h1`–`h4` magic headers
   and `s1`/`s2` junk prefixes) so control frames can be treated specially by the
   pacer.
+- **tolerates a not-yet-assignable `source_addr` at startup** (`Open()`). A path
+  whose *well-formed* `source_addr` no interface holds yet — a mobile edge booting
+  before its 5G modem has a DHCP lease, Starlink mid-obstruction — makes
+  `net.ListenUDP` return `EADDRNOTAVAIL`. Rather than tear the whole bond down,
+  `Open()` brings the tunnel up on the paths that **do** bind and *defers* the
+  unbindable ones: a deferred path is recorded (with its boot prober) and left
+  `Down` — its prober never echoes, so the scheduler excludes it, exactly as the
+  runtime path-down model treats a live-but-silent path. Hard guards: if **zero**
+  paths bind, `Open()` still fails fatally (no transport ⇒ no tunnel); a
+  **malformed** `source_addr` remains a hard config-load error (`config.validate`
+  rejects it at load); and any bind error that is **not** `EADDRNOTAVAIL`
+  (`EADDRINUSE`, permission) stays fatal. Startup and the runtime model are
+  symmetric: a SIGHUP reload that introduces a not-yet-assignable path *defers* it
+  the same way (`AddPath`), a reload that keeps a deferred path is a no-op for it
+  (`PathNames` reports the durable membership, deferred paths included), and a reload
+  that drops one retires it (`RemovePath`) — so a deferred path never regresses the
+  SIGHUP-no-op invariant. (The background reconcile that retries a deferred path as
+  its address appears is **not yet built** — see "Not yet built".)
 
 This package is also the **amnezia boundary** (`bind.go`, above).
 
@@ -256,6 +274,11 @@ These are recorded design boundaries, not defects:
   bonding/FEC/failover/DPI; "bonded ≈ sum of links" and bufferbloat require real
   uplinks (see [manual-checklist.md](manual-checklist.md) §P0 and
   [p0-findings.md](p0-findings.md)).
+- **No background reconcile of a deferred path.** `Open()` tolerates a
+  not-yet-assignable `source_addr` by deferring the path (above), but the loop that
+  retries binding it as its interface/address appears — event-driven via netlink or
+  a bounded poll — is not yet wired. A deferred path therefore stays `Down` until
+  the next full `Close→Open` cycle re-attempts every path's bind.
 - **Single concentrator; UDP-only.** No tunnel-termination failover, no TCP/TLS
   fallback for wholesale-UDP-block networks. Both are explicit non-goals.
 
