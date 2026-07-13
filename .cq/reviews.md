@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 61
+  item: 63
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -627,3 +627,21 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T57 (edge-side hub-loss detection + peer-remote switch + WG re-handshake) implement-review: APPROVE after round-1 DISAPPROVE resolved. Adversarial review (opus) verified ALL six core concerns CORRECT: (1) Re-handshake API sound — dev.LookupPeer/peer.ExpireCurrentKeypairs/SendHandshakeInitiation all exist+exported in amneziawg-go@v1.0.4; ExpireCurrentKeypairs invalidates keypairs, clears handshake state, deletes index-table entry, AND backdates lastSentHandshake by RekeyTimeout+1s so the following SendHandshakeInitiation(false) clears the RekeyTimeout guard and emits a fresh initiation (no wedge); LookupPeer==nil handled. (2) Invariant A1 preserved — SetPeerRemote (multipath.go:1329) takes m.mu, updates defaultRemote, calls ps.setRemote on every path under ps.mu; never touches the engine virtual endpoint; lock order m.mu->ps.mu matches seed paths (no inversion); -race clean. (3) No boot false-positive — lastSwitch seeded to construction time + 3s settle dwell gates first advance; reachable hub UP in ~600ms<<3s. (4) Goroutine lifecycle clean — done channel + sync.Once-guarded close wired into Close; single-endpoint/concentrator/no-prober -> no-op stopper, no goroutine; -race clean. (5) Single-endpoint GUARD non-vacuous (removing len<2 fires 5 switches -> test fails). (6) WRAP policy bounded to one switch/dwell, re-arms. Round-1 sole blocker (CRITICISM): no test exercised a MIXED liveness state (one path Up, one Down) for the load-bearing 'hub loss = ALL down, distinct from single-path failover' property -> an allDownLocked all-down->any-down regression would pass the whole suite. RESOLVED: added TestHubFailoverPartialDownNoFailover (settle dwell elapsed so an any-down detector WOULD fire), MUTATION-VERIFIED it FAILS under the any-down regression and passes with correct logic. Full gate + go test -race ./internal/bind/... ./internal/device/... + go vet -tags e2e all green on merged main. Merged at 40ba4d8 + 7d309bd. Real cross-network netns e2e deferred to T62."
 - ledgerRefs: ["tasks:T57"]
+
+### R62 — go-ahead
+
+- createdAt: 2026-07-13T16:55:51.799Z
+- updatedAt: 2026-07-13T16:55:51.799Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "D32 fix (reseq re-baseline on hub failover, commit c7f8421) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus) verified: (1) anti-forgery guard NOT weakened from the wire — Rebaseline reachable ONLY via SetPeerRemote->hubFailover.check(), gated on allDownLocked (liveness plane) + >=2 endpoints + settle dwell, never a wire-frame path; an on-path attacker who forces all-paths-DOWN already holds the accepted DATA-plane DoS (invariant 4), and a forged post-switch anchor still fails WG inner Noise auth. (2) No lock inversion — SetPeerRemote takes m.mu, loads the atomic.Pointer, RELEASES m.mu, then calls Rebaseline (r.mu); reseq imports stdlib only so r.mu->m.mu is structurally impossible; nil-guard correct; -race clean. (3) Rebaseline correct — released FIFO preserved, no double-free, idempotent, no WG replay regression (standby is a fresh session). (4) Both new reseq tests mutation-sensitive (non-vacuous). Full gate + go test -race ./internal/reseq/./internal/bind/./internal/device green. HARDWARE (llm-ubuntu-0): TestHubFailoverStandbySwitch 13/13 PASS on successful setups (was 0/3), HUB_FAILOVER_RESUME_MS ~6.0-6.8s within the 10.2s window — traffic resumes via standby hub#2; single-endpoint guard 7/7 PASS. Reviewer filed 1 out-of-scope low-sev defect (D34: post-rebaseline straggler/FEC re-anchor race, self-healing) — did NOT trigger in 13 hardware runs. D32 RESOLVED."
+- ledgerRefs: ["defects:D32"]
+
+### R63 — go-ahead
+
+- createdAt: 2026-07-13T17:09:02.831Z
+- updatedAt: 2026-07-13T17:09:02.831Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T62 (hub-failover netns e2e) FINAL: APPROVE + HARDWARE-VALIDATED. Static review (round 1) approved the test as non-vacuous (iperf3 client in edge netns, server only in hub#2 netns, hub#1 L2-blackholed -> a transfer proves the standby switch + fresh re-handshake; guard test load-bearing via the 'hub failover:' journal-absence assertion; port 9099 collision-free; bounded/analytical waits). The e2e then did its JOB on hardware: it caught TWO real defects the unit tests + code review missed -- D32 (hub-failover data-plane: resequencer dropped the standby's handshake-response, tunnel never re-established) and D33 (fixture netns setup race). BOTH FIXED + hardware-confirmed: D32 (reseq re-baseline, c7f8421) -> StandbySwitch 13/13 PASS, RESUME_MS ~6.0-6.9s within the 10.2s window, traffic resumes via hub#2; D33 (retry the in-netns addr-add, merged into the test) -> 26/26 setups clean (0 failures vs prior ~13%). Merged to main (1f1cd04 test + c4e10a7 D33 fix). Full gate + go vet -tags e2e green. This task delivered exactly the pilot value of the report-only hardware tier: an e2e that surfaced a data-plane bug unit tests could not. 1 residual low-sev hardening defect (D34) filed + deferred (did not trigger in 39 hardware runs)."
+- ledgerRefs: ["tasks:T62"]
