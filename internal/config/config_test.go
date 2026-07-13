@@ -321,6 +321,138 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 	}
 }
 
+// twoPeerConcentratorTemplate is a parameterized variant of
+// twoPeerConcentratorConfig for the T81 per-peer psk/name validation table:
+// %NAME0%/%PSK0%/%NAME1%/%PSK1% let each case independently vary name and psk
+// to exercise the presence/uniqueness/distinctness rules. An empty %PSK1%/
+// %NAME0%/etc. renders an empty TOML string value, which the decoder leaves
+// at the unset zero value — the same as omitting the key entirely.
+const twoPeerConcentratorTemplate = `
+role = "concentrator"
+psk = "%TOPPSK%"
+
+[[paths]]
+name = "wan"
+source_addr = "203.0.113.5"
+
+[wireguard]
+private_key = "%PRIV%"
+listen_port = 51820
+
+[[wireguard.peers]]
+public_key = "%PUB1%"
+name = "%NAME0%"
+psk = "%PSK0%"
+allowed_ips = ["10.0.0.2/32"]
+
+[[wireguard.peers]]
+public_key = "%PUB2%"
+name = "%NAME1%"
+psk = "%PSK1%"
+allowed_ips = ["10.0.0.3/32"]
+`
+
+func fillTwoPeer(name0, psk0, name1, psk1 string) string {
+	r := strings.NewReplacer(
+		"%PRIV%", testKey(1),
+		"%PUB1%", testKey(2),
+		"%TOPPSK%", testKey(3),
+		"%PUB2%", testKey(4),
+		"%NAME0%", name0,
+		"%PSK0%", psk0,
+		"%NAME1%", name1,
+		"%PSK1%", psk1,
+	)
+	return r.Replace(twoPeerConcentratorTemplate)
+}
+
+// edgeTwoPeersConfig is an edge config with two wireguard peers, used only to
+// exercise the Q21 concentrator-only-scope rejection (the edge dials exactly
+// one concentrator peer per process).
+const edgeTwoPeersConfig = `
+role = "edge"
+psk = "%PSK%"
+
+[[paths]]
+name = "starlink"
+source_addr = "192.0.2.10"
+
+[wireguard]
+private_key = "%PRIV%"
+[[wireguard.peers]]
+public_key = "%PUB%"
+endpoint = "203.0.113.5:51820"
+allowed_ips = ["0.0.0.0/0"]
+[[wireguard.peers]]
+public_key = "%PUB2%"
+endpoint = "203.0.113.9:51820"
+allowed_ips = ["0.0.0.0/0"]
+`
+
+// TestPeerPSKAndNameValidation is the T81 acceptance table for Q21 multi-peer
+// concentrator validation: with more than one peer, each peer's psk must be
+// present and pairwise-distinct (equal psks defeat authenticated demux) and
+// each peer's name must be present and unique; with exactly one peer, the
+// top-level psk is the default and a per-peer psk must be absent; an edge
+// role config is rejected outright with more than one peer (concentrator-only
+// scope, Q21).
+func TestPeerPSKAndNameValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string // empty means Load must succeed
+	}{
+		{
+			name:    "more than one peer with equal per-peer psks fails",
+			body:    fillTwoPeer("peer-a", testKey(5), "peer-b", testKey(5)),
+			wantErr: "pairwise distinct",
+		},
+		{
+			name:    "more than one peer with a missing per-peer psk fails",
+			body:    fillTwoPeer("peer-a", testKey(5), "peer-b", ""),
+			wantErr: "psk is required",
+		},
+		{
+			name:    "duplicate peer names fail",
+			body:    fillTwoPeer("peer-a", testKey(5), "peer-a", testKey(6)),
+			wantErr: "must be unique",
+		},
+		{
+			name:    "edge role with 2 peers fails with a scope-explaining message",
+			body:    strings.NewReplacer("%PRIV%", testKey(1), "%PUB%", testKey(2), "%PSK%", testKey(3), "%PUB2%", testKey(4)).Replace(edgeTwoPeersConfig),
+			wantErr: "concentrator-only",
+		},
+		{
+			name:    "single-peer top-level-only passes",
+			body:    fill(concentratorConfig),
+			wantErr: "",
+		},
+		{
+			name:    "2 peers with distinct psks and names pass",
+			body:    fillTwoPeer("peer-a", testKey(5), "peer-b", testKey(6)),
+			wantErr: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, 0o600, tc.body)
+			_, err := Load(path)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestLoadEndpointAllLiteralPopulatesEndpointSpecs is the T67 byte-for-byte
 // invariant (Q29): an all-IP-literal config must take EXACTLY today's code
 // path. EndpointSpecs must mirror Endpoints one-for-one (IsName=false, Addr

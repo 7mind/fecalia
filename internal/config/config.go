@@ -486,17 +486,22 @@ type Peer struct {
 	EndpointSpecs []EndpointSpec `toml:"-"`
 	// AllowedIPs are the CIDR ranges routed to this peer.
 	AllowedIPs []string `toml:"allowed_ips"`
-	// PSK is this peer's OPTIONAL per-peer override of the outer-control PSK
-	// (G4 multi-peer concentrator groundwork). When unset, the top-level
-	// Config.PSK remains the single-peer default and this field has no effect —
-	// a legacy single-peer config carrying only the top-level `psk` parses and
-	// behaves byte-identically to before this field existed. No code path
-	// consumes PSK yet (no datapath change in T80); it is parsed and exposed
-	// only.
+	// PSK is this peer's per-peer override of the outer-control PSK (G4
+	// multi-peer concentrator groundwork). With a single configured peer it
+	// must be left UNSET: the top-level Config.PSK remains the single-peer
+	// default, so a legacy single-peer config carrying only the top-level
+	// `psk` parses and behaves byte-identically to before this field existed.
+	// With more than one peer, validate requires it to be present and
+	// pairwise-distinct across peers (T81, Q21) — the top-level psk alone
+	// cannot discriminate which peer authenticated an inbound frame, and equal
+	// per-peer psks would defeat that authenticated demux. No datapath code
+	// path consumes PSK yet; it is parsed, validated, and exposed only.
 	PSK Key `toml:"psk"`
-	// Name is this peer's OPTIONAL human-readable identifier (G4 multi-peer
-	// concentrator groundwork), analogous to Path.Name. Unset by default and
-	// not yet consumed by any code path.
+	// Name is this peer's human-readable identifier (G4 multi-peer
+	// concentrator groundwork), analogous to Path.Name. Unused and optional
+	// with a single peer; required and must be unique across peers when more
+	// than one is configured (T81, Q21). Not yet consumed by any datapath code
+	// path.
 	Name string `toml:"name"`
 }
 
@@ -930,6 +935,13 @@ func (c *Config) validate() error {
 	if len(c.WireGuard.Peers) == 0 {
 		return errors.New("at least one wireguard peer is required")
 	}
+	// The edge dials exactly one concentrator peer per process (Q21); multi-peer
+	// configs are concentrator-only scope. Check this before the per-peer loop
+	// below so an edge config with >1 peer is rejected with this scope-explaining
+	// message regardless of whether the peers are otherwise well-formed.
+	if c.Role == RoleEdge && len(c.WireGuard.Peers) > 1 {
+		return fmt.Errorf("edge role supports exactly one wireguard peer per process (got %d); the edge dials a single concentrator peer, multi-peer configs are concentrator-only", len(c.WireGuard.Peers))
+	}
 	for i, peer := range c.WireGuard.Peers {
 		if !peer.PublicKey.IsSet() {
 			return fmt.Errorf("wireguard peer %d: public_key is required", i)
@@ -953,6 +965,37 @@ func (c *Config) validate() error {
 		// when no endpoint/endpoints entries are present.
 		if c.Role == RoleConcentrator && peer.DNS {
 			return fmt.Errorf("wireguard peer %d: dns is not meaningful for the concentrator role (it learns the edge's endpoint dynamically)", i)
+		}
+	}
+	// Per-peer name/psk (Q21 multi-peer concentrator): with a single peer the
+	// top-level Config.PSK remains the sole authenticator (T80) and a per-peer
+	// psk is redundant, so reject one if given. With more than one peer, the
+	// single top-level psk can no longer discriminate which peer authenticated
+	// an inbound frame, so each peer must carry its own name and psk, both
+	// required and pairwise-distinct — equal per-peer psks would defeat that
+	// authenticated demux.
+	if len(c.WireGuard.Peers) == 1 {
+		if c.WireGuard.Peers[0].PSK.IsSet() {
+			return errors.New("wireguard peer 0: psk is not meaningful with a single peer; the top-level psk is used as the default")
+		}
+	} else {
+		seenNames := make(map[string]int, len(c.WireGuard.Peers))
+		seenPSKs := make(map[[keyLen]byte]int, len(c.WireGuard.Peers))
+		for i, peer := range c.WireGuard.Peers {
+			if peer.Name == "" {
+				return fmt.Errorf("wireguard peer %d: name is required when more than one peer is configured", i)
+			}
+			if prev, dup := seenNames[peer.Name]; dup {
+				return fmt.Errorf("wireguard peers %d and %d share name %q; peer names must be unique", prev, i, peer.Name)
+			}
+			seenNames[peer.Name] = i
+			if !peer.PSK.IsSet() {
+				return fmt.Errorf("wireguard peer %d (%q): psk is required when more than one peer is configured", i, peer.Name)
+			}
+			if prev, dup := seenPSKs[peer.PSK.Bytes()]; dup {
+				return fmt.Errorf("wireguard peers %d (%q) and %d (%q) share the same psk; per-peer psks must be pairwise distinct (equal psks defeat authenticated demux)", prev, c.WireGuard.Peers[prev].Name, i, peer.Name)
+			}
+			seenPSKs[peer.PSK.Bytes()] = i
 		}
 	}
 	if c.Role == RoleConcentrator && c.WireGuard.ListenPort == 0 {
