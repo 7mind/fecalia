@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 63
+  item: 64
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -645,3 +645,14 @@ archives:
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - summary: "T62 (hub-failover netns e2e) FINAL: APPROVE + HARDWARE-VALIDATED. Static review (round 1) approved the test as non-vacuous (iperf3 client in edge netns, server only in hub#2 netns, hub#1 L2-blackholed -> a transfer proves the standby switch + fresh re-handshake; guard test load-bearing via the 'hub failover:' journal-absence assertion; port 9099 collision-free; bounded/analytical waits). The e2e then did its JOB on hardware: it caught TWO real defects the unit tests + code review missed -- D32 (hub-failover data-plane: resequencer dropped the standby's handshake-response, tunnel never re-established) and D33 (fixture netns setup race). BOTH FIXED + hardware-confirmed: D32 (reseq re-baseline, c7f8421) -> StandbySwitch 13/13 PASS, RESUME_MS ~6.0-6.9s within the 10.2s window, traffic resumes via hub#2; D33 (retry the in-netns addr-add, merged into the test) -> 26/26 setups clean (0 failures vs prior ~13%). Merged to main (1f1cd04 test + c4e10a7 D33 fix). Full gate + go vet -tags e2e green. This task delivered exactly the pilot value of the report-only hardware tier: an e2e that surfaced a data-plane bug unit tests could not. 1 residual low-sev hardening defect (D34) filed + deferred (did not trigger in 39 hardware runs)."
 - ledgerRefs: ["tasks:T62"]
+
+## M16
+
+### R64 — go-ahead
+
+- createdAt: 2026-07-13T17:27:05.128Z
+- updatedAt: 2026-07-13T17:27:05.128Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- summary: "T58 (realhosts aggregation-ratio + loaded-RTT bufferbloat) review: APPROVE + HARDWARE-VALIDATED. Adversarial review (opus, 0 criticisms/questions/defects): report-only discipline holds (every t.Fatal/t.Error is liveness/structural -- link-up, handshake, both-paths-up, positive throughput, positive parsed RTT; NO Mbit/s/ratio/ms gate, M10/Q12-compliant); D21 no-leak satisfied (startLoadFlow -t20 + ctx-bounded + t.Cleanup kill/pkill; iperf server unit torn down; preClean before); aggregation isolation real (scoped-blackhole the OTHER path's table + bounded wait-for-'down'); loaded ping overlaps the saturating flow; emitted weighted+pacing edge TOML verified against config.normalize/deriveWeightedPacingFromBDP (capfps=8333/burst=500 from 100Mbit/60ms); no o3-destructive op; vet/gofmt/go test green. HARDWARE (llm-ubuntu-0 x86_64 EDGE <-> o3 aarch64 PUBLIC concentrator): PASS 143.65s -- real cross-network tunnel up, per-path 38.68/20.23 Mbit/s, bonded 14.47, ratio 0.246 (shared-physical-uplink artifact, ratio<=1 EXPECTED + documented), idle RTT 28.9ms -> loaded 50.5ms (bufferbloat delta 21.55ms with pacing). Clean teardown on both hosts, no leaked flows. NOTE for T65 runbook: the realhosts topology shares ONE physical uplink per host (two source-IPs), so bonding shows no aggregation gain -- a genuine two-WAN deployment (separate physical links) is where aggregation applies; the realhosts tier cannot replicate two separate physical uplinks. Merged to main (with T58 cherry-pick)."
+- ledgerRefs: ["tasks:T58"]

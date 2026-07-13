@@ -580,10 +580,10 @@ archives:
 
 ## M16
 
-### T58 — planned
+### T58 — done
 
 - createdAt: 2026-07-13T13:42:19.742Z
-- updatedAt: 2026-07-13T13:42:19.742Z
+- updatedAt: 2026-07-13T17:27:12.155Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - headline: "Realhosts tier: throughput-aggregation ratio + loaded-RTT (bufferbloat) across the two standing hosts"
