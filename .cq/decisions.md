@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 3
+  item: 4
 archives: []
 ---
 
@@ -45,3 +45,15 @@ archives: []
 - headline: "plan review: approved — hardening round (M11 / T42-T50)"
 - rationale: "Reviewer go-ahead R40: re-review confirms all three R39 criticisms resolved with no new defect; 14/14 deferred defects mapped 1:1 to fix tasks, Q14-16 wired. Locks the M11 hardening milestone and its fix-task DAG T42-T50 as the accepted plan."
 - ledgerRefs: ["goals:G1"]
+
+## M12
+
+### K4 — locked
+
+- createdAt: 2026-07-13T13:49:25.344Z
+- updatedAt: 2026-07-13T13:49:25.344Z
+- author: "opus-4.8[1m]"
+- session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
+- headline: "plan review: approved"
+- rationale: "R51 go-ahead (round 1, 0 criticism / 0 new_questions): the M13-M17 / T51-T66 production-readiness DAG is fine-grained, correctly sequenced, testable, grounded, and consistent with the Q17-Q20 answers (CONTROL dormant, multi-concentrator edge-side ordered-endpoint active-standby, non-blocking soak exit, pacing wired-from-declared-bandwidth + documented). This locks that DAG as the accepted plan for G2."
+- ledgerRefs: ["goals:G2"]

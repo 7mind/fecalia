@@ -68,10 +68,10 @@ archives: []
 
 ## M12
 
-### G2 — planning
+### G2 — planned
 
 - createdAt: 2026-07-13T12:27:36.017Z
-- updatedAt: 2026-07-13T13:43:54.542Z
+- updatedAt: 2026-07-13T13:49:31.728Z
 - author: "opus-4.8[1m]"
 - session: 45fdce95-2af6-42cd-8ddd-0c9faabc56ef
 - title: "Production-readiness: real-link validation, pacing sizing, and pilot hardening"
