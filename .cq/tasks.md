@@ -1874,18 +1874,19 @@ archives:
 
 ## M54
 
-### T145 — planned
+### T145 — done
 
 - createdAt: 2026-07-14T12:41:14.250Z
-- updatedAt: 2026-07-14T12:41:14.250Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T18:22:21.140Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Reserve probe headroom in the weighted pacer: exempt-but-charged probe accounting"
 - description: "Item 3(ii) + Q51 (PROBE-frame protection only; inner-ICMP explicitly OUT of scope). GROUNDING (load-bearing, confirmed by BOTH candidate planners): wanbond's own PROBE frames (frame.KindProbe) do NOT traverse scheduler.Pick — emitProbes (internal/bind/probe.go) writes them directly to each path socket, bypassing Send->Pick->token-bucket. So a ClassControl-style pacer EXEMPTION does not apply; the failure mode is that the pacer budgets ZERO headroom for probes, so a pace sized at ~link rate lets paced DATA + the probe stream (plus reflected echoes) oversubscribe the link, building the standing qdisc queue that delays/drops probes past DownAfter (1200ms, internal/telemetry/liveness.go) -> spurious path-DOWN / failover flap. REPRODUCE-FIRST: land a failing -tags e2e that observes the spurious path-down under sustained overload BEFORE the fix (confirm it fails for THIS reason). Then implement exempt-but-charged probe accounting: add a small optional interface (e.g. ProbeBudget{AccountProbe(pathIdx int)}) implemented by *WeightedScheduler — deduct one token from the path's pacing bucket per emitted probe WITHOUT ever shedding or delaying the probe (strict priority: bucket may briefly go negative / pre-drain so subsequent ClassData Picks yield) — and call it from the bind's probe emission AND the echo-reflection write in dispatchInbound (symmetric). ClassControl semantics stay EXACTLY as D22 (exempt AND uncharged) — do not re-plan. Codify the three-tier invariant in the FrameClass/Pick contract comments (internal/sched/scheduler.go) and docs/design.md priority model: ClassControl exempt-uncharged, KindProbe exempt-but-charged, ClassData fully paced."
 - acceptance: "-tags e2e under `just e2e` (reproduce-first): weighted + pacing daemon on a rate-capped netns path with pace sized at ~the link rate; the harness driver sustains ClassData overload >= 2x pacing capacity for >= 10s (> 8x DownAfter). The regression test FAILS (observes a 'path liveness transition' to=down and/or wanbond_path_up->0 for the loaded path) with the probe accounting disabled/absent, and PASSES with it enabled: ZERO to=down transitions during the overload window, 'scheduler pacer shedding' lines ARE present (overload proven real), and wanbond_path_rtt_seconds for the loaded path stays below the DownAfter threshold throughout. `go test` GREEN (race detector per repo default), `just lint` (default+e2e+realhosts) GREEN."
 - suggestedModel: frontier
 - dependsOn: ["T141"]
 - ledgerRefs: ["goals:G13"]
+- resultCommit: 56f521a
 
 ## M55
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 187
+  item: 188
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2214,3 +2214,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T128","goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
+
+## M54
+
+### R187 — go-ahead
+
+- createdAt: 2026-07-14T18:22:19.505Z
+- updatedAt: 2026-07-14T18:22:19.505Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T145 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). sched.ProbeBudget{AccountProbe} on *WeightedScheduler: exempt-but-charged probe accounting — deducts one token per emitted probe / reflected echo WITHOUT shedding/delaying (strict priority; bucket may go negative), wired symmetrically into emitProbes + dispatchInbound echo via peerPathState.schedIdx. Three-tier priority model (ClassControl exempt-uncharged, KindProbe exempt-but-charged, ClassData fully paced) codified in scheduler.go + docs/design.md. Merged to main as 56f521a (cherry-pick of 36157e7 onto c028ca7; netns.go port CONFLICT resolved 9107→9109 + probe_headroom_test.go updated to 9109; multipath.go [T145 dispatchInbound vs merged T146 PeerSnapshot] + design.md [three-tier vs T146 metrics-ref] 3-way AUTO-MERGED clean). REPRODUCE-FIRST HANDLED HONESTLY: worker determined a base-fails/fix-passes -tags e2e would be a FLAKY KNIFE-EDGE (probe/echo ~10 frames/s ≈ 0.1-0.5% of a 450fps pace — ~2 ORDERS OF MAGNITUDE short of building a 1.2s standing queue in a 12s netns window; ran BOTH base+fixed binaries, both hold RTT ~0.06-0.08s), so the DISCRIMINATING proof lives in sched UNIT tests; the e2e (TestProbeHeadroomUnderOverload, port 9109) is an invariant guard, ran GREEN on llm-ubuntu-0 hardware (peak RTT 0.061s, overload proven real via 'scheduler pacer shedding'). BOTH reviewers MUTATION-VERIFIED: no-oping pacer.accountProbe's token deduction fails TestWeightedAccountProbeDeductsOneTokenWithoutShedding (bucket=4 want -2) AND TestWeightedAccountProbeReservesClassDataHeadroom (freed 0 want 3; base=7 charged=7) for the accounting reason; restore → pass. Verified: STRICT PRIORITY (charge inside if werr==nil AFTER the unconditional socket write, both sites); SYMMETRY (emitProbes charges snapshot idx i under m.mu, echo charges ps.schedIdx atomic); schedIdx STAMPED at all 3 p.paths splice sites (Open/attach/detach) with bounds-checked no-op fallback (-1/1/99 unit-tested); -race clean (AccountProbe takes only leaf s.mu, charged after m.mu.Unlock — no cycle with Pick); D22 ClassControl exempt-uncharged intact; pacing-off no-op. Full gate green on composed main: sched+bind tests + -race ok; e2e compiles; just lint 0 issues default+e2e+realhosts. BOTH filed ONE identical out-of-scope defect → D76 (active-backup+pacing lacks ProbeBudget — same latent starvation). 0 criticisms / 0 questions."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T145","goals:G13","defects:D65","defects:D76"]
