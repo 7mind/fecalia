@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 108
+  item: 109
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1186,3 +1186,18 @@ archives:
 - ledgerRefs: ["tasks:T78","goals:G5"]
 - sessionLogs: [".cq/logs/20260714-050548-a54ae7c80e1ab909f.md",".cq/logs/20260714-050548-a65d3da77adb4f5b4.md",".cq/logs/20260714-051954-a9e48eb98d4a79d0d.md",".cq/logs/20260714-051954-a01261db5c976ffab.md"]
 - rawLogs: [".cq/logs/raw/20260714-050548-a54ae7c80e1ab909f.jsonl",".cq/logs/raw/20260714-050548-a65d3da77adb4f5b4.jsonl",".cq/logs/raw/20260714-051954-a9e48eb98d4a79d0d.jsonl",".cq/logs/raw/20260714-051954-a01261db5c976ffab.jsonl"]
+
+## M26
+
+### R109 — go-ahead
+
+- createdAt: 2026-07-14T05:50:25.913Z
+- updatedAt: 2026-07-14T05:50:25.913Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T93 terminal reconciled panel verdict after 2 rounds. R1 [opus] approve / [fable] disapprove (strictest-wins) with FOUR criticisms: (1) a REPRODUCED daemon panic — a deferred runtime AddPath on a 2-peer concentrator grew only the primary's probers while the new Open per-peer view loop indexes every peer's probers by the m.defs index, so the next Close→Open crashed with index-out-of-range at multipath.go:806; (2) DEVICE-level per-peer PSK keying was mutation-unproven (both wrong-PSK mutants at device.go:301/:306 survived the whole suite); (3) a new staticcheck QF1008; (4) an inaccurate BoundPeerNames doc comment. R2 (20ef56c) UNANIMOUS approve: worker (1) fanned the deferred-add prober record out to EVERY bound peer (per-peer index-aligned Down prober) + a fail-fast Open bounds guard, with a regression test; (2) added TestUpTwoPeerConcentratorKeysEachPeerOnItsOwnPSK proving each peer is keyed on its OWN psk on BOTH the prober AND reflector planes (via new PeerBootProbe/PeerReflect accessors); (3) fixed QF1008; (4) corrected the doc. BOTH R2 reviewers independently (isolated git-archive copies) reverted the fan-out to reproduce the exact panic then confirmed the fix, and independently killed both device PSK mutants on their respective planes. Single-peer uapiConfig BYTE-IDENTICAL (device.go untouched in R2); -race -count=2 bind+device green. Rebased onto current main (gate re-run green) and ff-merged as 55889b1. The re-filed pre-existing lint findings are D45 (line numbers shifted by T106's edits)."
+- criticism: ["[fable, R1, RESOLVED R2] REPRODUCED panic — deferred AddPath on a 2-peer concentrator crashed on reopen (index-out-of-range at multipath.go:806); fixed by fanning the deferred prober to every peer (index-aligned) + a fail-fast Open guard + a regression test.","[fable, R1, RESOLVED R2] device-level per-peer PSK keying was mutation-unproven — added a device test that kills both device.go:301 (prober plane) and :306 (reflector plane) wrong-PSK mutants.","[fable, R1, RESOLVED R2] new staticcheck QF1008 at multipath.go:675 — fixed.","[fable, R1, RESOLVED R2] inaccurate BoundPeerNames doc comment — corrected to match the hardcoded empty primary name."]
+- new_questions: []
+- ledgerRefs: ["tasks:T93","goals:G4","defects:D45"]
+- sessionLogs: [".cq/logs/20260714-054935-aeb82bf6766d4a909.md",".cq/logs/20260714-054935-a0b6f7290c160086e.md"]
+- rawLogs: [".cq/logs/raw/20260714-054935-aeb82bf6766d4a909.jsonl",".cq/logs/raw/20260714-054935-a0b6f7290c160086e.jsonl"]

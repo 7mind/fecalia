@@ -1033,10 +1033,10 @@ archives:
 
 ## M26
 
-### T93 — wip
+### T93 — done
 
 - createdAt: 2026-07-13T22:28:58.271Z
-- updatedAt: 2026-07-14T04:45:51.735Z
+- updatedAt: 2026-07-14T05:50:37.108Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire per-peer prober sets, schedulers, and virtual endpoints in device.Up
@@ -1045,6 +1045,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T85","T86","T88"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 55889b1
+- completion: "Wired per-peer prober sets, schedulers, and stable virtual endpoints into device.Up for the concentrator: device.Up builds per-peer wiring (prober set + scheduler + prober factory keyed on each peer's effective PSK from config.PeerIdentities) and registers each additional concentrator peer via a new bind.Multipath.AddConcentratorPeer before dev.Up; Open builds a per-(peer,path) view of every bound socket for every peer and reconciles each peer's scheduler; the probe/liveness loop drives every peer. Single-peer wiring + uapiConfig golden output are BYTE-IDENTICAL (primary keyed on ids[0].PSK == cfg.PSK). R2 fixed a daemon panic the multi-peer split introduced (deferred AddPath on a 2-peer concentrator crashed on reopen — index-out-of-range) by fanning the deferred prober out to every peer index-aligned with m.defs + a fail-fast Open guard, and added a device-level test proving per-peer PSK isolation on both the prober and reflector planes (kills both wrong-PSK mutants). All mechanisms mutation-verified across 2 rounds; go test -race ./internal/bind/... ./internal/device/... green. startHubFailover edge-only/unchanged; deferred-path fan-out beyond the per-peer prober record remains a later G4 task. Rebased onto current main (gate re-run green) and ff-merged as 55889b1."
+- sessionLogs: [".cq/logs/20260714-050646-ab3db2ecbe75a0a06.md",".cq/logs/20260714-053851-aef05f0eb9f10ec63.md",".cq/logs/20260714-052053-ab385aae86467f7e3.md",".cq/logs/20260714-052053-a70da160c8c02fa61.md",".cq/logs/20260714-054935-aeb82bf6766d4a909.md",".cq/logs/20260714-054935-a0b6f7290c160086e.md"]
+- rawLogs: [".cq/logs/raw/20260714-050646-ab3db2ecbe75a0a06.jsonl",".cq/logs/raw/20260714-053851-aef05f0eb9f10ec63.jsonl",".cq/logs/raw/20260714-052053-ab385aae86467f7e3.jsonl",".cq/logs/raw/20260714-052053-a70da160c8c02fa61.jsonl",".cq/logs/raw/20260714-054935-aeb82bf6766d4a909.jsonl",".cq/logs/raw/20260714-054935-a0b6f7290c160086e.jsonl"]
 
 ### T94 — planned
 
