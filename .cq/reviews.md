@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 103
+  item: 104
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1035,6 +1035,19 @@ archives:
 - ledgerRefs: ["tasks:T91","goals:G4","defects:D49","defects:D50"]
 - sessionLogs: [".cq/logs/20260714-032122-acd6bfff48ecc6611.md",".cq/logs/20260714-032122-a43969b0d13dec49c.md",".cq/logs/20260714-035218-a84c7434f6d908139.md",".cq/logs/20260714-035218-a6f8746b8e0351608.md"]
 - rawLogs: [".cq/logs/raw/20260714-032122-acd6bfff48ecc6611.jsonl",".cq/logs/raw/20260714-032122-a43969b0d13dec49c.jsonl",".cq/logs/raw/20260714-035218-a84c7434f6d908139.jsonl",".cq/logs/raw/20260714-035218-a6f8746b8e0351608.jsonl"]
+
+### R104 — go-ahead
+
+- createdAt: 2026-07-14T04:21:56.054Z
+- updatedAt: 2026-07-14T04:21:56.054Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T92 unanimous panel approve (round 1): [opus]+[fable] both approve. Test-only (internal/bind/threat_model_test.go, +297) codifying the Q27 cross-peer isolation threat model as adversary cases against the T83-T91 demux. Attacks target a source ALREADY BOUND to peer A (genuinely beyond T88/89/90's unbound coverage): foreign-psk PROBEs, wrong-psk PROBEs, replay, byte-mutation, forged DATA+outer-seq-storm, and a 300-source unauthenticated flood — A's binding, resequencer release point, FEC decoder, and liveness all asserted intact; the flood binds nothing, grows no demux state, evicts no live peer. Sentinel assertion cryptographically sound (DATA/PARITY are obfuscation-only/unauthenticated, so a wrong-psk decode can never reproduce a CHOSEN sentinel); release-point assertion made deterministic by the reseq discontinuity guard. BOTH reviewers independently mutation-verified BOTH isolation guards (demuxInbound bound-source early-return removal → binding re-pointed to B; isProbe D9/D11 gate removal → demux map grew 1→~204). go test -race ./internal/bind/... -count=2 + full gate green. No production isolation defect found. Rebased onto current main and ff-merged as e3c2655."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T92","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-042139-accf6c05ac3dfa0e1.md",".cq/logs/20260714-042139-a4291b0fb8fad1812.md"]
+- rawLogs: [".cq/logs/raw/20260714-042139-accf6c05ac3dfa0e1.jsonl",".cq/logs/raw/20260714-042139-a4291b0fb8fad1812.jsonl"]
 
 ## M30
 

@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 52
+  item: 53
 archives: []
 ---
 
@@ -729,3 +729,17 @@ archives: []
 - severity: medium
 - suggestedFix: Extend reloadWarnings with reflect.DeepEqual comparisons for Scheduler, FEC, DNS, and Bind (mirroring the existing wireguard/amnezia/log cases) + unit-test cases; OR compare a struct copy with the path/metrics fields zeroed so the warning set is future-proof against new Config fields.
 - ledgerRefs: ["tasks:T109","goals:G6"]
+
+## M31
+
+### D53 — open
+
+- createdAt: 2026-07-14T04:18:15.521Z
+- updatedAt: 2026-07-14T04:18:15.521Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Device-bind fallback to source-IP pinning is silent (no WARN) in internal/bind
+- description: "Both T106 reviewers ([opus]+[fable]) independently filed this. An operator who explicitly sets bind=\"device\" can silently end up source-IP-pinned — either an unresolvable interface in selectDeviceBinds/resolveForcedDeviceBind, OR a failed SO_BINDTODEVICE setsockopt in listenPath — losing the roam-survival property the mode was chosen for, with NO log signal. internal/bind holds no logger (NewMultipath, multipath.go:514, takes no logger param) and the PRE-EXISTING CAP/setsockopt fallback in listenPath is itself silent, so T106's 'matching the existing CAP fallback' is factually satisfied by silence. Fixing requires threading a logger through NewMultipath — broader than T106's selection-logic scope, so filed-and-deferred."
+- severity: medium
+- suggestedFix: Thread the repo's internal/log logger through NewMultipath into listenPath/planPathBinds/resolveForcedDeviceBind and WARN on every forced-device fallback to source-IP binding (both the unresolvable-interface and the setsockopt-failure layers; covers the pre-existing CAP fallback too), naming the path + interface.
+- ledgerRefs: ["tasks:T106","goals:G6"]

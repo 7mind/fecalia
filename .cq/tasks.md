@@ -1006,10 +1006,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-030903-aa2065422bfcb3fa2.md",".cq/logs/20260714-032122-acd6bfff48ecc6611.md",".cq/logs/20260714-032122-a43969b0d13dec49c.md",".cq/logs/20260714-035218-a84c7434f6d908139.md",".cq/logs/20260714-035218-a6f8746b8e0351608.md"]
 - rawLogs: [".cq/logs/raw/20260714-030903-aa2065422bfcb3fa2.jsonl",".cq/logs/raw/20260714-032122-acd6bfff48ecc6611.jsonl",".cq/logs/raw/20260714-032122-a43969b0d13dec49c.jsonl",".cq/logs/raw/20260714-035218-a84c7434f6d908139.jsonl",".cq/logs/raw/20260714-035218-a6f8746b8e0351608.jsonl"]
 
-### T92 — wip
+### T92 — done
 
 - createdAt: 2026-07-13T22:28:47.652Z
-- updatedAt: 2026-07-14T04:02:07.051Z
+- updatedAt: 2026-07-14T04:22:03.037Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Enforce and test cross-peer isolation threat model
@@ -1018,6 +1018,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T90","T91"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: e3c2655
+- completion: "Cross-peer isolation threat model (Q27) codified as unit-level adversary cases (test-only, internal/bind/threat_model_test.go): against a source already bound+live on peer A, foreign/wrong-psk PROBEs, replay, mutation, a forged DATA+seq-storm, and a 300-source unauthenticated flood all leave A's binding/resequencer/FEC/liveness intact; unauthenticated floods bind nothing, grow no demux state, and never evict a live peer; a wrong-psk PROBE from a bound source neither re-binds nor unbinds it. Isolation rests on two production guards (demuxInbound bound-source early-return; isProbe D9/D11 trial-decode gate) — both mutation-verified discriminating by BOTH reviewers independently. Sentinel/release-point assertions proven deterministic (DATA/PARITY unauthenticated; reseq discontinuity guard). No production defect found. Unanimous 1-round panel approve; ff-merged as e3c2655."
+- sessionLogs: [".cq/logs/20260714-041618-a1036c3748de6eaed.md",".cq/logs/20260714-042139-accf6c05ac3dfa0e1.md",".cq/logs/20260714-042139-a4291b0fb8fad1812.md"]
+- rawLogs: [".cq/logs/raw/20260714-041618-a1036c3748de6eaed.jsonl",".cq/logs/raw/20260714-042139-accf6c05ac3dfa0e1.jsonl",".cq/logs/raw/20260714-042139-a4291b0fb8fad1812.jsonl"]
 
 ## M26
 
