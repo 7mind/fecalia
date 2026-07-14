@@ -1814,10 +1814,10 @@ archives:
 - ledgerRefs: ["goals:G13"]
 - resultCommit: 6f906b3
 
-### T144 — wip
+### T144 — done
 
 - createdAt: 2026-07-14T12:41:01.308Z
-- updatedAt: 2026-07-14T16:06:16.867Z
+- updatedAt: 2026-07-14T16:35:32.038Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Startup WARN and wanbond_weighted_capacity_sane gauge when weighted capacity is unverifiable
@@ -1826,13 +1826,14 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T142"]
 - ledgerRefs: ["goals:G13"]
+- resultCommit: c31e792
 
 ## M53
 
 ### T143 — wip
 
 - createdAt: 2026-07-14T12:40:52.205Z
-- updatedAt: 2026-07-14T16:06:15.431Z
+- updatedAt: 2026-07-14T16:26:45.643Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Expose WeightedScheduler aggregation-gate snapshot and log engage/disengage transitions
@@ -1916,7 +1917,7 @@ archives:
 ### T150 — wip
 
 - createdAt: 2026-07-14T13:16:09.195Z
-- updatedAt: 2026-07-14T16:06:18.024Z
+- updatedAt: 2026-07-14T16:35:47.803Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add BDP-sized send-pacing to the ActiveBackup scheduler

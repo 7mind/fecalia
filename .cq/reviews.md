@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 179
+  item: 182
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2097,6 +2097,17 @@ archives:
 - new_questions: []
 - ledgerRefs: ["tasks:T149","goals:G14","defects:D65"]
 
+### R181 — revise
+
+- createdAt: 2026-07-14T16:35:46.568Z
+- updatedAt: 2026-07-14T16:35:46.568Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T150 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). CORE VERIFIED SOUND by both: per-path (NOT bottleneck) BDP sizing proven (primary admits ~1008 = own cap*T+burst, strictly above the 208 backup-rate bound — a fast primary is NOT capped at the slow backup); ClassControl exempt (admitted on empty bucket, D22); PickPaced(-2) distinct from PickNone(-1); middle-path RemovePath keeps the survivor on its OWN bucket (index-aligned, token state travels); pacing-off byte-compat; fail-fast validation; reproduce-first re-verified by surgically neutering Pick (5000/5000 admitted, no shedding, for the right reason); 3 enumerated doc comments corrected; build/vet/test + -race + just lint green. But [fable] DEMONSTRATED a PANIC in the task's EXPLICIT no-panic-across-membership-churn hazard — REVISE round 2."
+- criticism: ["DEMONSTRATED PANIC (deterministic) in the required membership-churn hazard class: with Pacing=true, RemovePath MAY empty the path set (the DynamicScheduler contract only requires i in range; the pre-pacing ActiveBackup tolerated remove-to-empty — Pick returns -1 fine). AFTER emptying, (a) AddPath panics 'index out of range [-1]' at internal/sched/active_backup.go:181 (s.pacers[len(s.pacers)-1] on an EMPTY slice), and (b) SetPaths panics at internal/sched/active_backup.go:271 (old[len(old)-1] in resizeActiveBackupPacers). Exact repros: NewActiveBackup([1 path], Pacing=true) -> RemovePath(0) -> AddPath(h); and NewActiveBackup([1 path], Pacing=true) -> RemovePath(0) -> SetPaths([h,h]). The comments claiming 'pacing implies >=1 path is an invariant' are FALSIFIED by the type's own API. Production is unexposed today ONLY because device.go:887 never sets Pacing=true, but panic-free churn is this task's stated REQUIRED hazard. FIX: when the pacer slice is empty, seed the new bucket from cfg.PerPathCapacities/PacingBursts tail (guaranteed non-empty whenever Pacing is on — the constructor validates len==len(health)>=1), OR enforce the >=1-path invariant in RemovePath; ADD a remove-to-empty-then-AddPath/SetPaths regression test.","A FOURTH stale doc comment of the exact genre the task targeted was MISSED: internal/sched/scheduler.go:34-36 (ClassData const doc) still scopes data pacing to 'under a weighted scheduler with pacing enabled it is subject to the per-path token buckets and is shed (PickPaced)…' — active-backup with pacing now ALSO sheds ClassData; reword to 'any pacing-enabled scheduler'."]
+- new_questions: []
+- ledgerRefs: ["tasks:T150","goals:G14","defects:D65"]
+
 ## M52
 
 ### R175 — go-ahead
@@ -2110,6 +2121,17 @@ archives:
 - new_questions: []
 - ledgerRefs: ["tasks:T142","goals:G13"]
 
+### R180 — go-ahead
+
+- createdAt: 2026-07-14T16:35:22.734Z
+- updatedAt: 2026-07-14T16:35:22.734Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T144 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Startup WARN + static unlabeled wanbond_weighted_capacity_sane gauge (Q52 soft verdict). Merged to main as c31e792 (cherry-pick of implement/T144 ab06cf9 onto 5e645e4; internal/metrics/metrics_test.go + device/config/docs 3-way auto-merged with T127, no conflicts). BOTH reviewers verified the FULL verdict matrix EMPIRICALLY: {active-backup}→nil/family-ABSENT; {weighted, all declared}→true/gauge1/no-WARN; {weighted, none declared}→false/gauge0/one-WARN; {weighted, PARTIAL, pacing disabled}→false/gauge0/one-WARN (R155 partial case pinned); {weighted, all declared, pacing ENABLED}→still true, no false WARN; {weighted, partial, pacing ENABLED}→hard-fails in deriveWeightedPacingFromBDP before the soft verdict. T142 ORDERING confirmed: Load→normalize()computes verdict→validate()runs the hard guard, so a declared-CONTRADICTING path still aborts Load (TestWeightedCapacitySaneDeclaredPathStillHardFails names the path). STARTUP NEVER BLOCKS: warnUnverifiableWeightedCapacity returns void, called EXACTLY ONCE in run() never in reloadTunnel (e2e asserts count==1). GAUGE static+unlabeled prometheus.NewGauge, does NOT touch NewCollector's multiPeer label decision, registered only when verdict non-nil (nil→absent); exposition byte-identical modulo the new unlabeled family for single AND two-peer sources (probed). All 3 NewServer(*bool) call sites updated. reloadWarnings catch-all correctly zeroes the derived field + reflection test adds it to known, still pinning every other field. Metric name exported MetricWeightedCapacitySane. All FOUR acceptance e2e cases PASS on llm-ubuntu-0 hardware (real /dev/net/tun, root). Full gate green on composed main: config/device/metrics tests ok; e2e compiles; just lint 0 issues default+e2e+realhosts. Docs synced (README + design.md + install.md §3a). Fable filed 2 out-of-scope defects: reload verdict staleness → D74 (new); load.go build-tags → already D73. 0 criticisms / 0 questions."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T144","goals:G13","defects:D74","defects:D73"]
+
 ## M51
 
 ### R177 — go-ahead
@@ -2122,3 +2144,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T141","goals:G13"]
+
+## M53
+
+### R179 — revise
+
+- createdAt: 2026-07-14T16:26:45.363Z
+- updatedAt: 2026-07-14T16:26:45.363Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T143 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). CORE VERIFIED SOUND by both: AggregationSnapshot reads all 4 fields under s.mu with threshold formulas byte-identical to updateGateLocked's engage/disengage locals (no metrics lie); the 'scheduler aggregation change' record was EXTENDED in place (from/engage_threshold_fps/disengage_threshold_fps), exactly one log call per flip in mutually-exclusive returning branches, one-shot-on-change preserved under a 2000-Pick saturated loop; fable MUTATION-verified the no-double-log test bites (duplicating the engage log call fails it 'got 2 want 1') and ran an 8-goroutine snapshot-vs-Pick -race probe clean; build/vet/test + -race + just lint all green. [fable] DISAPPROVE for a docs-sync inaccuracy + correlated e2e flake, all autonomously fixable — REVISE round 2."
+- criticism: ["docs/design.md's new T143 paragraph misdocuments the log schema: it claims EVERY 'scheduler aggregation change' record carries load_fps, but the IDLE-GAP collapse branch (internal/sched/weighted.go:537-538) emits NO load_fps and carries an UNDOCUMENTED 'gap' field. FIX (preferred): add `\"load_fps\", s.loadRate` to the idle-gap collapse record — the EWMA has already decayed across the gap in observeLoadLocked so the value is meaningful, and the schema becomes UNIFORM for the T146 metrics/log consumers; document the 'gap' field too. (Alternative: correct the doc to state load_fps is absent + gap present on idle-gap collapse — but uniformity is better for T146.)","TestAggregationGateLog idle-gap FLAKE hazard: between the engage drive's last frame and the low drive's first frame the harness does AwaitLogLine + log parse + spawns a second nsenter'd UDP sink; if that wall-clock span reaches CollapseDwell (only 800ms) the FIRST low-phase Pick collapses via the idle-gap branch (which lacks load_fps) and assertAggLogFields fails spuriously with a misleading 'missing load_fps'. HARDEN: adopt the load_fps-uniformity fix from criticism 1, AND assert reason=='sustained low load' explicitly, AND widen this test's CollapseDwell (e.g. 2s) so the inter-phase margin dominates harness jitter.","The e2e fixture configures an UNUSED [metrics] listen block (aggLogMetricsListen 127.0.0.1:9106) on both daemons; the test never queries it and the task EXPLICITLY defers all metrics wiring to T146 — REMOVE the block (T146's own e2e adds it). This also frees port 9106 back to the registry."]
+- new_questions: []
+- ledgerRefs: ["tasks:T143","goals:G13","defects:D72","defects:D73"]

@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 72
+  item: 75
 archives: []
 ---
 
@@ -987,6 +987,42 @@ archives: []
 - severity: medium
 - suggestedFix: Log the promotion error at WARN/ERROR in reconcileDeferred's promote-failure branch, deduplicated per deferral window like warnedUnresolvable to avoid 1 Hz spam.
 - ledgerRefs: ["tasks:T134","defects:D53"]
+
+### D72 — open
+
+- createdAt: 2026-07-14T16:26:20.289Z
+- updatedAt: 2026-07-14T16:26:20.289Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: WeightedScheduler.SetPaths silently collapses the aggregation gate without the canonical log record
+- description: "Filed by the T143 fable reviewer (out-of-scope for T143). internal/sched/weighted.go SetPaths (T30-era, ~:659) sets s.aggregating=false with NO 'scheduler aggregation change' record, so on every Bind reopen (Close->Open durable-membership swap) a log consumer reconstructing gate state sees two consecutive to='aggregating' records with no intervening collapse. Pre-existing behavior untouched by T143's diff. Low severity."
+- severity: low
+- suggestedFix: In SetPaths, when s.aggregating was true before the reset, emit the canonical 'scheduler aggregation change' record (to=collapsed, from=aggregating, reason='paths replaced', plus the threshold fields from T143) under the already-held s.mu.
+- ledgerRefs: ["tasks:T143","goals:G13"]
+
+### D73 — open
+
+- createdAt: 2026-07-14T16:26:28.223Z
+- updatedAt: 2026-07-14T16:26:28.223Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: test/e2e/load.go (non-test file) references _test.go-only symbols, so `go build -tags e2e ./test/e2e/...` fails
+- description: "Filed independently by BOTH T143 reviewers (opus noted, fable filed); pre-existing from T141 (present on base 6e26127, now on main via b0f52e4). test/e2e/load.go is a NON-_test.go file carrying the e2e build tag but references proc, lockedBuffer, and nsEnvMarker which are defined only in *_test.go files. The package therefore compiles under `go test` / `go vet -tags e2e` / golangci (all of which include test files) but `go build -tags e2e ./test/e2e/...` errors with undefined symbols. Latent: nothing in the gate does a plain `go build -tags e2e` (the gate uses `go test -tags e2e -count=0` which compiles via the test binary), so it went uncaught, but any future tooling that plain-builds the tag reddens. In Go, a non-test file cannot legally reference _test.go symbols outside the test binary — load.go is mis-structured."
+- severity: low
+- suggestedFix: Rename test/e2e/load.go to test/e2e/load_test.go (it is test-support code, belongs in the test binary), OR move proc/lockedBuffer/nsEnvMarker into a non-test e2e-tagged support file. Then add `go build -tags e2e ./test/e2e/...` to the gate so it cannot regress.
+- ledgerRefs: ["tasks:T141","tasks:T143","goals:G13"]
+
+### D74 — open
+
+- createdAt: 2026-07-14T16:35:30.090Z
+- updatedAt: 2026-07-14T16:35:30.090Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Reload silently staleing the wanbond_weighted_capacity_sane gauge (membership add of an undeclared path leaves gauge=1)
+- description: "Filed by the T144 fable reviewer (out-of-scope for T144, which pins a STATIC startup gauge). Two coupled reload gaps: (1) a SIGHUP that ADDS a path WITHOUT link_bandwidth under weighted policy is applied to membership but neither re-warns nor recomputes wanbond_weighted_capacity_sane — the gauge can read 1 while the running path set is no longer capacity-verifiable; (2) [overlaps D70] reloadWarnings' same-name path comparison covers only SourceAddr/DestAddr/Bind, so a SIGHUP changing an existing path's link_bandwidth/link_rtt is silently accepted, violating the D52 'SILENCE is not acceptable' invariant. See [[D70]] for the per-path link_bw/rtt reload-warning half; THIS defect adds the gauge-recompute-on-reload angle specific to T144's static gauge."
+- severity: medium
+- suggestedFix: Recompute the capacity-sanity verdict in runningConfig()/reloadTunnel and re-set the gauge (and emit a WARN) whenever the live vs desired WeightedCapacitySane differ; extend reloadWarnings' same-name comparison to LinkBandwidthBitsPerSec/LinkRTT (coordinate with D70's fix to avoid double-work).
+- ledgerRefs: ["tasks:T144","defects:D70","defects:D52","goals:G13"]
 
 ## M49
 
