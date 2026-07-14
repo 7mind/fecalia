@@ -273,23 +273,29 @@ archives: []
 ### G10 — planning
 
 - createdAt: 2026-07-14T09:07:27.096Z
-- updatedAt: 2026-07-14T09:07:27.096Z
+- updatedAt: 2026-07-14T10:07:14.795Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Observability & metrics accuracy
 - description: "DEFECT-SEEDED (skip clarifying — reviewer-pinned). Fix per each defect item: defects:D48 — wanbond_path_tx_bytes_total omits probe and echo-reflection wire bytes, so per-path tx/rx byte accounting under-reports (count probe/echo frames in the wire-byte counters, or document the exclusion — prefer counting for accurate bufferbloat/BDP math); defects:D52 — reloadWarnings omits the scheduler/fec/dns/bind non-path config sections, so a SIGHUP that changes those sections is silently ignored with no warning (extend reloadWarnings to cover all reload-immutable sections); defects:D53 — the device-bind→source-IP-pinning fallback is SILENT (no WARN) in internal/bind, so an operator never learns the requested device bind was denied/unsupported and fell back (emit a WARN on the listenPath SO_BINDTODEVICE fallback). PLANNER: coherent fix tasks with metrics/log unit tests; each ledgerRef its defects:<D>, drive resolved on merge. Grounding: internal/metrics, internal/device/reload path, internal/bind/pathsock.go listenPath."
 - sourceRefs: ["defects:D48","defects:D52","defects:D53"]
 - tags: ["observability","metrics","defect-seeded"]
+- milestones: ["M37","M46"]
+- sessionLogs: [".cq/logs/20260714-100701-a4b1145f72fc338bd.md",".cq/logs/20260714-100701-a8f084815c088a9b9.md"]
+- rawLogs: [".cq/logs/raw/20260714-100701-a4b1145f72fc338bd.jsonl",".cq/logs/raw/20260714-100701-a8f084815c088a9b9.jsonl"]
 
 ## M38
 
-### G11 — planning
+### G11 — planned
 
 - createdAt: 2026-07-14T09:07:37.085Z
-- updatedAt: 2026-07-14T09:07:37.085Z
+- updatedAt: 2026-07-14T10:21:26.815Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Code, test, and doc-comment hygiene cleanup
 - description: "DEFECT-SEEDED (skip clarifying — all reviewer-pinned, mostly one-line/low-risk). A single coherent hygiene sweep (can be one or a few tasks). Fix per each defect item: defects:D40 — CAP_NET_RAW (pathsock comment) vs CAP_NET_ADMIN (shipped systemd units) mismatch for SO_BINDTODEVICE — reconcile the comment to the actually-required capability; defects:D45 — `just lint` is RED at base (3 pre-existing golangci-lint findings in dnsresolve/doh.go, dot.go, bind/pathsock.go, device/metrics_test.go) — fix the findings so lint is green; defects:D51 — e2e /metrics port collision: pacing_test.go and p3_fec_test.go both bind 127.0.0.1:9096 — give each e2e test a unique port; defects:D54 — golangci-lint scans nested .claude/worktrees, leaking sibling agents' in-progress code into lint — exclude .claude/worktrees in .golangci config; defects:D56 — superseded primary-only bind read seams (PathSnapshots/FECSnapshot) retained with duplicated FEC-stat derivation — migrate bind tests to PeerSnapshots and delete them, or make them thin wrappers so the honest-delivered-count derivation lives once; defects:D57 — stale config.go doc-comments (Peer.PSK/Name 'not yet consumed by any datapath') now false since T93; defects:D60 — stale config.go BindMode + Path.Bind 'config surface only / not yet consumed' comments now false since T106. PLANNER: group into a hygiene task (or split lint/test-hygiene vs stale-comments); each ledgerRef its defects:<D>; keep the gate green; drive resolved on merge. Grounding on each defect item."
 - sourceRefs: ["defects:D40","defects:D45","defects:D51","defects:D54","defects:D56","defects:D57","defects:D60"]
 - tags: ["hygiene","lint","defect-seeded"]
+- milestones: ["M38","M47"]
+- sessionLogs: [".cq/logs/20260714-100847-a682af370a1cff1d9.md",".cq/logs/20260714-100847-aae9f3a68abcdc6ba.md"]
+- rawLogs: [".cq/logs/raw/20260714-100847-a682af370a1cff1d9.jsonl",".cq/logs/raw/20260714-100847-aae9f3a68abcdc6ba.jsonl"]

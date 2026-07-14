@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 45
+  item: 47
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -321,3 +321,15 @@ archives:
 - createdAt: 2026-07-14T10:00:09.529Z
 - updatedAt: 2026-07-14T10:00:09.529Z
 - title: "G9-W: config loader/validation hardening (serialized: strict-decode → durations → allowed_ips/default-route)"
+
+### M46 — open
+
+- createdAt: 2026-07-14T10:07:03.072Z
+- updatedAt: 2026-07-14T10:07:03.072Z
+- title: "G10-W: observability & metrics accuracy (bind tx-byte + fallback WARN serialized; reloadWarnings parallel)"
+
+### M47 — open
+
+- createdAt: 2026-07-14T10:08:49.641Z
+- updatedAt: 2026-07-14T10:08:49.641Z
+- title: "G11-W: hygiene sweep (lint-gate first; then e2e-ports / config-comments / bind-seams / capability)"

@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 132
+  item: 140
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1674,3 +1674,109 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T131"]
 - ledgerRefs: ["goals:G9","defects:D55","defects:D59"]
+
+## M46
+
+### T133 — planned
+
+- createdAt: 2026-07-14T10:07:27.505Z
+- updatedAt: 2026-07-14T10:18:34.676Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Count probe emission + echo-reflection wire bytes into ps.txBytes and flip the T104 standby-idle subtest green (D48)
+- description: "wanbond_path_tx_bytes_total under-reports because ps.txBytes is charged only on the DATA/PARITY send paths (Send + fecFlushDeadline), while rxBytes counts EVERY inbound datagram — so a healthy idle standby (active-backup collapses DATA onto the primary) reads path_up=1 with tx=0 while rx grows (the I8-motivating observation). Adopt the true-wire-volume contract (D48's preferred option): (1) internal/bind/probe.go emitProbes (~:50): after a successful ps.conn.WriteToUDPAddrPort(raw, remote), add ps.txBytes.Add(uint64(len(raw))) — ONLY on a nil error, mirroring how rxBytes counts bytes actually pulled off the socket. (2) internal/bind/multipath.go dispatchInbound echo reflection (~:1693, line refs drifted — locate the echo WriteToUDPAddrPort): after a successful write add ps.txBytes.Add(uint64(len(echo))). Both sites use the atomic counter outside m.mu — no locking change. (3) COUNTER-CONTRACT SYNC (R131 [fable]): the peerPathState txBytes field comment (internal/bind/multipath.go ~:157-167) currently states txBytes 'counts the DATA-frame wire bytes this path egresses on the Send hot path' and defines the data-thrift signal as 'the backup path's Send count stays ~flat' — BOTH become false once probe/echo bytes count (the standby's counter growing IS the fix). Rewrite that comment to the true-wire-volume semantics (all egressed wire bytes: DATA/PARITY + probes + echoes), and verify the wanbond_path_tx_bytes_total help string (internal/metrics) is ACCURATE ('Total bytes transmitted on the path'; adjust only if it still implies DATA-only). Do NOT add a separate DATA-only series (out of scope). (4) DOCS-SYNC (R131 [fable], AGENTS.md clause — T133 changes an operator-visible metric's semantics): check and update README.md + docs/design.md wherever wanbond_path_tx_bytes_total OR the idle-standby-tx symptom is documented, so operator docs match the new wire-volume meaning. (5) T104 SUBTEST (R131 [fable] clarification): 'flip the T104 standby-idle subtest green' means UPDATE ITS STALE REPRO COMMENTARY — the test's file/subtest doc-comment that predicts failure and the t.Errorf 'refile-as-defect' instruction — NOT invert any assertion: the subtest already asserts delta>0 via t.Errorf, so the green acceptance (idle standby tx_bytes>0 while path_up=1) holds once the fix lands; only the surrounding stale-repro prose changes. (6) NOTE: throughput derivation (internal/device/metrics.go) sums tx+rx deltas, so counted probe bytes slightly raise reported idle throughput — intended wire-volume semantics. FIRST bind task — T134 (D53) serializes after it (both edit multipath.go)."
+- acceptance: "`go build ./... && go vet ./... && go test ./internal/bind/... ./internal/metrics/...` pass; new unit tests (probe_test.go fake-clock pattern) assert ps.txBytes increments by the emitted frame length for (a) emitProbes probe emission and (b) an inbound PROBE's echo reflection, and FAIL against the unpatched code. The peerPathState txBytes comment (multipath.go ~:157-167) no longer claims DATA-only/Send-only semantics. README.md + docs/design.md carry no stale DATA-only tx_bytes wording (grep for wanbond_path_tx_bytes_total documentation). T104's 'standby-transmits-when-idle' subtest (test/e2e/standby_liveness_test.go) has its stale-repro commentary updated to the green expectation (idle standby shows tx_bytes>0 while path_up=1) with no assertion logic inverted; compiles under -tags e2e (privileged run per the o3/llm-ubuntu-0 procedure)."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G10","defects:D48"]
+
+### T134 — planned
+
+- createdAt: 2026-07-14T10:07:46.968Z
+- updatedAt: 2026-07-14T10:07:46.968Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Thread internal/log through NewMultipath and WARN on every forced-device-bind fallback to source-IP pinning (D53)
+- description: "internal/bind holds no logger, so the SO_BINDTODEVICE→source-IP fallback is SILENT — an operator setting bind=\"device\" can end up source-IP-pinned (losing roam survival) with no signal (D53). (1) Add a log.Logger parameter to NewMultipath (internal/bind/multipath.go, ~:549/612) and store it component-scoped (logger.Component(\"bind\")); update ALL call sites: the ~9 in internal/device/device.go (device already holds t.log) + the ~6 internal/bind test files (a discard-writer log for tests). Fail fast on a nil logger, consistent with the constructor's existing nil-checks. (2) WARN at BOTH fallback layers, naming path + interface: (a) unresolvable-interface layer — where planPathBinds/resolveForcedDeviceBind (internal/bind/pathsock.go) yields dev==\"\" for a path whose resolved mode is BindModeDevice; (b) setsockopt-failure layer — listenPath (pathsock.go:35) currently SWALLOWS the listenOnDevice error: restructure so the caller can log it — PREFERRED (keeps pathsock.go logging-free) is to RETURN the fallback fact + underlying error alongside the conn and WARN at the call sites (Open, AddPath via the addPathListen seam, reconcile.go). This covers the PRE-EXISTING silent CAP/setsockopt fallback too; distinguish FORCED (bind=\"device\", operator-chosen roam property lost — WARN) from AUTO (informational). Keep the m.resolveDeviceBind/m.addPathListen function-field seams working for tests. Docs-sync per AGENTS.md if bind-fallback behaviour is documented. Serialized after T133 (both edit multipath.go; T134 changes the NewMultipath signature + struct)."
+- acceptance: "`go build ./... && go vet ./... && go test ./internal/bind/... ./internal/device/...` pass (all NewMultipath call sites updated); new unit tests inject a capturing log.Logger and assert ONE WARN naming path+interface for (a) an unresolvable forced device (non-existent interface) and (b) a failing setsockopt fallback (driven via the addPathListen/deferredListen seams), and NO WARN on a successful device bind or a source-mode path; the WARN-on-fallback tests FAIL against the unpatched (silent) code; the fallback still returns a working source-IP-bound socket."
+- suggestedModel: standard
+- dependsOn: ["T133"]
+- ledgerRefs: ["goals:G10","defects:D53"]
+
+### T135 — planned
+
+- createdAt: 2026-07-14T10:07:57.865Z
+- updatedAt: 2026-07-14T10:19:06.772Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Extend reloadWarnings to cover the Scheduler/FEC/DNS/Bind reload-immutable config sections (D52)
+- description: "reloadWarnings (internal/device/device.go ~:549) reports a change for Role/PSK/WireGuard/Amnezia/Log/TUNPersist + same-name path source/dest + reorder, but OMITS the Scheduler, FEC, DNS, and Bind sections — a SIGHUP changing any of those is silently accepted while the running tunnel keeps the booted values, contradicting Reload's documented 'SILENCE is not acceptable' invariant (D52). Fix: (1) add reflect.DeepEqual comparisons with actionable per-section messages for the top-level Scheduler, FEC, and DNS sections (mirroring the WireGuard/Amnezia/Log cases). (2) BIND — Bind lives at BOTH levels (R131 [opus+fable], NOT either/or): config.Config has a TOP-LEVEL default c.Bind (normalize resolves it, internal/config/config.go ~:841-843) AND a per-path config.Path.Bind with fallback to that default (~:847-849). Handle BOTH: (a) extend the existing same-name-path comparison (currently SourceAddr/DestAddr only) to also warn when l.Bind != d.Bind ('path %q bind mode changed — the running socket keeps its original binding') — since normalize resolves the top-level default into every path, this catches effective per-path changes; AND (b) explicitly handle the top-level c.Bind — either its OWN DeepEqual case with an actionable message ('default bind mode changed — running sockets keep their original binding'), OR deliberately zero it in the (3) catch-all as covered-by-per-path — so a top-level bind change fires ONE actionable per-section warning, NOT the generic catch-all double-warning. (3) FUTURE-PROOF (D52 suggestedFix option B): add a final catch-all comparing struct copies with ALL handled fields zeroed (Paths, Metrics — which IS applied, so must NOT warn — and every individually-compared/warned field including the Bind fields handled above) via reflect.DeepEqual, warning generically that other config sections changed — so a future Config field can never silently regress this invariant. Do NOT warn on Metrics (Reload applies it) or on path membership add/remove (applied). Keep reloadWarnings a pure function. Docs-sync design.md reload section if it enumerates warned sections. Edits device.go (reloadWarnings ~:549); serialized AFTER T134 (R131 [opus]: T134 rewrites the 9 NewMultipath call sites in device.go, so both tasks edit device.go — same-file serialization, consistent with the T133->T134 multipath.go rule)."
+- acceptance: "`go build ./... && go test ./internal/device/...` pass; new table-driven internal/device/reload_test.go cases each mutate exactly one of Scheduler/FEC/DNS between live and desired and assert reloadWarnings returns exactly one corresponding warning; a case mutating the TOP-LEVEL c.Bind default asserts exactly one bind-default warning (NOT the generic catch-all), and a case mutating a single path's Path.Bind asserts exactly one per-path bind warning; a case mutating Metrics asserts NO warning (still applied); a synthetic added-but-unhandled field is caught by the zeroed-copy catch-all (or its coverage documented); existing warning cases stay green."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G10","defects:D52"]
+- dependsOn: ["T134"]
+
+## M47
+
+### T136 — planned
+
+- createdAt: 2026-07-14T10:09:10.921Z
+- updatedAt: 2026-07-14T10:09:10.921Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Make `just lint` green and hermetic: fix the 3 base findings (D45) + stop golangci-lint walking .claude/worktrees (D54)"
+- description: "Two coupled lint-gate fixes (one hides the other: sibling-worktree noise masks real findings). (D54 — hermeticity) The Justfile `lint` recipe runs bare `golangci-lint run` from the repo root, walking .claude/worktrees/ and leaking sibling agents' in-progress code into every lint run. NOTE (fable grounding): `.golangci.yml` is a v2-format config (`version: \"2\"`), so the defect's suggested v1 `run.skip-dirs`/`issues.exclude-dirs` keys DO NOT apply — the v2 mechanism is `linters.exclusions.paths` (+ `formatters.exclusions.paths`) with a pattern like `^\\.claude/`, OR switch the Justfile lint recipe to an explicit package list (`golangci-lint run ./cmd/... ./internal/... ./test/...`); pick one and document why in a one-line comment. (D45 — the 3 tracked-tree findings) errcheck on the unchecked deferred Close at internal/dnsresolve/doh.go:206 (`defer resp.Body.Close()`) and dot.go:168 (`defer conn.Close()`) — fix per repo convention (e.g. `defer func() { _ = x.Close() }()`; keep the Body.Close recognizable to bodyclose); plus the staticcheck QF1001 De Morgan rewrite in internal/bind/pathsock.go — the filed line :166 is STALE (T106 shifted the file), so run `golangci-lint run ./internal/bind/...` to locate the current site + apply the suggested rewrite. Also fix any other finding lint reports on the tracked tree (goal notes device/metrics_test.go). Do NOT touch the pathsock CAP_NET_RAW comment (that is the dependent D40 task). FIRST task — all other G11 tasks dependsOn it so each verifies against a GREEN lint, and it serializes the two potential pathsock.go editors (this QF1001 rewrite vs D40's capability comment)."
+- acceptance: "From a clean checkout in the `nix develop` dev shell with a clean golangci-lint cache, `just lint` exits 0 on the tracked tree; the doh.go/dot.go errcheck + pathsock.go QF1001 findings are gone. Hermeticity: a throwaway Go file with an obvious lint violation placed under `.claude/worktrees/x/` does NOT change `just lint`'s (still-0) exit status. `just test` stays green."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G11","defects:D45","defects:D54"]
+
+### T137 — planned
+
+- createdAt: 2026-07-14T10:09:29.500Z
+- updatedAt: 2026-07-14T10:09:29.500Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Give each e2e metrics listener a unique port (resolve the 9096 collision) (D51)
+- description: "test/e2e/pacing_test.go and test/e2e/p3_fec_test.go both bind the metrics listener to 127.0.0.1:9096, breaking the per-file-unique-port convention (latent under the sequential netns runner; an active EADDRINUSE under shuffle/parallelism or a wedged teardown). Inventory every metrics-port constant across test/e2e/*.go (T101 already claimed 9101), then move ONE of the two colliding files to an unused port. Add a short comment at the chosen constant (or in the shared fixture, e.g. netns.go) enumerating the claimed ports so the convention can't silently drift again — the minimal registry the defect asks for; do NOT build ephemeral :0 allocation unless it's a trivial drop-in. e2e test-only; no production source. dependsOn T136 so it verifies against a green/hermetic lint."
+- acceptance: A grep for metrics-port constants across test/e2e/ shows every file's port unique (no two files share a port literal); the port-inventory comment lists them. `go vet -tags e2e ./test/e2e/... && golangci-lint run --build-tags e2e ./test/e2e/...` pass; unprivileged `just test` stays green.
+- suggestedModel: fast
+- dependsOn: ["T136"]
+- ledgerRefs: ["goals:G11","defects:D51"]
+
+### T138 — planned
+
+- createdAt: 2026-07-14T10:09:39.058Z
+- updatedAt: 2026-07-14T10:09:39.058Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Refresh the four stale 'not yet consumed' doc-comments in internal/config/config.go (D57, D60)
+- description: "Single-file comment sweep — D57 and D60 are co-located in internal/config/config.go so ONE task owns the file (avoids intra-file conflict). D60 (delete two stale sentences, keep the accurate description): (a) the BindMode type comment (~:78-81) — remove 'This is the CONFIG SURFACE only ... a later task — today every path is bound exactly as before'; (b) the Path.Bind field note (~:488-494) — remove 'this is the config surface only, not yet consumed by planPathBinds/selectDeviceBinds'. Both FALSE since T106: pathsock.go selectDeviceBinds switches on config.BindModeSource/Device/Auto and multipath.AddPath honors a forced BindModeDevice. D57 (REPLACE, not just delete): (c) Peer.PSK (~:569-579) — replace 'No datapath code path consumes PSK yet; it is parsed, validated, and exposed only' with the real consumers: device.go calls cfg.PeerIdentities() to derive each peer's effective PSK, and bind/multipath.go consumes those per-peer PSKs for the peerBySource PROBE-authenticated demux; (d) Peer.Name (~:580-585) — replace 'Not yet consumed by any datapath code path' with: surfaces (for additional concentrator peers) as the metrics 'peer' label via BoundPeerNames/PeerSnapshot.Name. Comment-only — touch no code. dependsOn T136."
+- acceptance: "`grep -nE 'not yet consumed|No datapath code path|CONFIG SURFACE only|config surface only' internal/config/config.go` returns nothing; the replacement comments name PeerIdentities()/peerBySource demux (PSK) + the metrics peer label (Name), and selectDeviceBinds/multipath.AddPath (BindMode). `go build ./... && just lint` stay green (comment-only diff)."
+- suggestedModel: fast
+- dependsOn: ["T136"]
+- ledgerRefs: ["goals:G11","defects:D57","defects:D60"]
+
+### T139 — planned
+
+- createdAt: 2026-07-14T10:09:48.135Z
+- updatedAt: 2026-07-14T10:09:48.135Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Consolidate the superseded PathSnapshots/FECSnapshot bind read seams onto PeerSnapshots (D56)
+- description: "After T94 migrated the device metrics adapter to Multipath.PeerSnapshots(), the primary-only seams Multipath.PathSnapshots (internal/bind/multipath.go ~:2701) and Multipath.FECSnapshot (~:2085) have NO remaining production callers — only bind's own tests (fec_test.go, traffic_test.go, ~9 call sites) — and PeerSnapshots COPY-PASTES FECSnapshot's honest Recovered/Unrecoverable delivered-count derivation (the comment admits it 'mirrors ... verbatim'), a two-copy DRIFT RISK on a non-trivial rule. Preferred fix: migrate the bind test call sites to PeerSnapshots() (single-peer tests read PeerSnapshots()[0].Paths / [0].FEC) and DELETE PathSnapshots + FECSnapshot outright, so the delivered-count derivation lives EXACTLY ONCE; fall back to thin wrappers over PeerSnapshots()[0] ONLY if a test genuinely needs the old shape. Keep test assertions semantically identical (seam migration, not a behavior change); preserve the correctness of the delivered-count rule (the load-bearing part). Verify nothing outside internal/bind references the deleted seams (the device metrics adapter already consumes PeerSnapshots). Isolated to internal/bind. dependsOn T136."
+- acceptance: The honest delivered-count FEC derivation exists in EXACTLY ONE place (no 'mirrors ... verbatim' duplicate — verify by grep); `grep -rn 'PathSnapshots|FECSnapshot(' internal/ cmd/ test/` shows no surviving callers of the deleted seams (or only the thin-wrapper fallback definitions). `go test ./internal/bind/... ./internal/device/... && just lint` pass.
+- suggestedModel: standard
+- dependsOn: ["T136"]
+- ledgerRefs: ["goals:G11","defects:D56"]
+
+### T140 — planned
+
+- createdAt: 2026-07-14T10:09:59.824Z
+- updatedAt: 2026-07-14T10:09:59.824Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Reconcile the SO_BINDTODEVICE capability story: pathsock comment vs CAP_NET_ADMIN units vs docs (D40)"
+- description: "internal/bind/pathsock_linux.go (~:9-10) claims bindToDevice 'requires CAP_NET_RAW', yet the shipped systemd units (packaging/systemd/wanbond-edge.service ~:24 + the concentrator twin) grant only CapabilityBoundingSet=CAP_NET_ADMIN — and device-bind SUCCEEDED on o3, so the comment and the unit disagree (D40). (1) Determine the real requirement: historically SO_BINDTODEVICE needed CAP_NET_RAW; Linux ≥5.7 allows it with no capability (verify the kernel commit/version via WebSearch and against the supported floor — Debian bookworm 6.1+, Ubuntu 22.04 5.15+, both ≥5.7). (2) EMPIRICALLY confirm on at least one standing worker (o3 aarch64 or llm-ubuntu-0 amd64, via `ssh -i /run/agenix/llm-ssh-key`): run a minimal setsockopt(SO_BINDTODEVICE) probe (or the daemon) under a CAP_NET_ADMIN-only bounding set and observe device-bind succeed; capture the command + output + `uname -r`. (3) Align all surfaces to the finding: the pathsock_linux.go bindToDevice comment (state the ≥5.7 rule + that the EPERM fallback covers pre-5.7 kernels), any other CAP_NET_RAW mention in internal/bind, the capability comment in BOTH packaging/systemd units, and docs/install.md's capability text. Do NOT widen the unit CapabilityBoundingSet unless the probe proves CAP_NET_RAW is actually required on a supported kernel. Keep the permission-error fallback intact. dependsOn T136 (serializes the pathsock.go editors: this comment vs the D45 QF1001 rewrite)."
+- acceptance: A documented probe (command + output + `uname -r`) shows SO_BINDTODEVICE succeeding under a CAP_NET_ADMIN-only bounding set on a supported kernel. `grep -rn CAP_NET_RAW internal/ packaging/ docs/` shows no remaining claim contradicting the finding; the pathsock_linux.go comment, both unit files' comments, and docs/install.md state the same kernel-version-qualified rule with the source-IP fallback documented. `just lint && just test` stay green; unit CapabilityBoundingSet unchanged unless the probe proves CAP_NET_RAW is actually required.
+- suggestedModel: standard
+- dependsOn: ["T136"]
+- ledgerRefs: ["goals:G11","defects:D40"]

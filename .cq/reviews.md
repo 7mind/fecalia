@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 130
+  item: 132
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1484,3 +1484,33 @@ archives:
 - ledgerRefs: ["goals:G9"]
 - sessionLogs: [".cq/logs/20260714-100557-a19544394bc175b00.md",".cq/logs/20260714-100557-a35b26d6acaee7e2d.md"]
 - rawLogs: [".cq/logs/raw/20260714-100557-a19544394bc175b00.jsonl",".cq/logs/raw/20260714-100557-a35b26d6acaee7e2d.jsonl"]
+
+## M37
+
+### R131 — revise
+
+- createdAt: 2026-07-14T10:14:55.933Z
+- updatedAt: 2026-07-14T10:14:55.933Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G10 plan review round 1 — RECONCILED REVISE (both [opus]+[fable] revise). Both verified the D48/D53 fix sites are complete + hazard-free (only 2 uncounted tx writes, atomic counters; 9 NewMultipath callers; both fallback layers + CAP covered) and T133→T134 serialization is justified. Reconciled union of 3 planner-fixable findings, folded into T133/T135:"
+- criticism: ["[opus+fable] T135 Bind either/or is a FALSE DICHOTOMY: config.Config has Bind at BOTH levels — top-level c.Bind global default (normalize, config.go:841-843) AND per-path Path.Bind with fallback (:847-849). FIX both/and: extend the same-name-path comparison with l.Bind != d.Bind (normalize resolves the default into every path, covering effective changes) AND explicitly handle top-level c.Bind (own DeepEqual case, OR deliberately zero it in the catch-all as covered-by-per-path) — else a top-level bind change fires only the generic catch-all instead of an actionable per-section warning. [ADDRESSED in revised T135.]","[opus] SEQUENCING: T134 (9 NewMultipath call sites in device.go) and T135 (reloadWarnings in device.go) BOTH edit internal/device/device.go, but T135 is parallel while T133→T134 were serialized on the same-file rationale. Apply consistently: T135 dependsOn T134. [ADDRESSED: T135 now dependsOn T134.]","[fable] T133 gaps: (a) the peerPathState txBytes counter-contract comment (multipath.go:157-167) states txBytes 'counts DATA-frame wire bytes on the Send hot path' + 'the backup path's Send count stays ~flat' — both FALSE once probe/echo bytes count; extend item (3) to update that comment. (b) T133 is the ONLY task without the AGENTS.md docs-sync clause despite changing an operator-visible metric — add: check/update README.md + docs/design.md wherever wanbond_path_tx_bytes_total / the idle-standby-tx symptom is documented. (c) Clarify 'flip the T104 subtest' = update its stale repro COMMENTARY (file doc-comment predicting failure + the refile-as-defect note); the subtest already asserts delta>0, no assertion logic inverts. [ADDRESSED in revised T133.]"]
+- new_questions: []
+- ledgerRefs: ["goals:G10"]
+- sessionLogs: [".cq/logs/20260714-101133-a0a8f038fe804a40b.md",".cq/logs/20260714-101133-afc7473f1aa34cb37.md"]
+- rawLogs: [".cq/logs/raw/20260714-101133-a0a8f038fe804a40b.jsonl",".cq/logs/raw/20260714-101133-afc7473f1aa34cb37.jsonl"]
+
+## M38
+
+### R132 — go-ahead
+
+- createdAt: 2026-07-14T10:21:03.533Z
+- updatedAt: 2026-07-14T10:21:03.533Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G11 plan review round 1 — RECONCILED GO-AHEAD (unanimous: both [opus]+[fable] go-ahead, 0 criticisms). Both reviewers independently ground-verified all 7 defect fixes against the working tree across the fine-grained/sequenced/testable/grounded/complete axes: T136 (.golangci.yml is v2 — the linters.exclusions.paths + formatters.exclusions.paths pivot from D54's stale v1 run.skip-dirs is correct, and the formatters half is load-bearing for the gofmt worktree-walk leak; doh.go:206 + dot.go:168 are genuine errcheck violations; the QF1001 site is now bind/pathsock.go:242 not the filed :166, which T136 anticipates by relocating via a lint run); T137 (9096 collision confirmed — pacing_test.go:75 + p3_fec_test.go:47, all other e2e ports unique across 9095-9102); T138 (all 4 config.go stale comments verbatim — BindMode :78-81, Path.Bind :492-493, PSK :577-578, Name :583-584 — with D60→delete / D57→replace correctly assigned and the claimed real consumers verified); T139 (zero external callers of Multipath.PathSnapshots/FECSnapshot — 3 traffic_test + 6 fec_test, none outside internal/bind; the metrics.FECSnapshot struct is a distinct type the grep's paren disambiguates); T140 (both shipped systemd units grant CAP_NET_ADMIN-only, so the empirical CAP_NET_ADMIN probe reproduces deployment reality, and the ≥5.7 unprivileged-SO_BINDTODEVICE floor + WebSearch verification is rigorous; don't-widen-unless-proven is the correct conservative posture). Sequencing: all-dependsOn-T136 is load-bearing (T138/T139 acceptances require `just lint` green, impossible before T136 lands on a RED base), a two-wave DAG with four file-disjoint parallel leaves. Completeness: all 7 defects map 1:1 to tasks with correct ledgerRefs; docs/install.md sync in T140; no orphaned scope. Only cosmetic non-blocking nits noted (stale 9101 hint self-corrected by T137's fresh-inventory mandate; two acceptance-grep case/history nits each redundantly covered by other clauses). No revision required."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["goals:G11"]
+- sessionLogs: [".cq/logs/20260714-102004-a2a60ff2d5102fd65.md",".cq/logs/20260714-102004-a2d056ba8c6f51a5a.md"]
+- rawLogs: [".cq/logs/raw/20260714-102004-a2a60ff2d5102fd65.jsonl",".cq/logs/raw/20260714-102004-a2d056ba8c6f51a5a.jsonl"]

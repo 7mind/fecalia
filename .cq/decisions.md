@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 10
+  item: 11
 archives: []
 ---
 
@@ -135,3 +135,17 @@ archives: []
 - landsIn: ["M45"]
 - sourceRefs: ["goals:G9","reviews:R130"]
 - ledgerRefs: ["goals:G9","defects:D41","defects:D43","defects:D55","defects:D59"]
+
+## M38
+
+### K11 — locked
+
+- createdAt: 2026-07-14T10:21:21.908Z
+- updatedAt: 2026-07-14T10:21:21.908Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G11 plan approved: code/test/doc-comment hygiene sweep DAG locked (M47 / T136-T140)"
+- rationale: "Unanimous round-1 reviewer go-ahead (R132, opus+fable, 0 criticisms). Two-wave DAG: T136 (root) fixes the 3 pre-existing golangci findings (doh.go:206 + dot.go:168 errcheck; the QF1001 site — now bind/pathsock.go:242, relocated via a lint run) AND installs the v2 .golangci.yml exclusions (linters.exclusions.paths + formatters.exclusions.paths for .claude/worktrees, D54) to make `just lint` green + hermetic — a genuine prerequisite because T138/T139 acceptances require a green lint gate (D45+D54). Then four file-disjoint parallel leaves each dependsOn T136: T137 (e2e /metrics port collision — pacing_test.go+p3_fec_test.go both 9096 — fresh port inventory + unique assignment, D51); T138 (stale config.go comments — D60 delete BindMode/Path.Bind 'config surface only', D57 replace PSK/Name 'not yet consumed' with real consumers); T139 (delete superseded primary-only Multipath.PathSnapshots/FECSnapshot seams — zero external callers — migrating bind tests to PeerSnapshots so the delivered-count derivation lives once, D56); T140 (reconcile SO_BINDTODEVICE capability — pathsock_linux.go CAP_NET_RAW comment vs CAP_NET_ADMIN-only units — via an empirical CAP_NET_ADMIN worker probe + ≥5.7 kernel-floor verification, widening the unit only if proven required, D40). All 7 defects map 1:1 with correct ledgerRefs; docs/install.md sync in T140. Synthesized from convergent opus+fable candidate plans. Fixes defects:D40/D45/D51/D54/D56/D57/D60."
+- landsIn: ["M47"]
+- sourceRefs: ["goals:G11","reviews:R132"]
+- ledgerRefs: ["goals:G11","defects:D40","defects:D45","defects:D51","defects:D54","defects:D56","defects:D57","defects:D60"]
