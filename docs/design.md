@@ -482,8 +482,10 @@ outage, network unreachable) **never blocks tunnel bring-up**. The tunnel
 boots without that endpoint, and a background re-resolution loop (at the
 cadence `[dns].poll_interval`, default 30s) installs it and initiates the
 Noise handshake on the first successful lookup. Steady-state re-resolution then
-repoints the bond whenever the hostname's record changes (TTL-driven or faster,
-per the operational `poll_interval`).
+repoints the bond only when the **active** endpoint's own AddrPort no longer
+appears in its spec's freshly re-resolved, non-empty expansion (TTL-driven or
+faster, per the operational `poll_interval`) — see "Change suppression" below
+for the exact scope of that check.
 
 - **Re-resolution cadence**: `[dns].poll_interval` (default 30s, must be > 0).
   Governs how often an opted-in hostname endpoint is re-resolved; changes are
@@ -497,32 +499,45 @@ per the operational `poll_interval`).
   normal TTL-clamped `poll_interval` delay; a sustained outage is covered by
   that regular poll loop, not by a shortened cadence.
 
-- **Change suppression**: Re-resolution results that are identical to the prior
-  set (same IP + port, same order) do not trigger re-keying or re-handshake —
-  they are silent, minimizing control churn.
+- **Change suppression**: suppression is **active-survival-scoped, not
+  set-identity-scoped**. `updateResolution` repoints only when the currently
+  active AddrPort is **absent** from its spec's freshly re-resolved,
+  non-empty expansion. Any re-resolution where the active AddrPort still
+  appears anywhere in the new expansion — including a genuinely changed set
+  that merely *added* an address, reordered the standbys, or dropped a
+  different (non-active) address — takes no repoint and no re-handshake; only
+  the derived flattened index is re-mapped. A repoint (one `SetPeerRemote` +
+  one re-handshake) fires only when the active AddrPort disappears from its
+  spec's new non-empty expansion, and it re-points to that expansion's new
+  first entry.
 
 ### Mixing rules with ordered endpoints
 
 When a peer declares multiple endpoints via the `endpoints` list (hub-failover),
 and one or more are hostnames (`dns = true`), the following rules apply:
 
-1. **Each hostname expands to its full A+AAAA record set** at resolve time, but
-   the resolver's own answer order is **not** preserved: `orderAddrPorts`
-   deterministically re-orders that spec's addresses IPv4-first-then-IPv6, and
-   drops any address of a family no local path can source (a v4-only edge
-   drops AAAA answers) — so an unchanged DNS answer always yields a
-   byte-identical expansion, independent of the resolver's own record order.
-   Endpoint *selection* is always ordered **ACTIVE-STANDBY** — `hubFailover`
-   advances through the flattened, ordered list on hub loss; `[scheduler]`'s
-   weighted policy is never consulted here (see above).
+1. **Each hostname expands to its full A+AAAA record set** at resolve time.
+   `orderAddrPorts` imposes only a family partition — IPv4 records first, then
+   IPv6 — and **preserves the resolver's own encounter order within each
+   family**; it does not sort by value. It also drops any address of a family
+   no local path can source (a v4-only edge drops AAAA answers). Consequently
+   the expansion is byte-identical tick after tick only when the resolver
+   returns the same records in the same within-family order; a same-set but
+   differently-ordered answer (e.g. DNS round-robin rotating the record order)
+   yields a differently-ordered expansion, which reorders the standby advance
+   sequence for that spec. Endpoint *selection* is always ordered
+   **ACTIVE-STANDBY** — `hubFailover` advances through the flattened, ordered
+   list on hub loss; `[scheduler]`'s weighted policy is never consulted here
+   (see above).
 
 2. **Order preservation**: the `endpoints` list order is **strict** — index 0
    is the active concentrator, index N are ordered standbys, and hub-failover
    advances through them in that order on hub loss. When a hostname at index K
    resolves to multiple addresses, they are inserted *consecutively* in that
    order (first address fills index K, subsequent addresses shift later
-   entries right in the flattened ordering) — but, per rule 1, in the
-   family-ordered form, not raw resolver order.
+   entries right in the flattened ordering) — in the family-partitioned,
+   within-family-resolver-order form described in rule 1, not a value-sorted
+   order.
 
 3. **Deduplication is per-namespace and load-time only; resolved addresses are
    never deduplicated across specs.** At config load, `resolveEndpoints`
