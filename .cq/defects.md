@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 44
+  item: 46
 archives: []
 ---
 
@@ -623,3 +623,29 @@ archives: []
 - severity: medium
 - suggestedFix: Accept Go duration strings uniformly for all operator-facing duration knobs (LinkRTTRaw-style raw string + time.ParseDuration in normalize, or a shared TOML-text-unmarshaling duration wrapper), and add a config test matrix loading every documented string form; alternatively correct the docs to integer nanoseconds (worse operator UX, inconsistent with link_rtt).
 - ledgerRefs: ["tasks:T72","goals:G5"]
+
+## M21
+
+### D45 — open
+
+- createdAt: 2026-07-14T01:02:00.302Z
+- updatedAt: 2026-07-14T01:02:00.302Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "just lint red at base: 3 pre-existing findings in dnsresolve and bind"
+- description: "golangci-lint (clean cache, nix develop shell) exits 1 at 276a6ea AND at base 817dac4: errcheck on unchecked deferred Close at internal/dnsresolve/doh.go:206 (resp.Body.Close) and internal/dnsresolve/dot.go:168 (conn.Close), plus staticcheck QF1001 at internal/bind/pathsock.go:166. All three files byte-identical between base and the T70 branch, so the breakage pre-exists T70. A red lint gate on the base masks new lint regressions in every in-flight task. Filed from implement review of T70 round 2 ([fable] reviewer, file-and-defer per K13)."
+- severity: medium
+- suggestedFix: Fix the two unchecked Close returns (assign or //nolint with justification per repo convention) and apply the QF1001 De Morgan rewrite, or reconcile the golangci-lint version/config drift in the dev shell if these linters were not previously enabled.
+- ledgerRefs: ["tasks:T70","goals:G5"]
+
+### D46 — open
+
+- createdAt: 2026-07-14T01:02:05.420Z
+- updatedAt: 2026-07-14T01:02:05.420Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "hubFailover: stale active with flattened total < 2 strands the bond despite one live standby record"
+- description: "internal/device/failover.go: updateResolution's contract says a change that empties the active spec leaves the identity stale and 'the next check on hub loss advances off it' — but check's total<2 guard blocks that advance when the emptying leaves exactly one record in another spec (e.g. two hostname specs, active re-resolves empty, standby holds one record). The bond stays pointed at the gone address under full hub loss until an expansion grows. Reachable only if the T73 resolver ever publishes an empty expansion for a previously-resolved hostname. Filed from implement review of T70 round 2 ([fable] reviewer, file-and-defer per K13); resolve alongside/within T73."
+- severity: low
+- suggestedFix: In T73, either never publish an empty expansion (retain last-good records on NXDOMAIN/timeout), or exempt the stale-active case (flatIndexLocked == -1 with total >= 1) from check's total<2 guard.
+- ledgerRefs: ["tasks:T70","tasks:T73","goals:G5"]

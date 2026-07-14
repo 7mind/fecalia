@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 89
+  item: 90
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -927,3 +927,18 @@ archives:
 - ledgerRefs: ["tasks:T87","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-004825-a19e6e3ee6175b726.md",".cq/logs/20260714-004825-a260f3da7a78a9174.md"]
 - rawLogs: [".cq/logs/raw/20260714-004825-a19e6e3ee6175b726.jsonl",".cq/logs/raw/20260714-004825-a260f3da7a78a9174.jsonl"]
+
+## M21
+
+### R90 — go-ahead
+
+- createdAt: 2026-07-14T01:02:40.367Z
+- updatedAt: 2026-07-14T01:02:40.367Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T70 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on 2 criticisms — activeSpec==-1 absorbing boot state (single-hostname peer never receives an endpoint) and missing lastSwitch settle-dwell reset on repoint; R2 (276a6ea) unanimous approve — boot adoption with one SetPeerRemote+rehandshake+dwell-arm, lastSwitch reset in the repoint branch, both new tests verified failing pre-fix. Two out-of-scope defects filed file-and-defer: D45 (pre-existing lint red at base) and D46 (T73-contingent total<2 stranding corner)."
+- criticism: ["[fable+opus, R1, RESOLVED R2] updateResolution could not activate from the all-empty boot state — single-hostname peer's bond never received an endpoint through the update API T73 must use.","[fable, R1, RESOLVED R2] the active-IP-change repoint skipped the lastSwitch settle-dwell reset, allowing an immediate second disruptive advance."]
+- new_questions: []
+- ledgerRefs: ["tasks:T70","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-005639-a4a5512b111f43aa0.md",".cq/logs/20260714-005639-a5c7bef556145b214.md",".cq/logs/20260714-010221-a67a4e5aa186a68a1.md",".cq/logs/20260714-010221-a7f9ccd45b1752e7f.md"]
+- rawLogs: [".cq/logs/raw/20260714-005639-a4a5512b111f43aa0.jsonl",".cq/logs/raw/20260714-005639-a5c7bef556145b214.jsonl",".cq/logs/raw/20260714-010221-a67a4e5aa186a68a1.jsonl",".cq/logs/raw/20260714-010221-a7f9ccd45b1752e7f.jsonl"]

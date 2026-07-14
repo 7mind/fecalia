@@ -675,10 +675,10 @@ archives:
 
 ## M21
 
-### T70 — wip
+### T70 — done
 
 - createdAt: 2026-07-13T21:54:32.763Z
-- updatedAt: 2026-07-14T00:33:00.857Z
+- updatedAt: 2026-07-14T01:02:46.864Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Refactor hubFailover to a mutable, spec-keyed endpoint set updated under its lock
@@ -687,6 +687,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T67"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 1fc6042
+- completion: "hubFailover refactored to a mutable spec-keyed endpoint set: []failoverSpec with per-spec expansions, (specIdx,AddrPort) active identity, updateResolution with D32 no-op suppression + boot adoption + dwell re-arm, peerNeedsHubFailover gating; 8 new acceptance tests incl. R70 cross-spec duplicate; 2 review rounds; merged ff to main. D45/D46 filed for follow-ups."
+- sessionLogs: [".cq/logs/20260714-004559-a5e1fb1cab9a92f66.md",".cq/logs/20260714-005639-a5279f6a07039286a.md",".cq/logs/20260714-005639-a4a5512b111f43aa0.md",".cq/logs/20260714-005639-a5c7bef556145b214.md",".cq/logs/20260714-010221-a67a4e5aa186a68a1.md",".cq/logs/20260714-010221-a7f9ccd45b1752e7f.md"]
+- rawLogs: [".cq/logs/raw/20260714-004559-a5e1fb1cab9a92f66.jsonl",".cq/logs/raw/20260714-005639-a5279f6a07039286a.jsonl",".cq/logs/raw/20260714-005639-a4a5512b111f43aa0.jsonl",".cq/logs/raw/20260714-005639-a5c7bef556145b214.jsonl",".cq/logs/raw/20260714-010221-a67a4e5aa186a68a1.jsonl",".cq/logs/raw/20260714-010221-a7f9ccd45b1752e7f.jsonl"]
 
 ### T73 — planned
 
