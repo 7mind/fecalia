@@ -61,12 +61,12 @@ func echoChallenge(t *testing.T, psk config.Key, echo []byte) uint64 {
 // startSeq+1). It returns the next unused ProbeSeq (startSeq+2).
 func adoptSession(t *testing.T, r *Reflector, psk config.Key, pathID uint8, sessionID, startSeq uint64) uint64 {
 	t.Helper()
-	echo, err := r.Reflect(encodeProbe(t, psk, pathID, sessionID, startSeq, false, 0))
+	echo, _, err := r.Reflect(encodeProbe(t, psk, pathID, sessionID, startSeq, false, 0))
 	if err != nil {
 		t.Fatalf("bootstrap probe rejected: %v", err)
 	}
 	ch := echoChallenge(t, psk, echo)
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, sessionID, startSeq+1, false, ch)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, sessionID, startSeq+1, false, ch)); err != nil {
 		t.Fatalf("adoption probe (challenge echoed) rejected: %v", err)
 	}
 	return startSeq + 2
@@ -84,7 +84,7 @@ func TestProbeEchoRTT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send probe: %v", err)
 	}
-	echo, err := r.Reflect(raw)
+	echo, _, err := r.Reflect(raw)
 	if err != nil {
 		t.Fatalf("reflect: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestForgedProbeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send probe: %v", err)
 	}
-	echo, err := r.Reflect(raw)
+	echo, _, err := r.Reflect(raw)
 	if err != nil {
 		t.Fatalf("reflect: %v", err)
 	}
@@ -164,10 +164,10 @@ func TestProbeReplayRejected(t *testing.T) {
 	r := NewReflector(psk, newTestRand())
 	const session = uint64(0x9999_0000_9999_0000)
 	next := adoptSession(t, r, psk, 1, session, 0) // high-water at 1
-	if _, err := r.Reflect(encodeProbe(t, psk, 1, session, next, false, 0)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, 1, session, next, false, 0)); err != nil {
 		t.Fatalf("fresh within-session probe rejected: %v", err)
 	}
-	if _, err := r.Reflect(encodeProbe(t, psk, 1, session, next, false, 0)); !errors.Is(err, ErrReplay) {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, 1, session, next, false, 0)); !errors.Is(err, ErrReplay) {
 		t.Fatalf("reflector accepted replayed within-session probe: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestProbeReplayRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send probe: %v", err)
 	}
-	echo, err := NewReflector(psk, newTestRand()).Reflect(raw)
+	echo, _, err := NewReflector(psk, newTestRand()).Reflect(raw)
 	if err != nil {
 		t.Fatalf("reflect: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestNonProbeFrameRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode control: %v", err)
 	}
-	if _, err := r.Reflect(ctrl); err == nil {
+	if _, _, err := r.Reflect(ctrl); err == nil {
 		t.Fatal("reflector accepted a control frame")
 	}
 	if err := p.HandleEcho(ctrl); err == nil {
@@ -244,16 +244,16 @@ func TestReflectorPerPathAntiReplay(t *testing.T) {
 	nextB := adoptSession(t, r, psk, 2, session, 0)
 
 	// Path A fresh probe accepted.
-	if _, err := r.Reflect(encodeProbe(t, psk, 1, session, nextA, false, 0)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, 1, session, nextA, false, 0)); err != nil {
 		t.Fatalf("path A fresh probe: %v", err)
 	}
 	// Path B has an independent seq space: its own next is accepted, not seen as an
 	// A replay.
-	if _, err := r.Reflect(encodeProbe(t, psk, 2, session, nextB, false, 0)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, 2, session, nextB, false, 0)); err != nil {
 		t.Fatalf("path B independent seq rejected as a cross-path replay: %v", err)
 	}
 	// A genuine per-path replay (path A seq nextA again) is rejected.
-	if _, err := r.Reflect(encodeProbe(t, psk, 1, session, nextA, false, 0)); !errors.Is(err, ErrReplay) {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, 1, session, nextA, false, 0)); !errors.Is(err, ErrReplay) {
 		t.Fatalf("path A replay: got %v, want ErrReplay", err)
 	}
 }
@@ -277,28 +277,28 @@ func TestReflectorSessionEpochResetOnPeerRestart(t *testing.T) {
 	// Session 1 adopted, then advances.
 	next := adoptSession(t, r, psk, pathID, s1, 0) // high-water at 1, next == 2
 	for seq := next; seq <= next+1; seq++ {
-		if _, err := r.Reflect(encodeProbe(t, psk, pathID, s1, seq, false, 0)); err != nil {
+		if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, s1, seq, false, 0)); err != nil {
 			t.Fatalf("session 1 seq %d: %v", seq, err)
 		}
 	}
 	// D4 preserved WITHIN the session: a replayed/stale seq is rejected.
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, s1, next, false, 0)); !errors.Is(err, ErrReplay) {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, s1, next, false, 0)); !errors.Is(err, ErrReplay) {
 		t.Fatalf("within-session replay: got %v, want ErrReplay", err)
 	}
 
 	// Peer restart: a NEW SessionID with seq from 0. Its bootstrap probe (challenge
 	// 0) is NOT adopted but IS reflected, teaching it the live challenge; its next
 	// probe echoes that challenge and IS adopted, resetting the high-water (D12).
-	echo, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 0, false, 0))
+	echo, _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 0, false, 0))
 	if err != nil {
 		t.Fatalf("restart bootstrap probe rejected: %v", err)
 	}
 	ch := echoChallenge(t, psk, echo)
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 1, false, ch)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 1, false, ch)); err != nil {
 		t.Fatalf("restart adoption probe rejected (D12 deadlock): %v", err)
 	}
 	// The new session then enforces its own within-session monotonicity.
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 1, false, 0)); !errors.Is(err, ErrReplay) {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 1, false, 0)); !errors.Is(err, ErrReplay) {
 		t.Fatalf("session 2 replay: got %v, want ErrReplay", err)
 	}
 }
@@ -321,7 +321,7 @@ func TestReflectorReplayCannotSeizeSession(t *testing.T) {
 	// The legit peer adopts its session and advances its high-water.
 	next := adoptSession(t, r, psk, pathID, sLegit, 0) // high-water at 1
 	for _, seq := range []uint64{next, next + 1} {
-		if _, err := r.Reflect(encodeProbe(t, psk, pathID, sLegit, seq, false, 0)); err != nil {
+		if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, sLegit, seq, false, 0)); err != nil {
 			t.Fatalf("legit seq %d: %v", seq, err)
 		}
 	}
@@ -332,18 +332,18 @@ func TestReflectorReplayCannotSeizeSession(t *testing.T) {
 	for _, atk := range []struct{ seq, ch uint64 }{
 		{0, 0}, {0, 0xDEAD}, {highWater + 100, 0}, {highWater + 100, 0x1234},
 	} {
-		if _, err := r.Reflect(encodeProbe(t, psk, pathID, sEvil, atk.seq, false, atk.ch)); err != nil {
+		if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, sEvil, atk.seq, false, atk.ch)); err != nil {
 			t.Fatalf("injected probe seq=%d ch=%#x unexpectedly errored: %v", atk.seq, atk.ch, err)
 		}
 	}
 
 	// The legit session was NOT seized: its next in-order probe is still accepted...
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, sLegit, highWater+1, false, 0)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, sLegit, highWater+1, false, 0)); err != nil {
 		t.Fatalf("legit session was seized/retired by the replay: %v", err)
 	}
 	// ...and its high-water was NOT rolled back: replaying an already-seen seq is
 	// still rejected.
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, sLegit, highWater, false, 0)); !errors.Is(err, ErrReplay) {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, sLegit, highWater, false, 0)); !errors.Is(err, ErrReplay) {
 		t.Fatalf("legit high-water rolled back by the injection: got %v, want ErrReplay", err)
 	}
 }
@@ -361,33 +361,33 @@ func TestReflectorAdoptionProbeCannotReadopt(t *testing.T) {
 	)
 
 	// Bootstrap + adopt s1; capture its adoption probe (carrying the then-live ch1).
-	echo, err := r.Reflect(encodeProbe(t, psk, pathID, s1, 0, false, 0))
+	echo, _, err := r.Reflect(encodeProbe(t, psk, pathID, s1, 0, false, 0))
 	if err != nil {
 		t.Fatalf("s1 bootstrap: %v", err)
 	}
 	ch1 := echoChallenge(t, psk, echo)
 	adoptProbe := encodeProbe(t, psk, pathID, s1, 1, false, ch1)
-	if _, err := r.Reflect(adoptProbe); err != nil {
+	if _, _, err := r.Reflect(adoptProbe); err != nil {
 		t.Fatalf("adopt s1: %v", err)
 	}
 
 	// Peer restarts to s2 and adopts (the challenge has rotated since s1's adoption).
-	echo2, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 0, false, 0))
+	echo2, _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 0, false, 0))
 	if err != nil {
 		t.Fatalf("s2 bootstrap: %v", err)
 	}
 	ch2 := echoChallenge(t, psk, echo2)
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 1, false, ch2)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 1, false, ch2)); err != nil {
 		t.Fatalf("adopt s2: %v", err)
 	}
 
 	// Replay the captured s1 adoption probe: ch1 is now stale, so it must NOT
 	// re-adopt s1 (merely reflected).
-	if _, err := r.Reflect(adoptProbe); err != nil {
+	if _, _, err := r.Reflect(adoptProbe); err != nil {
 		t.Fatalf("replayed adoption probe errored unexpectedly: %v", err)
 	}
 	// s2 remains the live session: its in-order probe is still accepted.
-	if _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 2, false, 0)); err != nil {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, pathID, s2, 2, false, 0)); err != nil {
 		t.Fatalf("s2 was re-seized by the replayed s1 adoption probe: %v", err)
 	}
 }
@@ -404,7 +404,7 @@ func TestReflectorSessionPerPathIndependent(t *testing.T) {
 	// The same session id on a DIFFERENT path is independent: adopt it there too.
 	adoptSession(t, r, psk, 2, s1, 0)
 	// Path 1's high-water is untouched by path 2: replaying path 1 seq 5 rejected.
-	if _, err := r.Reflect(encodeProbe(t, psk, 1, s1, 5, false, 0)); !errors.Is(err, ErrReplay) {
+	if _, _, err := r.Reflect(encodeProbe(t, psk, 1, s1, 5, false, 0)); !errors.Is(err, ErrReplay) {
 		t.Fatalf("path 1 replay after path 2 activity: got %v, want ErrReplay", err)
 	}
 }
@@ -435,7 +435,7 @@ func TestProberRejectsForeignSessionEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send probe: %v", err)
 	}
-	echo, err := NewReflector(psk, newTestRand()).Reflect(raw)
+	echo, _, err := NewReflector(psk, newTestRand()).Reflect(raw)
 	if err != nil {
 		t.Fatalf("reflect: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestProberLearnsAndEchoesChallenge(t *testing.T) {
 	if got := echoChallenge(t, psk, raw0); got != 0 {
 		t.Fatalf("bootstrap probe challenge = %#x, want 0", got)
 	}
-	echo0, err := r.Reflect(raw0)
+	echo0, _, err := r.Reflect(raw0)
 	if err != nil {
 		t.Fatalf("reflect 0: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestProberLearnsAndEchoesChallenge(t *testing.T) {
 	if got := echoChallenge(t, psk, raw1); got != issued {
 		t.Fatalf("second probe challenge = %#x, want learned %#x", got, issued)
 	}
-	if _, err := r.Reflect(raw1); err != nil {
+	if _, _, err := r.Reflect(raw1); err != nil {
 		t.Fatalf("adoption probe rejected: %v", err)
 	}
 }
@@ -499,15 +499,20 @@ func TestProbeSessionEpochSurvivesPeerRestart(t *testing.T) {
 	cfg := proberCfg()
 	r := NewReflector(psk, newTestRand()) // the surviving peer
 
-	bringUp := func(p *Prober) {
+	// bringUp drives the Prober Up and returns how many of its probes the responder
+	// surfaced as a peer-restart epoch change (the new Reflect flag, T116).
+	bringUp := func(p *Prober) (epochChanges int) {
 		for i := 0; i < cfg.Liveness.UpAfterSuccesses; i++ {
 			raw, err := p.SendProbe()
 			if err != nil {
 				t.Fatalf("send probe: %v", err)
 			}
-			echo, err := r.Reflect(raw)
+			echo, epochChanged, err := r.Reflect(raw)
 			if err != nil {
 				t.Fatalf("reflect: %v", err)
+			}
+			if epochChanged {
+				epochChanges++
 			}
 			clk.advance(10 * time.Millisecond)
 			if err := p.HandleEcho(echo); err != nil {
@@ -515,21 +520,115 @@ func TestProbeSessionEpochSurvivesPeerRestart(t *testing.T) {
 			}
 			p.Tick()
 		}
+		return epochChanges
 	}
 
-	// Boot 1 comes Up against the responder.
+	// Boot 1 comes Up against the responder. Its adoption is a FIRST-EVER bootstrap,
+	// not a restart, so no probe reports an epoch change.
 	boot1 := NewProber("starlink", 1, 0xB0071111, psk, cfg, clk, discardLogger(t))
-	bringUp(boot1)
+	if got := bringUp(boot1); got != 0 {
+		t.Fatalf("boot 1 first-ever bootstrap surfaced %d epoch changes, want 0", got)
+	}
 	if boot1.State() != StateUp {
 		t.Fatalf("boot 1 state = %v, want up", boot1.State())
 	}
 
 	// Restart: a brand-new Prober with a NEW session id and nextSeq back at 0,
 	// against the SAME (unrestarted) responder whose high-water is already advanced.
+	// The adoption over the already-adopted path is a RESTART: it surfaces the epoch
+	// change EXACTLY ONCE (the challenge-carrying adoption probe; the bootstrap probe
+	// and the following within-session probe do not).
 	boot2 := NewProber("starlink", 1, 0xB0072222, psk, cfg, clk, discardLogger(t))
-	bringUp(boot2)
+	if got := bringUp(boot2); got != 1 {
+		t.Fatalf("restarted boot 2 surfaced %d epoch changes, want exactly 1", got)
+	}
 	if boot2.State() != StateUp {
 		t.Fatalf("restarted boot 2 never came up (D12 liveness deadlock): state = %v", boot2.State())
+	}
+}
+
+// reflectAdopt drives the two-round challenge handshake so r adopts sessionID on
+// pathID and returns the next unused ProbeSeq plus whether the adoption (round 2)
+// surfaced a peer-restart epoch change (T116). Round 1 (challenge 0) is reflected
+// and teaches the live challenge; round 2 carries it and is adopted. The bootstrap
+// round must never itself report an epoch change (it adopts nothing).
+func reflectAdopt(t *testing.T, r *Reflector, psk config.Key, pathID uint8, sessionID, startSeq uint64) (nextSeq uint64, epochChanged bool) {
+	t.Helper()
+	echo, ec0, err := r.Reflect(encodeProbe(t, psk, pathID, sessionID, startSeq, false, 0))
+	if err != nil {
+		t.Fatalf("bootstrap probe (session %#x) rejected: %v", sessionID, err)
+	}
+	if ec0 {
+		t.Fatalf("bootstrap probe (session %#x, challenge 0) reported epochChanged=true, want false", sessionID)
+	}
+	ch := echoChallenge(t, psk, echo)
+	_, ec1, err := r.Reflect(encodeProbe(t, psk, pathID, sessionID, startSeq+1, false, ch))
+	if err != nil {
+		t.Fatalf("adoption probe (session %#x) rejected: %v", sessionID, err)
+	}
+	return startSeq + 2, ec1
+}
+
+// TestReflectEpochChangedOnPeerRestart is the T116 acceptance for the peer-restart
+// signal surfaced from Reflect: (a) a restart adoption over an already-adopted path
+// reports epochChanged=true EXACTLY ONCE even across multiple paths of the same
+// boot; (b) a first-ever bootstrap adoption reports false; (c) a cross-session probe
+// WITHOUT the live challenge (replay/forgery) reports false; (d) within-session
+// probes and per-path duplicates report false.
+func TestReflectEpochChangedOnPeerRestart(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	r := NewReflector(psk, newTestRand())
+	const (
+		p1 = uint8(1)
+		p2 = uint8(2)
+		s1 = uint64(0xB0071111) // first boot
+		s2 = uint64(0xB0072222) // second boot (restart)
+		s3 = uint64(0xB0073333) // third boot (a later restart)
+	)
+
+	// (b) First-ever bootstrap adoption is NOT a restart: false on every path of the
+	// first boot (both paths adopt s1 for the first time).
+	if _, ec := reflectAdopt(t, r, psk, p1, s1, 0); ec {
+		t.Fatal("first-ever bootstrap adoption on path 1 reported epochChanged=true, want false")
+	}
+	if _, ec := reflectAdopt(t, r, psk, p2, s1, 0); ec {
+		t.Fatal("first-ever bootstrap adoption on path 2 reported epochChanged=true, want false")
+	}
+
+	// (a) The peer restarts to s2. The first already-adopted path to re-adopt reports
+	// the epoch change; the SECOND path of the same boot carries the same sessionID
+	// and is deduped at the Reflector to false.
+	if _, ec := reflectAdopt(t, r, psk, p1, s2, 10); !ec {
+		t.Fatal("restart adoption on path 1 reported epochChanged=false, want true")
+	}
+	if _, ec := reflectAdopt(t, r, psk, p2, s2, 10); ec {
+		t.Fatal("restart adoption on path 2 (same boot) reported epochChanged=true; per-epoch dedup failed")
+	}
+
+	// (c) A cross-session probe WITHOUT the live challenge (a replay attacker or a
+	// forgery) is reflected but adopts nothing, so it never reports an epoch change —
+	// neither with a zero challenge nor with a wrong non-zero one.
+	if _, ec, err := r.Reflect(encodeProbe(t, psk, p1, s3, 0, false, 0)); err != nil || ec {
+		t.Fatalf("cross-session probe (zero challenge): err=%v epochChanged=%v, want nil/false", err, ec)
+	}
+	if _, ec, err := r.Reflect(encodeProbe(t, psk, p1, s3, 1, false, 0x1234_5678_9ABC_DEF0)); err != nil || ec {
+		t.Fatalf("cross-session probe (wrong challenge): err=%v epochChanged=%v, want nil/false", err, ec)
+	}
+
+	// (d) Within-session probes and per-path duplicates never report an epoch change:
+	// s2 is still the adopted session on p1 with its high-water at 11, so seq 12 is a
+	// fresh in-session probe and a re-sent seq 12 is a rejected duplicate.
+	if _, ec, err := r.Reflect(encodeProbe(t, psk, p1, s2, 12, false, 0)); err != nil || ec {
+		t.Fatalf("within-session probe: err=%v epochChanged=%v, want nil/false", err, ec)
+	}
+	if _, ec, err := r.Reflect(encodeProbe(t, psk, p1, s2, 12, false, 0)); !errors.Is(err, ErrReplay) || ec {
+		t.Fatalf("within-session duplicate: err=%v epochChanged=%v, want ErrReplay/false", err, ec)
+	}
+
+	// A subsequent GENUINE restart to a new epoch fires again — the dedup is per new
+	// epoch, not once-for-all.
+	if _, ec := reflectAdopt(t, r, psk, p1, s3, 20); !ec {
+		t.Fatal("restart to a new epoch reported epochChanged=false, want true")
 	}
 }
 
@@ -581,7 +680,7 @@ func TestProberConcurrent(t *testing.T) {
 				t.Errorf("send probe: %v", err)
 				return
 			}
-			echo, err := r.Reflect(raw)
+			echo, _, err := r.Reflect(raw)
 			if err != nil {
 				t.Errorf("reflect: %v", err)
 				return
@@ -630,7 +729,7 @@ func TestReflectorConcurrent(t *testing.T) {
 					t.Errorf("encode: %v", err)
 					return
 				}
-				if _, err := r.Reflect(raw); err != nil {
+				if _, _, err := r.Reflect(raw); err != nil {
 					t.Errorf("reflect path=%d seq=%d: %v", pathID, seq, err)
 					return
 				}
@@ -656,7 +755,7 @@ func TestProberDrivesLiveness(t *testing.T) {
 		if err != nil {
 			t.Fatalf("send probe %d: %v", i, err)
 		}
-		echo, err := r.Reflect(raw)
+		echo, _, err := r.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect %d: %v", i, err)
 		}

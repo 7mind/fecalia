@@ -311,6 +311,14 @@ type Reflector struct {
 
 	mu    sync.Mutex
 	paths map[uint8]*reflectorPath
+	// lastRestartSession is the most recent sessionID that a RESTART adoption
+	// (an adoption over an ALREADY-adopted path under a DIFFERENT sessionID)
+	// switched to. Because every prober of one boot shares one sessionID, this
+	// dedups the peer-restart signal at the Reflector (per-peer) level so an epoch
+	// change is surfaced ONCE per new epoch, not once per path that re-adopts it.
+	// haveRestartSession distinguishes "no restart yet" from a genuine zero id.
+	lastRestartSession uint64
+	haveRestartSession bool
 }
 
 // NewReflector builds a Reflector authenticating under psk and drawing its per-path
@@ -331,24 +339,33 @@ func NewReflector(psk config.Key, rand io.Reader) *Reflector {
 // CSPRNG cannot deliver a challenge. Every other authenticated probe — including a
 // cross-session probe that does NOT carry the live challenge — is reflected; it
 // simply does not reset the epoch.
-func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
+//
+// epochChanged reports an authenticated PEER RESTART: this probe adopted a NEW
+// session epoch over a path that was ALREADY adopted under a different session
+// (the D12 restart-recovery adoption). It is deduped at the Reflector so it is
+// true EXACTLY ONCE per new epoch even though every path of the restarted boot
+// re-adopts the same sessionID; it is false for a first-ever bootstrap adoption,
+// for a within-session probe, and for a cross-session probe that does not carry
+// the live challenge. The bind consumes the flag OUTSIDE r.mu (T119); the
+// Reflector itself stays resequencer-unaware — it only reports the boolean.
+func (r *Reflector) Reflect(raw []byte) (echo []byte, epochChanged bool, err error) {
 	f, err := frame.Decode(r.psk, raw)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	probe, ok := f.(frame.Probe)
 	if !ok {
-		return nil, fmt.Errorf("telemetry: expected probe, got frame kind %d", f.Kind())
+		return nil, false, fmt.Errorf("telemetry: expected probe, got frame kind %d", f.Kind())
 	}
 
 	r.mu.Lock()
-	issued, reflect, err := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq, probe.Challenge)
+	issued, reflect, restarted, err := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq, probe.Challenge)
 	r.mu.Unlock()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !reflect {
-		return nil, ErrReplay
+		return nil, false, ErrReplay
 	}
 	// Mark the reflection as an echo so the originator's transport routes it into its
 	// Prober (HandleEcho) rather than reflecting it again, and stamp the path's live
@@ -356,19 +373,24 @@ func (r *Reflector) Reflect(raw []byte) ([]byte, error) {
 	// TimestampNanos / SessionID are preserved verbatim.
 	probe.IsEcho = true
 	probe.Challenge = issued
-	return frame.Encode(r.psk, probe)
+	out, err := frame.Encode(r.psk, probe)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, restarted, nil
 }
 
 // acceptLocked applies the responder-contributed-challenge decision for one probe.
 // It reports the issued challenge to stamp into the echo, whether to reflect at all
-// (reflect=false => a within-session duplicate, surfaced as ErrReplay), and any
+// (reflect=false => a within-session duplicate, surfaced as ErrReplay), whether this
+// probe was a deduped peer-restart epoch change (epochChanged; see Reflect), and any
 // CSPRNG error. The caller holds r.mu. See Reflector for the full rule set.
-func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChallenge uint64) (issued uint64, reflect bool, err error) {
+func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChallenge uint64) (issued uint64, reflect bool, epochChanged bool, err error) {
 	st, ok := r.paths[pathID]
 	if !ok {
 		ch, derr := r.drawChallenge()
 		if derr != nil {
-			return 0, false, derr
+			return 0, false, false, derr
 		}
 		st = &reflectorPath{challenge: ch}
 		r.paths[pathID] = st
@@ -378,30 +400,42 @@ func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChalle
 	case st.adopted && sessionID == st.session:
 		// Current live session: strict-monotonic within-session replay rejection (D4).
 		if !st.guard.Accept(probeSeq) {
-			return 0, false, nil // known duplicate/stale: reject, do not reflect
+			return 0, false, false, nil // known duplicate/stale: reject, do not reflect
 		}
-		return st.challenge, true, nil
+		return st.challenge, true, false, nil
 	case echoedChallenge == st.challenge:
 		// Cross-session probe echoing our LIVE challenge: a genuine peer that received
 		// our echo. Adopt the new epoch, reset the high-water for its seq-from-0 stream,
 		// then ROTATE the challenge so this adoption probe can never be replayed later
 		// to re-adopt a superseded session.
+		//
+		// A RESTART is an adoption over an ALREADY-adopted path under a DIFFERENT
+		// sessionID; a first-ever bootstrap adoption (!st.adopted) is NOT a restart.
+		// Capture the classification BEFORE mutating st.
+		restart := st.adopted && sessionID != st.session
 		st.session = sessionID
 		st.adopted = true
 		st.guard = AntiReplay{}
 		st.guard.Accept(probeSeq)
 		ch, derr := r.drawChallenge()
 		if derr != nil {
-			return 0, false, derr
+			return 0, false, false, derr
 		}
 		st.challenge = ch
-		return st.challenge, true, nil
+		// Surface the restart ONCE per new epoch: every path of the restarted boot
+		// carries the same sessionID, so dedup on it at the Reflector level.
+		if restart && (!r.haveRestartSession || sessionID != r.lastRestartSession) {
+			r.lastRestartSession = sessionID
+			r.haveRestartSession = true
+			epochChanged = true
+		}
+		return st.challenge, true, epochChanged, nil
 	default:
 		// Cross-session probe WITHOUT our live challenge: a replay attacker (which can
 		// never carry the current challenge) or a not-yet-bootstrapped restarted peer.
 		// Never adopt/reset; still reflect the live challenge so a genuine peer learns
 		// it and is adopted on its next probe.
-		return st.challenge, true, nil
+		return st.challenge, true, false, nil
 	}
 }
 

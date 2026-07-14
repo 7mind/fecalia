@@ -53,7 +53,7 @@ func probeRound(t testing.TB, m *Multipath, clk *fakeClock, refl *telemetry.Refl
 		if err != nil {
 			t.Fatalf("re-encode probe: %v", err)
 		}
-		echo, err := refl.Reflect(raw)
+		echo, _, err := refl.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect path %d: %v", idx, err)
 		}
@@ -145,7 +145,7 @@ func TestMultipathAddPathAdmitsWhenHealthy(t *testing.T) {
 		readProbe(t, peer0, codec) // drain the primary's probe, no echo (blackhole)
 		probe := readProbe(t, peer1, codec)
 		raw, _ := frame.Encode(psk, probe)
-		echo, err := refl.Reflect(raw)
+		echo, _, err := refl.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect backup: %v", err)
 		}
@@ -508,7 +508,7 @@ func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
 		readProbe(t, peer0, codec) // drain primary probe, no echo (blackhole)
 		probe := readProbe(t, peer1, codec)
 		raw, _ := frame.Encode(psk, probe)
-		echo, err := refl.Reflect(raw)
+		echo, _, err := refl.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect backup: %v", err)
 		}

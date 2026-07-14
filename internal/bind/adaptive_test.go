@@ -81,7 +81,7 @@ func bringProberUpWithLoss(t testing.TB, pr *telemetry.Prober, psk config.Key, c
 			dropped++
 			continue // this probe is "lost": never echoed
 		}
-		echo, err := reflector.Reflect(raw)
+		echo, _, err := reflector.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect probe %d: %v", i, err)
 		}

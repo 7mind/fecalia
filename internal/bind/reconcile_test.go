@@ -147,7 +147,7 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("re-encode probe: %v", err)
 		}
-		echo, err := refl.Reflect(raw)
+		echo, _, err := refl.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect promoted path: %v", err)
 		}

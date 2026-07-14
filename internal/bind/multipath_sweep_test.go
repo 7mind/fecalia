@@ -139,7 +139,7 @@ func TestSweepDetectsDownWithStarvedTimer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("re-encode probe: %v", err)
 		}
-		echo, err := reflector.Reflect(reraw)
+		echo, _, err := reflector.Reflect(reraw)
 		if err != nil {
 			t.Fatalf("reflect: %v", err)
 		}
@@ -225,7 +225,7 @@ func TestSweepDrivesEagerFailover(t *testing.T) {
 		if err != nil {
 			t.Fatalf("path %d re-encode: %v", i, err)
 		}
-		echo, err := reflector.Reflect(reraw)
+		echo, _, err := reflector.Reflect(reraw)
 		if err != nil {
 			t.Fatalf("path %d reflect: %v", i, err)
 		}

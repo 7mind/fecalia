@@ -207,7 +207,7 @@ func TestMultipathEchoFeedsProber(t *testing.T) {
 		t.Fatalf("send probe: %v", err)
 	}
 	reflector := telemetry.NewReflector(psk, rand.Reader)
-	echo, err := reflector.Reflect(probeRaw)
+	echo, _, err := reflector.Reflect(probeRaw)
 	if err != nil {
 		t.Fatalf("reflect: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 		if err != nil {
 			t.Fatalf("re-encode probe: %v", err)
 		}
-		reflected, err := reflector.Reflect(raw)
+		reflected, _, err := reflector.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect path %d: %v", p, err)
 		}

@@ -77,7 +77,7 @@ func driveConcentratorPathUp(t *testing.T, pp *peerPathState, psk config.Key, cl
 		if err != nil {
 			t.Fatalf("SendProbe: %v", err)
 		}
-		echo, err := reflector.Reflect(raw)
+		echo, _, err := reflector.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect probe: %v", err)
 		}

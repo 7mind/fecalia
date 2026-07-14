@@ -1687,7 +1687,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			return
 		}
 		if pr.reflector != nil {
-			if echo, rerr := pr.reflector.Reflect(raw); rerr == nil {
+			if echo, _, rerr := pr.reflector.Reflect(raw); rerr == nil {
 				// UDP writes are goroutine-safe, so this receive-goroutine reflection
 				// races no in-flight Send on the same socket.
 				_, _ = ps.conn.WriteToUDPAddrPort(echo, srcAP)
@@ -2669,7 +2669,8 @@ func (m *Multipath) PeerReflect(peerIdx int, raw []byte) ([]byte, error) {
 	if peerIdx < 0 || peerIdx >= len(m.peers) {
 		return nil, fmt.Errorf("bind: peer index %d out of range [0,%d)", peerIdx, len(m.peers))
 	}
-	return m.peers[peerIdx].reflector.Reflect(raw)
+	echo, _, err := m.peers[peerIdx].reflector.Reflect(raw)
+	return echo, err
 }
 
 // PathTraffic is a consistent per-path traffic+telemetry snapshot (T23): the OUTER-

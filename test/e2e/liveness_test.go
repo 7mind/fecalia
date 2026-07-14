@@ -150,7 +150,7 @@ func TestProbeReflectorHelper(t *testing.T) {
 		if err != nil {
 			return // socket closed on parent kill
 		}
-		echo, err := refl.Reflect(buf[:n])
+		echo, _, err := refl.Reflect(buf[:n])
 		if err != nil {
 			continue // drop forged / replayed / non-probe frames
 		}

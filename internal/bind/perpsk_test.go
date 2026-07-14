@@ -63,12 +63,12 @@ func TestPeerStatePerPSKCodecAndReflector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode probe under psk A: %v", err)
 	}
-	if _, err := peerA.reflector.Reflect(probeA); err != nil {
+	if _, _, err := peerA.reflector.Reflect(probeA); err != nil {
 		t.Fatalf("peer A reflector must authenticate a probe under its own psk: %v", err)
 	}
 	// Under peer B's psk the probe never reflects: it fails the MAC, or (when the wrong obfKey
 	// garbles the kind into an unauthenticated one) decodes to a non-probe the Reflector refuses.
-	if _, err := peerB.reflector.Reflect(probeA); err == nil {
+	if _, _, err := peerB.reflector.Reflect(probeA); err == nil {
 		t.Fatal("peer B reflector reflected a probe minted under psk A (cross-psk probe must be rejected)")
 	}
 }

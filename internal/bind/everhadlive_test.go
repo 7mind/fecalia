@@ -23,7 +23,7 @@ func driveEdgePathUp(t *testing.T, m *Multipath, idx int, psk config.Key, src ne
 		if err != nil {
 			t.Fatalf("SendProbe: %v", err)
 		}
-		echo, err := reflector.Reflect(raw)
+		echo, _, err := reflector.Reflect(raw)
 		if err != nil {
 			t.Fatalf("reflect probe: %v", err)
 		}
