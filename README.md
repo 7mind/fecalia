@@ -112,7 +112,20 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   (per-peer gauges showing whether data-thrift striping is engaged, the smoothed
   offered load driving it, and the static engage/disengage thresholds; absent
   under `active-backup`).
-- **Logs**: structured, to stderr → `journalctl -u wanbond-…`.
+- **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
+  one-shot `"scheduler aggregation change"` record on every engage/disengage
+  flip and the coalesced `"scheduler pacer shedding"` record while a pacing-
+  enabled peer is actively shedding `ClassData` under overload.
+- **Pacing on/off is a real tradeoff, not just a knob**: pacing bounds
+  worst-case loaded RTT and keeps liveness stable under sustained overload, at
+  the cost of shedding the excess offered load instead of queueing it; leaving
+  it off maximizes throughput but risks bufferbloat-driven liveness flaps
+  under sustained overload — see [docs/design.md §Send-side
+  scheduler](docs/design.md) for the
+  measured numbers, the three-tier `ClassControl`/`frame.KindProbe`/`ClassData`
+  priority model, why inner-tunnel traffic (e.g. inner ICMP) can never get its
+  own priority lane, and the full operability runbook tying every signal
+  above together.
 
 ## Testing
 

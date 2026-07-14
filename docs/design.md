@@ -290,6 +290,27 @@ probes:
 - **`ClassData`** (bulk WireGuard transport) — **fully paced**: subject to the
   per-path token bucket and shed (`PickPaced`) when it is empty.
 
+**Why inner-tunnel prioritization (e.g. inner ICMP) is infeasible (Q51).** The
+three-tier model above is the full extent of frame-type-aware pacing wanbond
+can do. wanbond's classifier (`wgClassifier.classify`, `internal/bind/classify.go`)
+sees only the OUTER WireGuard datagram: it reads the (possibly junk-shifted,
+under AmneziaWG obfuscation) little-endian type word to tell a control frame
+(handshake initiation/response, cookie reply) from a transport frame, and
+within transport frames a keepalive-sized one is the only case that resolves
+back to `ClassControl` — a fixed-size keepalive is otherwise indistinguishable
+from a small tunnelled payload. Everything else that traverses the tunnel,
+including an inner ICMP echo (or any other inner flow) carried inside an
+encrypted WireGuard transport payload, is opaque `ClassData` to the pacer: the
+ciphertext carries no protocol, size, or offset signal until it is decrypted
+at the OTHER end of the WireGuard tunnel — well past wanbond's pacing point.
+Giving inner ICMP (or any inner flow) its own priority lane would require
+plaintext deep-packet inspection BEFORE encryption, which is out of
+architecture (wanbond is designed to carry the inner tunnel opaquely, not to
+terminate or inspect it). The only wanbond-addressable priority signal below
+`ClassControl` is `frame.KindProbe` (wanbond's own PROBE frames, exempt-but-
+charged above) — there is no path to prioritizing traffic the pacer cannot
+see inside the tunnel.
+
 **Motivation (defect D65).** wanbond keeps **no internal send queue**: `Send`
 writes each frame synchronously to the path's UDP socket, and the pacer, when
 enabled, **sheds at the head** rather than buffering — `tryConsume` either
@@ -441,6 +462,78 @@ scheduler exposes no gate, contributes no snapshot and its four series are
 ABSENT (not present-at-zero). They honour the same T94 single-peer-omits-label
 back-compat rule as the FEC/resequencer series (the `peer` label appears only on
 a multi-peer concentrator scrape).
+
+**Pacing on/off: the measured operability tradeoff (G13).** Enabling pacing
+trades throughput for bounded latency and liveness stability; the right
+default depends on the deployment. Measured under sustained offered-load
+overload on a rate-capped weighted-policy multipath link:
+
+| | pacing OFF | pacing ON |
+|---|---|---|
+| path traffic split | ~71/29 (RTT-weighted — the lower-RTT path takes most of the load) | ~50/50 (capacity-capped — each path's token bucket admits at its own declared rate) |
+| worst-case loaded RTT | 1083 ms | 757 ms |
+| achieved throughput | 6.93 Mbit/s | 4.98 Mbit/s |
+| offered load shed at the pacer | none (no egress shaping; the excess is absorbed downstream instead, see D65) | ~33%, deliberately (`"scheduler pacer shedding"`) |
+| liveness under sustained overload | the unshaped sender lets the downstream link queue build (bufferbloat, D65) until RTT growth can push PROBE echoes past `DownAfter` and flap liveness | probe headroom (T145, the exempt-but-charged middle tier above) keeps PROBE frames answered inside `DownAfter` even while `ClassData` is being shed, so liveness stays stable |
+
+Pacing OFF wins raw throughput (6.93 vs 4.98 Mbit/s here) by trading away a
+latency/liveness ceiling; pacing ON bounds worst-case RTT and keeps liveness
+stable at the cost of the ~33% excess it sheds rather than lets queue.
+**Guidance:** enable `pacing_enabled = true` whenever the deployment values
+bounded latency and stable liveness under sustained overload more than the
+last few percent of throughput — e.g. interactive/real-time traffic over the
+tunnel, or any link where a liveness flap triggers a disruptive failover.
+Leave it off only when the workload is throughput-bound, tolerant of
+bufferbloat-scale latency spikes, and unlikely to sustain overload long
+enough to threaten liveness.
+
+**Operability runbook: reading the pacing/aggregation signals together
+(G13).** Diagnosing a weighted-policy deployment's pacing/aggregation
+behaviour composes the following signals into one picture:
+
+- `wanbond_aggregation_engaged` (0/1, per-peer) — is striping currently
+  engaged, or collapsed to primary-only?
+- `wanbond_offered_load_fps` (per-peer) — the smoothed offered load driving
+  the gate; compare it against the two static per-peer thresholds
+  `wanbond_aggregation_engage_threshold_fps` /
+  `wanbond_aggregation_disengage_threshold_fps` to see how close the peer is
+  to flipping.
+- `wanbond_weighted_capacity_sane` (static, unlabeled, weighted policy only)
+  — `1` when every path's declared `link_bandwidth` has been verified
+  against the engage threshold at load, `0` when at least one path's
+  capacity is UNVERIFIABLE (see [install.md
+  §6b](install.md#6b-weighted-policy-capacity-sanity-check-t144) for the
+  remedy); absent entirely under `active-backup`.
+- the `"scheduler aggregation change"` log record — one-shot on every
+  engage/disengage flip, carrying `to`/`from`, `load_fps`,
+  `engage_threshold_fps`, `disengage_threshold_fps`, plus `reason` on a
+  collapse.
+- the `"scheduler pacer shedding"` log record — coalesced, at most once per
+  second, whenever the pacer is actively dropping `ClassData` (`shed_frames`,
+  `load_fps`); its absence under sustained load is itself informative
+  (nothing is being shed).
+- the config-load hard-fail guard
+  (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can
+  mathematically never engage at line rate on this path…" error) — fails
+  FAST at startup, before any of the above signals can even be observed,
+  when a path's declared `link_bandwidth` mathematically cannot sustain its
+  own engage threshold.
+
+Read together: a peer stuck at `wanbond_aggregation_engaged = 0` with
+`wanbond_offered_load_fps` climbing toward — but never past —
+`wanbond_aggregation_engage_threshold_fps`, and no `"scheduler aggregation
+change"` record, means load genuinely never crossed the gate, not a defect.
+Recurring `"scheduler pacer shedding"` records are expected behaviour
+whenever pacing is enabled and offered load exceeds capacity (see the
+tradeoff table above). `wanbond_weighted_capacity_sane = 0` at startup is a
+prompt to either declare `link_bandwidth` on every path or verify
+`per_path_capacity_fps` by hand ([install.md
+§3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)) — it never blocks
+startup. The hard-fail guard blocking startup outright means the declared
+`link_bandwidth`/`engage_fraction`/`per_path_capacity_fps` triple is
+self-contradictory and must be corrected before the daemon will run at all
+(see install.md §3a for how to size `per_path_capacity_fps`/BDP; not
+restated here).
 
 ### Concentrator hub failover — `internal/device` (`failover.go`, T57)
 
