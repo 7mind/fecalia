@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 11
+  item: 12
 archives: []
 ---
 
@@ -299,3 +299,16 @@ archives: []
 - milestones: ["M38","M47"]
 - sessionLogs: [".cq/logs/20260714-100847-a682af370a1cff1d9.md",".cq/logs/20260714-100847-aae9f3a68abcdc6ba.md"]
 - rawLogs: [".cq/logs/raw/20260714-100847-a682af370a1cff1d9.jsonl",".cq/logs/raw/20260714-100847-aae9f3a68abcdc6ba.jsonl"]
+
+## M48
+
+### G12 — clarifying
+
+- createdAt: 2026-07-14T11:41:52.076Z
+- updatedAt: 2026-07-14T11:45:46.121Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- title: Live monitoring web UI on edge and concentrator (WebSocket status, local-API auth)
+- description: "Add live monitoring capabilities to both edge and concentrator instances. We already have some sort of a metrics API; embed a simple webpage which would receive dynamic status updates over WebSocket and display live link quality/peer/loss/RTT/FEC statistics. The /resilient-ws-ui skill (guidelines for reliable WebSocket connections to a backend with clear connection-health surfacing) could help with the frontend. Important open question: how to make such an API safe against unauthorized local calls."
+- sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
+- rawLogs: [".cq/logs/raw/20260714-114510-a2014552ac2ffb804.jsonl"]

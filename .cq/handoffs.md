@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 16
+  item: 17
 archives: []
 ---
 
@@ -233,3 +233,18 @@ archives: []
 - ledgerRefs: ["goals:G6","reviews:R80","reviews:R81","reviews:R82","decisions:K7"]
 - sessionLogs: [".cq/logs/20260713-232548-a382332a889496d5d.md",".cq/logs/20260713-232548-a795489b23fb6f794.md",".cq/logs/20260713-233100-a55a4e128f6f54f3a.md",".cq/logs/20260713-233100-af3f0626f4832a9e5.md",".cq/logs/20260713-233226-a31df891879aba85e.md",".cq/logs/20260713-233606-a6a7deec127907c4c.md",".cq/logs/20260713-233606-a00894726fc25d16c.md",".cq/logs/20260713-233719-a1999a2a1c65132fa.md",".cq/logs/20260713-233917-a89c1670ebd3cd89d.md",".cq/logs/20260713-233917-a5034ee3e9ef63fd4.md",".cq/logs/20260713-234017-aa1ce2b42795fdf8a.md"]
 - rawLogs: [".cq/logs/raw/20260713-232548-a382332a889496d5d.jsonl",".cq/logs/raw/20260713-232548-a795489b23fb6f794.jsonl",".cq/logs/raw/20260713-233100-a55a4e128f6f54f3a.jsonl",".cq/logs/raw/20260713-233100-af3f0626f4832a9e5.jsonl",".cq/logs/raw/20260713-233226-a31df891879aba85e.jsonl",".cq/logs/raw/20260713-233606-a6a7deec127907c4c.jsonl",".cq/logs/raw/20260713-233606-a00894726fc25d16c.jsonl",".cq/logs/raw/20260713-233719-a1999a2a1c65132fa.jsonl",".cq/logs/raw/20260713-233917-a89c1670ebd3cd89d.jsonl",".cq/logs/raw/20260713-233917-a5034ee3e9ef63fd4.jsonl",".cq/logs/raw/20260713-234017-aa1ce2b42795fdf8a.jsonl"]
+
+## M48
+
+### HO17 — answers-required
+
+- createdAt: 2026-07-14T11:46:26.489Z
+- updatedAt: 2026-07-14T11:46:26.489Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- summary: "/cq:plan bootstrapped goal G12 'Live monitoring web UI on edge and concentrator (WebSocket status, local-API auth)' (milestone M48) into `clarifying`. The plan-advance planner grounded against the repo (verified: internal/metrics.Source already snapshots exactly the statistics the goal names — Paths/FEC/Reseq/Session/PeerNames; internal/metrics/server.go enforces loopback-only binding fail-fast with act-then-verify on the kernel-bound address; repo is pure Go with no websocket library and no JS toolchain; single binary serves both roles from 0600-enforced TOML config with SIGHUP reload) and filed 6 clarifying questions Q45-Q50 (open, linked goals:G12) covering: (Q45) network exposure — loopback-only vs LAN against the existing ErrNonLoopbackBind invariant; (Q46) shared metrics listener vs dedicated [monitor] listener; (Q47) auth threat model + mechanism for unauthorized local calls (token / Origin-validation / unix-socket options) — the goal's stated open question; (Q48) read-only vs control actions; (Q49) vanilla go:embed vs JS toolchain + coder/websocket dependency; (Q50) data scope/cadence/history, per-peer on concentrator. Auto-investigate worklist EMPTY by ledger query (no open defect links goals:G12). NEXT: user answers Q45-Q50 in the TUI/web, then runs /cq:plan:advance G12 to plan the task DAG. Blocked on user answers."
+- flow: plan
+- ledgerRefs: ["goals:G12"]
+- blockingQuestions: ["Q45","Q46","Q47","Q48","Q49","Q50"]
+- sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
+- rawLogs: [".cq/logs/raw/20260714-114510-a2014552ac2ffb804.jsonl"]

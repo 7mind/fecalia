@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 44
+  item: 50
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -587,3 +587,77 @@ archives:
 - question: "D35 (0.0.0.0/0 handshake wedge): read-only investigation is exhausted and the production path is already mitigated (T107 split shield). Localizing the residual upstream-engine wedge requires a PRIVILEGED 3-arm handshake repro that the sandbox cannot run (no CAP_NET_ADMIN for netns) — it must run on the e2e hosts (o3.7mind.io + llm-ubuntu-0, the G2 pattern). Authorize/queue that privileged repro (drive a real WG handshake with a LITERAL /0 in the UAPI set bypassing the split, vs /32, vs the /1+/1 split; amneziawg-go verbose + pcap on the receiver; also pin o3's actual amneziawg-go commit vs go.mod v1.0.4), OR confirm the split shield is a sufficient disposition and D35 can be closed against the shield with the upstream engine bug tracked separately."
 - context: "H1 adjudged uncertain: the T107 shield is CONFIRMED (device.go:1071-1080/1052-1060, unconditional split before UAPI render — config /0 can no longer reach the engine). The originally-stated trie-zero-length mechanism is RULED OUT against amneziawg-go v1.0.4 (allowedips insert/lookup handle cidr==0 cleanly; the handshake-response path never consults the trie — receive.go:400-417/521-543). The runtime wedge is real but unlocalized read-only; it needs the privileged repro above. No shipped e2e reproduces it (default_route_test.go asserts route wiring only)."
 - ledgerRefs: ["defects:D35"]
+
+## M48
+
+### Q45 — open
+
+- createdAt: 2026-07-14T11:44:03.256Z
+- updatedAt: 2026-07-14T11:44:03.256Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- question: "Network exposure: must the monitoring UI stay loopback-only (like the existing /metrics endpoint), or should it be reachable off-host (e.g. from a phone/laptop on the LAN behind the edge)?"
+- context: The existing metrics server (internal/metrics/server.go) enforces loopback-only binding as a hard fail-fast invariant (ErrNonLoopbackBind, plus an act-then-verify check on the kernel-bound address) because it exposes per-path operational data. A live-monitoring webpage is most useful viewed from a browser, which for loopback-only means either a browser on the box itself or an SSH port-forward. Allowing a non-loopback bind materially changes the security design (auth becomes mandatory, TLS becomes a question). This decision drives the whole plan shape.
+- suggestions: ["Loopback-only, same invariant as /metrics; remote viewing via `ssh -L` port-forward","Loopback default, but permit an explicit opt-in non-loopback bind gated on auth being configured (fail-fast if non-loopback without auth)","LAN-reachable by default with mandatory auth"]
+- recommendation: "Option 2: keep loopback as the default and the documented posture, but allow an explicit non-loopback bind that hard-requires the auth mechanism (fail-fast at config load otherwise). This keeps the safe default while making the UI actually usable from the LAN behind an edge box."
+- ledgerRefs: ["goals:G12"]
+
+### Q46 — open
+
+- createdAt: 2026-07-14T11:44:10.340Z
+- updatedAt: 2026-07-14T11:44:10.340Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- question: "Listener topology: should the UI + WebSocket share the existing metrics listener/mux (new routes next to /metrics on the same port), or get a dedicated listener with its own [monitor] config block and port?"
+- context: "internal/metrics.Server currently serves exactly one route (/metrics, Prometheus text format) on the [metrics] listen address. Adding / (page) and /ws (live updates) to that mux couples the scrape surface to the UI surface: auth added for the UI would either also gate Prometheus scrapes (breaking scrapers) or need per-route exemptions. A separate listener keeps /metrics a bare unauthenticated Prometheus surface and lets the monitor listener carry auth uniformly, at the cost of a second port and config block."
+- suggestions: ["Separate [monitor] listener/port; [metrics] unchanged","Same listener: add / and /ws to the metrics mux, auth-exempt /metrics","Same listener and auth everything including /metrics"]
+- recommendation: "Separate [monitor] listener. Uniform auth on the new surface, zero behaviour change to the existing scrape endpoint, and the exposure decision (previous question) can then differ between the two surfaces."
+- ledgerRefs: ["goals:G12"]
+
+### Q47 — open
+
+- createdAt: 2026-07-14T11:44:21.470Z
+- updatedAt: 2026-07-14T11:44:21.470Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- question: "Auth threat model and mechanism: which adversary must the local API resist, and which authentication mechanism do you want? (a) other unprivileged local users/processes on the same host calling the loopback API, (b) the operator's own browser being lured to a malicious page that attacks the localhost API cross-origin (DNS rebinding / CSRF), or (c) both?"
+- context: "This is the goal's stated open question. The mechanisms differ per adversary. Against (b), strict Host/Origin validation on every request and on the WebSocket upgrade suffices and needs no secret. Against (a), a secret is required: a static bearer token in the TOML config (already enforced mode 0600, so readable only by the daemon user/root), or a per-boot random token written to a 0600 file and logged, either presented once via URL and then held in a cookie/localStorage. A Unix-domain socket with SO_PEERCRED gives the strongest local-caller identity but browsers cannot speak to unix sockets, so it fits a CLI, not an embedded webpage. Note the daemon runs privileged (TUN device), so on a single-admin box adversary (a) may be out of scope by definition."
+- suggestions: ["Origin/Host validation only (defends the browser vector; any local process can still read stats)","Static token in the 0600 TOML config + Origin/Host validation","Per-boot random token (0600 file, path logged at startup) + Origin/Host validation","Unix socket + SO_PEERCRED (CLI-only, incompatible with a browser UI)"]
+- recommendation: "Option 2: static token in the config (generated by the operator or documented `openssl rand` one-liner), presented as ?token= once and set as a SameSite=Strict cookie, plus unconditional Host/Origin validation on the WS upgrade and API routes. Covers both adversaries with no new files or state; the 0600 config already protects the secret exactly as it protects the WG private key."
+- ledgerRefs: ["goals:G12"]
+
+### Q48 — open
+
+- createdAt: 2026-07-14T11:44:27.540Z
+- updatedAt: 2026-07-14T11:44:27.540Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- question: Is the monitoring UI strictly read-only (a dashboard), or should v1 also expose control actions (e.g. trigger failover, SIGHUP-equivalent config reload, enable/disable a path)?
+- context: Read-only vs control changes the stakes of the auth question, the API surface, and the test burden substantially. The daemon already has SIGHUP for config reload, so a reload button would duplicate an existing control path. Everything the goal text names (link quality/peer/loss/RTT/FEC statistics) is read-only and already available via the metrics Source interface (Paths/FEC/Reseq/Session/PeerNames snapshots).
+- suggestions: ["Read-only dashboard only","Read-only plus a config-reload button","Full control surface (failover, path enable/disable)"]
+- recommendation: Read-only for v1. It matches the goal text, keeps the unauthorized-local-call risk to information disclosure rather than tunnel manipulation, and control actions can be a follow-up goal.
+- ledgerRefs: ["goals:G12"]
+
+### Q49 — open
+
+- createdAt: 2026-07-14T11:44:36.327Z
+- updatedAt: 2026-07-14T11:44:36.327Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- question: "Frontend toolchain constraint: hand-written vanilla HTML/CSS/JS embedded via go:embed (no Node/npm build step in the repo), or is introducing a JS build toolchain (e.g. Vite + a framework) acceptable? Relatedly: OK to add one Go WebSocket dependency (github.com/coder/websocket), or hand-roll the server side?"
+- context: The repo is currently pure Go (go.mod has no web/JS anything; golang.org/x/net is present but its websocket package is deprecated and unsuitable). A single embedded vanilla page keeps the build `go build`-only and the binary self-contained, at the cost of hand-writing the reconnect/health logic per the /resilient-ws-ui skill guidelines (which are framework-agnostic and fit vanilla JS fine). A toolchain buys niceties (TypeScript, components) but adds a second build system to CI and the release process. On the server side, coder/websocket is the maintained, minimal, widely-used choice; hand-rolling RFC 6455 is possible but not a good use of effort.
+- suggestions: ["Vanilla single-page, go:embed, zero JS toolchain; add coder/websocket for the server","Vanilla page but hand-rolled WS server (zero new deps)","Vite+TypeScript toolchain, build output go:embed-ed"]
+- recommendation: "Option 1: vanilla embedded page plus coder/websocket. Keeps the toolchain Go-only and the binary self-contained; one small, well-maintained dependency is the right trade against hand-rolling the WS protocol."
+- ledgerRefs: ["goals:G12"]
+
+### Q50 — open
+
+- createdAt: 2026-07-14T11:44:45.693Z
+- updatedAt: 2026-07-14T11:44:45.693Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- question: "Data scope and cadence for v1: which statistics, at what push interval, and with how much history? Specifically: (a) is the existing metrics Source snapshot set (per-(peer,path) RTT/jitter/loss/throughput/up, FEC counters, resequencer counters, WG session state) the right v1 payload, or is anything missing? (b) what update interval (e.g. 1s)? (c) instantaneous values only, or client-side rolling history with sparklines/graphs (last N minutes, browser memory only)? (d) on the concentrator, per-peer sections for all bound peers?"
+- context: The metrics Source interface (internal/metrics/metrics.go) already snapshots exactly the categories the goal names, so the cheapest design pushes those same snapshots as JSON over the WebSocket on a timer — no new instrumentation. Anything beyond it (e.g. per-path event log, handshake history, packet captures) means new plumbing in internal/telemetry/device and grows the plan. History kept server-side (ring buffers) vs client-side (browser only, lost on reload) is a real scope fork.
+- suggestions: ["Source snapshots as-is, 1s push, client-side-only rolling ~5min sparklines, per-peer sections on the concentrator","Source snapshots, 1s push, instantaneous values only (no graphs)","Snapshots + server-side ring-buffer history so a freshly opened page shows the recent past"]
+- recommendation: Option 1. It reuses the existing snapshot plumbing verbatim, gives the 'live link quality' feel via client-side sparklines, and loses nothing that matters on page reload; server-side history can be a follow-up if wanted.
+- ledgerRefs: ["goals:G12"]

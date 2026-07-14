@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 47
+  item: 48
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -333,3 +333,10 @@ archives:
 - createdAt: 2026-07-14T10:08:49.641Z
 - updatedAt: 2026-07-14T10:08:49.641Z
 - title: "G11-W: hygiene sweep (lint-gate first; then e2e-ports / config-comments / bind-seams / capability)"
+
+### M48 — open
+
+- createdAt: 2026-07-14T11:41:36.409Z
+- updatedAt: 2026-07-14T11:41:36.409Z
+- title: "Plan: live monitoring web UI (edge + concentrator)"
+- description: "Coordination milestone for the plan-flow goal: embedded live-monitoring webpage with WebSocket status updates (link quality/peer/loss/RTT/FEC) on both edge and concentrator, plus local-API authorization hardening."
