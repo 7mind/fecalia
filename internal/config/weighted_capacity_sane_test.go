@@ -80,7 +80,7 @@ func TestWeightedCapacitySaneNoneDeclared(t *testing.T) {
 // TestWeightedCapacitySanePartiallyDeclared is the R155-pinned case: a PARTIAL
 // declaration (one path declares link_bandwidth, the other does not) with pacing
 // DISABLED (the shipped default) is a reachable, LOAD-SUCCEEDING state —
-// deriveWeightedPacingFromBDP no-ops under disabled pacing, and the T142 guard only
+// deriveWeightedBottleneckPacing no-ops under disabled pacing, and the T142 guard only
 // checks the DECLARED path (guard-consistent here) — yet the T144 verdict must still
 // be UNVERIFIABLE, not SANE-VERIFIED: the undeclared path's capacity cannot be
 // checked, so the aggregate accounting is not provably sane.

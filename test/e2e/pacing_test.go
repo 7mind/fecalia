@@ -216,7 +216,7 @@ func TestPacingBufferbloat(t *testing.T) {
 // link_rtt (the caller's measured linkRTT) on the path — the T53 wiring that derives
 // the scheduler's per-path pace from the bandwidth-delay product — and turns
 // pacing_enabled on; the unpaced config omits both (a declared bandwidth is inert
-// with pacing off, config.go's deriveWeightedPacingFromBDP), so the ONLY config
+// with pacing off, config.go's deriveWeightedBottleneckPacing), so the ONLY config
 // delta between the two runs is the pacing feature itself.
 func setupPacingTunnel(t *testing.T, top *Topology, bin string, pacingEnabled bool, linkRTT string) (edge, conc *proc) {
 	t.Helper()

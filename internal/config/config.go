@@ -73,7 +73,7 @@ type Config struct {
 	// declared-but-inconsistent path would have already aborted Load), false when at
 	// least one path's link_bandwidth is undeclared (UNVERIFIABLE: gauge=0, one startup
 	// WARN — covering BOTH "no path declares it" and a PARTIAL declaration, the latter
-	// reachable whenever pacing is disabled since deriveWeightedPacingFromBDP then
+	// reachable whenever pacing is disabled since deriveWeightedBottleneckPacing then
 	// no-ops and never rejects it). See weightedCapacitySane.
 	WeightedCapacitySane *bool `toml:"-"`
 }
@@ -168,18 +168,61 @@ const (
 )
 
 // SchedulerConfig selects and tunes the send scheduler. When the [scheduler] block
-// is omitted the policy defaults to active-backup and every weighted knob is
-// ignored, so existing configs keep the P1 behaviour unchanged. The weighted knobs
-// are validated (and defaulted) only when the weighted policy is selected.
+// is omitted the policy defaults to active-backup and every weighted-only aggregation/
+// weight knob is ignored, so existing configs keep the P1 behaviour unchanged. The
+// knobs fall in two groups (D65, T152): the POLICY-INDEPENDENT pacing surface
+// (pacing_enabled, per_path_capacity_fps, pacing_burst_frames — which size egress
+// pacing under BOTH the weighted and the default active-backup policy) and the
+// WEIGHTED-ONLY aggregation/weight knobs (engage/disengage/collapse/load_tau/weight_*),
+// which are validated and defaulted only when the weighted policy is selected. The
+// pacing knobs are validated whenever pacing is enabled under EITHER policy.
 type SchedulerConfig struct {
 	// Policy selects the scheduler; defaults to active-backup when empty.
 	Policy SchedulerPolicy `toml:"policy"`
 
+	// --- Policy-independent pacing surface (D65, T152) ---
+	// These size egress send-pacing under BOTH policies. Under weighted, a declared
+	// link_bandwidth sizes the SHARED bottleneck scalar (PerPathCapacityFPS/
+	// PacingBurstFrames); under active-backup it sizes the PER-PATH vectors
+	// (PerPathCapacities/PacingBursts), since only one path egresses at a time and a
+	// fast active primary must pace at its OWN drain rate, not the slowest link's.
+
+	// PacingEnabled turns per-path send-pacing on. When false the token buckets are
+	// bypassed (a documented no-op — P0 §7 could not empirically size the pace in the
+	// unmetered fixture). Under weighted, PerPathCapacityFPS still drives the
+	// aggregation gate even with pacing off; under active-backup it is inert with
+	// pacing off.
+	PacingEnabled bool `toml:"pacing_enabled"`
 	// PerPathCapacityFPS is the reference per-path capacity in frame-selection slots
-	// per second: the denominator the aggregation load-gate compares offered load
-	// against, and the per-path pacing refill rate when PacingEnabled. Must be > 0
-	// under the weighted policy.
+	// per second: under the weighted policy it is the denominator the aggregation
+	// load-gate compares offered load against AND (when PacingEnabled) the shared
+	// per-path pacing refill rate; under active-backup it is an explicit pacing refill
+	// rate (replicated across paths). Must be > 0 under the weighted policy, and — when
+	// pacing is enabled under active-backup WITHOUT a declared link_bandwidth — it (with
+	// pacing_burst_frames) is the required explicit pace source.
 	PerPathCapacityFPS float64 `toml:"per_path_capacity_fps"`
+	// PacingBurstFrames is the per-path token-bucket burst in frame slots. Must be > 0
+	// when PacingEnabled under EITHER policy (unless the pace is BDP-derived from a
+	// declared link_bandwidth, which supplies the burst per path).
+	PacingBurstFrames float64 `toml:"pacing_burst_frames"`
+	// PerPathCapacities is the DERIVED per-path token-bucket refill rate (frame slots/s),
+	// index-aligned to Config.Paths, populated ONLY under the active-backup policy when
+	// pacing is enabled (T152) — from each path's OWN link_bandwidth/link_rtt BDP, or by
+	// replicating the explicit per_path_capacity_fps scalar. It is the field T153 plumbs
+	// into device.selectScheduler's NewActiveBackup call as sched.Config.PerPathCapacities.
+	// nil under the weighted policy (which uses the shared PerPathCapacityFPS scalar) and
+	// with pacing disabled. Never read from TOML.
+	PerPathCapacities []float64 `toml:"-"`
+	// PacingBursts is the DERIVED per-path token-bucket burst (frame slots), index-aligned
+	// to Config.Paths and to PerPathCapacities, populated under the same conditions and
+	// consumed by T153 as sched.Config.PacingBursts. nil under weighted / with pacing off.
+	// Never read from TOML.
+	PacingBursts []float64 `toml:"-"`
+
+	// --- Weighted-only aggregation/weight knobs ---
+	// Validated and defaulted ONLY when the weighted policy is selected; inert (and
+	// left zero) under active-backup.
+
 	// EngageFraction engages aggregation when offered load exceeds
 	// EngageFraction*PerPathCapacityFPS. Must be in (0,1].
 	EngageFraction float64 `toml:"engage_fraction"`
@@ -201,15 +244,6 @@ type SchedulerConfig struct {
 	// LoadTauRaw is the TOML Go-duration string form of LoadTau, e.g. "200ms" (D43).
 	// Parsed in normalize; an unparseable value fails fast.
 	LoadTauRaw string `toml:"load_tau"`
-
-	// PacingEnabled turns per-path send-pacing on. When false the token buckets are
-	// bypassed (a documented no-op — P0 §7 could not empirically size the pace in the
-	// unmetered fixture), but PerPathCapacityFPS still drives the aggregation gate.
-	PacingEnabled bool `toml:"pacing_enabled"`
-	// PacingBurstFrames is the per-path token-bucket burst in frame slots. Must be > 0
-	// when PacingEnabled.
-	PacingBurstFrames float64 `toml:"pacing_burst_frames"`
-
 	// WeightRTTFloor floors RTT in the weight formula (must be > 0 under weighted).
 	// Parsed from WeightRTTFloorRaw in normalize.
 	WeightRTTFloor time.Duration `toml:"-"`
@@ -506,11 +540,13 @@ type Path struct {
 	// DestAddrRaw is the TOML string form of DestAddr; parsed in normalize.
 	DestAddrRaw string `toml:"dest_addr"`
 	// LinkBandwidthBitsPerSec is the OPERATOR-DECLARED bottleneck bandwidth of this
-	// uplink in bits/s, parsed from LinkBandwidthRaw in normalize. It is used ONLY to
-	// size the weighted scheduler's per-path pace from the bandwidth-delay product
-	// (SizePacingFromBDP) when the weighted policy runs with pacing ENABLED (T53, Q20);
-	// it is OPERATOR-DECLARED, not runtime-measured — wanbond never auto-tunes it live.
-	// Zero means "not declared" (the synthetic default pace is kept).
+	// uplink in bits/s, parsed from LinkBandwidthRaw in normalize. It sizes the egress
+	// pace from the bandwidth-delay product (SizePacingFromBDP) when pacing is ENABLED
+	// under BOTH the weighted policy (shared bottleneck scalar) and the default active-
+	// backup policy (per-path capacity for the active link) — T53/T152, Q20. It is
+	// OPERATOR-DECLARED, not runtime-measured — wanbond never auto-tunes it live. Zero
+	// means "not declared": under weighted the synthetic default pace is kept; under
+	// active-backup pacing then requires the explicit per_path_capacity_fps knobs.
 	LinkBandwidthBitsPerSec float64 `toml:"-"`
 	// LinkBandwidthRaw is the TOML string form of the declared bandwidth, e.g.
 	// "50Mbit" / "1Gbit" / "500kbit" (SI bit/s units; the "bit" suffix may be written
@@ -519,7 +555,8 @@ type Path struct {
 	// LinkRTT is the OPERATOR-DECLARED baseline RTT of this uplink, parsed from
 	// LinkRTTRaw in normalize. It is the delay term of the bandwidth-delay-product pace
 	// burst (one RTT of in-flight frames); required (> 0) when LinkBandwidth is set and
-	// pacing is enabled under the weighted policy, ignored otherwise.
+	// pacing is enabled under EITHER the weighted or the active-backup policy, ignored
+	// otherwise.
 	LinkRTT time.Duration `toml:"-"`
 	// LinkRTTRaw is the TOML Go-duration string form of LinkRTT, e.g. "45ms". Parsed in
 	// normalize; an unparseable or non-positive value fails fast.
@@ -929,12 +966,14 @@ func (c *Config) normalize() error {
 		}
 	}
 	c.Amnezia.applyDefaults()
-	// Derive the weighted pace from any operator-declared per-link bandwidth BEFORE
-	// applyDefaults, so it can (a) see the raw zero PerPathCapacityFPS to distinguish an
-	// explicit knob from the default and (b) set the derived capacity/burst that
-	// applyDefaults then leaves intact (it only fills a knob left at zero). Under a
-	// disabled or non-weighted pacing it is a no-op, so the synthetic default is kept.
-	if err := c.deriveWeightedPacingFromBDP(); err != nil {
+	// Derive the pace from any operator-declared per-link bandwidth BEFORE applyDefaults,
+	// so it can (a) see the raw zero PerPathCapacityFPS to distinguish an explicit knob
+	// from the default and (b) set the derived capacity/burst that applyDefaults then
+	// leaves intact (it only fills a knob left at zero). It runs under BOTH policies when
+	// pacing is enabled (T152): weighted sizes the shared bottleneck scalar, active-backup
+	// the per-path vectors. With pacing disabled it is a no-op, so the synthetic default is
+	// kept.
+	if err := c.derivePacingFromBDP(); err != nil {
 		return err
 	}
 	if err := c.Scheduler.parseDurations(); err != nil {
@@ -977,31 +1016,70 @@ func (c *Config) weightedCapacitySane() *bool {
 	return &sane
 }
 
-// deriveWeightedPacingFromBDP sizes the weighted scheduler's per-path pace from the
-// operator-declared per-link bandwidth (T53, Q20) via SizePacingFromBDP instead of the
-// synthetic defaultPerPathCapacityFPS. It runs only under the weighted policy with
-// pacing ENABLED and at least one declared link_bandwidth; otherwise a declared
-// bandwidth is inert (pacing ships DISABLED by default), so an unrelated config is
-// untouched. The value is OPERATOR-DECLARED and fixed at load — NOT runtime auto-tuning
-// (Q20 rejected a live control loop for the pilot).
+// derivePacingFromBDP sizes egress send-pacing from the operator-declared per-link
+// bandwidth (T53, Q20; generalized to be policy-independent in T152, D65) via
+// SizePacingFromBDP instead of the synthetic defaultPerPathCapacityFPS. It runs
+// whenever pacing is ENABLED, under BOTH the weighted and the default active-backup
+// policy; with pacing DISABLED (the shipped default) a declared bandwidth is inert, so
+// an unrelated config is untouched. The value is OPERATOR-DECLARED and fixed at load —
+// NOT runtime auto-tuning (Q20 rejected a live control loop for the pilot).
 //
-// The scheduler carries a SINGLE reference per-path capacity applied to every path's
-// token bucket, so a heterogeneous link set is sized to the BOTTLENECK: the slowest
-// declared link governs the shared pace, because pacing any path faster than the
-// slowest link's capacity would let that link build the very standing queue pacing
-// exists to prevent. All paths must therefore declare a bandwidth (all-or-nothing) so
-// the bottleneck is well-defined across the whole path set.
-func (c *Config) deriveWeightedPacingFromBDP() error {
+// The two policies size the pace DIFFERENTLY (D65), because they egress differently:
+//
+//   - WEIGHTED stripes ALL paths simultaneously, so a single reference per-path capacity
+//     is applied to every path's token bucket and a heterogeneous link set is sized to
+//     the BOTTLENECK (the slowest declared link governs the shared scalar
+//     PerPathCapacityFPS/PacingBurstFrames): pacing any path faster than the slowest
+//     link's capacity would let that link build the very standing queue pacing exists to
+//     prevent.
+//   - ACTIVE-BACKUP egresses on exactly ONE path at a time, so each path is paced from
+//     ITS OWN BDP into the PER-PATH vectors (PerPathCapacities/PacingBursts) — NOT
+//     min-reduced to the bottleneck, which would cap a fast active primary at the slowest
+//     backup's rate (reimposing the D65 single-flow ceiling this fix removes).
+//
+// Both policies keep the all-paths-or-none link_bandwidth rule, the raw-knobs-vs-
+// link_bandwidth mutual exclusion, and the per-path link_rtt>0 requirement. Under
+// active-backup, pacing enabled with NEITHER a declared link_bandwidth NOR explicit
+// per_path_capacity_fps+pacing_burst_frames is a fail-fast LOAD ERROR: the weighted
+// synthetic default (~10000 fps) must not silently apply, since a nominally-enabled-but-
+// UNBINDING pace reproduces D65 while claiming to shape.
+//
+// It runs before SchedulerConfig.applyDefaults, so an omitted policy is still the empty
+// string here; the empty policy is treated as its active-backup default.
+func (c *Config) derivePacingFromBDP() error {
 	s := &c.Scheduler
-	if s.Policy != PolicyWeighted || !s.PacingEnabled {
+	if !s.PacingEnabled {
 		return nil
 	}
+	switch s.Policy {
+	case PolicyWeighted:
+		return c.deriveWeightedBottleneckPacing()
+	case PolicyActiveBackup, "":
+		return c.deriveActiveBackupPerPathPacing()
+	default:
+		// An unrecognized policy is rejected by validate(); size nothing here.
+		return nil
+	}
+}
+
+// declaredLinkBandwidths counts paths carrying an operator-declared link_bandwidth.
+func (c *Config) declaredLinkBandwidths() int {
 	declared := 0
 	for i := range c.Paths {
 		if c.Paths[i].LinkBandwidthBitsPerSec > 0 {
 			declared++
 		}
 	}
+	return declared
+}
+
+// deriveWeightedBottleneckPacing sizes the weighted scheduler's SHARED per-path pace to
+// the BOTTLENECK (slowest) declared link — the pre-T152 behaviour, byte-identical: the
+// weighted scheduler applies one reference capacity to every path, so the shared pace
+// must not exceed the slowest link's capacity.
+func (c *Config) deriveWeightedBottleneckPacing() error {
+	s := &c.Scheduler
+	declared := c.declaredLinkBandwidths()
 	if declared == 0 {
 		return nil // no declared bandwidth: the synthetic default pace is preserved.
 	}
@@ -1027,6 +1105,65 @@ func (c *Config) deriveWeightedPacingFromBDP() error {
 	}
 	s.PerPathCapacityFPS = bottleneck.CapacityFPS
 	s.PacingBurstFrames = bottleneck.BurstFrames
+	return nil
+}
+
+// deriveActiveBackupPerPathPacing sizes the active-backup scheduler's PER-PATH pace
+// (T152, D65). Because only one path egresses at a time, each path's token bucket is
+// sized from ITS OWN link_bandwidth/link_rtt BDP into the PerPathCapacities/PacingBursts
+// vectors T153 plumbs into NewActiveBackup — NOT min-reduced to the bottleneck. When no
+// link_bandwidth is declared, the explicit per_path_capacity_fps + pacing_burst_frames
+// scalars are the required pace source, replicated across every path. Pacing enabled with
+// NEITHER source is a fail-fast LOAD ERROR (no silent synthetic default — see
+// derivePacingFromBDP).
+func (c *Config) deriveActiveBackupPerPathPacing() error {
+	s := &c.Scheduler
+	declared := c.declaredLinkBandwidths()
+	hasRawKnobs := s.PerPathCapacityFPS != 0 || s.PacingBurstFrames != 0
+	if declared > 0 {
+		// BDP-sized per-path pace. The raw frame-slot knobs are mutually exclusive with
+		// a declared bandwidth, exactly as under weighted.
+		if hasRawKnobs {
+			return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived pace) OR set the raw frame-slot knobs, not both")
+		}
+		if declared != len(c.Paths) {
+			return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — each path's pace is sized from its own declared link, which is undefined with a partial declaration", declared, len(c.Paths))
+		}
+		caps := make([]float64, len(c.Paths))
+		bursts := make([]float64, len(c.Paths))
+		for i := range c.Paths {
+			p := &c.Paths[i]
+			if p.LinkRTT <= 0 {
+				return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under active-backup pacing — it is the delay term of the bandwidth-delay-product burst", p.Name)
+			}
+			sz, err := SizePacingFromBDP(p.LinkBandwidthBitsPerSec, p.LinkRTT, defaultAvgWireFrameBytes)
+			if err != nil {
+				return fmt.Errorf("path %q: %w", p.Name, err)
+			}
+			caps[i] = sz.CapacityFPS
+			bursts[i] = sz.BurstFrames
+		}
+		s.PerPathCapacities = caps
+		s.PacingBursts = bursts
+		return nil
+	}
+	// No declared bandwidth: the explicit raw knobs are the ONLY pace source. Fail fast
+	// when they are absent — the weighted synthetic default must NOT bind here (D65).
+	if !hasRawKnobs {
+		return errors.New("scheduler.pacing_enabled under the active-backup policy requires a bound pace source: declare link_bandwidth + link_rtt on ALL paths (per-path BDP-derived pace) OR set explicit per_path_capacity_fps + pacing_burst_frames; with neither, the pace would not bind (reintroducing the D65 bufferbloat it claims to shape)")
+	}
+	// Explicit scalar knobs: replicate across every path into the vectors T153 consumes.
+	// A missing/negative knob is left in the vector and rejected by validate (>0), so the
+	// >0 checks live in a single locus.
+	n := len(c.Paths)
+	caps := make([]float64, n)
+	bursts := make([]float64, n)
+	for i := 0; i < n; i++ {
+		caps[i] = s.PerPathCapacityFPS
+		bursts[i] = s.PacingBurstFrames
+	}
+	s.PerPathCapacities = caps
+	s.PacingBursts = bursts
 	return nil
 }
 
@@ -1065,9 +1202,17 @@ func (s *SchedulerConfig) parseDurations() error {
 }
 
 // applyDefaults selects active-backup when no policy is given and, only under the
-// weighted policy, fills any weighted knob left at its zero value with its default.
-// It is a no-op for the active-backup policy: those weighted knobs are inert there,
-// so leaving them zero keeps the config surface for a P1 deployment empty.
+// weighted policy, fills any weighted-family knob (including the shared pacing scalar)
+// left at its zero value with its default. It is a no-op for the active-backup policy:
+// the weighted aggregation/weight knobs are inert there, so leaving them zero keeps the
+// config surface for a P1 deployment empty.
+//
+// The pacing knobs under active-backup are DELIBERATELY not synthetically defaulted here
+// (T152, D65): derivePacingFromBDP has already sized the per-path vectors from
+// link_bandwidth or the explicit knobs, or failed fast. Applying the weighted synthetic
+// default (~10000 fps) to per_path_capacity_fps under active-backup would let a
+// nominally-enabled pace silently fail to bind, reproducing the very D65 bufferbloat it
+// claims to shape — so it must stay a load error, not a silent default.
 func (s *SchedulerConfig) applyDefaults() {
 	if s.Policy == "" {
 		s.Policy = PolicyActiveBackup
@@ -1101,15 +1246,22 @@ func (s *SchedulerConfig) applyDefaults() {
 	}
 }
 
-// validate enforces the scheduler policy invariants. active-backup needs no tuning.
-// The weighted policy fails fast on any out-of-range knob so a mis-tuned
-// aggregation policy is rejected at load rather than misbehaving at runtime (the
-// hysteresis band, in particular, is only a band when disengage < engage).
+// validate enforces the scheduler policy invariants. active-backup needs no tuning
+// unless pacing is enabled, in which case the policy-independent pacing surface is
+// validated (T152). The weighted policy fails fast on any out-of-range knob so a
+// mis-tuned aggregation policy is rejected at load rather than misbehaving at runtime
+// (the hysteresis band, in particular, is only a band when disengage < engage).
 func (s SchedulerConfig) validate() error {
 	if !s.Policy.valid() {
 		return fmt.Errorf("scheduler.policy must be %q or %q, got %q", PolicyActiveBackup, PolicyWeighted, s.Policy)
 	}
 	if s.Policy != PolicyWeighted {
+		// active-backup (an omitted policy has already been defaulted to it). The
+		// weighted aggregation/weight knobs are inert and unvalidated here; only the
+		// policy-independent pacing surface is validated, and only when enabled.
+		if s.PacingEnabled {
+			return s.validateActiveBackupPacing()
+		}
 		return nil
 	}
 	if s.PerPathCapacityFPS <= 0 {
@@ -1139,6 +1291,34 @@ func (s SchedulerConfig) validate() error {
 	return nil
 }
 
+// validateActiveBackupPacing enforces the policy-independent pacing invariants under the
+// active-backup policy (T152, D65): pacing must be sized to a bound per-path pace. By the
+// time validate runs, derivePacingFromBDP has populated the PerPathCapacities/PacingBursts
+// vectors from link_bandwidth or the explicit per_path_capacity_fps+pacing_burst_frames
+// scalars, or already failed fast when NEITHER source was given — so an empty vector here
+// is a defensive guard against that fail-fast being bypassed. Every per-path capacity and
+// burst must be > 0 (the shared >0 locus for both the BDP-derived and explicit-scalar
+// paths), mirroring the weighted per_path_capacity_fps/pacing_burst_frames checks.
+func (s SchedulerConfig) validateActiveBackupPacing() error {
+	if len(s.PerPathCapacities) == 0 || len(s.PacingBursts) == 0 {
+		return errors.New("scheduler.pacing_enabled under the active-backup policy requires a bound pace source: declare link_bandwidth + link_rtt on ALL paths OR set explicit per_path_capacity_fps + pacing_burst_frames (the weighted synthetic default must not silently apply)")
+	}
+	if len(s.PerPathCapacities) != len(s.PacingBursts) {
+		return fmt.Errorf("scheduler: per-path pacing vectors must be the same length, got %d capacities and %d bursts", len(s.PerPathCapacities), len(s.PacingBursts))
+	}
+	for i, capFPS := range s.PerPathCapacities {
+		if capFPS <= 0 {
+			return fmt.Errorf("scheduler.per_path_capacity_fps must be > 0 when pacing is enabled under active-backup, got %g (path %d)", capFPS, i)
+		}
+	}
+	for i, burst := range s.PacingBursts {
+		if burst <= 0 {
+			return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled under active-backup, got %g (path %d)", burst, i)
+		}
+	}
+	return nil
+}
+
 // validateWeightedEngageAgainstBandwidth is the Q52/Q53 hard-fail guard (Option 3,
 // scoped to the guard itself — per-path capacity auto-derive + BDP-sizing docs are
 // G2/Q20's scope, see docs/install.md §3a, not restated here). Under the weighted
@@ -1146,16 +1326,16 @@ func (s SchedulerConfig) validate() error {
 // aggregation engage threshold, or weighted aggregation can mathematically never
 // engage at line rate on that path — a misconfiguration that must fail fast at load
 // rather than silently capping the path below its declared capacity forever. It runs
-// AFTER normalize (deriveWeightedPacingFromBDP + SchedulerConfig.applyDefaults have
+// AFTER normalize (deriveWeightedBottleneckPacing + SchedulerConfig.applyDefaults have
 // already produced the EFFECTIVE EngageFraction/PerPathCapacityFPS), and computes the
 // bandwidth-implied capacity with the SAME avg-wire-frame constant and math
 // SizePacingFromBDP uses (capacity_fps = bandwidth / (8 * defaultAvgWireFrameBytes)),
 // so the guard and the BDP derive can never disagree.
 //
-// With pacing ENABLED + declared bandwidth, deriveWeightedPacingFromBDP has already
+// With pacing ENABLED + declared bandwidth, deriveWeightedBottleneckPacing has already
 // sized PerPathCapacityFPS to the BOTTLENECK link's implied capacity (the raw
 // per_path_capacity_fps/pacing_burst_frames knobs are mutually exclusive with a
-// declared bandwidth there, config.go's deriveWeightedPacingFromBDP), so
+// declared bandwidth there, config.go's deriveWeightedBottleneckPacing), so
 // EngageFraction <= 1 (enforced by SchedulerConfig.validate above) makes this guard
 // structurally unable to fire. It therefore chiefly bites when pacing is DISABLED
 // (the derive no-ops, leaving the synthetic defaultPerPathCapacityFPS=10000 standing
