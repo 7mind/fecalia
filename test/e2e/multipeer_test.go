@@ -65,12 +65,13 @@ import (
 // in the concentrator config (T81: multi-peer requires present, pairwise-distinct per-peer
 // psks), so the concentrator authenticates each edge's probe plane with the right key.
 //
-// PER-PEER METRIC LABEL. The concentrator's PRIMARY (first-configured) peer always binds
-// UNNAMED — bind.Multipath.BoundPeerNames forces peers[0].name = "" on both a single-peer
-// hub AND a multi-peer concentrator; only ADDITIONAL peers (AddConcentratorPeer) carry
-// their configured name (device.go). So edge A, configured FIRST, surfaces under the
-// `peer=""` label (NOT its config name "edge-alpha"), and edge B under `peer="edge-beta"`.
-// The two labels are DISTINCT, which is all the attribution assertions need.
+// PER-PEER METRIC LABEL. On a multi-peer concentrator EVERY bound peer — including the
+// first-configured one — carries its configured name as the `peer` label (D58):
+// device.Up plumbs ids[0].Name into the primary's peerState (SetPrimaryPeerName)
+// whenever more than one peer is configured, so peer="" appears only on a true
+// single-peer exposition. Edge A, configured FIRST, therefore surfaces under
+// `peer="edge-alpha"`, and edge B under `peer="edge-beta"`. The two labels are DISTINCT,
+// which is all the attribution assertions need.
 const (
 	// WAN-1 fabric: bridge + concentrator uplink address (the "wan1" path source_addr).
 	mpBr1     = "wbMp1"
@@ -107,12 +108,12 @@ const (
 	mpWan1 = "wan1"
 	mpWan2 = "wan2"
 
-	// The two edges' configured peer names on the concentrator. edge A is configured FIRST,
-	// so it binds as the unnamed primary (see the per-peer-label note above); edge B keeps
-	// its configured name as its metric label.
+	// The two edges' configured peer names on the concentrator. edge A is configured FIRST
+	// (the primary) but — since D58 — still surfaces under its OWN configured name, exactly
+	// like edge B (see the per-peer-label note above).
 	mpPeerAConfigName = "edge-alpha"
 	mpPeerBConfigName = "edge-beta"
-	mpPeerALabel      = "" // edge A surfaces UNNAMED (primary override), not "edge-alpha"
+	mpPeerALabel      = mpPeerAConfigName
 	mpPeerBLabel      = mpPeerBConfigName
 
 	// Per-uplink netem delay (ms). Distinct across a bond so frames reorder and the

@@ -333,20 +333,25 @@ func TestExpositionSinglePeerByteCompatible(t *testing.T) {
 
 // TestExpositionTwoPeerSeries asserts a 2-peer Source's scrape carries DISTINCT `peer`
 // labels on the path, resequencer, and FEC series, attributable to each edge, with
-// independent counters (T94) — the multi-peer half of the back-compat rule.
+// independent counters (T94) — the multi-peer half of the back-compat rule. The PRIMARY
+// (first-configured) peer carries its own configured non-empty name too, not "" (D58):
+// device.Up plumbs the primary's configured identity name into the bind
+// (bind.Multipath.SetPrimaryPeerName) whenever more than one peer is configured, so a
+// two-peer concentrator's metrics attribute every series — including the primary's — to a
+// named edge.
 func TestExpositionTwoPeerSeries(t *testing.T) {
 	src := fakeSource{
-		peerNames: []string{"", "edge2"},
+		peerNames: []string{"edge1", "edge2"},
 		paths: []PathSnapshot{
-			{Peer: "", Name: "starlink", TxBytes: 100, ThroughputBitsPerSecond: 111, State: telemetry.StateUp},
+			{Peer: "edge1", Name: "starlink", TxBytes: 100, ThroughputBitsPerSecond: 111, State: telemetry.StateUp},
 			{Peer: "edge2", Name: "starlink", TxBytes: 900, ThroughputBitsPerSecond: 999, State: telemetry.StateUp},
 		},
 		fec: []FECSnapshot{
-			{Peer: "", DataPackets: 10},
+			{Peer: "edge1", DataPackets: 10},
 			{Peer: "edge2", DataPackets: 700},
 		},
 		reseq: []ReseqSnapshot{
-			{Peer: "", Stats: reseq.Stats{Released: 5}},
+			{Peer: "edge1", Stats: reseq.Stats{Released: 5}},
 			{Peer: "edge2", Stats: reseq.Stats{Released: 900}},
 		},
 	}
@@ -359,27 +364,27 @@ func TestExpositionTwoPeerSeries(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 
-	if got, ok := exp.PeerPathValue(MetricTxBytes, "", "starlink"); !ok || got != 100 {
+	if got, ok := exp.PeerPathValue(MetricTxBytes, "edge1", "starlink"); !ok || got != 100 {
 		t.Errorf("primary path tx_bytes = %v (present=%v), want 100", got, ok)
 	}
 	if got, ok := exp.PeerPathValue(MetricTxBytes, "edge2", "starlink"); !ok || got != 900 {
 		t.Errorf("edge2 path tx_bytes = %v (present=%v), want 900", got, ok)
 	}
-	if got, ok := exp.PeerPathValue(MetricThroughput, "", "starlink"); !ok || got != 111 {
+	if got, ok := exp.PeerPathValue(MetricThroughput, "edge1", "starlink"); !ok || got != 111 {
 		t.Errorf("primary path throughput = %v (present=%v), want 111", got, ok)
 	}
 	if got, ok := exp.PeerPathValue(MetricThroughput, "edge2", "starlink"); !ok || got != 999 {
 		t.Errorf("edge2 path throughput = %v (present=%v), want 999", got, ok)
 	}
 
-	if got, ok := exp.PeerValue(MetricFECData, ""); !ok || got != 10 {
+	if got, ok := exp.PeerValue(MetricFECData, "edge1"); !ok || got != 10 {
 		t.Errorf("primary FEC data packets = %v (present=%v), want 10", got, ok)
 	}
 	if got, ok := exp.PeerValue(MetricFECData, "edge2"); !ok || got != 700 {
 		t.Errorf("edge2 FEC data packets = %v (present=%v), want 700 (independent of primary)", got, ok)
 	}
 
-	if got, ok := exp.PeerValue(MetricReseqReleased, ""); !ok || got != 5 {
+	if got, ok := exp.PeerValue(MetricReseqReleased, "edge1"); !ok || got != 5 {
 		t.Errorf("primary resequencer released = %v (present=%v), want 5", got, ok)
 	}
 	if got, ok := exp.PeerValue(MetricReseqReleased, "edge2"); !ok || got != 900 {

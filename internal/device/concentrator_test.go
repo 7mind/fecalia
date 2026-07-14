@@ -91,8 +91,12 @@ func TestUpTwoPeerConcentratorWiresPerPeerState(t *testing.T) {
 	if len(names) != 2 {
 		t.Fatalf("bound peers = %v, want 2", names)
 	}
-	// The second identity is wired under its configured name; the embedded primary carries the
-	// empty name (peers[0]).
+	// Both identities are wired under their configured names — including the embedded
+	// primary (peers[0]), which device.Up renames via SetPrimaryPeerName once a second
+	// peer is configured (D58).
+	if names[0] != "edge-0" {
+		t.Fatalf("primary bound peer name = %q, want %q", names[0], "edge-0")
+	}
 	if names[1] != "edge-1" {
 		t.Fatalf("second bound peer name = %q, want %q", names[1], "edge-1")
 	}
@@ -210,8 +214,8 @@ func TestUpTwoPeerConcentratorKeysEachPeerOnItsOwnPSK(t *testing.T) {
 	}
 	defer tun.Close()
 
-	if names := tun.bind.BoundPeerNames(); len(names) != 2 || names[1] != "edge-1" {
-		t.Fatalf("bound peers = %v, want the primary + \"edge-1\"", names)
+	if names := tun.bind.BoundPeerNames(); len(names) != 2 || names[0] != "edge-0" || names[1] != "edge-1" {
+		t.Fatalf("bound peers = %v, want [\"edge-0\" \"edge-1\"]", names)
 	}
 
 	// --- PROBER plane (device.go:301): edge-1's boot PROBE authenticates under psk1, not psk0. ---

@@ -311,6 +311,20 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
 	}
+	// A multi-peer concentrator names its primary too (D58): NewMultipath always mints the
+	// primary as peers[0] with name="" (a single-peer edge/hub needs no name — there is only
+	// one peer to key, and this keeps that exposition byte-identical to pre-T94). Once a
+	// SECOND identity is configured, every bound peer — including the primary — must carry its
+	// configured name so /metrics attributes series to the right edge instead of leaking the
+	// primary as peer="". This runs BEFORE the AddConcentratorPeer loop below so that loop's
+	// name-collision checks (name == m.name, the peersByName duplicate check) compare against
+	// the primary's FINAL name.
+	if len(ids) > 1 {
+		if err := mpBind.SetPrimaryPeerName(ids[0].Name); err != nil {
+			_ = tunDev.Close()
+			return nil, fmt.Errorf("device: set primary peer name %q: %w", ids[0].Name, err)
+		}
+	}
 	// Concentrator per-peer wiring (G4/T93): register each ADDITIONAL configured peer with its
 	// OWN prober set, scheduler, and prober factory (all keyed on that peer's effective psk),
 	// BEFORE dev.Up drives the bind's Open — which builds each registered peer's per-(peer,path)

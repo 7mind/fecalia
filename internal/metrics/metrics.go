@@ -17,14 +17,16 @@ import (
 // single-peer edge/hub/concentrator-primary), so a single-peer scrape's series are
 // byte-identical to the pre-T94 exposition (no label ever added or removed makes a
 // PromQL selector's label set change shape mid-life). ONLY when 2+ peers are bound does
-// the label appear, carrying each peer's BoundPeerNames() value verbatim (which, for a
-// concentrator's first-configured peer, is the empty string "" — a known consequence of
-// the primary always binding unnamed; see bind.Multipath.BoundPeerNames). Because the
-// label set is a property of the whole scrape (Prometheus requires every sample of one
-// metric family to share one label schema), this is decided ONCE at NewCollector
-// construction from Source.PeerNames() — never per-scrape — matching the peer set's
-// documented static cardinality (a peer is bound at Open/AddConcentratorPeer, never
-// added/removed at runtime).
+// the label appear, carrying each peer's BoundPeerNames() value verbatim — which, on a
+// multi-peer concentrator, is EVERY configured peer's own name, including the
+// first-configured one: device.Up plumbs ids[0].Name into the primary's peerState
+// (bind.Multipath.SetPrimaryPeerName) whenever more than one peer is configured, so
+// peer="" appears ONLY on the true single-peer exposition (D58). Because the label set
+// is a property of the whole scrape (Prometheus requires every sample of one metric
+// family to share one label schema), this is decided ONCE at NewCollector construction
+// from Source.PeerNames() — never per-scrape — matching the peer set's documented static
+// cardinality (a peer is bound at Open/AddConcentratorPeer, never added/removed at
+// runtime).
 //
 // namespace prefixes every wanbond metric name; pathSubsystem, fecSubsystem,
 // resequencerSubsystem, and sessionSubsystem partition the per-path, FEC, resequencer,

@@ -23,9 +23,10 @@ type trafficProvider interface {
 // path name alone is only unique WITHIN one peer, not across peers (each peer's path
 // set is independently configured/named in principle), so keying by path name alone
 // would let two peers' samples for a same-named path clobber each other's rate
-// derivation. peer is "" for the single-peer edge/hub and a concentrator's primary,
-// exactly matching PeerSnapshot.Name — so a single-peer config's map degenerates to the
-// pre-T94 keying (peer is always "", so the key varies only by path).
+// derivation. peer is "" for the single-peer edge/hub, exactly matching PeerSnapshot.Name
+// — so a single-peer config's map degenerates to the pre-T94 keying (peer is always "",
+// so the key varies only by path). A concentrator's primary carries its configured name
+// like every other bound peer (D58), so a multi-peer config's map is keyed by that name.
 type sampleKey struct {
 	peer, path string
 }

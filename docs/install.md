@@ -194,11 +194,10 @@ multi-peer concentrator it authenticates no peer** — an existing single-peer
 edge does NOT keep authenticating via the top-level psk once a second peer is
 added; it must be given its own per-peer psk at that point.
 
-**Metrics `peer` label:** additional peers (all but the first-configured) are
-exposed under their configured `name` as the metrics `peer` label. The
-first/primary peer's series always carry the empty label `peer=""`, even
-though its `name` is set and required in multi-peer mode — this is the current
-shipped behavior (defect D58), not something this doc changes.
+**Metrics `peer` label:** every bound peer — including the first-configured
+(primary) one — is exposed under its configured `name` as the metrics `peer`
+label once a second peer is configured; `peer=""` appears only on a true
+single-peer edge/hub/concentrator (D58).
 
 **Edges see no change:** each edge always points to the concentrator's public
 address (its public IP + port); it does not know or care that multiple edges

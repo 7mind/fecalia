@@ -608,8 +608,9 @@ type Peer struct {
 	// Name is this peer's human-readable identifier (G4 multi-peer
 	// concentrator groundwork), analogous to Path.Name. Unused and optional
 	// with a single peer; required and must be unique across peers when more
-	// than one is configured (T81, Q21). Surfaces (for additional concentrator
-	// peers) as the metrics 'peer' label via BoundPeerNames/PeerSnapshot.Name.
+	// than one is configured (T81, Q21). Surfaces as the metrics 'peer' label
+	// via BoundPeerNames/PeerSnapshot.Name for EVERY bound peer once a second
+	// peer is configured — including the first-configured one (D58).
 	Name string `toml:"name"`
 }
 

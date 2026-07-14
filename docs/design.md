@@ -142,8 +142,10 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   the bind). Binding is learned only from PROBE frames — unauthenticated
   DATA/PARITY cannot establish or hijack a source-to-peer binding (D9/D11).
   Per-peer `name` is required in multi-peer mode and exposed as the metrics `peer`
-  label for **additional** peers only; the first/primary peer's series always
-  carry the empty label `peer=""` (D58).
+  label for **every** bound peer, including the first/primary one: `device.Up`
+  plumbs the primary's configured name into the bind
+  (`bind.Multipath.SetPrimaryPeerName`) whenever a second peer is configured, so
+  `peer=""` appears only on a true single-peer edge/hub/concentrator (D58).
 - owns the **per-path UDP sockets**, byte counters, the send-path FEC `Admit`, the
   adaptive-FEC tick loop, and the wiring that hands frames to the scheduler and
   the resequencer.

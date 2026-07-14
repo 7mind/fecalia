@@ -236,7 +236,10 @@ type peerPathState struct {
 // read them WITHOUT m.mu.
 type peerState struct {
 	// name is the peer id/name, the key under which Multipath.peersByName holds this peer.
-	// Empty on the single-peer edge/hub (there is only one peer to key).
+	// Empty on the single-peer edge/hub (there is only one peer to key) and on the
+	// concentrator's primary UNTIL SetPrimaryPeerName re-keys it to its configured name
+	// (D58) — device.Up calls that whenever more than one peer is configured, so in
+	// practice this is empty only for the true single-peer case.
 	name string
 
 	// psk is THIS peer's effective pre-shared key: the sole seam from which every frame
@@ -880,6 +883,37 @@ func (m *Multipath) AddConcentratorPeer(name string, psk config.Key, scheduler s
 	m.peerByVirt[p.virt] = p
 	// Publish the grown peer set so the engine-facing receive drainer (newReceiveFunc) will
 	// enumerate this peer's resequencer once Open builds it.
+	m.republishPeersLocked()
+	return nil
+}
+
+// SetPrimaryPeerName re-keys the embedded primary (peers[0]) from its NewMultipath-assigned
+// name "" to the configured multi-peer identity name, so a concentrator's first-configured
+// peer carries its own name on /metrics like every other bound peer instead of leaking as
+// peer="" (D58). The concentrator wiring (device.Up) calls this with ids[0].Name exactly
+// when more than one peer is configured, BEFORE registering any additional peer via
+// AddConcentratorPeer — so a later AddConcentratorPeer's collision checks (name == m.name,
+// the peersByName duplicate check) compare against the FINAL primary name and correctly
+// reject a genuine clash. The single-peer edge/hub never calls this, so its primary keeps
+// name="" — byte-identical exposition (T94). TearDownPeer's primary-refusal is unaffected:
+// teardownPeerLocked keys on IDENTITY (p == m.peerState), never on name, so renaming the
+// primary does not change its teardown-immunity. Must be called before Open (like
+// AddConcentratorPeer) since it mutates peer identity the Open-built views assume stable.
+func (m *Multipath) SetPrimaryPeerName(name string) error {
+	if name == "" {
+		return errors.New("bind: primary peer name is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.paths) != 0 {
+		return errors.New("bind: primary peer name must be set before Open")
+	}
+	if _, dup := m.peersByName[name]; dup {
+		return fmt.Errorf("bind: primary peer name %q collides with an already-registered concentrator peer", name)
+	}
+	delete(m.peersByName, m.name)
+	m.name = name
+	m.peersByName[name] = m.peerState
 	m.republishPeersLocked()
 	return nil
 }
@@ -2982,11 +3016,12 @@ func (m *Multipath) PathNames() []string {
 }
 
 // BoundPeerNames returns the id/name of every bound peer in peer order — peers[0] is the
-// embedded primary, which NewMultipath always names "" (on both the single-peer edge/hub AND a
-// multi-peer concentrator; only the ADDITIONAL peers registered via AddConcentratorPeer carry a
-// configured name), followed by each peer registered via AddConcentratorPeer in registration
-// order. It is an observability accessor over the bound peer set the concentrator wiring builds;
-// it takes m.mu so it never races peer registration.
+// embedded primary, which NewMultipath names "" and which stays "" for the single-peer
+// edge/hub; a multi-peer concentrator's wiring (device.Up) calls SetPrimaryPeerName so the
+// primary ALSO carries its configured name (D58) — followed by each peer registered via
+// AddConcentratorPeer, in registration order, under its own configured name. It is an
+// observability accessor over the bound peer set the concentrator wiring builds; it takes
+// m.mu so it never races peer registration.
 func (m *Multipath) BoundPeerNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -3068,8 +3103,9 @@ type PathTraffic struct {
 // counters, and resequencer counters (T94): the read side the per-peer /metrics
 // exposition scrapes. It reports EVERY bound peer (not just the primary), so a
 // multi-peer concentrator's metrics can attribute each series to the edge it came
-// from. Name is BoundPeerNames()[i]: "" for the primary (single-peer edge/hub AND a
-// concentrator's first-configured peer alike), the peer's configured name otherwise.
+// from. Name is BoundPeerNames()[i]: "" for the primary on the single-peer edge/hub only;
+// the peer's configured name otherwise, including the concentrator's first-configured peer
+// once SetPrimaryPeerName has run (D58).
 type PeerSnapshot struct {
 	Name  string
 	Paths []PathTraffic

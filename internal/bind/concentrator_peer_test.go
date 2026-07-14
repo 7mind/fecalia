@@ -306,3 +306,81 @@ func TestConcentratorPeerRegistrationRefusedAfterOpen(t *testing.T) {
 		t.Fatal("AddConcentratorPeer after Open succeeded, want refusal")
 	}
 }
+
+// TestSetPrimaryPeerNameRenamesPrimaryAndKeepsCollisionCheckCorrect is the D58 acceptance:
+// SetPrimaryPeerName re-keys the embedded primary from "" to its configured name BEFORE any
+// AddConcentratorPeer registration, and a LATER AddConcentratorPeer call whose name collides
+// with that FINAL primary name is correctly refused (the m.name == name check in
+// AddConcentratorPeer must see the renamed primary, not the stale "").
+func TestSetPrimaryPeerNameRenamesPrimaryAndKeepsCollisionCheckCorrect(t *testing.T) {
+	pskA := testKey(t, 0x77)
+	pskB := testKey(t, 0x88)
+	clk := newFakeClock()
+	paths := loopbackPaths(1)
+	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+
+	if names := m.BoundPeerNames(); len(names) != 1 || names[0] != "" {
+		t.Fatalf("BoundPeerNames before rename = %v, want [\"\"]", names)
+	}
+
+	if err := m.SetPrimaryPeerName("alpha"); err != nil {
+		t.Fatalf("SetPrimaryPeerName: %v", err)
+	}
+	if names := m.BoundPeerNames(); len(names) != 1 || names[0] != "alpha" {
+		t.Fatalf("BoundPeerNames after rename = %v, want [\"alpha\"]", names)
+	}
+	if p := m.peersByName["alpha"]; p != m.peerState {
+		t.Fatal("peersByName[\"alpha\"] does not resolve to the renamed primary")
+	}
+	if _, stale := m.peersByName[""]; stale {
+		t.Fatal("peersByName still holds a stale \"\" entry after rename")
+	}
+
+	// A later AddConcentratorPeer registration colliding with the RENAMED primary's name is
+	// refused (proves the name-collision check sees the FINAL name, not the stale "").
+	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0A1FA, clk)
+	if err := m.AddConcentratorPeer("alpha", pskB, betaSched, betaProbers, betaFactory); err == nil {
+		t.Fatal("AddConcentratorPeer with a name colliding with the renamed primary succeeded, want refusal")
+	}
+
+	// A non-colliding name registers normally, and the two peers stay independently keyed.
+	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+		t.Fatalf("AddConcentratorPeer(\"beta\"): %v", err)
+	}
+	if names := m.BoundPeerNames(); len(names) != 2 || names[0] != "alpha" || names[1] != "beta" {
+		t.Fatalf("BoundPeerNames after AddConcentratorPeer = %v, want [\"alpha\" \"beta\"]", names)
+	}
+}
+
+// TestSetPrimaryPeerNameRejectsEmptyAfterOpenAndOnCollision covers SetPrimaryPeerName's own
+// fail-fast validation: an empty name is rejected, a call after Open is refused (peer identity
+// must stay stable once Open has built its views), and a name already held by a registered
+// concentrator peer is refused.
+func TestSetPrimaryPeerNameRejectsEmptyAfterOpenAndOnCollision(t *testing.T) {
+	pskA := testKey(t, 0x99)
+	pskB := testKey(t, 0xAA)
+	clk := newFakeClock()
+	paths := loopbackPaths(1)
+
+	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	if err := m.SetPrimaryPeerName(""); err == nil {
+		t.Fatal("SetPrimaryPeerName(\"\") succeeded, want refusal")
+	}
+
+	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEEF, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+		t.Fatalf("AddConcentratorPeer: %v", err)
+	}
+	if err := m.SetPrimaryPeerName("beta"); err == nil {
+		t.Fatal("SetPrimaryPeerName(\"beta\") colliding with a registered peer succeeded, want refusal")
+	}
+
+	m2, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	if _, _, err := m2.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m2.Close() })
+	if err := m2.SetPrimaryPeerName("alpha"); err == nil {
+		t.Fatal("SetPrimaryPeerName after Open succeeded, want refusal")
+	}
+}

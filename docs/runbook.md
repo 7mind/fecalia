@@ -348,11 +348,13 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
 
 > **Multi-peer concentrator (G4).** A concentrator bound to 2+ edges additionally
-> labels every path/resequencer/FEC series above with `peer="<name>"` (the
-> configured `[[wireguard.peers]]` `name`, or `""` for the concentrator's
-> first-configured peer — see `internal/metrics/metrics.go`'s package doc for the
-> back-compat rule). A single-peer edge/hub/concentrator carries **no** `peer` label
-> at all — the exposition above is unchanged from pre-multi-peer wanbond.
+> labels every path/resequencer/FEC series above with `peer="<name>"` — the
+> configured `[[wireguard.peers]]` `name`, for EVERY bound peer including the
+> first-configured one (`device.Up` plumbs its configured name into the bind via
+> `bind.Multipath.SetPrimaryPeerName`; see `internal/metrics/metrics.go`'s package
+> doc for the back-compat rule, D58). A single-peer edge/hub/concentrator carries
+> **no** `peer` label at all — the exposition above is unchanged from
+> pre-multi-peer wanbond.
 
 > **Session vs paths.** `wanbond_session_established` is the WG-session signal the
 > per-path gauges cannot give you: a path can be `up` (probes reflect) while the
