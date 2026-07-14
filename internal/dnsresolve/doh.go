@@ -41,8 +41,9 @@ const dohMaxMessageSize = 65535
 // the query *content* from on-path observers, not the fact that this host is
 // talking to that DoH provider.
 type DoHResolver struct {
-	url    string
-	client *http.Client
+	url      string
+	client   *http.Client
+	dialHost string // non-empty: the bootstrap IP every dial is pinned to (NewDoHResolverWithBootstrap); empty: normal system-resolved dial
 }
 
 var _ Resolver = (*DoHResolver)(nil)
@@ -52,15 +53,38 @@ var _ Resolver = (*DoHResolver)(nil)
 // platform's standard root CA store — there is no production knob to disable
 // certificate verification.
 func NewDoHResolver(rawURL string) (*DoHResolver, error) {
-	return newDoHResolver(rawURL, nil)
+	return newDoHResolver(rawURL, nil, "")
+}
+
+// NewDoHResolverWithBootstrap returns a Resolver like NewDoHResolver, but
+// dials bootstrapIP instead of resolving rawURL's host through the system
+// dialer — the TLS ServerName (SNI) and HTTP Host header still use rawURL's
+// original host, only the TCP connect address is pinned. Use this when
+// rawURL's host is a hostname and its address is already known out-of-band
+// (the BOOTSTRAP-IP invariant, Q33): resolving a private DoH resolver's own
+// name via the system resolver before the first query would leak that lookup
+// in plaintext, defeating the point of using a private resolver at all.
+func NewDoHResolverWithBootstrap(rawURL, bootstrapIP string) (*DoHResolver, error) {
+	return newDoHResolver(rawURL, nil, bootstrapIP)
+}
+
+// DialHost returns the bootstrap IP this resolver pins its TCP connect
+// address to (set via NewDoHResolverWithBootstrap), or "" when dials go
+// through the normal system-resolved path. Exposed so callers (and tests)
+// can confirm which address a resolver actually dials, independent of the
+// URL host it presents in the TLS SNI / HTTP Host header.
+func (d *DoHResolver) DialHost() string {
+	return d.dialHost
 }
 
 // newDoHResolver is the unexported constructor seam: a non-nil roots pool
 // overrides the platform trust store with roots, for injecting a test CA
 // (e.g. from httptest.NewTLSServer) — it exists ONLY for tests in this
-// package. Production code always goes through NewDoHResolver, which passes
-// roots=nil and gets tls.Config's default (the system pool).
-func newDoHResolver(rawURL string, roots *x509.CertPool) (*DoHResolver, error) {
+// package. A non-empty bootstrapIP pins the TCP connect address (see
+// NewDoHResolverWithBootstrap). Production code without a bootstrap goes
+// through NewDoHResolver, which passes roots=nil, bootstrapIP="" and gets
+// tls.Config's default (the system pool) and a normal system-resolved dial.
+func newDoHResolver(rawURL string, roots *x509.CertPool, bootstrapIP string) (*DoHResolver, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("dnsresolve: invalid DoH URL %q: %w", rawURL, err)
@@ -83,9 +107,24 @@ func newDoHResolver(rawURL string, roots *x509.CertPool) (*DoHResolver, error) {
 		// TLSClientConfig when this is set explicitly.
 		ForceAttemptHTTP2: true,
 	}
+	if bootstrapIP != "" {
+		// Pin the TCP connect address to bootstrapIP, keeping the dialed
+		// addr's PORT (http.Transport passes "host:port", defaulting to 443
+		// for https). net/http derives the TLS ServerName and the HTTP Host
+		// header from the request URL, not from the dial address, so SNI and
+		// Host stay rawURL's original host — only the connect target moves.
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("dnsresolve: DoH bootstrap dial: invalid addr %q: %w", addr, err)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(bootstrapIP, port))
+		}
+	}
 
 	return &DoHResolver{
-		url: rawURL,
+		url:      rawURL,
+		dialHost: bootstrapIP,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   dohTimeout,

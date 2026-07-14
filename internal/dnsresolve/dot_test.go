@@ -362,3 +362,74 @@ func TestNewDoTResolverRejectsEmptyServer(t *testing.T) {
 		t.Fatal("NewDoTResolver(\"\"): expected error, got nil")
 	}
 }
+
+// TestNewDoTResolverWithBootstrapDialAddr is the plain constructor test (no
+// live dial) for the exported NewDoTResolverWithBootstrap: the stored dial
+// target must be bootstrapIP:853 — the fixed IANA DoT port dnsresolve always
+// dials — never the hostname.
+func TestNewDoTResolverWithBootstrapDialAddr(t *testing.T) {
+	r, err := NewDoTResolverWithBootstrap("resolver.example.com", "198.51.100.1")
+	if err != nil {
+		t.Fatalf("NewDoTResolverWithBootstrap: unexpected error: %v", err)
+	}
+	if want := "198.51.100.1:853"; r.DialAddr() != want {
+		t.Fatalf("DialAddr() = %q, want %q", r.DialAddr(), want)
+	}
+}
+
+// TestNewDoTResolverWithBootstrapDialsBootstrapIP is the hermetic construct
+// test for the BOOTSTRAP-IP invariant (Q33): serverName names a HOSTNAME
+// that does not exist in DNS, so if the resolver dialed it via the system
+// resolver the connection would fail before any TLS handshake happens. It
+// instead dials bootstrapIP:port (a real hermetic TLS listener bound there,
+// mirroring NewDoTResolverWithBootstrap's addr construction but at an
+// ephemeral test port since the exported constructor's port is fixed at
+// 853), proving the dial address — not the server name — determines the TCP
+// connect target, while the listener's certificate is issued for the
+// hostname to also confirm the TLS ServerName / SNI is untouched.
+func TestNewDoTResolverWithBootstrapDialsBootstrapIP(t *testing.T) {
+	const unresolvableHost = "dot-resolver.invalid.wanbond-test"
+	cert, pool := generateDoTTestCert(t, unresolvableHost)
+
+	addr, stop := startDoTTestListener(t, cert, func(t *testing.T, msg dnsmessage.Message, q dnsmessage.Question) []byte {
+		switch q.Type {
+		case dnsmessage.TypeA:
+			return packDoTAnswer(t, q, []dnsmessage.Resource{aResource(t, q, [4]byte{192, 0, 2, 43}, 30)})
+		case dnsmessage.TypeAAAA:
+			resp := dnsmessage.Message{Header: dnsmessage.Header{Response: true, RCode: dnsmessage.RCodeNameError}, Questions: []dnsmessage.Question{q}}
+			buf, err := resp.Pack()
+			if err != nil {
+				t.Fatalf("packing NXDOMAIN response: %v", err)
+			}
+			return buf
+		default:
+			t.Fatalf("unexpected query type %v", q.Type)
+			return nil
+		}
+	})
+	defer stop()
+
+	bootstrapIP, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("splitting listener addr: %v", err)
+	}
+
+	// Mirrors NewDoTResolverWithBootstrap's addr construction
+	// (net.JoinHostPort(bootstrapIP, dotPort)) at the listener's ephemeral
+	// port instead of the fixed 853, since binding 853 needs root.
+	r, err := newDoTResolver(net.JoinHostPort(bootstrapIP, port), unresolvableHost, pool)
+	if err != nil {
+		t.Fatalf("newDoTResolver: unexpected error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	addrs, _, _, err := r.Lookup(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("Lookup: unexpected error (bootstrap dial should have reached the hermetic listener without any DNS lookup of %q): %v", unresolvableHost, err)
+	}
+	if len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.43") {
+		t.Fatalf("Lookup: got %v, want [192.0.2.43]", addrs)
+	}
+}

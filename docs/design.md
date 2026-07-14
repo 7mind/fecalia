@@ -332,7 +332,9 @@ space** and never touches the inner WireGuard counter (a core invariant).
   resolver transport (system default, DoH, or DoT) a peer's opt-in hostname
   endpoint is resolved through, enforcing the BOOTSTRAP-IP invariant (a
   hostname-form `doh_url`/`dot_server` requires an explicit `bootstrap_ip`)
-  and constructing the matching `internal/dnsresolve` implementation.
+  and constructing the matching `internal/dnsresolve` implementation — when
+  `bootstrap_ip` is set, that implementation dials it directly instead of
+  resolving the configured hostname through the system dialer.
 - `internal/device` — brings a tunnel up from a validated config (Up/Down/Reload),
   wires metrics, handles SIGHUP path add/remove without teardown.
 - `internal/metrics` — a private-registry Prometheus `/metrics` endpoint that

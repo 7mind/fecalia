@@ -2,9 +2,11 @@ package dnsresolve
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -29,7 +31,7 @@ func newCertPoolFromServer(t *testing.T, srv *httptest.Server) *x509.CertPool {
 func newDoHTestResolver(t *testing.T, srv *httptest.Server, path string) *DoHResolver {
 	t.Helper()
 	pool := newCertPoolFromServer(t, srv)
-	r, err := newDoHResolver(srv.URL+path, pool)
+	r, err := newDoHResolver(srv.URL+path, pool, "")
 	if err != nil {
 		t.Fatalf("newDoHResolver: unexpected error: %v", err)
 	}
@@ -321,5 +323,81 @@ func TestDoHResolverTimeout(t *testing.T) {
 func TestNewDoHResolverRejectsNonHTTPS(t *testing.T) {
 	if _, err := NewDoHResolver("http://example.com/dns-query"); err == nil {
 		t.Fatal("NewDoHResolver(http://...): expected error, got nil")
+	}
+}
+
+// TestNewDoHResolverWithBootstrapDialsBootstrapIP is the hermetic construct
+// test for the BOOTSTRAP-IP invariant (Q33): rawURL names a HOSTNAME that
+// does not exist in DNS, so if the resolver dialed it via the system
+// resolver the lookup itself would fail before any TLS handshake happens.
+// Using the unexported constructor seam (to inject the hermetic listener's
+// self-signed test CA — NewDoHResolverWithBootstrap, like NewDoHResolver,
+// always uses the platform trust store), it instead dials bootstrapIP,
+// proving the DialContext override — not the URL host — determines the TCP
+// connect target, while the listener's certificate is issued for the URL's
+// original hostname to also confirm the TLS ServerName / SNI is untouched.
+func TestNewDoHResolverWithBootstrapDialsBootstrapIP(t *testing.T) {
+	const unresolvableHost = "doh-resolver.invalid.wanbond-test"
+
+	cert, pool := generateDoTTestCert(t, unresolvableHost)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		msg, qtype := readDoHQuestion(t, r)
+		q := msg.Questions[0]
+		if qtype == dnsmessage.TypeA {
+			writeDoHAnswer(t, w, q, []dnsmessage.Resource{aResource(t, q, [4]byte{192, 0, 2, 42}, 30)})
+			return
+		}
+		resp := dnsmessage.Message{Header: dnsmessage.Header{Response: true, RCode: dnsmessage.RCodeNameError}, Questions: []dnsmessage.Question{q}}
+		buf, err := resp.Pack()
+		if err != nil {
+			t.Fatalf("packing NXDOMAIN response: %v", err)
+		}
+		w.Header().Set("Content-Type", dohMediaType)
+		_, _ = w.Write(buf)
+	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	srv.StartTLS()
+	defer srv.Close()
+
+	bootstrapIP, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("splitting listener addr: %v", err)
+	}
+	// Rewrite the server's self-reported URL to use the unresolvable hostname
+	// instead of its loopback IP, so the resolver sees a hostname-form URL
+	// exactly like the config.DNS.NewResolver caller does.
+	rawURL := "https://" + net.JoinHostPort(unresolvableHost, port) + "/dns-query"
+
+	r, err := newDoHResolver(rawURL, pool, bootstrapIP)
+	if err != nil {
+		t.Fatalf("newDoHResolver: unexpected error: %v", err)
+	}
+	if r.DialHost() != bootstrapIP {
+		t.Fatalf("DialHost() = %q, want %q", r.DialHost(), bootstrapIP)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	addrs, _, _, err := r.Lookup(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("Lookup: unexpected error (bootstrap dial should have reached the hermetic listener without any DNS lookup of %q): %v", unresolvableHost, err)
+	}
+	if len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.42") {
+		t.Fatalf("Lookup: got %v, want [192.0.2.42]", addrs)
+	}
+}
+
+// TestNewDoHResolverWithBootstrapStoresDialTarget is the plain constructor
+// test (no live dial) for the exported NewDoHResolverWithBootstrap: it must
+// record bootstrapIP as the DialHost every subsequent Lookup pins its TCP
+// connect address to.
+func TestNewDoHResolverWithBootstrapStoresDialTarget(t *testing.T) {
+	r, err := NewDoHResolverWithBootstrap("https://resolver.example.com/dns-query", "198.51.100.1")
+	if err != nil {
+		t.Fatalf("NewDoHResolverWithBootstrap: unexpected error: %v", err)
+	}
+	if r.DialHost() != "198.51.100.1" {
+		t.Fatalf("DialHost() = %q, want %q", r.DialHost(), "198.51.100.1")
 	}
 }

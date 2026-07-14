@@ -52,6 +52,27 @@ func NewDoTResolver(server string) (*DoTResolver, error) {
 	return newDoTResolver(net.JoinHostPort(server, dotPort), server, nil)
 }
 
+// NewDoTResolverWithBootstrap returns a Resolver like NewDoTResolver, but
+// dials bootstrapIP:853 instead of resolving server through the system
+// dialer, while still verifying the presented certificate against server as
+// the TLS server name. Use this when server is a hostname and its address is
+// already known out-of-band (the BOOTSTRAP-IP invariant, Q33): resolving a
+// private DoT resolver's own name via the system resolver before the first
+// query would leak that lookup in plaintext, defeating the point of using a
+// private resolver at all.
+func NewDoTResolverWithBootstrap(server, bootstrapIP string) (*DoTResolver, error) {
+	return newDoTResolver(net.JoinHostPort(bootstrapIP, dotPort), server, nil)
+}
+
+// DialAddr returns the dial target ("host:port") this resolver connects to
+// for every lookup — bootstrapIP:853 when constructed via
+// NewDoTResolverWithBootstrap, server:853 otherwise. Exposed so callers (and
+// tests) can confirm which address a resolver actually dials, independent of
+// the TLS server name it verifies against.
+func (d *DoTResolver) DialAddr() string {
+	return d.addr
+}
+
 // newDoTResolver is the unexported constructor seam: addr is the dial
 // target (host:port), serverName is the TLS server name verified against
 // the presented certificate, and a non-nil roots pool overrides the

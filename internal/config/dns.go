@@ -76,28 +76,53 @@ type DNS struct {
 	// host is a hostname; ignored when it is already an IP literal.
 	BootstrapIP string `toml:"bootstrap_ip"`
 	// PollInterval is the re-resolution cadence for an opted-in hostname peer
-	// endpoint (Q31). Defaults to defaultDNSPollInterval when left zero; must
-	// be > 0 after defaulting.
-	PollInterval time.Duration `toml:"poll_interval"`
-	// Timeout bounds a single resolver lookup. Defaults to defaultDNSTimeout
-	// when left zero; must be > 0 after defaulting.
-	Timeout time.Duration `toml:"timeout"`
+	// endpoint (Q31), parsed from PollIntervalRaw in applyDefaults. Defaults to
+	// defaultDNSPollInterval when PollIntervalRaw is left empty; must be > 0
+	// after defaulting.
+	PollInterval time.Duration `toml:"-"`
+	// PollIntervalRaw is the TOML Go-duration string form of PollInterval,
+	// e.g. "30s". Mirrors Path.LinkRTTRaw: go-toml/v2 cannot decode a TOML
+	// string directly into a time.Duration field, so the raw string is parsed
+	// via time.ParseDuration in applyDefaults.
+	PollIntervalRaw string `toml:"poll_interval"`
+	// Timeout bounds a single resolver lookup, parsed from TimeoutRaw in
+	// applyDefaults. Defaults to defaultDNSTimeout when TimeoutRaw is left
+	// empty; must be > 0 after defaulting.
+	Timeout time.Duration `toml:"-"`
+	// TimeoutRaw is the TOML Go-duration string form of Timeout, e.g. "5s".
+	TimeoutRaw string `toml:"timeout"`
 }
 
 // applyDefaults fills the resolver mode and cadence/timeout knobs left at
 // their zero value, so a minimal or absent [dns] block resolves to explicit,
 // usable settings — an absent block still ends up as the system resolver
 // with the standard cadence/timeout, per the type's zero-value contract.
-func (d *DNS) applyDefaults() {
+// PollIntervalRaw/TimeoutRaw are parsed here (mirroring Path's *Raw-field
+// normalize step for LinkRTTRaw); an unparseable duration string is reported
+// immediately.
+func (d *DNS) applyDefaults() error {
 	if d.Resolver == "" {
 		d.Resolver = DNSResolverSystem
 	}
-	if d.PollInterval == 0 {
+	if d.PollIntervalRaw == "" {
 		d.PollInterval = defaultDNSPollInterval
+	} else {
+		v, err := time.ParseDuration(d.PollIntervalRaw)
+		if err != nil {
+			return fmt.Errorf("dns.poll_interval: invalid duration %q: %w", d.PollIntervalRaw, err)
+		}
+		d.PollInterval = v
 	}
-	if d.Timeout == 0 {
+	if d.TimeoutRaw == "" {
 		d.Timeout = defaultDNSTimeout
+	} else {
+		v, err := time.ParseDuration(d.TimeoutRaw)
+		if err != nil {
+			return fmt.Errorf("dns.timeout: invalid duration %q: %w", d.TimeoutRaw, err)
+		}
+		d.Timeout = v
 	}
+	return nil
 }
 
 // validate enforces the [dns] block invariants: a resolver-mode-appropriate
@@ -219,25 +244,31 @@ func dotServerHost(raw string) (string, error) {
 
 // NewResolver constructs the dnsresolve.Resolver implementation the
 // (validated) [dns] block selects: dnsresolve.NewSystemResolver for the
-// default/system mode, dnsresolve.NewDoHResolver for doh, or
-// dnsresolve.NewDoTResolver for dot. Callers normally obtain a DNS value via
-// config.Load, which already ran applyDefaults/validate; calling this on an
-// un-validated DNS value surfaces whatever the underlying dnsresolve
-// constructor rejects.
+// default/system mode, dnsresolve.NewDoHResolver/NewDoTResolver for doh/dot,
+// or their *WithBootstrap variants when bootstrap_ip is set. Callers
+// normally obtain a DNS value via config.Load, which already ran
+// applyDefaults/validate; calling this on an un-validated DNS value surfaces
+// whatever the underlying dnsresolve constructor rejects.
 //
-// bootstrap_ip is validated (fail-fast, see requireBootstrapForHost) but not
-// yet wired into the constructed resolver's dial target: dnsresolve's
-// exported constructors take only a URL/server string and always resolve it
-// through the standard net dialer, so bypassing DNS for the bootstrap dial
-// itself is follow-on scope.
+// bootstrap_ip (validated fail-fast, see requireBootstrapForHost) IS wired
+// into the constructed resolver's dial target: when set, the resolver dials
+// bootstrap_ip directly instead of resolving the configured hostname through
+// the system dialer — the BOOTSTRAP-IP invariant (Q33) exists precisely to
+// avoid that plaintext lookup of the private resolver's own name.
 func (d DNS) NewResolver() (dnsresolve.Resolver, error) {
 	switch d.Resolver {
 	case DNSResolverDoH:
+		if d.BootstrapIP != "" {
+			return dnsresolve.NewDoHResolverWithBootstrap(d.DoHURL, d.BootstrapIP)
+		}
 		return dnsresolve.NewDoHResolver(d.DoHURL)
 	case DNSResolverDoT:
 		host, err := dotServerHost(d.DoTServer)
 		if err != nil {
 			return nil, fmt.Errorf("dns.dot_server: %w", err)
+		}
+		if d.BootstrapIP != "" {
+			return dnsresolve.NewDoTResolverWithBootstrap(host, d.BootstrapIP)
 		}
 		return dnsresolve.NewDoTResolver(host)
 	default:

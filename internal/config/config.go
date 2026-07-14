@@ -808,7 +808,9 @@ func (c *Config) normalize() error {
 	}
 	c.Scheduler.applyDefaults()
 	c.FEC.applyDefaults()
-	c.DNS.applyDefaults()
+	if err := c.DNS.applyDefaults(); err != nil {
+		return err
+	}
 	return nil
 }
 
