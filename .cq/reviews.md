@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 117
+  item: 118
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1238,6 +1238,19 @@ archives:
 - ledgerRefs: ["tasks:T76","goals:G5"]
 - sessionLogs: [".cq/logs/20260714-061018-aabdf77e0c8e0f30f.md",".cq/logs/20260714-061018-a98cbbd2ae1d05ea6.md"]
 - rawLogs: [".cq/logs/raw/20260714-061018-aabdf77e0c8e0f30f.jsonl",".cq/logs/raw/20260714-061018-a98cbbd2ae1d05ea6.jsonl"]
+
+### R118 — go-ahead
+
+- createdAt: 2026-07-14T07:20:26.312Z
+- updatedAt: 2026-07-14T07:20:26.312Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T79 unanimous panel approve at ROUND 3 (3-round criticism loop): [opus]+[fable] both approve. G5 DNS/hostname-endpoint doc-sync across README.md, docs/design.md, docs/install.md, docs/runbook.md, wanbond.example.toml + a new config test (internal/config/config_test.go TestExampleConfigLoads) that READS the real wanbond.example.toml, extracts+uncomments each [dns] variant (doh/dot/system) and the hostname-peer example, and config.Load()s each (mutation-verified: injecting dot_server into the doh example fails dns_example_doh). Round 1 filed 7 criticisms (broken FULL-[dns] example that failed Load; test never read the real file; false 'dns=true requires [dns] block' in 3 files; wrong dedup/liveness/mixing prose; stale 'no DNS' text) — all fixed round 2. Round 2 filed 2 residual design.md false claims: (a) Mixing-rules rules 1-2 wrongly said the expansion is 'independent of the resolver's own record order' — orderAddrPorts (resolution.go:283-303) is a STABLE v4-before-v6 partition preserving within-family resolver encounter order (no sort), so byte-identical expansion requires a byte-identical answer; (b) boot-semantics 'repoints whenever the record changes' + Change-suppression understated updateResolution (failover.go:305-321) which is active-AddrPort-SURVIVAL-scoped (repoint only when the active AddrPort disappears from the spec's non-empty new expansion, re-point to addrs[0], one SetPeerRemote+rehandshake). Round 3 reworded both, changing ONLY docs/design.md; both reviewers verified verbatim against source. Rebased past T95/T96/T103/T97 and ff-merged as 167bed3."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T79","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-071939-a4cceb8d343f3d498.md",".cq/logs/20260714-071939-a193ca96634ef63ef.md"]
+- rawLogs: [".cq/logs/raw/20260714-071939-a4cceb8d343f3d498.jsonl",".cq/logs/raw/20260714-071939-a193ca96634ef63ef.jsonl"]
 
 ## M26
 

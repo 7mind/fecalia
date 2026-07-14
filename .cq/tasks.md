@@ -796,10 +796,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-045408-a6ff3c7de32c86767.md",".cq/logs/20260714-051113-abaaea20708e03b76.md",".cq/logs/20260714-050548-a54ae7c80e1ab909f.md",".cq/logs/20260714-050548-a65d3da77adb4f5b4.md",".cq/logs/20260714-051954-a9e48eb98d4a79d0d.md",".cq/logs/20260714-051954-a01261db5c976ffab.md"]
 - rawLogs: [".cq/logs/raw/20260714-045408-a6ff3c7de32c86767.jsonl",".cq/logs/raw/20260714-051113-abaaea20708e03b76.jsonl",".cq/logs/raw/20260714-050548-a54ae7c80e1ab909f.jsonl",".cq/logs/raw/20260714-050548-a65d3da77adb4f5b4.jsonl",".cq/logs/raw/20260714-051954-a9e48eb98d4a79d0d.jsonl",".cq/logs/raw/20260714-051954-a01261db5c976ffab.jsonl"]
 
-### T79 — wip
+### T79 — done
 
 - createdAt: 2026-07-13T21:56:16.623Z
-- updatedAt: 2026-07-14T06:22:36.780Z
+- updatedAt: 2026-07-14T07:22:28.482Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Sync docs and example config: DNS endpoints, resolver privacy trade-offs"
@@ -808,6 +808,10 @@ archives:
 - suggestedModel: fast
 - dependsOn: ["T76","T69","T71"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 167bed3
+- completion: "G5 DNS/hostname-endpoint doc-sync (docs-only + config test). README.md/docs/design.md/docs/install.md/docs/runbook.md/wanbond.example.toml describe the shipped DNS feature; new TestExampleConfigLoads (internal/config/config_test.go) READS the real wanbond.example.toml and config.Load()s its extracted doh/dot/system [dns] variants + the hostname-peer example (mutation-verified). 3-round criticism loop: R1 fixed 7 findings (broken FULL-[dns] example, test-didn't-read-file, false '[dns] required' claims, wrong prose, stale text); R2→R3 fixed 2 residual design.md false claims grounded against orderAddrPorts (stable v4-then-v6 partition preserving within-family resolver order) and updateResolution (active-AddrPort-survival-scoped suppression). Unanimous round-3 panel approve. Rebased onto current main and ff-merged as 167bed3."
+- sessionLogs: [".cq/logs/20260714-070000-aed9d426a93a8fb36.md",".cq/logs/20260714-070917-ad04d044c371aebd8.md",".cq/logs/20260714-071939-a4cceb8d343f3d498.md",".cq/logs/20260714-071939-a193ca96634ef63ef.md"]
+- rawLogs: [".cq/logs/raw/20260714-070000-aed9d426a93a8fb36.jsonl",".cq/logs/raw/20260714-070917-ad04d044c371aebd8.jsonl",".cq/logs/raw/20260714-071939-a4cceb8d343f3d498.jsonl",".cq/logs/raw/20260714-071939-a193ca96634ef63ef.jsonl"]
 
 ## M23
 
@@ -1124,10 +1128,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-064317-af9870e926cd7a191.md",".cq/logs/20260714-065448-a43bd9a8d80ec37ce.md",".cq/logs/20260714-065448-a377c32726def949b.md"]
 - rawLogs: [".cq/logs/raw/20260714-064317-af9870e926cd7a191.jsonl",".cq/logs/raw/20260714-065448-a43bd9a8d80ec37ce.jsonl",".cq/logs/raw/20260714-065448-a377c32726def949b.jsonl"]
 
-### T98 — planned
+### T98 — wip
 
 - createdAt: 2026-07-13T22:29:48.172Z
-- updatedAt: 2026-07-13T22:29:48.172Z
+- updatedAt: 2026-07-14T07:02:05.278Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Sync AGENTS.md, design/install/README docs and example config for multi-peer
@@ -1137,10 +1141,10 @@ archives:
 - dependsOn: ["T97"]
 - ledgerRefs: ["goals:G4"]
 
-### T99 — planned
+### T99 — wip
 
 - createdAt: 2026-07-13T22:29:52.474Z
-- updatedAt: 2026-07-13T22:29:52.474Z
+- updatedAt: 2026-07-14T07:02:06.794Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Run full suite and capture report-only 2-edge real-link check
@@ -1283,12 +1287,12 @@ archives:
 - sessionLogs: [".cq/logs/20260714-060333-a41c6d5823c2af08c.md",".cq/logs/20260714-060726-a48e2a04e50fbf112.md",".cq/logs/20260714-060726-af9cfffd1ceb8b455.md"]
 - rawLogs: [".cq/logs/raw/20260714-060333-a41c6d5823c2af08c.jsonl",".cq/logs/raw/20260714-060726-a48e2a04e50fbf112.jsonl",".cq/logs/raw/20260714-060726-af9cfffd1ceb8b455.jsonl"]
 
-### T108 — planned
+### T108 — wip
 
 - createdAt: 2026-07-13T23:23:50.937Z
-- updatedAt: 2026-07-13T23:23:50.937Z
+- updatedAt: 2026-07-14T07:02:07.792Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Edge default-route wiring under mode=default-route (I6 routes)
 - description: "When `mode = \"default-route\"` is active on the edge, after the interface is UP the daemon installs the default-route wiring into wanbond0 — the two /1 routes (wg-quick style, matching the internal allowed_ips split) — and removes them on Close. STRICT Q41 boundary: NO client-LAN policy routing, NO SNAT, NO concentrator ip_forward/MASQUERADE/FORWARD programming — those stay documented C3/C6 recipes. This is the daemon's first route programming (install.md §4 today states it never assigns routes) — keep it minimal, fail-fast, and confined to the mode being explicitly enabled; default behavior without the mode is byte-for-byte unchanged."
 - acceptance: "Netns e2e: with mode=default-route the edge's two /1 routes via wanbond0 exist while the daemon runs and are gone after Close; traffic to an arbitrary destination egresses through the tunnel; WITHOUT the mode, no route is ever installed (regression guard). go test -tags e2e ./test/e2e green."
