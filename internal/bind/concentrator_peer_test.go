@@ -2,7 +2,9 @@ package bind
 
 import (
 	"io"
+	"net"
 	"net/netip"
+	"syscall"
 	"testing"
 	"time"
 
@@ -214,6 +216,75 @@ func TestConcentratorRuntimePathFanOutPerPeerPSK(t *testing.T) {
 			t.Fatalf("%s peer lost its surviving path 'a' on the remove: %v", tc.who, pathNamesOfPeer(tc.p))
 		}
 	}
+}
+
+// TestConcentratorDeferredAddThenReopenFansPerPeerProbers is the T93 ROUND-2 regression: on a
+// MULTI-PEER concentrator, a runtime AddPath that DEFERS (EADDRNOTAVAIL — a well-formed but
+// not-yet-assignable source_addr) must fan a Down prober out to EVERY bound peer, not just the
+// primary. Pre-fix the deferred admission grew m.defs + the PRIMARY's probers only, leaving a
+// concentrator peer's p.probers SHORT of m.defs; the next Close->Open that SUCCESSFULLY binds the
+// deferred def (the address became assignable) then indexed that peer's p.probers[i] OUT OF RANGE
+// and PANICKED at Open (`pp.prober = p.probers[i]`). This drives exactly that sequence — 2 peers
+// bound, a deferred AddPath, then Close->Open with the def now bindable — and asserts the reopen
+// brings the path up on BOTH peers with each peer's prober keyed on its OWN psk. It PANICS before
+// the fan-out fix and passes after.
+func TestConcentratorDeferredAddThenReopenFansPerPeerProbers(t *testing.T) {
+	pskA := testKey(t, 0x71)
+	pskB := testKey(t, 0x72)
+	clk := newFakeClock()
+	paths := loopbackPaths(1) // boot path "a"
+	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+
+	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0DEFACE, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+		t.Fatalf("AddConcentratorPeer: %v", err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	// Force the runtime AddPath to DEFER: the addPathListen seam returns EADDRNOTAVAIL, exactly as
+	// a not-yet-assignable source_addr would, so AddPath records the def as deferred rather than
+	// binding it. (Open itself uses the package-level listenPath, so the later reopen still binds
+	// the def for real off 127.0.0.1 — the address "became assignable".)
+	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
+		return nil, syscall.EADDRNOTAVAIL
+	}
+	if err := m.AddPath(config.Path{Name: "deferred-b", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
+		t.Fatalf("AddPath (deferred): %v", err)
+	}
+
+	// Precondition: the def joined the durable membership + deferred set (holds pre- and post-fix
+	// — the divergence the fix repairs is the SILENT per-peer prober shortfall, exercised by the
+	// reopen below, NOT this count).
+	if len(m.defs) != 2 || len(m.deferred) != 1 {
+		t.Fatalf("after deferred AddPath: m.defs=%d m.deferred=%d, want 2 and 1", len(m.defs), len(m.deferred))
+	}
+
+	// The address "becomes assignable": Close, then Open. Open re-binds the deferred def from
+	// m.defs (via the real listenPath off 127.0.0.1) and rebuilds every peer's per-(peer,path)
+	// view by indexing p.probers[i]. This is the step that PANICS pre-fix (beta.probers[1] OOR).
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("reopen after the deferred address became assignable: %v", err)
+	}
+
+	primary := m.peerState
+	beta := m.peersByName["beta"]
+	pa := peerPathByName(primary, "deferred-b")
+	pb := peerPathByName(beta, "deferred-b")
+	if pa == nil || pb == nil {
+		t.Fatalf("deferred path not bound on reopen: primary=%v beta=%v", pathNamesOfPeer(primary), pathNamesOfPeer(beta))
+	}
+	if pa.prober == pb.prober {
+		t.Fatal("both peers share ONE prober for the reopened deferred path — the fan-out did not mint per-peer state")
+	}
+	// Each reopened deferred path is keyed on its OWN peer's psk (mutation-sensitive).
+	assertProberKeyedOn(t, "primary deferred prober 'deferred-b'", pa.prober, pskA, pskB)
+	assertProberKeyedOn(t, "beta deferred prober 'deferred-b'", pb.prober, pskB, pskA)
 }
 
 // TestConcentratorPeerRegistrationRefusedAfterOpen pins the ordering invariant: a concentrator

@@ -672,7 +672,7 @@ func (m *Multipath) AddConcentratorPeer(name string, psk config.Key, scheduler s
 			return fmt.Errorf("bind: concentrator peer %q: prober %d is nil", name, i)
 		}
 	}
-	if name == m.peerState.name {
+	if name == m.name {
 		return fmt.Errorf("bind: concentrator peer name %q collides with the primary peer", name)
 	}
 	if _, dup := m.peersByName[name]; dup {
@@ -798,6 +798,16 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			}
 			pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec}
 			if p.probers != nil {
+				// Fail fast rather than panic if a peer's prober slice ever falls short of the
+				// shared m.defs membership: every runtime admission (bound OR deferred) fans a
+				// per-peer prober out to EVERY peer (AddPath), so p.probers stays index-aligned
+				// with m.defs. A divergence is a wiring defect — surface it as a bind error
+				// instead of an index-out-of-range panic that would crash the daemon.
+				if i >= len(p.probers) {
+					_ = c.Close()
+					_ = m.closeSocketsLocked()
+					return nil, 0, fmt.Errorf("bind: peer %q prober set (len %d) is shorter than the path membership at index %d — per-peer prober fan-out desync", p.name, len(p.probers), i)
+				}
 				pp.prober = p.probers[i]
 				if pi == 0 {
 					// Reconcile the SHARED DATA-frame path-id to the PRIMARY prober's IMMUTABLE
@@ -2279,12 +2289,35 @@ func (m *Multipath) AddPath(def config.Path) error {
 			// already requires the probe transport + a DynamicScheduler (checked above),
 			// which is exactly the Down model Open's tolerance needs. The prober is minted
 			// here so the reserved id-stamp is consumed even while deferred; a later bind
-			// (T55 / a Close→Open) reuses the SAME stamp. The deferred path is recorded on the
-			// PRIMARY peer only (the concentrator fan-out of a still-deferred path is a later
-			// G4 task; the single-peer edge/hub, which is all that defers today, is exact).
-			prober := m.newProber(def.Name, id)
+			// (T55 / a Close→Open) reuses the SAME stamp.
+			//
+			// FAN the deferred admission out to EVERY bound peer, mirroring the bound-add
+			// fan-out (attachSharedPathLocked): a still-deferred def is appended to the SHARED
+			// membership m.defs, and Open rebuilds EVERY peer's per-(peer,path) view by indexing
+			// p.probers[i] with i the def's index in m.defs. If only the primary's probers grew
+			// here (the pre-fix behaviour), a concentrator peer's p.probers would fall SHORT of
+			// m.defs, and the first Close->Open cycle that SUCCESSFULLY binds this deferred def
+			// would panic with index-out-of-range at Open's `pp.prober = p.probers[i]`. So mint
+			// each peer its OWN Down prober (keyed on that peer's psk, stamped with the shared
+			// id so DATA and PROBE agree), keeping every peer's prober slice index-aligned with
+			// m.defs. Each per-peer prober stays Down and absent from the scheduler until a later
+			// bind admits it; the PRIMARY's is the durable deferredPath record (Open re-defers it
+			// as m.probers[i]). Guard each peer's factory up front so a missing one fails the add
+			// fast rather than nil-dereferencing mid fan-out.
+			for _, p := range m.peers {
+				if p.newProber == nil {
+					return fmt.Errorf("bind: add path %q: peer %q cannot defer a path without the probe transport", def.Name, p.name)
+				}
+			}
+			prober := m.newProber(def.Name, id) // the primary's; also the durable deferred record
 			m.defs = append(m.defs, def)
-			m.probers = append(m.probers, prober)
+			for pi, p := range m.peers {
+				if pi == 0 {
+					p.probers = append(p.probers, prober)
+					continue
+				}
+				p.probers = append(p.probers, p.newProber(def.Name, id))
+			}
 			m.deferred = append(m.deferred, deferredPath{def: def, prober: prober})
 			m.nextPathID++
 			return nil
@@ -2541,10 +2574,11 @@ func (m *Multipath) PathNames() []string {
 }
 
 // BoundPeerNames returns the id/name of every bound peer in peer order — peers[0] is the
-// embedded primary ("" on the single-peer edge/hub, or the first configured peer's name on a
-// multi-peer concentrator), followed by each peer registered via AddConcentratorPeer. It is an
-// observability accessor over the bound peer set the concentrator wiring builds; it takes m.mu
-// so it never races peer registration.
+// embedded primary, which NewMultipath always names "" (on both the single-peer edge/hub AND a
+// multi-peer concentrator; only the ADDITIONAL peers registered via AddConcentratorPeer carry a
+// configured name), followed by each peer registered via AddConcentratorPeer in registration
+// order. It is an observability accessor over the bound peer set the concentrator wiring builds;
+// it takes m.mu so it never races peer registration.
 func (m *Multipath) BoundPeerNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2567,6 +2601,43 @@ func (m *Multipath) PeerVirtEndpoints() []Endpoint {
 		eps[i] = p.virt
 	}
 	return eps
+}
+
+// PeerBootProbe emits a freshly-encoded boot PROBE from bound peer peerIdx's boot prober for
+// path pathIdx (both in bound-peer / durable-membership order). The returned bytes are MAC'd
+// under THAT peer's prober psk, so a test can assert each concentrator peer's prober is keyed on
+// its own configured psk — the bytes decode as a PROBE under it and under NO other peer's psk.
+// Wiring-verification accessor over the per-peer prober set the concentrator wiring builds; it
+// takes m.mu so it never races peer registration. It errors if the indices are out of range or
+// the peer carries no prober for that path (a bind without the probe transport).
+func (m *Multipath) PeerBootProbe(peerIdx, pathIdx int) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if peerIdx < 0 || peerIdx >= len(m.peers) {
+		return nil, fmt.Errorf("bind: peer index %d out of range [0,%d)", peerIdx, len(m.peers))
+	}
+	p := m.peers[peerIdx]
+	if pathIdx < 0 || pathIdx >= len(p.probers) {
+		return nil, fmt.Errorf("bind: peer %q path index %d out of range [0,%d)", p.name, pathIdx, len(p.probers))
+	}
+	if p.probers[pathIdx] == nil {
+		return nil, fmt.Errorf("bind: peer %q has no prober for path %d", p.name, pathIdx)
+	}
+	return p.probers[pathIdx].SendProbe()
+}
+
+// PeerReflect runs raw through bound peer peerIdx's probe Reflector (keyed on that peer's psk)
+// and returns the authenticated echo, or an error if the peer's reflector does not authenticate
+// raw. It lets a test assert each concentrator peer's reflector (and thus its codec derivation)
+// is keyed on its own configured psk: a probe minted under the peer's psk reflects, one minted
+// under another peer's psk does not. Wiring-verification accessor; it takes m.mu.
+func (m *Multipath) PeerReflect(peerIdx int, raw []byte) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if peerIdx < 0 || peerIdx >= len(m.peers) {
+		return nil, fmt.Errorf("bind: peer index %d out of range [0,%d)", peerIdx, len(m.peers))
+	}
+	return m.peers[peerIdx].reflector.Reflect(raw)
 }
 
 // PathTraffic is a consistent per-path traffic+telemetry snapshot (T23): the OUTER-
