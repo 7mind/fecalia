@@ -67,6 +67,26 @@ func routeSocket() (int, error) {
 	return fd, nil
 }
 
+// routeMsgFlags returns the netlink header flags for a route request. A delete
+// (add=false) carries only NLM_F_REQUEST|NLM_F_ACK. An add carries additionally
+// NLM_F_CREATE|NLM_F_REPLACE — deliberately NOT NLM_F_EXCL. Under tun_persist=true
+// (T109) an unclean daemon death (SIGKILL/OOM/panic) leaves wanbond0 AND its /1
+// routes in place because Close never ran; on restart an EXCL add would fail EEXIST
+// on the first prefix, abort up(), and wedge every subsequent restart until an
+// operator manually `ip route del`s. REPLACE adopts the leftover route — overwriting
+// any stale attributes so it ends in exactly the intended state — matching the
+// daemon's persistent-TUN adoption posture (persist_linux.go). It also makes a
+// duplicate prefix in the computed set a no-op instead of a hard EEXIST failure.
+// Kept as a pure function so the flag choice is unit-testable without a privileged
+// netlink socket.
+func routeMsgFlags(add bool) uint16 {
+	flags := uint16(unix.NLM_F_REQUEST | unix.NLM_F_ACK)
+	if add {
+		flags |= unix.NLM_F_CREATE | unix.NLM_F_REPLACE
+	}
+	return flags
+}
+
 // programRoute sends a single RTM_NEWROUTE (add) or RTM_DELROUTE (remove) request
 // for the scope-link device route prefix p via ifindex, then waits for the kernel
 // ACK. The request carries exactly two attributes — RTA_DST (the masked prefix
@@ -76,11 +96,10 @@ func routeSocket() (int, error) {
 // already-absent route).
 func programRoute(fd int, seq uint32, add bool, ifindex int, p netip.Prefix) error {
 	msgType := uint16(unix.RTM_DELROUTE)
-	flags := uint16(unix.NLM_F_REQUEST | unix.NLM_F_ACK)
 	if add {
 		msgType = unix.RTM_NEWROUTE
-		flags |= unix.NLM_F_CREATE | unix.NLM_F_EXCL
 	}
+	flags := routeMsgFlags(add)
 
 	addr := p.Addr()
 	family := byte(unix.AF_INET)
@@ -176,8 +195,13 @@ func recvAck(fd int) error {
 
 // installRoutes installs each prefix as a scope-link device route via ifname. It is
 // called only with a non-empty set (the caller skips a config with no default-route
-// peer), so a plain tunnel never opens a netlink socket. A failure aborts bring-up
-// (fail fast) with every already-installed prefix left for Close to withdraw.
+// peer), so a plain tunnel never opens a netlink socket. On a mid-set failure it
+// returns immediately, having installed every prefix BEFORE the failing one; because
+// up() aborts before the Tunnel exists, Close/removeRoutes never runs, so the caller
+// (device.go up()) is responsible for best-effort withdrawing this partial set before
+// it propagates the error — otherwise, under tun_persist=true, those prefixes leak on
+// the surviving interface. Re-install is idempotent (routeMsgFlags uses NLM_F_REPLACE),
+// so a subsequent successful start overwrites any leak regardless.
 func installRoutes(ifname string, prefixes []netip.Prefix) error {
 	idx, err := ifIndex(ifname)
 	if err != nil {

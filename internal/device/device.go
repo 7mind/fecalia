@@ -356,11 +356,17 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// default-route peer computes an empty set, opens no netlink socket, and installs
 	// nothing, so default behaviour is byte-for-byte unchanged. STRICT Q41 boundary —
 	// routes ONLY (no policy routing, no SNAT, no concentrator forwarding). Fail fast:
-	// a route error aborts bring-up (dev.Close tears the engine/TUN down; the routes,
-	// if any partial set landed, go with the non-persistent interface). Removed on Close.
+	// a route error aborts bring-up. Before returning we best-effort withdraw whatever
+	// partial set installRoutes landed: dev.Close tears down the engine/TUN, but under
+	// tun_persist=true the interface (and its routes) SURVIVES Close, and up() aborts
+	// before the Tunnel exists so Close/removeRoutes never runs — the already-installed
+	// prefixes would otherwise leak on the surviving interface. removeRoutes errors are
+	// ignored (the install error is the one that matters; a leftover is overwritten by
+	// the next successful start's NLM_F_REPLACE re-install anyway). Removed on Close.
 	routePrefixes := defaultRoutePrefixes(cfg)
 	if len(routePrefixes) > 0 {
 		if err := installRoutes(name, routePrefixes); err != nil {
+			_ = removeRoutes(name, routePrefixes)
 			dev.Close()
 			return nil, fmt.Errorf("device: install default-route wiring: %w", err)
 		}
