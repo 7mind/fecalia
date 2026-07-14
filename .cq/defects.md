@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 83
+  item: 84
 archives: []
 ---
 
@@ -1148,6 +1148,19 @@ archives: []
 - suggestedFix: "Refactor internal/metrics/server.go requireLoopback to DELEGATE its loopback/non-loopback decision to internal/netutil.IsLoopbackHost, preserving requireLoopback's richer per-case error messages (ErrNonLoopbackBind + hostname-resolves-to-non-loopback detail) and keeping verifyLoopbackBind's kernel-bound-Addr act-then-verify unchanged. Regression-cover via the existing metrics-server tests + the new internal/netutil table test (added in T160 round 2). Low priority; group into a code-hygiene/consolidation fix goal (can join the doc-accuracy/hygiene cluster D61/D66/D68 or stand alone) via /cq:plan."
 - ledgerRefs: ["tasks:T160","goals:G12"]
 - rootCause: "CONFIRMED by construction + reviewer verification (no DFS needed). CAUSE: T160 was explicitly directed to add the Q45 monitor loopback classifier WITHOUT importing internal/metrics server internals, so it created internal/netutil.IsLoopbackHost as a deliberate faithful DUPLICATE of internal/metrics/server.go requireLoopback's classification logic (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP requiring EVERY resolved address to be loopback). The T160 fable reviewer empirically verified the two are byte-faithful across 20 edge cases (0.0.0.0, empty host, [::], [::1], IPv4-mapped, malformed). So the duplication is real and confirmed; the DRIFT RISK is inherent to two independent copies of a security-critical predicate (a future change to one not mirrored to the other silently weakens one surface). This is NOT a runtime defect today (both copies correct) — it is a maintainability/consolidation hardening. Disposition: default-FIX, deferred to a separate hygiene task (out-of-scope for T160 per the plan's task boundary + the explicit do-not-touch-metrics-internals instruction). READY-TO-SEED."
+
+### D84 — root-caused
+
+- createdAt: 2026-07-14T23:22:43.357Z
+- updatedAt: 2026-07-14T23:23:39.128Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: metrics.Server.Close leaks its listener when Start was never called (http.Server.Shutdown does not close an unregistered listener)
+- severity: low
+- description: "Filed during T162 review ([fable], out-of-scope for T162 — pre-existing; T162 copied the pattern and is fixing its OWN copy in monitor.Server.Close, but the metrics original remains). internal/metrics/server.go Close is `return s.srv.Shutdown(ctx)` only. http.Server.Shutdown closes ONLY the listeners registered via Serve() — so on a NewServer-then-Close-WITHOUT-Start teardown (e.g. the daemon aborting startup after constructing the server but before Start, or applyMetricsLocked reconciling a just-built server away), the bound socket ln is NEVER released. Fable EMPIRICALLY reproduced the analogous leak on the monitor copy: after NewServer('127.0.0.1:0')+Close, re-listening on the same port fails with `bind: address already in use`. The metrics.Server has the byte-identical Close body, so it leaks identically on the Close-without-Start path. Low severity (only the abort-before-Start / construct-then-discard path; the normal Start->Close path releases the listener via Serve)."
+- suggestedFix: "In internal/metrics/server.go Close, after srv.Shutdown(ctx) also close s.ln, ignoring net.ErrClosed (the normal already-served case where Serve closed it); return Shutdown's error, or the ln-close error when it is not net.ErrClosed. Add a Close-without-Start re-bind regression test to internal/metrics (NewServer on a fixed loopback port -> Close -> NewServer on the SAME port succeeds). Mirror the fix T162 round-2 lands in monitor.Server.Close. Low priority; group with the code-hygiene cluster (D83 also edits internal/metrics/server.go) via /cq:plan."
+- ledgerRefs: ["tasks:T162","defects:D83"]
+- rootCause: "CONFIRMED (fable empirically reproduced the analogous leak; metrics has the byte-identical Close body). CAUSE: internal/metrics/server.go Server.Close is `return s.srv.Shutdown(ctx)` only. Go's http.Server.Shutdown gracefully closes ONLY the listeners it registered via Serve()/ListenAndServe(); a listener created by NewServer (net.Listen) but never passed to Serve (because Start was never called) is NOT tracked by the http.Server, so Shutdown leaves it open. On the NewServer-then-Close-WITHOUT-Start teardown — daemon aborting startup after constructing the metrics server but before Start(), or applyMetricsLocked reconciling a just-built server away before serving — the bound socket s.ln leaks (port stays bound). Fable reproduced this on the T162 monitor.Server copy (NewServer('127.0.0.1:0')+Close -> EADDRINUSE re-listening the same port); metrics.Server.Close is byte-identical, so it leaks identically. Confirmed low-severity: the normal Start->Close path releases the listener via Serve/Shutdown, so only the construct-then-discard-without-serving path leaks. Disposition: default-FIX, deferred (out-of-scope for T162, which fixes only its own monitor.Server.Close copy). READY-TO-SEED."
 
 ## M49
 

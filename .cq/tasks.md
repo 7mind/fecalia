@@ -2111,11 +2111,11 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G12"]
 
-### T162 — planned
+### T162 — wip
 
 - createdAt: 2026-07-14T18:46:21.811Z
-- updatedAt: 2026-07-14T18:46:21.811Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T23:11:58.880Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Monitor HTTP server skeleton: dedicated listener + /ws upgrade, Start/Close lifecycle"
 - description: "In internal/monitor/server.go add a Server type analogous to internal/metrics.Server but for the [monitor] surface. NewServer(addr, token string, src metrics.Source, logger) validates the bind: loopback always allowed; NON-loopback allowed ONLY when token != \"\" (mirror config validation, defense-in-depth) and otherwise return a named error WITHOUT binding. Keep metrics' act-then-verify discipline for the loopback case (verify the kernel-bound Addr), but permit a verified non-loopback bind when a token is set. Register routes on a private mux: GET / (placeholder handler for now — real assets come in W2 T-embed) and GET /ws (accept a coder/websocket upgrade and, for the skeleton, send exactly one BuildSnapshot(src) JSON frame then close). Add github.com/coder/websocket to go.mod (go get). Provide Addr(), Start() (background Serve goroutine, ReadHeaderTimeout set) and Close(ctx) exactly like metrics.Server. Do NOT wire into the daemon yet (that is T-daemon in W3)."
