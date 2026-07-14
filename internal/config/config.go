@@ -13,6 +13,8 @@ import (
 	"time"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
+
+	"github.com/7mind/wanbond/internal/netutil"
 )
 
 // Role selects which end of the tunnel this process runs as. It is an explicit,
@@ -43,6 +45,7 @@ type Config struct {
 	Amnezia   Amnezia         `toml:"amnezia"`
 	PSK       Key             `toml:"psk"`
 	Metrics   Metrics         `toml:"metrics"`
+	Monitor   Monitor         `toml:"monitor"`
 	Log       Log             `toml:"log"`
 	Scheduler SchedulerConfig `toml:"scheduler"`
 	FEC       FEC             `toml:"fec"`
@@ -874,6 +877,52 @@ type Metrics struct {
 	Listen string `toml:"listen"`
 }
 
+// ErrMonitorNonLoopbackWithoutAuth is returned by validate() when monitor.listen
+// is set to a non-loopback address without a monitor.token (Q45): the
+// monitoring-UI endpoint exposes operational state and must not be reachable
+// off-host without an explicit auth token, so an opt-in non-loopback bind
+// without a token fails fast at config load rather than serving unauthenticated
+// off-host.
+var ErrMonitorNonLoopbackWithoutAuth = errors.New("config: monitor.listen is non-loopback and requires monitor.token to be set")
+
+// Monitor configures the OPTIONAL monitoring-UI endpoint (Q45). Empty Listen
+// mirrors Metrics: the block is disabled and Token is ignored. A loopback
+// Listen needs no Token — operator access is host-local, matching the Metrics
+// posture. A non-loopback Listen is an explicit off-host exposure opt-in and
+// REQUIRES a non-empty Token; validate() enforces this invariant and fails
+// fast with ErrMonitorNonLoopbackWithoutAuth otherwise.
+type Monitor struct {
+	// Listen is the address the monitoring-UI endpoint binds to. Empty (the
+	// default) disables the endpoint entirely, mirroring Metrics.Listen.
+	Listen string `toml:"listen"`
+	// Token is the bearer credential the monitoring-UI endpoint requires when
+	// Listen is non-loopback. Optional when Listen is loopback; ignored when
+	// Listen is empty.
+	Token string `toml:"token"`
+}
+
+// validate enforces the Q45 opt-in-non-loopback-requires-auth invariant: a
+// disabled block (empty Listen) needs no token; a loopback Listen needs no
+// token either (host-local access); a non-loopback Listen REQUIRES a non-empty
+// Token, failing fast with ErrMonitorNonLoopbackWithoutAuth rather than
+// serving an unauthenticated endpoint off-host. The loopback classification
+// mirrors internal/metrics/server.go's requireLoopback via the shared
+// internal/netutil helper (duplicated rather than imported, so config does not
+// depend on the metrics package's internals).
+func (m Monitor) validate() error {
+	if m.Listen == "" {
+		return nil
+	}
+	loopback, err := netutil.IsLoopbackHost(m.Listen)
+	if err != nil {
+		return fmt.Errorf("monitor.listen: %w", err)
+	}
+	if !loopback && m.Token == "" {
+		return fmt.Errorf("%w: monitor.listen %q is not loopback", ErrMonitorNonLoopbackWithoutAuth, m.Listen)
+	}
+	return nil
+}
+
 // Log configures structured logging.
 type Log struct {
 	Level string `toml:"level"`
@@ -1582,6 +1631,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.DNS.validate(); err != nil {
+		return err
+	}
+	if err := c.Monitor.validate(); err != nil {
 		return err
 	}
 	return nil

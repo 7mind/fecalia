@@ -644,6 +644,11 @@ func reloadWarnings(live, desired *config.Config) []string {
 	if !reflect.DeepEqual(live.DNS, desired.DNS) {
 		w = append(w, "dns section changed — the running resolver configuration is unchanged until restart")
 	}
+	// Monitor (T160) has no reload wiring yet — unlike Metrics it is not rebound on
+	// SIGHUP — so a change is reported as ignored, mirroring scheduler/fec/dns above.
+	if !reflect.DeepEqual(live.Monitor, desired.Monitor) {
+		w = append(w, "monitor section changed — the running monitor endpoint (if any) is unchanged until restart")
+	}
 	// The top-level Bind default (I5, Q42) is resolved by normalize() into every path
 	// that omits its own `bind`, so a change here has already propagated into
 	// Path.Bind by the time reloadWarnings runs — but the RUNNING sockets keep the
@@ -696,6 +701,7 @@ func reloadWarnings(live, desired *config.Config) []string {
 	lc.Bind, dc.Bind = "", ""
 	lc.Paths, dc.Paths = nil, nil
 	lc.Metrics, dc.Metrics = config.Metrics{}, config.Metrics{}
+	lc.Monitor, dc.Monitor = config.Monitor{}, config.Monitor{}
 	// WeightedCapacitySane (T144) is a value COMPUTED from Scheduler+Paths, never an
 	// independent operator knob (toml:"-") — a change to it is always a symptom of a
 	// Scheduler or Paths change, both already compared above (or, for a same-name

@@ -135,6 +135,11 @@ func TestReloadWarnings(t *testing.T) {
 			c.Metrics = config.Metrics{Listen: "127.0.0.1:9100"}
 			return c
 		}, ""}, // Metrics IS applied by Reload (rebinds /metrics); must not warn.
+		{"monitor changed", func() *config.Config {
+			c := base()
+			c.Monitor = config.Monitor{Listen: "127.0.0.1:9200"}
+			return c
+		}, "monitor"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,7 +211,7 @@ func TestReloadWarningsBind(t *testing.T) {
 func TestReloadWarningsCatchAll(t *testing.T) {
 	known := map[string]bool{
 		"Role": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
-		"Metrics": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
+		"Metrics": true, "Monitor": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
 		"Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
 	}
 	typ := reflect.TypeOf(config.Config{})

@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -1710,4 +1712,84 @@ func TestExampleConfigLoads(t *testing.T) {
 			t.Fatalf("fec.deadline = %s, want 5ms", cfg.FEC.Deadline)
 		}
 	})
+}
+
+// TestMonitorDefaultOff is the T160/Q45 default-unchanged case: a config that
+// omits [monitor] entirely loads with an empty Listen (disabled, mirroring
+// Metrics) and no validation error.
+func TestMonitorDefaultOff(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Monitor.Listen != "" || c.Monitor.Token != "" {
+		t.Fatalf("monitor must default to empty/disabled, got %+v", c.Monitor)
+	}
+}
+
+// TestMonitorValidation is the T160/Q45 table test for the opt-in-non-loopback-
+// requires-auth invariant: empty Listen is always fine (disabled); a loopback
+// Listen is fine with or without a Token (host-local access); a non-loopback
+// Listen requires a non-empty Token, and rejecting it without one names
+// ErrMonitorNonLoopbackWithoutAuth.
+func TestMonitorValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		listen  string
+		token   string
+		wantErr bool
+	}{
+		{name: "empty listen disabled", listen: "", token: "", wantErr: false},
+		{name: "loopback listen, empty token", listen: "127.0.0.1:9096", token: "", wantErr: false},
+		{name: "loopback listen, with token", listen: "127.0.0.1:9096", token: "s3cret", wantErr: false},
+		{name: "non-loopback listen, empty token", listen: "0.0.0.0:9096", token: "", wantErr: true},
+		{name: "non-loopback listen, with token", listen: "0.0.0.0:9096", token: "s3cret", wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			block := ""
+			if tc.listen != "" {
+				block = fmt.Sprintf("\n[monitor]\nlisten = %q\n", tc.listen)
+				if tc.token != "" {
+					block += fmt.Sprintf("token = %q\n", tc.token)
+				}
+			}
+			path := writeConfig(t, 0o600, fill(edgeConfig)+block)
+			c, err := Load(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected ErrMonitorNonLoopbackWithoutAuth, got nil")
+				}
+				if !errors.Is(err, ErrMonitorNonLoopbackWithoutAuth) {
+					t.Fatalf("error = %v, want ErrMonitorNonLoopbackWithoutAuth", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.Monitor.Listen != tc.listen {
+				t.Errorf("monitor.listen = %q, want %q", c.Monitor.Listen, tc.listen)
+			}
+			if c.Monitor.Token != tc.token {
+				t.Errorf("monitor.token = %q, want %q", c.Monitor.Token, tc.token)
+			}
+		})
+	}
+}
+
+// TestMonitorUnknownKeyRejected mirrors D41's strict-decoding coverage for
+// [metrics]/[fec]/etc: a misspelled [monitor] key is rejected at Load with the
+// dotted key path named, rather than silently dropped (DisallowUnknownFields).
+func TestMonitorUnknownKeyRejected(t *testing.T) {
+	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"127.0.0.1:9096\"\ntokenn = \"s3cret\"\n"
+	path := writeConfig(t, 0o600, body)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected unknown-key error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown key monitor.tokenn") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "unknown key monitor.tokenn")
+	}
 }
