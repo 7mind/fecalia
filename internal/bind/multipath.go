@@ -352,6 +352,17 @@ type Multipath struct {
 	// after construction, never nil.
 	deferredListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error)
 
+	// resolveDeviceBind decides AddPath's and reconcileDeferred's per-path forced-
+	// device bind (I5): whether a path's RESOLVED BindMode is config.BindModeDevice,
+	// and if so, the interface its source_addr currently resolves to (see
+	// resolveForcedDeviceBind — it has no other-path contention to check, unlike
+	// Open's planPathBinds/selectDeviceBinds). It is an injection seam mirroring
+	// deferredListen: the default is the real resolveForcedDeviceBind (a
+	// net.Interfaces() snapshot), and a test overrides it to drive a BindModeDevice
+	// path's dev deterministically without a real interface having to appear on the
+	// host (T106 round 2). Immutable after construction, never nil.
+	resolveDeviceBind func(src netip.Addr, mode config.BindMode) string
+
 	mu sync.Mutex
 
 	// The PRIMARY peer, embedded so the single-peer datapath (Send, the receive drainer,
@@ -576,17 +587,18 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	// stable across Open/Close/add/remove.
 	primary := newPeerState("", psk, scheduler, newProber, probers)
 	m := &Multipath{
-		defs:            append([]config.Path(nil), paths...),
-		classify:        newWGClassifier(amnezia),
-		deferredListen:  defaultDeferredListen,
-		peerState:       primary,
-		peers:           []*peerState{primary},
-		peersByName:     map[string]*peerState{primary.name: primary},
-		peerByEndpoint:  map[netip.AddrPort]*peerState{},
-		peerByVirt:      map[*udpEndpoint]*peerState{primary.virt: primary},
-		maxDemuxSources: defaultMaxDemuxSources,
-		fecCfg:          fecCfg,
-		adaptiveCfg:     adaptiveCfg,
+		defs:              append([]config.Path(nil), paths...),
+		classify:          newWGClassifier(amnezia),
+		deferredListen:    defaultDeferredListen,
+		resolveDeviceBind: resolveForcedDeviceBind,
+		peerState:         primary,
+		peers:             []*peerState{primary},
+		peersByName:       map[string]*peerState{primary.name: primary},
+		peerByEndpoint:    map[netip.AddrPort]*peerState{},
+		peerByVirt:        map[*udpEndpoint]*peerState{primary.virt: primary},
+		maxDemuxSources:   defaultMaxDemuxSources,
+		fecCfg:            fecCfg,
+		adaptiveCfg:       adaptiveCfg,
 	}
 	// Publish the initial (primary-only) peer view the receive drainer iterates. No
 	// concurrency yet — the bind is not open — so this runs without m.mu.
@@ -2147,7 +2159,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 	// BindModeAuto keep AddPath's pre-I5 behaviour of always source-IP-pinning a
 	// runtime-added path (D30 — auto never device-binds at runtime — is a separate,
 	// still-open gap this task does not close).
-	dev := resolveForcedDeviceBind(def.SourceAddr, def.Bind)
+	dev := m.resolveDeviceBind(def.SourceAddr, def.Bind)
 	c, err := listenPath(def.SourceAddr, m.openPort, dev)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRNOTAVAIL) {

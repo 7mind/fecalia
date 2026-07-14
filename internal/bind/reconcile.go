@@ -107,7 +107,7 @@ func (m *Multipath) reconcileDeferred() {
 	// a still-deferred entry never clobbers one not yet read (the standard filter idiom).
 	kept := m.deferred[:0]
 	for _, dp := range m.deferred {
-		dev := resolveForcedDeviceBind(dp.def.SourceAddr, dp.def.Bind)
+		dev := m.resolveDeviceBind(dp.def.SourceAddr, dp.def.Bind)
 		c, err := m.deferredListen(dp.def.SourceAddr, m.openPort, dev)
 		if err != nil {
 			kept = append(kept, dp) // still not assignable (or a transient fault): retry next tick

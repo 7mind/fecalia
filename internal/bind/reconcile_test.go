@@ -25,6 +25,11 @@ import (
 type fakeDeferredBinder struct {
 	mu    sync.Mutex
 	armed bool
+	// devs records the dev argument of every listen() call, in call order, so a test
+	// can assert what the caller's forced-device-bind DECISION threaded through to the
+	// actual bind — the T106 round-2 gap: dev was accepted but never inspected by any
+	// test, so neutering that decision to always "" passed the full suite.
+	devs []string
 }
 
 func (f *fakeDeferredBinder) arm() {
@@ -33,8 +38,9 @@ func (f *fakeDeferredBinder) arm() {
 	f.mu.Unlock()
 }
 
-func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
+func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, dev string) (*net.UDPConn, error) {
 	f.mu.Lock()
+	f.devs = append(f.devs, dev)
 	armed := f.armed
 	f.mu.Unlock()
 	if !armed {
@@ -201,6 +207,71 @@ func TestReconcileSkipsPathRemovedBeforeBind(t *testing.T) {
 		if ps.name == "deferred" {
 			t.Fatal("a path removed before it bound was promoted by reconcile")
 		}
+	}
+}
+
+// TestReconcileThreadsForcedDeviceBind is the T106 round-2 gap: the AddPath/deferred-
+// reconcile device-mode wiring (I5) was UNVERIFIED — reconcileDeferred computes dev via
+// m.resolveDeviceBind (resolveForcedDeviceBind in production) and passes it straight
+// through to m.deferredListen, but nothing inspected that argument, so neutering the
+// decision to always return "" (deactivating device-bind everywhere at runtime) passed
+// the full bind suite. This overrides m.resolveDeviceBind to a deterministic fake (no
+// real interface needed) and asserts the fake's decision is threaded, per deferred
+// path, into deferredListen's dev parameter: a BindModeDevice path must receive the
+// resolved device, while a BindModeAuto sibling must still receive "" (AddPath/
+// reconcile's pre-I5 behaviour, D30, is unchanged by this task). It FAILS if the
+// threading is dropped anywhere between resolveDeviceBind and deferredListen.
+func TestReconcileThreadsForcedDeviceBind(t *testing.T) {
+	psk := testKey(t, 0x59)
+	clk := newFakeClock()
+	paths := []config.Path{
+		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.1")},
+		{Name: "deferred-auto", SourceAddr: netip.MustParseAddr(unassignableSource), Bind: config.BindModeAuto},
+		{Name: "deferred-device", SourceAddr: netip.MustParseAddr(unassignableSource), Bind: config.BindModeDevice},
+	}
+	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	binder := &fakeDeferredBinder{}
+	m.deferredListen = binder.listen
+	// Deterministic fake decision: BindModeDevice resolves to "wan0"; every other mode
+	// yields "" — exactly resolveForcedDeviceBind's real contract, without touching
+	// net.Interfaces().
+	m.resolveDeviceBind = func(_ netip.Addr, mode config.BindMode) string {
+		if mode == config.BindModeDevice {
+			return "wan0"
+		}
+		return ""
+	}
+
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	if len(m.deferred) != 2 {
+		t.Fatalf("after Open: deferred = %d, want 2", len(m.deferred))
+	}
+
+	binder.arm()
+	m.reconcileDeferred()
+
+	if len(m.paths) != 3 || len(m.deferred) != 0 {
+		t.Fatalf("after reconcile: paths=%d deferred=%d, want 3 and 0", len(m.paths), len(m.deferred))
+	}
+	if len(binder.devs) != 2 {
+		t.Fatalf("deferredListen called %d times, want 2", len(binder.devs))
+	}
+	// binder.devs is in m.deferred's iteration order, which matches the order the two
+	// deferred defs were appended in Open (deferred-auto then deferred-device);
+	// m.paths' promotion order matches too (reconcileDeferred iterates m.deferred in
+	// order and appends each promotion to m.paths) — asserted below.
+	if binder.devs[0] != "" {
+		t.Fatalf("deferred-auto path's threaded dev = %q, want \"\" (I5 AddPath/reconcile pre-existing auto behaviour unchanged)", binder.devs[0])
+	}
+	if binder.devs[1] != "wan0" {
+		t.Fatalf("deferred-device path's threaded dev = %q, want %q (resolveDeviceBind's decision was not threaded into deferredListen)", binder.devs[1], "wan0")
+	}
+	if m.paths[1].name != "deferred-auto" || m.paths[2].name != "deferred-device" {
+		t.Fatalf("promoted path order = [%q %q], want [deferred-auto deferred-device]", m.paths[1].name, m.paths[2].name)
 	}
 }
 

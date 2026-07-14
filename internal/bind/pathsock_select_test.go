@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"net"
 	"net/netip"
 	"testing"
 
@@ -163,6 +164,108 @@ func TestSelectDeviceBindsForcedDevice(t *testing.T) {
 			t.Fatalf("selectDeviceBinds(BindModeDevice, unresolvable) = %v, want [\"\"] (fallback to source-IP binding)", got)
 		}
 	})
+}
+
+// TestSelectForcedDeviceBind is the T106 round-2 gap closure: resolveForcedDeviceBind
+// (AddPath / the T55 deferred-path reconcile — a single, isolated forced-device bind
+// with no other-path contention, unlike Open's selectDeviceBinds) previously called
+// net.Interfaces() inline, so nothing exercised its per-mode DECISION without a real
+// interface. selectForcedDeviceBind splits that decision out (mirroring
+// planPathBinds/selectDeviceBinds' split), so it is tested here through a fake
+// resolver across all three BindModes plus the unresolvable-interface fallback. This
+// FAILS if resolveForcedDeviceBind (or this decision) is neutered to always return ""
+// regardless of mode — the exact round-1 review gap (mutating it to unconditionally
+// return "" passed the full pre-round-2 bind suite).
+func TestSelectForcedDeviceBind(t *testing.T) {
+	src := netip.MustParseAddr("198.51.100.10")
+	resolvable := func(netip.Addr) ifaceInfo { return ifaceInfo{dev: "wan0", familyCount: 1} }
+	unresolvable := func(netip.Addr) ifaceInfo { return ifaceInfo{} }
+
+	tests := []struct {
+		name    string
+		mode    config.BindMode
+		resolve func(netip.Addr) ifaceInfo
+		want    string
+	}{
+		{"source never device-binds", config.BindModeSource, resolvable, ""},
+		{"auto never device-binds here (D30)", config.BindModeAuto, resolvable, ""},
+		{"device+resolvable uses the resolved dev", config.BindModeDevice, resolvable, "wan0"},
+		{"device+unresolvable falls back to source-IP binding", config.BindModeDevice, unresolvable, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := selectForcedDeviceBind(src, tc.mode, tc.resolve)
+			if got != tc.want {
+				t.Fatalf("selectForcedDeviceBind(%s) = %q, want %q", tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveForcedDeviceBindAgreesWithRealInterfaces exercises resolveForcedDeviceBind
+// itself — the real net.Interfaces()-snapshotting wrapper, not the fake-resolver
+// decision tests above — so it is sensitive to the EXACT round-1 review mutation
+// (neutering resolveForcedDeviceBind to unconditionally return "", which "made the
+// entire runtime-path device-bind activation inert" yet passed the full pre-round-2
+// bind suite): TestSelectForcedDeviceBind calls selectForcedDeviceBind directly and
+// never reaches resolveForcedDeviceBind's own body, so it alone cannot catch that
+// mutation. It discovers its own fixture (a real non-loopback, single-address
+// interface, the same shape TestSelectDeviceBinds' "solo single-address interface"
+// case fakes) rather than hardcoding one, so it stays portable: it asks interfaceInfo
+// directly what that candidate resolves to, then requires
+// resolveForcedDeviceBind(candidate, BindModeDevice) to agree. It skips — never
+// fails — on a host with no such interface (e.g. a bare loopback-only container),
+// the one environment it structurally cannot exercise; every dev/CI host this repo
+// targets has at least one.
+func TestResolveForcedDeviceBindAgreesWithRealInterfaces(t *testing.T) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("net.Interfaces: %v", err)
+	}
+	var candidate netip.Addr
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(ipn.IP)
+			if !ok {
+				continue
+			}
+			if info := interfaceInfo(ip, ifaces); info.dev != "" && info.familyCount == 1 {
+				candidate = ip
+				break
+			}
+		}
+		if candidate.IsValid() {
+			break
+		}
+	}
+	if !candidate.IsValid() {
+		t.Skip("host has no non-loopback single-address interface to exercise resolveForcedDeviceBind against")
+	}
+
+	if got := resolveForcedDeviceBind(candidate, config.BindModeSource); got != "" {
+		t.Fatalf("resolveForcedDeviceBind(BindModeSource) = %q, want \"\"", got)
+	}
+	if got := resolveForcedDeviceBind(candidate, config.BindModeAuto); got != "" {
+		t.Fatalf("resolveForcedDeviceBind(BindModeAuto) = %q, want \"\"", got)
+	}
+	want := interfaceInfo(candidate, ifaces).dev
+	if want == "" {
+		t.Fatal("test bug: candidate's own interfaceInfo resolved to \"\", the picker's filter above should have excluded it")
+	}
+	if got := resolveForcedDeviceBind(candidate, config.BindModeDevice); got != want {
+		t.Fatalf("resolveForcedDeviceBind(BindModeDevice) = %q, want %q (the resolved interface) -- fails if resolveForcedDeviceBind is neutered to always return \"\"", got, want)
+	}
 }
 
 // TestPlanPathBinds exercises the real planPathBinds wrapper (real net.Interfaces()

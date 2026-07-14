@@ -149,15 +149,37 @@ func selectDeviceBinds(srcs []netip.Addr, modes []config.BindMode, resolve func(
 // other than config.BindModeDevice, or when the interface cannot be resolved, so
 // the caller's listenPath call falls back to source-IP binding exactly as the
 // unresolvable-interface case does in selectDeviceBinds.
+//
+// It is a thin real-interfaces wrapper around selectForcedDeviceBind (the DECISION,
+// split out below — T106 round 2) exactly as planPathBinds wraps selectDeviceBinds:
+// the mode check short-circuits BEFORE the net.Interfaces() snapshot so a non-device
+// path never pays that syscall.
 func resolveForcedDeviceBind(src netip.Addr, mode config.BindMode) string {
 	if mode != config.BindModeDevice {
 		return ""
 	}
 	ifaces, err := net.Interfaces()
 	if err != nil {
+		ifaces = nil
+	}
+	return selectForcedDeviceBind(src, mode, func(s netip.Addr) ifaceInfo {
+		return interfaceInfo(s, ifaces)
+	})
+}
+
+// selectForcedDeviceBind is resolveForcedDeviceBind's DECISION, split from the
+// net.Interfaces() snapshot the same way selectDeviceBinds is split from
+// planPathBinds (T106 round 2), so it is unit-testable with a fake resolver and no
+// real interfaces: source -> "" (never device-bind, the D38 escape hatch),
+// auto/other -> "" (AddPath/reconcile never auto-device-binds at runtime, D30, a
+// still-open gap this task does not close), device+resolvable -> the resolved dev,
+// device+unresolvable -> "" (fallback to source-IP binding, exactly as
+// selectDeviceBinds' unresolvable case).
+func selectForcedDeviceBind(src netip.Addr, mode config.BindMode, resolve func(netip.Addr) ifaceInfo) string {
+	if mode != config.BindModeDevice {
 		return ""
 	}
-	return interfaceInfo(src, ifaces).dev
+	return resolve(src).dev
 }
 
 // interfaceInfo resolves src against ifaces (a single net.Interfaces snapshot):
