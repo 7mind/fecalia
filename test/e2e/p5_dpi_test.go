@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/7mind/wanbond/internal/wireaudit"
 )
 
 // Requirement-6 (DPI-resistance) EXTERNAL-TOOL non-classification check (M9).
@@ -106,6 +108,20 @@ const (
 
 	// suricataEveFile is the JSON event log suricata writes into its -l directory.
 	suricataEveFile = "eve.json"
+
+	// dpiDNSGuardFilter is the tcpdump BPF filter for the zero-DNS-egress guard
+	// (Q29/Q33): the well-known ports for cleartext system DNS (53), DNS-over-TLS (853),
+	// and DNS-over-HTTPS (443 — shared with generic HTTPS, but this fixture's edge netns
+	// makes no other outbound connection during the capture window, so any packet on
+	// these ports here IS DNS-adjacent egress, in either direction). This capture runs on
+	// a DNS-OFF config (no peer carries the `dns = true` opt-in; every endpoint is an
+	// IP literal), so Q29 requires it to be PROVABLY inert: zero packets on any of these
+	// ports for the whole session. Documents the exact artifact each mode would otherwise
+	// leak to a passive observer, once DNS IS opted in: system mode leaks a CLEARTEXT DNS
+	// query naming the concentrator's hostname; DoH/DoT mode leaks the TLS ClientHello
+	// SNI plus connection timing to the resolver (the query payload itself is encrypted,
+	// but the SNI and the timing correlate the edge to that resolver).
+	dpiDNSGuardFilter = "port 53 or port 853 or port 443"
 )
 
 // vpnLabelPatterns are the lowercase substrings that mark a DPI label as a WireGuard or
@@ -147,8 +163,14 @@ func TestP5DPI(t *testing.T) {
 
 	// (2) Capture the OBFUSCATED wanbond flow (amnezia junk + FEC parity active) on a
 	// NON-registered port and run both engines over it. Neither may classify it
-	// WireGuard/VPN by payload.
-	wbPcap := captureWanbondFlow(t, top, bin)
+	// WireGuard/VPN by payload. The SAME session also runs the zero-DNS-egress guard
+	// (Q29/Q33): this config carries no `dns = true` opt-in (every endpoint is an IP
+	// literal), so NO packet may appear on the system-DNS/DoT/DoH ports for the whole
+	// capture window — proving DNS stays inert on the wire, not just in-process (see
+	// the tripwire-resolver unit test in internal/device for the in-process half).
+	wbPcap, dnsGuardPcap := captureWanbondFlow(t, top, bin)
+
+	assertZeroDNSEgress(t, dnsGuardPcap)
 
 	negFlows := runNdpiFlows(t, wbPcap)
 	if f, label, pat, ok := payloadVPNFlow(negFlows); ok {
@@ -214,27 +236,63 @@ func plainWGPcapPath(t *testing.T) string {
 // captureWanbondFlow brings up one fresh amnezia+FEC wanbond tunnel over auditPath on the
 // NON-registered dpiListenPort, captures the outer UDP wire on the edge veth with tcpdump
 // (T26's startPcap — no `-Z root`) while a short bulk transfer drives the full
-// DATA/PARITY/PROBE/junk mix, and returns the path to the completed pcap savefile.
-func captureWanbondFlow(t *testing.T, top *Topology, bin string) string {
+// DATA/PARITY/PROBE/junk mix, and returns the path to the completed pcap savefile PLUS the
+// path to a second, concurrent capture over the SAME veth/window restricted to the
+// system-DNS/DoT/DoH ports (dpiDNSGuardFilter) — the zero-DNS-egress guard's evidence. The
+// tunnel config carries no `dns = true` opt-in, so the second capture must be empty.
+func captureWanbondFlow(t *testing.T, top *Topology, bin string) (wbPcap, dnsGuardPcap string) {
 	t.Helper()
 	pcapFile := filepath.Join(t.TempDir(), "wanbond-obfuscated.pcap")
+	dnsPcapFile := filepath.Join(t.TempDir(), "wanbond-dns-guard.pcap")
 	cap := top.startPcap(t, auditPath.edgeVeth, dpiListenPort, pcapFile)
+	dnsCap := top.startPcapFilter(t, auditPath.edgeVeth, dpiDNSGuardFilter, dnsPcapFile)
 
 	edge, conc := setupWanbondDPITunnel(t, top, bin, dpiListenPort)
 	if !top.pingUntil(concInner, 15*time.Second) {
 		cap.stop(t)
+		dnsCap.stop(t)
 		t.Fatalf("wanbond tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 	}
 	if mbps := top.iperf3Mbps(t, concInner, dpiLoadSecs); mbps <= 0 {
 		cap.stop(t)
+		dnsCap.stop(t)
 		t.Fatalf("wanbond capture: non-positive throughput %.2f Mbit/s", mbps)
 	}
 	cap.stop(t)
+	dnsCap.stop(t)
 
 	if fi, err := os.Stat(pcapFile); err != nil || fi.Size() == 0 {
 		t.Fatalf("wanbond capture %s is missing or empty (err=%v)\n--- tcpdump ---\n%s", pcapFile, err, cap.log())
 	}
-	return pcapFile
+	if fi, err := os.Stat(dnsPcapFile); err != nil || fi.Size() == 0 {
+		t.Fatalf("DNS-guard capture %s is missing or empty (err=%v) — the savefile must at least contain a global header even with zero packets\n--- tcpdump ---\n%s", dnsPcapFile, err, dnsCap.log())
+	}
+	return pcapFile, dnsPcapFile
+}
+
+// assertZeroDNSEgress reads the zero-DNS-egress guard's capture (dpiDNSGuardFilter,
+// system-DNS/DoT/DoH ports) and fails the test if it holds ANY packet: with DNS opted
+// off, the edge netns must emit and receive NOTHING on those ports (Q29). Once DNS IS
+// opted in, this is exactly what would leak: system mode, a cleartext DNS query naming
+// the concentrator's hostname; DoH/DoT mode, the TLS ClientHello SNI + timing to the
+// resolver.
+func assertZeroDNSEgress(t *testing.T, dnsGuardPcap string) {
+	t.Helper()
+	data, err := os.ReadFile(dnsGuardPcap)
+	if err != nil {
+		t.Fatalf("read DNS-guard capture %s: %v", dnsGuardPcap, err)
+	}
+	n, err := wireaudit.CountPcapPackets(data)
+	if err != nil {
+		t.Fatalf("parse DNS-guard capture %s: %v", dnsGuardPcap, err)
+	}
+	if n != 0 {
+		t.Fatalf("REQUIREMENT Q29/Q33 DEFECT: %d packet(s) on the system-DNS/DoT/DoH ports (53/853/443) egressed the edge netns "+
+			"on a DNS-off config (no peer opts in `dns = true`, every endpoint is an IP literal). DNS must stay PROVABLY inert on the "+
+			"wire: with DNS opted in, this is exactly what leaks — system mode, a cleartext DNS query naming the concentrator's "+
+			"hostname; DoH/DoT mode, the TLS ClientHello SNI + connection timing to the resolver.", n)
+	}
+	t.Logf("zero-DNS-egress guard OK: 0 packets on ports 53/853/443 over the wanbond capture window (DNS opt-in off)")
 }
 
 // setupWanbondDPITunnel brings the edge+concentrator tunnel up over auditPath with BOTH

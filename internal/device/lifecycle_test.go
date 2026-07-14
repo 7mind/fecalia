@@ -204,6 +204,57 @@ func TestUpZeroHostnameNoResolverNoLoop(t *testing.T) {
 	}
 }
 
+// tripwireResolver is a dnsresolve.Resolver whose Lookup FAILS the test the instant it is
+// EVER called — the Q29/G5 tripwire (T76). t.Errorf (unlike t.Fatalf/FailNow) is safe to
+// call from any goroutine, so this catches a Lookup invoked either from the SYNCHRONOUS
+// bounded boot resolve (resolveBootEndpoints, on the test's own goroutine) or from an
+// asynchronously started re-resolution loop goroutine (startResolutionLoop).
+type tripwireResolver struct{ t *testing.T }
+
+func (r *tripwireResolver) Lookup(_ context.Context, host string) ([]netip.Addr, time.Duration, bool, error) {
+	r.t.Errorf("Q29 TRIPWIRE: dnsresolve.Resolver.Lookup(%q) called on an all-IP-literal config — "+
+		"DNS must stay PROVABLY inert when no peer opts in `dns = true` (zero DNS egress)", host)
+	return nil, 0, false, fmt.Errorf("tripwireResolver: unexpected lookup for %q", host)
+}
+
+// TestUpAllLiteralTripwireNeverCallsLookup hardens TestUpZeroHostnameNoResolverNoLoop's
+// factory-call-count proof (T74) with a direct, stronger guard (T76 / Q29): on an
+// all-IP-literal config (every peer endpoint spec is an IP:port, no `dns = true` opt-in),
+// the injected resolver factory returns a tripwireResolver whose Lookup fails the test the
+// instant it is invoked — from ANY call site, sync or async — rather than relying solely on
+// an after-the-fact call count. It also re-asserts the factory itself is never invoked
+// (Q29: no dnsresolve.Resolver may even be CONSTRUCTED for a literal config), and lets the
+// tunnel run past several probe cadences (long enough for a wrongly-started re-resolution
+// goroutine to have ticked and called Lookup at least once) before closing.
+//
+// Mutation check: wiring a resolver (and driving a lookup through it) UNCONDITIONALLY —
+// dropping the hasName/resolver!=nil gates in resolveBootEndpoints/startResolution — makes
+// this test fail, both via the factory-call count and via the tripwire's Lookup failure.
+func TestUpAllLiteralTripwireNeverCallsLookup(t *testing.T) {
+	cfg := writeEdgeConfig(t, `["127.0.0.1:51821"]`, false)
+	chtun := tuntest.NewChannelTUN()
+
+	factoryCalls := 0
+	factory := func() (dnsresolve.Resolver, error) {
+		factoryCalls++
+		return &tripwireResolver{t: t}, nil
+	}
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	if err != nil {
+		t.Fatalf("up on an all-literal edge peer failed: %v", err)
+	}
+	// Let any wrongly-started re-resolution loop tick at least once before asserting and
+	// closing: a mutant that starts the loop asynchronously (rather than resolving inline)
+	// would otherwise race a bare post-Up assertion.
+	time.Sleep(3 * telemetry.DefaultProbeInterval)
+	tun.Close()
+
+	if factoryCalls != 0 {
+		t.Fatalf("resolver factory invoked %d times for a zero-hostname config, want 0 (provably inert, Q29)", factoryCalls)
+	}
+}
+
 // TestCloseStopsResolutionLoopNoLeak is acceptance (3): Close stops the re-resolution loop (and the
 // probe/reconcile/hub-failover loops) with no goroutine leak. goleak verifies zero surviving
 // goroutines AFTER Close, under -race.

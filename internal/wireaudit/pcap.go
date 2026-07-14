@@ -95,6 +95,42 @@ func ParsePcap(data []byte, udpPort uint16) ([]Frame, error) {
 	return frames, nil
 }
 
+// CountPcapPackets returns the total number of packet records in a classic libpcap
+// savefile, regardless of link/network/transport protocol. Unlike ParsePcap (which
+// extracts and filters UDP payloads by port), this only needs the record count — e.g.
+// to assert a BPF-filtered capture (`tcpdump ... port 53 or port 853 or port 443`) saw
+// ZERO matching packets, whether those packets would have been UDP (DNS/DoT-over-UDP)
+// or TCP (DoT/DoH). Filtering already happened in tcpdump; this just counts what it
+// wrote.
+func CountPcapPackets(data []byte) (int, error) {
+	if len(data) < pcapGlobalHeaderLen {
+		return 0, fmt.Errorf("wireaudit: pcap too short: %d bytes < %d-byte global header", len(data), pcapGlobalHeaderLen)
+	}
+	magic := binary.BigEndian.Uint32(data[0:4])
+	var bo binary.ByteOrder
+	switch magic {
+	case magicMicroBE, magicNanoBE:
+		bo = binary.BigEndian
+	case magicMicroLE, magicNanoLE:
+		bo = binary.LittleEndian
+	default:
+		return 0, fmt.Errorf("wireaudit: not a classic pcap savefile (magic 0x%08x)", magic)
+	}
+
+	count := 0
+	off := pcapGlobalHeaderLen
+	for off+pcapRecordHeaderLen <= len(data) {
+		inclLen := int(bo.Uint32(data[off+pcapInclLenOff : off+pcapInclLenOff+4]))
+		off += pcapRecordHeaderLen
+		if inclLen < 0 || off+inclLen > len(data) {
+			return 0, fmt.Errorf("wireaudit: truncated pcap record at byte %d (incl_len %d, %d bytes remain)", off, inclLen, len(data)-off)
+		}
+		off += inclLen
+		count++
+	}
+	return count, nil
+}
+
 // udpPayload returns the UDP payload of an Ethernet/IPv4/UDP packet whose source or
 // destination port matches port, or ok=false if pkt is not such a packet. The
 // payload is bounded by the IPv4 total-length field (not the captured length), so

@@ -200,3 +200,51 @@ func TestParsePcapEmptyIsNoFrames(t *testing.T) {
 		t.Fatalf("got %d frames from an empty savefile, want 0", len(frames))
 	}
 }
+
+// TestCountPcapPacketsEmptyIsZero proves the zero-egress guard's core reading: a
+// savefile with no records (nothing matched the BPF filter at capture time) counts 0.
+func TestCountPcapPacketsEmptyIsZero(t *testing.T) {
+	data := buildPcap(binary.LittleEndian, magicMicroLE, nil)
+	n, err := CountPcapPackets(data)
+	if err != nil {
+		t.Fatalf("CountPcapPackets on empty savefile: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("got %d packets from an empty savefile, want 0", n)
+	}
+}
+
+// TestCountPcapPacketsCountsAllRecords proves the count is protocol-agnostic (UDP
+// packets here, but nothing in the walk inspects IP/transport headers) and includes
+// EVERY record, unlike ParsePcap's port/protocol filtering.
+func TestCountPcapPacketsCountsAllRecords(t *testing.T) {
+	pkts := [][]byte{
+		buildEthIPUDP(1, 2, []byte("a"), 0),
+		buildEthIPUDP(3, 4, []byte("bb"), 5),
+		buildEthIPUDP(5, 6, []byte("ccc"), 0),
+	}
+	data := buildPcap(binary.LittleEndian, magicMicroLE, pkts)
+	n, err := CountPcapPackets(data)
+	if err != nil {
+		t.Fatalf("CountPcapPackets: %v", err)
+	}
+	if n != len(pkts) {
+		t.Fatalf("got %d packets, want %d", n, len(pkts))
+	}
+}
+
+func TestCountPcapPacketsRejectsNonPcap(t *testing.T) {
+	if _, err := CountPcapPackets([]byte("not a pcap file at all!!")); err == nil {
+		t.Fatal("expected an error for non-pcap input")
+	}
+}
+
+func TestCountPcapPacketsRejectsTruncatedRecord(t *testing.T) {
+	data := buildPcap(binary.LittleEndian, magicMicroLE, [][]byte{
+		buildEthIPUDP(1, 2, []byte("payload"), 0),
+	})
+	truncated := data[:len(data)-4]
+	if _, err := CountPcapPackets(truncated); err == nil {
+		t.Fatal("expected a truncation error")
+	}
+}
