@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 200
+  item: 201
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2365,3 +2365,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T161 implement review (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = approve/go-ahead (BOTH reviewers approve; 0 criticisms / 0 questions / 0 defects). internal/monitor MonitorSnapshot DTO + BuildSnapshot(metrics.Source) faithfully and completely encode the metrics.Source read model: field-by-field cross-check against all five Source DTOs (PathSnapshot incl State->up, FECSnapshot 8, ReseqSnapshot incl all 7 embedded reseq.Stats, AggregationSnapshot 5, SessionSnapshot 2) found NO dropped/mistyped field; RTT/Jitter/LastHandshakeAge rendered as float SECONDS via .Seconds() and PINNED by marshalled-JSON value assertions (50ms->0.05 catches any 1e9 error); multiPeer=len(PeerNames())>1 tested for 1 and 2 peers with per-entry peer labels; each Source method called EXACTLY ONCE (no rate-state-corrupting double read); NO device import (only metrics + telemetry); empty collections marshal as [] not null (TestBuildSnapshotEmptyIsNotNull); tests assert the MARSHALLED JSON shape (map[string]any) not struct equality; gofmt/go build/vet/test + just lint (default+e2e+realhosts) all green. Surgical diff (2 new files). Merged to main."
 - ledgerRefs: ["tasks:T161","goals:G12"]
+
+### R201 — revise
+
+- createdAt: 2026-07-14T23:02:00.182Z
+- updatedAt: 2026-07-14T23:02:00.182Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T160 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins). Both confirm the CODE is correct and the gate is green: internal/netutil.IsLoopbackHost is byte-faithful to metrics/server.go requireLoopback and fail-closed on all 20 probed edge cases (0.0.0.0, empty host ':9096', [::], [::1], malformed -> Load error); no input lets a routable addr pass as loopback; ErrMonitorNonLoopbackWithoutAuth is package-level, %w-wrapped, asserted via errors.Is; DisallowUnknownFields genuinely exercised; all 6 acceptance cases present; device D52 reload catch-all extended minimally without pre-empting T169; go build/vet/test + just lint (default+e2e+realhosts) all green. DISAPPROVED on definition-of-done, two autonomously-fixable criticisms: (1) DOC-SYNC (AGENTS.md 'keep docs current'): the new operator-facing [monitor] config keys (monitor.listen/monitor.token) + fail-fast invariant appear in NO doc; add at minimum a commented-out [monitor] block to wanbond.example.toml (the deliberately-exhaustive example that documents [metrics]) noting the endpoint/full docs land with later monitor tasks — the comprehensive README/design/install sync remains T171's scope. (2) internal/netutil ships with NO test files: add a direct table test for IsLoopbackHost covering the fail-closed branches (empty host, [::1], [::], bare-port/missing-port error path) so a regression in the host=='' security branch cannot pass the suite. Filed low out-of-scope defect (classification duplication metrics/server.go vs netutil -> consolidate later). Re-dispatching worker with these two criticisms."
+- ledgerRefs: ["tasks:T160","goals:G12"]

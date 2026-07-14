@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 82
+  item: 83
 archives: []
 ---
 
@@ -1135,6 +1135,19 @@ archives: []
 - suggestedFix: "Switch T97's non-primary per-peer INBOUND assertion from MetricRxBytes to MetricTxBytes (per-peer-attributed), mirroring the D77-fix d47 correction, and reword the :201 comment to match. SEPARATELY (design decision, own task — couples with D77-fix finding #4): decide whether per-peer INBOUND accounting on a multi-peer concentrator SHOULD attribute per demuxed peer (move rxBytes.Add into demuxInbound); if adopted, keep an rx assertion and file the production task. Seed the test-fix into the same metrics/e2e-hardening goal as D80/D77."
 - ledgerRefs: ["tasks:T97","defects:D58","goals:G8"]
 - rootCause: "CONFIRMED against source. test/e2e/multipeer_test.go DOES assert non-primary per-peer INBOUND rx>0: for each peer label (mpPeerALabel AND mpPeerBLabel) it sums rx across both uplinks via PeerPathValue(MetricRxBytes,...) into peerBytes and then fails on 'if peerBytes <= 0 { t.Fatalf(\"peer %q carried non-positive rx bytes ...\") }' (multipeer_test.go ~:206-213). The inline comment ':201 'counts are report-only ... the asserted invariant is per-peer presence'' is itself CONTRADICTED by that <=0 fatal below it. On a multi-peer concentrator the single readLoop per shared path attributes ALL received bytes to the PRIMARY peer (internal/bind/multipath.go, T23/T93 one-reader-per-shared-socket, rx keyed to primary), so the NON-primary peer's summed rx is structurally 0 → peerBytes<=0 → deterministic fatal on a real run. The parallel tx block (:277 txTotal<=0) is CORRECT because tx IS per-peer attributed. This is the SAME latent flaw the D77-fix worker already hit+fixed in multipeer_hardened_test.go's d47 (switched the non-primary per-peer assertion rx->tx). Cause: T97's per-peer inbound assertion assumes per-demuxed-peer rx accounting that the shipped datapath does not provide."
+
+### D83 — root-caused
+
+- createdAt: 2026-07-14T23:02:08.821Z
+- updatedAt: 2026-07-14T23:03:59.943Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Loopback classification duplicated between metrics/server.go requireLoopback and internal/netutil.IsLoopbackHost (security predicate, drift risk)
+- severity: low
+- description: "Filed during T160 review ([fable], out-of-scope for T160 which was explicitly directed not to touch metrics server internals). T160 introduced internal/netutil.IsLoopbackHost (the Q45 monitor non-loopback-requires-token classifier) as a faithful DUPLICATE of internal/metrics/server.go requireLoopback's loopback classification (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP with all-resolved-must-be-loopback). Currently byte-faithful, but two independent copies of a SECURITY-CRITICAL predicate can drift silently (a future fix to one not mirrored to the other weakens one surface). requireLoopback should DELEGATE its classification decision to netutil.IsLoopbackHost while keeping its richer per-case ErrNonLoopbackBind error detail (act-then-verify verifyLoopbackBind stays as-is). Not a runtime defect today (both correct); a maintainability/consolidation hardening."
+- suggestedFix: "Refactor internal/metrics/server.go requireLoopback to DELEGATE its loopback/non-loopback decision to internal/netutil.IsLoopbackHost, preserving requireLoopback's richer per-case error messages (ErrNonLoopbackBind + hostname-resolves-to-non-loopback detail) and keeping verifyLoopbackBind's kernel-bound-Addr act-then-verify unchanged. Regression-cover via the existing metrics-server tests + the new internal/netutil table test (added in T160 round 2). Low priority; group into a code-hygiene/consolidation fix goal (can join the doc-accuracy/hygiene cluster D61/D66/D68 or stand alone) via /cq:plan."
+- ledgerRefs: ["tasks:T160","goals:G12"]
+- rootCause: "CONFIRMED by construction + reviewer verification (no DFS needed). CAUSE: T160 was explicitly directed to add the Q45 monitor loopback classifier WITHOUT importing internal/metrics server internals, so it created internal/netutil.IsLoopbackHost as a deliberate faithful DUPLICATE of internal/metrics/server.go requireLoopback's classification logic (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP requiring EVERY resolved address to be loopback). The T160 fable reviewer empirically verified the two are byte-faithful across 20 edge cases (0.0.0.0, empty host, [::], [::1], IPv4-mapped, malformed). So the duplication is real and confirmed; the DRIFT RISK is inherent to two independent copies of a security-critical predicate (a future change to one not mirrored to the other silently weakens one surface). This is NOT a runtime defect today (both copies correct) — it is a maintainability/consolidation hardening. Disposition: default-FIX, deferred to a separate hygiene task (out-of-scope for T160 per the plan's task boundary + the explicit do-not-touch-metrics-internals instruction). READY-TO-SEED."
 
 ## M49
 
