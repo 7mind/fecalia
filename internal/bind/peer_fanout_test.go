@@ -78,6 +78,9 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 	}
 	m.peers = append(m.peers, p)
 	m.peersByName[name] = p
+	// Register the peer's virt so an outbound Send to it routes to THIS peerState (the
+	// concentrator's per-peer wiring does the same when it binds a peer).
+	m.peerByVirt[p.virt] = p
 	return p
 }
 

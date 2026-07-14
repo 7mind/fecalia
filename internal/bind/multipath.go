@@ -319,6 +319,16 @@ type Multipath struct {
 	// (a later G4 task) populates and reads them.
 	peerByEndpoint map[netip.AddrPort]*peerState
 	peerBySource   map[netip.Addr]*peerState
+	// peerByVirt routes an OUTBOUND Send to its owning peer: the engine hands Send the
+	// single virtual endpoint (*udpEndpoint) it holds for a peer, and this map resolves
+	// that pointer to the peer's datapath state (outerSeq, scheduler, sendCodec, fecSend,
+	// per-(peer,path) set). It is the SEND-side dual of peerByEndpoint/peerBySource (which
+	// demux INBOUND datagrams). Each peer's virt is DISTINCT, so the lookup is exact; an
+	// endpoint not in this map is an unknown peer, which Send refuses rather than
+	// misrouting onto some other peer's paths. The primary is registered at construction;
+	// the concentrator registers each additional peer as it binds it. Read under m.mu on
+	// the Send path; written under m.mu (or at single-threaded construction).
+	peerByVirt map[*udpEndpoint]*peerState
 
 	// shared is the SHARED per-socket path list (the sockets themselves), rebuilt from
 	// m.defs on every Open and mutated by the runtime add/remove. Each bound peer holds a
@@ -497,6 +507,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		peersByName:    map[string]*peerState{primary.name: primary},
 		peerByEndpoint: map[netip.AddrPort]*peerState{},
 		peerBySource:   map[netip.Addr]*peerState{},
+		peerByVirt:     map[*udpEndpoint]*peerState{primary.virt: primary},
 		fecCfg:         fecCfg,
 		adaptiveCfg:    adaptiveCfg,
 	}, nil
@@ -1120,7 +1131,8 @@ func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
 // goroutine pinning the virtual endpoint therefore never blocks behind an
 // in-flight transmit syscall.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
-	if _, ok := ep.(*udpEndpoint); !ok {
+	ue, ok := ep.(*udpEndpoint)
+	if !ok {
 		return conn.ErrWrongEndpointType
 	}
 
@@ -1130,15 +1142,28 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	// rekey. The classifier is parameterized by the tunnel's Amnezia profile, so it works
 	// under advanced-security obfuscation (custom magic headers + handshake junk), not
 	// only vanilla WireGuard. It reads only the (possibly junk-shifted) type word off the
-	// lock.
+	// lock. It is peer-agnostic (inner WireGuard type, not routing), so it runs before the
+	// peer resolution below.
 	class := m.classify.classifyBatch(bufs)
 
 	m.mu.Lock()
-	if len(m.paths) == 0 {
+	// Resolve the OWNING peer from the engine-facing virtual endpoint: each peer holds a
+	// DISTINCT virt, so this datagram egresses on THAT peer's outerSeq, scheduler,
+	// sendCodec, fecSend, and per-(peer,path) set — never the embedded primary's by
+	// promotion. An endpoint of the right type but unknown to the demux (no bound peer)
+	// cannot be routed, so it returns the no-path error rather than misrouting onto some
+	// other peer's paths. On the single-peer edge/hub the primary's virt resolves to the
+	// primary peerState, so behaviour is byte-identical to the pre-split singleton.
+	peer, ok := m.peerByVirt[ue]
+	if !ok {
+		m.mu.Unlock()
+		return errNoHealthyPath
+	}
+	if len(peer.paths) == 0 {
 		m.mu.Unlock()
 		return errClosed
 	}
-	idx := m.scheduler.Pick(class)
+	idx := peer.scheduler.Pick(class)
 	if idx == sched.PickPaced {
 		// The scheduler shed this datagram for pacing while paths are healthy: drop it
 		// (same as no-path), but surface a DISTINCT error so the diagnostic is not
@@ -1147,11 +1172,11 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		m.mu.Unlock()
 		return errPacerShedding
 	}
-	if idx < 0 || idx >= len(m.paths) {
+	if idx < 0 || idx >= len(peer.paths) {
 		m.mu.Unlock()
 		return errNoHealthyPath
 	}
-	ps := m.paths[idx]
+	ps := peer.paths[idx]
 	remote, ok := ps.getRemote()
 	if !ok {
 		m.mu.Unlock()
@@ -1160,8 +1185,8 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	c := ps.conn
 	wires := make([]fecWire, 0, len(bufs))
 	for _, b := range bufs {
-		seq := m.outerSeq.Add(1)
-		if m.fecSend != nil {
+		seq := peer.outerSeq.Add(1)
+		if peer.fecSend != nil {
 			// FEC on (T24): admit the inner datagram (coded as seq || inner) to the group
 			// encoder. The returned data shard rides a normal DATA frame carrying its FEC
 			// group + shard index; when this admission FILLS the group the encoder returns
@@ -1169,19 +1194,19 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 			// chosen path. Spreading parity onto a DIFFERENT path than its data (so one
 			// path outage cannot lose both) is a documented future refinement, deliberately
 			// NOT implemented here (see the T24 design notes).
-			ds, parity, err := m.fecSend.enc.Admit(fecShardPayload(seq, b))
+			ds, parity, err := peer.fecSend.enc.Admit(fecShardPayload(seq, b))
 			if err != nil {
 				m.mu.Unlock()
 				return err
 			}
-			wire, err := m.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, FECGroup: uint32(ds.Group), FECIndex: uint8(ds.Index), Payload: b})
+			wire, err := peer.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, FECGroup: uint32(ds.Group), FECIndex: uint8(ds.Index), Payload: b})
 			if err != nil {
 				m.mu.Unlock()
 				return err
 			}
 			wires = append(wires, fecWire{b: wire})
 			for _, par := range parity {
-				pw, err := m.encodeParityLocked(par, ps.id)
+				pw, err := m.encodeParityLocked(peer, par, ps.id)
 				if err != nil {
 					m.mu.Unlock()
 					return err
@@ -1190,14 +1215,14 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 			}
 			continue
 		}
-		wire, err := m.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
+		wire, err := peer.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
 		if err != nil {
 			m.mu.Unlock()
 			return err
 		}
 		wires = append(wires, fecWire{b: wire})
 	}
-	fs := m.fecSend
+	fs := peer.fecSend
 	m.mu.Unlock()
 
 	for _, w := range wires {
@@ -1239,9 +1264,10 @@ type fecWire struct {
 }
 
 // encodeParityLocked encodes one parity shard as a KindParity frame on the given
-// path. Caller holds m.mu (the send Codec is shared and stateful).
-func (m *Multipath) encodeParityLocked(par fec.ParityShard, pathID uint8) ([]byte, error) {
-	return m.sendCodec.Encode(nil, frame.Parity{
+// path, using the owning peer's send Codec. Caller holds m.mu (the send Codec is
+// shared and stateful per peer).
+func (m *Multipath) encodeParityLocked(peer *peerState, par fec.ParityShard, pathID uint8) ([]byte, error) {
+	return peer.sendCodec.Encode(nil, frame.Parity{
 		FECGroup:    uint32(par.Group),
 		ParityIndex: uint16(par.Index),
 		DataCount:   uint8(par.DataCount),
@@ -1317,7 +1343,10 @@ func (m *Multipath) fecFlushDeadline() {
 	fs := m.fecSend
 	wires := make([][]byte, 0, len(parity))
 	for _, par := range parity {
-		pw, err := m.encodeParityLocked(par, ps.id)
+		// fecFlushDeadline drives the PRIMARY peer's FEC group (m.fecSend/m.scheduler/
+		// m.paths reach the primary by promotion), so its parity is framed with the
+		// primary's send Codec.
+		pw, err := m.encodeParityLocked(m.peerState, par, ps.id)
 		if err != nil {
 			m.mu.Unlock()
 			return
