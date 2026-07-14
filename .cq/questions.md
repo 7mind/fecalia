@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 57
+  item: 59
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -668,6 +668,18 @@ archives:
 - recommendation: Option 1. It reuses the existing snapshot plumbing verbatim, gives the 'live link quality' feel via client-side sparklines, and loses nothing that matters on page reload; server-side history can be a follow-up if wanted.
 - ledgerRefs: ["goals:G12"]
 - answer: as recommended
+
+### Q58 — open
+
+- createdAt: 2026-07-14T18:56:25.640Z
+- updatedAt: 2026-07-14T18:56:25.640Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: "G12 monitoring UI — transport confidentiality for the opt-in NON-loopback (LAN-reachable) [monitor] bind. The emitted plan (T164) transmits the static bearer token in a non-Secure cookie / Authorization header over PLAINTEXT HTTP, so a passive on-path LAN observer can capture the token (which grants read-only stats access). Q45's context flagged TLS as an open question but no Q45-Q50 answer resolved it. Which transport posture for the non-loopback case do you want?"
+- context: "Blocks G12 plan finalization (plan review R190 = revise). The 13-task plan T160-T172 is otherwise sound and fully grounded; only this transport decision needs your answer before the plan locks to `planned`. The existing /metrics server is loopback-ONLY by a documented T17 security invariant (docs/design.md:740); option (c) keeps the monitor consistent with that. Raised by the G12 plan-reviewer (opus)."
+- suggestions: ["(a) Accept plaintext-token-over-LAN as adequate for the read-only v1 scope and DOCUMENT the residual passive-capture risk","(b) Require TLS (server cert config) whenever the [monitor] listener is non-loopback","(c) Forbid non-loopback binds entirely; keep the monitor strictly loopback like /metrics and document `ssh -L` port-forwarding as the only remote-viewing path"]
+- recommendation: Option (c) is the most consistent with the existing loopback-only T17 invariant and needs no new TLS/cert plumbing — remote viewing via `ssh -L` is the established secure pattern; but this is a genuine user-only risk-posture decision.
+- ledgerRefs: ["goals:G12"]
 
 ## M50
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 190
+  item: 191
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2251,3 +2251,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T152","goals:G14","defects:D65"]
+
+## M48
+
+### R190 — revise
+
+- createdAt: 2026-07-14T18:55:12.748Z
+- updatedAt: 2026-07-14T18:56:27.033Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G12 PLAN review round 1 — RECONCILED REVISE (single configured plan-reviewer opus ran in Mode B and returned json; orchestrator writes this aggregated review). The emitted 13-task plan (T160-T172 across M61 backend / M62 Vite+TS frontend / M63 daemon-wiring+e2e+docs) for the live monitoring web UI is STRONG: FIDELITY to the answered Q45-Q50 is high (loopback-default + opt-in-non-loopback-requires-token, separate [monitor] listener, Host/Origin + static token + SameSite=Strict/HttpOnly cookie + constant-time compare, read-only v1, Vite+TS go:embed, 1s push + client-side ~5min sparklines + per-peer). GROUNDING verified accurate against source: the metrics.Source interface; the metricsSource.Paths() last-sample throughput-delta HAZARD (device/metrics.go:74-110 mutates a per-(peer,path) s.last map — two readers on the SAME instance semantically corrupt each other's cadence even under the mutex; newMetricsSource allocates a fresh map so the monitor MUST use its OWN Source instance — correctly captured in T161/T165/T169); the loopback-only T17 fail-fast invariant; single-binary role-from-config (edge/concentrator parity free via device.Up wiring); 0600 config load. DAG is ACYCLIC with correct build-ordering (Vite scaffold → //go:embed → go build/golangci typecheck → gate), every task has concrete verifiable acceptance, auth tasks (T162/T164) are frontier-tier and well-specified, sizing is right (no mega-tasks, auth isolated). coder/websocket server lib is a determinable default (Q49 bundled it; user did not pick hand-roll) — not a blocker. THE ONE GAP (→ revise): a USER-ONLY unresolved decision on TRANSPORT CONFIDENTIALITY for the opt-in non-loopback bind — the plan ships a bearer token over PLAINTEXT HTTP on a LAN-reachable listener (passive on-path capture), and TLS (flagged in Q45's context) was never adjudicated in Q45-Q50. This sits squarely in the goal's headline concern ('how to make such an API safe'). Filed as open question Q51 (options: accept+document / require-TLS-when-non-loopback / forbid-non-loopback+ssh-L). G12 stays in planning, BLOCKED on Q51 until the user answers; then a re-plan/lock round finalizes. 0 criticisms (no plan defect) / 1 new_question (Q51) / 0 out-of-scope defects."
+- criticism: []
+- new_questions: ["Q58"]
+- ledgerRefs: ["goals:G12","questions:Q58"]
