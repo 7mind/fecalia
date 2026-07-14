@@ -47,9 +47,9 @@ func lazyConcentrator(t *testing.T, pskA, pskB config.Key) (m *Multipath, primar
 	return m, primary, second, clk
 }
 
-// synthSource returns a distinct spoofable source address for the i-th flood entry. The demux
-// map is keyed by netip.Addr, so the ADDRESS (not just the port) must differ to occupy a
-// distinct map slot.
+// synthSource returns a distinct spoofable source AddrPort for the i-th flood entry. The demux
+// map is keyed by the full netip.AddrPort (D47); these entries vary the ADDRESS (fixed port), so
+// each occupies a distinct slot regardless of the address/port split.
 func synthSource(i int) netip.AddrPort {
 	return netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), 41000)
 }
@@ -119,7 +119,7 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	// heavy receive datapath.
 	src := synthSource(1)
 	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), src)
-	bound, ok := m.lookupPeerBySource(src.Addr())
+	bound, ok := m.lookupPeerBySource(src)
 	if !ok || bound != second {
 		t.Fatalf("authenticated PROBE did not bind the source to peer B: bound=%v ok=%v", bound, ok)
 	}
@@ -152,7 +152,7 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	if second.fecRecv.Load() != nil {
 		t.Fatal("teardown did not free peer B's FEC receive buffers")
 	}
-	if _, ok := m.lookupPeerBySource(src.Addr()); ok {
+	if _, ok := m.lookupPeerBySource(src); ok {
 		t.Fatal("teardown did not release peer B's source->peer binding")
 	}
 
@@ -168,7 +168,7 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	// (4) Re-bind: a fresh authenticated PROBE re-instantiates the ring cleanly, and traffic
 	// flows again.
 	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 2, clk), src)
-	rebound, ok := m.lookupPeerBySource(src.Addr())
+	rebound, ok := m.lookupPeerBySource(src)
 	if !ok || rebound != second {
 		t.Fatalf("re-bind PROBE did not re-bind the source to peer B: bound=%v ok=%v", rebound, ok)
 	}
@@ -184,9 +184,11 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	}
 }
 
-// TestConcentratorDemuxCapBoundsBootstrapFlood is the T91 DoS-bound acceptance: a flood of many
-// distinct spoofed unbound source addresses cannot grow the demux state past the configured cap
-// and cannot evict or disturb a live bound peer.
+// TestConcentratorDemuxCapBoundsBootstrapFlood is the T91 DoS-bound acceptance, refined by D49:
+// a flood of many distinct spoofed unbound sources cannot grow the demux state without bound and
+// cannot evict or disturb a live bound peer. Unauthenticated garbage binds nothing; an authenticated
+// flood against one peer clamps at that peer's PER-PEER quota (not the global cap) and never evicts
+// ANOTHER peer's binding.
 func TestConcentratorDemuxCapBoundsBootstrapFlood(t *testing.T) {
 	pskA := testKey(t, 0x11) // primary (the live peer under test)
 	pskB := testKey(t, 0x22) // second peer, the flood's nominal target psk
@@ -202,7 +204,7 @@ func TestConcentratorDemuxCapBoundsBootstrapFlood(t *testing.T) {
 		// drive its path Up, and leave a DATA frame buffered in its ring.
 		live := synthSource(0)
 		m.demuxInbound(m.paths[0], authProbe(t, pskA, m.paths[0].id, 1, clk), live)
-		if bound, ok := m.lookupPeerBySource(live.Addr()); !ok || bound != primary {
+		if bound, ok := m.lookupPeerBySource(live); !ok || bound != primary {
 			t.Fatalf("live source did not bind to the primary: bound=%v ok=%v", bound, ok)
 		}
 		driveConcentratorPathUp(t, m.paths[0], pskA, clk)
@@ -226,7 +228,7 @@ func TestConcentratorDemuxCapBoundsBootstrapFlood(t *testing.T) {
 		if after := m.peerBySourceLenForTest(); after != before {
 			t.Fatalf("spoofed flood grew the demux map from %d to %d entries", before, after)
 		}
-		if bound, ok := m.lookupPeerBySource(live.Addr()); !ok || bound != primary {
+		if bound, ok := m.lookupPeerBySource(live); !ok || bound != primary {
 			t.Fatal("the flood evicted or repointed the live source->peer binding")
 		}
 		if m.paths[0].prober.State() != telemetry.StateUp {
@@ -237,41 +239,55 @@ func TestConcentratorDemuxCapBoundsBootstrapFlood(t *testing.T) {
 		}
 	})
 
-	t.Run("authenticated bindings clamp at the cap and never evict an existing binding", func(t *testing.T) {
+	t.Run("authenticated bindings clamp at the PER-PEER quota and never evict another peer's binding", func(t *testing.T) {
+		// D49: the flood target's footprint is bounded by its PER-PEER quota
+		// (maxDemuxSources/len(peers), floor 1) — NOT the global cap — and its churn never touches
+		// another peer's slot. With two peers (primary + peer B) and a cap of 4, each peer's quota
+		// is 2.
 		m, primary, second, clk := lazyConcentrator(t, pskA, pskB)
 		const capLimit = 4
 		m.maxDemuxSources = capLimit
+		const quota = capLimit / 2 // len(peers) == 2 (primary + peer B)
 		secondView := peerPathByName(second, "a")
 
 		// The first bound source belongs to the PRIMARY (a DIFFERENT peer than the flood target),
-		// so the cap test also proves cross-peer non-disturbance.
+		// so the test also proves cross-peer non-disturbance.
 		live := synthSource(0)
 		m.demuxInbound(m.paths[0], authProbe(t, pskA, m.paths[0].id, 1, clk), live)
-		if bound, ok := m.lookupPeerBySource(live.Addr()); !ok || bound != primary {
+		if bound, ok := m.lookupPeerBySource(live); !ok || bound != primary {
 			t.Fatalf("live source did not bind to the primary: bound=%v ok=%v", bound, ok)
 		}
 
-		// Now flood authenticated PROBEs under pskB from many distinct sources — each WOULD bind
-		// to peer B. Only up to the cap can be admitted; the rest are dropped-on-exhaustion.
+		// Flood authenticated PROBEs under pskB from many distinct sources — each WOULD bind to
+		// peer B. Peer B's footprint clamps at its per-peer quota: once at quota, each new AddrPort
+		// evicts B's OWN oldest binding (LRU), so B never grows past quota and never touches the
+		// primary's slot.
 		for i := 1; i <= 50; i++ {
 			m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, uint64(i+1), clk), synthSource(i))
 		}
 
-		if got := m.peerBySourceLenForTest(); got != capLimit {
-			t.Fatalf("demux map = %d entries, want it clamped at the cap %d", got, capLimit)
+		if got := m.peerBindingCountForTest(second); got != quota {
+			t.Fatalf("peer B holds %d demux bindings, want it clamped at its per-peer quota %d", got, quota)
 		}
-		// The pre-existing binding was never evicted to make room for a newer source.
-		if bound, ok := m.lookupPeerBySource(live.Addr()); !ok || bound != primary {
-			t.Fatal("cap exhaustion evicted the pre-existing (primary) binding — drop-on-exhaustion must never evict")
+		if got := m.peerBySourceLenForTest(); got != quota+1 {
+			t.Fatalf("demux map = %d entries, want peer B's quota %d + the primary's 1", got, quota+1)
 		}
-		// A brand-new source arriving while at cap is refused (bootstrap degrades, no growth).
+		// The pre-existing PRIMARY binding was never evicted by peer B's flood (cross-peer isolation).
+		if bound, ok := m.lookupPeerBySource(live); !ok || bound != primary {
+			t.Fatal("peer B's flood evicted the primary's binding — a peer must never evict ANOTHER peer's slot")
+		}
+		// A brand-new source for peer B while B is AT its quota still BINDS: B self-evicts its own
+		// oldest (LRU), so a live/roaming peer is never dropped. B stays at quota; primary untouched.
 		fresh := synthSource(9999)
 		m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 9999, clk), fresh)
-		if _, ok := m.lookupPeerBySource(fresh.Addr()); ok {
-			t.Fatal("a new source bound while the demux map was at its cap (drop-on-exhaustion violated)")
+		if bound, ok := m.lookupPeerBySource(fresh); !ok || bound != second {
+			t.Fatalf("a new source for peer B at its quota was not admitted (LRU self-eviction expected): bound=%v ok=%v", bound, ok)
 		}
-		if got := m.peerBySourceLenForTest(); got != capLimit {
-			t.Fatalf("demux map grew past the cap to %d after a post-exhaustion arrival", got)
+		if got := m.peerBindingCountForTest(second); got != quota {
+			t.Fatalf("peer B grew past its quota to %d after admitting a new source (self-eviction failed)", got)
+		}
+		if bound, ok := m.lookupPeerBySource(live); !ok || bound != primary {
+			t.Fatal("admitting peer B's new source disturbed the primary's binding")
 		}
 	})
 }
@@ -329,7 +345,7 @@ func TestConcentratorLivePeerNeverTornDown(t *testing.T) {
 	if secondView.prober.State() != telemetry.StateUp {
 		t.Fatalf("peer B lost liveness across peer C's churn: %v", secondView.prober.State())
 	}
-	if bound, ok := m.lookupPeerBySource(srcB.Addr()); !ok || bound != second {
+	if bound, ok := m.lookupPeerBySource(srcB); !ok || bound != second {
 		t.Fatal("peer B's binding was disturbed by peer C's churn")
 	}
 	if second.resequencer.Load() != ringB {
@@ -348,6 +364,22 @@ func (m *Multipath) peerBySourceLenForTest() int {
 		return 0
 	}
 	return len(*mp)
+}
+
+// peerBindingCountForTest reports how many source->peer demux bindings currently point at p
+// (its per-peer footprint against the D49 quota).
+func (m *Multipath) peerBindingCountForTest(p *peerState) int {
+	mp := m.peerBySource.Load()
+	if mp == nil {
+		return 0
+	}
+	count := 0
+	for _, b := range *mp {
+		if b.peer == p {
+			count++
+		}
+	}
+	return count
 }
 
 // mustEncodeData encodes a DATA frame or fails the test.

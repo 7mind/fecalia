@@ -121,12 +121,19 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   enabling real CGNAT traversal.
 - **demuxes multiple peers by authenticated source binding (G4 multi-peer)** — on a
   concentrator with more than one configured peer, inbound datagrams are routed to
-  the owning peer via `peerBySource`, an atomic-pointer source-address map
-  populated only from authenticated PROBE frames. Each peer authenticates with its
-  own per-peer `psk`: the first PROBE from a source that MAC-verifies under a
+  the owning peer via `peerBySource`, an atomic-pointer map keyed by the full source
+  **`AddrPort` (address+port)** and populated only from authenticated PROBE frames.
+  Keying on the AddrPort — not the bare address — lets two peers behind ONE public IP
+  (CGNAT, distinct source ports) bind and demux independently. Each peer authenticates
+  with its own per-peer `psk`: the first PROBE from a source that MAC-verifies under a
   peer's psk binds that source to that peer; subsequent DATA/PARITY frames from
   the same source are routed without re-authentication, keeping the receive hot
-  path fast. With a single configured peer, a per-peer `psk` is **rejected** at
+  path fast. The map is bounded by a global cap and a **per-peer quota**
+  (`maxDemuxSources/len(peers)`, floor 1): a party holding one valid psk that floods
+  spoofed sources exhausts only its own quota and never starves another peer's
+  bootstrap PROBE. A peer that roams across CGNAT source ports past its own quota
+  evicts its OWN oldest binding (LRU) to admit the new one — it is never dropped and
+  never disturbs another peer's slot. With a single configured peer, a per-peer `psk` is **rejected** at
   config load (`config.validate`) and the top-level `psk` is the sole
   authenticator, byte-identical to pre-G4 behavior. Once a second peer is
   configured, per-peer `psk` becomes **required and pairwise-distinct**, and the
@@ -678,10 +685,10 @@ misbehaves subtly. Agents and contributors must preserve them.
     than one configured peer, each edge authenticates PROBE frames with its OWN
     per-peer `psk` — this field is REQUIRED and must be pairwise-distinct across
     peers (config load rejects a duplicate). The concentrator uses PROBE
-    MAC-verification to learn each source address's owning peer (`peerBySource`
-    binding in `internal/bind/multipath.go`); a source that MAC-verifies under
-    peer A's psk is bound to A, and subsequent DATA/PARITY frames from it route
-    to A without re-authentication. The top-level `psk` remains REQUIRED by
+    MAC-verification to learn each source `AddrPort`'s owning peer (`peerBySource`
+    binding in `internal/bind/multipath.go`, keyed by address+port so CGNAT-shared
+    IPs demux per-port); a source that MAC-verifies under peer A's psk is bound to A,
+    and subsequent DATA/PARITY frames from it route to A without re-authentication. The top-level `psk` remains REQUIRED by
     config validation in every configuration, but on a multi-peer concentrator it
     authenticates **no peer**: `device.Up` feeds only each peer's own PSK (from
     `Config.PeerIdentities`) into the bind, so an existing single-peer edge does
@@ -699,11 +706,11 @@ misbehaves subtly. Agents and contributors must preserve them.
   - **In multi-peer mode**, unauthenticated DATA/PARITY do not establish
     source-to-peer bindings (they route using existing bindings learned from
     PROBE frames). The two forgery cases cost differently: a forged source
-    address with **no existing binding** is trial-decoded against each
+    `AddrPort` with **no existing binding** is trial-decoded against each
     configured peer's codec (`O(peers)`, bounded by the static peer count,
     `demuxInbound`) and, carrying no PROBE MAC, is dropped there — it never
     dispatches to a peer and never reaches that peer's resequencer or FEC
-    decoder. A forged source that spoofs an address **already bound** to a
+    decoder. A forged source that spoofs an `AddrPort` **already bound** to a
     peer (learned from that peer's authenticated PROBE) routes straight into
     that peer's plane and wastes its resequence/FEC work — the same
     DoS-grade residual described above for the single-peer case — before the

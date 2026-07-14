@@ -47,7 +47,7 @@ func victimPeerFEC(t *testing.T, pskA, pskB config.Key) (m *Multipath, victim, p
 	// Bind the victim source to peer A through an authenticated PROBE, then drive its path Up so
 	// A is a genuinely LIVE, bound peer for the duration of every attack below.
 	m.demuxInbound(m.paths[0], authProbe(t, pskA, m.paths[0].id, 1, clk), src)
-	bound, ok := m.lookupPeerBySource(src.Addr())
+	bound, ok := m.lookupPeerBySource(src)
 	if !ok || bound != victim {
 		t.Fatalf("victim source did not bind to peer A: bound=%v ok=%v", bound, ok)
 	}
@@ -80,7 +80,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 
 		// The binding is unmoved: still A, never re-pointed to B (the T90 roam path must never fire
 		// for a foreign-psk frame). With the early-return removed this reads peer B.
-		bound, ok := m.lookupPeerBySource(src.Addr())
+		bound, ok := m.lookupPeerBySource(src)
 		if !ok || bound != victim {
 			t.Fatalf("foreign-psk PROBE re-pointed A's bound source: bound=%v ok=%v (want peer A)", bound, ok)
 		}
@@ -109,7 +109,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 		// (no peer holds pskC) NOR unbound (a decode failure must not evict a live binding).
 		m.demuxInbound(m.paths[0], authProbe(t, pskC, m.paths[0].id, 2, clk), src)
 
-		bound, ok := m.lookupPeerBySource(src.Addr())
+		bound, ok := m.lookupPeerBySource(src)
 		if !ok {
 			t.Fatal("a wrong-psk PROBE UNBOUND A's live source (a decode failure must never evict a binding)")
 		}
@@ -129,7 +129,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 		// already bound to A, so the binding is a no-op and stays put.
 		genuine := authProbe(t, pskA, m.paths[0].id, 2, clk)
 		m.demuxInbound(m.paths[0], genuine, src)
-		if bound, ok := m.lookupPeerBySource(src.Addr()); !ok || bound != victim {
+		if bound, ok := m.lookupPeerBySource(src); !ok || bound != victim {
 			t.Fatalf("a replayed genuine PROBE disturbed A's binding: bound=%v ok=%v", bound, ok)
 		}
 
@@ -138,7 +138,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 		mutated := append([]byte(nil), genuine...)
 		mutated[len(mutated)-1] ^= 0xFF // corrupt the authentication tag
 		m.demuxInbound(m.paths[0], mutated, src)
-		if bound, ok := m.lookupPeerBySource(src.Addr()); !ok || bound != victim {
+		if bound, ok := m.lookupPeerBySource(src); !ok || bound != victim {
 			t.Fatalf("a mutated PROBE disturbed A's binding: bound=%v ok=%v", bound, ok)
 		}
 		if m.paths[0].prober.State() != telemetry.StateUp {
@@ -179,7 +179,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 
 		// The binding and liveness are intact (no eviction), and peer B — whose psk the adversary
 		// holds — got NO binding to A's source (the storm cannot bleed A's source into B).
-		if bound, ok := m.lookupPeerBySource(src.Addr()); !ok || bound != victim {
+		if bound, ok := m.lookupPeerBySource(src); !ok || bound != victim {
 			t.Fatalf("the forged storm disturbed A's binding: bound=%v ok=%v", bound, ok)
 		}
 		if m.paths[0].prober.State() != telemetry.StateUp {
@@ -285,7 +285,7 @@ func TestUnauthenticatedFloodBindsNothingAndInjectsNothing(t *testing.T) {
 		t.Fatalf("the flood's FEC garbage reached the victim's decoder: Recovered %d -> %d", victimDecoderRecoveredBefore, got)
 	}
 	// The live victim binding, liveness, and buffered frame all survived untouched.
-	if bound, ok := m.lookupPeerBySource(victimSrc.Addr()); !ok || bound != victim {
+	if bound, ok := m.lookupPeerBySource(victimSrc); !ok || bound != victim {
 		t.Fatal("the flood disturbed the live victim binding")
 	}
 	if m.paths[0].prober.State() != telemetry.StateUp {

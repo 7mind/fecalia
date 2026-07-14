@@ -60,7 +60,7 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 		if it, ok := second.resequencer.Load().Pop(); ok {
 			t.Fatalf("DATA from an UNBOUND source was delivered up peer B (%q); only a PROBE may bind first", it.Payload)
 		}
-		if _, ok := m.lookupPeerBySource(peerAP.Addr()); ok {
+		if _, ok := m.lookupPeerBySource(peerAP); ok {
 			t.Fatal("an unauthenticated DATA frame established a source->peer binding (D9/D11 violated)")
 		}
 
@@ -74,7 +74,7 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 		m.demuxInbound(m.paths[0], probeRaw, peerAP)
 
 		// The source is now bound to peer B (never the primary).
-		bound, ok := m.lookupPeerBySource(peerAP.Addr())
+		bound, ok := m.lookupPeerBySource(peerAP)
 		if !ok {
 			t.Fatal("authenticated PROBE did not establish a source->peer binding")
 		}
@@ -126,7 +126,7 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 		}
 		m.demuxInbound(m.paths[0], garbage, peerAP)
 
-		if _, ok := m.lookupPeerBySource(peerAP.Addr()); ok {
+		if _, ok := m.lookupPeerBySource(peerAP); ok {
 			t.Fatal("a forged/garbage frame established a source->peer binding")
 		}
 		if _, ok := secondView.getRemote(); ok {
@@ -175,7 +175,7 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 		m.demuxInbound(m.paths[0], probeRaw, peerAP)
 
 		// The source bound to the primary — the FIRST view whose codec yielded a PROBE.
-		bound, ok := m.lookupPeerBySource(peerAP.Addr())
+		bound, ok := m.lookupPeerBySource(peerAP)
 		if !ok || bound != primary {
 			t.Fatalf("source bound to %v (ok=%v), want the PRIMARY (the first matching psk)", bound, ok)
 		}
@@ -248,7 +248,7 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 
 		// Peer B's PROBE authenticated on the SECOND trial (after the primary's non-PROBE decode
 		// did NOT abort the loop): the source bound to peer B.
-		bound, ok := m.lookupPeerBySource(peerAP.Addr())
+		bound, ok := m.lookupPeerBySource(peerAP)
 		if !ok {
 			t.Fatal("a genuine peer-B PROBE that decoded as a non-PROBE under the primary's psk was dropped — the trial-decode aborted at the first successful DECODE instead of the first MAC")
 		}

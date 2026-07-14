@@ -67,11 +67,11 @@ func TestConcentratorRoamRebindsPeerOnAuthenticatedProbe(t *testing.T) {
 
 	// --- bind both peers via authenticated PROBEs on the shared socket ---
 	m.demuxInbound(aView, probeUnder(pskA, aView.id, 1), srcA)
-	if bound, ok := m.lookupPeerBySource(srcA.Addr()); !ok || bound != primary {
+	if bound, ok := m.lookupPeerBySource(srcA); !ok || bound != primary {
 		t.Fatalf("srcA bound to %v (ok=%v), want peer A (primary)", bound, ok)
 	}
 	m.demuxInbound(aView, probeUnder(pskB, bView.id, 1), srcB0)
-	if bound, ok := m.lookupPeerBySource(srcB0.Addr()); !ok || bound != second {
+	if bound, ok := m.lookupPeerBySource(srcB0); !ok || bound != second {
 		t.Fatalf("srcB0 bound to %v (ok=%v), want peer B", bound, ok)
 	}
 
@@ -82,7 +82,7 @@ func TestConcentratorRoamRebindsPeerOnAuthenticatedProbe(t *testing.T) {
 	// B's DATA from the new source must be DROPPED until an authenticated PROBE re-binds it, and
 	// must NOT be misrouted into peer A's resequencer.
 	m.demuxInbound(aView, dataB(20, "b-roam-early"), srcB1)
-	if _, ok := m.lookupPeerBySource(srcB1.Addr()); ok {
+	if _, ok := m.lookupPeerBySource(srcB1); ok {
 		t.Fatal("DATA from the roamed (unbound) source established a source->peer binding — only a PROBE may (D9/D11)")
 	}
 	if it, ok := second.resequencer.Load().Pop(); ok {
@@ -91,7 +91,7 @@ func TestConcentratorRoamRebindsPeerOnAuthenticatedProbe(t *testing.T) {
 
 	// A fresh authenticated PROBE under peer B's psk from the NEW source re-binds it to the SAME peer B.
 	m.demuxInbound(aView, probeUnder(pskB, bView.id, 2), srcB1)
-	bound, ok := m.lookupPeerBySource(srcB1.Addr())
+	bound, ok := m.lookupPeerBySource(srcB1)
 	if !ok {
 		t.Fatal("an authenticated PROBE from the roamed source did not re-bind it")
 	}

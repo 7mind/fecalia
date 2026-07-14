@@ -100,7 +100,7 @@ func TestSharedSocketGatesUnboundDataParity(t *testing.T) {
 		if it, ok := primary.resequencer.Load().Pop(); ok {
 			t.Fatalf("DATA from an UNBOUND source landed in the PRIMARY resequencer (%q)", it.Payload)
 		}
-		if _, ok := m.lookupPeerBySource(peerAP.Addr()); ok {
+		if _, ok := m.lookupPeerBySource(peerAP); ok {
 			t.Fatal("an unbound DATA frame established a source->peer binding (D9/D11 violated)")
 		}
 	})
@@ -151,7 +151,7 @@ func TestSharedSocketGatesUnboundDataParity(t *testing.T) {
 				t.Fatalf("PARITY from an UNBOUND source landed in %s's resequencer (%q)", pc.who, it.Payload)
 			}
 		}
-		if _, ok := m.lookupPeerBySource(peerAP.Addr()); ok {
+		if _, ok := m.lookupPeerBySource(peerAP); ok {
 			t.Fatal("an unbound PARITY frame established a source->peer binding (D9/D11 violated)")
 		}
 	})
@@ -167,7 +167,7 @@ func TestSharedSocketGatesUnboundDataParity(t *testing.T) {
 			t.Fatalf("encode pre-bind DATA: %v", err)
 		}
 		m.demuxInbound(m.paths[0], early, peerAP)
-		if _, ok := m.lookupPeerBySource(peerAP.Addr()); ok {
+		if _, ok := m.lookupPeerBySource(peerAP); ok {
 			t.Fatal("pre-bind DATA established a binding")
 		}
 
@@ -180,7 +180,7 @@ func TestSharedSocketGatesUnboundDataParity(t *testing.T) {
 		}
 		m.demuxInbound(m.paths[0], probeRaw, peerAP)
 
-		bound, ok := m.lookupPeerBySource(peerAP.Addr())
+		bound, ok := m.lookupPeerBySource(peerAP)
 		if !ok || bound != second {
 			t.Fatalf("PROBE did not bind the source to peer B: bound=%v ok=%v", bound, ok)
 		}

@@ -64,14 +64,28 @@ const (
 // PROVISIONAL/unbound-source tracking state whose growth an attacker probes at
 // bootstrap (Q26/Q27). It is sized SEPARATELY from the steady-state peer set
 // (m.peersByName, bounded by the static configured [[wireguard.peers]]): a source
-// enters this map only on an authenticated PROBE (T88), but a party holding ONE
-// valid psk could otherwise bind an unbounded number of distinct spoofed sources to
-// its OWN peer and exhaust memory. On exhaustion a NEW source's binding is dropped
-// (drop-on-exhaustion, bootstrap degrades) — an already-bound (live) source is NEVER
-// evicted. Roam/re-bind of an already-present source (T90) does not grow the map, so
-// it is never blocked by the cap. A dead peer's bindings are reclaimed on teardown
-// (TearDownPeer), freeing slots. The default is generous relative to any realistic
-// concentrator's peer×roam-churn count yet bounds the flood surface.
+// AddrPort enters this map only on an authenticated PROBE (T88). The map is keyed by
+// the full source netip.AddrPort (address+port, D47) — NOT the bare address — so two
+// peers behind ONE public IP (CGNAT) bind to distinct entries and demux independently.
+//
+// This GLOBAL cap is the outer bound; within it a PER-PEER quota (maxDemuxSources /
+// len(peers), floor 1, D49) is enforced so one party holding ONE valid psk that floods
+// spoofed sources to its OWN peer exhausts only ITS OWN quota and never starves another
+// peer's bootstrap PROBE (Q27(1) cross-peer isolation). Two eviction/drop regimes apply
+// to a NEW source AddrPort:
+//   - SAME-peer (roam port-churn): a peer already at its per-peer quota that authenticates
+//     a NEW AddrPort for ITSELF evicts its OWN oldest binding (LRU within the peer) to admit
+//     it — a live roaming peer is NEVER dropped and its footprint never grows past quota, so
+//     it can never evict ANOTHER peer's slot (never-evict-live w.r.t. others holds).
+//   - CROSS-peer (drop-on-exhaustion): a peer BELOW its quota whose NEW source would grow the
+//     map past the GLOBAL cap is refused — it may not steal another peer's headroom. Bootstrap
+//     degrades; WG retransmits re-drive it once a slot frees.
+//
+// An already-bound (live) source is NEVER evicted by another peer. Roam/re-affirm of an
+// already-present AddrPort (T90) does not grow the map, so it is never blocked by the cap. A
+// dead peer's bindings are reclaimed on teardown (TearDownPeer), freeing slots. The default is
+// generous relative to any realistic concentrator's peer×roam-churn count yet bounds the flood
+// surface.
 const defaultMaxDemuxSources = 1024
 
 var (
@@ -337,6 +351,16 @@ func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 // transport (the T12 unit tests), which therefore cannot add paths at runtime.
 type ProberFactory func(name string, id uint8) *telemetry.Prober
 
+// sourceBinding is one entry of the source->peer demux map (peerBySource): the peer a learned
+// source AddrPort was bound to by an authenticated PROBE, plus a monotonic insertion sequence
+// used ONLY to choose a peer's OWN oldest binding for LRU eviction when that peer authenticates
+// a new AddrPort for itself while already at its per-peer quota (roam port-churn, D49). The seq
+// orders a single peer's own bindings against each other; it is never compared across peers.
+type sourceBinding struct {
+	peer *peerState
+	seq  uint64
+}
+
 type Multipath struct {
 	defs []config.Path
 
@@ -408,22 +432,31 @@ type Multipath struct {
 	// single-peer edge/hub needs no demux, and the source-keyed binding below is what the
 	// concentrator receive path routes on).
 	peerByEndpoint map[netip.AddrPort]*peerState
-	// peerBySource is the inbound source-demux map: a learned source address → the peer it was
-	// bound to by an authenticated PROBE (T88). The concentrator's per-socket readLoops resolve
-	// a datagram's source to its owning peer through it; a source is bound ONLY on the first
-	// PROBE that MAC-verifies under a peer's psk (D9/D11: bindings, like remotes, are learned
-	// only from authenticated PROBEs). It is published copy-on-write through an atomic.Pointer
-	// so the receive hot path resolves a bound source with a lock-free Load (no m.mu — a reader
-	// must never block on m.mu, since Close waits on the readers WHILE holding it), and a new
-	// binding is installed lock-free by a CAS republish of a copy with the entry added
-	// (bindSourceToPeer). Nil until the first binding; the single-peer edge/hub never consults
-	// it (one peer owns every socket — handleInbound's fast path skips the demux entirely).
-	peerBySource atomic.Pointer[map[netip.Addr]*peerState]
-	// maxDemuxSources caps peerBySource (the provisional/unbound-source demux state) so a
-	// bootstrap flood cannot grow it without bound (Q26/Q27, see defaultMaxDemuxSources). Set
-	// once at construction and read on the lock-free bind path (bindSourceToPeer); a test may
-	// lower it to exercise cap-exhaustion. Zero (never set) means "no cap".
+	// peerBySource is the inbound source-demux map: a learned source AddrPort → the peer it was
+	// bound to by an authenticated PROBE (T88). It is keyed by the full source netip.AddrPort
+	// (address+port, D47), NOT the bare address, so two peers behind ONE public IP (CGNAT, one
+	// netip.Addr, distinct ports) occupy distinct entries and demux independently. The
+	// concentrator's per-socket readLoops resolve a datagram's source to its owning peer through
+	// it; a source is bound ONLY on the first PROBE that MAC-verifies under a peer's psk (D9/D11:
+	// bindings, like remotes, are learned only from authenticated PROBEs). It is published
+	// copy-on-write through an atomic.Pointer so the receive hot path resolves a bound source with
+	// a lock-free Load (no m.mu — a reader must never block on m.mu, since Close waits on the
+	// readers WHILE holding it), and a new binding is installed lock-free by a CAS republish of a
+	// copy with the entry added (bindSourceToPeer). Nil until the first binding; the single-peer
+	// edge/hub never consults it (one peer owns every socket — handleInbound's fast path skips the
+	// demux entirely).
+	peerBySource atomic.Pointer[map[netip.AddrPort]sourceBinding]
+	// maxDemuxSources is the GLOBAL cap on peerBySource (the provisional/unbound-source demux
+	// state) so a bootstrap flood cannot grow it without bound (Q26/Q27, see defaultMaxDemuxSources).
+	// Within it bindSourceToPeer enforces a PER-PEER quota (maxDemuxSources/len(peers), floor 1,
+	// D49) for cross-peer isolation. Set once at construction and read on the lock-free bind path
+	// (bindSourceToPeer); a test may lower it to exercise cap/quota exhaustion. Zero (never set)
+	// means "no cap".
 	maxDemuxSources int
+	// bindSeq is a monotonic counter stamped on each source binding to order a peer's OWN
+	// bindings for per-peer LRU eviction (D49 roam port-churn). Read/incremented on the lock-free
+	// bind path (bindSourceToPeer) from readLoop goroutines, so it is atomic; it takes no m.mu.
+	bindSeq atomic.Uint64
 	// peerByVirt routes an OUTBOUND Send to its owning peer: the engine hands Send the
 	// single virtual endpoint (*udpEndpoint) it holds for a peer, and this map resolves
 	// that pointer to the peer's datapath state (outerSeq, scheduler, sendCodec, fecSend,
@@ -1415,7 +1448,7 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 		m.handleInbound(ps, raw, srcAP)
 		return
 	}
-	if bound, ok := m.lookupPeerBySource(srcAP.Addr()); ok {
+	if bound, ok := m.lookupPeerBySource(srcAP); ok {
 		for _, v := range *views {
 			if v.peer == bound {
 				m.handleInbound(v, raw, srcAP)
@@ -1436,10 +1469,12 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 			// rather than aborting — a genuine unbound DATA/PARITY still never binds.
 			continue
 		}
-		if !m.bindSourceToPeer(srcAP.Addr(), v.peer) {
-			// Provisional demux state is at its cap (bootstrap flood): drop this new source's
-			// PROBE rather than grow the map or evict a live binding (Q26/Q27). WG retransmits
-			// re-drive the bootstrap once a slot frees.
+		if !m.bindSourceToPeer(srcAP, v.peer) {
+			// This peer is below its per-peer quota yet the GLOBAL demux cap is exhausted
+			// (cross-peer drop-on-exhaustion): drop this new source's PROBE rather than grow the
+			// map past the cap or steal another peer's headroom (Q26/Q27). WG retransmits re-drive
+			// the bootstrap once a slot frees. (A peer AT its own quota is never dropped here — it
+			// self-evicts its oldest binding, D49.)
 			return
 		}
 		// The binding just resolved this peer: lazily materialise its heavy receive datapath
@@ -1453,60 +1488,122 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 	// No peer's psk verified: a forged/garbage frame. No binding, drop.
 }
 
-// lookupPeerBySource resolves a learned source address to the peer bound to it, or nil when
+// lookupPeerBySource resolves a learned source AddrPort to the peer bound to it, or nil when
 // the source is not yet bound. It reads the copy-on-write binding map with a single lock-free
 // Load, so the concentrator receive hot path never takes m.mu (see peerBySource).
-func (m *Multipath) lookupPeerBySource(addr netip.Addr) (*peerState, bool) {
+func (m *Multipath) lookupPeerBySource(srcAP netip.AddrPort) (*peerState, bool) {
 	mp := m.peerBySource.Load()
 	if mp == nil {
 		return nil, false
 	}
-	p, ok := (*mp)[addr]
-	return p, ok
+	b, ok := (*mp)[srcAP]
+	return b.peer, ok
 }
 
-// bindSourceToPeer records addr→p in the source-demux map, installed lock-free by a CAS
+// perPeerQuota is the per-peer share of maxDemuxSources (the GLOBAL cap) that any single peer
+// may occupy in the demux map: maxDemuxSources/len(peers), floored at 1 (D49). len(peers) is
+// read from the lock-free peersView snapshot (never nil after construction), so the quota is
+// computed WITHOUT m.mu on the bind path. Caller guards on maxDemuxSources > 0.
+func (m *Multipath) perPeerQuota() int {
+	numPeers := 1
+	if pv := m.peersView.Load(); pv != nil && len(*pv) > numPeers {
+		numPeers = len(*pv)
+	}
+	quota := m.maxDemuxSources / numPeers
+	if quota < 1 {
+		quota = 1
+	}
+	return quota
+}
+
+// bindSourceToPeer records srcAP→p in the source-demux map, installed lock-free by a CAS
 // republish of a copy with the entry added (T88). It takes NO lock: a reader must never block
 // on m.mu (Close waits on the readers WHILE holding m.mu), so the binding — written from a
-// readLoop goroutine — must not acquire it. Idempotent: an already-present addr→p binding is a
+// readLoop goroutine — must not acquire it. Idempotent: an already-present srcAP→p binding is a
 // no-op, and a lost CAS (a concurrent bind on another socket) simply retries. Copy-on-write
 // keeps every published map immutable, so a concurrent lookupPeerBySource over the old snapshot
 // is never disturbed.
 //
-// It returns true when addr is bound to p on return (either freshly installed, already present,
-// or re-pointed from another peer — a roam, T90) and false ONLY when the map is at its
-// maxDemuxSources cap and addr is a NEW source: drop-on-exhaustion (Q26/Q27). A cap-drop NEVER
-// evicts an existing binding, so a live peer is never disturbed by a bootstrap flood; only a
-// brand-new source's bootstrap is (temporarily) refused, and WG retransmits cover the gap once
-// a slot frees (e.g. a dead peer's teardown). Re-pointing or re-affirming an already-present
-// source does not grow the map and is therefore never blocked by the cap.
-func (m *Multipath) bindSourceToPeer(addr netip.Addr, p *peerState) bool {
+// The map is keyed by the full source AddrPort (D47): a peer that roams to a NEW port behind the
+// same CGNAT address is a NEW key, and two peers behind one public IP occupy distinct keys.
+//
+// Cap/quota discipline for a NEW srcAP key (D49). The GLOBAL cap is maxDemuxSources; within it
+// each peer's share is perPeerQuota (maxDemuxSources/len(peers), floor 1):
+//   - SAME-peer roam churn: if p is ALREADY at its per-peer quota, admit the new AddrPort by
+//     EVICTING p's OWN oldest binding (LRU within p, chosen by sourceBinding.seq). p's footprint
+//     stays at quota, a live roaming peer is NEVER dropped, and p can never evict ANOTHER peer's
+//     slot — so never-evict-live holds w.r.t. every other peer and cross-peer isolation is total.
+//   - CROSS-peer exhaustion: if p is BELOW its quota but the GLOBAL cap is full (only reachable
+//     when the floor-1 quotas sum past the cap), drop-on-exhaustion — return false. p may not
+//     evict another peer's binding to grow past the cap; bootstrap degrades, WG retransmits cover
+//     the gap once a slot frees (e.g. a dead peer's teardown).
+//
+// Returns true when srcAP is bound to p on return (freshly installed — possibly after an own-LRU
+// eviction — already present, or re-pointed from another peer, a roam T90) and false ONLY in the
+// cross-peer exhaustion case above. Re-pointing or re-affirming an already-present AddrPort does
+// not grow the map and is therefore never blocked.
+func (m *Multipath) bindSourceToPeer(srcAP netip.AddrPort, p *peerState) bool {
 	for {
 		old := m.peerBySource.Load()
 		var n int
 		present := false
 		if old != nil {
-			existing, ok := (*old)[addr]
+			existing, ok := (*old)[srcAP]
 			if ok {
 				present = true
-				if existing == p {
+				if existing.peer == p {
 					return true // already bound to p: idempotent no-op
 				}
 			}
 			n = len(*old)
 		}
-		if !present && m.maxDemuxSources > 0 && n >= m.maxDemuxSources {
-			// Cap exhausted and this is a NEW source: drop it. An existing (live) binding is
-			// never evicted to make room — bootstrap degrades, isolation holds.
-			return false
-		}
-		next := make(map[netip.Addr]*peerState, n+1)
-		if old != nil {
-			for k, v := range *old {
-				next[k] = v
+
+		// Cap/quota enforcement applies ONLY to a NEW key: a re-point of an existing AddrPort
+		// does not grow the map (T90 roam re-affirm), so it is never blocked.
+		evict := false
+		var evictKey netip.AddrPort
+		if !present && m.maxDemuxSources > 0 {
+			quota := m.perPeerQuota()
+			countP := 0
+			var oldestSeq uint64
+			if old != nil {
+				for k, b := range *old {
+					if b.peer != p {
+						continue
+					}
+					if countP == 0 || b.seq < oldestSeq {
+						oldestSeq = b.seq
+						evictKey = k
+					}
+					countP++
+				}
+			}
+			switch {
+			case countP >= quota:
+				// p is at its per-peer quota: admit by evicting p's OWN oldest binding (LRU).
+				// countP >= quota >= 1, so an oldest binding of p's exists.
+				evict = true
+			case n >= m.maxDemuxSources:
+				// p is below its quota but the GLOBAL cap is exhausted: p may not steal another
+				// peer's headroom. Drop-on-exhaustion (cross-peer isolation).
+				return false
 			}
 		}
-		next[addr] = p
+
+		size := n + 1
+		if evict {
+			size = n // one out, one in: net-zero growth
+		}
+		next := make(map[netip.AddrPort]sourceBinding, size)
+		if old != nil {
+			for k, b := range *old {
+				if evict && k == evictKey {
+					continue // drop p's own oldest binding to make room for the new AddrPort
+				}
+				next[k] = b
+			}
+		}
+		next[srcAP] = sourceBinding{peer: p, seq: m.bindSeq.Add(1)}
 		if m.peerBySource.CompareAndSwap(old, &next) {
 			return true
 		}
@@ -1526,8 +1623,8 @@ func (m *Multipath) unbindPeerSources(p *peerState) {
 			return
 		}
 		found := false
-		for _, v := range *old {
-			if v == p {
+		for _, b := range *old {
+			if b.peer == p {
 				found = true
 				break
 			}
@@ -1535,10 +1632,10 @@ func (m *Multipath) unbindPeerSources(p *peerState) {
 		if !found {
 			return
 		}
-		next := make(map[netip.Addr]*peerState, len(*old))
-		for k, v := range *old {
-			if v != p {
-				next[k] = v
+		next := make(map[netip.AddrPort]sourceBinding, len(*old))
+		for k, b := range *old {
+			if b.peer != p {
+				next[k] = b
 			}
 		}
 		if m.peerBySource.CompareAndSwap(old, &next) {

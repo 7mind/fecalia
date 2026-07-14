@@ -40,11 +40,11 @@ func TestPerPeerReseqIsolation(t *testing.T) {
 	// Bind each source to its own peer through an authenticated PROBE — the same production
 	// binding demuxInbound requires before it will route DATA by learned source.
 	m.demuxInbound(m.paths[0], authProbe(t, pskA, m.paths[0].id, 1, clk), srcA)
-	if bound, ok := m.lookupPeerBySource(srcA.Addr()); !ok || bound != primary {
+	if bound, ok := m.lookupPeerBySource(srcA); !ok || bound != primary {
 		t.Fatalf("srcA did not bind to peer A: bound=%v ok=%v", bound, ok)
 	}
 	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), srcB)
-	if bound, ok := m.lookupPeerBySource(srcB.Addr()); !ok || bound != second {
+	if bound, ok := m.lookupPeerBySource(srcB); !ok || bound != second {
 		t.Fatalf("srcB did not bind to peer B: bound=%v ok=%v", bound, ok)
 	}
 

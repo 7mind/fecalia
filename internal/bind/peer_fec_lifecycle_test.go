@@ -241,7 +241,7 @@ func TestDispatchInboundNilGuardsDropNotPanic(t *testing.T) {
 		}
 		src := synthSource(1)
 		m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), src)
-		if bound, ok := m.lookupPeerBySource(src.Addr()); !ok || bound != second {
+		if bound, ok := m.lookupPeerBySource(src); !ok || bound != second {
 			t.Fatalf("probe did not bind source to peer B: bound=%v ok=%v", bound, ok)
 		}
 		// The source stays BOUND; only the ring is torn out — the ordering the DATA guard defends.
@@ -377,10 +377,10 @@ func TestConcentratorFECParityNeverCrossesPeers(t *testing.T) {
 	// serves two views, so demuxInbound routes strictly by learned source (T88).
 	m.demuxInbound(m.paths[0], authProbe(t, pskA, primaryView.id, 1, clk), srcA)
 	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), srcB)
-	if bound, ok := m.lookupPeerBySource(srcA.Addr()); !ok || bound != primary {
+	if bound, ok := m.lookupPeerBySource(srcA); !ok || bound != primary {
 		t.Fatalf("srcA did not bind to the primary: bound=%v ok=%v", bound, ok)
 	}
-	if bound, ok := m.lookupPeerBySource(srcB.Addr()); !ok || bound != second {
+	if bound, ok := m.lookupPeerBySource(srcB); !ok || bound != second {
 		t.Fatalf("srcB did not bind to peer B: bound=%v ok=%v", bound, ok)
 	}
 
