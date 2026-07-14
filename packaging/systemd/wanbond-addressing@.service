@@ -1,0 +1,49 @@
+# wanbond addressing oneshot (templated; instance = role: edge | concentrator).
+# Re-applies interface addressing + link-up + policy rules + per-table routes
+# + nft SNAT from an operator-owned script after wanbond-<role>.service
+# (re)starts. Needed on hosts that do NOT use systemd-networkd for wanbond0
+# (systemd-networkd watches the interface itself and needs no such recipe —
+# see docs/install.md §4).
+#
+# Install:
+#   cp wanbond-addressing@.service /etc/systemd/system/
+#   $EDITOR /etc/wanbond/addressing-<role>.sh   # your re-apply logic, chmod +x
+#   $EDITOR /etc/wanbond/addressing-<role>.env  # optional EnvironmentFile
+#   systemctl daemon-reload
+#   systemctl enable --now wanbond-addressing@<role>.service
+#
+# DO NOT replace the ExecStartPre wait loop below with a plain ExecStartPost=
+# on wanbond-<role>.service itself: that unit is Type=exec, so systemd marks
+# it "started" the instant execve() returns -- BEFORE the daemon has created
+# wanbond0 -- so an ExecStartPost there races tun creation, fails with
+# "Cannot find device", and (being un-prefixed) fails the unit and trips
+# Restart=on-failure. This is the exact race R27 found and fixed for the
+# systemd-networkd recipe; see docs/install.md §4. This unit instead orders
+# itself After= the daemon unit AND actively polls for the interface to
+# exist before running, so it never races tun creation regardless of how
+# long the daemon takes to create it.
+#
+# See docs/install.md §4 for the full persistence recipe and the
+# tun_persist cross-link (this oneshot becomes optional-but-harmless once
+# tun_persist is enabled, but stays useful as a first-boot/manual-teardown
+# safety net).
+
+[Unit]
+Description=wanbond %i interface addressing re-apply (operator-owned, oneshot)
+PartOf=wanbond-%i.service
+After=wanbond-%i.service
+ConditionPathExists=/etc/wanbond/addressing-%i.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/wanbond/addressing-%i.env
+# Poll for wanbond0 rather than trusting unit-start ordering alone: the
+# daemon exposes no sd_notify readiness, and wanbond-%i.service (Type=exec)
+# is considered "started" long before it creates the interface (R27).
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -e /sys/class/net/wanbond0 ]; do i=$((i+1)); [ "$i" -ge 60 ] && { echo "wanbond0 did not appear within 30s" >&2; exit 1; }; sleep 0.5; done'
+ExecStart=/etc/wanbond/addressing-%i.sh
+TimeoutStartSec=45s
+
+[Install]
+WantedBy=wanbond-%i.service

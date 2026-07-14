@@ -740,6 +740,54 @@ being torn down on stop.
 > operator assigned. Keep the unmanaged-devices drop-in in place regardless of
 > `tun_persist`.
 
+#### Persistence recipe for non-networkd hosts (`wanbond-addressing@.service`)
+
+The `systemd-networkd` `.network` recipe above needs `systemd-networkd`
+itself watching `wanbond0`. On a host that addresses the interface another
+way — NetworkManager with the unmanaged-devices drop-in above but no
+networkd `.network` file, or neither daemon running — use the shipped
+templated oneshot instead, `packaging/systemd/wanbond-addressing@.service`
+(instance = role: `edge` or `concentrator`):
+
+```sh
+cp packaging/systemd/wanbond-addressing@.service /etc/systemd/system/
+# Write your own re-apply script (address + link-up + policy rules +
+# per-table routes + nft SNAT — whatever the role needs) and, optionally, an
+# environment file it can read:
+$EDITOR /etc/wanbond/addressing-edge.sh    # or addressing-concentrator.sh
+chmod +x /etc/wanbond/addressing-edge.sh
+$EDITOR /etc/wanbond/addressing-edge.env   # optional EnvironmentFile
+systemctl daemon-reload
+systemctl enable --now wanbond-addressing@edge.service   # instance = role
+```
+
+`wanbond-addressing@<role>.service` is `PartOf=`/`After=wanbond-<role>.service`
+(stops with the daemon, only ever starts after it) and has
+`ConditionPathExists=/etc/wanbond/addressing-<role>.sh` — leave that script
+unwritten and the unit is skipped, not failed. It is a `Type=oneshot` with
+`RemainAfterExit=yes` that runs `ExecStart=/etc/wanbond/addressing-<role>.sh`,
+optionally fed by `EnvironmentFile=-/etc/wanbond/addressing-<role>.env`.
+
+**Do not replace its `ExecStartPre` wait loop with a plain `ExecStartPost=` on
+`wanbond-<role>.service` itself.** That is the exact race R27 found and fixed:
+`wanbond-edge.service`/`wanbond-concentrator.service` are `Type=exec`, so
+systemd considers them started the instant `execve()` returns — **before**
+the daemon has created `wanbond0` — so an `ExecStartPost` there runs against a
+not-yet-existent interface, fails with "Cannot find device", and (being
+un-prefixed) fails the unit and trips the `Restart=on-failure` crash-loop
+(the same failure mode as the raw `ip address add` `ExecStartPost` warned
+against above). `wanbond-addressing@.service` avoids this by ordering itself
+`After=` the daemon unit **and** actively polling `/sys/class/net/wanbond0` in
+its own `ExecStartPre` until the interface exists, so it never races tun
+creation regardless of how long the daemon takes to create it.
+
+Once `tun_persist = true` (above) is enabled, `wanbond0` and the
+addresses/routes/rules attached to it survive a daemon restart on their own,
+so re-running this oneshot on every restart becomes **optional but
+harmless** — keep it enabled anyway as a safety net for what `tun_persist`
+does not cover (first boot, a manual `ip link delete wanbond0`, a host that
+cannot enable `tun_persist`).
+
 ## 5. Firewall
 
 ### Concentrator: UDP listen port

@@ -50,6 +50,63 @@ func TestNetworkManagerDropIn(t *testing.T) {
 	}
 }
 
+// TestWanbondAddressingOneshotUnit verifies that the shipped templated
+// addressing oneshot unit exists and orders itself after interface
+// EXISTENCE, not merely after execve() returning (the R27 lesson: a plain
+// ExecStartPost under Type=exec races wanbond0's creation). See
+// docs/install.md §4 for the persistence recipe this unit implements.
+func TestWanbondAddressingOneshotUnit(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+
+	unitPath := filepath.Join(repoRoot, "packaging", "systemd", "wanbond-addressing@.service")
+
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("wanbond-addressing@.service not found at %s: %v", unitPath, err)
+	}
+	content := string(data)
+
+	// Templated instance = role, coupled to wanbond-<role>.service.
+	for _, want := range []string{
+		"PartOf=wanbond-%i.service",
+		"After=wanbond-%i.service",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("wanbond-addressing@.service missing %q", want)
+		}
+	}
+
+	// The unit must NOT rely on unit-start ordering alone (After= only
+	// orders after execve() returns under Type=exec, per R27) — it must
+	// actively wait for the wanbond0 interface to exist before running.
+	if !strings.Contains(content, "ExecStartPre=") {
+		t.Fatal("wanbond-addressing@.service has no ExecStartPre= interface-wait guard")
+	}
+	if !strings.Contains(content, "/sys/class/net/wanbond0") {
+		t.Error("wanbond-addressing@.service does not poll for wanbond0's existence (/sys/class/net/wanbond0)")
+	}
+
+	// A bare ExecStartPost directive (the exact race R27 fixed) must not
+	// reappear as an active unit key — only check actual key=value lines,
+	// not the file's own explanatory comments about the race.
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "ExecStartPost=") {
+			t.Error("wanbond-addressing@.service sets ExecStartPost=, which races tun creation under Type=exec (R27) — use the ExecStartPre interface-wait guard instead")
+		}
+	}
+
+	if !strings.Contains(content, "Type=oneshot") {
+		t.Error("wanbond-addressing@.service is not Type=oneshot")
+	}
+	if !strings.Contains(content, "RemainAfterExit=yes") {
+		t.Error("wanbond-addressing@.service is missing RemainAfterExit=yes")
+	}
+}
+
 // findRepoRoot walks up the directory tree to find the repository root
 // (the directory containing a go.mod file).
 func findRepoRoot(t *testing.T) string {
