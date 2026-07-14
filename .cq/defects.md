@@ -956,7 +956,7 @@ archives: []
 ### D65 — root-caused
 
 - createdAt: 2026-07-14T12:11:27.104Z
-- updatedAt: 2026-07-14T12:57:05.518Z
+- updatedAt: 2026-07-14T13:17:40.979Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: Tunnel single-flow throughput plateaus at ~3.67 Mbps with loss/reorder-limited TCP and ~1s bufferbloat under load
@@ -995,3 +995,4 @@ archives: []
     On-hardware validation (three-way iperf3 + loaded-RTT A/B on Pi4/Starlink/o3) is deferred to verify/implement.
 - sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
 - rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]
+- dependsOn: ["T149","T150","T151","T152","T153","T154","T155","T156","T157","T158","T159"]

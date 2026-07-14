@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 148
+  item: 159
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1892,3 +1892,171 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T147","T144","T145"]
 - ledgerRefs: ["goals:G13"]
+
+## M57
+
+### T149 — planned
+
+- createdAt: 2026-07-14T13:15:57.936Z
+- updatedAt: 2026-07-14T13:15:57.936Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Extract the per-path token-bucket pacer into a shared internal/sched component
+- description: "Behavior-preserving refactor to enable reuse by ActiveBackup. Move the pacing state + logic currently embedded in WeightedScheduler (internal/sched/weighted.go: tokens[]float64, lastFill/haveFill, refillLocked, tryConsumeLocked, shedLocked with the coalesced 'pacer shedding' rate-limited log, fullBuckets, and the PickPaced/PickNone sentinel semantics + ClassControl exemption per defect D22) into a standalone caller-locked helper type in a NEW internal/sched/pacer.go (e.g. a `pacer` holding tokens[], lastFill, haveFill, shedCount, lastShedLog and a config of CapacityFPS + BurstFrames). Refactor WeightedScheduler to delegate to it with ZERO behavioral change (it still guards the pacer under s.mu). Pure refactor — no config change, no ActiveBackup change."
+- acceptance: "`nix develop -c just test` passes with internal/sched/weighted_test.go UNCHANGED — every existing weighted pacing test green against the delegating impl (token refill, burst bound, TestWeightedPacingBoundsEgressAndBacklog, ClassControl exemption, PickPaced shed, shed-log coalescing, sentinel distinctness); internal/sched/pacer.go exists and weighted.go delegates refill/consume/shed to it; `nix develop -c go vet ./internal/sched/...` clean."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G14","defects:D65"]
+
+### T150 — planned
+
+- createdAt: 2026-07-14T13:16:09.195Z
+- updatedAt: 2026-07-14T13:27:58.739Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Add BDP-sized send-pacing to the ActiveBackup scheduler
+- description: |
+    Give ActiveBackup an optional PER-PATH token-bucket pace using the shared pacer, so the DEFAULT scheduler shapes a single uplink to its drain rate and cannot self-inflict the ~1s Starlink bufferbloat (D65 primary fix). Extend sched.Config (active-backup config) with pacing fields: Pacing bool, plus PER-PATH capacity/burst SLICES — PerPathCapacities []float64 and PacingBursts []float64, index-aligned to the health/priority slice — NOT the single shared scalar the weighted scheduler carries.
+    
+    CRITICAL DESIGN CONSTRAINT (R162 criticism 1): active-backup egresses on exactly ONE path at a time, so each path's bucket MUST be sized from ITS OWN link_bandwidth/link_rtt BDP. Do NOT reuse weighted's shared-scalar BOTTLENECK sizing (config.go deriveWeightedPacingFromBDP: min CapacityFPS across all paths applied to every bucket) — that would cap a faster active primary at the slowest backup's declared rate (e.g. a Starlink primary paced to a 5G backup's rate), reimposing the exact artificial single-flow ceiling this goal exists to remove.
+    
+    In Pick(class): when pacing enabled, consume one token from the ACTIVE path's OWN bucket for a ClassData frame, return PickPaced (not the active index) when that bucket is empty, and EXEMPT ClassControl (spend no token, never shed) exactly as weighted does (D22); refill on each Pick. Per-path buckets so a failover to a different active path draws from that path's own (full) bucket at that path's own rate.
+    
+    Bucket-consistency across membership changes (T30) — REQUIRED to avoid a Close→Open panic: initialize the per-path bucket slice in NewActiveBackup (mirroring WeightedScheduler.fullBuckets init), and resize/reset it in AddPath, RemovePath, AND SetPaths (internal/sched/active_backup.go:143 — the Close→Open durable-membership path that replaces s.health wholesale). If SetPaths swaps in a different path count without resizing the bucket/capacity slices, the next Pick indexes tokens[] out of range and panics. Recompute stays strictly non-consuming. When pacing disabled the buckets are inert and Pick is byte-for-byte today's behavior.
+    
+    Validate the new fields in NewActiveBackup (when Pacing on: each PerPathCapacity>0 and each PacingBurst>0, and len(PerPathCapacities)==len(PacingBursts)==len(health)), failing fast. Pacer stays under the existing selection lock — no new deadlock path into the Bind (PickPaced is already handled at internal/bind/multipath.go:1981-1989 as errPacerShedding, so NO Bind change).
+    
+    ALSO correct ALL THREE now-stale doc comments the change falsifies (none catchable by `just lint` — they stay grammatically well-formed): (a) internal/sched/scheduler.go:16-20 — the PickPaced constant doc ('Only a pacing-enabled weighted scheduler ever returns it'); (b) internal/sched/scheduler.go:59-62 — the Scheduler interface class doc ('A non-pacing scheduler (active-backup) ignores class'); (c) internal/sched/active_backup.go:176-179 — ActiveBackup.Pick's doc ('class is ignored: active-backup has no pacer'). All three must be reworded to state that active-backup paces (and honors ClassControl exemption) when configured.
+- acceptance: "Reproduction-first: a NEW test in internal/sched/active_backup_test.go asserting that with Pacing=true and HETEROGENEOUS per-path capacities (e.g. path0=1000fps, path1=200fps, PacingBurst=8 each), offering ~5000 ClassData Picks over an advancing fakeClock, the ACTIVE path's admits are bounded by THAT path's OWN PerPathCapacity*T + PacingBurst — and a fast active primary is explicitly NOT capped at the slow backup's rate — while the rest return PickPaced (distinct from PickNone), and a ClassControl frame is admitted even with an empty bucket; written and observed to FAIL for the right reason before the impl (no pacing today), PASS after. All THREE stale doc comments (scheduler.go:16-20 PickPaced const, scheduler.go:59-62 interface class doc, active_backup.go:176-179 Pick doc) are corrected to state active-backup paces when configured (verify by reading each). `nix develop -c just test` green; `nix develop -c go vet ./internal/sched/...` clean."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T149"]
+
+### T151 — planned
+
+- createdAt: 2026-07-14T13:16:15.348Z
+- updatedAt: 2026-07-14T13:28:06.752Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Unit-test ActiveBackup pacing edge cases
+- description: "Add the remaining active-backup pacing coverage beyond the primary bound-test bundled with the impl, reusing newFakeClock()/advance and the synthetic PathHealth drivers already in the sched test package: (a) pacing DISABLED is a pure no-op — Pick admits every frame on the active path exactly as pre-change (regression guard); (b) FAILOVER — the active path changes and pacing then draws from the NEW active path's OWN bucket at that path's own rate (a saturated old primary does not starve the backup, and a fast backup is not throttled to the old primary's rate); (c) sentinel distinctness — PickPaced (healthy-but-paced) vs PickNone (no eligible path) returned in the correct distinct situations; (d) ClassControl exemption holds both at cold start and after sustained shedding; (e) burst absorption — a burst <= PacingBurst after idle is admitted without shed; (f) Close→Open MEMBERSHIP CHANGE (T30 pacer regression, R162 criticism 3) — a SetPaths that CHANGES the path count resizes/reinitializes the per-path bucket+capacity slices so the next Pick indexes in range and does NOT panic, and then paces correctly against the new membership (proves NewActiveBackup init + SetPaths resize keep tokens[] length == len(health)). Assertions must be non-vacuous (verify by the count bound / observed pace, not by absence of error)."
+- acceptance: "`nix develop -c just test` green with the new cases present; `nix develop -c go test ./internal/sched/ -run ActiveBackup -v` lists and passes all scenarios including the Close→Open-with-different-path-count case (asserted to complete without panic and to pace on the new membership); a coverage check shows the pacing branches in active_backup.go Pick and the SetPaths/NewActiveBackup bucket-init paths are exercised."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T150"]
+
+## M59
+
+### T152 — planned
+
+- createdAt: 2026-07-14T13:16:26.891Z
+- updatedAt: 2026-07-14T13:28:25.307Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "Generalize the [scheduler] pacing config to be policy-independent (with fail-fast)"
+- description: |
+    Make egress pacing a policy-independent config surface usable under the DEFAULT active-backup policy, not only weighted (D65 design decision: policy-independent knob). internal/config/config.go: (1) split the pacing knobs (PerPathCapacityFPS, PacingBurstFrames, PacingEnabled) from the weighted-only aggregation/weight knobs (engage/disengage/collapse/load_tau/weight_*). (2) Rename deriveWeightedPacingFromBDP → derivePacingFromBDP and change its gate from `Policy==PolicyWeighted && PacingEnabled` to `PacingEnabled` for BOTH policies.
+    
+    CRITICAL — PER-PATH sizing under active-backup (R162 criticism 1): derivePacingFromBDP must branch on policy for HOW it sizes. Under WEIGHTED keep the existing shared BOTTLENECK scalar (min CapacityFPS across paths → single PerPathCapacityFPS/PacingBurstFrames) byte-identical, because weighted stripes all paths simultaneously and a faster path outrunning the bottleneck would build the standing queue. Under ACTIVE-BACKUP produce PER-PATH capacities: run SizePacingFromBDP once per path over ITS OWN link_bandwidth/link_rtt and fill a per-path capacity/burst vector (surfaced to sched.Config as PerPathCapacities/PacingBursts, plumbed through T153) — do NOT min-reduce to the bottleneck, since only one path egresses at a time and a fast active primary must pace at its OWN drain rate (bottleneck sizing here reimposes the D65 ceiling). Keep the all-paths-or-none link_bandwidth rule, the raw-knobs-vs-link_bandwidth mutual-exclusion, and the per-path link_rtt>0 requirement under BOTH policies. (3) In applyDefaults, when policy is active-backup AND pacing_enabled, default the pacing knobs (today applyDefaults early-returns for non-weighted). (4) validate: enforce pacing_burst_frames>0 and per_path_capacity_fps>0 when pacing_enabled under active-backup, keeping weighted-only knobs inert/unvalidated under active-backup. FAIL-FAST (critical, from D65 mechanism): pacing_enabled under active-backup with NEITHER all-paths link_bandwidth+link_rtt NOR explicit per_path_capacity_fps+pacing_burst_frames is a LOAD ERROR — the weighted synthetic default (~10000 fps) must NOT silently apply under active-backup, because a nominally-enabled-but-UNBINDING pace would reproduce D65 while claiming to shape. Weighted-policy behavior stays byte-identical.
+    
+    ALSO (R162 criticism 4) correct the now-stale weighted-only claims in the code doc-comments this change falsifies: config.go:158-161 (SchedulerConfig doc: 'every weighted knob is ignored'/pacing weighted-only framing), config.go:496-501 (Path.LinkBandwidthBitsPerSec: 'size the weighted scheduler's per-path pace ... when the weighted policy runs'), and config.go:507-510 (Path.LinkRTT: 'under the weighted policy'). Reword each to state pacing/link_bandwidth/link_rtt now size the pace under BOTH the weighted and the default active-backup policy.
+- acceptance: "`nix develop -c just test` green with new config cases: (i) active-backup + pacing_enabled + explicit per_path_capacity_fps/pacing_burst_frames loads+validates; (ii) active-backup + pacing_enabled + link_bandwidth+link_rtt on ALL paths sizes PER-PATH capacities from EACH path's OWN BDP via SizePacingFromBDP — asserted a HETEROGENEOUS link set yields DISTINCT per-path capacities (the faster link gets the higher CapacityFPS, NOT min-reduced to the bottleneck); (iii) active-backup + pacing_enabled with NO bandwidth and NO explicit knobs FAILS at load with a named error (no silent 10000fps default); (iv) partial link_bandwidth and setting both raw knobs+link_bandwidth each fail fast; (v) active-backup WITHOUT pacing keeps every weighted knob zero/inert; (vi) all pre-existing weighted config tests pass unchanged (weighted still bottleneck-sized). The three stale weighted-only doc comments (config.go:158-161, 496-501, 507-510) are reworded to cover active-backup (verify by reading each)."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T150"]
+
+### T153 — planned
+
+- createdAt: 2026-07-14T13:16:32.388Z
+- updatedAt: 2026-07-14T13:28:32.311Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Wire pacing config into selectScheduler's active-backup branch
+- description: "internal/device/device.go selectScheduler (the default/active-backup branch, ~device.go:803): pass the validated pacing configuration into sched.Config so a configured pace actually reaches ActiveBackup — set Pacing=cfg.Scheduler.PacingEnabled and the PER-PATH capacity/burst vectors (PerPathCapacities / PacingBursts, index-aligned to the path/health priority order the scheduler is built over) derived by T152's derivePacingFromBDP, alongside the existing FailbackAfter. Per-path (NOT a single shared scalar) so each path's bucket paces at its OWN drain rate under active-backup (R162 criticism 1); ensure the capacity/burst vector order matches the health-slice order handed to NewActiveBackup. Leave the weighted branch unchanged (it keeps its shared bottleneck scalar). The existing health prober set suffices (active-backup needs only health). No other composition-root change."
+- acceptance: "`nix develop -c go build ./...` succeeds; a device/config-to-scheduler test asserts a config with policy=active-backup + pacing_enabled=true builds an ActiveBackup whose per-path buckets carry the per-path capacities (a heterogeneous link set → distinct per-path pace, fast path not throttled to the bottleneck) and whose Pick sheds (PickPaced) under sustained overload, and pacing_enabled=false builds the byte-for-byte pre-change behavior. `nix develop -c just test` (incl. ./internal/device/...) green."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T150","T152"]
+
+### T154 — planned
+
+- createdAt: 2026-07-14T13:16:37.344Z
+- updatedAt: 2026-07-14T13:28:39.766Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Config unit tests for active-backup pacing and BDP sizing
+- description: "Focused config-layer tests locking the new surface (complementary to those bundled with the generalization task): policy=active-backup + pacing round-trips through Load/normalize/validate; PER-PATH BDP sizing under active-backup (R162 criticism 1) produces a per-path capacity for EACH path equal to SizePacingFromBDP of THAT path's OWN link_bandwidth/link_rtt — a PER-PATH parity table test (NOT the weighted shared-bottleneck parity): for identical inputs, each active-backup path's PerPathCapacities[i]/PacingBursts[i] matches SizePacingFromBDP(path[i]), and a HETEROGENEOUS link set yields DISTINCT per-path capacities under active-backup (the faster link keeps its higher CapacityFPS) whereas the SAME inputs under weighted collapse to the single min-bottleneck scalar — the two sizings are asserted to DIFFER for a heterogeneous set. Plus: an existing active-backup config with NO pacing continues to load+validate with all weighted knobs zero (regression guard that the P1 empty-config surface is unchanged)."
+- acceptance: "`nix develop -c go test ./internal/config/ -run Pacing` passes with the active-backup cases; a table test asserts each active-backup PerPathCapacities[i] equals SizePacingFromBDP of path[i]'s own link_bandwidth/link_rtt (per-path parity), and that a heterogeneous link set produces DISTINCT active-backup per-path capacities while the same inputs under weighted collapse to the single bottleneck scalar (the two are asserted unequal); the no-pacing active-backup regression case is green; `nix develop -c just test` green overall."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T152"]
+
+## M60
+
+### T155 — planned
+
+- createdAt: 2026-07-14T13:16:44.340Z
+- updatedAt: 2026-07-14T13:28:50.880Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Sync docs + example config for default-path pacing
+- description: |
+    Per AGENTS.md docs-are-definition-of-done, update in the SAME change: README.md (config surface — pacing_enabled/link_bandwidth/link_rtt now meaningful under the DEFAULT active-backup policy); docs/design.md (scheduler section: pacing is a policy-independent egress shaper; its D65 motivation — unshaped default sender overruns a bloated last-mile buffer; the drop-at-head/no-internal-queue invariant; the PER-PATH (not bottleneck) sizing under active-backup vs the shared-bottleneck sizing under weighted; and a decision block recording the policy-independent-pacing choice); docs/install.md + docs/runbook.md (operator guidance: on a bufferbloated uplink like Starlink, declare link_bandwidth+link_rtt on ALL paths and set pacing_enabled=true under the default policy, with example values); wanbond.example.toml (a commented [scheduler] pacing block valid under active-backup). Config key names must match across all files. Reference D65 as the motivating defect.
+    
+    ALSO (R162 criticism 4) CORRECT the now-contradictory weighted-only pacing claims in the existing docs this change falsifies: docs/install.md §3z's [scheduler] block (the statement 'Every knob below applies ONLY to weighted; under active-backup they are inert') AND its per-key comments for pacing_enabled/per_path_capacity_fps/pacing_burst_frames/link_bandwidth/link_rtt, and wanbond.example.toml's MIRRORED per-key comments — reword so the pacing/BDP keys are documented as applying under active-backup too, while the genuinely weighted-only aggregation knobs (engage/disengage/collapse/load_tau/weight_*) stay marked weighted-only. Keep the two files' comments consistent with each other and with the code doc-comments corrected in T152.
+- acceptance: grep confirms README.md, docs/design.md, docs/install.md, docs/runbook.md, wanbond.example.toml each state pacing is available under active-backup with identical key names; the design.md decision block records the policy-independent-pacing choice AND the per-path-vs-bottleneck sizing distinction; wanbond.example.toml still loads via the config tests; an ABSENCE grep across docs/install.md and wanbond.example.toml finds NO remaining 'only under weighted' / 'ONLY to weighted' / weighted-only claims attached to the pacing/link_bandwidth/link_rtt keys (aggregation-knob weighted-only notes may remain); `nix develop -c just lint` (misspell/doc checks) passes on the changed files.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T152","T153"]
+
+### T156 — planned
+
+- createdAt: 2026-07-14T13:16:51.364Z
+- updatedAt: 2026-07-14T13:17:31.107Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Add the D65 field-validation procedure to docs/manual-checklist.md
+- description: "The on-hardware validation was waived pre-fix (Q56) and deferred to the field pass — script it so it is executable verbatim: three-way iperf3 attribution (direct-WAN no-tunnel / through-tunnel / loopback-netns tunnel) plus a loaded-RTT A/B with pacing OFF vs ON, on the Pi4-edge/Starlink/o3 topology. Record the expected observations: single-flow TCP through the paced tunnel approaches the UDP-goodput ceiling (~6.9 Mbps measured pre-fix) instead of ~3.67 Mbps; loaded RTT no longer builds toward ~1s; retransmits drop from ~13/10s. Note the AGENTS.md rule that netns/e2e fixtures must NOT assert absolute throughput — this belongs to the manual/real-host tier only."
+- acceptance: docs/manual-checklist.md contains the exact iperf3 command lines for all three legs, the pacing on/off A/B toggle steps (config diff), and an expected-observation table; no netns e2e test asserts absolute throughput (unchanged); `nix develop -c just lint` doc checks pass.
+- suggestedModel: fast
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T155"]
+
+### T157 — planned
+
+- createdAt: 2026-07-14T13:16:57.835Z
+- updatedAt: 2026-07-14T13:17:33.128Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "Green definition-of-done gate: nix develop -c just build && just test && just lint"
+- description: "On the COMPOSED tree (all pacing + config + wiring + docs + MSS-clamp-docs tasks merged), run the full project definition-of-done and fix any residual fallout. Per project discipline the gate is `nix develop -c just build`, `just test`, AND `just lint` — golangci-lint + go vet across the default, e2e, AND realhosts build tags (not `go test` alone): a lint-only regression in a tag-guarded test helper referencing changed SchedulerConfig/sched symbols, an unused symbol orphaned by the pacer extraction, a stale doc-comment lint, or a misspell in the new docs MUST be caught here. Terminal integration node — depends on every code and doc task across both tracks."
+- acceptance: "`nix develop -c just build` && `nix develop -c just test` && `nix develop -c just lint` all exit 0 on the composed tree; `gofmt -l cmd internal test` is empty; `git status` shows README.md/docs/* updated in sync with the code (no doc drift)."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T151","T153","T154","T155","T156","T158","T159"]
+
+## M58
+
+### T158 — planned
+
+- createdAt: 2026-07-14T13:17:07.335Z
+- updatedAt: 2026-07-14T13:17:07.335Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Document the forwarded-TCP MSS clamp operator recipe
+- description: "Deliver the SECONDARY D65 fix as a documented OPERATOR step (design decision: the daemon owns only the tunnel engine and stays free of privileged shell-outs per the internal/device invariant, and the repo already treats ALL firewall/routing plumbing as operator-owned via the oneshot-unit pattern — so the clamp is an operator recipe, NOT a daemon-installed rule). Add to docs/install.md §9.2 (the full-tunnel / route-a-client-LAN forwarding recipe) and docs/runbook.md's firewall-persistence step the two rules verbatim from docs/p1-mtu.md: `iptables -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu` plus the ip6tables equivalent — on BOTH forwarding nodes (edge AND concentrator), scoped to FORWARDED traffic, with persistence guidance matching the recipe's existing pattern, a cross-reference to docs/p1-mtu.md's MSS-clamping section for the arithmetic, one line on why --clamp-mss-to-pmtu is preferred over --set-mss (tracks inner-MTU retuning), and an explicit statement that omitting it lets forwarded TCP emit segments that fragment/PMTU-blackhole (the D65 compounding fault). Keep the existing MSS=1361 accounting in p1-mtu.md consistent. Docs only."
+- acceptance: grep confirms docs/install.md §9.2 and docs/runbook.md each contain BOTH clamp rules (iptables AND ip6tables) with -o wanbond0 and --clamp-mss-to-pmtu, a persistence note, a link to docs/p1-mtu.md, and name both edge and concentrator as clamp points; the recipe is an operator step (no daemon shell-out); `nix develop -c just lint` doc checks pass.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G14","defects:D65"]
+
+### T159 — planned
+
+- createdAt: 2026-07-14T13:17:11.561Z
+- updatedAt: 2026-07-14T13:17:34.260Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Record the MSS-clamp gap closure in wanbond-fixes.md
+- description: wanbond-fixes.md's C3 full-tunnel / route-a-client-LAN recipe (the deploy notes the D65 root cause cites as omitting the clamp) gains the TCPMSS --clamp-mss-to-pmtu FORWARD rule as a REQUIRED step of the routed-client-LAN setup, marked as closing the D65 compounding fault, pointing at the now-updated docs/install.md §9.2 recipe rather than duplicating the rule syntax at length.
+- acceptance: wanbond-fixes.md C3 (or an adjacent entry) names the TCPMSS --clamp-mss-to-pmtu FORWARD rule as a required recipe step and references docs/install.md §9.2 and D65; `nix develop -c just lint` doc checks pass.
+- suggestedModel: fast
+- ledgerRefs: ["goals:G14","defects:D65"]
+- dependsOn: ["T158"]

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 161
+  item: 163
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1907,3 +1907,31 @@ archives:
 - ledgerRefs: ["goals:G13"]
 - sessionLogs: [".cq/logs/20260714-125245-ae05184c487158ddc.md",".cq/logs/20260714-125245-a943cee6cd9b93e72.md"]
 - rawLogs: [".cq/logs/raw/20260714-125245-ae05184c487158ddc.jsonl",".cq/logs/raw/20260714-125245-a943cee6cd9b93e72.jsonl"]
+
+## M56
+
+### R162 — revise
+
+- createdAt: 2026-07-14T13:24:51.758Z
+- updatedAt: 2026-07-14T13:24:51.758Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- summary: "Reconciled (opus+fable, strictest-wins): REVISE. Plan is well-grounded, fine-grained, correctly sequenced, testable, and covers both D65 halves — but 4 autonomously-fixable criticisms, including one real design defect (bottleneck BDP sizing is wrong for active-backup's one-active-path model)."
+- new_questions: []
+- criticism: ["[fable] DESIGN DEFECT — T152/T154 carry weighted's BOTTLENECK BDP sizing into active-backup. Weighted shares one PerPathCapacity scalar across simultaneously-striped paths (config.go:952-953); active-backup egresses on ONE path at a time and T150 gives it per-path buckets. Sizing every bucket at the SLOWEST declared link's rate over-throttles a faster active primary (e.g. a Starlink primary paced to the 5G backup's declared rate) — reimposing the exact artificial single-flow ceiling this goal removes. FIX: under active-backup, size each path's bucket from ITS OWN link_bandwidth/link_rtt (per-path capacities in sched.Config, plumbed through T153), or record an explicit justification for bottleneck sizing; change T154's weighted-parity table test to per-path parity accordingly.","[opus+fable] T150 under-scopes the stale doc-comment corrections its own change forces. Beyond the interface comment at internal/sched/scheduler.go:59-62, adding pacing to ActiveBackup ALSO falsifies (a) scheduler.go:16-20 — the PickPaced constant doc ('Only a pacing-enabled weighted scheduler ever returns it'); and (b) internal/sched/active_backup.go:176-179 — ActiveBackup.Pick's doc ('class is ignored: active-backup has no pacer'). `just lint` cannot catch these (they stay grammatically well-formed). Broaden T150's acceptance to correct ALL THREE comments.","[opus] T150 keeps per-path buckets consistent via AddPath/RemovePath but OMITS SetPaths (internal/sched/active_backup.go:143), the Close→Open / T30 durable-membership path that replaces s.health wholesale. If the bucket slice is not resized/reset in SetPaths (and initialized in NewActiveBackup, mirroring WeightedScheduler's fullBuckets init), a Close→Open that changes the path count leaves tokens[] mis-length and the next Pick indexes out of range (panic). Add SetPaths + the NewActiveBackup bucket init to T150's bucket-consistency scope, and add a Close→Open-with-different-path-count regression case to T151.","[fable] T152/T155 leave contradictory weighted-only claims un-enumerated: config.go SchedulerConfig doc (158-161), Path.LinkBandwidthBitsPerSec (496-501) and Path.LinkRTT (507-510), install.md §3z's [scheduler] block ('Every knob below applies ONLY to weighted; under active-backup they are inert') and its per-key comments, and wanbond.example.toml's mirrored comments — all assert weighted-only pacing. T155's grep acceptance checks only PRESENCE of new statements; add an ABSENCE check (no remaining 'only under weighted' pacing claims) and name these sites in T152/T155."]
+- ledgerRefs: ["goals:G14"]
+- sessionLogs: [".cq/logs/20260714-132348-a4817b0c9903be5f5.md",".cq/logs/20260714-132348-a2ee651df649727fc.md"]
+- rawLogs: [".cq/logs/raw/20260714-132348-a4817b0c9903be5f5.jsonl",".cq/logs/raw/20260714-132348-a2ee651df649727fc.jsonl"]
+
+### R163 — go-ahead
+
+- createdAt: 2026-07-14T13:34:16.102Z
+- updatedAt: 2026-07-14T13:34:16.102Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- summary: "Round 2 reconciled (opus+fable, both go-ahead): GO-AHEAD. All 4 R162 criticisms verified resolved with line-level repo grounding — per-path (not bottleneck) BDP sizing correct for active-backup's one-active-path model, all three stale sched doc comments enumerated, SetPaths+NewActiveBackup bucket init with a Close→Open regression case, and enumerated weighted-only doc sites plus a file-wide absence grep. Plan is fine-grained, sequenced, testable, grounded, and complete across both D65 halves. No new blocking issues."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G14"]
+- sessionLogs: [".cq/logs/20260714-133358-a65ef5ef060923e4e.md",".cq/logs/20260714-133358-a75a6833b6ede96b3.md"]
+- rawLogs: [".cq/logs/raw/20260714-133358-a65ef5ef060923e4e.jsonl",".cq/logs/raw/20260714-133358-a75a6833b6ede96b3.jsonl"]

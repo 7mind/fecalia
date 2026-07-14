@@ -343,10 +343,10 @@ archives: []
 
 ## M56
 
-### G14 — planning
+### G14 — planned
 
 - createdAt: 2026-07-14T12:58:21.455Z
-- updatedAt: 2026-07-14T12:58:21.455Z
+- updatedAt: 2026-07-14T13:36:00.134Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - title: "Fix D65: shape egress on the default path + clamp forwarded-TCP MSS"
@@ -361,4 +361,7 @@ archives: []
     
     VALIDATION: on-hardware three-way iperf3 (direct-WAN / tunnel / loopback) + loaded-RTT A/B on the Pi4/Starlink/o3 is deferred to verify/implement (the user waived pre-fix field measurement per Q56). NON-GOAL (low priority, NOT the D65 ceiling): send-path micro-optimizations (dst-reuse seam, GSO/sendmmsg batching, SIMD chacha20).
 - sourceRefs: ["defects:D65"]
-- grounding: defect-seeded
+- grounding: "Synthesized from opus+fable candidate planners (both grounded read-only in the repo). Key facts: the token-bucket pacer already lives inside WeightedScheduler (internal/sched/weighted.go: tokens[]/refillLocked/tryConsumeLocked/shedLocked, ClassControl-exempt per D22, PickPaced/PickNone sentinels already handled by internal/bind/multipath.go:1981-1989 as errPacerShedding — so NO Bind change needed). BDP sizing = config.SizePacingFromBDP (config.go:250); pacing is currently gated to PolicyWeighted (deriveWeightedPacingFromBDP config.go:955; applyDefaults/validate skip pacing knobs for active-backup). selectScheduler (device.go:786-810) builds ActiveBackup with only FailbackAfter (no pacer). Design decisions locked: (1) extract the pacer into a shared internal/sched component + make the pacing config policy-independent (reuse, not active-backup-internal duplication); (2) MSS clamp is a documented OPERATOR step, NOT daemon-installed (internal/device owns only the tunnel engine, no privileged shell-outs); (3) CoDel AQM deferred (token-bucket drop-at-head suffices for the overflow signature). Fail-fast: pacing_enabled under active-backup must NOT inherit the weighted synthetic ~10000fps default (an unbinding pace would reproduce D65). Gate = nix develop -c just build && just test && just lint (lint spans default+e2e+realhosts tags). On-hardware field validation deferred to a manual checklist per Q56."
+- milestones: ["M57","M59","M60","M58"]
+- sessionLogs: [".cq/logs/20260714-131751-a939da48f71492819.md",".cq/logs/20260714-131751-a4e27ec8438296860.md",".cq/logs/20260714-132929-aa935aed152b4e285.md",".cq/logs/20260714-133525-a3a8224f82f52d214.md"]
+- rawLogs: [".cq/logs/raw/20260714-131751-a939da48f71492819.jsonl",".cq/logs/raw/20260714-131751-a4e27ec8438296860.jsonl",".cq/logs/raw/20260714-132929-aa935aed152b4e285.jsonl",".cq/logs/raw/20260714-133525-a3a8224f82f52d214.jsonl"]

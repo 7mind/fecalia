@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 21
+  item: 22
 archives: []
 ---
 
@@ -302,3 +302,17 @@ archives: []
 - ledgerRefs: ["defects:D65","goals:G14","questions:Q57"]
 - sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
 - rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]
+
+## M56
+
+### HO22 — drained
+
+- createdAt: 2026-07-14T13:36:19.755Z
+- updatedAt: 2026-07-14T13:36:19.755Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- summary: "/cq:plan:advance G14 (standalone, configured multi-planner+multi-reviewer opus+fable). Defect-seeded goal G14 (D65 fix) advanced clarifying-skip → planning → PLANNED. Two candidate planners generated DAGs; judge+synthesis folded opus's finer decomposition with fable's distinct contributions (per-path-not-bottleneck insight surfaced at review, fail-fast guard, field-validation checklist, nix-develop gate) into ONE plan: 4 work milestones (M57 pacing sched / M59 config+wiring / M60 docs+gate / M58 MSS-clamp docs), 11 tasks T149-T159, ledgerRef defects:D65 with bidirectional D65.dependsOn back-link. Review round 1 (opus+fable reconciled revise, R162): 4 criticisms incl. one real design defect (reusing weighted's bottleneck BDP sizing under active-backup would cap a faster active primary at the slowest backup's rate). A revise pass fixed all four (per-path BDP sizing, three stale doc comments, SetPaths+NewActiveBackup bucket init + Close→Open regression, enumerated weighted-only doc sites + absence grep). Review round 2 (opus+fable both go-ahead, R163): all resolved, no new issues. Decision K14 locked; G14 planned. Auto-investigate worklist for G14 empty (D65 root-caused/excluded; no other defect links G14). Nothing left to advance."
+- flow: plan
+- ledgerRefs: ["goals:G14","defects:D65"]
+- sessionLogs: [".cq/logs/20260714-131751-a939da48f71492819.md",".cq/logs/20260714-131751-a4e27ec8438296860.md",".cq/logs/20260714-132348-a4817b0c9903be5f5.md",".cq/logs/20260714-132348-a2ee651df649727fc.md",".cq/logs/20260714-132929-aa935aed152b4e285.md",".cq/logs/20260714-133358-a65ef5ef060923e4e.md",".cq/logs/20260714-133358-a75a6833b6ede96b3.md",".cq/logs/20260714-133525-a3a8224f82f52d214.md"]
+- rawLogs: [".cq/logs/raw/20260714-131751-a939da48f71492819.jsonl",".cq/logs/raw/20260714-131751-a4e27ec8438296860.jsonl",".cq/logs/raw/20260714-132348-a4817b0c9903be5f5.jsonl",".cq/logs/raw/20260714-132348-a2ee651df649727fc.jsonl",".cq/logs/raw/20260714-132929-aa935aed152b4e285.jsonl",".cq/logs/raw/20260714-133358-a65ef5ef060923e4e.jsonl",".cq/logs/raw/20260714-133358-a75a6833b6ede96b3.jsonl",".cq/logs/raw/20260714-133525-a3a8224f82f52d214.jsonl"]
