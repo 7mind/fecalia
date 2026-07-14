@@ -880,41 +880,44 @@ archives: []
 - ledgerRefs: ["tasks:T136","defects:D54"]
 - rootCause: "CONFIRMED via the reviewer's own reproduction (documented in the defect body, a T136-worktree experiment). The recorded D54 mechanism — 'a bare golangci-lint run walks nested .claude/worktrees and leaks sibling code' — does NOT reproduce on the current dev-shell toolchain: with a planted errcheck violation at .claude/worktrees/x/bad.go, the OLD bare 'golangci-lint run' exits 0 / '0 issues' because Go package loading skips dot-directories (a '.claude' path component is not walked). D54's original observed evidence (errcheck hits at internal/dnsresolve/{doh,dot}.go) names exactly D45's pre-existing OWN-tree findings, whose relative paths are indistinguishable from a sibling-worktree leak — consistent with misattribution of D45's own-tree lint debt to a phantom worktree-leak mechanism. Cause: the D54 RECORD asserts an unverified walk-the-repo-root mechanism; the actual observation was D45's own-tree errcheck debt. IMPORTANT SCOPE: the T136 fix itself (explicit-package-list Justfile lint recipe) ALREADY LANDED and remains a sound BY-CONSTRUCTION hermeticity guarantee meeting its acceptance — this defect concerns ONLY the accuracy of the D54 narrative + the Justfile comment's 'which walks the repo root' clause, not any code regression."
 
-### D62 — open
+### D62 — root-caused
 
 - createdAt: 2026-07-14T10:57:57.911Z
-- updatedAt: 2026-07-14T10:57:57.911Z
+- updatedAt: 2026-07-14T19:55:18.314Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Teardown-vs-bind race can install a dead-peer source binding that demuxInbound then permanently blackholes
 - description: "Filed during T123 review ([fable], out-of-scope; PRE-EXISTING at base 735ece3). bindSourceToPeer (internal/bind/multipath.go) is lock-free by design and never rechecks peer liveness/views: a PROBE trial-decoded against a peer's view snapshot CONCURRENT with that peer's teardown re-installs a binding to the torn-down peerState AFTER unbindPeerSources completes (a lost CAS retries against the post-unbind map and installs anyway). demuxInbound then hits the ':1444 return' (bound peer holds no view → drop) for every subsequent frame from that AddrPort — the trial-decode/re-bind loop is unreachable for a bound key — so the AddrPort is blackholed until process restart and the stale entry consumes a global-cap slot forever (nothing reclaims it; a re-instantiated peer is a new pointer, so a repeat TearDownPeer does not match). T123 (AddrPort re-key) neither introduced nor widened it — the same structure exists at base with the netip.Addr key."
 - severity: medium
-- suggestedFix: "After a successful CAS in bindSourceToPeer, revalidate the peer is still wired (peersView membership or a peer.dead flag) and unbind on failure; OR make the ':1444 no-view' drop branch fall through to the trial-decode loop so an authenticated PROBE can re-point a stale binding."
+- suggestedFix: "After a winning CAS in bindSourceToPeer, revalidate the peer is still wired (peersView membership or a peer.dead flag) and unbind-on-failure; OR make the demux :1669 no-view branch fall through to the trial-decode loop so an authenticated PROBE can re-point a stale binding. Add a teardown-concurrent-with-bind regression test. Seed into a bind/demux-hardening fix goal (groups with D63/D67, same multipath.go source-binding subsystem)."
 - ledgerRefs: ["tasks:T123"]
+- rootCause: "CONFIRMED against source (citation corrected :1444→:1669). bindSourceToPeer (multipath.go:1756) is lock-free: it builds a fresh map, stamps sourceBinding{peer:p, seq:m.bindSeq.Add(1)} (:1817), and CompareAndSwaps peerBySource (:1818) with NO peer-liveness/view recheck in the retry loop. unbindPeerSources (:1830) likewise CAS-rebuilds the map dropping entries whose binding.peer==p (:1846-1852). demuxInbound (:1656) drops at :1669 with the verbatim comment 'the bound peer holds no view of this socket (removed): drop' and does NOT fall through to the trial-decode/re-bind loop for an already-bound key. RACE (real): a PROBE-driven bindSourceToPeer whose CAS loses to a concurrent unbindPeerSources re-reads the POST-unbind map and installs the binding to the just-torn-down peerState AFTER unbind completed — unbind has already run, so nothing ever removes this entry. demuxInbound then hits the :1669 drop for every subsequent frame from that AddrPort permanently (blackhole until process restart), and the stale entry occupies a global-cap slot forever (a re-instantiated peer is a new pointer, so a later TearDownPeer's unbind never matches it). Cause: lock-free bind with no post-CAS liveness revalidation + a no-view demux branch that cannot self-heal a stale binding. Medium; PRE-EXISTING at base 735ece3 (T123 AddrPort re-key neither introduced nor widened it)."
 
-### D63 — open
+### D63 — root-caused
 
 - createdAt: 2026-07-14T10:58:05.222Z
-- updatedAt: 2026-07-14T10:58:05.222Z
+- updatedAt: 2026-07-14T19:55:25.766Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Per-peer demux eviction is first-bind order (FIFO), not LRU — a peer's ACTIVE binding can be evicted by its own churn
 - description: "Filed during T123 review ([fable], out-of-scope refinement). sourceBinding.seq is stamped only when a key is inserted/re-pointed in bindSourceToPeer; bound sources short-circuit to handleInbound and NEVER refresh recency, so 'oldest' means first-bound, not least-recently-used. A peer with more concurrently-ACTIVE AddrPorts than its per-peer quota (many paths, or heavy CGNAT port churn alongside a stable path) evicts its own OLDEST — possibly actively-used — binding, blackholing that path's DATA until its next periodic PROBE re-binds it (which evicts the next-oldest: bounded rotating thrash). This CONFORMS to the pinned T123 plan decision (insertion order was explicitly sanctioned) and the default quota (1024/len(peers)) makes it unrealistic for sane deployments — so it is a design refinement for a separate task, not a T123 defect."
 - severity: low
-- suggestedFix: Refresh the binding's seq (recency) when an authenticated PROBE arrives from an already-bound AddrPort (handleInbound path), making eviction true LRU; OR floor the per-peer quota at the peer's configured path count so a peer's active paths are never self-evicted.
+- suggestedFix: Refresh the binding's seq (recency) when an authenticated PROBE arrives from an already-bound AddrPort (handleInbound path) → true LRU; OR floor the per-peer quota at the peer's configured path count so a peer's active paths are never self-evicted. Low priority; group with D62 in the bind/demux-hardening goal.
 - ledgerRefs: ["tasks:T123","defects:D49"]
+- rootCause: "CONFIRMED against source. sourceBinding.seq is stamped ONLY at insert/re-point in bindSourceToPeer (multipath.go:1817, seq:m.bindSeq.Add(1)); an already-bound source short-circuits before that path (the receive fast path routes a bound key straight through demuxInbound/handleInbound and never re-stamps seq), so eviction-by-oldest-seq is FIRST-BIND order (FIFO), not LRU. A peer with more concurrently-ACTIVE AddrPorts than its per-peer quota (many paths, or CGNAT port churn alongside a stable path) can evict its OWN oldest still-active binding, blackholing that path's DATA until its next periodic PROBE re-binds it (evicting the next-oldest — bounded rotating thrash). Cause: recency is never refreshed for bound sources. SCOPE: this CONFORMS to the pinned T123 plan decision (insertion-order eviction was explicitly sanctioned) and the default quota 1024/len(peers) makes it unrealistic for sane deployments — a design refinement, NOT a T123 regression. Low."
 
-### D64 — open
+### D64 — root-caused
 
 - createdAt: 2026-07-14T11:51:23.954Z
-- updatedAt: 2026-07-14T11:51:23.954Z
+- updatedAt: 2026-07-14T19:55:36.777Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Rebaseline()+ObserveRecovered: an FEC-recovered old-hub frame re-pins the unpinned release point, re-opening D32 when FEC is active"
 - description: "Filed during T119 round-2 review ([fable], out-of-scope; PRE-EXISTING D32/T57-era, untouched by T119). Rebaseline() sets started=false (reseq.go:581), and ObserveRecovered's !started branch (reseq.go:246-249) then pins next to the FIRST recovered frame's seq — contradicting its OWN documented contract that a recovered frame 'NEVER moves or re-pins the release point' (reseq.go:232-240). After a hub failover, a parity-recovered OLD-hub HIGH-seq frame landing in the failover window re-pins next HIGH before the standby's low stream arrives; per Rebaseline's own doc the standby emits ~1 DATA frame per RekeyTimeout, so tryResync corroboration (3 distinct seqs) falls OUTSIDE the failover window and the D32 blackhole RE-OPENS for FEC-enabled deployments. Lives on the Rebaseline/FEC seam, NOT the new T119 RebaselineToLow path."
 - severity: medium
-- suggestedFix: Make ObserveRecovered refuse to anchor an unstarted ring (drop the recovered frame and return false when !started) so only a natively-received frame can pin the release point after any unpin; add a Rebaseline-then-ObserveRecovered regression test. Coordinate with T119's fix for the analogous RebaselineToLow-armed ObserveRecovered bypass (same seam).
+- suggestedFix: Make ObserveRecovered refuse to anchor an unstarted ring on the plain-Rebaseline path too — i.e. drop and return false when !r.started (extend the pendingLow-style guard to cover Rebaseline's unpin), so ONLY a natively-received frame can pin the release point after any unpin. Add a Rebaseline-then-ObserveRecovered regression test asserting the recovered frame does not pin next. Coordinate with the existing pendingLow guard (same seam). Seed into a resequencer-hardening fix goal (groups with D35's reconverge family if desired).
 - ledgerRefs: ["tasks:T119","defects:D36"]
+- rootCause: "CONFIRMED against source (citations corrected: Rebaseline started=false at reseq.go:633 not :581; the offending pin at :271-274 not :246-249; the contract at :239-249). ObserveRecovered (:251) documents (:239-249) 'Unlike Observe it NEVER moves or re-pins the release point', yet its !started branch does exactly that: 'if !r.started { r.started = true; r.next = seq }' (:271-274) — pinning next to the FIRST recovered frame's seq. Rebaseline() (:626) sets r.started=false (:633) WITHOUT arming pendingLow. The pendingLow guard added T119/round-3-FIX-4b (:256-268) drops recovered frames while armed — but that guard covers ONLY the RebaselineToLow (peer-restart) path; the plain Rebaseline (D32 hub-failover) path leaves pendingLow false, so a parity-recovered OLD-hub HIGH-seq frame in the failover window reaches :271-274 and re-pins next HIGH before the standby's low stream arrives. Per Rebaseline's own doc the standby emits ~1 DATA frame per RekeyTimeout, so tryResync's 3-distinct-seq corroboration falls outside the failover window → the D32 blackhole RE-OPENS for FEC-enabled deployments. Cause: the FEC-recovered-frame anchoring bypass was closed for the peer-restart unpin (pendingLow) but NOT for the hub-failover plain-Rebaseline unpin. Medium; PRE-EXISTING D32/T57-era, untouched by T119."
 
 ### D66 — root-caused
 
@@ -929,17 +932,18 @@ archives: []
 - ledgerRefs: ["tasks:T124"]
 - rootCause: "CONFIRMED against source (with a corrected citation). The stale comment is at internal/bind/multipath.go:2779-2780 — NOT the D66-cited :2548-2549 (the line ref drifted ~230 lines; :2540-2560 is unrelated SetPeerRemote/D32 code). The real comment reads: 'One reader per SHARED socket, feeding the primary peer (single-peer receive; the concentrator's shared-socket demux to N peers is a later G4 task — see handleInbound).' above 'go m.readLoop(attached[0], m.deliverSignal)' (:2782). The claim 'demux to N peers is a later G4 task' is stale: the multi-view source demux (demuxInbound, T88/T93) IS shipped and is exactly what T124's TestReconcilePromotionFansViewAndSchedulerToEveryPeer exercises; the promoteDeferredLocked spawn-site comment states this correctly. Cause: the attach-path readLoop spawn comment was not updated when the G4 demux landed. NOTE: this concerns the demux ROUTING existing (shipped); it is orthogonal to D81's finding that per-peer rx BYTE ACCOUNTING still keys to the primary — both can hold simultaneously."
 
-### D67 — open
+### D67 — root-caused
 
 - createdAt: 2026-07-14T12:55:24.802Z
-- updatedAt: 2026-07-14T12:55:24.802Z
+- updatedAt: 2026-07-14T19:55:43.846Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: attachSharedPathLocked rollback swallows detachPeerPathBoundLocked errors, leaving a stale peerPathState
 - description: "Filed during T124 review ([fable], out-of-scope; PRE-EXISTING from the T123 AddPath fan-out — T124 only threads the probers param through). internal/bind/multipath.go ~:2580: on a mid-fan-out failure the rollback loop does `_ = m.detachPeerPathBoundLocked(...)`; if dyn.RemovePath fails inside detach, p.paths is NOT spliced, leaving a stale peerPathState (referencing a socket the caller then closes) in that peer's live path slice until the next Close→Open — a scheduler/paths coherence violation surviving an error path that claims 'a partial fan-out never leaks'."
 - severity: low
-- suggestedFix: Propagate or at least log the detach error; on detach failure, force-splice the tail peerPathState so p.paths never retains a view of a closed socket.
+- suggestedFix: "Propagate or at least log the detach error in the :2811 rollback loop; on detach failure force-splice the tail peerPathState so p.paths never retains a view of a closed socket. Low priority; group with D62/D63 in the bind/demux-hardening goal (same multipath.go path-lifecycle subsystem)."
 - ledgerRefs: ["tasks:T124","defects:D42"]
+- rootCause: "CONFIRMED against source (citation corrected :2580→:2811). attachSharedPathLocked (multipath.go:2801) rolls back a mid-fan-out failure at :2811 with '_ = m.detachPeerPathBoundLocked(m.peers[k], shared.name)' — error swallowed — and also swallows the shared-side unwind '_ = dyn.RemovePath(schedIdx)' (:2861). detachPeerPathBoundLocked (:2878) returns an error and its 'if err := dyn.RemovePath(idx); err != nil' (:2893) CAN fail; when it does, the peer's p.paths is NOT spliced, so a stale peerPathState referencing a socket the caller then closes remains in that peer's live path slice until the next Close→Open. That violates scheduler/paths coherence on an error path whose contract claims 'a partial fan-out never leaks'. Cause: rollback discards detach errors and does not force-splice the tail peerPathState on detach failure. Low; PRE-EXISTING from the T123 AddPath fan-out (T124 only threaded the probers param through)."
 
 ### D68 — root-caused
 
