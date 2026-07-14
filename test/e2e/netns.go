@@ -231,6 +231,30 @@ func (top *Topology) Restore(name string) {
 	top.run("ip", "link", "set", p.edgeVeth, "up")
 }
 
+// BlockEgress drops ALL outbound traffic on the named path's edge veth via a tc
+// clsact egress filter (matchall + drop), while leaving the veth up and inbound
+// traffic untouched — a one-way egress failure (e.g. a dead uplink amplifier), as
+// opposed to Blackhole's bidirectional link-down. It is used by T104 to prove
+// liveness is genuinely bidirectional: with only egress dead the peer's own probes
+// still ARRIVE at this path (an operator naively trusting "receiving traffic" as
+// health would stay wrongly up), but this path's OWN probe/echo round trip cannot
+// complete, so it must go DOWN. clsact attaches its own ingress/egress hooks
+// independent of whatever root qdisc is set, so it coexists with the path's netem
+// root qdisc (delay/jitter/loss) without disturbing it.
+func (top *Topology) BlockEgress(name string) {
+	p := top.path(name)
+	top.run("tc", "qdisc", "add", "dev", p.edgeVeth, "clsact")
+	top.run("tc", "filter", "add", "dev", p.edgeVeth, "egress", "protocol", "all", "matchall", "action", "drop")
+}
+
+// UnblockEgress removes a BlockEgress filter, restoring the named path's egress.
+// Idempotent — deleting an already-absent clsact qdisc is tolerated — so a test may
+// call it both explicitly and via t.Cleanup without failing on the second call.
+func (top *Topology) UnblockEgress(name string) {
+	p := top.path(name)
+	_ = top.tryRun("tc", "qdisc", "del", "dev", p.edgeVeth, "clsact")
+}
+
 // Readdress replaces the edge-side address of the named path, simulating an edge
 // public-IP change (used by the P1 roaming test). newEdgeIP must be a bare IPv4
 // address in the path's /24.
