@@ -758,10 +758,10 @@ archives:
 - dependsOn: ["T74"]
 - ledgerRefs: ["goals:G5"]
 
-### T77 — wip
+### T77 — done
 
 - createdAt: 2026-07-13T21:56:00.076Z
-- updatedAt: 2026-07-14T04:02:05.579Z
+- updatedAt: 2026-07-14T04:24:18.197Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add the netns e2e: dial-by-name, mid-session concentrator IP change, tunnel survives"
@@ -770,6 +770,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T74"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 2afe674
+- completion: "Netns e2e for the Q36 v1 DNS acceptance bar (test-only, test/e2e/dns_failover_test.go: TestDNSHubResolveAndReroute). Edge names the concentrator by hostname (dns opt-in, system resolver); hermetic in-namespace dnsmessage UDP responder (mount-ns-private resolv.conf + GODEBUG=netdns=go on the edge daemon + query-count probe; no external DNS egress). Stages all 5 phases: NXDOMAIN endpoint-less boot → R70 first-resolve engine-endpoint install + first handshake → mid-session concentrator IP change (multi-homed conc + DNS cutover + real old-address flush) → re-resolve repoint (exactly one SetPeerRemote) → D32 resequencer-rebaseline guard (real post-change iperf3 transfer, not a handshake counter). Unanimous 1-round panel approve; daemon markers/semantics verified against source by both reviewers. Compiles/vets under -tags e2e; PRIVILEGED root execution DEFERRED to the o3.7mind.io + llm-ubuntu-0 hosts (G2 pattern — sandbox lacks /dev/net/tun). docs/design.md synced. Rebased onto current main and ff-merged as 2afe674. Filed D54 (golangci scans nested worktrees)."
+- sessionLogs: [".cq/logs/20260714-041618-aa6460b0564523c9f.md",".cq/logs/20260714-042350-ab2788ec23f5df97d.md",".cq/logs/20260714-042350-a0e589c40f828c748.md"]
+- rawLogs: [".cq/logs/raw/20260714-041618-aa6460b0564523c9f.jsonl",".cq/logs/raw/20260714-042350-ab2788ec23f5df97d.jsonl",".cq/logs/raw/20260714-042350-a0e589c40f828c748.jsonl"]
 
 ### T78 — planned
 

@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 53
+  item: 54
 archives: []
 ---
 
@@ -729,6 +729,18 @@ archives: []
 - severity: medium
 - suggestedFix: Extend reloadWarnings with reflect.DeepEqual comparisons for Scheduler, FEC, DNS, and Bind (mirroring the existing wireguard/amnezia/log cases) + unit-test cases; OR compare a struct copy with the path/metrics fields zeroed so the warning set is future-proof against new Config fields.
 - ledgerRefs: ["tasks:T109","goals:G6"]
+
+### D54 — open
+
+- createdAt: 2026-07-14T04:23:35.572Z
+- updatedAt: 2026-07-14T04:23:35.572Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: golangci-lint scans nested .claude/worktrees, leaking sibling agents' in-progress code into every lint run
+- description: "Surfaced during T77 review ([fable]). `just lint` (golangci-lint) walks the nested implement-worker worktrees under .claude/worktrees/, so in-progress code from OTHER concurrent tasks fails the lint gate of every checkout, including main (observed: errcheck hits from a sibling agent's internal/dnsresolve/{doh,dot}.go leaking into an unrelated task's lint run). The lint gate is NON-HERMETIC with respect to concurrent agent worktrees — it makes `just lint` results depend on what other agents happen to be running, which is both noisy and non-reproducible. (Distinct from D45, which is the pre-existing real lint findings on the tracked tree.)"
+- severity: medium
+- suggestedFix: "Exclude the .claude directory from linting: set run.skip-dirs / issues.exclude-dirs to include `.claude` in .golangci.yml, OR lint an explicit package list in the justfile (`golangci-lint run ./cmd/... ./internal/... ./test/...`) instead of the implicit recursive walk."
+- ledgerRefs: ["tasks:T77","goals:G6"]
 
 ## M31
 

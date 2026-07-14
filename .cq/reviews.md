@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 104
+  item: 105
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1132,3 +1132,18 @@ archives:
 - ledgerRefs: ["tasks:T109","goals:G6","defects:D52"]
 - sessionLogs: [".cq/logs/20260714-040623-a21407ed6e6df882a.md",".cq/logs/20260714-040623-a64c1d2ea3184af3e.md"]
 - rawLogs: [".cq/logs/raw/20260714-040623-a21407ed6e6df882a.jsonl",".cq/logs/raw/20260714-040623-a64c1d2ea3184af3e.jsonl"]
+
+## M22
+
+### R105 — go-ahead
+
+- createdAt: 2026-07-14T04:24:10.337Z
+- updatedAt: 2026-07-14T04:24:10.337Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T77 unanimous panel approve (round 1): [opus]+[fable] both approve. Test-only (test/e2e/dns_failover_test.go +459, TestDNSHubResolveAndReroute; + docs/design.md). The Q36 v1 DNS acceptance bar as a netns e2e: edge names the concentrator by hostname (dns opt-in, system resolver). BOTH reviewers verified against production source: all 3 grepped daemon log markers exist verbatim (boots deferred device.go:866; first endpoint resolution failover.go:302; active concentrator endpoint re-resolved failover.go:317). Hermeticity triple-sealed and verified: GODEBUG=netdns=go set on the EDGE DAEMON (the resolving process via SystemResolver), private bind-mounted resolv.conf in the confirmed mount namespace, in-netns dnsmessage responder as sole answer source, + a query-count growth probe; the unshared netns has no external route (defense in depth). All 5 phases staged: NXDOMAIN endpoint-less boot / R70 first-resolve install (not race-masked — responder NXDOMAIN before boot, pure-Go resolver has no cache, conc can't initiate) / mid-session hubA→hubB renumber with real concHubA flush / re-resolve repoint (updateResolution active-spec-changed branch, exactly one SetPeerRemote) / D32 rebaseline guard asserting real post-change iperf3 bytes over concHubB. Single-edge-path model correct for uniform SetPeerRemote. Compiles/vets under -tags e2e + full non-e2e gate green; docs synced. Privileged root -run DNS execution DEFERRED to the o3 + llm-ubuntu-0 hosts (G2 pattern; sandbox lacks /dev/net/tun). Rebased onto current main and ff-merged as 2afe674."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T77","goals:G5","defects:D54"]
+- sessionLogs: [".cq/logs/20260714-042350-ab2788ec23f5df97d.md",".cq/logs/20260714-042350-a0e589c40f828c748.md"]
+- rawLogs: [".cq/logs/raw/20260714-042350-ab2788ec23f5df97d.jsonl",".cq/logs/raw/20260714-042350-a0e589c40f828c748.jsonl"]
