@@ -1844,12 +1844,12 @@ archives:
 - ledgerRefs: ["goals:G13"]
 - resultCommit: d4ed216
 
-### T146 — planned
+### T146 — wip
 
 - createdAt: 2026-07-14T12:41:29.073Z
-- updatedAt: 2026-07-14T12:41:29.073Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T16:58:35.682Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Plumb per-peer aggregation gauges through the Bind snapshot, metrics.Source, and collector
 - description: "Item 1 + Q54 (per-peer labels, labelPeer), metrics-plumbing half. Expose the four Q54 series to /metrics via the existing seam layers: wanbond_aggregation_engaged{peer} (bool gauge), wanbond_offered_load_fps{peer} (gauge), and the STATIC wanbond_aggregation_engage_threshold_fps{peer} / wanbond_aggregation_disengage_threshold_fps{peer} (gauges). (1) internal/bind: the Multipath per-peer snapshot (PeerSnapshots, consumed by internal/device/metrics.go metricsSource) gains the aggregation-gate snapshot for peers whose scheduler exposes it — type-assert peer.scheduler against a small optional reporter interface satisfied by *WeightedScheduler's AggregationSnapshot() (from T143); active-backup peers report nothing so the series are ABSENT. Read the snapshot without holding the send lock across Pick (consistent with how Estimate/FEC snapshots are read). (2) internal/metrics/metrics.go: add an AggregationSnapshot type and a Source.Aggregation() []AggregationSnapshot method (mirroring FEC()/Reseq()), emit the four gauges in collector.Collect honoring the EXISTING single-peer-omits-label back-compat rule (T94) already applied to FEC/reseq, and export the four metric names as constants next to MetricLoss/MetricRTT. Update the metrics reference in README.md/docs/design.md in the same change (AGENTS.md docs-sync)."
 - acceptance: "-tags e2e under `just e2e`: (i) single-peer weighted daemon on the fixture — metrics.Fetch shows all four families; both threshold gauges equal the configured engage/disengage_fraction*per_path_capacity_fps within a small relative tolerance; wanbond_aggregation_engaged reads 0 at idle; (ii) under active-backup policy NONE of the four families is present; (iii) on the existing multi-peer concentrator fixture the series carry the peer label (Exposition.PeerValue resolves them). `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
@@ -1940,18 +1940,19 @@ archives:
 - dependsOn: ["T149"]
 - resultCommit: 8c86bc3
 
-### T151 — planned
+### T151 — done
 
 - createdAt: 2026-07-14T13:16:15.348Z
-- updatedAt: 2026-07-14T13:28:06.752Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T17:20:18.845Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Unit-test ActiveBackup pacing edge cases
 - description: "Add the remaining active-backup pacing coverage beyond the primary bound-test bundled with the impl, reusing newFakeClock()/advance and the synthetic PathHealth drivers already in the sched test package: (a) pacing DISABLED is a pure no-op — Pick admits every frame on the active path exactly as pre-change (regression guard); (b) FAILOVER — the active path changes and pacing then draws from the NEW active path's OWN bucket at that path's own rate (a saturated old primary does not starve the backup, and a fast backup is not throttled to the old primary's rate); (c) sentinel distinctness — PickPaced (healthy-but-paced) vs PickNone (no eligible path) returned in the correct distinct situations; (d) ClassControl exemption holds both at cold start and after sustained shedding; (e) burst absorption — a burst <= PacingBurst after idle is admitted without shed; (f) Close→Open MEMBERSHIP CHANGE (T30 pacer regression, R162 criticism 3) — a SetPaths that CHANGES the path count resizes/reinitializes the per-path bucket+capacity slices so the next Pick indexes in range and does NOT panic, and then paces correctly against the new membership (proves NewActiveBackup init + SetPaths resize keep tokens[] length == len(health)). Assertions must be non-vacuous (verify by the count bound / observed pace, not by absence of error)."
 - acceptance: "`nix develop -c just test` green with the new cases present; `nix develop -c go test ./internal/sched/ -run ActiveBackup -v` lists and passes all scenarios including the Close→Open-with-different-path-count case (asserted to complete without panic and to pace on the new membership); a coverage check shows the pacing branches in active_backup.go Pick and the SetPaths/NewActiveBackup bucket-init paths are exercised."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T150"]
+- resultCommit: f9b2836
 
 ## M59
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 184
+  item: 185
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2118,6 +2118,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T150","goals:G14","defects:D65"]
+
+### R184 — go-ahead
+
+- createdAt: 2026-07-14T17:20:12.706Z
+- updatedAt: 2026-07-14T17:20:12.706Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T151 review round 1 — GO-AHEAD (single opus reviewer, proportionate for a TEST-ONLY additive-coverage task). 6 new active-backup pacing scenarios added to internal/sched/active_backup_test.go (+406 lines, ZERO production code). Merged to main as f9b2836 (clean cherry-pick of a56f608 onto b6f5ad7; sched test file only). Reviewer verified NON-VACUITY against the real token-bucket logic: (a) pacing-disabled asserts admitted==5000 & each Pick got==0 (would return PickPaced=-2 if pacing-off shed); (b) failover asserts primaryAdmitted==5, backupAdmitted==20 with window bound >primaryUpper(25) AND <=backupUpper(820) — the admitted-starts-at-1 off-by-one (failover Pick consumes the first token) is arithmetically correct; (c) PickPaced(-2)/PickNone(-1) distinct in the right situations; (d) ClassControl exemption asserts haveFill==false cold-start + tokens[0] unchanged across control Picks (catches a charged ClassControl); (e) burst absorption admitted==burst, shed==0 + refill-cap; (f) SetPaths membership-count-change asserts len(s.pacers)==membership count after grow(3)/shrink(1) AND admitted==tailBurst (count-bound 'paces on new membership', not mere no-panic). DISTINCT from T150's homogeneous FailoverUsesOwnBucket + SetPathsResizeNoPanic — strengthens both. Full gate green: build/vet/test + -race + just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T151","goals:G14","defects:D65"]
 
 ## M52
 
