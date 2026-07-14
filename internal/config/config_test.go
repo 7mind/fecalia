@@ -833,8 +833,8 @@ func TestLoadRejects(t *testing.T) {
 			name: "unknown key on path table",
 			mode: 0o600,
 			body: fill(strings.Replace(edgeConfig, `source_addr = "192.0.2.10"`,
-				"source_addr = \"192.0.2.10\"\nlink_bandwith = 1000000", 1)),
-			want: "unknown key paths.link_bandwith",
+				"source_addr = \"192.0.2.10\"\nlink_bandwith = 1000000", 1)), //nolint:misspell // intentional misspelling: the rejected-key fixture
+			want: "unknown key paths.link_bandwith", //nolint:misspell // intentional misspelling: the rejected-key fixture
 		},
 		{
 			// D41: strict decoding rejects a misspelled key on a nested table too,
