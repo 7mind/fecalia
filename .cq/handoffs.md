@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 22
+  item: 23
 archives: []
 ---
 
@@ -248,6 +248,29 @@ archives: []
 - blockingQuestions: ["Q45","Q46","Q47","Q48","Q49","Q50"]
 - sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
 - rawLogs: [".cq/logs/raw/20260714-114510-a2014552ac2ffb804.jsonl"]
+
+### HO23 — answers-required
+
+- createdAt: 2026-07-14T20:18:55.221Z
+- updatedAt: 2026-07-14T20:18:55.221Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: |
+    /cq:advance run stop = BLOCKED-ON-QUESTIONS (answers-required). Gate at stop: P-investigate=FALSE / P-plan=TRUE[G12] / P-implement=FALSE / open-Q-gate=FALSE. The sole unblocked-but-question-gated predicate is P-plan[G12], blocked on open Q58.
+    
+    SOLE GENUINE BLOCKER — Q58 (goals:G12, 'live monitoring web UI'): the 13-task plan T160-T172 is emitted and otherwise sound+grounded (review R190=revise); it needs ONLY a user risk-posture decision on transport confidentiality for the opt-in non-loopback [monitor] bind — (a) accept plaintext-token-over-LAN + document residual risk, (b) require TLS when non-loopback, or (c) forbid non-loopback (loopback-only like /metrics, ssh -L for remote), reviewer-recommended (c). Answer Q58, then run /cq:plan:advance G12 to lock the plan to `planned`, then implement.
+    
+    WORK COMPLETED THIS RUN (investigate stage fully DRAINED): all previously-open defects root-caused. D35 (HIGH, allowed_ips=0.0.0.0/0 wedges the WG handshake) root-caused via a 2-arch hardware investigate-prober: the filed amneziawg-go engine-trie mechanism (H1) is EMPIRICALLY REFUTED on amd64+aarch64 with pinned v1.0.4 (literal /0 establishes identically to /32/split, no rx-flood/tx~0 wedge); the true cause is a routing-layer default-route loop from EXTERNAL route management, and every wanbond surface already avoids it (T107 config split-shield + T108 /1-split route programming) — residual is a docs/operator-guidance gap, not a code defect; production already mitigated. Also root-caused: D61/D66/D68/D75 (doc/test-record accuracy), D80/D81 (e2e loopback-bind + per-peer rx-attribution test defects), D62/D63/D67 (bind/demux source-binding races), D64 (Rebaseline+ObserveRecovered FEC re-pin re-opening D32), D70/D71/D72/D74/D76/D79 (active-backup pacing + reload-warning family). Several citations were corrected against source during adjudication (D66 :2548->:2779; D81 rx>0 assertion confirmed; D80 requireLoopback confirmed; D62 :1444->:1669; D64 :271-274; D67 :2811). ALL root-caused defects are READY-TO-SEED into hardening fix goals — house them via /cq:plan (suggested groupings noted per-defect: active-backup-pacing D76+D79; reload-warning-completeness D70+D74; bind/demux-hardening D62+D63+D67; resequencer-hardening D64; metrics/e2e-hardening D80+D81+D77; doc-accuracy D61+D66+D68; test-coverage D75; D35 docs/operator-guidance).
+    
+    HOUSEKEEPING (stale ledger artifacts, delegated — NOT mutated by this pure-sequencer stop, flagged for resumption): (1) questions:Q57 is a SATISFIED stale resume-pointer ('run /cq:plan:advance G14') — G14 is already `planned` AND fully implemented (tasks T149-T159 all done), so Q57 needs no answer and should be closed. (2) goals:G14 (fix D65: active-backup egress pacing + forwarded-TCP MSS-clamp docs) is `planned` but all its tasks are done — it awaits a goal-completion transition (planned->building->done) + milestone archival (M57-M60). A goal-status/milestone-archival housekeeping sweep remains for G14 and any other fully-implemented goals (the implement flow owns these transitions). defects:D65 stays root-caused (fix implemented; on-hardware field validation deferred per Q56). (3) 55 orphaned implement worktrees from the completed run were swept this pass (worktree count 3: main + 2 preserved unmerged worktree-agent trees a715d0c6/ae5fb59d).
+    
+    RESUME: answer Q58 -> /cq:plan:advance G12 -> /cq:implement:advance; and (independently) /cq:plan to house the ready-to-seed root-caused defects into fix goals.
+- flow: advance
+- ledgerRefs: ["goals:G12","questions:Q58","goals:G14","questions:Q57","defects:D35"]
+- blockingQuestions: ["Q58"]
+- sessionLogs: [".cq/logs/20260714-200739-a3738815bfa329aa3.md"]
+- rawLogs: [".cq/logs/raw/20260714-200739-a3738815bfa329aa3.jsonl"]
+- tags: ["cq-advance-run-stop","blocked-on-questions","defects-ready-to-seed"]
 
 ## M50
 
