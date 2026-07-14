@@ -313,7 +313,7 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 
 	// Real engine over a channel TUN, brought up endpoint-less (no endpoint= line).
 	chtun := tuntest.NewChannelTUN()
-	dev := awgdevice.NewDevice(chtun.TUN(), mp, engineLogger(lg, "error"))
+	dev := awgdevice.NewDevice(chtun.TUN(), mp, engineLogger(lg, "error", mp.EverHadLivePath))
 	defer dev.Close()
 
 	edgePrivRaw, _ := genX25519(t)

@@ -11,11 +11,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
@@ -314,7 +316,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 			return nil, fmt.Errorf("device: wire concentrator peer %q: %w", id.Name, perr)
 		}
 	}
-	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level))
+	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level, mpBind.EverHadLivePath))
 
 	// Bounded initial hostname resolution (Q30): construct the resolver ONCE (only when some peer
 	// carries a hostname spec — Q29 inertness), resolve each hostname spec under a short timeout,
@@ -813,16 +815,53 @@ func (t *Tunnel) Close() {
 // engineLogger adapts the amneziawg engine's logger onto wanbond's structured
 // logger under a "wg" component. The engine is verbose only when the daemon runs
 // at debug level; otherwise only its errors surface.
-func engineLogger(lg log.Logger, level string) *awgdevice.Logger {
+//
+// everHadLivePath is the bind-level "ever had a live path" predicate (I4,
+// bind.Multipath.EverHadLivePath): until the FIRST configured path reaches
+// liveness up, the engine's "Failed to send handshake initiation: %w"
+// (bind.ErrNoHealthyPath) is expected — every path starts Down and the boot-time
+// probe race hasn't settled yet — so it would otherwise spam ERROR on every normal
+// start. During that warmup window this adapter coalesces every such record into
+// exactly ONE "waiting for path liveness" INFO line (not one per failed init) and
+// emits none at ERROR; once everHadLivePath reports true it stops intercepting —
+// the SAME error after a path has been up is a genuine outage and stays ERROR.
+// Any OTHER Errorf record (not wrapping ErrNoHealthyPath) is unaffected and always
+// logs at ERROR, warmup or not. Relates D37 (the wasted-first-init defect itself is
+// investigate-flow-owned; this only fixes log severity).
+func engineLogger(lg log.Logger, level string, everHadLivePath func() bool) *awgdevice.Logger {
 	wg := lg.Component("wg")
 	verbosef := func(string, ...any) {}
 	if strings.EqualFold(strings.TrimSpace(level), "debug") {
 		verbosef = func(format string, args ...any) { wg.Debug(fmt.Sprintf(format, args...)) }
 	}
+	var warmupInfoLogged atomic.Bool
+	errorf := func(format string, args ...any) {
+		if !everHadLivePath() && argsHaveNoHealthyPath(args) {
+			if warmupInfoLogged.CompareAndSwap(false, true) {
+				wg.Info("waiting for path liveness")
+			}
+			return
+		}
+		wg.Error(fmt.Sprintf(format, args...))
+	}
 	return &awgdevice.Logger{
 		Verbosef: verbosef,
-		Errorf:   func(format string, args ...any) { wg.Error(fmt.Sprintf(format, args...)) },
+		Errorf:   errorf,
 	}
+}
+
+// argsHaveNoHealthyPath reports whether any of an Errorf call's variadic args is (or
+// wraps) bind.ErrNoHealthyPath. The engine passes the error value itself as a %v/%w
+// arg (e.g. peer.go's "%v - Failed to send handshake initiation: %v", peer, err), so
+// this checks the args directly with errors.Is rather than string-matching the
+// formatted message, which would be fragile against wording changes.
+func argsHaveNoHealthyPath(args []any) bool {
+	for _, a := range args {
+		if err, ok := a.(error); ok && errors.Is(err, bind.ErrNoHealthyPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // bootEndpoint is a peer's initial engine endpoint derived from the bounded boot resolve: the

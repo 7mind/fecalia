@@ -346,7 +346,7 @@ func TestMultipathRuntimePathSetRace(t *testing.T) {
 // probed-but-unselectable path that desynced the scheduler from the path slice. Now
 // m.defs/m.probers track the removal and Open reconciles the scheduler, so the
 // removed path stays gone and Pick still addresses the surviving path with no
-// errNoHealthyPath.
+// ErrNoHealthyPath.
 func TestMultipathRuntimeRemoveSurvivesReopen(t *testing.T) {
 	psk := testKey(t, 0x34)
 	clk := newFakeClock()
@@ -403,11 +403,11 @@ func TestMultipathRuntimeRemoveSurvivesReopen(t *testing.T) {
 		t.Fatalf("Pick returned out-of-range index %d for %d paths (frozen zombie entry)", idx, len(m.paths))
 	}
 
-	// No errNoHealthyPath: a Send egresses on the surviving path once its remote is
+	// No ErrNoHealthyPath: a Send egresses on the surviving path once its remote is
 	// re-seeded on the fresh socket.
 	m.paths[0].setRemote(ap0)
 	if err := m.Send([][]byte{[]byte("post-reopen")}, m.virt); err != nil {
-		t.Fatalf("Send after reopen = %v, want nil (no errNoHealthyPath)", err)
+		t.Fatalf("Send after reopen = %v, want nil (no ErrNoHealthyPath)", err)
 	}
 }
 
@@ -478,7 +478,7 @@ func TestMultipathRuntimeAddSurvivesReopen(t *testing.T) {
 	sinkPeer, sinkAP := rawPeer(t)
 	m.paths[0].setRemote(sinkAP)
 	if err := m.Send([][]byte{[]byte("post-reopen")}, m.virt); err != nil {
-		t.Fatalf("Send after reopen = %v, want nil (frozen zombie would cause errNoHealthyPath)", err)
+		t.Fatalf("Send after reopen = %v, want nil (frozen zombie would cause ErrNoHealthyPath)", err)
 	}
 	_ = sinkPeer
 	m.paths[0].setRemote(ap0)

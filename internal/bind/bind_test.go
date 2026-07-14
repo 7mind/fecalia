@@ -391,7 +391,7 @@ func (s stubScheduler) Pick(_ sched.FrameClass) int { return s.pick }
 func (s stubScheduler) Recompute()                  {}
 
 // TestMultipathSendPacerSheddingDistinct: a PickPaced shed (paths healthy, rate
-// limited) maps to errPacerShedding, DISTINCT from the errNoHealthyPath a PickNone
+// limited) maps to errPacerShedding, DISTINCT from the ErrNoHealthyPath a PickNone
 // outage yields, so operator logs and the e2e log-grep harness can tell deliberate
 // pacer shedding from total path failure (criticism #3). The drop behavior is
 // identical (Send returns an error and the datagram is not sent) — only the error, and
@@ -404,7 +404,7 @@ func TestMultipathSendPacerSheddingDistinct(t *testing.T) {
 		want error
 	}{
 		{"paced shed", sched.PickPaced, errPacerShedding},
-		{"no eligible path", sched.PickNone, errNoHealthyPath},
+		{"no eligible path", sched.PickNone, ErrNoHealthyPath},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -422,7 +422,7 @@ func TestMultipathSendPacerSheddingDistinct(t *testing.T) {
 			}
 			// The shed error must NOT be conflated with the outage error (distinct
 			// sentinels), so a paced shed never reads as no-healthy-path.
-			if tc.pick == sched.PickPaced && errors.Is(err, errNoHealthyPath) {
+			if tc.pick == sched.PickPaced && errors.Is(err, ErrNoHealthyPath) {
 				t.Fatal("pacer shedding conflated with no-healthy-path outage")
 			}
 		})

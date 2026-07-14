@@ -75,10 +75,13 @@ const (
 const defaultMaxDemuxSources = 1024
 
 var (
-	errNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
+	// ErrNoHealthyPath is exported (I4) so the device-package engineLogger adapter can
+	// errors.Is-match it against the engine's wrapped Errorf args to gate the startup
+	// no-healthy-path warmup coalescing without string-matching the log message.
+	ErrNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
 	// errPacerShedding is returned by Send when the scheduler shed the datagram for
 	// pacing (PickPaced) while paths are healthy — deliberate rate limiting, NOT an
-	// outage. It is DISTINCT from errNoHealthyPath so operator logs and the e2e
+	// outage. It is DISTINCT from ErrNoHealthyPath so operator logs and the e2e
 	// log-grep harness can tell shedding from total path failure (the drop behavior is
 	// identical to the pre-existing no-path case; only the diagnostic differs). The
 	// coalesced, rate-limited "pacer shedding" record is emitted by the scheduler.
@@ -490,6 +493,15 @@ type Multipath struct {
 	// to at most once per interval so the receive hot path stays cheap.
 	sweepIntervalNanos atomic.Int64
 	lastSweepNanos     atomic.Int64
+
+	// everUp is the STICKY "ever had a live path" predicate (I4): set true the first time
+	// ANY path, for ANY bound peer, reaches liveness telemetry.StateUp (dispatchInbound,
+	// on a fresh probe echo), and never cleared afterward — a later total outage is a
+	// genuine failure signal, not a startup warmup. The device-package engineLogger
+	// adapter consults EverHadLivePath to downgrade the startup no-healthy-path spam
+	// (ErrNoHealthyPath) to a single coalesced INFO line until the first path comes up,
+	// then lets it log at ERROR (a real outage) from then on.
+	everUp atomic.Bool
 }
 
 // compile-time proof that Multipath satisfies the engine's Bind contract.
@@ -1587,6 +1599,17 @@ func (m *Multipath) TearDownPeer(name string) bool {
 	return m.teardownPeerLocked(p)
 }
 
+// EverHadLivePath reports whether ANY configured path, for ANY bound peer, has EVER
+// reached liveness telemetry.StateUp since this Bind was constructed (I4). It is
+// STICKY: once true it stays true for the Bind's lifetime, even if every path later
+// goes down — a total outage AFTER connectivity was established is a genuine failure
+// signal, not a startup warmup. The device-package engineLogger adapter consults it to
+// gate the coalesced startup no-healthy-path INFO line (see ErrNoHealthyPath) to the
+// warmup window only. Safe for concurrent use (backed by atomic.Bool); never blocks.
+func (m *Multipath) EverHadLivePath() bool {
+	return m.everUp.Load()
+}
+
 // dispatchInbound handles one already-decoded inbound frame on the resolved peer's view (ps):
 // it routes to that peer's resequencer / FEC decoder / reflector. The source demux in
 // demuxInbound has already selected ps so a shared socket serving many peers resequences each
@@ -1651,6 +1674,15 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				// ps.prober is the path's OWN immutable prober — never a lookup into a
 				// dynamically-mutated slice — so runtime add/remove cannot race this.
 				_ = ps.prober.HandleEcho(raw)
+				// Sticky "ever had a live path" latch (I4): a fresh echo that just brought
+				// this path to StateUp (or found it already Up) flips everUp permanently.
+				// Checked here rather than only in Liveness.transition so the bind-level
+				// predicate needs no wiring through NewProber/NewLiveness — it observes the
+				// SAME state HandleEcho just updated, at the one call site that can ever
+				// change Down->Up.
+				if ps.prober.State() == telemetry.StateUp {
+					m.everUp.Store(true)
+				}
 			}
 			return
 		}
@@ -1776,7 +1808,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	peer, ok := m.peerByVirt[ue]
 	if !ok {
 		m.mu.Unlock()
-		return errNoHealthyPath
+		return ErrNoHealthyPath
 	}
 	if len(peer.paths) == 0 {
 		m.mu.Unlock()
@@ -1793,13 +1825,13 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	}
 	if idx < 0 || idx >= len(peer.paths) {
 		m.mu.Unlock()
-		return errNoHealthyPath
+		return ErrNoHealthyPath
 	}
 	ps := peer.paths[idx]
 	remote, ok := ps.getRemote()
 	if !ok {
 		m.mu.Unlock()
-		return errNoHealthyPath
+		return ErrNoHealthyPath
 	}
 	c := ps.conn
 	// Snapshot this peer's send-FEC plane once under m.mu: a torn-down peer reads nil (sends
