@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 186
+  item: 187
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2190,6 +2190,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T143","goals:G13","defects:D75"]
+
+### R186 — go-ahead
+
+- createdAt: 2026-07-14T18:19:45.581Z
+- updatedAt: 2026-07-14T18:19:45.581Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T146 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Four per-peer aggregation-gate gauges (wanbond_aggregation_engaged{peer}, wanbond_offered_load_fps{peer}, static engage/disengage_threshold_fps{peer}) plumbed through Bind PeerSnapshot (optional aggregationReporter type-assert) → metrics.Source.Aggregation() → collector. Merged to main as a082a9d (cherry-pick of ddbc10c onto 28e1c26; netns.go port CONFLICT resolved by reassigning T146's port 9107→9108 since T128 holds 9107, + aggregation_metrics_test.go updated to 9108; multipath.go/metrics.go/device/docs 3-way clean). BOTH reviewers verified EMPIRICALLY (HTTP scrapes): (1) THRESHOLD TRUTHFUL — gauge expr weighted.go:315-316 (EngageFraction*PerPathCapacity / Disengage*) BYTE-IDENTICAL to the live gate expr weighted.go:522-523, sourced live from immutable cfg each read; selectScheduler maps per_path_capacity_fps/fractions verbatim (defaults 0.9/0.5); e2e asserts 630/350 at 1e-6 tol; (2) T94 BACK-COMPAT EXACT — single-peer UNLABELED, two-peer peer-LABELED (multi-peer test rejects any unlabeled sample), via the shared peerLabelValues path; NewCollector's multiPeer decision unchanged (one-shot PeerNames()); every pre-existing exposition test passed UNMODIFIED (only fakeSource gained the method); (3) ACTIVE-BACKUP ABSENT at BOTH seams (nil PeerSnapshot.Aggregation skipped — no zero-value/empty-label leak; sampleless Descs emit nothing); (4) LOCK-SAFE — peerState.scheduler write-once, PeerSnapshots reads AggregationSnapshot (takes only sched.mu) AFTER releasing m.mu → m.mu→sched.mu ordering, no cycle; -race green; (5) 4 names exported constants, empty-subsystem offered_load_fps intentional. Full gate green on composed main: bind/metrics/device tests + -race ok; e2e compiles; just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T146","goals:G13"]
 
 ## M44
 

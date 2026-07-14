@@ -1845,10 +1845,10 @@ archives:
 - ledgerRefs: ["goals:G13"]
 - resultCommit: d4ed216
 
-### T146 — wip
+### T146 — done
 
 - createdAt: 2026-07-14T12:41:29.073Z
-- updatedAt: 2026-07-14T16:58:35.682Z
+- updatedAt: 2026-07-14T18:19:48.419Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Plumb per-peer aggregation gauges through the Bind snapshot, metrics.Source, and collector
@@ -1857,6 +1857,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T143"]
 - ledgerRefs: ["goals:G13"]
+- resultCommit: a082a9d
 
 ### T147 — planned
 
