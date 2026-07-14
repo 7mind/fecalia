@@ -2273,40 +2273,6 @@ func maxEligiblePathLossLocked(peer *peerState) (float64, bool) {
 	return maxLoss, have
 }
 
-// FECSnapshot returns a consistent snapshot of the connection-scoped FEC counters
-// (T24): the send-side parity overhead and the receive-side recovery outcome. It
-// follows the PathSnapshots discipline — grab the send/receive state pointers under
-// m.mu, then read the decoder's stats OUTSIDE m.mu (the decoder has its own mutex) —
-// so the scrape never blocks an in-flight Send. All zero when FEC is disabled or the
-// bind is closed.
-func (m *Multipath) FECSnapshot() FECStats {
-	m.mu.Lock()
-	fs := m.fecSend.Load()
-	fr := m.fecRecv.Load()
-	m.mu.Unlock()
-
-	var out FECStats
-	if fs != nil {
-		out.DataFrames = fs.dataFrames.Load()
-		out.DataBytes = fs.dataBytes.Load()
-		out.ParityFrames = fs.parityFrames.Load()
-		out.ParityBytes = fs.parityBytes.Load()
-	}
-	if fr != nil {
-		if fr.connLoss != nil {
-			out.ResidualLoss = fr.connLoss.Loss()
-		}
-		// Recovered is the HONEST delivered count (frames placed ahead of the release
-		// point), NOT the decoder's raw reconstruction count — a frame rebuilt after the
-		// resequencer skipped its gap is reconstructed but never delivered, so counting it
-		// would overstate recovery on /metrics. Unrecoverable is the decoder's repair-
-		// failure count (groups evicted still incomplete).
-		out.Recovered = fr.deliveredRecovered.Load()
-		out.Unrecoverable = fr.stats().Unrecoverable
-	}
-	return out
-}
-
 // ParseEndpoint records the peer's wireguard endpoint as the default per-path
 // remote and returns the single virtual endpoint. It may run before Open (the
 // engine applies UAPI config before binding), so the parsed address is stashed
@@ -2924,47 +2890,10 @@ type PathTraffic struct {
 	State    telemetry.PathState
 }
 
-// PathSnapshots returns a consistent per-path traffic+telemetry snapshot for the
-// currently-active paths, in priority order — the read side the metrics exposition
-// (T23) scrapes. Concurrency: it acquires m.mu ONLY to copy out each path's name, its
-// two atomic byte counters, and its prober pointer, then RELEASES m.mu BEFORE calling
-// the (independently-synchronized) prober's Estimate()/State(). This mirrors
-// tickLivenessFromReceive's discipline — the lock is held for a bounded, syscall-free,
-// O(paths) copy and never across a prober call or a log write — so the scrape never
-// blocks an in-flight Send behind the prober's own mutex, and the lock-free send/
-// receive byte-counter Adds are undisturbed (they take no lock at all). The counters
-// are read as a point-in-time atomic Load: tx and rx of one path may reflect Adds a
-// nanosecond apart, which is immaterial to a cumulative-counter exposition.
-func (m *Multipath) PathSnapshots() []PathTraffic {
-	type ref struct {
-		name   string
-		tx, rx uint64
-		prober *telemetry.Prober
-	}
-	m.mu.Lock()
-	refs := make([]ref, len(m.paths))
-	for i, ps := range m.paths {
-		refs[i] = ref{name: ps.name, tx: ps.txBytes.Load(), rx: ps.rxBytes.Load(), prober: ps.prober}
-	}
-	m.mu.Unlock()
-
-	out := make([]PathTraffic, len(refs))
-	for i, r := range refs {
-		pt := PathTraffic{Name: r.name, TxBytes: r.tx, RxBytes: r.rx}
-		if r.prober != nil {
-			pt.Estimate = r.prober.Estimate()
-			pt.State = r.prober.State()
-		}
-		out[i] = pt
-	}
-	return out
-}
-
 // PeerSnapshot is a consistent per-BOUND-PEER snapshot of path traffic+telemetry, FEC
 // counters, and resequencer counters (T94): the read side the per-peer /metrics
-// exposition scrapes. It generalizes PathSnapshots/FECSnapshot — which report only the
-// PRIMARY peer (peers[0], byte-compat with the pre-G4 singleton) — to EVERY bound peer,
-// so a multi-peer concentrator's metrics can attribute each series to the edge it came
+// exposition scrapes. It reports EVERY bound peer (not just the primary), so a
+// multi-peer concentrator's metrics can attribute each series to the edge it came
 // from. Name is BoundPeerNames()[i]: "" for the primary (single-peer edge/hub AND a
 // concentrator's first-configured peer alike), the peer's configured name otherwise.
 type PeerSnapshot struct {
@@ -2976,15 +2905,13 @@ type PeerSnapshot struct {
 
 // PeerSnapshots returns a consistent per-peer snapshot, in bound-peer order (matching
 // BoundPeerNames), for every bound peer's path traffic+telemetry, FEC counters, and
-// resequencer counters. It follows the PathSnapshots/FECSnapshot concurrency
-// discipline: grab each peer's name, per-path counters/prober pointers, and
-// FEC/resequencer pointers under m.mu in one bounded O(peers+paths) copy, then RELEASE
-// m.mu before calling the independently-synchronized prober Estimate()/State(),
-// decoder stats(), and resequencer Stats() — so the scrape never blocks an in-flight
-// Send behind m.mu. len(result) >= 1: NewMultipath always binds at least the primary
-// peer, so this is never empty (unlike PathSnapshots, which can be empty on a peer with
-// no paths — impossible today since NewMultipath requires len(paths) >= 1, but the
-// per-peer Paths slice can still be empty for a peer with a currently-empty path set).
+// resequencer counters. Concurrency: grab each peer's name, per-path counters/prober
+// pointers, and FEC/resequencer pointers under m.mu in one bounded O(peers+paths) copy,
+// then RELEASE m.mu before calling the independently-synchronized prober
+// Estimate()/State(), decoder stats(), and resequencer Stats() — so the scrape never
+// blocks an in-flight Send behind m.mu. len(result) >= 1: NewMultipath always binds at
+// least the primary peer, so this is never empty — though the per-peer Paths slice can
+// still be empty for a peer with a currently-empty path set.
 func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 	type pathRef struct {
 		name   string
@@ -3030,9 +2957,11 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			snap.FEC.ParityBytes = r.fs.parityBytes.Load()
 		}
 		if r.fr != nil {
-			// Mirrors FECSnapshot's Recovered/Unrecoverable derivation verbatim (see its
-			// comment for why Recovered is the HONEST delivered count, not the decoder's
-			// raw reconstruction count).
+			// Recovered is the HONEST delivered count (frames placed ahead of the release
+			// point), NOT the decoder's raw reconstruction count — a frame rebuilt after the
+			// resequencer skipped its gap is reconstructed but never delivered, so counting it
+			// would overstate recovery on /metrics. Unrecoverable is the decoder's repair-
+			// failure count (groups evicted still incomplete).
 			if r.fr.connLoss != nil {
 				snap.FEC.ResidualLoss = r.fr.connLoss.Loss()
 			}

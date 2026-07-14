@@ -236,12 +236,12 @@ func TestMultipathFECTransparentAndOverhead(t *testing.T) {
 		}
 	}
 
-	snap := sender.FECSnapshot()
+	snap := sender.PeerSnapshots()[0].FEC
 	if snap.DataFrames != uint64(dataShards*groups) {
-		t.Fatalf("FECSnapshot.DataFrames = %d, want %d (the fixed-ratio overhead denominator)", snap.DataFrames, dataShards*groups)
+		t.Fatalf("PeerSnapshots FEC.DataFrames = %d, want %d (the fixed-ratio overhead denominator)", snap.DataFrames, dataShards*groups)
 	}
 	if snap.ParityFrames != uint64(parityShards*groups) {
-		t.Fatalf("FECSnapshot.ParityFrames = %d, want %d", snap.ParityFrames, parityShards*groups)
+		t.Fatalf("PeerSnapshots FEC.ParityFrames = %d, want %d", snap.ParityFrames, parityShards*groups)
 	}
 	// The /metrics overhead ratio the P3 e2e asserts is ParityFrames/DataFrames; on full
 	// groups it equals the configured M/K exactly.
@@ -249,7 +249,7 @@ func TestMultipathFECTransparentAndOverhead(t *testing.T) {
 		t.Fatalf("overhead ratio ParityFrames/DataFrames = %d/%d != %d/%d (M/K)", snap.ParityFrames, snap.DataFrames, parityShards, dataShards)
 	}
 	if snap.ParityBytes == 0 {
-		t.Fatal("FECSnapshot.ParityBytes = 0, want > 0 (parity has wire cost)")
+		t.Fatal("PeerSnapshots FEC.ParityBytes = 0, want > 0 (parity has wire cost)")
 	}
 	if snap.Recovered != 0 || snap.Unrecoverable != 0 {
 		t.Fatalf("send-only path recovered/unrecoverable = %d/%d, want 0/0", snap.Recovered, snap.Unrecoverable)
@@ -335,13 +335,13 @@ func TestMultipathFECRecoversWithinBudget(t *testing.T) {
 		}
 	}
 
-	snap := rx.FECSnapshot()
+	snap := rx.PeerSnapshots()[0].FEC
 	wantRecovered := uint64(droppedPerLossyGroup * lossyGroups)
 	if snap.Recovered != wantRecovered {
-		t.Fatalf("FECSnapshot.Recovered = %d, want %d (exactly the reconstructed frames)", snap.Recovered, wantRecovered)
+		t.Fatalf("PeerSnapshots FEC.Recovered = %d, want %d (exactly the reconstructed frames)", snap.Recovered, wantRecovered)
 	}
 	if snap.Unrecoverable != 0 {
-		t.Fatalf("FECSnapshot.Unrecoverable = %d, want 0 (all loss was within budget)", snap.Unrecoverable)
+		t.Fatalf("PeerSnapshots FEC.Unrecoverable = %d, want 0 (all loss was within budget)", snap.Unrecoverable)
 	}
 }
 
@@ -422,14 +422,14 @@ func TestMultipathFECUnrecoverableDoesNotStall(t *testing.T) {
 		}
 	}
 
-	snap := rx.FECSnapshot()
+	snap := rx.PeerSnapshots()[0].FEC
 	if snap.Recovered != 0 {
-		t.Fatalf("FECSnapshot.Recovered = %d, want 0 (a > M-loss group must not fabricate data)", snap.Recovered)
+		t.Fatalf("PeerSnapshots FEC.Recovered = %d, want 0 (a > M-loss group must not fabricate data)", snap.Recovered)
 	}
 }
 
 // TestMultipathFECResidualLossNonVacuous proves the post-FEC-recovery residual-loss gauge
-// (T29, FECSnapshot().ResidualLoss) actually MEASURES residual — the whole "equal masking"
+// (T29, PeerSnapshots()[0].FEC.ResidualLoss) actually MEASURES residual — the whole "equal masking"
 // leg of P4 rests on it, so a dead-low gauge (dropped Observe wiring or a Loss() defect)
 // must not read ~0 under real unmasked loss. It drives two hand-chosen receive streams
 // through the SAME K=4/M=2 datapath:
@@ -489,7 +489,7 @@ func TestMultipathFECResidualLossNonVacuous(t *testing.T) {
 			}
 			feedInbound(rx, c, src)
 		}
-		return rx.FECSnapshot().ResidualLoss
+		return rx.PeerSnapshots()[0].FEC.ResidualLoss
 	}
 
 	// UNMASKED: drop 3 of group 1's 4 data shards (> M=2). 1 data + 2 parity = 3 < K=4, so the
@@ -589,14 +589,14 @@ func TestMultipathFECDeadlineEmitsPartialGroupParity(t *testing.T) {
 	snapDeadline := time.Now().Add(200 * time.Millisecond)
 	var snap FECStats
 	for {
-		snap = sender.FECSnapshot()
+		snap = sender.PeerSnapshots()[0].FEC
 		if snap.ParityFrames >= parityShards || !time.Now().Before(snapDeadline) {
 			break
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	if snap.ParityFrames != parityShards {
-		t.Fatalf("FECSnapshot.ParityFrames = %d, want %d after deadline flush", snap.ParityFrames, parityShards)
+		t.Fatalf("PeerSnapshots FEC.ParityFrames = %d, want %d after deadline flush", snap.ParityFrames, parityShards)
 	}
 }
 
@@ -674,7 +674,7 @@ func TestMultipathFECLateRecoveryNotCountedDelivered(t *testing.T) {
 		t.Fatalf("decoder reconstructed %d shards, want %d", got, parityShards)
 	}
 	// ... but they were delivered too late, so the honest /metrics recovered count is 0.
-	if snap := rx.FECSnapshot(); snap.Recovered != 0 {
-		t.Fatalf("FECSnapshot.Recovered = %d, want 0 (reconstructed-but-late must not count as delivered)", snap.Recovered)
+	if snap := rx.PeerSnapshots()[0].FEC; snap.Recovered != 0 {
+		t.Fatalf("PeerSnapshots FEC.Recovered = %d, want 0 (reconstructed-but-late must not count as delivered)", snap.Recovered)
 	}
 }

@@ -42,9 +42,9 @@ func TestMultipathTxBytesCountedOnSend(t *testing.T) {
 		wantTx += uint64(n)
 	}
 
-	snaps := m.PathSnapshots()
+	snaps := m.PeerSnapshots()[0].Paths
 	if len(snaps) != 2 {
-		t.Fatalf("PathSnapshots len = %d, want 2", len(snaps))
+		t.Fatalf("PeerSnapshots()[0].Paths len = %d, want 2", len(snaps))
 	}
 	if snaps[0].TxBytes != wantTx {
 		t.Errorf("path 0 TxBytes = %d, want %d (sum of wire bytes the peer received)", snaps[0].TxBytes, wantTx)
@@ -94,7 +94,7 @@ func TestMultipathRxBytesCountedOnReceive(t *testing.T) {
 	var got uint64
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		snaps := m.PathSnapshots()
+		snaps := m.PeerSnapshots()[0].Paths
 		if snaps[1].RxBytes > 0 {
 			got = snaps[1].RxBytes
 			break
@@ -109,7 +109,7 @@ func TestMultipathRxBytesCountedOnReceive(t *testing.T) {
 	if got <= uint64(len(payload)) {
 		t.Errorf("path 1 RxBytes = %d, want > inner payload len %d (outer framing)", got, len(payload))
 	}
-	if snaps := m.PathSnapshots(); snaps[0].RxBytes != 0 {
+	if snaps := m.PeerSnapshots()[0].Paths; snaps[0].RxBytes != 0 {
 		t.Errorf("path 0 RxBytes = %d, want 0 (frame arrived on path 1)", snaps[0].RxBytes)
 	}
 }
