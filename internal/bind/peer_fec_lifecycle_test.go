@@ -12,6 +12,7 @@ import (
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -278,6 +279,201 @@ func TestDispatchInboundNilGuardsDropNotPanic(t *testing.T) {
 		// Must not panic: the guard drops the reconstruction rather than resequencing on a nil ring.
 		m.demuxInbound(m.paths[0], parity, src)
 	})
+}
+
+// fecShardSpec is one (outer-seq, inner-payload) pair a test group admits into a
+// standalone fec.Encoder — the ingredients TestConcentratorFECParityNeverCrossesPeers
+// codes into a genuine 4-data/1-parity group exactly as a peer's own fecSend would.
+type fecShardSpec struct {
+	seq   uint64
+	inner []byte
+}
+
+// buildFECGroupOfFour codes 4 payloads through a FRESH fec.Encoder — mirroring one
+// peer's own independent fecSend plane — and returns its 4 data shards plus the
+// single parity shard the full group closes with. A fresh Encoder always opens its
+// first group at id 0 (Encoder.nextGroup starts at 0), so two independently-built
+// groups collide on GroupID by construction: exactly the scenario the isolation
+// test below needs.
+func buildFECGroupOfFour(t *testing.T, cfg fec.Config, specs [4]fecShardSpec) ([4]fec.DataShard, fec.ParityShard) {
+	t.Helper()
+	enc, err := fec.NewEncoder(cfg, fec.SystemClock{})
+	if err != nil {
+		t.Fatalf("build FEC encoder: %v", err)
+	}
+	var data [4]fec.DataShard
+	var parity []fec.ParityShard
+	for i, s := range specs {
+		ds, par, aerr := enc.Admit(fecShardPayload(s.seq, s.inner))
+		if aerr != nil {
+			t.Fatalf("admit shard %d: %v", i, aerr)
+		}
+		data[i] = ds
+		if par != nil {
+			parity = par
+		}
+	}
+	if len(parity) != 1 {
+		t.Fatalf("group of 4 emitted %d parity shard(s), want 1", len(parity))
+	}
+	return data, parity[0]
+}
+
+// drainPayloads Pops every ready item off a peer's resequencer and returns their
+// payloads in release order.
+func drainPayloads(rq *reseq.Resequencer) [][]byte {
+	var out [][]byte
+	for {
+		it, ok := rq.Pop()
+		if !ok {
+			return out
+		}
+		out = append(out, it.Payload)
+	}
+}
+
+// containsPayload reports whether any payload in got equals byte-for-byte want.
+func containsPayload(got [][]byte, want []byte) bool {
+	for _, g := range got {
+		if bytes.Equal(g, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestConcentratorFECParityNeverCrossesPeers is the T96 per-peer FEC isolation
+// acceptance for the T91/T93 per-peer fecSend/fecRecv split: peer A's PARITY —
+// genuinely encoded under A's own psk and delivered from A's own bound source —
+// must reconstruct ONLY into peer A's decoder, never peer B's, even when both
+// peers' independent FEC encoders assign the SAME numeric FECGroup id. That
+// collision is not contrived: every fresh per-peer fec.Encoder opens its first
+// group at id 0 (buildFECGroupOfFour), and a concentrator hub runs one encoder
+// per peer over one shared wire, so two peers' group-0's coexisting is the
+// ordinary case, not an edge case.
+//
+// Both peers are driven to an IDENTICAL pending shape — 3 of 4 data shards
+// received, group id 0, awaiting the 4th — but with DISTINCT secret payloads, so
+// a routing defect that fed A's parity into B's decoder (instead of A's) would
+// be caught either way: B's Recovered counter would spuriously advance, or B's
+// resequencer would surface A's secret payload, or (if a defect instead SHARED
+// one decoder across peers) B's own later, genuine parity would fail to recover
+// its own secret. Mutation-verified: temporarily making dispatchInbound's PARITY
+// case route to `pr := ps.peer` -> a HARD-CODED wrong peer's fecRecv (e.g. always
+// `primary.fecRecv` regardless of ps) turns this red — peer B's Recovered stays 0
+// where it must be 1, or peer A's secret leaks into peer B's resequencer.
+func TestConcentratorFECParityNeverCrossesPeers(t *testing.T) {
+	pskA := testKey(t, 0x11)
+	pskB := testKey(t, 0x22)
+	fecCfg := &fec.Config{DataShards: 4, ParityShards: 1, Deadline: testFECDeadline}
+	m, primary, second, clk := lazyConcentratorFEC(t, pskA, pskB, fecCfg)
+	primaryView := peerPathByName(primary, "a")
+	secondView := peerPathByName(second, "a")
+
+	srcA := synthSource(1)
+	srcB := synthSource(2)
+
+	// Bind both sources with genuine authenticated PROBEs: the shared socket now
+	// serves two views, so demuxInbound routes strictly by learned source (T88).
+	m.demuxInbound(m.paths[0], authProbe(t, pskA, primaryView.id, 1, clk), srcA)
+	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), srcB)
+	if bound, ok := m.lookupPeerBySource(srcA.Addr()); !ok || bound != primary {
+		t.Fatalf("srcA did not bind to the primary: bound=%v ok=%v", bound, ok)
+	}
+	if bound, ok := m.lookupPeerBySource(srcB.Addr()); !ok || bound != second {
+		t.Fatalf("srcB did not bind to peer B: bound=%v ok=%v", bound, ok)
+	}
+
+	codecA, err := frame.NewCodec(pskA)
+	if err != nil {
+		t.Fatalf("build peer A codec: %v", err)
+	}
+	codecB, err := frame.NewCodec(pskB)
+	if err != nil {
+		t.Fatalf("build peer B codec: %v", err)
+	}
+
+	specsA := [4]fecShardSpec{{100, []byte("A-0")}, {101, []byte("A-1")}, {102, []byte("A-2")}, {103, []byte("A-secret-3")}}
+	specsB := [4]fecShardSpec{{200, []byte("B-0")}, {201, []byte("B-1")}, {202, []byte("B-2")}, {203, []byte("B-secret-3")}}
+	dataA, parityA := buildFECGroupOfFour(t, *fecCfg, specsA)
+	dataB, parityB := buildFECGroupOfFour(t, *fecCfg, specsB)
+	if dataA[0].Group != 0 || dataB[0].Group != 0 {
+		t.Fatalf("expected both fresh per-peer encoders to open group 0, got A=%d B=%d", dataA[0].Group, dataB[0].Group)
+	}
+
+	encodeData := func(codec *frame.Codec, view *peerPathState, ds fec.DataShard, s fecShardSpec) []byte {
+		raw, eerr := codec.Encode(nil, frame.Data{
+			OuterSeq: s.seq,
+			PathID:   view.id,
+			FECGroup: uint32(ds.Group),
+			FECIndex: uint8(ds.Index),
+			Payload:  s.inner,
+		})
+		if eerr != nil {
+			t.Fatalf("encode DATA: %v", eerr)
+		}
+		return raw
+	}
+	encodeParity := func(codec *frame.Codec, view *peerPathState, p fec.ParityShard) []byte {
+		raw, eerr := codec.Encode(nil, frame.Parity{
+			FECGroup:    uint32(p.Group),
+			ParityIndex: uint16(p.Index),
+			DataCount:   uint8(p.DataCount),
+			PathID:      view.id,
+			Payload:     p.Payload,
+		})
+		if eerr != nil {
+			t.Fatalf("encode PARITY: %v", eerr)
+		}
+		return raw
+	}
+
+	// Withhold index 3 from BOTH peers: each decoder now holds a partial group-0
+	// (3 of 4 shards), awaiting its own parity to recover its own secret.
+	for i := 0; i < 3; i++ {
+		m.demuxInbound(m.paths[0], encodeData(codecA, primaryView, dataA[i], specsA[i]), srcA)
+	}
+	for i := 0; i < 3; i++ {
+		m.demuxInbound(m.paths[0], encodeData(codecB, secondView, dataB[i], specsB[i]), srcB)
+	}
+
+	recoveredBeforeA := primary.fecRecv.Load().stats().Recovered
+	recoveredBeforeB := second.fecRecv.Load().stats().Recovered
+
+	// Deliver peer A's OWN genuine parity to peer A's OWN bound source.
+	m.demuxInbound(m.paths[0], encodeParity(codecA, primaryView, parityA), srcA)
+
+	if got := primary.fecRecv.Load().stats().Recovered - recoveredBeforeA; got != 1 {
+		t.Fatalf("peer A's own parity recovered %d frame(s) into A's decoder, want 1", got)
+	}
+	if got := second.fecRecv.Load().stats().Recovered - recoveredBeforeB; got != 0 {
+		t.Fatalf("peer A's parity leaked into peer B's decoder: B's Recovered advanced by %d", got)
+	}
+
+	primaryPayloads := drainPayloads(primary.resequencer.Load())
+	if !containsPayload(primaryPayloads, []byte("A-secret-3")) {
+		t.Fatalf("peer A's resequencer never received its own recovered secret; got %q", primaryPayloads)
+	}
+
+	secondPayloads := drainPayloads(second.resequencer.Load())
+	if containsPayload(secondPayloads, []byte("A-secret-3")) {
+		t.Fatalf("peer A's recovered secret leaked into peer B's resequencer: %q", secondPayloads)
+	}
+	if containsPayload(secondPayloads, []byte("B-secret-3")) {
+		t.Fatal("peer B's own secret was recovered before peer B's own parity was ever delivered: B's group was disturbed")
+	}
+
+	// Reciprocal check: peer B's own group-0 must still be intact and independently
+	// recoverable from ITS own parity — proving A's parity delivery neither
+	// corrupted nor consumed B's pending group.
+	m.demuxInbound(m.paths[0], encodeParity(codecB, secondView, parityB), srcB)
+	if got := second.fecRecv.Load().stats().Recovered - recoveredBeforeB; got != 1 {
+		t.Fatalf("peer B's own parity recovered %d frame(s) into B's decoder, want 1", got)
+	}
+	secondPayloadsAfter := drainPayloads(second.resequencer.Load())
+	if !containsPayload(secondPayloadsAfter, []byte("B-secret-3")) {
+		t.Fatalf("peer B's own parity did not recover B's own secret; got %q", secondPayloadsAfter)
+	}
 }
 
 // TestConcentratorTeardownRebindDemuxRace drives the CONCURRENT ordering the dispatchInbound
