@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 19
+  item: 20
 archives: []
 ---
 
@@ -263,6 +263,18 @@ archives: []
 - blockingQuestions: ["Q51","Q52","Q53","Q54","Q55"]
 - sessionLogs: [".cq/logs/20260714-121742-a7376892a4d9f68f5.md"]
 - rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl"]
+
+### HO20 — drained
+
+- createdAt: 2026-07-14T12:54:26.543Z
+- updatedAt: 2026-07-14T12:54:26.543Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- summary: "/cq:plan:advance G13 (standalone) run to completion: G13 reached `planned`. Q51-Q55 were all answered, so the configured multi-planner path ran: 2 candidate planners (opus 5M/6T, fable 5M/8T) fanned out in CANDIDATE mode; JUDGE+SYNTHESIS took fable's finer 8-task decomposition as base (guard split into hard-fail T142 + WARN/gauge T144; a dedicated configured-but-inert e2e scenario T147) and folded in opus's reproduce-first probe acceptance (T145); the orchestrator persisted work milestones M51-M55 + tasks T141-T148 and transitioned G13 to planning. Review loop (configured opus+fable panel, strictest-wins): R155 revise (4 criticisms: T143 false 'flips silently' grounding [updateGateLocked already logs 'scheduler aggregation change'] risking double-log; T143/T147 asserting a non-existent 'engaged/disengaged' log string; T144 asserting the T141 capturer without a dependsOn edge; T144 partial-link_bandwidth verdict unspecified) -> orchestrator revised T143/T147/T144 in place -> R156 unanimous go-ahead. Decision K13 locked; G13 `planned`; planning-lock commit 24fddb9. Auto-investigate worklist EMPTY by ledger query (both reviewers filed 0 out-of-scope defects; no actionable defect carries goals:G13). Scope note: G13 stayed operability-only per Q53 Option A (item-2 auto-derive + item-3(a) BDP-sizing docs remain G2/Q20-owned by reference, not re-planned). NEXT: /cq:implement:start (or /cq:advance) to build M51-M55."
+- flow: plan
+- ledgerRefs: ["goals:G13","reviews:R155","reviews:R156","decisions:K13"]
+- sessionLogs: [".cq/logs/20260714-123907-ac5d6e2c7eba4f406.md",".cq/logs/20260714-123907-a525c21bb0638ebf4.md",".cq/logs/20260714-124714-a81dc426b159d4381.md",".cq/logs/20260714-124714-af7800def9e0eca35.md",".cq/logs/20260714-125245-ae05184c487158ddc.md",".cq/logs/20260714-125245-a943cee6cd9b93e72.md"]
+- rawLogs: [".cq/logs/raw/20260714-123907-ac5d6e2c7eba4f406.jsonl",".cq/logs/raw/20260714-123907-a525c21bb0638ebf4.jsonl",".cq/logs/raw/20260714-124714-a81dc426b159d4381.jsonl",".cq/logs/raw/20260714-124714-af7800def9e0eca35.jsonl",".cq/logs/raw/20260714-125245-ae05184c487158ddc.jsonl",".cq/logs/raw/20260714-125245-a943cee6cd9b93e72.jsonl"]
 
 ## M49
 
