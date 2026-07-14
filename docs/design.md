@@ -289,6 +289,34 @@ essential to validate that the declared bandwidth and RTT reflect the actual
 link properties; the netns fixture is CPU-bound and cannot build the standing
 queues pacing is designed to control (see [manual-checklist.md §P0](manual-checklist.md#p0--spike--baseline)).
 
+**Capacity-sanity guard and WARN (T142/T144).** A path that declares
+`link_bandwidth` under the weighted policy must be able to sustain the
+aggregation engage threshold (`engage_fraction * per_path_capacity_fps`), or
+aggregation can mathematically never engage at line rate on it — a
+misconfiguration `validateWeightedEngageAgainstBandwidth` (T142) refuses at
+config load (hard fail) for every path that DOES declare a bandwidth and
+contradicts the guard. That guard cannot check a path that declares no
+bandwidth at all; T144 is the complementary SOFT verdict for exactly that gap.
+At load, `Config.WeightedCapacitySane` (`internal/config`) records: nil when
+the policy is not weighted (not applicable); `true` when every path declares
+`link_bandwidth` (SANE-VERIFIED — the T142 guard has then necessarily also
+passed, since Load would otherwise have already failed); `false` when at least
+one path's `link_bandwidth` is undeclared — UNVERIFIABLE, covering both "no
+path declares it" and a PARTIAL declaration (reachable whenever pacing is
+disabled, the shipped default, since the derive above then no-ops and never
+rejects a partial set). Unlike T142, this is never fatal: startup must not be
+blocked on an unverifiable — as opposed to a contradicting — declaration. The
+daemon instead logs ONE actionable startup WARN
+(`cmd/wanbond`'s `warnUnverifiableWeightedCapacity`) and the `/metrics`
+endpoint exposes a STATIC, unlabeled `wanbond_weighted_capacity_sane` gauge
+(1 = verified sane, 0 = unverifiable) registered directly from the loaded
+config alongside — not through — the Source-driven collector (it is
+config-derived, not per-peer, so it carries no `peer` label and is exempt from
+the collector's per-peer back-compat rule); the family is absent entirely
+under the active-backup policy. See
+[install.md §6b](install.md#6b-weighted-policy-capacity-sanity-check-t144) for
+the operator-facing remedy.
+
 ### Concentrator hub failover — `internal/device` (`failover.go`, T57)
 
 Two *different* failovers exist and must not be conflated:

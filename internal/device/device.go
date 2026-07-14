@@ -512,7 +512,7 @@ func (t *Tunnel) applyMetricsLocked(listen string) error {
 		t.stopMetricsLocked()
 		return nil
 	}
-	srv, err := metrics.NewServer(listen, t.metricsSrc, t.log)
+	srv, err := metrics.NewServer(listen, t.metricsSrc, t.cfg.WeightedCapacitySane, t.log)
 	if err != nil {
 		return err
 	}
@@ -696,6 +696,12 @@ func reloadWarnings(live, desired *config.Config) []string {
 	lc.Bind, dc.Bind = "", ""
 	lc.Paths, dc.Paths = nil, nil
 	lc.Metrics, dc.Metrics = config.Metrics{}, config.Metrics{}
+	// WeightedCapacitySane (T144) is a value COMPUTED from Scheduler+Paths, never an
+	// independent operator knob (toml:"-") — a change to it is always a symptom of a
+	// Scheduler or Paths change, both already compared above (or, for a same-name
+	// path's link_bandwidth specifically, a pre-existing gap outside T144's scope).
+	// Comparing it directly here would be redundant at best and could double-warn.
+	lc.WeightedCapacitySane, dc.WeightedCapacitySane = nil, nil
 	if !reflect.DeepEqual(lc, dc) {
 		w = append(w, "other config section changed — reload does not apply it; restart required")
 	}

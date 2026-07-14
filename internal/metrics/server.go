@@ -41,8 +41,12 @@ type Server struct {
 // /metrics handler over a private registry fed by src. It returns
 // ErrNonLoopbackBind WITHOUT binding if addr is not loopback. addr is a
 // host:port string; a ":0" or "127.0.0.1:0" port yields an OS-assigned port
-// readable via Addr after construction.
-func NewServer(addr string, src Source, logger log.Logger) (*Server, error) {
+// readable via Addr after construction. weightedCapacitySane is the T144
+// config-derived verdict (config.Config.WeightedCapacitySane, verbatim): nil
+// registers no wanbond_weighted_capacity_sane series at all (the non-weighted-policy
+// case — the family is absent entirely); a non-nil bool registers it as a STATIC
+// gauge fixed at that value, alongside (not through) the Source-driven collector.
+func NewServer(addr string, src Source, weightedCapacitySane *bool, logger log.Logger) (*Server, error) {
 	if err := requireLoopback(addr); err != nil {
 		return nil, err
 	}
@@ -50,6 +54,11 @@ func NewServer(addr string, src Source, logger log.Logger) (*Server, error) {
 	reg := prometheus.NewRegistry()
 	if err := reg.Register(NewCollector(src)); err != nil {
 		return nil, fmt.Errorf("metrics: register collector: %w", err)
+	}
+	if weightedCapacitySane != nil {
+		if err := reg.Register(newWeightedCapacityGauge(*weightedCapacitySane)); err != nil {
+			return nil, fmt.Errorf("metrics: register weighted-capacity gauge: %w", err)
+		}
 	}
 
 	ln, err := net.Listen("tcp", addr)

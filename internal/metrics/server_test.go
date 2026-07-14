@@ -22,7 +22,7 @@ func TestNonLoopbackBindRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, err := NewServer(tc.addr, fakeSource{}, testLogger(t))
+			srv, err := NewServer(tc.addr, fakeSource{}, nil, testLogger(t))
 			if err == nil {
 				ctx := t.Context()
 				_ = srv.Close(ctx)
@@ -42,7 +42,7 @@ func TestNonLoopbackBindRefused(t *testing.T) {
 func TestLoopbackBindAccepted(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
 		t.Run(addr, func(t *testing.T) {
-			srv, err := NewServer(addr, fakeSource{}, testLogger(t))
+			srv, err := NewServer(addr, fakeSource{}, nil, testLogger(t))
 			if err != nil {
 				t.Fatalf("NewServer(%q): %v", addr, err)
 			}
@@ -57,7 +57,7 @@ func TestLoopbackBindAccepted(t *testing.T) {
 // TestInvalidListenAddress asserts a malformed address is rejected with a parse
 // error (not ErrNonLoopbackBind).
 func TestInvalidListenAddress(t *testing.T) {
-	_, err := NewServer("not-an-address", fakeSource{}, testLogger(t))
+	_, err := NewServer("not-an-address", fakeSource{}, nil, testLogger(t))
 	if err == nil {
 		t.Fatal("NewServer with malformed address succeeded, want error")
 	}
@@ -104,7 +104,7 @@ func TestVerifyLoopbackBind(t *testing.T) {
 // bound a loopback interface — the guard ENFORCES loopback on the concrete
 // bound address, not merely on a pre-Listen resolution.
 func TestHostnameBindVerifiedLoopback(t *testing.T) {
-	srv, err := NewServer("localhost:0", fakeSource{}, testLogger(t))
+	srv, err := NewServer("localhost:0", fakeSource{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer(localhost:0): %v", err)
 	}

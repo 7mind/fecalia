@@ -64,6 +64,18 @@ type Config struct {
 	// device STILL needs the unmanaged-devices drop-in (D39) — persistence keeps
 	// the link across restarts but does not exempt it from NetworkManager.
 	TUNPersist bool `toml:"tun_persist"`
+	// WeightedCapacitySane is the Q52 WARN-arm capacity-sanity verdict (T144), computed
+	// by normalize() and never read from TOML: nil when scheduler.policy is not
+	// "weighted" (not applicable — the wanbond_weighted_capacity_sane metric family is
+	// absent and no startup WARN is possible), otherwise a non-nil bool — true when
+	// EVERY path declares link_bandwidth (SANE-VERIFIED: gauge=1, no WARN — by the time
+	// Load returns, the T142 hard-fail guard has necessarily also passed, since a
+	// declared-but-inconsistent path would have already aborted Load), false when at
+	// least one path's link_bandwidth is undeclared (UNVERIFIABLE: gauge=0, one startup
+	// WARN — covering BOTH "no path declares it" and a PARTIAL declaration, the latter
+	// reachable whenever pacing is disabled since deriveWeightedPacingFromBDP then
+	// no-ops and never rejects it). See weightedCapacitySane.
+	WeightedCapacitySane *bool `toml:"-"`
 }
 
 // BindMode selects, per path, how that path's UDP socket is bound to the
@@ -936,7 +948,33 @@ func (c *Config) normalize() error {
 	if err := c.DNS.applyDefaults(); err != nil {
 		return err
 	}
+	// Computed LAST, after c.Scheduler.applyDefaults() has resolved an omitted
+	// scheduler.policy to its default (PolicyActiveBackup) — see weightedCapacitySane's
+	// doc for why this must run after every path's LinkBandwidthBitsPerSec is parsed.
+	c.WeightedCapacitySane = c.weightedCapacitySane()
 	return nil
+}
+
+// weightedCapacitySane computes the Q52 WARN-arm capacity-sanity verdict (T144, the
+// complementary soft-verdict to T142's hard-fail guard): nil when the scheduler is not
+// running the weighted policy (not applicable). Under the weighted policy it is true
+// when EVERY path declares link_bandwidth — SANE-VERIFIED — and false when at least one
+// does not — UNVERIFIABLE, covering both "no path declares it" and a PARTIAL
+// declaration. It must run after normalize has parsed every path's LinkBandwidthRaw
+// into LinkBandwidthBitsPerSec and after c.Scheduler.applyDefaults has resolved an
+// omitted policy, so it sees the EFFECTIVE policy and EFFECTIVE per-path bandwidths.
+func (c *Config) weightedCapacitySane() *bool {
+	if c.Scheduler.Policy != PolicyWeighted {
+		return nil
+	}
+	declared := 0
+	for i := range c.Paths {
+		if c.Paths[i].LinkBandwidthBitsPerSec > 0 {
+			declared++
+		}
+	}
+	sane := declared == len(c.Paths)
+	return &sane
 }
 
 // deriveWeightedPacingFromBDP sizes the weighted scheduler's per-path pace from the

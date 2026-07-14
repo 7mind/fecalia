@@ -207,7 +207,7 @@ func TestReloadWarningsCatchAll(t *testing.T) {
 	known := map[string]bool{
 		"Role": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
 		"Metrics": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
-		"Bind": true, "TUNPersist": true,
+		"Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
 	}
 	typ := reflect.TypeOf(config.Config{})
 	for i := 0; i < typ.NumField(); i++ {

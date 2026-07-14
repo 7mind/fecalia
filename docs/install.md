@@ -1290,6 +1290,47 @@ coordinated both-ends restart above (~25 s total) whenever possible. Until
 D36 is fixed, coordinate endpoint restarts — both together is far faster than
 one at a time.
 
+### 6b. Weighted-policy capacity-sanity check (T144)
+
+Under `scheduler.policy = "weighted"`, at startup the daemon checks whether
+every `[[paths]]` block declares `link_bandwidth` — the precondition for the
+aggregate capacity accounting (`per_path_capacity_fps` / the engage threshold)
+to be provably sane. This is a **soft** check — it never blocks startup —
+distinct from the **hard** `link_bandwidth`-vs-`engage_fraction` guard
+(config load refuses outright if a *declared* bandwidth cannot sustain the
+engage threshold; see [§3a](#3a-tuning-per-link-bandwidth-and-pacing)). This
+check instead covers the paths that guard cannot see: any path that leaves
+`link_bandwidth` undeclared.
+
+- **`wanbond_weighted_capacity_sane` Prometheus gauge:** a static (fixed at
+  startup, not re-scraped), unlabeled 0/1 metric.
+  ```sh
+  curl -s http://127.0.0.1:9090/metrics | grep wanbond_weighted_capacity_sane
+  ```
+  - `1` — **SANE-VERIFIED**: every path declares `link_bandwidth`.
+  - `0` — **UNVERIFIABLE**: at least one path does not declare
+    `link_bandwidth` — either none of them do, or only some do (a PARTIAL
+    declaration, reachable whenever `scheduler.pacing_enabled` is left at its
+    default `false`).
+  - **Absent entirely** under `scheduler.policy = "active-backup"` (the
+    default) — the check does not apply outside the weighted policy.
+
+- **Startup WARN log line:** emitted once, at daemon start, exactly when the
+  gauge above reads `0`:
+  ```sh
+  journalctl -u wanbond-edge | grep "weighted policy: link_bandwidth capacity is unverifiable"
+  ```
+  The record's `declared_paths`/`total_paths` fields name how many paths
+  declared a bandwidth out of the total. **Remedy:** declare `link_bandwidth`
+  on **all** paths so capacity can be checked, or verify
+  `scheduler.per_path_capacity_fps` against the BDP sizing recipe in
+  [§3a](#3a-tuning-per-link-bandwidth-and-pacing) instead.
+
+A path that DOES declare `link_bandwidth` but contradicts the engage
+threshold still hard-fails config load exactly as before (§3a) — this WARN is
+about the paths that declare nothing at all, which the hard guard cannot
+evaluate.
+
 ## 7. MTU
 
 The daemon sets the TUN MTU itself from the bonded-overhead budget (see

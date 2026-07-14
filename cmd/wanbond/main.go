@@ -54,6 +54,7 @@ func run(args []string) error {
 	}
 	main := lg.Component("main")
 	main.Info("wanbond starting", "version", version, "role", string(cfg.Role))
+	warnUnverifiableWeightedCapacity(main, cfg)
 
 	tun, err := device.Up(cfg, lg)
 	if err != nil {
@@ -84,6 +85,29 @@ func run(args []string) error {
 			return fmt.Errorf("tunnel device stopped unexpectedly")
 		}
 	}
+}
+
+// warnUnverifiableWeightedCapacity logs the Q52 WARN-arm startup diagnostic (T144)
+// when cfg's weighted-policy capacity-sanity verdict is UNVERIFIABLE — some or all
+// paths leave link_bandwidth undeclared, so the aggregate capacity accounting cannot
+// be checked. It is a NO-OP (not applicable, no WARN) when cfg.WeightedCapacitySane
+// is nil (the active-backup policy) or SANE-VERIFIED (every path declared). This is
+// the soft, non-blocking complement to config.Load's T142 hard-fail guard: startup
+// must NEVER be blocked on an unverifiable declaration, only on a DECLARED path that
+// actively contradicts the guard (which Load already refused before main ever runs).
+func warnUnverifiableWeightedCapacity(lg log.Logger, cfg *config.Config) {
+	if cfg.WeightedCapacitySane == nil || *cfg.WeightedCapacitySane {
+		return
+	}
+	declared := 0
+	for _, p := range cfg.Paths {
+		if p.LinkBandwidthBitsPerSec > 0 {
+			declared++
+		}
+	}
+	lg.Warn("weighted policy: link_bandwidth capacity is unverifiable",
+		"declared_paths", declared, "total_paths", len(cfg.Paths),
+		"remedy", "declare link_bandwidth on ALL paths so capacity can be checked, or verify per_path_capacity_fps against the BDP sizing in install.md §3a")
 }
 
 // reloadTunnel re-reads and validates the config file and applies its path diff to

@@ -105,6 +105,40 @@ const (
 	MetricSessionLastHandshake = "wanbond_session_last_handshake_seconds"
 )
 
+// MetricWeightedCapacitySane is the Q52 WARN-arm capacity-sanity gauge (T144).
+// Unlike every other series above, it is CONFIG-DERIVED, not sourced from Source at
+// scrape time: its value is fixed once at daemon startup from the loaded
+// config.Config.WeightedCapacitySane verdict, registered as a STATIC gauge alongside
+// (not through) the Source-driven collector — see NewServer. It carries no labels at
+// all (config-derived, not per-peer — exempt from the labelPeer back-compat rule) and
+// the family is ABSENT ENTIRELY under the active-backup policy (a nil verdict). Under
+// the weighted policy it reads 1 when every path declares link_bandwidth (SANE-VERIFIED)
+// or 0 when at least one path's declaration is missing or partial (UNVERIFIABLE) — see
+// docs/install.md §3a for the operator remedy.
+const MetricWeightedCapacitySane = "wanbond_weighted_capacity_sane"
+
+// newWeightedCapacityGauge builds the static wanbond_weighted_capacity_sane gauge
+// (T144) fixed at sane's value for the collector's whole life — unlike collector, it
+// is never re-read at scrape time, matching its config-derived (not live-telemetry)
+// source of truth.
+func newWeightedCapacityGauge(sane bool) prometheus.Collector {
+	g := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "weighted_capacity_sane",
+		Help:      "Config-derived weighted-policy capacity-sanity verdict (1 = every path declares link_bandwidth, 0 = unverifiable; see docs/install.md).",
+	})
+	g.Set(weightedCapacitySaneValue(sane))
+	return g
+}
+
+// weightedCapacitySaneValue maps the T144 verdict to the gauge value.
+func weightedCapacitySaneValue(sane bool) float64 {
+	if sane {
+		return 1
+	}
+	return 0
+}
+
 // FECSnapshot is the current connection-scoped FEC signal set the exposition layer
 // reports (T24). It is sourced from the multipath Bind's FEC counters, read at scrape
 // time like the per-path snapshots. All zero when FEC is disabled.

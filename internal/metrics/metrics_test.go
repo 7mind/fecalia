@@ -44,10 +44,19 @@ func testLogger(t *testing.T) log.Logger {
 }
 
 // startServer builds a loopback metrics server over src, starts it, and registers
-// cleanup. It returns the running server.
+// cleanup. It returns the running server. weightedCapacitySane is nil (the
+// non-weighted-policy shape — no wanbond_weighted_capacity_sane series at all) for
+// every existing caller; see startServerWithCapacity for the T144 registration tests.
 func startServer(t *testing.T, src Source) *Server {
 	t.Helper()
-	srv, err := NewServer("127.0.0.1:0", src, testLogger(t))
+	return startServerWithCapacity(t, src, nil)
+}
+
+// startServerWithCapacity is startServer plus an explicit T144 weightedCapacitySane
+// verdict, for the wanbond_weighted_capacity_sane registration tests.
+func startServerWithCapacity(t *testing.T, src Source, weightedCapacitySane *bool) *Server {
+	t.Helper()
+	srv, err := NewServer("127.0.0.1:0", src, weightedCapacitySane, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -441,5 +450,57 @@ func TestExpositionReseqRebaselineAndDropSuspect(t *testing.T) {
 	}
 	if got, ok := exp.Value(MetricReseqDroppedSuspect); !ok || got != 1 {
 		t.Errorf("%s = %v (present=%v), want 1", MetricReseqDroppedSuspect, got, ok)
+	}
+}
+
+// TestWeightedCapacitySaneAbsentUnderActiveBackup asserts the T144 gauge family is
+// registered AT ALL only when a T144 verdict is supplied: NewServer(..., nil, ...) —
+// the shape config.Config.WeightedCapacitySane presents under the active-backup
+// policy — must expose no wanbond_weighted_capacity_sane series whatsoever, not a
+// present-but-empty family and not a present-with-zero-value series.
+func TestWeightedCapacitySaneAbsentUnderActiveBackup(t *testing.T) {
+	srv := startServerWithCapacity(t, fakeSource{}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if exp.Has(MetricWeightedCapacitySane) {
+		t.Errorf("%s registered under a nil (active-backup) verdict, want absent entirely", MetricWeightedCapacitySane)
+	}
+}
+
+// TestWeightedCapacitySaneGaugeValue asserts the T144 gauge, when a verdict IS
+// supplied, exposes an unlabeled series carrying exactly that value — 1 for
+// SANE-VERIFIED, 0 for UNVERIFIABLE.
+func TestWeightedCapacitySaneGaugeValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sane bool
+		want float64
+	}{
+		{"sane-verified", true, 1},
+		{"unverifiable", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sane := tc.sane
+			srv := startServerWithCapacity(t, fakeSource{}, &sane)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			got, ok := exp.Value(MetricWeightedCapacitySane)
+			if !ok {
+				t.Fatalf("%s series absent, want present", MetricWeightedCapacitySane)
+			}
+			if got != tc.want {
+				t.Errorf("%s = %v, want %v", MetricWeightedCapacitySane, got, tc.want)
+			}
+		})
 	}
 }
