@@ -207,8 +207,8 @@ func TestMultipathVirtualEndpointDstRace(t *testing.T) {
 			defer writersWg.Done()
 			ap := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, byte(id + 1)}), uint16(1000+id))
 			for j := 0; j < iters; j++ {
-				m.virtualEndpoint(ap) // real pin path (guarded, publishes atomically)
-				m.virt.setDst(ap)     // direct hammer to stress the accessor
+				m.virtualEndpoint(m.peerState, ap) // real pin path (guarded, publishes atomically)
+				m.virt.setDst(ap)                  // direct hammer to stress the accessor
 			}
 		}(i)
 	}

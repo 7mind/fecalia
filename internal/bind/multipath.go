@@ -312,6 +312,13 @@ type Multipath struct {
 	// them by peer id/name.
 	peers       []*peerState
 	peersByName map[string]*peerState
+	// peersView is the LOCK-FREE snapshot of the bound peer set the single engine-facing
+	// receive drainer iterates (newReceiveFunc). m.peers is mutated only under m.mu (peer
+	// wiring / fan-out); every mutation republishes this pointer (republishPeersLocked) so
+	// the drainer enumerates EVERY bound peer's resequencer WITHOUT taking m.mu on the
+	// receive hot path — the same lock-free-publish discipline resequencer/fecRecv use. It
+	// is never nil after construction (the constructor publishes the primary-only view).
+	peersView atomic.Pointer[[]*peerState]
 	// peerByEndpoint / peerBySource are the inbound demux lookup maps the concentrator's
 	// shared-socket receive path needs to route a datagram to the owning peer (endpoint or
 	// learned source → peer). They are PLACEHOLDERS today: the single-peer edge/hub needs no
@@ -498,7 +505,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	// the process life and every existing test relies on the virtual-endpoint pointer being
 	// stable across Open/Close/add/remove.
 	primary := newPeerState("", psk, scheduler, newProber, probers)
-	return &Multipath{
+	m := &Multipath{
 		defs:           append([]config.Path(nil), paths...),
 		classify:       newWGClassifier(amnezia),
 		deferredListen: defaultDeferredListen,
@@ -510,7 +517,23 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		peerByVirt:     map[*udpEndpoint]*peerState{primary.virt: primary},
 		fecCfg:         fecCfg,
 		adaptiveCfg:    adaptiveCfg,
-	}, nil
+	}
+	// Publish the initial (primary-only) peer view the receive drainer iterates. No
+	// concurrency yet — the bind is not open — so this runs without m.mu.
+	m.republishPeersLocked()
+	return m, nil
+}
+
+// republishPeersLocked snapshots m.peers into the lock-free peersView the engine-facing
+// receive drainer (newReceiveFunc) iterates. The caller MUST hold m.mu whenever the bind
+// can be open (so the snapshot never races a concurrent m.peers append); the constructor
+// is the sole exception (it runs before the Multipath is reachable by any goroutine). The
+// snapshot is a fresh slice so a later append to m.peers never mutates a view the drainer
+// is mid-iteration over.
+func (m *Multipath) republishPeersLocked() {
+	snap := make([]*peerState, len(m.peers))
+	copy(snap, m.peers)
+	m.peersView.Store(&snap)
 }
 
 // Open binds one UDP socket per configured path to that path's source address on
@@ -897,15 +920,24 @@ func (m *Multipath) nudgeSchedulerActive() {
 	m.scheduler.Recompute()
 }
 
-// newReceiveFunc returns the SINGLE engine-facing ReceiveFunc: it drains the shared
-// resequencer in outer-seq order and hands each inner datagram up under the one
-// virtual endpoint. Because every path's reader feeds this one drainer, a path added
-// or removed at runtime needs no change to the engine's receive set. When nothing is
-// ready it parks until a reader pokes deliver, until Close closes closed, or until a
-// short poll elapses — the poll guarantees a head-of-line-blocked run still makes
-// timeout progress even if the last live path fell silent right after buffering it.
-// A single drainer also delivers with ZERO added reorder (only it calls Pop), which
-// is stricter than T12's per-path receivers.
+// newReceiveFunc returns the SINGLE engine-facing ReceiveFunc: it drains EACH bound peer's
+// resequencer in that peer's own outer-seq order and hands each inner datagram up stamped
+// with THAT peer's stable virtual endpoint (per-packet endpoint fill), so the engine
+// attributes return traffic to the right peer and Send routes replies back via that peer's
+// virt (invariant A1: one virtual endpoint per peer). A path's reader (handleInbound) has
+// already routed each DATA frame to its OWNING peer's resequencer via the peerPathState's
+// ps.peer back-reference, so a shared socket serving many peers keeps each peer's stream
+// isolated; this drainer just fans the in-order releases back in. Because every path's
+// reader feeds one of these resequencers and a single drainer releases them, a path (or
+// peer) added or removed at runtime needs no change to the engine's receive set.
+//
+// Fairness: the peers are scanned round-robin from a rotating cursor so a saturated peer
+// cannot starve another peer's in-order releases (single-peer edge/hub: the cursor is a
+// no-op). When nothing is ready across ANY peer it parks until a reader pokes deliver,
+// until Close closes closed, or until a short poll elapses — the poll guarantees a
+// head-of-line-blocked run still makes timeout progress even if the last live path fell
+// silent right after buffering it. A single drainer delivers with ZERO added reorder
+// (only it calls Pop), which is stricter than T12's per-path receivers.
 func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct{}) ReceiveFunc {
 	// One reusable poll timer per drainer, NOT a fresh time.After timer per park: the
 	// drainer parks on every empty receive, and a per-park 250 ms timer — retained by
@@ -922,18 +954,43 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 		}
 	}
 	stopTimer() // start inert; armed only while parked
+	// rr is the round-robin cursor, advanced past a peer each time it yields a frame so
+	// the next receive starts at the following peer. It is touched only by this single
+	// engine goroutine, so it needs no synchronisation.
+	var rr int
 	return func(packets [][]byte, sizes []int, eps []Endpoint) (int, error) {
 		for {
-			// Deliver any in-order resequenced DATA. The item carries the outer source
-			// of the frame that produced it, so the virtual endpoint pins correctly even
-			// when the frame was buffered and released out of arrival order.
-			if it, ok := m.resequencer.Load().Pop(); ok {
+			// Scan every bound peer round-robin for an in-order resequenced DATA frame.
+			// The item carries the outer source of the frame that produced it, so the
+			// peer's virtual endpoint pins correctly even when the frame was buffered and
+			// released out of arrival order. The peer view is read lock-free (peersView),
+			// so a concurrent peer wiring/fan-out never contends m.mu here.
+			peers := *m.peersView.Load()
+			n := len(peers)
+			progressed := false
+			for i := 0; i < n; i++ {
+				ps := peers[(rr+i)%n]
+				rq := ps.resequencer.Load()
+				if rq == nil {
+					continue // a peer not yet Open on this span has no resequencer
+				}
+				it, ok := rq.Pop()
+				if !ok {
+					continue
+				}
+				rr = (rr + i + 1) % n // start the next scan after this peer (fairness)
 				if len(it.Payload) > len(packets[0]) {
-					continue // oversize inner datagram: drop, keep draining
+					// Oversize inner datagram: drop it, but a frame WAS dequeued this pass,
+					// so keep draining (re-scan) rather than parking.
+					progressed = true
+					break
 				}
 				sizes[0] = copy(packets[0], it.Payload)
-				eps[0] = m.virtualEndpoint(it.Src)
+				eps[0] = m.virtualEndpoint(ps, it.Src)
 				return 1, nil
+			}
+			if progressed {
+				continue // dropped an oversize frame; re-scan before parking
 			}
 			timer.Reset(resequencerTimeout)
 			select {
@@ -1081,25 +1138,29 @@ func (m *Multipath) observeRecovered(fr *fecReceiver, rq *reseq.Resequencer, rec
 	}
 }
 
-// virtualEndpoint returns the single stable endpoint the engine holds for the
-// peer. On the concentrator (which has no configured endpoint) its destination
-// is pinned ONCE to the first learned source; thereafter every path returns the
-// identical pointer so the engine sees one peer, never per-packet churn.
+// virtualEndpoint returns the single stable endpoint the engine holds for the GIVEN
+// peer (ps). Each peer owns its OWN virtual endpoint (invariant A1: one virtual endpoint
+// per peer), so the drainer stamps a delivered inner datagram with the endpoint of the
+// peer whose resequencer released it — the engine thus attributes return traffic to the
+// right peer and Send routes replies back via that peer's virt. On a peer with no
+// configured endpoint (the concentrator) its destination is pinned ONCE to the first
+// learned source; thereafter every path returns the identical pointer so the engine sees
+// one peer, never per-packet churn.
 //
 // Hot-path note: the destination, once pinned, never changes, and it is published
 // through an atomic.Pointer (see udpEndpoint). So the common case takes a
 // lock-free fast path — every received datagram would otherwise contend m.mu with
 // in-flight Sends. The mutex is acquired only to pin the FIRST learned source.
-func (m *Multipath) virtualEndpoint(learned netip.AddrPort) Endpoint {
-	if m.virt.dstValid() {
-		return m.virt
+func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpoint {
+	if ps.virt.dstValid() {
+		return ps.virt
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.virt.dstValid() {
-		m.virt.setDst(learned)
+	if !ps.virt.dstValid() {
+		ps.virt.setDst(learned)
 	}
-	return m.virt
+	return ps.virt
 }
 
 // Send wraps each buffer in an outer DATA frame (fresh outer-seq + the chosen

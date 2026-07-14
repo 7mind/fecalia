@@ -60,7 +60,7 @@ func TestMultipathReRoamRelearnsRemoteVirtStable(t *testing.T) {
 			t.Fatalf("popped payload %q, want %q", it.Payload, want)
 		}
 		// The receiver pins/reads the virtual endpoint from each delivered frame's src.
-		_ = m.virtualEndpoint(it.Src)
+		_ = m.virtualEndpoint(m.peerState, it.Src)
 		return it.Src
 	}
 

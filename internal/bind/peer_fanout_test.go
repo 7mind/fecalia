@@ -8,6 +8,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -66,6 +67,11 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 		t.Fatalf("build second-peer send codec: %v", err)
 	}
 	p.sendCodec = sendCodec
+	// A per-peer receive resequencer, exactly as Open Stores for the primary — the
+	// concentrator's per-peer wiring (a later G4 task) builds this; the helper stands in
+	// so handleInbound can route this peer's DATA stream into its OWN buffer and the
+	// engine-facing drainer can release it under this peer's virtual endpoint.
+	p.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
 	// A peerPathState VIEW over each bound shared socket, index-aligned with m.shared (which,
 	// with no deferred paths, is also aligned with m.defs) so the peer's scheduler and paths
 	// stay index-aligned exactly as the primary's do.
@@ -81,6 +87,9 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 	// Register the peer's virt so an outbound Send to it routes to THIS peerState (the
 	// concentrator's per-peer wiring does the same when it binds a peer).
 	m.peerByVirt[p.virt] = p
+	// Republish the lock-free peer view the receive drainer iterates, so this newly-bound
+	// peer's resequencer is drained (mirrors the concentrator wiring's obligation).
+	m.republishPeersLocked()
 	return p
 }
 
