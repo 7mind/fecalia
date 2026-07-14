@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 112
+  item: 113
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1240,3 +1240,16 @@ archives:
 - ledgerRefs: ["tasks:T93","goals:G4","defects:D45"]
 - sessionLogs: [".cq/logs/20260714-054935-aeb82bf6766d4a909.md",".cq/logs/20260714-054935-a0b6f7290c160086e.md"]
 - rawLogs: [".cq/logs/raw/20260714-054935-aeb82bf6766d4a909.jsonl",".cq/logs/raw/20260714-054935-a0b6f7290c160086e.jsonl"]
+
+### R113 — go-ahead
+
+- createdAt: 2026-07-14T06:21:24.075Z
+- updatedAt: 2026-07-14T06:21:24.075Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T94 unanimous panel approve (round 1): [opus]+[fable] both approve. Added a conditionally-attached `peer` label (keyed on config peer name) to wanbond_path_*, wanbond_fec_*, and NEW wanbond_resequencer_* series, decided ONCE at NewCollector from Source.PeerNames(): 1 peer = OMIT the label (byte-compatible), 2+ = include. New bind.Multipath.PeerSnapshots() generalizes the primary-only PathSnapshots/FECSnapshot to per-peer path traffic + FEC + resequencer counters; the device adapter keys its throughput last-sample map by (peer,path). BOTH reviewers independently verified the SINGLE-PEER byte-compatibility as the load-bearing property: [opus] confirmed TestExpositionSinglePeerByteCompatible is a real raw-text assertion (no peer= leak + exact pre-T94 lines); [fable] additionally DIFFED the base-vs-HEAD exposition text with identical source data — every pre-existing series line byte-identical, only the additive resequencer families differ — and mutation-proofed it (forcing multiPeer=true fails the byte-compat test). Per-(peer,path) throughput rate isolation verified under same-named paths (both peers have a 'starlink' path; 800 vs 8000 bit/s, no clobber). decide-once sound (peer set frozen via AddConcentratorPeer before NewCollector; Reload keeps it static). reseq series map verbatim to reseq.Stats; back-compat rule documented in the package comment + runbook. Full gate + go vet -tags e2e green. Rebased onto current main (gate re-run green) and ff-merged as ed4b45c. [fable] filed low defect D56 (superseded PathSnapshots/FECSnapshot seams + duplicated FEC derivation)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T94","goals:G4","defects:D56"]
+- sessionLogs: [".cq/logs/20260714-062044-a7f4a8b610cf5aeda.md",".cq/logs/20260714-062044-a31be323657b7a7c5.md"]
+- rawLogs: [".cq/logs/raw/20260714-062044-a7f4a8b610cf5aeda.jsonl",".cq/logs/raw/20260714-062044-a31be323657b7a7c5.jsonl"]

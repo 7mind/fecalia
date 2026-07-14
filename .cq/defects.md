@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 55
+  item: 56
 archives: []
 ---
 
@@ -767,3 +767,17 @@ archives: []
 - severity: low
 - suggestedFix: netip.ParsePrefix each allowed_ips entry in config.validate() and reject at Load time with the peer index + the offending string (mirroring how endpoint/source_addr are already parsed-and-validated at load).
 - ledgerRefs: ["tasks:T107","goals:G6"]
+
+## M26
+
+### D56 — open
+
+- createdAt: 2026-07-14T06:20:31.860Z
+- updatedAt: 2026-07-14T06:20:31.860Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Superseded primary-only bind read seams (PathSnapshots/FECSnapshot) retained with duplicated FEC-stat derivation
+- description: "Surfaced during T94 review ([fable]). After T94 migrated the device metrics adapter to Multipath.PeerSnapshots(), the older primary-only seams Multipath.PathSnapshots (internal/bind/multipath.go:2669) and Multipath.FECSnapshot (multipath.go:2053) have NO remaining production callers — only bind's own tests use them. Worse, PeerSnapshots COPY-PASTES FECSnapshot's honest Recovered/Unrecoverable 'delivered count' derivation (the code comment admits 'mirrors ... verbatim'), creating a two-copy DRIFT RISK on that non-trivial rule. Out of scope for T94 (removing them requires migrating ~9 bind test call sites in fec_test.go/traffic_test.go, an unrelated consolidation)."
+- severity: low
+- suggestedFix: "Either migrate bind's fec_test.go/traffic_test.go to PeerSnapshots and delete PathSnapshots/FECSnapshot, OR reimplement both as thin wrappers over PeerSnapshots()[0] so the honest-delivered-count FEC derivation lives in exactly one place."
+- ledgerRefs: ["tasks:T94","goals:G4"]

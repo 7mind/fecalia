@@ -1054,10 +1054,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-050646-ab3db2ecbe75a0a06.md",".cq/logs/20260714-053851-aef05f0eb9f10ec63.md",".cq/logs/20260714-052053-ab385aae86467f7e3.md",".cq/logs/20260714-052053-a70da160c8c02fa61.md",".cq/logs/20260714-054935-aeb82bf6766d4a909.md",".cq/logs/20260714-054935-a0b6f7290c160086e.md"]
 - rawLogs: [".cq/logs/raw/20260714-050646-ab3db2ecbe75a0a06.jsonl",".cq/logs/raw/20260714-053851-aef05f0eb9f10ec63.jsonl",".cq/logs/raw/20260714-052053-ab385aae86467f7e3.jsonl",".cq/logs/raw/20260714-052053-a70da160c8c02fa61.jsonl",".cq/logs/raw/20260714-054935-aeb82bf6766d4a909.jsonl",".cq/logs/raw/20260714-054935-a0b6f7290c160086e.jsonl"]
 
-### T94 — wip
+### T94 — done
 
 - createdAt: 2026-07-13T22:29:07.891Z
-- updatedAt: 2026-07-14T05:51:56.110Z
+- updatedAt: 2026-07-14T06:21:31.043Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-peer label to /metrics path, resequencer, and FEC series
@@ -1066,6 +1066,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T93"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: ed4b45c
+- completion: "Per-peer /metrics label (internal/metrics + internal/device/metrics.go + bind.Multipath.PeerSnapshots): a conditionally-attached `peer` label on wanbond_path_*, wanbond_fec_*, and NEW wanbond_resequencer_* series, decided ONCE at NewCollector from Source.PeerNames() — single-peer OMITS the label (byte-compatible with today's series), 2+ peers include it (cardinality bounded by the static peer set). PeerSnapshots() generalizes the primary-only PathSnapshots/FECSnapshot to per-peer path+FEC+resequencer snapshots; the throughput last-sample map is keyed by (peer,path) so per-edge rates stay correct even with same-named paths. Back-compat rule documented in the metrics package comment; runbook synced. Single-peer byte-compatibility independently verified (base-vs-HEAD exposition diff) + mutation-proofed by BOTH reviewers. Unanimous 1-round panel approve; rebased onto current main (gate re-run green) and ff-merged as ed4b45c. Filed D56 (superseded PathSnapshots/FECSnapshot seams; low)."
+- sessionLogs: [".cq/logs/20260714-061244-a1470f0ba95b346dc.md",".cq/logs/20260714-062044-a7f4a8b610cf5aeda.md",".cq/logs/20260714-062044-a31be323657b7a7c5.md"]
+- rawLogs: [".cq/logs/raw/20260714-061244-a1470f0ba95b346dc.jsonl",".cq/logs/raw/20260714-062044-a7f4a8b610cf5aeda.jsonl",".cq/logs/raw/20260714-062044-a31be323657b7a7c5.jsonl"]
 
 ## M27
 
