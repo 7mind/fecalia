@@ -427,44 +427,100 @@ WireGuard anti-replay window sees the traffic — critical, because WG would
 otherwise drop legitimately-reordered datagrams. It runs its **own outer sequence
 space** and never touches the inner WireGuard counter (a core invariant).
 
-**Trusted re-baseline on a peer restart (T116/T119).** A DATA frame is
-unauthenticated, so the release point is normally moved only by the corroborating
-`resync` guard (several distinct low seqs within one window) — which a *single*
-low frame cannot trip. That is fine for reorder, but a **peer/concentrator process
-restart** resets the sender's outer-seq near 1 far below the release point the prior
-boot's high-rate stream advanced `next` to, and the restarted peer's wrapped WG init
-is a *lone* low frame — it would be dropped as *suspect* and the tunnel would never
-re-establish. The restart is detected on the **authenticated** liveness plane: the
-per-peer probe reflector reports an `epochChanged` when a probe adopts an
-already-adopted path under a **new session id** (a genuine restart, deduped once per
-epoch), and `dispatchInbound` re-baselines *that* peer's resequencer via
-`Resequencer.RebaselineToLow`. Because this fires on the demux-resolved per-peer view,
-the one call site covers both the edge single-concentrator primary and every
-concentrator per-peer resequencer, in either restart direction. Unlike the hub-failover
-`Rebaseline` (which unpins and re-anchors on the *next* frame), the **low-anchor**
-variant re-anchors only on a frame more than one window *below* the pre-rebaseline
-release point — so a stale HIGH-seq straggler still draining from the old boot's queues
-is suspect-dropped and cannot re-pin `next` high and block recovery (the D36 re-pin
-race). Two boundary rules keep the low-anchor gate from becoming a *blackhole*: (1) the
-gate is armed only when the release point is high enough for it to be satisfiable
-(`next > window+1`) — the restarted sender's first DATA is outer-seq ~1, so at a small
-anchor no low frame could ever satisfy `anchor - seq > window` and every frame would be
-suspect-dropped forever; at a small anchor (light traffic / an early restart / a
-crash-loop) it falls back to the plain unpin, which self-heals; and (2) a subsequent
-plain `Rebaseline` (a D32 hub failover) *clears* any still-pending low-anchor, so the
-fail-back stream is not re-classified against a now-stale anchor. Both re-baselines are
-sound because a hub switch and an authenticated epoch change are **trusted control
-events**, not forgeable wire frames. Two further rules keep the gate from blackholing
-under *loss* (D36's own premise): (3) the gate is **bounded** — the sole in-budget
-re-anchor frame at the tightest armed anchor (`window+2`) is outer-seq 1, and if that
-lone wrapped-init frame is *lost* every later new-boot frame fails `anchor - seq > window`
-and would suspect-drop forever, so after O(window) consecutive pending-low drops the gate
-falls back to the plain unpin and self-heals via the resync-corroboration path; and (4)
-FEC repair must not subvert the gate — `ObserveRecovered` normally bypasses `admit`, so a
-parity-recovered *old-boot* frame while the gate is armed is by definition pre-restart and
-is **dropped** (never seated), and the low-anchor re-anchor **clears the ring** (like
-`resync`) so no stale occupied cell survives to keep a head-of-line timeout live and jump
-`next` high past the restarted stream.
+**Two trusted re-anchor triggers, plus an unauthenticated corroboration fallback.**
+A DATA frame is unauthenticated, so the release point is normally moved only by
+the `resync` guard (several distinct low seqs within one window) — which a
+*single* low frame cannot trip, protecting against forgeable wire frames. Two
+trusted control events, not forgeable, force re-anchoring via
+`Resequencer.Rebaseline` or `RebaselineToLow` and are each tracked by the metric
+`wanbond_resequencer_rebaselines_total`:
+
+1. **Hub failover (D32, T57)** — `SetPeerRemote` at the bind layer (when the
+   edge switches to a standby concentrator). The standby is a separate process
+   with outer-sequence restarted near 1; `Rebaseline` unpins and re-anchors on
+   the *next* frame immediately, discarding the dead hub's buffered frames
+   while leaving already-delivered frames untouched.
+
+2. **Peer restart (D36, T119)** — a **peer/concentrator process restart**
+   resets the sender's outer-seq near 1, far below the release point the prior
+   boot's high-rate stream advanced `next` to, and the restarted peer's wrapped
+   WG init is a *lone* low frame that a plain `Rebaseline` cannot safely rescue
+   (see below). It is detected on the **authenticated** liveness plane: the
+   per-peer probe reflector reports an `epochChanged` when a probe adopts an
+   already-adopted path under a **new session id** (a genuine restart, deduped
+   once per epoch), and `dispatchInbound` re-baselines *that* peer's
+   resequencer via `Resequencer.RebaselineToLow`. Because this fires on the
+   demux-resolved per-peer view, the one call site covers both the edge
+   single-concentrator primary and every concentrator per-peer resequencer, in
+   either restart direction. Unlike the hub-failover `Rebaseline` (trigger 1),
+   the **low-anchor** variant re-anchors only on a frame more than one window
+   *below* the pre-rebaseline release point — so a stale HIGH-seq straggler
+   still draining from the old boot's queues is suspect-dropped and cannot
+   re-pin `next` high and block recovery (the D36 re-pin race).
+
+A third path, the **unauthenticated corroboration fallback (D12)**, is the
+`resync` guard itself: several distinct low seqs arriving within one
+resequence window, with no special trigger — it is the steady-state defense
+against non-trusted, forgeable frames. Unlike the two trusted triggers above,
+it never calls `Rebaseline` or `RebaselineToLow`; it runs through
+`tryResync`/`resync` and re-pins `next` only once `resyncCorroborate` (3)
+mutually-close, independent low seqs corroborate a discontinuity, and it is
+tracked by the separate metric `wanbond_resequencer_resyncs_total`, never
+`rebaselines_total`.
+
+Two boundary rules keep the low-anchor gate (trigger 2) from becoming a
+*blackhole*: (1) the gate is armed only when the release point is high enough
+for it to be satisfiable (`next > window+1`) — the restarted sender's first
+DATA is outer-seq ~1, so at a small anchor no low frame could ever satisfy
+`anchor - seq > window` and every frame would be suspect-dropped forever; at a
+small anchor (light traffic / an early restart / a crash-loop) it falls back
+to the plain unpin, which self-heals; and (2) a subsequent plain `Rebaseline`
+(trigger 1, hub failover) *clears* any still-pending low-anchor, so the
+fail-back stream is not re-classified against a now-stale anchor. Both
+`Rebaseline` and `RebaselineToLow` are sound because a hub switch and an
+authenticated epoch change are **trusted control events**, not forgeable wire
+frames — trigger 3 (D12) carries no such guarantee, which is why it requires
+corroboration instead of re-anchoring on a single frame. Two further rules
+keep the gate from blackholing under *loss* (D36's own premise): (3) the gate
+is **bounded** — the sole in-budget re-anchor frame at the tightest armed
+anchor (`window+2`) is outer-seq 1, and if that lone wrapped-init frame is
+*lost* every later new-boot frame fails `anchor - seq > window` and would
+suspect-drop forever, so after O(window) consecutive pending-low drops the
+gate falls back to the plain unpin and self-heals via the unauthenticated
+resync-corroboration fallback (trigger 3); and (4) FEC repair must not
+subvert the gate — `ObserveRecovered` normally bypasses `admit`, so a
+parity-recovered *old-boot* frame while the gate is armed is by definition
+pre-restart and is **dropped** (never seated), and the low-anchor re-anchor
+**clears the ring** (like `resync`) so no stale occupied cell survives to
+keep a head-of-line timeout live and jump `next` high past the restarted
+stream.
+
+**Frame rejection during rebaseline recovery.** While recovery is in flight,
+the resequencer counts frames dropped as *suspect* via the metric
+`wanbond_resequencer_dropped_suspect_frames_total` (scoped per peer in
+multi-peer mode). A plain `Rebaseline` (trigger 1, D32 hub failover) does
+**not** drive this counter: it unpins and re-anchors on the very next frame
+immediately, so the dead hub's buffered frames drop as ordinary *late*
+(stale/old), never suspect, and a HIGH-seq straggler simply re-pins `next`.
+Suspect drops during recovery are driven instead by (a) the `RebaselineToLow`
+low-anchor gate (trigger 2, D36) — a stale HIGH-seq straggler from the old
+boot lands at or near the old release point and is classified suspect so it
+cannot re-pin `next` high (the D36 re-pin race) — and (b) the unauthenticated
+`resync` corroboration path (trigger 3, D12) before it has accumulated enough
+corroborating seqs. The classification is precise, not merely "outside the
+acceptance window": a frame is *suspect* when the low-anchor gate is armed
+(any drop while `pendingLow` is set), or when it lands more than one window
+*below* the release point (`next - seq > window`), or when it lands
+`>= resyncFactor * window` *ahead* of the release point. A frame within a
+single window *below* the release point is classified *late* (`dropLate`),
+not suspect, and does not contribute to this counter.
+
+**Operational expectation.** Because a detected peer restart now re-anchors
+via `RebaselineToLow` (trigger 2) instead of waiting on the unauthenticated
+`resync` fallback, a one-sided restart reconverges approximately at the
+both-ends-fresh baseline (~25 s observed), rather than waiting out
+WireGuard's own rekey timer — static analysis predicts ~10 s specifically for
+the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
 
 ### FEC — `internal/fec` + `internal/adaptivefec`
 
