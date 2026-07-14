@@ -128,7 +128,7 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 
 	m.mu.Lock()
 	m.driveAdaptiveControllerLocked()
-	target := m.fecSend.ctrl.Parity()
+	target := m.fecSend.Load().ctrl.Parity()
 	m.mu.Unlock()
 
 	if target <= 0 || target > ac.MaxParity {
@@ -155,9 +155,9 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 
 	// The path is Down (never probed), so the drive finds no eligible loss sample.
 	m.mu.Lock()
-	before := m.fecSend.ctrl.Parity()
+	before := m.fecSend.Load().ctrl.Parity()
 	m.driveAdaptiveControllerLocked()
-	after := m.fecSend.ctrl.Parity()
+	after := m.fecSend.Load().ctrl.Parity()
 	m.mu.Unlock()
 	if before != after {
 		t.Fatalf("controller moved (%d -> %d) with no eligible path; want held", before, after)
@@ -173,7 +173,7 @@ func admitFullGroupParity(t testing.TB, m *Multipath, k int) int {
 	defer m.mu.Unlock()
 	var parity int
 	for i := 0; i < k; i++ {
-		_, par, err := m.fecSend.enc.Admit([]byte{byte(i), 0xAA})
+		_, par, err := m.fecSend.Load().enc.Admit([]byte{byte(i), 0xAA})
 		if err != nil {
 			t.Fatalf("admit %d: %v", i, err)
 		}

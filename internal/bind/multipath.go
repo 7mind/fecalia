@@ -218,10 +218,24 @@ type peerState struct {
 	// resequencer is this peer's shared T18 receive resequencing buffer. Published
 	// atomically so the per-path readLoop goroutines read it WITHOUT m.mu.
 	resequencer atomic.Pointer[reseq.Resequencer]
-	// FEC datapath (T24), per peer. fecSend accessed only under m.mu; fecRecv published
-	// atomically like resequencer. Both nil/empty when FEC is off.
-	fecSend *fecSender
+	// FEC datapath (T24), per peer. Both published atomically like resequencer so the
+	// lock-free receive fast path Loads fecRecv, and the lazy re-instantiation on re-bind
+	// (ensurePeerReceiveInstantiated, on a readLoop that must not take m.mu) can Store
+	// fecSend without racing Send's under-m.mu Load. The ENCODER inside fecSend is still
+	// mutated (Admit/Tick) only under m.mu — the atomic pointer governs publication of the
+	// fecSender object, not its encoder's single-writer discipline. Both nil when FEC is off.
+	fecSend atomic.Pointer[fecSender]
 	fecRecv atomic.Pointer[fecReceiver]
+
+	// lifecycleMu serializes lazy (re)instantiation of the heavy trio (resequencer, fecRecv,
+	// fecSend) on a readLoop goroutine (ensurePeerReceiveInstantiated) against teardown's
+	// clearing of that trio (teardownPeerLocked), so a teardown interleaving mid-instantiation
+	// can never leave a half-published plane (a fecRecv/fecSend without its resequencer) nor
+	// resurrect a plane on a torn-down peer that the next re-bind then reuses stale. It is a
+	// LEAF lock taken either ALONE (instantiation — which must never take m.mu, so Close's
+	// readersWG.Wait under m.mu cannot deadlock on it) or UNDER m.mu (teardown), giving the
+	// single fixed order m.mu -> lifecycleMu and no cycle (instantiation never reaches for m.mu).
+	lifecycleMu sync.Mutex
 }
 
 // newPeerState builds the durable per-peer datapath state whose probe Reflector — and,
@@ -795,7 +809,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// threshold. Tracked by readersWG (like the readers) so Close waits for it; it
 	// exits on recvClosed. It TryLocks m.mu, so it never blocks Close's readersWG.Wait
 	// held under m.mu.
-	if m.fecSend != nil {
+	if m.fecSend.Load() != nil {
 		m.readersWG.Add(1)
 		go m.fecTickLoop(m.fecCfg.Deadline, m.recvClosed)
 	}
@@ -830,29 +844,11 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// peer) in closeSocketsLocked. A build error here is a programmer error (the ratio was
 	// validated in NewMultipath), so it fails the Open.
 	if m.fecCfg != nil {
-		enc, err := fec.NewEncoder(*m.fecCfg, fec.SystemClock{})
+		fs, err := m.newFECSender()
 		if err != nil {
-			return fmt.Errorf("bind: build FEC encoder: %w", err)
+			return err
 		}
-		ps.fecSend = &fecSender{enc: enc}
-		// Adaptive mode (T29): a fresh controller per Open, re-pinned with the encoder so a
-		// Close→Open cycle starts the control law from M=0 (no standing redundancy until
-		// loss is observed) rather than inheriting a stale target. The controller cfg was
-		// validated in NewMultipath, so a build error here is a programmer error and fails
-		// the Open. The receive-side residual-loss estimator (post-FEC-recovery loss, the
-		// P4 signal) is likewise fresh per span.
-		if m.adaptiveCfg != nil {
-			ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, adaptivefec.SystemClock{})
-			if err != nil {
-				return fmt.Errorf("bind: build adaptive FEC controller: %w", err)
-			}
-			ps.fecSend.ctrl = ctrl
-			// Adopt the controller's starting parity (0 — no standing redundancy until loss
-			// is observed) so the encoder and controller agree from t=0; the tick loop then
-			// sizes it to measured loss within the first control interval. Fixed mode leaves
-			// the encoder at its cfg.ParityShards default instead.
-			enc.SetParity(ctrl.Parity())
-		}
+		ps.fecSend.Store(fs)
 		fr, err := m.newFECReceiver()
 		if err != nil {
 			return err
@@ -861,6 +857,38 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	}
 	ps.sendCodec = sendCodec
 	return nil
+}
+
+// newFECSender builds a fresh FEC send plane (group encoder + optional adaptive controller)
+// from the bind-wide fecCfg/adaptiveCfg, or returns (nil, nil) when FEC is disabled. Like
+// newFECReceiver it reads only immutable post-construction config, so it is safe to call
+// WITHOUT m.mu — which the lock-free re-instantiation on re-bind (ensurePeerReceiveInstantiated)
+// relies on to rebuild a torn-down concentrator peer's send plane symmetric to the receive
+// plane. Open calls it too, so a lazily-rebuilt fecSend is byte-identical to an eagerly-opened
+// one: a fresh encoder re-pinned to this bring-up, and in adaptive mode a fresh controller
+// starting the control law from M=0 (no standing redundancy until loss is observed). A build
+// error is a programmer error (the ratio/controller cfg were validated in NewMultipath).
+func (m *Multipath) newFECSender() (*fecSender, error) {
+	if m.fecCfg == nil {
+		return nil, nil
+	}
+	enc, err := fec.NewEncoder(*m.fecCfg, fec.SystemClock{})
+	if err != nil {
+		return nil, fmt.Errorf("bind: build FEC encoder: %w", err)
+	}
+	fs := &fecSender{enc: enc}
+	if m.adaptiveCfg != nil {
+		ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, adaptivefec.SystemClock{})
+		if err != nil {
+			return nil, fmt.Errorf("bind: build adaptive FEC controller: %w", err)
+		}
+		fs.ctrl = ctrl
+		// Adopt the controller's starting parity so encoder and controller agree from t=0; the
+		// tick loop sizes it to measured loss within the first control interval. Fixed mode
+		// leaves the encoder at its cfg.ParityShards default instead.
+		enc.SetParity(ctrl.Parity())
+	}
+	return fs, nil
 }
 
 // newFECReceiver builds a fresh FEC receive plane (decoder + residual-loss estimator) from
@@ -891,27 +919,47 @@ func (m *Multipath) newFECReceiver() (*fecReceiver, error) {
 // configured concentrator peer that has never been reached therefore carries none of that
 // per-peer memory; it materialises only once an authenticated PROBE has bound a source to it,
 // and is reclaimed on teardown (teardownPeerLocked), re-materialising cleanly on the next
-// re-bind. It is idempotent and LOCK-FREE (published through the same atomic.Pointer the
-// receive fast path Loads): it runs on the Bind-owned readLoop goroutine, which must never
-// take m.mu (Close waits on the readers WHILE holding it). The resequencer CAS elects a single
-// instantiator when two sockets bind the same peer concurrently; the loser drops its spare
-// allocation. A build error on the FEC plane is a programmer error (the ratio was validated in
-// NewMultipath) — the resequencer is still installed so DATA flows, only FEC recovery is
-// absent, which is the safe degradation.
+// re-bind. It publishes through the same atomic.Pointer the receive fast path Loads and runs
+// on the Bind-owned readLoop goroutine, which must never take m.mu (Close waits on the readers
+// WHILE holding it) — so it takes ONLY the per-peer lifecycleMu, never m.mu. That lifecycleMu
+// makes the whole build-and-publish of the heavy trio (resequencer + FEC receive AND send
+// planes) mutually exclusive with teardownPeerLocked's clearing of the same trio: a teardown
+// can no longer interleave between the resequencer publish and the FEC publish and leave a
+// half-published plane, nor resurrect a plane on a torn-down peer. It is idempotent (the
+// lifecycleMu-guarded resequencer==nil double-check elects a single instantiator when two
+// sockets bind the same peer concurrently; the loser returns without building). It re-instates
+// the SEND plane symmetric to the receive plane, so a torn-down-then-rebound FEC peer sends
+// parity again rather than silently sending unprotected. A build error on either FEC plane is a
+// programmer error (the ratios were validated in NewMultipath) — the resequencer is still
+// installed so DATA flows, only FEC is absent, which is the safe degradation.
 func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 	if ps.resequencer.Load() != nil {
-		return // already instantiated (the eager primary, or a prior binding)
+		return // fast path: already instantiated (the eager primary, or a prior binding)
 	}
-	rq := reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{})
-	if !ps.resequencer.CompareAndSwap(nil, rq) {
-		return // a concurrent bind on another socket won the race and installed the ring
+	ps.lifecycleMu.Lock()
+	defer ps.lifecycleMu.Unlock()
+	if ps.resequencer.Load() != nil {
+		return // a concurrent bind instantiated it while we waited on lifecycleMu
 	}
-	// This goroutine owns the instantiation (it won the resequencer CAS), so it also installs
-	// the matching FEC receive plane. A concurrent teardown clears both under m.mu; the CAS
-	// keeps this Store from resurrecting a plane a later teardown already dropped.
-	if fr, err := m.newFECReceiver(); err == nil && fr != nil {
-		ps.fecRecv.CompareAndSwap(nil, fr)
+	// Build both FEC planes BEFORE publishing anything; on a build error degrade to no-FEC (the
+	// resequencer alone still carries DATA). Store the resequencer LAST: it is the election
+	// sentinel the fast-path check above and the receive fast path key on, so a concurrent
+	// reader never observes a live resequencer whose FEC planes are not yet published.
+	fr, ferr := m.newFECReceiver()
+	if ferr != nil {
+		fr = nil
 	}
+	fs, serr := m.newFECSender()
+	if serr != nil {
+		fs = nil
+	}
+	if fr != nil {
+		ps.fecRecv.Store(fr)
+	}
+	if fs != nil {
+		ps.fecSend.Store(fs)
+	}
+	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
 }
 
 // readLoop is one Bind-OWNED per-path receive goroutine (T30). It reads the path
@@ -1371,9 +1419,19 @@ func (m *Multipath) teardownPeerLocked(p *peerState) bool {
 	if m.peerIsLiveLocked(p) {
 		return false // a live (Up) peer is never torn down, whatever other peers' churn
 	}
+	// Clear the heavy trio under lifecycleMu so a concurrent ensurePeerReceiveInstantiated on a
+	// readLoop (which also holds lifecycleMu across its whole build-and-publish) cannot interleave:
+	// it either runs wholly before this clear (and is then wholly undone here) or wholly after
+	// (and rebuilds all three cleanly). This closes the resurrection/half-published hole where a
+	// teardown landing mid-instantiation left a fecRecv/fecSend without its resequencer, which the
+	// next re-bind then reused stale. lifecycleMu is a leaf lock (see its field doc); we hold m.mu
+	// here, giving the fixed order m.mu -> lifecycleMu with no cycle. The unbind runs after the
+	// clear (and outside lifecycleMu): it is its own lock-free CAS loop and needs no ordering here.
+	p.lifecycleMu.Lock()
 	p.resequencer.Store(nil)
 	p.fecRecv.Store(nil)
-	p.fecSend = nil
+	p.fecSend.Store(nil)
+	p.lifecycleMu.Unlock()
 	m.unbindPeerSources(p)
 	return true
 }
@@ -1609,10 +1667,15 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return errNoHealthyPath
 	}
 	c := ps.conn
+	// Snapshot this peer's send-FEC plane once under m.mu: a torn-down peer reads nil (sends
+	// unprotected until re-bind rebuilds it), a re-bound peer reads its freshly re-instantiated
+	// sender. The encoder is mutated (Admit) only here under m.mu, so this single Load pins a
+	// stable sender for the whole batch.
+	sendFEC := peer.fecSend.Load()
 	wires := make([]fecWire, 0, len(bufs))
 	for _, b := range bufs {
 		seq := peer.outerSeq.Add(1)
-		if peer.fecSend != nil {
+		if sendFEC != nil {
 			// FEC on (T24): admit the inner datagram (coded as seq || inner) to the group
 			// encoder. The returned data shard rides a normal DATA frame carrying its FEC
 			// group + shard index; when this admission FILLS the group the encoder returns
@@ -1620,7 +1683,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 			// chosen path. Spreading parity onto a DIFFERENT path than its data (so one
 			// path outage cannot lose both) is a documented future refinement, deliberately
 			// NOT implemented here (see the T24 design notes).
-			ds, parity, err := peer.fecSend.enc.Admit(fecShardPayload(seq, b))
+			ds, parity, err := sendFEC.enc.Admit(fecShardPayload(seq, b))
 			if err != nil {
 				m.mu.Unlock()
 				return err
@@ -1648,7 +1711,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		}
 		wires = append(wires, fecWire{b: wire})
 	}
-	fs := peer.fecSend
+	fs := sendFEC
 	m.mu.Unlock()
 
 	for _, w := range wires {
@@ -1733,7 +1796,8 @@ func (m *Multipath) fecFlushDeadline() {
 	if !m.mu.TryLock() {
 		return
 	}
-	if m.fecSend == nil || len(m.paths) == 0 {
+	fs := m.fecSend.Load()
+	if fs == nil || len(m.paths) == 0 {
 		m.mu.Unlock()
 		return
 	}
@@ -1743,7 +1807,7 @@ func (m *Multipath) fecFlushDeadline() {
 	// probe cadence. Runs under the same m.mu the flush holds — the single serialized FEC
 	// locus — so the controller (a state machine) is never touched concurrently.
 	m.driveAdaptiveControllerLocked()
-	parity, err := m.fecSend.enc.Tick()
+	parity, err := fs.enc.Tick()
 	if err != nil || len(parity) == 0 {
 		m.mu.Unlock()
 		return
@@ -1766,7 +1830,6 @@ func (m *Multipath) fecFlushDeadline() {
 		return
 	}
 	c := ps.conn
-	fs := m.fecSend
 	wires := make([][]byte, 0, len(parity))
 	for _, par := range parity {
 		// fecFlushDeadline drives the PRIMARY peer's FEC group (m.fecSend/m.scheduler/
@@ -1807,7 +1870,7 @@ func (m *Multipath) fecFlushDeadline() {
 // the masked residual back would form a control loop that under-provisions precisely because
 // it is succeeding. A down/probeless path is excluded — it carries no data to protect.
 func (m *Multipath) driveAdaptiveControllerLocked() {
-	fs := m.fecSend
+	fs := m.fecSend.Load()
 	if fs.ctrl == nil {
 		return // fixed-ratio mode
 	}
@@ -1854,7 +1917,7 @@ func (m *Multipath) maxEligiblePathLossLocked() (float64, bool) {
 // bind is closed.
 func (m *Multipath) FECSnapshot() FECStats {
 	m.mu.Lock()
-	fs := m.fecSend
+	fs := m.fecSend.Load()
 	fr := m.fecRecv.Load()
 	m.mu.Unlock()
 
@@ -2012,12 +2075,17 @@ func (m *Multipath) closeSocketsLocked() error {
 	// Clear every peer's per-Open state so the next Open rebuilds it fresh (paths, send
 	// Codec, FEC send/receive). The deadline-tick goroutine that reads a peer's fecSend is
 	// stopped by Close (recvClosed) and joined via readersWG before state is cleared, and it
-	// captured its own fecSender pointer, so niling here never races it.
+	// captured its own fecSender pointer, so niling here never races it. The per-path readLoops
+	// are joined by readersWG.Wait AFTER this returns, so one may still be mid-instantiation
+	// (ensurePeerReceiveInstantiated) here; clear the FEC planes under lifecycleMu so that build
+	// cannot interleave and resurrect a half-published plane past this Close.
 	for _, p := range m.peers {
 		p.paths = nil
 		p.sendCodec = nil
-		p.fecSend = nil
+		p.lifecycleMu.Lock()
+		p.fecSend.Store(nil)
 		p.fecRecv.Store(nil)
+		p.lifecycleMu.Unlock()
 	}
 	return firstErr
 }
