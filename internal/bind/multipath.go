@@ -558,64 +558,19 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 
-	sendCodec, err := m.newCodec()
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// A fresh resequencer per Open: its release point re-pins to the first frame
-	// received after this bring-up, so a Close→Open cycle (or reconnect) never
-	// wedges on a stale high-water outer-seq.
-	m.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
-
-	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
-	// group state and the decoder's per-group buffers re-pin with the sockets, so a
-	// Close→Open cycle never reconstructs against a stale group. Both are torn down in
-	// closeSocketsLocked. A build error here is a programmer error (the ratio was
-	// validated in NewMultipath), so it fails the Open.
-	if m.fecCfg != nil {
-		enc, err := fec.NewEncoder(*m.fecCfg, fec.SystemClock{})
-		if err != nil {
+	// (Re)build the per-Open datapath planes — send Codec, receive resequencer, and FEC
+	// send/receive state — fresh for this bring-up, for EVERY bound peer (not just the
+	// primary via promotion). This keeps Open symmetric with closeSocketsLocked, which
+	// clears every peer's per-Open state: a concentrator peer bound before Open must get
+	// its OWN fresh planes on each Close→Open cycle, and one peer's (re)creation must never
+	// touch another peer's release point or FEC group state. On the single-peer edge/hub
+	// m.peers holds only the primary, so this is byte-identical to the pre-split rebuild.
+	// See openPeerDatapathLocked.
+	for _, p := range m.peers {
+		if err := m.openPeerDatapathLocked(p); err != nil {
 			_ = m.closeSocketsLocked()
-			return nil, 0, fmt.Errorf("bind: build FEC encoder: %w", err)
+			return nil, 0, err
 		}
-		dec, err := fec.NewDecoder(*m.fecCfg)
-		if err != nil {
-			_ = m.closeSocketsLocked()
-			return nil, 0, fmt.Errorf("bind: build FEC decoder: %w", err)
-		}
-		dec.SetRetainWindow(fecRetainGroups)
-		// Quiescence-accurate unrecoverable accounting (D24): fold a doomed group into
-		// the unrecoverable counter once its recovery could no longer have helped, even
-		// when no newer group arrives to advance the retain-window eviction (a stalled
-		// link, or traffic that simply stops after an incident). Past fecRecoveryDeadline
-		// from a group's first-seen instant, its deadline-flushed parity has certainly
-		// arrived (encoder grouping deadline) AND the resequencer has certainly skipped
-		// its gap (resequencerTimeout), so any later reconstruction is delivered too late
-		// to matter — the group is definitively unrecoverable and safe to count.
-		dec.SetClock(fec.SystemClock{})
-		dec.SetRecoveryDeadline(m.fecCfg.Deadline + resequencerTimeout)
-		m.fecSend = &fecSender{enc: enc}
-		// Adaptive mode (T29): a fresh controller per Open, re-pinned with the encoder so a
-		// Close→Open cycle starts the control law from M=0 (no standing redundancy until
-		// loss is observed) rather than inheriting a stale target. The controller cfg was
-		// validated in NewMultipath, so a build error here is a programmer error and fails
-		// the Open. The receive-side residual-loss estimator (post-FEC-recovery loss, the
-		// P4 signal) is likewise fresh per span.
-		if m.adaptiveCfg != nil {
-			ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, adaptivefec.SystemClock{})
-			if err != nil {
-				_ = m.closeSocketsLocked()
-				return nil, 0, fmt.Errorf("bind: build adaptive FEC controller: %w", err)
-			}
-			m.fecSend.ctrl = ctrl
-			// Adopt the controller's starting parity (0 — no standing redundancy until loss
-			// is observed) so the encoder and controller agree from t=0; the tick loop then
-			// sizes it to measured loss within the first control interval. Fixed mode leaves
-			// the encoder at its cfg.ParityShards default instead.
-			enc.SetParity(ctrl.Parity())
-		}
-		m.fecRecv.Store(&fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)})
 	}
 
 	// Resolve every path's interface up front and decide, per path, whether its
@@ -743,7 +698,6 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			}
 		}
 	}
-	m.sendCodec = sendCodec
 
 	// Reconcile the scheduler's membership with the path slice just rebuilt from
 	// m.defs. A runtime AddPath/RemovePath (T30) keeps m.defs, m.probers, AND the
@@ -788,6 +742,78 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		go m.fecTickLoop(m.fecCfg.Deadline, m.recvClosed)
 	}
 	return []ReceiveFunc{m.newReceiveFunc(m.deliverSignal, m.recvClosed)}, actualPort, nil
+}
+
+// openPeerDatapathLocked (re)builds ONE peer's per-Open datapath planes: its send Codec
+// (derived from THIS peer's psk), its receive resequencer, and — when FEC is configured —
+// its FEC send/receive planes. Each is fresh per Open so a Close→Open cycle (or reconnect)
+// re-pins the peer's release point and re-anchors its FEC grouping to this bring-up rather
+// than a stale prior span. It writes ONLY the given peer's fields (from the peer's own psk
+// and the bind-wide fecCfg/adaptiveCfg), so one peer's (re)creation never touches another
+// peer's resequencer or FEC group state — the per-peer lifecycle boundary that keeps a
+// reconnect on one peer from disturbing another's. Caller holds m.mu; on error the caller
+// unwinds the whole Open via closeSocketsLocked (which clears every peer's per-Open state),
+// so a partial build here is cleaned up.
+func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
+	sendCodec, err := ps.newCodec()
+	if err != nil {
+		return err
+	}
+
+	// A fresh resequencer per Open: its release point re-pins to the first frame THIS peer
+	// receives after this bring-up, so a Close→Open cycle (or reconnect) never wedges on a
+	// stale high-water outer-seq. Published atomically so the peer's per-path readLoop
+	// goroutines read it WITHOUT m.mu.
+	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+
+	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
+	// group state and the decoder's per-group buffers re-pin with the sockets, so a
+	// Close→Open cycle never reconstructs against a stale group. Both are torn down (per
+	// peer) in closeSocketsLocked. A build error here is a programmer error (the ratio was
+	// validated in NewMultipath), so it fails the Open.
+	if m.fecCfg != nil {
+		enc, err := fec.NewEncoder(*m.fecCfg, fec.SystemClock{})
+		if err != nil {
+			return fmt.Errorf("bind: build FEC encoder: %w", err)
+		}
+		dec, err := fec.NewDecoder(*m.fecCfg)
+		if err != nil {
+			return fmt.Errorf("bind: build FEC decoder: %w", err)
+		}
+		dec.SetRetainWindow(fecRetainGroups)
+		// Quiescence-accurate unrecoverable accounting (D24): fold a doomed group into
+		// the unrecoverable counter once its recovery could no longer have helped, even
+		// when no newer group arrives to advance the retain-window eviction (a stalled
+		// link, or traffic that simply stops after an incident). Past fecRecoveryDeadline
+		// from a group's first-seen instant, its deadline-flushed parity has certainly
+		// arrived (encoder grouping deadline) AND the resequencer has certainly skipped
+		// its gap (resequencerTimeout), so any later reconstruction is delivered too late
+		// to matter — the group is definitively unrecoverable and safe to count.
+		dec.SetClock(fec.SystemClock{})
+		dec.SetRecoveryDeadline(m.fecCfg.Deadline + resequencerTimeout)
+		ps.fecSend = &fecSender{enc: enc}
+		// Adaptive mode (T29): a fresh controller per Open, re-pinned with the encoder so a
+		// Close→Open cycle starts the control law from M=0 (no standing redundancy until
+		// loss is observed) rather than inheriting a stale target. The controller cfg was
+		// validated in NewMultipath, so a build error here is a programmer error and fails
+		// the Open. The receive-side residual-loss estimator (post-FEC-recovery loss, the
+		// P4 signal) is likewise fresh per span.
+		if m.adaptiveCfg != nil {
+			ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, adaptivefec.SystemClock{})
+			if err != nil {
+				return fmt.Errorf("bind: build adaptive FEC controller: %w", err)
+			}
+			ps.fecSend.ctrl = ctrl
+			// Adopt the controller's starting parity (0 — no standing redundancy until loss
+			// is observed) so the encoder and controller agree from t=0; the tick loop then
+			// sizes it to measured loss within the first control interval. Fixed mode leaves
+			// the encoder at its cfg.ParityShards default instead.
+			enc.SetParity(ctrl.Parity())
+		}
+		ps.fecRecv.Store(&fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)})
+	}
+	ps.sendCodec = sendCodec
+	return nil
 }
 
 // readLoop is one Bind-OWNED per-path receive goroutine (T30). It reads the path
@@ -1563,18 +1589,20 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 // repoint each path's remote (each ps.setRemote takes the path's own mutex). It is
 // safe on a CLOSED bind (no paths) — the new default remote is still recorded, so the
 // next Open seeds fresh paths with it.
+//
+// The edge fronts a SINGLE concentrator peer (hub failover is an edge-only event — the
+// concentrator learns remotes and never switches hubs), so this operates on the primary
+// peerState. The per-peer mechanics live in setPeerRemoteLocked, which touches ONLY that
+// peer's paths and resequencer, so the D32 re-baseline is scoped to the peer whose remote
+// changed and can never disturb another bound peer's release point.
 func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	m.mu.Lock()
-	m.defaultRemote, m.hasDefaultRemote = ap, true
-	for _, ps := range m.paths {
-		ps.setRemote(ap)
-	}
-	rq := m.resequencer.Load()
+	rq := m.setPeerRemoteLocked(m.peerState, ap)
 	m.mu.Unlock()
 
 	// A hub switch changes the DATA-frame SENDER identity: the standby concentrator is a
 	// separate process whose outer-seq restarts near 1, far below the release point the
-	// prior hub's stream advanced the shared resequencer's `next` to. Re-baseline it so the
+	// prior hub's stream advanced THIS peer's resequencer's `next` to. Re-baseline it so the
 	// standby's FIRST frame (the WG handshake response) re-anchors the release point instead
 	// of being dropped as a suspect low seq — without this the tunnel never re-establishes
 	// after failover (defect D32). Done OUTSIDE m.mu (the resequencer has its own mutex;
@@ -1583,6 +1611,22 @@ func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	if rq != nil {
 		rq.Rebaseline()
 	}
+}
+
+// setPeerRemoteLocked repoints EVERY path bound to the given peer at ap — overriding an
+// already-learned/configured remote — and records ap as the bind's default remote seeded
+// onto that peer's future paths, returning the peer's receive resequencer so the caller
+// re-baselines it OUTSIDE m.mu (the resequencer keeps its own mutex; never nest it under
+// m.mu). It writes ONLY the given peer's per-path remotes and reads ONLY that peer's
+// resequencer, so a hub switch on one peer never disturbs another bound peer's wire remotes
+// or release point — the per-peer D32 boundary. Returns nil on a closed bind (no
+// resequencer Stored yet). Caller holds m.mu.
+func (m *Multipath) setPeerRemoteLocked(ps *peerState, ap netip.AddrPort) *reseq.Resequencer {
+	m.defaultRemote, m.hasDefaultRemote = ap, true
+	for _, pp := range ps.paths {
+		pp.setRemote(ap)
+	}
+	return ps.resequencer.Load()
 }
 
 // Close tears down every per-path socket and CLEARS the bind's path state so a
