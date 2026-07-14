@@ -303,22 +303,28 @@ runs its own device-lifecycle loop **off the send hot path** — all lookups hap
 its goroutine; results are applied only through `updateResolution`. Each evaluation:
 
 - **Poll** every hostname spec on the fixed `[dns]` cadence; on a **successful,
-  non-empty** lookup the addrs are family-ordered (IPv4 first, then IPv6, deduped —
-  a deterministic order so an unchanged answer yields a byte-identical expansion) and
-  handed to `updateResolution`, which **repoints only on an actual active-IP change**
-  (D32 no-op suppression). When the transport exposes a TTL (DoH/DoT), the next poll
-  is clamped to `min(pollInterval, minTTL)`.
+  non-empty** lookup the addrs are **family-filtered then ordered** — addrs of a
+  family no local path can source (a path binds a socket whose family is fixed by its
+  `source_addr`, so an AAAA answer on a v4-only edge is unreachable and is dropped),
+  then IPv4 first, then IPv6, deduped — a deterministic order so an unchanged answer
+  yields a byte-identical expansion. The result is handed to `updateResolution`, which
+  **repoints only on an actual active-IP change** (D32 no-op suppression). When the
+  transport exposes a TTL (DoH/DoT), the next poll is clamped to
+  `min(pollInterval, minTTL)`.
 - **Liveness-loss trigger**: the instant every path to the **active** endpoint reads
   `StateDown` — the *same* `allDown` sweep the failover loop advances on (Q34: the
   two controllers coordinate purely through the shared lock and the update API) — the
   active spec is re-resolved **out of band**, edge-triggered, without waiting for the
-  next poll tick.
+  next poll tick. This out-of-band re-arm is clamped to `min(pollInterval, minTTL)`
+  too, so record freshness holds on exactly the hub-loss path where it matters most.
 - **Retention invariant (D46)**: a lookup that **fails** (error/timeout/NXDOMAIN) or
-  yields an **empty** set **never publishes** — the spec keeps its last-good
-  expansion and the controller retries next tick. A transient resolver fault
-  therefore never tears down a working endpoint set, and `hubFailover` never sees a
-  previously-resolved active spec collapse to empty (the condition its `total < 2`
-  guard could otherwise strand the bond on).
+  yields an **empty** usable set — including an answer that **filters down to empty**
+  because it carries no family any local path can source — **never publishes**: the
+  spec keeps its last-good expansion and the controller retries next tick. A transient
+  resolver fault, or an answer for a family the edge cannot reach, therefore never
+  tears down a working endpoint set, and `hubFailover` never sees a previously-resolved
+  active spec collapse to empty (the condition its `total < 2` guard could otherwise
+  strand the bond on).
 
 This controller runs **even for a single-hostname peer** (to track a changing DDNS
 address), independent of hub-failover's `>= 2` guard; the first successful poll of a

@@ -502,7 +502,7 @@ func startResolution(cfg *config.Config, ctrl *hubFailover, peer config.Peer, lg
 		return func() {}
 	}
 	res := newResolution(
-		resolver, ctrl, targets,
+		resolver, ctrl, targets, pathFamiliesFromPaths(cfg.Paths),
 		telemetry.SystemClock{}, cfg.DNS.PollInterval, cfg.DNS.Timeout,
 		lg.Component("dnsresolve"),
 	)

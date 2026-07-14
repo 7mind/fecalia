@@ -118,7 +118,7 @@ func newResolutionHarness(t *testing.T, host string, port uint16, initialActive 
 	res := newResolution(rslv, fo, nameTargetsFromSpecs([]config.EndpointSpec{
 		{Host: host, Port: port, IsName: true},
 		{Addr: mustAP(t, "198.51.100.7:51820")},
-	}), clk, testPollInterval, testDNSTimeout, discardLogger(t))
+	}), pathFamilies{v4: true, v6: true}, clk, testPollInterval, testDNSTimeout, discardLogger(t))
 	return &resolutionHarness{res: res, fo: fo, rem: rem, rslv: rslv, clk: clk, hp: hp}
 }
 
@@ -335,7 +335,7 @@ func TestResolutionSingleHostnameBootAdopts(t *testing.T) {
 	rslv.set(host, first)
 	res := newResolution(rslv, fo, nameTargetsFromSpecs([]config.EndpointSpec{
 		{Host: host, Port: 51820, IsName: true},
-	}), clk, testPollInterval, testDNSTimeout, discardLogger(t))
+	}), pathFamilies{v4: true, v6: true}, clk, testPollInterval, testDNSTimeout, discardLogger(t))
 
 	// First step polls immediately (nextPollAt armed at construction time) and adopts.
 	res.step()
@@ -345,6 +345,75 @@ func TestResolutionSingleHostnameBootAdopts(t *testing.T) {
 	}
 	if fo.activeSpec != 0 || fo.activeAddr != firstAP {
 		t.Fatalf("post-adoption active = (%d,%v), want (0,%v)", fo.activeSpec, fo.activeAddr, firstAP)
+	}
+}
+
+// TestResolutionFamilyFilterRetainsLastGood is the family-filter acceptance: an AAAA-only answer
+// on a v4-only edge (no local path can source v6) filters down to an EMPTY usable set, so the spec
+// keeps its last-good v4 expansion and NO SetPeerRemote fires — a successful lookup of an
+// unreachable family must never tear down a working v4 endpoint.
+func TestResolutionFamilyFilterRetainsLastGood(t *testing.T) {
+	host := "hub.example.com"
+	active := mustAP(t, "203.0.113.1:51820")
+	h := newResolutionHarness(t, host, 51820, active, telemetry.StateUp)
+	h.res.families = pathFamilies{v4: true} // v4-only paths: v6 answers are unreachable
+
+	// The resolver now answers with AAAA records only (a v6-only rrset for the active spec).
+	h.rslv.set(host, mustAddr(t, "2001:db8::1"), mustAddr(t, "2001:db8::2"))
+	for i := 0; i < 5; i++ {
+		h.advancePastPoll()
+		h.res.step()
+	}
+
+	if h.rem.calls != 0 {
+		t.Fatalf("AAAA-only answer on v4-only paths repointed the bond %d times, want 0 (family filter → retain)", h.rem.calls)
+	}
+	if got := len(h.fo.specs[0].addrs); got != 1 || h.fo.specs[0].addrs[0] != active {
+		t.Fatalf("active spec expansion = %v under an all-filtered answer, want [%v] retained", h.fo.specs[0].addrs, active)
+	}
+	if h.fo.activeSpec != 0 || h.fo.activeAddr != active {
+		t.Fatalf("active identity = (%d,%v), want (0,%v) untouched", h.fo.activeSpec, h.fo.activeAddr, active)
+	}
+}
+
+// TestResolutionLivenessLossReArmClampsToTTL extends the TTL-clamp invariant to the OUT-OF-BAND
+// (liveness-loss) re-resolve path: when every path to the active concentrator goes DOWN, the
+// re-arm of the next scheduled poll must be clamped to min(pollInterval, TTL) — not reset to a
+// blind full interval — so a short-TTL record is re-checked no later than its TTL in exactly the
+// hub-loss window where record freshness matters most. A lookup with no TTL leaves the full interval.
+func TestResolutionLivenessLossReArmClampsToTTL(t *testing.T) {
+	host := "hub.example.com"
+	active := mustAP(t, "203.0.113.1:51820")
+	h := newResolutionHarness(t, host, 51820, active, telemetry.StateUp, telemetry.StateUp)
+	h.rslv.set(host, active.Addr())
+
+	// Baseline UP step: record the not-down edge state and consume the initial scheduled poll.
+	h.advancePastPoll()
+	h.res.step()
+
+	// A short-TTL record AND every path goes DOWN → out-of-band re-resolve re-arms at the TTL.
+	h.rslv.ttl = 5 * time.Second
+	h.rslv.ttlOk = true
+	h.hp[0].state = telemetry.StateDown
+	h.hp[1].state = telemetry.StateDown
+	now := h.clk.Now()
+	h.res.step()
+	if got, want := h.res.nextPollAt, now.Add(5*time.Second); !got.Equal(want) {
+		t.Fatalf("liveness-loss re-arm nextPollAt = %v, want %v (clamped to 5s TTL)", got, want)
+	}
+
+	// Clear the edge (paths back UP, no re-resolve), then lose them again with NO TTL exposed:
+	// the out-of-band re-arm must fall back to the full poll interval.
+	h.hp[0].state = telemetry.StateUp
+	h.hp[1].state = telemetry.StateUp
+	h.res.step()
+	h.rslv.ttlOk = false
+	h.hp[0].state = telemetry.StateDown
+	h.hp[1].state = telemetry.StateDown
+	now = h.clk.Now()
+	h.res.step()
+	if got, want := h.res.nextPollAt, now.Add(testPollInterval); !got.Equal(want) {
+		t.Fatalf("liveness-loss re-arm nextPollAt = %v with no TTL, want %v (full poll interval)", got, want)
 	}
 }
 
@@ -359,7 +428,7 @@ func TestOrderAddrPortsDeterministicFamilyOrder(t *testing.T) {
 		mustAddr(t, "203.0.113.1"), // duplicate v4 → dropped
 		mustAddr(t, "203.0.113.2"),
 	}
-	got := orderAddrPorts(in, 51820)
+	got := orderAddrPorts(in, 51820, pathFamilies{v4: true, v6: true})
 	want := []netip.AddrPort{
 		netip.AddrPortFrom(mustAddr(t, "203.0.113.1"), 51820),
 		netip.AddrPortFrom(mustAddr(t, "203.0.113.2"), 51820),

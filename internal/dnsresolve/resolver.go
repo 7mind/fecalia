@@ -8,7 +8,8 @@ import (
 
 // Resolver resolves a hostname to its full A+AAAA record set, context-bounded.
 // Implementations return addrs deterministically (both v4 and v6 when present);
-// callers filter/order by local path family as needed.
+// the caller filters/orders by local path family (device.orderAddrPorts drops
+// addrs of a family no local path can source and puts v4 ahead of v6).
 //
 // minTTL is the minimum TTL across the returned records when the transport
 // exposes it; ttlOk reports whether minTTL is meaningful — it is false when the

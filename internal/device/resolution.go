@@ -48,6 +48,11 @@ type resolution struct {
 	// targets is the ordered set of hostname specs to re-resolve; empty for an all-literal peer,
 	// in which case the loop is a no-op.
 	targets []nameTarget
+	// families is the set of IP families the local path sockets can source traffic from (a v4
+	// source_addr path reaches only v4 endpoints, a v6 path only v6). A resolved address of a
+	// family NO local path can source is unreachable and is dropped from a spec's expansion — else
+	// an AAAA-only answer on v4-only paths would repoint the bond at an address no path can carry.
+	families pathFamilies
 
 	clock        telemetry.Clock
 	pollInterval time.Duration
@@ -72,11 +77,12 @@ type resolution struct {
 // (no goroutine, no engine dependency) so a test drives step/pollAll directly against a fake
 // resolver and a fake clock. nextPollAt is armed at construction time so the first step polls
 // immediately.
-func newResolution(resolver dnsresolve.Resolver, fo *hubFailover, targets []nameTarget, clock telemetry.Clock, pollInterval, timeout time.Duration, lg log.Logger) *resolution {
+func newResolution(resolver dnsresolve.Resolver, fo *hubFailover, targets []nameTarget, families pathFamilies, clock telemetry.Clock, pollInterval, timeout time.Duration, lg log.Logger) *resolution {
 	return &resolution{
 		resolver:     resolver,
 		fo:           fo,
 		targets:      targets,
+		families:     families,
 		clock:        clock,
 		pollInterval: pollInterval,
 		timeout:      timeout,
@@ -96,6 +102,39 @@ func nameTargetsFromSpecs(specs []config.EndpointSpec) []nameTarget {
 		}
 	}
 	return ts
+}
+
+// pathFamilies records which IP families the local path sockets can source traffic from. A path
+// binds a socket whose family is fixed by its source_addr (bind.listenOnDevice): a v4 source can
+// only reach v4 endpoints, a v6 source only v6. Re-resolution filters a resolved record set to the
+// families at least one local path can source, so a lookup answer of an unreachable family (an
+// AAAA-only answer on a v4-only edge) never repoints the bond at an address no path can carry.
+type pathFamilies struct {
+	v4 bool
+	v6 bool
+}
+
+// allows reports whether a resolved address's family can be sourced by at least one local path.
+func (f pathFamilies) allows(a netip.Addr) bool {
+	if a.Unmap().Is4() {
+		return f.v4
+	}
+	return f.v6
+}
+
+// pathFamiliesFromPaths derives the usable-family set from the configured paths. Config validation
+// guarantees every path carries a valid source_addr (Config.normalize), so each path contributes
+// exactly one family and the result is non-empty for any peer that reaches this controller.
+func pathFamiliesFromPaths(paths []config.Path) pathFamilies {
+	var f pathFamilies
+	for _, p := range paths {
+		if p.SourceAddr.Unmap().Is4() {
+			f.v4 = true
+		} else {
+			f.v6 = true
+		}
+	}
+	return f
 }
 
 // step is one evaluation at the probe cadence: it first services a liveness-loss edge (an
@@ -126,16 +165,28 @@ func (r *resolution) step() {
 func (r *resolution) pollAll() time.Duration {
 	delay := r.pollInterval
 	for _, t := range r.targets {
-		minTTL, ttlOk := r.resolveTarget(t)
-		if ttlOk && minTTL > 0 && minTTL < delay {
-			delay = minTTL
+		if d := r.clampPollDelay(r.resolveTarget(t)); d < delay {
+			delay = d
 		}
 	}
 	return delay
 }
 
+// clampPollDelay returns the scheduled poll interval clamped DOWN to a positive, meaningful TTL,
+// so a record about to expire is re-checked no later than its TTL (Q31 TTL clamp). A lookup that
+// exposes no TTL (ttlOk=false — system resolver) or a non-positive one leaves the full interval.
+// It is applied uniformly to the scheduled poll re-arm AND the out-of-band liveness-loss re-arm,
+// so the clamp invariant holds on BOTH paths — including the hub-loss window where record
+// freshness matters most.
+func (r *resolution) clampPollDelay(minTTL time.Duration, ttlOk bool) time.Duration {
+	if ttlOk && minTTL > 0 && minTTL < r.pollInterval {
+		return minTTL
+	}
+	return r.pollInterval
+}
+
 // resolveTarget performs one context-bounded lookup for a single hostname spec and, on a
-// non-empty SUCCESS, hands the family-ordered record set to hubFailover.updateResolution (which
+// non-empty SUCCESS, hands the family-filtered, ordered record set to hubFailover.updateResolution (which
 // suppresses a no-op change and repoints only on an actual active-IP change). It returns the
 // lookup's minimum TTL and whether that TTL is meaningful, for the caller's clamp.
 //
@@ -154,9 +205,9 @@ func (r *resolution) resolveTarget(t nameTarget) (time.Duration, bool) {
 			"host", t.host, "spec_index", t.specIdx, "error", err.Error())
 		return 0, false
 	}
-	eps := orderAddrPorts(addrs, t.port)
+	eps := orderAddrPorts(addrs, t.port, r.families)
 	if len(eps) == 0 {
-		r.log.Debug("dns re-resolution: empty record set; retaining last-good records",
+		r.log.Debug("dns re-resolution: no usable record for local path families; retaining last-good records",
 			"host", t.host, "spec_index", t.specIdx)
 		return 0, false
 	}
@@ -189,12 +240,13 @@ func (r *resolution) checkLivenessLoss() {
 	}
 	r.log.Warn("dns re-resolution: all paths to active concentrator down; out-of-band re-resolve",
 		"host", t.host, "spec_index", t.specIdx)
-	r.resolveTarget(t)
+	minTTL, ttlOk := r.resolveTarget(t)
 
 	// An out-of-band re-resolve subsumes the scheduled poll for this instant; push the next poll
-	// out a full interval so the two do not resolve back to back.
+	// out — but re-arm at the TTL-CLAMPED delay, not a blind full interval, so a short-TTL record
+	// is re-checked no later than its TTL on exactly the hub-loss path where freshness matters most.
 	r.mu.Lock()
-	r.nextPollAt = r.clock.Now().Add(r.pollInterval)
+	r.nextPollAt = r.clock.Now().Add(r.clampPollDelay(minTTL, ttlOk))
 	r.mu.Unlock()
 }
 
@@ -226,12 +278,13 @@ func (r *resolution) lookupContext() (context.Context, context.CancelFunc) {
 // then IPv6, each paired with the spec's port. The order is DETERMINISTIC so an unchanged DNS
 // answer produces a byte-identical expansion tick after tick — the precondition for
 // updateResolution's active-AddrPort survival check to suppress a no-op repoint. Invalid or
-// duplicate addrs are dropped.
-func orderAddrPorts(addrs []netip.Addr, port uint16) []netip.AddrPort {
+// duplicate addrs, and addrs of a family NO local path can source (fams), are dropped — so a
+// record set that filters down to nothing yields an empty expansion the caller retains last-good on.
+func orderAddrPorts(addrs []netip.Addr, port uint16, fams pathFamilies) []netip.AddrPort {
 	seen := make(map[netip.Addr]struct{}, len(addrs))
 	var v4, v6 []netip.AddrPort
 	for _, a := range addrs {
-		if !a.IsValid() {
+		if !a.IsValid() || !fams.allows(a) {
 			continue
 		}
 		canon := a.Unmap()
