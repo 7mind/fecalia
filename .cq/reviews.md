@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 178
+  item: 179
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2048,6 +2048,17 @@ archives:
 - ledgerRefs: ["tasks:T126","goals:G8","defects:D50"]
 - sessionLogs: [".cq/logs/20260714-133500-a76410870f2fdd4fd.md",".cq/logs/20260714-133500-a4f63c99c44d4ebb6.md"]
 - rawLogs: [".cq/logs/raw/20260714-133500-a76410870f2fdd4fd.jsonl",".cq/logs/raw/20260714-133500-a4f63c99c44d4ebb6.jsonl"]
+
+### R178 — revise
+
+- createdAt: 2026-07-14T16:11:45.492Z
+- updatedAt: 2026-07-14T16:11:45.492Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T127 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve), REMEDIATED INLINE by orchestrator (both criticisms were trivial doc-sync textual fixes on a DUAL-APPROVED core; T137 escape-hatch precedent). BOTH reviewers verified the CORE fix is sound + green and INDEPENDENTLY reproduced the pre-fix D58 failure: SetPrimaryPeerName (multipath.go:901-918) re-keys peersByName from '' under m.mu, refuses ''/post-Open/already-registered; device.Up calls it before the AddConcentratorPeer loop gated on len(ids)>1, so collision checks (name==m.name :874 + peersByName dup :877) see the FINAL name (proven by TestSetPrimaryPeerNameRenamesPrimaryAndKeepsCollisionCheckCorrect, both orders); single-peer keeps peer='' (TestExpositionSinglePeerByteCompatible, T94); teardownPeerLocked refuses on IDENTITY p==m.peerState (:1871) not name; repro: excising the device.Up call makes TestUpTwoPeerConcentratorWiresPerPeerState fail 'primary bound peer name = \"\", want \"edge-0\"'; TestExpositionTwoPeerSeries asserts two distinct non-empty labels; build/vet/test + -race(bind/device/metrics) + just lint all green. [fable] DISAPPROVE for 2 DOC-SYNC misses the acceptance's repo-wide grep should have caught: (1) wanbond.example.toml:189-193 still documented the OLD peer='' behavior as 'documented current behavior; not fixed here' — a shipped user-facing example CONTRADICTING the merged code; (2) test/e2e/restart_onesided_test.go:410-422 r121PeerCounter comment claimed a peer='' multi-peer series exists (false post-D58). ORCHESTRATOR REMEDIATION (commit 316ab81): rewrote the wanbond.example.toml block to the corrected rule (every bound peer incl. first-configured carries its name once >1 peer; peer='' only in true single-peer exposition); corrected the r121PeerCounter comment AND dropped the now-dead PeerValue(name,'') first-try (behavior-preserving — this survivor is single-peer so it always fell through to Value(name); the probe can never match post-D58) + fixed its Fatalf message. Merged to main as 3ceef3d (T127 core, clean cherry-pick, docs/install.md+config.go 3-way auto-merged) + 316ab81 (doc-sync). Full gate re-run green on composed main: bind/device/metrics tests ok; e2e compiles; just lint 0 issues default+e2e+realhosts. 2 criticisms (both remediated inline) / 0 questions / 0 defects."
+- criticism: ["[fable, REMEDIATED 316ab81] wanbond.example.toml:189-193 documented the pre-fix peer='' primary behavior as current ('not fixed here') — rewritten to the D58-fixed rule.","[fable, REMEDIATED 316ab81] test/e2e/restart_onesided_test.go r121PeerCounter comment asserted a peer='' multi-peer series that no longer exists post-D58 — comment corrected and the now-dead PeerValue(name,'') probe dropped (behavior-preserving for the single-peer survivor)."]
+- new_questions: []
+- ledgerRefs: ["tasks:T127","goals:G8","defects:D58"]
 
 ## M58
 

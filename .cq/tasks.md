@@ -1591,10 +1591,10 @@ archives:
 - dependsOn: ["T123"]
 - ledgerRefs: ["goals:G8","defects:D50"]
 
-### T127 — planned
+### T127 — done
 
 - createdAt: 2026-07-14T09:47:20.098Z
-- updatedAt: 2026-07-14T09:53:57.886Z
+- updatedAt: 2026-07-14T16:11:46.606Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Plumb the primary peer's configured name into the bind so metrics label every peer (D58)
@@ -1606,6 +1606,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T125"]
 - ledgerRefs: ["goals:G8","defects:D58"]
+- resultCommit: 316ab81
 
 ## M44
 
@@ -1813,12 +1814,12 @@ archives:
 - ledgerRefs: ["goals:G13"]
 - resultCommit: 6f906b3
 
-### T144 — planned
+### T144 — wip
 
 - createdAt: 2026-07-14T12:41:01.308Z
-- updatedAt: 2026-07-14T12:50:17.810Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T16:06:16.867Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Startup WARN and wanbond_weighted_capacity_sane gauge when weighted capacity is unverifiable
 - description: "Q52 WARN arm. When policy=\"weighted\" and link_bandwidth is NOT FULLY declared, startup must NEVER be blocked. Config load computes a capacity-sanity verdict: SANE-VERIFIED (gauge=1, no WARN) ONLY when EVERY path declares link_bandwidth AND the T142 hard-fail guard passed; UNVERIFIABLE (gauge=0 + one WARN) otherwise. REVISION (R155 [fable]): the UNVERIFIABLE case covers BOTH 'no path declares bandwidth' AND a PARTIAL declaration (some paths declare, some don't) — a reachable state when pacing is DISABLED (deriveWeightedPacingFromBDP no-ops, internal/config/config.go:957). Pin it explicitly: partial declaration => WARN + wanbond_weighted_capacity_sane=0, WHILE T142's hard-fail guard STILL independently checks each DECLARED path (a declared path that contradicts still hard-fails at T142; this WARN concerns the UNdeclared paths that cannot be checked). In the unverifiable case the daemon logs ONE actionable startup WARN (message: declare link_bandwidth on ALL paths so capacity can be checked, or verify per_path_capacity_fps against the BDP sizing in install.md 3a — REFERENCE, do not restate, the G2-owned sizing docs). The metrics endpoint exposes a STATIC unlabeled gauge wanbond_weighted_capacity_sane: 1 when verified sane, 0 when unverifiable; the family is ABSENT entirely under non-weighted policy. Plumb the verdict from the loaded config through internal/device to collector registration as a static registered gauge alongside the Source-driven collector (config-derived, NOT per-peer, hence unlabeled and exempt from the labelPeer back-compat rule). Export the metric name as a constant. Update the metrics reference (README.md/docs/design.md) and docs/install.md in the same change."
 - acceptance: "-tags e2e under `just e2e`, asserting on the daemon's OWN startProc combined log output (proc.log(), NOT the T141 sampler — so M52 stays an INDEPENDENT root; dependsOn remains [T142]): (a) weighted daemon with NO link_bandwidth on any path starts on the fixture, its combined output contains EXACTLY ONE capacity-sanity WARN line, and metrics.Fetch reads wanbond_weighted_capacity_sane == 0; (b) a PARTIAL declaration (link_bandwidth on some paths not all; pacing disabled; declared paths guard-consistent) also starts, emits EXACTLY ONE WARN, and reads gauge == 0; (c) link_bandwidth declared on ALL paths (guard-consistent capacity) starts with NO WARN and gauge == 1; (d) under active-backup policy the family is absent. `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
@@ -1828,12 +1829,12 @@ archives:
 
 ## M53
 
-### T143 — planned
+### T143 — wip
 
 - createdAt: 2026-07-14T12:40:52.205Z
-- updatedAt: 2026-07-14T12:50:04.123Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T16:06:15.431Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Expose WeightedScheduler aggregation-gate snapshot and log engage/disengage transitions
 - description: "Item 1 + Q54, sched-package half. internal/sched/weighted.go holds the gate state under s.mu — s.aggregating, the EWMA loadRate (fps), and the thresholds EngageFraction*PerPathCapacity / DisengageFraction*PerPathCapacity — but exposes NONE of it to any accessor. (1) Add a mutex-guarded snapshot accessor on *WeightedScheduler, e.g. AggregationSnapshot() returning {Aggregating bool, OfferedLoadFPS, EngageThresholdFPS, DisengageThresholdFPS}, as the read seam the metrics plumbing (T146) consumes. (2) REVISION (R155 [opus]): updateGateLocked (weighted.go:499-532) does NOT 'flip the gate silently' — it ALREADY emits s.log.Info(\"scheduler aggregation change\", \"to\", \"aggregating\"|\"collapsed\", \"load_fps\", s.loadRate [+ reason on collapse]) on every s.aggregating flip (lines 506/514/526). Do NOT add a second log line (that would DOUBLE-LOG every engage/disengage). Instead EXTEND that existing 'scheduler aggregation change' record with the MISSING structured fields — from (the prior gate state), engage_threshold_fps, disengage_threshold_fps — keeping the CANONICAL message string 'scheduler aggregation change', its existing to/load_fps/reason fields, and the one-shot-on-change semantics (parity with setActiveLocked's 'scheduler active path change', so a saturated Pick path does NOT log per-frame). Active-backup has no gate and is untouched. Pure sched-package change; NO metrics wiring here (T146). Document the extended log fields in docs/design.md's scheduler section in the same change (AGENTS.md docs-sync)."
 - acceptance: "-tags e2e under `just e2e`: weighted-policy daemon with per_path_capacity_fps=250 (the empirical repro value) on the netns fixture; using the harness overload driver, offered load pushed above engage_fraction*250 makes the log capturer observe a 'scheduler aggregation change' record with to=\"aggregating\" carrying the NEW from + engage_threshold_fps + disengage_threshold_fps fields (alongside the existing load_fps); stopping the load yields a 'scheduler aggregation change' to=\"collapsed\" record within the collapse-dwell + EWMA-tau budget (wait derived from configured knobs, NO magic sleeps). Assert on the CANONICAL existing message string 'scheduler aggregation change' (NOT a new 'engaged/disengaged' string) and assert EXACTLY ONE record per flip (no double-log regression). `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
@@ -1912,12 +1913,12 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - resultCommit: f387831
 
-### T150 — planned
+### T150 — wip
 
 - createdAt: 2026-07-14T13:16:09.195Z
-- updatedAt: 2026-07-14T13:27:58.739Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T16:06:18.024Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add BDP-sized send-pacing to the ActiveBackup scheduler
 - description: |
     Give ActiveBackup an optional PER-PATH token-bucket pace using the shared pacer, so the DEFAULT scheduler shapes a single uplink to its drain rate and cannot self-inflict the ~1s Starlink bufferbloat (D65 primary fix). Extend sched.Config (active-backup config) with pacing fields: Pacing bool, plus PER-PATH capacity/burst SLICES — PerPathCapacities []float64 and PacingBursts []float64, index-aligned to the health/priority slice — NOT the single shared scalar the weighted scheduler carries.
