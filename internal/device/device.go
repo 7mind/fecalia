@@ -1072,9 +1072,10 @@ func uapiConfig(cfg *config.Config, bootEndpoints []bootEndpoint) (string, error
 // its equivalent pair of /1 prefixes (D35, I6): amneziawg-go's engine wedges
 // the handshake when handed the literal all-routes /0 prefix, so uapiConfig
 // always renders the split form here and the engine never receives a literal
-// /0 — regardless of the peer's mode. Any other prefix, including one that
-// fails to parse (allowed_ips carries no syntax validation upstream), passes
-// through unchanged.
+// /0 — regardless of the peer's mode. Any other prefix passes through
+// unchanged; the parse-failure branch is defensive only, since config.validate()
+// now parse-validates every allowed_ips entry at load (T132/D55), so an
+// unparseable entry can no longer reach here.
 func splitDefaultRoute(cidr string) []string {
 	p, err := netip.ParsePrefix(cidr)
 	if err != nil || p.Bits() != 0 {
@@ -1094,9 +1095,9 @@ func splitDefaultRoute(cidr string) []string {
 // peer explicitly opts into default-route mode — the regression guard: a config
 // without the mode installs no route at all. mode=default-route is edge-only (config
 // validation rejects it on the concentrator), so this is naturally empty there. An
-// allowed_ip that fails to parse is skipped (allowed_ips carries no upstream syntax
-// validation, matching splitDefaultRoute's own tolerance); the split entries always
-// parse.
+// allowed_ip that fails to parse is skipped — defensive only, since config.validate()
+// now parse-validates every allowed_ips entry at load (T132/D55), so an unparseable
+// entry can no longer reach here; the split entries always parse.
 func defaultRoutePrefixes(cfg *config.Config) []netip.Prefix {
 	var prefixes []netip.Prefix
 	for _, peer := range cfg.WireGuard.Peers {
