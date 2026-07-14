@@ -798,3 +798,174 @@ func TestRebaselineDiscardsBufferedPreSwitchFrames(t *testing.T) {
 		t.Fatalf("released FIFO after Rebaseline = %v, want [0] (prior deliveries must be untouched)", got)
 	}
 }
+
+// TestRebaselineToLowSurvivesStaleHighStragglerRace is the reseq-level D36 repro (plan
+// review R126). Under the saturation precondition the plain Rebaseline (unpin + trust
+// the NEXT frame) loses a race: after a PEER RESTART re-baseline, a stale HIGH-seq
+// straggler still draining from the OLD boot can land BEFORE the restarted low-seq init
+// and re-pin `next` HIGH, and with once-per-epoch restart dedup recovery is then blocked.
+// RebaselineToLow re-anchors ONLY on a frame more than one window below the pre-rebaseline
+// release point, so the stale-high straggler is SUSPECT-dropped and the subsequent low
+// init still admits. The parallel with plain Rebaseline is deliberate: swap RebaselineToLow
+// for Rebaseline here and the straggler re-pins next high, the low init is dropped, and the
+// final delivery assertion fails.
+func TestRebaselineToLowSurvivesStaleHighStragglerRace(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Prior boot: a busy contiguous stream advances the release point well past one
+	// window (next == priorHi afterwards).
+	const priorHi = 200
+	for s := uint64(0); s < priorHi; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r)
+
+	// Authenticated peer restart: the low-anchor re-baseline pins the pending anchor at
+	// the current (high) release point rather than unpinning outright.
+	r.RebaselineToLow()
+	if s := r.Stats(); s.Rebaselines != 1 {
+		t.Fatalf("Rebaselines = %d, want 1", s.Rebaselines)
+	}
+
+	// The re-pin RACE: a stale OLD-boot HIGH-seq straggler arrives FIRST. It must be
+	// SUSPECT-dropped and must NOT re-pin `next` high (which a plain Rebaseline would
+	// let it do, blocking recovery).
+	const staleHigh = priorHi + 5 // above the old release point: a genuine "high" straggler
+	beforeSuspect := r.Stats().DroppedSuspect
+	r.RebaselineToLow() // idempotent: a repeated restart signal keeps the original high anchor
+	if s := r.Stats(); s.Rebaselines != 2 {
+		t.Fatalf("Rebaselines = %d after a repeated restart signal, want 2", s.Rebaselines)
+	}
+	r.Observe(staleHigh, payloadOf(staleHigh), testSrc)
+	if got := drain(r); len(got) != 0 {
+		t.Fatalf("stale-high straggler was DELIVERED %v — it re-pinned next high (D36 race not closed)", got)
+	}
+	if r.Stats().DroppedSuspect <= beforeSuspect {
+		t.Fatal("stale-high straggler was not SUSPECT-dropped (DroppedSuspect did not increase)")
+	}
+
+	// Now the genuine restarted-stream low-seq init arrives: it is more than one window
+	// below the pre-rebaseline release point, so it re-anchors and DELIVERS, and it must
+	// NOT itself count as a suspect drop.
+	const lowInit = 1
+	suspectBeforeLow := r.Stats().DroppedSuspect
+	r.Observe(lowInit, payloadOf(lowInit), testSrc)
+	r.Observe(lowInit+1, payloadOf(lowInit+1), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{lowInit, lowInit + 1}) {
+		t.Fatalf("after RebaselineToLow the restarted low stream delivered %v, want [%d %d]", got, lowInit, lowInit+1)
+	}
+	if r.Stats().DroppedSuspect != suspectBeforeLow {
+		t.Fatalf("the low-seq init was counted as a suspect drop: DroppedSuspect %d -> %d", suspectBeforeLow, r.Stats().DroppedSuspect)
+	}
+}
+
+// TestRebaselineToLowNoOpBeforeFirstObserve pins that a low-anchor re-baseline on an
+// UNSTARTED ring (a torn-down peer re-instantiated a fresh resequencer) enters NO pending
+// mode: the first Observe pins `next` normally, whatever its seq, exactly as a fresh ring
+// behaves. It bumps the diagnostic counter but must not blackhole the first stream.
+func TestRebaselineToLowNoOpBeforeFirstObserve(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(64, time.Second, clk)
+
+	r.RebaselineToLow()
+	if s := r.Stats(); s.Rebaselines != 1 {
+		t.Fatalf("Rebaselines = %d, want 1", s.Rebaselines)
+	}
+	// A fresh high-seq stream pins next and delivers in order — no pending-low gate.
+	r.Observe(5000, payloadOf(5000), testSrc)
+	r.Observe(5001, payloadOf(5001), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{5000, 5001}) {
+		t.Fatalf("unstarted RebaselineToLow blackholed the first stream: delivered %v, want [5000 5001]", got)
+	}
+}
+
+// TestRebaselineToLowSmallAnchorSelfHeals is the FIX-1 regression (round-2 review). A
+// RebaselineToLow at a SMALL release point (next <= window) must NOT arm the low-anchor
+// gate: the re-anchor predicate `seq < anchor && anchor - seq > window` is UNSATISFIABLE
+// for the restarted sender's first DATA (outer-seq ~1) when anchor <= window+1, so a
+// pin would blackhole the whole restarted stream FOREVER — a regression from the pre-T119
+// resync self-heal. Realistic trigger: light traffic / an early restart / a crash-loop
+// (a first restart re-anchors next~1, a second restart within one window pins a tiny
+// anchor). The fix falls back to a plain unpin at a small anchor, so the new-boot stream
+// re-anchors on its first frame and DELIVERS.
+func TestRebaselineToLowSmallAnchorSelfHeals(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Old boot: only 50 contiguous frames, so the release point is SMALL (next == 50 <=
+	// window). This is the light-traffic / early-restart precondition.
+	const oldBoot = 50
+	for s := uint64(0); s < oldBoot; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r)
+
+	// Authenticated peer restart at the small anchor. FIX 1: no pending-low gate armed
+	// (it would be unsatisfiable); plain unpin instead.
+	r.RebaselineToLow()
+	if s := r.Stats(); s.Rebaselines != 1 {
+		t.Fatalf("Rebaselines = %d, want 1", s.Rebaselines)
+	}
+
+	// The restarted new-boot stream (outer-seq restarts near 1). Before the fix these were
+	// all SUSPECT-dropped forever (a permanent blackhole); after the fix the first frame
+	// re-anchors next and the stream DELIVERS in order.
+	var want []uint64
+	for s := uint64(1); s <= 8; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+		want = append(want, s)
+	}
+	if got := drain(r); !equalSeqs(got, want) {
+		t.Fatalf("small-anchor restart blackholed the new-boot stream: delivered %v, want %v", got, want)
+	}
+	// The stream self-healed on the FIRST frame, not by dropping the whole window.
+	if s := r.Stats(); s.DroppedSuspect != 0 {
+		t.Fatalf("small-anchor restart SUSPECT-dropped %d new-boot frames; want 0 (plain unpin re-anchors)", s.DroppedSuspect)
+	}
+}
+
+// TestRebaselineToLowThenRebaselineDelivers is the FIX-2 regression (round-2 review). A
+// plain Rebaseline() (the D32 hub-failover path) must CLEAR a pending low-anchor left by a
+// prior RebaselineToLow whose restarted low init has not yet re-anchored next. Without the
+// fix, Rebaseline resets `started` but leaves pendingLow armed against the stale
+// pendingLowAnchor, so every post-failover fail-back frame is re-classified against that
+// stale anchor and SUSPECT-dropped — violating Rebaseline's "next Observe re-anchors next"
+// postcondition. The fix clears pendingLow, restoring the plain unpin-and-trust-next path.
+func TestRebaselineToLowThenRebaselineDelivers(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Prior boot advances the release point well past one window: next == 200.
+	const priorHi = 200
+	for s := uint64(0); s < priorHi; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r)
+
+	// Peer restart arms the pending low-anchor at 200 (the low init has NOT yet arrived).
+	r.RebaselineToLow()
+
+	// A D32 hub failover now Rebaselines the SAME resequencer. FIX 2: this clears the
+	// pending low-anchor so the standby's fail-back stream is not gated against the stale
+	// anchor.
+	r.Rebaseline()
+
+	// The standby's fail-back stream (a fresh outer-seq run, here 300..399). Before the fix
+	// these were all SUSPECT-dropped (0/100 delivered) against the stale pendingLowAnchor=200;
+	// after the fix the first frame re-anchors next and the stream DELIVERS in order.
+	var want []uint64
+	for s := uint64(300); s < 400; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+		want = append(want, s)
+	}
+	if got := drain(r); !equalSeqs(got, want) {
+		t.Fatalf("RebaselineToLow→Rebaseline left the pending gate in force: delivered %d frames, want %d", len(got), len(want))
+	}
+	if s := r.Stats(); s.DroppedSuspect != 0 {
+		t.Fatalf("post-Rebaseline fail-back stream SUSPECT-dropped %d frames; want 0 (stale pendingLow not cleared)", s.DroppedSuspect)
+	}
+}

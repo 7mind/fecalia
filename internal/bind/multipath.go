@@ -1825,7 +1825,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			return
 		}
 		if pr.reflector != nil {
-			if echo, _, rerr := pr.reflector.Reflect(raw); rerr == nil {
+			if echo, epochChanged, rerr := pr.reflector.Reflect(raw); rerr == nil {
 				// UDP writes are goroutine-safe, so this receive-goroutine reflection
 				// races no in-flight Send on the same socket.
 				if _, werr := ps.conn.WriteToUDPAddrPort(echo, srcAP); werr == nil {
@@ -1833,6 +1833,27 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 					// real egress traffic on this path, so it counts toward txBytes
 					// exactly like a DATA/PARITY write — only on a nil write error.
 					ps.txBytes.Add(uint64(len(echo)))
+				}
+				if epochChanged {
+					// Authenticated PEER RESTART (T116/T119): the reflector reports THIS
+					// peer's epoch changed — a new-sessionID adoption over an already-adopted
+					// path. The restarted peer's outer-seq resets near 1, far below the
+					// release point the pre-restart stream advanced THIS peer's resequencer's
+					// `next` to, so its wrapped WG init (outer-seq ~1) would be SUSPECT-dropped
+					// and the tunnel never re-establishes. Re-anchor via a LOW-ANCHOR
+					// re-baseline so the restarted low-seq init re-pins the release point while
+					// a stale HIGH-seq old-boot straggler still draining cannot re-pin it high
+					// (defect D36 re-pin race). Because pr is the demux-resolved per-peer view,
+					// this ONE site covers the edge single-concentrator primary AND every
+					// concentrator per-peer resequencer, both restart directions. Load the
+					// resequencer atomically and nil-check it — absent mid-teardown, like the
+					// DATA branch; a torn-down peer re-instantiates an UNSTARTED ring that needs
+					// no re-anchor. Done OUTSIDE m.mu with no other lock held (dispatchInbound
+					// runs on a readLoop that never takes m.mu; the resequencer keeps its own
+					// mutex — never nest it), mirroring the SetPeerRemote->Rebaseline discipline.
+					if rq := pr.resequencer.Load(); rq != nil {
+						rq.RebaselineToLow()
+					}
 				}
 			}
 		}

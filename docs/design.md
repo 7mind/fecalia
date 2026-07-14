@@ -427,6 +427,35 @@ WireGuard anti-replay window sees the traffic — critical, because WG would
 otherwise drop legitimately-reordered datagrams. It runs its **own outer sequence
 space** and never touches the inner WireGuard counter (a core invariant).
 
+**Trusted re-baseline on a peer restart (T116/T119).** A DATA frame is
+unauthenticated, so the release point is normally moved only by the corroborating
+`resync` guard (several distinct low seqs within one window) — which a *single*
+low frame cannot trip. That is fine for reorder, but a **peer/concentrator process
+restart** resets the sender's outer-seq near 1 far below the release point the prior
+boot's high-rate stream advanced `next` to, and the restarted peer's wrapped WG init
+is a *lone* low frame — it would be dropped as *suspect* and the tunnel would never
+re-establish. The restart is detected on the **authenticated** liveness plane: the
+per-peer probe reflector reports an `epochChanged` when a probe adopts an
+already-adopted path under a **new session id** (a genuine restart, deduped once per
+epoch), and `dispatchInbound` re-baselines *that* peer's resequencer via
+`Resequencer.RebaselineToLow`. Because this fires on the demux-resolved per-peer view,
+the one call site covers both the edge single-concentrator primary and every
+concentrator per-peer resequencer, in either restart direction. Unlike the hub-failover
+`Rebaseline` (which unpins and re-anchors on the *next* frame), the **low-anchor**
+variant re-anchors only on a frame more than one window *below* the pre-rebaseline
+release point — so a stale HIGH-seq straggler still draining from the old boot's queues
+is suspect-dropped and cannot re-pin `next` high and block recovery (the D36 re-pin
+race). Two boundary rules keep the low-anchor gate from becoming a *blackhole*: (1) the
+gate is armed only when the release point is high enough for it to be satisfiable
+(`next > window+1`) — the restarted sender's first DATA is outer-seq ~1, so at a small
+anchor no low frame could ever satisfy `anchor - seq > window` and every frame would be
+suspect-dropped forever; at a small anchor (light traffic / an early restart / a
+crash-loop) it falls back to the plain unpin, which self-heals; and (2) a subsequent
+plain `Rebaseline` (a D32 hub failover) *clears* any still-pending low-anchor, so the
+fail-back stream is not re-classified against a now-stale anchor. Both re-baselines are
+sound because a hub switch and an authenticated epoch change are **trusted control
+events**, not forgeable wire frames.
+
 ### FEC — `internal/fec` + `internal/adaptivefec`
 
 - `fec` implements Reed-Solomon over groups of *K* data shards + *M* parity

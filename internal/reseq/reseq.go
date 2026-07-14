@@ -144,6 +144,16 @@ type Resequencer struct {
 	resyncLo   uint64
 	resyncHi   uint64
 
+	// Pending low-anchor re-baseline (peer restart, T119). After RebaselineToLow the
+	// release point is UNPINNED but NOT re-anchored on the next arbitrary frame:
+	// pendingLow keeps `next` held at pendingLowAnchor (the pre-rebaseline release
+	// point) so a stale HIGH-seq straggler still draining from the OLD boot is
+	// SUSPECT-dropped, and `next` re-anchors ONLY when a genuine restarted-stream
+	// low-seq — a frame more than one window BELOW pendingLowAnchor — arrives. This
+	// closes the D36 re-pin race the plain Rebaseline leaves open (plan review R126).
+	pendingLow       bool
+	pendingLowAnchor uint64
+
 	// Diagnostics (read via the accessors; useful for the bounded-memory asserts).
 	highWater   int    // max occupied slots ever held
 	dropDup     uint64 // frames dropped as duplicates
@@ -283,6 +293,24 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 // bounded amount on a plausible loss burst, or re-pin next on a corroborated
 // discontinuity. Caller holds r.mu.
 func (r *Resequencer) admit(seq uint64) bool {
+	if r.pendingLow {
+		// A low-anchor re-baseline (peer restart, T119) is in effect: re-anchor the
+		// release point ONLY on the genuine restarted-stream low-seq — a frame more
+		// than one window BELOW the pre-rebaseline release point. A stale HIGH-seq
+		// straggler still draining from the OLD boot (at or near the old release
+		// point) is an ordinary SUSPECT-drop and must NOT re-pin `next` high, so
+		// recovery is not blocked once-per-epoch (defect D36 re-pin race). The
+		// seq < anchor guard is load-bearing: without it a straggler at or above the
+		// anchor would underflow the unsigned subtraction and spuriously re-anchor.
+		if seq < r.pendingLowAnchor && r.pendingLowAnchor-seq > r.window {
+			r.pendingLow = false
+			r.resyncReset()
+			r.next = seq
+			return true
+		}
+		r.dropSuspect++
+		return false
+	}
 	if seq < r.next {
 		// Below the release point. A frame more than one window below next is
 		// impossibly late under bounded reorder — treat it as SUSPECT (a peer
@@ -552,8 +580,75 @@ func (r *Resequencer) Rebaseline() {
 	r.buf = 0
 	r.started = false
 	r.waiting = false
+	// A full unpin SUPERSEDES any pending low-anchor re-baseline (T119). If a peer
+	// restart had armed pendingLow (via RebaselineToLow) and the restarted low-seq
+	// init had not yet re-anchored `next`, a subsequent D32 hub failover must NOT
+	// leave the stale pendingLow gate in force: admit would keep classifying every
+	// fail-back frame against the now-stale pendingLowAnchor and blackhole the
+	// standby's stream, violating this method's documented "next Observe re-anchors
+	// next" postcondition. Clearing it restores the plain unpin-and-trust-next path.
+	r.pendingLow = false
 	r.resyncReset()
 	r.rebaselines++
+}
+
+// RebaselineToLow re-baselines the release point for a PEER RESTART (T119) using a
+// LOW-ANCHOR rule the plain Rebaseline lacks. Like Rebaseline it discards the
+// buffered pre-restart frames in O(window) and leaves the already-released FIFO
+// untouched, but instead of unpinning `next` and trusting the NEXT frame to
+// re-anchor, it PINS a pending low-anchor at the current release point: `next`
+// re-anchors ONLY when a frame more than one window BELOW that point arrives — the
+// genuine restarted-stream low-seq (the wrapped WG init, outer-seq ~1). Any stale
+// HIGH-seq straggler still draining from the OLD boot lands at or near the old
+// release point and is SUSPECT-dropped, so it can never re-pin `next` high and
+// block recovery (the D36 re-pin race under the saturation precondition that a
+// plain Rebaseline — which re-anchors on the first frame, high straggler included —
+// cannot survive; plan review R126). Idempotent across repeated restart signals: a
+// second call while a re-anchor is still pending keeps the ORIGINAL (high) anchor.
+// Safe before the first Observe (an UNSTARTED ring needs no re-anchor — the first
+// Observe pins next normally).
+//
+// The low-anchor gate is armed ONLY when the pre-rebaseline release point is high
+// enough for it to be satisfiable: the re-anchor predicate is
+// `seq < pendingLowAnchor && pendingLowAnchor - seq > window`, and the restarted
+// sender's first DATA is outer-seq ~1, so it can only re-anchor when
+// pendingLowAnchor >= window+2 (i.e. next > window+1). For a SMALL anchor
+// (next <= window+1) the predicate is UNSATISFIABLE for any low seq — nothing would
+// ever clear pendingLow and every subsequent frame would be SUSPECT-dropped forever
+// (a permanent blackhole; the pre-T119 code self-heals here via resync corroboration,
+// so pinning would be a regression). This is the realistic light-traffic / early-
+// restart / crash-loop case. So when the anchor is small we fall back to a PLAIN
+// unpin (started=false), re-anchoring on the next frame exactly as the D32
+// Rebaseline does — bounded, self-healing loss instead of a blackhole. Takes r.mu;
+// the caller must NOT hold it.
+func (r *Resequencer) RebaselineToLow() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.ring {
+		r.ring[i] = slot{}
+	}
+	r.buf = 0
+	r.waiting = false
+	r.resyncReset()
+	r.rebaselines++
+	switch {
+	case r.pendingLow:
+		// Already pending from an earlier restart signal this epoch: keep the ORIGINAL
+		// (high) anchor — idempotent under repeated restart signals for the same epoch.
+	case r.started && r.next > r.window+1:
+		// The release point is high enough for the low-anchor gate to be satisfiable:
+		// hold `next` at the pre-rebaseline release point so stale-high stragglers
+		// SUSPECT-drop until the restarted low-seq re-anchors it.
+		r.pendingLow = true
+		r.pendingLowAnchor = r.next
+	default:
+		// UNSTARTED ring, or a small release point (next <= window+1) where a low-anchor
+		// gate would be UNSATISFIABLE and permanently blackhole the restarted stream.
+		// Fall back to a plain unpin: the next Observe re-anchors next, self-healing
+		// exactly as the D32 hub-failover Rebaseline does. On an unstarted ring this is
+		// a no-op (started is already false).
+		r.started = false
+	}
 }
 
 // smallestBuffered scans the ring for the lowest occupied seq at or above next.
