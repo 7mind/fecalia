@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"strconv"
 	"syscall"
+
+	"github.com/7mind/wanbond/internal/config"
 )
 
 // listenPath binds one path's UDP socket to port on the path's source.
@@ -56,38 +58,61 @@ type ifaceInfo struct {
 // host's interfaces and returns the per-path bind plan (see selectDeviceBinds):
 // index i holds the device to SO_BINDTODEVICE-bind path i to, or "" to pin path
 // i's specific source IP. A snapshot failure resolves every source to an empty
-// dev, so all paths fall back to source-IP binding.
-func planPathBinds(srcs []netip.Addr) []string {
+// dev, so all paths (other than a forced BindModeDevice — see selectDeviceBinds)
+// fall back to source-IP binding. modes is parallel to srcs and holds each
+// path's RESOLVED bind mode (config.Path.Bind after normalize(), I5) — never
+// empty on a loaded config, but selectDeviceBinds treats any value other than
+// BindModeSource/BindModeDevice as BindModeAuto defensively.
+func planPathBinds(srcs []netip.Addr, modes []config.BindMode) []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		ifaces = nil
 	}
-	return selectDeviceBinds(srcs, func(s netip.Addr) ifaceInfo {
+	return selectDeviceBinds(srcs, modes, func(s netip.Addr) ifaceInfo {
 		return interfaceInfo(s, ifaces)
 	})
 }
 
 // selectDeviceBinds decides, per source address, whether its path socket may be
 // bound to the source's interface (SO_BINDTODEVICE + wildcard) or must pin the
-// specific source IP. Device binding — the T16 roam-surviving mode — is chosen
-// ONLY when it is provably equivalent to pinning the configured source_addr AND
-// no other path contends for the device:
+// specific source IP, honoring each path's RESOLVED BindMode (I5, Q42):
+//
+//   - config.BindModeSource forces source-IP pinning unconditionally: the
+//     source's interface is never even consulted for a device-bind decision.
+//     This is the D38 escape hatch — a source-policy-routed uplink (one address
+//     per VLAN interface) that the BindModeAuto heuristic below would otherwise
+//     device-bind, silently defeating `ip rule from <source_addr>`.
+//
+//   - config.BindModeDevice forces a device bind unconditionally: the path's
+//     interface is used whenever it resolves, regardless of family count or
+//     contention with another configured path. An unresolvable interface (no
+//     owning interface found) falls back to source-IP binding; a resolved-but-
+//     failing SO_BINDTODEVICE (permission, unsupported) falls back the same way
+//     at listenPath's setsockopt layer.
+//
+//   - config.BindModeAuto (and, defensively, any other/unset value) reproduces
+//     the pre-I5 heuristic BYTE-FOR-BYTE: device binding — the T16 roam-
+//     surviving mode — is chosen ONLY when it is provably equivalent to pinning
+//     the configured source_addr AND no other path contends for the device:
 //
 //   - the source resolves to a non-loopback interface (dev != ""),
+//
 //   - that interface carries exactly ONE address of the source's family, so a
 //     wildcard-on-device socket can only ever source from the configured address
 //     (a multi-address interface would let the kernel pick a DIFFERENT source via
 //     route-based selection, voiding source_addr's pin — Criticism 2), and
+//
 //   - exactly ONE configured path resolves to that interface, because two
 //     wildcard+device sockets on the same port and device collide EADDRINUSE;
 //     source-IP binding keeps their two DISTINCT specific-IP sockets, which
 //     coexist on one port — the pre-T16 behaviour (Criticism 1).
 //
-// Every other path falls back to source-IP binding, exactly as before T16 (at the
-// cost of not surviving a same-address readdress for those paths — the pre-T16
-// status quo). The returned slice is parallel to srcs: a non-empty dev at i means
-// "device-bind path i to it"; "" means "source-IP-bind path i".
-func selectDeviceBinds(srcs []netip.Addr, resolve func(netip.Addr) ifaceInfo) []string {
+// Every auto-mode path that fails those checks falls back to source-IP binding,
+// exactly as before T16 (at the cost of not surviving a same-address readdress
+// for those paths — the pre-T16 status quo). The returned slice is parallel to
+// srcs: a non-empty dev at i means "device-bind path i to it"; "" means
+// "source-IP-bind path i". modes is parallel to srcs.
+func selectDeviceBinds(srcs []netip.Addr, modes []config.BindMode, resolve func(netip.Addr) ifaceInfo) []string {
 	infos := make([]ifaceInfo, len(srcs))
 	devPaths := make(map[string]int, len(srcs))
 	for i, s := range srcs {
@@ -99,11 +124,40 @@ func selectDeviceBinds(srcs []netip.Addr, resolve func(netip.Addr) ifaceInfo) []
 	out := make([]string, len(srcs))
 	for i := range srcs {
 		info := infos[i]
-		if info.dev != "" && info.familyCount == 1 && devPaths[info.dev] == 1 {
+		switch modes[i] {
+		case config.BindModeSource:
+			// out[i] stays "": never SO_BINDTODEVICE, regardless of what the
+			// interface resolution would have decided (the D38 escape hatch).
+		case config.BindModeDevice:
+			// Forced device-bind: use the path's interface unconditionally when it
+			// resolves. info.dev is already "" when unresolvable, which is the
+			// fallback-to-source-IP-binding outcome.
 			out[i] = info.dev
+		default: // config.BindModeAuto, or any other/unset value.
+			if info.dev != "" && info.familyCount == 1 && devPaths[info.dev] == 1 {
+				out[i] = info.dev
+			}
 		}
 	}
 	return out
+}
+
+// resolveForcedDeviceBind resolves src's interface for a single, isolated
+// forced-device-mode bind (AddPath / the T55 deferred-path reconcile), which —
+// unlike Open's planPathBinds/selectDeviceBinds — binds one path at a time with
+// no other-path contention to check. It returns "" (source-IP-bind) for any mode
+// other than config.BindModeDevice, or when the interface cannot be resolved, so
+// the caller's listenPath call falls back to source-IP binding exactly as the
+// unresolvable-interface case does in selectDeviceBinds.
+func resolveForcedDeviceBind(src netip.Addr, mode config.BindMode) string {
+	if mode != config.BindModeDevice {
+		return ""
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	return interfaceInfo(src, ifaces).dev
 }
 
 // interfaceInfo resolves src against ifaces (a single net.Interfaces snapshot):

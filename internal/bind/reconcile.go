@@ -20,13 +20,14 @@ import (
 const DefaultReconcileInterval = 1 * time.Second
 
 // defaultDeferredListen is the production bind for a reconciled deferred path: it pins
-// the path's source IP on the bind's shared port, identical to AddPath's runtime bind
-// (net.ListenUDP on the source). It returns EADDRNOTAVAIL for as long as no interface
-// holds the address — which is exactly the signal reconcileDeferred reads to keep the
-// path deferred and retry — and succeeds once the address becomes assignable.
-func defaultDeferredListen(src netip.Addr, port uint16) (*net.UDPConn, error) {
-	laddr := &net.UDPAddr{IP: net.IP(src.AsSlice()), Port: int(port)}
-	return net.ListenUDP("udp", laddr)
+// the path's source IP on the bind's shared port, identical to AddPath's runtime bind,
+// unless dev is set (a forced BindModeDevice — I5), in which case it device-binds like
+// Open/AddPath (falling back to source-IP binding on an unresolvable interface or a
+// failed setsockopt — see listenPath). It returns EADDRNOTAVAIL for as long as no
+// interface holds the address — which is exactly the signal reconcileDeferred reads to
+// keep the path deferred and retry — and succeeds once the address becomes assignable.
+func defaultDeferredListen(src netip.Addr, port uint16, dev string) (*net.UDPConn, error) {
+	return listenPath(src, port, dev)
 }
 
 // StartReconcileLoop launches the background deferred-path reconciler (T55): every
@@ -106,7 +107,8 @@ func (m *Multipath) reconcileDeferred() {
 	// a still-deferred entry never clobbers one not yet read (the standard filter idiom).
 	kept := m.deferred[:0]
 	for _, dp := range m.deferred {
-		c, err := m.deferredListen(dp.def.SourceAddr, m.openPort)
+		dev := resolveForcedDeviceBind(dp.def.SourceAddr, dp.def.Bind)
+		c, err := m.deferredListen(dp.def.SourceAddr, m.openPort, dev)
 		if err != nil {
 			kept = append(kept, dp) // still not assignable (or a transient fault): retry next tick
 			continue

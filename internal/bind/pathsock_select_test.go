@@ -3,16 +3,30 @@ package bind
 import (
 	"net/netip"
 	"testing"
+
+	"github.com/7mind/wanbond/internal/config"
 )
 
+// autoModes returns a config.BindMode slice of n BindModeAuto entries, the mode
+// every pre-I5 selectDeviceBinds test exercised implicitly.
+func autoModes(n int) []config.BindMode {
+	modes := make([]config.BindMode, n)
+	for i := range modes {
+		modes[i] = config.BindModeAuto
+	}
+	return modes
+}
+
 // TestSelectDeviceBinds is the T16 rework regression for the device-bind SELECTION
-// rule (the two review criticisms fable reproduced under `unshare -Urn`). Device
-// binding (SO_BINDTODEVICE + wildcard source — the roam-surviving mode) must be
-// chosen ONLY when it is provably equivalent to pinning the configured
-// source_addr AND no other path contends for the device; every other path must
-// fall back to source-IP binding (the pre-T16 behaviour that lets distinct
-// specific-IP sockets coexist on one port). It exercises selectDeviceBinds with a
-// fake resolver so it needs no privilege / real interfaces.
+// rule (the two review criticisms fable reproduced under `unshare -Urn`), now run
+// under explicit BindModeAuto (I5) to pin it as the REGRESSION GUARD that auto
+// reproduces the pre-I5 heuristic byte-for-byte on these fixtures. Device binding
+// (SO_BINDTODEVICE + wildcard source — the roam-surviving mode) must be chosen
+// ONLY when it is provably equivalent to pinning the configured source_addr AND no
+// other path contends for the device; every other path must fall back to
+// source-IP binding (the pre-T16 behaviour that lets distinct specific-IP sockets
+// coexist on one port). It exercises selectDeviceBinds with a fake resolver so it
+// needs no privilege / real interfaces.
 func TestSelectDeviceBinds(t *testing.T) {
 	addr := func(s string) netip.Addr { return netip.MustParseAddr(s) }
 
@@ -81,7 +95,7 @@ func TestSelectDeviceBinds(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := selectDeviceBinds(tc.srcs, build(tc.table))
+			got := selectDeviceBinds(tc.srcs, autoModes(len(tc.srcs)), build(tc.table))
 			if len(got) != len(tc.wantDev) {
 				t.Fatalf("selectDeviceBinds returned %d entries, want %d (%v)", len(got), len(tc.wantDev), got)
 			}
@@ -89,6 +103,79 @@ func TestSelectDeviceBinds(t *testing.T) {
 				if got[i] != tc.wantDev[i] {
 					t.Fatalf("path %d bind = %q, want %q (full: %v want %v)", i, got[i], tc.wantDev[i], got, tc.wantDev)
 				}
+			}
+		})
+	}
+}
+
+// TestSelectDeviceBindsForcedSource is the D38 trap regression (I5): a SOLE path on
+// a single-address interface is EXACTLY the case BindModeAuto device-binds (see
+// "solo single-address interface device-binds" above) — and exactly the source-
+// policy-routed VLAN-per-WAN topology (defects:D38) where a wildcard+device socket
+// silently defeats `ip rule from <source_addr>`. BindModeSource must force
+// source-IP pinning here regardless, discriminating it from BindModeAuto on the
+// identical fixture.
+func TestSelectDeviceBindsForcedSource(t *testing.T) {
+	addr := netip.MustParseAddr("198.51.100.10")
+	table := map[netip.Addr]ifaceInfo{addr: {dev: "eth0", familyCount: 1}}
+	resolve := func(a netip.Addr) ifaceInfo { return table[a] }
+
+	got := selectDeviceBinds([]netip.Addr{addr}, []config.BindMode{config.BindModeSource}, resolve)
+	if len(got) != 1 || got[0] != "" {
+		t.Fatalf("selectDeviceBinds(BindModeSource) = %v, want [\"\"] (never SO_BINDTODEVICE)", got)
+	}
+
+	// Sanity: the SAME fixture under BindModeAuto device-binds — confirms the
+	// forced-source result above is actually discriminating the mode, not merely
+	// reflecting an unresolvable/multi-address fixture.
+	gotAuto := selectDeviceBinds([]netip.Addr{addr}, autoModes(1), resolve)
+	if len(gotAuto) != 1 || gotAuto[0] != "eth0" {
+		t.Fatalf("selectDeviceBinds(BindModeAuto) = %v, want [\"eth0\"] (the D38 trap this test discriminates against)", gotAuto)
+	}
+}
+
+// TestSelectDeviceBindsForcedDevice covers BindModeDevice (I5): it device-binds
+// whenever the source resolves to an interface — even one BindModeAuto would have
+// refused (multi-address, or shared with another path) — and falls back to
+// source-IP binding only when the interface cannot be resolved at all.
+func TestSelectDeviceBindsForcedDevice(t *testing.T) {
+	addr := func(s string) netip.Addr { return netip.MustParseAddr(s) }
+
+	t.Run("resolvable multi-address interface still device-binds", func(t *testing.T) {
+		// BindModeAuto refuses this fixture (see "solo multi-address interface ->
+		// source-IP-bound" above); BindModeDevice must device-bind it anyway.
+		src := addr("203.0.113.5")
+		table := map[netip.Addr]ifaceInfo{src: {dev: "eth0", familyCount: 2}}
+		resolve := func(a netip.Addr) ifaceInfo { return table[a] }
+
+		got := selectDeviceBinds([]netip.Addr{src}, []config.BindMode{config.BindModeDevice}, resolve)
+		if len(got) != 1 || got[0] != "eth0" {
+			t.Fatalf("selectDeviceBinds(BindModeDevice, multi-address) = %v, want [\"eth0\"]", got)
+		}
+	})
+
+	t.Run("unresolvable interface falls back to source-IP binding", func(t *testing.T) {
+		src := addr("127.0.0.1") // loopback: interfaceInfo never resolves it (see TestFamilyBindCount's siblings)
+		resolve := func(netip.Addr) ifaceInfo { return ifaceInfo{} }
+
+		got := selectDeviceBinds([]netip.Addr{src}, []config.BindMode{config.BindModeDevice}, resolve)
+		if len(got) != 1 || got[0] != "" {
+			t.Fatalf("selectDeviceBinds(BindModeDevice, unresolvable) = %v, want [\"\"] (fallback to source-IP binding)", got)
+		}
+	})
+}
+
+// TestPlanPathBinds exercises the real planPathBinds wrapper (real net.Interfaces()
+// snapshot, no injected resolver) end to end: a loopback source never resolves to a
+// non-loopback interface, so it source-IP-binds under every mode — the mode plumbing
+// through planPathBinds compiles and behaves the same as selectDeviceBinds direct.
+func TestPlanPathBinds(t *testing.T) {
+	srcs := []netip.Addr{netip.MustParseAddr("127.0.0.1")}
+	for _, mode := range []config.BindMode{config.BindModeSource, config.BindModeDevice, config.BindModeAuto} {
+		t.Run(string(mode), func(t *testing.T) {
+			got := planPathBinds(srcs, []config.BindMode{mode})
+			if len(got) != 1 || got[0] != "" {
+				t.Fatalf("planPathBinds(%s, loopback) = %v, want [\"\"]", mode, got)
 			}
 		})
 	}

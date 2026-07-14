@@ -33,7 +33,7 @@ func (f *fakeDeferredBinder) arm() {
 	f.mu.Unlock()
 }
 
-func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16) (*net.UDPConn, error) {
+func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
 	f.mu.Lock()
 	armed := f.armed
 	f.mu.Unlock()

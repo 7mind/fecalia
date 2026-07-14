@@ -343,12 +343,14 @@ type Multipath struct {
 	classify wgClassifier
 
 	// deferredListen binds a reconciled deferred path's socket (T55 background
-	// reconcile). It is an injection seam: the default pins the source IP (net.ListenUDP,
-	// matching AddPath's runtime bind), and a test overrides it to drive the
-	// deferred→bound transition deterministically — a source_addr "becoming assignable"
-	// — without a real interface address having to appear on the host. Immutable after
-	// construction, never nil.
-	deferredListen func(src netip.Addr, port uint16) (*net.UDPConn, error)
+	// reconcile). It is an injection seam: the default pins the source IP unless dev is
+	// set (net.ListenUDP / listenPath, matching AddPath's runtime bind — I5), and a test
+	// overrides it to drive the deferred→bound transition deterministically — a
+	// source_addr "becoming assignable" — without a real interface address having to
+	// appear on the host. dev is resolveForcedDeviceBind's decision for the deferred
+	// path's resolved BindMode, computed by reconcileDeferred before the call. Immutable
+	// after construction, never nil.
+	deferredListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error)
 
 	mu sync.Mutex
 
@@ -648,10 +650,12 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// specific-IP sockets coexist on one port without an EADDRINUSE collision). See
 	// selectDeviceBinds.
 	srcs := make([]netip.Addr, len(m.defs))
+	modes := make([]config.BindMode, len(m.defs))
 	for i := range m.defs {
 		srcs[i] = m.defs[i].SourceAddr
+		modes[i] = m.defs[i].Bind
 	}
-	bindDevs := planPathBinds(srcs)
+	bindDevs := planPathBinds(srcs, modes)
 
 	// A path whose WELL-FORMED source_addr is merely NOT-YET-ASSIGNABLE at boot
 	// (EADDRNOTAVAIL: no interface holds the address — a 5G modem without a DHCP
@@ -2139,8 +2143,12 @@ func (m *Multipath) AddPath(def config.Path) error {
 	}
 	id := uint8(m.nextPathID)
 
-	laddr := &net.UDPAddr{IP: net.IP(def.SourceAddr.AsSlice()), Port: int(m.openPort)}
-	c, err := net.ListenUDP("udp", laddr)
+	// Honor a forced BindModeDevice the same way Open does (I5); BindModeSource and
+	// BindModeAuto keep AddPath's pre-I5 behaviour of always source-IP-pinning a
+	// runtime-added path (D30 — auto never device-binds at runtime — is a separate,
+	// still-open gap this task does not close).
+	dev := resolveForcedDeviceBind(def.SourceAddr, def.Bind)
+	c, err := listenPath(def.SourceAddr, m.openPort, dev)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRNOTAVAIL) {
 			// Symmetric with Open's tolerant bind: a well-formed-but-not-yet-assignable
