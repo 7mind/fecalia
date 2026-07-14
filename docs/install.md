@@ -644,10 +644,13 @@ systemctl enable --now wanbond-edge      # or wanbond-concentrator
 
 ### Interface addressing and routing (operator-owned)
 
-The daemon creates the TUN interface (`wanbond0`) and owns ONLY the tunnel
-engine — **it never assigns addresses or routes** (wg-quick style, no
-privileged shell-outs). Assign them with a **systemd-networkd `.network`
-file**, using the inner addresses from `allowed_ips`:
+The daemon creates the TUN interface (`wanbond0`) and brings it
+administratively **UP** itself (`SIOCSIFFLAGS`/`IFF_UP`) right after creation —
+so a write to it never silently fails with `EIO` for want of a link-up step —
+but owns ONLY the tunnel engine: **it never assigns addresses or routes**
+(wg-quick style, no privileged shell-outs). Assign them with a
+**systemd-networkd `.network` file**, using the inner addresses from
+`allowed_ips`:
 
 ```ini
 # /etc/systemd/network/10-wanbond0.network  (edge; concentrator: 10.77.0.1/24)

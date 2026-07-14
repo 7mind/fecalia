@@ -203,6 +203,15 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: read TUN name: %w", err)
 	}
+	// Bring the interface administratively UP now (I1): amneziawg-go never does this
+	// itself, and a write to a DOWN TUN yields EIO — a silent-dead-tunnel footgun the
+	// operator previously had to work around with an out-of-band `ip link set up`.
+	// Addressing stays operator-owned; this sets ONLY the IFF_UP flag (see ifUp).
+	if err := ifUp(name); err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: bring interface up: %w", err)
+	}
+	clg.Info("interface up", "interface", name)
 	// The DNS re-resolution transport is the one the (validated) [dns] block selects. It is passed
 	// as a factory (not eagerly constructed) so up() builds it AT MOST ONCE and ONLY when some peer
 	// carries a hostname endpoint spec — a config with zero hostname specs never constructs a
