@@ -1,0 +1,51 @@
+# cq.toml — cq review orchestrator config.
+# Full schema and the flat backward-compatible layout: see cq.toml.example.
+
+# alias -> "<harness>:<model>" token. Definitions only — an alias does nothing
+# until a panel (reviewers/planners) or a [harness.<h>.tiers] entry references it.
+# Optional trailing reasoning-effort suffix ":<effort>" (higher = more thinking):
+#   pi     — off | minimal | low | medium | high | xhigh   (used at dispatch)
+#   claude — low | medium | high | xhigh | max             (parsed; not yet used)
+[aliases]
+  opus     = "claude:opus-4.8[1m]"
+  sonnet   = "claude:sonnet-5"
+  haiku    = "claude:haiku-4.5"
+  opus-max = "claude:opus-4.8[1m]:max"          # opus, max reasoning effort
+  fable    = "claude:fable-5"                    # Anthropic's most capable
+  grok     = "pi:grok-build/grok-build:high"     # pi: <provider>/<model>
+  codex    = "pi:openai-codex/gpt-5.5:xhigh"     # Codex (GPT-5.5) via pi
+
+# Per-agent tier. An agent not listed here defaults to "standard".
+[agent_tiers]
+  investigate-explorer        = "frontier"
+  investigate-prober          = "standard"
+  plan-advance                = "frontier"
+  plan-reviewer               = "frontier"
+  implement-worker            = "standard"
+  implement-reviewer          = "frontier"
+  implement-conflict-resolver = "standard"
+
+# Panels + tier->model map for the default (claude) harness. Tiers are
+# harness-specific — there is no shared [tiers]. This map is what makes a model
+# dispatchable; an alias named by no tier here is inert.
+[harness.claude]
+  reviewers = ["opus", "fable"]
+  planners  = ["opus", "fable"]
+[harness.claude.tiers]           # tier -> one model (a model may serve several tiers)
+  frontier = "opus"              # swap to "fable" or "opus-max" to change frontier
+  standard = "sonnet"
+  fast     = "haiku"
+
+# The pi harness: its own panels + tier->model map. Ignored under claude; active
+# when CQ_HARNESS=pi. [harness.pi.tiers] wholly replaces the shared [tiers].
+[harness.pi]
+  reviewers = ["grok", "codex"]
+  planners  = ["codex"]
+[harness.pi.tiers]
+  frontier = "codex"
+  standard = "grok"
+
+# Ledger storage backend (default: "fs"). Uncomment for the experimental
+# git-object backend.
+# [ledger]
+#   backend = "git-object"

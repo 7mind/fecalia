@@ -1610,10 +1610,10 @@ archives:
 
 ## M44
 
-### T128 — planned
+### T128 — wip
 
 - createdAt: 2026-07-14T09:47:30.122Z
-- updatedAt: 2026-07-14T09:47:30.122Z
+- updatedAt: 2026-07-14T16:37:37.690Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extend the multi-peer netns e2e for the hardened datapath (shared-NAT demux, teardown/re-bind, quota, per-peer labels)
