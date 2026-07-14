@@ -1799,10 +1799,10 @@ archives:
 
 ## M52
 
-### T142 — wip
+### T142 — done
 
 - createdAt: 2026-07-14T12:40:34.697Z
-- updatedAt: 2026-07-14T15:34:43.074Z
+- updatedAt: 2026-07-14T15:54:29.801Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Hard-fail config load when declared link_bandwidth proves weighted aggregation can never engage
@@ -1810,6 +1810,7 @@ archives:
 - acceptance: "-tags e2e under `just e2e` (fixture builds+runs the binary): (i) a daemon launched with policy=\"weighted\", link_bandwidth=\"8mbit\" (+link_rtt), pacing disabled, and default per_path_capacity_fps REFUSES to start, exiting non-zero with the actionable error naming the implied capacity fps and engage-threshold fps; (ii) the same config with per_path_capacity_fps lowered so EngageFraction*capacity <= impliedCapacityFPS starts and establishes the tunnel. `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G13"]
+- resultCommit: 6f906b3
 
 ### T144 — planned
 
@@ -1897,10 +1898,10 @@ archives:
 
 ## M57
 
-### T149 — wip
+### T149 — done
 
 - createdAt: 2026-07-14T13:15:57.936Z
-- updatedAt: 2026-07-14T15:34:40.708Z
+- updatedAt: 2026-07-14T15:53:37.851Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extract the per-path token-bucket pacer into a shared internal/sched component
@@ -1908,6 +1909,7 @@ archives:
 - acceptance: "`nix develop -c just test` passes with internal/sched/weighted_test.go UNCHANGED — every existing weighted pacing test green against the delegating impl (token refill, burst bound, TestWeightedPacingBoundsEgressAndBacklog, ClassControl exemption, PickPaced shed, shed-log coalescing, sentinel distinctness); internal/sched/pacer.go exists and weighted.go delegates refill/consume/shed to it; `nix develop -c go vet ./internal/sched/...` clean."
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G14","defects:D65"]
+- resultCommit: f387831
 
 ### T150 — planned
 

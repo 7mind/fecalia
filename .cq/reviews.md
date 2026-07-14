@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 174
+  item: 176
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2061,3 +2061,29 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T158","goals:G14","defects:D65"]
+
+## M57
+
+### R174 — go-ahead
+
+- createdAt: 2026-07-14T15:53:36.335Z
+- updatedAt: 2026-07-14T15:53:36.335Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T149 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Pure behavior-preserving extraction of the WeightedScheduler token-bucket pacer into new internal/sched/pacer.go (caller-locked `pacer` type + pacerConfig). Merged to main as f387831 (cherry-pick of 88ba71c onto f387831-parent e569d48; internal/sched/{pacer.go,weighted.go} only, clean). BOTH reviewers verified ZERO behavioral change: weighted_test.go BYTE-IDENTICAL (empty diff) and green unchanged; pacer is caller-locked (no internal mutex; every call under s.mu at the identical pre-refactor site; -race clean); anonymous embedding shadows correctly (outer cfg/log win at depth 0 per Go shallowest-depth; no method collision — old refillLocked/tryConsumeLocked/shedLocked renamed, addPath/removePath lowercase ≠ exported AddPath/RemovePath; no exported-surface change); shed-log message/fields(shed_frames+load_fps)/1s cadence, refill seeding+burst-clamp, tryConsume order, fullBuckets, PickNone=-1/PickPaced=-2 sentinels, ClassControl D22 exemption, tokens[] index alignment ALL unchanged. FABLE ran a differential overload test at BOTH base 972d84d and head 88ba71c — BIT-IDENTICAL trajectories (11997/15000=0.800 sheds, 3 coalesced log emissions/3s, shedCount reset at each boundary, tokens never exceed burst). Snapshot-vs-live hazard (pacerConfig snapshots cfg at construction vs old live s.cfg reads) proven INERT (no post-construction cfg mutation in the package). pacer.go standalone-reusable for ActiveBackup (depends only on time/log/PickPaced; loadFPS is a param). Full gate green on composed main: go build/vet/test sched ok; just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T149","goals:G14","defects:D65"]
+
+## M52
+
+### R175 — go-ahead
+
+- createdAt: 2026-07-14T15:54:28.347Z
+- updatedAt: 2026-07-14T15:54:28.347Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T142 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Config-load hard-fail guard: under policy=weighted, a path declaring link_bandwidth whose impliedCapacityFPS = LinkBandwidthBitsPerSec/(8*defaultAvgWireFrameBytes) is below EngageFraction*PerPathCapacityFPS makes Load fail fast. Merged to main as 6f906b3 (cherry-pick of 3298e5d onto f387831; docs/install.md auto-merged with T134/T158 sections, no conflicts). BOTH reviewers verified: (1) CONSTANT CONSISTENCY — guard math byte-identical to SizePacingFromBDP with the SAME defaultAvgWireFrameBytes=1500 (config.go:1134 vs :262), so guard and BDP-derive cannot disagree; (2) ordering — Load→normalize(deriveWeightedPacingFromBDP+applyDefaults)→validate; guard in Config.validate after Scheduler.validate on EFFECTIVE values; (3) boundary strict `>` allows exact equality (proven binary-exact 0.5*1000==500 AND decimal-inexact fl(0.9*1000)==900); (4) NO FALSE TRIP in pacing-enabled mode — derive sizes PerPathCapacityFPS to the bottleneck so threshold=EngageFraction(≤1)*bottleneck ≤ implied for every declared path; FABLE empirically probed engage_fraction=1.0 + pacing-enabled and confirmed no fire; (5) error names path + declared bw + implied fps + engage-threshold fps + all three fixes; (6) FIXTURE BUMP 50/10→150/120 Mbit in TestPacingDisabledLeavesDerivationInert LEGITIMATE (old 10Mbit→833fps<9000 threshold now an intentionally-forbidden config; assertions/intent unchanged); (7) REPRO-FIRST confirmed — removing the guard call makes TestWeightedEngageAgainstBandwidthRefuses fail for the right reason; (8) docs/install.md config-error entry accurate. FABLE ran 7 edge probes (multi-path bottleneck naming, undeclared-path skip, float boundary, unit spellings 8mbit/8Mbit/8000kbit/8mbps all→666.7, extreme 100kbit vs 1e9fps no Inf/NaN/div0). Acceptance (i) refuses-to-start e2e RAN GREEN unprivileged (exit 1, all markers); (ii) tunnel-establish needs /dev/net/tun — compiles/vets/lints, DEFERRED to hardware. Full gate green on composed main: go build/vet/test config ok; e2e compiles; just lint 0 issues default+e2e+realhosts. NON-BLOCKING (opus): exactly-equal boundary not explicitly unit-tested (the `>` is correct by inspection; pass-when-lowered case is strictly-below so wouldn't catch a `>=` regression) — candidate hardening, not a defect. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T142","goals:G13"]
