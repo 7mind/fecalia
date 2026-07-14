@@ -519,8 +519,14 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   into the equivalent /1+/1 pair at UAPI
                                    #   render.
 # mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as
-                                   #   the edge's full-tunnel concentrator.
-                                   #   Rejected on the concentrator.
+                                   #   the edge's full-tunnel concentrator: the
+                                   #   daemon installs this peer's allowed_ips
+                                   #   split (wg-quick /1+/1 for 0.0.0.0/0) as
+                                   #   routes via wanbond0 once the interface is
+                                   #   up, and removes them on stop. Routes ONLY —
+                                   #   no policy routing/SNAT/forwarding, which
+                                   #   stay operator-owned (§4). Rejected on the
+                                   #   concentrator.
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
 # ALL-OR-NOTHING: either omit the whole block, or set the entire
@@ -631,8 +637,13 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 - **`mode` is edge-only.** Peer `mode = "default-route"` marks a peer as the
   edge's full-tunnel concentrator (an opt-in alongside a `0.0.0.0/0`/`::/0`
   `allowed_ips` entry); rejected on the concentrator, mirroring the
-  `endpoint`/`dns` edge-only rules. It is a config-surface marker only today —
-  it does not install any OS-level default route.
+  `endpoint`/`dns` edge-only rules. When set, the daemon installs this peer's
+  `allowed_ips` split (the wg-quick `/1`+`/1` pair for `0.0.0.0/0`) as scope-link
+  routes via `wanbond0` once the interface is up, and withdraws them on stop —
+  the daemon's ONLY route programming. It is deliberately minimal: routes ONLY,
+  **no** client-LAN policy routing, SNAT, or concentrator `ip_forward`/
+  `MASQUERADE`/`FORWARD` — those stay operator-owned recipes (see §4). Without
+  the mode, no route is ever installed.
 - **amnezia all-or-nothing.** An unconfigured (all-zero) block is plain
   WireGuard. Once *any* of `jc/jmin/jmax/s1/s2/h1..h4` is set, the full
   `jc,jmin,jmax,s1,s2` set must be `> 0`, `jmin <= jmax`, the init/response
@@ -718,10 +729,15 @@ the drop-in is still required to prevent the address flush.)
 The daemon creates the TUN interface (`wanbond0`) and brings it
 administratively **UP** itself (`SIOCSIFFLAGS`/`IFF_UP`) right after creation —
 so a write to it never silently fails with `EIO` for want of a link-up step —
-but owns ONLY the tunnel engine: **it never assigns addresses or routes**
-(wg-quick style, no privileged shell-outs). Assign them with a
-**systemd-networkd `.network` file**, using the inner addresses from
-`allowed_ips`:
+but otherwise owns ONLY the tunnel engine: **it never assigns addresses**, and
+**installs no routes** — with ONE narrow exception: a peer marked
+`mode = "default-route"` (see §3) makes the daemon install that peer's
+`allowed_ips` split (the wg-quick `/1`+`/1` pair for `0.0.0.0/0`) as scope-link
+routes via `wanbond0`, and remove them on stop. That exception is routes ONLY —
+no policy routing, SNAT, or concentrator forwarding, which remain operator-owned
+(put them in the addressing script below). Addressing is always operator-owned (wg-quick
+style, no privileged shell-outs); assign it with a **systemd-networkd `.network`
+file**, using the inner addresses from `allowed_ips`:
 
 If something ELSE takes the link back down after boot (NetworkManager without
 the unmanaged-devices drop-in below is the common case, D39), a `TUN write`

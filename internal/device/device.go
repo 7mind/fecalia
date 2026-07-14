@@ -60,6 +60,12 @@ type Tunnel struct {
 	dev  *awgdevice.Device
 	tun  tun.Device
 	name string
+	// routePrefixes is the default-route wiring installed into wanbond0 for a
+	// mode=default-route peer (I6, Q41): the wg-quick-style split of that peer's
+	// allowed_ips (the two /1s for a /0), installed after dev.Up and withdrawn on
+	// Close. Empty (nil) for a config with no default-route peer, so a plain tunnel
+	// programs — and tears down — no routes at all.
+	routePrefixes []netip.Prefix
 	// bind is the multipath Bind the engine drives; Reload calls its runtime
 	// AddPath/RemovePath to apply a config-reload path diff (T30).
 	bind *bind.Multipath
@@ -342,6 +348,25 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		return nil, fmt.Errorf("device: bring up: %w", err)
 	}
 
+	// Default-route wiring (I6, Q41): with a mode=default-route peer, install the
+	// wg-quick-style split default route (the two /1s of that peer's allowed_ips) INTO
+	// wanbond0 now that the interface is up and the engine is running, so an arbitrary
+	// destination egresses through the tunnel. This is the daemon's FIRST route
+	// programming — confined to the mode being explicitly enabled: a config with no
+	// default-route peer computes an empty set, opens no netlink socket, and installs
+	// nothing, so default behaviour is byte-for-byte unchanged. STRICT Q41 boundary —
+	// routes ONLY (no policy routing, no SNAT, no concentrator forwarding). Fail fast:
+	// a route error aborts bring-up (dev.Close tears the engine/TUN down; the routes,
+	// if any partial set landed, go with the non-persistent interface). Removed on Close.
+	routePrefixes := defaultRoutePrefixes(cfg)
+	if len(routePrefixes) > 0 {
+		if err := installRoutes(name, routePrefixes); err != nil {
+			dev.Close()
+			return nil, fmt.Errorf("device: install default-route wiring: %w", err)
+		}
+		clg.Info("default-route wiring installed", "interface", name, "routes", len(routePrefixes))
+	}
+
 	// The engine has opened the bind (dev.Up → BindUpdate → Open), so the per-path
 	// sockets exist: start the probe cadence now. Close stops it before dev.Close.
 	// The interval is the SINGLE-SOURCE-OF-TRUTH telemetry default, which also arms
@@ -372,7 +397,8 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
-		stopProbes: stopProbes, stopReconcile: stopReconcile,
+		routePrefixes: routePrefixes,
+		stopProbes:    stopProbes, stopReconcile: stopReconcile,
 		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
 		stopSession: stopSession, amnezia: cfg.Amnezia,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
@@ -808,6 +834,17 @@ func (t *Tunnel) Close() {
 	if t.stopSession != nil {
 		t.stopSession()
 	}
+	// Withdraw the default-route wiring (I6) BEFORE the engine teardown, while wanbond0
+	// still exists: with tun_persist=true the interface survives Close, so its routes
+	// must be explicitly removed here; with the default teardown dev.Close destroys the
+	// interface (and the kernel drops its routes with it), so removeRoutes is idempotent
+	// either way (it tolerates an already-gone device/route). A tunnel with no
+	// default-route peer has an empty set and this is a no-op.
+	if len(t.routePrefixes) > 0 {
+		if err := removeRoutes(t.name, t.routePrefixes); err != nil {
+			t.log.Warn("default-route teardown: could not remove routes", "error", err.Error())
+		}
+	}
 	t.dev.Close()
 	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })
 }
@@ -1034,6 +1071,36 @@ func splitDefaultRoute(cidr string) []string {
 		return []string{"0.0.0.0/1", "128.0.0.0/1"}
 	}
 	return []string{"::/1", "8000::/1"}
+}
+
+// defaultRoutePrefixes computes the route set to install into wanbond0 for
+// mode=default-route (I6, Q41): the wg-quick-style split of every default-route
+// peer's allowed_ips (0.0.0.0/0 → the two /1s, ::/0 → its two /1s), REUSING the
+// same splitDefaultRoute helper uapiConfig renders the engine allowed_ips with, so
+// the installed routes match the internal split exactly. It returns nil unless some
+// peer explicitly opts into default-route mode — the regression guard: a config
+// without the mode installs no route at all. mode=default-route is edge-only (config
+// validation rejects it on the concentrator), so this is naturally empty there. An
+// allowed_ip that fails to parse is skipped (allowed_ips carries no upstream syntax
+// validation, matching splitDefaultRoute's own tolerance); the split entries always
+// parse.
+func defaultRoutePrefixes(cfg *config.Config) []netip.Prefix {
+	var prefixes []netip.Prefix
+	for _, peer := range cfg.WireGuard.Peers {
+		if peer.Mode != config.PeerModeDefaultRoute {
+			continue
+		}
+		for _, cidr := range peer.AllowedIPs {
+			for _, split := range splitDefaultRoute(cidr) {
+				p, err := netip.ParsePrefix(split)
+				if err != nil {
+					continue
+				}
+				prefixes = append(prefixes, p.Masked())
+			}
+		}
+	}
+	return prefixes
 }
 
 // keepaliveSeconds is the edge's persistent-keepalive interval.

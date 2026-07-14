@@ -109,9 +109,13 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as the
                                    #   edge's full-tunnel concentrator (opts into a
                                    #   0.0.0.0/0 / ::/0 allowed_ips entry above).
-                                   #   Rejected on the concentrator. Config-surface
-                                   #   only today: it does not itself install any
-                                   #   OS-level default route.
+                                   #   Rejected on the concentrator. When set, the
+                                   #   daemon installs this peer's allowed_ips split
+                                   #   (wg-quick /1+/1 for 0.0.0.0/0) as scope-link
+                                   #   routes via wanbond0 once the interface is up,
+                                   #   and removes them on stop. Routes ONLY — no
+                                   #   policy routing, SNAT, or concentrator
+                                   #   forwarding (those stay operator-owned).
 
 # ── second peer example (hostname endpoint with DNS opt-in) ──────────────────────
 # [[wireguard.peers]]
