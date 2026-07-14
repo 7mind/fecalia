@@ -146,6 +146,26 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   is set. Must stay 0 in fixed mode. Mutually
                                    #   exclusive with target_residual.
 
+# ── dns: OPTIONAL. Omitted => system resolver, default cadence/timeouts ───────
+# Selects the TRANSPORT a peer's opt-in hostname endpoint (dns = true, above)
+# is resolved through. [dns] alone never turns hostname resolution on.
+# [dns]
+# resolver = "system"              # DEFAULT "system". "system" | "doh" | "dot".
+# doh_url = "https://<ip>/dns-query"  # REQUIRED iff resolver = "doh"; rejected
+                                   #   under any other resolver. Must be https.
+# dot_server = "<ip>"              # REQUIRED iff resolver = "dot"; rejected
+                                   #   under any other resolver. Bare host, or
+                                   #   "host:port" where port must be 853 (the
+                                   #   IANA-assigned DoT port).
+# bootstrap_ip = "<ip>"            # REQUIRED iff doh_url/dot_server's host is a
+                                   #   hostname rather than an IP literal
+                                   #   (BOOTSTRAP-IP invariant: the private
+                                   #   resolver's own address must be reachable
+                                   #   WITHOUT a DNS lookup). No default.
+# poll_interval = "30s"            # DEFAULT 30s. Re-resolution cadence for an
+                                   #   opted-in hostname peer endpoint. > 0.
+# timeout = "5s"                   # DEFAULT 5s. Per-lookup bound. > 0.
+
 # ── metrics: OPTIONAL. Omit the block => no /metrics endpoint is served ───────
 [metrics]
 listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8, ::1, or
@@ -190,3 +210,10 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 # • metrics loopback-only: listen must be a loopback address (or a hostname
 #   resolving entirely to loopback); a non-loopback bind is refused when the
 #   endpoint starts. Omit the block to serve no metrics.
+# • dns off-unless-present: no [dns] => system resolver, default cadence/
+#   timeouts; [dns] only selects the transport a peer's `dns = true` opt-in
+#   uses, never a gate by itself. doh_url/dot_server are mode-specific: set
+#   exactly the one matching `resolver`, the other (and bootstrap_ip under
+#   resolver = "system") must stay absent. BOOTSTRAP-IP invariant: a
+#   hostname-form doh_url/dot_server host REQUIRES bootstrap_ip; an IP
+#   literal host does not.

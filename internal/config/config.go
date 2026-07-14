@@ -46,6 +46,7 @@ type Config struct {
 	Log       Log             `toml:"log"`
 	Scheduler SchedulerConfig `toml:"scheduler"`
 	FEC       FEC             `toml:"fec"`
+	DNS       DNS             `toml:"dns"`
 }
 
 // SchedulerPolicy selects the send-side path-selection policy the multipath Bind
@@ -807,6 +808,7 @@ func (c *Config) normalize() error {
 	}
 	c.Scheduler.applyDefaults()
 	c.FEC.applyDefaults()
+	c.DNS.applyDefaults()
 	return nil
 }
 
@@ -1056,6 +1058,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.FEC.validate(); err != nil {
+		return err
+	}
+	if err := c.DNS.validate(); err != nil {
 		return err
 	}
 	return nil

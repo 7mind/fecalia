@@ -308,6 +308,12 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 		Scheduler: SchedulerConfig{
 			Policy: PolicyActiveBackup, // applyDefaults always fills this in.
 		},
+		DNS: DNS{
+			// applyDefaults always fills these in for an absent [dns] block.
+			Resolver:     DNSResolverSystem,
+			PollInterval: defaultDNSPollInterval,
+			Timeout:      defaultDNSTimeout,
+		},
 	}
 
 	if !reflect.DeepEqual(c, want) {

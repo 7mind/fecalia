@@ -328,7 +328,11 @@ space** and never touches the inner WireGuard counter (a core invariant).
 
 - `internal/config` — loads the single TOML config, validates fail-fast at load
   (0600 perms, complete-or-absent amnezia block, FEC bounds, scheduler
-  invariants, unique `source_addr`).
+  invariants, unique `source_addr`). The optional `[dns]` block selects the
+  resolver transport (system default, DoH, or DoT) a peer's opt-in hostname
+  endpoint is resolved through, enforcing the BOOTSTRAP-IP invariant (a
+  hostname-form `doh_url`/`dot_server` requires an explicit `bootstrap_ip`)
+  and constructing the matching `internal/dnsresolve` implementation.
 - `internal/device` — brings a tunnel up from a validated config (Up/Down/Reload),
   wires metrics, handles SIGHUP path add/remove without teardown.
 - `internal/metrics` — a private-registry Prometheus `/metrics` endpoint that

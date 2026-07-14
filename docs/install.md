@@ -203,6 +203,36 @@ link_rtt = "45ms"          # baseline RTT — the delay term of the pacing burst
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
 
+### Optional `[dns]` resolver block
+
+Hostname peer endpoints (opt-in per peer with `dns = true`, see the endpoint
+list note above) are resolved through the OS **system resolver by default** —
+an absent `[dns]` block is inert. To route that resolution through a private
+DNS-over-HTTPS or DNS-over-TLS resolver instead, add an explicit `[dns]`
+block:
+
+```toml
+[dns]
+resolver = "doh"                                # "system" (default) | "doh" | "dot"
+doh_url = "https://198.51.100.1/dns-query"       # required iff resolver = "doh"
+# dot_server = "198.51.100.1"                    # required iff resolver = "dot"
+# poll_interval = "30s"                          # re-resolution cadence; must be > 0
+# timeout = "5s"                                 # per-lookup bound; must be > 0
+```
+
+- `[dns]` only **selects the transport** the per-peer `dns = true` opt-in uses;
+  it never turns hostname resolution on by itself.
+- **BOOTSTRAP-IP invariant**: `doh_url`/`dot_server`'s host must itself be
+  reachable *without* a DNS lookup (otherwise resolving your private
+  resolver's own name would need the very system resolver you configured it
+  to avoid). Give it as an IP literal, or set `bootstrap_ip` explicitly when
+  it is a hostname — config load fails fast otherwise.
+- `dot_server` dials the fixed IANA-assigned DoT port (853); an explicit
+  `host:port` form must use that exact port.
+- `doh_url`/`dot_server` are mode-specific: setting the wrong one for the
+  selected `resolver` (or either one under `resolver = "system"`) is
+  rejected at load.
+
 ### 3a. Tuning per-link bandwidth and pacing
 
 **Pacing ships DISABLED by default.** When enabled with `pacing_enabled = true`
