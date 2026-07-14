@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 203
+  item: 204
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2392,3 +2392,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T162 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins; fable empirically REPRODUCED a real defect opus missed). Both confirm the bind guard is fail-closed (non-loopback+empty-token returns ErrNonLoopbackBind BEFORE net.Listen, opens no socket; wildcard/empty-host/routable covered), act-then-verify TOCTOU parity with metrics/server.go on the tokenless path, coder/websocket v1.8.15 Accept uses the SAFE same-origin default (authenticateOrigin on unless InsecureSkipVerify — verified accept.go:116; no CSWSH regression, T164 tightens), the /ws frame is the real BuildSnapshot(src) contract with exactly-one-frame-then-StatusNormalClosure, and the full gate is green (go test -race + just lint 0 issues all tags + go mod verify/tidy clean). DISAPPROVED on three autonomously-fixable criticisms: (1) LISTENER LEAK on Close-without-Start — Server.Close is only s.srv.Shutdown(ctx), but http.Server.Shutdown closes ONLY listeners registered via Serve; on the NewServer->Close-without-Start path (which TestLoopbackBindAccepted itself exercises) the bound socket is NEVER released (fable reproduced `bind: address already in use` on re-listen). Fails the 'Close clean' acceptance operationally. FIX: Close must also close s.ln tolerating net.ErrClosed (when Serve already closed it), and TestLoopbackBindAccepted must assert the port is re-bindable after Close. (2) The token-AUTHORIZED bind branch is UNTESTED: no test covers non-loopback + token!='' succeeding (NewServer('0.0.0.0:0','secret',...) must bind, nil error) — a regression inverting the token check would pass. Add it. (3) Stale comment in newWSHandler: says 'StatusInternalError on the deferred close is a no-op' but the code uses c.CloseNow() (sends no status) — fix the comment to match. Filed low out-of-scope defect: metrics.Server.Close has the IDENTICAL leak (pre-existing, T162 copied the pattern; fixing metrics is separate). Re-dispatching worker with the three criticisms."
 - ledgerRefs: ["tasks:T162","goals:G12"]
+
+### R204 — go-ahead
+
+- createdAt: 2026-07-14T23:29:51.253Z
+- updatedAt: 2026-07-14T23:29:51.253Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T162 implement review round 2 (fable re-review of the revise). VERDICT = approve/go-ahead. All THREE round-1 criticisms verified RESOLVED with evidence: (1) LISTENER LEAK fixed — Server.Close (internal/monitor/server.go) now runs srv.Shutdown then s.ln.Close() tolerating net.ErrClosed (Start->Close path where Serve already closed it), correct error precedence (Shutdown's error wins; ln-close error surfaces only if Shutdown succeeded); TestCloseReleasesPortWithoutStart re-binds the SAME OS-assigned port read from Addr() (not :0) — a REAL regression guard, FAIL-FIRST VERIFIED (reverting Close to Shutdown-only makes it fail EADDRINUSE, with the fix go test -race passes); the Start->Close path stays goleak/-race clean. (2) TestNonLoopbackWithTokenAccepted added locking the token-authorized non-loopback bind branch (0.0.0.0:0 + token => nil error + bound server). (3) newWSHandler comment corrected to accurately describe c.CloseNow (immediate close, no close frame/status). Round-1 skeleton code otherwise unchanged (opus + fable round-1 vetted the bind guard/WS same-origin default/lifecycle); internal/metrics/ UNTOUCHED (D84 separate). Gate green in worktree AND re-gated on composed main tree: gofmt clean, go build/vet/test (monitor/config/metrics) green. Round-1 = opus-approve + fable-disapprove (R203 revise, fable reproduced the leak); round-2 = approve. Merged to main (47c65af, 2 commits). Pre-existing metrics.Close leak filed as D84 (root-caused, ready-to-seed)."
+- ledgerRefs: ["tasks:T162","goals:G12","defects:D84"]

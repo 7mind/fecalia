@@ -2111,10 +2111,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G12"]
 
-### T162 — wip
+### T162 — done
 
 - createdAt: 2026-07-14T18:46:21.811Z
-- updatedAt: 2026-07-14T23:11:58.880Z
+- updatedAt: 2026-07-14T23:29:52.264Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Monitor HTTP server skeleton: dedicated listener + /ws upgrade, Start/Close lifecycle"
