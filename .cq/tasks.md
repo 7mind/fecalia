@@ -656,10 +656,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-234055-a4b1141d2bedfcafe.md",".cq/logs/20260713-234055-af856789b6ff0a960.md",".cq/logs/20260713-234055-a0b4991b5647ea04b.md"]
 - rawLogs: [".cq/logs/raw/20260713-234055-a4b1141d2bedfcafe.jsonl",".cq/logs/raw/20260713-234055-af856789b6ff0a960.jsonl",".cq/logs/raw/20260713-234055-a0b4991b5647ea04b.jsonl"]
 
-### T72 — wip
+### T72 — done
 
 - createdAt: 2026-07-13T21:54:56.902Z
-- updatedAt: 2026-07-13T23:58:26.204Z
+- updatedAt: 2026-07-14T00:32:42.211Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add the [dns] config block selecting resolver mode, cadence, and timeouts"
@@ -668,6 +668,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T67","T71"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: d0b28ab
+- completion: "[dns] config block landed over 3 review rounds: resolver mode system/doh/dot, duration-string poll_interval/timeout (LinkRTTRaw pattern), bootstrap_ip wired into the DoH/DoT dial target (WithBootstrap constructors) with fail-fast rejection under IP-literal hosts, full validation matrix, docs/example synced; merged ff to main."
+- sessionLogs: [".cq/logs/20260714-001002-adff709a56135e73f.md",".cq/logs/20260714-002323-a4c50f2ae82785a2f.md",".cq/logs/20260714-003019-a31a3fb1eb6004083.md",".cq/logs/20260714-001524-ab3c6a032f4c6441f.md",".cq/logs/20260714-001524-a3e48d89773e283be.md",".cq/logs/20260714-003019-a7c2512ac55807582.md",".cq/logs/20260714-003019-a7ba4d8dc5a6d3714.md",".cq/logs/20260714-003215-a51f0c5a70ae87666.md",".cq/logs/20260714-003215-a66e35c5e28239c28.md"]
+- rawLogs: [".cq/logs/raw/20260714-001002-adff709a56135e73f.jsonl",".cq/logs/raw/20260714-002323-a4c50f2ae82785a2f.jsonl",".cq/logs/raw/20260714-003019-a31a3fb1eb6004083.jsonl",".cq/logs/raw/20260714-001524-ab3c6a032f4c6441f.jsonl",".cq/logs/raw/20260714-001524-a3e48d89773e283be.jsonl",".cq/logs/raw/20260714-003019-a7c2512ac55807582.jsonl",".cq/logs/raw/20260714-003019-a7ba4d8dc5a6d3714.jsonl",".cq/logs/raw/20260714-003215-a51f0c5a70ae87666.jsonl",".cq/logs/raw/20260714-003215-a66e35c5e28239c28.jsonl"]
 
 ## M21
 

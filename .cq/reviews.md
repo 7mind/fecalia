@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 87
+  item: 88
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -765,6 +765,19 @@ archives:
 - ledgerRefs: ["tasks:T71","goals:G5"]
 - sessionLogs: [".cq/logs/20260713-234055-af856789b6ff0a960.md",".cq/logs/20260713-234055-a0b4991b5647ea04b.md"]
 - rawLogs: [".cq/logs/raw/20260713-234055-af856789b6ff0a960.jsonl",".cq/logs/raw/20260713-234055-a0b4991b5647ea04b.jsonl"]
+
+### R88 — go-ahead
+
+- createdAt: 2026-07-14T00:32:34.350Z
+- updatedAt: 2026-07-14T00:32:34.350Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T72 terminal reconciled panel verdict after 3 rounds: R1 disapprove ([fable] documented duration strings failed TOML decode; bootstrap_ip decorative) → R2 fixes accepted but [fable] found a NEW gap (unvalidated bootstrap_ip overriding an IP-literal host, contradicting the documented contract) → R3 (2417bb9) unanimous approve: fail-fast rejection of bootstrap_ip under an IP-literal host, non-vacuous negative tests both transports, docs fully consistent, gate green. D43 filed R1 (pre-existing scheduler/FEC string-duration docs desync)."
+- criticism: ["[fable, R1, RESOLVED R2] documented \"30s\"/\"5s\" duration strings failed go-toml/v2 decode → PollIntervalRaw/TimeoutRaw + time.ParseDuration.","[fable, R1, RESOLVED R2] bootstrap_ip validated but not wired into the DoH/DoT dial target → NewDoTResolverWithBootstrap / NewDoHResolverWithBootstrap.","[fable, R2, RESOLVED R3] unvalidated bootstrap_ip could override an IP-literal host's dial target → fail-fast mode-mismatch rejection + matrix tests + docs alignment."]
+- new_questions: []
+- ledgerRefs: ["tasks:T72","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-001524-ab3c6a032f4c6441f.md",".cq/logs/20260714-001524-a3e48d89773e283be.md",".cq/logs/20260714-003019-a7c2512ac55807582.md",".cq/logs/20260714-003019-a7ba4d8dc5a6d3714.md",".cq/logs/20260714-003215-a51f0c5a70ae87666.md",".cq/logs/20260714-003215-a66e35c5e28239c28.md"]
+- rawLogs: [".cq/logs/raw/20260714-001524-ab3c6a032f4c6441f.jsonl",".cq/logs/raw/20260714-001524-a3e48d89773e283be.jsonl",".cq/logs/raw/20260714-003019-a7c2512ac55807582.jsonl",".cq/logs/raw/20260714-003019-a7ba4d8dc5a6d3714.jsonl",".cq/logs/raw/20260714-003215-a51f0c5a70ae87666.jsonl",".cq/logs/raw/20260714-003215-a66e35c5e28239c28.jsonl"]
 
 ## M23
 
