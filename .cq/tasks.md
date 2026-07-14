@@ -1395,10 +1395,10 @@ archives:
 - dependsOn: ["T108","T111"]
 - ledgerRefs: ["goals:G6"]
 
-### T114 — wip
+### T114 — done
 
 - createdAt: 2026-07-13T23:24:53.330Z
-- updatedAt: 2026-07-14T07:54:56.009Z
+- updatedAt: 2026-07-14T08:18:52.930Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Docs C5: reconverge window + restart guidance using the session metric"
@@ -1407,6 +1407,10 @@ archives:
 - suggestedModel: fast
 - dependsOn: ["T101"]
 - ledgerRefs: ["goals:G6"]
+- resultCommit: c71d26a
+- completion: "Docs (install.md §6a): interim-until-D36 restart/reconverge guidance. Documents that restarting ONE end can leave the tunnel down for minutes (up to ~3min, bounded by RekeyAfterTime 120s/RejectAfterTime 180s — the stale-session end does not promptly re-handshake) while restarting BOTH ends ~together reconverges in ~25s, and presents wanbond_session_established / the 'session established' log line (T101/I2, named verbatim) as the operational 'is it up yet' check with a converging-vs-wedged discriminator + a stale-end freshness caveat. 2-round loop: round 1 caught a fabricated '~2.5 hours' figure (actual RejectAfterTime=180s); round 2 corrected both sites + aligned with D36 (inner-WG whole-tunnel outage, distinct from resolved outer-path D12) + added the discriminator. Unanimous R2 approve; rebased and ff-merged as c71d26a."
+- sessionLogs: [".cq/logs/20260714-081229-a850365d641c82d66.md",".cq/logs/20260714-081736-a61c19bcaa76a8b17.md",".cq/logs/20260714-081736-a0bb9d3d0e0db7a83.md"]
+- rawLogs: [".cq/logs/raw/20260714-081229-a850365d641c82d66.jsonl",".cq/logs/raw/20260714-081736-a61c19bcaa76a8b17.jsonl",".cq/logs/raw/20260714-081736-a0bb9d3d0e0db7a83.jsonl"]
 
 ### T115 — planned
 

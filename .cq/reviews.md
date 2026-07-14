@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 122
+  item: 123
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1374,3 +1374,16 @@ archives:
 - ledgerRefs: ["tasks:T112","goals:G6","defects:D60"]
 - sessionLogs: [".cq/logs/20260714-081736-a440fa701129dfa8e.md",".cq/logs/20260714-081736-a2b12f72790f5bc08.md"]
 - rawLogs: [".cq/logs/raw/20260714-081736-a440fa701129dfa8e.jsonl",".cq/logs/raw/20260714-081736-a2b12f72790f5bc08.jsonl"]
+
+### R123 — go-ahead
+
+- createdAt: 2026-07-14T08:18:45.455Z
+- updatedAt: 2026-07-14T08:18:45.455Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T114 unanimous panel approve at ROUND 2 ([opus]+[fable] both approve). Docs (install.md §6a): interim restart/reconverge guidance until D36 is fixed, using the T101 session metric. Round 1 (both disapprove) caught a FABRICATED timing figure: the section stated the session-validity/freshness window and the one-sided-restart convergence delay as '~2.5 hours' — ~50x too large. Round 2 fixed all 4 findings, each grounded against source: (1) both '~2.5 hours' → ~180s/~3min (RejectAfterTime = time.Second*180, amneziawg-go device/constants.go:22, consumed verbatim as the session expiry in internal/device/session.go:61); (2) the one-sided-restart outage rescaled to minutes-scale bounded by RekeyAfterTime(120s)/RejectAfterTime(180s), matching D36's 'down for MINUTES until a rekey timer fires'; (3) the 'Avoid' paragraph reframed — D36 is the INNER-WG whole-tunnel session outage, distinct from the already-resolved OUTER per-path liveness deadlock (D12); (4) added a converging-vs-wedged operational discriminator (gauge 1 within ~25s of a coordinated both-end restart; persistent 0 beyond ~25s/~3min = wedge) + a stale-end caveat (the non-restarted end's wanbond_session_established can read 1 for up to ~180s post-peer-restart despite no live traffic, since Established = age<=RejectAfterTime per session.go:84). Metric name wanbond_session_established (metrics.go:102) + log line 'session established' (session.go:166) kept verbatim; interim-until-D36 marking intact. Full gate green. Rebased onto current main and ff-merged as c71d26a."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T114","goals:G6","defects:D36"]
+- sessionLogs: [".cq/logs/20260714-081736-a61c19bcaa76a8b17.md",".cq/logs/20260714-081736-a0bb9d3d0e0db7a83.md"]
+- rawLogs: [".cq/logs/raw/20260714-081736-a61c19bcaa76a8b17.jsonl",".cq/logs/raw/20260714-081736-a0bb9d3d0e0db7a83.jsonl"]
