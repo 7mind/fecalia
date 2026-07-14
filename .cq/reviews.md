@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 197
+  item: 198
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2225,6 +2225,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T128","goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
+
+### R197 — go-ahead
+
+- createdAt: 2026-07-14T19:39:37.324Z
+- updatedAt: 2026-07-14T19:39:37.324Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "D77 fix review — GO-AHEAD (single opus reviewer; dual-arch hardware pass is the ultimate corroboration). Fixed D77 (concentrator /metrics non-loopback bind) + D78 (fast-host lo-up/metrics-bind start race) + 5 further fixture defects that first-ever execution of T128's suite surfaced. Merged to main as 8b6a815 (cherry-pick of d2d094b onto 0145bfb; test/e2e/{multipeer_hardened_test.go,p2_aggregation_test.go,netns.go}; netns.go 3-way auto-merged with T147's port-9110 addition, no conflict). Reviewer verified: (1) SCOPE test/e2e ONLY — git diff internal/ EMPTY, server.go:requireLoopback (T17 invariant) UNTOUCHED (fixture adapts, does not weaken); (2) LOOPBACK FIX correct — metricsAddr()→127.0.0.1:9107 scraped via fetchMetricsInNetns/netnsMetricsClient into the peer netns (p2/p3/p4 mechanism); (3) rx→tx switch (d47) LEGITIMATE, verified vs real code — readLoop:1376 accrues shared-socket rx to the PRIMARY's peerPathState (attached[0], reconcile.go:220-224), so non-primary rx is structurally ~0; tx IS per-peer; NOT masking a bug (filed D81); (4) D50 teardown-match SOUND — baseline-anchored (index>=pre-kill) + peer==gamma filtered, verifies POST-KILL teardown; (5) bind=source (D30/D80 workaround) + start-retry (concStartAttempts=4, bounded, reaps hung daemon, still fails a genuine unbindable addr) are legitimate bounded fixture guards; (6) p2_aggregation_test.go = pure netnsMetricsClient extraction (behavior preserved); netns.go = registry-comment update. Default+e2e build/vet + just lint (default+e2e+realhosts) 0 issues. HARDWARE: BOTH o3 (aarch64, 205.4s) AND llm-ubuntu-0 (amd64, 208.6s) ran ALL subtests (d47/d58/d49/d44/d42/d50) GREEN, NO SKIP — satisfies T129. Reported 4 out-of-scope findings: D80 (r121 same loopback bind), D81 (T97 rx accounting) filed; D30 (production runtime-add gap, pre-existing) + per-peer-inbound-accounting design note. 0 criticisms / 0 questions / 0 new defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["defects:D77","defects:D78","tasks:T129","tasks:T128","goals:G8","defects:D80","defects:D81"]
 
 ## M54
 

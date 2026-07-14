@@ -1624,10 +1624,10 @@ archives:
 - ledgerRefs: ["goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
 - resultCommit: f54888e
 
-### T129 — wip
+### T129 — done
 
 - createdAt: 2026-07-14T09:47:37.696Z
-- updatedAt: 2026-07-14T18:23:07.741Z
+- updatedAt: 2026-07-14T19:39:50.949Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Run the multi-peer privileged netns e2e on o3 + llm-ubuntu-0 (deferred hardware validation)
@@ -1636,6 +1636,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T128"]
 - ledgerRefs: ["goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
+- resultCommit: 8b6a815
 
 ## M45
 

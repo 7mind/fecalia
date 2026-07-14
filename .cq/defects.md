@@ -1049,10 +1049,10 @@ archives: []
 - suggestedFix: "Implement ProbeBudget on *ActiveBackup: under s.mu, bounds-check pathIdx against s.pacers and call s.pacers[pathIdx].accountProbe(0) (each active-backup pacer is a single-bucket pacer). The existing bind seam (emitProbes + echo reflection) and schedIdx index maintenance then apply unchanged. Mirror the three T145 weighted unit tests (one-token deduction/negative bucket, ClassData-headroom reservation, pacing-off + out-of-range no-op)."
 - ledgerRefs: ["tasks:T145","tasks:T150","defects:D65","goals:G14"]
 
-### D77 — open
+### D77 — resolved
 
 - createdAt: 2026-07-14T18:35:44.464Z
-- updatedAt: 2026-07-14T18:35:44.464Z
+- updatedAt: 2026-07-14T19:39:43.691Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: T128's multipeer_hardened_test.go binds concentrator /metrics to a NON-loopback address, violating the T17 loopback-only invariant — the suite fails deterministically on all hardware
@@ -1060,11 +1060,12 @@ archives: []
 - severity: high
 - suggestedFix: "Mirror the existing multipeer_test.go concentrator-metrics pattern: bind the concentrator's /metrics to 127.0.0.1:<port> (loopback, reachable from WITHIN the concentrator's own netns) and SCRAPE it via nsenter into that netns (metrics.Fetch executed inside the peer netns), instead of binding the uplink IP. The loopback-only invariant is deliberate (T17 security: never expose /metrics off-box); the fixture must adapt to it, not the production code. Then T129's hardware run should pass."
 - ledgerRefs: ["tasks:T128","tasks:T129","goals:G8"]
+- rootCause: "T128's multipeer_hardened_test.go bound the concentrator /metrics to its non-loopback hw1 uplink IP (10.106.1.2:9107); internal/metrics/server.go's requireLoopback (T17 invariant) unconditionally rejects any non-loopback bind, so the concentrator daemon exited at Open before creating its TUN — deterministic FAIL at fixture setup on every host, surfaced only by T129's first privileged execution. RESOLVED (commit 8b6a815, reviewed R197): bound the concentrator /metrics to 127.0.0.1:9107 INSIDE the peer netns and scrape via fetchMetricsInNetns (the p2/p3/p4 mechanism) — the T17 invariant is NOT weakened. First-ever execution also surfaced+fixed 5 further fixture defects (iperf3 server netns, edge C lifetime under D49 cleanup, D50 startup-vs-post-kill teardown match, d47 per-peer rx→tx, fast-host lo-up start race=D78) + a bind=source workaround for the pre-existing D30 runtime-add gap. Validated GREEN on BOTH o3 (aarch64) + llm-ubuntu-0 (amd64), all subtests, no skip. Spawned D80 (r121 identical bind) + D81 (T97 rx accounting)."
 
-### D78 — open
+### D78 — resolved
 
 - createdAt: 2026-07-14T18:44:58.189Z
-- updatedAt: 2026-07-14T18:44:58.189Z
+- updatedAt: 2026-07-14T19:39:49.051Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Intermittent concentrator netns/loopback bring-up race in the shared e2e fixture (flaky -tags e2e under back-to-back netns churn)
@@ -1072,6 +1073,7 @@ archives: []
 - severity: low
 - suggestedFix: "Harden the netns fixture concentrator bring-up: after nsenter-configuring the concentrator veth/loopback, poll-wait for the interface + address to actually appear (retry loop with backoff) before starting the daemon, instead of assuming synchronous visibility; and/or retry the /metrics bind on EADDRNOTAVAIL during the brief post-netns window. Consolidate with the T60/T62 race mitigations into a single fixture readiness barrier in test/e2e/netns.go's SetupWithPaths."
 - ledgerRefs: ["tasks:T147","goals:G13"]
+- rootCause: "Intermittent concentrator startup failure on the fast amd64 host: the concentrator's loopback /metrics bind momentarily lost a race with the peer netns's lo coming UP (SetupWithPaths brings lo up, but the netlink state can lag a beat), so the daemon exited at Open with 'bind: cannot assign requested address' and its TUN vanished ('Cannot find device wanbond0'). Matched the T60/T62 netns-setup race family. RESOLVED (commit 8b6a815, reviewed R197) as part of the D77 fix: added a bounded startConcentrator retry helper (concStartAttempts=4) that re-asserts lo-up and retries the daemon start on the transient race, reaping the hung daemon before each retry; a GENUINELY unbindable metrics address still fails fast after 4 attempts (does not convert a real failure into a pass). Validated GREEN on BOTH o3 (aarch64) + llm-ubuntu-0 (amd64) with no skip — the amd64 host that previously flaked now passes deterministically."
 
 ### D79 — open
 
