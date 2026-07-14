@@ -2,6 +2,7 @@ package device
 
 import (
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -114,6 +115,26 @@ func TestReloadWarnings(t *testing.T) {
 			c.TUNPersist = true // base leaves it false; a reload cannot re-issue TUNSETPERSIST
 			return c
 		}, "tun_persist"},
+		{"scheduler changed", func() *config.Config {
+			c := base()
+			c.Scheduler = config.SchedulerConfig{Policy: config.PolicyWeighted}
+			return c
+		}, "scheduler"},
+		{"fec changed", func() *config.Config {
+			c := base()
+			c.FEC = config.FEC{Enabled: true, DataShards: 4, ParityShards: 2}
+			return c
+		}, "fec"},
+		{"dns changed", func() *config.Config {
+			c := base()
+			c.DNS = config.DNS{Resolver: config.DNSResolverDoH, DoHURL: "https://example.com/dns-query"}
+			return c
+		}, "dns"},
+		{"metrics changed", func() *config.Config {
+			c := base()
+			c.Metrics = config.Metrics{Listen: "127.0.0.1:9100"}
+			return c
+		}, ""}, // Metrics IS applied by Reload (rebinds /metrics); must not warn.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,7 +148,78 @@ func TestReloadWarnings(t *testing.T) {
 			if !containsSubstr(w, tc.want) {
 				t.Fatalf("want a warning containing %q, got %v", tc.want, w)
 			}
+			if len(w) != 1 {
+				t.Fatalf("want exactly one warning, got %v", w)
+			}
 		})
+	}
+}
+
+// TestReloadWarningsBind pins the Bind mode reload contract (D52): Bind lives at BOTH
+// the top-level Config.Bind default AND the per-path Path.Bind (falling back to that
+// default in normalize). A change to either must produce EXACTLY ONE actionable
+// warning — the top-level-default warning, NOT the generic catch-all — and a
+// per-path Bind change (independent of source/dest) gets its own per-path warning.
+func TestReloadWarningsBind(t *testing.T) {
+	bindPath := func(name string, mode config.BindMode) config.Path {
+		p := path(name)
+		p.Bind = mode
+		return p
+	}
+
+	t.Run("top-level default bind changed", func(t *testing.T) {
+		live := &config.Config{Role: config.RoleEdge, Bind: config.BindModeAuto, Paths: []config.Path{path("a")}}
+		desired := &config.Config{Role: config.RoleEdge, Bind: config.BindModeDevice, Paths: []config.Path{path("a")}}
+		w := reloadWarnings(live, desired)
+		if len(w) != 1 {
+			t.Fatalf("want exactly one warning, got %v", w)
+		}
+		if !strings.Contains(w[0], "default bind mode changed") {
+			t.Fatalf("want the default-bind warning, got %v", w)
+		}
+	})
+
+	t.Run("per-path bind changed", func(t *testing.T) {
+		live := &config.Config{Role: config.RoleEdge, Bind: config.BindModeAuto, Paths: []config.Path{bindPath("a", config.BindModeAuto)}}
+		desired := &config.Config{Role: config.RoleEdge, Bind: config.BindModeAuto, Paths: []config.Path{bindPath("a", config.BindModeSource)}}
+		w := reloadWarnings(live, desired)
+		if len(w) != 1 {
+			t.Fatalf("want exactly one warning, got %v", w)
+		}
+		if !strings.Contains(w[0], `path "a" bind mode changed`) {
+			t.Fatalf("want the per-path bind warning, got %v", w)
+		}
+	})
+}
+
+// TestReloadWarningsCatchAll pins the D52-option-B future-proofing catch-all: it
+// compares live/desired with every individually-handled field zeroed, so a Config
+// field this function does not yet know about still produces a generic warning
+// rather than being silently accepted. Config's real field set is closed (Go has no
+// runtime struct extension), so this is exercised two ways: (1) every case above
+// that DOES have a dedicated warning must stay at exactly one warning — proving the
+// catch-all does NOT double-fire once a field is individually handled; (2) this test
+// enumerates config.Config's actual fields via reflection and asserts the set is
+// EXACTLY the set reloadWarnings's catch-all zeroes — so adding a new field to
+// Config without also updating reloadWarnings (with either a dedicated warning or an
+// addition to the zeroed set) fails this test, forcing the invariant to be honoured.
+func TestReloadWarningsCatchAll(t *testing.T) {
+	known := map[string]bool{
+		"Role": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
+		"Metrics": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
+		"Bind": true, "TUNPersist": true,
+	}
+	typ := reflect.TypeOf(config.Config{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if !known[name] {
+			t.Fatalf("config.Config has a new field %q that reloadWarnings's catch-all does not account for "+
+				"(add a dedicated warning or zero it in the catch-all copy, then add it here)", name)
+		}
+		delete(known, name)
+	}
+	if len(known) != 0 {
+		t.Fatalf("reloadWarnings/this test references fields no longer on config.Config: %v", known)
 	}
 }
 

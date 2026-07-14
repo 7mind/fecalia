@@ -621,6 +621,23 @@ func reloadWarnings(live, desired *config.Config) []string {
 	// NOTE: a Metrics change is NOT warned here — unlike the other non-path fields, the
 	// reload APPLIES it by rebinding the /metrics endpoint (see Reload). Warning about a
 	// change that is honoured would misinform the operator.
+	if !reflect.DeepEqual(live.Scheduler, desired.Scheduler) {
+		w = append(w, "scheduler section changed — the running scheduler keeps its original policy/parameters until restart")
+	}
+	if !reflect.DeepEqual(live.FEC, desired.FEC) {
+		w = append(w, "fec section changed — the running FEC parameters are unchanged until restart")
+	}
+	if !reflect.DeepEqual(live.DNS, desired.DNS) {
+		w = append(w, "dns section changed — the running resolver configuration is unchanged until restart")
+	}
+	// The top-level Bind default (I5, Q42) is resolved by normalize() into every path
+	// that omits its own `bind`, so a change here has already propagated into
+	// Path.Bind by the time reloadWarnings runs — but the RUNNING sockets keep the
+	// binding they were opened with, so it still needs its own actionable warning
+	// (kept separate from the generic catch-all below to avoid double-warning).
+	if live.Bind != desired.Bind {
+		w = append(w, "default bind mode changed — running sockets keep their original binding")
+	}
 
 	// Same-name paths whose parameters changed: diffPaths matches by name only, so a
 	// modified source/dest on an existing path is otherwise silently dropped.
@@ -636,10 +653,37 @@ func reloadWarnings(live, desired *config.Config) []string {
 		if l.SourceAddr != d.SourceAddr || l.DestAddr != d.DestAddr {
 			w = append(w, fmt.Sprintf("path %q source/dest changed — the running path keeps its original binding", d.Name))
 		}
+		if l.Bind != d.Bind {
+			w = append(w, fmt.Sprintf("path %q bind mode changed — the running socket keeps its original binding", d.Name))
+		}
 	}
 
 	if reordered(live.Paths, desired.Paths) {
 		w = append(w, "path priority order changed (reorder) — the running order is unchanged")
+	}
+
+	// D52 option B — future-proof catch-all: copy live/desired with every
+	// INDIVIDUALLY handled field zeroed (including Paths and Metrics — Metrics IS
+	// applied by Reload, see the NOTE above, so it must not warn here either) and
+	// DeepEqual the copies. A Config field added later that nobody has taught this
+	// function to warn about falls through to this generic warning instead of being
+	// silently accepted, so the "SILENCE is not acceptable" invariant (D52) cannot
+	// regress by omission.
+	lc, dc := *live, *desired
+	lc.Role, dc.Role = "", ""
+	lc.PSK, dc.PSK = config.Key{}, config.Key{}
+	lc.WireGuard, dc.WireGuard = config.WireGuard{}, config.WireGuard{}
+	lc.Amnezia, dc.Amnezia = config.Amnezia{}, config.Amnezia{}
+	lc.Log, dc.Log = config.Log{}, config.Log{}
+	lc.TUNPersist, dc.TUNPersist = false, false
+	lc.Scheduler, dc.Scheduler = config.SchedulerConfig{}, config.SchedulerConfig{}
+	lc.FEC, dc.FEC = config.FEC{}, config.FEC{}
+	lc.DNS, dc.DNS = config.DNS{}, config.DNS{}
+	lc.Bind, dc.Bind = "", ""
+	lc.Paths, dc.Paths = nil, nil
+	lc.Metrics, dc.Metrics = config.Metrics{}, config.Metrics{}
+	if !reflect.DeepEqual(lc, dc) {
+		w = append(w, "other config section changed — reload does not apply it; restart required")
 	}
 	return w
 }
