@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 42
+  item: 44
 archives: []
 ---
 
@@ -597,3 +597,29 @@ archives: []
 - severity: medium
 - suggestedFix: In the G4 task that implements the concentrator deferred-path fan-out (T85-T88 area), mint per-peer probers for deferred paths so every peer's probers stays m.defs-aligned; until then, fail fast by refusing deferral (returning the bind error) when len(m.peers) > 1, or assert the alignment invariant in removeDurableLocked.
 - ledgerRefs: ["tasks:T83","goals:G4"]
+
+### D44 — open
+
+- createdAt: 2026-07-14T00:14:32.635Z
+- updatedAt: 2026-07-14T00:14:32.635Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: fecFlushDeadline drives only the primary peer's FEC group; per-peer fecSend added later (T91/T93) would never receive deadline parity flushes
+- description: "internal/bind/multipath.go:1271 fecFlushDeadline reaches m.fecSend/m.scheduler/m.paths through the embedded-primary promotion, so only the primary's straggler FEC groups get deadline parity (likewise driveAdaptiveControllerLocked). No fault today — no non-primary peerState is ever given a fecSend — but T91 (lazy per-peer FEC instantiation) and T93 (per-peer device wiring) will populate per-peer fecSend, and neither task's text mentions fanning the deadline flush across bound peers; a non-primary peer's partially filled groups would then only close on fill, silently losing straggler parity. Out of scope for T85 (Send-side routing map only). Filed from implement review of T85 round 1 ([fable] reviewer, file-and-defer per K13)."
+- severity: low
+- suggestedFix: When per-peer fecSend is wired (T91/T93), make the flush timer iterate m.peers, ticking each peer's encoder and framing parity with that peer's sendCodec via encodeParityLocked(peer, ...), and drive the adaptive controller per peer.
+- ledgerRefs: ["tasks:T85","goals:G4"]
+
+## M20
+
+### D43 — open
+
+- createdAt: 2026-07-14T00:14:26.934Z
+- updatedAt: 2026-07-14T00:14:26.934Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Pre-existing docs advertise string-duration config forms the loader rejects ([scheduler]/[fec])"
+- description: "wanbond.example.toml documents collapse_dwell = \"2s\", load_tau = \"200ms\", weight_rtt_floor = \"1ms\" (~L115-123) and [fec] deadline = \"5ms\" (~L136) for fields typed time.Duration and decoded by go-toml/v2, which cannot decode a TOML string into time.Duration. Probe test confirmed: fec.deadline = \"5ms\" fails config.Load with 'toml: cannot decode TOML string into struct field config.FEC.Deadline of type time.Duration'. An operator uncommenting the documented example gets a load failure. Pre-existing (fields and doc lines pre-date T72). Filed from implement review of T72 round 1 ([fable] reviewer, file-and-defer per K13)."
+- severity: medium
+- suggestedFix: Accept Go duration strings uniformly for all operator-facing duration knobs (LinkRTTRaw-style raw string + time.ParseDuration in normalize, or a shared TOML-text-unmarshaling duration wrapper), and add a config test matrix loading every documented string form; alternatively correct the docs to integer nanoseconds (worse operator UX, inconsistent with link_rtt).
+- ledgerRefs: ["tasks:T72","goals:G5"]

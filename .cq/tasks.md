@@ -656,10 +656,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-234055-a4b1141d2bedfcafe.md",".cq/logs/20260713-234055-af856789b6ff0a960.md",".cq/logs/20260713-234055-a0b4991b5647ea04b.md"]
 - rawLogs: [".cq/logs/raw/20260713-234055-a4b1141d2bedfcafe.jsonl",".cq/logs/raw/20260713-234055-af856789b6ff0a960.jsonl",".cq/logs/raw/20260713-234055-a0b4991b5647ea04b.jsonl"]
 
-### T72 — planned
+### T72 — wip
 
 - createdAt: 2026-07-13T21:54:56.902Z
-- updatedAt: 2026-07-13T21:54:56.902Z
+- updatedAt: 2026-07-13T23:58:26.204Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add the [dns] config block selecting resolver mode, cadence, and timeouts"
@@ -848,10 +848,10 @@ archives:
 - sessionLogs: [".cq/logs/20260713-235250-a01fcd30d435bc669.md",".cq/logs/20260713-235735-a10456d6fb76f7f1c.md",".cq/logs/20260713-235735-aefa45ecf45cfffd3.md"]
 - rawLogs: [".cq/logs/raw/20260713-235250-a01fcd30d435bc669.jsonl",".cq/logs/raw/20260713-235735-a10456d6fb76f7f1c.jsonl",".cq/logs/raw/20260713-235735-aefa45ecf45cfffd3.jsonl"]
 
-### T84 — planned
+### T84 — done
 
 - createdAt: 2026-07-13T22:27:42.661Z
-- updatedAt: 2026-07-13T22:27:42.661Z
+- updatedAt: 2026-07-14T00:17:00.236Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Derive per-peer frame Codec and Reflector from each peer PSK
@@ -860,11 +860,15 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T83"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: b61f152
+- completion: Per-peer PSK codec/reflector derivation landed (peerState.psk + newPeerState/newCodec seams; dead Multipath.psk removed); cross-psk rejection pinned by the deterministic cryptographic invariant; merged ff to main.
+- sessionLogs: [".cq/logs/20260714-001002-a37d00249a2a18a46.md",".cq/logs/20260714-001524-a6a63e0616ed2fed9.md",".cq/logs/20260714-001524-ab4832a41c717ad90.md"]
+- rawLogs: [".cq/logs/raw/20260714-001002-a37d00249a2a18a46.jsonl",".cq/logs/raw/20260714-001524-a6a63e0616ed2fed9.jsonl",".cq/logs/raw/20260714-001524-ab4832a41c717ad90.jsonl"]
 
-### T85 — planned
+### T85 — done
 
 - createdAt: 2026-07-13T22:27:47.208Z
-- updatedAt: 2026-07-13T22:27:47.208Z
+- updatedAt: 2026-07-14T00:17:04.962Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Route Send to a peerState via a per-peer virtual endpoint map
@@ -873,11 +877,15 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T83"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 7e02c85
+- completion: "Send routing via peerByVirt landed: Send resolves the owning peerState from the endpoint and drives that peer's outerSeq/scheduler/sendCodec/fecSend/per-(peer,path) egress; unknown endpoint errors safely; merged ff to main. D44 filed for the primary-only fecFlushDeadline follow-up."
+- sessionLogs: [".cq/logs/20260714-001002-a9f753cb838945145.md",".cq/logs/20260714-001524-a370601a73478ca92.md",".cq/logs/20260714-001524-a2b4d488f2a5615f5.md"]
+- rawLogs: [".cq/logs/raw/20260714-001002-a9f753cb838945145.jsonl",".cq/logs/raw/20260714-001524-a370601a73478ca92.jsonl",".cq/logs/raw/20260714-001524-a2b4d488f2a5615f5.jsonl"]
 
-### T86 — planned
+### T86 — wip
 
 - createdAt: 2026-07-13T22:27:51.291Z
-- updatedAt: 2026-07-13T22:27:51.291Z
+- updatedAt: 2026-07-13T23:58:27.464Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Demux receive delivery to per-peer resequencer under per-peer virt endpoint

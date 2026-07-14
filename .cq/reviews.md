@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 84
+  item: 86
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -862,3 +862,29 @@ archives:
 - ledgerRefs: ["tasks:T83","goals:G4"]
 - sessionLogs: [".cq/logs/20260713-235735-a10456d6fb76f7f1c.md",".cq/logs/20260713-235735-aefa45ecf45cfffd3.md"]
 - rawLogs: [".cq/logs/raw/20260713-235735-a10456d6fb76f7f1c.jsonl",".cq/logs/raw/20260713-235735-aefa45ecf45cfffd3.jsonl"]
+
+### R85 — go-ahead
+
+- createdAt: 2026-07-14T00:16:43.710Z
+- updatedAt: 2026-07-14T00:16:43.710Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T84 round 1 reconciled panel verdict (opus + fable, unanimous approve, gate green uncached): per-peer PSK seam (peerState.psk, newPeerState, newCodec) correct and surgical; the cryptographic-invariant test reframing (never accepted as an authenticated probe; Reflector never reflects cross-psk) judged a deterministic strengthening over the flaky literal decode-failure wording; the ~0.8% cross-psk garble into unauthenticated DATA/PARITY is designed frame-format forgeability, pre-existing, and defended in reseq + inner WG auth — no defect."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T84","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-001524-a6a63e0616ed2fed9.md",".cq/logs/20260714-001524-ab4832a41c717ad90.md"]
+- rawLogs: [".cq/logs/raw/20260714-001524-a6a63e0616ed2fed9.jsonl",".cq/logs/raw/20260714-001524-ab4832a41c717ad90.jsonl"]
+
+### R86 — go-ahead
+
+- createdAt: 2026-07-14T00:16:49.384Z
+- updatedAt: 2026-07-14T00:16:49.384Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T85 round 1 reconciled panel verdict (opus + fable, unanimous approve, gate green + -race): Send routes via peerByVirt to the owning peerState (outerSeq/scheduler/sendCodec/fecSend/per-(peer,path) egress); acceptance test discriminates the fix and verifies wire-level egress at each stand-in remote; unknown endpoint errors with zero side effects; single-peer behavior preserved. One out-of-scope defect filed file-and-defer ([fable] D44: fecFlushDeadline primary-only — per-peer FEC from T91/T93 would silently lose straggler parity)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T85","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-001524-a370601a73478ca92.md",".cq/logs/20260714-001524-a2b4d488f2a5615f5.md"]
+- rawLogs: [".cq/logs/raw/20260714-001524-a370601a73478ca92.jsonl",".cq/logs/raw/20260714-001524-a2b4d488f2a5615f5.jsonl"]
