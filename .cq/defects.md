@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 71
+  item: 72
 archives: []
 ---
 
@@ -975,6 +975,18 @@ archives: []
 - severity: medium
 - suggestedFix: Extend the same-name-path comparison to warn on l.LinkBandwidthBitsPerSec/l.LinkRTT != d's (mirroring the source/dest/bind checks with actionable messages), OR generalize the per-path comparison to a whole-struct reflect.DeepEqual per name-matched pair with the already-individually-warned/applied fields (Name) zeroed — so any future Path field is covered symmetrically to the top-level catch-all. Add table cases asserting exactly one warning each.
 - ledgerRefs: ["tasks:T135","defects:D52"]
+
+### D71 — open
+
+- createdAt: 2026-07-14T15:30:45.086Z
+- updatedAt: 2026-07-14T15:30:45.086Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: reconcileDeferred silently swallows promoteDeferredLocked's error
+- description: "Filed by the T134-r2 fable reviewer as pre-existing/out-of-scope. internal/bind/reconcile.go: on promoteDeferredLocked failure the error is discarded (`_ = c.Close(); kept = append(kept, dp)`) with no log, so a wiring-defect/attach failure leaves the path permanently deferred with ZERO diagnostic signal. Pre-existing at base a768452 (the bind held no logger then); out of scope for T134's D53 fallback-warning surface, but now that Multipath holds a component-scoped logger (added by T134) the swallow is fixable. Note: T134 round 3's criticism #1 fix (moving the fallback warns to AFTER promoteDeferredLocked succeeds) is adjacent but distinct — that stops the FALSE success claim; this defect is about the MISSING failure diagnostic."
+- severity: medium
+- suggestedFix: Log the promotion error at WARN/ERROR in reconcileDeferred's promote-failure branch, deduplicated per deferral window like warnedUnresolvable to avoid 1 Hz spam.
+- ledgerRefs: ["tasks:T134","defects:D53"]
 
 ## M49
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 171
+  item: 172
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1782,6 +1782,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T135","goals:G10","defects:D52","defects:D70"]
+
+### R171 — revise
+
+- createdAt: 2026-07-14T15:30:38.907Z
+- updatedAt: 2026-07-14T15:30:38.907Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T134 review round 2 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). Both round-1 criticisms VERIFIED FIXED and mutation-locked by BOTH reviewers: FIX1 dedup — deleting the !alreadyWarned check makes TestReconcileDeferredDedupesUnresolvableWarn fail (WARN count 1, want 0); FIX2 false-claim — restoring the false claim at Open's deferral makes TestOpenWarnsOnUnresolvableForcedDeviceBind fail the !strings.Contains('falling back') assertion. warnedUnresolvable latch is per-path, seeded/threaded/cleared correctly, leak-free (opus confirmed). build/vet/test/-race/just-lint all green at 8ce35eb; merge-base==a768452; 12 D53 tests pass non-cached. BUT [fable] adversarial mutation hunt found the round-1 DEFECT CLASS RELOCATED to the promote-failure edge, plus a mutation-vacuous test — REVISE for round 3."
+- criticism: ["[fable] FALSE-FALLBACK + PER-TICK SPAM RELOCATED to the promote-failure edge: in reconcileDeferred (internal/bind/reconcile.go ~L128-135) the two success-path warns (warnForcedDeviceUnresolvable + warnDeviceBindFallback) fire after deferredListen succeeds but BEFORE promoteDeferredLocked. On promotion failure the fresh socket is closed (_ = c.Close()) and the path stays deferred — so 'falling back to source-IP pinning' is OUTCOME-FALSE (no socket persists, path never comes up), and because promotion is retried every 1 Hz tick with NO dedup on these two warns, a persistent promotion failure (defIdx/prober desync or attachSharedPathLocked error — the code's own 'wiring defect' path) spams the false claim once per tick. This is exactly the round-1 defect class (false claim + 1 Hz spam) relocated. FIX: emit both warns ONLY after promoteDeferredLocked returns nil (the fallback socket has actually materialized AND been installed).","[fable] TestReconcileDeferredReArmsAfterResolveThenUnresolve is MUTATION-VACUOUS for the latch-clear it documents: deleting `dp.warnedUnresolvable = false` from reconcileDeferred leaves the test PASSING (verified by mutation). It promotes the entry OUT of m.deferred then AddPath mints a FRESH deferredPath whose latch is trivially unset — the latch-clear line's only observable flow (listen-success → promote-FAILURE → SAME kept entry) is untested. FIX: strengthen to re-arm the SAME kept entry — inject a promoteDeferredLocked failure (e.g. rename m.deferred[0].def.Name so defIdx<0) so listen-success clears the latch on a KEPT entry, then drive a failing listen and assert a NEW WARN fires.","[fable] STALE COMMENT in TestAddPathWarnsOnUnresolvableForcedDeviceBind (internal/bind/devicebind_warn_test.go ~L136): 'the WARN under test fires BEFORE that bind attempt, independent of whether the fallback bind itself later succeeds' — FALSE after round 2: the warn fires INSIDE the EADDRNOTAVAIL deferral branch (AFTER the failed bind), and a successful fallback logs the OTHER (fallback-claiming) message instead. Correct the comment to the round-2/3 semantics."]
+- new_questions: []
+- ledgerRefs: ["tasks:T134","goals:G10","defects:D53","defects:D71"]
 
 ## M47
 

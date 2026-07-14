@@ -1689,10 +1689,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G10","defects:D48"]
 
-### T134 — planned
+### T134 — wip
 
 - createdAt: 2026-07-14T10:07:46.968Z
-- updatedAt: 2026-07-14T10:07:46.968Z
+- updatedAt: 2026-07-14T15:30:53.648Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Thread internal/log through NewMultipath and WARN on every forced-device-bind fallback to source-IP pinning (D53)
