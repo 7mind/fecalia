@@ -1547,10 +1547,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G8","defects:D47","defects:D49"]
 
-### T124 — planned
+### T124 — done
 
 - createdAt: 2026-07-14T09:46:45.633Z
-- updatedAt: 2026-07-14T09:46:45.633Z
+- updatedAt: 2026-07-14T13:07:21.610Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Complete the deferred-path multi-peer lifecycle (promoteDeferredLocked fan-out + alignment guard) (D42)

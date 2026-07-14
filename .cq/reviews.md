@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 158
+  item: 159
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1665,6 +1665,19 @@ archives:
 - ledgerRefs: ["tasks:T124","goals:G8","defects:D42"]
 - sessionLogs: [".cq/logs/20260714-124000-a5092d8500e5d2467.md",".cq/logs/20260714-124000-a931ad26492d4a88b.md"]
 - rawLogs: [".cq/logs/raw/20260714-124000-a5092d8500e5d2467.jsonl",".cq/logs/raw/20260714-124000-a931ad26492d4a88b.jsonl"]
+
+### R159 — go-ahead
+
+- createdAt: 2026-07-14T13:07:20.176Z
+- updatedAt: 2026-07-14T13:07:20.176Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T124 review round 2 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after the round-1 revise (R157). The sole round-1 criticism is resolved: removeDurableLocked's alignment guard now checks `len(p.probers) != len(m.defs)` per peer BEFORE any mutation (multipath.go:2773-2777), naming the peer + both lengths — covering tail-short in-range, probers-longer-than-m.defs, AND non-tail desync (the full 'any length divergence' the task specified, not just the round-1 index-out-of-range case). BOTH reviewers empirically re-verified by reverting the guard to the round-1 index-only form in a scratch worktree: the new TestRemoveDeferredPathInRangeMisalignedPeerProbersFailsFast then FAILS ('RemovePath succeeded, want a wiring-defect error' — the exact silent-mis-splice the guard prevents) while the round-1 tail-short test still passes, so the new test isolates precisely the in-range class. The round-1-approved core (promoteDeferredLocked fan-out to every peer, attachSharedPathLocked optional-probers reuse, rollback, the 3 original tests) is BYTE-IDENTICAL between rounds (reconcile.go unchanged); the deferred-AddPath-mints-per-peer-prober invariant keeps len(p.probers)==len(m.defs) so the guard cannot false-positive on legitimate states. go build/vet/test + -race ./internal/bind/... + just lint all green. LANDED on main at 11e67e6 (branch implement/T124-r2, 0ef749f6). Two out-of-scope pre-existing defects were filed during round 1: D66 (stale single-peer-receive comment), D67 (attachSharedPathLocked rollback swallows detach errors)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T124","goals:G8","defects:D42"]
+- sessionLogs: [".cq/logs/20260714-125200-a208a987d174ab1a6.md",".cq/logs/20260714-125200-a83001b621c7fea3d.md"]
+- rawLogs: [".cq/logs/raw/20260714-125200-a208a987d174ab1a6.jsonl",".cq/logs/raw/20260714-125200-a83001b621c7fea3d.jsonl"]
 
 ## M46
 
