@@ -1352,27 +1352,58 @@ sudo iptables -t nat -A POSTROUTING -s 192.168.223.0/24 -o wanbond0 -j SNAT --to
 client-LAN VLAN, routing table, and tunnel address, per `wanbond-fixes.md`
 §C3 — substitute your own client subnet, an unused table number, and the
 edge's own tunnel address from its interface `Address=` in §4. **Not** the
-`allowed_ips` in the edge's own peer config, §3 — that holds the
-*concentrator's* tunnel address as seen from the edge (e.g. `10.77.0.1/32`),
-not the edge's own.)
+`allowed_ips` in the edge's own peer config (§3/§9.1) — in the point-to-point
+form (§3) that holds the *concentrator's* tunnel address as seen from the edge
+(e.g. `10.77.0.1/32`); in this full-tunnel recipe (§9.1) it instead holds
+`0.0.0.0/0`. In neither case is it the edge's own address.)
 
 **Alternative — widen the concentrator's `allowed_ips` instead of SNAT-ing on
-the edge:** set the concentrator's peer entry for this edge to
-`allowed_ips = ["10.77.0.2/32", "192.168.223.0/24"]` and skip the edge-side
-`iptables -t nat` step above. Trades a wider `allowed_ips` (the concentrator
-now cryptokey-routes the client subnet directly to this peer) for one fewer
-operator-owned step; pick one form, not both.
+the edge:** the SNAT recipe above is the recommended, validated path. This
+alternative trades the edge-side SNAT for **three** concentrator-side
+operator-owned changes (not one) and has **not** been validated on the
+production Pi/o3 deploy — read on only if you have a specific reason to avoid
+SNAT-ing on the edge.
 
-This branch changes what source address reaches the concentrator's WAN NIC:
-without the edge-side SNAT, forwarded packets keep their original
-client-subnet source (`192.168.223.0/24`), which the §9.3 / §5 C6
-`MASQUERADE -s <tunnel-net>` rule (scoped to the tunnel subnet, e.g.
-`10.77.0.0/24`) does **not** match — so this branch additionally requires
-widening that concentrator `MASQUERADE -s` to also cover the client subnet
-(or replacing it with a supernet covering both), otherwise the reply traffic
-leaves the WAN with an RFC1918 source and the return path dies. Unlike the
-SNAT branch above, this alternative has **not** been validated on the
-production Pi/o3 deploy.
+Without the edge-side SNAT, forwarded packets keep their original
+client-subnet source (`192.168.223.0/24`) all the way to the concentrator.
+That requires all three of:
+
+1. **Widen the concentrator's peer `allowed_ips`** for this edge to
+   `allowed_ips = ["10.77.0.2/32", "192.168.223.0/24"]`, so WireGuard's
+   cryptokey routing accepts traffic sourced from the client subnet on this
+   peer (skip the edge-side `iptables -t nat` step above).
+2. **Widen the concentrator's `MASQUERADE -s`** (§9.3 / §5 C6) to also cover
+   the client subnet, or replace it with a supernet covering both — the
+   `-s <tunnel-net>` scoping (e.g. `10.77.0.0/24`) does **not** match the
+   client-subnet source, so without this the client-outbound leg of forwarded
+   traffic leaves the WAN NIC un-NATed with an RFC1918 source and is dropped
+   as non-routable before it reaches the internet.
+3. **Add a kernel route for the client subnet on the concentrator, back
+   toward `wanbond0`:**
+   ```sh
+   sudo ip route add 192.168.223.0/24 dev wanbond0
+   ```
+   This step has **no daemon-programmed equivalent** on the concentrator: the
+   daemon installs routes only for a peer with `mode = "default-route"`
+   (`internal/device/device.go`'s `defaultRoutePrefixes`/`installRoutes`), and
+   that mode is rejected outright on the concentrator role
+   (`internal/config/config.go`: "mode ... is not meaningful for the
+   concentrator role"). Widening `allowed_ips` in step 1 does not substitute
+   for this route — WireGuard cryptokey routing only *selects a peer* for a
+   packet the kernel has *already* routed into `wanbond0`; it installs no
+   kernel route itself. Without step 3, a reply the concentrator receives on
+   its WAN NIC gets conntrack de-NATed (by step 2) to a `192.168.223.x`
+   destination, but the concentrator's kernel — which per §4's networkd file
+   has only the on-link tunnel `/24`, no route for the client subnet — sends
+   it out the concentrator's default route toward the WAN instead of into
+   `wanbond0`, so it never reaches the edge and the return path dies
+   regardless of steps 1–2.
+
+Persist step 3 the same interface-keyed way §9.4 persists the edge's policy
+routes: add the `ip route add` above to the concentrator's own addressing
+oneshot (`wanbond-addressing@concentrator.service`, §4) alongside its other
+route/address state, so it survives `wanbond0` being torn down and recreated
+on daemon restart (unless `tun_persist = true`, §4 I7).
 
 Put the `ip_forward` toggle, the `ip rule`/`ip route`, and (if used) the
 `iptables -t nat` SNAT rule into the edge's addressing oneshot
