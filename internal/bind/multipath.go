@@ -60,6 +60,20 @@ const (
 	resequencerTimeout = 250 * time.Millisecond
 )
 
+// defaultMaxDemuxSources caps the source->peer demux map (peerBySource), the
+// PROVISIONAL/unbound-source tracking state whose growth an attacker probes at
+// bootstrap (Q26/Q27). It is sized SEPARATELY from the steady-state peer set
+// (m.peersByName, bounded by the static configured [[wireguard.peers]]): a source
+// enters this map only on an authenticated PROBE (T88), but a party holding ONE
+// valid psk could otherwise bind an unbounded number of distinct spoofed sources to
+// its OWN peer and exhaust memory. On exhaustion a NEW source's binding is dropped
+// (drop-on-exhaustion, bootstrap degrades) — an already-bound (live) source is NEVER
+// evicted. Roam/re-bind of an already-present source (T90) does not grow the map, so
+// it is never blocked by the cap. A dead peer's bindings are reclaimed on teardown
+// (TearDownPeer), freeing slots. The default is generous relative to any realistic
+// concentrator's peer×roam-churn count yet bounds the flood surface.
+const defaultMaxDemuxSources = 1024
+
 var (
 	errNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
 	// errPacerShedding is returned by Send when the scheduler shed the datagram for
@@ -361,6 +375,11 @@ type Multipath struct {
 	// (bindSourceToPeer). Nil until the first binding; the single-peer edge/hub never consults
 	// it (one peer owns every socket — handleInbound's fast path skips the demux entirely).
 	peerBySource atomic.Pointer[map[netip.Addr]*peerState]
+	// maxDemuxSources caps peerBySource (the provisional/unbound-source demux state) so a
+	// bootstrap flood cannot grow it without bound (Q26/Q27, see defaultMaxDemuxSources). Set
+	// once at construction and read on the lock-free bind path (bindSourceToPeer); a test may
+	// lower it to exercise cap-exhaustion. Zero (never set) means "no cap".
+	maxDemuxSources int
 	// peerByVirt routes an OUTBOUND Send to its owning peer: the engine hands Send the
 	// single virtual endpoint (*udpEndpoint) it holds for a peer, and this map resolves
 	// that pointer to the peer's datapath state (outerSeq, scheduler, sendCodec, fecSend,
@@ -541,16 +560,17 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	// stable across Open/Close/add/remove.
 	primary := newPeerState("", psk, scheduler, newProber, probers)
 	m := &Multipath{
-		defs:           append([]config.Path(nil), paths...),
-		classify:       newWGClassifier(amnezia),
-		deferredListen: defaultDeferredListen,
-		peerState:      primary,
-		peers:          []*peerState{primary},
-		peersByName:    map[string]*peerState{primary.name: primary},
-		peerByEndpoint: map[netip.AddrPort]*peerState{},
-		peerByVirt:     map[*udpEndpoint]*peerState{primary.virt: primary},
-		fecCfg:         fecCfg,
-		adaptiveCfg:    adaptiveCfg,
+		defs:            append([]config.Path(nil), paths...),
+		classify:        newWGClassifier(amnezia),
+		deferredListen:  defaultDeferredListen,
+		peerState:       primary,
+		peers:           []*peerState{primary},
+		peersByName:     map[string]*peerState{primary.name: primary},
+		peerByEndpoint:  map[netip.AddrPort]*peerState{},
+		peerByVirt:      map[*udpEndpoint]*peerState{primary.virt: primary},
+		maxDemuxSources: defaultMaxDemuxSources,
+		fecCfg:          fecCfg,
+		adaptiveCfg:     adaptiveCfg,
 	}
 	// Publish the initial (primary-only) peer view the receive drainer iterates. No
 	// concurrency yet — the bind is not open — so this runs without m.mu.
@@ -814,21 +834,6 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 		if err != nil {
 			return fmt.Errorf("bind: build FEC encoder: %w", err)
 		}
-		dec, err := fec.NewDecoder(*m.fecCfg)
-		if err != nil {
-			return fmt.Errorf("bind: build FEC decoder: %w", err)
-		}
-		dec.SetRetainWindow(fecRetainGroups)
-		// Quiescence-accurate unrecoverable accounting (D24): fold a doomed group into
-		// the unrecoverable counter once its recovery could no longer have helped, even
-		// when no newer group arrives to advance the retain-window eviction (a stalled
-		// link, or traffic that simply stops after an incident). Past fecRecoveryDeadline
-		// from a group's first-seen instant, its deadline-flushed parity has certainly
-		// arrived (encoder grouping deadline) AND the resequencer has certainly skipped
-		// its gap (resequencerTimeout), so any later reconstruction is delivered too late
-		// to matter — the group is definitively unrecoverable and safe to count.
-		dec.SetClock(fec.SystemClock{})
-		dec.SetRecoveryDeadline(m.fecCfg.Deadline + resequencerTimeout)
 		ps.fecSend = &fecSender{enc: enc}
 		// Adaptive mode (T29): a fresh controller per Open, re-pinned with the encoder so a
 		// Close→Open cycle starts the control law from M=0 (no standing redundancy until
@@ -848,10 +853,65 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 			// the encoder at its cfg.ParityShards default instead.
 			enc.SetParity(ctrl.Parity())
 		}
-		ps.fecRecv.Store(&fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)})
+		fr, err := m.newFECReceiver()
+		if err != nil {
+			return err
+		}
+		ps.fecRecv.Store(fr)
 	}
 	ps.sendCodec = sendCodec
 	return nil
+}
+
+// newFECReceiver builds a fresh FEC receive plane (decoder + residual-loss estimator) from
+// the bind-wide fecCfg, or returns (nil, nil) when FEC is disabled. It reads only immutable
+// post-construction config (m.fecCfg), so it is safe to call WITHOUT m.mu — which the
+// lock-free lazy receive-side instantiation on first authenticated binding
+// (ensurePeerReceiveInstantiated) relies on. The decoder tuning matches what Open pins for
+// the primary: a retain window, and a recovery deadline past which a doomed group is folded
+// into the unrecoverable counter (D24), so a lazily-instantiated concentrator peer recovers
+// identically to an eagerly-opened one.
+func (m *Multipath) newFECReceiver() (*fecReceiver, error) {
+	if m.fecCfg == nil {
+		return nil, nil
+	}
+	dec, err := fec.NewDecoder(*m.fecCfg)
+	if err != nil {
+		return nil, fmt.Errorf("bind: build FEC decoder: %w", err)
+	}
+	dec.SetRetainWindow(fecRetainGroups)
+	dec.SetClock(fec.SystemClock{})
+	dec.SetRecoveryDeadline(m.fecCfg.Deadline + resequencerTimeout)
+	return &fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)}, nil
+}
+
+// ensurePeerReceiveInstantiated lazily builds a peer's HEAVY receive-side datapath — the
+// ~2048-frame resequencer ring and (when FEC is configured) the decoder's per-group buffers —
+// on the FIRST authenticated source->peer binding, rather than eagerly at Open (Q26). A
+// configured concentrator peer that has never been reached therefore carries none of that
+// per-peer memory; it materialises only once an authenticated PROBE has bound a source to it,
+// and is reclaimed on teardown (teardownPeerLocked), re-materialising cleanly on the next
+// re-bind. It is idempotent and LOCK-FREE (published through the same atomic.Pointer the
+// receive fast path Loads): it runs on the Bind-owned readLoop goroutine, which must never
+// take m.mu (Close waits on the readers WHILE holding it). The resequencer CAS elects a single
+// instantiator when two sockets bind the same peer concurrently; the loser drops its spare
+// allocation. A build error on the FEC plane is a programmer error (the ratio was validated in
+// NewMultipath) — the resequencer is still installed so DATA flows, only FEC recovery is
+// absent, which is the safe degradation.
+func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
+	if ps.resequencer.Load() != nil {
+		return // already instantiated (the eager primary, or a prior binding)
+	}
+	rq := reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{})
+	if !ps.resequencer.CompareAndSwap(nil, rq) {
+		return // a concurrent bind on another socket won the race and installed the ring
+	}
+	// This goroutine owns the instantiation (it won the resequencer CAS), so it also installs
+	// the matching FEC receive plane. A concurrent teardown clears both under m.mu; the CAS
+	// keeps this Store from resurrecting a plane a later teardown already dropped.
+	if fr, err := m.newFECReceiver(); err == nil && fr != nil {
+		ps.fecRecv.CompareAndSwap(nil, fr)
+	}
 }
 
 // readLoop is one Bind-OWNED per-path receive goroutine (T30). It reads the path
@@ -1167,7 +1227,17 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 			// rather than aborting — a genuine unbound DATA/PARITY still never binds.
 			continue
 		}
-		m.bindSourceToPeer(srcAP.Addr(), v.peer)
+		if !m.bindSourceToPeer(srcAP.Addr(), v.peer) {
+			// Provisional demux state is at its cap (bootstrap flood): drop this new source's
+			// PROBE rather than grow the map or evict a live binding (Q26/Q27). WG retransmits
+			// re-drive the bootstrap once a slot frees.
+			return
+		}
+		// The binding just resolved this peer: lazily materialise its heavy receive datapath
+		// (resequencer ring + FEC decoder buffers) BEFORE dispatch, so a configured peer that
+		// had never been reached — and a peer whose state was torn down on session loss — pays
+		// that memory only from its first authenticated binding onward (Q26).
+		m.ensurePeerReceiveInstantiated(v.peer)
 		m.dispatchInbound(v, fr, raw, srcAP) // already decoded: dispatch without re-decoding
 		return
 	}
@@ -1193,17 +1263,33 @@ func (m *Multipath) lookupPeerBySource(addr netip.Addr) (*peerState, bool) {
 // no-op, and a lost CAS (a concurrent bind on another socket) simply retries. Copy-on-write
 // keeps every published map immutable, so a concurrent lookupPeerBySource over the old snapshot
 // is never disturbed.
-func (m *Multipath) bindSourceToPeer(addr netip.Addr, p *peerState) {
+//
+// It returns true when addr is bound to p on return (either freshly installed, already present,
+// or re-pointed from another peer — a roam, T90) and false ONLY when the map is at its
+// maxDemuxSources cap and addr is a NEW source: drop-on-exhaustion (Q26/Q27). A cap-drop NEVER
+// evicts an existing binding, so a live peer is never disturbed by a bootstrap flood; only a
+// brand-new source's bootstrap is (temporarily) refused, and WG retransmits cover the gap once
+// a slot frees (e.g. a dead peer's teardown). Re-pointing or re-affirming an already-present
+// source does not grow the map and is therefore never blocked by the cap.
+func (m *Multipath) bindSourceToPeer(addr netip.Addr, p *peerState) bool {
 	for {
 		old := m.peerBySource.Load()
-		if old != nil {
-			if existing, ok := (*old)[addr]; ok && existing == p {
-				return
-			}
-		}
 		var n int
+		present := false
 		if old != nil {
+			existing, ok := (*old)[addr]
+			if ok {
+				present = true
+				if existing == p {
+					return true // already bound to p: idempotent no-op
+				}
+			}
 			n = len(*old)
+		}
+		if !present && m.maxDemuxSources > 0 && n >= m.maxDemuxSources {
+			// Cap exhausted and this is a NEW source: drop it. An existing (live) binding is
+			// never evicted to make room — bootstrap degrades, isolation holds.
+			return false
 		}
 		next := make(map[netip.Addr]*peerState, n+1)
 		if old != nil {
@@ -1213,10 +1299,99 @@ func (m *Multipath) bindSourceToPeer(addr netip.Addr, p *peerState) {
 		}
 		next[addr] = p
 		if m.peerBySource.CompareAndSwap(old, &next) {
-			return
+			return true
 		}
 		// Lost the race with a concurrent bind: reload and retry.
 	}
+}
+
+// unbindPeerSources removes every source->peer entry pointing at p from the demux map (a CAS
+// republish of a copy with p's entries dropped), reclaiming their cap slots so a fresh
+// authenticated PROBE can re-bind after the peer is re-instantiated. Like bindSourceToPeer it
+// is lock-free copy-on-write (retry on a lost CAS), so it composes with a concurrent bind on a
+// readLoop goroutine without either blocking on m.mu. A no-op when p holds no bindings.
+func (m *Multipath) unbindPeerSources(p *peerState) {
+	for {
+		old := m.peerBySource.Load()
+		if old == nil {
+			return
+		}
+		found := false
+		for _, v := range *old {
+			if v == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+		next := make(map[netip.Addr]*peerState, len(*old))
+		for k, v := range *old {
+			if v != p {
+				next[k] = v
+			}
+		}
+		if m.peerBySource.CompareAndSwap(old, &next) {
+			return
+		}
+	}
+}
+
+// peerIsLiveLocked reports whether ANY of peer p's paths is currently StateUp — the liveness
+// gate that makes teardown safe: a peer with a live path is actively carrying (or about to
+// carry) traffic and must NEVER be torn down (Q26). It reads each path's own immutable prober
+// State() (atomic internally, per the PathHealth contract), so it is safe under m.mu. A peer
+// with no prober-bearing path (a bind without the probe transport) reports not-live, matching
+// the fact that such a bind has no liveness signal to protect.
+func (m *Multipath) peerIsLiveLocked(p *peerState) bool {
+	for _, pp := range p.paths {
+		if pp.prober != nil && pp.prober.State() == telemetry.StateUp {
+			return true
+		}
+	}
+	return false
+}
+
+// teardownPeerLocked frees a dead peer's HEAVY per-peer state — the ~2048-frame resequencer
+// ring and the FEC send/receive buffers — and releases its source->peer demux bindings,
+// reclaiming both the memory and the demux-map cap slots (Q26). It is the lifecycle dual of
+// ensurePeerReceiveInstantiated: after teardown the peer is dormant (its light state — psk,
+// codec, reflector, per-(peer,path) views — survives so a trial-decode still authenticates it),
+// and the next authenticated PROBE re-binds a source and re-instantiates the ring cleanly. It
+// REFUSES to tear down a LIVE peer (any path StateUp) and the embedded primary (the edge/hub,
+// whose lifecycle is Open/Close, not session teardown), returning false in both cases so a
+// caller can distinguish "torn down" from "kept". The heavy fields are atomic.Pointer, so
+// Store(nil) is safe against a concurrent readLoop (which nil-guards its Load); the drainer
+// likewise skips a peer whose resequencer Loads nil. Caller holds m.mu.
+func (m *Multipath) teardownPeerLocked(p *peerState) bool {
+	if p == m.peerState {
+		return false // the primary (edge/hub) is torn down only by Close, never by session loss
+	}
+	if m.peerIsLiveLocked(p) {
+		return false // a live (Up) peer is never torn down, whatever other peers' churn
+	}
+	p.resequencer.Store(nil)
+	p.fecRecv.Store(nil)
+	p.fecSend = nil
+	m.unbindPeerSources(p)
+	return true
+}
+
+// TearDownPeer frees the heavy per-peer state of the named configured peer once its WireGuard
+// session / liveness is gone — the device wires this from its per-peer session events (Q26). It
+// is a no-op returning false when the peer is unknown, is the embedded primary, or is still
+// LIVE (a live peer is never torn down); it returns true when the peer's resequencer ring and
+// FEC buffers were freed and its source bindings released. A torn-down configured peer
+// re-instantiates cleanly on its next authenticated PROBE (ensurePeerReceiveInstantiated).
+func (m *Multipath) TearDownPeer(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peersByName[name]
+	if !ok {
+		return false
+	}
+	return m.teardownPeerLocked(p)
 }
 
 // dispatchInbound handles one already-decoded inbound frame on the resolved peer's view (ps):
@@ -1232,6 +1407,12 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		// Decode already returned a fresh copy of the payload (it aliases nothing
 		// else), so the resequencer may take ownership of it directly.
 		rq := pr.resequencer.Load()
+		if rq == nil {
+			// The peer's heavy receive state is absent — not yet instantiated, or torn down on
+			// session/liveness loss while a DATA frame was in flight on this readLoop. Drop it;
+			// a fresh authenticated PROBE re-instantiates the ring before the next DATA lands.
+			return
+		}
 		if fr := pr.fecRecv.Load(); fr != nil {
 			// FEC on (T24): offer the data shard to the decoder BEFORE resequencing so a
 			// later parity frame can reconstruct any group-mate lost in transit, then
@@ -1258,9 +1439,13 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		// with T18 exactly like a natively-received frame. With FEC off, PARITY is
 		// dropped (the pre-T24 behaviour).
 		if fr := pr.fecRecv.Load(); fr != nil {
+			rq := pr.resequencer.Load()
+			if rq == nil {
+				return // heavy receive state torn down mid-flight (see the DATA case)
+			}
 			shard := fec.ParityShard{Group: fec.GroupID(f.FECGroup), Index: int(f.ParityIndex), DataCount: int(f.DataCount), Payload: f.Payload}
 			recovered, _ := fr.offer(shard)
-			m.observeRecovered(fr, pr.resequencer.Load(), recovered, srcAP)
+			m.observeRecovered(fr, rq, recovered, srcAP)
 		}
 	case frame.Probe:
 		// Authenticated (the PROBE MAC verified in Decode): learn the return remote
