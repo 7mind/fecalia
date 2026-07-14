@@ -965,10 +965,30 @@ func uapiConfig(cfg *config.Config, bootEndpoints []bootEndpoint) (string, error
 			return "", fmt.Errorf("peer %d (%s): at least one allowed_ip is required", i, hex.EncodeToString(pub[:8]))
 		}
 		for _, cidr := range peer.AllowedIPs {
-			fmt.Fprintf(&b, "allowed_ip=%s\n", cidr)
+			for _, split := range splitDefaultRoute(cidr) {
+				fmt.Fprintf(&b, "allowed_ip=%s\n", split)
+			}
 		}
 	}
 	return b.String(), nil
+}
+
+// splitDefaultRoute expands a literal 0.0.0.0/0 or ::/0 allowed_ip entry into
+// its equivalent pair of /1 prefixes (D35, I6): amneziawg-go's engine wedges
+// the handshake when handed the literal all-routes /0 prefix, so uapiConfig
+// always renders the split form here and the engine never receives a literal
+// /0 — regardless of the peer's mode. Any other prefix, including one that
+// fails to parse (allowed_ips carries no syntax validation upstream), passes
+// through unchanged.
+func splitDefaultRoute(cidr string) []string {
+	p, err := netip.ParsePrefix(cidr)
+	if err != nil || p.Bits() != 0 {
+		return []string{cidr}
+	}
+	if p.Addr().Is4() {
+		return []string{"0.0.0.0/1", "128.0.0.0/1"}
+	}
+	return []string{"::/1", "8000::/1"}
 }
 
 // keepaliveSeconds is the edge's persistent-keepalive interval.

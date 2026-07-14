@@ -502,6 +502,27 @@ type WireGuard struct {
 	ListenPort uint16 `toml:"listen_port"`
 }
 
+// PeerMode selects a peer's full-tunnel intent (I6, Q41 — thin surface):
+// PeerModeDefaultRoute marks a peer as the edge's full-tunnel concentrator,
+// permitting a 0.0.0.0/0 (and/or ::/0) entry in that peer's allowed_ips. The
+// UAPI renderer (uapiConfig) ALWAYS splits a literal 0.0.0.0/0 or ::/0 into
+// the equivalent /1+/1 pair regardless of mode (D35 — the engine wedges on
+// the literal /0), so this field is a config-surface/validation concern only:
+// it does not itself drive the split, and it does not yet wire any OS-level
+// default-route/policy-routing behavior on the edge (that is a later task).
+type PeerMode string
+
+const (
+	// PeerModeDefaultRoute marks this peer as the edge's full-tunnel
+	// concentrator. Edge-only: a concentrator-role config declaring it on any
+	// peer is a config error, mirroring the endpoint/dns edge-only rules.
+	PeerModeDefaultRoute PeerMode = "default-route"
+)
+
+func (m PeerMode) valid() bool {
+	return m == "" || m == PeerModeDefaultRoute
+}
+
 // Peer is one WireGuard peer.
 type Peer struct {
 	PublicKey Key `toml:"public_key"`
@@ -541,6 +562,10 @@ type Peer struct {
 	EndpointSpecs []EndpointSpec `toml:"-"`
 	// AllowedIPs are the CIDR ranges routed to this peer.
 	AllowedIPs []string `toml:"allowed_ips"`
+	// Mode is this peer's full-tunnel intent (I6, Q41): unset, or
+	// "default-route" to mark it as the edge's full-tunnel concentrator. See
+	// PeerMode.
+	Mode PeerMode `toml:"mode"`
 	// PSK is this peer's per-peer override of the outer-control PSK (G4
 	// multi-peer concentrator groundwork). With a single configured peer it
 	// must be left UNSET: the top-level Config.PSK remains the single-peer
@@ -1085,6 +1110,16 @@ func (c *Config) validate() error {
 		// when no endpoint/endpoints entries are present.
 		if c.Role == RoleConcentrator && peer.DNS {
 			return fmt.Errorf("wireguard peer %d: dns is not meaningful for the concentrator role (it learns the edge's endpoint dynamically)", i)
+		}
+		if !peer.Mode.valid() {
+			return fmt.Errorf("wireguard peer %d: mode must be empty or %q, got %q", i, PeerModeDefaultRoute, peer.Mode)
+		}
+		// The full-tunnel/default-route surface is edge-only (I6, Q41), mirroring
+		// the endpoints/dns edge-only rules above: a concentrator is the full-tunnel
+		// TARGET, not the peer that opts a route into it, so mode = "default-route"
+		// on a concentrator-role peer is a config error rather than a silent no-op.
+		if c.Role == RoleConcentrator && peer.Mode == PeerModeDefaultRoute {
+			return fmt.Errorf("wireguard peer %d: mode = %q is not meaningful for the concentrator role (it is an edge-only full-tunnel opt-in)", i, PeerModeDefaultRoute)
 		}
 	}
 	// Per-peer name/psk (Q21 multi-peer concentrator): with a single peer the

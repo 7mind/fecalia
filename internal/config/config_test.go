@@ -117,6 +117,24 @@ func TestLoadValidEdge(t *testing.T) {
 	}
 }
 
+// TestPeerModeDefaultRouteOptIn is the I6/Q41 accepted case: an edge peer may
+// opt into mode = "default-route" alongside a full-tunnel 0.0.0.0/0
+// allowed_ips entry, and Load parses it onto Peer.Mode without error (the
+// literal-/0-to-/1+/1 split itself happens later, at UAPI render — see
+// internal/device's uapiConfig tests).
+func TestPeerModeDefaultRouteOptIn(t *testing.T) {
+	body := strings.Replace(fill(edgeConfig), `allowed_ips = ["0.0.0.0/0"]`,
+		"allowed_ips = [\"0.0.0.0/0\"]\nmode = \"default-route\"", 1)
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.WireGuard.Peers[0].Mode; got != PeerModeDefaultRoute {
+		t.Errorf("peer 0 mode = %q, want %q", got, PeerModeDefaultRoute)
+	}
+}
+
 // TestTUNPersistDefaultsFalse is the I7/Q38 default-unchanged case: a config that
 // omits tun_persist parses with TUNPersist == false, so the daemon keeps today's
 // teardown semantics (the TUN disappears on Close) byte-for-byte.
@@ -792,6 +810,22 @@ func TestLoadRejects(t *testing.T) {
 			body: fill(strings.Replace(concentratorConfig, `allowed_ips = ["10.0.0.2/32"]`,
 				"allowed_ips = [\"10.0.0.2/32\"]\ndns = true", 1)),
 			want: "not meaningful for the concentrator role",
+		},
+		{
+			// I6/Q41: mode = "default-route" is an edge-only full-tunnel opt-in,
+			// mirroring the endpoints/dns edge-only rules above.
+			name: "concentrator peer declares mode = default-route (edge-only surface)",
+			mode: 0o600,
+			body: fill(strings.Replace(concentratorConfig, `allowed_ips = ["10.0.0.2/32"]`,
+				"allowed_ips = [\"10.0.0.2/32\"]\nmode = \"default-route\"", 1)),
+			want: "not meaningful for the concentrator role",
+		},
+		{
+			name: "edge peer unknown mode value",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				"allowed_ips = [\"0.0.0.0/0\"]\nmode = \"split-tunnel\"", 1)),
+			want: "mode must be",
 		},
 		{
 			name: "concentrator without listen_port",

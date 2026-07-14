@@ -92,7 +92,16 @@ endpoint = "203.0.113.7:51820"     # EDGE: REQUIRED (this OR `endpoints`). ip:po
                                    #   the concentrator.
 allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   (enforced when the WG UAPI is built). This is
-                                   #   the peer's inner tunnel address(es).
+                                   #   the peer's inner tunnel address(es). A literal
+                                   #   0.0.0.0/0 or ::/0 (full tunnel) is ALWAYS split
+                                   #   into the equivalent /1+/1 pair at UAPI render —
+                                   #   the engine never sees the literal /0.
+# mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as the
+                                   #   edge's full-tunnel concentrator (opts into a
+                                   #   0.0.0.0/0 / ::/0 allowed_ips entry above).
+                                   #   Rejected on the concentrator. Config-surface
+                                   #   only today: it does not itself install any
+                                   #   OS-level default route.
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
 # ALL-OR-NOTHING: either omit the whole block, or set the entire jc/jmin/jmax/s1/s2

@@ -502,7 +502,13 @@ endpoint = "203.0.113.7:51820"     # EDGE: REQUIRED (this OR `endpoints`).
                                    #   with `endpoint` (which is its one-element
                                    #   form). Rejected on the concentrator.
 allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
-                                   #   (enforced when the WG UAPI is built).
+                                   #   (enforced when the WG UAPI is built). A
+                                   #   literal 0.0.0.0/0 or ::/0 is always split
+                                   #   into the equivalent /1+/1 pair at UAPI
+                                   #   render.
+# mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as
+                                   #   the edge's full-tunnel concentrator.
+                                   #   Rejected on the concentrator.
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
 # ALL-OR-NOTHING: either omit the whole block, or set the entire
@@ -603,7 +609,15 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   `source_addr` (compared unmapped, so `192.0.2.10` and `::ffff:192.0.2.10`
   collide). `name` must also be unique.
 - **`allowed_ips`.** At least one CIDR per peer; empty is rejected when the WG
-  configuration is assembled (not by `config.validate`).
+  configuration is assembled (not by `config.validate`). A literal `0.0.0.0/0`
+  or `::/0` (full tunnel) is ALWAYS split into the equivalent `/1`+`/1` pair at
+  UAPI render — the engine never receives the literal `/0`, which wedges the
+  handshake.
+- **`mode` is edge-only.** Peer `mode = "default-route"` marks a peer as the
+  edge's full-tunnel concentrator (an opt-in alongside a `0.0.0.0/0`/`::/0`
+  `allowed_ips` entry); rejected on the concentrator, mirroring the
+  `endpoint`/`dns` edge-only rules. It is a config-surface marker only today —
+  it does not install any OS-level default route.
 - **amnezia all-or-nothing.** An unconfigured (all-zero) block is plain
   WireGuard. Once *any* of `jc/jmin/jmax/s1/s2/h1..h4` is set, the full
   `jc,jmin,jmax,s1,s2` set must be `> 0`, `jmin <= jmax`, the init/response
