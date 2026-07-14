@@ -1784,12 +1784,12 @@ archives:
 
 ## M51
 
-### T141 — planned
+### T141 — wip
 
 - createdAt: 2026-07-14T12:40:24.246Z
-- updatedAt: 2026-07-14T12:40:24.246Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T15:34:41.836Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extend the netns e2e fixture with a sustained-load driver and metrics/log sampling helpers
 - description: "Q55 binds ALL per-task acceptance to the -tags e2e netns fixture, and flags that the fixture cannot yet (a) drive a SUSTAINED, rate-calibrated offered load through a running weighted-policy tunnel (frames/sec targeted above engage_fraction*per_path_capacity_fps and against the pacing capacity), (b) periodically sample the Exposition DURING that load, or (c) capture and grep the daemon's structured log stream for transition lines while the load runs. test/e2e/netns.go (SetupWithPaths/netemArgs) already provides per-path rateMbit caps and lossPct; metrics.Fetch (internal/metrics/scrape.go) scrapes /metrics; TestFixtureImpairment (test/e2e/fixture_impairment_test.go, T35) exposes rateMbit/lossPct. Build the shared capability as an up-front dependency for the observability and probe-protection e2e tasks. Add three reusable helpers to the e2e package: (1) a UDP load generator (target fps, payload size, duration; sender+sink across the tunnel); (2) a polling metrics sampler (poll Fetch every ~100-200ms, retain samples); (3) a structured-log capturer that asserts on daemon JSON log lines (liveness 'path liveness transition', 'scheduler pacer shedding', and the upcoming aggregation-transition line). Do NOT change production code. Keep DefaultPaths and existing TestFixtureImpairment behavior byte-identical; extend, do not modify, existing helpers. Update the test/e2e harness-contract doc comments."
 - acceptance: "A new -tags e2e harness self-test under `just e2e`: with a weighted-policy daemon and a rate-capped path (~5 Mbit), the driver sustains a target offered load for >=5s within +/-20% (verified via wanbond_path_tx_bytes_total deltas from the sampler), the metrics sampler returns >=1 gauge sample scraped via metrics.Fetch during that window, and the log capturer returns >=1 expected structured line (e.g. the coalesced 'scheduler pacer shedding' record under deliberate overload). Existing e2e tests unaffected (DefaultPaths byte-identical). `go test` GREEN, `go test -tags e2e` (just e2e) GREEN, `just lint` across default+e2e+realhosts tags GREEN."
@@ -1798,12 +1798,12 @@ archives:
 
 ## M52
 
-### T142 — planned
+### T142 — wip
 
 - createdAt: 2026-07-14T12:40:34.697Z
-- updatedAt: 2026-07-14T12:40:34.697Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T15:34:43.074Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Hard-fail config load when declared link_bandwidth proves weighted aggregation can never engage
 - description: "Q52 hard-fail arm (Option 3), scoped by Q53 to the GUARD ONLY (G2/Q20 owns per_path_capacity_fps auto-derive + BDP-sizing docs — reference install.md 3a, do NOT restate; note deriveWeightedPacingFromBDP already exists in internal/config/config.go:955). In internal/config, AFTER normalize (so deriveWeightedPacingFromBDP and applyDefaults have produced the EFFECTIVE EngageFraction/PerPathCapacityFPS): when scheduler.policy=\"weighted\" and a path declares link_bandwidth (Path.LinkBandwidthBitsPerSec), compute impliedCapacityFPS = LinkBandwidthBitsPerSec / (8 * defaultAvgWireFrameBytes) using the SAME avg-wire-frame constant and math SizePacingFromBDP uses (so the guard and the BDP derive can never disagree). If EngageFraction*PerPathCapacityFPS > impliedCapacityFPS for any declared path (aggregation can mathematically never engage at line rate), Load fails fast with an actionable error naming the path and all three numbers (declared bandwidth, implied capacity fps, engage-threshold fps) and the fixes (lower per_path_capacity_fps, enable pacing to auto-derive it, or correct link_bandwidth). Interaction to respect: with pacing ENABLED + declared bandwidth the capacity is auto-derived (raw knobs mutually exclusive, config.go:972), so the guard chiefly bites when pacing is DISABLED (derive no-ops, synthetic 10000 default stands) or knobs are explicit. Document the new failure mode in docs/install.md's config-error list in the same change (AGENTS.md docs-sync)."
 - acceptance: "-tags e2e under `just e2e` (fixture builds+runs the binary): (i) a daemon launched with policy=\"weighted\", link_bandwidth=\"8mbit\" (+link_rtt), pacing disabled, and default per_path_capacity_fps REFUSES to start, exiting non-zero with the actionable error naming the implied capacity fps and engage-threshold fps; (ii) the same config with per_path_capacity_fps lowered so EngageFraction*capacity <= impliedCapacityFPS starts and establishes the tunnel. `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
@@ -1896,12 +1896,12 @@ archives:
 
 ## M57
 
-### T149 — planned
+### T149 — wip
 
 - createdAt: 2026-07-14T13:15:57.936Z
-- updatedAt: 2026-07-14T13:15:57.936Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T15:34:40.708Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extract the per-path token-bucket pacer into a shared internal/sched component
 - description: "Behavior-preserving refactor to enable reuse by ActiveBackup. Move the pacing state + logic currently embedded in WeightedScheduler (internal/sched/weighted.go: tokens[]float64, lastFill/haveFill, refillLocked, tryConsumeLocked, shedLocked with the coalesced 'pacer shedding' rate-limited log, fullBuckets, and the PickPaced/PickNone sentinel semantics + ClassControl exemption per defect D22) into a standalone caller-locked helper type in a NEW internal/sched/pacer.go (e.g. a `pacer` holding tokens[], lastFill, haveFill, shedCount, lastShedLog and a config of CapacityFPS + BurstFrames). Refactor WeightedScheduler to delegate to it with ZERO behavioral change (it still guards the pacer under s.mu). Pure refactor — no config change, no ActiveBackup change."
 - acceptance: "`nix develop -c just test` passes with internal/sched/weighted_test.go UNCHANGED — every existing weighted pacing test green against the delegating impl (token refill, burst bound, TestWeightedPacingBoundsEgressAndBacklog, ClassControl exemption, PickPaced shed, shed-log coalescing, sentinel distinctness); internal/sched/pacer.go exists and weighted.go delegates refill/consume/shed to it; `nix develop -c go vet ./internal/sched/...` clean."
@@ -2037,17 +2037,18 @@ archives:
 
 ## M58
 
-### T158 — planned
+### T158 — done
 
 - createdAt: 2026-07-14T13:17:07.335Z
-- updatedAt: 2026-07-14T13:17:07.335Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T15:43:16.750Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Document the forwarded-TCP MSS clamp operator recipe
 - description: "Deliver the SECONDARY D65 fix as a documented OPERATOR step (design decision: the daemon owns only the tunnel engine and stays free of privileged shell-outs per the internal/device invariant, and the repo already treats ALL firewall/routing plumbing as operator-owned via the oneshot-unit pattern — so the clamp is an operator recipe, NOT a daemon-installed rule). Add to docs/install.md §9.2 (the full-tunnel / route-a-client-LAN forwarding recipe) and docs/runbook.md's firewall-persistence step the two rules verbatim from docs/p1-mtu.md: `iptables -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu` plus the ip6tables equivalent — on BOTH forwarding nodes (edge AND concentrator), scoped to FORWARDED traffic, with persistence guidance matching the recipe's existing pattern, a cross-reference to docs/p1-mtu.md's MSS-clamping section for the arithmetic, one line on why --clamp-mss-to-pmtu is preferred over --set-mss (tracks inner-MTU retuning), and an explicit statement that omitting it lets forwarded TCP emit segments that fragment/PMTU-blackhole (the D65 compounding fault). Keep the existing MSS=1361 accounting in p1-mtu.md consistent. Docs only."
 - acceptance: grep confirms docs/install.md §9.2 and docs/runbook.md each contain BOTH clamp rules (iptables AND ip6tables) with -o wanbond0 and --clamp-mss-to-pmtu, a persistence note, a link to docs/p1-mtu.md, and name both edge and concentrator as clamp points; the recipe is an operator step (no daemon shell-out); `nix develop -c just lint` doc checks pass.
 - suggestedModel: standard
 - ledgerRefs: ["goals:G14","defects:D65"]
+- resultCommit: "0414854"
 
 ### T159 — planned
 

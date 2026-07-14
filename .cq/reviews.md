@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 172
+  item: 173
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2037,3 +2037,16 @@ archives:
 - ledgerRefs: ["tasks:T126","goals:G8","defects:D50"]
 - sessionLogs: [".cq/logs/20260714-133500-a76410870f2fdd4fd.md",".cq/logs/20260714-133500-a4f63c99c44d4ebb6.md"]
 - rawLogs: [".cq/logs/raw/20260714-133500-a76410870f2fdd4fd.jsonl",".cq/logs/raw/20260714-133500-a4f63c99c44d4ebb6.jsonl"]
+
+## M58
+
+### R172 — go-ahead
+
+- createdAt: 2026-07-14T15:43:15.179Z
+- updatedAt: 2026-07-14T15:43:15.179Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T158 review round 1 — GO-AHEAD (single opus reviewer, proportionate for a docs-only change with grep-deterministic acceptance). Forwarded-TCP MSS-clamp operator recipe (D65 secondary fix). Merged to main as 0414854 (cherry-pick of ee3cca8 onto 972d84d; docs/install.md + docs/runbook.md only, clean). Reviewer verified EVERY acceptance clause: both clamp rules (iptables + ip6tables, `-t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu`) present in install.md §9.2 AND runbook.md, byte-verbatim vs docs/p1-mtu.md canonical; --clamp-mss-to-pmtu-vs---set-mss rationale present+correct (tracks live inner MTU); D65 fragment/PMTU-blackhole risk stated in both; arithmetic (IPv4 1401-40=1361, IPv6 1381-60=1321) matches p1-mtu.md and p1-mtu.md UNCHANGED; both edge+concentrator named as clamp points; explicitly operator-owned (daemon installs no firewall/mangle rules); p1-mtu.md links + accurate persistence notes (edge→addressing oneshot, concentrator→netfilter-persistent save) in both files; docs-only diff, no production code; just lint green (0 issues all tag sets). 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T158","goals:G14","defects:D65"]
