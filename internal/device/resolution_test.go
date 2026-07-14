@@ -328,6 +328,8 @@ func TestResolutionSingleHostnameBootAdopts(t *testing.T) {
 	rem := &recordingRemote{}
 	clk := &fakeClock{now: time.Unix(1000, 0)}
 	fo := newHubFailoverFromSpecs(specs, hp, rem, func() {}, clk, testSettle, discardLogger(t))
+	var installed []netip.AddrPort
+	fo.install = func(ap netip.AddrPort) { installed = append(installed, ap) }
 	if fo.activeSpec != -1 {
 		t.Fatalf("single hostname boot activeSpec = %d, want -1 (empty)", fo.activeSpec)
 	}
@@ -337,11 +339,15 @@ func TestResolutionSingleHostnameBootAdopts(t *testing.T) {
 		{Host: host, Port: 51820, IsName: true},
 	}), pathFamilies{v4: true, v6: true}, clk, testPollInterval, testDNSTimeout, discardLogger(t))
 
-	// First step polls immediately (nextPollAt armed at construction time) and adopts.
+	// First step polls immediately (nextPollAt armed at construction time) and adopts via the
+	// FIRST-RESOLVE INSTALL PATH (install on the engine peer, NOT SetPeerRemote — R70).
 	res.step()
 
-	if rem.calls != 1 || rem.last != firstAP {
-		t.Fatalf("single-hostname boot adoption SetPeerRemote = (calls %d, last %v), want (1, %v)", rem.calls, rem.last, firstAP)
+	if len(installed) != 1 || installed[0] != firstAP {
+		t.Fatalf("single-hostname boot adoption engine-endpoint install = %v, want exactly [%v] (R70 install path)", installed, firstAP)
+	}
+	if rem.calls != 0 {
+		t.Fatalf("single-hostname boot adoption used SetPeerRemote %d times, want 0 (R70: install on the engine peer, do not repoint bind remotes)", rem.calls)
 	}
 	if fo.activeSpec != 0 || fo.activeAddr != firstAP {
 		t.Fatalf("post-adoption active = (%d,%v), want (0,%v)", fo.activeSpec, fo.activeAddr, firstAP)

@@ -428,11 +428,12 @@ func TestPeerNeedsHubFailover(t *testing.T) {
 	}
 }
 
-// TestHubFailoverBootAdoptsFirstResolution is acceptance (7): a hostname-only peer boots
-// with every spec's expansion EMPTY (activeSpec == -1) — check can never rescue it (a
-// one-record expansion keeps the flattened length at 1, under the total<2 guard), so the
-// first resolution MUST adopt its head as the active endpoint and point the bond at it via
-// exactly one SetPeerRemote + one re-handshake, arming the settle dwell.
+// TestHubFailoverBootAdoptsFirstResolution is acceptance (7) + the R70 FIRST-RESOLVE INSTALL PATH:
+// a hostname-only peer boots with every spec's expansion EMPTY (activeSpec == -1) — check can never
+// rescue it (a one-record expansion keeps the flattened length at 1, under the total<2 guard), so
+// the first resolution MUST adopt its head as the active endpoint and INSTALL it on the engine peer
+// (the install collaborator, NOT SetPeerRemote — SetPeerRemote never populates the engine peer's
+// endpoint) then re-handshake, arming the settle dwell.
 func TestHubFailoverBootAdoptsFirstResolution(t *testing.T) {
 	first := mustAP(t, "203.0.113.1:51820")
 	specs := []failoverSpec{
@@ -443,15 +444,20 @@ func TestHubFailoverBootAdoptsFirstResolution(t *testing.T) {
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
 	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	var installed []netip.AddrPort
+	h.install = func(ap netip.AddrPort) { installed = append(installed, ap) }
 	if h.activeSpec != -1 || h.idx != -1 {
 		t.Fatalf("boot active = (spec %d, idx %d), want (spec -1, idx -1) (all specs empty)", h.activeSpec, h.idx)
 	}
 
-	// First resolution populates the sole hostname spec: adopt its head, point the bond.
+	// First resolution populates the sole hostname spec: adopt its head, INSTALL on the engine peer.
 	h.updateResolution(0, []netip.AddrPort{first})
 
-	if rem.calls != 1 || rem.last != first {
-		t.Fatalf("first resolution SetPeerRemote=%d last=%v, want 1 and %v (adopt head)", rem.calls, rem.last, first)
+	if len(installed) != 1 || installed[0] != first {
+		t.Fatalf("first resolution engine-endpoint install = %v, want exactly [%v] (R70 install path)", installed, first)
+	}
+	if rem.calls != 0 {
+		t.Fatalf("first resolution used SetPeerRemote %d times, want 0 — boot adoption must INSTALL on the engine peer, not repoint the bind remotes (SetPeerRemote never sets the engine peer endpoint, R70)", rem.calls)
 	}
 	if handshakes != 1 {
 		t.Fatalf("first resolution re-handshakes=%d, want 1", handshakes)

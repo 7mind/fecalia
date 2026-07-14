@@ -1,6 +1,8 @@
 package device
 
 import (
+	"encoding/hex"
+	"fmt"
 	"net/netip"
 	"sync"
 	"time"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -84,7 +87,16 @@ type hubFailover struct {
 
 	remote      peerRemote
 	rehandshake rehandshake
-	clock       telemetry.Clock
+	// install populates the ENGINE peer's endpoint via the UAPI/IpcSet path (R70). It is used on
+	// the FIRST-RESOLVE INSTALL PATH only — the boot-adoption of a peer that came up endpoint-less —
+	// because SetPeerRemote (remote) repoints the bind's per-path remotes but NEVER sets the engine
+	// peer's endpoint, so after an endpoint-less boot a bare rehandshake would have no endpoint to
+	// transmit to. The device wires it to deviceInstallEndpoint; a unit test over a fake remote with
+	// no engine leaves it nil, and boot adoption then falls back to remote so the switch stays
+	// observable. Subsequent re-resolves of an already-installed peer take the remote (SetPeerRemote)
+	// repoint path — the engine's virtual endpoint stays stable per A1; only the bind remotes move.
+	install func(netip.AddrPort)
+	clock   telemetry.Clock
 	// settle is the dwell a freshly-selected endpoint gets before another advance is
 	// allowed (hubFailoverSettle in production; a test injects its own).
 	settle time.Duration
@@ -270,11 +282,16 @@ func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
 			h.activeSpec = adoptSpec
 			h.activeAddr = adoptAddr
 			h.lastSwitch = h.clock.Now()
-			h.remote.SetPeerRemote(adoptAddr)
+			// FIRST-RESOLVE INSTALL PATH (R70): the peer booted endpoint-less, so the engine peer
+			// has NO endpoint yet. INSTALL the resolved endpoint on the engine peer via the UAPI
+			// path (install) FIRST — a SetPeerRemote repoint would move the bind's per-path remotes
+			// but leave the engine peer endpoint-less, so the following rehandshake would have no
+			// endpoint to transmit to — THEN rehandshake, which now has an addressable endpoint.
+			h.installActive(adoptAddr)
 			if h.rehandshake != nil {
 				h.rehandshake()
 			}
-			h.log.Warn("hub failover: first endpoint resolution; adopted active concentrator endpoint and re-handshaked",
+			h.log.Warn("hub failover: first endpoint resolution; installed active concentrator endpoint on the engine peer and re-handshaked",
 				"spec_index", adoptSpec, "to_endpoint", adoptAddr.String())
 		}
 	case specIdx == h.activeSpec:
@@ -296,6 +313,18 @@ func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
 	}
 
 	h.idx = h.flatIndexLocked(h.activeSpec, h.activeAddr)
+}
+
+// installActive gives the ENGINE peer an addressable endpoint at boot-adoption time (R70). It
+// prefers the install collaborator (the UAPI/IpcSet endpoint= path, the ONLY way to populate the
+// engine peer's endpoint); when unset — a unit test driving a fake remote with no engine behind it
+// — it falls back to SetPeerRemote so the adoption switch stays observable. Caller holds h.mu.
+func (h *hubFailover) installActive(ap netip.AddrPort) {
+	if h.install != nil {
+		h.install(ap)
+		return
+	}
+	h.remote.SetPeerRemote(ap)
 }
 
 // allPathsDown reports HUB LOSS — every path to the active concentrator DOWN — under h.mu.
@@ -413,6 +442,28 @@ func deviceRehandshake(dev *awgdevice.Device, pk config.Key) rehandshake {
 	}
 }
 
+// deviceInstallEndpoint returns an install function that populates the ENGINE peer's endpoint via
+// the UAPI/IpcSet path — an `endpoint=` line for pk routed through the engine to
+// Multipath.ParseEndpoint (R70). This is the ONLY way to give the engine peer an addressable
+// endpoint: SetPeerRemote repoints the bind's per-path remotes but leaves the engine peer's
+// endpoint untouched, so after an endpoint-less tolerant boot a bare rehandshake has no endpoint
+// to transmit to. The device installs the FIRST resolved endpoint through this before the first
+// rehandshake; ParseEndpoint also seeds the (previously remoteless) per-path remotes with it, so
+// the initiation egresses toward the resolved address. Re-issuing `public_key=` for an existing
+// peer only updates its endpoint — it does not reset keys or allowed-ips. An IpcSet failure is
+// logged; the loop retries on the next resolve. It stays in the device package alongside the rest
+// of the engine wiring, mirroring deviceRehandshake.
+func deviceInstallEndpoint(dev *awgdevice.Device, pk config.Key, lg log.Logger) func(netip.AddrPort) {
+	raw := pk.Bytes()
+	pubHex := hex.EncodeToString(raw[:])
+	return func(ap netip.AddrPort) {
+		if err := dev.IpcSet(fmt.Sprintf("public_key=%s\nendpoint=%s\n", pubHex, ap.String())); err != nil {
+			lg.Warn("hub failover: failed to install resolved endpoint on the engine peer",
+				"endpoint", ap.String(), "error", err.Error())
+		}
+	}
+}
+
 // peerNeedsHubFailover reports whether a peer's endpoint set warrants a hub-failover
 // controller: it does when the peer carries ANY hostname spec (its runtime resolution may
 // yield further endpoints, and even a single hostname can re-resolve onto a new IP the bond
@@ -429,76 +480,69 @@ func peerNeedsHubFailover(peer config.Peer) bool {
 	return len(peer.Endpoints) >= 2
 }
 
-// startHubFailover builds and starts the edge-side hub-failover monitor for cfg's
-// concentrator peer, or returns a NO-OP stopper when hub failover does not apply: the
-// concentrator role (it roams edges dynamically and has no endpoint list), a bind without
-// the probe transport (no probers → no liveness plane), or no peer whose endpoint set
-// warrants a controller (peerNeedsHubFailover — a single-IP-literal deployment gets none,
-// staying behaviour-identical to pre-G5). The edge bonds every path to a SINGLE
-// concentrator, so the whole per-path prober set IS the liveness of the paths to that
-// concentrator (hub loss = every one DOWN); the controller drives the first qualifying
-// peer. The returned stopper is what device.Close invokes to halt the loop.
-func startHubFailover(cfg *config.Config, mp *bind.Multipath, probers []*telemetry.Prober, dev *awgdevice.Device, lg log.Logger) func() {
+// startFailoverAndResolution builds and starts the edge-side hub-failover monitor AND the
+// re-resolution controller for cfg's concentrator peer, returning their two SEPARATE stoppers
+// (device.Close invokes both). It returns no-op stoppers when hub failover does not apply: the
+// concentrator role (it roams edges dynamically and has no endpoint list), a bind without the
+// probe transport (no probers → no liveness plane), or no peer whose endpoint set warrants a
+// controller (peerNeedsHubFailover — a single-IP-literal deployment gets none, staying
+// behaviour-identical to pre-G5). The edge bonds every path to a SINGLE concentrator, so the whole
+// per-path prober set IS the liveness of the paths to that concentrator (hub loss = every one
+// DOWN); the controller drives the first qualifying peer.
+//
+// The controller's spec expansions come from boot (the bounded initial resolve, Q30): a hostname
+// that resolved at boot starts with a non-empty expansion (activeSpec set, endpoint already
+// installed at boot via the UAPI render), while one that did not resolve starts EMPTY (activeSpec
+// == -1) and the re-resolution loop's first success adopts it through the FIRST-RESOLVE INSTALL
+// PATH (ctrl.install, R70). The install collaborator is wired here to the engine peer.
+func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers []*telemetry.Prober, dev *awgdevice.Device, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func()) {
+	noop := func() {}
 	if cfg.Role != config.RoleEdge || len(probers) == 0 {
-		return func() {}
+		return noop, noop
 	}
-	for _, peer := range cfg.WireGuard.Peers {
+	for i, peer := range cfg.WireGuard.Peers {
 		if !peerNeedsHubFailover(peer) {
 			continue
 		}
 		health := make([]hubHealth, len(probers))
-		for i, pr := range probers {
-			health[i] = pr
+		for j, pr := range probers {
+			health[j] = pr
 		}
-		// Seed each spec's expansion: a literal is its fixed single AddrPort; a hostname
-		// starts EMPTY — resolution is a later task's job (Q30), not wired here.
-		specs := make([]failoverSpec, len(peer.EndpointSpecs))
-		for i, s := range peer.EndpointSpecs {
-			var addrs []netip.AddrPort
-			if !s.IsName {
-				addrs = []netip.AddrPort{s.Addr}
-			}
-			specs[i] = failoverSpec{spec: s, addrs: addrs}
-		}
+		hlg := lg.Component("hubfailover")
 		ctrl := newHubFailoverFromSpecs(
-			specs, health, mp,
+			boot.specs[i], health, mp,
 			deviceRehandshake(dev, peer.PublicKey),
 			telemetry.SystemClock{}, hubFailoverSettle,
-			lg.Component("hubfailover"),
+			hlg,
 		)
-		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep)
-		// and the settle dwell bounds actual switches, so a responsive poll only tightens
-		// detection latency without churning the remote.
-		stopFailover := ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval)
+		// Wire the engine-endpoint install used by the FIRST-RESOLVE INSTALL PATH (R70): boot
+		// adoption of an endpoint-less peer installs the resolved endpoint on the engine peer here,
+		// then rehandshakes.
+		ctrl.install = deviceInstallEndpoint(dev, peer.PublicKey, hlg)
+		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep) and the
+		// settle dwell bounds actual switches, so a responsive poll only tightens detection latency
+		// without churning the remote.
+		stopFailover = ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval)
 		// Alongside failover, start the re-resolution controller (T73) over the SAME ctrl for a
 		// peer carrying hostname specs: it re-resolves each on the [dns] poll cadence and out-of-
 		// band on hub loss, feeding fresh records through ctrl.updateResolution (Q34 — the two
 		// coordinate purely through the shared lock and update API). An all-literal peer has no
 		// hostname to track, so it starts nothing.
-		stopResolution := startResolution(cfg, ctrl, peer, lg)
-		return func() {
-			stopFailover()
-			stopResolution()
-		}
+		stopResolution = startResolution(cfg, ctrl, peer, boot.resolver, lg)
+		return stopFailover, stopResolution
 	}
-	return func() {}
+	return noop, noop
 }
 
 // startResolution builds and starts the re-resolution controller for peer's hostname endpoint
 // specs over the already-constructed hub-failover controller, or returns a no-op stopper when the
-// peer carries no hostname spec (an all-literal peer never re-resolves). The resolver transport is
-// the one the (validated) [dns] block selects; a resolver-construction failure is logged and
-// resolution is skipped rather than failing tunnel bring-up, since hub failover itself is
-// independent of re-resolution.
-func startResolution(cfg *config.Config, ctrl *hubFailover, peer config.Peer, lg log.Logger) func() {
+// peer carries no hostname spec (an all-literal peer never re-resolves) or the resolver could not
+// be constructed (nil — logged at boot). The resolver is the one built ONCE at boot from the
+// (validated) [dns] block and shared with the bounded initial resolve, so hostname re-resolution
+// never fails tunnel bring-up: hub failover itself is independent of re-resolution.
+func startResolution(cfg *config.Config, ctrl *hubFailover, peer config.Peer, resolver dnsresolve.Resolver, lg log.Logger) func() {
 	targets := nameTargetsFromSpecs(peer.EndpointSpecs)
-	if len(targets) == 0 {
-		return func() {}
-	}
-	resolver, err := cfg.DNS.NewResolver()
-	if err != nil {
-		lg.Warn("dns re-resolution: could not build resolver; hostname endpoints will not re-resolve",
-			"error", err.Error())
+	if len(targets) == 0 || resolver == nil {
 		return func() {}
 	}
 	res := newResolution(

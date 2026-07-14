@@ -234,6 +234,11 @@ doh_url = "https://198.51.100.1/dns-query"       # required iff resolver = "doh"
 - `doh_url`/`dot_server` are mode-specific: setting the wrong one for the
   selected `resolver` (or either one under `resolver = "system"`) is
   rejected at load.
+- **Tolerant boot**: a hostname endpoint that cannot be resolved at startup
+  (resolver down, DNS outage) never fails bring-up — the tunnel comes up
+  *without* that peer endpoint and the background re-resolution loop installs
+  it and initiates the handshake on the first successful lookup. Steady-state
+  re-resolution then repoints the bond whenever the record changes.
 
 ### 3a. Tuning per-link bandwidth and pacing
 

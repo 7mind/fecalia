@@ -327,8 +327,27 @@ its goroutine; results are applied only through `updateResolution`. Each evaluat
   strand the bond on).
 
 This controller runs **even for a single-hostname peer** (to track a changing DDNS
-address), independent of hub-failover's `>= 2` guard; the first successful poll of a
-hostname-only peer is what boot-adopts its active endpoint.
+address), independent of hub-failover's `>= 2` guard; the first successful resolution
+of a hostname-only peer is what boot-adopts its active endpoint.
+
+**Device lifecycle** (T74). At `Up` the device does one **bounded initial resolve**
+of each hostname spec (the `[dns]` per-lookup timeout) and builds the engine/UAPI peer
+endpoint **only from resolved entries** — the flattened head of the seeded specs. If a
+name does not resolve in the boot window (single-hostname peer, resolver down), the
+tunnel comes up **without a peer endpoint** (tolerant boot, Q30 defer-and-reconcile —
+an unresolvable name never hard-fails bring-up); the concentrator already runs
+endpoint-less, so the engine supports it. The resolver is constructed **once**, and
+**only when some peer carries a hostname spec** — a zero-hostname config builds no
+resolver and starts no loop (Q29 inertness). The **first-resolve install path (R70)**
+is load-bearing: `SetPeerRemote` repoints the bind's per-path remotes but **never sets
+the engine peer's endpoint**, which is populated **only** by a UAPI `endpoint=` line
+routed through `Multipath.ParseEndpoint`. So after an endpoint-less boot, the first
+successful resolve must **install** the resolved endpoint on the engine peer via the
+UAPI/IpcSet path (`deviceInstallEndpoint`) **then** re-handshake — the initiation now
+has an addressable endpoint. Subsequent re-resolves of an already-installed peer take
+the normal `SetPeerRemote` repoint path (the engine's virtual endpoint stays stable per
+A1; only the bind remotes move). The re-resolution loop's stopper is held on the
+`Tunnel` and invoked by `Close` between the hub-failover stop and the engine teardown.
 
 ### Per-path telemetry — `internal/telemetry`
 

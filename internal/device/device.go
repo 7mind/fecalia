@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
@@ -85,6 +87,12 @@ type Tunnel struct {
 	// idempotent and never nil (a no-op on the concentrator, or an edge with a single
 	// concentrator endpoint, or a bind without the probe transport).
 	stopHubFailover func()
+	// stopResolution halts the edge-side DNS re-resolution loop (T74): it re-resolves each
+	// opted-in hostname peer-endpoint spec on the [dns] poll cadence and out-of-band on hub loss,
+	// feeding fresh records to the hub-failover controller. Close calls it between stopHubFailover
+	// and dev.Close. It is idempotent and never nil (a no-op on the concentrator, an all-literal
+	// edge, or when no hostname spec is configured — Q29 inertness).
+	stopResolution func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -195,7 +203,26 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: read TUN name: %w", err)
 	}
+	// The DNS re-resolution transport is the one the (validated) [dns] block selects. It is passed
+	// as a factory (not eagerly constructed) so up() builds it AT MOST ONCE and ONLY when some peer
+	// carries a hostname endpoint spec — a config with zero hostname specs never constructs a
+	// resolver (Q29 inertness). The injected TUN and factory are also the seams device tests drive.
+	return up(cfg, clg, tunDev, name, cfg.DNS.NewResolver)
+}
 
+// resolverFactory builds the DNS resolver used for hostname endpoint re-resolution. It is injected
+// so a device test can supply a fake; production passes cfg.DNS.NewResolver. up() invokes it AT
+// MOST ONCE, and ONLY when some peer carries a hostname endpoint spec.
+type resolverFactory func() (dnsresolve.Resolver, error)
+
+// up drives the tunnel bring-up over an already-created TUN and an injected resolver factory: it
+// wires the multipath Bind into the amneziawg engine, performs the bounded initial hostname
+// resolve (Q30), applies the crypto/endpoint UAPI config built ONLY from resolved entries, brings
+// the device up, and starts the probe / reconcile / hub-failover / re-resolution loops. Splitting
+// it out of Up gives device tests a seam to inject a channel TUN and a fake resolver without the
+// privileged tun.CreateTUN. The same path drives both roles; the role only changes which UAPI
+// fields cfg carries (the concentrator sets listen_port; the edge sets each peer's endpoint).
+func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newResolver resolverFactory) (*Tunnel, error) {
 	// Claim the single-amnezia-engine-per-process invariant (D2) BEFORE IpcSet
 	// assigns amneziawg-go's process-global message-type state. On any failure
 	// below, ok stays false and the deferred release returns the hold; the
@@ -227,7 +254,17 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	}
 	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level))
 
-	uapi, err := uapiConfig(cfg)
+	// Bounded initial hostname resolution (Q30): construct the resolver ONCE (only when some peer
+	// carries a hostname spec — Q29 inertness), resolve each hostname spec under a short timeout,
+	// and seed its expansion. The per-peer boot endpoint — the flattened head of the seeded specs —
+	// is what the UAPI render installs on the engine peer; a hostname that does not resolve in the
+	// boot window (or a resolver that fails to construct) leaves its spec EMPTY and the peer boots
+	// WITHOUT a peer endpoint (tolerant boot). The re-resolution loop then completes the wiring on
+	// first success via the FIRST-RESOLVE INSTALL PATH (R70). Literal specs are seeded verbatim, so
+	// an all-literal peer boots byte-for-byte as before.
+	boot := resolveBootEndpoints(cfg, newResolver, clg)
+
+	uapi, err := uapiConfig(cfg, boot.endpoints)
 	if err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("device: build UAPI config: %w", err)
@@ -251,17 +288,19 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	// lease at boot) is retried and promoted to a live path as its address appears,
 	// WITHOUT a tunnel restart. Close stops it before dev.Close, like the probe loop.
 	stopReconcile := mpBind.StartReconcileLoop(bind.DefaultReconcileInterval)
-	// Start the edge-side hub-failover monitor (T57): on hub loss (every path to the
-	// active concentrator DOWN) it advances to the next ordered peer endpoint, repoints the
-	// bond's remote, and re-handshakes. A no-op on the concentrator, a single-concentrator
-	// edge, or a bind without the probe transport. Started AFTER dev.Up so the engine peer
-	// the re-handshake looks up exists (IpcSet added it above). Close stops it before
-	// dev.Close, like the probe/reconcile loops.
-	stopHubFailover := startHubFailover(cfg, mpBind, probers, dev, clg)
+	// Start the edge-side hub-failover monitor (T57) AND the DNS re-resolution loop (T74): on hub
+	// loss (every path to the active concentrator DOWN) failover advances to the next ordered peer
+	// endpoint, repoints the bond's remote, and re-handshakes; re-resolution re-resolves opted-in
+	// hostname specs and installs/repoints on change. Both a no-op on the concentrator, a
+	// single-IP-literal edge, or a bind without the probe transport. Started AFTER dev.Up so the
+	// engine peer the re-handshake / endpoint-install look up exists (IpcSet added it above). Close
+	// stops both before dev.Close, like the probe/reconcile loops.
+	stopHubFailover, stopResolution := startFailoverAndResolution(cfg, mpBind, probers, dev, boot, clg)
 
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
-		stopProbes: stopProbes, stopReconcile: stopReconcile, stopHubFailover: stopHubFailover, amnezia: cfg.Amnezia,
+		stopProbes: stopProbes, stopReconcile: stopReconcile,
+		stopHubFailover: stopHubFailover, stopResolution: stopResolution, amnezia: cfg.Amnezia,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). It is
 		// built unconditionally (cheap) so a reload that later turns [metrics].listen ON has
@@ -677,6 +716,11 @@ func (t *Tunnel) Close() {
 	if t.stopHubFailover != nil {
 		t.stopHubFailover()
 	}
+	// Stop the DNS re-resolution loop between hub-failover and the engine teardown (T74): no
+	// re-resolve may race the engine peer's install/repoint or the socket close.
+	if t.stopResolution != nil {
+		t.stopResolution()
+	}
 	t.dev.Close()
 	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })
 }
@@ -696,6 +740,112 @@ func engineLogger(lg log.Logger, level string) *awgdevice.Logger {
 	}
 }
 
+// bootEndpoint is a peer's initial engine endpoint derived from the bounded boot resolve: the
+// flattened head of its seeded failoverSpecs, valid only when at least one spec has an expansion.
+// An invalid boot endpoint means the peer boots endpoint-less (tolerant boot).
+type bootEndpoint struct {
+	ap    netip.AddrPort
+	valid bool
+}
+
+// bootEndpoints is the outcome of the bounded initial resolve: the resolver constructed for
+// hostname re-resolution (nil when no peer carries a hostname spec — the wiring is then provably
+// inert, Q29), the per-peer seeded failoverSpecs (hostname expansions filled from the boot resolve,
+// literals fixed), and the per-peer boot endpoint the UAPI render installs. specs and endpoints are
+// indexed 1:1 with cfg.WireGuard.Peers.
+type bootEndpoints struct {
+	resolver  dnsresolve.Resolver
+	specs     [][]failoverSpec
+	endpoints []bootEndpoint
+}
+
+// resolveBootEndpoints performs the bounded initial hostname resolve (Q30) and derives, per peer,
+// the seeded failoverSpecs and the boot endpoint the UAPI render installs. It constructs the
+// resolver AT MOST ONCE, and ONLY when some peer carries a hostname endpoint spec — a config with
+// zero hostname specs never invokes newResolver, so its wiring is provably inert (Q29). A literal
+// spec is seeded verbatim (byte-for-byte the pre-G5 behaviour); a hostname spec is resolved under
+// the [dns] per-lookup timeout and family-filtered. A lookup that fails, times out, or yields no
+// usable record leaves that spec EMPTY — the peer boots endpoint-less and the re-resolution loop
+// installs it on first success (R70). A resolver that fails to construct is logged and treated as
+// absent (every hostname spec then boots empty), since re-resolution must never fail bring-up.
+func resolveBootEndpoints(cfg *config.Config, newResolver resolverFactory, lg log.Logger) bootEndpoints {
+	peers := cfg.WireGuard.Peers
+	b := bootEndpoints{
+		specs:     make([][]failoverSpec, len(peers)),
+		endpoints: make([]bootEndpoint, len(peers)),
+	}
+
+	hasName := false
+	for _, p := range peers {
+		for _, s := range p.EndpointSpecs {
+			if s.IsName {
+				hasName = true
+			}
+		}
+	}
+	if hasName {
+		if r, err := newResolver(); err != nil {
+			lg.Warn("dns: could not construct resolver; hostname endpoints boot endpoint-less and will not re-resolve",
+				"error", err.Error())
+		} else {
+			b.resolver = r
+		}
+	}
+
+	fams := pathFamiliesFromPaths(cfg.Paths)
+	for i, p := range peers {
+		specs := make([]failoverSpec, len(p.EndpointSpecs))
+		for j, s := range p.EndpointSpecs {
+			if !s.IsName {
+				specs[j] = failoverSpec{spec: s, addrs: []netip.AddrPort{s.Addr}}
+				continue
+			}
+			var addrs []netip.AddrPort
+			if b.resolver != nil {
+				addrs = bootResolveHostname(b.resolver, s, fams, cfg.DNS.Timeout, lg)
+			}
+			specs[j] = failoverSpec{spec: s, addrs: addrs}
+		}
+		b.specs[i] = specs
+		// The boot endpoint is the FLATTENED head — the first spec (in TOML order) with a
+		// non-empty expansion. None ⇒ endpoint-less boot.
+		for _, sp := range specs {
+			if len(sp.addrs) > 0 {
+				b.endpoints[i] = bootEndpoint{ap: sp.addrs[0], valid: true}
+				break
+			}
+		}
+	}
+	return b
+}
+
+// bootResolveHostname does one context-bounded lookup for a hostname spec at boot and returns the
+// ordered, family-filtered []netip.AddrPort (empty on any failure/timeout/empty-result — the caller
+// then boots that spec endpoint-less). The timeout is the [dns] per-lookup timeout (kept > 0 by
+// config validation); a non-positive value falls back to an unbounded context, matching
+// resolution.lookupContext, but Up should never pass one.
+func bootResolveHostname(resolver dnsresolve.Resolver, s config.EndpointSpec, fams pathFamilies, timeout time.Duration, lg log.Logger) []netip.AddrPort {
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	addrs, _, _, err := resolver.Lookup(ctx, s.Host)
+	if err != nil {
+		lg.Info("dns: initial resolve failed; endpoint boots deferred to the re-resolution loop",
+			"host", s.Host, "error", err.Error())
+		return nil
+	}
+	eps := orderAddrPorts(addrs, s.Port, fams)
+	if len(eps) == 0 {
+		lg.Info("dns: initial resolve yielded no usable record for local path families; endpoint boots deferred",
+			"host", s.Host)
+		return nil
+	}
+	return eps
+}
+
 // uapiConfig renders cfg into the newline-delimited UAPI set string the engine's
 // IpcSet consumes. Keys are lowercase hex (UAPI's on-the-wire encoding), NOT the
 // base64 form the TOML carries. Amnezia obfuscation keys are emitted only when the
@@ -703,7 +853,7 @@ func engineLogger(lg log.Logger, level string) *awgdevice.Logger {
 // WireGuard mode. The same amnezia parameters are applied on BOTH roles (edge and
 // concentrator) as defense-in-depth — they must match end to end for the handshake
 // to succeed (config validation makes each end specify a complete profile, D1).
-func uapiConfig(cfg *config.Config) (string, error) {
+func uapiConfig(cfg *config.Config, bootEndpoints []bootEndpoint) (string, error) {
 	var b strings.Builder
 
 	priv := cfg.WireGuard.PrivateKey.Bytes()
@@ -716,14 +866,17 @@ func uapiConfig(cfg *config.Config) (string, error) {
 	for i, peer := range cfg.WireGuard.Peers {
 		pub := peer.PublicKey.Bytes()
 		fmt.Fprintf(&b, "public_key=%s\n", hex.EncodeToString(pub[:]))
-		if len(peer.Endpoints) > 0 {
-			// Endpoints[0] is the active/primary concentrator (Q18 ordered-endpoint
-			// active-standby); it is populated from either the legacy single
-			// `endpoint` field or the new ordered `endpoints` list (config.Peer.
-			// resolveEndpoints), so both forms bring up the tunnel identically here.
-			// Switching to a standby endpoint on hub loss is T57's job, not this
-			// initial UAPI render.
-			fmt.Fprintf(&b, "endpoint=%s\n", peer.Endpoints[0])
+		// The engine peer's endpoint is built ONLY from a resolved flattened entry (Q30): the
+		// boot endpoint is the head of the peer's seeded failoverSpecs — a literal's fixed address
+		// for an all-literal peer (byte-for-byte the pre-G5 render, Endpoints[0]), or a hostname's
+		// boot-resolved head. When nothing resolved (a hostname peer whose name did not resolve in
+		// the boot window, or a resolver-less concentrator peer with no endpoint at all) the boot
+		// endpoint is INVALID and no endpoint line is emitted — the peer boots endpoint-less
+		// (tolerant boot), and for a hostname peer the re-resolution loop installs it on first
+		// success (R70). Switching to a standby endpoint on hub loss is the failover controller's
+		// job, not this initial render.
+		if ep := bootEndpoints[i]; ep.valid {
+			fmt.Fprintf(&b, "endpoint=%s\n", ep.ap.String())
 			// A keepalive keeps the edge->concentrator session warm and lets the
 			// concentrator relearn the edge endpoint after a NAT rebind; only the
 			// initiating (edge) side sets it.
