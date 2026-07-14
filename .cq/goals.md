@@ -315,10 +315,10 @@ archives: []
 
 ## M50
 
-### G13 — clarifying
+### G13 — planned
 
 - createdAt: 2026-07-14T12:13:29.796Z
-- updatedAt: 2026-07-14T12:18:25.999Z
+- updatedAt: 2026-07-14T12:53:50.586Z
 - author: "opus-4.8[1m]"
 - session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
 - title: Operability & safety for weighted aggregation + pacing
@@ -336,5 +336,7 @@ archives: []
     Deliverable: acceptance criteria per task; each reproducible on a bandwidth-capped netns fixture (no metered WAN needed).
     
     RELATIONSHIP TO G2 (planner: dedup at task level, do NOT re-plan G2's locked scope): the already-`planned` goal G2 covers broad pacing empirical BDP sizing (Q20 = wire SizePacingFromBDP from declared per-link bandwidth + document) and validates that enabled pacing does NOT starve WireGuard control frames. This goal is OPERABILITY-specific and adds three things G2 does not: (i) the `wanbond_aggregation_engaged` metric + EWMA-offered-load-vs-threshold observability; (ii) a weighted-mode capacity-sanity WARN/FAIL-LOUD guard tied to install.md §3a BDP sizing; (iii) a latency/priority class mechanism so control/probe/ICMP frames aren't dropped indiscriminately under pacer overload. If item 2's auto-derive or item 3(a)'s sizing docs would duplicate a G2/M13-M17 task, reference the G2 task instead of restating it.
-- sessionLogs: [".cq/logs/20260714-121742-a7376892a4d9f68f5.md"]
-- rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl"]
+- sessionLogs: [".cq/logs/20260714-121742-a7376892a4d9f68f5.md",".cq/logs/20260714-123907-ac5d6e2c7eba4f406.md",".cq/logs/20260714-123907-a525c21bb0638ebf4.md"]
+- rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl",".cq/logs/raw/20260714-123907-ac5d6e2c7eba4f406.jsonl",".cq/logs/raw/20260714-123907-a525c21bb0638ebf4.jsonl"]
+- milestones: ["M51","M52","M53","M54","M55"]
+- grounding: "Synthesized 2026-07-14 (opus-4.8[1m] orchestrator) from a 2-planner candidate panel (opus 5M/6T + fable 5M/8T; generate-N-then-JUDGE+SYNTHESIS). Both candidates converged on the same DAG shape; fable's 8-task decomposition taken as base, folding in opus's reproduce-first probe acceptance. DAG: M51 harness (root) -> {M53 observability, M54 probe} ; M52 guard (independent root) ; M55 docs (leaf, deps M52+M53+M54). 8 tasks T141-T148. LOAD-BEARING GROUNDING (both planners, independently confirmed): (1) PROBE frames (frame.KindProbe) do NOT traverse scheduler.Pick/token-bucket — emitProbes (internal/bind/probe.go) writes them directly to the path socket; so Q51 protection is NOT a ClassControl-style exemption but exempt-but-charged probe accounting that reserves link headroom against the pacer (T145, reproduce-first). (2) No scheduler->metrics seam exists today (metrics.Source = Paths/FEC/Reseq/Session/PeerNames); item 1 needs a new WeightedScheduler.AggregationSnapshot() accessor (T143) -> Bind PeerSnapshots -> device metricsSource -> collector four per-peer gauges (T146), honoring the T94 single-peer-omits-label back-compat. (3) deriveWeightedPacingFromBDP/SizePacingFromBDP already exist and are G2/Q20-owned — the Q52 capacity guard (T142 hard-fail / T144 WARN) reuses their avg-wire-frame math for consistency but does NOT re-own auto-derive or BDP docs (Q53 Option A). SCOPE per binding answers: item 1 observability (Q54 per-peer gauges + engage/disengage transition log + configured-but-inert e2e scenario), item 2 capacity-sanity guard (Q52 Option 3: hard-fail declared-contradiction / WARN+wanbond_weighted_capacity_sane gauge undeclared), item 3(ii) probe protection (Q51, inner-ICMP explicitly infeasible/out-of-scope), item 3(a) tradeoff+priority-model+infeasibility docs. All behavioral acceptance is -tags e2e via an up-front fixture-extension (Q55); the pure-docs task T148 is the one deliberate Q55 deviation (lint + reviewer prose-check, no runtime surface)."

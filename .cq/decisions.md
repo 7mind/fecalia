@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 12
+  item: 13
 archives: []
 ---
 
@@ -163,3 +163,15 @@ archives: []
 - landsIn: ["M46"]
 - sourceRefs: ["goals:G10","reviews:R131","reviews:R133"]
 - ledgerRefs: ["goals:G10","defects:D48","defects:D52","defects:D53"]
+
+## M50
+
+### K13 — locked
+
+- createdAt: 2026-07-14T12:53:33.053Z
+- updatedAt: 2026-07-14T12:53:33.053Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: "plan review: approved"
+- rationale: "Reviewer go-ahead per R156 (unanimous opus+fable panel, empty new_questions/criticism). Plan G13 (work milestones M51-M55 / tasks T141-T148) approved; DAG verified acyclic and complete for the Q51-Q55 scope (R155 revise[4 criticisms] -> R156 go-ahead). Synthesized from a 2-planner candidate panel (opus+fable, generate-N-then-JUDGE+SYNTHESIS). Locking to permit planning->planned."
+- ledgerRefs: ["goals:G13"]

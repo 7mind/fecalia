@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 50
+  item: 55
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -353,3 +353,41 @@ archives:
 - updatedAt: 2026-07-14T12:13:11.545Z
 - title: "Plan: weighted-mode operability & pacing safety"
 - description: "Coordination milestone for the plan-flow goal covering operability gaps found while testing policy=\"weighted\" with pacing on/off: aggregation-engagement observability, capacity-sizing safety (warn-loud/auto-derive), and the pacing on/off tradeoff (docs + a latency/priority class for control frames). Groups the goal, its clarifying questions, reviews, and the approval decision."
+
+### M51 — open
+
+- createdAt: 2026-07-14T12:39:47.365Z
+- updatedAt: 2026-07-14T12:39:47.365Z
+- title: "G13: E2E overload+sampling harness"
+- description: Work milestone for G13. Extends the -tags e2e netns fixture (test/e2e) with a sustained calibrated tunnel-load driver plus concurrent /metrics and structured-log sampling helpers — the shared capability Q55 flagged as missing. Prerequisite for the observability and probe-protection e2e acceptances.
+
+### M52 — open
+
+- createdAt: 2026-07-14T12:39:49.619Z
+- updatedAt: 2026-07-14T12:39:49.619Z
+- title: "G13: Weighted capacity-sanity guard"
+- description: "Work milestone for G13 item 2 (Q52 Option 3, scoped to the GUARD ONLY per Q53). Config-load capacity-sanity check for policy=\"weighted\": hard-fail when declared link_bandwidth proves aggregation can never engage; startup WARN + wanbond_weighted_capacity_sane gauge when bandwidth is undeclared/unverifiable. Does NOT own the G2/Q20 per_path_capacity_fps auto-derive or BDP-sizing docs."
+
+### M53 — open
+
+- createdAt: 2026-07-14T12:39:55.737Z
+- updatedAt: 2026-07-14T12:39:55.737Z
+- title: "G13: Aggregation-engagement observability"
+- description: Work milestone for G13 item 1 (Q54). Exposes the WeightedScheduler aggregation-gate state (s.aggregating, EWMA loadRate, engage/disengage thresholds) as per-peer Prometheus gauges (wanbond_aggregation_engaged / wanbond_offered_load_fps / engage+disengage threshold gauges), adds an engage↔disengage INFO transition log, and validates the "configured but inert" blind spot via -tags e2e scenarios.
+- dependsOn: ["M51"]
+
+### M54 — open
+
+- createdAt: 2026-07-14T12:39:58.494Z
+- updatedAt: 2026-07-14T12:39:58.494Z
+- title: "G13: Probe protection under pacer overload"
+- description: Work milestone for G13 item 3(ii) (Q51). Protects wanbond's own telemetry PROBE frames (frame.KindProbe) so pacer-era DATA overload cannot induce spurious path-DOWN / failover flaps, via exempt-but-charged probe accounting in the weighted pacer. Inner-tunnel ICMP prioritization is explicitly OUT of scope (opaque ClassData).
+- dependsOn: ["M51"]
+
+### M55 — open
+
+- createdAt: 2026-07-14T12:40:04.019Z
+- updatedAt: 2026-07-14T12:40:04.019Z
+- title: "G13: Operability documentation"
+- description: Work milestone for G13 item 3(a) docs + the Q51 infeasibility note. Documents the measured pacing on/off tradeoff, the codified frame-class priority model (ClassControl exempt-uncharged, KindProbe exempt-but-charged, ClassData fully paced), the new operability signals, and the explicit architectural note that inner-tunnel ICMP prioritization is infeasible — referencing (not restating) G2/Q20's BDP-sizing docs.
+- dependsOn: ["M53","M52","M54"]

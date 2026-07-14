@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 140
+  item: 148
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1780,3 +1780,115 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T136"]
 - ledgerRefs: ["goals:G11","defects:D40"]
+
+## M51
+
+### T141 — planned
+
+- createdAt: 2026-07-14T12:40:24.246Z
+- updatedAt: 2026-07-14T12:40:24.246Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: Extend the netns e2e fixture with a sustained-load driver and metrics/log sampling helpers
+- description: "Q55 binds ALL per-task acceptance to the -tags e2e netns fixture, and flags that the fixture cannot yet (a) drive a SUSTAINED, rate-calibrated offered load through a running weighted-policy tunnel (frames/sec targeted above engage_fraction*per_path_capacity_fps and against the pacing capacity), (b) periodically sample the Exposition DURING that load, or (c) capture and grep the daemon's structured log stream for transition lines while the load runs. test/e2e/netns.go (SetupWithPaths/netemArgs) already provides per-path rateMbit caps and lossPct; metrics.Fetch (internal/metrics/scrape.go) scrapes /metrics; TestFixtureImpairment (test/e2e/fixture_impairment_test.go, T35) exposes rateMbit/lossPct. Build the shared capability as an up-front dependency for the observability and probe-protection e2e tasks. Add three reusable helpers to the e2e package: (1) a UDP load generator (target fps, payload size, duration; sender+sink across the tunnel); (2) a polling metrics sampler (poll Fetch every ~100-200ms, retain samples); (3) a structured-log capturer that asserts on daemon JSON log lines (liveness 'path liveness transition', 'scheduler pacer shedding', and the upcoming aggregation-transition line). Do NOT change production code. Keep DefaultPaths and existing TestFixtureImpairment behavior byte-identical; extend, do not modify, existing helpers. Update the test/e2e harness-contract doc comments."
+- acceptance: "A new -tags e2e harness self-test under `just e2e`: with a weighted-policy daemon and a rate-capped path (~5 Mbit), the driver sustains a target offered load for >=5s within +/-20% (verified via wanbond_path_tx_bytes_total deltas from the sampler), the metrics sampler returns >=1 gauge sample scraped via metrics.Fetch during that window, and the log capturer returns >=1 expected structured line (e.g. the coalesced 'scheduler pacer shedding' record under deliberate overload). Existing e2e tests unaffected (DefaultPaths byte-identical). `go test` GREEN, `go test -tags e2e` (just e2e) GREEN, `just lint` across default+e2e+realhosts tags GREEN."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G13"]
+
+## M52
+
+### T142 — planned
+
+- createdAt: 2026-07-14T12:40:34.697Z
+- updatedAt: 2026-07-14T12:40:34.697Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: Hard-fail config load when declared link_bandwidth proves weighted aggregation can never engage
+- description: "Q52 hard-fail arm (Option 3), scoped by Q53 to the GUARD ONLY (G2/Q20 owns per_path_capacity_fps auto-derive + BDP-sizing docs — reference install.md 3a, do NOT restate; note deriveWeightedPacingFromBDP already exists in internal/config/config.go:955). In internal/config, AFTER normalize (so deriveWeightedPacingFromBDP and applyDefaults have produced the EFFECTIVE EngageFraction/PerPathCapacityFPS): when scheduler.policy=\"weighted\" and a path declares link_bandwidth (Path.LinkBandwidthBitsPerSec), compute impliedCapacityFPS = LinkBandwidthBitsPerSec / (8 * defaultAvgWireFrameBytes) using the SAME avg-wire-frame constant and math SizePacingFromBDP uses (so the guard and the BDP derive can never disagree). If EngageFraction*PerPathCapacityFPS > impliedCapacityFPS for any declared path (aggregation can mathematically never engage at line rate), Load fails fast with an actionable error naming the path and all three numbers (declared bandwidth, implied capacity fps, engage-threshold fps) and the fixes (lower per_path_capacity_fps, enable pacing to auto-derive it, or correct link_bandwidth). Interaction to respect: with pacing ENABLED + declared bandwidth the capacity is auto-derived (raw knobs mutually exclusive, config.go:972), so the guard chiefly bites when pacing is DISABLED (derive no-ops, synthetic 10000 default stands) or knobs are explicit. Document the new failure mode in docs/install.md's config-error list in the same change (AGENTS.md docs-sync)."
+- acceptance: "-tags e2e under `just e2e` (fixture builds+runs the binary): (i) a daemon launched with policy=\"weighted\", link_bandwidth=\"8mbit\" (+link_rtt), pacing disabled, and default per_path_capacity_fps REFUSES to start, exiting non-zero with the actionable error naming the implied capacity fps and engage-threshold fps; (ii) the same config with per_path_capacity_fps lowered so EngageFraction*capacity <= impliedCapacityFPS starts and establishes the tunnel. `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G13"]
+
+### T144 — planned
+
+- createdAt: 2026-07-14T12:41:01.308Z
+- updatedAt: 2026-07-14T12:50:17.810Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: Startup WARN and wanbond_weighted_capacity_sane gauge when weighted capacity is unverifiable
+- description: "Q52 WARN arm. When policy=\"weighted\" and link_bandwidth is NOT FULLY declared, startup must NEVER be blocked. Config load computes a capacity-sanity verdict: SANE-VERIFIED (gauge=1, no WARN) ONLY when EVERY path declares link_bandwidth AND the T142 hard-fail guard passed; UNVERIFIABLE (gauge=0 + one WARN) otherwise. REVISION (R155 [fable]): the UNVERIFIABLE case covers BOTH 'no path declares bandwidth' AND a PARTIAL declaration (some paths declare, some don't) — a reachable state when pacing is DISABLED (deriveWeightedPacingFromBDP no-ops, internal/config/config.go:957). Pin it explicitly: partial declaration => WARN + wanbond_weighted_capacity_sane=0, WHILE T142's hard-fail guard STILL independently checks each DECLARED path (a declared path that contradicts still hard-fails at T142; this WARN concerns the UNdeclared paths that cannot be checked). In the unverifiable case the daemon logs ONE actionable startup WARN (message: declare link_bandwidth on ALL paths so capacity can be checked, or verify per_path_capacity_fps against the BDP sizing in install.md 3a — REFERENCE, do not restate, the G2-owned sizing docs). The metrics endpoint exposes a STATIC unlabeled gauge wanbond_weighted_capacity_sane: 1 when verified sane, 0 when unverifiable; the family is ABSENT entirely under non-weighted policy. Plumb the verdict from the loaded config through internal/device to collector registration as a static registered gauge alongside the Source-driven collector (config-derived, NOT per-peer, hence unlabeled and exempt from the labelPeer back-compat rule). Export the metric name as a constant. Update the metrics reference (README.md/docs/design.md) and docs/install.md in the same change."
+- acceptance: "-tags e2e under `just e2e`, asserting on the daemon's OWN startProc combined log output (proc.log(), NOT the T141 sampler — so M52 stays an INDEPENDENT root; dependsOn remains [T142]): (a) weighted daemon with NO link_bandwidth on any path starts on the fixture, its combined output contains EXACTLY ONE capacity-sanity WARN line, and metrics.Fetch reads wanbond_weighted_capacity_sane == 0; (b) a PARTIAL declaration (link_bandwidth on some paths not all; pacing disabled; declared paths guard-consistent) also starts, emits EXACTLY ONE WARN, and reads gauge == 0; (c) link_bandwidth declared on ALL paths (guard-consistent capacity) starts with NO WARN and gauge == 1; (d) under active-backup policy the family is absent. `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
+- suggestedModel: standard
+- dependsOn: ["T142"]
+- ledgerRefs: ["goals:G13"]
+
+## M53
+
+### T143 — planned
+
+- createdAt: 2026-07-14T12:40:52.205Z
+- updatedAt: 2026-07-14T12:50:04.123Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: Expose WeightedScheduler aggregation-gate snapshot and log engage/disengage transitions
+- description: "Item 1 + Q54, sched-package half. internal/sched/weighted.go holds the gate state under s.mu — s.aggregating, the EWMA loadRate (fps), and the thresholds EngageFraction*PerPathCapacity / DisengageFraction*PerPathCapacity — but exposes NONE of it to any accessor. (1) Add a mutex-guarded snapshot accessor on *WeightedScheduler, e.g. AggregationSnapshot() returning {Aggregating bool, OfferedLoadFPS, EngageThresholdFPS, DisengageThresholdFPS}, as the read seam the metrics plumbing (T146) consumes. (2) REVISION (R155 [opus]): updateGateLocked (weighted.go:499-532) does NOT 'flip the gate silently' — it ALREADY emits s.log.Info(\"scheduler aggregation change\", \"to\", \"aggregating\"|\"collapsed\", \"load_fps\", s.loadRate [+ reason on collapse]) on every s.aggregating flip (lines 506/514/526). Do NOT add a second log line (that would DOUBLE-LOG every engage/disengage). Instead EXTEND that existing 'scheduler aggregation change' record with the MISSING structured fields — from (the prior gate state), engage_threshold_fps, disengage_threshold_fps — keeping the CANONICAL message string 'scheduler aggregation change', its existing to/load_fps/reason fields, and the one-shot-on-change semantics (parity with setActiveLocked's 'scheduler active path change', so a saturated Pick path does NOT log per-frame). Active-backup has no gate and is untouched. Pure sched-package change; NO metrics wiring here (T146). Document the extended log fields in docs/design.md's scheduler section in the same change (AGENTS.md docs-sync)."
+- acceptance: "-tags e2e under `just e2e`: weighted-policy daemon with per_path_capacity_fps=250 (the empirical repro value) on the netns fixture; using the harness overload driver, offered load pushed above engage_fraction*250 makes the log capturer observe a 'scheduler aggregation change' record with to=\"aggregating\" carrying the NEW from + engage_threshold_fps + disengage_threshold_fps fields (alongside the existing load_fps); stopping the load yields a 'scheduler aggregation change' to=\"collapsed\" record within the collapse-dwell + EWMA-tau budget (wait derived from configured knobs, NO magic sleeps). Assert on the CANONICAL existing message string 'scheduler aggregation change' (NOT a new 'engaged/disengaged' string) and assert EXACTLY ONE record per flip (no double-log regression). `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
+- suggestedModel: standard
+- dependsOn: ["T141"]
+- ledgerRefs: ["goals:G13"]
+
+### T146 — planned
+
+- createdAt: 2026-07-14T12:41:29.073Z
+- updatedAt: 2026-07-14T12:41:29.073Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: Plumb per-peer aggregation gauges through the Bind snapshot, metrics.Source, and collector
+- description: "Item 1 + Q54 (per-peer labels, labelPeer), metrics-plumbing half. Expose the four Q54 series to /metrics via the existing seam layers: wanbond_aggregation_engaged{peer} (bool gauge), wanbond_offered_load_fps{peer} (gauge), and the STATIC wanbond_aggregation_engage_threshold_fps{peer} / wanbond_aggregation_disengage_threshold_fps{peer} (gauges). (1) internal/bind: the Multipath per-peer snapshot (PeerSnapshots, consumed by internal/device/metrics.go metricsSource) gains the aggregation-gate snapshot for peers whose scheduler exposes it — type-assert peer.scheduler against a small optional reporter interface satisfied by *WeightedScheduler's AggregationSnapshot() (from T143); active-backup peers report nothing so the series are ABSENT. Read the snapshot without holding the send lock across Pick (consistent with how Estimate/FEC snapshots are read). (2) internal/metrics/metrics.go: add an AggregationSnapshot type and a Source.Aggregation() []AggregationSnapshot method (mirroring FEC()/Reseq()), emit the four gauges in collector.Collect honoring the EXISTING single-peer-omits-label back-compat rule (T94) already applied to FEC/reseq, and export the four metric names as constants next to MetricLoss/MetricRTT. Update the metrics reference in README.md/docs/design.md in the same change (AGENTS.md docs-sync)."
+- acceptance: "-tags e2e under `just e2e`: (i) single-peer weighted daemon on the fixture — metrics.Fetch shows all four families; both threshold gauges equal the configured engage/disengage_fraction*per_path_capacity_fps within a small relative tolerance; wanbond_aggregation_engaged reads 0 at idle; (ii) under active-backup policy NONE of the four families is present; (iii) on the existing multi-peer concentrator fixture the series carry the peer label (Exposition.PeerValue resolves them). `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
+- suggestedModel: frontier
+- dependsOn: ["T143"]
+- ledgerRefs: ["goals:G13"]
+
+### T147 — planned
+
+- createdAt: 2026-07-14T12:41:42.007Z
+- updatedAt: 2026-07-14T12:50:07.678Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: "e2e: aggregation engage/disengage flip and configured-but-inert visibility scenarios"
+- description: "The empirical acceptance for item 1: two -tags e2e scenarios on the netns fixture proving the operator blind spot is now directly observable. Scenario A (flip): weighted policy, per_path_capacity_fps=250; the harness sustained-load driver pushes offered load above the engage threshold; poll the metrics sampler until wanbond_aggregation_engaged==1 AND wanbond_offered_load_fps exceeds the engage-threshold gauge; stop the load and observe engaged return to 0 within the collapse-dwell + EWMA-tau budget (derive the wait from the configured knobs, NO magic sleeps); assert BOTH the engage and disengage transition log lines (from T143) for parity with the metric flips. Scenario B (configured-but-inert — the exact blind spot from the goal): DEFAULT per_path_capacity_fps (10000) with a modest sustained load — assert wanbond_aggregation_engaged stays 0 for the whole window WHILE wanbond_offered_load_fps reports a clearly non-zero value far below the engage-threshold gauge, i.e. 'policy=weighted but single-path behavior' is now measurable from /metrics instead of invisible. This task adds ONLY test code (relies on T143 log + T146 gauges); no production change."
+- acceptance: "Both scenarios pass deterministically under `just e2e` (privileged netns fixture): scenario A observes wanbond_aggregation_engaged 0->1->0 with wanbond_offered_load_fps crossing the threshold gauges in the expected direction each time AND both 'scheduler aggregation change' log records captured (to=\"aggregating\" then to=\"collapsed\" — the CANONICAL message string from T143, NOT an 'engaged/disengaged' string); scenario B holds wanbond_aggregation_engaged==0 with 0 < wanbond_offered_load_fps < engage-threshold gauge for >=5s of sustained load. `go test` GREEN, `just lint` (default+e2e+realhosts) GREEN."
+- suggestedModel: standard
+- dependsOn: ["T141","T146"]
+- ledgerRefs: ["goals:G13"]
+
+## M54
+
+### T145 — planned
+
+- createdAt: 2026-07-14T12:41:14.250Z
+- updatedAt: 2026-07-14T12:41:14.250Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: "Reserve probe headroom in the weighted pacer: exempt-but-charged probe accounting"
+- description: "Item 3(ii) + Q51 (PROBE-frame protection only; inner-ICMP explicitly OUT of scope). GROUNDING (load-bearing, confirmed by BOTH candidate planners): wanbond's own PROBE frames (frame.KindProbe) do NOT traverse scheduler.Pick — emitProbes (internal/bind/probe.go) writes them directly to each path socket, bypassing Send->Pick->token-bucket. So a ClassControl-style pacer EXEMPTION does not apply; the failure mode is that the pacer budgets ZERO headroom for probes, so a pace sized at ~link rate lets paced DATA + the probe stream (plus reflected echoes) oversubscribe the link, building the standing qdisc queue that delays/drops probes past DownAfter (1200ms, internal/telemetry/liveness.go) -> spurious path-DOWN / failover flap. REPRODUCE-FIRST: land a failing -tags e2e that observes the spurious path-down under sustained overload BEFORE the fix (confirm it fails for THIS reason). Then implement exempt-but-charged probe accounting: add a small optional interface (e.g. ProbeBudget{AccountProbe(pathIdx int)}) implemented by *WeightedScheduler — deduct one token from the path's pacing bucket per emitted probe WITHOUT ever shedding or delaying the probe (strict priority: bucket may briefly go negative / pre-drain so subsequent ClassData Picks yield) — and call it from the bind's probe emission AND the echo-reflection write in dispatchInbound (symmetric). ClassControl semantics stay EXACTLY as D22 (exempt AND uncharged) — do not re-plan. Codify the three-tier invariant in the FrameClass/Pick contract comments (internal/sched/scheduler.go) and docs/design.md priority model: ClassControl exempt-uncharged, KindProbe exempt-but-charged, ClassData fully paced."
+- acceptance: "-tags e2e under `just e2e` (reproduce-first): weighted + pacing daemon on a rate-capped netns path with pace sized at ~the link rate; the harness driver sustains ClassData overload >= 2x pacing capacity for >= 10s (> 8x DownAfter). The regression test FAILS (observes a 'path liveness transition' to=down and/or wanbond_path_up->0 for the loaded path) with the probe accounting disabled/absent, and PASSES with it enabled: ZERO to=down transitions during the overload window, 'scheduler pacer shedding' lines ARE present (overload proven real), and wanbond_path_rtt_seconds for the loaded path stays below the DownAfter threshold throughout. `go test` GREEN (race detector per repo default), `just lint` (default+e2e+realhosts) GREEN."
+- suggestedModel: frontier
+- dependsOn: ["T141"]
+- ledgerRefs: ["goals:G13"]
+
+## M55
+
+### T148 — planned
+
+- createdAt: 2026-07-14T12:41:59.713Z
+- updatedAt: 2026-07-14T12:41:59.713Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- headline: Document the pacing on/off tradeoff, the frame-class priority model, and inner-ICMP infeasibility
+- description: "Item 3(a) docs + the Q51 infeasibility note, scoped by Q53 (reference — do NOT restate — G2/Q20's per_path_capacity_fps auto-derive/BDP-sizing docs). In docs/design.md (+ README.md operator section where appropriate): (a) the measured pacing ON/OFF tradeoff from the goal's empirical data — path split RTT-weighted ~71/29 (off) vs capacity-capped ~50/50 (on); bounded worst-case loaded RTT (757ms vs 1083ms) bought with reduced throughput (4.98 vs 6.93 Mbps) and deliberate shedding of ~33% excess; liveness stability under overload (pacing on + probe headroom keeps probes healthy; pacing off + sustained overload saturates the link queue and can flap liveness) — framed as an operability tradeoff with guidance on when to enable pacing; (b) the codified priority model: ClassControl exempt-uncharged (D22), KindProbe exempt-but-charged headroom (T145), ClassData fully paced/shed; (c) an EXPLICIT architectural note that inner-tunnel ICMP (or any inner flow) prioritization is INFEASIBLE — the WG tunnel payload is opaque ClassData to the pacer (classify.go reads only the inner WireGuard message TYPE word; plaintext DPI before encryption is out of architecture); (d) a short operability runbook stanza tying the new signals together: the four aggregation gauges, wanbond_weighted_capacity_sane, the engage/disengage and pacer-shedding log lines, and the hard-fail guard error. Do NOT write BDP/per_path_capacity_fps sizing guidance — REFERENCE install.md 3a (G2/Q20 owns it). NOTE (deliberate Q55 deviation): this is a PURE-DOCS task with no runtime surface to exercise via the netns fixture, so it is gated on `just lint` + reviewer prose-check rather than an -tags e2e test; the behavioral tasks (T143/T144/T146/T145) already carry the e2e acceptance and update their own operator docs in-change."
+- acceptance: Every metric name, log-message string, and config-error phrase cited in the docs matches the exported constants and the exact strings the -tags e2e suite asserts (cross-checked by grep against the source constants and the e2e assertions in review); docs/design.md, README.md, and docs/install.md render consistently and contain the four sections (pacing on/off tradeoff, three-tier priority model, inner-ICMP-infeasible note, operability-signals runbook stanza) with a REFERENCE to G2's BDP sizing rather than a duplicate; `go test` GREEN and `just lint` (misspell/format across default+e2e+realhosts tags — covers doc fixtures per the T130 incident) GREEN.
+- suggestedModel: standard
+- dependsOn: ["T147","T144","T145"]
+- ledgerRefs: ["goals:G13"]

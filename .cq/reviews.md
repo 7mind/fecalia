@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 154
+  item: 156
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1814,3 +1814,31 @@ archives:
 - ledgerRefs: ["tasks:T132","goals:G9","defects:D55","defects:D59"]
 - sessionLogs: [".cq/logs/20260714-120400-afcec1c5e8be9f846.md"]
 - rawLogs: [".cq/logs/raw/20260714-120400-afcec1c5e8be9f846.jsonl"]
+
+## M50
+
+### R155 — revise
+
+- createdAt: 2026-07-14T12:48:57.476Z
+- updatedAt: 2026-07-14T12:48:57.476Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- summary: "revise (strictest-wins over opus+fable panel): plan is well-grounded, acyclic, and complete for the Q51-Q55 scope without re-owning G2/Q20, but 4 planner-fixable faults survive — T143 rests on a false grounding claim (the aggregation-change log already exists) and T143/T147 assert a non-existent log string; T144 is missing a dependsOn edge and leaves the partial-declaration verdict unspecified. 0 out-of-scope defects filed by either reviewer."
+- new_questions: []
+- criticism: ["[opus] T143 grounding is factually WRONG against the repo: updateGateLocked (internal/sched/weighted.go:499-532) does NOT 'flip the gate silently' — it ALREADY emits s.log.Info(\"scheduler aggregation change\", \"to\", \"aggregating\"|\"collapsed\", \"load_fps\", s.loadRate) on every s.aggregating flip (lines 506/514/526). A literal implementation of T143 ('emit an INFO transition log on every flip' as if none exists) DOUBLE-LOGS every engage/disengage. Fix T143 to EXTEND the existing 'scheduler aggregation change' record (add the missing from + engage_threshold_fps + disengage_threshold_fps structured fields) rather than introduce a new log line.","[opus] T143 and T147 acceptance assert the exact log strings 'scheduler aggregation engaged' / 'scheduler aggregation disengaged', but the code's existing message is 'scheduler aggregation change' with to=\"aggregating\"|\"collapsed\". Pin the SINGLE canonical message string in T143 and align T143/T147's log-grep assertions to it (preserving the setActiveLocked coalesce-on-change parity).","[fable] T144's acceptance asserts via 'the log capturer' — a T141 deliverable — but its dependsOn lists only T142 and the grounding declares M52 an INDEPENDENT root; if T144 dispatches while T141 is in flight the acceptance is unimplementable as written. Add T141 to T144's dependsOn, OR reword the acceptance to assert on the existing startProc combined-output (proc.log()) so M52 stays independent.","[fable] T144's capacity-sanity verdict is unspecified for a reachable state: with pacing DISABLED, deriveWeightedPacingFromBDP no-ops (config.go:957), so a PARTIAL declaration (link_bandwidth on some paths, not all) reaches the guard, yet T144 defines the gauge only for 'every path declares'(1) and 'no bandwidth declared'(0). Pin the partial case (e.g. WARN + wanbond_weighted_capacity_sane=0 while T142's guard still checks the declared paths) so the T142 and T144 workers cannot resolve it inconsistently."]
+- ledgerRefs: ["goals:G13"]
+- sessionLogs: [".cq/logs/20260714-124714-a81dc426b159d4381.md",".cq/logs/20260714-124714-af7800def9e0eca35.md"]
+- rawLogs: [".cq/logs/raw/20260714-124714-a81dc426b159d4381.jsonl",".cq/logs/raw/20260714-124714-af7800def9e0eca35.jsonl"]
+
+### R156 — go-ahead
+
+- createdAt: 2026-07-14T12:53:19.521Z
+- updatedAt: 2026-07-14T12:53:19.521Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- summary: "GO-AHEAD (round 2, reconciled: opus go-ahead + fable go-ahead, unanimous). All 4 R155 criticisms verified resolved against the revised tasks AND live source: (C1) T143 now EXTENDS the existing weighted.go:506/514/526 'scheduler aggregation change' record with from/engage_threshold_fps/disengage_threshold_fps and forbids a second log line (no double-log); (C2) T143 & T147 acceptance assert the CANONICAL 'scheduler aggregation change' (to=aggregating|collapsed) string, not the fictional 'engaged/disengaged'; (C3) T144 reworded to assert on the daemon's own startProc proc.log() combined output, dependsOn stays [T142] so M52 remains an independent root; (C4) T144 pins the partial-link_bandwidth-declaration verdict (WARN + wanbond_weighted_capacity_sane=0 while T142 still hard-fails contradicting declared paths). No new faults; DAG re-verified acyclic (roots T141/T142 -> T143/T144/T145 -> T146 -> T147 -> T148) and complete for Q51-Q55 (harness T141, guard T142/T144, observability T143/T146/T147, probe T145, docs T148), Q53 G2-boundary preserved, Q55 e2e binding respected (T148 the one declared docs deviation). 0 out-of-scope defects. Review history: R155 (revise, 4 criticisms) -> R156 unanimous go-ahead."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G13"]
+- sessionLogs: [".cq/logs/20260714-125245-ae05184c487158ddc.md",".cq/logs/20260714-125245-a943cee6cd9b93e72.md"]
+- rawLogs: [".cq/logs/raw/20260714-125245-ae05184c487158ddc.jsonl",".cq/logs/raw/20260714-125245-a943cee6cd9b93e72.jsonl"]

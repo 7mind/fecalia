@@ -738,11 +738,11 @@ archives:
 
 ## M49
 
-### Q56 — open
+### Q56 — answered
 
 - createdAt: 2026-07-14T12:36:15.358Z
-- updatedAt: 2026-07-14T12:36:15.358Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T12:53:41.107Z
+- author: user
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - question: |
     D65 investigation has ruled out the tunnel-internal candidates and isolated the ceiling to an EXTERNAL loss/bufferbloat mechanism the repo cannot reproduce. To CONFIRM attribution and quantify the fix gain, please run these on the actual Pi4/Starlink/o3 deployment and paste the outputs, then re-run `/cq:investigate:advance D65`:
@@ -762,3 +762,4 @@ archives:
     
     WHY BLOCKED: attributing the 3.67 Mbps between raw-WAN-rate and fixable-tunnel-deficiency, and proving the pacing fix recovers throughput, requires running the tunnel over the real bufferbloated Starlink link — external hardware the repo cannot reproduce. On receiving the measurements, H-F/H-A can be confirmed and the fix file-and-deferred to plan-flow.
 - ledgerRefs: ["defects:D65"]
+- answer: implement the fixes
