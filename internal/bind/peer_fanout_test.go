@@ -1,14 +1,12 @@
 package bind
 
 import (
-	"crypto/rand"
 	"io"
 	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/7mind/wanbond/internal/config"
-	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -60,24 +58,19 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 	if err != nil {
 		t.Fatalf("build second-peer scheduler: %v", err)
 	}
-	sendCodec, err := frame.NewCodec(psk)
+	// Build the peer through the SAME seam production uses (newPeerState), so its Reflector
+	// and every codec derive from THIS peer's psk (T84) rather than being hand-wired.
+	p := newPeerState(name, psk, scheduler, newProber, probers)
+	sendCodec, err := p.newCodec()
 	if err != nil {
 		t.Fatalf("build second-peer send codec: %v", err)
 	}
-	p := &peerState{
-		name:      name,
-		virt:      &udpEndpoint{},
-		scheduler: scheduler,
-		reflector: telemetry.NewReflector(psk, rand.Reader),
-		newProber: newProber,
-		probers:   probers,
-		sendCodec: sendCodec,
-	}
+	p.sendCodec = sendCodec
 	// A peerPathState VIEW over each bound shared socket, index-aligned with m.shared (which,
 	// with no deferred paths, is also aligned with m.defs) so the peer's scheduler and paths
 	// stay index-aligned exactly as the primary's do.
 	for _, sp := range m.shared {
-		codec, cerr := frame.NewCodec(psk)
+		codec, cerr := p.newCodec()
 		if cerr != nil {
 			t.Fatalf("build second-peer path codec: %v", cerr)
 		}

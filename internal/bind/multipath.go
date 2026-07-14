@@ -144,6 +144,15 @@ type peerState struct {
 	// Empty on the single-peer edge/hub (there is only one peer to key).
 	name string
 
+	// psk is THIS peer's effective pre-shared key: the sole seam from which every frame
+	// Codec this peer derives (its sendCodec and each per-(peer,path) receive codec, via
+	// newCodec) and its probe Reflector authenticate. The single-peer edge/hub sets it to
+	// the one configured psk (so behaviour is byte-identical to the pre-split singleton);
+	// the concentrator sets a DIFFERENT psk per bound peer, so one peer's codec/reflector
+	// rejects another peer's frames (T84). NewCodec/NewReflector PSK-derivation itself is
+	// unchanged — only WHICH psk each peer feeds them differs.
+	psk config.Key
+
 	// Immutable per-peer collaborators, built at construction and persisting across the
 	// Open→Close socket lifecycle (the concentrator pins virt's destination once for the
 	// process life, so virt in particular must NOT be recreated per Open).
@@ -172,6 +181,38 @@ type peerState struct {
 	// atomically like resequencer. Both nil/empty when FEC is off.
 	fecSend *fecSender
 	fecRecv atomic.Pointer[fecReceiver]
+}
+
+// newPeerState builds the durable per-peer datapath state whose probe Reflector — and,
+// through ps.psk, every frame Codec this peer later derives in Open/AddPath (its sendCodec
+// and each per-(peer,path) receive codec, via newCodec) — authenticate under THIS peer's
+// psk. It is the seam that replaces the pre-split single-psk assumption (T84): the
+// single-peer edge/hub mints exactly one (the primary) from the sole configured psk, while
+// the concentrator mints one per bound peer from that peer's DIFFERENT effective psk, so a
+// peerState built from a different psk gets its own codec/reflector and cross-psk frames are
+// rejected. virt is created here (not per Open) because the concentrator pins its destination
+// once for the process life. The Reflector draws its per-path challenges from crypto/rand,
+// exactly as before. The per-Open fields (sendCodec, paths, resequencer, FEC planes) are
+// left zero for Open to (re)build.
+func newPeerState(name string, psk config.Key, scheduler sched.Scheduler, newProber ProberFactory, probers []*telemetry.Prober) *peerState {
+	return &peerState{
+		name:      name,
+		psk:       psk,
+		virt:      &udpEndpoint{},
+		scheduler: scheduler,
+		reflector: telemetry.NewReflector(psk, rand.Reader),
+		newProber: newProber,
+		probers:   probers,
+	}
+}
+
+// newCodec derives a fresh frame Codec bound to THIS peer's psk — the send Codec at Open and
+// each per-(peer,path) receive Codec share the derivation but not the instance, since a Codec
+// is not safe for concurrent use (each receive path decodes on its own goroutine). Deriving
+// from ps.psk (not a Multipath-wide key) is what makes a path's receive Codec the codec of the
+// peer the path is bound to (T84).
+func (ps *peerState) newCodec() (*frame.Codec, error) {
+	return frame.NewCodec(ps.psk)
 }
 
 // deferredPath is a configured path whose WELL-FORMED source_addr was not yet
@@ -237,7 +278,6 @@ func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 type ProberFactory func(name string, id uint8) *telemetry.Prober
 
 type Multipath struct {
-	psk  config.Key
 	defs []config.Path
 
 	// classify maps each outbound datagram to its pacer traffic class from the inner
@@ -447,15 +487,8 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	// created here — NOT per Open — because the concentrator pins its destination once for
 	// the process life and every existing test relies on the virtual-endpoint pointer being
 	// stable across Open/Close/add/remove.
-	primary := &peerState{
-		virt:      &udpEndpoint{},
-		scheduler: scheduler,
-		reflector: telemetry.NewReflector(psk, rand.Reader),
-		newProber: newProber,
-		probers:   probers,
-	}
+	primary := newPeerState("", psk, scheduler, newProber, probers)
 	return &Multipath{
-		psk:            psk,
 		defs:           append([]config.Path(nil), paths...),
 		classify:       newWGClassifier(amnezia),
 		deferredListen: defaultDeferredListen,
@@ -491,7 +524,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 
-	sendCodec, err := frame.NewCodec(m.psk)
+	sendCodec, err := m.newCodec()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -607,7 +640,9 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		// treat it as non-fatal rather than refusing to bind in a restricted env.
 		_ = c.SetReadBuffer(socketRecvBuffer)
 
-		codec, err := frame.NewCodec(m.psk)
+		// The path binds to the primary peer here; its receive codec is that peer's codec
+		// (reached through the embedded primary, as the datapath reaches m.sendCodec).
+		codec, err := m.newCodec()
 		if err != nil {
 			_ = c.Close()
 			_ = m.closeSocketsLocked()
@@ -1655,7 +1690,8 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 	if p.newProber == nil {
 		return nil, errors.New("bind: cannot add a path at runtime without the probe transport")
 	}
-	codec, err := frame.NewCodec(m.psk)
+	// This path binds to peer p; its receive codec is p's codec (derived from p's psk).
+	codec, err := p.newCodec()
 	if err != nil {
 		return nil, err
 	}

@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/sched"
 )
 
@@ -137,7 +136,9 @@ func (m *Multipath) reconcileDeferred() {
 func (m *Multipath) promoteDeferredLocked(dyn sched.DynamicScheduler, dp deferredPath, c *net.UDPConn) error {
 	// Large SO_RCVBUF, best-effort (kernel-capped, needs no privilege) — as in Open/AddPath.
 	_ = c.SetReadBuffer(socketRecvBuffer)
-	codec, err := frame.NewCodec(m.psk)
+	// The deferred-path machinery is single-peer today, so this attaches the primary peer's
+	// view; its receive codec is that peer's codec, reached through the embedded primary.
+	codec, err := m.newCodec()
 	if err != nil {
 		return err // programmer error (psk validated at construction); never hit in practice
 	}
