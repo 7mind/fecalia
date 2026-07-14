@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 196
+  item: 197
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2310,6 +2310,17 @@ archives:
 - criticism: ["[REMEDIATED 5451c54] iperf3 leg-1a `-R` download baseline non-comparable to the forward/upload tunnel legs 1b/1c + missing `iperf3 -s` server line — rewritten to forward/upload with the server line added.","[REMEDIATED 5451c54] broken design.md#pacing anchor — repointed to the real #send-side-scheduler--internalsched heading."]
 - new_questions: []
 - ledgerRefs: ["tasks:T156","goals:G14","defects:D65"]
+
+### R196 — go-ahead
+
+- createdAt: 2026-07-14T19:34:36.926Z
+- updatedAt: 2026-07-14T19:34:36.926Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T157 — GO-AHEAD (orchestrator-run terminal G14 integration gate; a verification task, not code-authoring, so run inline on the composed main rather than dispatched). Ran the full project definition-of-done on composed main 8685a5e (all G14 pacing+config+wiring+docs merged: T149/T150/T151/T152/T153/T154/T155/T156/T158/T159 + the G13 T143-T148): `nix develop -c just build` → go build ./... clean; `nix develop -c just test` → all 13 packages ok; `nix develop -c just lint` → golangci-lint + go vet across default+e2e+realhosts tags = 0 issues each; `gofmt -l cmd internal test` → EMPTY (exit 0). No lint-only regression in tag-guarded helpers referencing the changed SchedulerConfig/sched symbols, no unused symbol orphaned by the pacer extraction, no stale-doc-comment/misspell lint in the new docs. No code-vs-doc drift (README.md/docs/* in sync with the merged code; the only dirty tree state is the per-merge .cq ledger + pre-existing untracked cq.toml/wanbond-fixes.md). Acceptance fully met. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T157","goals:G14","defects:D65"]
 
 ## M55
 

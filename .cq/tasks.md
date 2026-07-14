@@ -2041,18 +2041,19 @@ archives:
 - dependsOn: ["T155"]
 - resultCommit: 5451c54
 
-### T157 — planned
+### T157 — done
 
 - createdAt: 2026-07-14T13:16:57.835Z
-- updatedAt: 2026-07-14T13:17:33.128Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T19:34:39.065Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Green definition-of-done gate: nix develop -c just build && just test && just lint"
 - description: "On the COMPOSED tree (all pacing + config + wiring + docs + MSS-clamp-docs tasks merged), run the full project definition-of-done and fix any residual fallout. Per project discipline the gate is `nix develop -c just build`, `just test`, AND `just lint` — golangci-lint + go vet across the default, e2e, AND realhosts build tags (not `go test` alone): a lint-only regression in a tag-guarded test helper referencing changed SchedulerConfig/sched symbols, an unused symbol orphaned by the pacer extraction, a stale doc-comment lint, or a misspell in the new docs MUST be caught here. Terminal integration node — depends on every code and doc task across both tracks."
 - acceptance: "`nix develop -c just build` && `nix develop -c just test` && `nix develop -c just lint` all exit 0 on the composed tree; `gofmt -l cmd internal test` is empty; `git status` shows README.md/docs/* updated in sync with the code (no doc drift)."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T151","T153","T154","T155","T156","T158","T159"]
+- resultCommit: 8685a5e
 
 ## M58
 
