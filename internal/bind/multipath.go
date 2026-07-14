@@ -1128,12 +1128,18 @@ func (m *Multipath) handleInbound(ps *peerPathState, raw []byte, srcAP netip.Add
 //     view of THIS socket (one lock-free map Load). A frame that does not verify under that
 //     peer's psk — a spoofed source it cannot forge the MAC for — is dropped by handleInbound.
 //   - An unbound source is trial-decoded against each peer's psk-derived codec (O(peers),
-//     bounded by the static peer count). A genuine frame authenticates under EXACTLY ONE psk,
-//     so the first MAC that verifies identifies the peer and the loop STOPS there. Only an
-//     authenticated PROBE establishes a binding (D9/D11: bindings, like remotes, are learned
-//     only from authenticated PROBEs); an authenticated DATA/PARITY from a not-yet-bound
-//     source carries no binding authority and is dropped until the peer's PROBE binds it. A
-//     forged/garbage frame verifies under NO psk, binds nothing, and is dropped cheaply.
+//     bounded by the static peer count). Only an authenticated PROBE establishes a binding
+//     (D9/D11: bindings, like remotes, are learned only from authenticated PROBEs), and a
+//     PROBE's MAC verifies under EXACTLY ONE psk — so the FIRST psk whose codec yields a PROBE
+//     identifies the peer, binds the source, dispatches, and the loop STOPS there. A non-PROBE
+//     decode does NOT stop the trial: DATA/PARITY carry no MAC and are forgeable by design, so
+//     a genuine PROBE from a later peer can cross-psk-garble into a DATA/PARITY kind under an
+//     earlier peer's codec (~0.4%); the loop must therefore `continue` past a non-PROBE decode
+//     to give every remaining psk its chance to authenticate a PROBE. A non-PROBE decode
+//     carries no binding authority and is dropped either way — a genuine DATA/PARITY from a
+//     not-yet-bound source never dispatches or binds until that peer's PROBE binds it, so
+//     continuing past it changes nothing for genuine frames. A forged/garbage frame verifies
+//     as a PROBE under NO psk, binds nothing, and is dropped cheaply.
 func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.AddrPort) {
 	views := ps.views.Load()
 	if views == nil || len(*views) <= 1 {
@@ -1155,7 +1161,11 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 			continue // not this peer's psk — try the next
 		}
 		if _, isProbe := fr.(frame.Probe); !isProbe {
-			return // this peer's frame, but not a PROBE: no binding, drop
+			// Decoded under this psk but not a PROBE (DATA/PARITY carry no MAC, so
+			// this may be a genuine PROBE from a later peer that cross-garbled into an
+			// unauthenticated kind here). No binding authority: try the remaining psks
+			// rather than aborting — a genuine unbound DATA/PARITY still never binds.
+			continue
 		}
 		m.bindSourceToPeer(srcAP.Addr(), v.peer)
 		m.dispatchInbound(v, fr, raw, srcAP) // already decoded: dispatch without re-decoding
