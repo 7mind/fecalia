@@ -324,6 +324,13 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	}
 	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level, mpBind.EverHadLivePath))
 
+	// Drive a forced WG handshake initiation off the bind's first-path-up latch (T117/D37/T120):
+	// registered HERE, before StartProbeLoop below can flip any path Up — see
+	// startFirstPathUpHandshake's doc comment for why the ordering matters and why it is inert for
+	// the concentrator role (peers[0] is the edge's sole peer per config validation; unused, and
+	// harmless, when cfg.Role is concentrator).
+	startFirstPathUpHandshake(cfg, mpBind, deviceRehandshake(dev, cfg.WireGuard.Peers[0].PublicKey))
+
 	// Bounded initial hostname resolution (Q30): construct the resolver ONCE (only when some peer
 	// carries a hostname spec — Q29 inertness), resolve each hostname spec under a short timeout,
 	// and seed its expansion. The per-peer boot endpoint — the flattened head of the seeded specs —

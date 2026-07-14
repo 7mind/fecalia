@@ -438,6 +438,36 @@ func deviceRehandshake(dev *awgdevice.Device, pk config.Key) rehandshake {
 	}
 }
 
+// startFirstPathUpHandshake wires the bind's first-path-up latch (T117, Multipath.SetOnFirstPathUp)
+// to a forced WG handshake initiation against the edge's single concentrator peer (D37/T120).
+//
+// Motivation: amneziawg-go's own boot-time initiation can race the bind's Open — the FIRST
+// SendHandshakeInitiation, issued before any path telemetry exists, may hit "no healthy path"
+// (bind: ErrNoHealthyPath, the D37 symptom) and get dropped, yet the engine still stamps
+// peer.lastSentHandshake. A bare retry shortly after can then be silently suppressed by the
+// engine's RekeyTimeout guard, leaving the tunnel to wait out the engine's own ~5s retransmit
+// timer instead of re-initiating the moment a path is actually usable. rh reuses the
+// deviceRehandshake pattern: ExpireCurrentKeypairs backdates lastSentHandshake so the immediately
+// following initiation is never suppressed by that guard; on a cold boot with no keypairs yet it
+// is a no-op, so this only ever helps, never disrupts, an established session.
+//
+// The caller MUST register this before mp.StartProbeLoop can flip any path Up: the callback's
+// edge is NOT retroactive (T117 — SetOnFirstPathUp does not fire for an edge that already
+// happened), so registering it any later could race the very first probe response and silently
+// miss the one moment this exists to catch.
+//
+// rh is the injected rehandshake collaborator (mirroring newHubFailoverFromSpecs's rehandshake
+// parameter) so a unit test can substitute a counter for deviceRehandshake — this function itself
+// needs no *awgdevice.Device at all, only mp and cfg.Role. It is a no-op for the concentrator
+// role: the concentrator is the responder to every edge and initiates nothing
+// (startFailoverAndResolution's concentrator no-op stays untouched).
+func startFirstPathUpHandshake(cfg *config.Config, mp *bind.Multipath, rh rehandshake) {
+	if cfg.Role != config.RoleEdge {
+		return
+	}
+	mp.SetOnFirstPathUp(rh)
+}
+
 // deviceInstallEndpoint returns an install function that populates the ENGINE peer's endpoint via
 // the UAPI/IpcSet path — an `endpoint=` line for pk routed through the engine to
 // Multipath.ParseEndpoint (R70). This is the ONLY way to give the engine peer an addressable

@@ -394,6 +394,24 @@ actually resumes (the D32 guard) — is validated end to end by the privileged n
 `TestDNSHubResolveAndReroute` (Q36), with a hermetic in-namespace UDP DNS responder as
 the sole answer source (no external DNS egress).
 
+**Boot-time forced initiation (D37/T120).** A THIRD, unrelated mechanism also lives in
+`failover.go`: `startFirstPathUpHandshake`, wired in `device.go`'s `up()` for the edge
+role only (a no-op for the concentrator, which is the responder to every edge and
+initiates nothing). It is **not** part of hub failover or re-resolution — it fires
+**once**, at most, per tunnel lifetime, on the bind's `Multipath.SetOnFirstPathUp`
+latch (T117), regardless of whether the peer's endpoint list has one entry or many.
+The problem it addresses: the engine's own boot-time handshake initiation can race
+`bind.Multipath.Open` — issued before any path telemetry exists, it may hit
+`bind: no healthy path` and get dropped, yet the engine still stamps
+`peer.lastSentHandshake`, so a bare retry moments later can be silently suppressed by
+the engine's own `RekeyTimeout` guard, leaving the tunnel waiting out that ~5 s
+retransmit timer instead of re-initiating the instant a path is actually usable. The
+callback reuses the `deviceRehandshake` pattern (`ExpireCurrentKeypairs` backdates
+`lastSentHandshake` so the immediately-following `SendHandshakeInitiation` is never
+suppressed; a no-op on a cold boot with no keypairs yet). It **must** be registered
+before the probe loop starts (the latch's edge is not retroactive), so `up()` wires it
+right after the engine is constructed, well before `StartProbeLoop`.
+
 ### Per-path telemetry — `internal/telemetry`
 
 Measures per-path quality (RTT, loss, jitter) by exchanging authenticated PROBE
