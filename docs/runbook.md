@@ -162,7 +162,8 @@ systemd-networkd `.network` file, and `enable --now` — the exact steps are
 > **Optional planes**, all off unless their block is present, all documented in
 > [install.md §3](install.md): `[amnezia]` (DPI obfuscation, all-or-nothing),
 > `[fec]` (Reed-Solomon forward error correction), `[scheduler]` (weighted
-> aggregation + pacing — see step 5). A peer `mode = "default-route"` is a
+> aggregation, and pacing — available under either policy, including the
+> default active-backup — see step 5). A peer `mode = "default-route"` is a
 > further edge-only opt-in for full-tunnel client-LAN routing — see
 > [install.md §9](install.md).
 
@@ -292,7 +293,13 @@ hole once wrapped by the tunnel.
 Per-path send-pacing bounds bufferbloat under sustained load by sizing each
 uplink's pace from its bandwidth-delay product. It is **off by default**;
 enabling it is a deliberate opt-in and requires **operator-measured** link
-figures (wanbond does not auto-tune them).
+figures (wanbond does not auto-tune them). Pacing is **policy-independent**
+(defect D65): it works identically, with the same keys, under the **default
+`active-backup` policy** — most single/priority-uplink deployments never set
+`[scheduler] policy` at all — and under `policy = "weighted"`. If your uplink is
+bufferbloat-prone (e.g. Starlink's last-mile buffer, the case D65 was measured
+on), declare `link_bandwidth` + `link_rtt` on **every** `[[paths]]` block and
+turn on `pacing_enabled = true` even though you never touch `policy`.
 
 Do **not** re-derive the procedure here — follow
 [install.md §3a *Tuning per-link bandwidth and pacing*](install.md) end to end.
@@ -300,14 +307,38 @@ In summary:
 
 - Measure each uplink's idle RTT and usable bandwidth (§3a Steps 1–2).
 - Enter `link_bandwidth` / `link_rtt` on **every** `[[paths]]` block (all-or-none;
-  a partial declaration is rejected at load) — §3a Step 3.
-- Turn it on under `[scheduler]` and reload — §3a Step 4:
+  a partial declaration is rejected at load) — §3a Step 3, e.g. for a Starlink
+  primary + 5G backup:
+
+  ```toml
+  [[paths]]
+  name           = "starlink"
+  source_addr    = "192.168.1.10"
+  link_bandwidth = "50Mbit"      # measured usable bandwidth
+  link_rtt       = "21ms"        # measured idle RTT
+
+  [[paths]]
+  name           = "5g"
+  source_addr    = "192.168.2.10"
+  link_bandwidth = "10Mbit"
+  link_rtt       = "45ms"
+  ```
+
+- Turn it on under `[scheduler]` and reload — §3a Step 4. Under the **default**
+  active-backup policy (no need to set `policy`):
 
   ```toml
   [scheduler]
-  policy         = "weighted"
+  # policy defaults to "active-backup"; no need to set it
   pacing_enabled = true          # OFF by default; sizes the pace from the links above
   ```
+
+  Active-backup sizes each path's pace from **its own** declared link (a fast
+  Starlink primary is not throttled to the 5G backup's rate); weighted instead
+  sizes ONE shared pace to the slowest declared link (the bottleneck), since it
+  stripes every path at once — see [design.md §Send-side
+  scheduler](design.md) for why. To opt into weighted aggregation instead, set
+  `policy = "weighted"` alongside `pacing_enabled = true`.
 
 - Verify the loaded RTT stays close to the idle RTT under sustained load — §3a
   Step 5. (A declared bandwidth with `pacing_enabled = false` is inert.)

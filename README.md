@@ -162,6 +162,11 @@ deliberate boundaries you must plan around:
   `link_bandwidth`/`link_rtt` (bandwidth-delay product); it was measured to
   eliminate bufferbloat on the bandwidth-capped netns fixture and the real-link
   tier. wanbond fixes the pace at config load and does not auto-tune it live (Q20).
+  Pacing is **policy-independent** (defect D65): `pacing_enabled`,
+  `link_bandwidth`, and `link_rtt` are meaningful — and configured with the
+  SAME keys — under the **default `active-backup` policy** too, not only under
+  `policy = "weighted"`; see [docs/design.md §Send-side
+  scheduler](docs/design.md) for the per-path-vs-bottleneck sizing distinction.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
   them instead; validate on your own uplinks before a production rollout.

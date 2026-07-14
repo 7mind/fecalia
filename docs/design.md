@@ -290,6 +290,25 @@ probes:
 - **`ClassData`** (bulk WireGuard transport) — **fully paced**: subject to the
   per-path token bucket and shed (`PickPaced`) when it is empty.
 
+**Motivation (defect D65).** wanbond keeps **no internal send queue**: `Send`
+writes each frame synchronously to the path's UDP socket, and the pacer, when
+enabled, **sheds at the head** rather than buffering — `tryConsume` either
+admits a token-bearing frame or returns `PickPaced` (dropped) for `ClassData`,
+never enqueues it for later. Before T152/T153, the DEFAULT active-backup
+policy applied **no egress shaping at all**, so an unshaped sender offered
+frames straight into whatever sits downstream at the rate the application
+produced them. On a bufferbloated last-mile (observed on Starlink, D65) that
+downstream buffer absorbs the overrun instead of dropping it, building a
+standing queue (~1 s loaded RTT against a ~40 ms idle baseline) before it
+starts shedding — the buffer-overflow signature of an unshaped sender, not
+ordinary medium loss; the resulting cwnd collapse capped single-flow TCP at
+~3.67 Mbps against a WAN independently shown to carry ≥6.9 Mbps. This
+drop-at-head, no-internal-queue design is deliberate and load-bearing: relocating
+the overrun into a wanbond-side queue would just move the standing delay from
+the ISP's buffer into wanbond's own, not remove it — the fix is to SHAPE the
+offered rate to the drain rate (pacing) and SHED what exceeds it, never to
+QUEUE it internally.
+
 Pacing is **policy-independent** (defect D65): it is available, and configured
 identically via `[scheduler] pacing_enabled`, under either the active-backup
 default or the weighted policy — active-backup wires it into `sched.Config`'s
@@ -299,6 +318,36 @@ differently: weighted stripes every path at once, so ONE shared reference
 capacity applies to every path's bucket; active-backup egresses on exactly ONE
 path at a time, so each path's bucket is sized from that path's OWN pace — a
 fast active primary is never throttled to a slower backup's rate.
+
+> **Decision (D65): pace BOTH policies, not just weighted.** Alternative
+> considered and rejected: keep pacing gated behind `policy = "weighted"` and
+> document "switch to weighted to fix D65's bufferbloat" — rejected because it
+> would force every operator hitting the D65 symptom onto multi-path striping
+> (with its own aggregation-gate/hysteresis tuning surface) just to get
+> pacing, coupling two orthogonal concerns (WHICH path(s) egress vs HOW FAST a
+> path egresses) for no principled reason, and would leave the common case
+> unfixed — the D65 measurements were taken on the DEFAULT active-backup
+> policy, which most single/priority-uplink deployments run. Chosen instead:
+> extend `sched.Config` for BOTH `ActiveBackup` and `WeightedScheduler` to
+> accept the same pacing fields, so `pacing_enabled = true` shapes egress
+> identically under either policy (T152 built the config plumbing; T153 wired
+> it into `selectScheduler`'s active-backup branch).
+>
+> **Decision (D65/T152): per-path sizing under active-backup, shared-bottleneck
+> sizing under weighted.** Both policies size the pace from the same BDP
+> algorithm (`SizePacingFromBDP`) but apply it differently because they egress
+> differently. Weighted stripes every eligible path AT ONCE, so a single shared
+> reference capacity — the slowest declared link, the bottleneck — bounds every
+> path's bucket; pacing any path faster than the bottleneck would let it build
+> the very standing queue pacing exists to prevent. Active-backup egresses on
+> exactly ONE path at a time, so bottleneck-sizing would be wrong: it would
+> throttle a fast active primary (e.g. Starlink) down to a much slower backup's
+> (e.g. 5G) declared rate even though the backup is idle, reimposing on the
+> active path the artificial single-flow ceiling D65 exists to remove.
+> Active-backup therefore sizes each path's bucket from **its own** declared
+> `link_bandwidth`/`link_rtt`, index-aligned to `Config.Paths`
+> (`PerPathCapacities`/`PacingBursts`) — a fast primary paces at its own drain
+> rate independent of what any backup declares.
 
 When pacing is enabled the per-path pace can be
 sized from an **operator-declared** per-link bandwidth (`link_bandwidth` +
