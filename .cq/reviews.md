@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 149
+  item: 150
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1555,6 +1555,19 @@ archives:
 - ledgerRefs: ["tasks:T119","goals:G7","defects:D36"]
 - sessionLogs: [".cq/logs/20260714-111900-ac937f4001db01ed3.md",".cq/logs/20260714-111900-a4fd5680adb345dca.md"]
 - rawLogs: [".cq/logs/raw/20260714-111900-ac937f4001db01ed3.jsonl",".cq/logs/raw/20260714-111900-a4fd5680adb345dca.jsonl"]
+
+### R150 — revise
+
+- createdAt: 2026-07-14T11:51:16.998Z
+- updatedAt: 2026-07-14T11:51:16.998Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T119 review round 2 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). BOTH round-1 blackhole fixes ARE verified resolved (both reviewers: TestRebaselineToLowSmallAnchorSelfHeals + TestRebaselineToLowThenRebaselineDelivers fail on the round-1 branch and pass on round-2; saturated D36 case, stale-high race, per-peer scoping, lock discipline, D32 tests all intact; full suite + -race green). BUT [fable]'s executable adversarial probes against 82d9793 found TWO NEW confirmed faults in the round-2 pendingLow gate (each reproduced), so the gate is not yet robust:"
+- criticism: ["[fable] RESIDUAL PERMANENT BLACKHOLE one seq past the round-2 guard (reproduced 0/499, DroppedSuspect=499): with anchor==window+2 the gate ARMS (next>window+1 holds), but the re-anchor budget is seq <= anchor-window-1 = seq 1 ALONE at that boundary (the restarted first DATA is outerSeq.Add(1)=1). If that single wrapped-init frame is LOST — and loss under saturation IS the D36 premise — every subsequent new-boot frame fails `anchor-seq > window` and is suspect-dropped FOREVER. The pendingLow branch of admit() (reseq.go:296-313) bypasses tryResync corroboration (the pre-T119 self-heal) with no drop-cap or timeout, and the idempotency branch (reseq.go:635) keeps the original anchor across repeated restart signals, so nothing clears the gate. Same failure class as round-1 FIX 1, moved one seq. FIX: BOUND the gate — after O(window) consecutive pendingLow suspect-drops (or a timeout) fall back to a plain unpin (started=false, which self-heals), OR feed gate-failing below-anchor frames into corroboration; ADD boundary tests at next==window+1 (plain unpin) and next==window+2 (armed, satisfiable by seq 1, PLUS the seq-1-lost recovery path).","[fable] FEC REPAIR BYPASSES the pendingLow gate AND the re-anchor does not clear the ring (reproduced next 2→210, Skipped:208): ObserveRecovered (reseq.go:241, production-wired to the SAME per-peer resequencer at multipath.go:1889) never consults pendingLow, so a parity-recovered OLD-boot frame in [anchor, anchor+window) is PLACED while the gate is armed; the admit() re-anchor branch (reseq.go:305-310) sets next=seq WITHOUT clearing the ring (unlike resync(), reseq.go:539, which clears it for exactly this reason). Repro: recovered old-boot seq 210 placed while armed → after the low init re-anchored next=1, the stale occupied cell kept the head-of-line timeout live and expire() jumped next 2→210 (Skipped:208), suspect-dropping new-boot frames 2-3 and delivering a STALE old-boot frame into the new stream (a bounded re-instance of the D36 re-pin the gate exists to prevent); a surviving stale cell can also corrupt buf accounting (occupied-cell overwrite, reseq.go:214-222). FIX: clear the ring/buf in the re-anchor branch (mirror resync()) AND drop recovered frames while pendingLow is armed (a recoverable frame while the gate is up is by definition pre-restart); ADD an ObserveRecovered-while-armed regression test."]
+- new_questions: []
+- ledgerRefs: ["tasks:T119","goals:G7","defects:D36"]
+- sessionLogs: [".cq/logs/20260714-114500-a9bbd3ad9b477e347.md",".cq/logs/20260714-114500-a640aac378eddd264.md"]
+- rawLogs: [".cq/logs/raw/20260714-114500-a9bbd3ad9b477e347.jsonl",".cq/logs/raw/20260714-114500-a640aac378eddd264.jsonl"]
 
 ## M40
 

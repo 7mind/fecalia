@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 63
+  item: 64
 archives: []
 ---
 
@@ -902,3 +902,15 @@ archives: []
 - severity: low
 - suggestedFix: Refresh the binding's seq (recency) when an authenticated PROBE arrives from an already-bound AddrPort (handleInbound path), making eviction true LRU; OR floor the per-peer quota at the peer's configured path count so a peer's active paths are never self-evicted.
 - ledgerRefs: ["tasks:T123","defects:D49"]
+
+### D64 — open
+
+- createdAt: 2026-07-14T11:51:23.954Z
+- updatedAt: 2026-07-14T11:51:23.954Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Rebaseline()+ObserveRecovered: an FEC-recovered old-hub frame re-pins the unpinned release point, re-opening D32 when FEC is active"
+- description: "Filed during T119 round-2 review ([fable], out-of-scope; PRE-EXISTING D32/T57-era, untouched by T119). Rebaseline() sets started=false (reseq.go:581), and ObserveRecovered's !started branch (reseq.go:246-249) then pins next to the FIRST recovered frame's seq — contradicting its OWN documented contract that a recovered frame 'NEVER moves or re-pins the release point' (reseq.go:232-240). After a hub failover, a parity-recovered OLD-hub HIGH-seq frame landing in the failover window re-pins next HIGH before the standby's low stream arrives; per Rebaseline's own doc the standby emits ~1 DATA frame per RekeyTimeout, so tryResync corroboration (3 distinct seqs) falls OUTSIDE the failover window and the D32 blackhole RE-OPENS for FEC-enabled deployments. Lives on the Rebaseline/FEC seam, NOT the new T119 RebaselineToLow path."
+- severity: medium
+- suggestedFix: Make ObserveRecovered refuse to anchor an unstarted ring (drop the recovered frame and return false when !started) so only a natively-received frame can pin the release point after any unpin; add a Rebaseline-then-ObserveRecovered regression test. Coordinate with T119's fix for the analogous RebaselineToLow-armed ObserveRecovered bypass (same seam).
+- ledgerRefs: ["tasks:T119","defects:D36"]
