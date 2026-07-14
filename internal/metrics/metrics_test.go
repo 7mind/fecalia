@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -383,5 +384,57 @@ func TestExpositionTwoPeerSeries(t *testing.T) {
 	}
 	if got, ok := exp.PeerValue(MetricReseqReleased, "edge2"); !ok || got != 900 {
 		t.Errorf("edge2 resequencer released = %v (present=%v), want 900 (independent of primary)", got, ok)
+	}
+}
+
+// TestExpositionReseqRebaselineAndDropSuspect drives a REAL reseq.Resequencer
+// through a Rebaseline() and a dropSuspect-triggering ObserveRecovered (T118),
+// then scrapes /metrics and asserts both counters are reflected in the
+// single-peer (no `peer` label) exposition — proving the restart-recovery
+// counters propagate end-to-end from the resequencer's own increments, not just
+// that a synthetic Stats value round-trips through the collector.
+func TestExpositionReseqRebaselineAndDropSuspect(t *testing.T) {
+	const window = 8
+	r := reseq.New(window, time.Second, reseq.SystemClock{})
+
+	// Advance the release point well past one window so a lone recovered frame
+	// far below it lands in ObserveRecovered's SUSPECT branch (reseq.go:247-249),
+	// which never attempts a resync and so needs no corroborating frames.
+	for s := uint64(0); s < 50; s++ {
+		r.Observe(s, []byte{byte(s)}, netip.AddrPort{})
+	}
+	for {
+		if _, ok := r.Pop(); !ok {
+			break
+		}
+	}
+
+	if placed := r.ObserveRecovered(1, []byte{1}, netip.AddrPort{}); placed {
+		t.Fatal("expected the far-below-window recovered frame to be dropped, not placed")
+	}
+	if got := r.Stats().DroppedSuspect; got != 1 {
+		t.Fatalf("precondition: DroppedSuspect = %d, want 1", got)
+	}
+
+	r.Rebaseline()
+	if got := r.Stats().Rebaselines; got != 1 {
+		t.Fatalf("precondition: Rebaselines = %d, want 1", got)
+	}
+
+	src := fakeSource{reseq: []ReseqSnapshot{{Stats: r.Stats()}}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if got, ok := exp.Value(MetricReseqRebaselines); !ok || got != 1 {
+		t.Errorf("%s = %v (present=%v), want 1", MetricReseqRebaselines, got, ok)
+	}
+	if got, ok := exp.Value(MetricReseqDroppedSuspect); !ok || got != 1 {
+		t.Errorf("%s = %v (present=%v), want 1", MetricReseqDroppedSuspect, got, ok)
 	}
 }
