@@ -828,6 +828,24 @@ func TestLoadRejects(t *testing.T) {
 			want: "mode must be",
 		},
 		{
+			// D41: strict decoding rejects a misspelled key instead of silently
+			// dropping it, and the error names the specific dotted key path.
+			name: "unknown key on path table",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `source_addr = "192.0.2.10"`,
+				"source_addr = \"192.0.2.10\"\nlink_bandwith = 1000000", 1)),
+			want: "unknown key paths.link_bandwith",
+		},
+		{
+			// D41: strict decoding rejects a misspelled key on a nested table too,
+			// and the error names the specific dotted key path.
+			name: "unknown key on peer table",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				"allowed_ips = [\"0.0.0.0/0\"]\nnane = \"bob\"", 1)),
+			want: "unknown key wireguard.peers.nane",
+		},
+		{
 			name: "concentrator without listen_port",
 			mode: 0o600,
 			body: fill(strings.Replace(concentratorConfig, "listen_port = 51820", "", 1)),

@@ -1,9 +1,12 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -31,7 +34,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	var c Config
-	if err := toml.Unmarshal(data, &c); err != nil {
+	dec := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		var strictErr *toml.StrictMissingError
+		if errors.As(err, &strictErr) {
+			return nil, fmt.Errorf("config %s: unknown key %s", path, unknownKeys(strictErr))
+		}
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	if err := c.normalize(); err != nil {
@@ -41,4 +49,16 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// unknownKeys renders a StrictMissingError's row list as a comma-separated
+// list of dotted key paths (e.g. "wireguard.peers.nane"), so a misspelled
+// TOML key surfaces as a precise, single-line diagnostic instead of the
+// library's raw multiline dump.
+func unknownKeys(err *toml.StrictMissingError) string {
+	keys := make([]string, 0, len(err.Errors))
+	for _, e := range err.Errors {
+		keys = append(keys, strings.Join(e.Key(), "."))
+	}
+	return strings.Join(keys, ", ")
 }
