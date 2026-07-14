@@ -1295,11 +1295,14 @@ WAN, each pinned by `source_addr`) and a client LAN on a third VLAN;
 concentrator = a public host reached over NAT. Substitute your own
 addresses/interfaces throughout.
 
-**Never write a literal `allowed_ips = ["0.0.0.0/0"]` (D35, open: it wedges
-the WG handshake permanently — see §3's cross-field constraints).** Both
-routes below reach the same result — an edge that can route to the whole
-internet through the tunnel — without ever handing the engine a literal
-`/0`:
+**A config-level literal `allowed_ips = ["0.0.0.0/0"]` is safe to write** —
+the daemon unconditionally splits it into the wg-quick `/1`+`/1` pair at UAPI
+render (§3's `splitDefaultRoute`), so the *engine* itself never receives the
+literal `/0` that would otherwise wedge the WG handshake permanently (D35,
+open: the underlying engine defect this daemon-side split works around).
+Both routes below reach the same result — an edge that can route to the
+whole internet through the tunnel — by relying on that daemon-guaranteed
+split, never a raw `/0` at the engine boundary:
 
 ### 9.1 Edge: install the default-route split (daemon-automated, §3)
 
@@ -1348,7 +1351,10 @@ sudo iptables -t nat -A POSTROUTING -s 192.168.223.0/24 -o wanbond0 -j SNAT --to
 (`192.168.223.0/24` / table `223` / `10.77.0.2` are the production Pi's
 client-LAN VLAN, routing table, and tunnel address, per `wanbond-fixes.md`
 §C3 — substitute your own client subnet, an unused table number, and the
-edge's `allowed_ips` address from its own peer config, §3.)
+edge's own tunnel address from its interface `Address=` in §4. **Not** the
+`allowed_ips` in the edge's own peer config, §3 — that holds the
+*concentrator's* tunnel address as seen from the edge (e.g. `10.77.0.1/32`),
+not the edge's own.)
 
 **Alternative — widen the concentrator's `allowed_ips` instead of SNAT-ing on
 the edge:** set the concentrator's peer entry for this edge to
@@ -1356,6 +1362,17 @@ the edge:** set the concentrator's peer entry for this edge to
 `iptables -t nat` step above. Trades a wider `allowed_ips` (the concentrator
 now cryptokey-routes the client subnet directly to this peer) for one fewer
 operator-owned step; pick one form, not both.
+
+This branch changes what source address reaches the concentrator's WAN NIC:
+without the edge-side SNAT, forwarded packets keep their original
+client-subnet source (`192.168.223.0/24`), which the §9.3 / §5 C6
+`MASQUERADE -s <tunnel-net>` rule (scoped to the tunnel subnet, e.g.
+`10.77.0.0/24`) does **not** match — so this branch additionally requires
+widening that concentrator `MASQUERADE -s` to also cover the client subnet
+(or replacing it with a supernet covering both), otherwise the reply traffic
+leaves the WAN with an RFC1918 source and the return path dies. Unlike the
+SNAT branch above, this alternative has **not** been validated on the
+production Pi/o3 deploy.
 
 Put the `ip_forward` toggle, the `ip rule`/`ip route`, and (if used) the
 `iptables -t nat` SNAT rule into the edge's addressing oneshot
