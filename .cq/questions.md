@@ -669,17 +669,18 @@ archives:
 - ledgerRefs: ["goals:G12"]
 - answer: as recommended
 
-### Q58 — open
+### Q58 — answered
 
 - createdAt: 2026-07-14T18:56:25.640Z
-- updatedAt: 2026-07-14T18:56:25.640Z
-- author: fable-5
+- updatedAt: 2026-07-14T21:07:07.300Z
+- author: user
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - question: "G12 monitoring UI — transport confidentiality for the opt-in NON-loopback (LAN-reachable) [monitor] bind. The emitted plan (T164) transmits the static bearer token in a non-Secure cookie / Authorization header over PLAINTEXT HTTP, so a passive on-path LAN observer can capture the token (which grants read-only stats access). Q45's context flagged TLS as an open question but no Q45-Q50 answer resolved it. Which transport posture for the non-loopback case do you want?"
 - context: "Blocks G12 plan finalization (plan review R190 = revise). The 13-task plan T160-T172 is otherwise sound and fully grounded; only this transport decision needs your answer before the plan locks to `planned`. The existing /metrics server is loopback-ONLY by a documented T17 security invariant (docs/design.md:740); option (c) keeps the monitor consistent with that. Raised by the G12 plan-reviewer (opus)."
 - suggestions: ["(a) Accept plaintext-token-over-LAN as adequate for the read-only v1 scope and DOCUMENT the residual passive-capture risk","(b) Require TLS (server cert config) whenever the [monitor] listener is non-loopback","(c) Forbid non-loopback binds entirely; keep the monitor strictly loopback like /metrics and document `ssh -L` port-forwarding as the only remote-viewing path"]
 - recommendation: Option (c) is the most consistent with the existing loopback-only T17 invariant and needs no new TLS/cert plumbing — remote viewing via `ssh -L` is the established secure pattern; but this is a genuine user-only risk-posture decision.
 - ledgerRefs: ["goals:G12"]
+- answer: (a) Accept plaintext-token-over-LAN as adequate for the read-only v1 scope and DOCUMENT the residual passive-capture risk
 
 ## M50
 
@@ -776,12 +777,13 @@ archives:
 - ledgerRefs: ["defects:D65"]
 - answer: implement the fixes
 
-### Q57 — open
+### Q57 — answered
 
 - createdAt: 2026-07-14T12:58:33.154Z
-- updatedAt: 2026-07-14T12:58:33.154Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T21:07:32.825Z
+- author: user
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - question: "Root cause of D65 confirmed and a defect-seeded goal G14 is ready — run `/cq:plan:advance G14` to produce the reviewed fix tasks."
 - context: "Root cause: unshaped egress on the DEFAULT active-backup scheduler lets the external Starlink last-mile buffer bloat to ~1s and drop ~13%, collapsing single-flow TCP cwnd to ~3.67 Mbps (the WAN carries ≥6.9 Mbps per the UDP result; encode CPU and internal queueing ruled out). Suggested fix: (1) add BDP-sized egress pacing (+optional AQM) to active-backup, reusing the existing weighted pacer; (2) MSS-clamp forwarded TCP on wanbond0 + document it. On-hardware validation deferred to verify/implement (user waived pre-fix measurement via Q56, answer 'implement the fixes'). Goal G14 (milestone M56) embeds the full root cause + suggestedFix and is defect-seeded, so plan-flow skips clarification and plans directly."
 - ledgerRefs: ["defects:D65","goals:G14"]
+- answer: Agreed

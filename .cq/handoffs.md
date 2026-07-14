@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 23
+  item: 24
 archives: []
 ---
 
@@ -271,6 +271,27 @@ archives: []
 - sessionLogs: [".cq/logs/20260714-200739-a3738815bfa329aa3.md"]
 - rawLogs: [".cq/logs/raw/20260714-200739-a3738815bfa329aa3.jsonl"]
 - tags: ["cq-advance-run-stop","blocked-on-questions","defects-ready-to-seed"]
+
+### HO24 — answers-required
+
+- createdAt: 2026-07-14T22:13:55.990Z
+- updatedAt: 2026-07-14T22:13:55.990Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: |
+    /cq:advance re-run (idempotent) — ledger state UNCHANGED since HO23; run stop = BLOCKED-ON-QUESTIONS (answers-required). Gate at stop: P-investigate=FALSE / P-plan=TRUE[G12] / P-implement=FALSE / open-Q-gate=FALSE. No stage did work this run: investigate drained (all defects root-caused), implement has no DAG-ready task, and the plan stage's only movable goal G12 is already at its terminal awaiting-answers token on the pre-existing open Q58 (no planner re-dispatch per the forward-progress invariant).
+    
+    SOLE BLOCKER — Q58 (goals:G12, live monitoring web UI): the 13-task plan T160-T172 is emitted and otherwise sound (review R190=revise); it needs ONLY your transport-confidentiality decision for the opt-in non-loopback [monitor] bind — (a) accept plaintext-token-over-LAN + document residual risk, (b) require TLS when non-loopback, or (c) forbid non-loopback (loopback-only like /metrics, ssh -L for remote; reviewer-recommended). Answer Q58, then re-run /cq:advance (or /cq:plan:advance G12) to lock the plan to `planned` and implement.
+    
+    UNCHANGED SINCE HO23 (see HO23 for full detail): all previously-open defects root-caused incl. D35 (HIGH — engine-trie mechanism empirically refuted on amd64+aarch64, true cause = external route-loop, wanbond surface mitigated by T107+T108); all root-caused defects READY-TO-SEED into hardening fix goals via /cq:plan.
+    
+    NOTED (unchanged stale artifacts, delegated — not mutated by this pure-sequencer stop): (1) questions:Q57 is a satisfied stale resume-pointer ('run /cq:plan:advance G14') — G14 is already planned AND fully implemented (T149-T159 done); it needs no answer and should be closed. (2) goals:G14 is `planned` with all tasks done — awaits a goal-completion transition (planned->done, user-owned) + work-milestone archival (M57-M60). (3) The end-of-run milestone auto-close+archive sweep was NOT executed: it is a documented 'placeholder, T128' feature that no prior run in this project has ever performed (all ~55 milestones remain `open` despite many completed; the 6 archived milestones were closed explicitly at implement-completion, not by the sweep), so executing it now would deviate from established behavior and is cosmetic to the quiescence predicates. Worktrees pruned (3: main + 2 preserved unmerged trees).
+    
+    RESUME: answer Q58 -> /cq:advance; and (independently) /cq:plan to house the ready-to-seed root-caused defects into fix goals.
+- flow: advance
+- ledgerRefs: ["goals:G12","questions:Q58"]
+- blockingQuestions: ["Q58"]
+- tags: ["cq-advance-run-stop","blocked-on-questions","idempotent-rerun"]
 
 ## M50
 
