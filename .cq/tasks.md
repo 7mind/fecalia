@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 122
+  item: 129
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1529,3 +1529,108 @@ archives:
 - suggestedModel: fast
 - dependsOn: ["T119","T120"]
 - ledgerRefs: ["goals:G7","defects:D36","defects:D37"]
+
+## M42
+
+### T123 — planned
+
+- createdAt: 2026-07-14T09:46:25.389Z
+- updatedAt: 2026-07-14T09:53:31.721Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Re-key the source→peer demux by AddrPort and enforce a per-peer binding quota (D47+D49)
+- description: |
+    Rework peerBySource (internal/bind/multipath.go ~:419, 1445-1534) in ONE pass — D47 and D49 edit the same lock-free copy-on-write structure. (1) D47: change the key from netip.Addr to netip.AddrPort so two peers behind ONE public IP (CGNAT) bind independently — thread srcAP through lookupPeerBySource/bindSourceToPeer/unbindPeerSources and the demuxInbound lookup site (~:1404 currently passes srcAP.Addr()); preserve T90 roam semantics + never-evict-live. (2) D49: inside the same CAS loop, enforce a PER-PEER quota (e.g. maxDemuxSources/len(peers), floor 1, against the copied map) summing under the retained global cap, so one valid-psk insider flooding spoofed sources exhausts only ITS OWN quota and never starves another peer's bootstrap PROBE (Q27(1) isolation).
+    
+    SAME-PEER ROAM-CHURN DECISION — PINNED (plan review R128, [fable]): the AddrPort re-key means a legitimately-roaming peer's CGNAT PORT CHURN accumulates stale bindings against its OWN quota with no unbind short of teardown, and TearDownPeer refuses LIVE peers — so 'leave stale bindings to teardown reclaim' would let a live roaming peer past its quota drop its own re-bind PROBE forever. PIN the behaviour: when a peer already at its per-peer quota authenticates a NEW AddrPort binding for ITSELF, EVICT that same peer's OWN OLDEST binding (LRU within the peer) to admit the new one — this preserves never-evict-live with respect to OTHER peers and full cross-peer isolation (a peer can never evict another peer's slot), while a live peer can always re-bind after a roam. (Track a per-peer insertion order / small ring of that peer's AddrPorts for the LRU choice.) Keep drop-on-exhaustion ONLY for the CROSS-peer case (a peer at its quota cannot steal another peer's headroom). Update the defaultMaxDemuxSources doc comment. FIRST multipath.go task — T124/T125/T127 serialize after it.
+- acceptance: "`go test -race ./internal/bind/...` passes incl. NEW tests: (a) two peers behind ONE IP (same netip.Addr, distinct ports) each bind and each peer's DATA reaches its OWN resequencer; (b) a CROSS-peer insider flooding k>=quota spoofed sources to peer A leaves peer B's first authenticated PROBE able to bind (bootstrap not starved) and A refused past its quota; (c) SAME-PEER port-churn: a single live peer that authenticates MORE than its quota of distinct AddrPorts (roam churn) keeps binding — its OWN oldest binding is evicted (LRU), it is NEVER dropped, and NO other peer's slot is disturbed; (d) existing concentrator_roam_test.go + cap tests updated for the AddrPort key and green. `go vet ./...` clean."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G8","defects:D47","defects:D49"]
+
+### T124 — planned
+
+- createdAt: 2026-07-14T09:46:45.633Z
+- updatedAt: 2026-07-14T09:46:45.633Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Complete the deferred-path multi-peer lifecycle (promoteDeferredLocked fan-out + alignment guard) (D42)
+- description: "D42's originally-filed AddPath desync is ALREADY partially mitigated (internal/bind/multipath.go ~:2339-2355 mints per-peer probers, keeping every p.probers m.defs-aligned; its comment names D42's panic as 'the pre-fix behaviour'). The LIVE residual is the deferred-path PROMOTION: promoteDeferredLocked (internal/bind/reconcile.go ~:138-188) attaches ONLY the primary's view ('single-peer today' comments), so on a concentrator a promoted deferred path leaves every non-primary peer view-less (its frames on that socket never demux to it) and absent from its scheduler until the next Close→Open. Fix: fan the promotion out to EVERY bound peer, reusing each peer's m.defs-aligned prober (locate by def name/index in p.probers) rather than minting fresh ones, with full rollback on partial failure (mirror attachSharedPathLocked); publish each view via addViewLocked. Add a fail-fast alignment assertion in removeDurableLocked (multipath.go ~:2575) that returns/logs a wiring-defect error instead of silently mis-splicing when any p.probers length diverges from m.defs. Serialized after T123 (shares multipath.go)."
+- acceptance: "`go test -race ./internal/bind/...` passes incl. three new multi-peer deferred-lifecycle regression tests: (a) RemovePath of a deferred path with >=2 bound peers splices every peer's probers correctly (no slice-bounds panic — the D42 scenario), (b) reconcile promotion gives EVERY peer a view + scheduler entry and both peers' DATA flows on the promoted path, (c) Close→Open after a deferred AddPath rebuilds without the out-of-range panic. A test constructing 2 peers + 1 deferred path + RemovePath panics on the pre-fix behaviour and passes after."
+- suggestedModel: standard
+- dependsOn: ["T123"]
+- ledgerRefs: ["goals:G8","defects:D42"]
+
+### T125 — planned
+
+- createdAt: 2026-07-14T09:46:54.469Z
+- updatedAt: 2026-07-14T09:46:54.469Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Fan the FEC deadline flush + adaptive-controller drive across all bound peers (D44)
+- description: "fecFlushDeadline (internal/bind/multipath.go ~:1962-2022) and driveAdaptiveControllerLocked (~:2039-2057) reach fecSend/scheduler/paths through the embedded-primary promotion, and encodeParityLocked is called with m.peerState hard-coded (~:2005) — so only the PRIMARY peer's straggler FEC groups get deadline parity; a non-primary peer's partial groups close only on fill, silently losing straggler parity (D44). Fix: make the flush iterate m.peers under the same TryLock, per peer Load fecSend (nil-skip a torn-down/uninstantiated peer), drive that peer's adaptive controller, Tick that peer's encoder, Pick on that peer's scheduler over that peer's paths, and frame parity with encodeParityLocked(peer, ...); accumulate wire writes outside the lock as today. ALSO fix the tick-loop START condition in Open (~:941 `m.fecSend.Load() != nil`, primary-only): start fecTickLoop whenever m.fecCfg != nil, so a concentrator peer whose fecSend materializes lazily on re-bind (ensurePeerReceiveInstantiated) still receives deadline flushes. Serialized after T124 (shares multipath.go)."
+- acceptance: "`go test -race ./internal/bind/...` passes incl. a new two-peer deadline-flush test that FAILS on current code (peer 2's partial group emits no parity on tick) and passes after: two bound peers each with a partial FEC group; one deadline tick emits parity for BOTH, each decodable ONLY under its own peer's psk-derived codec and egressed via its own scheduler; a torn-down peer is skipped without disturbing others. Existing fec_test.go / peer_fec_lifecycle_test.go stay green."
+- suggestedModel: standard
+- dependsOn: ["T124"]
+- ledgerRefs: ["goals:G8","defects:D44"]
+
+## M43
+
+### T126 — planned
+
+- createdAt: 2026-07-14T09:47:03.275Z
+- updatedAt: 2026-07-14T09:53:46.204Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Wire device per-peer session/liveness-loss events to Bind.TearDownPeer (D50)
+- description: |
+    Bind.TearDownPeer (internal/bind/multipath.go ~:1592) exists and is bind-tested but NO production code calls it (D50), so a dead peer's resequencer ring, FEC buffers, and demux cap slots are never reclaimed. Wire it from the device: extend internal/device/session.go — whose latestHandshakeNano currently flattens the UAPI dump to one global max — to parse a PER-PEER snapshot (public_key → last_handshake instant per peer block) and map pubkey → configured peer name via config.PeerIdentities.
+    
+    DETECTION IS LEVEL-TRIGGERED — PINNED (plan review R128, [fable]): do NOT use edge-triggered (Established 1→0) detection — a peer's heavy state is instantiated on its FIRST authenticated PROBE (demuxInbound→ensurePeerReceiveInstantiated, multipath.go:1425-1435), NOT on WG handshake, so a valid-psk peer that BINDS via PROBE but NEVER completes a handshake (wrong WG keys, or edge dies pre-handshake) has last_handshake=0 forever and no 1→0 edge ever fires, leaking its state permanently — the exact D50 symptom. Instead, in the concentrator poll loop, for EACH configured non-primary peer, LEVEL-check 'not established now' (last_handshake absent OR aged past RejectAfterTime) and call Bind.TearDownPeer(name) every poll while that holds. TearDownPeer is idempotent-safe (refuses live peers + the primary, no-ops on an absent/already-torn name), so a repeated level-triggered call is harmless and also survives a daemon-reload loss of prior edge memory; log one INFO on the transition to torn-down (dedupe the log, not the call). Engage the per-peer path ONLY in multi-peer (concentrator) mode; the single-peer edge/hub keeps the existing global monitor byte-identical. Edits device/session.go (parallel to the M42 multipath.go chain); dependsOn T123 for the AddrPort teardown-reclaim semantics.
+- acceptance: "`go test -race ./internal/device/... ./internal/bind/...` passes incl. new device tests (fake ipcGetter/UAPI dump): (a) a peer whose handshake ages past RejectAfterTime is torn down (TearDownPeer invoked with its configured name; its resequencer.Load() is nil + source bindings gone); (b) the NEVER-HANDSHAKED reclaim case — a peer that instantiated state via authenticated PROBE but has last_handshake=0 (no handshake ever) is ALSO torn down by the level check (not skipped for lack of a 1→0 edge); (c) a LIVE peer (fresh handshake) is untouched and its repeated level-check does not tear it down; (d) a fresh authenticated PROBE re-binds + re-instantiates a torn-down peer and DATA flows again."
+- suggestedModel: frontier
+- dependsOn: ["T123"]
+- ledgerRefs: ["goals:G8","defects:D50"]
+
+### T127 — planned
+
+- createdAt: 2026-07-14T09:47:20.098Z
+- updatedAt: 2026-07-14T09:53:57.886Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Plumb the primary peer's configured name into the bind so metrics label every peer (D58)
+- description: |
+    Config validation requires a unique name per peer in multi-peer mode, yet device.Up never passes ids[0].Name to bind.NewMultipath — newPeerState("", ...) at internal/bind/multipath.go ~:612 — so BoundPeerNames (~:2614) and every per-peer metrics series label the primary edge peer="" (D58). Fix: in the concentrator wiring, set the primary peerState's name to ids[0].Name whenever >1 peer is configured (an extra NewMultipath parameter, or a pre-Open SetPrimaryPeerName that re-keys peersByName from "" and keeps the AddConcentratorPeer name-collision check correct), keeping name="" ONLY for the single-peer edge/hub so the exposition stays byte-compatible (T94). Verify TearDownPeer's primary-refusal still keys on IDENTITY (p == m.peerState ~:1563), not the empty name. Update BoundPeerNames consumers + device.Up/up.
+    
+    DOC-SYNC — REQUIRED (plan review R128, [fable], AGENTS.md same-change rule): this changes USER-VISIBLE, DOCUMENTED metrics-label semantics — T98 shipped docs (docs/design.md/README.md/docs/runbook.md) pinning the current primary peer="" behaviour, and T97's e2e asserts it. In the SAME change, update those docs so the multi-peer metrics-label description states that EVERY configured peer (including the first) carries its configured `name` as the `peer` label when >1 peer is bound, and peer="" remains ONLY for the single-peer exposition. Update the tests: TestExpositionTwoPeerSeries (both peers carry non-empty names), the T94 back-compat test (single-peer still peer=""), and the T97 e2e label expectation (edge A now its configured name, no longer "").
+- acceptance: "`go test -race ./internal/bind/... ./internal/device/... ./internal/metrics/...` passes; TestExpositionTwoPeerSeries (updated) asserts BOTH peers' series carry their configured non-empty names on a two-peer concentrator; the single-peer back-compat test still asserts peer=\"\" unchanged; the T97 e2e label expectation updated to the configured name. DOCS: docs/design.md + README.md + docs/runbook.md metrics-label descriptions updated to the corrected multi-peer behaviour (grep for the old 'primary ... peer=\"\"' / 'first-configured peer ... \"\"' framing and correct it); a reviewer can trace the documented label rule to the merged code. Serialized after T125 (shares multipath.go NewMultipath/BoundPeerNames)."
+- suggestedModel: standard
+- dependsOn: ["T125"]
+- ledgerRefs: ["goals:G8","defects:D58"]
+
+## M44
+
+### T128 — planned
+
+- createdAt: 2026-07-14T09:47:30.122Z
+- updatedAt: 2026-07-14T09:47:30.122Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Extend the multi-peer netns e2e for the hardened datapath (shared-NAT demux, teardown/re-bind, quota, per-peer labels)
+- description: "Extend the existing multi-peer concentrator netns e2e (test/e2e, -tags e2e, G2 pattern, following multipeer_test.go/netns.go; unique metrics port) with the externally-observable hardening behaviours: (a) D47 — two edge peers egressing from ONE public IP (same-netns SNAT, distinct ports) both establish sessions and carry traffic through the concentrator simultaneously; (b) D50 — kill one edge (drop links / stop its daemon), assert the concentrator tears its peer state down (log-grep the teardown INFO + /metrics reflects the dead peer), then restart the edge and assert re-handshake re-binds and traffic resumes; (c) D58 — scrape the concentrator /metrics and assert EVERY peer's series (incl. the FIRST configured peer) carries its configured non-empty name; (d) D49 best-effort — where feasible in netns, a spoofed-source flood from one edge does not block the other edge's bootstrap; (e) where reachable, D42 (deferred-path add/remove with >1 peer no panic) + D44 (non-primary peer receives deadline FEC parity). Local deliverable is compiling, vet-clean test code + harness plumbing; the PRIVILEGED run is DEFERRED to the separate host-run task."
+- acceptance: "`go build -tags e2e ./test/e2e/... && go vet -tags e2e ./test/e2e/...` clean; the test is excluded from the default `go test ./...` and skips (not fails) without CAP_NET_ADMIN (gated on the harness's root/netns capability check exactly as existing e2e tests). It encodes the D47/D49/D50/D58 (+ reachable D42/D44) scenarios with log-grep + /metrics-scrape assertions."
+- suggestedModel: standard
+- dependsOn: ["T125","T126","T127"]
+- ledgerRefs: ["goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
+
+### T129 — planned
+
+- createdAt: 2026-07-14T09:47:37.696Z
+- updatedAt: 2026-07-14T09:47:37.696Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Run the multi-peer privileged netns e2e on o3 + llm-ubuntu-0 (deferred hardware validation)
+- description: "DEFERRED privileged execution of the extended multi-peer netns e2e (G2 remote-hardware pattern): run the `-tags e2e` multi-peer suite requiring CAP_NET_ADMIN / real netns on BOTH hosts — o3.7mind.io (aarch64) and llm-ubuntu-0.pgtr.7mind.io (amd64) — using the documented `ssh -i /run/agenix/llm-ssh-key <user>@<host>` + passwordless sudo + Go PATH invocations (see the o3-hardware-e2e project memory for the exact provisioning + SSH/sudo/PATH commands). Capture pass/fail output for the D47 (two-peers-behind-one-NAT bind), D49 (insider-quota fairness), D50 (dead-peer teardown + re-bind), D58 (per-peer metrics name), and reachable D42/D44 scenarios on EACH architecture. This task performs NO source changes; it depends on the e2e-authoring task having merged."
+- acceptance: The `-tags e2e` multi-peer suite is executed on both o3 (aarch64) and llm-ubuntu-0 (amd64) and passes on each; captured logs show the two-peers-behind-one-NAT bind, insider-quota fairness, dead-peer teardown+re-bind, and per-peer metrics-name assertions succeeding. Results recorded on the goal/milestone.
+- suggestedModel: standard
+- dependsOn: ["T128"]
+- ledgerRefs: ["goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]

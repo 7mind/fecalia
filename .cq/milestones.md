@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 41
+  item: 44
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -297,3 +297,21 @@ archives:
 - createdAt: 2026-07-14T09:20:42.843Z
 - updatedAt: 2026-07-14T09:20:42.843Z
 - title: "G7-W3: one-sided-restart netns e2e, restart-recovery counters, docs sync"
+
+### M42 — open
+
+- createdAt: 2026-07-14T09:46:00.066Z
+- updatedAt: 2026-07-14T09:46:00.066Z
+- title: "G8-A: bind demux (AddrPort+quota), deferred-path, FEC per-peer hardening (serialized multipath.go)"
+
+### M43 — open
+
+- createdAt: 2026-07-14T09:46:00.112Z
+- updatedAt: 2026-07-14T09:46:00.112Z
+- title: "G8-B: device per-peer teardown wiring + primary-peer name attribution"
+
+### M44 — open
+
+- createdAt: 2026-07-14T09:46:00.976Z
+- updatedAt: 2026-07-14T09:46:00.976Z
+- title: "G8-C: multi-peer netns e2e extension + deferred privileged run (o3 + llm-ubuntu-0)"

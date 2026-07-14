@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 127
+  item: 129
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1441,3 +1441,31 @@ archives:
 - ledgerRefs: ["goals:G7"]
 - sessionLogs: [".cq/logs/20260714-093902-a58e381892eb74d71.md",".cq/logs/20260714-093902-ac82af35219680402.md"]
 - rawLogs: [".cq/logs/raw/20260714-093902-a58e381892eb74d71.jsonl",".cq/logs/raw/20260714-093902-ac82af35219680402.jsonl"]
+
+## M35
+
+### R128 — revise
+
+- createdAt: 2026-07-14T09:53:07.303Z
+- updatedAt: 2026-07-14T09:53:07.303Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G8 plan review round 1 — RECONCILED REVISE (strictest-wins): [opus] go-ahead, [fable] revise (3 criticisms). Both verified every grounding claim + the DAG (acyclic, multipath.go serialized). [fable]'s 3 planner-fixable findings folded into T123/T126/T127 (below)."
+- criticism: ["[fable] T126 (D50): EDGE-triggered detection (Established 1→0) MISSES the exact D50 leak — heavy state instantiates on the first authenticated PROBE (demuxInbound→ensurePeerReceiveInstantiated, multipath.go:1425-1435), NOT on WG handshake, so a valid-psk peer that never completes a handshake has last_handshake=0 forever, no 1→0 edge ever fires, and its ring/FEC/demux state leaks permanently. FIX: LEVEL-triggered detection (per poll: not-established-now ⇒ TearDownPeer(name); TearDownPeer is safe to call repeatedly — refuses live/primary, no-ops on absent) + add the never-handshaked-peer reclaim case to acceptance. [ADDRESSED in revised T126.]","[fable] T123 (D47+D49 interaction): the AddrPort re-key introduces a NEW failure mode — same-peer CGNAT port churn accumulates stale bindings counting against that peer's OWN quota with no unbind path short of teardown, and TearDownPeer refuses LIVE peers, so a live legitimately-roaming peer that churns past its quota drops its own re-bind PROBE forever. FIX: pin the decision — a same-peer bind AT quota re-points/evicts that peer's OWN oldest binding (preserving never-evict-live wrt OTHER peers + full cross-peer isolation) — and add a same-peer-port-churn-past-quota case to acceptance (currently only the cross-peer insider flood). [ADDRESSED in revised T123.]","[fable] T127 (D58): the fix changes user-visible documented metrics-label semantics (T98 shipped docs pinning primary peer=\"\"; T97 e2e pins it), but T127 updates only tests — per AGENTS.md same-change doc-sync, add updating the T98-touched docs (README/docs/design.md metrics-label description) to T127's scope + acceptance. [ADDRESSED in revised T127.]"]
+- new_questions: []
+- ledgerRefs: ["goals:G8"]
+- sessionLogs: [".cq/logs/20260714-094948-adc9642f29210ebd5.md",".cq/logs/20260714-094948-a29368d245dc044ba.md"]
+- rawLogs: [".cq/logs/raw/20260714-094948-adc9642f29210ebd5.jsonl",".cq/logs/raw/20260714-094948-a29368d245dc044ba.jsonl"]
+
+### R129 — go-ahead
+
+- createdAt: 2026-07-14T09:56:26.017Z
+- updatedAt: 2026-07-14T09:56:26.017Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G8 plan review round 2 — UNANIMOUS GO-AHEAD ([opus]+[fable]). All three R128 revise criticisms verified resolved against source: (1) T123 pins same-peer-own-oldest LRU eviction — a live roaming peer at quota evicts ITS OWN oldest binding (never another peer's), closing the self-starvation the AddrPort re-key introduced while preserving cross-peer drop-on-exhaustion + never-evict-live; implementable in the existing copy-on-write CAS loop (bindSourceToPeer :1469-1501). (2) T126 pins LEVEL-triggered per-poll detection + idempotent TearDownPeer, closing the never-handshaked-but-PROBE-instantiated leak (heavy state instantiates at demuxInbound→ensurePeerReceiveInstantiated :1425-1435, not on WG handshake, so an edge detector never fires; TearDownPeer refuses live/primary by identity :1563-1568, so repeated level calls are safe). (3) T127 adds the AGENTS.md doc-sync (docs/design.md + README.md + docs/runbook.md metrics-label + the T97 e2e). DAG acyclic; multipath.go serialization (T123→T124→T125→T127) intact; nothing regressed. Plan APPROVED — G8 locked to planned."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["goals:G8"]
+- sessionLogs: [".cq/logs/20260714-095536-a3a7f395cb395bd56.md",".cq/logs/20260714-095536-a5a35759bbc77ff8a.md"]
+- rawLogs: [".cq/logs/raw/20260714-095536-a3a7f395cb395bd56.jsonl",".cq/logs/raw/20260714-095536-a5a35759bbc77ff8a.jsonl"]

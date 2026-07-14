@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 8
+  item: 9
 archives: []
 ---
 
@@ -107,3 +107,17 @@ archives: []
 - landsIn: ["M39","M40","M41"]
 - sourceRefs: ["goals:G7","reviews:R126","reviews:R127"]
 - ledgerRefs: ["goals:G7","defects:D36","defects:D37"]
+
+## M35
+
+### K9 — locked
+
+- createdAt: 2026-07-14T09:56:34.511Z
+- updatedAt: 2026-07-14T09:56:34.511Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G8 plan approved: multi-peer datapath hardening DAG locked (M42-M44 / T123-T129)"
+- rationale: "Unanimous reviewer go-ahead (R129, round 2, opus+fable) after a round-1 revise (R128) whose 3 criticisms were resolved. Six multi-peer defects grouped by code-locality: T123 re-keys the source→peer demux by AddrPort + per-peer quota with same-peer-own-oldest LRU eviction (D47+D49); T124 completes the deferred-path lifecycle (promoteDeferredLocked fan-out + removeDurableLocked alignment guard, D42); T125 fans the FEC deadline flush + tick-loop-start across peers (D44); T126 wires LEVEL-triggered device per-peer teardown→Bind.TearDownPeer (D50, closing the never-handshaked leak); T127 plumbs the primary peer name into metrics + doc-sync (D58); T128 extends the multi-peer netns e2e; T129 the deferred privileged run on o3+llm-ubuntu-0. The multipath.go editors (T123→T124→T125→T127) are serialized to avoid worktree merge conflicts in the 2820-line file. Synthesized from opus+fable candidates (fable base: sharper D42-already-partially-fixed + D44-tickloop grounding, D47+D49 fusion, multipath.go serialization; opus's separate deferred-privileged-run task folded in). Fixes defects:D42/D44/D47/D49/D50/D58."
+- landsIn: ["M42","M43","M44"]
+- sourceRefs: ["goals:G8","reviews:R128","reviews:R129"]
+- ledgerRefs: ["goals:G8","defects:D42","defects:D44","defects:D47","defects:D49","defects:D50","defects:D58"]

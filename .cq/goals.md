@@ -238,16 +238,19 @@ archives: []
 
 ## M35
 
-### G8 — planning
+### G8 — planned
 
 - createdAt: 2026-07-14T09:07:10.028Z
-- updatedAt: 2026-07-14T09:07:10.028Z
+- updatedAt: 2026-07-14T09:56:41.736Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Multi-peer concentrator datapath hardening (G4 follow-up)
 - description: "DEFECT-SEEDED (skip clarifying — each defect is reviewer-pinned with a code-grounded root cause + suggestedFix this run). Harden the multi-peer (hub-and-spoke) concentrator datapath that G4 landed. Fix, each per its ledger detail (read the defect item): defects:D42 — deferred AddPath desyncs per-peer probers from m.defs when >1 peer is bound (latent out-of-range/mis-attribution); defects:D44 — fecFlushDeadline drives only the primary peer's FEC group, so additional peers' partial FEC groups miss the deadline flush; defects:D47 — source→peer binding keyed by address only, so two peers behind ONE public IP (same NAT) can never both bind (a real CGNAT topology gap); defects:D49 — the global demux cap is monopolizable by one authenticated insider, starving other peers' bootstrap (per-peer fairness/quota); defects:D50 — device wiring of TearDownPeer (peer session/liveness loss) is untracked by any task (a peer that goes away is never torn down — leak/stale state); defects:D58 — the multi-peer concentrator drops the FIRST configured peer's required name from metrics labels (primary peer always peer=\"\" despite config requiring a unique name). PLANNER: group into coherent fix tasks by subsystem (bind/multipath demux+prober+FEC lifecycle, config/metrics label), each ledgerRef its defects:<D> and drive it resolved on merge; add per-peer unit tests + extend the multi-peer netns e2e (privileged run deferred to the o3 + llm-ubuntu-0 hosts, G2 pattern). Grounding lives on each defect item and in internal/bind/multipath.go, internal/reseq, internal/fec, internal/metrics."
 - sourceRefs: ["defects:D42","defects:D44","defects:D47","defects:D49","defects:D50","defects:D58","goals:G4"]
 - tags: ["multi-peer","concentrator","defect-seeded"]
+- milestones: ["M35","M42","M43","M44"]
+- sessionLogs: [".cq/logs/20260714-094557-a1b53c2cc830f3a68.md",".cq/logs/20260714-094557-a127c117697460cae.md"]
+- rawLogs: [".cq/logs/raw/20260714-094557-a1b53c2cc830f3a68.jsonl",".cq/logs/raw/20260714-094557-a127c117697460cae.jsonl"]
 
 ## M36
 
