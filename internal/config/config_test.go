@@ -1210,48 +1210,181 @@ func TestBindModeRejectsUnknownGlobalValue(t *testing.T) {
 	}
 }
 
-// TestExampleConfigLoads verifies that wanbond.example.toml's documented examples
-// (both commented-out and active) parse correctly. This ensures the documented
-// examples remain valid as the schema evolves (including DNS endpoints with hostname
-// resolution and [dns] resolver blocks).
-func TestExampleConfigLoads(t *testing.T) {
-	// Example with hostname peer endpoint, dns=true opt-in, and [dns] resolver block.
-	// This demonstrates the DNS endpoints feature documented in docs/design.md.
-	hostnameWithDNS := `
-role = "edge"
-psk = "%PSK%"
-
-[[paths]]
-name = "starlink"
-source_addr = "192.168.1.10"
-
-[wireguard]
-private_key = "%PRIV%"
-
-[[wireguard.peers]]
-public_key = "%PUB%"
-endpoint = "concentrator.example.com:51820"
-dns = true
-allowed_ips = ["10.77.0.1/32"]
-
-[dns]
-resolver = "doh"
-doh_url = "https://198.51.100.1/dns-query"
-poll_interval = "30s"
-timeout = "5s"
-`
-	path := writeConfig(t, 0o600, fill(hostnameWithDNS))
-	cfg, err := Load(path)
+// readExampleFile returns the verbatim content of the repo's wanbond.example.toml,
+// so the tests below exercise the ACTUAL documented file rather than a hand-copied
+// literal that could silently drift from it.
+func readExampleFile(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "wanbond.example.toml"))
 	if err != nil {
-		t.Fatalf("load hostname+DNS example: %v", err)
+		t.Fatalf("read wanbond.example.toml: %v", err)
 	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
+	return string(raw)
+}
+
+// extractExampleSection returns the text strictly between startMarker (exclusive —
+// the marker's own line, typically prose like "# EXAMPLE 1 (...):" or a section
+// header, is dropped) and endMarker (exclusive), with exactly one level of leading
+// "#" TOML-comment marker stripped from every line that has one at column 0. A
+// continuation line that is itself an aligned comment (e.g. wrapped explanatory
+// text with no leading "#" at column 0) is left untouched, mirroring exactly what a
+// human uncommenting the block by hand would do. This is how every commented-out
+// example in wanbond.example.toml is meant to be activated, so it is also the
+// correct way to extract and load one for testing.
+func extractExampleSection(t *testing.T, content, startMarker, endMarker string) string {
+	t.Helper()
+	start := strings.Index(content, startMarker)
+	if start < 0 {
+		t.Fatalf("start marker %q not found in wanbond.example.toml", startMarker)
 	}
-	if !cfg.WireGuard.Peers[0].DNS {
-		t.Fatal("expected peer to have dns=true")
+	rest := content[start:]
+	end := len(rest)
+	if endMarker != "" {
+		idx := strings.Index(rest, endMarker)
+		if idx < 0 {
+			t.Fatalf("end marker %q not found after %q in wanbond.example.toml", endMarker, startMarker)
+		}
+		end = idx
 	}
-	if cfg.DNS.Resolver != DNSResolverDoH {
-		t.Fatalf("expected resolver=DoH, got %q", cfg.DNS.Resolver)
+	lines := strings.Split(rest[:end], "\n")
+	lines = lines[1:] // drop the marker's own (prose/header) line
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "#") {
+			ln = strings.TrimPrefix(ln, "#")
+			ln = strings.TrimPrefix(ln, " ")
+			lines[i] = ln
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// fillExamplePlaceholders substitutes wanbond.example.toml's literal <base64 ...>
+// placeholders with syntactically valid test key material, mirroring fill()'s
+// %PRIV%/%PUB%/%PSK% substitution for the hand-written fixtures above.
+func fillExamplePlaceholders(s string) string {
+	r := strings.NewReplacer(
+		"<base64 32-byte PSK>", testKey(3),
+		"<base64 32-byte private key>", testKey(1),
+		"<base64 peer public key>", testKey(2),
+	)
+	return r.Replace(s)
+}
+
+// exampleTopSection returns wanbond.example.toml's content from the start up to
+// (excluding) the live "[[wireguard.peers]]" table header: role/psk/paths/
+// wireguard.private_key, with placeholders filled.
+func exampleTopSection(t *testing.T, content string) string {
+	t.Helper()
+	idx := strings.Index(content, "\n[[wireguard.peers]]\n")
+	if idx < 0 {
+		t.Fatal("live [[wireguard.peers]] header not found in wanbond.example.toml")
+	}
+	return fillExamplePlaceholders(content[:idx+1])
+}
+
+// exampleLiteralPeer returns the live, IP-literal first peer block (public_key,
+// endpoint, allowed_ips, plus inert commented optional lines), with placeholders
+// filled.
+func exampleLiteralPeer(t *testing.T, content string) string {
+	t.Helper()
+	start := strings.Index(content, "\n[[wireguard.peers]]\n")
+	if start < 0 {
+		t.Fatal("live [[wireguard.peers]] header not found in wanbond.example.toml")
+	}
+	end := strings.Index(content, "\n# ── second peer example")
+	if end < 0 {
+		t.Fatal("second peer example marker not found in wanbond.example.toml")
+	}
+	return fillExamplePlaceholders(content[start+1 : end+1])
+}
+
+// exampleHostnamePeer extracts and uncomments the documented "second peer example
+// (hostname endpoint with DNS opt-in)" block, with placeholders filled.
+func exampleHostnamePeer(t *testing.T, content string) string {
+	t.Helper()
+	block := extractExampleSection(t, content,
+		"# ── second peer example (hostname endpoint with DNS opt-in) ──",
+		"\n# ── amnezia obfuscation:",
+	)
+	return fillExamplePlaceholders(block)
+}
+
+// exampleDNSBlock extracts and uncomments one of the three documented, mutually
+// exclusive [dns] EXAMPLE blocks by resolver mode.
+func exampleDNSBlock(t *testing.T, content, mode string) string {
+	t.Helper()
+	markers := map[string][2]string{
+		"doh":    {"# EXAMPLE 1 (IP-literal DoH resolver):", "\n# EXAMPLE 2 (hostname DoT resolver, requires bootstrap_ip):"},
+		"dot":    {"# EXAMPLE 2 (hostname DoT resolver, requires bootstrap_ip):", "\n# EXAMPLE 3 (system resolver, any IP-literal endpoint):"},
+		"system": {"# EXAMPLE 3 (system resolver, any IP-literal endpoint):", "\n# Each EXAMPLE above is self-contained"},
+	}
+	m, ok := markers[mode]
+	if !ok {
+		t.Fatalf("unknown dns example mode %q", mode)
+	}
+	return extractExampleSection(t, content, m[0], m[1])
+}
+
+// TestExampleConfigLoads verifies that wanbond.example.toml's documented examples
+// — read from the ACTUAL file, not a hand-copied literal — parse correctly: the
+// live base config as shipped, the hostname-endpoint second peer example (with NO
+// [dns] block, confirming dns = true never requires one), and each of the three
+// mutually exclusive [dns] resolver-mode examples. A future edit that breaks any
+// of these documented examples fails this test.
+func TestExampleConfigLoads(t *testing.T) {
+	content := readExampleFile(t)
+	top := exampleTopSection(t, content)
+
+	t.Run("base_literal_peer", func(t *testing.T) {
+		body := top + exampleLiteralPeer(t, content)
+		path := writeConfig(t, 0o600, body)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load base example: %v", err)
+		}
+		if cfg.WireGuard.Peers[0].DNS {
+			t.Fatal("expected the live peer example to have dns=false (unset)")
+		}
+	})
+
+	t.Run("hostname_peer_no_dns_block", func(t *testing.T) {
+		// dns = true with NO [dns] block: must load and default to the system
+		// resolver — the [dns] block is OPTIONAL, never required by dns = true.
+		body := top + exampleHostnamePeer(t, content)
+		path := writeConfig(t, 0o600, body)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load hostname-peer example with no [dns] block: %v", err)
+		}
+		if !cfg.WireGuard.Peers[0].DNS {
+			t.Fatal("expected peer to have dns=true")
+		}
+		if len(cfg.WireGuard.Peers[0].EndpointSpecs) != 1 || !cfg.WireGuard.Peers[0].EndpointSpecs[0].IsName {
+			t.Fatal("expected a single hostname endpoint spec")
+		}
+		if cfg.DNS.Resolver != DNSResolverSystem {
+			t.Fatalf("expected resolver to default to %q, got %q", DNSResolverSystem, cfg.DNS.Resolver)
+		}
+	})
+
+	for _, tc := range []struct {
+		mode string
+		want DNSResolverMode
+	}{
+		{"doh", DNSResolverDoH},
+		{"dot", DNSResolverDoT},
+		{"system", DNSResolverSystem},
+	} {
+		t.Run("dns_example_"+tc.mode, func(t *testing.T) {
+			body := top + exampleHostnamePeer(t, content) + "\n" + exampleDNSBlock(t, content, tc.mode)
+			path := writeConfig(t, 0o600, body)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("load [dns] %s example:\n%s\n\nerror: %v", tc.mode, body, err)
+			}
+			if cfg.DNS.Resolver != tc.want {
+				t.Fatalf("expected resolver=%q, got %q", tc.want, cfg.DNS.Resolver)
+			}
+		})
 	}
 }

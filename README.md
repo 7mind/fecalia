@@ -162,8 +162,10 @@ deliberate boundaries you must plan around:
   bond, and re-handshakes a fresh session (round-robin/wrap at end of list). The
   switch is covered by unit/component tests, the netns hub-failover e2e (T62), and
   the real-link mid-transfer WAN-kill tier (T63). Endpoints may be IP:port
-  literals (default) or hostnames with opt-in `dns = true` per-peer and an
-  explicit `[dns]` resolver block; see
+  literals (default) or hostnames with per-peer opt-in `dns = true`; the
+  `[dns]` resolver block is OPTIONAL — an absent block defaults to the system
+  resolver — and only selects the transport (system/DoH/DoT) that opt-in
+  uses; see
   [docs/design.md §DNS endpoints and resolver privacy trade-offs](docs/design.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.

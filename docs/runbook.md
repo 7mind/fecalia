@@ -173,8 +173,10 @@ Two configuration facts make it work:
 
    `endpoints` is **mutually exclusive** with `endpoint`; the single `endpoint`
    form is just its one-element case and takes **no** failover action, so a
-   one-concentrator deployment stays exactly as in step 2. Endpoints are
-   **IP:port only — no DNS resolution**.
+   one-concentrator deployment stays exactly as in step 2. Each entry may be
+   an **IP:port literal** (as above) or a **hostname:port** behind the peer's
+   `dns = true` opt-in — see [design.md §DNS endpoints and resolver privacy
+   trade-offs](design.md).
 
 2. **The standby shares the active's WireGuard static key.** All hubs in the
    list present the **same** WireGuard identity, so the edge re-handshakes to

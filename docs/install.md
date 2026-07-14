@@ -77,14 +77,22 @@ private_key = "<base64 edge private key>"
 
 [[wireguard.peers]]
 public_key = "<base64 concentrator public key>"
-endpoint = "203.0.113.7:51820"     # required on the edge
+endpoint = "203.0.113.7:51820"     # required on the edge; an ip:port literal
+                                   # (default) OR a hostname:port behind the
+                                   # opt-in `dns = true` below — see §Optional
+                                   # [dns] resolver block.
+# dns = true                        # OPTIONAL, default false. Enables hostname
+# resolution for the endpoint above (e.g. endpoint = "hub.example.com:51820").
+# The [dns] block is itself OPTIONAL: absent, hostnames resolve through the
+# OS system resolver; see §Optional [dns] resolver block below.
 # endpoints = ["203.0.113.7:51820", "198.51.100.7:51820"]  # ordered hub-failover
 # form (Q18): first entry is the active/primary concentrator, the rest are
 # ordered standbys tried in order when the active one is lost. Mutually
 # exclusive with `endpoint` above — `endpoint` is just its one-element form,
 # so a single-concentrator deployment keeps using it unchanged. Edge-only.
-# Hub failover (all-paths-down detection + switch/re-handshake to the next
-# endpoint) is implemented: T54 config surface + T57 switch.
+# Each entry may likewise be an ip:port literal or, with `dns = true`, a
+# hostname:port. Hub failover (all-paths-down detection + switch/re-handshake
+# to the next endpoint) is implemented: T54 config surface + T57 switch.
 allowed_ips = ["10.77.0.1/32"]     # concentrator's inner tunnel address
 
 [metrics]
@@ -490,16 +498,20 @@ private_key = "<base64 32-byte private key>"  # REQUIRED (both roles).
 [[wireguard.peers]]
 public_key = "<base64 peer public key>"  # REQUIRED. base64 32-byte key.
 endpoint = "203.0.113.7:51820"     # EDGE: REQUIRED (this OR `endpoints`).
-                                   #   ip:port literal only, no DNS.
-                                   #   CONCENTRATOR: must be ABSENT (rejected) —
-                                   #   it roams the edge dynamically. Mutually
+                                   #   ip:port literal (default) OR hostname
+                                   #   with opt-in `dns = true` (§Optional
+                                   #   [dns] resolver block). CONCENTRATOR:
+                                   #   must be ABSENT (rejected) — it roams
+                                   #   the edge dynamically. Mutually
                                    #   exclusive with `endpoints`.
 # endpoints = ["203.0.113.7:51820", "198.51.100.7:51820"]
                                    # EDGE-ONLY ordered hub-failover list: [0] is
                                    #   the active concentrator, the rest ordered
-                                   #   standbys. ip:port literals only, no DNS;
-                                   #   duplicates rejected. Mutually exclusive
-                                   #   with `endpoint` (which is its one-element
+                                   #   standbys. Each entry may be an ip:port
+                                   #   literal or, with `dns = true`, a
+                                   #   hostname; duplicates rejected within
+                                   #   each form. Mutually exclusive with
+                                   #   `endpoint` (which is its one-element
                                    #   form). Rejected on the concentrator.
 allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   (enforced when the WG UAPI is built). A
@@ -603,8 +615,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   `wireguard.listen_port` (required there, unused on the edge).
 - **`endpoint` vs `endpoints`.** Mutually exclusive; `endpoint` is the
   one-element form of `endpoints`. On the edge exactly one must be present; the
-  concentrator must set neither. Entries are `ip:port` literals only (no DNS),
-  de-duplicated.
+  concentrator must set neither. Each entry is an `ip:port` literal (default)
+  or, with the peer's `dns = true` opt-in, a hostname resolved at runtime
+  (never at config load); duplicates are rejected within each form
+  (literal-vs-literal, hostname-vs-hostname) — see §Optional `[dns]` resolver
+  block.
 - **Distinct `source_addr`.** Each `[[paths]]` needs a unique, valid
   `source_addr` (compared unmapped, so `192.0.2.10` and `::ffff:192.0.2.10`
   collide). `name` must also be unique.

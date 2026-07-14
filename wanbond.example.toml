@@ -79,14 +79,16 @@ private_key = "<base64 32-byte private key>"  # REQUIRED (both roles).
 public_key = "<base64 peer public key>"  # REQUIRED. base64 32-byte key (the OTHER
                                    #   end's public key).
 endpoint = "203.0.113.7:51820"     # EDGE: REQUIRED (this OR `endpoints`). ip:port
-                                   #   literal (default, no DNS) OR hostname with
-                                   #   opt-in `dns = true` below + an explicit [dns]
-                                   #   resolver block. CONCENTRATOR: must be ABSENT
-                                   #   (rejected) — it roams the edge dynamically.
-                                   #   Mutually exclusive with `endpoints`.
+                                   #   literal (default) OR hostname with opt-in
+                                   #   `dns = true` below. CONCENTRATOR: must be
+                                   #   ABSENT (rejected) — it roams the edge
+                                   #   dynamically. Mutually exclusive with
+                                   #   `endpoints`.
 # dns = false                       # OPTIONAL, DEFAULT false. Set true to enable
-                                   #   hostname resolution for the endpoint above
-                                   #   (requires an explicit [dns] resolver block).
+                                   #   hostname resolution for the endpoint above.
+                                   #   The [dns] block below is OPTIONAL: it only
+                                   #   selects the resolver TRANSPORT and defaults
+                                   #   to the system resolver when absent.
 # endpoints = ["203.0.113.7:51820", "198.51.100.7:51820"]
                                    # EDGE-ONLY ordered hub-failover list: [0] is the
                                    #   active concentrator, the rest ordered
@@ -116,7 +118,8 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # public_key = "<base64 peer public key>"
 # endpoint = "concentrator.example.com:51820"  # hostname endpoint (requires dns = true)
 # dns = true                        # enable hostname resolution for this endpoint
-#                                   #   (also requires an explicit [dns] resolver block)
+#                                   #   ([dns] block below is OPTIONAL — absent
+#                                   #   means the system resolver; see [dns])
 # allowed_ips = ["10.77.0.1/32"]
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
@@ -210,25 +213,13 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # poll_interval = "30s"
 # timeout = "5s"
 #
-# FULL [dns] BLOCK (EXAMPLE 1 — IP-literal DoH):
-# [dns]
-# resolver = "doh"                 # "system" (default) | "doh" | "dot".
-# doh_url = "https://198.51.100.1/dns-query"  # REQUIRED iff resolver = "doh"
-                                   #   Must be https://.
-# dot_server = "198.51.100.1"      # REQUIRED iff resolver = "dot"; rejected
-                                   #   under any other resolver. Bare host, or
-                                   #   "host:port" where port must be 853 (the
-                                   #   IANA-assigned DoT port).
-# bootstrap_ip = "198.51.100.1"    # REQUIRED iff doh_url/dot_server's host is a
-                                   #   hostname rather than an IP literal
-                                   #   (BOOTSTRAP-IP invariant: the private
-                                   #   resolver's own address must be reachable
-                                   #   WITHOUT a DNS lookup). REJECTED (must stay
-                                   #   absent) when the host is already an IP
-                                   #   literal. No default.
-# poll_interval = "30s"            # DEFAULT 30s. Re-resolution cadence for an
-                                   #   opted-in hostname peer endpoint. > 0.
-# timeout = "5s"                   # DEFAULT 5s. Per-lookup bound. > 0.
+# Each EXAMPLE above is self-contained and independently valid: uncomment
+# EXACTLY ONE (its [dns] header plus its fields) and nothing else. The three
+# resolver modes are mutually exclusive — setting fields from more than one
+# EXAMPLE at once (e.g. resolver = "doh" together with dot_server, or a
+# bootstrap_ip on a doh_url/dot_server host that is already an IP literal) is
+# rejected at config load. See internal/config/dns.go for every field's exact
+# precondition.
 
 # ── metrics: OPTIONAL. Omit the block => no /metrics endpoint is served ───────
 [metrics]
@@ -250,7 +241,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 #   concentrator). Concentrator-only: wireguard.listen_port (required there).
 # • endpoint vs endpoints: mutually exclusive; `endpoint` is the one-element form
 #   of `endpoints`. On the edge exactly one must be present; the concentrator sets
-#   neither. Entries are ip:port literals only (no DNS), de-duplicated.
+#   neither. Each entry is an ip:port literal (default) or, with the peer's
+#   `dns = true` opt-in, a hostname:port resolved at runtime (never at config
+#   load). Duplicates are rejected within each form (literal-vs-literal,
+#   hostname:port-vs-hostname:port) — a hostname is never compared against a
+#   literal at load time.
 # • Distinct source_addr: each [[paths]] needs a unique, valid source_addr
 #   (compared unmapped, so 192.0.2.10 and ::ffff:192.0.2.10 collide). `name` must
 #   also be unique.

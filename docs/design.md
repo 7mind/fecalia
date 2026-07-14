@@ -438,8 +438,10 @@ on-path adversary sees the edge asking for the public concentrator's hostname
 without inspecting any encrypted traffic. This is true regardless of how the
 lookup is done — system resolver, DoH/DoT — because the resolver *itself*
 learns the query. The default posture (IP literals only; hostnames deferred
-to an explicit opt-in with `dns = true` + an explicit `[dns]` resolver block)
-keeps this leakage off by default and surfaces it as an intentional choice.
+to an explicit opt-in with `dns = true`) keeps this leakage off by default and
+surfaces it as an intentional choice. The `[dns]` block is **optional** even
+once a peer opts in — it only selects the resolver *transport*; an absent
+block still resolves hostnames, through the OS system resolver.
 
 ### Leaked artifacts per resolver mode
 
@@ -465,10 +467,13 @@ observer — per Requirement-6 testing (test/e2e/p5_dpi_test.go, Q29/Q33):
   resolver.
 
 In all three cases, **multi-record expansions** (a hostname resolving to multiple
-A/AAAA records, e.g. concentrator failover `endpoints` list) feed back into
-hub-failover: each address in the result set feeds the active-backup or weighted
-scheduler as a separate routable endpoint, so the edge can failover within that
-set on liveness loss (one address down → try the next).
+A/AAAA records, e.g. in a concentrator failover `endpoints` list) feed back into
+`hubFailover`: each address in the result set becomes a separate entry in that
+spec's slot of the ORDERED, ACTIVE-STANDBY failover list, so the edge can
+advance within that set on hub loss (one address down → try the next). This
+selection is **always** active-standby — `[scheduler].policy = "weighted"`
+never applies here; weighted only reweights the *per-path* scheduler across the
+paths reaching whichever single endpoint hub-failover has currently selected.
 
 ### Opt-in defer-and-reconcile boot semantics
 
@@ -484,10 +489,13 @@ per the operational `poll_interval`).
   Governs how often an opted-in hostname endpoint is re-resolved; changes are
   reconciled immediately.
 
-- **Liveness-loss trigger**: If all endpoints (resolved A/AAAA records + any
-  IP-literal endpoints) for a peer go unreachable simultaneously, the
-  re-resolution loop shortens its cadence and retries aggressively; once any
-  endpoint recovers, it returns to the normal cadence.
+- **Liveness-loss trigger**: the instant every path to the peer's **currently
+  active** endpoint reads `StateDown` (the same `allPathsDown` sweep
+  hub-failover advances on), the re-resolution controller re-resolves the
+  **active spec, once**, out of band — an edge-triggered kick, not a sustained
+  faster-cadence retry mode. It then re-arms the next scheduled poll at the
+  normal TTL-clamped `poll_interval` delay; a sustained outage is covered by
+  that regular poll loop, not by a shortened cadence.
 
 - **Change suppression**: Re-resolution results that are identical to the prior
   set (same IP + port, same order) do not trigger re-keying or re-handshake —
@@ -498,19 +506,35 @@ per the operational `poll_interval`).
 When a peer declares multiple endpoints via the `endpoints` list (hub-failover),
 and one or more are hostnames (`dns = true`), the following rules apply:
 
-1. **Each hostname expands to its full A+AAAA record set** at resolve time; IP
-   literals and resolved addresses are all ordered together per the scheduler's
-   active-backup or weighted policy.
+1. **Each hostname expands to its full A+AAAA record set** at resolve time, but
+   the resolver's own answer order is **not** preserved: `orderAddrPorts`
+   deterministically re-orders that spec's addresses IPv4-first-then-IPv6, and
+   drops any address of a family no local path can source (a v4-only edge
+   drops AAAA answers) — so an unchanged DNS answer always yields a
+   byte-identical expansion, independent of the resolver's own record order.
+   Endpoint *selection* is always ordered **ACTIVE-STANDBY** — `hubFailover`
+   advances through the flattened, ordered list on hub loss; `[scheduler]`'s
+   weighted policy is never consulted here (see above).
 
-2. **Order preservation**: the `endpoints` list order is **strict** — the scheduler
-   respects it for active-backup failover (index 0 is primary, index N are standbys).
-   When a hostname at index K resolves to multiple addresses, they are inserted
-   *consecutively* in that order (first address fills index K, subsequent addresses
-   shift later entries right in the ordering).
+2. **Order preservation**: the `endpoints` list order is **strict** — index 0
+   is the active concentrator, index N are ordered standbys, and hub-failover
+   advances through them in that order on hub loss. When a hostname at index K
+   resolves to multiple addresses, they are inserted *consecutively* in that
+   order (first address fills index K, subsequent addresses shift later
+   entries right in the flattened ordering) — but, per rule 1, in the
+   family-ordered form, not raw resolver order.
 
-3. **Deduplication**: if two `endpoints` entries (whether IP or hostname) resolve
-   to the same address:port, both are rejected at config load (duplicates not
-   allowed in the flattened set).
+3. **Deduplication is per-namespace and load-time only; resolved addresses are
+   never deduplicated across specs.** At config load, `resolveEndpoints`
+   rejects a duplicate **within** each of two disjoint namespaces — a literal
+   duplicating another literal, or a hostname:port duplicating another
+   hostname:port — never across the two, and never on a resolved address (no
+   resolution happens at load, Q30). At runtime, `orderAddrPorts` dedupes
+   addresses only **within a single hostname spec's own** A+AAAA answer. Two
+   *different* specs (two distinct hostnames, or a hostname and a literal)
+   that happen to resolve or point to the same address:port are **not**
+   rejected or merged — both remain distinct entries in the flattened
+   failover list.
 
 4. **Resolver selection is global**: `[dns].resolver` applies to *all* opted-in
    hostname endpoints — you cannot mix system + DoH + DoT within one config.
@@ -589,8 +613,9 @@ These are recorded design boundaries, not defects:
   surface (T54), the switch (T57), the netns e2e (T62), and the real-link
   mid-transfer WAN-kill tier (T63) are all built and validated (see *Concentrator
   hub failover* above). What stays out of scope: UDP-only is deliberate — there is
-  no TCP/TLS fallback for wholesale-UDP-block networks — and the endpoint list is
-  IP:port only (no DNS resolution).
+  no TCP/TLS fallback for wholesale-UDP-block networks. The endpoint list itself
+  is no longer IP:port-only: an entry may also be a hostname behind the peer's
+  `dns = true` opt-in (see *DNS endpoints and resolver privacy trade-offs* above).
 
 ## References
 
