@@ -28,7 +28,7 @@ func driveConcurrentPathUp(m *Multipath, idx int, psk config.Key, src netip.Addr
 		if err != nil {
 			return fmt.Errorf("path %q: SendProbe: %w", pp.name, err)
 		}
-		echo, err := reflector.Reflect(raw)
+		echo, _, err := reflector.Reflect(raw)
 		if err != nil {
 			return fmt.Errorf("path %q: reflect probe: %w", pp.name, err)
 		}
