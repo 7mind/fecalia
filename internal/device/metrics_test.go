@@ -8,6 +8,7 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -143,6 +144,58 @@ func TestMetricsSourceMapsReseq(t *testing.T) {
 	}
 	if got[0].Stats != (reseq.Stats{Released: 900, DroppedDup: 3, DroppedOld: 2, DroppedSuspect: 1, Skipped: 4, Resyncs: 2, Rebaselines: 1}) {
 		t.Errorf("Stats = %+v, want the injected counters verbatim", got[0].Stats)
+	}
+}
+
+// TestMetricsSourceMapsAggregation asserts the adapter passes a peer's weighted-scheduler
+// aggregation-gate snapshot (T146) verbatim onto the metrics.AggregationSnapshot the
+// exposition reads, for a single-peer (unnamed primary) source.
+func TestMetricsSourceMapsAggregation(t *testing.T) {
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{{
+		Name: "",
+		Aggregation: &sched.AggregationSnapshot{
+			Aggregating:           true,
+			OfferedLoadFPS:        640,
+			EngageThresholdFPS:    630,
+			DisengageThresholdFPS: 350,
+		},
+	}})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.Aggregation()
+	if len(got) != 1 {
+		t.Fatalf("Aggregation len = %d, want 1", len(got))
+	}
+	want := metrics.AggregationSnapshot{
+		Peer:                  "",
+		Aggregating:           true,
+		OfferedLoadFPS:        640,
+		EngageThresholdFPS:    630,
+		DisengageThresholdFPS: 350,
+	}
+	if got[0] != want {
+		t.Errorf("Aggregation[0] = %+v, want %+v", got[0], want)
+	}
+}
+
+// TestMetricsSourceAggregationAbsentForActiveBackup asserts a peer whose Bind snapshot
+// carries a nil Aggregation (an active-backup peer — no scheduler gate) contributes NO
+// entry to src.Aggregation(), so the four series are absent for it (T146).
+func TestMetricsSourceAggregationAbsentForActiveBackup(t *testing.T) {
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{
+		{Name: "edge1", Aggregation: nil}, // active-backup: no gate
+		{Name: "edge2", Aggregation: &sched.AggregationSnapshot{Aggregating: true, EngageThresholdFPS: 630, DisengageThresholdFPS: 350}},
+	})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.Aggregation()
+	if len(got) != 1 {
+		t.Fatalf("Aggregation len = %d, want 1 (only the weighted peer reports a gate)", len(got))
+	}
+	if got[0].Peer != "edge2" {
+		t.Errorf("Aggregation[0].Peer = %q, want %q (the nil-gate active-backup peer must be skipped)", got[0].Peer, "edge2")
 	}
 }
 

@@ -144,6 +144,32 @@ func (s *metricsSource) Reseq() []metrics.ReseqSnapshot {
 	return out
 }
 
+// Aggregation implements metrics.Source: it reads each peer's weighted-scheduler
+// aggregation-gate snapshot (T146) from the Bind's per-peer snapshot at scrape time,
+// emitting ONE entry per peer whose scheduler exposes a gate. A peer without one
+// (active-backup) carries a nil PeerSnapshot.Aggregation and is skipped, so the four
+// aggregation series are absent for it — like FEC/Reseq, a direct pass-through of a
+// lock-free snapshot the Bind already computed (the gate read happens in PeerSnapshots,
+// off the send lock), needing no rate derivation or prior-sample state here.
+func (s *metricsSource) Aggregation() []metrics.AggregationSnapshot {
+	peers := s.provider.PeerSnapshots()
+	out := make([]metrics.AggregationSnapshot, 0, len(peers))
+	for _, peer := range peers {
+		if peer.Aggregation == nil {
+			continue
+		}
+		a := peer.Aggregation
+		out = append(out, metrics.AggregationSnapshot{
+			Peer:                  peer.Name,
+			Aggregating:           a.Aggregating,
+			OfferedLoadFPS:        a.OfferedLoadFPS,
+			EngageThresholdFPS:    a.EngageThresholdFPS,
+			DisengageThresholdFPS: a.DisengageThresholdFPS,
+		})
+	}
+	return out
+}
+
 // PeerNames implements metrics.Source: it returns the current bound-peer name set,
 // queried once by metrics.NewCollector to fix the `peer` label's presence for the
 // collector's whole life (T94) — see the metrics package doc for the back-compat rule.

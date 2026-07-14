@@ -335,6 +335,26 @@ under the active-backup policy. See
 [install.md §6b](install.md#6b-weighted-policy-capacity-sanity-check-t144) for
 the operator-facing remedy.
 
+**Aggregation-gate observability (T146, Q54).** The weighted scheduler's
+data-thrift gate (engage/disengage hysteresis above) is surfaced on `/metrics`
+as four PER-PEER gauges, so an operator can see whether striping is engaged and
+why: `wanbond_aggregation_engaged` (1 = striping across every eligible path,
+0 = collapsed to primary-only), `wanbond_offered_load_fps` (the smoothed
+offered load, an EWMA of `Pick` calls, driving the gate), and the two STATIC
+thresholds `wanbond_aggregation_engage_threshold_fps`
+(`engage_fraction * per_path_capacity_fps`) and
+`wanbond_aggregation_disengage_threshold_fps`
+(`disengage_fraction * per_path_capacity_fps`) it compares that load against.
+Unlike `wanbond_weighted_capacity_sane`, these are Source-driven and read at
+scrape time through the existing seam: the Bind's per-peer `PeerSnapshots`
+type-asserts each peer's scheduler against a small optional reporter interface
+satisfied by `*sched.WeightedScheduler.AggregationSnapshot()` (T143) — read off
+the send lock, like the prober/FEC snapshots — so an active-backup peer, whose
+scheduler exposes no gate, contributes no snapshot and its four series are
+ABSENT (not present-at-zero). They honour the same T94 single-peer-omits-label
+back-compat rule as the FEC/resequencer series (the `peer` label appears only on
+a multi-peer concentrator scrape).
+
 ### Concentrator hub failover — `internal/device` (`failover.go`, T57)
 
 Two *different* failovers exist and must not be conflated:

@@ -106,7 +106,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   (`wanbond_session_established`), and — under `scheduler.policy = "weighted"`
   — a static `wanbond_weighted_capacity_sane` gauge that flags an unverifiable
   `link_bandwidth` declaration (see [docs/install.md
-  §6b](docs/install.md#6b-weighted-policy-capacity-sanity-check-t144)).
+  §6b](docs/install.md#6b-weighted-policy-capacity-sanity-check-t144)) plus the
+  aggregation-gate quartet `wanbond_aggregation_engaged` /
+  `wanbond_offered_load_fps` / `wanbond_aggregation_{engage,disengage}_threshold_fps`
+  (per-peer gauges showing whether data-thrift striping is engaged, the smoothed
+  offered load driving it, and the static engage/disengage thresholds; absent
+  under `active-backup`).
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`.
 
 ## Testing

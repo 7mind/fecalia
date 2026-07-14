@@ -358,6 +358,17 @@ func TestMultiPeerConcentratorIsolation(t *testing.T) {
 // daemons each in its own PID-addressed holder namespace. It addresses every TUN and
 // returns once both bonds' TUNs exist. All teardown is registered via t.Cleanup.
 func setupMultiPeer(t *testing.T) *multiPeerFixture {
+	return setupMultiPeerSched(t, "")
+}
+
+// setupMultiPeerSched is setupMultiPeer with an explicit concentrator [scheduler] block
+// (concSched) spliced into the concentrator config verbatim. "" leaves the concentrator at
+// its default (active-backup) policy — byte-identical to the pre-T146 config, so
+// TestMultiPeerConcentratorIsolation is unchanged — while a weighted block (T146) makes each
+// bound peer's scheduler expose an aggregation gate, so the per-peer aggregation series
+// appear. concSched, when non-empty, MUST end with a trailing blank line (it sits directly
+// before the [metrics] block).
+func setupMultiPeerSched(t *testing.T, concSched string) *multiPeerFixture {
 	t.Helper()
 	bin := buildWanbond(t)
 
@@ -405,7 +416,7 @@ source_addr = "%s"
 name = "%s"
 source_addr = "%s"
 
-[metrics]
+%s[metrics]
 listen = "%s"
 
 [wireguard]
@@ -429,6 +440,7 @@ level = "info"
 `, topPSK,
 		mpWan1, mpConc1IP,
 		mpWan2, mpConc2IP,
+		concSched,
 		mpMetricsListen,
 		concPriv, listenPort,
 		edgeAPub, mpPeerAConfigName, pskA, mpEdgeAInner,

@@ -21,18 +21,20 @@ import (
 // peer — the pre-T94 back-compat (no `peer` label) exposition — so every EXISTING
 // test below that does not set peerNames keeps exercising the byte-compatible shape.
 type fakeSource struct {
-	paths     []PathSnapshot
-	fec       []FECSnapshot
-	reseq     []ReseqSnapshot
-	session   SessionSnapshot
-	peerNames []string
+	paths       []PathSnapshot
+	fec         []FECSnapshot
+	reseq       []ReseqSnapshot
+	aggregation []AggregationSnapshot
+	session     SessionSnapshot
+	peerNames   []string
 }
 
-func (f fakeSource) Paths() []PathSnapshot    { return f.paths }
-func (f fakeSource) FEC() []FECSnapshot       { return f.fec }
-func (f fakeSource) Reseq() []ReseqSnapshot   { return f.reseq }
-func (f fakeSource) Session() SessionSnapshot { return f.session }
-func (f fakeSource) PeerNames() []string      { return f.peerNames }
+func (f fakeSource) Paths() []PathSnapshot              { return f.paths }
+func (f fakeSource) FEC() []FECSnapshot                 { return f.fec }
+func (f fakeSource) Reseq() []ReseqSnapshot             { return f.reseq }
+func (f fakeSource) Aggregation() []AggregationSnapshot { return f.aggregation }
+func (f fakeSource) Session() SessionSnapshot           { return f.session }
+func (f fakeSource) PeerNames() []string                { return f.peerNames }
 
 func testLogger(t *testing.T) log.Logger {
 	t.Helper()
@@ -450,6 +452,156 @@ func TestExpositionReseqRebaselineAndDropSuspect(t *testing.T) {
 	}
 	if got, ok := exp.Value(MetricReseqDroppedSuspect); !ok || got != 1 {
 		t.Errorf("%s = %v (present=%v), want 1", MetricReseqDroppedSuspect, got, ok)
+	}
+}
+
+// TestExpositionAggregationSinglePeer is T146 acceptance (i) at the metrics-package
+// seam: a single-peer weighted Source.Aggregation() emits all four Q54 gauge families
+// with NO `peer` label (the T94 single-peer back-compat rule), engaged reads 0 at idle,
+// and each threshold gauge carries exactly engage/disengage_fraction*per_path_capacity_fps.
+func TestExpositionAggregationSinglePeer(t *testing.T) {
+	const (
+		perPathCapacityFPS = 700.0
+		engageFraction     = 0.9
+		disengageFraction  = 0.5
+	)
+	engageTh := engageFraction * perPathCapacityFPS       // 630
+	disengageTh := disengageFraction * perPathCapacityFPS // 350
+
+	src := fakeSource{aggregation: []AggregationSnapshot{{
+		Peer:                  "",
+		Aggregating:           false, // idle
+		OfferedLoadFPS:        0,
+		EngageThresholdFPS:    engageTh,
+		DisengageThresholdFPS: disengageTh,
+	}}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		want float64
+	}{
+		{MetricAggregationEngaged, 0},
+		{MetricOfferedLoadFPS, 0},
+		{MetricAggregationEngageThreshold, engageTh},
+		{MetricAggregationDisengageThreshold, disengageTh},
+	}
+	for _, c := range checks {
+		if !exp.Has(c.name) {
+			t.Errorf("aggregation series %s absent, want present", c.name)
+			continue
+		}
+		got, ok := exp.Value(c.name) // unlabeled series (single-peer omits `peer`)
+		if !ok {
+			t.Errorf("%s has no unlabeled sample (single-peer must omit the peer label)", c.name)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestExpositionAggregationEngagedGauge asserts the engaged gauge reflects the live gate
+// verdict: Aggregating=true maps to 1 (striping), independent of the threshold gauges.
+func TestExpositionAggregationEngagedGauge(t *testing.T) {
+	src := fakeSource{aggregation: []AggregationSnapshot{{
+		Aggregating:           true,
+		OfferedLoadFPS:        640,
+		EngageThresholdFPS:    630,
+		DisengageThresholdFPS: 350,
+	}}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if v, ok := exp.Value(MetricAggregationEngaged); !ok || v != 1 {
+		t.Errorf("%s = %v (present=%v), want 1 (gate engaged)", MetricAggregationEngaged, v, ok)
+	}
+	if v, ok := exp.Value(MetricOfferedLoadFPS); !ok || v != 640 {
+		t.Errorf("%s = %v (present=%v), want 640", MetricOfferedLoadFPS, v, ok)
+	}
+}
+
+// TestExpositionAggregationMultiPeer is T146 acceptance (iii) at the metrics seam: a
+// 2-peer Source.Aggregation() carries the `peer` label (PeerValue resolves each series),
+// with each edge's own gate verdict, offered load, and thresholds.
+func TestExpositionAggregationMultiPeer(t *testing.T) {
+	src := fakeSource{
+		peerNames: []string{"edge1", "edge2"},
+		aggregation: []AggregationSnapshot{
+			{Peer: "edge1", Aggregating: false, OfferedLoadFPS: 10, EngageThresholdFPS: 630, DisengageThresholdFPS: 350},
+			{Peer: "edge2", Aggregating: true, OfferedLoadFPS: 900, EngageThresholdFPS: 810, DisengageThresholdFPS: 450},
+		},
+	}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		peer string
+		want float64
+	}{
+		{MetricAggregationEngaged, "edge1", 0},
+		{MetricAggregationEngaged, "edge2", 1},
+		{MetricOfferedLoadFPS, "edge1", 10},
+		{MetricOfferedLoadFPS, "edge2", 900},
+		{MetricAggregationEngageThreshold, "edge1", 630},
+		{MetricAggregationEngageThreshold, "edge2", 810},
+		{MetricAggregationDisengageThreshold, "edge1", 350},
+		{MetricAggregationDisengageThreshold, "edge2", 450},
+	}
+	for _, c := range checks {
+		got, ok := exp.PeerValue(c.name, c.peer)
+		if !ok {
+			t.Errorf("%s{peer=%q} missing", c.name, c.peer)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s{peer=%q} = %v, want %v", c.name, c.peer, got, c.want)
+		}
+	}
+}
+
+// TestAggregationAbsentUnderActiveBackup is T146 acceptance (ii) at the metrics seam: a
+// Source whose Aggregation() returns no entries (the shape an active-backup Bind
+// presents — no peer's scheduler exposes a gate) exposes NONE of the four aggregation
+// families, not a present-but-empty or present-at-zero series.
+func TestAggregationAbsentUnderActiveBackup(t *testing.T) {
+	srv := startServer(t, fakeSource{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for _, name := range []string{
+		MetricAggregationEngaged,
+		MetricOfferedLoadFPS,
+		MetricAggregationEngageThreshold,
+		MetricAggregationDisengageThreshold,
+	} {
+		if exp.Has(name) {
+			t.Errorf("%s registered under an empty (active-backup) Aggregation(), want absent entirely", name)
+		}
 	}
 }
 

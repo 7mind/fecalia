@@ -37,6 +37,11 @@ const (
 	fecSubsystem         = "fec"
 	resequencerSubsystem = "resequencer"
 	sessionSubsystem     = "session"
+	// aggregationSubsystem partitions the weighted-scheduler aggregation-gate series
+	// (T146). The smoothed offered-load gauge deliberately carries NO subsystem (it is
+	// wanbond_offered_load_fps, not wanbond_aggregation_…) since it is the load the gate
+	// observes, not a property of the gate itself.
+	aggregationSubsystem = "aggregation"
 
 	// labelPath is the single label carried by every per-path series; its value is
 	// the stable path name from configuration (e.g. "starlink").
@@ -116,6 +121,31 @@ const (
 // or 0 when at least one path's declaration is missing or partial (UNVERIFIABLE) — see
 // docs/install.md §3a for the operator remedy.
 const MetricWeightedCapacitySane = "wanbond_weighted_capacity_sane"
+
+// Aggregation-gate metric names (T146, Q54). These four PER-PEER series expose the
+// weighted scheduler's data-thrift aggregation gate: whether striping is currently
+// engaged, the smoothed offered load driving it, and the STATIC engage/disengage
+// thresholds it compares that load against. They obey the T94 single-peer-omits-label
+// back-compat rule (peer label present only on a multi-peer Source) and, unlike the
+// config-derived MetricWeightedCapacitySane, are sourced from Source.Aggregation() at
+// scrape time. The whole set is ABSENT under active-backup (its scheduler exposes no
+// gate — Source.Aggregation() returns no entry for that peer).
+const (
+	// MetricAggregationEngaged is a per-peer bool gauge: 1 while the gate is engaged
+	// (traffic striped across every eligible path), 0 while collapsed (primary-only).
+	MetricAggregationEngaged = "wanbond_aggregation_engaged"
+	// MetricOfferedLoadFPS is the per-peer smoothed offered-load estimate in
+	// frames/second (Pick calls per second, EWMA) driving the gate.
+	MetricOfferedLoadFPS = "wanbond_offered_load_fps"
+	// MetricAggregationEngageThreshold is the per-peer STATIC engage threshold in
+	// frames/second (engage_fraction * per_path_capacity_fps): the offered load above
+	// which the gate engages.
+	MetricAggregationEngageThreshold = "wanbond_aggregation_engage_threshold_fps"
+	// MetricAggregationDisengageThreshold is the per-peer STATIC disengage threshold in
+	// frames/second (disengage_fraction * per_path_capacity_fps): the offered load
+	// below which, sustained, the gate collapses.
+	MetricAggregationDisengageThreshold = "wanbond_aggregation_disengage_threshold_fps"
+)
 
 // newWeightedCapacityGauge builds the static wanbond_weighted_capacity_sane gauge
 // (T144) fixed at sane's value for the collector's whole life — unlike collector, it
@@ -206,6 +236,32 @@ type ReseqSnapshot struct {
 	reseq.Stats
 }
 
+// AggregationSnapshot is the current per-peer weighted-scheduler aggregation-gate signal
+// set the exposition layer reports (T146, Q54). It is sourced from the peer's scheduler
+// at scrape time (via the Bind's per-peer snapshot); a peer whose scheduler exposes no
+// gate (active-backup) contributes NO AggregationSnapshot, so its four series are absent.
+// The threshold fields are STATIC (fixed at scheduler construction from
+// engage/disengage_fraction * per_path_capacity_fps) — exposed as gauges so an operator
+// can read the engaged/offered/threshold triple as one coherent snapshot.
+type AggregationSnapshot struct {
+	// Peer attributes this snapshot to a bound peer (T94); see the package-level
+	// back-compat rule for when it surfaces as the `peer` label. "" on a Source with a
+	// single bound peer.
+	Peer string
+	// Aggregating is the current gate verdict → the wanbond_aggregation_engaged 0/1
+	// gauge (1 = striping across every eligible path, 0 = collapsed to primary-only).
+	Aggregating bool
+	// OfferedLoadFPS is the smoothed offered-load estimate (frames/second) driving the
+	// gate → the wanbond_offered_load_fps gauge.
+	OfferedLoadFPS float64
+	// EngageThresholdFPS is the STATIC engage_fraction*per_path_capacity_fps threshold
+	// (frames/second) → the wanbond_aggregation_engage_threshold_fps gauge.
+	EngageThresholdFPS float64
+	// DisengageThresholdFPS is the STATIC disengage_fraction*per_path_capacity_fps
+	// threshold (frames/second) → the wanbond_aggregation_disengage_threshold_fps gauge.
+	DisengageThresholdFPS float64
+}
+
 // SessionSnapshot is the current WG-session signal set the exposition layer reports
 // (I2). It is sourced at scrape time from the amneziawg engine's peer last-handshake
 // state by the device layer; the bind stays WG-unaware. The device layer owns the
@@ -238,6 +294,11 @@ type Source interface {
 	FEC() []FECSnapshot
 	// Reseq returns the current per-peer resequencer counters (T94).
 	Reseq() []ReseqSnapshot
+	// Aggregation returns the current per-peer weighted-scheduler aggregation-gate
+	// snapshots (T146). It returns ONE entry per peer whose scheduler exposes a gate
+	// (the weighted policy) and NO entry for a peer without one (active-backup), so the
+	// four aggregation series are absent whenever no bound peer runs the weighted policy.
+	Aggregation() []AggregationSnapshot
 	// Session returns the current connection-scoped WG-session snapshot (I2).
 	Session() SessionSnapshot
 	// PeerNames returns the STATIC set of bound peer names (BoundPeerNames order):
@@ -281,6 +342,11 @@ type collector struct {
 	reseqSkipped        *prometheus.Desc
 	reseqResyncs        *prometheus.Desc
 	reseqRebaselines    *prometheus.Desc
+
+	aggregationEngaged    *prometheus.Desc
+	offeredLoad           *prometheus.Desc
+	aggregationEngageTh   *prometheus.Desc
+	aggregationDisengageT *prometheus.Desc
 
 	sessionEstablished   *prometheus.Desc
 	sessionLastHandshake *prometheus.Desc
@@ -330,6 +396,11 @@ func NewCollector(src Source) prometheus.Collector {
 		reseqResyncs:        desc(resequencerSubsystem, "resyncs_total", "Resequencer release-point re-pins after a corroborated discontinuity.", peerScopedLabels),
 		reseqRebaselines:    desc(resequencerSubsystem, "rebaselines_total", "Resequencer release-point re-baselines forced by a trusted control event (e.g. hub failover).", peerScopedLabels),
 
+		aggregationEngaged:    desc(aggregationSubsystem, "engaged", "Weighted-scheduler aggregation gate (1 = striping across every eligible path, 0 = collapsed to primary-only).", peerScopedLabels),
+		offeredLoad:           desc("", "offered_load_fps", "Smoothed offered load in frames/second (EWMA of Pick calls) driving the aggregation gate.", peerScopedLabels),
+		aggregationEngageTh:   desc(aggregationSubsystem, "engage_threshold_fps", "Static engage threshold in frames/second (engage_fraction * per_path_capacity_fps): offered load above which the gate engages.", peerScopedLabels),
+		aggregationDisengageT: desc(aggregationSubsystem, "disengage_threshold_fps", "Static disengage threshold in frames/second (disengage_fraction * per_path_capacity_fps): offered load below which, sustained, the gate collapses.", peerScopedLabels),
+
 		sessionEstablished:   desc(sessionSubsystem, "established", "WG session liveness (1 = a handshake has completed and is still fresh, 0 = still converging or wedged).", nil),
 		sessionLastHandshake: desc(sessionSubsystem, "last_handshake_seconds", "Age in seconds of the peer's most recent completed WG handshake (0 when none has completed).", nil),
 	}
@@ -360,6 +431,10 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.reseqSkipped
 	ch <- c.reseqResyncs
 	ch <- c.reseqRebaselines
+	ch <- c.aggregationEngaged
+	ch <- c.offeredLoad
+	ch <- c.aggregationEngageTh
+	ch <- c.aggregationDisengageT
 	ch <- c.sessionEstablished
 	ch <- c.sessionLastHandshake
 }
@@ -399,6 +474,14 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.reseqRebaselines, prometheus.CounterValue, float64(r.Rebaselines), labels...)
 	}
 
+	for _, a := range c.src.Aggregation() {
+		labels := c.peerLabelValues(a.Peer)
+		ch <- prometheus.MustNewConstMetric(c.aggregationEngaged, prometheus.GaugeValue, aggregatingValue(a.Aggregating), labels...)
+		ch <- prometheus.MustNewConstMetric(c.offeredLoad, prometheus.GaugeValue, a.OfferedLoadFPS, labels...)
+		ch <- prometheus.MustNewConstMetric(c.aggregationEngageTh, prometheus.GaugeValue, a.EngageThresholdFPS, labels...)
+		ch <- prometheus.MustNewConstMetric(c.aggregationDisengageT, prometheus.GaugeValue, a.DisengageThresholdFPS, labels...)
+	}
+
 	sess := c.src.Session()
 	ch <- prometheus.MustNewConstMetric(c.sessionEstablished, prometheus.GaugeValue, establishedValue(sess.Established))
 	ch <- prometheus.MustNewConstMetric(c.sessionLastHandshake, prometheus.GaugeValue, sess.LastHandshakeAge.Seconds())
@@ -426,6 +509,15 @@ func (c *collector) peerLabelValues(peer string) []string {
 // wanbond_session_established gauge value.
 func establishedValue(established bool) float64 {
 	if established {
+		return 1
+	}
+	return 0
+}
+
+// aggregatingValue maps the aggregation-gate verdict to the
+// wanbond_aggregation_engaged gauge value.
+func aggregatingValue(aggregating bool) float64 {
+	if aggregating {
 		return 1
 	}
 	return 0

@@ -3111,6 +3111,25 @@ type PeerSnapshot struct {
 	Paths []PathTraffic
 	FEC   FECStats
 	Reseq reseq.Stats
+	// Aggregation is the weighted scheduler's aggregation-gate snapshot (T146),
+	// present ONLY for a peer whose scheduler exposes it (the weighted policy, via
+	// *sched.WeightedScheduler's AggregationSnapshot(), T143). It is nil for an
+	// active-backup peer — which has no aggregation gate — so the four Q54 aggregation
+	// series are ABSENT for that peer, rather than fabricating a gate reading the way a
+	// zero-valued struct would.
+	Aggregation *sched.AggregationSnapshot
+}
+
+// aggregationReporter is the small OPTIONAL seam a scheduler implements to expose its
+// aggregation-gate state to the /metrics plumbing (T146). Only *sched.WeightedScheduler
+// satisfies it (its AggregationSnapshot() reads the gate under the scheduler's OWN mutex,
+// T143); active-backup does not, so type-asserting a peer's scheduler against it is how
+// PeerSnapshots decides per-peer whether the aggregation series exist. AggregationSnapshot
+// advances no per-frame distribution state, so polling it at scrape time never perturbs
+// selection — and, like the prober Estimate()/decoder stats() reads, it is called AFTER
+// m.mu is released so the scrape never blocks an in-flight Send.
+type aggregationReporter interface {
+	AggregationSnapshot() sched.AggregationSnapshot
 }
 
 // PeerSnapshots returns a consistent per-peer snapshot, in bound-peer order (matching
@@ -3134,12 +3153,13 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		fs    *fecSender
 		fr    *fecReceiver
 		rq    *reseq.Resequencer
+		sched sched.Scheduler
 	}
 
 	m.mu.Lock()
 	refs := make([]peerRef, len(m.peers))
 	for i, p := range m.peers {
-		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load()}
+		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler}
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
 			r.paths[j] = pathRef{name: pp.name, tx: pp.txBytes.Load(), rx: pp.rxBytes.Load(), prober: pp.prober}
@@ -3180,6 +3200,15 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		}
 		if r.rq != nil {
 			snap.Reseq = r.rq.Stats()
+		}
+		// Poll the aggregation gate only for a scheduler that reports one (weighted policy);
+		// active-backup does not satisfy aggregationReporter, so its peers leave Aggregation
+		// nil and the Q54 series are absent (T146). Like the prober/decoder reads above, this
+		// runs after m.mu is released — AggregationSnapshot takes the scheduler's own lock, not
+		// the send lock, so it never blocks Send across a Pick.
+		if rep, ok := r.sched.(aggregationReporter); ok {
+			agg := rep.AggregationSnapshot()
+			snap.Aggregation = &agg
 		}
 		out[i] = snap
 	}
