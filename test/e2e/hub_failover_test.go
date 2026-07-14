@@ -78,7 +78,7 @@ const (
 	hfPathName = "uplink"            // the single edge path's name (the metrics series key)
 
 	// hfMetricsListen is the edge /metrics endpoint for this file, on a port none of
-	// the other e2e files use (p2/p3/p4/pacing/tolerant use 9095-9098).
+	// the other e2e files use (see the metrics-port registry in netns.go).
 	hfMetricsListen = "127.0.0.1:9099"
 	hfMetricsURL    = "http://" + hfMetricsListen + "/metrics"
 )

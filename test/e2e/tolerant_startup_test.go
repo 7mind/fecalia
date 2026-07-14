@@ -27,7 +27,7 @@ import (
 
 const (
 	// t60MetricsListen is the edge's /metrics endpoint for this file's tests, on a
-	// port none of the other e2e files use (see test/e2e/p2/p3/p4/pacing for 9095-97).
+	// port none of the other e2e files use (see the metrics-port registry in netns.go).
 	t60MetricsListen = "127.0.0.1:9098"
 	t60MetricsURL    = "http://" + t60MetricsListen + "/metrics"
 

@@ -126,7 +126,7 @@ const (
 	mpFloodSrcIP = "10.101.1.9"
 
 	// mpMetricsListen is the CONCENTRATOR's /metrics endpoint for this file, on a port no
-	// other e2e file uses (survey the *MetricsListen constants: the current max is 9101).
+	// other e2e file uses (see the metrics-port registry in netns.go).
 	mpMetricsListen = "127.0.0.1:9102"
 	mpMetricsURL    = "http://" + mpMetricsListen + "/metrics"
 

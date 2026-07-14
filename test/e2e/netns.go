@@ -12,6 +12,21 @@ import (
 	"time"
 )
 
+// metricsPortRegistry documents the unique 127.0.0.1 /metrics port each e2e
+// test file binds its edge/concentrator listener to, so files never collide under
+// the netns runner (a shared port EADDRINUSEs under shuffle/parallel or a wedged
+// teardown). Keep this in sync when adding a file:
+//
+//	9095  p2_aggregation_test.go      (p2MetricsListen)
+//	9096  p3_fec_test.go              (p3MetricsListen)
+//	9097  p4_adaptive_test.go         (p4MetricsListen)
+//	9098  tolerant_startup_test.go    (t60MetricsListen)
+//	9099  hub_failover_test.go        (hfMetricsListen)
+//	9100  standby_liveness_test.go    (t104MetricsListen)
+//	9101  session_established_test.go (i2MetricsListen)
+//	9102  multipeer_test.go           (mpMetricsListen)
+//	9103  pacing_test.go              (pacingMetricsListen)
+
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
 // egress. The bandwidth cap (rateMbit) and controlled loss (lossPct) are

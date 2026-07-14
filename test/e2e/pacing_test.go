@@ -72,7 +72,7 @@ const (
 	// steady state before any load is offered.
 	pacingSettle = 2 * time.Second
 
-	pacingMetricsListen = "127.0.0.1:9096"
+	pacingMetricsListen = "127.0.0.1:9103"
 	pacingMetricsURL    = "http://" + pacingMetricsListen + "/metrics"
 )
 
