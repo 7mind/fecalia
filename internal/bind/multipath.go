@@ -631,6 +631,63 @@ func (m *Multipath) republishPeersLocked() {
 	m.peersView.Store(&snap)
 }
 
+// AddConcentratorPeer registers one ADDITIONAL bound peer with the Bind — the concentrator's
+// per-peer wiring (G4/T93). Peer 0 (the embedded primary) is built by NewMultipath; the
+// concentrator calls this once per additional configured peer, each with its OWN effective psk,
+// send scheduler, boot-time per-path prober set, and runtime prober factory (all keyed on that
+// peer's psk, so one peer's codec/reflector reject another's frames — T84/R72). The peer's
+// STABLE virtual endpoint is minted here (newPeerState) and registered in peerByVirt so an
+// outbound Send routes replies back to THIS peer; Open then builds this peer's per-(peer,path)
+// view of every bound socket, reconciles its scheduler, and (via newReceiveFunc) reports its
+// virt to the engine on the first inbound frame (invariant A1: one virtual endpoint per peer).
+//
+// It MUST be called BEFORE Open (while the bind is closed): the per-(peer,path) views are
+// rebuilt by Open from the registered peer set on every Open span (including each Close→Open
+// cycle the engine drives on Down/Up and route changes), so a peer registered after the sockets
+// are bound would be view-less and its DATA/PROBE never routed. probers, when supplied, must be
+// index-aligned with the configured path membership (m.defs), exactly as the primary's are.
+func (m *Multipath) AddConcentratorPeer(name string, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory) error {
+	if name == "" {
+		return errors.New("bind: concentrator peer name is required")
+	}
+	if !psk.IsSet() {
+		return errors.New("bind: concentrator peer psk is required")
+	}
+	if scheduler == nil {
+		return errors.New("bind: concentrator peer requires a send scheduler")
+	}
+	if newProber != nil && probers == nil {
+		return errors.New("bind: newProber requires a non-nil probers (boot-time set)")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.paths) != 0 {
+		return errors.New("bind: concentrator peers must be registered before Open")
+	}
+	if probers != nil && len(probers) != len(m.defs) {
+		return fmt.Errorf("bind: concentrator peer %q: probers must have one entry per configured path (got %d, want %d)", name, len(probers), len(m.defs))
+	}
+	for i, pr := range probers {
+		if pr == nil {
+			return fmt.Errorf("bind: concentrator peer %q: prober %d is nil", name, i)
+		}
+	}
+	if name == m.peerState.name {
+		return fmt.Errorf("bind: concentrator peer name %q collides with the primary peer", name)
+	}
+	if _, dup := m.peersByName[name]; dup {
+		return fmt.Errorf("bind: duplicate concentrator peer name %q", name)
+	}
+	p := newPeerState(name, psk, scheduler, newProber, probers)
+	m.peers = append(m.peers, p)
+	m.peersByName[name] = p
+	m.peerByVirt[p.virt] = p
+	// Publish the grown peer set so the engine-facing receive drainer (newReceiveFunc) will
+	// enumerate this peer's resequencer once Open builds it.
+	m.republishPeersLocked()
+	return nil
+}
+
 // Open binds one UDP socket per configured path to that path's source address on
 // port (0 = random per socket), sets a large SO_RCVBUF on each, spawns one
 // Bind-owned reader per path, and returns a SINGLE engine-facing ReceiveFunc (the
@@ -693,16 +750,12 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// exactly as AddPath refuses a runtime add without probers — every bind error
 	// stays fatal there. A MALFORMED source_addr never reaches here (config.validate
 	// rejects it at load), and any OTHER bind error (EADDRINUSE, permission) is fatal.
-	dyn, dynOK := m.scheduler.(sched.DynamicScheduler)
+	_, dynOK := m.scheduler.(sched.DynamicScheduler)
 	tolerateDefer := m.probers != nil && dynOK
 	m.deferred = nil
 
 	actualPort := port
 	firstBound := true
-	// boundProbers is index-aligned with m.paths (the paths that actually bound), so
-	// the scheduler reconcile below and Send's Pick->m.paths[idx] mapping stay aligned
-	// even when a middle path deferred. nil in the no-prober case (nothing to reconcile).
-	var boundProbers []*telemetry.Prober
 	for i := range m.defs {
 		def := m.defs[i]
 		// Device-bind this path when selectDeviceBinds proved it safe (so a
@@ -726,39 +779,50 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		// treat it as non-fatal rather than refusing to bind in a restricted env.
 		_ = c.SetReadBuffer(socketRecvBuffer)
 
-		// The path binds to the primary peer here; its receive codec is that peer's codec
-		// (reached through the embedded primary, as the datapath reaches m.sendCodec).
-		codec, err := m.newCodec()
-		if err != nil {
-			_ = c.Close()
-			_ = m.closeSocketsLocked()
-			return nil, 0, err
-		}
-
 		shared := &sharedPathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c}
-		ps := &peerPathState{sharedPathState: shared, peer: m.peerState, codec: codec}
-		if m.probers != nil {
-			ps.prober = m.probers[i]
-			// Reconcile the DATA-frame path-id to the prober's IMMUTABLE stamp rather than
-			// to the slice index i: after a runtime RemovePath the survivor keeps its
-			// original (higher) stamp, so index-based numbering would renumber a live path
-			// AND diverge its DATA id from its PROBE stamp. Taking id from the prober keeps
-			// DATA and PROBE agreeing on the wire and a survivor's id stable across a reopen.
-			shared.id = ps.prober.PathID()
-			boundProbers = append(boundProbers, ps.prober)
-		}
-		switch {
-		case def.DestAddr.IsValid():
-			ps.setRemote(def.DestAddr)
-		case m.hasDefaultRemote:
-			ps.setRemote(m.defaultRemote)
+		// Build EVERY bound peer's view of this shared socket (T93): each peer decodes under its
+		// OWN psk-derived Codec and probes with its OWN per-(peer,path) prober, so a concentrator
+		// socket shared by several peers keeps each peer's authenticated stream isolated
+		// (demuxInbound source-demuxes on the first authenticated PROBE). The primary (peers[0])
+		// is built exactly as the pre-split single peer — byte-identical on the single-peer
+		// edge/hub, where m.peers holds only the primary. m.paths (the primary's path slice,
+		// reached through the embed) grows via the pi==0 append below; a concentrator peer's
+		// paths grow on its own peerState.
+		for pi, p := range m.peers {
+			// The path binds to peer p; its receive codec is p's codec (derived from p's psk).
+			codec, err := p.newCodec()
+			if err != nil {
+				_ = c.Close()
+				_ = m.closeSocketsLocked()
+				return nil, 0, err
+			}
+			pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec}
+			if p.probers != nil {
+				pp.prober = p.probers[i]
+				if pi == 0 {
+					// Reconcile the SHARED DATA-frame path-id to the PRIMARY prober's IMMUTABLE
+					// stamp rather than the slice index i: after a runtime RemovePath the survivor
+					// keeps its original (higher) stamp, so index-based numbering would renumber a
+					// live path AND diverge its DATA id from its PROBE stamp. Every peer's
+					// probers[i] carries the SAME stamp (the device stamps each peer's boot prober
+					// for path i identically), so taking it from the primary is authoritative and
+					// keeps DATA and every peer's PROBE agreeing on the wire.
+					shared.id = pp.prober.PathID()
+				}
+			}
+			switch {
+			case def.DestAddr.IsValid():
+				pp.setRemote(def.DestAddr)
+			case m.hasDefaultRemote:
+				pp.setRemote(m.defaultRemote)
+			}
+			p.paths = append(p.paths, pp)
+			// Publish this peer's view for the receive demux (T88). A single-view socket is the
+			// edge/hub byte-identical fast path in demuxInbound; a socket with >1 view is
+			// source-demuxed to its owning peer on each authenticated PROBE.
+			shared.addViewLocked(pp)
 		}
 		m.shared = append(m.shared, shared)
-		m.paths = append(m.paths, ps)
-		// Publish the primary's view for the receive demux (T88). On the single-peer edge/hub
-		// this is the ONLY view, which handleInbound reads as the byte-identical fast path; a
-		// concentrator peer bound later appends its own view to the same socket.
-		shared.addViewLocked(ps)
 		if firstBound {
 			actualPort = uint16(c.LocalAddr().(*net.UDPAddr).Port)
 			firstBound = false
@@ -813,12 +877,26 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// stays index-aligned with the bound-only path slice. Only meaningful with the
 	// probe transport: a bind without probers cannot change membership at runtime
 	// (AddPath is refused) and never defers, so its scheduler is left exactly as built.
-	if m.probers != nil && dynOK {
-		health := make([]sched.PathHealth, len(boundProbers))
-		for i, pr := range boundProbers {
-			health[i] = pr
+	// Reconcile EACH bound peer's scheduler membership with the path slice just rebuilt from
+	// m.defs (T93): every peer's per-(peer,path) views were appended in m.defs order above, so a
+	// peer's scheduler health list is that peer's BOUND probers in order (a DEFERRED path
+	// contributed no view and is deliberately excluded, exactly as for the primary). On the
+	// single-peer edge/hub m.peers holds only the primary, so this reconciles exactly the one
+	// scheduler — byte-identical to the pre-split single reconcile. A peer without the probe
+	// transport or with a non-dynamic scheduler is left as built (the T12 no-prober unit binds
+	// never change membership at runtime and never defer).
+	for _, p := range m.peers {
+		pdyn, pdynOK := p.scheduler.(sched.DynamicScheduler)
+		if p.probers == nil || !pdynOK {
+			continue
 		}
-		if err := dyn.SetPaths(health); err != nil {
+		health := make([]sched.PathHealth, 0, len(p.paths))
+		for _, pp := range p.paths {
+			if pp.prober != nil {
+				health = append(health, pp.prober)
+			}
+		}
+		if err := pdyn.SetPaths(health); err != nil {
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: reconcile scheduler on open: %w", err)
 		}
@@ -1068,10 +1146,16 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	if !m.mu.TryLock() {
 		return
 	}
+	// Sweep EVERY bound peer's paths (T93): the receive-tick liveness signal must advance each
+	// peer's own probers so a concentrator peer's silent path is marked DOWN promptly even when
+	// the probe-loop ticker is starved. On the single-peer edge/hub m.peers holds only the
+	// primary, so this is byte-identical to the pre-split single-peer sweep.
 	probers := make([]*telemetry.Prober, 0, len(m.paths))
-	for _, ps := range m.paths {
-		if ps.prober != nil {
-			probers = append(probers, ps.prober)
+	for _, p := range m.peers {
+		for _, ps := range p.paths {
+			if ps.prober != nil {
+				probers = append(probers, ps.prober)
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -1118,6 +1202,18 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 // eager-failover guarantee holds for BOTH the active-backup and the weighted policy
 // (defect D18).
 func (m *Multipath) nudgeSchedulerActive() {
+	// Recompute EVERY bound peer's active egress set (T93): each peer schedules over its OWN
+	// paths, so a liveness DOWN on one peer's path must nudge THAT peer's scheduler. The peer
+	// set is read lock-free through peersView (published under m.mu at construction / peer
+	// registration and immutable during an Open span), so this stays off m.mu exactly as the
+	// pre-split single Recompute did. On the single-peer edge/hub peersView holds only the
+	// primary (p.scheduler == m.scheduler), so this is byte-identical to the pre-split nudge.
+	if peers := m.peersView.Load(); peers != nil {
+		for _, p := range *peers {
+			p.scheduler.Recompute()
+		}
+		return
+	}
 	m.scheduler.Recompute()
 }
 
@@ -2442,6 +2538,35 @@ func (m *Multipath) PathNames() []string {
 		names[i] = def.Name
 	}
 	return names
+}
+
+// BoundPeerNames returns the id/name of every bound peer in peer order — peers[0] is the
+// embedded primary ("" on the single-peer edge/hub, or the first configured peer's name on a
+// multi-peer concentrator), followed by each peer registered via AddConcentratorPeer. It is an
+// observability accessor over the bound peer set the concentrator wiring builds; it takes m.mu
+// so it never races peer registration.
+func (m *Multipath) BoundPeerNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, len(m.peers))
+	for i, p := range m.peers {
+		names[i] = p.name
+	}
+	return names
+}
+
+// PeerVirtEndpoints returns each bound peer's STABLE virtual endpoint (invariant A1: one per
+// peer), in peer order. Each is a DISTINCT pointer pinned for the peer's whole life, so the
+// engine attributes return traffic to the right peer and Send routes replies back through it.
+// Observability accessor; it takes m.mu so it never races peer registration.
+func (m *Multipath) PeerVirtEndpoints() []Endpoint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	eps := make([]Endpoint, len(m.peers))
+	for i, p := range m.peers {
+		eps[i] = p.virt
+	}
+	return eps
 }
 
 // PathTraffic is a consistent per-path traffic+telemetry snapshot (T23): the OUTER-

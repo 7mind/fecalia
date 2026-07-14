@@ -263,19 +263,50 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		}
 	}()
 
-	// One live *telemetry.Prober per path drives on-wire liveness. The SAME prober
-	// values back the scheduler's PathHealth AND the bind's probe transport, so the
-	// liveness the probe loop measures is exactly the liveness the scheduler selects
-	// on (T37 replaces the sched.AlwaysUp placeholder here).
-	scheduler, probers, newProber, err := buildScheduler(cfg, clg)
+	// One random per-boot probe session id, shared by every path AND every configured peer (it
+	// identifies THIS boot, not a path or peer): a peer restart presents a new id that resets
+	// the surviving responder's anti-replay high-water so liveness recovers (T38, D12), and a
+	// runtime-added path (T30) reuses it so its probes join this boot's stream.
+	sessionID, err := telemetry.NewSessionID(rand.Reader)
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: new probe session id: %w", err)
+	}
+	// PeerIdentities is the SINGLE place the single-peer/multi-peer effective-PSK decision is
+	// made (G4): for a single-peer config every identity's PSK is the top-level psk; for a
+	// multi-peer concentrator each is that peer's own psk. Its order matches cfg.WireGuard.Peers
+	// (and thus uapiConfig's peer render), so the engine peer set and the Bind peer set agree.
+	ids := cfg.PeerIdentities()
+	// The primary peer (peers[0]) drives on-wire liveness through the SAME prober values that
+	// back its scheduler's PathHealth (T37). It is keyed on the FIRST identity's effective psk:
+	// the top-level psk for a single-peer config (byte-identical to pre-G4), or peer 0's own psk
+	// for a multi-peer concentrator.
+	scheduler, probers, newProber, err := buildScheduler(cfg, ids[0].PSK, sessionID, clg)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, cfg.PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia)
+	mpBind, err := bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
+	}
+	// Concentrator per-peer wiring (G4/T93): register each ADDITIONAL configured peer with its
+	// OWN prober set, scheduler, and prober factory (all keyed on that peer's effective psk),
+	// BEFORE dev.Up drives the bind's Open — which builds each registered peer's per-(peer,path)
+	// view of every bound socket, reconciles its scheduler, and reports its stable virtual
+	// endpoint to the engine (A1). A single-peer config has exactly one identity, so this loop
+	// is empty and the wiring stays byte-identical to the pre-G4 single-peer path.
+	for _, id := range ids[1:] {
+		psched, pprobers, pfactory, perr := buildScheduler(cfg, id.PSK, sessionID, clg)
+		if perr != nil {
+			_ = tunDev.Close()
+			return nil, fmt.Errorf("device: build scheduler for peer %q: %w", id.Name, perr)
+		}
+		if perr := mpBind.AddConcentratorPeer(id.Name, id.PSK, psched, pprobers, pfactory); perr != nil {
+			_ = tunDev.Close()
+			return nil, fmt.Errorf("device: wire concentrator peer %q: %w", id.Name, perr)
+		}
 	}
 	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level))
 
@@ -648,15 +679,24 @@ func adaptiveFECConfig(f config.FEC) *adaptivefec.Config {
 	return &c
 }
 
-// buildScheduler constructs one live *telemetry.Prober per path and the P1
-// active-backup send scheduler over them, in cfg.Paths' configured priority order
-// (index 0 = the preferred primary). The returned probers ARE the scheduler's
-// PathHealth sources (a *Prober is internally synchronized, satisfying the
-// PathHealth concurrency contract — a bare *Liveness would not) and are handed to
-// the bind so the probe transport drives the very same liveness the scheduler
-// selects on. This replaces the T15 sched.AlwaysUp placeholder with real on-wire
-// failover (T37).
-func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, bind.ProberFactory, error) {
+// buildScheduler constructs ONE peer's boot-time per-path prober set, its runtime prober
+// factory, and the send scheduler over them — ALL keyed on that peer's effective psk (R72) —
+// in cfg.Paths' configured priority order (index 0 = the preferred primary path). The returned
+// probers ARE the scheduler's PathHealth sources (a *Prober is internally synchronized,
+// satisfying the PathHealth concurrency contract — a bare *Liveness would not) and are handed
+// to the bind so the probe transport drives the very same liveness the scheduler selects on
+// (T37 replaces the T15 sched.AlwaysUp placeholder with real on-wire failover).
+//
+// The single-peer edge/hub/concentrator calls this once (psk = the top-level effective psk, so
+// the wiring is byte-identical to pre-G4); a multi-peer concentrator calls it once per
+// configured peer, each with that peer's OWN effective psk, so one peer's probers/reflector
+// authenticate under a DIFFERENT key and reject another peer's frames (T84). sessionID is the
+// per-boot probe session id — it identifies THIS boot, not a path or peer — shared by every
+// path AND every peer: each peer's reflector keys anti-replay under its own psk, so a shared
+// session id never conflates two peers' probe streams, and a runtime-added path (T30) reuses it
+// so its probes join this boot's stream and the peer's reflector adopts them without a
+// challenge reset.
+func buildScheduler(cfg *config.Config, psk config.Key, sessionID uint64, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, bind.ProberFactory, error) {
 	clock := telemetry.SystemClock{}
 	proberCfg := telemetry.ProberConfig{
 		LossWindow: telemetry.DefaultLossWindow,
@@ -665,20 +705,11 @@ func buildScheduler(cfg *config.Config, lg log.Logger) (sched.Scheduler, []*tele
 			UpAfterSuccesses: telemetry.DefaultUpSuccesses,
 		},
 	}
-	// One random per-boot session id shared by every path's Prober (it identifies
-	// this boot, not the path): a peer restart presents a new session id that resets
-	// the surviving responder's anti-replay high-water so liveness recovers (T38, D12).
-	// A runtime-added path (T30) reuses the SAME session id, so its probes join this
-	// boot's stream and the peer's reflector adopts them without a challenge reset.
-	sessionID, err := telemetry.NewSessionID(rand.Reader)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	// newProber mints one path's Prober with the shared session/config/clock. It is
-	// the single construction point for boot-time AND runtime paths, so both measure
-	// liveness identically.
+	// newProber mints one path's Prober with the shared session/config/clock, keyed on THIS
+	// peer's psk. It is the single construction point for this peer's boot-time AND runtime
+	// paths, so both measure liveness identically.
 	newProber := func(name string, id uint8) *telemetry.Prober {
-		return telemetry.NewProber(name, id, sessionID, cfg.PSK, proberCfg, clock, lg)
+		return telemetry.NewProber(name, id, sessionID, psk, proberCfg, clock, lg)
 	}
 	probers := make([]*telemetry.Prober, len(cfg.Paths))
 	health := make([]sched.PathHealth, len(cfg.Paths))

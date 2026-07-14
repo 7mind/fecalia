@@ -28,12 +28,18 @@ func (m *Multipath) emitProbes() {
 		ps *peerPathState
 		pr *telemetry.Prober
 	}
+	// Probe EVERY bound peer's paths (T93): a concentrator initiates its own probe stream to
+	// each edge over that edge-peer's per-(peer,path) prober, so every peer's liveness/RTT is
+	// measured for its OWN scheduler. On the single-peer edge/hub m.peers holds only the
+	// primary, so this is byte-identical to the pre-split single-peer sweep.
 	targets := make([]target, 0, len(m.paths))
-	for _, ps := range m.paths {
-		if ps.prober == nil {
-			continue
+	for _, p := range m.peers {
+		for _, ps := range p.paths {
+			if ps.prober == nil {
+				continue
+			}
+			targets = append(targets, target{ps: ps, pr: ps.prober})
 		}
-		targets = append(targets, target{ps: ps, pr: ps.prober})
 	}
 	m.mu.Unlock()
 
