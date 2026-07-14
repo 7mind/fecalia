@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 50
+  item: 55
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -578,15 +578,16 @@ archives:
 
 ## M28
 
-### Q44 — open
+### Q44 — answered
 
 - createdAt: 2026-07-14T08:57:18.103Z
-- updatedAt: 2026-07-14T08:57:18.103Z
-- author: fable-5
+- updatedAt: 2026-07-14T12:01:26.625Z
+- author: user
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - question: "D35 (0.0.0.0/0 handshake wedge): read-only investigation is exhausted and the production path is already mitigated (T107 split shield). Localizing the residual upstream-engine wedge requires a PRIVILEGED 3-arm handshake repro that the sandbox cannot run (no CAP_NET_ADMIN for netns) — it must run on the e2e hosts (o3.7mind.io + llm-ubuntu-0, the G2 pattern). Authorize/queue that privileged repro (drive a real WG handshake with a LITERAL /0 in the UAPI set bypassing the split, vs /32, vs the /1+/1 split; amneziawg-go verbose + pcap on the receiver; also pin o3's actual amneziawg-go commit vs go.mod v1.0.4), OR confirm the split shield is a sufficient disposition and D35 can be closed against the shield with the upstream engine bug tracked separately."
 - context: "H1 adjudged uncertain: the T107 shield is CONFIRMED (device.go:1071-1080/1052-1060, unconditional split before UAPI render — config /0 can no longer reach the engine). The originally-stated trie-zero-length mechanism is RULED OUT against amneziawg-go v1.0.4 (allowedips insert/lookup handle cidr==0 cleanly; the handshake-response path never consults the trie — receive.go:400-417/521-543). The runtime wedge is real but unlocalized read-only; it needs the privileged repro above. No shipped e2e reproduces it (default_route_test.go asserts route wiring only)."
 - ledgerRefs: ["defects:D35"]
+- answer: This is not a question - you have access to the hosts in question and can run privileged tests on them. Keep in mind that o3 has a production instance, use another port/device to run your tests.
 
 ## M48
 
@@ -667,3 +668,65 @@ archives:
 - recommendation: Option 1. It reuses the existing snapshot plumbing verbatim, gives the 'live link quality' feel via client-side sparklines, and loses nothing that matters on page reload; server-side history can be a follow-up if wanted.
 - ledgerRefs: ["goals:G12"]
 - answer: as recommended
+
+## M50
+
+### Q51 — open
+
+- createdAt: 2026-07-14T12:16:25.034Z
+- updatedAt: 2026-07-14T12:16:25.034Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- question: "Item 3(ii) 'latency/priority class so control/probe/ICMP frames aren't dropped under pacer overload': what is the ACTUAL in-scope traffic, given wanbond cannot see inside the encrypted WG tunnel? Confirm the scope split so I can write feasible tasks."
+- context: "The pacer's only frame-type signal is FrameClass = ClassData | ClassControl (internal/sched/scheduler.go). ClassControl (WG handshake/keepalive) is ALREADY pacing-exempt (D22), which is also what G2 CORE-SCOPE-1 validates ('pacing does not starve WireGuard control frames'). Your empirical '~38% ICMP loss under overload' almost certainly refers to ICMP carried INSIDE the tunnel: to wanbond that is opaque ClassData (encrypted WG transport) indistinguishable from bulk data, so wanbond CANNOT give inner ICMP a priority lane without plaintext DPI before encryption (out of architecture). What IS addressable and wanbond-visible: (a) wanbond's OWN telemetry PROBE frames (frame.KindProbe) being shed by the pacer under overload, which would cause spurious path-DOWN / failover flaps; (b) a generic small-frame / low-rate priority lane for ClassData (heuristic, since inner type is invisible). Which of these does item 3(ii) mean, and is inner-ICMP prioritization explicitly OUT of scope?"
+- suggestions: ["Scope item 3(ii) to protecting wanbond-generated PROBE frames from pacer shedding (add a probe/priority class so overload can't induce spurious path-down), and EXCLUDE inner-ICMP prioritization as architecturally infeasible (document why).","Add BOTH a probe-protection class AND a generic small-frame/low-rate ClassData priority lane (best-effort, since inner type is opaque), excluding inner-ICMP as out of scope.","Something else / inner-ICMP really was OUTER host traffic competing on the netns link (then wanbond cannot prioritize it either) - clarify the empirical setup."]
+- recommendation: "Option 1: protect PROBE frames (wanbond-visible, real operability impact - prevents pacer overload from faking path-down), and explicitly document inner-ICMP prioritization as out of scope because the tunnel payload is opaque to the pacer."
+- ledgerRefs: ["goals:G13"]
+
+### Q52 — open
+
+- createdAt: 2026-07-14T12:16:37.613Z
+- updatedAt: 2026-07-14T12:16:37.613Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- question: "Item 2 capacity-sanity guard: should selecting policy=\"weighted\" with a per_path_capacity_fps the declared link can never approach be a HARD config-load FAILURE (fail-fast, refuse to start) or a startup WARN (log + metric, still runs)? And what is the exact trip criterion?"
+- context: "Today per_path_capacity_fps defaults to a synthetic 10000 (~115 Mbit/s); on a low-throughput/CPU-bound edge, EngageFraction*PerPathCapacity is never reached so aggregation is silently inert (you had to hand-set 250). A precise, testable trip rule is needed. Candidate criterion using the existing SizePacingFromBDP helper: when weighted is selected AND link_bandwidth is declared, compute impliedCapacityFPS = link_bandwidth/(8*avgWireFrameBytes); if the configured EngageFraction*per_path_capacity_fps exceeds impliedCapacityFPS (aggregation mathematically cannot engage at line rate), trip the guard. Open sub-question: if weighted is selected but link_bandwidth is NOT declared, is that itself a WARN/FAIL (no way to sanity-check), or allowed? 'Fail-loud' in your text is ambiguous between a hard fail and a loud warning."
+- suggestions: ["Hard config-load FAILURE (fail-fast per project guidelines): weighted + a capacity the declared link cannot approach refuses to start with an actionable error; weighted + undeclared link_bandwidth also fails (cannot verify).","Startup WARN only (log line + a wanbond_weighted_capacity_sane gauge=0): never blocks startup, surfaces the misconfig for the operator/dashboard to catch.","WARN when link_bandwidth is undeclared, but FAIL when it IS declared and the numbers prove aggregation can never engage."]
+- recommendation: "Option 3: a declared-bandwidth contradiction is a determinable misconfiguration -> fail fast (matches the repo's fail-fast/validate-at-boundary discipline); an undeclared bandwidth can only be WARNed since there is nothing to check against. This also dovetails with the metric from item 1."
+- ledgerRefs: ["goals:G13"]
+
+### Q53 — open
+
+- createdAt: 2026-07-14T12:16:52.104Z
+- updatedAt: 2026-07-14T12:16:52.104Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- question: "Boundary with G2/Q20: G2 already OWNS (by its locked Q20 decision) auto-wiring SizePacingFromBDP from operator-declared per-link bandwidth PLUS documenting BDP sizing - but that work is NOT yet materialized as tasks (G2's M14/M16/M17 are empty). Does G13 restrict item 2 to only the WARN/FAIL capacity-sanity guard + item 1 observability (deferring the actual auto-derive/auto-wire AND the item 3(a) BDP-sizing docs to G2), or should G13 own the auto-derive/docs too since G2 hasn't decomposed them?"
+- context: "G2 is `planned`; its grounding records 'Q20 pacing = BOTH (wire SizePacingFromBDP from operator-declared per-link bandwidth + document measurement)'. G2 milestones M13 (tolerant startup) and M15 (hub failover) are done, but M14/M16/M17 hold no tasks - so the pacing-sizing + real-link + runbook scope exists as INTENT only. Your goal text says 'if item 2's auto-derive or item 3(a)'s sizing docs would duplicate a G2 task, reference the G2 task instead of restating it' - but there is no G2 task to reference yet. So the dedup must be resolved at the goal-ownership level: either (A) G13 stays operability-only (guard + metric + probe class) and G2 later owns the auto-derive + BDP docs, or (B) G13 absorbs the auto-derive + docs because they are prerequisite to G13's guard and G2 has not claimed them concretely."
+- suggestions: ["A - G13 stays operability-only: capacity-sanity WARN/FAIL guard (item 2), wanbond_aggregation_engaged + offered-load metrics (item 1), and the probe/priority class (item 3(ii)). The per_path_capacity_fps auto-derive from link_bandwidth and the BDP-sizing docs (item 3(a)) remain G2/Q20 and are only REFERENCED here.","B - G13 owns auto-derive + BDP docs too (fold Q20's pacing-sizing into G13 since G2 left it undecomposed), and G2's Q20 pacing-sizing scope is retired/redirected to avoid duplication.","C - G13 owns the runtime guard AND the auto-derive wiring, but the BDP-sizing DOCUMENTATION (install.md §3a / item 3(a)) stays with G2's doc task."]
+- recommendation: "A: keep G13 crisply operability-scoped (guard + observability + probe class); leave the auto-derive wiring and BDP docs to G2's Q20 owner. If G2's pacing-sizing is later dropped, raise a follow-up rather than silently double-owning it now. This keeps the two goals' scopes disjoint and avoids re-planning G2's locked decision."
+- ledgerRefs: ["goals:G13"]
+
+### Q54 — open
+
+- createdAt: 2026-07-14T12:17:05.130Z
+- updatedAt: 2026-07-14T12:17:05.130Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- question: Item 1 observability - metric SHAPE and cardinality. The weighted scheduler is per-PEER (one scheduler per bound peer). For wanbond_aggregation_engaged (bool) and the offered-load-vs-threshold series, what label cardinality, and should engage/disengage ALSO emit a transition log line?
+- context: "The scheduler already holds all the state (s.aggregating, loadRate EWMA, EngageFraction/DisengageFraction*PerPathCapacity) but exposes NONE to the metrics Source/Collector (internal/metrics). Existing Prometheus series are labeled per-path (labelPath) or per-peer (labelPeer, used by FEC/resequencer). Aggregation is a per-peer-scheduler property, not per-path. Options for the numeric 'offered load vs threshold' visibility: expose (a) wanbond_offered_load_fps gauge, (b) the engage + disengage threshold gauges (fps), so a dashboard can plot load against both bands directly. Separately, liveness/failover already log transitions (path up/down, active-path change); an engage/disengage transition log line would give the same operability for the aggregation gate ('configured but inert' becomes visible in logs too, not only /metrics)."
+- suggestions: ["Per-peer label (labelPeer), matching the FEC/resequencer per-peer series: wanbond_aggregation_engaged{peer} plus wanbond_offered_load_fps{peer} and static wanbond_aggregation_engage_threshold_fps{peer}/..._disengage_threshold_fps{peer}; AND log an INFO transition on every engage<->disengage flip (parity with liveness transitions).","Same metrics but UNLABELED/global (assume the common single-peer edge) to keep cardinality minimal; still log transitions.","Bool gauge only (wanbond_aggregation_engaged{peer}) + transition log, WITHOUT the extra offered-load/threshold gauges (leave load visibility to logs)."]
+- recommendation: "Option 1: per-peer labels (consistent with existing per-peer series and correct on a multi-peer concentrator), expose offered-load + both threshold gauges so 'inert because load never crosses the band' is directly graphable, and add the engage/disengage transition log for parity with liveness. This most directly kills the 'configured but silently inert' blind spot you hit."
+- ledgerRefs: ["goals:G13"]
+
+### Q55 — open
+
+- createdAt: 2026-07-14T12:17:19.822Z
+- updatedAt: 2026-07-14T12:17:19.822Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- question: "Acceptance-harness constraints: each task must be 'reproducible on a bandwidth-capped netns fixture'. Should per-task acceptance be netns e2e tests under `-tags e2e` (privileged, `just e2e`), or default-tag unprivileged unit/integration tests where the behavior allows? And does TestFixtureImpairment (T35) already support the three things these acceptances need - bandwidth cap, /metrics scrape of the new gauges, and injecting a competing/probe-starvation flow - or is extending the fixture itself a task in this plan?"
+- context: "The definition-of-done here is `go test` GREEN plus `just lint` across default+e2e+realhosts tags (per project memory: a test-only view once reddened main's lint gate). Much of item 1 (metric wiring) and item 2 (config-load guard) is testable UNPRIVILEGED at the unit level (metrics.Exposition scrape helper exists; config.validate is pure); only the empirical engage/starvation behavior (aggregation actually engaging under load; the probe/pacer-overload starvation from item 3(ii)) needs the capped netns fixture. TestFixtureImpairment (test/e2e/fixture_impairment_test.go) exposes rateMbit/lossPct capping, and metrics.Fetch scrapes /metrics, but it is unclear whether it can drive a sustained overload that flips wanbond_aggregation_engaged AND concurrently observe probe/small-frame starvation - if not, a fixture-extension task is needed as a dependency."
+- suggestions: ["Prefer unprivileged default-tag unit/integration acceptance wherever the behavior permits (metric registration+values, config-load guard), and use `-tags e2e` netns fixture acceptance ONLY for the empirical engage-under-load and pacer-starvation tasks; add an explicit fixture-extension task if TestFixtureImpairment can't yet drive sustained overload + observe probe starvation.","All acceptance via `-tags e2e` netns fixture for uniformity (heavier, privileged, but end-to-end).","Unit-only wherever possible and treat the empirical netns validations as report-only (M10/Q12-style, non-gating), mirroring G2's real-link tier."]
+- recommendation: "Option 1: push acceptance to the cheapest level that still verifies the behavior (unit for metric/guard, e2e only for the load-dependent effects), and make any needed TestFixtureImpairment extension an explicit up-front task other tasks depend on - so no task's acceptance is blocked on fixture capability that doesn't exist yet."
+- ledgerRefs: ["goals:G13"]

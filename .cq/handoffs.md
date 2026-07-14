@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 17
+  item: 18
 archives: []
 ---
 
@@ -248,3 +248,18 @@ archives: []
 - blockingQuestions: ["Q45","Q46","Q47","Q48","Q49","Q50"]
 - sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
 - rawLogs: [".cq/logs/raw/20260714-114510-a2014552ac2ffb804.jsonl"]
+
+## M50
+
+### HO18 — answers-required
+
+- createdAt: 2026-07-14T12:18:55.230Z
+- updatedAt: 2026-07-14T12:18:55.230Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- summary: "/cq:plan bootstrapped goal G13 'Operability & safety for weighted aggregation + pacing' (milestone M50) into `clarifying` from empirical findings testing policy=\"weighted\" with pacing on/off. Three operability gaps: (1) aggregation-engagement observability — add `wanbond_aggregation_engaged` metric + EWMA-offered-load-vs-threshold signal so \"configured but inert\" (default per_path_capacity_fps=10000 never engages on a CPU-bound edge) is visible; (2) capacity-sizing safety — auto-derive per_path_capacity_fps from declared link_bandwidth OR warn/fail-loud, tied to install.md §3a BDP sizing; (3) pacing on/off tradeoff docs + a latency/priority class so small control frames aren't starved (measured ~38% loss on a concurrent ICMP flow under pacer overload). The plan-advance planner grounded against the repo and filed 5 clarifying questions Q51-Q55 (open, linked goals:G13). Key findings surfaced: the '38% ICMP loss' is likely INNER-tunnel ICMP (opaque ClassData to the pacer — no priority lane possible); the wanbond-addressable target is PROBE-frame (KindProbe) starvation (Q51); G2's Q20 pacing-sizing decision is recorded but UNMATERIALIZED (M14/M16/M17 empty) so G2/G13 ownership must be settled at goal level (Q53); the weighted scheduler already computes aggregation-gate state (s.aggregating, EWMA loadRate, thresholds) but is per-PEER, making `wanbond_aggregation_engaged` cardinality a real design decision (Q54). Auto-investigate worklist EMPTY by ledger query (no open defect links goals:G13). NEXT: user answers Q51-Q55 in the TUI/web (set each to answered with a non-empty answer), then runs /cq:plan:advance G13 to plan the task DAG. Blocked on user answers."
+- flow: plan
+- ledgerRefs: ["goals:G13"]
+- blockingQuestions: ["Q51","Q52","Q53","Q54","Q55"]
+- sessionLogs: [".cq/logs/20260714-121742-a7376892a4d9f68f5.md"]
+- rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl"]

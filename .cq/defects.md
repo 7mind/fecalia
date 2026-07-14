@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 64
+  item: 65
 archives: []
 ---
 
@@ -487,12 +487,12 @@ archives: []
 
 ## M28
 
-### D35 — inconclusive
+### D35 — wip
 
 - createdAt: 2026-07-13T22:48:19.299Z
-- updatedAt: 2026-07-14T08:57:08.582Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- updatedAt: 2026-07-14T12:02:29.786Z
+- author: "opus-4.8[1m]"
+- session: be1a85fd-55c8-4654-ae42-672792fc0238
 - headline: allowed_ips = 0.0.0.0/0 wedges the WG handshake — full-tunnel config never establishes
 - severity: high
 - description: "[fixes-doc D1, S1 — production deploy, real hardware, bisected and confirmed.] With the concentrator peer's `allowed_ips = [\"0.0.0.0/0\"]` on the edge, the WG handshake NEVER completes — even fresh-restarting BOTH ends and waiting minutes (edge tx≈0; o3 rx floods to 2.3 MB with tx 9 KB, i.e. o3 receives but never answers; no handshake ever logged). Reverting the SAME peer to a concrete prefix (`10.77.0.1/32`) establishes in ~25 s, deterministically. The split default `[\"0.0.0.0/1\",\"128.0.0.0/1\"]` also works. The virtual-endpoint design (the engine never holds the real 89.168.124.91) rules out an endpoint routing loop, so the cause is a `0.0.0.0/0`-specific path — amneziawg-go allowed-ip trie or a wanbond special-case. This silently breaks the single most common full-tunnel config. Observed asymmetry suggests the RECEIVING side (o3) drops/never responds when the initiating peer carries the /0 allowed-ip — investigate the allowed-ips trie insert/lookup for the zero-length prefix and any wanbond handling of the peer allowed_ips."
@@ -914,3 +914,28 @@ archives: []
 - severity: medium
 - suggestedFix: Make ObserveRecovered refuse to anchor an unstarted ring (drop the recovered frame and return false when !started) so only a natively-received frame can pin the release point after any unpin; add a Rebaseline-then-ObserveRecovered regression test. Coordinate with T119's fix for the analogous RebaselineToLow-armed ObserveRecovered bypass (same seam).
 - ledgerRefs: ["tasks:T119","defects:D36"]
+
+## M49
+
+### D65 — wip
+
+- createdAt: 2026-07-14T12:11:27.104Z
+- updatedAt: 2026-07-14T12:11:58.639Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: Tunnel single-flow throughput plateaus at ~3.67 Mbps with loss/reorder-limited TCP and ~1s bufferbloat under load
+- severity: high
+- description: |
+    Root-cause the tunnel's low single-flow throughput and its loss/bufferbloat under load.
+    
+    **Observations (Pi 4 edge, Starlink active path ~40 ms RTT, o3 concentrator):**
+    - Single-stream **TCP** through the tunnel plateaus at **~3.67 Mbps**, with `cwnd` stuck at ~30 KB and **13 retransmits / 10 s** — i.e. loss/reordering-limited, not a clean rate cap.
+    - **UDP** offered at 8 Mbps delivers ~6.9 Mbps at **13% datagram loss** with the queue building to **~1 s loaded RTT** (idle ~40 ms).
+    - Plain WireGuard on aarch64 normally does far more than 3.67 Mbps, so the ceiling and the retransmit pattern warrant explanation.
+    
+    **Investigate — isolate the ceiling's source and any fixable inefficiency:**
+    1. Separate the three candidate limiters with measurements: (a) direct iperf3 over the same WAN (no tunnel) = WAN ceiling; (b) tunnel over the WAN = end-to-end; (c) a loopback / netns tunnel (no WAN) = pure CPU/codec ceiling. Attribute the gap.
+    2. If CPU-bound: profile the send path — WG crypto vs reed-solomon FEC encode vs the bonding DATA-frame codec (`internal/bind/`) vs the userspace TUN read/write copy. Look for per-frame allocation, absence of send batching / GSO, single-goroutine serialization, or an XChaCha20/FEC hot loop.
+    3. If loss/reorder-bound: is the loss introduced by the tunnel (framing/FEC/scheduler) or by the WAN? Check MSS clamping on `wanbond0` (inner MTU 1400 → is TCP fragmenting/PMTU black-holing?), and whether active-backup ever briefly reorders at path selection.
+    
+    Deliverable: a profile + the dominant cost, whether ~3.67 Mbps is the true CPU/WAN ceiling or an inefficiency, and a concrete fix candidate (batching, buffer reuse, MSS clamp) with the expected gain.

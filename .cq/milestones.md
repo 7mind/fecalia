@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 48
+  item: 50
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -340,3 +340,16 @@ archives:
 - updatedAt: 2026-07-14T11:41:36.409Z
 - title: "Plan: live monitoring web UI (edge + concentrator)"
 - description: "Coordination milestone for the plan-flow goal: embedded live-monitoring webpage with WebSocket status updates (link quality/peer/loss/RTT/FEC) on both edge and concentrator, plus local-API authorization hardening."
+
+### M49 — open
+
+- createdAt: 2026-07-14T12:11:13.644Z
+- updatedAt: 2026-07-14T12:11:13.644Z
+- title: "Investigate: low-throughput-loss-bufferbloat"
+
+### M50 — open
+
+- createdAt: 2026-07-14T12:13:11.545Z
+- updatedAt: 2026-07-14T12:13:11.545Z
+- title: "Plan: weighted-mode operability & pacing safety"
+- description: "Coordination milestone for the plan-flow goal covering operability gaps found while testing policy=\"weighted\" with pacing on/off: aggregation-engagement observability, capacity-sizing safety (warn-loud/auto-derive), and the pacing on/off tradeoff (docs + a latency/priority class for control frames). Groups the goal, its clarifying questions, reviews, and the approval decision."

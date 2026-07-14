@@ -2,7 +2,7 @@
 ledger: hypothesis
 counters:
   milestone: 0
-  item: 3
+  item: 8
 archives: []
 ---
 
@@ -48,3 +48,55 @@ archives: []
 - evidence: ["[correct] pathsock.go:136-139 — auto heuristic device-binds (SO_BINDTODEVICE, wildcard src) exactly a one-address (familyCount==1) one-path (devPaths==1) interface: the VLAN-per-WAN collision with `ip rule from <source>` is real. VALIDATED against source.","[correct] pathsock.go:127-130 — BindModeSource leaves out[i]=\"\" unconditionally (\"the D38 escape hatch\"), so listenPath pins the source IP and never device-binds: the fix. VALIDATED against source (exact match).","[correct] multipath.go:746-752 — Open builds modes[] from m.defs[i].Bind and passes to planPathBinds→selectDeviceBinds: the toggle is consumed at runtime. VALIDATED against source (exact match).","[correct] multipath.go:613-627 — NewMultipath stores the normalize()-resolved config.Path (incl. Bind) into m.defs: closes config→runtime.","[correct] config.go:84-96,840-849 — BindMode source/device/auto validated; auto is the default; per-path override beats top-level default. Only the explicit toggle shipped (no auto-detection).","[correct] install.md §3b (:499-585, shipped T112) — documents the D38 collision + the `ip rule add oif <dev> table N` recipe + the bind toggle.","[correct] config.go:78-81,488-494 — stale 'not yet consumed by planPathBinds/selectDeviceBinds' comments (now false) = the already-filed D60."]
 - sessionLogs: [".cq/logs/20260714-085530-a6ed9f2c043a11557.md"]
 - rawLogs: [".cq/logs/raw/20260714-085530-a6ed9f2c043a11557.jsonl"]
+
+## M49
+
+### H4 — open
+
+- createdAt: 2026-07-14T12:12:54.877Z
+- updatedAt: 2026-07-14T12:12:54.877Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "H-A: No MSS clamping on wanbond0 — inner MTU 1400 (minus FEC parity penalty) not enforced on TCP, so full-size segments fragment over the underlay or hit a PMTUD black-hole, causing per-segment loss + retransmits"
+- description: "TRUE if: the wanbond0 device / setup does NOT install a TCP MSS clamp (iptables TCPMSS --clamp-mss-to-pmtu or --set-mss, or an in-tunnel clamp) matching the effective inner MTU (1400 minus FECParityMTUPenalty when FEC enabled); AND inner TCP therefore emits segments that exceed the tunnel payload budget, forcing IP fragmentation (whole-datagram loss on any fragment drop) or PMTUD black-holing (ICMP frag-needed dropped). This directly explains loss-limited TCP with cwnd stuck ~30KB and 13 retx/10s. Leads: internal/bind/mtu.go (InnerMTU, FECParityMTUPenalty, DefaultPathMTU=1500, references docs/p1-mtu.md MSS-clamping guidance), internal/bind/classify.go, cmd/ + internal/device (wanbond0 link setup), docs/p1-mtu.md."
+- ledgerRefs: ["defects:D65"]
+
+### H5 — open
+
+- createdAt: 2026-07-14T12:13:01.248Z
+- updatedAt: 2026-07-14T12:13:01.248Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "H-B: The bonding scheduler reorders packets (active-backup failover flaps or weighted/multipath striping across paths of unequal RTT), and the resequencer's reorder window is too small, so TCP sees dup-ACKs → spurious fast-retransmit → cwnd collapse"
+- description: "TRUE if: the active-backup path selector briefly emits packets on two paths during a switch, OR a weighted/striping scheduler spreads a single flow across paths with differing one-way delay, producing out-of-order arrival at the concentrator that exceeds the resequencer's buffering/timeout, so reordered (not lost) packets are delivered late/dropped and TCP interprets them as loss. Explains 13 retx/10s + cwnd stuck without true WAN loss. Leads: internal/sched/active_backup.go, weighted.go, scheduler.go, internal/reseq/reseq.go (reorder buffer depth/timeout), internal/bind/multipath.go (path selection & send)."
+- ledgerRefs: ["defects:D65"]
+
+### H6 — open
+
+- createdAt: 2026-07-14T12:13:13.133Z
+- updatedAt: 2026-07-14T12:13:13.133Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "H-C: CPU-bound send path — single-goroutine serialized DATA-frame codec + per-frame heap allocation + no send batching/GSO, so XChaCha20 + reed-solomon per 1400B frame caps encode throughput on the Pi 4, filling an internal queue that then tail-drops"
+- description: "TRUE if: the TUN→frame→FEC→WG→socket send path serializes on one goroutine and allocates per frame (no buffer pool), and issues one syscall per packet (no sendmmsg/GSO/writev batching), so aggregate encode+send throughput on aarch64 (Pi 4) is capped near ~3.67 Mbps regardless of WAN. The ceiling being far below plain-WireGuard aarch64 throughput points here. Distinguish from H-E: this is CPU cost per frame, not bandwidth overhead. Leads: internal/bind/multipath.go (send loop / goroutine structure), internal/frame, internal/fec/encoder.go (RS encode hot loop, allocations), internal/device (TUN read/write copy), any make([]byte, ...) per-frame allocs. Profile: pprof CPU during a loopback/netns transfer."
+- ledgerRefs: ["defects:D65"]
+
+### H7 — open
+
+- createdAt: 2026-07-14T12:13:20.148Z
+- updatedAt: 2026-07-14T12:13:20.148Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "H-D: Bufferbloat — an oversized/unbounded internal TX (or reorder) queue with drop-tail and no AQM/BDP bound; the ~1s loaded RTT (idle 40ms) + 13% UDP loss at only 8Mbps offered is the classic oversized-buffer + tail-drop signature"
+- description: "TRUE if: a send-side or resequencer queue is sized in fixed packets/bytes far exceeding the path BDP (~40ms × link rate) with plain drop-tail and no CoDel/AQM, so under load it fills to ~1s of standing queue (matches observed loaded RTT) and then tail-drops ~13% of datagrams. This is a queue-management defect independent of whatever sets the rate ceiling. Leads: channel/queue construction in internal/bind (send queues), internal/reseq/reseq.go (reorder buffer depth & drop policy), internal/sched (per-path queues), any make(chan ..., N) with large N or unbounded slice-backed queues. Check for absence of AQM/pacing."
+- ledgerRefs: ["defects:D65"]
+
+### H8 — open
+
+- createdAt: 2026-07-14T12:13:27.755Z
+- updatedAt: 2026-07-14T12:13:27.755Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "H-E: FEC redundancy consumes underlay goodput and/or the adaptive FEC controller over-provisions parity — reed-solomon parity frames eat WAN capacity (goodput ≪ offered) and FEC decode adds a reorder/latency window that amplifies apparent loss"
+- description: "TRUE if: FEC is enabled by default on the active path and the code rate (data:parity) is low enough that parity frames consume a large fraction of underlay bandwidth, so goodput is a fraction of raw WAN capacity (could explain ~3.67 Mbps if effective rate is ~50%); OR the adaptive FEC controller ramps parity up under the very loss it should mask, wasting more capacity; OR the FEC decoder's block-completion wait injects latency/reordering that TCP reads as loss. Distinguish from H-C: this is bandwidth/overhead + decode-latency, not CPU cost. Leads: internal/fec/encoder.go & decoder.go (code rate, block size, parity count), internal/adaptivefec/controller.go & residual.go (parity ramp policy), internal/bind/fec.go, internal/bind/mtu.go FECParityMTUPenalty. Compare goodput with FEC on vs off."
+- ledgerRefs: ["defects:D65"]

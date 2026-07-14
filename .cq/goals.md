@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 12
+  item: 13
 archives: []
 ---
 
@@ -312,3 +312,29 @@ archives: []
 - description: "Add live monitoring capabilities to both edge and concentrator instances. We already have some sort of a metrics API; embed a simple webpage which would receive dynamic status updates over WebSocket and display live link quality/peer/loss/RTT/FEC statistics. The /resilient-ws-ui skill (guidelines for reliable WebSocket connections to a backend with clear connection-health surfacing) could help with the frontend. Important open question: how to make such an API safe against unauthorized local calls."
 - sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
 - rawLogs: [".cq/logs/raw/20260714-114510-a2014552ac2ffb804.jsonl"]
+
+## M50
+
+### G13 — clarifying
+
+- createdAt: 2026-07-14T12:13:29.796Z
+- updatedAt: 2026-07-14T12:18:25.999Z
+- author: "opus-4.8[1m]"
+- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- title: Operability & safety for weighted aggregation + pacing
+- description: |
+    Plan (task DAG + acceptance) the operability gaps found while testing policy="weighted" with pacing on and off. Both functionally worked — the single flow striped across both paths — but they are hard to operate safely.
+    
+    1. **Aggregation-engagement observability.** Weighted mode sits silently in primary-only until offered load exceeds `engage_fraction × per_path_capacity_fps`. With the default `per_path_capacity_fps = 10000` (~100+ Mbps/path) aggregation NEVER engages on a low-throughput / CPU-bound edge — the operator sees `policy="weighted"` but single-path behavior and no signal why. Add a metric + log: `wanbond_aggregation_engaged` (bool) and the current EWMA offered-load vs the engage/disengage thresholds, so "configured but inert" is directly visible. (Empirically: had to hand-set `per_path_capacity_fps = 250` to trigger aggregation at all.)
+    2. **Capacity-sizing safety.** Either auto-derive the default `per_path_capacity_fps` from measured/declared `link_bandwidth`, or warn/fail-loud when `weighted` is selected but capacity is left at a default the link cannot approach (so aggregation is silently dead). Tie the docs' BDP sizing (`install.md §3a`) to a runtime sanity check.
+    3. **Pacing tradeoff — expose & document.** Measured on/off at the same 8 Mbps offered load:
+       - pacing changed the path split — RTT-weighted 71/29 (off) → capacity-capped ~50/50 (on);
+       - pacing bounded worst-case loaded RTT to 757 ms vs 1083 ms unpaced, but cut throughput to 4.98 vs 6.93 Mbps and dropped 33% excess;
+       - under overload the pacer dropped frames indiscriminately — a concurrent ICMP flow saw ~38% loss.
+       Plan: (a) document the on/off tradeoff and how to size `per_path_capacity_fps` / `pacing_burst_frames` from BDP; (b) consider a latency/priority class so small control frames (handshake, probes, ICMP) aren't starved when the pace saturates.
+    
+    Deliverable: acceptance criteria per task; each reproducible on a bandwidth-capped netns fixture (no metered WAN needed).
+    
+    RELATIONSHIP TO G2 (planner: dedup at task level, do NOT re-plan G2's locked scope): the already-`planned` goal G2 covers broad pacing empirical BDP sizing (Q20 = wire SizePacingFromBDP from declared per-link bandwidth + document) and validates that enabled pacing does NOT starve WireGuard control frames. This goal is OPERABILITY-specific and adds three things G2 does not: (i) the `wanbond_aggregation_engaged` metric + EWMA-offered-load-vs-threshold observability; (ii) a weighted-mode capacity-sanity WARN/FAIL-LOUD guard tied to install.md §3a BDP sizing; (iii) a latency/priority class mechanism so control/probe/ICMP frames aren't dropped indiscriminately under pacer overload. If item 2's auto-derive or item 3(a)'s sizing docs would duplicate a G2/M13-M17 task, reference the G2 task instead of restating it.
+- sessionLogs: [".cq/logs/20260714-121742-a7376892a4d9f68f5.md"]
+- rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl"]
