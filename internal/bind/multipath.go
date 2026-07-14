@@ -985,7 +985,13 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 	// threshold. Tracked by readersWG (like the readers) so Close waits for it; it
 	// exits on recvClosed. It TryLocks m.mu, so it never blocks Close's readersWG.Wait
 	// held under m.mu.
-	if m.fecSend.Load() != nil {
+	// Started whenever FEC is configured at all (m.fecCfg != nil), NOT merely when the
+	// PRIMARY's fecSend has already materialized: a concentrator peer's fecSend can still
+	// be nil here and only Store lazily on its first authenticated bind
+	// (ensurePeerReceiveInstantiated), yet it must receive deadline flushes as soon as it
+	// does. Gating on m.fecSend.Load() (the primary's plane, via promotion) would leave
+	// such a peer's straggler parity stranded until the next size-triggered close (D44).
+	if m.fecCfg != nil {
 		m.readersWG.Add(1)
 		go m.fecTickLoop(m.fecCfg.Deadline, m.recvClosed)
 	}
@@ -2116,94 +2122,121 @@ func (m *Multipath) fecTickLoop(period time.Duration, closed <-chan struct{}) {
 	}
 }
 
-// fecFlushDeadline closes any FEC group whose grouping deadline has elapsed and emits
-// its parity on a scheduler-chosen path. It TryLocks m.mu: when the lock is contended
-// (a concurrent Send/Close/AddPath) it simply skips this tick — the next tick, or the
-// next size-triggered close, still emits the group's parity, and skipping preserves
-// Close's invariant that no readersWG goroutine blocks on m.mu. Framing runs under the
-// lock (the shared stateful send Codec); the socket writes run without it, mirroring
-// Send.
+// fecFlushPeerWrite is one peer's accumulated deadline-flush parity, framed under m.mu and
+// egressed after it is released (see fecFlushDeadline). Each peer contributes at most one of
+// these per tick, so a torn-down/never-instantiated peer or a peer with nothing to flush
+// simply contributes none — it never disturbs any other peer's flush.
+type fecFlushPeerWrite struct {
+	conn   *net.UDPConn
+	remote netip.AddrPort
+	ps     *peerPathState
+	fs     *fecSender
+	wires  [][]byte
+}
+
+// fecFlushDeadline closes any FEC group whose grouping deadline has elapsed, for EVERY bound
+// peer, and emits each peer's parity on that peer's OWN scheduler-chosen path (D44 — a
+// concentrator peer's straggler parity must flush on the deadline exactly like the primary's,
+// not only on the next size-triggered close). It TryLocks m.mu: when the lock is contended (a
+// concurrent Send/Close/AddPath) it simply skips this tick — the next tick, or the next
+// size-triggered close, still emits the group's parity, and skipping preserves Close's
+// invariant that no readersWG goroutine blocks on m.mu. Framing (and the adaptive drive) run
+// under the lock (each peer's send Codec/controller/encoder are shared, stateful, per-peer
+// state); the socket writes run without it, mirroring Send. A peer whose fecSend Loads nil —
+// torn down, or never lazily instantiated (ensurePeerReceiveInstantiated) — is nil-skipped
+// without affecting any other peer's flush; likewise a per-peer framing/Pick/write failure
+// only drops THAT peer's group for this tick, exactly as it did (whole-flush) before the
+// multi-peer fan-out.
 func (m *Multipath) fecFlushDeadline() {
 	if !m.mu.TryLock() {
 		return
 	}
-	fs := m.fecSend.Load()
-	if fs == nil || len(m.paths) == 0 {
-		m.mu.Unlock()
-		return
-	}
-	// Adaptive drive (T29): fold a fresh loss sample into the controller and retarget the
-	// encoder's per-group parity BEFORE flushing, so a group closed by this tick already
-	// carries the current target. It is a no-op in fixed mode and self-throttles to the
-	// probe cadence. Runs under the same m.mu the flush holds — the single serialized FEC
-	// locus — so the controller (a state machine) is never touched concurrently.
-	m.driveAdaptiveControllerLocked()
-	parity, err := fs.enc.Tick()
-	if err != nil || len(parity) == 0 {
-		m.mu.Unlock()
-		return
-	}
-	// Route the parity like data through the scheduler (a first-integration choice; see
-	// Send). A shed/no-path verdict drops this group's parity — a degraded path is
-	// exactly when the datapath is under pressure, and a stranded partial group's parity
-	// is best-effort — so the group simply goes unprotected rather than blocking. FEC
-	// parity is bulk redundancy, so it is paced as ClassData (defect D22): only WireGuard
-	// control frames earn the pacing exemption.
-	idx := m.scheduler.Pick(sched.ClassData)
-	if idx < 0 || idx >= len(m.paths) {
-		m.mu.Unlock()
-		return
-	}
-	ps := m.paths[idx]
-	remote, ok := ps.getRemote()
-	if !ok {
-		m.mu.Unlock()
-		return
-	}
-	c := ps.conn
-	wires := make([][]byte, 0, len(parity))
-	for _, par := range parity {
-		// fecFlushDeadline drives the PRIMARY peer's FEC group (m.fecSend/m.scheduler/
-		// m.paths reach the primary by promotion), so its parity is framed with the
-		// primary's send Codec.
-		pw, err := m.encodeParityLocked(m.peerState, par, ps.id)
-		if err != nil {
-			m.mu.Unlock()
-			return
+	var writes []fecFlushPeerWrite
+	for _, peer := range m.peers {
+		fs := peer.fecSend.Load()
+		if fs == nil || len(peer.paths) == 0 {
+			continue
 		}
-		wires = append(wires, pw)
+		// Adaptive drive (T29): fold a fresh loss sample into THIS peer's controller and
+		// retarget THIS peer's encoder's per-group parity BEFORE flushing, so a group closed
+		// by this tick already carries the current target. It is a no-op in fixed mode and
+		// self-throttles to the probe cadence. Runs under the same m.mu the flush holds — the
+		// single serialized FEC locus — so the controller (a state machine) is never touched
+		// concurrently.
+		m.driveAdaptiveControllerLocked(peer)
+		parity, err := fs.enc.Tick()
+		if err != nil || len(parity) == 0 {
+			continue
+		}
+		// Route the parity like data through THIS peer's scheduler (a first-integration
+		// choice; see Send). A shed/no-path verdict drops this group's parity — a degraded
+		// path is exactly when the datapath is under pressure, and a stranded partial group's
+		// parity is best-effort — so the group simply goes unprotected rather than blocking.
+		// FEC parity is bulk redundancy, so it is paced as ClassData (defect D22): only
+		// WireGuard control frames earn the pacing exemption.
+		idx := peer.scheduler.Pick(sched.ClassData)
+		if idx < 0 || idx >= len(peer.paths) {
+			continue
+		}
+		ps := peer.paths[idx]
+		remote, ok := ps.getRemote()
+		if !ok {
+			continue
+		}
+		wires := make([][]byte, 0, len(parity))
+		framingFailed := false
+		for _, par := range parity {
+			// Frame with THIS peer's own psk-derived send Codec (encodeParityLocked), so each
+			// peer's parity is decodable only under its own peer's codec — never the primary's
+			// by promotion.
+			pw, err := m.encodeParityLocked(peer, par, ps.id)
+			if err != nil {
+				framingFailed = true
+				break
+			}
+			wires = append(wires, pw)
+		}
+		if framingFailed {
+			continue
+		}
+		writes = append(writes, fecFlushPeerWrite{conn: ps.conn, remote: remote, ps: ps, fs: fs, wires: wires})
 	}
 	m.mu.Unlock()
 
-	for _, wire := range wires {
-		if _, err := c.WriteToUDPAddrPort(wire, remote); err != nil {
-			return
+	for _, w := range writes {
+		for _, wire := range w.wires {
+			if _, err := w.conn.WriteToUDPAddrPort(wire, w.remote); err != nil {
+				break // this peer's remaining shards for this tick are dropped; other peers are unaffected
+			}
+			w.ps.txBytes.Add(uint64(len(wire)))
+			w.fs.parityFrames.Add(1)
+			w.fs.parityBytes.Add(uint64(len(wire)))
 		}
-		ps.txBytes.Add(uint64(len(wire)))
-		fs.parityFrames.Add(1)
-		fs.parityBytes.Add(uint64(len(wire)))
 	}
 }
 
-// driveAdaptiveControllerLocked folds one measured loss sample into the adaptive FEC
-// controller and retargets the encoder's per-group parity (T29). Caller holds m.mu, so
+// driveAdaptiveControllerLocked folds one measured loss sample into peer's adaptive FEC
+// controller and retargets peer's encoder's per-group parity (T29). Caller holds m.mu, so
 // the controller — a state machine that is NOT safe for concurrent use — is driven from
-// this single serialized locus (the FEC tick loop), exactly as the encoder is. It is a
-// no-op in fixed-ratio mode (no controller) and self-throttles to adaptiveControlInterval
-// so the controller's EWMA sees ~one sample per probe interval regardless of the tick rate.
+// this single serialized locus (the FEC tick loop, per peer), exactly as the encoder is. It
+// is a no-op in fixed-ratio mode (no controller) and self-throttles to
+// adaptiveControlInterval so the controller's EWMA sees ~one sample per probe interval
+// regardless of the tick rate. peer is any bound peer (the embedded primary or a
+// concentrator peer) — the drive is entirely peer-scoped so one peer's control loop never
+// reads or perturbs another peer's controller/encoder/paths.
 //
 // WHICH LOSS drives the controller (design decision 1): the MAX raw probe-measured loss
-// (Estimate().Loss) across the currently-eligible (StateUp) paths. Parity must mask the
-// loss the DATA actually experiences; under active-backup only the primary carries data
+// (Estimate().Loss) across peer's own currently-eligible (StateUp) paths. Parity must mask
+// the loss the DATA actually experiences; under active-backup only the primary carries data
 // and the max collapses to it, and under the weighted scheduler data is striped across the
 // eligible set, so sizing to the worst active path is the defensible, policy-agnostic
 // choice. It is deliberately the RAW per-path loss, NOT the post-recovery ConnLoss: feeding
 // the masked residual back would form a control loop that under-provisions precisely because
 // it is succeeding. A down/probeless path is excluded — it carries no data to protect.
-func (m *Multipath) driveAdaptiveControllerLocked() {
-	fs := m.fecSend.Load()
-	if fs.ctrl == nil {
-		return // fixed-ratio mode
+func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
+	fs := peer.fecSend.Load()
+	if fs == nil || fs.ctrl == nil {
+		return // FEC off for this peer, or fixed-ratio mode
 	}
 	now := time.Now()
 	if fs.haveControlTick && now.Sub(fs.lastControlTick) < adaptiveControlInterval {
@@ -2212,7 +2245,7 @@ func (m *Multipath) driveAdaptiveControllerLocked() {
 	fs.lastControlTick = now
 	fs.haveControlTick = true
 
-	loss, have := m.maxEligiblePathLossLocked()
+	loss, have := maxEligiblePathLossLocked(peer)
 	if !have {
 		return // no eligible probed path this interval: hold the current target
 	}
@@ -2220,15 +2253,15 @@ func (m *Multipath) driveAdaptiveControllerLocked() {
 	fs.enc.SetParity(fs.ctrl.Parity())
 }
 
-// maxEligiblePathLossLocked returns the maximum raw probe-measured loss across the paths
-// that are currently StateUp and carry a prober, plus whether any such path exists. Caller
-// holds m.mu. It reads each prober's own mutex (State/Estimate) under m.mu; the prober is a
-// LEAF lock (it never calls back into the Bind), so this cannot invert the send-path
-// m.mu→scheduler→prober order the rest of the Bind takes.
-func (m *Multipath) maxEligiblePathLossLocked() (float64, bool) {
+// maxEligiblePathLossLocked returns the maximum raw probe-measured loss across peer's OWN
+// paths that are currently StateUp and carry a prober, plus whether any such path exists.
+// Caller holds m.mu. It reads each prober's own mutex (State/Estimate) under m.mu; the
+// prober is a LEAF lock (it never calls back into the Bind), so this cannot invert the
+// send-path m.mu→scheduler→prober order the rest of the Bind takes.
+func maxEligiblePathLossLocked(peer *peerState) (float64, bool) {
 	maxLoss := 0.0
 	have := false
-	for _, ps := range m.paths {
+	for _, ps := range peer.paths {
 		if ps.prober == nil || ps.prober.State() != telemetry.StateUp {
 			continue
 		}

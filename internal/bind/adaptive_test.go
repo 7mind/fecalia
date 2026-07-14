@@ -127,7 +127,7 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	loss := probers[0].Estimate().Loss
 
 	m.mu.Lock()
-	m.driveAdaptiveControllerLocked()
+	m.driveAdaptiveControllerLocked(m.peerState)
 	target := m.fecSend.Load().ctrl.Parity()
 	m.mu.Unlock()
 
@@ -156,7 +156,7 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 	// The path is Down (never probed), so the drive finds no eligible loss sample.
 	m.mu.Lock()
 	before := m.fecSend.Load().ctrl.Parity()
-	m.driveAdaptiveControllerLocked()
+	m.driveAdaptiveControllerLocked(m.peerState)
 	after := m.fecSend.Load().ctrl.Parity()
 	m.mu.Unlock()
 	if before != after {

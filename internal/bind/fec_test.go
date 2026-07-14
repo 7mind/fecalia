@@ -581,7 +581,21 @@ func TestMultipathFECDeadlineEmitsPartialGroupParity(t *testing.T) {
 	if paritySeen != parityShards {
 		t.Fatalf("saw %d PARITY frames from the deadline tick, want %d (partial group was stranded)", paritySeen, parityShards)
 	}
-	if snap := sender.FECSnapshot(); snap.ParityFrames != parityShards {
+	// fs.parityFrames is incremented AFTER the socket write (production semantics kept as-is,
+	// D69), so the moment this goroutine has read both parity wires off the socket, the async
+	// fecTickLoop goroutine may not yet have run its post-write increment. Poll with a short
+	// bounded retry instead of a single immediate read to close that race (~2% flake under
+	// -race).
+	snapDeadline := time.Now().Add(200 * time.Millisecond)
+	var snap FECStats
+	for {
+		snap = sender.FECSnapshot()
+		if snap.ParityFrames >= parityShards || !time.Now().Before(snapDeadline) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if snap.ParityFrames != parityShards {
 		t.Fatalf("FECSnapshot.ParityFrames = %d, want %d after deadline flush", snap.ParityFrames, parityShards)
 	}
 }
