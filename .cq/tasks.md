@@ -2099,10 +2099,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G12"]
 
-### T161 — wip
+### T161 — done
 
 - createdAt: 2026-07-14T18:46:06.629Z
-- updatedAt: 2026-07-14T22:44:29.370Z
+- updatedAt: 2026-07-14T22:59:00.439Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Define the JSON monitor-snapshot DTO + BuildSnapshot(metrics.Source) encoder
