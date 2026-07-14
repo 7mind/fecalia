@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 50
+  item: 51
 archives: []
 ---
 
@@ -703,3 +703,15 @@ archives: []
 - severity: medium
 - suggestedFix: "In the fix task decide the counter contract: either count probe emission (emitProbes) + echo reflection into ps.txBytes so tx matches rx's true-wire-volume semantics (optionally add a separate DATA-only series for the data-thrift signal the doc at multipath.go:140-151 describes), or re-document/rename the metric so its help string stops claiming total transmitted bytes. Then flip T104's standby-transmits-when-idle subtest from repro-failure to the green acceptance check."
 - ledgerRefs: ["tasks:T104","goals:G6"]
+
+### D51 — open
+
+- createdAt: 2026-07-14T03:53:40.693Z
+- updatedAt: 2026-07-14T03:53:40.693Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Pre-existing e2e /metrics port collision: pacing_test.go and p3_fec_test.go both bind 127.0.0.1:9096"
+- description: Surfaced during T101 round-2 review (port-inventory survey). Two -tags e2e test files declare the SAME metrics-listener port 9096 (pacing_test.go and p3_fec_test.go), breaking the per-file-unique-port convention. Latent under the current SEQUENTIAL netns runner (startProc cleanup waits for process exit), but becomes an active bind conflict under test shuffle/parallelism or a wedged teardown. Pre-existing (NOT introduced by T101, which was fixed to use 9101); out of scope for T101 so filed-and-deferred.
+- severity: low
+- suggestedFix: "Move one of the two (pacing_test.go or p3_fec_test.go) to an unused port and, ideally, centralize e2e metrics-port allocation (a shared registry or per-test ephemeral :0 bind) so the per-file-unique convention can't silently drift again."
+- ledgerRefs: ["goals:G6"]

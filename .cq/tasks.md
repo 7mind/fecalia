@@ -1132,10 +1132,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-025553-a3d95aaa6b922d19a.md",".cq/logs/20260714-030756-aa7c68662525d4b3f.md",".cq/logs/20260714-030756-a9196a9bc3bed8ec8.md"]
 - rawLogs: [".cq/logs/raw/20260714-025553-a3d95aaa6b922d19a.jsonl",".cq/logs/raw/20260714-030756-aa7c68662525d4b3f.jsonl",".cq/logs/raw/20260714-030756-a9196a9bc3bed8ec8.jsonl"]
 
-### T101 — wip
+### T101 — done
 
 - createdAt: 2026-07-13T23:22:37.650Z
-- updatedAt: 2026-07-14T03:23:04.948Z
+- updatedAt: 2026-07-14T03:57:42.202Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add wanbond_session_established metric, last-handshake age, and a 'session established' log line (I2)
@@ -1143,6 +1143,10 @@ archives:
 - acceptance: Unit tests cover metric registration and the 0→1 edge; netns e2e asserts wanbond_session_established transitions 0→1 after tunnel up (scraped via metrics.Fetch) and that the path-up-before-session-established ordering holds by comparing the path-up and session-established transition timestamps recorded in the logs — NOT by observing a path_up=1/session=0 intermediate scrape, which the netns tier reaches within milliseconds and a scrape-cadence observer would nondeterministically miss (the ~25 s gap is a production/WAN artifact); the 'session established' record appears exactly once per session; go test ./... and -tags e2e suite green.
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 1957f21
+- completion: "Added a WG-session signal to the metrics plane: wanbond_session_established gauge (0/1) + wanbond_session_last_handshake_seconds age, via a new metrics.Source SessionSnapshot seam supplied by the device layer (internal/device/session.go sessionMonitor reads the amneziawg peer last-handshake via IpcGet UAPI-text at scrape time — bind stays WG-unaware). A probe-cadence poll emits ONE INFO 'session established' log per 0→1 edge (mutation-verified once-per-session; re-arms on a new session). Distinguishes 'still converging' from 'wedged' (the D35/D36/D37 blind spot). Unit tests cover registration, exposition, UAPI parse, never-handshaked/aged-out, and the mutation-killed edge; deferred netns e2e asserts scrape 0→1 + path-up-before-session log-timestamp ordering (compiles/vets under -tags e2e, execution deferred G2). R2 fixed an e2e metrics-port collision. docs/runbook.md synced. Rebased onto current main and ff-merged as 1957f21. Filed D51 (pre-existing pacing/p3 9096 collision)."
+- sessionLogs: [".cq/logs/20260714-034520-a0d7a77e637809a31.md",".cq/logs/20260714-035334-a5d713271e5cc337d.md",".cq/logs/20260714-035711-af7fe1e7fcf138c03.md",".cq/logs/20260714-035711-ac7254fc378c0095a.md",".cq/logs/20260714-035711-a1a5495814cda5845.md",".cq/logs/20260714-035711-ac04c993630a8da43.md"]
+- rawLogs: [".cq/logs/raw/20260714-034520-a0d7a77e637809a31.jsonl",".cq/logs/raw/20260714-035334-a5d713271e5cc337d.jsonl",".cq/logs/raw/20260714-035711-af7fe1e7fcf138c03.jsonl",".cq/logs/raw/20260714-035711-ac7254fc378c0095a.jsonl",".cq/logs/raw/20260714-035711-a1a5495814cda5845.jsonl",".cq/logs/raw/20260714-035711-ac04c993630a8da43.jsonl"]
 
 ### T102 — planned
 

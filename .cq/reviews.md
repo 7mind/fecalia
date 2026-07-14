@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 101
+  item: 102
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1063,6 +1063,19 @@ archives:
 - ledgerRefs: ["tasks:T104","goals:G6","defects:D48"]
 - sessionLogs: [".cq/logs/20260714-031845-a6d96b8f39ee0fc04.md",".cq/logs/20260714-031845-ae358e9b638958305.md"]
 - rawLogs: [".cq/logs/raw/20260714-031845-a6d96b8f39ee0fc04.jsonl",".cq/logs/raw/20260714-031845-ae358e9b638958305.jsonl"]
+
+### R102 — go-ahead
+
+- createdAt: 2026-07-14T03:57:32.248Z
+- updatedAt: 2026-07-14T03:57:32.248Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T101 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on ONE criticism — the e2e i2MetricsListen port 9099 collided with hub_failover_test.go's hfMetricsListen and its 'unique port' comment was factually false (substance was otherwise sound: both reviewers verified the 0→1 edge detector mutation-kills in isolated copies, bind stays WG-unaware, UAPI last_handshake parse correct against amneziawg-go source). R2 (51b6df6) unanimous approve — worker surveyed all e2e *MetricsListen ports and moved i2 to the unused 9101 (both reviewers grep-verified uniqueness) and de-staled the comment; round-2 diff test-only. A PRE-EXISTING 9096 collision (pacing_test vs p3_fec_test) surfaced during the survey and was filed as D51 (out of scope). Rebased onto current main and ff-merged as 1957f21."
+- criticism: ["[fable, R1, RESOLVED R2] e2e i2MetricsListen 9099 collided with hub_failover's hfMetricsListen + false unique-port comment — moved to unused 9101, comment de-staled, grep-verified unique."]
+- new_questions: []
+- ledgerRefs: ["tasks:T101","goals:G6","defects:D51"]
+- sessionLogs: [".cq/logs/20260714-035711-af7fe1e7fcf138c03.md",".cq/logs/20260714-035711-ac7254fc378c0095a.md",".cq/logs/20260714-035711-a1a5495814cda5845.md",".cq/logs/20260714-035711-ac04c993630a8da43.md"]
+- rawLogs: [".cq/logs/raw/20260714-035711-af7fe1e7fcf138c03.jsonl",".cq/logs/raw/20260714-035711-ac7254fc378c0095a.jsonl",".cq/logs/raw/20260714-035711-a1a5495814cda5845.jsonl",".cq/logs/raw/20260714-035711-ac04c993630a8da43.jsonl"]
 
 ## M31
 
