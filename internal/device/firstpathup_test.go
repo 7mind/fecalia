@@ -64,7 +64,7 @@ func newFirstPathUpHarness(t *testing.T, cfg *config.Config) *bind.Multipath {
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	mp, err := bind.NewMultipath(cfg.Paths, psk, scheduler, probers, newProber, nil, nil, cfg.Amnezia)
+	mp, err := bind.NewMultipath(cfg.Paths, psk, scheduler, probers, newProber, nil, nil, cfg.Amnezia, lg)
 	if err != nil {
 		t.Fatalf("build multipath bind: %v", err)
 	}

@@ -306,7 +306,7 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	mp, err := bind.NewMultipath(paths, psk, scheduler, nil, nil, nil, nil, config.Amnezia{})
+	mp, err := bind.NewMultipath(paths, psk, scheduler, nil, nil, nil, nil, config.Amnezia{}, lg)
 	if err != nil {
 		t.Fatalf("build multipath bind: %v", err)
 	}

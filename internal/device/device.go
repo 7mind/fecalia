@@ -306,7 +306,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
-	mpBind, err := bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia)
+	mpBind, err := bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, clg)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)

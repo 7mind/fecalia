@@ -34,7 +34,7 @@ func newMultipathFEC(t testing.TB, paths []config.Path, psk config.Key, fecCfg *
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	m, err := NewMultipath(paths, psk, scheduler, nil, nil, fecCfg, nil, config.Amnezia{})
+	m, err := NewMultipath(paths, psk, scheduler, nil, nil, fecCfg, nil, config.Amnezia{}, lg)
 	if err != nil {
 		t.Fatalf("NewMultipath(fec): %v", err)
 	}

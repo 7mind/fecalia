@@ -165,6 +165,28 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   *sole* address on its own device, so `"auto"`'s equivalence heuristic
   device-binds it — losing the source-based `ip rule` selector the operator's
   routing depends on); see [install.md §3b](install.md#3b-policy-routing-edge-topologies-source-ip-pinning-with-bind--source).
+  A `"device"` path whose device bind cannot be honored — its `source_addr`
+  resolves to no live interface, or the resolved interface's `SO_BINDTODEVICE`
+  setsockopt fails (pre-5.7 kernel, permission) — silently fell back to
+  source-IP pinning pre-D53, dropping the operator's roam-survival choice with
+  no signal. `NewMultipath` now takes a component-scoped `log.Logger`
+  (`log.Component("bind")`) and WARNs at both fallback points, naming the path
+  and the (resolved or empty) interface, so the operator sees the roam
+  property was lost; the same setsockopt fallback for an `"auto"`-selected
+  device bind — never an operator's explicit choice — logs at INFO instead
+  (D53). The WARN fires **only once a source-IP-pinned socket has actually
+  materialized** — a claim of "falling back to source-IP pinning" while the
+  fallback bind itself also failed (the path stays `DEFERRED`, no socket at
+  all) would be false; that case instead logs a distinct, non-fallback-
+  claiming "still deferred" WARN. That still-deferred WARN is deduplicated
+  **per condition-transition**, not per background-reconcile tick: the T55
+  reconciler (`StartReconcileLoop`/`reconcileDeferred`) retries a deferred
+  path every `DefaultReconcileInterval` (1s), and a persistently-unresolvable
+  interface — a mobile edge before its DHCP lease, Starlink mid-obstruction —
+  WARNs once for the whole deferral window rather than flooding the log at
+  1 Hz; the latch clears (re-arming a fresh WARN) the moment the interface
+  resolves or the fallback starts working, so a later re-roam that drops the
+  interface again is reported too.
 - **tolerates a not-yet-assignable `source_addr` at startup** (`Open()`). A path
   whose *well-formed* `source_addr` no interface holds yet — a mobile edge booting
   before its 5G modem has a DHCP lease, Starlink mid-obstruction — makes

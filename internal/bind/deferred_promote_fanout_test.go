@@ -41,8 +41,8 @@ func TestRemoveDeferredPathMisalignedPeerProbersFailsFast(t *testing.T) {
 
 	// A runtime AddPath that DEFERS (EADDRNOTAVAIL): the already-shipped AddPath fan-out mints
 	// a Down prober for EVERY peer, keeping m.defs and every peer's probers aligned at length 2.
-	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
-		return nil, syscall.EADDRNOTAVAIL
+	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error, error) {
+		return nil, nil, syscall.EADDRNOTAVAIL
 	}
 	if err := m.AddPath(config.Path{Name: "deferred-c", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
 		t.Fatalf("AddPath (deferred): %v", err)
@@ -110,8 +110,8 @@ func TestRemoveDeferredPathInRangeMisalignedPeerProbersFailsFast(t *testing.T) {
 
 	// A runtime AddPath that DEFERS (EADDRNOTAVAIL): the already-shipped AddPath fan-out mints
 	// a Down prober for EVERY peer, keeping m.defs and every peer's probers aligned at length 2.
-	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
-		return nil, syscall.EADDRNOTAVAIL
+	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error, error) {
+		return nil, nil, syscall.EADDRNOTAVAIL
 	}
 	if err := m.AddPath(config.Path{Name: "deferred-c", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
 		t.Fatalf("AddPath (deferred): %v", err)
@@ -284,8 +284,8 @@ func TestConcentratorCloseOpenAfterDeferredPromoteRebuildsBothPeers(t *testing.T
 
 	// A runtime AddPath that DEFERS (EADDRNOTAVAIL), fanned to both peers by the already-shipped
 	// AddPath fix.
-	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
-		return nil, syscall.EADDRNOTAVAIL
+	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error, error) {
+		return nil, nil, syscall.EADDRNOTAVAIL
 	}
 	if err := m.AddPath(config.Path{Name: "runtime-deferred", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
 		t.Fatalf("AddPath (deferred): %v", err)

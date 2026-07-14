@@ -27,7 +27,8 @@ const DefaultReconcileInterval = 1 * time.Second
 // failed setsockopt — see listenPath). It returns EADDRNOTAVAIL for as long as no
 // interface holds the address — which is exactly the signal reconcileDeferred reads to
 // keep the path deferred and retry — and succeeds once the address becomes assignable.
-func defaultDeferredListen(src netip.Addr, port uint16, dev string) (*net.UDPConn, error) {
+// The middle return mirrors listenPath's deviceErr (D53).
+func defaultDeferredListen(src netip.Addr, port uint16, dev string) (*net.UDPConn, error, error) {
 	return listenPath(src, port, dev)
 }
 
@@ -112,11 +113,25 @@ func (m *Multipath) reconcileDeferred() {
 	kept := m.deferred[:0]
 	for _, dp := range m.deferred {
 		dev := m.resolveDeviceBind(dp.def.SourceAddr, dp.def.Bind)
-		c, err := m.deferredListen(dp.def.SourceAddr, m.openPort, dev)
+		c, deviceErr, err := m.deferredListen(dp.def.SourceAddr, m.openPort, dev)
 		if err != nil {
+			// Still deferred (still not assignable, or a transient fault): no fallback
+			// socket materialized this tick, so this is NOT a "falling back to source-IP
+			// pinning" event — warnForcedDeviceStillDeferred (D53 round 2 / FIX1+FIX2)
+			// logs the accurate "still deferred" fact instead, deduplicated per
+			// condition-transition so a persistently-unresolvable interface WARNs once
+			// for the whole deferral window, not once per 1 Hz tick.
+			dp.warnedUnresolvable = m.warnForcedDeviceStillDeferred(dp.def.Name, dp.def.Bind, dev, dp.warnedUnresolvable)
 			kept = append(kept, dp) // still not assignable (or a transient fault): retry next tick
 			continue
 		}
+		// The listen succeeded: a working conn materialized (either the interface
+		// resolved and device-bound, or the source-IP-pin fallback bound). Re-arm the
+		// dedup latch so a LATER unresolvable transition (e.g. a re-roam) warns again,
+		// and log the two D53 fallback facts now that they are backed by a real socket.
+		dp.warnedUnresolvable = false
+		m.warnForcedDeviceUnresolvable(dp.def.Name, dp.def.Bind, dp.def.SourceAddr, dev)
+		m.warnDeviceBindFallback(dp.def.Name, dp.def.Bind, dev, deviceErr)
 		if err := m.promoteDeferredLocked(dp, c); err != nil {
 			// The bind succeeded but promotion did not (a scheduler/path index skew, or a
 			// codec build error): close the fresh socket and keep the path deferred so the

@@ -38,7 +38,7 @@ func (f *fakeDeferredBinder) arm() {
 	f.mu.Unlock()
 }
 
-func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, dev string) (*net.UDPConn, error) {
+func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, dev string) (*net.UDPConn, error, error) {
 	f.mu.Lock()
 	f.devs = append(f.devs, dev)
 	armed := f.armed
@@ -46,12 +46,13 @@ func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, dev string) (*net.UD
 	if !armed {
 		// Exactly the error a real not-yet-assignable source_addr yields; reconcileDeferred
 		// keeps the path deferred and retries next tick.
-		return nil, syscall.EADDRNOTAVAIL
+		return nil, nil, syscall.EADDRNOTAVAIL
 	}
 	// The address is now assignable: bind a real loopback socket standing in for the
 	// interface that just came up, so the promoted path has a working transport the test
 	// can probe over.
-	return net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	return c, nil, err
 }
 
 // TestReconcilePromotesDeferredPathToLive is the T55 core acceptance: a path DEFERRED
@@ -289,11 +290,12 @@ type fakeAddPathBinder struct {
 	devs []string
 }
 
-func (f *fakeAddPathBinder) listen(src netip.Addr, _ uint16, dev string) (*net.UDPConn, error) {
+func (f *fakeAddPathBinder) listen(src netip.Addr, _ uint16, dev string) (*net.UDPConn, error, error) {
 	f.mu.Lock()
 	f.devs = append(f.devs, dev)
 	f.mu.Unlock()
-	return net.ListenUDP("udp", &net.UDPAddr{IP: src.AsSlice(), Port: 0})
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: src.AsSlice(), Port: 0})
+	return c, nil, err
 }
 
 // TestAddPathThreadsForcedDeviceBind is the T106 round-3 regression guard: AddPath must

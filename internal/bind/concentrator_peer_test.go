@@ -248,8 +248,8 @@ func TestConcentratorDeferredAddThenReopenFansPerPeerProbers(t *testing.T) {
 	// a not-yet-assignable source_addr would, so AddPath records the def as deferred rather than
 	// binding it. (Open itself uses the package-level listenPath, so the later reopen still binds
 	// the def for real off 127.0.0.1 — the address "became assignable".)
-	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error) {
-		return nil, syscall.EADDRNOTAVAIL
+	m.addPathListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error, error) {
+		return nil, nil, syscall.EADDRNOTAVAIL
 	}
 	if err := m.AddPath(config.Path{Name: "deferred-b", SourceAddr: netip.MustParseAddr("127.0.0.1")}); err != nil {
 		t.Fatalf("AddPath (deferred): %v", err)

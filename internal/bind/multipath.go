@@ -17,6 +17,7 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -87,6 +88,40 @@ const (
 // generous relative to any realistic concentrator's peer×roam-churn count yet bounds the flood
 // surface.
 const defaultMaxDemuxSources = 1024
+
+// Forced-device-bind fallback log messages (D53). A path configured bind="device" is
+// the operator's explicit, roam-surviving choice (T16): its socket keeps sending from
+// the interface's NEW address across a mid-session re-roam, unlike a source-IP-pinned
+// socket, which fails once the old address is removed. Pre-D53 the two ways that choice
+// silently degrades to source-IP pinning — an unresolvable interface (layer a) and a
+// failing SO_BINDTODEVICE setsockopt (layer b) — were unlogged, so an operator could run
+// roam-fragile for the whole session with no signal. Both fallback-succeeded messages
+// name the path and the (possibly empty) resolved interface so the two layers are
+// distinguishable in the log.
+//
+// D53 round 2 (FIX 1 + FIX 2) refines this: forcedDeviceUnresolvableWarn now fires ONLY
+// once the source-IP-pin fallback it describes has ACTUALLY materialized a working
+// socket (err == nil at the call site) — claiming the fallback while the path stays
+// DEFERRED (no socket exists at all) would be a false report. When the interface stays
+// unresolved and the fallback bind itself also fails, forcedDeviceStillDeferredWarn
+// reports that accurate, non-fallback fact instead, deduplicated per condition-
+// transition (deferredPath.warnedUnresolvable) so a persistently-unresolvable deferred
+// path — a normal boot-time transient reconcileDeferred retries at 1 Hz — WARNs once for
+// the whole deferral window rather than once per tick.
+const (
+	forcedDeviceUnresolvableWarn = "bind: forced device bind (bind=\"device\") has no resolvable interface for this path's source address; falling back to source-IP pinning (roam survival across an address change is lost)"
+	// forcedDeviceStillDeferredWarn is the accurate, non-fallback-claiming counterpart to
+	// forcedDeviceUnresolvableWarn for when the source-IP-pin fallback attempt ITSELF
+	// fails too (e.g. the source_addr is also not yet assignable): the path stays
+	// deferred rather than falling back to anything, so no fallback claim is made.
+	forcedDeviceStillDeferredWarn = "bind: forced device bind (bind=\"device\") has no resolvable interface for this path's source address; the source-IP-pin fallback attempt also did not bind, so the path stays deferred (roam survival across an address change remains lost until it resolves)"
+	forcedDeviceSetsockoptWarn    = "bind: forced device bind (bind=\"device\") interface bind (SO_BINDTODEVICE) failed; falling back to source-IP pinning (roam survival across an address change is lost)"
+	// autoDeviceSetsockoptInfo covers the PRE-EXISTING silent CAP/setsockopt fallback for
+	// an AUTO-selected (not operator-forced) device bind: informational, not a WARN,
+	// because the operator never asked for the roam-survival property BindModeAuto only
+	// opportunistically grants.
+	autoDeviceSetsockoptInfo = "bind: auto-selected device bind (SO_BINDTODEVICE) failed; falling back to source-IP pinning"
+)
 
 var (
 	// ErrNoHealthyPath is exported (I4) so the device-package engineLogger adapter can
@@ -302,6 +337,17 @@ func (ps *peerState) newCodec() (*frame.Codec, error) {
 type deferredPath struct {
 	def    config.Path
 	prober *telemetry.Prober
+	// warnedUnresolvable is the FIX1 (D53 round 2) per-path dedup latch for
+	// warnForcedDeviceStillDeferred: true once reconcileDeferred has WARNed that this
+	// path's forced-device interface is unresolvable AND its source-IP-pin fallback
+	// also failed to bind, so a persistently-unresolvable deferred path WARNs once for
+	// the whole deferral window rather than once per 1 Hz reconcile tick. It is set on
+	// Open/AddPath's initial deferral (the first WARN for this condition) and cleared
+	// the moment a later tick's listen succeeds (the interface resolved, or the
+	// fallback bind now works) — so a LATER unresolvable transition (a re-roam) WARNs
+	// again. It has no meaning for a path that is not bind="device" (the WARN it
+	// guards never fires for one).
+	warnedUnresolvable bool
 }
 
 func (ps *peerPathState) setRemote(ap netip.AddrPort) {
@@ -371,15 +417,27 @@ type Multipath struct {
 	// is immutable after construction and holds no lock, so Send reads it off m.mu.
 	classify wgClassifier
 
+	// log is this bind's component-scoped logger (log.Component("bind"), D53), set once
+	// at construction and never nil (NewMultipath fails fast on a nil logger, consistent
+	// with its other required-collaborator checks). It is the sole place internal/bind
+	// depends on internal/log; pathsock.go itself stays logging-free (see
+	// warnForcedDeviceUnresolvable / warnForcedDeviceStillDeferred / warnDeviceBindFallback,
+	// the call-site helpers that read it).
+	log log.Logger
+
 	// deferredListen binds a reconciled deferred path's socket (T55 background
 	// reconcile). It is an injection seam: the default pins the source IP unless dev is
 	// set (net.ListenUDP / listenPath, matching AddPath's runtime bind — I5), and a test
 	// overrides it to drive the deferred→bound transition deterministically — a
 	// source_addr "becoming assignable" — without a real interface address having to
 	// appear on the host. dev is resolveForcedDeviceBind's decision for the deferred
-	// path's resolved BindMode, computed by reconcileDeferred before the call. Immutable
-	// after construction, never nil.
-	deferredListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error)
+	// path's resolved BindMode, computed by reconcileDeferred before the call. The
+	// middle return is the underlying SO_BINDTODEVICE error when dev != "" and the
+	// device bind failed and fell back to source-IP pinning (nil otherwise — no device
+	// bind was attempted, or it succeeded), matching listenPath (D53); the caller logs
+	// it rather than pathsock.go, which stays logging-free. Immutable after
+	// construction, never nil.
+	deferredListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error, error)
 
 	// resolveDeviceBind decides AddPath's and reconcileDeferred's per-path forced-
 	// device bind (I5): whether a path's RESOLVED BindMode is config.BindModeDevice,
@@ -400,9 +458,10 @@ type Multipath struct {
 	// BindModeDevice interface via resolveDeviceBind and then discarding it at the
 	// listen call passes the full suite (T106 round 3). The default is the real
 	// listenPath; a test overrides it to capture the dev argument deterministically
-	// without a real interface having to appear on the host. Immutable after
+	// without a real interface having to appear on the host. The middle return carries
+	// the same setsockopt-fallback error as deferredListen (D53). Immutable after
 	// construction, never nil.
-	addPathListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error)
+	addPathListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error, error)
 
 	mu sync.Mutex
 
@@ -593,7 +652,14 @@ var _ Bind = (*Multipath)(nil)
 // for a vanilla (unobfuscated) tunnel; the classifier then uses the default type words
 // and no junk prefix. It does NOT need to match the config's validated state — an
 // all-zero profile is exactly the vanilla classifier.
-func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config, amnezia config.Amnezia) (*Multipath, error) {
+//
+// lg is the structured logger (internal/log); it is component-scoped to "bind"
+// (log.Logger.Component) and stored so the SO_BINDTODEVICE→source-IP fallback a
+// forced bind="device" path can silently take is surfaced at WARN instead of the
+// pre-D53 silence (see warnForcedDeviceUnresolvable / warnDeviceBindFallback). It is
+// a required collaborator, like scheduler — fail fast on nil rather than let the bind
+// run logging-blind.
+func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config, amnezia config.Amnezia, lg log.Logger) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -606,6 +672,9 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	}
 	if scheduler == nil {
 		return nil, errors.New("bind: a send scheduler is required")
+	}
+	if lg == nil {
+		return nil, errors.New("bind: a logger is required")
 	}
 	if newProber != nil && probers == nil {
 		// A runtime-path factory without a boot-time prober slice would let AddPath append
@@ -659,6 +728,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	primary := newPeerState("", psk, scheduler, newProber, probers)
 	m := &Multipath{
 		defs:              append([]config.Path(nil), paths...),
+		log:               lg.Component("bind"),
 		classify:          newWGClassifier(amnezia),
 		deferredListen:    defaultDeferredListen,
 		resolveDeviceBind: resolveForcedDeviceBind,
@@ -676,6 +746,73 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 	// concurrency yet — the bind is not open — so this runs without m.mu.
 	m.republishPeersLocked()
 	return m, nil
+}
+
+// warnForcedDeviceUnresolvable logs the D53 layer-(a) fallback that ACTUALLY
+// materialized: a path configured bind="device" whose source address resolved to NO
+// live interface (dev == ""), whose source-IP-pin fallback attempt then produced a
+// REAL working socket, so the operator's roam-survival choice was silently lost
+// (pre-D53) unless this WARN surfaces it. Callers gate it on that fallback having
+// materialized — the caller only reaches this AFTER a successful listen (err == nil,
+// D53 round 2 / FIX 2) — so it never claims a fallback that did not happen; see
+// warnForcedDeviceStillDeferred for the accurate message when the fallback attempt
+// itself also fails. It is a no-op for every other case — BindModeSource/
+// BindModeAuto never "fall back" by resolving to dev == "": that is their ordinary,
+// non-forced decision (see selectDeviceBinds/selectForcedDeviceBind) and would flood
+// the log if warned on. Called from the three sites that resolve a per-path forced-
+// device decision AFTER their listen succeeds: Open (planPathBinds), AddPath, and
+// reconcileDeferred (both via m.resolveDeviceBind).
+func (m *Multipath) warnForcedDeviceUnresolvable(name string, mode config.BindMode, src netip.Addr, dev string) {
+	if mode != config.BindModeDevice || dev != "" {
+		return
+	}
+	m.log.Warn(forcedDeviceUnresolvableWarn, "path", name, "interface", dev, "source_addr", src.String())
+}
+
+// warnForcedDeviceStillDeferred logs the D53 round-2 (FIX 1 + FIX 2) accurate,
+// non-fallback-claiming counterpart to warnForcedDeviceUnresolvable: a path
+// configured bind="device" whose source address has NO resolvable interface (dev ==
+// "") AND whose source-IP-pin fallback attempt this tick ALSO failed to bind, so the
+// path stays (or becomes) deferred with NO socket at all — logging "falling back to
+// source-IP pinning" here would be a false claim. It is a no-op unless mode ==
+// BindModeDevice && dev == "" (the same guard as warnForcedDeviceUnresolvable), and
+// is deduplicated per condition-transition via alreadyWarned (FIX 1): the caller
+// threads deferredPath.warnedUnresolvable (reconcileDeferred's per-tick loop) or
+// false (Open/AddPath's one-shot initial deferral) in, and this returns the value
+// the caller should persist — true once WARNed, so a persistently-unresolvable
+// deferred path WARNs once for the whole deferral window rather than once per 1 Hz
+// reconcile tick, and the caller resets it to false the moment the interface
+// resolves or the fallback bind starts working, re-arming a LATER transition.
+func (m *Multipath) warnForcedDeviceStillDeferred(name string, mode config.BindMode, dev string, alreadyWarned bool) bool {
+	if mode != config.BindModeDevice || dev != "" {
+		return false
+	}
+	if !alreadyWarned {
+		m.log.Warn(forcedDeviceStillDeferredWarn, "path", name, "interface", dev)
+	}
+	return true
+}
+
+// warnDeviceBindFallback logs the D53 layer-(b) fallback: deviceErr is the
+// SO_BINDTODEVICE error listenPath (or a test's addPathListen/deferredListen seam)
+// returns exactly when a device bind was attempted (dev != "") and failed. Callers
+// invoke this only AFTER a successful listen (err == nil, D53 round 2 / FIX 2), so
+// the accompanying conn is a REAL, working source-IP-pinned socket — never a claim
+// of a fallback that did not materialize. It is a no-op whenever no device bind was
+// attempted (dev == "") or it succeeded (deviceErr == nil). An operator-forced
+// bind="device" logs at WARN (the roam-survival property they asked for is lost); an
+// AUTO-selected device bind logs at INFO (the operator never asked for that
+// property, so its loss is informational, not actionable) — this also covers the
+// PRE-EXISTING silent CAP/setsockopt fallback AUTO could already hit.
+func (m *Multipath) warnDeviceBindFallback(name string, mode config.BindMode, dev string, deviceErr error) {
+	if deviceErr == nil {
+		return
+	}
+	if mode == config.BindModeDevice {
+		m.log.Warn(forcedDeviceSetsockoptWarn, "path", name, "interface", dev, "error", deviceErr.Error())
+		return
+	}
+	m.log.Info(autoDeviceSetsockoptInfo, "path", name, "interface", dev, "error", deviceErr.Error())
 }
 
 // republishPeersLocked snapshots m.peers into the lock-free peersView the engine-facing
@@ -820,19 +957,30 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		// Device-bind this path when selectDeviceBinds proved it safe (so a
 		// mid-session source-address change / T16 re-roam does not break the socket),
 		// otherwise pin the specific source IP. See selectDeviceBinds / listenPath.
-		c, err := listenPath(def.SourceAddr, port, bindDevs[i])
+		c, deviceErr, err := listenPath(def.SourceAddr, port, bindDevs[i])
 		if err != nil {
 			if tolerateDefer && errors.Is(err, syscall.EADDRNOTAVAIL) {
 				// Defer this path: record its def + boot prober (kept Down) for the T55
 				// background reconcile to retry, and leave the bond to come up on the rest.
 				// Mirrors AddPath's rollback discipline — a failed path never disturbs the
-				// tunnel — at the boot boundary.
-				m.deferred = append(m.deferred, deferredPath{def: def, prober: m.probers[i]})
+				// tunnel — at the boot boundary. No socket materialized (the source-IP-pin
+				// fallback failed too), so warnForcedDeviceStillDeferred — not
+				// warnForcedDeviceUnresolvable — is the accurate, non-fallback-claiming
+				// WARN here (D53 round 2 / FIX 2); it seeds the fresh deferredPath's dedup
+				// latch so reconcileDeferred's first retry tick does not immediately
+				// re-WARN the SAME condition (FIX 1).
+				warned := m.warnForcedDeviceStillDeferred(def.Name, def.Bind, bindDevs[i], false)
+				m.deferred = append(m.deferred, deferredPath{def: def, prober: m.probers[i], warnedUnresolvable: warned})
 				continue
 			}
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: open path %q on %s: %w", def.Name, def.SourceAddr, err)
 		}
+		// The listen succeeded: a working conn materialized, so any forced-device
+		// fallback fact these log is backed by a real socket, not a claim (D53 round 2 /
+		// FIX 2).
+		m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, bindDevs[i])
+		m.warnDeviceBindFallback(def.Name, def.Bind, bindDevs[i], deviceErr)
 		// Large SO_RCVBUF, best-effort: the kernel caps at net.core.rmem_max and
 		// SetReadBuffer does not require privilege, so a returned error is rare;
 		// treat it as non-fatal rather than refusing to bind in a restricted env.
@@ -2474,7 +2622,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 	// runtime-added path (D30 — auto never device-binds at runtime — is a separate,
 	// still-open gap this task does not close).
 	dev := m.resolveDeviceBind(def.SourceAddr, def.Bind)
-	c, err := m.addPathListen(def.SourceAddr, m.openPort, dev)
+	c, deviceErr, err := m.addPathListen(def.SourceAddr, m.openPort, dev)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRNOTAVAIL) {
 			// Symmetric with Open's tolerant bind: a well-formed-but-not-yet-assignable
@@ -2484,7 +2632,12 @@ func (m *Multipath) AddPath(def config.Path) error {
 			// already requires the probe transport + a DynamicScheduler (checked above),
 			// which is exactly the Down model Open's tolerance needs. The prober is minted
 			// here so the reserved id-stamp is consumed even while deferred; a later bind
-			// (T55 / a Close→Open) reuses the SAME stamp.
+			// (T55 / a Close→Open) reuses the SAME stamp. No socket materialized (the
+			// source-IP-pin fallback failed too), so warnForcedDeviceStillDeferred — not
+			// warnForcedDeviceUnresolvable — is the accurate, non-fallback-claiming WARN
+			// here (D53 round 2 / FIX 2); it seeds the fresh deferredPath's dedup latch so
+			// reconcileDeferred's first retry tick does not immediately re-WARN the SAME
+			// condition (FIX 1).
 			//
 			// FAN the deferred admission out to EVERY bound peer, mirroring the bound-add
 			// fan-out (attachSharedPathLocked): a still-deferred def is appended to the SHARED
@@ -2513,12 +2666,17 @@ func (m *Multipath) AddPath(def config.Path) error {
 				}
 				p.probers = append(p.probers, p.newProber(def.Name, id))
 			}
-			m.deferred = append(m.deferred, deferredPath{def: def, prober: prober})
+			warned := m.warnForcedDeviceStillDeferred(def.Name, def.Bind, dev, false)
+			m.deferred = append(m.deferred, deferredPath{def: def, prober: prober, warnedUnresolvable: warned})
 			m.nextPathID++
 			return nil
 		}
 		return fmt.Errorf("bind: add path %q on %s: %w", def.Name, def.SourceAddr, err)
 	}
+	// The listen succeeded: a working conn materialized, so any forced-device fallback
+	// fact these log is backed by a real socket, not a claim (D53 round 2 / FIX 2).
+	m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, dev)
+	m.warnDeviceBindFallback(def.Name, def.Bind, dev, deviceErr)
 	_ = c.SetReadBuffer(socketRecvBuffer)
 	shared := &sharedPathState{name: def.Name, id: id, src: def.SourceAddr, conn: c}
 

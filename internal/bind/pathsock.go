@@ -36,15 +36,29 @@ import (
 // loopback unprivileged too, exercising that same fallback path. It is also
 // Linux-only, so a device-bind failure falls back to source-IP binding
 // rather than failing Open.
-func listenPath(src netip.Addr, port uint16, dev string) (*net.UDPConn, error) {
+//
+// The middle return, deviceErr, is the underlying SO_BINDTODEVICE failure exactly
+// when dev != "" and the device bind was attempted and failed (nil when dev == "",
+// or when it succeeded) — the fallback fact plus its cause, alongside conn, so a
+// caller can log a forced bind="device" path's silent-until-D53 fallback to
+// source-IP pinning WITHOUT this file importing internal/log (Open, AddPath, and
+// reconcileDeferred are the loggers; this stays logging-free). deviceErr alone does
+// NOT mean a fallback socket exists: the caller MUST gate any "fell back to
+// source-IP pinning" claim on err == nil (D53 round 2) — deviceErr only says a
+// device bind was attempted and failed, not that the source-IP fallback attempted
+// here actually produced a working socket.
+func listenPath(src netip.Addr, port uint16, dev string) (conn *net.UDPConn, deviceErr error, err error) {
 	if dev != "" {
-		if c, err := listenOnDevice(src, port, dev); err == nil {
-			return c, nil
+		c, derr := listenOnDevice(src, port, dev)
+		if derr == nil {
+			return c, nil, nil
 		}
 		// SO_BINDTODEVICE denied / unsupported: fall back to source-IP binding.
+		deviceErr = derr
 	}
 	laddr := &net.UDPAddr{IP: net.IP(src.AsSlice()), Port: int(port)}
-	return net.ListenUDP("udp", laddr)
+	conn, err = net.ListenUDP("udp", laddr)
+	return conn, deviceErr, err
 }
 
 // ifaceInfo is the resolution of a source address against the host's interfaces:

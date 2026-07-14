@@ -888,7 +888,16 @@ systemctl enable --now wanbond-edge      # or wanbond-concentrator
   kernel device-bind fails with EPERM and the daemon transparently falls back
   to source-IP binding (see [install.md §3b](#3b-policy-routing-edge-topologies-source-ip-pinning-with-bind--source)
   for when that fallback matters). All kernels this project supports
-  (Debian bookworm 6.1+, Ubuntu 22.04 5.15+) are already >=5.7.
+  (Debian bookworm 6.1+, Ubuntu 22.04 5.15+) are already >=5.7. For a
+  `bind = "device"` path this fallback logs a WARN naming the path and the
+  interface (D53) — it silently loses the roam-survival property `"device"`
+  exists for, so it is worth watching for in the daemon's logs on a pre-5.7
+  host or an interface that has gone away. The WARN fires only once a
+  source-IP-pinned socket has actually bound; if the interface is
+  unresolvable AND the source-IP fallback itself cannot bind either (the path
+  stays deferred, not falling back to anything), a distinct "still deferred"
+  WARN is logged instead, once per unresolvable spell rather than once per
+  second of the T55 background reconcile retry.
 
 ### NetworkManager unmanaged-devices drop-in
 
