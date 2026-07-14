@@ -964,10 +964,10 @@ archives: []
 - ledgerRefs: ["tasks:T125","defects:D44"]
 - rootCause: "Test-synchronization defect: TestMultipathFECDeadlineEmitsPartialGroupParity (fec_test.go) read FECSnapshot().ParityFrames immediately after receiving both parity wires, racing the async fecTickLoop goroutine's post-WriteToUDPAddrPort counter increment (~2% flake under -race; NO memory race). RESOLVED by T125 round 2 (landed 3eab82e): the test now polls ParityFrames with a bounded 200ms retry then asserts strict equality — masks neither under- nor over-count. Verified via 50x/100x -race runs (0 failures)."
 
-### D70 — open
+### D70 — root-caused
 
 - createdAt: 2026-07-14T15:29:16.572Z
-- updatedAt: 2026-07-14T15:29:16.572Z
+- updatedAt: 2026-07-14T19:46:29.349Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Same-name path link_bandwidth/link_rtt changes are silently accepted on reload (D52 gap at path-sub-field level)
@@ -975,11 +975,12 @@ archives: []
 - severity: medium
 - suggestedFix: Extend the same-name-path comparison to warn on l.LinkBandwidthBitsPerSec/l.LinkRTT != d's (mirroring the source/dest/bind checks with actionable messages), OR generalize the per-path comparison to a whole-struct reflect.DeepEqual per name-matched pair with the already-individually-warned/applied fields (Name) zeroed — so any future Path field is covered symmetrically to the top-level catch-all. Add table cases asserting exactly one warning each.
 - ledgerRefs: ["tasks:T135","defects:D52"]
+- rootCause: "CONFIRMED (investigate stage) — documented+source-cited by BOTH T135 reviewers (opus+fable). reloadWarnings' same-name-path comparison (internal/device/device.go ~:648-659) compares only SourceAddr/DestAddr/Bind; Path.LinkBandwidthBitsPerSec/LinkRTT changes on a surviving same-name path are (a) not applied on reload (runningConfig keeps booted params), (b) not warned, (c) not caught by the D52 catch-all (which zeroes Paths entirely) — a SIGHUP silently keeps the booted pace, the exact D52 'SILENCE is not acceptable' violation at path-sub-field level. FIX documented (extend the same-name comparison to LinkBandwidth/LinkRTT, or whole-struct DeepEqual per name-matched pair). Couples with [[D74]] (gauge-recompute-on-reload). READY-TO-SEED into a reload-warning-completeness hardening goal (with D74); awaiting /cq:plan."
 
-### D71 — open
+### D71 — root-caused
 
 - createdAt: 2026-07-14T15:30:45.086Z
-- updatedAt: 2026-07-14T15:30:45.086Z
+- updatedAt: 2026-07-14T19:46:33.427Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: reconcileDeferred silently swallows promoteDeferredLocked's error
@@ -987,11 +988,12 @@ archives: []
 - severity: medium
 - suggestedFix: Log the promotion error at WARN/ERROR in reconcileDeferred's promote-failure branch, deduplicated per deferral window like warnedUnresolvable to avoid 1 Hz spam.
 - ledgerRefs: ["tasks:T134","defects:D53"]
+- rootCause: "CONFIRMED (investigate stage) — documented+source-cited by the T134-r2 fable reviewer. internal/bind/reconcile.go: on promoteDeferredLocked failure the error is discarded (`_ = c.Close(); kept = append(kept, dp)`) with NO log, so an attach/wiring failure leaves the path permanently deferred with zero diagnostic signal. Pre-existing (the bind held no logger pre-T134); now fixable since T134 gave Multipath a component-scoped logger. FIX documented (log the promote error at WARN/ERROR, deduped per deferral window like warnedUnresolvable to avoid 1Hz spam). READY-TO-SEED into a bind-diagnostics hardening goal; awaiting /cq:plan."
 
-### D72 — open
+### D72 — root-caused
 
 - createdAt: 2026-07-14T16:26:20.289Z
-- updatedAt: 2026-07-14T16:26:20.289Z
+- updatedAt: 2026-07-14T19:46:37.532Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: WeightedScheduler.SetPaths silently collapses the aggregation gate without the canonical log record
@@ -999,6 +1001,7 @@ archives: []
 - severity: low
 - suggestedFix: In SetPaths, when s.aggregating was true before the reset, emit the canonical 'scheduler aggregation change' record (to=collapsed, from=aggregating, reason='paths replaced', plus the threshold fields from T143) under the already-held s.mu.
 - ledgerRefs: ["tasks:T143","goals:G13"]
+- rootCause: "CONFIRMED (investigate stage) — documented+source-cited by the T143 fable reviewer. internal/sched/weighted.go SetPaths sets s.aggregating=false with NO 'scheduler aggregation change' record, so on every Bind reopen (Close->Open durable-membership swap) a log consumer reconstructing gate state sees two consecutive to='aggregating' with no intervening collapse. Low severity, pre-existing (T30-era). FIX documented (emit the canonical collapsed record with reason='paths replaced' + the T143 threshold fields under the held s.mu when s.aggregating was true). READY-TO-SEED into an aggregation-log-completeness hardening goal (with D75); awaiting /cq:plan."
 
 ### D73 — resolved
 
@@ -1013,10 +1016,10 @@ archives: []
 - ledgerRefs: ["tasks:T141","tasks:T143","goals:G13"]
 - rootCause: "test/e2e/load.go (added by T141) was a NON-_test.go file carrying the e2e build tag but referencing proc/lockedBuffer/nsEnvMarker which are defined only in *_test.go files; in Go a non-test file cannot see _test.go symbols outside the test binary, so `go build -tags e2e ./test/e2e/...` failed with 3 undefined symbols (uncaught because the gate used `go test`/`go vet -tags e2e`/golangci, all of which include test files). RESOLVED inline by orchestrator (commit c5335a0): `git mv test/e2e/load.go test/e2e/load_test.go` — load helpers are test-support consumed only by e2e _test.go files, so moving load.go into the test binary makes the symbols resolve while DriveUDPLoad/MetricsSampler/ParseLogLines stay visible to the e2e tests. Verified: `go build -tags e2e ./test/e2e/...` now clean; e2e compiles; just lint 0 issues default+e2e+realhosts. This also unblocked T128 whose acceptance requires `go build -tags e2e` clean."
 
-### D74 — open
+### D74 — root-caused
 
 - createdAt: 2026-07-14T16:35:30.090Z
-- updatedAt: 2026-07-14T16:35:30.090Z
+- updatedAt: 2026-07-14T19:46:41.626Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Reload silently staleing the wanbond_weighted_capacity_sane gauge (membership add of an undeclared path leaves gauge=1)
@@ -1024,6 +1027,7 @@ archives: []
 - severity: medium
 - suggestedFix: Recompute the capacity-sanity verdict in runningConfig()/reloadTunnel and re-set the gauge (and emit a WARN) whenever the live vs desired WeightedCapacitySane differ; extend reloadWarnings' same-name comparison to LinkBandwidthBitsPerSec/LinkRTT (coordinate with D70's fix to avoid double-work).
 - ledgerRefs: ["tasks:T144","defects:D70","defects:D52","goals:G13"]
+- rootCause: "CONFIRMED (investigate stage) — documented+source-cited by the T144 fable reviewer. Two coupled reload gaps: (1) a SIGHUP ADDING a path without link_bandwidth under weighted policy is applied to membership but neither re-warns nor recomputes the static wanbond_weighted_capacity_sane gauge — it can read 1 while the running set is no longer capacity-verifiable; (2) [overlaps D70] reloadWarnings ignores per-path link_bandwidth/link_rtt changes. FIX documented (recompute the capacity-sanity verdict in runningConfig()/reloadTunnel + re-set gauge + WARN on live-vs-desired divergence; extend the same-name comparison to LinkBandwidth/LinkRTT — coordinate with D70). READY-TO-SEED into the reload-warning-completeness hardening goal (with D70); awaiting /cq:plan."
 
 ### D75 — open
 
@@ -1037,10 +1041,10 @@ archives: []
 - suggestedFix: Extend TestWeightedCollapsesAfterOverloadIdle (or the log-fields unit test) with the existing capturing-logger infra to assert the idle-gap collapse record carries reason='idle gap', gap, load_fps, from, and both threshold fields — locking the schema-uniformity invariant on all three record sites.
 - ledgerRefs: ["tasks:T143","goals:G13"]
 
-### D76 — open
+### D76 — root-caused
 
 - createdAt: 2026-07-14T18:20:59.440Z
-- updatedAt: 2026-07-14T18:20:59.440Z
+- updatedAt: 2026-07-14T19:46:23.474Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Active-backup pacing lacks ProbeBudget: probe/echo egress unaccounted under active-backup + pacing (same D65 starvation T145 fixed for weighted)"
@@ -1048,6 +1052,7 @@ archives: []
 - severity: medium
 - suggestedFix: "Implement ProbeBudget on *ActiveBackup: under s.mu, bounds-check pathIdx against s.pacers and call s.pacers[pathIdx].accountProbe(0) (each active-backup pacer is a single-bucket pacer). The existing bind seam (emitProbes + echo reflection) and schedIdx index maintenance then apply unchanged. Mirror the three T145 weighted unit tests (one-token deduction/negative bucket, ClassData-headroom reservation, pacing-off + out-of-range no-op)."
 - ledgerRefs: ["tasks:T145","tasks:T150","defects:D65","goals:G14"]
+- rootCause: "CONFIRMED (investigate stage) — root cause documented+source-cited by BOTH T145 reviewers (opus+fable, independently) and corroborated by the orchestrator's read of internal/sched/active_backup.go (which carries s.pacers[] single-bucket pacers from T150 but exposes NO ProbeBudget/AccountProbe method, so the bind's `scheduler.(sched.ProbeBudget)` type-assert in emitProbes/dispatchInbound no-ops for *ActiveBackup). Under policy=active_backup + pacing_enabled the probe/echo egress gets ZERO reserved headroom — the exact D65-class probe-starvation→spurious-path-DOWN failover flap T145 fixed for *WeightedScheduler, on the scheduler whose purpose IS failover. Sibling of [[D79]] (both are churn/coverage holes in the T150-T153 active-backup pacing feature). FIX documented (implement ProbeBudget on *ActiveBackup calling s.pacers[pathIdx].accountProbe(0) + the 3 mirror unit tests). READY-TO-SEED into an active-backup-pacing-correctness hardening goal with D79; awaiting /cq:plan."
 
 ### D77 — resolved
 
