@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 185
+  item: 186
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2190,3 +2190,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T143","goals:G13","defects:D75"]
+
+## M44
+
+### R185 — go-ahead
+
+- createdAt: 2026-07-14T18:03:08.314Z
+- updatedAt: 2026-07-14T18:03:08.314Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T128 review round 1 — GO-AHEAD (single opus reviewer, proportionate for an e2e COMPILE+VET deliverable with privileged run DEFERRED to hardware). New test/e2e/multipeer_hardened_test.go (TestMultiPeerHardenedDatapath, 730 lines) encoding D47/D50/D58/D49/D42/D44 + netns.go port 9107 registration. Merged to main as f54888e (cherry-pick of fbc615e onto e0d6701; test/e2e only, registry merged cleanly — 9107 slots after T144's 9106). Reviewer verified OPERATIONALLY: (1) SCOPE clean — test/e2e only, no production code; (2) SKIP-NOT-FAIL — requireNetAdmin(t) is the first statement, running as uid 1000 SKIPPED at '/dev/net/tun unavailable' (--- SKIP, not FAIL); new requireIPTables mirrors the fail-soft t.Skipf contract; (3) compiles+vets under -tags e2e, just lint 0 issues x3 tag sets; (4) ASSERTIONS NON-VACUOUS — D47: both NATed edges measure positive iperf3 throughput AND per-peer wanbond_path_rx_bytes_total>0; D50: log-greps teardown INFO (peer field==hw-gamma) + wanbond_path_up{peer=hw-gamma}==0; D44: wanbond_fec_repair_packets_total strictly advances; D42: no 'panic:' + post-reload 3-peer reachability; D49: bootstrap within budget + 2 live peers reachable; (5) D58 asserts BOTH hw-alpha (first-configured) AND hw-beta carry their own peer label AND negatively asserts NO peer='' series (guards the T127 regression); (6) D50 budget hwTeardownBudget=RejectAfterTime+15s (real WireGuard keypair-validity budget, not a magic sleep); (7) port 9107 registered, no in-tree self-collision. Privileged execution legitimately deferred to the host-run task. 0 criticisms / 0 questions / 0 defects. NOTE: the worker de-risked by validating the D47 SNAT/conntrack demux in an unprivileged userns + round-tripping all rendered TOML through config.Load."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T128","goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
