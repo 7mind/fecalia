@@ -231,24 +231,48 @@ func allowedHosts(listenAddr string) map[string]struct{} {
 	return set
 }
 
-// hostAllowed reports whether a Host/Origin host value is permitted. A value in
-// the allowlist is accepted; an IP literal is accepted because DNS rebinding
-// requires a resolvable DOMAIN and cannot target a raw IP; any other (domain)
-// name is rejected. The value may carry a port and/or v6 brackets, stripped
-// first.
-func hostAllowed(hostport string, allowed map[string]struct{}) bool {
+// hostOnly returns the host portion of a host:port value, stripping the port
+// and any v6 brackets. A value with no port is returned as-is (minus brackets).
+func hostOnly(hostport string) string {
 	h := hostport
 	if host, _, err := net.SplitHostPort(hostport); err == nil {
 		h = host
 	}
 	h = strings.TrimPrefix(h, "[")
 	h = strings.TrimSuffix(h, "]")
+	return h
+}
+
+// hostAllowed reports whether a HOST header value is permitted (the
+// DNS-rebinding defense). A value in the allowlist is accepted; an IP literal is
+// accepted because DNS rebinding requires a resolvable DOMAIN and cannot target
+// a raw IP; any other (domain) name is rejected. IMPORTANT: the IP-literal pass
+// is valid ONLY for the Host header (the address the client connected to) — the
+// Origin header is attacker-controlled and uses originAllowed instead.
+func hostAllowed(hostport string, allowed map[string]struct{}) bool {
+	h := hostOnly(hostport)
 	if _, ok := allowed[h]; ok {
 		return true
 	}
 	// An IP literal cannot be DNS-rebound (no name resolution); only domain
 	// names are a rebinding vector, so a raw IP Host is always safe.
 	return net.ParseIP(h) != nil
+}
+
+// originAllowed reports whether an ORIGIN header host is permitted (the
+// cross-origin / CSRF defense — the SOLE CSRF control on the /ws upgrade, which
+// SOP/CORS do not gate). Unlike hostAllowed it grants NO blanket IP-literal
+// pass: the Origin is the CLIENT PAGE's own origin, fully attacker-controlled
+// and serveable from any raw public IP, so an attacker page at http://<any-ip>/
+// must NOT be trusted. An Origin is accepted only when it is EXACTLY same-origin
+// with the request Host (the legitimate loopback/LAN-access case) or its host is
+// an explicit allowlist entry (loopback aliases + the configured listen host).
+func originAllowed(originHostport, reqHostport string, allowed map[string]struct{}) bool {
+	if originHostport == reqHostport {
+		return true // exact same-origin (host:port match)
+	}
+	_, ok := allowed[hostOnly(originHostport)]
+	return ok
 }
 
 // middleware wraps next with the monitor auth layer: UNCONDITIONAL Host and
@@ -263,7 +287,7 @@ func (a *authConfig) middleware(next http.Handler) http.Handler {
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
 			u, err := url.Parse(origin)
-			if err != nil || u.Host == "" || !hostAllowed(u.Host, a.allowed) {
+			if err != nil || u.Host == "" || !originAllowed(u.Host, r.Host, a.allowed) {
 				http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
 				return
 			}

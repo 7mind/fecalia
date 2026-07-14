@@ -244,7 +244,7 @@ func TestAuthHostOrigin(t *testing.T) {
 	defer closeMonitor(t, srv)
 	client := noRedirectClient()
 
-	// Foreign Origin => 403 (cross-origin defense).
+	// Foreign DOMAIN Origin => 403 (cross-origin defense).
 	req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
 	req.Header.Set("Origin", "http://evil.example.com")
 	resp, err := client.Do(req)
@@ -254,6 +254,21 @@ func TestAuthHostOrigin(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign Origin => %d, want 403", resp.StatusCode)
+	}
+
+	// Foreign IP-LITERAL Origin => 403. An attacker page served from a bare
+	// public IP is fully attacker-controlled; the Host-header DNS-rebinding IP
+	// pass must NOT extend to the Origin gate (regression guard for the reused-
+	// hostAllowed cross-origin bypass).
+	reqIP, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	reqIP.Header.Set("Origin", "http://198.51.100.7")
+	respIP, err := client.Do(reqIP)
+	if err != nil {
+		t.Fatalf("foreign-IP-Origin request: %v", err)
+	}
+	_ = respIP.Body.Close()
+	if respIP.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign IP-literal Origin => %d, want 403", respIP.StatusCode)
 	}
 
 	// Foreign Host (DNS-rebinding) => 403.
@@ -390,5 +405,59 @@ func TestHostAllowed(t *testing.T) {
 		if got := hostAllowed(tc.host, allowed); got != tc.want {
 			t.Errorf("hostAllowed(%q) = %v, want %v", tc.host, got, tc.want)
 		}
+	}
+}
+
+// TestOriginAllowed unit-checks the Origin classifier: exact same-origin and
+// allowlisted hosts pass; a foreign IP literal is REJECTED (unlike the Host
+// classifier, the Origin is attacker-controlled so IP literals get no pass).
+func TestOriginAllowed(t *testing.T) {
+	allowed := allowedHosts("127.0.0.1:9101")
+	const reqHost = "127.0.0.1:9101"
+	cases := []struct {
+		origin string
+		want   bool
+	}{
+		{"127.0.0.1:9101", true}, // exact same-origin
+		{"localhost:9101", true}, // allowlisted host (any port)
+		{"[::1]:9101", true},     // allowlisted host
+		{"198.51.100.7", false},  // foreign bare IP — the cross-origin bypass
+		{"198.51.100.7:80", false},
+		{"evil.example.com", false},
+		{"evil.example.com:9101", false},
+	}
+	for _, tc := range cases {
+		if got := originAllowed(tc.origin, reqHost, allowed); got != tc.want {
+			t.Errorf("originAllowed(%q, %q) = %v, want %v", tc.origin, reqHost, got, tc.want)
+		}
+	}
+}
+
+// TestAuthForeignOriginRejectedOnWS asserts the /ws UPGRADE is refused for a
+// foreign (bare-IP) Origin. The middleware Origin gate is the sole CSRF control
+// on the WebSocket upgrade (SOP/CORS do not protect it), so this is the
+// security-critical path for the Origin fix.
+func TestAuthForeignOriginRejectedOnWS(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	srv, _ := startAuthTestServer(t, "")
+	defer closeMonitor(t, srv)
+
+	wsURL := "ws://" + srv.Addr().String() + "/ws"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {"http://198.51.100.7"}},
+	})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		if c != nil {
+			_ = c.CloseNow()
+		}
+		t.Fatal("WS dial with a foreign-IP Origin succeeded, want rejection")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("WS foreign-IP Origin handshake status = %d, want 403", resp.StatusCode)
 	}
 }
