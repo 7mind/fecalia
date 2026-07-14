@@ -1637,10 +1637,10 @@ archives:
 
 ## M45
 
-### T130 — wip
+### T130 — done
 
 - createdAt: 2026-07-14T10:00:28.040Z
-- updatedAt: 2026-07-14T10:26:22.801Z
+- updatedAt: 2026-07-14T11:05:02.662Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Reject unknown TOML keys at config load via strict decoding (D41)

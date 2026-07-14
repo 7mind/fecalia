@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 140
+  item: 141
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1632,3 +1632,16 @@ archives:
 - ledgerRefs: ["tasks:T130","goals:G9","defects:D41"]
 - sessionLogs: [".cq/logs/20260714-105323-aa06d4feec9b3da1c.md",".cq/logs/20260714-105323-a9ffe648dbfc97572.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-aa06d4feec9b3da1c.jsonl",".cq/logs/raw/20260714-105323-a9ffe648dbfc97572.jsonl"]
+
+### R141 — go-ahead
+
+- createdAt: 2026-07-14T11:05:01.599Z
+- updatedAt: 2026-07-14T11:05:01.599Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T130 review round 2 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after the round-1 revise (R140). The sole round-1 criticism is resolved: both new rejects-table cases now assert the SPECIFIC rendered dotted key ('unknown key paths.link_bandwith' and 'unknown key wireguard.peers.nane') via strings.Contains, so the unknownKeys dotted-path rendering is operationalized — the generic 'unknown key' substring no longer satisfies the assertion. fable (who raised the criticism) EMPIRICALLY re-verified by scratchpad-mutating unknownKeys to return an empty list, which makes both cases fail on the substring check, proving the rendering is genuinely exercised; the asserted paths also confirm go-toml/v2 StrictMissingError.Key() renders array-of-tables without a numeric index (paths.link_bandwith, not paths.0.link_bandwith). The strict-decode implementation (load.go: toml.NewDecoder(...).DisallowUnknownFields().Decode, errors.As on *toml.StrictMissingError, other decode errors on the %w path) is unchanged from the round-1-approved form; all accept-table configs incl. wanbond.example.toml still load; go build/vet/test ./... green. LANDED on main at 2036bba (branch implement/T130-r2, commit c590052)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T130","goals:G9","defects:D41"]
+- sessionLogs: [".cq/logs/20260714-105323-a9f20c7eca65cd28d.md",".cq/logs/20260714-105323-acf604535befc5929.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-a9f20c7eca65cd28d.jsonl",".cq/logs/raw/20260714-105323-acf604535befc5929.jsonl"]
