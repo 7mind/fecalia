@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 176
+  item: 177
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2061,6 +2061,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T158","goals:G14","defects:D65"]
+
+### R176 — go-ahead
+
+- createdAt: 2026-07-14T16:00:26.162Z
+- updatedAt: 2026-07-14T16:00:26.162Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T159 — GO-AHEAD (orchestrator-applied inline, escape-hatch per the T137 precedent for a trivial docs task whose target file is NOT in any git worktree). wanbond-fixes.md is an UNTRACKED (but not gitignored) project deploy-notes/defect-analysis doc referenced by tracked tasks as the D65 root-cause notes; a worktree-isolated worker cut from HEAD cannot see it, so the orchestrator edited it directly in the main checkout and self-verified against acceptance. Added to C3 (Full-tunnel / route-a-client-LAN recipe) a 'Required step (closes the D65 compounding fault)' naming the TCPMSS --clamp-mss-to-pmtu mangle FORWARD rule (iptables+ip6tables) on BOTH forwarding nodes, pointing at the now-merged docs/install.md §9.2 (+ runbook.md) rather than duplicating rule syntax, with a docs/p1-mtu.md cross-ref for the MSS=1361/1321 arithmetic. Acceptance verified by grep: C3 names the --clamp-mss-to-pmtu FORWARD rule as a required step AND references install.md §9.2 + D65. just lint is Go-only in this repo (no markdown linter) so the markdown-only change trivially passes. Merged as 479a231. NOTE FOR USER: this commit NEWLY TRACKS the previously-untracked wanbond-fixes.md — if you intended it to stay a local scratch doc, `git rm --cached wanbond-fixes.md` reverts the tracking while keeping the file. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T159","goals:G14","defects:D65"]
 
 ## M57
 

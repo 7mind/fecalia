@@ -2053,15 +2053,16 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - resultCommit: "0414854"
 
-### T159 — planned
+### T159 — done
 
 - createdAt: 2026-07-14T13:17:11.561Z
-- updatedAt: 2026-07-14T13:17:34.260Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T16:00:27.279Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Record the MSS-clamp gap closure in wanbond-fixes.md
 - description: wanbond-fixes.md's C3 full-tunnel / route-a-client-LAN recipe (the deploy notes the D65 root cause cites as omitting the clamp) gains the TCPMSS --clamp-mss-to-pmtu FORWARD rule as a REQUIRED step of the routed-client-LAN setup, marked as closing the D65 compounding fault, pointing at the now-updated docs/install.md §9.2 recipe rather than duplicating the rule syntax at length.
 - acceptance: wanbond-fixes.md C3 (or an adjacent entry) names the TCPMSS --clamp-mss-to-pmtu FORWARD rule as a required recipe step and references docs/install.md §9.2 and D65; `nix develop -c just lint` doc checks pass.
 - suggestedModel: fast
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T158"]
+- resultCommit: 479a231
