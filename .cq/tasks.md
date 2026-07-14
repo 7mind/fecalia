@@ -1291,10 +1291,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-060333-a41c6d5823c2af08c.md",".cq/logs/20260714-060726-a48e2a04e50fbf112.md",".cq/logs/20260714-060726-af9cfffd1ceb8b455.md"]
 - rawLogs: [".cq/logs/raw/20260714-060333-a41c6d5823c2af08c.jsonl",".cq/logs/raw/20260714-060726-a48e2a04e50fbf112.jsonl",".cq/logs/raw/20260714-060726-af9cfffd1ceb8b455.jsonl"]
 
-### T108 — wip
+### T108 — done
 
 - createdAt: 2026-07-13T23:23:50.937Z
-- updatedAt: 2026-07-14T07:02:07.792Z
+- updatedAt: 2026-07-14T07:47:35.089Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Edge default-route wiring under mode=default-route (I6 routes)
@@ -1303,6 +1303,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T107","T100"]
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 8bb24a9
+- completion: "Edge default-route wiring under mode=default-route (G6/I6). internal/device/route_linux.go programs the wg-quick-style split default route (two /1s of the peer's allowed_ips, reusing splitDefaultRoute) into wanbond0 via rtnetlink after dev.Up(), withdraws on Close; route_other.go non-Linux stub. Idempotent (NLM_F_CREATE|NLM_F_REPLACE — adopts a leftover route on restart-after-unclean-death under tun_persist rather than wedging EEXIST) with best-effort partial-install cleanup on the up() error path. STRICT Q41: scope-link device routes only, no policy routing/SNAT/forwarding; no default-route peer → no socket, no route, byte-for-byte unchanged. TestDefaultRoutePrefixes + TestRouteMsgFlags unit tests; test/e2e/default_route_test.go netns e2e (compile+vet only in sandbox; PRIVILEGED exec DEFERRED to o3+llm-ubuntu-0). 2-round panel (R1 split → R2 unanimous approve after fixing an EEXIST bring-up-loop + a partial-install leak). Rebased over T79/T99 and ff-merged as 8bb24a9. Config gap (multiple default-route peers) filed D59."
+- sessionLogs: [".cq/logs/20260714-073515-aa43ce28a2ab2fa2f.md",".cq/logs/20260714-074804-a95d32452b71677e1.md",".cq/logs/20260714-074804-aaac034e84e494ebc.md"]
+- rawLogs: [".cq/logs/raw/20260714-073515-aa43ce28a2ab2fa2f.jsonl",".cq/logs/raw/20260714-074804-a95d32452b71677e1.jsonl",".cq/logs/raw/20260714-074804-aaac034e84e494ebc.jsonl"]
 
 ## M32
 

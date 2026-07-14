@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 56
+  item: 59
 archives: []
 ---
 
@@ -768,6 +768,18 @@ archives: []
 - suggestedFix: netip.ParsePrefix each allowed_ips entry in config.validate() and reject at Load time with the peer index + the offending string (mirroring how endpoint/source_addr are already parsed-and-validated at load).
 - ledgerRefs: ["tasks:T107","goals:G6"]
 
+### D59 — open
+
+- createdAt: 2026-07-14T07:35:20.455Z
+- updatedAt: 2026-07-14T07:35:20.455Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Config validation accepts multiple mode=default-route peers on the edge (overlapping /0)
+- description: "Surfaced during T108 review ([fable]). internal/config/config.go validates only that Peer.Mode is empty-or-'default-route' and rejects mode on the concentrator; nothing rejects TWO OR MORE edge peers both marked mode=default-route with overlapping 0.0.0.0/0 allowed_ips. WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins at the engine, so such a config is silently misconfigured regardless of route programming — contrary to the project's fail-fast validation posture. Pre-existing (T107 config surface), not introduced by or fixable within T108 (which programs routes, not config validation)."
+- severity: low
+- suggestedFix: Reject >1 peer with mode=default-route (and/or overlapping /0 allowed_ips across peers) at config validation with a clear error.
+- ledgerRefs: ["tasks:T108","goals:G6"]
+
 ## M26
 
 ### D56 — open
@@ -781,3 +793,29 @@ archives: []
 - severity: low
 - suggestedFix: "Either migrate bind's fec_test.go/traffic_test.go to PeerSnapshots and delete PathSnapshots/FECSnapshot, OR reimplement both as thin wrappers over PeerSnapshots()[0] so the honest-delivered-count FEC derivation lives in exactly one place."
 - ledgerRefs: ["tasks:T94","goals:G4"]
+
+## M27
+
+### D57 — open
+
+- createdAt: 2026-07-14T07:23:55.639Z
+- updatedAt: 2026-07-14T07:23:55.639Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Stale doc-comments in internal/config/config.go: Peer.PSK/Name marked 'not yet consumed by any datapath code path'"
+- description: "Surfaced during T98 review ([opus]). config.go Peer.PSK/Name doc-comments state 'No datapath code path consumes PSK yet; it is parsed, validated, and exposed only' and Name is 'Not yet consumed by any datapath code path'. As of the shipped G4 wiring these are FALSE: device.go calls cfg.PeerIdentities() which derives each peer's effective PSK from Peer.PSK, and internal/bind/multipath.go consumes those per-peer PSKs for peerBySource PROBE-authenticated demux; Peer.Name surfaces (for additional peers) as the metrics 'peer' label. Pre-existing groundwork remnant from T80/T81; out of scope for T98 (docs-sync task that edits AGENTS.md/README/docs/example, not config.go source comments)."
+- severity: low
+- suggestedFix: Update the Peer.PSK and Peer.Name doc-comments in internal/config/config.go to state they are now consumed via PeerIdentities() by device.Up and the Bind's peerBySource demux (PSK) and, for additional concentrator peers, the metrics peer label (Name).
+- ledgerRefs: ["tasks:T98","goals:G4"]
+
+### D58 — open
+
+- createdAt: 2026-07-14T07:24:03.514Z
+- updatedAt: 2026-07-14T07:24:03.514Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Multi-peer concentrator drops the first configured peer's required name from metrics labels
+- description: "Surfaced during T98 review ([fable]). Config validation REQUIRES a unique name per peer in multi-peer mode (internal/config/config.go, 'for metrics/logging clarity'), but device.Up never passes ids[0].Name to bind.NewMultipath, and Multipath.BoundPeerNames (internal/bind/multipath.go ~L2608-2622) hard-codes the embedded primary peer's name to \"\" — so on a two-edge concentrator, one edge's metrics series are labeled with its configured name while the primary edge's series carry peer=\"\", defeating the per-peer attribution the name requirement exists for. This is a KNOWN design property that T97's e2e asserts as current behavior (edge A → peer=\"\"), but it contradicts the config-level name requirement. Pre-existing T93/T94 wiring; NOT fixable within T98 (docs-sync). Distinct from [[D56]] (which concerns superseded PathSnapshots/FECSnapshot read seams, not the primary-name label)."
+- severity: low
+- suggestedFix: "Plumb ids[0].Name into NewMultipath (or set the primary peerState's name during concentrator wiring) so BoundPeerNames reports the configured name whenever >1 peer is bound, keeping \"\" only for the single-peer byte-compat exposition; update TestExpositionTwoPeerSeries and the T94 back-compat test accordingly. OR relax the config name-required rule for the primary peer and document peer=\"\" as its canonical label."
+- ledgerRefs: ["tasks:T98","goals:G4","defects:D56"]

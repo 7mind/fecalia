@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 119
+  item: 120
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1156,6 +1156,19 @@ archives:
 - ledgerRefs: ["tasks:T107","goals:G6","defects:D55"]
 - sessionLogs: [".cq/logs/20260714-060726-a48e2a04e50fbf112.md",".cq/logs/20260714-060726-af9cfffd1ceb8b455.md"]
 - rawLogs: [".cq/logs/raw/20260714-060726-a48e2a04e50fbf112.jsonl",".cq/logs/raw/20260714-060726-af9cfffd1ceb8b455.jsonl"]
+
+### R120 — go-ahead
+
+- createdAt: 2026-07-14T07:47:27.336Z
+- updatedAt: 2026-07-14T07:47:27.336Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T108 unanimous panel approve at ROUND 2 ([opus]+[fable] both approve; round 1 was split — opus approve, fable disapprove). Edge default-route wiring under mode=default-route (G6/I6): new internal/device/route_linux.go programs the wg-quick-style split default route (the two /1s of the default-route peer's allowed_ips, reusing T107's splitDefaultRoute) into wanbond0 via hand-rolled rtnetlink (golang.org/x/sys/unix; route_other.go non-Linux stub), installed after dev.Up() and withdrawn on Close. STRICT Q41 boundary held: scope-link device routes ONLY — no policy routing, SNAT, ip_forward, or FORWARD programming. Round 1: opus verified rtnetlink message/attribute/ACK construction + socket lifecycle + Q41 + regression guard all correct; fable DISAPPROVED on 2 objective lifecycle defects — (1) NLM_F_EXCL made restart after an unclean death under tun_persist=true fail EEXIST forever (unrecoverable bring-up loop, since the persistent wanbond0 keeps its /1 routes), and (2) a partial-install leak because up() returns before the Tunnel is constructed so Close/removeRoutes never runs. Round 2 fixed BOTH: route add flags factored into a pure routeMsgFlags(add) helper using NLM_F_CREATE|NLM_F_REPLACE (never EXCL) — `ip route replace` semantics that ADOPT/normalize a leftover route on restart (matching the persist_linux.go TUN-adoption posture) and no-op on duplicate prefixes — pinned by TestRouteMsgFlags; and a best-effort removeRoutes(name,prefixes) on the up() install-error path (correctly ordered before dev.Close while the iface still exists; ESRCH/ENOENT-tolerant) plus a corrected installRoutes comment. Both reviewers re-verified against source; the REPLACE-overwrites-foreign-route hazard judged pre-existing in kind (teardown DELROUTE was never ownership-checked) and consistent with the daemon's converge-to-intended-state posture. Regression guard (no default-route peer → no socket, no route, byte-for-byte unchanged) intact; splitDefaultRoute reused. Full gate + -tags e2e compile/vet green; PRIVILEGED netns exec of test/e2e/default_route_test.go DEFERRED to the o3 + llm-ubuntu-0 hosts (G2 pattern). Rebased onto current main (over T79/T99 docs) cleanly and ff-merged as 8bb24a9. fable's config-validation finding (multiple mode=default-route peers) filed as D59."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T108","goals:G6","defects:D59"]
+- sessionLogs: [".cq/logs/20260714-074804-a95d32452b71677e1.md",".cq/logs/20260714-074804-aaac034e84e494ebc.md"]
+- rawLogs: [".cq/logs/raw/20260714-074804-a95d32452b71677e1.jsonl",".cq/logs/raw/20260714-074804-aaac034e84e494ebc.jsonl"]
 
 ## M32
 
