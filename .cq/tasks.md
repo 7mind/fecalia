@@ -2087,11 +2087,11 @@ archives:
 
 ## M61
 
-### T160 — planned
+### T160 — wip
 
 - createdAt: 2026-07-14T18:46:00.265Z
-- updatedAt: 2026-07-14T18:46:00.265Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T22:44:26.272Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add [monitor] config block with loopback-default + opt-in-non-loopback-requires-token validation"
 - description: "In internal/config: add a Monitor struct (toml:\"monitor\") to Config (next to Metrics at config.go:45) with fields Listen string (toml:\"listen\") and Token string (toml:\"token\"). Empty Listen == monitor disabled (mirror Metrics). Add validation in the config.validate() path (config.go): (1) if Listen is set and is NON-loopback, Token MUST be non-empty else fail-fast with a named error (e.g. ErrMonitorNonLoopbackWithoutAuth) — this is the Q45 opt-in-non-loopback-requires-auth invariant; (2) loopback Listen with empty Token is permitted (Token optional on loopback). Reuse the loopback-classification logic pattern from internal/metrics/server.go requireLoopback (do not import server internals; extract or duplicate a small host-classification helper — a shared internal/netutil helper is acceptable if cleaner). go-toml/v2 DisallowUnknownFields is already on, so the struct must be registered on Config. Keep the 0600-load path (load.go) unchanged — the token rides in the already-0600 file."
@@ -2099,11 +2099,11 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G12"]
 
-### T161 — planned
+### T161 — wip
 
 - createdAt: 2026-07-14T18:46:06.629Z
-- updatedAt: 2026-07-14T18:46:06.629Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T22:44:29.370Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Define the JSON monitor-snapshot DTO + BuildSnapshot(metrics.Source) encoder
 - description: "Create internal/monitor package. Define an exported MonitorSnapshot struct (with json tags) that mirrors the metrics.Source read model: per-(peer,path) entries {name, peer, txBytes, rxBytes, throughputBps, rttSeconds, jitterSeconds, loss, up}, per-peer FEC counters, per-peer resequencer counters, per-peer aggregation-gate snapshot, the connection-scoped session {established, lastHandshakeSeconds}, and peerNames plus a multiPeer bool (derived from len(PeerNames())>1, matching the metrics peer-label rule). Add BuildSnapshot(src metrics.Source) MonitorSnapshot that calls Paths()/FEC()/Reseq()/Aggregation()/Session()/PeerNames() ONCE and marshals telemetry.Estimate (RTT/Jitter as float seconds, Loss float) and durations to seconds — this is the on-the-wire contract W2's frontend consumes. Depends only on the metrics.Source interface (no device import)."
