@@ -493,6 +493,13 @@ func reloadWarnings(live, desired *config.Config) []string {
 	if !reflect.DeepEqual(live.Log, desired.Log) {
 		w = append(w, "log section changed")
 	}
+	// tun_persist is applied only once, at device.Up (TUNSETPERSIST); a reload never
+	// re-issues the ioctl, so a SIGHUP that flips it must NOT be silently accepted —
+	// otherwise an operator who sets tun_persist=true and reloads believes persistence
+	// is armed while the next stop still destroys wanbond0 and drops its addressing.
+	if live.TUNPersist != desired.TUNPersist {
+		w = append(w, fmt.Sprintf("tun_persist %v -> %v — the running interface keeps its original persistence; ignored until restart", live.TUNPersist, desired.TUNPersist))
+	}
 	// NOTE: a Metrics change is NOT warned here — unlike the other non-path fields, the
 	// reload APPLIES it by rebinding the /metrics endpoint (see Reload). Warning about a
 	// change that is honoured would misinform the operator.

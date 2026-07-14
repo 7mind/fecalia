@@ -109,6 +109,11 @@ func TestReloadWarnings(t *testing.T) {
 			c.Log = config.Log{Level: "debug"}
 			return c
 		}, "log"},
+		{"tun_persist flipped", func() *config.Config {
+			c := base()
+			c.TUNPersist = true // base leaves it false; a reload cannot re-issue TUNSETPERSIST
+			return c
+		}, "tun_persist"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
