@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 192
+  item: 193
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2262,6 +2262,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T154","goals:G14","defects:D65"]
+
+### R192 — go-ahead
+
+- createdAt: 2026-07-14T19:06:12.037Z
+- updatedAt: 2026-07-14T19:06:12.037Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T153 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Wired cfg.Scheduler.PacingEnabled/PerPathCapacities/PacingBursts into sched.Config in selectScheduler's ACTIVE-BACKUP branch (device.go), weighted branch untouched — the final step making active-backup pacing (D65 primary fix) RUNTIME-EFFECTIVE. Merged to main as a39f39f (clean cherry-pick of 1490597 onto 1c446ea; device.go + scheduler_pacing_test.go[new] + config_test.go marker + docs install/design/example-toml). BOTH reviewers verified CONSTRUCTION-TIME INDEX ALIGNMENT is provably 1:1: buildScheduler (device.go:865-872) sets health[i]=probers[i] over cfg.Paths in declaration order (NO filter/reorder); deriveActiveBackupPerPathPacing (config.go:1132-1147) builds caps[i]/bursts[i] over cfg.Paths[i] in the SAME order; newActiveBackupPacers pairs pacers[i] with health[i] from PerPathCapacities[i]; NewActiveBackup fail-fasts on length mismatch. WEIGHTED byte-identical (diff touches only the default branch). PACING-OFF byte-compat (PacingEnabled=false → nil vectors, newActiveBackupPacers nil, Pick guards !cfg.Pacing; test compares to a reference unwired NewActiveBackup). REPRODUCE-FIRST empirically verified by BOTH: reverting the wiring hunk fails TestSelectSchedulerActiveBackupPacingEnabled at the exact D65-regression message ('no frames were paced out … wired pacing did not shed'); the test asserts per-path (NOT bottleneck) pacing in BOTH directions (admitted ≤ primaryCap*T+burst AND admitted > backupCap*T+backupBurst). Docs (install/design/wanbond.example.toml) accurately state policy-independent pacing + active-backup fail-fast; config_test.go scrape marker matches the new example header. Full gate green on composed main: device+sched+config tests + -race ok; just lint 0 issues default+e2e+realhosts. FABLE filed 1 HIGH-severity OUT-OF-SCOPE defect → D79 (per-path pacer configs carried POSITIONALLY not by identity across bind membership churn — a deferred path at Open / T55 promotion / reload AddPath misassigns the fast path to the slow path's rate, reintroducing D65; pre-existing in internal/sched+bind untouched by this diff, made REACHABLE by T153's wiring). 0 criticisms / 0 questions."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T153","goals:G14","defects:D65","defects:D79"]
 
 ## M48
 

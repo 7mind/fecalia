@@ -1979,10 +1979,10 @@ archives:
 - dependsOn: ["T150"]
 - resultCommit: e093276
 
-### T153 — wip
+### T153 — done
 
 - createdAt: 2026-07-14T13:16:32.388Z
-- updatedAt: 2026-07-14T18:48:06.219Z
+- updatedAt: 2026-07-14T19:06:13.135Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire pacing config into selectScheduler's active-backup branch
@@ -1991,6 +1991,7 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T150","T152"]
+- resultCommit: a39f39f
 
 ### T154 — done
 

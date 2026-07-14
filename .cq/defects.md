@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 79
+  item: 80
 archives: []
 ---
 
@@ -1072,6 +1072,18 @@ archives: []
 - severity: low
 - suggestedFix: "Harden the netns fixture concentrator bring-up: after nsenter-configuring the concentrator veth/loopback, poll-wait for the interface + address to actually appear (retry loop with backoff) before starting the daemon, instead of assuming synchronous visibility; and/or retry the /metrics bind on EADDRNOTAVAIL during the brief post-netns window. Consolidate with the T60/T62 race mitigations into a single fixture readiness barrier in test/e2e/netns.go's SetupWithPaths."
 - ledgerRefs: ["tasks:T147","goals:G13"]
+
+### D79 — open
+
+- createdAt: 2026-07-14T19:05:13.710Z
+- updatedAt: 2026-07-14T19:05:13.710Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Active-backup per-path pacing capacities MISASSIGN across bind membership churn (deferred path at Open / T55 promotion / runtime AddPath) — silently reintroduces the D65 fast-path-throttled-to-slow-rate fault
+- description: "Filed by the T153 fable reviewer (out-of-scope for T153, HIGH severity). The per-path pacer configs are carried POSITIONALLY, not by path IDENTITY, across ActiveBackup scheduler membership changes. internal/bind/multipath.go Open (~:1162-1177) EXCLUDES a deferred path (EADDRNOTAVAIL source_addr — the DOCUMENTED T55 deferral case, e.g. a 5G modem without a DHCP lease) from the health slice passed to SetPaths; internal/sched/active_backup.go resizeActiveBackupPacers (~:275-288) then rebuilds buckets by INDEX carry-over. Concretely: cfg.Paths=[slow(cap_l), fast(cap_f)] with the slow path deferred at boot leaves the FAST path's bucket = old[0] = cap_l — the fast path silently throttled to the SLOW path's rate, exactly the D65 failure mode the active-backup pacing feature (T150/T152/T153) exists to remove. T55 promotion (promoteDeferredLocked→attachSharedPathLocked→scheduler AddPath, tail-pace inheritance) AND runtime reload AddPath assign the tail-inherited pace, NEVER the path's own T152-derived capacity, and the config vectors are never re-consulted after construction — so the misassignment PERSISTS even after full recovery/promotion. Construction-time alignment (fresh boot, all paths bindable) is provably 1:1 (verified); the hole is specifically the deferral/churn path. Pre-existing: internal/sched + internal/bind are UNTOUCHED by T153's diff (resize/tail-inheritance shipped with T150 commit 8c86bc3; deferral with T55); T153's wiring merely makes the latent misassignment REACHABLE in production. Relates to [[D65]] (this is D65 resurfacing under churn) and [[D76]] (both are active-backup-pacing correctness holes exposed by the T145/T150-T153 pacing work)."
+- severity: high
+- suggestedFix: "Key each path's pacer config by path IDENTITY, not slice position: extend the DynamicScheduler membership calls (SetPaths/AddPath/promotion) so the bind passes per-path pacer configs (capacity/burst) ALONGSIDE the health sources, sourced from the path's OWN cfg-derived T152 capacity (the bind already knows the m.defs index of every bound/promoted path, and cfg.Scheduler.PerPathCapacities is index-aligned to cfg.Paths). Add a regression test: defer path 0 at Open, assert path 1's bucket carries ITS OWN capacity (not path 0's), then promote path 0 and assert the promoted path's bucket carries ITS own too. Consider whether the weighted scheduler has an analogous positional-carry hole (it uses a shared scalar so likely not, but verify)."
+- ledgerRefs: ["tasks:T153","tasks:T150","defects:D65","defects:D76","goals:G14"]
 
 ## M49
 
