@@ -1082,6 +1082,67 @@ Each daemon serves Prometheus metrics on the loopback-only `[metrics] listen`
 address (`curl -s http://127.0.0.1:9090/metrics`). Logs go to stderr →
 `journalctl -u wanbond-<role>`.
 
+### 6a. Tunnel restart guidance and convergence checking (interim, until D36 is fixed)
+
+**This section documents interim behavior** — restarting tunnel endpoints leaves
+the session wedged for minutes under specific conditions. Once defect D36
+(stale-session peer does not promptly re-handshake) is fixed, the reconvergence
+timing will improve; until then, use the guidance below.
+
+**The operational check:** the tunnel is up and carrying traffic when the
+**`wanbond_session_established` metric reads `1`** (or the log shows `session
+established`). These signal the same event: the WireGuard peer has completed a
+handshake within the session-validity window (RejectAfterTime, ~2.5 hours).
+
+- **`wanbond_session_established` Prometheus gauge:** a binary (0 or 1) metric
+  on each daemon's `/metrics` endpoint. Query it to confirm the tunnel is
+  converged:
+  ```sh
+  curl -s http://127.0.0.1:9090/metrics | grep wanbond_session_established
+  ```
+  Expected output when the tunnel is up: `wanbond_session_established 1`.
+  When converging or wedged: `wanbond_session_established 0`.
+
+- **`session established` log line:** emitted once per session-establish event
+  at INFO level. Watch the daemon's logs:
+  ```sh
+  journalctl -u wanbond-edge -f | grep "session established"
+  ```
+  When the tunnel completes its initial handshake or re-establishes after a
+  restart, this line appears exactly once, carrying the last handshake age in
+  milliseconds (`last_handshake_age_ms`).
+
+**Restarting one endpoint leaves the tunnel down for minutes (D36):**
+
+When you restart **only one end** (edge or concentrator) while the other remains
+live, the restarted end initiates a new handshake promptly. However, the
+**stale-peer (still running) does not detect the new handshake or re-handshake
+promptly** — it keeps the old session cached and does not poll the new one.
+Result: the tunnel is down at the restarted end (new session not yet up) and at
+the stale end (old session still valid but peers no longer match on keys). The
+stale end eventually re-handshakes once its session expires (~2.5 hours), causing
+a ~2.5-hour convergence delay.
+
+**Fast path: restart both ends together (~25 s observed):**
+
+Restarting **both ends within a short window** (e.g., within the same minute)
+sidesteps the stale-session hang. Both re-handshake together and reconverge
+within seconds once the faster end detects the other is live.
+
+Procedure:
+1. On the concentrator (or hub): `systemctl restart wanbond-concentrator`
+2. Immediately (within 30 s) on the edge: `systemctl restart wanbond-edge`
+3. Watch for convergence on one end:
+   ```sh
+   journalctl -u wanbond-edge -f | grep "session established"
+   ```
+   Typical reconvergence time: 10–25 seconds from the second restart.
+
+**Avoid:** restarting a single end for maintenance; if you must, plan for a ~20 s
+down window on one uplink (one path recovers) or factor in the D36 timeout if
+both ends must be up. Until D36 is fixed, coordinate endpoint restarts; both
+together is faster than one at a time.
+
 ## 7. MTU
 
 The daemon sets the TUN MTU itself from the bonded-overhead budget (see
