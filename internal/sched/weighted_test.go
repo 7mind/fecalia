@@ -1,10 +1,14 @@
 package sched
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -664,5 +668,194 @@ func TestWeightedSetPathsRealignsMembership(t *testing.T) {
 	}
 	if _, err := s.AddPath(nil); err == nil {
 		t.Fatal("AddPath(nil) accepted, want error")
+	}
+}
+
+// capturedLogLine is one parsed structured (JSON) log record, mirroring the shape
+// test/e2e/load.go's LogLine gives an e2e test — but built locally here since sched
+// cannot import the e2e-tagged test package.
+type capturedLogLine struct {
+	Msg    string
+	Fields map[string]any
+}
+
+// newCapturingLogger builds a Logger writing to an in-memory buffer, so a test can
+// assert on the structured fields of a record (not just that Info was called) the
+// way the e2e log capturer does for a live daemon.
+func newCapturingLogger(t testing.TB) (log.Logger, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	l, err := log.New("debug", &buf)
+	if err != nil {
+		t.Fatalf("build logger: %v", err)
+	}
+	return l, &buf
+}
+
+// parseCapturedLogLines parses every JSON line buf has accumulated so far.
+func parseCapturedLogLines(t testing.TB, buf *bytes.Buffer) []capturedLogLine {
+	t.Helper()
+	var out []capturedLogLine
+	for _, line := range strings.Split(buf.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Fatalf("non-JSON captured log line %q: %v", line, err)
+		}
+		msg, _ := raw["msg"].(string)
+		out = append(out, capturedLogLine{Msg: msg, Fields: raw})
+	}
+	return out
+}
+
+// aggregationChangeLines filters lines to the canonical "scheduler aggregation
+// change" record, optionally further filtered by "to" when want is non-empty.
+func aggregationChangeLines(lines []capturedLogLine, want string) []capturedLogLine {
+	var out []capturedLogLine
+	for _, l := range lines {
+		if l.Msg != "scheduler aggregation change" {
+			continue
+		}
+		if want != "" {
+			if to, _ := l.Fields["to"].(string); to != want {
+				continue
+			}
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// TestWeightedAggregationSnapshot is the T143 accessor half: AggregationSnapshot
+// reflects the gate's current engaged/collapsed state, the smoothed offered-load
+// estimate, and the two configured thresholds, without perturbing any per-frame
+// distribution state (it takes s.mu but calls neither Pick nor Recompute logic).
+func TestWeightedAggregationSnapshot(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	backup := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	s := newWeighted(t, clock, cfg, primary, backup)
+
+	wantEngage := cfg.EngageFraction * cfg.PerPathCapacity
+	wantDisengage := cfg.DisengageFraction * cfg.PerPathCapacity
+
+	snap := s.AggregationSnapshot()
+	if snap.Aggregating {
+		t.Fatal("initial snapshot reports aggregating, want collapsed (no load offered yet)")
+	}
+	if snap.OfferedLoadFPS != 0 {
+		t.Fatalf("initial OfferedLoadFPS = %g, want 0", snap.OfferedLoadFPS)
+	}
+	if snap.EngageThresholdFPS != wantEngage {
+		t.Fatalf("EngageThresholdFPS = %g, want %g", snap.EngageThresholdFPS, wantEngage)
+	}
+	if snap.DisengageThresholdFPS != wantDisengage {
+		t.Fatalf("DisengageThresholdFPS = %g, want %g", snap.DisengageThresholdFPS, wantDisengage)
+	}
+
+	const dt = 100 * time.Microsecond // >> engage threshold
+	driveUntilAggregating(t, s, clock, dt)
+
+	snap = s.AggregationSnapshot()
+	if !snap.Aggregating {
+		t.Fatal("snapshot reports collapsed after the gate engaged, want aggregating")
+	}
+	if snap.OfferedLoadFPS <= wantEngage {
+		t.Fatalf("OfferedLoadFPS = %g, want > engage threshold %g once aggregating", snap.OfferedLoadFPS, wantEngage)
+	}
+	// Thresholds are static config projections: unchanged by the gate flip.
+	if snap.EngageThresholdFPS != wantEngage || snap.DisengageThresholdFPS != wantDisengage {
+		t.Fatalf("thresholds changed after engage: engage=%g disengage=%g, want %g/%g",
+			snap.EngageThresholdFPS, snap.DisengageThresholdFPS, wantEngage, wantDisengage)
+	}
+}
+
+// TestWeightedAggregationChangeLogFieldsAndNoDoubleLog is the T143/R155 log-extension
+// half: the CANONICAL "scheduler aggregation change" record (not a new message
+// string) gains "from"/"engage_threshold_fps"/"disengage_threshold_fps" alongside its
+// existing "to"/"load_fps"/"reason" fields, and still fires EXACTLY ONCE per gate
+// flip — sustained high load after engaging must not re-log (parity with
+// setActiveLocked's one-shot-on-change semantics; a saturated Pick path must not
+// log per-frame).
+func TestWeightedAggregationChangeLogFieldsAndNoDoubleLog(t *testing.T) {
+	clock := newFakeClock()
+	lg, buf := newCapturingLogger(t)
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	backup := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	health := []PathHealth{primary, backup}
+	quality := []PathQuality{primary, backup}
+	s, err := NewWeighted(health, quality, cfg, clock, lg)
+	if err != nil {
+		t.Fatalf("NewWeighted: %v", err)
+	}
+
+	wantEngage := cfg.EngageFraction * cfg.PerPathCapacity
+	wantDisengage := cfg.DisengageFraction * cfg.PerPathCapacity
+
+	// Engage: sustained high offered load, then keep pumping well past the flip to
+	// prove the record is one-shot, not per-frame.
+	const hiDt = 100 * time.Microsecond
+	driveUntilAggregating(t, s, clock, hiDt)
+	for i := 0; i < 2000; i++ {
+		s.Pick(ClassData)
+		clock.advance(hiDt)
+	}
+
+	engageLines := aggregationChangeLines(parseCapturedLogLines(t, buf), "aggregating")
+	if len(engageLines) != 1 {
+		t.Fatalf("got %d 'scheduler aggregation change' to=aggregating records after 2000+ Picks under sustained overload, want exactly 1 (no double-log)", len(engageLines))
+	}
+	rec := engageLines[0]
+	if from, _ := rec.Fields["from"].(string); from != "collapsed" {
+		t.Fatalf("from = %q, want %q", from, "collapsed")
+	}
+	if _, ok := rec.Fields["load_fps"]; !ok {
+		t.Fatal("missing existing load_fps field — must be preserved")
+	}
+	if got, ok := rec.Fields["engage_threshold_fps"].(float64); !ok || got != wantEngage {
+		t.Fatalf("engage_threshold_fps = %v (ok=%v), want %g", rec.Fields["engage_threshold_fps"], ok, wantEngage)
+	}
+	if got, ok := rec.Fields["disengage_threshold_fps"].(float64); !ok || got != wantDisengage {
+		t.Fatalf("disengage_threshold_fps = %v (ok=%v), want %g", rec.Fields["disengage_threshold_fps"], ok, wantDisengage)
+	}
+
+	// Disengage: sustained low offered load past CollapseDwell.
+	const lowDt = 20 * time.Millisecond
+	for i := 0; i < 400; i++ {
+		s.Pick(ClassData)
+		if !s.aggregating {
+			break
+		}
+		clock.advance(lowDt)
+	}
+	if s.aggregating {
+		t.Fatal("setup: never collapsed under sustained low load")
+	}
+
+	collapseLines := aggregationChangeLines(parseCapturedLogLines(t, buf), "collapsed")
+	if len(collapseLines) != 1 {
+		t.Fatalf("got %d 'scheduler aggregation change' to=collapsed records, want exactly 1 (no double-log)", len(collapseLines))
+	}
+	rec = collapseLines[0]
+	if from, _ := rec.Fields["from"].(string); from != "aggregating" {
+		t.Fatalf("from = %q, want %q", from, "aggregating")
+	}
+	if got, ok := rec.Fields["engage_threshold_fps"].(float64); !ok || got != wantEngage {
+		t.Fatalf("engage_threshold_fps = %v (ok=%v), want %g", rec.Fields["engage_threshold_fps"], ok, wantEngage)
+	}
+	if got, ok := rec.Fields["disengage_threshold_fps"].(float64); !ok || got != wantDisengage {
+		t.Fatalf("disengage_threshold_fps = %v (ok=%v), want %g", rec.Fields["disengage_threshold_fps"], ok, wantDisengage)
+	}
+
+	// Exactly one "scheduler aggregation change" record total (one engage + one
+	// collapse) across the whole run — the strongest form of the no-double-log
+	// assertion.
+	if all := aggregationChangeLines(parseCapturedLogLines(t, buf), ""); len(all) != 2 {
+		t.Fatalf("got %d total 'scheduler aggregation change' records, want exactly 2 (1 engage + 1 collapse)", len(all))
 	}
 }

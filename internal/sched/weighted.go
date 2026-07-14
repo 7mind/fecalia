@@ -281,6 +281,42 @@ func (s *WeightedScheduler) Pick(class FrameClass) int {
 	return s.selectAggregatingLocked(now, eligible, weights, class)
 }
 
+// AggregationSnapshot is a point-in-time, mutex-guarded read of the weighted
+// scheduler's aggregation gate: whether it is currently engaged, the smoothed
+// offered-load estimate driving it, and the engage/disengage thresholds
+// (EngageFraction/DisengageFraction * PerPathCapacity) it compares that estimate
+// against. It is the read seam the T146 metrics plumbing polls; AggregationSnapshot
+// itself advances no per-frame distribution state.
+type AggregationSnapshot struct {
+	// Aggregating reports whether the gate is currently engaged (traffic striped
+	// across every eligible path) or collapsed (primary-only, data-thrift).
+	Aggregating bool
+	// OfferedLoadFPS is the current smoothed offered-load estimate (Pick calls per
+	// second, EWMA over LoadTau) driving the gate.
+	OfferedLoadFPS float64
+	// EngageThresholdFPS is EngageFraction*PerPathCapacity: the load level above
+	// which the gate engages.
+	EngageThresholdFPS float64
+	// DisengageThresholdFPS is DisengageFraction*PerPathCapacity: the load level
+	// below which, sustained for CollapseDwell, the gate collapses.
+	DisengageThresholdFPS float64
+}
+
+// AggregationSnapshot returns a point-in-time snapshot of the aggregation gate
+// state under s.mu. It is a read-only accessor for consumers (the T146 metrics
+// plumbing) that must observe the gate without perturbing any per-frame
+// distribution state the way a Pick or Recompute call would.
+func (s *WeightedScheduler) AggregationSnapshot() AggregationSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return AggregationSnapshot{
+		Aggregating:           s.aggregating,
+		OfferedLoadFPS:        s.loadRate,
+		EngageThresholdFPS:    s.cfg.EngageFraction * s.cfg.PerPathCapacity,
+		DisengageThresholdFPS: s.cfg.DisengageFraction * s.cfg.PerPathCapacity,
+	}
+}
+
 // loadGapLocked returns the wall-clock gap since the previous offered-load sample, or
 // 0 before the first sample. Caller holds s.mu.
 func (s *WeightedScheduler) loadGapLocked(now time.Time) time.Duration {
@@ -489,7 +525,8 @@ func (s *WeightedScheduler) updateGateLocked(now time.Time, gap time.Duration) {
 		if s.loadRate > engage {
 			s.aggregating = true
 			s.belowSince = time.Time{}
-			s.log.Info("scheduler aggregation change", "to", "aggregating", "load_fps", s.loadRate)
+			s.log.Info("scheduler aggregation change", "to", "aggregating", "from", "collapsed",
+				"load_fps", s.loadRate, "engage_threshold_fps", engage, "disengage_threshold_fps", disengage)
 		}
 		return
 	}
@@ -497,7 +534,8 @@ func (s *WeightedScheduler) updateGateLocked(now time.Time, gap time.Duration) {
 	if gap >= s.cfg.CollapseDwell {
 		s.aggregating = false
 		s.belowSince = time.Time{}
-		s.log.Info("scheduler aggregation change", "to", "collapsed", "reason", "idle gap", "gap", gap.String())
+		s.log.Info("scheduler aggregation change", "to", "collapsed", "from", "aggregating",
+			"reason", "idle gap", "gap", gap.String(), "engage_threshold_fps", engage, "disengage_threshold_fps", disengage)
 		return
 	}
 	if s.loadRate < disengage {
@@ -509,7 +547,8 @@ func (s *WeightedScheduler) updateGateLocked(now time.Time, gap time.Duration) {
 		if now.Sub(s.belowSince) >= s.cfg.CollapseDwell {
 			s.aggregating = false
 			s.belowSince = time.Time{}
-			s.log.Info("scheduler aggregation change", "to", "collapsed", "reason", "sustained low load", "load_fps", s.loadRate)
+			s.log.Info("scheduler aggregation change", "to", "collapsed", "from", "aggregating",
+				"reason", "sustained low load", "load_fps", s.loadRate, "engage_threshold_fps", engage, "disengage_threshold_fps", disengage)
 		}
 		return
 	}

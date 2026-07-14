@@ -248,6 +248,19 @@ Decides which path(s) a frame goes out. Two policies:
   across paths, with a Mathis-proxy path quality signal (`1/(RTT·√loss)`),
   three-region hysteresis to avoid flapping, and load-based engage/disengage.
 
+**Aggregation-gate observability (T143).** `*WeightedScheduler.AggregationSnapshot()`
+is a mutex-guarded, read-only accessor returning `{Aggregating, OfferedLoadFPS,
+EngageThresholdFPS, DisengageThresholdFPS}` — a point-in-time read of the load
+gate that advances no per-frame distribution state (unlike `Pick`/`Recompute`).
+It is the seam the `/metrics` plumbing polls. Every engage/disengage flip logs a
+single `"scheduler aggregation change"` record (one-shot on change, mirroring
+`"scheduler active path change"`'s semantics — a saturated `Pick` path never
+logs per-frame); the record carries `to` (`"aggregating"`/`"collapsed"`), `from`
+(the prior state, same vocabulary), `load_fps` (the smoothed offered-load
+estimate), `engage_threshold_fps`/`disengage_threshold_fps`
+(`EngageFraction`/`DisengageFraction * PerPathCapacity`), and, on a
+sustained-low-load or idle-gap collapse, `reason`.
+
 **Pacing** (per-path token buckets) is a scheduler feature that is **off by
 default** and, when enabled, exempts WireGuard control frames from shedding so
 overload cannot starve rekey. When pacing is enabled the per-path pace can be
