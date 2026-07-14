@@ -161,9 +161,10 @@ deliberate boundaries you must plan around:
   concentrator down at once) the edge advances to the next endpoint, repoints the
   bond, and re-handshakes a fresh session (round-robin/wrap at end of list). The
   switch is covered by unit/component tests, the netns hub-failover e2e (T62), and
-  the real-link mid-transfer WAN-kill tier (T63). Scope limit: endpoints are
-  IP:port only (no DNS). See
-  [docs/design.md §Concentrator hub failover](docs/design.md).
+  the real-link mid-transfer WAN-kill tier (T63). Endpoints may be IP:port
+  literals (default) or hostnames with opt-in `dns = true` per-peer and an
+  explicit `[dns]` resolver block; see
+  [docs/design.md §DNS endpoints and resolver privacy trade-offs](docs/design.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
 - **DATA/PARITY frames are unauthenticated by design** (inner WireGuard

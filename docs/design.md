@@ -422,6 +422,100 @@ space** and never touches the inner WireGuard counter (a core invariant).
   (`NXDomainError`/`NoDataError`), never a silent `([], nil)`. Residual leak
   for both: TLS SNI/timing to the configured provider.
 
+## DNS endpoints and resolver privacy trade-offs
+
+The optional `[dns]` block selects which transport resolves a peer's hostname
+endpoint when opted in with `dns = true` per-peer. It is **opt-in by default —
+[dns] alone never enables hostname resolution**; every peer endpoint is always
+an IP literal unless explicitly marked `dns = true`. Hostname endpoints are
+resolved through the OS system resolver by default (when `[dns]` is absent).
+
+### Why default-off: the DPI thesis
+
+A **pre-tunnel hostname lookup** is an unencrypted (cleartext) signal: an
+on-path adversary sees the edge asking for the public concentrator's hostname
+*before* the tunnel is up, making the host blocklistable at the DNS level
+without inspecting any encrypted traffic. This is true regardless of how the
+lookup is done — system resolver, DoH/DoT — because the resolver *itself*
+learns the query. The default posture (IP literals only; hostnames deferred
+to an explicit opt-in with `dns = true` + an explicit `[dns]` resolver block)
+keeps this leakage off by default and surfaces it as an intentional choice.
+
+### Leaked artifacts per resolver mode
+
+Once a peer opts into hostname resolution (`dns = true`), the transport choice
+in `[dns].resolver` determines what information escapes to a passive on-path
+observer — per Requirement-6 testing (test/e2e/p5_dpi_test.go, Q29/Q33):
+
+- **system** (default, OS stub resolver): A **cleartext DNS query naming the
+  concentrator's hostname** — the full QNAME in plaintext on port 53. This is
+  the most visible artifact: a DPI engine observes the exact hostname being
+  resolved and can block it pre-emptively at the network edge.
+
+- **DoH** (DNS-over-HTTPS, RFC 8484): The **TLS ClientHello SNI** (Server Name
+  Indication, naming the DoH provider's host) **plus timing/connection metadata**
+  to the DoH provider. The query payload itself is encrypted within the HTTPS
+  tunnel, but the SNI and the observed request/response cadence allow timing-based
+  inference and correlation to the DoH provider — the concentrator hostname is
+  *not* visible on the wire.
+
+- **DoT** (DNS-over-TLS, RFC 7858): Identical to DoH: the **TLS ClientHello SNI**
+  (naming the DoT server) **plus timing and connection metadata** to the DoT
+  provider. The query is encrypted, but SNI + timing correlates the edge to that
+  resolver.
+
+In all three cases, **multi-record expansions** (a hostname resolving to multiple
+A/AAAA records, e.g. concentrator failover `endpoints` list) feed back into
+hub-failover: each address in the result set feeds the active-backup or weighted
+scheduler as a separate routable endpoint, so the edge can failover within that
+set on liveness loss (one address down → try the next).
+
+### Opt-in defer-and-reconcile boot semantics
+
+A hostname endpoint that cannot be resolved at startup (resolver down, DNS
+outage, network unreachable) **never blocks tunnel bring-up**. The tunnel
+boots without that endpoint, and a background re-resolution loop (at the
+cadence `[dns].poll_interval`, default 30s) installs it and initiates the
+Noise handshake on the first successful lookup. Steady-state re-resolution then
+repoints the bond whenever the hostname's record changes (TTL-driven or faster,
+per the operational `poll_interval`).
+
+- **Re-resolution cadence**: `[dns].poll_interval` (default 30s, must be > 0).
+  Governs how often an opted-in hostname endpoint is re-resolved; changes are
+  reconciled immediately.
+
+- **Liveness-loss trigger**: If all endpoints (resolved A/AAAA records + any
+  IP-literal endpoints) for a peer go unreachable simultaneously, the
+  re-resolution loop shortens its cadence and retries aggressively; once any
+  endpoint recovers, it returns to the normal cadence.
+
+- **Change suppression**: Re-resolution results that are identical to the prior
+  set (same IP + port, same order) do not trigger re-keying or re-handshake —
+  they are silent, minimizing control churn.
+
+### Mixing rules with ordered endpoints
+
+When a peer declares multiple endpoints via the `endpoints` list (hub-failover),
+and one or more are hostnames (`dns = true`), the following rules apply:
+
+1. **Each hostname expands to its full A+AAAA record set** at resolve time; IP
+   literals and resolved addresses are all ordered together per the scheduler's
+   active-backup or weighted policy.
+
+2. **Order preservation**: the `endpoints` list order is **strict** — the scheduler
+   respects it for active-backup failover (index 0 is primary, index N are standbys).
+   When a hostname at index K resolves to multiple addresses, they are inserted
+   *consecutively* in that order (first address fills index K, subsequent addresses
+   shift later entries right in the ordering).
+
+3. **Deduplication**: if two `endpoints` entries (whether IP or hostname) resolve
+   to the same address:port, both are rejected at config load (duplicates not
+   allowed in the flattened set).
+
+4. **Resolver selection is global**: `[dns].resolver` applies to *all* opted-in
+   hostname endpoints — you cannot mix system + DoH + DoT within one config.
+   Choose one transport per tunnel.
+
 ## Load-bearing invariants
 
 These are the rules that keep the design correct; break them and the tunnel

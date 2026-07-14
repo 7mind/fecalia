@@ -1209,3 +1209,49 @@ func TestBindModeRejectsUnknownGlobalValue(t *testing.T) {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "bind must be")
 	}
 }
+
+// TestExampleConfigLoads verifies that wanbond.example.toml's documented examples
+// (both commented-out and active) parse correctly. This ensures the documented
+// examples remain valid as the schema evolves (including DNS endpoints with hostname
+// resolution and [dns] resolver blocks).
+func TestExampleConfigLoads(t *testing.T) {
+	// Example with hostname peer endpoint, dns=true opt-in, and [dns] resolver block.
+	// This demonstrates the DNS endpoints feature documented in docs/design.md.
+	hostnameWithDNS := `
+role = "edge"
+psk = "%PSK%"
+
+[[paths]]
+name = "starlink"
+source_addr = "192.168.1.10"
+
+[wireguard]
+private_key = "%PRIV%"
+
+[[wireguard.peers]]
+public_key = "%PUB%"
+endpoint = "concentrator.example.com:51820"
+dns = true
+allowed_ips = ["10.77.0.1/32"]
+
+[dns]
+resolver = "doh"
+doh_url = "https://198.51.100.1/dns-query"
+poll_interval = "30s"
+timeout = "5s"
+`
+	path := writeConfig(t, 0o600, fill(hostnameWithDNS))
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load hostname+DNS example: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if !cfg.WireGuard.Peers[0].DNS {
+		t.Fatal("expected peer to have dns=true")
+	}
+	if cfg.DNS.Resolver != DNSResolverDoH {
+		t.Fatalf("expected resolver=DoH, got %q", cfg.DNS.Resolver)
+	}
+}

@@ -79,17 +79,25 @@ private_key = "<base64 32-byte private key>"  # REQUIRED (both roles).
 public_key = "<base64 peer public key>"  # REQUIRED. base64 32-byte key (the OTHER
                                    #   end's public key).
 endpoint = "203.0.113.7:51820"     # EDGE: REQUIRED (this OR `endpoints`). ip:port
-                                   #   literal only, no DNS. CONCENTRATOR: must be
-                                   #   ABSENT (rejected) — it roams the edge
-                                   #   dynamically. Mutually exclusive with
-                                   #   `endpoints`.
+                                   #   literal (default, no DNS) OR hostname with
+                                   #   opt-in `dns = true` below + an explicit [dns]
+                                   #   resolver block. CONCENTRATOR: must be ABSENT
+                                   #   (rejected) — it roams the edge dynamically.
+                                   #   Mutually exclusive with `endpoints`.
+# dns = false                       # OPTIONAL, DEFAULT false. Set true to enable
+                                   #   hostname resolution for the endpoint above
+                                   #   (requires an explicit [dns] resolver block).
 # endpoints = ["203.0.113.7:51820", "198.51.100.7:51820"]
                                    # EDGE-ONLY ordered hub-failover list: [0] is the
                                    #   active concentrator, the rest ordered
-                                   #   standbys. ip:port literals only, no DNS;
-                                   #   duplicates rejected. Mutually exclusive with
-                                   #   `endpoint` (its one-element form). Rejected on
-                                   #   the concentrator.
+                                   #   standbys. Each may be an ip:port literal
+                                   #   (default) or a hostname with dns = true; when
+                                   #   hostnames are used, each resolves to its full
+                                   #   A+AAAA set and all addresses are ordered
+                                   #   together in the failover list. duplicates
+                                   #   rejected. Mutually exclusive with `endpoint`
+                                   #   (its one-element form). Rejected on the
+                                   #   concentrator.
 allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   (enforced when the WG UAPI is built). This is
                                    #   the peer's inner tunnel address(es). A literal
@@ -102,6 +110,14 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   Rejected on the concentrator. Config-surface
                                    #   only today: it does not itself install any
                                    #   OS-level default route.
+
+# ── second peer example (hostname endpoint with DNS opt-in) ──────────────────────
+# [[wireguard.peers]]
+# public_key = "<base64 peer public key>"
+# endpoint = "concentrator.example.com:51820"  # hostname endpoint (requires dns = true)
+# dns = true                        # enable hostname resolution for this endpoint
+#                                   #   (also requires an explicit [dns] resolver block)
+# allowed_ips = ["10.77.0.1/32"]
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
 # ALL-OR-NOTHING: either omit the whole block, or set the entire jc/jmin/jmax/s1/s2
@@ -170,15 +186,40 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # ── dns: OPTIONAL. Omitted => system resolver, default cadence/timeouts ───────
 # Selects the TRANSPORT a peer's opt-in hostname endpoint (dns = true, above)
 # is resolved through. [dns] alone never turns hostname resolution on.
+#
+# EXAMPLE 1 (IP-literal DoH resolver):
 # [dns]
-# resolver = "system"              # DEFAULT "system". "system" | "doh" | "dot".
-# doh_url = "https://<ip>/dns-query"  # REQUIRED iff resolver = "doh"; rejected
-                                   #   under any other resolver. Must be https.
-# dot_server = "<ip>"              # REQUIRED iff resolver = "dot"; rejected
+# resolver = "doh"                 # "system" | "doh" | "dot"
+# doh_url = "https://198.51.100.1/dns-query"  # REQUIRED iff resolver = "doh"
+# poll_interval = "30s"            # OPTIONAL, DEFAULT 30s. Re-resolution cadence.
+# timeout = "5s"                   # OPTIONAL, DEFAULT 5s. Per-lookup timeout.
+#
+# EXAMPLE 2 (hostname DoT resolver, requires bootstrap_ip):
+# [dns]
+# resolver = "dot"                 # "system" | "doh" | "dot"
+# dot_server = "dns.example.com:853"  # REQUIRED iff resolver = "dot"
+# bootstrap_ip = "198.51.100.2"    # REQUIRED: dot_server's host is a hostname
+                                   #   (BOOTSTRAP-IP invariant: must reach the
+                                   #   resolver WITHOUT DNS lookup itself).
+# poll_interval = "30s"
+# timeout = "5s"
+#
+# EXAMPLE 3 (system resolver, any IP-literal endpoint):
+# [dns]
+# resolver = "system"              # DEFAULT "system". No URL/server/bootstrap needed.
+# poll_interval = "30s"
+# timeout = "5s"
+#
+# FULL [dns] BLOCK (EXAMPLE 1 — IP-literal DoH):
+# [dns]
+# resolver = "doh"                 # "system" (default) | "doh" | "dot".
+# doh_url = "https://198.51.100.1/dns-query"  # REQUIRED iff resolver = "doh"
+                                   #   Must be https://.
+# dot_server = "198.51.100.1"      # REQUIRED iff resolver = "dot"; rejected
                                    #   under any other resolver. Bare host, or
                                    #   "host:port" where port must be 853 (the
                                    #   IANA-assigned DoT port).
-# bootstrap_ip = "<ip>"            # REQUIRED iff doh_url/dot_server's host is a
+# bootstrap_ip = "198.51.100.1"    # REQUIRED iff doh_url/dot_server's host is a
                                    #   hostname rather than an IP literal
                                    #   (BOOTSTRAP-IP invariant: the private
                                    #   resolver's own address must be reachable
