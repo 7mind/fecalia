@@ -147,3 +147,58 @@ func TestLoopbackBindAccepted(t *testing.T) {
 		})
 	}
 }
+
+// TestCloseReleasesPortWithoutStart is the regression guard for the listener
+// leak: Close on a NewServer that was never Start()ed must release the bound
+// socket, not merely Shutdown the (never-Serve'd) http.Server. Proven by
+// re-binding the SAME port after Close: with the leak, the second NewServer
+// fails EADDRINUSE. The first server binds 127.0.0.1:0, its OS-assigned port is
+// read back from Addr(), and the re-bind targets that exact port.
+func TestCloseReleasesPortWithoutStart(t *testing.T) {
+	srv, err := NewServer("127.0.0.1:0", "", fakeSource{}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	addr := srv.Addr().String() // 127.0.0.1:<assigned port>
+
+	// Close WITHOUT ever calling Start(): only the explicit s.ln.Close in Close
+	// can release the port here, since Shutdown owns no Serve'd listener.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	if err := srv.Close(closeCtx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	srv2, err := NewServer(addr, "", fakeSource{}, testLogger(t))
+	if err != nil {
+		t.Fatalf("re-bind on %q after Close failed (leaked listener): %v", addr, err)
+	}
+	reCloseCtx, reCloseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reCloseCancel()
+	if err := srv2.Close(reCloseCtx); err != nil {
+		t.Errorf("Close (re-bound server): %v", err)
+	}
+}
+
+// TestNonLoopbackWithTokenAccepted locks the token-authorized branch: a
+// non-loopback (wildcard) bind with a NON-EMPTY token must SUCCEED — the token
+// is the explicit opt-in that permits off-host exposure. This guards against a
+// regression that inverts the token check and refuses authorized binds (or,
+// worse, accepts unauthenticated ones). Close must be clean.
+func TestNonLoopbackWithTokenAccepted(t *testing.T) {
+	srv, err := NewServer("0.0.0.0:0", "secret-token", fakeSource{}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer(\"0.0.0.0:0\", token): %v", err)
+	}
+	if srv == nil {
+		t.Fatal("NewServer returned nil server with nil error")
+	}
+	if srv.Addr() == nil {
+		t.Fatal("authorized non-loopback bind produced no listen address")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Close(ctx); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}

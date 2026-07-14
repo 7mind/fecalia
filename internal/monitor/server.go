@@ -113,9 +113,22 @@ func (s *Server) Start() {
 	}()
 }
 
-// Close gracefully shuts the endpoint down, bounded by ctx.
+// Close gracefully shuts the endpoint down, bounded by ctx. http.Server.Shutdown
+// only closes listeners it took ownership of via Serve, so a Close on a Server
+// that was never Start()ed would leak the bound socket s.ln (the port stays
+// held, EADDRINUSE on re-listen). Close s.ln explicitly to release the port in
+// both paths, tolerating net.ErrClosed for the Start->Close path where Serve
+// already closed it. The Shutdown error takes precedence; a meaningful
+// listener-close error surfaces only when Shutdown itself succeeded.
 func (s *Server) Close(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
+	shutdownErr := s.srv.Shutdown(ctx)
+	if err := s.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		return err
+	}
+	return shutdownErr
 }
 
 // handleRoot is the placeholder document handler. The real static assets (the
@@ -137,8 +150,10 @@ func newWSHandler(src metrics.Source, logger log.Logger) http.HandlerFunc {
 			logger.Error("monitor ws accept failed", "err", err.Error())
 			return
 		}
-		// StatusInternalError on the deferred close is a no-op once we have
-		// already closed normally below; it only fires if we bail early.
+		// CloseNow closes the underlying connection immediately WITHOUT sending a
+		// close frame or status code; it is idempotent, so on the normal path
+		// (the explicit StatusNormalClosure Close below) this deferred call is a
+		// no-op, and on an early bail it just tears the connection down.
 		defer func() { _ = c.CloseNow() }()
 
 		payload, err := json.Marshal(BuildSnapshot(src))
