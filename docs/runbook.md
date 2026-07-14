@@ -263,6 +263,30 @@ The repo automates and asserts exactly these steps for the standing testbed:
 `/etc/iptables/rules.v4` and precedes the REJECT. Use it as the executable
 reference for this section.
 
+**MSS-clamp forwarded TCP — required only if you enabled the full-tunnel /
+client-LAN forwarding recipe ([install.md §9](install.md)).** Narrowing the
+tunnel's own MTU (§9.1) does nothing for TCP endpoints behind either
+forwarding node, which negotiate their MSS off their own link MTU — clamp it
+on **both** forwarding nodes, this concentrator and the edge:
+
+```sh
+sudo iptables  -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
+               -j TCPMSS --clamp-mss-to-pmtu
+sudo ip6tables -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
+               -j TCPMSS --clamp-mss-to-pmtu
+```
+
+`--clamp-mss-to-pmtu` (preferred over a fixed `--set-mss <n>`) tracks the
+tunnel's live inner MTU, so it stays correct across any inner-MTU retuning.
+See [install.md §9.2](install.md) for the same recipe with the full edge/
+concentrator context, and [docs/p1-mtu.md §MSS clamping](p1-mtu.md) for the
+inner-MTU-minus-headers arithmetic. Persist it the same way as this section's
+INPUT rules — fold it into the `netfilter-persistent save` above for this
+concentrator, and into the edge's `wanbond-addressing@edge.service` oneshot
+for the edge side (install.md §9.4). Omitting this on either node lets
+forwarded TCP connections emit segments that fragment or hit a PMTUD black
+hole once wrapped by the tunnel.
+
 ## 5. Pacing (optional — ships DISABLED, opt-in)
 
 Per-path send-pacing bounds bufferbloat under sustained load by sizing each

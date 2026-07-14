@@ -1451,13 +1451,50 @@ through it are torn down and recreated on every daemon restart unless
 `tun_persist = true` (§4, I7), so these must be re-applied the same way the
 existing persistence recipe re-applies addressing.
 
+**MSS-clamp forwarded TCP — REQUIRED, on both forwarding nodes.** Splitting
+`0.0.0.0/1`+`128.0.0.0/1` (§9.1) narrows the *tunnel* MTU, but TCP endpoints
+behind either forwarding node — the client LAN behind the edge, or the
+concentrator's own downstream (§9.3) — negotiate their MSS off their own link
+MTU and happily emit oversized segments once wrapped. Clamp the MSS of
+**forwarded** SYNs on **both** forwarding nodes — the edge (this section) and
+the concentrator (§9.3) — to the tunnel's inner MTU; see [docs/p1-mtu.md §MSS
+clamping](p1-mtu.md) for the inner-MTU-minus-headers arithmetic (IPv4:
+`1401 − 40 = 1361` bytes at the default 1500-byte path MTU; IPv6:
+`1381 − 60 = 1321` bytes):
+
+```sh
+sudo iptables  -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
+               -j TCPMSS --clamp-mss-to-pmtu
+sudo ip6tables -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
+               -j TCPMSS --clamp-mss-to-pmtu
+```
+
+`--clamp-mss-to-pmtu` is preferred over a fixed `--set-mss <n>`: it derives
+the MSS from the tunnel interface's live MTU, so it tracks any inner-MTU
+retuning (amnezia junk prefixes, a lower real path MTU) automatically instead
+of going stale. **Without this rule, forwarded TCP connections emit segments
+the tunnel cannot carry whole — they either IP-fragment (the loss-amplification
+risk in p1-mtu.md) or, more commonly, hit a PMTUD black hole and stall
+silently** — the D65 compounding fault this recipe closes. Like the rest of
+§9.2–9.3, this is an **operator** step: the daemon owns only the tunnel engine
+(`internal/device`) and installs no firewall/mangle rules of its own.
+
+Persist each node's clamp rule the same way this recipe already persists that
+node's other rules (§9.4): fold the edge's `iptables -t mangle` insert above
+into `wanbond-addressing@edge.service` alongside the policy-route/SNAT rules;
+persist the concentrator's equivalent with `netfilter-persistent save`,
+alongside its other `iptables`/`ip6tables` rules (§9.3/§5).
+
 ### 9.3 Concentrator: NAT and forward the tunnel traffic out the WAN (operator-owned)
 
 See §5 "Concentrator: NAT/forwarding prerequisites for routed traffic (C6)"
 — `ip_forward`, `MASQUERADE`, and the `FORWARD` established/related accept
 are all required for this recipe and, like 9.2, are entirely
 operator-owned: the daemon programs none of them (§3's `mode` boundary
-covers routes only, never NAT/forwarding/policy-routing).
+covers routes only, never NAT/forwarding/policy-routing). Apply the concentrator
+half of §9.2's MSS-clamp rules here too — the same `iptables`/`ip6tables -t
+mangle -A FORWARD -o wanbond0 ... -j TCPMSS --clamp-mss-to-pmtu` pair, applied
+on this node.
 
 ### 9.4 Persistence
 
@@ -1469,4 +1506,6 @@ interface (9.2's `ip rule`/`ip route`, and the `iptables -t nat` SNAT rule
 if you took the SNAT branch above), and `netfilter-persistent save` (§5) for
 the concentrator's `iptables`/`ip6tables` rules, which persist independently
 of the interface. `net.ipv4.ip_forward` persists on its own once written to
-`/etc/sysctl.d/` (§5 C6).
+`/etc/sysctl.d/` (§5 C6). The MSS-clamp rules (9.2) follow the same split:
+the edge's into its addressing oneshot, the concentrator's into
+`netfilter-persistent save`.
