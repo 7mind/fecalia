@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 150
+  item: 151
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1762,3 +1762,16 @@ archives:
 - ledgerRefs: ["tasks:T130","goals:G9","defects:D41"]
 - sessionLogs: [".cq/logs/20260714-105323-a9f20c7eca65cd28d.md",".cq/logs/20260714-105323-acf604535befc5929.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-a9f20c7eca65cd28d.jsonl",".cq/logs/raw/20260714-105323-acf604535befc5929.jsonl"]
+
+### R151 — go-ahead
+
+- createdAt: 2026-07-14T12:00:03.962Z
+- updatedAt: 2026-07-14T12:00:03.962Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T131 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). All FOUR operator-facing duration knobs (scheduler.collapse_dwell/load_tau/weight_rtt_floor + fec.deadline) now accept the documented Go-duration STRING forms via the LinkRTTRaw/DNS Raw-field precedent: typed fields moved to `toml:\"-\"` (inert to the T130 strict decoder), new *Raw string fields carry the real TOML keys, parsed by parseDurations() in normalize() BEFORE applyDefaults (so empty-Raw→zero→default-fill is preserved; deriveWeightedPacingFromBDP runs earlier but reads only Path.LinkRTT, so ordering is sound), with existing range validation unchanged. Verified: the string-form matrix test asserts 2s/200ms/1ms/5ms; the 8-case rejects-table covers unparseable ('5 parsecs') + non-positive ('-1s') per knob with field-naming errors; TestExampleConfigLoads confirms the uncommented wanbond.example.toml scheduler/fec blocks load; the dropped bare-integer-nanoseconds form is now cleanly REJECTED (empirical probe: type error naming the field). fable's tree-wide grep (literal + %d-format) found ZERO remaining bare-int duration writers for these keys — the 4 e2e fixtures the worker also fixed (p3_fec/p4_adaptive/p5_dpi/wireaudit, which generate deadline TOML for real tunnel bring-up) render exact ms equivalents (100/50ms ÷ 1e6). Docs already documented the string forms (that doc-vs-code mismatch WAS D43), so no doc edit needed. go build/vet/test + go vet -tags e2e/realhosts + just lint all green. Non-blocking nit: the bare-int reject error names the internal field 'DeadlineRaw' not the TOML key (go-toml/v2 library message). LANDED on main at e6beded."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T131","goals:G9","defects:D43"]
+- sessionLogs: [".cq/logs/20260714-115400-a3ce1c99e0384583a.md",".cq/logs/20260714-115400-a212c96b9b4e7bbd0.md"]
+- rawLogs: [".cq/logs/raw/20260714-115400-a3ce1c99e0384583a.jsonl",".cq/logs/raw/20260714-115400-a212c96b9b4e7bbd0.jsonl"]

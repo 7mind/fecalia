@@ -1649,10 +1649,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G9","defects:D41"]
 
-### T131 — planned
+### T131 — done
 
 - createdAt: 2026-07-14T10:00:43.797Z
-- updatedAt: 2026-07-14T10:00:43.797Z
+- updatedAt: 2026-07-14T12:00:05.416Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Accept documented string-duration forms for operator-facing duration knobs (D43)
