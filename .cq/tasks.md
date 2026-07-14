@@ -1107,10 +1107,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-063350-a5cce87613f1ea68b.md",".cq/logs/20260714-064007-a0d31254057d2a3a1.md",".cq/logs/20260714-064007-a278df2d0fc736c97.md"]
 - rawLogs: [".cq/logs/raw/20260714-063350-a5cce87613f1ea68b.jsonl",".cq/logs/raw/20260714-064007-a0d31254057d2a3a1.jsonl",".cq/logs/raw/20260714-064007-a278df2d0fc736c97.jsonl"]
 
-### T97 — wip
+### T97 — done
 
 - createdAt: 2026-07-13T22:29:36.024Z
-- updatedAt: 2026-07-14T06:22:42.324Z
+- updatedAt: 2026-07-14T06:55:21.178Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add netns e2e proving 2+ edges to one concentrator stay isolated
@@ -1119,6 +1119,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T92","T93","T94"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 4b912e5
+- completion: "Multi-peer concentrator isolation netns e2e (test-only, test/e2e/multipeer_test.go: TestMultiPeerConcentratorIsolation): one concentrator + two edges each bonded across its own uplinks. Proves end-to-end the G4 threat model: independent per-edge inner streams; edge-A kill+restart leaves edge-B's tunnel uninterrupted (asserted via a transfer spanning the outage); per-peer /metrics attribution (edge A under peer=\"\", edge B under peer=\"edge-beta\" — label mapping verified against T93/T94 wiring); edge-A NAT-rebind recovery via PROBE re-bind with B undisturbed; a spoofed unbound-source flood evicts no live peer. Isolation properties Fatalf; absolute numbers report-only. Compiles/vets under -tags e2e; PRIVILEGED execution DEFERRED to the o3.7mind.io + llm-ubuntu-0 hosts (G2 pattern). netns.go/thresholds.go untouched; unique port 9102. Unanimous 1-round panel approve; rebased past T95/T96/T103 and ff-merged as 4b912e5."
+- sessionLogs: [".cq/logs/20260714-064317-af9870e926cd7a191.md",".cq/logs/20260714-065448-a43bd9a8d80ec37ce.md",".cq/logs/20260714-065448-a377c32726def949b.md"]
+- rawLogs: [".cq/logs/raw/20260714-064317-af9870e926cd7a191.jsonl",".cq/logs/raw/20260714-065448-a43bd9a8d80ec37ce.jsonl",".cq/logs/raw/20260714-065448-a377c32726def949b.jsonl"]
 
 ### T98 — planned
 

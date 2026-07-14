@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 116
+  item: 117
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1294,3 +1294,16 @@ archives:
 - ledgerRefs: ["tasks:T96","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-064007-a0d31254057d2a3a1.md",".cq/logs/20260714-064007-a278df2d0fc736c97.md"]
 - rawLogs: [".cq/logs/raw/20260714-064007-a0d31254057d2a3a1.jsonl",".cq/logs/raw/20260714-064007-a278df2d0fc736c97.jsonl"]
+
+### R117 — go-ahead
+
+- createdAt: 2026-07-14T06:55:13.693Z
+- updatedAt: 2026-07-14T06:55:13.693Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T97 unanimous panel approve (round 1): [opus]+[fable] both approve. New netns e2e (test/e2e/multipeer_test.go, +777, TestMultiPeerConcentratorIsolation): one concentrator (2 uplinks, 2 peers, /metrics 9102) + two edges each in their own holder netns bonded across two netem-shaped uplinks over a two-bridge fabric. Stages ALL acceptance scenarios: independent per-edge inner streams (concurrent bulk TCP, both positive); edge-A kill+restart with an edge-B transfer SPANNING the outage (a reset fails the assertion, so a positive result proves non-interruption) + edge-B per-peer path_up; per-peer /metrics attribution; edge-A NAT-rebind recovery forced onto the rebound uplink (mirrors the T16 roaming proof) with B undisturbed; a spoofed unbound-source flood (real unenrolled source hitting the demux via net.DialUDP) asserting no live-peer eviction (ping + wanbond_path_up==1 for both peers, not just no-crash). BOTH reviewers verified the peer-label attribution against source (edge A → peer=\"\" since device.go binds ids[0] via NewMultipath unnamed + BoundPeerNames forces primary name=\"\"; edge B → peer=\"edge-beta\" via AddConcentratorPeer) — [fable] cross-checked 3 independent unit-level proofs (TestExpositionTwoPeerSeries empty-label scrape round-trip + concentrator_peer_test BoundPeerNames==[\"\",\"beta\"]). Isolation properties genuinely Fatalf; absolute counters report-only (M10/Q12). Port 9102 unique; netns.go/thresholds.go untouched. Compiles/vets under -tags e2e + full gate green; privileged execution DEFERRED to the o3 + llm-ubuntu-0 hosts (G2 pattern). Rebased onto current main and ff-merged as 4b912e5. [fable]'s 9096 pacing/p3 collision defect is a DUPLICATE of D51."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T97","goals:G4","defects:D51"]
+- sessionLogs: [".cq/logs/20260714-065448-a43bd9a8d80ec37ce.md",".cq/logs/20260714-065448-a377c32726def949b.md"]
+- rawLogs: [".cq/logs/raw/20260714-065448-a43bd9a8d80ec37ce.jsonl",".cq/logs/raw/20260714-065448-a377c32726def949b.jsonl"]
