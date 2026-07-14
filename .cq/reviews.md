@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 198
+  item: 199
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2296,6 +2296,15 @@ archives:
 - summary: "G12 PLAN review round 1 — RECONCILED REVISE (single configured plan-reviewer opus ran in Mode B and returned json; orchestrator writes this aggregated review). The emitted 13-task plan (T160-T172 across M61 backend / M62 Vite+TS frontend / M63 daemon-wiring+e2e+docs) for the live monitoring web UI is STRONG: FIDELITY to the answered Q45-Q50 is high (loopback-default + opt-in-non-loopback-requires-token, separate [monitor] listener, Host/Origin + static token + SameSite=Strict/HttpOnly cookie + constant-time compare, read-only v1, Vite+TS go:embed, 1s push + client-side ~5min sparklines + per-peer). GROUNDING verified accurate against source: the metrics.Source interface; the metricsSource.Paths() last-sample throughput-delta HAZARD (device/metrics.go:74-110 mutates a per-(peer,path) s.last map — two readers on the SAME instance semantically corrupt each other's cadence even under the mutex; newMetricsSource allocates a fresh map so the monitor MUST use its OWN Source instance — correctly captured in T161/T165/T169); the loopback-only T17 fail-fast invariant; single-binary role-from-config (edge/concentrator parity free via device.Up wiring); 0600 config load. DAG is ACYCLIC with correct build-ordering (Vite scaffold → //go:embed → go build/golangci typecheck → gate), every task has concrete verifiable acceptance, auth tasks (T162/T164) are frontier-tier and well-specified, sizing is right (no mega-tasks, auth isolated). coder/websocket server lib is a determinable default (Q49 bundled it; user did not pick hand-roll) — not a blocker. THE ONE GAP (→ revise): a USER-ONLY unresolved decision on TRANSPORT CONFIDENTIALITY for the opt-in non-loopback bind — the plan ships a bearer token over PLAINTEXT HTTP on a LAN-reachable listener (passive on-path capture), and TLS (flagged in Q45's context) was never adjudicated in Q45-Q50. This sits squarely in the goal's headline concern ('how to make such an API safe'). Filed as open question Q51 (options: accept+document / require-TLS-when-non-loopback / forbid-non-loopback+ssh-L). G12 stays in planning, BLOCKED on Q51 until the user answers; then a re-plan/lock round finalizes. 0 criticisms (no plan defect) / 1 new_question (Q51) / 0 out-of-scope defects."
 - criticism: []
 - new_questions: ["Q58"]
+- ledgerRefs: ["goals:G12","questions:Q58"]
+
+### R199 — go-ahead
+
+- createdAt: 2026-07-14T22:41:45.469Z
+- updatedAt: 2026-07-14T22:41:45.469Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G12 revised-plan review (aggregated, multi-reviewer panel opus + fable, reconciled strictest-wins). VERDICT = go-ahead (both reviewers go-ahead; 0 criticisms / 0 new questions / 0 defects). The sole prior blocker of R190 (open Q58 — transport confidentiality for the opt-in non-loopback [monitor] bind) is RESOLVED by the user's answer (a): accept plaintext-token-over-LAN for the read-only v1 scope + document the residual passive-capture risk. The plan-advance revision applied this surgically and faithfully: no transport/auth task changed (answer (a) accepts the existing loopback-default + opt-in-non-loopback-requires-token + static-bearer-token-over-plaintext posture, so T160/T162/T164 stand as R190 already judged sound), and T171 (M63 docs-sync) now has BOTH description AND acceptance requiring an explicit residual-risk paragraph (token in cleartext over LAN; passive on-path observer can capture it -> read-only stats access; recommend loopback + `ssh -L` on untrusted networks) co-located with the existing metrics-loopback invariant in design.md, plus README/install.md/wanbond.example.toml [monitor] coverage mirroring the [metrics] doc pattern. Both reviewers confirmed no silent-unwarned path exists: T160+T162 fail-fast on a non-loopback bind without a token at both config-load and bind time; answer (a) requires DOCUMENTATION (not runtime TLS/log-warning), which T171 (a required, DoD-gated task) ships with the code. DAG T160-T172 intact, un-renumbered. MINOR NON-BLOCKING NOTE for the implementer (fable): T171's 'docs/design.md:740' anchor for the T17 metrics-loopback invariant is STALE — the invariant prose now lives at design.md:897-898 under '### Supporting packages' and there is no titled 'security-invariants section'; T171's acceptance is content-based (place the monitor invariant + residual-risk paragraph alongside the existing metrics-loopback prose), so resolve the location by content, not line number. Plan is ready to lock to `planned`."
 - ledgerRefs: ["goals:G12","questions:Q58"]
 
 ## M60

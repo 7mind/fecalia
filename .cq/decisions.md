@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 14
+  item: 15
 archives: []
 ---
 
@@ -187,3 +187,15 @@ archives: []
 - headline: "plan review: approved"
 - rationale: "Reconciled opus+fable plan review R163 both go-ahead: all 4 R162 criticisms verified resolved, plan fine-grained/sequenced/testable/grounded/complete across both D65 halves."
 - ledgerRefs: ["goals:G14"]
+
+## M48
+
+### K15 — locked
+
+- createdAt: 2026-07-14T22:42:34.113Z
+- updatedAt: 2026-07-14T22:42:34.113Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "plan review: approved"
+- rationale: "Reviewer go-ahead (ref review R199, aggregated opus+fable panel: 0 criticisms / 0 new questions / 0 defects). Plan DAG M61/M62/M63 tasks T160-T172 approved; prior blocker Q58 answered (a) and reflected in T171."
+- ledgerRefs: ["goals:G12"]
