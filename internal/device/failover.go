@@ -232,6 +232,13 @@ func containsAddrPort(addrs []netip.AddrPort, target netip.AddrPort) bool {
 // updateResolution swaps specIdx's expansion under h.mu — the sole mutation point of the
 // endpoint set — and reconciles the active pointer WITHIN its owning spec (R70 spec-scoped
 // identity):
+//   - BOOT ADOPTION (activeSpec == -1: every spec's expansion was empty, e.g. a hostname-
+//     only peer before the resolver first ran): the first resolution that makes the
+//     flattened list non-empty ADOPTS its head as the active endpoint — set (activeSpec,
+//     activeAddr), point the bond via exactly ONE SetPeerRemote, one rehandshake, and ARM
+//     the settle dwell (lastSwitch = now). Without this a single-hostname peer's bond would
+//     never receive any endpoint: check cannot rescue it either, because a one-record
+//     expansion keeps the flattened length at 1, permanently under check's total<2 guard.
 //   - A STANDBY-only change (specIdx != activeSpec) NEVER touches the bond: the active
 //     entry is untouched; only the DERIVED flattened idx is re-mapped (an earlier spec
 //     growing/shrinking shifts the active entry's flattened position without moving it).
@@ -240,7 +247,8 @@ func containsAddrPort(addrs []netip.AddrPort, target netip.AddrPort) bool {
 //     no-op suppression), only the idx re-maps. If the active AddrPort is GONE, the active
 //     endpoint's IP has genuinely changed: repoint via exactly ONE SetPeerRemote (D32
 //     disruptive → Rebaseline + rehandshake) and one rehandshake to the new expansion's
-//     first entry.
+//     first entry, and RE-ARM the settle dwell (lastSwitch = now) so the freshly-repointed
+//     endpoint gets its full grace before a subsequent all-down check may advance off it.
 //
 // A change that empties the active spec (nothing to point at) leaves the active identity
 // stale — the flattened list no longer contains it — and the next check on hub loss
@@ -254,12 +262,29 @@ func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
 	}
 	h.specs[specIdx].addrs = addrs
 
-	if specIdx == h.activeSpec {
+	switch {
+	case h.activeSpec == -1:
+		// No active entry yet (every spec was empty at boot). If this resolution populated
+		// the flattened list, adopt its head, point the bond at it, and arm the settle dwell.
+		if adoptSpec, adoptAddr := h.entryAtLocked(0); adoptSpec != -1 {
+			h.activeSpec = adoptSpec
+			h.activeAddr = adoptAddr
+			h.lastSwitch = h.clock.Now()
+			h.remote.SetPeerRemote(adoptAddr)
+			if h.rehandshake != nil {
+				h.rehandshake()
+			}
+			h.log.Warn("hub failover: first endpoint resolution; adopted active concentrator endpoint and re-handshaked",
+				"spec_index", adoptSpec, "to_endpoint", adoptAddr.String())
+		}
+	case specIdx == h.activeSpec:
 		if !containsAddrPort(addrs, h.activeAddr) && len(addrs) > 0 {
 			// The active endpoint's own spec re-resolved off the current AddrPort: its IP
-			// changed. Repoint the bond once and re-handshake against the new first entry.
+			// changed. Repoint the bond once, re-handshake against the new first entry, and
+			// re-arm the settle dwell against the freshly-repointed endpoint.
 			prev := h.activeAddr
 			h.activeAddr = addrs[0]
+			h.lastSwitch = h.clock.Now()
 			h.remote.SetPeerRemote(h.activeAddr)
 			if h.rehandshake != nil {
 				h.rehandshake()

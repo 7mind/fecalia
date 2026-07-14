@@ -428,6 +428,89 @@ func TestPeerNeedsHubFailover(t *testing.T) {
 	}
 }
 
+// TestHubFailoverBootAdoptsFirstResolution is acceptance (7): a hostname-only peer boots
+// with every spec's expansion EMPTY (activeSpec == -1) — check can never rescue it (a
+// one-record expansion keeps the flattened length at 1, under the total<2 guard), so the
+// first resolution MUST adopt its head as the active endpoint and point the bond at it via
+// exactly one SetPeerRemote + one re-handshake, arming the settle dwell.
+func TestHubFailoverBootAdoptsFirstResolution(t *testing.T) {
+	first := mustAP(t, "203.0.113.1:51820")
+	specs := []failoverSpec{
+		nameSpec("hub.example.com", 51820), // sole spec: hostname, EMPTY at boot
+	}
+	hp := []hubHealth{&fakeHealth{telemetry.StateDown}}
+	rem := &recordingRemote{}
+	handshakes := 0
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	if h.activeSpec != -1 || h.idx != -1 {
+		t.Fatalf("boot active = (spec %d, idx %d), want (spec -1, idx -1) (all specs empty)", h.activeSpec, h.idx)
+	}
+
+	// First resolution populates the sole hostname spec: adopt its head, point the bond.
+	h.updateResolution(0, []netip.AddrPort{first})
+
+	if rem.calls != 1 || rem.last != first {
+		t.Fatalf("first resolution SetPeerRemote=%d last=%v, want 1 and %v (adopt head)", rem.calls, rem.last, first)
+	}
+	if handshakes != 1 {
+		t.Fatalf("first resolution re-handshakes=%d, want 1", handshakes)
+	}
+	if h.activeSpec != 0 || h.activeAddr != first || h.idx != 0 {
+		t.Fatalf("post-adoption active = (%d,%v) idx=%d, want (0,%v) idx=0", h.activeSpec, h.activeAddr, h.idx, first)
+	}
+	// The dwell is armed at adoption time, not construction time.
+	if !h.lastSwitch.Equal(clk.now) {
+		t.Fatalf("lastSwitch=%v, want %v (armed at adoption)", h.lastSwitch, clk.now)
+	}
+}
+
+// TestHubFailoverRepointResetsSettleDwell is acceptance (8): an active-IP-change repoint
+// (T73's liveness-loss re-resolution flow) must RE-ARM the settle dwell, so the next
+// all-down check within the dwell does NOT immediately advance off the just-repointed
+// endpoint — a second disruptive SetPeerRemote before the new address can prove itself.
+func TestHubFailoverRepointResetsSettleDwell(t *testing.T) {
+	oldA := mustAP(t, "203.0.113.1:51820")
+	newA := mustAP(t, "203.0.113.2:51820")
+	standby := mustAP(t, "198.51.100.7:51820")
+	specs := []failoverSpec{
+		nameSpec("hub.example.com", 51820, oldA), // spec 0: active hostname
+		litSpec(t, "198.51.100.7:51820"),         // spec 1: literal standby
+	}
+	hp := []hubHealth{&fakeHealth{telemetry.StateDown}, &fakeHealth{telemetry.StateDown}}
+	rem := &recordingRemote{}
+	handshakes := 0
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+
+	// Let the boot dwell fully elapse so, absent a reset, the next all-down check WOULD advance.
+	clk.advance(testSettle + time.Second)
+
+	// The active spec re-resolves to a new IP under hub loss: repoint (one switch).
+	h.updateResolution(0, []netip.AddrPort{newA})
+	if rem.calls != 1 || rem.last != newA {
+		t.Fatalf("repoint SetPeerRemote=%d last=%v, want 1 and %v", rem.calls, rem.last, newA)
+	}
+
+	// The repoint re-armed the dwell: a check WITHIN the settle must NOT advance off the
+	// just-repointed endpoint, even though every path still reads DOWN.
+	clk.advance(testSettle - time.Millisecond)
+	h.check()
+	if rem.calls != 1 {
+		t.Fatalf("advanced within the dwell after a repoint: SetPeerRemote=%d, want 1 (no second switch)", rem.calls)
+	}
+	if h.activeSpec != 0 || h.activeAddr != newA {
+		t.Fatalf("active moved off the repointed endpoint within the dwell: (%d,%v), want (0,%v)", h.activeSpec, h.activeAddr, newA)
+	}
+
+	// Once the dwell elapses relative to the repoint, the controller may advance (to standby).
+	clk.advance(2 * time.Millisecond)
+	h.check()
+	if rem.calls != 2 || rem.last != standby {
+		t.Fatalf("no advance after the dwell elapsed: SetPeerRemote=%d last=%v, want 2 and %v", rem.calls, rem.last, standby)
+	}
+}
+
 // TestHubFailoverCrossSpecDuplicateNoSpuriousReMap is acceptance (6), the R70 case: a
 // hostname STANDBY spec re-resolving onto the SAME AddrPort as the active spec's own literal
 // must NOT move the active pointer (spec-scoped identity, not bare value) and must not touch
