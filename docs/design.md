@@ -348,6 +348,12 @@ has an addressable endpoint. Subsequent re-resolves of an already-installed peer
 the normal `SetPeerRemote` repoint path (the engine's virtual endpoint stays stable per
 A1; only the bind remotes move). The re-resolution loop's stopper is held on the
 `Tunnel` and invoked by `Close` between the hub-failover stop and the engine teardown.
+The whole flow — endpoint-less boot while the name is unresolvable, the R70
+first-resolve install, a mid-session concentrator-IP change, and the re-resolve repoint
+whose `SetPeerRemote` re-baselines the receive resequencer so post-change traffic
+actually resumes (the D32 guard) — is validated end to end by the privileged netns e2e
+`TestDNSHubResolveAndReroute` (Q36), with a hermetic in-namespace UDP DNS responder as
+the sole answer source (no external DNS egress).
 
 ### Per-path telemetry — `internal/telemetry`
 
