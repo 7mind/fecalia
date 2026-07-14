@@ -1517,10 +1517,10 @@ archives:
 - dependsOn: ["T119","T120","T118"]
 - ledgerRefs: ["goals:G7","defects:D36","defects:D37"]
 
-### T122 — planned
+### T122 — done
 
 - createdAt: 2026-07-14T09:22:27.663Z
-- updatedAt: 2026-07-14T09:22:27.663Z
+- updatedAt: 2026-07-14T13:37:48.579Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Sync docs/design.md with the peer-restart rebaseline trigger and first-path-up rehandshake
@@ -1575,10 +1575,10 @@ archives:
 
 ## M43
 
-### T126 — planned
+### T126 — done
 
 - createdAt: 2026-07-14T09:47:03.275Z
-- updatedAt: 2026-07-14T09:53:46.204Z
+- updatedAt: 2026-07-14T13:37:36.196Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire device per-peer session/liveness-loss events to Bind.TearDownPeer (D50)

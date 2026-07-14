@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 163
+  item: 165
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1664,6 +1664,19 @@ archives:
 - sessionLogs: [".cq/logs/20260714-125200-abceb9ac1a325216c.md",".cq/logs/20260714-125200-a77a583ad721906d7.md"]
 - rawLogs: [".cq/logs/raw/20260714-125200-abceb9ac1a325216c.jsonl",".cq/logs/raw/20260714-125200-a77a583ad721906d7.jsonl"]
 
+### R165 — go-ahead
+
+- createdAt: 2026-07-14T13:37:47.400Z
+- updatedAt: 2026-07-14T13:37:47.400Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T122 review round 2 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after the round-1 revise (R161). All THREE round-1 doc-accuracy criticisms are resolved, both reviewers verifying line-by-line against merged code: (1) the re-anchor section now cleanly separates TWO trusted, authenticated triggers — D32 Rebaseline via SetPeerRemote (multipath.go:2331→2345) and D36 RebaselineToLow via dispatchInbound on epochChanged (multipath.go:1837→1855), BOTH incrementing r.rebaselines (reseq.go:645/692) → wanbond_resequencer_rebaselines_total — from the THIRD, UNAUTHENTICATED corroboration fallback (D12 resync, which 'never calls Rebaseline/RebaselineToLow', runs tryResync/resync, increments r.resyncs (reseq.go:599) → wanbond_resequencer_resyncs_total (metrics.go:91)); (2) suspect drops are now attributed to D36 (low-anchor gate) + D12, NOT D32 (a plain Rebaseline re-anchors on the next frame and drops its buffered frames as dropLate, never suspect), with the suspect-vs-late classification matching admit() exactly (suspect: reseq.go:363/375/389, resyncFactor=4; late: :379); (3) the task-required operational-expectation sentence is present and grounded (reconverges ~= the ~25s both-ends-fresh baseline / ~10s predicted edge-restart, cited to test/e2e/restart_onesided_test.go, no invented causal claim). The D37/T120 first-path-up section (design.md:397-411) is retained + accurate; no stale 'hub-failover-only' claim survives; docs-only diff, reseq.go untouched (the stale reseq.go:760 comment is filed as out-of-scope D68). go build + just lint green. COMPLETES goal G7 (T116-T122 all done). LANDED on main at 26cf5c8 (branch implement/T122-r2, 6f40bd16)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T122","goals:G7","defects:D36","defects:D37"]
+- sessionLogs: [".cq/logs/20260714-133500-a507a4b42a8fa94c0.md",".cq/logs/20260714-133500-aa13ce82d5eeddc77.md"]
+- rawLogs: [".cq/logs/raw/20260714-133500-a507a4b42a8fa94c0.jsonl",".cq/logs/raw/20260714-133500-aa13ce82d5eeddc77.jsonl"]
+
 ## M42
 
 ### R137 — go-ahead
@@ -1935,3 +1948,18 @@ archives:
 - ledgerRefs: ["goals:G14"]
 - sessionLogs: [".cq/logs/20260714-133358-a65ef5ef060923e4e.md",".cq/logs/20260714-133358-a75a6833b6ede96b3.md"]
 - rawLogs: [".cq/logs/raw/20260714-133358-a65ef5ef060923e4e.jsonl",".cq/logs/raw/20260714-133358-a75a6833b6ede96b3.jsonl"]
+
+## M43
+
+### R164 — go-ahead
+
+- createdAt: 2026-07-14T13:37:34.038Z
+- updatedAt: 2026-07-14T13:37:34.038Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T126 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). The device wires a LEVEL-triggered concentrator per-peer teardown monitor (perPeerHandshakeNano parses the UAPI dump per-peer; peerTeardownMonitor level-checks each configured non-primary peer every poll: established := nano!=0 && age<=RejectAfterTime, and calls the idempotent Bind.TearDownPeer(name) on any not-established peer) to Bind.TearDownPeer (D50 — previously uncalled, leaking dead-peer resequencer rings/FEC buffers/demux slots). Both reviewers verified: (a) the NEVER-HANDSHAKED reclaim (last_handshake=0, instantiated via PROBE, no 1→0 edge ever) IS torn down by the level check (TestPeerTeardownNeverHandshaked); (b) a LIVE peer is untouched across repeated polls; (c) the pubkey→configured-name mapping is correct end-to-end (cfg.PeerIdentities() order matches cfg.WireGuard.Peers index-for-index; AddConcentratorPeer registers under id.Name; TearDownPeer keys peersByName) and idempotent-safe (refuses live+primary); (d) the SINGLE-PEER path is BYTE-IDENTICAL — concentratorMonitoredPeers returns nil for len(peers)<=1, startPeerTeardownMonitor spawns NO goroutine, sessionMonitor untouched; the RejectAfterTime threshold matches sessionMonitor; a mid-first-handshake sweep is safe (teardownPeerLocked refuses StateUp probers, the next authenticated PROBE re-instantiates — bind-tested); churn is bounded (bind-side live-refusal + T123 lifecycleMu ordering); the monitor is stopped in Close (sync.Once) BEFORE dev.Close, race-clean. Acceptance (a)-(c) covered by new device tests, (d) by the existing bind lifecycle test. go build/vet/test + -race ./internal/device/... ./internal/bind/... + just lint all green. LANDED on main at df4651c."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T126","goals:G8","defects:D50"]
+- sessionLogs: [".cq/logs/20260714-133500-a76410870f2fdd4fd.md",".cq/logs/20260714-133500-a4f63c99c44d4ebb6.md"]
+- rawLogs: [".cq/logs/raw/20260714-133500-a76410870f2fdd4fd.jsonl",".cq/logs/raw/20260714-133500-a4f63c99c44d4ebb6.jsonl"]
