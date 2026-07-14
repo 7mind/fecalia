@@ -1662,10 +1662,10 @@ archives:
 - dependsOn: ["T130"]
 - ledgerRefs: ["goals:G9","defects:D43"]
 
-### T132 — planned
+### T132 — done
 
 - createdAt: 2026-07-14T10:00:55.164Z
-- updatedAt: 2026-07-14T10:00:55.164Z
+- updatedAt: 2026-07-14T12:21:44.804Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Validate allowed_ips CIDR syntax + default-route /0 exclusivity at load (D55+D59)

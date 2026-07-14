@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 152
+  item: 154
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1788,3 +1788,29 @@ archives:
 - ledgerRefs: ["tasks:T131","goals:G9","defects:D43"]
 - sessionLogs: [".cq/logs/20260714-115400-a3ce1c99e0384583a.md",".cq/logs/20260714-115400-a212c96b9b4e7bbd0.md"]
 - rawLogs: [".cq/logs/raw/20260714-115400-a3ce1c99e0384583a.jsonl",".cq/logs/raw/20260714-115400-a212c96b9b4e7bbd0.jsonl"]
+
+### R153 — revise
+
+- createdAt: 2026-07-14T12:21:36.547Z
+- updatedAt: 2026-07-14T12:21:36.547Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T132 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). Both reviewers verified the SUBSTANCE is correct and well-tested: D55 (netip.ParsePrefix every allowed_ips entry, fail-fast at load naming the peer index/name + offending string) and D59 (at most one default-route peer; a 0.0.0.0/0 or ::/0 entry at most once per address family both within and across peers) are enforced in Config.validate() with reject-table + direct-validate() tests; the ordering is safe (edgeTwoPeersConfig carries no mode, so the default-route pre-pass is inert and the pre-existing edge single-peer-cap 'concentrator-only' message is unchanged); and fable's 11 adversarial over-rejection probes ALL pass (shared non-/0 CIDR across peers, dual-family /0 on one peer, cross-family /0 across peers, v6-only ::/0 edge peer, bare-IP correctly rejected, non-canonical 1.2.3.4/0 = v4 default) — only literal /0 exclusivity is enforced, not general overlap. build/vet/test + just lint green. The REVISE is a same-change docs-sync gap fable caught:"
+- criticism: ["[fable] internal/device/device.go: the doc comments on splitDefaultRoute (:1076 'allowed_ips carries no syntax validation upstream') and defaultRoutePrefixes (:1097 'allowed_ips carries no upstream syntax validation, matching splitDefaultRoute's own tolerance') now assert a FALSE invariant — this change makes config.validate() parse-validate every allowed_ips entry at load, so an unparseable entry can no longer reach either function. Per the repo's docs-in-sync-in-the-same-change rule, update both comments to state the new invariant (entries are guaranteed parseable post-D55; the parse-failure branches are defensive-only). [RESOLVED inline — see R154.]"]
+- new_questions: []
+- ledgerRefs: ["tasks:T132","goals:G9","defects:D55","defects:D59"]
+- sessionLogs: [".cq/logs/20260714-120400-adee6f071f63fe512.md",".cq/logs/20260714-120400-afcec1c5e8be9f846.md"]
+- rawLogs: [".cq/logs/raw/20260714-120400-adee6f071f63fe512.jsonl",".cq/logs/raw/20260714-120400-afcec1c5e8be9f846.jsonl"]
+
+### R154 — go-ahead
+
+- createdAt: 2026-07-14T12:21:43.973Z
+- updatedAt: 2026-07-14T12:21:43.973Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T132 round 2 — GO-AHEAD (orchestrator-resolved the single round-1 docs-sync criticism inline). The R153 [fable] criticism was a purely mechanical 2-comment doc-sync fix in a file T132 did not otherwise touch (internal/device/device.go). The orchestrator updated both stale comments on CURRENT main: splitDefaultRoute and defaultRoutePrefixes no longer claim 'allowed_ips carries no (upstream) syntax validation' — they now state that config.validate() parse-validates every allowed_ips entry at load (T132/D55), so an unparseable entry can no longer reach either function and the parse-failure branches are DEFENSIVE-only. Verified: `grep 'no (upstream) syntax validation' internal/device/device.go` returns nothing; go build/vet + go test ./internal/config/... ./internal/device/... + just lint all green. The T132 substance (D55 CIDR validation + D59 /0 exclusivity, unanimously approved) LANDED at 24714b3; the doc-sync fix at 74f38b7. Resolves D55+D59; completes goal G9 (T130+T131+T132 all done)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T132","goals:G9","defects:D55","defects:D59"]
+- sessionLogs: [".cq/logs/20260714-120400-afcec1c5e8be9f846.md"]
+- rawLogs: [".cq/logs/raw/20260714-120400-afcec1c5e8be9f846.jsonl"]
