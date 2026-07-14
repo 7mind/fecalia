@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 56
+  item: 60
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -397,3 +397,29 @@ archives:
 - createdAt: 2026-07-14T12:57:12.928Z
 - updatedAt: 2026-07-14T12:57:12.928Z
 - title: "Plan: fix D65 (tunnel single-flow throughput / bufferbloat)"
+
+### M57 — open
+
+- createdAt: 2026-07-14T13:14:52.912Z
+- updatedAt: 2026-07-14T13:14:52.912Z
+- title: "wanbond D65: BDP-sized egress pacing on the default active-backup scheduler"
+
+### M58 — open
+
+- createdAt: 2026-07-14T13:14:53.131Z
+- updatedAt: 2026-07-14T13:14:53.131Z
+- title: "wanbond D65: forwarded-TCP MSS clamp operator recipe (docs)"
+
+### M59 — open
+
+- createdAt: 2026-07-14T13:14:58.930Z
+- updatedAt: 2026-07-14T13:14:58.930Z
+- title: "wanbond D65: policy-independent pacing config + composition wiring"
+- dependsOn: ["M57"]
+
+### M60 — open
+
+- createdAt: 2026-07-14T13:15:03.407Z
+- updatedAt: 2026-07-14T13:15:03.407Z
+- title: "wanbond D65: docs sync + green definition-of-done gate"
+- dependsOn: ["M59"]

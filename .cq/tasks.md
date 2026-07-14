@@ -1504,10 +1504,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G7","defects:D36"]
 
-### T121 — planned
+### T121 — done
 
 - createdAt: 2026-07-14T09:22:18.781Z
-- updatedAt: 2026-07-14T09:22:18.781Z
+- updatedAt: 2026-07-14T13:14:51.924Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Author the netns one-sided-restart e2e (restart-only-edge and restart-only-concentrator; privileged run deferred to o3 + llm-ubuntu-0)

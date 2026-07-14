@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 67
+  item: 68
 archives: []
 ---
 
@@ -938,6 +938,18 @@ archives: []
 - severity: low
 - suggestedFix: Propagate or at least log the detach error; on detach failure, force-splice the tail peerPathState so p.paths never retains a view of a closed socket.
 - ledgerRefs: ["tasks:T124","defects:D42"]
+
+### D68 — open
+
+- createdAt: 2026-07-14T13:15:12.210Z
+- updatedAt: 2026-07-14T13:15:12.210Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Stale reseq.go Rebaselines-snapshot comment attributes the counter to hub failover only
+- description: "Filed during T122 review ([fable], out-of-scope; PRE-EXISTING, introduced/left by T119). internal/reseq/reseq.go ~:760 comments the snapshot field as 'release-point re-baselines forced by a trusted control event (hub failover)', but since T119 the counter ALSO increments in RebaselineToLow (peer restart, reseq.go:692). Contradicts the metrics.go:295 help string which correctly covers both."
+- severity: low
+- suggestedFix: "Change the parenthetical to '(hub failover, peer restart)' or '(e.g. hub failover)' to match the metrics.go:295 help string."
+- ledgerRefs: ["tasks:T122","defects:D36"]
 
 ## M49
 

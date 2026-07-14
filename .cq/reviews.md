@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 159
+  item: 161
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1637,6 +1637,32 @@ archives:
 - ledgerRefs: ["tasks:T121","goals:G7","defects:D36","defects:D37"]
 - sessionLogs: [".cq/logs/20260714-124500-a490dba7f580b73b3.md",".cq/logs/20260714-124500-a6c1ec1e870de2511.md"]
 - rawLogs: [".cq/logs/raw/20260714-124500-a490dba7f580b73b3.jsonl",".cq/logs/raw/20260714-124500-a6c1ec1e870de2511.jsonl"]
+
+### R160 — go-ahead
+
+- createdAt: 2026-07-14T13:14:50.632Z
+- updatedAt: 2026-07-14T13:14:50.632Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T121 review round 2 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after the round-1 revise (R158, where fable EXECUTED the deferred e2e and found two blocking defects). All THREE round-1 fixes verified, both reviewers re-running the test: FIX 1 — r121PeerCounter now reads the single-peer NO-LABEL reseq exposition via a PeerValue-then-Value fallback (traced against internal/metrics: single-peer daemon → multiPeer=len(PeerNames())>1=FALSE → peerLabelValues=nil → series emitted UNLABELED → Value(name) matches len(GetLabel())==0), so the D36 rebaselines>=1 / ~0-dropSuspect assertions can actually observe values; FIX 2 — the skip-gate now probes /dev/net/tun FIRST, and BOTH reviewers ran `go test -tags e2e -run TestOneSidedRestartRecovery -count=1` unprivileged and confirmed `--- SKIP` at 0.00s BEFORE any daemon bring-up (closing the round-1 userns-CAP_NET_ADMIN FAIL path); FIX 3 — the post-restart re-adoption check now polls the RESTARTED process's own log buffer for the 'tunnel interface up' record (cmd/wanbond/main.go:64, emitted only after CreateTUN/TUNSETIFF succeeds; fresh lockedBuffer per proc), non-vacuous under tun_persist. go build/vet -tags e2e clean, just lint 0 issues, just test green, port 9104 unique + registered in netns.go. The run-A/run-B restart matrix, D36 saturation-past-window precondition, D37 4s-budget (< one 5s WG retransmit), and the o3+llm-ubuntu-0 runbook are all intact; the PRIVILEGED run is deferred per the G2 pattern and NOT part of the merge gate. LANDED on main at 50ffe9b (branch implement/T121-r2, a9488e46)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T121","goals:G7","defects:D36","defects:D37"]
+- sessionLogs: [".cq/logs/20260714-130000-aa99e39f80a1a7b81.md",".cq/logs/20260714-130000-a7f14b9d3aa0ae11a.md"]
+- rawLogs: [".cq/logs/raw/20260714-130000-aa99e39f80a1a7b81.jsonl",".cq/logs/raw/20260714-130000-a7f14b9d3aa0ae11a.jsonl"]
+
+### R161 — revise
+
+- createdAt: 2026-07-14T13:15:08.307Z
+- updatedAt: 2026-07-14T13:15:08.307Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T122 review round 1 — RECONCILED REVISE (BOTH [opus]+[fable] disapprove). The docs-only design.md change is build/lint-green and MOSTLY traces to merged code (counter names match metrics.go:89/92; triggers 1-2 = SetPeerRemote→Rebaseline / epochChanged→RebaselineToLow verified; all four T119 boundary rules verified; D37/T120 first-path-up section retained; NO stale 'hub-failover-only' claim survives). But three technical-accuracy defects (superset of both reviewers):"
+- criticism: ["[fable+opus, PRIMARY] Trigger-3 MISATTRIBUTION (design.md ~:430-435 preamble): it claims all three triggers are 'trusted control events, not forgeable', re-anchor 'via Resequencer.Rebaseline or RebaselineToLow', and are 'each tracked by wanbond_resequencer_rebaselines_total'. ALL THREE clauses are FALSE for trigger 3 (D12 resync corroboration): it is the UNAUTHENTICATED path driven by forgeable wire frames (the doc's own item-3 text says 'defense against non-trusted frames'), it goes through tryResync/resync (internal/reseq/reseq.go:533,591) NOT Rebaseline/RebaselineToLow, and it increments r.resyncs → wanbond_resequencer_resyncs_total (reseq.go:599, metrics.go:91), NEVER r.rebaselines (only reseq.go:645,692). REWORD: TWO trusted triggers (hub failover D32, peer restart D36) tracked by rebaselines_total, PLUS the unauthenticated corroboration fallback (D12) tracked by resyncs_total.","[opus+fable, related] The 'Frame rejection during rebaseline recovery' paragraph (design.md ~:481-485) wrongly attributes dropped_suspect_frames_total increments to D32 plain Rebaseline ('increases during both planned rebaselines (D32, D36)') — a plain Rebaseline() (reseq.go:626) unpins + re-anchors on the NEXT frame immediately and NEVER routes through the suspect branch (dead-hub frames drop as stale/old; HIGH stragglers re-pin — the race D36's low-anchor gate exists to prevent). Suspect drops are driven by D36 (low-anchor gate) + D12 (resync), NOT D32. ALSO the suspect classification '(outer-seq outside the acceptance window)' is imprecise: a frame within one window BELOW the release point is dropped as LATE (dropLate, reseq.go:379), not suspect; suspect = >1 window below next, or >= resyncFactor*window ahead, or any drop while the pendingLow gate is armed (reseq.go:363,375,389). Fix the attribution + classification.","[fable] MISSING task-required content: the task description mandates 'State the operational expectation: one-sided restart reconverges ~= the both-ends-fresh baseline, not on the WG rekey timer.' No such statement exists in the diff or design.md (grep reconverge/both-ends/'rekey timer' misses). ADD it."]
+- new_questions: []
+- ledgerRefs: ["tasks:T122","goals:G7","defects:D36","defects:D37"]
+- sessionLogs: [".cq/logs/20260714-125200-abceb9ac1a325216c.md",".cq/logs/20260714-125200-a77a583ad721906d7.md"]
+- rawLogs: [".cq/logs/raw/20260714-125200-abceb9ac1a325216c.jsonl",".cq/logs/raw/20260714-125200-a77a583ad721906d7.jsonl"]
 
 ## M42
 
