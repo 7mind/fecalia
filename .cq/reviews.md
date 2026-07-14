@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 183
+  item: 184
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2105,6 +2105,17 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T150 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). CORE VERIFIED SOUND by both: per-path (NOT bottleneck) BDP sizing proven (primary admits ~1008 = own cap*T+burst, strictly above the 208 backup-rate bound — a fast primary is NOT capped at the slow backup); ClassControl exempt (admitted on empty bucket, D22); PickPaced(-2) distinct from PickNone(-1); middle-path RemovePath keeps the survivor on its OWN bucket (index-aligned, token state travels); pacing-off byte-compat; fail-fast validation; reproduce-first re-verified by surgically neutering Pick (5000/5000 admitted, no shedding, for the right reason); 3 enumerated doc comments corrected; build/vet/test + -race + just lint green. But [fable] DEMONSTRATED a PANIC in the task's EXPLICIT no-panic-across-membership-churn hazard — REVISE round 2."
 - criticism: ["DEMONSTRATED PANIC (deterministic) in the required membership-churn hazard class: with Pacing=true, RemovePath MAY empty the path set (the DynamicScheduler contract only requires i in range; the pre-pacing ActiveBackup tolerated remove-to-empty — Pick returns -1 fine). AFTER emptying, (a) AddPath panics 'index out of range [-1]' at internal/sched/active_backup.go:181 (s.pacers[len(s.pacers)-1] on an EMPTY slice), and (b) SetPaths panics at internal/sched/active_backup.go:271 (old[len(old)-1] in resizeActiveBackupPacers). Exact repros: NewActiveBackup([1 path], Pacing=true) -> RemovePath(0) -> AddPath(h); and NewActiveBackup([1 path], Pacing=true) -> RemovePath(0) -> SetPaths([h,h]). The comments claiming 'pacing implies >=1 path is an invariant' are FALSIFIED by the type's own API. Production is unexposed today ONLY because device.go:887 never sets Pacing=true, but panic-free churn is this task's stated REQUIRED hazard. FIX: when the pacer slice is empty, seed the new bucket from cfg.PerPathCapacities/PacingBursts tail (guaranteed non-empty whenever Pacing is on — the constructor validates len==len(health)>=1), OR enforce the >=1-path invariant in RemovePath; ADD a remove-to-empty-then-AddPath/SetPaths regression test.","A FOURTH stale doc comment of the exact genre the task targeted was MISSED: internal/sched/scheduler.go:34-36 (ClassData const doc) still scopes data pacing to 'under a weighted scheduler with pacing enabled it is subject to the per-path token buckets and is shed (PickPaced)…' — active-backup with pacing now ALSO sheds ClassData; reword to 'any pacing-enabled scheduler'."]
+- new_questions: []
+- ledgerRefs: ["tasks:T150","goals:G14","defects:D65"]
+
+### R183 — go-ahead
+
+- createdAt: 2026-07-14T16:55:34.100Z
+- updatedAt: 2026-07-14T16:55:34.100Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T150 review round 2 — GO-AHEAD (single fable reviewer — it demonstrated the round-1 panic, proportionate; round-1 core dual-verified). Both round-1 criticisms RESOLVED: C1 (PANIC) — the two regression tests encode fable's exact repros (RemovePath(0)-to-empty then AddPath / SetPaths), mutation-verified to panic 'index out of range [-1]' at AddPath and resizeActiveBackupPacers:271 against the round-1 tip, PASS with the fix (incl. post-regrow Pick burst). Config-tail seeding (new Config.tailPacerConfig) SCRUTINIZED: engages ONLY when the live pacer slice is EMPTY (all paths removed — no per-path correspondence survives by construction); 'remove path 0 of 3 then re-grow' never reaches the fallback (2 live pacers remain, round-1 live-tail inheritance applies); fallback read is safe (newActiveBackupPacers fails fast unless len(PerPathCapacities)==len(PacingBursts)==len(health)>=1 when Pacing on; NewActiveBackup rejects empty health; s.cfg stored by value, never reassigned) — capacity never zero/garbage. THIRD-SITE HUNT: Pick guards s.active<0; RemovePath compaction bounds-safe; a 50-seed × 400-op randomized churn (add/remove/setpaths/pick/recompute, repeatedly draining to empty + re-growing, heterogeneous caps) under -race found NO third index site (len(pacers)==len(health) + positive configs asserted after every op). C2 (4th doc comment) — scheduler.go PickPaced/ClassData/interface-class + active_backup.go Pick doc all corrected; no 5th stale comment. Merged to main as ee95d4c (round-1 core) + 8c86bc3 (round-2) via clean cherry-pick of 6e26127..11a6849 onto 9925b97 (internal/sched only, no conflicts). Full gate green on composed main: sched tests + -race ok; just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects. NOTE: active-backup pacing is the SCHED FOUNDATION — device.go still constructs it with Pacing=false (config-wiring is a follow-up), so the churn-panic path is not production-reachable today but is now panic-safe for when it is wired."
+- criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T150","goals:G14","defects:D65"]
 

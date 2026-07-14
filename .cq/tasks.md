@@ -1915,10 +1915,10 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - resultCommit: f387831
 
-### T150 — wip
+### T150 — done
 
 - createdAt: 2026-07-14T13:16:09.195Z
-- updatedAt: 2026-07-14T16:35:47.803Z
+- updatedAt: 2026-07-14T16:55:44.702Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add BDP-sized send-pacing to the ActiveBackup scheduler
@@ -1938,6 +1938,7 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T149"]
+- resultCommit: 8c86bc3
 
 ### T151 — planned
 
