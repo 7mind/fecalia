@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 167
+  item: 172
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1859,10 +1859,10 @@ archives:
 - ledgerRefs: ["goals:G13"]
 - resultCommit: a082a9d
 
-### T147 — wip
+### T147 — done
 
 - createdAt: 2026-07-14T12:41:42.007Z
-- updatedAt: 2026-07-14T18:23:08.862Z
+- updatedAt: 2026-07-14T18:49:57.955Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "e2e: aggregation engage/disengage flip and configured-but-inert visibility scenarios"
@@ -1871,6 +1871,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T141","T146"]
 - ledgerRefs: ["goals:G13"]
+- resultCommit: 9eb3274
 
 ## M54
 
@@ -1978,12 +1979,12 @@ archives:
 - dependsOn: ["T150"]
 - resultCommit: e093276
 
-### T153 — planned
+### T153 — wip
 
 - createdAt: 2026-07-14T13:16:32.388Z
-- updatedAt: 2026-07-14T13:28:32.311Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T18:48:06.219Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire pacing config into selectScheduler's active-backup branch
 - description: "internal/device/device.go selectScheduler (the default/active-backup branch, ~device.go:803): pass the validated pacing configuration into sched.Config so a configured pace actually reaches ActiveBackup — set Pacing=cfg.Scheduler.PacingEnabled and the PER-PATH capacity/burst vectors (PerPathCapacities / PacingBursts, index-aligned to the path/health priority order the scheduler is built over) derived by T152's derivePacingFromBDP, alongside the existing FailbackAfter. Per-path (NOT a single shared scalar) so each path's bucket paces at its OWN drain rate under active-backup (R162 criticism 1); ensure the capacity/burst vector order matches the health-slice order handed to NewActiveBackup. Leave the weighted branch unchanged (it keeps its shared bottleneck scalar). The existing health prober set suffices (active-backup needs only health). No other composition-root change."
 - acceptance: "`nix develop -c go build ./...` succeeds; a device/config-to-scheduler test asserts a config with policy=active-backup + pacing_enabled=true builds an ActiveBackup whose per-path buckets carry the per-path capacities (a heterogeneous link set → distinct per-path pace, fast path not throttled to the bottleneck) and whose Pick sheds (PickPaced) under sustained overload, and pacing_enabled=false builds the byte-for-byte pre-change behavior. `nix develop -c just test` (incl. ./internal/device/...) green."
@@ -1991,12 +1992,12 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T150","T152"]
 
-### T154 — planned
+### T154 — wip
 
 - createdAt: 2026-07-14T13:16:37.344Z
-- updatedAt: 2026-07-14T13:28:39.766Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T18:48:07.257Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Config unit tests for active-backup pacing and BDP sizing
 - description: "Focused config-layer tests locking the new surface (complementary to those bundled with the generalization task): policy=active-backup + pacing round-trips through Load/normalize/validate; PER-PATH BDP sizing under active-backup (R162 criticism 1) produces a per-path capacity for EACH path equal to SizePacingFromBDP of THAT path's OWN link_bandwidth/link_rtt — a PER-PATH parity table test (NOT the weighted shared-bottleneck parity): for identical inputs, each active-backup path's PerPathCapacities[i]/PacingBursts[i] matches SizePacingFromBDP(path[i]), and a HETEROGENEOUS link set yields DISTINCT per-path capacities under active-backup (the faster link keeps its higher CapacityFPS) whereas the SAME inputs under weighted collapse to the single min-bottleneck scalar — the two sizings are asserted to DIFFER for a heterogeneous set. Plus: an existing active-backup config with NO pacing continues to load+validate with all weighted knobs zero (regression guard that the P1 empty-config surface is unchanged)."
 - acceptance: "`nix develop -c go test ./internal/config/ -run Pacing` passes with the active-backup cases; a table test asserts each active-backup PerPathCapacities[i] equals SizePacingFromBDP of path[i]'s own link_bandwidth/link_rtt (per-path parity), and that a heterogeneous link set produces DISTINCT active-backup per-path capacities while the same inputs under weighted collapse to the single bottleneck scalar (the two are asserted unequal); the no-pacing active-backup regression case is green; `nix develop -c just test` green overall."
@@ -2181,4 +2182,71 @@ archives:
 - acceptance: "`just build` (or the documented sequence) produces the frontend bundle then `go build ./...` with assets embedded; GET / on the running monitor returns the index HTML and assets load; `just lint` is green (no empty-//go:embed typecheck failure); the embed package is in the lint list."
 - suggestedModel: frontier
 - dependsOn: ["T162","T163"]
+- ledgerRefs: ["goals:G12"]
+
+### T168 — planned
+
+- createdAt: 2026-07-14T18:47:28.958Z
+- updatedAt: 2026-07-14T18:47:28.958Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Read-only dashboard: per-path/FEC/reseq/session render, per-peer sections, client-side sparklines"
+- description: "Build the read-only (Q48) dashboard view fed by the T166 client. Render, from each MonitorSnapshot: per-path cards showing link quality — loss, RTT, jitter, throughput, tx/rx bytes, and up/down state; the connection-scoped FEC counters (data/repair/recovered/unrecoverable, byte overhead, residual loss); resequencer counters; and WG-session (established + last-handshake age). When the snapshot is multi-peer (concentrator, PeerNames()>1), group paths/FEC/reseq/aggregation into per-peer sections; when single-peer (edge), render one flat section (matching the metrics peer-label omission). Add client-side-only rolling sparklines over the last ~5 minutes (Q50) for the key time series (per-path loss/RTT/throughput, residual loss) held in browser memory only — lost on reload, no server history. Keep styling minimal and dependency-light."
+- acceptance: "With a stub WS server emitting a known multi-peer snapshot stream: the page renders per-peer sections with all named stat groups; feeding a single-peer stream renders one flat section (no empty peer label); sparklines accumulate and scroll over successive frames and cap at ~5min of history. Verified by a vitest/DOM test or a documented manual repro with screenshots/DOM assertions."
+- suggestedModel: standard
+- dependsOn: ["T166"]
+- ledgerRefs: ["goals:G12"]
+
+## M63
+
+### T169 — planned
+
+- createdAt: 2026-07-14T18:47:37.031Z
+- updatedAt: 2026-07-14T18:47:37.031Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Wire the monitor into device.Up with a dedicated Source + SIGHUP-reload reconciler (edge+concentrator parity)
+- description: "Wire the monitor into the daemon lifecycle mirroring the metrics pattern (grounding: internal/device/device.go). (1) In device.Up, construct a DEDICATED metrics.Source for the monitor via a second newMetricsSource(...) call — NOT t.metricsSrc — so the monitor's throughput derivation does not share last-sample state with the Prometheus scraper (see grounding/T165). (2) Add an applyMonitorLocked(listen, token) idempotent reconciler analogous to applyMetricsLocked (device.go:507): no-op if unchanged; empty listen stops; else monitor.NewServer(...).Start(); stored on the Tunnel; a stopMonitorLocked mirroring stopMetricsLocked. (3) Call it from device.Up under reloadMu at startup (like device.go:459), and apply monitor listen/token changes from Tunnel.Reload (device.go:574 region) so SIGHUP reconciles the monitor. Because role is config-only and both roles flow through device.Up, this gives edge+concentrator parity for free — assert that in a test. Config plumbed from cfg.Monitor (T160)."
+- acceptance: "go test ./internal/device/... : with [monitor] configured, device.Up starts a monitor server reachable over WS (using the dedicated Source, not the metrics one); SIGHUP/Reload changing monitor.listen or monitor.token reconciles (start/stop/rebind) without tearing the tunnel; a RoleEdge config and a RoleConcentrator config BOTH start the monitor (parity test). goleak-clean shutdown."
+- suggestedModel: frontier
+- dependsOn: ["T162","T165"]
+- ledgerRefs: ["goals:G12"]
+
+### T170 — planned
+
+- createdAt: 2026-07-14T18:47:52.990Z
+- updatedAt: 2026-07-14T18:47:52.990Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "End-to-end test: live WS monitor against a real Source reflects path/FEC/session state (single + multi-peer)"
+- description: "Add an integration/e2e test that stands up the monitor server against a REAL metrics.Source (the device metricsSource fed by a test bind/telemetry harness, reusing the existing device/metrics test fixtures) and drives it over an actual coder/websocket client. Assert the streamed MonitorSnapshot reflects live state: path up/down and RTT/loss/throughput change as the underlying fixtures change; FEC and session fields populate; a multi-peer (concentrator) fixture yields per-peer sections and a single-peer (edge) fixture yields the flat shape. Place under the appropriate build tag/dir consistent with the repo's existing test taxonomy (grounding: Justfile has default + e2e + realhosts tag suites; loopback bind needs no privilege so this can be a default-tag test). This is the definition-of-done verification for the backend+contract."
+- acceptance: The new test passes under `go test` (or the tagged suite it belongs to) and fails if the snapshot stops reflecting the Source (guard against a frozen/placeholder feed); it exercises both single-peer and multi-peer Sources over a real WebSocket connection; goleak-clean.
+- suggestedModel: standard
+- dependsOn: ["T169","T168"]
+- ledgerRefs: ["goals:G12"]
+
+### T171 — planned
+
+- createdAt: 2026-07-14T18:48:02.948Z
+- updatedAt: 2026-07-14T18:48:02.948Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Docs sync: [monitor] config, loopback/token security invariant, token-cookie flow, build step"
+- description: "Per the AGENTS.md doc-sync rule (docs move in the SAME change as code), update README.md, docs/design.md, and docs/install.md for the monitoring UI. Cover: the new [monitor] TOML block (listen, token) and that empty listen disables it; the SECURITY INVARIANT — loopback-only by default, and a non-loopback bind is fail-fast REFUSED unless a token is configured (contrast with /metrics which is loopback-only, unchanged) — update the design.md security-invariants section (near the existing T17 metrics loopback invariant at docs/design.md:740) to add the monitor's rule; the auth model (unconditional Host/Origin validation + optional static token presented as ?token= once, then SameSite=Strict HttpOnly cookie); how to view it (loopback via ssh -L, or LAN via non-loopback bind + token); read-only scope (v1, no control actions); and the new frontend build step (web-build) in install/build instructions. Keep wanbond.example.toml in sync if it enumerates config blocks."
+- acceptance: "README/design.md/install.md describe the [monitor] block, the loopback-default + opt-in-non-loopback-requires-token invariant, the token-cookie flow, the read-only scope, and the build step; design.md security-invariants section includes the monitor rule alongside the metrics one; wanbond.example.toml (if it lists blocks) includes a commented [monitor] example; `just fmt-check` and any docs link checks pass."
+- suggestedModel: standard
+- dependsOn: ["T169","T167"]
+- ledgerRefs: ["goals:G12"]
+
+### T172 — planned
+
+- createdAt: 2026-07-14T18:48:10.791Z
+- updatedAt: 2026-07-14T18:48:10.791Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Green the full gate: just lint (default+e2e+realhosts) + fmt-check + test + build with the new packages and embed"
+- description: "Final definition-of-done gate (grounding: MEMORY 'Go gate is not just test' — the DoD includes golangci across default+e2e+realhosts tags, not only go test). Ensure: internal/monitor (and any new internal/netutil helper) and the embed package are included in the Justfile golangci package lists (./cmd/... ./internal/... ./test/... — add explicitly if a new top-level package sits outside them); the web-build step (T167) runs before lint/build so //go:embed and golangci typecheck see the assets; gofmt clean over the new Go files; go vet across default + e2e + realhosts tags clean; go test ./... green. Resolve any lint findings (bodyclose/gosec on the new HTTP/WS server, e.g. ReadHeaderTimeout, response-body closes) rather than suppressing them."
+- acceptance: "`just fmt-check && just lint && just test && just build` all exit 0 on a clean checkout (after the web-build prerequisite), with the monitor + embed + any netutil packages covered by lint across the default, e2e and realhosts tag sets."
+- suggestedModel: standard
+- dependsOn: ["T167","T169"]
 - ledgerRefs: ["goals:G12"]

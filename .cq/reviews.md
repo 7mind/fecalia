@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 189
+  item: 190
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2201,6 +2201,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T146","goals:G13"]
+
+### R189 — go-ahead
+
+- createdAt: 2026-07-14T18:49:56.003Z
+- updatedAt: 2026-07-14T18:49:56.003Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T147 review round 1 — GO-AHEAD (single opus reviewer, proportionate for a TEST-ONLY e2e task; scenario A hardware-deterministic, scenario B validated modulo the pre-existing D78 harness race). Two -tags e2e aggregation-visibility scenarios (test/e2e/aggregation_visibility_test.go, +478) + netns.go port 9110. Merged to main as 9eb3274 (clean cherry-pick of e081f5c onto dea04b2; test-only, registry 9110 slots after 9109). Reviewer verified: (1) SCOPE test-only, no production code; (2) SKIP-NOT-FAIL via //go:build e2e + TestMain unshare -Urmn gating (every sibling e2e's mechanism); (3) build+vet under default AND -tags e2e clean, just lint 0 issues x3 tags; (4) SCENARIO A non-vacuous — asserts wanbond_aggregation_engaged 0->1->0 with wanbond_offered_load_fps crossing the engage(225)/disengage(125) threshold GAUGES directionally, EXACTLY TWO canonical T143 'scheduler aggregation change' records (to=aggregating then to=collapsed, verified vs weighted.go:546/555, NOT engaged/disengaged), log threshold fields asserted vs fraction*capacity, collapse wait DERIVED from collapse_dwell+load_tau (no magic sleep); (5) SCENARIO B non-vacuous — DEFAULT per_path_capacity_fps=10000 (engage-threshold gauge=9000), asserts engaged==0 across every retained sample for >=5s while 0<offered<9000, with a sawNonzeroOffered guard defeating a vacuous all-zero pass; (6) gauge names match metrics.go, port 9110 registered. D78 (pre-existing concentrator-netns bring-up race) manifests as a setup Fatalf not a false assertion; T147 adds no new flake. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T147","goals:G13","defects:D78"]
 
 ## M44
 
