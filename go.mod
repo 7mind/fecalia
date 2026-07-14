@@ -23,6 +23,8 @@ require (
 	golang.org/x/sys v0.35.0
 )
 
+require github.com/coder/websocket v1.8.15
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
