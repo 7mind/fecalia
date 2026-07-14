@@ -350,7 +350,7 @@ CPU-bound and cannot build the standing queues pacing is designed to prevent.
 Absolute throughput assertions belong in this section (real links), never in
 automated netns e2e tests. `TestFixtureImpairment` and any similar capped-fixture
 netns tests remain throughput-measurement **report-only** (informational) with
-no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#pacing)).
+no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#send-side-scheduler--internalsched)).
 
 ### Setup and prerequisites
 
@@ -372,18 +372,22 @@ isolate wanbond's egress path (the pacing effect) from network capacity:
 Baseline: throughput on each uplink without wanbond. Brings one uplink down to
 measure each independently:
 
+**Concentrator (server, for both sub-measurements):** `iperf3 -s -p 5201`
+
 **Starlink only (5G disabled or down):**
-- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20 -R`
-      (or use inner tunnel address if both uplinks reach it directly; adjust port
-      if concentrator listens elsewhere)
-- [ ] Record the **sender-side throughput** (edge reports received rate via `-R`
-      reverse mode). This is the Starlink solo capacity.
+- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20`
+      (FORWARD mode — edge SENDS — so this measures edge UPLOAD/egress, the same
+      direction wanbond paces and that legs 1b/1c measure; adjust port if the
+      concentrator listens elsewhere)
+- [ ] Record the **edge upload throughput** (edge's iperf3 summary). This is the
+      Starlink solo UPLOAD capacity — the direction the pacer shapes.
 
 **5G only (Starlink disabled or down):**
-- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20 -R`
-- [ ] Record the **sender-side throughput**. This is the 5G solo capacity.
+- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20`
+- [ ] Record the **edge upload throughput**. This is the 5G solo upload capacity.
 
-Record both as `T_starlink_direct` and `T_5g_direct` (Mbit/s).
+Record both as `T_starlink_direct` and `T_5g_direct` (Mbit/s, UPLOAD direction — so
+they are valid baselines for the upload-shaped tunnel legs 1b/1c).
 
 #### 1b. Through tunnel, pacing OFF (default)
 
