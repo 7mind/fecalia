@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 111
+  item: 112
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1089,6 +1089,19 @@ archives:
 - ledgerRefs: ["tasks:T101","goals:G6","defects:D51"]
 - sessionLogs: [".cq/logs/20260714-035711-af7fe1e7fcf138c03.md",".cq/logs/20260714-035711-ac7254fc378c0095a.md",".cq/logs/20260714-035711-a1a5495814cda5845.md",".cq/logs/20260714-035711-ac04c993630a8da43.md"]
 - rawLogs: [".cq/logs/raw/20260714-035711-af7fe1e7fcf138c03.jsonl",".cq/logs/raw/20260714-035711-ac7254fc378c0095a.jsonl",".cq/logs/raw/20260714-035711-a1a5495814cda5845.jsonl",".cq/logs/raw/20260714-035711-ac04c993630a8da43.jsonl"]
+
+### R112 — go-ahead
+
+- createdAt: 2026-07-14T06:12:11.412Z
+- updatedAt: 2026-07-14T06:12:11.412Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T102 unanimous panel approve (round 1): [opus]+[fable] both approve. Added diagnosingTUN — a tun.Device decorator wrapping the engine's TUN so every Write is diagnosed: on syscall.EIO (detected via errors.Is, not a fragile string match) it inspects the interface IFF_UP/MTU state via a new read-only ifState ioctl (mirroring T100's ifUp) and logs ONE rate-limited (30s sliding-window) actionable ERROR naming the state (DOWN/UP/unknown — probe-driven, NOT hardcoded) + pointing at install.md §4 + the raw numeric errno, while returning the original (n,err) UNCHANGED on every path (transparent). BOTH reviewers verified transparency by reading Write; [fable] confirmed the ioctl is GATED behind the rate limiter (early return precedes probeState — no ioctl-storm under a write storm) and killed 4/4 mutants (unthrottled, latch-once, always-DOWN, any-error-diagnosed); [opus] confirmed the sliding-window limiter via burst=1/post-window=2/strict-< boundary tests + that awgdevice consumes tun.Device purely by interface (decorator can't break the engine). Wired into up(); !linux stub builds; docs/install.md §4 synced. Rebased onto current main (device.go + install.md overlapped T107; clean 3-way merge, gate re-run green) and ff-merged as 890ab43."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T102","goals:G6"]
+- sessionLogs: [".cq/logs/20260714-061135-a8a45233ae279d4cd.md",".cq/logs/20260714-061135-a0b85a40cc20e154c.md"]
+- rawLogs: [".cq/logs/raw/20260714-061135-a8a45233ae279d4cd.jsonl",".cq/logs/raw/20260714-061135-a0b85a40cc20e154c.jsonl"]
 
 ## M31
 

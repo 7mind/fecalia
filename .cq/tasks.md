@@ -1168,10 +1168,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-034520-a0d7a77e637809a31.md",".cq/logs/20260714-035334-a5d713271e5cc337d.md",".cq/logs/20260714-035711-af7fe1e7fcf138c03.md",".cq/logs/20260714-035711-ac7254fc378c0095a.md",".cq/logs/20260714-035711-a1a5495814cda5845.md",".cq/logs/20260714-035711-ac04c993630a8da43.md"]
 - rawLogs: [".cq/logs/raw/20260714-034520-a0d7a77e637809a31.jsonl",".cq/logs/raw/20260714-035334-a5d713271e5cc337d.jsonl",".cq/logs/raw/20260714-035711-af7fe1e7fcf138c03.jsonl",".cq/logs/raw/20260714-035711-ac7254fc378c0095a.jsonl",".cq/logs/raw/20260714-035711-a1a5495814cda5845.jsonl",".cq/logs/raw/20260714-035711-ac04c993630a8da43.jsonl"]
 
-### T102 — wip
+### T102 — done
 
 - createdAt: 2026-07-13T23:22:48.514Z
-- updatedAt: 2026-07-14T05:51:54.611Z
+- updatedAt: 2026-07-14T06:12:19.229Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Emit an actionable diagnostic on TUN write EIO instead of the raw input/output error (I3)
@@ -1179,6 +1179,10 @@ archives:
 - acceptance: Unit test injecting EIO against a fake/DOWN TUN asserts the log record names the interface state and points at install.md §4, with the raw errno included, and that a burst of EIOs yields one rate-limited diagnostic. Relates D39 (diagnoses the D39 symptom) with no dependsOn on its fix. go test ./... green.
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 890ab43
+- completion: "Actionable TUN-write-EIO diagnostic (I3): a diagnosingTUN tun.Device decorator (internal/device/tundiag.go) wraps the engine's TUN in up() so every Write is diagnosed — on syscall.EIO (errors.Is) it inspects the interface IFF_UP/MTU via a new read-only ifState ioctl (linkup_linux.go, mirroring T100's ifUp; !linux stub) and logs ONE rate-limited (30s sliding window) actionable ERROR naming the interface state (DOWN/UP/unknown, probe-driven) + pointing at install.md §4 + the raw numeric errno, while returning the original (n,err) UNCHANGED (transparent). The ioctl is gated behind the rate limiter (no ioctl-storm). Non-EIO errors pass through undiagnosed. Diagnoses the D39 symptom (silent EIO on a DOWN/unaddressed wanbond0) without depending on its fix. Unit tests mutation-verified by BOTH reviewers (4/4 mutants killed: unthrottled, latch-once, always-DOWN, any-error). docs/install.md §4 synced. Unanimous 1-round panel approve; rebased onto current main (device.go/install.md overlap with T107 resolved, gate re-run green) and ff-merged as 890ab43."
+- sessionLogs: [".cq/logs/20260714-060518-a116fca10b59541c0.md",".cq/logs/20260714-061135-a8a45233ae279d4cd.md",".cq/logs/20260714-061135-a0b85a40cc20e154c.md"]
+- rawLogs: [".cq/logs/raw/20260714-060518-a116fca10b59541c0.jsonl",".cq/logs/raw/20260714-061135-a8a45233ae279d4cd.jsonl",".cq/logs/raw/20260714-061135-a0b85a40cc20e154c.jsonl"]
 
 ### T103 — planned
 
