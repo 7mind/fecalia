@@ -111,6 +111,29 @@ func (r *neverResolver) Lookup(_ context.Context, host string) ([]netip.Addr, ti
 	return nil, 0, false, fmt.Errorf("neverResolver: %q does not resolve", host)
 }
 
+// flakyThenResolver FAILS its first lookup (the bounded boot resolve — so the peer boots
+// endpoint-less) then resolves host to addr on every subsequent lookup (the re-resolution loop's
+// first successful poll). It models a name unresolvable in the boot window that comes good once the
+// loop runs, so the endpoint reaches the engine peer only via the FIRST-RESOLVE INSTALL PATH (R70).
+// calls is touched only on the boot goroutine (call 1) then the single resolution-loop goroutine
+// (calls 2+), ordered by the loop's goroutine start — no concurrent access, so no lock is needed.
+type flakyThenResolver struct {
+	host  string
+	addr  netip.Addr
+	calls int
+}
+
+func (r *flakyThenResolver) Lookup(_ context.Context, host string) ([]netip.Addr, time.Duration, bool, error) {
+	r.calls++
+	if r.calls == 1 {
+		return nil, 0, false, fmt.Errorf("flakyThenResolver: boot lookup fails for %q", host)
+	}
+	if host != r.host {
+		return nil, 0, false, fmt.Errorf("flakyThenResolver: no such host %q", host)
+	}
+	return []netip.Addr{r.addr}, 0, false, nil
+}
+
 // TestUpTolerantBootEndpointless is acceptance (1): Up on a single-hostname peer whose name NEVER
 // resolves must SUCCEED (tolerant boot, Q30 defer-and-reconcile — never hard-fail on an
 // unresolvable name), and the engine peer must carry NO endpoint (UAPI get shows no endpoint=
@@ -261,8 +284,7 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 	specs := []failoverSpec{nameSpec("hub.example.com", 51820)}
 	hp := []hubHealth{&fakeHealth{telemetry.StateUp}}
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	ctrl := newHubFailoverFromSpecs(specs, hp, mp, deviceRehandshake(dev, hubKey), clk, testSettle, lg)
-	ctrl.install = deviceInstallEndpoint(dev, hubKey, lg)
+	ctrl := newHubFailoverFromSpecs(specs, hp, mp, deviceRehandshake(dev, hubKey), deviceInstallEndpoint(dev, hubKey, lg), clk, testSettle, lg)
 
 	// Before any resolution the engine peer has NO endpoint.
 	if before, err := dev.IpcGet(); err != nil {
@@ -294,6 +316,57 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatalf("observed a zero-length datagram from %s, want a framed handshake initiation", from)
+	}
+}
+
+// TestUpFirstResolveInstallsEndpointThroughProductionWiring drives the R70 FIRST-RESOLVE INSTALL
+// PATH end to end through up() — the PRODUCTION wiring in startFailoverAndResolution — rather than a
+// hand-wired controller (which the sibling TestFirstResolveInstallsEndpointAndInitiatesHandshake
+// exercises for the egress half). A single-hostname peer whose name FAILS the bounded boot resolve
+// boots endpoint-less (tolerant boot); the re-resolution loop's first successful poll must boot-adopt
+// through the install collaborator up() wires (deviceInstallEndpoint), populating the ENGINE peer's
+// endpoint — observable via IpcGet. This fails fast if that one production wiring line is ever lost:
+// without ctrl.install the boot adoption could only reach the bind's per-path remotes, never the
+// engine peer endpoint, so IpcGet would never gain the resolved endpoint. No probe responder is
+// needed — boot adoption is not liveness-gated; it fires on the loop's first successful resolve
+// (nextPollAt armed at construction, stepped at DefaultProbeInterval), well within the 2s bound.
+func TestUpFirstResolveInstallsEndpointThroughProductionWiring(t *testing.T) {
+	cfg := writeEdgeConfig(t, `["hub.example.com:51820"]`, true)
+	chtun := tuntest.NewChannelTUN()
+
+	resolved := netip.MustParseAddr("203.0.113.5")
+	rslv := &flakyThenResolver{host: "hub.example.com", addr: resolved}
+	factory := func() (dnsresolve.Resolver, error) { return rslv, nil }
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	if err != nil {
+		t.Fatalf("up on a hostname peer whose boot resolve fails, want tolerant boot: %v", err)
+	}
+	defer tun.Close()
+
+	// Endpoint-less at boot: the bounded boot lookup failed, so no endpoint line yet.
+	if before, err := tun.dev.IpcGet(); err != nil {
+		t.Fatalf("IpcGet (pre-resolve): %v", err)
+	} else if strings.Contains(before, "endpoint=") {
+		t.Fatalf("engine peer carried an endpoint before the first successful resolve, want none:\n%s", before)
+	}
+
+	// The re-resolution loop resolves on its first poll and boot-adopts through the production
+	// install wiring; poll IpcGet until the engine peer reports the resolved endpoint.
+	want := "endpoint=" + netip.AddrPortFrom(resolved, 51820).String()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		uapi, err := tun.dev.IpcGet()
+		if err != nil {
+			t.Fatalf("IpcGet: %v", err)
+		}
+		if strings.Contains(uapi, want) {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("engine peer endpoint not installed through production wiring within 2s, want %q (R70 install path via startFailoverAndResolution):\n%s", want, uapi)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

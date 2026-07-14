@@ -91,10 +91,11 @@ type hubFailover struct {
 	// the FIRST-RESOLVE INSTALL PATH only — the boot-adoption of a peer that came up endpoint-less —
 	// because SetPeerRemote (remote) repoints the bind's per-path remotes but NEVER sets the engine
 	// peer's endpoint, so after an endpoint-less boot a bare rehandshake would have no endpoint to
-	// transmit to. The device wires it to deviceInstallEndpoint; a unit test over a fake remote with
-	// no engine leaves it nil, and boot adoption then falls back to remote so the switch stays
-	// observable. Subsequent re-resolves of an already-installed peer take the remote (SetPeerRemote)
-	// repoint path — the engine's virtual endpoint stays stable per A1; only the bind remotes move.
+	// transmit to. It is a REQUIRED constructor collaborator (newHubFailoverFromSpecs) — the device
+	// wires it to deviceInstallEndpoint at construction, so a lost production wiring line is a
+	// compile error, never a silent degradation to SetPeerRemote. Subsequent re-resolves of an
+	// already-installed peer take the remote (SetPeerRemote) repoint path — the engine's virtual
+	// endpoint stays stable per A1; only the bind remotes move.
 	install func(netip.AddrPort)
 	clock   telemetry.Clock
 	// settle is the dwell a freshly-selected endpoint gets before another advance is
@@ -146,20 +147,27 @@ func newHubFailover(endpoints []netip.AddrPort, health []hubHealth, remote peerR
 	for i, ap := range endpoints {
 		specs[i] = failoverSpec{spec: config.EndpointSpec{Addr: ap}, addrs: []netip.AddrPort{ap}}
 	}
-	return newHubFailoverFromSpecs(specs, health, remote, rh, clock, settle, lg)
+	// An all-literal controller starts with every spec's expansion non-empty, so activeSpec is set
+	// at construction and the FIRST-RESOLVE INSTALL PATH (h.install in updateResolution) is never
+	// reached — it takes no engine-endpoint install. Pass a no-op for the required install collaborator.
+	return newHubFailoverFromSpecs(specs, health, remote, rh, func(netip.AddrPort) {}, clock, settle, lg)
 }
 
 // newHubFailoverFromSpecs builds the controller over the ordered, spec-keyed endpoint set.
 // The active endpoint is initialized to the FIRST flattened entry (spec order); when every
 // spec's expansion is empty (e.g. a hostname-only peer before the resolver has run) there
 // is no active entry yet (activeSpec == -1) and check takes no action until an expansion
-// appears. Like newHubFailover it injects no goroutine or engine dependency.
-func newHubFailoverFromSpecs(specs []failoverSpec, health []hubHealth, remote peerRemote, rh rehandshake, clock telemetry.Clock, settle time.Duration, lg log.Logger) *hubFailover {
+// appears. Like newHubFailover it injects no goroutine or engine dependency. install is a
+// REQUIRED collaborator (the FIRST-RESOLVE INSTALL PATH, R70): making it a constructor
+// parameter — rather than a field patched in afterwards — turns a lost production wiring line
+// into a compile error instead of a silent degradation to SetPeerRemote.
+func newHubFailoverFromSpecs(specs []failoverSpec, health []hubHealth, remote peerRemote, rh rehandshake, install func(netip.AddrPort), clock telemetry.Clock, settle time.Duration, lg log.Logger) *hubFailover {
 	h := &hubFailover{
 		specs:       specs,
 		health:      health,
 		remote:      remote,
 		rehandshake: rh,
+		install:     install,
 		clock:       clock,
 		settle:      settle,
 		lastSwitch:  clock.Now(),
@@ -287,7 +295,7 @@ func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
 			// path (install) FIRST — a SetPeerRemote repoint would move the bind's per-path remotes
 			// but leave the engine peer endpoint-less, so the following rehandshake would have no
 			// endpoint to transmit to — THEN rehandshake, which now has an addressable endpoint.
-			h.installActive(adoptAddr)
+			h.install(adoptAddr)
 			if h.rehandshake != nil {
 				h.rehandshake()
 			}
@@ -313,18 +321,6 @@ func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
 	}
 
 	h.idx = h.flatIndexLocked(h.activeSpec, h.activeAddr)
-}
-
-// installActive gives the ENGINE peer an addressable endpoint at boot-adoption time (R70). It
-// prefers the install collaborator (the UAPI/IpcSet endpoint= path, the ONLY way to populate the
-// engine peer's endpoint); when unset — a unit test driving a fake remote with no engine behind it
-// — it falls back to SetPeerRemote so the adoption switch stays observable. Caller holds h.mu.
-func (h *hubFailover) installActive(ap netip.AddrPort) {
-	if h.install != nil {
-		h.install(ap)
-		return
-	}
-	h.remote.SetPeerRemote(ap)
 }
 
 // allPathsDown reports HUB LOSS — every path to the active concentrator DOWN — under h.mu.
@@ -509,16 +505,18 @@ func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers 
 			health[j] = pr
 		}
 		hlg := lg.Component("hubfailover")
+		// The engine-endpoint install used by the FIRST-RESOLVE INSTALL PATH (R70) is a REQUIRED
+		// constructor collaborator: boot adoption of an endpoint-less peer installs the resolved
+		// endpoint on the engine peer through it, then rehandshakes. Passing it at construction
+		// (rather than patching a field afterwards) makes a lost wiring line a compile error, so it
+		// can never silently degrade to a SetPeerRemote that leaves the engine peer endpoint-less.
 		ctrl := newHubFailoverFromSpecs(
 			boot.specs[i], health, mp,
 			deviceRehandshake(dev, peer.PublicKey),
+			deviceInstallEndpoint(dev, peer.PublicKey, hlg),
 			telemetry.SystemClock{}, hubFailoverSettle,
 			hlg,
 		)
-		// Wire the engine-endpoint install used by the FIRST-RESOLVE INSTALL PATH (R70): boot
-		// adoption of an endpoint-less peer installs the resolved endpoint on the engine peer here,
-		// then rehandshakes.
-		ctrl.install = deviceInstallEndpoint(dev, peer.PublicKey, hlg)
 		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep) and the
 		// settle dwell bounds actual switches, so a responsive poll only tightens detection latency
 		// without churning the remote.

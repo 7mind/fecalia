@@ -38,6 +38,12 @@ func discardLogger(t *testing.T) log.Logger {
 	return lg
 }
 
+// discardInstall is the no-op install collaborator for controllers whose test never drives the
+// FIRST-RESOLVE INSTALL PATH (boot adoption) — either the active spec is pre-seeded (activeSpec set
+// at construction) or the case under test never boot-adopts. Tests that DO assert on the install
+// pass a recording closure instead.
+func discardInstall(netip.AddrPort) {}
+
 func mustEndpoints(t *testing.T, ss ...string) []netip.AddrPort {
 	t.Helper()
 	eps := make([]netip.AddrPort, len(ss))
@@ -250,7 +256,7 @@ func TestHubFailoverStandbyRecordSwapNoRepoint(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, discardInstall, clk, testSettle, discardLogger(t))
 	if h.activeSpec != 0 || h.activeAddr != active {
 		t.Fatalf("boot active = (%d,%v), want (0,%v)", h.activeSpec, h.activeAddr, active)
 	}
@@ -283,7 +289,7 @@ func TestHubFailoverActiveIPChangeRepointsOnce(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, discardInstall, clk, testSettle, discardLogger(t))
 	if h.activeSpec != 0 || h.activeAddr != oldA {
 		t.Fatalf("boot active = (%d,%v), want (0,%v)", h.activeSpec, h.activeAddr, oldA)
 	}
@@ -318,7 +324,7 @@ func TestHubFailoverUnchangedActiveIPNoRepoint(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, discardInstall, clk, testSettle, discardLogger(t))
 
 	// Re-resolve: the record set changed (grew) but STILL contains the active AddrPort.
 	h.updateResolution(0, []netip.AddrPort{active, extra})
@@ -348,7 +354,7 @@ func TestHubFailoverIdxReMapsOnExpansionGrowShrink(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, discardInstall, clk, testSettle, discardLogger(t))
 	if h.activeSpec != 1 || h.activeAddr != activeLit || h.idx != 0 {
 		t.Fatalf("boot active = (%d,%v) idx=%d, want (1,%v) idx=0", h.activeSpec, h.activeAddr, h.idx, activeLit)
 	}
@@ -443,9 +449,8 @@ func TestHubFailoverBootAdoptsFirstResolution(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
 	var installed []netip.AddrPort
-	h.install = func(ap netip.AddrPort) { installed = append(installed, ap) }
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, func(ap netip.AddrPort) { installed = append(installed, ap) }, clk, testSettle, discardLogger(t))
 	if h.activeSpec != -1 || h.idx != -1 {
 		t.Fatalf("boot active = (spec %d, idx %d), want (spec -1, idx -1) (all specs empty)", h.activeSpec, h.idx)
 	}
@@ -487,7 +492,7 @@ func TestHubFailoverRepointResetsSettleDwell(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, discardInstall, clk, testSettle, discardLogger(t))
 
 	// Let the boot dwell fully elapse so, absent a reset, the next all-down check WOULD advance.
 	clk.advance(testSettle + time.Second)
@@ -534,7 +539,7 @@ func TestHubFailoverCrossSpecDuplicateNoSpuriousReMap(t *testing.T) {
 	rem := &recordingRemote{}
 	handshakes := 0
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	h := newHubFailoverFromSpecs(specs, hp, rem, func() { handshakes++ }, discardInstall, clk, testSettle, discardLogger(t))
 	if h.activeSpec != 1 || h.activeAddr != dup || h.idx != 0 {
 		t.Fatalf("boot active = (%d,%v) idx=%d, want (1,%v) idx=0", h.activeSpec, h.activeAddr, h.idx, dup)
 	}

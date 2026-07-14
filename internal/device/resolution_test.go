@@ -113,7 +113,7 @@ func newResolutionHarness(t *testing.T, host string, port uint16, initialActive 
 	}
 	rem := &recordingRemote{}
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	fo := newHubFailoverFromSpecs(specs, hh, rem, func() {}, clk, testSettle, discardLogger(t))
+	fo := newHubFailoverFromSpecs(specs, hh, rem, func() {}, discardInstall, clk, testSettle, discardLogger(t))
 	rslv := newScriptedResolver()
 	res := newResolution(rslv, fo, nameTargetsFromSpecs([]config.EndpointSpec{
 		{Host: host, Port: port, IsName: true},
@@ -327,9 +327,8 @@ func TestResolutionSingleHostnameBootAdopts(t *testing.T) {
 	hp := []hubHealth{&fakeHealth{telemetry.StateUp}}
 	rem := &recordingRemote{}
 	clk := &fakeClock{now: time.Unix(1000, 0)}
-	fo := newHubFailoverFromSpecs(specs, hp, rem, func() {}, clk, testSettle, discardLogger(t))
 	var installed []netip.AddrPort
-	fo.install = func(ap netip.AddrPort) { installed = append(installed, ap) }
+	fo := newHubFailoverFromSpecs(specs, hp, rem, func() {}, func(ap netip.AddrPort) { installed = append(installed, ap) }, clk, testSettle, discardLogger(t))
 	if fo.activeSpec != -1 {
 		t.Fatalf("single hostname boot activeSpec = %d, want -1 (empty)", fo.activeSpec)
 	}
