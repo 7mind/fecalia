@@ -825,11 +825,11 @@ archives: []
 ### D60 — open
 
 - createdAt: 2026-07-14T08:08:15.604Z
-- updatedAt: 2026-07-14T08:08:15.604Z
+- updatedAt: 2026-07-14T08:43:32.927Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Stale 'config surface only' doc-comment on config.BindMode contradicts the shipped T106 wiring
-- description: "Surfaced during T112 review ([fable]). internal/config/config.go (~L78-81) states the BindMode field is 'the CONFIG SURFACE only ... Wiring planPathBinds/selectDeviceBinds to consume the resolved mode is a later task — today every path is bound exactly as before, regardless of this field's value.' That is now FALSE: internal/bind/pathsock.go selectDeviceBinds/resolveForcedDeviceBind consume the resolved mode (T106 shipped the wiring). Pre-existing at T112's base and untouched by that docs-only diff, so out of scope there. Same class as [[D57]] (stale Peer.PSK/Name 'not yet consumed' comment) — both are groundwork-then-wire remnants in config.go."
+- description: "Surfaced during T112 review ([fable]), re-confirmed + extended during T115 review ([fable]). TWO stale bind-mode doc-comments in internal/config/config.go claim the resolved bind mode is 'CONFIG SURFACE only' / 'not yet consumed': (a) the BindMode type comment (~L78-81): 'Wiring planPathBinds/selectDeviceBinds to consume the resolved mode is a later task — today every path is bound exactly as before, regardless of this field's value'; (b) the parallel Path.Bind field note (~L492-493). Both are FALSE since T106: internal/bind/pathsock.go selectDeviceBinds (~L115-136) switches on config.BindModeSource/Device/Auto and internal/bind/multipath.go (~L2309) AddPath honors a forced BindModeDevice. Groundwork-then-wire remnants, same class as [[D57]] (stale Peer.PSK/Name 'not yet consumed'). Out of scope for the docs-only tasks that surfaced it."
 - severity: low
-- suggestedFix: Delete or rewrite the trailing paragraph of the BindMode doc-comment to state that planPathBinds/selectDeviceBinds honor the resolved mode since T106.
+- suggestedFix: Delete the two 'later task / not yet consumed' sentences from BOTH the BindMode type comment (config.go ~L78-81) and the Path.Bind field note (config.go ~L492-493), leaving the now-accurate semantic description; selectDeviceBinds/multipath.AddPath honor the resolved mode since T106.
 - ledgerRefs: ["tasks:T112","goals:G6","defects:D57"]

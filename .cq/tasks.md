@@ -1416,15 +1416,19 @@ archives:
 - sessionLogs: [".cq/logs/20260714-081229-a850365d641c82d66.md",".cq/logs/20260714-081736-a61c19bcaa76a8b17.md",".cq/logs/20260714-081736-a0bb9d3d0e0db7a83.md"]
 - rawLogs: [".cq/logs/raw/20260714-081229-a850365d641c82d66.jsonl",".cq/logs/raw/20260714-081736-a61c19bcaa76a8b17.jsonl",".cq/logs/raw/20260714-081736-a0bb9d3d0e0db7a83.jsonl"]
 
-### T115 — planned
+### T115 — done
 
 - createdAt: 2026-07-13T23:25:03.491Z
-- updatedAt: 2026-07-13T23:36:55.912Z
-- author: "opus-4.8[1m]"
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- updatedAt: 2026-07-14T08:43:53.043Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Sync the config reference, wanbond.example.toml, design.md, and README for all new surfaces
 - description: "Per the AGENTS.md docs-in-sync rule, one sweep after the config-surface and behavior tasks land: install.md §3z exhaustive key reference + wanbond.example.toml gain `bind` (per-path + global default, default auto), the full-tunnel `mode = \"default-route\"` + 0.0.0.0/0-split semantics, and `tun_persist`; docs/design.md notes the new session-signal metric names (shipped by T101) and the default-route wiring (landed by T108) as the one deliberate exception to 'the daemon never assigns routes'; docs/runbook.md — install.md's designated end-to-end operator provisioning procedure — updated to cover the new provisioning steps this goal introduces: the C1 NetworkManager unmanaged-devices drop-in, the C3 full-tunnel client-LAN recipe, and the C4 addressing/persistence oneshot; README feature list updated if it enumerates config keys or metrics."
 - acceptance: Every new config key and metric introduced by this goal appears in §3z, wanbond.example.toml (commented-out with default, matching the existing style), and design.md; docs/runbook.md references the new C1/C3/C4 provisioning steps; grep for each new key/metric name across docs/ (including runbook.md) and README returns the expected hits; no stale 'never assigns routes' claim survives unqualified.
 - suggestedModel: standard
 - dependsOn: ["T101","T105","T107","T108","T109","T110","T111","T113"]
 - ledgerRefs: ["goals:G6"]
+- resultCommit: f2e3fc0
+- completion: "The final G6 doc-sync consistency sweep (docs/design.md, docs/install.md §3z, docs/runbook.md, wanbond.example.toml). Inventoried what T101/T105-T114 already documented and filled the genuine gaps: added the `bind` key (top-level + per-path, source/device/auto, default auto) to §3z + wanbond.example.toml; added a design.md section covering tun_persist/TUNSETPERSIST, the mode=default-route routing wiring as the ONE deliberate exception to 'the daemon never assigns routes' (both surviving occurrences now inline-qualified), and the wanbond_session_established session signal; added runbook.md pointers to the C1 NetworkManager drop-in, C4 addressing/persistence oneshot, and C3 full-tunnel recipe. All claims grounded verbatim in source; all cross-reference anchors verified against real headings; TestExampleConfigLoads still green. Unanimous round-1 approve; ff-merged as f2e3fc0. Closes the G6 docs surface. (README needed no change; stale config.go bind comments deferred as D60.)"
+- sessionLogs: [".cq/logs/20260714-083759-ace22219f4e9e9b4e.md",".cq/logs/20260714-084317-a1960e942fe11ca6d.md",".cq/logs/20260714-084317-af168e7ecc9a2339a.md"]
+- rawLogs: [".cq/logs/raw/20260714-083759-ace22219f4e9e9b4e.jsonl",".cq/logs/raw/20260714-084317-a1960e942fe11ca6d.jsonl",".cq/logs/raw/20260714-084317-af168e7ecc9a2339a.jsonl"]

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 124
+  item: 125
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1400,3 +1400,16 @@ archives:
 - ledgerRefs: ["tasks:T113","goals:G6","defects:D35"]
 - sessionLogs: [".cq/logs/20260714-082657-a554e035011abf6ad.md",".cq/logs/20260714-082657-afee22f11f48ff9b8.md"]
 - rawLogs: [".cq/logs/raw/20260714-082657-a554e035011abf6ad.jsonl",".cq/logs/raw/20260714-082657-afee22f11f48ff9b8.jsonl"]
+
+### R125 — go-ahead
+
+- createdAt: 2026-07-14T08:43:46.175Z
+- updatedAt: 2026-07-14T08:43:46.175Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T115 unanimous panel approve (round 1): [opus]+[fable] both approve. The FINAL G6 doc-sync sweep (docs/design.md, docs/install.md, docs/runbook.md, wanbond.example.toml). The worker correctly inventoried what T101/T105-T114 already shipped and filled ONLY the genuine gaps: (1) the `bind` key (top-level + per-path, values source/device/auto, default auto) was absent from install.md §3z's toml block + wanbond.example.toml despite §3b prose — added; (2) docs/design.md had ZERO mentions of bind/BindMode, tun_persist/TUNSETPERSIST, mode=default-route/splitDefaultRoute, or wanbond_session_established (no G6 task had touched design.md) — added a new section covering tun_persist, the default-route wiring as the ONE deliberate exception to 'the daemon never assigns routes', and the session signal; (3) docs/runbook.md gained pointers to the C1 NetworkManager unmanaged-devices drop-in, the C4 addressing/persistence oneshot, and the C3 §9 full-tunnel recipe. Both reviewers GROUNDED every claim verbatim against source (config.go bind shape; persist_linux.go:31-47 TUNSETPERSIST called from device.Up:234; device.go:1071 splitDefaultRoute shared by route-install + uapiConfig; config.go:1122 concentrator mode rejection; metrics.go:102 wanbond_session_established byte-for-byte; session.go sessionMonitor/RejectAfterTime/one-INFO-per-0→-1-edge) AND independently re-derived all three hand-authored design.md GitHub anchor slugs, confirming each resolves to a real install.md heading; confirmed both surviving 'never assigns routes' statements (design.md:448, install.md:915) are inline-qualified with the default-route exception (no unqualified survivor in docs/ or README); cited packaging artifacts exist. README needed no change (its feature list doesn't enumerate keys/metrics). Full gate + TestExampleConfigLoads green. Base = current main; ff-merged as f2e3fc0. [fable]'s stale-config.go-bind-comment defect extends the already-filed D60."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T115","goals:G6","defects:D60"]
+- sessionLogs: [".cq/logs/20260714-084317-a1960e942fe11ca6d.md",".cq/logs/20260714-084317-af168e7ecc9a2339a.md"]
+- rawLogs: [".cq/logs/raw/20260714-084317-a1960e942fe11ca6d.jsonl",".cq/logs/raw/20260714-084317-af168e7ecc9a2339a.jsonl"]
