@@ -363,6 +363,18 @@ type Multipath struct {
 	// host (T106 round 2). Immutable after construction, never nil.
 	resolveDeviceBind func(src netip.Addr, mode config.BindMode) string
 
+	// addPathListen binds AddPath's runtime-admitted path's socket. It is an
+	// injection seam mirroring deferredListen, scoped to AddPath's OWN call site:
+	// AddPath calls the package-level listenPath directly (it is not routed through
+	// deferredListen, which only reconcileDeferred drives), so without this seam no
+	// test can observe what dev AddPath actually threads into the bind — resolving a
+	// BindModeDevice interface via resolveDeviceBind and then discarding it at the
+	// listen call passes the full suite (T106 round 3). The default is the real
+	// listenPath; a test overrides it to capture the dev argument deterministically
+	// without a real interface having to appear on the host. Immutable after
+	// construction, never nil.
+	addPathListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error)
+
 	mu sync.Mutex
 
 	// The PRIMARY peer, embedded so the single-peer datapath (Send, the receive drainer,
@@ -591,6 +603,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		classify:          newWGClassifier(amnezia),
 		deferredListen:    defaultDeferredListen,
 		resolveDeviceBind: resolveForcedDeviceBind,
+		addPathListen:     listenPath,
 		peerState:         primary,
 		peers:             []*peerState{primary},
 		peersByName:       map[string]*peerState{primary.name: primary},
@@ -2160,7 +2173,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 	// runtime-added path (D30 — auto never device-binds at runtime — is a separate,
 	// still-open gap this task does not close).
 	dev := m.resolveDeviceBind(def.SourceAddr, def.Bind)
-	c, err := listenPath(def.SourceAddr, m.openPort, dev)
+	c, err := m.addPathListen(def.SourceAddr, m.openPort, dev)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRNOTAVAIL) {
 			// Symmetric with Open's tolerant bind: a well-formed-but-not-yet-assignable

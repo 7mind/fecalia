@@ -275,6 +275,75 @@ func TestReconcileThreadsForcedDeviceBind(t *testing.T) {
 	}
 }
 
+// fakeAddPathBinder is the injected listen seam (m.addPathListen) the AddPath
+// threading test drives: it records the dev argument of every listen() call, in call
+// order, and binds a REAL loopback socket regardless of dev — so AddPath completes as
+// a live (non-deferred) admission without touching net.Interfaces() or requiring a real
+// device to be present on the host. Mirrors fakeDeferredBinder's recording shape,
+// scoped to the AddPath call site: AddPath calls the package-level listenPath directly
+// (no shared seam with deferredListen), so TestReconcileThreadsForcedDeviceBind (round
+// 2) covers only the reconcile half of the wiring gap — this covers the AddPath half
+// (T106 round 3).
+type fakeAddPathBinder struct {
+	mu   sync.Mutex
+	devs []string
+}
+
+func (f *fakeAddPathBinder) listen(src netip.Addr, _ uint16, dev string) (*net.UDPConn, error) {
+	f.mu.Lock()
+	f.devs = append(f.devs, dev)
+	f.mu.Unlock()
+	return net.ListenUDP("udp", &net.UDPAddr{IP: src.AsSlice(), Port: 0})
+}
+
+// TestAddPathThreadsForcedDeviceBind is the T106 round-3 regression guard: AddPath must
+// thread resolveDeviceBind's decision into the bind it actually performs, not merely
+// compute and discard it. It exercises AddPath directly (not reconcileDeferred), via
+// the addPathListen seam, with a BindModeDevice path (want the fake-resolved "wan0")
+// and a BindModeAuto sibling (want "", matching I5's pre-existing auto-never-device-
+// binds-at-runtime behaviour). FAILS on a pre-fix AddPath that calls the package-level
+// listenPath directly with a hardcoded/discarded dev — replacing `dev :=
+// m.resolveDeviceBind(...)`'s result with "" at the AddPath call site makes this test
+// fail (devs[0] would be "" instead of "wan0"), whereas it left the full default suite
+// green pre-fix.
+func TestAddPathThreadsForcedDeviceBind(t *testing.T) {
+	psk := testKey(t, 0x5A)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	binder := &fakeAddPathBinder{}
+	m.addPathListen = binder.listen
+	// Deterministic fake decision, matching TestReconcileThreadsForcedDeviceBind's
+	// contract: BindModeDevice resolves to "wan0"; every other mode yields "".
+	m.resolveDeviceBind = func(_ netip.Addr, mode config.BindMode) string {
+		if mode == config.BindModeDevice {
+			return "wan0"
+		}
+		return ""
+	}
+
+	if err := m.AddPath(config.Path{Name: "device-path", SourceAddr: netip.MustParseAddr("127.0.0.1"), Bind: config.BindModeDevice}); err != nil {
+		t.Fatalf("AddPath (device): %v", err)
+	}
+	if err := m.AddPath(config.Path{Name: "auto-path", SourceAddr: netip.MustParseAddr("127.0.0.1"), Bind: config.BindModeAuto}); err != nil {
+		t.Fatalf("AddPath (auto): %v", err)
+	}
+
+	if len(binder.devs) != 2 {
+		t.Fatalf("addPathListen called %d times, want 2", len(binder.devs))
+	}
+	if binder.devs[0] != "wan0" {
+		t.Fatalf("BindModeDevice path's threaded dev = %q, want %q (resolveDeviceBind's decision was not threaded into AddPath's listen)", binder.devs[0], "wan0")
+	}
+	if binder.devs[1] != "" {
+		t.Fatalf("BindModeAuto path's threaded dev = %q, want \"\" (auto must not device-bind at runtime)", binder.devs[1])
+	}
+}
+
 // TestReconcileLoopStopsCleanly asserts the background reconcile goroutine terminates
 // on its stopper with no goroutine leak (the shutdown contract Close relies on), and
 // that the stopper is idempotent. goleak.VerifyNone fails if the loop goroutine
