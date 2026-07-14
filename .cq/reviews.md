@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 193
+  item: 194
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2286,3 +2286,16 @@ archives:
 - criticism: []
 - new_questions: ["Q58"]
 - ledgerRefs: ["goals:G12","questions:Q58"]
+
+## M60
+
+### R193 — go-ahead
+
+- createdAt: 2026-07-14T19:19:13.885Z
+- updatedAt: 2026-07-14T19:19:13.885Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T155 review round 1 — GO-AHEAD (single opus reviewer, proportionate for DOCS-ONLY). Full doc-sync for D65 policy-independent pacing. Merged to main as 00e190f (clean cherry-pick of 975734c onto e12e620; README.md + docs/design.md + docs/runbook.md — install.md + wanbond.example.toml were already corrected by the merged T153). Reviewer verified all 7 acceptance clauses: (1) docs-only, no production code; (2) all FIVE files (README/design/install/runbook/example.toml) carry pacing_enabled/link_bandwidth/link_rtt + state pacing available under default active-backup; (3) design.md DECISION BLOCKS record BOTH the policy-independent-pacing choice AND the per-path-vs-bottleneck sizing distinction; (4) ABSENCE grep clean — no weighted-only claim attached to pacing/BDP keys (surviving weighted-only notes attach only to the aggregation knobs engage/disengage/collapse/load_tau/weight_*, permitted); (5) wanbond.example.toml loads (TestExampleConfigLoads PASS); (6) D65 motivation accurate vs rootCause + internal/sched/pacer.go (synchronous Send, head-shed pacer no internal enqueue, ~1s loaded vs ~40ms idle RTT, 3.67 vs >=6.9 Mbps); (7) runbook Starlink-style guidance consistent with the T152 all-paths fail-fast rule. Full gate green on composed main: config Example test ok; just lint 0 issues default+e2e+realhosts. NON-BLOCKING nit (not filed): design.md attributes a PickPaced return to tryConsume (which returns bool; PickPaced is the Pick result) — substantively correct (admit-or-shed-at-head, never enqueue), immaterial for a docs task. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T155","goals:G14","defects:D65"]

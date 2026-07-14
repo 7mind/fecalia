@@ -2009,12 +2009,12 @@ archives:
 
 ## M60
 
-### T155 — planned
+### T155 — done
 
 - createdAt: 2026-07-14T13:16:44.340Z
-- updatedAt: 2026-07-14T13:28:50.880Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T19:19:16.775Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Sync docs + example config for default-path pacing
 - description: |
     Per AGENTS.md docs-are-definition-of-done, update in the SAME change: README.md (config surface — pacing_enabled/link_bandwidth/link_rtt now meaningful under the DEFAULT active-backup policy); docs/design.md (scheduler section: pacing is a policy-independent egress shaper; its D65 motivation — unshaped default sender overruns a bloated last-mile buffer; the drop-at-head/no-internal-queue invariant; the PER-PATH (not bottleneck) sizing under active-backup vs the shared-bottleneck sizing under weighted; and a decision block recording the policy-independent-pacing choice); docs/install.md + docs/runbook.md (operator guidance: on a bufferbloated uplink like Starlink, declare link_bandwidth+link_rtt on ALL paths and set pacing_enabled=true under the default policy, with example values); wanbond.example.toml (a commented [scheduler] pacing block valid under active-backup). Config key names must match across all files. Reference D65 as the motivating defect.
@@ -2024,6 +2024,7 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T152","T153"]
+- resultCommit: 00e190f
 
 ### T156 — planned
 
