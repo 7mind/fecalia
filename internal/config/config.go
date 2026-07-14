@@ -52,6 +52,18 @@ type Config struct {
 	// (today's selectDeviceBinds heuristic) in normalize(), so an existing config
 	// with no `bind` anywhere keeps exactly today's per-path bind behaviour.
 	Bind BindMode `toml:"bind"`
+	// TUNPersist opts wanbond0 into surviving daemon restarts (I7, Q38). Default
+	// false keeps today's teardown semantics exactly: the TUN is non-persistent
+	// and the kernel destroys it when the daemon's last fd closes on Close, so
+	// addresses/routes/rules referencing it are dropped on every restart. Set true
+	// and the daemon issues TUNSETPERSIST on start (device.Up) — the link then
+	// outlives Close (amneziawg-go's NativeTun.Close only closes the fd/netlink
+	// socket; it never issues RTM_DELLINK), and the next start re-adopts the same
+	// persistent device BY NAME via CreateTUN's TUNSETIFF, preserving its ifindex
+	// so operator-owned addressing survives untouched. On an NM host a persistent
+	// device STILL needs the unmanaged-devices drop-in (D39) — persistence keeps
+	// the link across restarts but does not exempt it from NetworkManager.
+	TUNPersist bool `toml:"tun_persist"`
 }
 
 // BindMode selects, per path, how that path's UDP socket is bound to the

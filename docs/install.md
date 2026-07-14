@@ -443,6 +443,13 @@ role = "edge"                      # REQUIRED. "edge" | "concentrator". Never
 psk  = "<base64 32-byte PSK>"      # REQUIRED. 32 raw bytes, base64. Same value
                                    #   on both ends; keys the PSK-HMAC that
                                    #   authenticates outer PROBE/CONTROL frames.
+# tun_persist = false              # OPTIONAL, DEFAULT false. false => wanbond0 is
+                                   #   destroyed on daemon stop (its addresses/
+                                   #   routes/rules drop on every restart). true =>
+                                   #   TUNSETPERSIST on start: wanbond0 survives a
+                                   #   restart with the SAME ifindex, so operator-
+                                   #   owned addressing persists. See "Interface
+                                   #   addressing" below for the NM (D39) caveat.
 
 # ── paths: one [[paths]] block per WAN uplink; at least one is REQUIRED ───────
 [[paths]]
@@ -709,6 +716,29 @@ unit and trip the `Restart=on-failure` crash-loop. networkd is race-free: it
 watches for the interface and applies the address the moment `wanbond0`
 appears, whenever that is. (The daemon exposes no `sd_notify` readiness, so
 there is no ordering guarantee to hang an `ExecStartPost` on.)
+
+#### Persisting `wanbond0` across daemon restarts (`tun_persist`, I7)
+
+By default `wanbond0` is a **non-persistent** TUN: the kernel destroys it when
+the daemon's last file descriptor closes on stop, so every restart re-creates
+it from scratch and the operator-owned addresses/routes/rules attached to it are
+dropped. networkd re-applies its `.network` address on the fresh interface, but
+any manual `ip` state and the interface's `ifindex` do not survive.
+
+Set the top-level `tun_persist = true` to opt into persistence: the daemon
+issues `TUNSETPERSIST` on start, so the kernel keeps `wanbond0` across a daemon
+stop/start with the **same `ifindex`**, and the next start re-adopts the same
+device by name rather than recreating it. Addresses, routes, and rules
+referencing `wanbond0` then survive a restart untouched. Reverting to
+`tun_persist = false` and restarting clears the flag, so the device returns to
+being torn down on stop.
+
+> **NetworkManager (D39):** a *persistent* `wanbond0` still needs the
+> NetworkManager `unmanaged-devices` drop-in on NM-managed hosts. Persistence
+> keeps the link alive across restarts; it does **not** exempt the interface
+> from NetworkManager, which would otherwise flush the addresses/routes the
+> operator assigned. Keep the unmanaged-devices drop-in in place regardless of
+> `tun_persist`.
 
 ## 5. Firewall
 

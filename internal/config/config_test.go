@@ -117,6 +117,37 @@ func TestLoadValidEdge(t *testing.T) {
 	}
 }
 
+// TestTUNPersistDefaultsFalse is the I7/Q38 default-unchanged case: a config that
+// omits tun_persist parses with TUNPersist == false, so the daemon keeps today's
+// teardown semantics (the TUN disappears on Close) byte-for-byte.
+func TestTUNPersistDefaultsFalse(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.TUNPersist {
+		t.Error("tun_persist must default to false when the key is omitted")
+	}
+}
+
+// TestTUNPersistOptIn is the I7/Q38 opt-in case: top-level `tun_persist = true`
+// parses onto Config.TUNPersist, which device.Up feeds to TUNSETPERSIST so
+// wanbond0 survives a daemon restart.
+func TestTUNPersistOptIn(t *testing.T) {
+	// tun_persist is a top-level scalar, so it must precede any table header (TOML
+	// scoping) — insert it alongside role/psk, not appended after [log].
+	body := strings.Replace(fill(edgeConfig), "role = \"edge\"", "role = \"edge\"\ntun_persist = true", 1)
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.TUNPersist {
+		t.Error("tun_persist = true must parse onto Config.TUNPersist")
+	}
+}
+
 func TestLoadValidConcentrator(t *testing.T) {
 	path := writeConfig(t, 0o600, fill(concentratorConfig))
 	c, err := Load(path)

@@ -27,6 +27,18 @@ psk  = "<base64 32-byte PSK>"      # REQUIRED. 32 raw bytes, base64. SAME value 
                                    #   both ends; keys the PSK-HMAC that
                                    #   authenticates outer PROBE/CONTROL frames.
                                    #   Generate: head -c 32 /dev/urandom | base64
+# tun_persist = false              # OPTIONAL, DEFAULT false. When false the TUN
+                                   #   wanbond0 is destroyed on daemon stop, so its
+                                   #   addresses/routes/rules are dropped on every
+                                   #   restart (today's teardown semantics). Set
+                                   #   true and the daemon issues TUNSETPERSIST on
+                                   #   start: wanbond0 SURVIVES a daemon restart
+                                   #   with the SAME ifindex, so operator-owned
+                                   #   addressing persists untouched. NOTE (D39): a
+                                   #   persistent device STILL needs the
+                                   #   NetworkManager unmanaged-devices drop-in on
+                                   #   NM hosts — persistence keeps the link, it
+                                   #   does not exempt it from NM.
 
 # ── paths: one [[paths]] block per WAN uplink; at least one is REQUIRED ───────
 [[paths]]

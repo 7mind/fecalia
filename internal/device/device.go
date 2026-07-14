@@ -216,7 +216,18 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: bring interface up: %w", err)
 	}
-	clg.Info("interface up", "interface", name)
+	// Apply the TUN persistence policy (I7, Q38) BEFORE the amnezia single-engine
+	// guard in up(): with tun_persist=true the kernel keeps wanbond0 (and its
+	// operator-owned addresses/routes) across a daemon restart; with the default
+	// false it explicitly CLEARS the flag so the device disappears on Close exactly
+	// as before. This composes with the ifUp above and does not touch the reload or
+	// restart-on-failure paths — a reload never re-creates the TUN, and a persistent
+	// device is simply re-adopted by name on the next Up (see setTUNPersist).
+	if err := setTUNPersist(tunDev, cfg.TUNPersist); err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: set TUN persistence: %w", err)
+	}
+	clg.Info("interface up", "interface", name, "tun_persist", cfg.TUNPersist)
 	// The DNS re-resolution transport is the one the (validated) [dns] block selects. It is passed
 	// as a factory (not eagerly constructed) so up() builds it AT MOST ONCE and ONLY when some peer
 	// carries a hostname endpoint spec — a config with zero hostname specs never constructs a
