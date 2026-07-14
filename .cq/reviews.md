@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 94
+  item: 95
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -996,3 +996,16 @@ archives:
 - ledgerRefs: ["tasks:T89","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-021726-a68d4cd936a9aeaec.md",".cq/logs/20260714-021726-a3a44fe24270c9538.md",".cq/logs/20260714-022112-a366f6435dd6b4681.md",".cq/logs/20260714-022112-a4a8424b945a1df11.md"]
 - rawLogs: [".cq/logs/raw/20260714-021726-a68d4cd936a9aeaec.jsonl",".cq/logs/raw/20260714-021726-a3a44fe24270c9538.jsonl",".cq/logs/raw/20260714-022112-a366f6435dd6b4681.jsonl",".cq/logs/raw/20260714-022112-a4a8424b945a1df11.jsonl"]
+
+### R95 — go-ahead
+
+- createdAt: 2026-07-14T03:07:15.964Z
+- updatedAt: 2026-07-14T03:07:15.964Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T90 unanimous panel approve (round 1): [opus]+[fable] both approve. Test-only (internal/bind/concentrator_roam_test.go) locking the per-peer NAT/roaming discipline provided by the T88/T89 unbound-source gate + PROBE-only bindSourceToPeer. BOTH reviewers independently ran the decisive roam-specific mutation (relearn an already-bound peer's roam from unauthenticated DATA): T90 FAILS while T89 PASSES — proving T90 discriminates the already-bound-peer/new-source roam property T89 does not cover. A-resequencer isolation + D11 authenticated re-learn (view remote repoints to the new source) asserted; -race green. Note: D47 (no unbind path / address-only keying) remains open — T90 is behavior-locking, did not settle it."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T90","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-030657-a4a3590b837613332.md",".cq/logs/20260714-030657-aa1362bb37a2ee5d5.md"]
+- rawLogs: [".cq/logs/raw/20260714-030657-a4a3590b837613332.jsonl",".cq/logs/raw/20260714-030657-aa1362bb37a2ee5d5.jsonl"]

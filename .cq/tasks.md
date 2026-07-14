@@ -726,10 +726,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-022249-afa803909d4c484b6.md",".cq/logs/20260714-023944-a9fac7819e0cf8c3d.md",".cq/logs/20260714-023944-ac7d0d623c6361bff.md",".cq/logs/20260714-023944-a9e9d35db0d94988e.md",".cq/logs/20260714-024545-a417b8e13ab58fa54.md",".cq/logs/20260714-024545-a534c16da5521baae.md"]
 - rawLogs: [".cq/logs/raw/20260714-022249-afa803909d4c484b6.jsonl",".cq/logs/raw/20260714-023944-a9fac7819e0cf8c3d.jsonl",".cq/logs/raw/20260714-023944-ac7d0d623c6361bff.jsonl",".cq/logs/raw/20260714-023944-a9e9d35db0d94988e.jsonl",".cq/logs/raw/20260714-024545-a417b8e13ab58fa54.jsonl",".cq/logs/raw/20260714-024545-a534c16da5521baae.jsonl"]
 
-### T75 — planned
+### T75 — wip
 
 - createdAt: 2026-07-13T21:55:46.889Z
-- updatedAt: 2026-07-13T21:55:46.889Z
+- updatedAt: 2026-07-14T02:48:36.658Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add cross-controller -race interleave tests: re-resolution vs hub-failover coordination"
@@ -968,10 +968,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-020133-a60e7a44eaa038405.md",".cq/logs/20260714-021726-a68d4cd936a9aeaec.md",".cq/logs/20260714-021726-a3a44fe24270c9538.md",".cq/logs/20260714-022112-a366f6435dd6b4681.md",".cq/logs/20260714-022112-a4a8424b945a1df11.md"]
 - rawLogs: [".cq/logs/raw/20260714-020133-a60e7a44eaa038405.jsonl",".cq/logs/raw/20260714-021726-a68d4cd936a9aeaec.jsonl",".cq/logs/raw/20260714-021726-a3a44fe24270c9538.jsonl",".cq/logs/raw/20260714-022112-a366f6435dd6b4681.jsonl",".cq/logs/raw/20260714-022112-a4a8424b945a1df11.jsonl"]
 
-### T90 — planned
+### T90 — done
 
 - createdAt: 2026-07-13T22:28:29.503Z
-- updatedAt: 2026-07-13T22:28:29.503Z
+- updatedAt: 2026-07-14T03:07:21.650Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Re-bind a roamed source to its peer on a fresh authenticated PROBE
@@ -980,11 +980,15 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T89"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 8c92b95
+- completion: "Per-peer roam re-bind pinned (test-only, TestConcentratorRoamRebindsPeerOnAuthenticatedProbe in internal/bind): a bound peer B whose traffic appears from a NEW source has that source's DATA dropped until a fresh authenticated PROBE under B's psk re-binds it to the SAME peer (view remote repoints to the new source); peer A's resequencer never observes B's frames. The behavior is provided by the T88/T89 unbound-source gate + PROBE-only binding; T90 locks it. Unanimous 1-round panel approve, mutation-verified roam-specific (fails where T89 passes). ff-merged to main."
+- sessionLogs: [".cq/logs/20260714-025518-ab151251d328f46db.md",".cq/logs/20260714-030657-a4a3590b837613332.md",".cq/logs/20260714-030657-aa1362bb37a2ee5d5.md"]
+- rawLogs: [".cq/logs/raw/20260714-025518-ab151251d328f46db.jsonl",".cq/logs/raw/20260714-030657-a4a3590b837613332.jsonl",".cq/logs/raw/20260714-030657-aa1362bb37a2ee5d5.jsonl"]
 
-### T91 — planned
+### T91 — wip
 
 - createdAt: 2026-07-13T22:28:36.021Z
-- updatedAt: 2026-07-13T22:28:36.021Z
+- updatedAt: 2026-07-14T02:48:35.164Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Cap provisional unbound-source demux state; lazy peerState instantiation and dead-peer teardown
@@ -1104,12 +1108,12 @@ archives:
 
 ## M30
 
-### T100 — planned
+### T100 — wip
 
 - createdAt: 2026-07-13T23:22:25.158Z
-- updatedAt: 2026-07-13T23:22:25.158Z
+- updatedAt: 2026-07-14T02:48:38.154Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Bring the wanbond0 link UP after TUN creation (I1)
 - description: In device.Up (internal/device/device.go), after the TUN is created, set IFF_UP on the interface (SIOCSIFFLAGS ioctl via golang.org/x/sys — no new dependency; the repo already targets Linux, see internal/bind/pathsock_linux.go). Addressing stays operator-owned (do NOT assign addresses). Teardown behavior unchanged. Log an INFO 'interface up' with the interface name. Removes the silent-dead-tunnel footgun where writes to a DOWN tun yield EIO (relates D39/NM flush; not a duplicate of the D39 fix).
 - acceptance: New netns e2e test (go test -tags e2e ./test/e2e) asserts wanbond0 reports UP immediately after device.Up on both roles with NO external `ip link set up`, and that the daemon assigns no address. go test ./... green; no regression in existing device/reload tests.
@@ -1152,12 +1156,12 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
 
-### T104 — planned
+### T104 — wip
 
 - createdAt: 2026-07-13T23:23:09.581Z
-- updatedAt: 2026-07-13T23:23:09.581Z
+- updatedAt: 2026-07-14T02:48:39.505Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Netns verification: standby-path liveness is bidirectional (I8)"
 - description: "Per Q39, an in-goal verification task (not a refactor): add a netns e2e test that (a) asserts an idle 'up' standby path actually TRANSMITS — its tx byte counter (wanbond_path_tx_bytes_total / PathSnapshots) grows from probe emission while the primary carries data (the production observation was path_up{5g}=1 with tx{5g}=0); and (b) with the standby's EGRESS direction blocked one-way (nft/iptables drop in the netns fixture), asserts the standby transitions DOWN and is not selected by failover. If either check exposes a real fault (liveness proving only receive), commit the failing test as the repro and refile the finding as a defect linked to G6 — the fix is then out of this goal's scope."
 - acceptance: "New -tags e2e test exists and runs in the netns tier: passes proving bidirectional liveness, OR fails with the failure documented and refiled as a defects item linked goals:G6 capturing the reproduction (test kept as repro). Either outcome satisfies the task per Q39."
