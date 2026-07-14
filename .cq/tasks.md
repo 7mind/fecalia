@@ -1742,10 +1742,10 @@ archives:
 - dependsOn: ["T136"]
 - ledgerRefs: ["goals:G11","defects:D51"]
 
-### T138 — planned
+### T138 — done
 
 - createdAt: 2026-07-14T10:09:39.058Z
-- updatedAt: 2026-07-14T10:09:39.058Z
+- updatedAt: 2026-07-14T11:19:58.376Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Refresh the four stale 'not yet consumed' doc-comments in internal/config/config.go (D57, D60)

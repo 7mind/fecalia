@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 141
+  item: 144
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1617,6 +1617,45 @@ archives:
 - ledgerRefs: ["tasks:T136","goals:G11","defects:D45","defects:D54"]
 - sessionLogs: [".cq/logs/20260714-105323-a5498c8846b8634b0.md",".cq/logs/20260714-105323-afb3dce8711b40b84.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-a5498c8846b8634b0.jsonl",".cq/logs/raw/20260714-105323-afb3dce8711b40b84.jsonl"]
+
+### R142 — go-ahead
+
+- createdAt: 2026-07-14T11:19:56.886Z
+- updatedAt: 2026-07-14T11:19:56.886Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T138 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). Comment-only refresh of the 4 stale config.go doc-comments (D57+D60). Acceptance grep returns nothing (all 4 stale phrases gone); both reviewers confirmed the diff is STRICTLY comment-only (declarations unchanged) and every replacement names a REAL wired consumer, grep-verified against source: cfg.PeerIdentities() (config.go:721) called by device.go:293; per-peer PSKs flow NewMultipath/AddConcentratorPeer → peerBySource PROBE-MAC-authenticated demux (multipath.go:440/1435); BoundPeerNames/PeerSnapshot.Name (multipath.go:2751/2877) → metrics 'peer' label (metrics.go:20); selectDeviceBinds (pathsock.go:128-136) switches on BindMode + AddPath honors forced BindModeDevice (multipath.go:2452) — confirming the deleted D60 sentences were false. go build + just lint green. LANDED on main at 0cd6d1c."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T138","goals:G11","defects:D57","defects:D60"]
+- sessionLogs: [".cq/logs/20260714-110600-a49e94b205e22d0c4.md",".cq/logs/20260714-110600-af680b3f433ebeead.md"]
+- rawLogs: [".cq/logs/raw/20260714-110600-a49e94b205e22d0c4.jsonl",".cq/logs/raw/20260714-110600-af680b3f433ebeead.jsonl"]
+
+### R143 — revise
+
+- createdAt: 2026-07-14T11:20:08.409Z
+- updatedAt: 2026-07-14T11:20:08.409Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T137 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). Both reviewers confirmed the CORE fix is correct and green: the 9096 collision (pacing_test.go vs p3_fec_test.go) is resolved by moving pacing_test.go's metrics listener to :9103; a fresh grep shows all 9 e2e metrics ports unique (9095-9103); the netns.go port registry comment matches every constant; 9103 is unused elsewhere; e2e-test-only; go vet -tags e2e + golangci-lint(e2e) + go test ./... green. The REVISE is a doc-consistency gap fable pinned: the port move FALSIFIED two PRE-EXISTING neighbor port-inventory comments that the diff did not update."
+- criticism: ["[fable] The pacing→9103 move left two now-FALSE port-inventory comments in the tree: test/e2e/tolerant_startup_test.go:30 still says '(see test/e2e/p2/p3/p4/pacing for 9095-97)' and test/e2e/hub_failover_test.go:81 still says '(p2/p3/p4/pacing/tolerant use 9095-9098)' — both were true when pacing bound 9096 and are false now that pacing binds 9103. Since the task's whole purpose is a drift-PROOF port registry, leaving two contradicting inventories defeats it. FIX: update both comments — either drop pacing from those ad-hoc lists or replace them with a pointer to the netns.go registry — then re-run `go vet -tags e2e ./test/e2e/...`."]
+- new_questions: []
+- ledgerRefs: ["tasks:T137","goals:G11","defects:D51"]
+- sessionLogs: [".cq/logs/20260714-110600-ab0af2aadb32069b9.md",".cq/logs/20260714-110600-a188d13d342d1aff9.md"]
+- rawLogs: [".cq/logs/raw/20260714-110600-ab0af2aadb32069b9.jsonl",".cq/logs/raw/20260714-110600-a188d13d342d1aff9.jsonl"]
+
+### R144 — revise
+
+- createdAt: 2026-07-14T11:20:20.652Z
+- updatedAt: 2026-07-14T11:20:20.652Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T140 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). Both reviewers verified the CORE reconciliation is correct: on Linux ≥5.7 SO_BINDTODEVICE needs NO capability for a not-yet-bound socket (kernel commit c427bfec18f21, v5.7, WebSearch-confirmed by opus AND independently by fable via a local zero-caps probe on kernel 7.0.8 succeeding); the worker's o3 probe (uid nobody, zero caps, kernel 6.17) is STRONGER than the CAP_NET_ADMIN-only bar; the diff is comment/docs-only with CapabilityBoundingSet unchanged in both units; the >=5.7 rule is stated across pathsock_linux.go + both units + docs/install.md with the EPERM→source-IP fallback; build/vet/test/lint green. The REVISE is a residual in-scope inconsistency fable caught: one CAP_NET_RAW surface the task text explicitly names ('any other CAP_NET_RAW mention in internal/bind') was left self-contradicting."
+- criticism: ["[fable] internal/bind/pathsock.go:31-33 — the diff RELOCATED the pre-existing parenthetical '(the daemon runs privileged, but the unit tests bind loopback unprivileged)' INSIDE the new 'on Linux <5.7, SO_BINDTODEVICE needs CAP_NET_RAW' clause, which now IMPLIES the daemon satisfies that pre-5.7 CAP_NET_RAW requirement. But the shipped units grant only CAP_NET_ADMIN (NOT CAP_NET_RAW), and pathsock_linux.go + docs/install.md:879 state the daemon itself EPERMs and falls back to source-IP binding on pre-5.7 kernels. This resurrects, in miniature, the exact pathsock-comment-vs-units disagreement D40 exists to eliminate. FIX: reword the parenthetical so it does NOT suggest the daemon holds CAP_NET_RAW pre-5.7 (e.g. note the units grant only CAP_NET_ADMIN, so a pre-5.7 daemon also takes the source-IP fallback; unit tests bind loopback unprivileged as well). Re-run `grep -rn CAP_NET_RAW internal/ packaging/ docs/` to confirm all surfaces agree."]
+- new_questions: []
+- ledgerRefs: ["tasks:T140","goals:G11","defects:D40"]
+- sessionLogs: [".cq/logs/20260714-110600-aa89c285efbeaba6e.md",".cq/logs/20260714-110600-a1757d0d469487eb3.md"]
+- rawLogs: [".cq/logs/raw/20260714-110600-aa89c285efbeaba6e.jsonl",".cq/logs/raw/20260714-110600-a1757d0d469487eb3.jsonl"]
 
 ## M45
 
