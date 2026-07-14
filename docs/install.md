@@ -642,6 +642,40 @@ systemctl enable --now wanbond-edge      # or wanbond-concentrator
   standard hardening. If you set `wireguard.listen_port` below 1024, add
   `CAP_NET_BIND_SERVICE` to the bounding set.
 
+### NetworkManager unmanaged-devices drop-in
+
+On systems running **NetworkManager** (the default on RPi OS, Debian, and Ubuntu
+desktop), NetworkManager monitors the `wanbond0` interface for link changes and
+automatically flushes any configured IP addresses on link-up, destroying the
+tunnel routing without operator action. This failure mode (D39, D5) is prevented
+by marking `wanbond0` as an unmanaged device in NetworkManager's configuration.
+
+Deploy the shipped drop-in:
+
+```sh
+cp packaging/networkmanager/99-wanbond-unmanaged.conf /etc/NetworkManager/conf.d/
+```
+
+Then reload NetworkManager to apply the change:
+
+```sh
+nmcli general reload
+# or
+sudo systemctl reload NetworkManager
+```
+
+Verify the interface is marked unmanaged:
+
+```sh
+nmcli device show wanbond0 | grep STATE
+```
+
+The output should show `STATE: unmanaged`.
+
+If your edge box runs **systemd-networkd** instead (or alongside NetworkManager),
+you do not need this drop-in — skip this subsection and proceed to "Interface
+addressing and routing" below.
+
 ### Interface addressing and routing (operator-owned)
 
 The daemon creates the TUN interface (`wanbond0`) and brings it
