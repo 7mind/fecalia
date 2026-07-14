@@ -154,6 +154,16 @@ type Resequencer struct {
 	pendingLow       bool
 	pendingLowAnchor uint64
 
+	// pendingLowDrops counts consecutive SUSPECT drops taken while the low-anchor gate
+	// is armed. It BOUNDS the gate so it can never permanently blackhole (round-3 FIX 3,
+	// review R150): at anchor == window+2 the only in-budget re-anchor frame is seq 1, so
+	// if that lone wrapped-init frame is LOST every later new-boot frame fails
+	// `anchor - seq > window` and would be SUSPECT-dropped forever. After O(window) such
+	// drops the gate FALLS BACK to a plain unpin (started=false), which self-heals via the
+	// existing resync-corroboration path. Reset to 0 whenever the gate is (re-)armed or
+	// cleared.
+	pendingLowDrops uint64
+
 	// Diagnostics (read via the accessors; useful for the bounded-memory asserts).
 	highWater   int    // max occupied slots ever held
 	dropDup     uint64 // frames dropped as duplicates
@@ -243,6 +253,21 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.pendingLow {
+		// A low-anchor re-baseline (peer restart) is armed: a parity-RECOVERED frame is
+		// by definition part of the PRE-restart stream — the gate is up precisely because
+		// a restart re-anchor is pending, and a frame recoverable from the old boot's
+		// parity belongs to that old boot. Seating it would place a stale old-boot cell in
+		// [anchor, anchor+window) that keeps the head-of-line timeout live and lets
+		// expire() jump `next` high past the restarted stream (round-3 FIX 4b, review
+		// R150). ObserveRecovered otherwise bypasses admit entirely, so without this it
+		// never consults the gate. Drop it — FEC recovery must not seat state while the
+		// gate arbitrates the restart. Returns false so the /metrics recovered counter
+		// stays honest (nothing was delivered).
+		r.dropSuspect++
+		return false
+	}
+
 	if !r.started {
 		r.started = true
 		r.next = seq
@@ -304,9 +329,36 @@ func (r *Resequencer) admit(seq uint64) bool {
 		// anchor would underflow the unsigned subtraction and spuriously re-anchor.
 		if seq < r.pendingLowAnchor && r.pendingLowAnchor-seq > r.window {
 			r.pendingLow = false
+			r.pendingLowDrops = 0
 			r.resyncReset()
+			// CLEAR the ring/buf on re-anchor (mirror resync, round-3 FIX 4a, review
+			// R150): a stale occupied cell left from the OLD boot — e.g. a parity-
+			// recovered old-boot frame seated in [anchor, anchor+window) — must NOT
+			// survive the re-anchor to next=seq. If it did, its cell would keep the
+			// head-of-line timeout live and expire() would jump `next` high past the
+			// restarted stream, suspect-dropping the new boot and delivering the stale
+			// frame; a surviving occupied cell also corrupts buf accounting on the next
+			// same-index placement (occupied-cell overwrite still does buf++).
+			for i := range r.ring {
+				r.ring[i] = slot{}
+			}
+			r.buf = 0
+			r.waiting = false
 			r.next = seq
 			return true
+		}
+		// BOUND the gate so a LOST re-anchor init frame can never permanently blackhole
+		// the restarted stream (round-3 FIX 3, review R150). After O(window) consecutive
+		// pendingLow suspect-drops, FALL BACK to a plain unpin (started=false): the next
+		// Observe re-anchors `next` and the existing resync-corroboration guard self-heals
+		// thereafter, exactly as the D32 hub-failover Rebaseline does — bounded loss
+		// instead of a permanent blackhole.
+		r.pendingLowDrops++
+		if r.pendingLowDrops > r.window {
+			r.pendingLow = false
+			r.pendingLowDrops = 0
+			r.started = false
+			r.resyncReset()
 		}
 		r.dropSuspect++
 		return false
@@ -588,6 +640,7 @@ func (r *Resequencer) Rebaseline() {
 	// standby's stream, violating this method's documented "next Observe re-anchors
 	// next" postcondition. Clearing it restores the plain unpin-and-trust-next path.
 	r.pendingLow = false
+	r.pendingLowDrops = 0
 	r.resyncReset()
 	r.rebaselines++
 }
@@ -621,6 +674,12 @@ func (r *Resequencer) Rebaseline() {
 // unpin (started=false), re-anchoring on the next frame exactly as the D32
 // Rebaseline does — bounded, self-healing loss instead of a blackhole. Takes r.mu;
 // the caller must NOT hold it.
+//
+// Even a correctly-armed gate (anchor >= window+2) is BOUNDED so LOSS cannot blackhole
+// it (round-3 FIX 3): the sole in-budget re-anchor frame at anchor == window+2 is
+// outer-seq 1, and if that lone init frame is lost every later new-boot frame fails the
+// predicate; admit therefore counts consecutive pending-low suspect-drops and, after
+// O(window) of them, falls back to a plain unpin that self-heals via resync corroboration.
 func (r *Resequencer) RebaselineToLow() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -641,6 +700,7 @@ func (r *Resequencer) RebaselineToLow() {
 		// SUSPECT-drop until the restarted low-seq re-anchors it.
 		r.pendingLow = true
 		r.pendingLowAnchor = r.next
+		r.pendingLowDrops = 0
 	default:
 		// UNSTARTED ring, or a small release point (next <= window+1) where a low-anchor
 		// gate would be UNSATISFIABLE and permanently blackhole the restarted stream.

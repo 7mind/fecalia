@@ -454,7 +454,17 @@ crash-loop) it falls back to the plain unpin, which self-heals; and (2) a subseq
 plain `Rebaseline` (a D32 hub failover) *clears* any still-pending low-anchor, so the
 fail-back stream is not re-classified against a now-stale anchor. Both re-baselines are
 sound because a hub switch and an authenticated epoch change are **trusted control
-events**, not forgeable wire frames.
+events**, not forgeable wire frames. Two further rules keep the gate from blackholing
+under *loss* (D36's own premise): (3) the gate is **bounded** — the sole in-budget
+re-anchor frame at the tightest armed anchor (`window+2`) is outer-seq 1, and if that
+lone wrapped-init frame is *lost* every later new-boot frame fails `anchor - seq > window`
+and would suspect-drop forever, so after O(window) consecutive pending-low drops the gate
+falls back to the plain unpin and self-heals via the resync-corroboration path; and (4)
+FEC repair must not subvert the gate — `ObserveRecovered` normally bypasses `admit`, so a
+parity-recovered *old-boot* frame while the gate is armed is by definition pre-restart and
+is **dropped** (never seated), and the low-anchor re-anchor **clears the ring** (like
+`resync`) so no stale occupied cell survives to keep a head-of-line timeout live and jump
+`next` high past the restarted stream.
 
 ### FEC — `internal/fec` + `internal/adaptivefec`
 

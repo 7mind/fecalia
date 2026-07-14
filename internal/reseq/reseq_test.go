@@ -969,3 +969,168 @@ func TestRebaselineToLowThenRebaselineDelivers(t *testing.T) {
 		t.Fatalf("post-Rebaseline fail-back stream SUSPECT-dropped %d frames; want 0 (stale pendingLow not cleared)", s.DroppedSuspect)
 	}
 }
+
+// isContiguousAscending reports whether s is a strictly +1 ascending run.
+func isContiguousAscending(s []uint64) bool {
+	for i := 1; i < len(s); i++ {
+		if s[i] != s[i-1]+1 {
+			return false
+		}
+	}
+	return true
+}
+
+// TestRebaselineToLowPlainUnpinAtWindowPlusOne is the round-3 FIX-3 lower boundary
+// (review R150). At release point next == window+1 the low-anchor gate is NOT armed:
+// the re-anchor predicate `seq < anchor && anchor - seq > window` requires
+// anchor >= window+2 to admit any positive seq, so at anchor == window+1 it is
+// unsatisfiable and arming would blackhole. RebaselineToLow must fall back to a PLAIN
+// unpin here, so the restarted stream re-anchors on its first frame with no suspect
+// drops — exactly the D32 hub-failover behaviour.
+func TestRebaselineToLowPlainUnpinAtWindowPlusOne(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Advance the release point to EXACTLY window+1 (observe seqs 0..window, i.e.
+	// window+1 frames, leaves next == window+1).
+	for s := uint64(0); s <= window; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r) // next == window+1
+
+	r.RebaselineToLow()
+
+	// Restarted new-boot stream (outer-seq near 1): the plain unpin re-anchors on the
+	// first frame and the stream DELIVERS with zero suspect drops (gate never armed).
+	var want []uint64
+	for s := uint64(1); s <= 6; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+		want = append(want, s)
+	}
+	if got := drain(r); !equalSeqs(got, want) {
+		t.Fatalf("window+1 anchor did not take the plain-unpin path: delivered %v, want %v", got, want)
+	}
+	if s := r.Stats(); s.DroppedSuspect != 0 {
+		t.Fatalf("window+1 anchor armed the gate (SUSPECT-dropped %d); want plain unpin, 0 drops", s.DroppedSuspect)
+	}
+}
+
+// TestRebaselineToLowArmedAtWindowPlusTwoSatisfiedBySeq1 is the round-3 FIX-3 upper
+// boundary (review R150). At release point next == window+2 the gate IS armed and its
+// SOLE in-budget re-anchor frame is seq 1 (anchor - 1 == window+1 > window). A stale
+// HIGH straggler is SUSPECT-dropped; seq 1 then re-anchors and the new boot delivers.
+// This pins the exact boundary the round-2 guard (arm only when next > window+1) opens.
+func TestRebaselineToLowArmedAtWindowPlusTwoSatisfiedBySeq1(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Advance to EXACTLY window+2 (observe seqs 0..window+1 == window+2 frames).
+	for s := uint64(0); s <= window+1; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r) // next == window+2
+
+	r.RebaselineToLow() // arms pendingLow at anchor == window+2
+
+	// A stale-high old-boot straggler must be SUSPECT-dropped, not re-pin next high.
+	const staleHigh = window + 5
+	r.Observe(staleHigh, payloadOf(staleHigh), testSrc)
+	if got := drain(r); len(got) != 0 {
+		t.Fatalf("stale-high straggler delivered %v at the window+2 boundary — gate not armed", got)
+	}
+
+	// seq 1 — the ONLY in-budget re-anchor at this boundary — re-anchors and delivers.
+	r.Observe(1, payloadOf(1), testSrc)
+	r.Observe(2, payloadOf(2), testSrc)
+	if got := drain(r); !equalSeqs(got, []uint64{1, 2}) {
+		t.Fatalf("seq 1 did not re-anchor the window+2 gate: delivered %v, want [1 2]", got)
+	}
+}
+
+// TestRebaselineToLowGateRecoversWhenInitFrameLost is the round-3 FIX-3 core regression
+// (fable probe, reproduced 0/499; review R150). At anchor == window+2 the only in-budget
+// re-anchor frame is seq 1. If that lone wrapped-init frame is LOST — loss under
+// saturation is the D36 premise — every later new-boot frame fails `anchor - seq > window`
+// and, on the round-2 logic, is SUSPECT-dropped FOREVER (a permanent blackhole: 0/N
+// delivered). The bounded gate falls back to a plain unpin after O(window) drops, so the
+// new-boot stream self-heals and DELIVERS its tail instead of blackholing.
+func TestRebaselineToLowGateRecoversWhenInitFrameLost(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Advance to EXACTLY window+2 so the gate arms with seq 1 as the sole re-anchor.
+	for s := uint64(0); s <= window+1; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r) // next == window+2
+	r.RebaselineToLow()
+
+	// seq 1 is LOST. The restarted stream continues at 2,3,...,last. Each fails the
+	// re-anchor predicate and is SUSPECT-dropped until the bounded gate falls back.
+	const last = 3 * window
+	for s := uint64(2); s <= last; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	got := drain(r)
+
+	if len(got) == 0 {
+		t.Fatal("init frame lost blackholed the whole new-boot stream (0/N) — bounded gate did not fall back")
+	}
+	if !isContiguousAscending(got) {
+		t.Fatalf("recovered delivery is not a contiguous run: %v", got)
+	}
+	if got[len(got)-1] != last {
+		t.Fatalf("recovered stream did not catch up: last delivered %d, want %d", got[len(got)-1], last)
+	}
+	if got[0] <= 1 {
+		t.Fatalf("stream delivered from seq %d — the bounded gate should drop a run before falling back", got[0])
+	}
+	if s := r.Stats(); s.DroppedSuspect == 0 {
+		t.Fatal("expected the bounded gate to SUSPECT-drop a bounded run before self-healing; got 0")
+	}
+}
+
+// TestObserveRecoveredDroppedWhileGateArmed is the round-3 FIX-4 regression (fable probe,
+// reproduced next 2→210 Skipped:208; review R150). FEC ObserveRecovered is production-wired
+// to the SAME per-peer resequencer and otherwise bypasses the low-anchor gate, so a parity-
+// recovered OLD-boot frame in [anchor, anchor+window) would be PLACED while the gate is
+// armed; then the re-anchor (which did not clear the ring) leaves that stale cell live, and
+// expire() jumps next HIGH past the restarted stream, delivering a stale frame. The fix (a)
+// clears the ring on re-anchor and (b) DROPS recovered frames while the gate is armed. This
+// pins both: a recovered frame while armed is dropped and seats nothing, and the subsequent
+// low init re-anchors cleanly with no stale delivery and no high re-pin.
+func TestObserveRecoveredDroppedWhileGateArmed(t *testing.T) {
+	clk := newFakeClock()
+	const window = 64
+	r := reseq.New(window, time.Second, clk)
+
+	// Busy prior boot: next == 200, well past one window.
+	const priorHi = 200
+	for s := uint64(0); s < priorHi; s++ {
+		r.Observe(s, payloadOf(s), testSrc)
+	}
+	_ = drain(r)
+	r.RebaselineToLow() // arms pendingLow at 200
+
+	// A parity-recovered OLD-boot frame inside [anchor, anchor+window) arrives while armed.
+	// It must be DROPPED (not placed) and must seat NOTHING in the ring.
+	const staleRecovered = priorHi + 5
+	if placed := r.ObserveRecovered(staleRecovered, payloadOf(staleRecovered), testSrc); placed {
+		t.Fatal("recovered old-boot frame was PLACED while the low-anchor gate was armed")
+	}
+	if b := r.Buffered(); b != 0 {
+		t.Fatalf("recovered-while-armed seated %d cells; want 0 (gate must drop it)", b)
+	}
+
+	// The genuine restarted low init now re-anchors. Delivery must be the NEW-boot stream
+	// from seq 1 — never the stale recovered frame, and next must NOT have jumped high.
+	r.Observe(1, payloadOf(1), testSrc)
+	r.Observe(2, payloadOf(2), testSrc)
+	got := drain(r)
+	if !equalSeqs(got, []uint64{1, 2}) {
+		t.Fatalf("after a recovered-while-armed interleave the restart delivered %v, want [1 2] (stale re-pin/deliver)", got)
+	}
+}
