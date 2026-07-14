@@ -82,7 +82,14 @@ func TestPacingDerivedFromDeclaredBandwidth(t *testing.T) {
 // capacity/burst are preserved, so pacing continues to ship disabled and un-sized.
 func TestPacingDisabledLeavesDerivationInert(t *testing.T) {
 	// weighted policy, pacing left at its default (false), bandwidth still declared.
-	path := writeConfig(t, 0o600, withSched("\n[scheduler]\npolicy = \"weighted\"\n"))
+	// Bandwidths here (150/120 Mbit) are deliberately far above edgePacingConfig's
+	// 50/10 Mbit: with pacing off the synthetic default per_path_capacity_fps (10000)
+	// stands unchanged, and T142's engage-vs-bandwidth guard requires every declared
+	// path to sustain engage_fraction(0.9)*10000 = 9000 frames/s — 50/10 Mbit cannot
+	// (implied ~4166.7/833.3 fps), but 150/120 Mbit comfortably can (implied
+	// ~12500/10000 fps), so this fixture stays a config the guard accepts while still
+	// exercising "declared bandwidth + pacing off = inert derivation".
+	path := writeConfig(t, 0o600, fill(twoPathConfig("150Mbit", "45ms", "120Mbit", "30ms"))+"\n[scheduler]\npolicy = \"weighted\"\n")
 	c, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)

@@ -1100,6 +1100,50 @@ func (s SchedulerConfig) validate() error {
 	return nil
 }
 
+// validateWeightedEngageAgainstBandwidth is the Q52/Q53 hard-fail guard (Option 3,
+// scoped to the guard itself — per-path capacity auto-derive + BDP-sizing docs are
+// G2/Q20's scope, see docs/install.md §3a, not restated here). Under the weighted
+// policy, a path that declares link_bandwidth must be able to sustain the
+// aggregation engage threshold, or weighted aggregation can mathematically never
+// engage at line rate on that path — a misconfiguration that must fail fast at load
+// rather than silently capping the path below its declared capacity forever. It runs
+// AFTER normalize (deriveWeightedPacingFromBDP + SchedulerConfig.applyDefaults have
+// already produced the EFFECTIVE EngageFraction/PerPathCapacityFPS), and computes the
+// bandwidth-implied capacity with the SAME avg-wire-frame constant and math
+// SizePacingFromBDP uses (capacity_fps = bandwidth / (8 * defaultAvgWireFrameBytes)),
+// so the guard and the BDP derive can never disagree.
+//
+// With pacing ENABLED + declared bandwidth, deriveWeightedPacingFromBDP has already
+// sized PerPathCapacityFPS to the BOTTLENECK link's implied capacity (the raw
+// per_path_capacity_fps/pacing_burst_frames knobs are mutually exclusive with a
+// declared bandwidth there, config.go's deriveWeightedPacingFromBDP), so
+// EngageFraction <= 1 (enforced by SchedulerConfig.validate above) makes this guard
+// structurally unable to fire. It therefore chiefly bites when pacing is DISABLED
+// (the derive no-ops, leaving the synthetic defaultPerPathCapacityFPS=10000 standing
+// against a much slower declared link) or when the raw knobs are set explicitly
+// alongside a declared bandwidth.
+func (c *Config) validateWeightedEngageAgainstBandwidth() error {
+	if c.Scheduler.Policy != PolicyWeighted {
+		return nil
+	}
+	threshold := c.Scheduler.EngageFraction * c.Scheduler.PerPathCapacityFPS
+	for _, p := range c.Paths {
+		if p.LinkBandwidthBitsPerSec <= 0 {
+			continue
+		}
+		impliedCapacityFPS := p.LinkBandwidthBitsPerSec / (8 * defaultAvgWireFrameBytes)
+		if threshold > impliedCapacityFPS {
+			return fmt.Errorf("path %q: declared link_bandwidth %s implies a maximum sustained capacity of %.1f frames/s, "+
+				"but scheduler.engage_fraction(%g) * per_path_capacity_fps(%.1f) = %.1f frames/s exceeds it — "+
+				"weighted aggregation can mathematically never engage at line rate on this path; "+
+				"lower scheduler.per_path_capacity_fps, enable scheduler.pacing_enabled to auto-derive it from "+
+				"link_bandwidth, or correct link_bandwidth",
+				p.Name, p.LinkBandwidthRaw, impliedCapacityFPS, c.Scheduler.EngageFraction, c.Scheduler.PerPathCapacityFPS, threshold)
+		}
+	}
+	return nil
+}
+
 // peerLabel formats a wireguard peer identifier for a validation error: the
 // index always, plus the configured name in parens when set (a single-peer
 // config legitimately leaves Name empty; a multi-peer one requires it).
@@ -1310,6 +1354,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.Scheduler.validate(); err != nil {
+		return err
+	}
+	if err := c.validateWeightedEngageAgainstBandwidth(); err != nil {
 		return err
 	}
 	if err := c.FEC.validate(); err != nil {

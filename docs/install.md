@@ -843,6 +843,19 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   declared bandwidth is inert. When active they are **mutually exclusive** with
   the raw `scheduler.per_path_capacity_fps` / `pacing_burst_frames` knobs —
   declare link bandwidth *or* set the frame-slot knobs, not both.
+- **`link_bandwidth` vs. the aggregation engage threshold (weighted only).** When
+  `scheduler.policy = "weighted"`, every path that declares `link_bandwidth` is
+  checked against the (effective, post-default) engage threshold: `Load` FAILS
+  FAST if `scheduler.engage_fraction * scheduler.per_path_capacity_fps` exceeds
+  the bandwidth-implied capacity (`link_bandwidth / (8 * 1500 bytes)`,
+  frames/s) — i.e. aggregation could mathematically never engage on that path
+  at line rate. With `pacing_enabled = true` and a declared bandwidth this can
+  never fire (§3a auto-derives `per_path_capacity_fps` from the same
+  bandwidth); it chiefly bites with pacing **disabled** (the synthetic default
+  `per_path_capacity_fps = 10000` left standing against a much slower declared
+  link) or with the raw knobs set explicitly. Fix by lowering
+  `per_path_capacity_fps`, enabling `pacing_enabled` to auto-derive it (see
+  §3a), or correcting `link_bandwidth`.
 - **scheduler off-unless-present.** No `[scheduler]` block ⇒ `active-backup` and
   every weighted knob ignored. Under `weighted`, omitted knobs take the defaults
   shown; the hysteresis band requires `disengage_fraction < engage_fraction`.
