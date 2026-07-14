@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 115
+  item: 116
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1102,6 +1102,19 @@ archives:
 - ledgerRefs: ["tasks:T102","goals:G6"]
 - sessionLogs: [".cq/logs/20260714-061135-a8a45233ae279d4cd.md",".cq/logs/20260714-061135-a0b85a40cc20e154c.md"]
 - rawLogs: [".cq/logs/raw/20260714-061135-a8a45233ae279d4cd.jsonl",".cq/logs/raw/20260714-061135-a0b85a40cc20e154c.jsonl"]
+
+### R116 — go-ahead
+
+- createdAt: 2026-07-14T06:42:34.546Z
+- updatedAt: 2026-07-14T06:42:34.546Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T103 unanimous panel approve (round 1): [opus]+[fable] both approve. Downgrades the startup no-healthy-path ERROR spam during the liveness warmup (I4). Exported bind.ErrNoHealthyPath + added a sticky, race-free Multipath.EverHadLivePath() latch (atomic.Bool, Store(true) only) set at the SOLE Down→Up transition site (dispatchInbound's HandleEcho echo branch → RecordEcho → transition(StateUp)). engineLogger now takes an everHadLivePath func() bool and, before the first path-up, COALESCES every ErrNoHealthyPath-wrapping Errorf record into exactly ONE INFO 'waiting for path liveness' via a warmupInfoLogged atomic CAS (detection is errors.Is on the Errorf args vs the exported sentinel — NOT string-match; the engine passes the raw bind error unwrapped through SendBuffers→Errorf, confirmed in amneziawg-go v1.0.4); after first path-up the same error logs at ERROR. Unrelated engine errors still log at their normal level. BOTH reviewers independently mutation-verified in isolated copies: gate removed → pre-up ERRORs; once-latch removed → INFO-per-record; everUp never set → sticky test fails. Both engineLogger callers updated (production plumbs the real mpBind.EverHadLivePath). -race + all-tags gate green. Rebased onto current main (gate re-run green) and ff-merged as 445c332. [fable]'s lint-at-base defect is a DUPLICATE of D45."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T103","goals:G6","defects:D45"]
+- sessionLogs: [".cq/logs/20260714-064150-a384714613befbd9b.md",".cq/logs/20260714-064150-a6746d623c2e7e8c7.md"]
+- rawLogs: [".cq/logs/raw/20260714-064150-a384714613befbd9b.jsonl",".cq/logs/raw/20260714-064150-a6746d623c2e7e8c7.jsonl"]
 
 ## M31
 

@@ -1196,10 +1196,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-060518-a116fca10b59541c0.md",".cq/logs/20260714-061135-a8a45233ae279d4cd.md",".cq/logs/20260714-061135-a0b85a40cc20e154c.md"]
 - rawLogs: [".cq/logs/raw/20260714-060518-a116fca10b59541c0.jsonl",".cq/logs/raw/20260714-061135-a8a45233ae279d4cd.jsonl",".cq/logs/raw/20260714-061135-a0b85a40cc20e154c.jsonl"]
 
-### T103 — wip
+### T103 — done
 
 - createdAt: 2026-07-13T23:22:58.901Z
-- updatedAt: 2026-07-14T06:22:41.289Z
+- updatedAt: 2026-07-14T06:42:42.084Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Downgrade the startup no-healthy-path ERROR spam during the liveness warmup (I4)
@@ -1207,6 +1207,10 @@ archives:
 - acceptance: "Unit test: no-healthy-path records before first path-up yield exactly one INFO 'waiting for path liveness' and zero ERRORs; the same record after a path has been up logs at ERROR. Relates D37 (the wasted-first-init defect stays investigate-flow-owned; this only fixes log severity). go test ./... green; no spurious ERROR on a normal start in the netns e2e logs."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 445c332
+- completion: "Startup no-healthy-path ERROR spam downgraded to a coalesced warmup INFO (I4): exported bind.ErrNoHealthyPath + a sticky race-free Multipath.EverHadLivePath() latch (atomic.Bool set at the sole Down→Up site — dispatchInbound's HandleEcho echo branch). engineLogger consults it: before the FIRST path-up it coalesces every ErrNoHealthyPath-wrapping Errorf into exactly ONE INFO 'waiting for path liveness' (via a warmupInfoLogged atomic CAS; detection is errors.Is on the Errorf args vs the sentinel, robust to wording); after first path-up the same error logs ERROR. Unrelated engine errors still log at their normal level. Diagnoses the D37 symptom (wasted first-init spam) at log-severity level only — the wasted-first-init defect stays investigate-flow-owned. All mechanisms mutation-verified by BOTH reviewers (gate/once-latch/never-set-latch). -race + all-tags gate green. Unanimous 1-round panel approve; rebased past T95/T96 and ff-merged as 445c332."
+- sessionLogs: [".cq/logs/20260714-063350-ac4b4116995048189.md",".cq/logs/20260714-064150-a384714613befbd9b.md",".cq/logs/20260714-064150-a6746d623c2e7e8c7.md"]
+- rawLogs: [".cq/logs/raw/20260714-063350-ac4b4116995048189.jsonl",".cq/logs/raw/20260714-064150-a384714613befbd9b.jsonl",".cq/logs/raw/20260714-064150-a6746d623c2e7e8c7.jsonl"]
 
 ### T104 — done
 
