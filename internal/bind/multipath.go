@@ -502,6 +502,18 @@ type Multipath struct {
 	// (ErrNoHealthyPath) to a single coalesced INFO line until the first path comes up,
 	// then lets it log at ERROR (a real outage) from then on.
 	everUp atomic.Bool
+
+	// onFirstPathUp is the optional injectable one-shot callback (D37 detection seam):
+	// invoked EXACTLY ONCE, off the receive hot path, on the everUp latch's false->true
+	// edge — the SAME moment EverHadLivePath starts reporting true. It keeps the bind
+	// WG-unaware: dispatchInbound invokes an opaque func() rather than importing
+	// anything from the device/engine layer, so the device-layer consumer (the
+	// dependent task) wires whatever it needs (e.g. nudging the engine) through this
+	// closure. nil (the default, set by NewMultipath) means "no callback" — dispatchInbound
+	// checks for nil before invoking it, so an unset callback never panics. Set via
+	// SetOnFirstPathUp; read lock-free (atomic.Pointer) so the receive hot path never
+	// blocks on m.mu to check it.
+	onFirstPathUp atomic.Pointer[func()]
 }
 
 // compile-time proof that Multipath satisfies the engine's Bind contract.
@@ -1610,6 +1622,19 @@ func (m *Multipath) EverHadLivePath() bool {
 	return m.everUp.Load()
 }
 
+// SetOnFirstPathUp registers the D37 detection-seam callback: fn is invoked EXACTLY
+// ONCE, off the receive hot path, the moment the everUp latch flips false->true (the
+// same edge EverHadLivePath's result flips on) — never again, including across a
+// later Down->Up->Down->Up cycle (everUp is sticky and never resets). Pass nil to
+// clear a previously-set callback (dispatchInbound is nil-safe either way). Callable
+// at any time — before or after Open, and safely from a goroutine concurrent with the
+// receive path, since it only replaces a lock-free pointer; if the edge already fired
+// before this call, fn is NOT retroactively invoked (it is a one-shot EDGE callback,
+// not a level-triggered "call me if already up" registration).
+func (m *Multipath) SetOnFirstPathUp(fn func()) {
+	m.onFirstPathUp.Store(&fn)
+}
+
 // dispatchInbound handles one already-decoded inbound frame on the resolved peer's view (ps):
 // it routes to that peer's resequencer / FEC decoder / reflector. The source demux in
 // demuxInbound has already selected ps so a shared socket serving many peers resequences each
@@ -1679,9 +1704,23 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				// Checked here rather than only in Liveness.transition so the bind-level
 				// predicate needs no wiring through NewProber/NewLiveness — it observes the
 				// SAME state HandleEcho just updated, at the one call site that can ever
-				// change Down->Up.
-				if ps.prober.State() == telemetry.StateUp {
-					m.everUp.Store(true)
+				// change Down->Up. The CAS (rather than a plain Store) is what makes the
+				// false->true transition observable EXACTLY ONCE: concurrent per-path
+				// receive goroutines (one per readLoop) can all reach this line around the
+				// SAME moment their own path first goes Up, and only the goroutine whose CAS
+				// actually flips false->true fires the D37 callback below — every other
+				// goroutine's CAS fails (everUp is already true) and falls through silently,
+				// including on a later Down->Up->Down->Up cycle (everUp never resets to
+				// false, so CAS never succeeds a second time).
+				if ps.prober.State() == telemetry.StateUp && m.everUp.CompareAndSwap(false, true) {
+					// Fire off the receive hot path: this call site holds no lock, but a
+					// dedicated goroutine keeps an arbitrarily slow or blocking callback from
+					// ever stalling the readLoop that just brought the path Up, and keeps
+					// every OTHER concurrent readLoop's dispatchInbound (on other paths/peers)
+					// un-delayed by it too.
+					if cb := m.onFirstPathUp.Load(); cb != nil && *cb != nil {
+						go (*cb)()
+					}
 				}
 			}
 			return
