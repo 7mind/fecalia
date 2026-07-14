@@ -23,6 +23,30 @@ type Config struct {
 	// active path cannot carry traffic while a timer runs. The asymmetry — instant
 	// failover, debounced failback — is what makes recovery non-thrashing.
 	FailbackAfter time.Duration
+
+	// Pacing turns per-path send-pacing on for active-backup (defect D65). With it
+	// off the scheduler is byte-for-byte its pre-pacing self: Pick returns the active
+	// index and no frame is ever shed. With it on, each Pick of a ClassData frame
+	// consumes one token from the ACTIVE path's OWN token bucket and returns PickPaced
+	// (not the active index) when that bucket is empty; ClassControl is pacing-EXEMPT
+	// (defect D22) — it egresses spending no token and is never shed. Shaping the
+	// single active uplink to its own drain rate is what stops it self-inflicting the
+	// ~1s Starlink bufferbloat this fix targets (D65 primary fix).
+	Pacing bool
+	// PerPathCapacities is the PER-PATH token-bucket refill rate in frame slots per
+	// second, index-aligned to the health/priority slice (index 0 = preferred
+	// primary). Because active-backup egresses on exactly ONE path at a time, each
+	// bucket is sized from ITS OWN link_bandwidth/link_rtt BDP — NOT the weighted
+	// scheduler's single shared BOTTLENECK scalar, which would cap a faster active
+	// primary at the slowest backup's declared rate (a Starlink primary paced to a 5G
+	// backup's rate), reimposing the artificial single-flow ceiling this fix removes.
+	// Required — each entry > 0, len == len(health) — when Pacing is on; ignored off.
+	PerPathCapacities []float64
+	// PacingBursts is the PER-PATH token-bucket burst (capacity) in frame slots,
+	// index-aligned to the health/priority slice (a freshly seeded bucket holds this
+	// many tokens). Required — each entry > 0, len == len(PerPathCapacities) ==
+	// len(health) — when Pacing is on; ignored when Pacing is off.
+	PacingBursts []float64
 }
 
 // ActiveBackup is the P1 send-side scheduler: a single ACTIVE path (the
@@ -49,6 +73,20 @@ type ActiveBackup struct {
 	active       int       // cached selection; -1 == no eligible path
 	pending      int       // failback candidate index; -1 == none pending
 	pendingSince time.Time // when the current failback candidate first became eligible
+
+	// Per-path send-pacing (defect D65): one caller-locked token bucket per path,
+	// index-aligned to health (index 0 = preferred primary). Active-backup egresses
+	// on exactly ONE path at a time, so each path carries its OWN BDP-sized bucket
+	// (PerPathCapacities[i]/PacingBursts[i]) — NOT the weighted scheduler's single
+	// shared-scalar pacer — so a fast active primary is never capped at the slowest
+	// backup's rate. Each pacer holds a single (n==1) bucket; Pick refills and
+	// consumes ONLY the active path's, and a failover path refills to full from its
+	// idle span. It is nil when pacing is disabled, in which case Pick is byte-for-
+	// byte its pre-pacing behaviour. Every access is under s.mu; the pacers hold no
+	// lock of their own. It is resized in AddPath/RemovePath/SetPaths so it stays
+	// index-aligned with health across membership changes (T30) and Pick never
+	// indexes out of range.
+	pacers []pacer
 }
 
 // compile-time proof ActiveBackup is a (dynamic) Scheduler.
@@ -76,14 +114,51 @@ func NewActiveBackup(health []PathHealth, cfg Config, clock telemetry.Clock, log
 	if logger == nil {
 		return nil, fmt.Errorf("sched: logger is required")
 	}
+	componentLog := logger.Component("sched")
+	pacers, err := newActiveBackupPacers(cfg, len(health), componentLog)
+	if err != nil {
+		return nil, err
+	}
 	return &ActiveBackup{
 		health:  health,
 		clock:   clock,
 		cfg:     cfg,
-		log:     logger.Component("sched"),
+		log:     componentLog,
 		active:  -1,
 		pending: -1,
+		pacers:  pacers,
 	}, nil
+}
+
+// newActiveBackupPacers validates the per-path pacing config and builds one full
+// (BurstFrames) single-bucket pacer per path, index-aligned to health. It returns a
+// nil slice when pacing is disabled (the buckets are then never consulted). When
+// pacing is on it fails fast unless there is exactly one capacity AND one burst per
+// path and every capacity/burst is > 0 — each path's bucket is sized from ITS OWN
+// BDP, so a missing or non-positive entry is a wiring error, not a soft default.
+func newActiveBackupPacers(cfg Config, n int, logger log.Logger) ([]pacer, error) {
+	if !cfg.Pacing {
+		return nil, nil
+	}
+	if len(cfg.PerPathCapacities) != n || len(cfg.PacingBursts) != n {
+		return nil, fmt.Errorf("sched: active-backup pacing needs one PerPathCapacity and one PacingBurst per path: got %d capacities, %d bursts, %d paths",
+			len(cfg.PerPathCapacities), len(cfg.PacingBursts), n)
+	}
+	pacers := make([]pacer, n)
+	for i := 0; i < n; i++ {
+		if cfg.PerPathCapacities[i] <= 0 {
+			return nil, fmt.Errorf("sched: active-backup PerPathCapacities[%d] must be > 0, got %g", i, cfg.PerPathCapacities[i])
+		}
+		if cfg.PacingBursts[i] <= 0 {
+			return nil, fmt.Errorf("sched: active-backup PacingBursts[%d] must be > 0, got %g", i, cfg.PacingBursts[i])
+		}
+		pacers[i] = newPacer(1, pacerConfig{
+			Pacing:      true,
+			CapacityFPS: cfg.PerPathCapacities[i],
+			BurstFrames: cfg.PacingBursts[i],
+		}, logger)
+	}
+	return pacers, nil
 }
 
 // AddPath admits h as a new lowest-priority path and returns its index (the new
@@ -98,6 +173,13 @@ func (s *ActiveBackup) AddPath(h PathHealth) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.health = append(s.health, h)
+	if s.cfg.Pacing {
+		// Keep the bucket slice index-aligned with health. A runtime-added path carries
+		// no declared per-path BDP, so its bucket inherits the current tail's pace (the
+		// tail is always present: pacing implies >=1 path). A full bucket, like every
+		// fresh pacer.
+		s.pacers = append(s.pacers, newPacer(1, s.pacers[len(s.pacers)-1].cfg, s.log))
+	}
 	return len(s.health) - 1, nil
 }
 
@@ -125,6 +207,11 @@ func (s *ActiveBackup) RemovePath(i int) error {
 		pendingH = s.health[s.pending]
 	}
 	s.health = append(s.health[:i], s.health[i+1:]...)
+	if s.cfg.Pacing {
+		// Drop path i's bucket, keeping the slice index-aligned with the compacted
+		// health list so a survivor's bucket stays with it and Pick never indexes stale.
+		s.pacers = append(s.pacers[:i], s.pacers[i+1:]...)
+	}
 	s.active = indexOfHealth(s.health, activeH)
 	s.pending = indexOfHealth(s.health, pendingH)
 	if s.pending < 0 {
@@ -152,10 +239,38 @@ func (s *ActiveBackup) SetPaths(health []PathHealth) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.health = append([]PathHealth(nil), health...)
+	if s.cfg.Pacing {
+		// SetPaths replaces s.health wholesale (a Close→Open durable-membership swap that
+		// may CHANGE the path count), so the bucket slice MUST be resized in lockstep —
+		// otherwise the next Pick indexes tokens[] out of range and panics. Rebuild n
+		// full, reseeded buckets: an overlapping index keeps its per-path pace; a
+		// grown-in path inherits the previous tail's pace (no declared BDP is available
+		// through this interface).
+		s.pacers = resizeActiveBackupPacers(s.pacers, len(health), s.log)
+	}
 	s.active = -1
 	s.pending = -1
 	s.pendingSince = time.Time{}
 	return nil
+}
+
+// resizeActiveBackupPacers rebuilds the per-path bucket slice to exactly n full,
+// reseeded single-bucket pacers (mirroring the membership-replacement reset in
+// SetPaths). An index present in old keeps its per-path pace; an index beyond old
+// inherits old's LAST pace (a grown-in path has no declared per-path BDP reachable
+// through the health-only SetPaths signature). Caller holds the owner's lock. old is
+// non-empty whenever pacing is enabled (>=1 path is an invariant), so the tail read
+// is safe.
+func resizeActiveBackupPacers(old []pacer, n int, logger log.Logger) []pacer {
+	np := make([]pacer, n)
+	for i := 0; i < n; i++ {
+		src := i
+		if src >= len(old) {
+			src = len(old) - 1
+		}
+		np[i] = newPacer(1, old[src].cfg, logger)
+	}
+	return np
 }
 
 // indexOfHealth returns the index of h in hs by identity, or -1 when h is nil or
@@ -175,13 +290,37 @@ func indexOfHealth(hs []PathHealth, h PathHealth) int {
 
 // Pick returns the index of the current active path, recomputing the selection
 // against live path health and the clock. It is safe for concurrent callers.
-// class is ignored: active-backup has no pacer, so every frame class is treated
-// identically (defect D22's control-frame exemption is a pacing concern).
-func (s *ActiveBackup) Pick(_ FrameClass) int {
+//
+// When pacing is configured (defect D65) it also meters the ACTIVE path's OWN token
+// bucket: a ClassData frame consumes one token from that path's bucket and Pick
+// returns PickPaced (not the active index) when it is empty; ClassControl is pacing-
+// EXEMPT (defect D22) — it egresses on the active path spending no token and is never
+// shed, so bulk overload cannot starve WireGuard rekey. Because each path has its OWN
+// BDP-sized bucket, a failover draws from the new active path's own (idle-refilled,
+// full) bucket at that path's own rate. With pacing disabled the buckets are inert and
+// this is byte-for-byte the pre-pacing behaviour (class is ignored, nothing is shed).
+func (s *ActiveBackup) Pick(class FrameClass) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.recomputeLocked(s.clock.Now())
-	return s.active
+	now := s.clock.Now()
+	s.recomputeLocked(now)
+	if !s.cfg.Pacing || s.active < 0 {
+		// Pacing off, or no eligible path (active == PickNone): return the selection
+		// as-is. Guard s.active < 0 BEFORE indexing s.pacers[s.active].
+		return s.active
+	}
+	if class == ClassControl {
+		return s.active // pacing-exempt: no token spent, never shed (defect D22).
+	}
+	p := &s.pacers[s.active]
+	p.refill(now)
+	if p.tryConsume(0) {
+		return s.active
+	}
+	// Healthy path, but its bucket is momentarily empty: shed this frame (PickPaced),
+	// bounding egress and the send backlog. active-backup meters no offered-load rate,
+	// so the coalesced shed diagnostic reports load 0.
+	return p.shed(now, 0)
 }
 
 // Recompute re-derives the active path from current liveness and the failback

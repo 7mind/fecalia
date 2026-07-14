@@ -15,8 +15,10 @@ const (
 	PickNone = -1
 	// PickPaced means eligible paths EXIST but every one is momentarily paced out, so
 	// this frame is shed (dropped) to bound egress and the send backlog. The paths are
-	// healthy — this is deliberate rate limiting, NOT an outage. Only a pacing-enabled
-	// weighted scheduler ever returns it.
+	// healthy — this is deliberate rate limiting, NOT an outage. Any pacing-enabled
+	// scheduler returns it: the weighted scheduler when every eligible path's bucket is
+	// empty, and active-backup (defect D65) when the single active path's own bucket is
+	// empty. A scheduler with pacing off never returns it.
 	PickPaced = -2
 )
 
@@ -59,7 +61,8 @@ type Scheduler interface {
 	// class is the frame's traffic class (defect D22): a pacing scheduler exempts
 	// ClassControl (WireGuard handshake/keepalive) from the data token buckets so
 	// bulk overload cannot shed control frames and starve rekey, while ClassData is
-	// fully paced. A non-pacing scheduler (active-backup) ignores class.
+	// fully paced. BOTH the weighted scheduler and active-backup (defect D65) honour
+	// this exemption when pacing is enabled; a scheduler with pacing off ignores class.
 	//
 	// Pick MAY be stateful: a weighted/aggregating scheduler advances its
 	// distribution bookkeeping (deficit/round-robin credits, pacing tokens, offered-
