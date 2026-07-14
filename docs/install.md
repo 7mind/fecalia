@@ -137,6 +137,74 @@ ends). Omit it entirely for plain WireGuard framing.
 Generate keys with standard WireGuard tooling (`wg genkey | tee k | wg pubkey`)
 and the PSK with `head -c 32 /dev/urandom | base64`.
 
+### Multi-peer concentrator (G4) — supporting multiple edges
+
+A concentrator can bond traffic from **multiple edges** (e.g., a branch-office
+edge, a mobile edge, a cloud gateway). Plural `[[wireguard.peers]]` blocks are
+supported; with more than one peer, each edge authenticates with its own psk
+for authenticated source-based demux:
+
+```toml
+role = "concentrator"
+psk = "<base64 32-byte PSK>"       # REQUIRED by validation; authenticates no
+                                   # peer once a second peer is configured
+                                   # (see note below)
+
+[[paths]]
+name = "wan0"
+source_addr = "10.0.0.5"
+
+[wireguard]
+private_key = "<base64 concentrator private key>"
+listen_port = 51820
+
+# Edge 1: office, its own PSK
+[[wireguard.peers]]
+public_key = "<base64 office-edge public key>"
+allowed_ips = ["10.77.1.0/24"]
+psk = "<base64 32-byte PSK for office-edge>"   # REQUIRED in multi-peer mode
+name = "office"                                 # REQUIRED in multi-peer mode
+
+# Edge 2: mobile, its own PSK
+[[wireguard.peers]]
+public_key = "<base64 mobile-edge public key>"
+allowed_ips = ["10.77.2.0/24"]
+psk = "<base64 32-byte PSK for mobile-edge>"   # Must differ from office's psk
+name = "mobile"                                 # Must differ from office's name
+
+[metrics]
+listen = "127.0.0.1:9090"
+```
+
+**Single-peer back-compatibility:** when a concentrator has only one peer
+(`[[wireguard.peers]]`), a per-peer `psk` is **rejected** at config load — leave
+it unset; the top-level `psk` remains the sole authenticator, so existing
+single-peer configs parse and run unchanged. A per-peer `name` is optional and
+has no effect on metrics for a single bound peer (the `peer` label is omitted
+entirely, not emitted empty).
+
+**Multi-peer requirements and authentication:** with more than one peer, each
+peer **must** have both a unique `psk` (config load rejects a duplicate) and a
+unique `name`. Every peer authenticates its OWN PROBE frames with its own psk;
+the concentrator learns each source address's owning peer only from a PROBE
+that MAC-verifies under that peer's psk, and subsequent DATA/PARITY frames from
+that source route accordingly without re-authentication. **The top-level `psk`
+stays required by config validation in every configuration, but on a
+multi-peer concentrator it authenticates no peer** — an existing single-peer
+edge does NOT keep authenticating via the top-level psk once a second peer is
+added; it must be given its own per-peer psk at that point.
+
+**Metrics `peer` label:** additional peers (all but the first-configured) are
+exposed under their configured `name` as the metrics `peer` label. The
+first/primary peer's series always carry the empty label `peer=""`, even
+though its `name` is set and required in multi-peer mode — this is the current
+shipped behavior (defect D58), not something this doc changes.
+
+**Edges see no change:** each edge always points to the concentrator's public
+address (its public IP + port); it does not know or care that multiple edges
+are connected to the same concentrator. The concentrator's internal demux is
+entirely transparent to the edge.
+
 ### Optional `[fec]` forward-error-correction plane
 
 FEC is **off** unless an `[fec]` block is present. A fixed-ratio block protects

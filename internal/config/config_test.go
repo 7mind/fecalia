@@ -1266,6 +1266,10 @@ func fillExamplePlaceholders(s string) string {
 		"<base64 32-byte PSK>", testKey(3),
 		"<base64 32-byte private key>", testKey(1),
 		"<base64 peer public key>", testKey(2),
+		"<base64 32-byte PSK for office-edge>", testKey(10),
+		"<base64 32-byte PSK for mobile-edge>", testKey(11),
+		"<base64 office-edge public key>", testKey(12),
+		"<base64 mobile-edge public key>", testKey(13),
 	)
 	return r.Replace(s)
 }
@@ -1304,7 +1308,7 @@ func exampleHostnamePeer(t *testing.T, content string) string {
 	t.Helper()
 	block := extractExampleSection(t, content,
 		"# ── second peer example (hostname endpoint with DNS opt-in) ──",
-		"\n# ── amnezia obfuscation:",
+		"\n# ─────────────────────────────────────────────────────────────────────────────\n# MULTI-PEER CONCENTRATOR EXAMPLE",
 	)
 	return fillExamplePlaceholders(block)
 }
@@ -1323,6 +1327,19 @@ func exampleDNSBlock(t *testing.T, content, mode string) string {
 		t.Fatalf("unknown dns example mode %q", mode)
 	}
 	return extractExampleSection(t, content, m[0], m[1])
+}
+
+// exampleMultiPeerConcentrator extracts and uncomments the documented "MULTI-PEER
+// CONCENTRATOR EXAMPLE (G4)" live example — a self-contained two-edge concentrator
+// config (role/psk/paths/wireguard/two peers/metrics, no `top` prefix needed since
+// it carries its own role/psk/paths/wireguard header) — with placeholders filled.
+func exampleMultiPeerConcentrator(t *testing.T, content string) string {
+	t.Helper()
+	block := extractExampleSection(t, content,
+		"# ── live example (two edges, distinct per-peer psk/name) ──",
+		"\n# ── amnezia obfuscation:",
+	)
+	return fillExamplePlaceholders(block)
 }
 
 // TestExampleConfigLoads verifies that wanbond.example.toml's documented examples
@@ -1387,4 +1404,32 @@ func TestExampleConfigLoads(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("multi_peer_concentrator", func(t *testing.T) {
+		// The documented G4 multi-peer concentrator example is self-contained (its
+		// own role/psk/paths/wireguard header), so it does NOT prepend `top` (which
+		// is edge-oriented).
+		body := exampleMultiPeerConcentrator(t, content)
+		path := writeConfig(t, 0o600, body)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load multi-peer concentrator example:\n%s\n\nerror: %v", body, err)
+		}
+		if got := len(cfg.WireGuard.Peers); got != 2 {
+			t.Fatalf("peers = %d, want 2", got)
+		}
+		p0, p1 := cfg.WireGuard.Peers[0], cfg.WireGuard.Peers[1]
+		if p0.Name != "office-edge" {
+			t.Errorf("peer 0 name = %q, want %q", p0.Name, "office-edge")
+		}
+		if p1.Name != "mobile-edge" {
+			t.Errorf("peer 1 name = %q, want %q", p1.Name, "mobile-edge")
+		}
+		if !p0.PSK.IsSet() || !p1.PSK.IsSet() {
+			t.Fatal("expected both peers to carry a psk")
+		}
+		if p0.PSK.Bytes() == p1.PSK.Bytes() {
+			t.Fatal("expected distinct per-peer psks per the documented example, got equal")
+		}
+	})
 }

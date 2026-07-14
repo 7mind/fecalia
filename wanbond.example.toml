@@ -116,6 +116,30 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   and removes them on stop. Routes ONLY — no
                                    #   policy routing, SNAT, or concentrator
                                    #   forwarding (those stay operator-owned).
+# psk = "<base64 32-byte PSK>"      # OPTIONAL. Meaningful only for a MULTI-PEER
+                                   #   concentrator (see the example below). With
+                                   #   exactly one peer configured — as shown live
+                                   #   here — a per-peer psk is REJECTED at load
+                                   #   ("psk is not meaningful with a single peer");
+                                   #   leave it UNSET and the top-level `psk` above
+                                   #   is used, so a legacy single-peer config is
+                                   #   unaffected. With MORE THAN ONE peer, this
+                                   #   field becomes REQUIRED and must be pairwise-
+                                   #   distinct across peers: each peer authenticates
+                                   #   its own PROBE frames with its OWN psk, and the
+                                   #   top-level `psk` authenticates NO peer once a
+                                   #   second peer is configured (T80/T81, Q21).
+                                   #   Generate: head -c 32 /dev/urandom | base64
+# name = "edge1"                    # OPTIONAL. Unused when a single peer is
+                                   #   configured, as shown live here (metrics never
+                                   #   carry a `peer` label for a single bound peer,
+                                   #   see [metrics] below). With MORE THAN ONE peer,
+                                   #   REQUIRED and must be unique across peers
+                                   #   (T80/T81, Q21). ADDITIONAL peers (all but the
+                                   #   first-configured) are exposed under this name
+                                   #   as the metrics `peer` label; the first/primary
+                                   #   peer's series always carry the empty label
+                                   #   peer="" regardless of this field (D58).
 
 # ── second peer example (hostname endpoint with DNS opt-in) ──────────────────────
 # [[wireguard.peers]]
@@ -125,6 +149,61 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 #                                   #   ([dns] block below is OPTIONAL — absent
 #                                   #   means the system resolver; see [dns])
 # allowed_ips = ["10.77.0.1/32"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MULTI-PEER CONCENTRATOR EXAMPLE (G4): TWO EDGES, ONE CONCENTRATOR
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The plural [[wireguard.peers]] syntax (one block per edge) is supported on the
+# concentrator. Single-peer configs (one [[wireguard.peers]] block, as shown
+# live above) are unaffected: with exactly one peer, a per-peer `psk` is
+# REJECTED at load (the top-level `psk` is used) and a per-peer `name` is
+# optional and inert for metrics.
+#
+# With MORE THAN ONE peer, every peer authenticates its own PROBE frames with
+# its OWN per-peer `psk` (internal/bind/multipath.go's peerBySource demux binds
+# a source only once a PROBE MAC-verifies under that peer's psk); the
+# top-level `psk` below remains REQUIRED by config validation but
+# authenticates NO peer once a second peer is configured
+# (internal/device/device.go feeds only per-peer PSKs to the bind — see
+# docs/design.md's Security model). Each peer's `name` is REQUIRED and must be
+# unique; ADDITIONAL peers (all but the first-configured) are exposed under
+# their configured name as the metrics `peer` label, while the first/primary
+# peer's series still carry the empty label peer="" — byte-compatible with the
+# single-peer exposition, but a discrepancy versus the "name required" config
+# rule filed as defect D58 (documented current behavior; not fixed here).
+#
+# ── live example (two edges, distinct per-peer psk/name) ─────────────────────
+# role = "concentrator"
+# psk = "<base64 32-byte PSK>"      # REQUIRED by validate; authenticates no
+                                   #   peer once a second peer is configured.
+#
+# [[paths]]
+# name = "wan0"
+# source_addr = "10.0.0.5"
+#
+# [wireguard]
+# private_key = "<base64 32-byte private key>"
+# listen_port = 51820
+#
+# # Edge 1: office — bound FIRST, so its metrics series carry peer="" (D58)
+# # even though `name` is set and required in multi-peer mode.
+# [[wireguard.peers]]
+# public_key = "<base64 office-edge public key>"
+# allowed_ips = ["10.77.1.0/24"]
+# psk = "<base64 32-byte PSK for office-edge>"    # REQUIRED in multi-peer mode
+# name = "office-edge"                             # REQUIRED in multi-peer mode
+#
+# # Edge 2: mobile — registered via AddConcentratorPeer, so its metrics
+# # series carry peer="mobile-edge".
+# [[wireguard.peers]]
+# public_key = "<base64 mobile-edge public key>"
+# allowed_ips = ["10.77.2.0/24"]
+# psk = "<base64 32-byte PSK for mobile-edge>"    # Must differ from office-edge's psk
+# name = "mobile-edge"                             # Must differ from office-edge's name
+#
+# [metrics]
+# listen = "127.0.0.1:9090"
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
 # ALL-OR-NOTHING: either omit the whole block, or set the entire jc/jmin/jmax/s1/s2

@@ -10,7 +10,8 @@ It is a single self-contained Go binary that runs on both ends of the tunnel:
 
 - **edge** — a Linux box (behind a router) that bonds the local WAN uplinks;
 - **concentrator** — a small public-IP VPS that terminates the tunnel and NATs
-  traffic onward.
+  traffic onward. Supports one or more edges (multi-peer mode): each edge
+  authenticates with its own PSK.
 
 The same binary serves both roles; the role is chosen from the config file.
 
@@ -37,8 +38,10 @@ WireGuard engine (TUN, Noise handshake, AEAD, rekey, roaming, keepalive) and put
 **all** bonding logic — multipath scheduling, an obfuscated outer frame codec,
 Reed-Solomon FEC, a receive resequencer, and per-path telemetry — into a custom
 `conn.Bind` that lives *beneath* the engine and operates only on opaque, already-
-encrypted WireGuard datagrams. The engine sees one stable virtual endpoint; the
-Bind privately fans traffic out across the real per-path UDP sockets. For the
+encrypted WireGuard datagrams. The engine sees one stable virtual endpoint per
+peer; the Bind privately fans traffic out across the real per-path UDP sockets
+and, on a concentrator with multiple edges, demuxes inbound traffic to the
+owning peer from PROBE frames authenticated under that peer's own PSK. For the
 full picture and the exact list of what we built on top of amneziawg-go, read
 **[docs/design.md](docs/design.md)**.
 

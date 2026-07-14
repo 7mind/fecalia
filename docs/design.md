@@ -119,6 +119,24 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
 - **learns edge endpoints dynamically** — the concentrator needs no edge endpoint
   config; it discovers each path's (possibly NAT'd) source from inbound traffic,
   enabling real CGNAT traversal.
+- **demuxes multiple peers by authenticated source binding (G4 multi-peer)** — on a
+  concentrator with more than one configured peer, inbound datagrams are routed to
+  the owning peer via `peerBySource`, an atomic-pointer source-address map
+  populated only from authenticated PROBE frames. Each peer authenticates with its
+  own per-peer `psk`: the first PROBE from a source that MAC-verifies under a
+  peer's psk binds that source to that peer; subsequent DATA/PARITY frames from
+  the same source are routed without re-authentication, keeping the receive hot
+  path fast. With a single configured peer, a per-peer `psk` is **rejected** at
+  config load (`config.validate`) and the top-level `psk` is the sole
+  authenticator, byte-identical to pre-G4 behavior. Once a second peer is
+  configured, per-peer `psk` becomes **required and pairwise-distinct**, and the
+  top-level `psk` — still required by validation — **authenticates no peer**
+  (`device.Up` feeds only each peer's own PSK, from `Config.PeerIdentities`, into
+  the bind). Binding is learned only from PROBE frames — unauthenticated
+  DATA/PARITY cannot establish or hijack a source-to-peer binding (D9/D11).
+  Per-peer `name` is required in multi-peer mode and exposed as the metrics `peer`
+  label for **additional** peers only; the first/primary peer's series always
+  carry the empty label `peer=""` (D58).
 - owns the **per-path UDP sockets**, byte counters, the send-path FEC `Admit`, the
   adaptive-FEC tick loop, and the wiring that hands frames to the scheduler and
   the resequencer.
@@ -583,12 +601,34 @@ misbehaves subtly. Agents and contributors must preserve them.
   WireGuard (Noise + AEAD). wanbond never sees plaintext.
 - **Outer control plane** (PROBE, CONTROL): PSK-HMAC authenticated + per-peer
   monotonic anti-replay — an attacker cannot forge or replay them.
+  - **Per-peer PSK (multi-peer concentrator, G4):** on a concentrator with more
+    than one configured peer, each edge authenticates PROBE frames with its OWN
+    per-peer `psk` — this field is REQUIRED and must be pairwise-distinct across
+    peers (config load rejects a duplicate). The concentrator uses PROBE
+    MAC-verification to learn each source address's owning peer (`peerBySource`
+    binding in `internal/bind/multipath.go`); a source that MAC-verifies under
+    peer A's psk is bound to A, and subsequent DATA/PARITY frames from it route
+    to A without re-authentication. The top-level `psk` remains REQUIRED by
+    config validation in every configuration, but on a multi-peer concentrator it
+    authenticates **no peer**: `device.Up` feeds only each peer's own PSK (from
+    `Config.PeerIdentities`) into the bind, so an existing single-peer edge does
+    NOT keep authenticating via the top-level psk once a second peer is added —
+    it must be given its own per-peer psk at that point. With a single configured
+    peer, a per-peer `psk` is instead REJECTED at config load (not merely
+    defaulted) and the top-level `psk` is the sole authenticator, so existing
+    single-peer deployments parse and run identically unchanged.
 - **Outer data plane** (DATA, PARITY): **unauthenticated by design**. A network
   attacker can forge/replay these; forgeries are dropped by the inner AEAD (real
   payload) or discarded by the FEC decoder as inconsistent. The accepted residual
   risk is **DoS-grade only** (an attacker can waste decode/resequence work), never
   a confidentiality or integrity break. This trade buys ~0 per-packet overhead on
   the hot path.
+  - **In multi-peer mode**, unauthenticated DATA/PARITY do not establish
+    source-to-peer bindings (they route using existing bindings learned from
+    PROBE frames). An attacker can spam DATA frames from a forged source address
+    and waste resequence/FEC work if that address has no binding, but cannot
+    impersonate an existing peer (its source bindings are locked by authenticated
+    PROBEs).
 - **Traffic analysis / DPI**: the outer wire has no fingerprint (random nonce,
   obfuscated body, no magic bytes); AmneziaWG junk params add defense-in-depth.
   Protocol *mimicry* (looking like HTTPS) is an explicit non-goal.

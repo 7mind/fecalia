@@ -54,8 +54,12 @@ default gate; validate them separately (see Testing discipline).
 Full detail in [docs/design.md §Load-bearing invariants](docs/design.md). In
 short:
 
-1. The engine sees **one virtual endpoint per peer**; the Bind fans out beneath
-   it (design rule A1). No per-packet endpoint churn to the engine.
+1. The engine sees **exactly one virtual endpoint per peer** (design rule A1); the
+   Bind fans out beneath it across all real per-path UDP sockets. No per-packet
+   endpoint churn to the engine. In multi-peer concentrator mode (G4), each peer
+   authenticates its own PROBE frames with its own PSK (authenticated
+   `peerBySource` demux); the top-level `psk` authenticates no peer once a
+   second peer is configured.
 2. Use wanbond's **own outer sequence space**; never reuse/perturb the inner
    WireGuard counter.
 3. **Resequence before** the inner anti-replay window validates.
