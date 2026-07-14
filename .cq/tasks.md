@@ -1785,10 +1785,10 @@ archives:
 
 ## M51
 
-### T141 — wip
+### T141 — done
 
 - createdAt: 2026-07-14T12:40:24.246Z
-- updatedAt: 2026-07-14T15:34:41.836Z
+- updatedAt: 2026-07-14T16:04:57.958Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extend the netns e2e fixture with a sustained-load driver and metrics/log sampling helpers
@@ -1796,6 +1796,7 @@ archives:
 - acceptance: "A new -tags e2e harness self-test under `just e2e`: with a weighted-policy daemon and a rate-capped path (~5 Mbit), the driver sustains a target offered load for >=5s within +/-20% (verified via wanbond_path_tx_bytes_total deltas from the sampler), the metrics sampler returns >=1 gauge sample scraped via metrics.Fetch during that window, and the log capturer returns >=1 expected structured line (e.g. the coalesced 'scheduler pacer shedding' record under deliberate overload). Existing e2e tests unaffected (DefaultPaths byte-identical). `go test` GREEN, `go test -tags e2e` (just e2e) GREEN, `just lint` across default+e2e+realhosts tags GREEN."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G13"]
+- resultCommit: b0f52e4
 
 ## M52
 

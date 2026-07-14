@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 177
+  item: 178
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2098,3 +2098,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T142","goals:G13"]
+
+## M51
+
+### R177 — go-ahead
+
+- createdAt: 2026-07-14T16:04:57.020Z
+- updatedAt: 2026-07-14T16:04:57.020Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T141 review round 1 — GO-AHEAD (single opus reviewer, proportionate for additive test-harness helpers with NO production code; worker independently executed the privileged e2e self-test on llm-ubuntu-0 hardware). Added test/e2e/load.go (DriveUDPLoad rate-calibrated UDP sender+sink, MetricsSampler polling scraper, ParseLogLines/AwaitLogLine structured-log capturer) + load_self_test.go (TestLoadDriverSelfTest) + a one-line netns.go registry doc comment. Merged to main as b0f52e4 (cherry-pick of implement/T141 4cac05d onto 88a8ba2; test/e2e/ only, clean). Reviewer verified: (1) SCOPE clean — diff confined to test/e2e/, no internal/ or production code; (2) DefaultPaths + TestFixtureImpairment BYTE-IDENTICAL (extend-not-modify honored); (3) helpers sound + race-free — DriveUDPLoad paces via fixed-interval ticker (1s/TargetFPS), MetricsSampler retains under mutex + joins goroutine on idempotent Stop registered as t.Cleanup, AwaitLogLine bounded-deadline (no hang), sink subprocess SIGTERM→wait→Kill via t.Cleanup; (4) self-test NON-VACUOUS — asserts achieved fps AND wire tx_bytes delta within ±20% requiring ≥2 samples + present wanbond_path_up gauge, awaits the coalesced 'scheduler pacer shedding' record under 3000fps overload + bring-up 'path liveness transition'; (5) ±20% ARITHMETIC validated against REAL code — txBytes counts the OUTER wanbond frame (multipath.go:2062), ~88B/frame overhead at 1200B payload = ~7.3% << 20% band, 380fps target sits above 360fps engage yet below 400fps pacing capacity so nothing sheds and sent-vs-tx is well-defined; (6) netns.go 9105 loadSelfTestMetricsListen comment accurate. WORKER RAN IT ON HARDWARE (llm-ubuntu-0): both subtests pass (376.8fps vs 380 off 0.8%, tx_bytes delta 6.2%, shed_frames observed live). Full gate green on composed main: go build/vet ok; e2e -count=0 compiles; just lint 0 issues default+e2e+realhosts. This is the up-front fixture dependency for the downstream observability/probe-protection e2e tasks (G13). 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T141","goals:G13"]
