@@ -1891,18 +1891,19 @@ archives:
 
 ## M55
 
-### T148 — planned
+### T148 — done
 
 - createdAt: 2026-07-14T12:41:59.713Z
-- updatedAt: 2026-07-14T12:41:59.713Z
-- author: "opus-4.8[1m]"
-- session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
+- updatedAt: 2026-07-14T19:28:33.314Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Document the pacing on/off tradeoff, the frame-class priority model, and inner-ICMP infeasibility
 - description: "Item 3(a) docs + the Q51 infeasibility note, scoped by Q53 (reference — do NOT restate — G2/Q20's per_path_capacity_fps auto-derive/BDP-sizing docs). In docs/design.md (+ README.md operator section where appropriate): (a) the measured pacing ON/OFF tradeoff from the goal's empirical data — path split RTT-weighted ~71/29 (off) vs capacity-capped ~50/50 (on); bounded worst-case loaded RTT (757ms vs 1083ms) bought with reduced throughput (4.98 vs 6.93 Mbps) and deliberate shedding of ~33% excess; liveness stability under overload (pacing on + probe headroom keeps probes healthy; pacing off + sustained overload saturates the link queue and can flap liveness) — framed as an operability tradeoff with guidance on when to enable pacing; (b) the codified priority model: ClassControl exempt-uncharged (D22), KindProbe exempt-but-charged headroom (T145), ClassData fully paced/shed; (c) an EXPLICIT architectural note that inner-tunnel ICMP (or any inner flow) prioritization is INFEASIBLE — the WG tunnel payload is opaque ClassData to the pacer (classify.go reads only the inner WireGuard message TYPE word; plaintext DPI before encryption is out of architecture); (d) a short operability runbook stanza tying the new signals together: the four aggregation gauges, wanbond_weighted_capacity_sane, the engage/disengage and pacer-shedding log lines, and the hard-fail guard error. Do NOT write BDP/per_path_capacity_fps sizing guidance — REFERENCE install.md 3a (G2/Q20 owns it). NOTE (deliberate Q55 deviation): this is a PURE-DOCS task with no runtime surface to exercise via the netns fixture, so it is gated on `just lint` + reviewer prose-check rather than an -tags e2e test; the behavioral tasks (T143/T144/T146/T145) already carry the e2e acceptance and update their own operator docs in-change."
 - acceptance: Every metric name, log-message string, and config-error phrase cited in the docs matches the exported constants and the exact strings the -tags e2e suite asserts (cross-checked by grep against the source constants and the e2e assertions in review); docs/design.md, README.md, and docs/install.md render consistently and contain the four sections (pacing on/off tradeoff, three-tier priority model, inner-ICMP-infeasible note, operability-signals runbook stanza) with a REFERENCE to G2's BDP sizing rather than a duplicate; `go test` GREEN and `just lint` (misspell/format across default+e2e+realhosts tags — covers doc fixtures per the T130 incident) GREEN.
 - suggestedModel: standard
 - dependsOn: ["T147","T144","T145"]
 - ledgerRefs: ["goals:G13"]
+- resultCommit: a1c3937
 
 ## M57
 
@@ -2026,12 +2027,12 @@ archives:
 - dependsOn: ["T152","T153"]
 - resultCommit: 00e190f
 
-### T156 — planned
+### T156 — wip
 
 - createdAt: 2026-07-14T13:16:51.364Z
-- updatedAt: 2026-07-14T13:17:31.107Z
-- author: "opus-4.8[1m]"
-- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- updatedAt: 2026-07-14T19:20:26.620Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add the D65 field-validation procedure to docs/manual-checklist.md
 - description: "The on-hardware validation was waived pre-fix (Q56) and deferred to the field pass — script it so it is executable verbatim: three-way iperf3 attribution (direct-WAN no-tunnel / through-tunnel / loopback-netns tunnel) plus a loaded-RTT A/B with pacing OFF vs ON, on the Pi4-edge/Starlink/o3 topology. Record the expected observations: single-flow TCP through the paced tunnel approaches the UDP-goodput ceiling (~6.9 Mbps measured pre-fix) instead of ~3.67 Mbps; loaded RTT no longer builds toward ~1s; retransmits drop from ~13/10s. Note the AGENTS.md rule that netns/e2e fixtures must NOT assert absolute throughput — this belongs to the manual/real-host tier only."
 - acceptance: docs/manual-checklist.md contains the exact iperf3 command lines for all three legs, the pacing on/off A/B toggle steps (config diff), and an expected-observation table; no netns e2e test asserts absolute throughput (unchanged); `nix develop -c just lint` doc checks pass.

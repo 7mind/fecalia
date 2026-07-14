@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 194
+  item: 195
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2299,3 +2299,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T155","goals:G14","defects:D65"]
+
+## M55
+
+### R194 — go-ahead
+
+- createdAt: 2026-07-14T19:28:27.798Z
+- updatedAt: 2026-07-14T19:28:27.798Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T148 review round 1 — GO-AHEAD (single opus reviewer, proportionate for DOCS-ONLY operability documentation). Added the pacing on/off tradeoff table, inner-ICMP-infeasibility note, and operability runbook stanza to docs/design.md + README.md (the three-tier priority model was already present from T145/T155, referenced not duplicated). Merged to main as a1c3937 (clean cherry-pick of e6838ea onto 1007707; design.md + README.md). Reviewer verified THE CRITICAL CHECK — every cited signal string matches source EXACTLY: all 5 metric names vs internal/metrics/metrics.go (wanbond_aggregation_engaged :136, wanbond_offered_load_fps :139 — the worker correctly used this NOT the task-prose typo wanbond_aggregation_offered_load_fps, wanbond_aggregation_engage_threshold_fps :143, wanbond_aggregation_disengage_threshold_fps :147, wanbond_weighted_capacity_sane :123); both log strings ('scheduler aggregation change' weighted.go:546/555/569, 'scheduler pacer shedding' pacer.go:142) + their field keys (to/from/load_fps/engage_threshold_fps/disengage_threshold_fps/reason; shed_frames/load_fps); the config hard-fail phrase (config.go:1357 validateWeightedEngageAgainstBandwidth); the inner-ICMP note cites the CORRECT internal/bind/classify.go (worker corrected the task's wrong sched/classify.go) reading only the outer WG type word; cross-doc anchors #3a/#6b resolve; BDP sizing REFERENCED to install.md §3a not duplicated; tradeoff table internally consistent (71/29 vs 50/50, 1083 vs 757ms, 6.93 vs 4.98 Mbps, ~33% shed). All 4 required sections present. Full gate green: build/vet/test + just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T148","goals:G13"]
