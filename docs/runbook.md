@@ -14,7 +14,13 @@ procedure. Those live in [docs/install.md](install.md):
 - **§3a *Tuning per-link bandwidth and pacing*** — the full measure-and-enter
   procedure for `link_bandwidth` / `link_rtt` — [install.md §3a](install.md);
 - **§4 systemd units**, **§5 Firewall**, **§6 Observability** — [install.md
-  §4–6](install.md).
+  §4–6](install.md);
+- the **NetworkManager unmanaged-devices drop-in** and the **`tun_persist` /
+  `wanbond-addressing@.service` addressing-persistence oneshot** — both under
+  [install.md §4](install.md);
+- **§9 *Full-tunnel / client-LAN recipe*** — the optional edge `mode =
+  "default-route"` full-tunnel opt-in and its client-LAN routing recipe —
+  [install.md §9](install.md).
 
 The concentrator hub-failover design (why a standby works with no state
 handoff) is [docs/design.md §Concentrator hub failover](design.md).
@@ -145,10 +151,20 @@ Then install the systemd unit for each role, assign the inner addresses with a
 systemd-networkd `.network` file, and `enable --now` — the exact steps are
 [install.md §4](install.md). Bring up the concentrator first, then the edge.
 
+> **NetworkManager hosts:** deploy the unmanaged-devices drop-in
+> (`packaging/networkmanager/99-wanbond-unmanaged.conf`) *before* bringing the
+> tunnel up — otherwise NetworkManager flushes `wanbond0`'s addresses on
+> link-up ([install.md §4](install.md)). For addressing/routes to survive a
+> daemon restart, either set the top-level `tun_persist = true`, or deploy the
+> `wanbond-addressing@.service` oneshot for hosts with no `systemd-networkd`
+> `.network` file watching `wanbond0` (same section).
+
 > **Optional planes**, all off unless their block is present, all documented in
 > [install.md §3](install.md): `[amnezia]` (DPI obfuscation, all-or-nothing),
 > `[fec]` (Reed-Solomon forward error correction), `[scheduler]` (weighted
-> aggregation + pacing — see step 5).
+> aggregation + pacing — see step 5). A peer `mode = "default-route"` is a
+> further edge-only opt-in for full-tunnel client-LAN routing — see
+> [install.md §9](install.md).
 
 ## 3. Add a standby concentrator (hub failover)
 

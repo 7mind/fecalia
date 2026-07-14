@@ -620,6 +620,12 @@ psk  = "<base64 32-byte PSK>"      # REQUIRED. 32 raw bytes, base64. Same value
                                    #   restart with the SAME ifindex, so operator-
                                    #   owned addressing persists. See "Interface
                                    #   addressing" below for the NM (D39) caveat.
+# bind = "auto"                    # OPTIONAL, DEFAULT "auto". Top-level default
+                                   #   bind mode applied to every [[paths]] block
+                                   #   that omits its own `bind`. "source" |
+                                   #   "device" | "auto" — see §3b for the
+                                   #   VLAN-per-WAN policy-routing case this exists
+                                   #   to fix, and the per-path `bind` note below.
 
 # ── paths: one [[paths]] block per WAN uplink; at least one is REQUIRED ───────
 [[paths]]
@@ -628,6 +634,15 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
                                    #   UDP socket binds to. Must be unique across
                                    #   paths (a shared source collides EADDRINUSE
                                    #   at the second bind). No default.
+# bind = "auto"                    # OPTIONAL, DEFAULT the top-level default
+                                   #   above (itself DEFAULT "auto"). "source"
+                                   #   forces the pre-T16 source-IP pin
+                                   #   unconditionally; "device" forces
+                                   #   SO_BINDTODEVICE unconditionally; "auto"
+                                   #   reproduces today's heuristic (device-bind
+                                   #   only when provably equivalent to the
+                                   #   source-IP pin, source-bind otherwise). See
+                                   #   §3b for the policy-routing recipe.
 # dest_addr = "203.0.113.7:51820"  # OPTIONAL, edge-only meaning. Per-path
                                    #   concentrator endpoint (ip:port). Omit when
                                    #   one public IP fronts all uplinks (the
@@ -830,6 +845,12 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 - **metrics loopback-only.** `[metrics] listen` must be a loopback address (or a
   hostname resolving entirely to loopback); a non-loopback bind is refused when
   the endpoint starts. Omit the block to serve no metrics at all.
+- **`bind` (top-level default + per-path override).** `"source"`, `"device"`, or
+  `"auto"` (DEFAULT). A `[[paths]]` block with no `bind` uses the top-level
+  default; the top-level default is itself `"auto"` when also omitted, so a
+  config with no `bind` anywhere keeps exactly today's per-path bind behavior.
+  See §3b for the VLAN-per-WAN policy-routing case `bind = "source"` exists to
+  fix.
 
 ## 4. systemd units
 

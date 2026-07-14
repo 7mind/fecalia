@@ -39,6 +39,13 @@ psk  = "<base64 32-byte PSK>"      # REQUIRED. 32 raw bytes, base64. SAME value 
                                    #   NetworkManager unmanaged-devices drop-in on
                                    #   NM hosts — persistence keeps the link, it
                                    #   does not exempt it from NM.
+# bind = "auto"                    # OPTIONAL, DEFAULT "auto". Top-level default
+                                   #   bind mode, applied to every [[paths]] block
+                                   #   that omits its own `bind` below. "source" |
+                                   #   "device" | "auto" — see the per-path `bind`
+                                   #   note below for what each value does. Exists
+                                   #   for the VLAN-per-WAN policy-routing case;
+                                   #   see docs/install.md §3b.
 
 # ── paths: one [[paths]] block per WAN uplink; at least one is REQUIRED ───────
 [[paths]]
@@ -47,6 +54,17 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's U
                                    #   socket binds to. Must be unique across paths
                                    #   (a shared source collides EADDRINUSE at the
                                    #   second bind). No default.
+# bind = "auto"                    # OPTIONAL, DEFAULT the top-level default above
+                                   #   (itself DEFAULT "auto" when that is also
+                                   #   omitted). "source" forces the pre-T16
+                                   #   source-IP pin unconditionally (defeats
+                                   #   device-bind roam tolerance, but is the fix
+                                   #   for a one-address-per-VLAN policy-routing
+                                   #   edge — see docs/install.md §3b). "device"
+                                   #   forces SO_BINDTODEVICE unconditionally.
+                                   #   "auto" reproduces today's heuristic:
+                                   #   device-bind only when provably equivalent
+                                   #   to the source-IP pin, source-bind otherwise.
 # dest_addr = "203.0.113.7:51820"  # OPTIONAL, edge-only meaning. Per-path
                                    #   concentrator endpoint (ip:port). Omit when
                                    #   one public IP fronts all uplinks (the peer's
@@ -353,6 +371,13 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 # • metrics loopback-only: listen must be a loopback address (or a hostname
 #   resolving entirely to loopback); a non-loopback bind is refused when the
 #   endpoint starts. Omit the block to serve no metrics.
+# • bind (top-level default + per-path override): "source" | "device" | "auto"
+#   (DEFAULT). A [[paths]] block with no `bind` uses the top-level default
+#   (itself DEFAULT "auto" when also omitted, so an existing config with no
+#   `bind` anywhere is unaffected). "auto" reproduces today's selectDeviceBinds
+#   heuristic; "source" and "device" force one behavior unconditionally. See
+#   install.md §3b for the VLAN-per-WAN policy-routing case `bind = "source"`
+#   exists to fix.
 # • dns off-unless-present: no [dns] => system resolver, default cadence/
 #   timeouts; [dns] only selects the transport a peer's `dns = true` opt-in
 #   uses, never a gate by itself. doh_url/dot_server are mode-specific: set

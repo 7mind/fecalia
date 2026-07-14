@@ -144,6 +144,20 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   the configured AmneziaWG obfuscation profile — custom `h1`–`h4` magic headers
   and `s1`/`s2` junk prefixes) so control frames can be treated specially by the
   pacer.
+- **selects, per path, HOW its socket binds to the network** (`bind`, I5,
+  Q42/`internal/bind/pathsock.go`'s `selectDeviceBinds`). Three modes, resolved
+  per path from the path's own `bind` or, when that is omitted, the top-level
+  default (itself `"auto"` when also omitted, matching pre-T105 behavior
+  byte-for-byte): `"auto"` reproduces the original heuristic — device-bind
+  (`SO_BINDTODEVICE`, wildcard source) only when provably equivalent to
+  pinning `source_addr` (the address is the *sole* owner of its interface, so
+  a device bind and a source-IP bind reach the same place), source-IP-bind
+  otherwise; `"source"` forces the pre-T16 source-IP pin unconditionally; and
+  `"device"` forces a device bind unconditionally. `"source"` is the fix for a
+  one-address-per-VLAN policy-routing edge (each VLAN sub-interface is the
+  *sole* address on its own device, so `"auto"`'s equivalence heuristic
+  device-binds it — losing the source-based `ip rule` selector the operator's
+  routing depends on); see [install.md §3b](install.md#3b-policy-routing-edge-topologies-source-ip-pinning-with-bind--source).
 - **tolerates a not-yet-assignable `source_addr` at startup** (`Open()`). A path
   whose *well-formed* `source_addr` no interface holds yet — a mobile edge booting
   before its 5G modem has a DHCP lease, Starlink mid-obstruction — makes
@@ -406,6 +420,65 @@ space** and never touches the inner WireGuard counter (a core invariant).
 > *j* identical across total-parity counts — an *undocumented* property. Any
 > reedsolomon bump must be re-verified against
 > `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing.
+
+### TUN lifecycle: persistence, the default-route exception, and the session signal — `internal/device`
+
+Three device-lifecycle surfaces beyond tunnel bring-up/teardown itself, all owned
+by `internal/device`:
+
+- **TUN persistence** (`tun_persist`, I7/Q38, `persist_linux.go`). By default
+  `wanbond0` is a non-persistent TUN: the kernel destroys it when the daemon's
+  last file descriptor closes on `Close`, so every restart drops the
+  operator-owned addresses/routes/rules attached to it. `tun_persist = true`
+  makes `device.Up` issue `TUNSETPERSIST` unconditionally with the config's
+  value — `persist=false` explicitly *clears* the flag too, so a device left
+  persistent by a prior `true` run and re-adopted under `false` reverts to
+  non-persistent teardown, and a fresh TUN's `TUNSETPERSIST(0)` is a harmless
+  no-op. amneziawg-go's `NativeTun.Close` only closes the fd/netlink socket —
+  it never issues `RTM_DELLINK` — so this flag alone makes the link outlive
+  `Close`; the next `Up` re-adopts the **same** persistent device by name via
+  `CreateTUN`'s `TUNSETIFF`, preserving its ifindex, so operator-owned
+  addressing survives untouched. Persistence does **not** exempt the interface
+  from NetworkManager (D39) — an NM host still needs the unmanaged-devices
+  drop-in regardless of `tun_persist`.
+- **The default-route routing exception** (`mode = "default-route"`, I6/Q41,
+  `route_linux.go`/`splitDefaultRoute` in `device.go`). Elsewhere in this
+  document and in [install.md](install.md), wanbond's interface-ownership
+  posture is: the daemon creates and brings up `wanbond0` but otherwise **never
+  assigns addresses and installs no routes** — addressing and routing stay
+  operator-owned. `mode = "default-route"` is the **one deliberate exception**:
+  an edge-only opt-in, rejected on the concentrator, that marks a peer as the
+  edge's full-tunnel concentrator. When set, once the interface is up the
+  daemon installs that peer's `allowed_ips` split — the wg-quick-style
+  `/1`+`/1` pair for a literal `0.0.0.0/0`/`::/0` (the same split
+  `uapiConfig`'s `splitDefaultRoute` already applies when rendering the
+  engine's UAPI `allowed_ip=` lines, so the installed routes and the engine's
+  notion of "what this peer owns" always agree) — as plain scope-link device
+  routes via `wanbond0`, and withdraws them on stop. This is **routes only**:
+  no policy-routing rules, SNAT, or concentrator `ip_forward`/`MASQUERADE`/
+  `FORWARD` programming, which stay documented operator recipes (client-LAN
+  full-tunnel: [install.md §9](install.md#9-full-tunnel--client-lan-recipe-c3);
+  concentrator NAT/forwarding: [install.md §5](install.md#concentrator-natforwarding-prerequisites-for-routed-traffic-c6)).
+  A literal `0.0.0.0/0`/`::/0` is never installed or handed to the engine —
+  only its `/1`+`/1` split, so the encrypted underlay path to the concentrator
+  endpoint itself is never captured by the tunnel's own default route.
+- **WG-session liveness signal** (`wanbond_session_established`, T101,
+  `session.go`). The per-path liveness plane (probes) tells you a path's
+  **transport** is reachable; it says nothing about whether the **inner**
+  WireGuard session has actually converged. A `sessionMonitor` polls the
+  engine's UAPI `IpcGet` peer dump at probe cadence and resolves each peer's
+  last-handshake age against WireGuard's `RejectAfterTime` (the point past
+  which a completed handshake's keypair is dead) into a binary verdict exposed
+  as the `wanbond_session_established` gauge, plus one INFO `session
+  established` log record emitted on each `0→1` edge (never repeated while the
+  session stays up, so a live poll loop doesn't spam the log). This
+  distinguishes a tunnel that is **still converging** (no completed handshake
+  yet) from one that is **wedged** (a path reads up but the handshake is
+  absent or has aged out) — a distinction `wanbond_path_up` alone cannot make.
+  The monitor is stateless (a pure function of engine state + clock), reads
+  through the UAPI seam only (there is no public accessor for a peer's
+  last-handshake instant), and takes no WG-session coupling anywhere else in
+  the bind — the Bind stays WG-unaware.
 
 ### Supporting packages
 
