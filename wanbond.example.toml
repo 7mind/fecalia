@@ -133,7 +133,8 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # name = "edge1"                    # OPTIONAL. Unused when a single peer is
                                    #   configured, as shown live here (metrics never
                                    #   carry a `peer` label for a single bound peer,
-                                   #   see [metrics] below). With MORE THAN ONE peer,
+                                   #   see docs/runbook.md's "Multi-peer concentrator
+                                   #   (G4)" metrics note). With MORE THAN ONE peer,
                                    #   REQUIRED and must be unique across peers
                                    #   (T80/T81, Q21). ADDITIONAL peers (all but the
                                    #   first-configured) are exposed under this name

@@ -10,8 +10,9 @@ It is a single self-contained Go binary that runs on both ends of the tunnel:
 
 - **edge** — a Linux box (behind a router) that bonds the local WAN uplinks;
 - **concentrator** — a small public-IP VPS that terminates the tunnel and NATs
-  traffic onward. Supports one or more edges (multi-peer mode): each edge
-  authenticates with its own PSK.
+  traffic onward. Supports multiple edges (multi-peer mode); with more than
+  one edge, each authenticates with its own per-peer PSK (a single edge uses
+  the top-level PSK).
 
 The same binary serves both roles; the role is chosen from the config file.
 

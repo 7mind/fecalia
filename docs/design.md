@@ -625,10 +625,18 @@ misbehaves subtly. Agents and contributors must preserve them.
   the hot path.
   - **In multi-peer mode**, unauthenticated DATA/PARITY do not establish
     source-to-peer bindings (they route using existing bindings learned from
-    PROBE frames). An attacker can spam DATA frames from a forged source address
-    and waste resequence/FEC work if that address has no binding, but cannot
-    impersonate an existing peer (its source bindings are locked by authenticated
-    PROBEs).
+    PROBE frames). The two forgery cases cost differently: a forged source
+    address with **no existing binding** is trial-decoded against each
+    configured peer's codec (`O(peers)`, bounded by the static peer count,
+    `demuxInbound`) and, carrying no PROBE MAC, is dropped there — it never
+    dispatches to a peer and never reaches that peer's resequencer or FEC
+    decoder. A forged source that spoofs an address **already bound** to a
+    peer (learned from that peer's authenticated PROBE) routes straight into
+    that peer's plane and wastes its resequence/FEC work — the same
+    DoS-grade residual described above for the single-peer case — before the
+    inner AEAD rejects the forged payload. Neither case lets an attacker
+    impersonate an existing peer: bindings are established and re-pointed
+    only by an authenticated PROBE.
 - **Traffic analysis / DPI**: the outer wire has no fingerprint (random nonce,
   obfuscated body, no magic bytes); AmneziaWG junk params add defense-in-depth.
   Protocol *mimicry* (looking like HTTPS) is an explicit non-goal.
