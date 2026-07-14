@@ -26,6 +26,7 @@ import (
 //	9101  session_established_test.go (i2MetricsListen)
 //	9102  multipeer_test.go           (mpMetricsListen)
 //	9103  pacing_test.go              (pacingMetricsListen)
+//	9104  restart_onesided_test.go    (r121MetricsPort; edge on 127.0.0.1, concentrator on its uplink IP)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
