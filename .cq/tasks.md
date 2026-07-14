@@ -775,10 +775,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-041618-aa6460b0564523c9f.md",".cq/logs/20260714-042350-ab2788ec23f5df97d.md",".cq/logs/20260714-042350-a0e589c40f828c748.md"]
 - rawLogs: [".cq/logs/raw/20260714-041618-aa6460b0564523c9f.jsonl",".cq/logs/raw/20260714-042350-ab2788ec23f5df97d.jsonl",".cq/logs/raw/20260714-042350-a0e589c40f828c748.jsonl"]
 
-### T78 — planned
+### T78 — wip
 
 - createdAt: 2026-07-13T21:56:10.379Z
-- updatedAt: 2026-07-13T21:56:10.379Z
+- updatedAt: 2026-07-14T04:45:54.074Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Realhosts report-only dial-by-name check (stretch)
@@ -1029,10 +1029,10 @@ archives:
 
 ## M26
 
-### T93 — planned
+### T93 — wip
 
 - createdAt: 2026-07-13T22:28:58.271Z
-- updatedAt: 2026-07-13T22:35:48.942Z
+- updatedAt: 2026-07-14T04:45:51.735Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire per-peer prober sets, schedulers, and virtual endpoints in device.Up
@@ -1290,18 +1290,22 @@ archives:
 - sessionLogs: [".cq/logs/20260714-033617-a553d90c5a5d0afc1.md",".cq/logs/20260714-034834-a38febff249b322f5.md",".cq/logs/20260714-034834-a8fe10de2e74c5ad8.md",".cq/logs/20260714-034834-a3b74d24cfbd0d5a7.md",".cq/logs/20260714-034834-a03fdf59bb32f668c.md"]
 - rawLogs: [".cq/logs/raw/20260714-033617-a553d90c5a5d0afc1.jsonl",".cq/logs/raw/20260714-034834-a38febff249b322f5.jsonl",".cq/logs/raw/20260714-034834-a8fe10de2e74c5ad8.jsonl",".cq/logs/raw/20260714-034834-a3b74d24cfbd0d5a7.jsonl",".cq/logs/raw/20260714-034834-a03fdf59bb32f668c.jsonl"]
 
-### T111 — planned
+### T111 — done
 
 - createdAt: 2026-07-13T23:24:22.830Z
-- updatedAt: 2026-07-13T23:36:56.893Z
-- author: "opus-4.8[1m]"
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- updatedAt: 2026-07-14T05:05:28.286Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Ship the templated wanbond-addressing oneshot unit + C4 persistence recipe (Q40 artifact + C4)
 - description: "Add packaging/systemd/wanbond-addressing@.service: a templated oneshot (instance = role) with `PartOf=wanbond-%i.service`, `After=wanbond-%i.service`, that re-applies address + link-up + policy rules + per-table routes + nft SNAT from an operator-owned environment/script file after the daemon (re)starts. It MUST NOT race tun creation (the R27 lesson: a plain ExecStartPost under Type=exec runs before wanbond0 exists) — wait for the interface (ExecStartPre poll loop or BindsTo/After=sys-subsystem-net-devices-wanbond0.device). Coupled C4 doc section in install.md: the persistence recipe for non-networkd hosts, blessing this unit, explicitly warning that a plain ExecStartPost races tun creation, and noting the oneshot becomes optional-but-harmless once tun_persist is enabled."
 - acceptance: systemd-analyze verify passes on the unit (where available in CI/dev shell); the unit orders after interface existence, not just after execve (documented rationale referencing the R27 race); install.md C4 section references the shipped file and carries the race warning + the tun_persist cross-link. go test ./... unaffected.
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
 - dependsOn: ["T109"]
+- resultCommit: f3a59f8
+- completion: "Shipped packaging/systemd/wanbond-addressing@.service: a templated oneshot (instance=role, Type=oneshot+RemainAfterExit) that is PartOf=/After=/WantedBy=wanbond-%i.service and re-applies the operator's address/link-up/policy-rules/routes/nft-SNAT script after the daemon (re)starts. It orders after wanbond0's actual EXISTENCE via a bounded ExecStartPre poll on /sys/class/net/wanbond0 (30s loop under TimeoutStartSec=45s), NOT merely after execve — avoiding the R27 ExecStartPost-races-tun-creation failure. C4 recipe added to docs/install.md §4 (shipped-file reference + R27 race warning + tun_persist cross-link noting the unit becomes optional-but-harmless once tun_persist is on) + a CI-guarded shape test in internal/config/packaging_test.go (mutation-verified non-vacuous: 4/4 mutations fail). systemd-analyze verify exit 0 (stub-path copy). Unanimous 1-round panel approve; ff-merged as f3a59f8."
+- sessionLogs: [".cq/logs/20260714-045305-a0f56065089a0c206.md",".cq/logs/20260714-050504-a680275f9573ffec1.md",".cq/logs/20260714-050504-af7c64d9b56c69fc6.md"]
+- rawLogs: [".cq/logs/raw/20260714-045305-a0f56065089a0c206.jsonl",".cq/logs/raw/20260714-050504-a680275f9573ffec1.jsonl",".cq/logs/raw/20260714-050504-af7c64d9b56c69fc6.jsonl"]
 
 ## M33
 

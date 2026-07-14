@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 106
+  item: 107
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1145,6 +1145,19 @@ archives:
 - ledgerRefs: ["tasks:T109","goals:G6","defects:D52"]
 - sessionLogs: [".cq/logs/20260714-040623-a21407ed6e6df882a.md",".cq/logs/20260714-040623-a64c1d2ea3184af3e.md"]
 - rawLogs: [".cq/logs/raw/20260714-040623-a21407ed6e6df882a.jsonl",".cq/logs/raw/20260714-040623-a64c1d2ea3184af3e.jsonl"]
+
+### R107 — go-ahead
+
+- createdAt: 2026-07-14T05:05:20.714Z
+- updatedAt: 2026-07-14T05:05:20.714Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T111 unanimous panel approve (round 1): [opus]+[fable] both approve. Shipped packaging/systemd/wanbond-addressing@.service (templated oneshot, instance=role) + docs/install.md §4 C4 recipe + a CI-guarded internal/config/packaging_test.go shape test. BOTH reviewers independently RAN systemd-analyze verify (systemd 260) → exit 0 on a stub-path copy (the only finding on the verbatim unit is the absent operator-owned /etc/wanbond/addressing-%i.sh, covered by ConditionPathExists at runtime). The unit orders after INTERFACE EXISTENCE via a bounded ExecStartPre poll on /sys/class/net/wanbond0 (30s loop < TimeoutStartSec=45s, fails cleanly — no boot hang), not merely after execve, with the R27-race rationale documented. Templated syntax correct (%i, PartOf/After/WantedBy=wanbond-%i.service restart-coupling, Type=oneshot+RemainAfterExit). [fable] mutation-verified the packaging test non-vacuous (4/4 mutations kill it: drop ExecStartPre, drop After=, change poll path, reintroduce active ExecStartPost=). install.md C4 references the shipped file + carries the R27 race warning + the tun_persist cross-link. Full gate green. ff-merged as f3a59f8."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T111","goals:G6"]
+- sessionLogs: [".cq/logs/20260714-050504-a680275f9573ffec1.md",".cq/logs/20260714-050504-af7c64d9b56c69fc6.md"]
+- rawLogs: [".cq/logs/raw/20260714-050504-a680275f9573ffec1.jsonl",".cq/logs/raw/20260714-050504-af7c64d9b56c69fc6.jsonl"]
 
 ## M22
 
