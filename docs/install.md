@@ -1071,6 +1071,65 @@ and asserts exactly these steps automatically: it installs
 `iptables-persistent`, inserts the runtime rule, runs `netfilter-persistent
 save`, and re-inspects that the rule is present in `/etc/iptables/rules.v4`.
 
+### Concentrator: NAT/forwarding prerequisites for routed traffic (C6)
+
+Required **only** when the concentrator routes traffic on beyond itself — any
+full-tunnel / client-LAN recipe (§9). Skip this subsection for a plain
+point-to-point tunnel that never carries traffic addressed past the tunnel
+endpoints themselves. All three items are **operator-owned** — the daemon
+programs none of `ip_forward`, NAT, or firewall rules — and match the
+production Pi/o3 deploy (`wanbond-fixes.md` §C3/C6).
+
+1. **`ip_forward` — REQUIRED.** Off by default on most distros; without it the
+   kernel never routes tunnel packets on to the WAN, full stop:
+
+   ```sh
+   sudo sysctl -w net.ipv4.ip_forward=1
+   echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-wanbond-forward.conf
+   ```
+
+2. **`MASQUERADE` the tunnel network out the WAN interface — REQUIRED.**
+   `<tunnel-net>` is the inner WireGuard subnet (e.g. `10.77.0.0/24`);
+   `<wan>` is the concentrator's actual internet-facing NIC — **not**
+   `wanbond0` (on o3 this is the private `enp0s6` that OCI itself NATs to the
+   public IP; substitute your own WAN-facing interface):
+
+   ```sh
+   sudo iptables -t nat -A POSTROUTING -s <tunnel-net> -o <wan> -j MASQUERADE
+   ```
+
+3. **`FORWARD`: accept both directions — REQUIRED, easy to miss.** The
+   "Concentrator: tunnel-interface ACCEPT" rule above (`-i wanbond0 ACCEPT`)
+   is an **`INPUT`** rule; it only covers traffic *terminating on* the
+   concentrator and says nothing about `FORWARD`, which is what packets pass
+   through when the concentrator merely routes them on to the WAN and back.
+   The default `FORWARD` policy is `REJECT`/`DROP` on the same distros/clouds
+   called out above (OCI included), so it silently drops one direction unless
+   both of these are present:
+
+   ```sh
+   # outbound leg: client-subnet traffic entering FORWARD via wanbond0
+   sudo iptables -I FORWARD -i wanbond0 -j ACCEPT
+   # return leg: the outbound-leg ACCEPT above covers only that ONE
+   # direction — without this conntrack-ESTABLISHED accept too, the default
+   # FORWARD REJECT/DROP silently drops all RETURN traffic and the tunnel
+   # looks one-way-dead from the client's perspective
+   sudo iptables -I FORWARD -o wanbond0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+   ```
+
+**Persistence.** All of the above (the `sysctl.d` drop-in aside) are
+runtime-only mutations, same as the tunnel-interface ACCEPT above — persist
+them with the identical `netfilter-persistent` flow already covered in
+"Concentrator: persist the rules across reboots" (this section):
+
+```sh
+sudo netfilter-persistent save
+```
+
+`net.ipv4.ip_forward` written to `/etc/sysctl.d/` (step 1) is already
+persistent across reboots without further action (`sysctl --system` re-reads
+`/etc/sysctl.d/` on boot).
+
 ### Edge
 
 Outbound UDP to the concentrator's `endpoint` (and any per-path `dest_addr`)
@@ -1225,3 +1284,102 @@ a hostile network that classifies by port, **prefer a non-registered UDP port**
 `endpoint`. This avoids the trivial port-based "VPN" label. It is a deployment
 consideration, not a payload weakness — the obfuscated payload itself does not
 identify the tunnel as WireGuard/VPN.
+
+## 9. Full-tunnel / client-LAN recipe (C3)
+
+wanbond's primary use case: route an entire client LAN's traffic through the
+bonded tunnel and out the concentrator's public IP. This is end-to-end
+validated on the production Pi/o3 deploy (`wanbond-fixes.md`): edge = a
+Raspberry Pi with two WAN uplinks arriving as VLAN sub-interfaces (one per
+WAN, each pinned by `source_addr`) and a client LAN on a third VLAN;
+concentrator = a public host reached over NAT. Substitute your own
+addresses/interfaces throughout.
+
+**Never write a literal `allowed_ips = ["0.0.0.0/0"]` (D35, open: it wedges
+the WG handshake permanently — see §3's cross-field constraints).** Both
+routes below reach the same result — an edge that can route to the whole
+internet through the tunnel — without ever handing the engine a literal
+`/0`:
+
+### 9.1 Edge: install the default-route split (daemon-automated, §3)
+
+Set `mode = "default-route"` on the concentrator peer alongside a
+`0.0.0.0/0` (and, for IPv6, `::/0`) `allowed_ips` entry:
+
+```toml
+[[wireguard.peers]]
+public_key = "<base64 concentrator public key>"
+endpoint = "203.0.113.7:51820"
+allowed_ips = ["0.0.0.0/0"]
+mode = "default-route"             # see §3: edge-only, full-tunnel opt-in
+```
+
+The daemon splits `0.0.0.0/0` into the wg-quick `/1`+`/1` pair
+(`0.0.0.0/1` + `128.0.0.0/1`) at UAPI render regardless of `mode` — so the
+engine itself never sees the literal `/0` that wedges D35 — and, because
+`mode = "default-route"` is set, ALSO installs that same split as scope-link
+routes via `wanbond0` once the interface comes up, withdrawing them on stop.
+This is the daemon's **only** route programming anywhere in this recipe;
+everything below (9.2–9.3) is entirely operator-owned, same boundary as §3/§4.
+
+If you would rather not opt into `mode` at all, install the equivalent
+routes yourself instead (e.g. from the addressing oneshot, §4):
+
+```sh
+sudo ip route add 0.0.0.0/1 dev wanbond0
+sudo ip route add 128.0.0.0/1 dev wanbond0
+```
+
+### 9.2 Edge: route the client LAN onto wanbond0 (operator-owned)
+
+Policy-route the client subnet to `wanbond0` and **SNAT to the edge's own
+tunnel address**, so the concentrator's per-edge `allowed_ips =
+<edge-tunnel-ip>/32` (the ordinary point-to-point form, §3) still matches
+the source address of forwarded traffic — no widening needed on the
+concentrator side:
+
+```sh
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo ip rule add from 192.168.223.0/24 lookup 223
+sudo ip route add default dev wanbond0 table 223
+sudo iptables -t nat -A POSTROUTING -s 192.168.223.0/24 -o wanbond0 -j SNAT --to-source 10.77.0.2
+```
+
+(`192.168.223.0/24` / table `223` / `10.77.0.2` are the production Pi's
+client-LAN VLAN, routing table, and tunnel address, per `wanbond-fixes.md`
+§C3 — substitute your own client subnet, an unused table number, and the
+edge's `allowed_ips` address from its own peer config, §3.)
+
+**Alternative — widen the concentrator's `allowed_ips` instead of SNAT-ing on
+the edge:** set the concentrator's peer entry for this edge to
+`allowed_ips = ["10.77.0.2/32", "192.168.223.0/24"]` and skip the edge-side
+`iptables -t nat` step above. Trades a wider `allowed_ips` (the concentrator
+now cryptokey-routes the client subnet directly to this peer) for one fewer
+operator-owned step; pick one form, not both.
+
+Put the `ip_forward` toggle, the `ip rule`/`ip route`, and (if used) the
+`iptables -t nat` SNAT rule into the edge's addressing oneshot
+(`wanbond-addressing@edge.service`, §4) — `wanbond0` and everything routed
+through it are torn down and recreated on every daemon restart unless
+`tun_persist = true` (§4, I7), so these must be re-applied the same way the
+existing persistence recipe re-applies addressing.
+
+### 9.3 Concentrator: NAT and forward the tunnel traffic out the WAN (operator-owned)
+
+See §5 "Concentrator: NAT/forwarding prerequisites for routed traffic (C6)"
+— `ip_forward`, `MASQUERADE`, and the `FORWARD` established/related accept
+are all required for this recipe and, like 9.2, are entirely
+operator-owned: the daemon programs none of them (§3's `mode` boundary
+covers routes only, never NAT/forwarding/policy-routing).
+
+### 9.4 Persistence
+
+Both the edge's policy-route/SNAT rules (9.2) and the concentrator's
+NAT/forward rules (§5 C6) reference `wanbond0` or its addresses and so must
+survive both reboots and daemon restarts. Use the existing §4
+`wanbond-addressing@<role>.service` oneshot for anything keyed to the
+interface (9.2's `ip rule`/`ip route`, and the `iptables -t nat` SNAT rule
+if you took the SNAT branch above), and `netfilter-persistent save` (§5) for
+the concentrator's `iptables`/`ip6tables` rules, which persist independently
+of the interface. `net.ipv4.ip_forward` persists on its own once written to
+`/etc/sysctl.d/` (§5 C6).
