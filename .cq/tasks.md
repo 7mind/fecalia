@@ -2027,10 +2027,10 @@ archives:
 - dependsOn: ["T152","T153"]
 - resultCommit: 00e190f
 
-### T156 — wip
+### T156 — done
 
 - createdAt: 2026-07-14T13:16:51.364Z
-- updatedAt: 2026-07-14T19:20:26.620Z
+- updatedAt: 2026-07-14T19:32:09.774Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add the D65 field-validation procedure to docs/manual-checklist.md
@@ -2039,6 +2039,7 @@ archives:
 - suggestedModel: fast
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T155"]
+- resultCommit: 5451c54
 
 ### T157 — planned
 

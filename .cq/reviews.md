@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 195
+  item: 196
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2299,6 +2299,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T155","goals:G14","defects:D65"]
+
+### R195 — revise
+
+- createdAt: 2026-07-14T19:32:07.482Z
+- updatedAt: 2026-07-14T19:32:07.482Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T156 review round 1 — DISAPPROVE (single opus reviewer), REMEDIATED INLINE by orchestrator (both criticisms trivial autonomously-fixable docs edits; T137 escape-hatch). D65 field-validation procedure in docs/manual-checklist.md (docs-only, +186). Reviewer confirmed scope/config-keys(pacing_enabled/link_bandwidth/link_rtt match schema, all-or-nothing satisfied)/observation-table/e2e-no-absolute-throughput-caveat/lint all correct, BUT found 2 real in-scope docs defects: (1) iperf3 DIRECTION inconsistency — leg 1a ('Direct WAN') used `-R` (reverse=edge measures DOWNLOAD) while legs 1b/1c use forward (edge SENDS=UPLOAD); pacing shapes edge EGRESS/upload and the D65 ~3.67→~6.9 Mbps figures are UPLOAD, so a `-R` download baseline on an asymmetric last-mile (Starlink down>>up) is NOT comparable — breaks the three-way attribution AND contradicts the table's own ~6.9 upload figure; plus leg 1a lacked the `iperf3 -s` server line 1b/1c have (not runnable verbatim); (2) BROKEN intra-repo anchor `design.md#pacing` (no such heading; pacing lives under '### Send-side scheduler — internal/sched'), uncaught by the Go-only just lint. ORCHESTRATOR REMEDIATION (commit 5451c54): rewrote leg 1a to FORWARD/upload mode (dropped `-R` on both sub-measurements, added the concentrator `iperf3 -s -p 5201` server line, reworded the record-notes to 'edge UPLOAD throughput — the direction the pacer shapes' so T_starlink_direct/T_5g_direct are valid upload baselines for legs 1b/1c); fixed the anchor to design.md#send-side-scheduler--internalsched (verified the target heading exists at design.md:241). Merged to main as afcc559 (T156 core) + 5451c54 (remediation). Verified: no `-R` remains in leg 1a, no `#pacing` anchor; just lint 0 issues default+e2e+realhosts. 2 criticisms (both remediated inline) / 0 questions / 0 defects."
+- criticism: ["[REMEDIATED 5451c54] iperf3 leg-1a `-R` download baseline non-comparable to the forward/upload tunnel legs 1b/1c + missing `iperf3 -s` server line — rewritten to forward/upload with the server line added.","[REMEDIATED 5451c54] broken design.md#pacing anchor — repointed to the real #send-side-scheduler--internalsched heading."]
+- new_questions: []
+- ledgerRefs: ["tasks:T156","goals:G14","defects:D65"]
 
 ## M55
 
