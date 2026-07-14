@@ -80,7 +80,11 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 		if cerr != nil {
 			t.Fatalf("build second-peer path codec: %v", cerr)
 		}
-		p.paths = append(p.paths, &peerPathState{sharedPathState: sp, peer: p, codec: codec, prober: byName[sp.name]})
+		pp := &peerPathState{sharedPathState: sp, peer: p, codec: codec, prober: byName[sp.name]}
+		p.paths = append(p.paths, pp)
+		// Publish this peer's view for the receive demux, exactly as the concentrator's per-peer
+		// wiring does, so handleInbound source-demuxes the shared socket to the owning peer (T88).
+		sp.addViewLocked(pp)
 	}
 	m.peers = append(m.peers, p)
 	m.peersByName[name] = p

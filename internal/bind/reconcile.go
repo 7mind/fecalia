@@ -161,6 +161,10 @@ func (m *Multipath) promoteDeferredLocked(dyn sched.DynamicScheduler, dp deferre
 	// would mis-route datagrams, so fail loudly and roll back.
 	m.shared = append(m.shared, shared)
 	m.paths = append(m.paths, ps)
+	// Publish the primary's view of the freshly-bound socket for the receive demux (T88);
+	// single-peer today (the deferred-path concentrator fan-out is a later G4 task), so this
+	// is the socket's only view and handleInbound reads it as the fast path.
+	shared.addViewLocked(ps)
 	schedIdx, err := dyn.AddPath(ps.prober)
 	if err != nil {
 		m.paths = m.paths[:len(m.paths)-1]

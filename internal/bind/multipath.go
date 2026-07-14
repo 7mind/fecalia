@@ -86,6 +86,33 @@ type sharedPathState struct {
 	id   uint8
 	src  netip.Addr
 	conn *net.UDPConn
+
+	// views is the per-peer VIEW set of THIS shared socket — one peerPathState per bound
+	// peer — published copy-on-write through an atomic.Pointer so the single Bind-owned
+	// readLoop demuxes an inbound datagram to its owning peer's view WITHOUT m.mu on the
+	// receive hot path (the same lock-free-publish discipline peersView/resequencer use).
+	// It is (re)published under m.mu at every fan-out site (Open / attachPeerPathLocked /
+	// deferred promote, and each concentrator peer bind). On the single-peer edge/hub it
+	// holds exactly one entry (the primary's view), which handleInbound reads as "no demux
+	// needed" — the byte-identical fast path. len(views)>1 marks a shared concentrator
+	// socket whose datagrams must be source-demuxed to the owning peer (T88).
+	views atomic.Pointer[[]*peerPathState]
+}
+
+// addViewLocked publishes pp as a per-peer view of this shared socket for the lock-free
+// receive demux (T88). Copy-on-write: it republishes a NEW slice with pp appended, so a
+// readLoop mid-iteration over the previously-published snapshot is never disturbed. The
+// caller holds m.mu (every fan-out site does), which serializes writers; readers Load
+// without a lock.
+func (sp *sharedPathState) addViewLocked(pp *peerPathState) {
+	old := sp.views.Load()
+	var next []*peerPathState
+	if old != nil {
+		next = make([]*peerPathState, len(*old), len(*old)+1)
+		copy(next, *old)
+	}
+	next = append(next, pp)
+	sp.views.Store(&next)
 }
 
 // peerPathState is one peer's per-(peer,path) VIEW of a shared uplink: that peer's own
@@ -319,13 +346,21 @@ type Multipath struct {
 	// receive hot path — the same lock-free-publish discipline resequencer/fecRecv use. It
 	// is never nil after construction (the constructor publishes the primary-only view).
 	peersView atomic.Pointer[[]*peerState]
-	// peerByEndpoint / peerBySource are the inbound demux lookup maps the concentrator's
-	// shared-socket receive path needs to route a datagram to the owning peer (endpoint or
-	// learned source → peer). They are PLACEHOLDERS today: the single-peer edge/hub needs no
-	// demux (one peer owns every socket), so they stay empty; the concentrator receive path
-	// (a later G4 task) populates and reads them.
+	// peerByEndpoint is the inbound endpoint-keyed demux placeholder (still unused today: the
+	// single-peer edge/hub needs no demux, and the source-keyed binding below is what the
+	// concentrator receive path routes on).
 	peerByEndpoint map[netip.AddrPort]*peerState
-	peerBySource   map[netip.Addr]*peerState
+	// peerBySource is the inbound source-demux map: a learned source address → the peer it was
+	// bound to by an authenticated PROBE (T88). The concentrator's per-socket readLoops resolve
+	// a datagram's source to its owning peer through it; a source is bound ONLY on the first
+	// PROBE that MAC-verifies under a peer's psk (D9/D11: bindings, like remotes, are learned
+	// only from authenticated PROBEs). It is published copy-on-write through an atomic.Pointer
+	// so the receive hot path resolves a bound source with a lock-free Load (no m.mu — a reader
+	// must never block on m.mu, since Close waits on the readers WHILE holding it), and a new
+	// binding is installed lock-free by a CAS republish of a copy with the entry added
+	// (bindSourceToPeer). Nil until the first binding; the single-peer edge/hub never consults
+	// it (one peer owns every socket — handleInbound's fast path skips the demux entirely).
+	peerBySource atomic.Pointer[map[netip.Addr]*peerState]
 	// peerByVirt routes an OUTBOUND Send to its owning peer: the engine hands Send the
 	// single virtual endpoint (*udpEndpoint) it holds for a peer, and this map resolves
 	// that pointer to the peer's datapath state (outerSeq, scheduler, sendCodec, fecSend,
@@ -513,7 +548,6 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		peers:          []*peerState{primary},
 		peersByName:    map[string]*peerState{primary.name: primary},
 		peerByEndpoint: map[netip.AddrPort]*peerState{},
-		peerBySource:   map[netip.Addr]*peerState{},
 		peerByVirt:     map[*udpEndpoint]*peerState{primary.virt: primary},
 		fecCfg:         fecCfg,
 		adaptiveCfg:    adaptiveCfg,
@@ -658,6 +692,10 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		}
 		m.shared = append(m.shared, shared)
 		m.paths = append(m.paths, ps)
+		// Publish the primary's view for the receive demux (T88). On the single-peer edge/hub
+		// this is the ONLY view, which handleInbound reads as the byte-identical fast path; a
+		// concentrator peer bound later appends its own view to the same socket.
+		shared.addViewLocked(ps)
 		if firstBound {
 			actualPort = uint16(c.LocalAddr().(*net.UDPAddr).Port)
 			firstBound = false
@@ -841,7 +879,7 @@ func (m *Multipath) readLoop(ps *peerPathState, deliver chan<- struct{}) {
 		// pulled off its socket before dispatch, lock-free. This goroutine is the sole
 		// writer of ps.rxBytes, so the atomic Add is uncontended.
 		ps.rxBytes.Add(uint64(n))
-		m.handleInbound(ps, readBuf[:n], srcAP)
+		m.demuxInbound(ps, readBuf[:n], srcAP)
 		// Advance liveness off the receive path (throttled): a live signal on THIS path
 		// is what lets a DIFFERENT, silent path be marked DOWN promptly even when the
 		// probe-loop ticker is starved under load (D15). The peer probes every path
@@ -1032,9 +1070,12 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 	}
 }
 
-// handleInbound decodes one received outer datagram and dispatches it by kind. It
-// is the single per-frame receive action, factored out of readLoop so the probe
-// transport is exercisable without spinning receive goroutines. Delivery up the WG
+// handleInbound decodes one received outer datagram UNDER THIS VIEW'S CODEC and dispatches
+// it by kind to the view's owning peer. It is the single per-frame receive action; the
+// readLoop reaches it through demuxInbound, which first resolves the owning view on a shared
+// concentrator socket (on the single-peer edge/hub the reader's own view is the owner, so
+// demuxInbound's fast path calls this directly — byte-identical to the pre-concentrator
+// behaviour). Delivery up the WG
 // path is deferred to the resequencer (Pop, in the engine-facing drainer): a DATA
 // frame is not handed up here but pushed into the shared resequencer to be released in
 // outer-seq order.
@@ -1068,10 +1109,113 @@ func (m *Multipath) handleInbound(ps *peerPathState, raw []byte, srcAP netip.Add
 	if err != nil {
 		return // drop malformed / PSK-mismatched outer frames
 	}
-	// Route to the OWNING peer's resequencer / FEC decoder / reflector: the per-(peer,path)
-	// state (ps) back-references its peerState, so a shared socket serving many peers still
-	// resequences each peer's stream against that peer's own buffer. On the single-peer
-	// edge/hub ps.peer is the embedded primary, so this is byte-identical to the singleton.
+	m.dispatchInbound(ps, fr, raw, srcAP)
+}
+
+// demuxInbound is the readLoop's per-frame entry on a (possibly shared) socket: it resolves
+// which bound peer's view owns the datagram, then hands the frame to handleInbound on THAT
+// view (T88). Because the readLoop holds only the PRIMARY's view of a shared socket (one
+// reader per socket), the routing that a concentrator needs — a datagram from peer B decoded
+// and resequenced under peer B's plane — happens HERE, not by trusting the reader's own view.
+//
+// Fast path: a socket with a single peer view (the edge/hub, or any socket not shared by a
+// second peer) needs no demux — dispatch on the reader's own view, byte-identical to the
+// pre-concentrator behaviour. The per-socket view snapshot is read lock-free; a nil/one-entry
+// snapshot means "not a shared concentrator socket".
+//
+// Shared socket (>1 view):
+//   - A source already bound by a prior authenticated PROBE routes straight to that peer's
+//     view of THIS socket (one lock-free map Load). A frame that does not verify under that
+//     peer's psk — a spoofed source it cannot forge the MAC for — is dropped by handleInbound.
+//   - An unbound source is trial-decoded against each peer's psk-derived codec (O(peers),
+//     bounded by the static peer count). A genuine frame authenticates under EXACTLY ONE psk,
+//     so the first MAC that verifies identifies the peer and the loop STOPS there. Only an
+//     authenticated PROBE establishes a binding (D9/D11: bindings, like remotes, are learned
+//     only from authenticated PROBEs); an authenticated DATA/PARITY from a not-yet-bound
+//     source carries no binding authority and is dropped until the peer's PROBE binds it. A
+//     forged/garbage frame verifies under NO psk, binds nothing, and is dropped cheaply.
+func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.AddrPort) {
+	views := ps.views.Load()
+	if views == nil || len(*views) <= 1 {
+		m.handleInbound(ps, raw, srcAP)
+		return
+	}
+	if bound, ok := m.lookupPeerBySource(srcAP.Addr()); ok {
+		for _, v := range *views {
+			if v.peer == bound {
+				m.handleInbound(v, raw, srcAP)
+				return
+			}
+		}
+		return // the bound peer holds no view of this socket (removed): drop
+	}
+	for _, v := range *views {
+		fr, err := v.codec.Decode(raw)
+		if err != nil {
+			continue // not this peer's psk — try the next
+		}
+		if _, isProbe := fr.(frame.Probe); !isProbe {
+			return // this peer's frame, but not a PROBE: no binding, drop
+		}
+		m.bindSourceToPeer(srcAP.Addr(), v.peer)
+		m.dispatchInbound(v, fr, raw, srcAP) // already decoded: dispatch without re-decoding
+		return
+	}
+	// No peer's psk verified: a forged/garbage frame. No binding, drop.
+}
+
+// lookupPeerBySource resolves a learned source address to the peer bound to it, or nil when
+// the source is not yet bound. It reads the copy-on-write binding map with a single lock-free
+// Load, so the concentrator receive hot path never takes m.mu (see peerBySource).
+func (m *Multipath) lookupPeerBySource(addr netip.Addr) (*peerState, bool) {
+	mp := m.peerBySource.Load()
+	if mp == nil {
+		return nil, false
+	}
+	p, ok := (*mp)[addr]
+	return p, ok
+}
+
+// bindSourceToPeer records addr→p in the source-demux map, installed lock-free by a CAS
+// republish of a copy with the entry added (T88). It takes NO lock: a reader must never block
+// on m.mu (Close waits on the readers WHILE holding m.mu), so the binding — written from a
+// readLoop goroutine — must not acquire it. Idempotent: an already-present addr→p binding is a
+// no-op, and a lost CAS (a concurrent bind on another socket) simply retries. Copy-on-write
+// keeps every published map immutable, so a concurrent lookupPeerBySource over the old snapshot
+// is never disturbed.
+func (m *Multipath) bindSourceToPeer(addr netip.Addr, p *peerState) {
+	for {
+		old := m.peerBySource.Load()
+		if old != nil {
+			if existing, ok := (*old)[addr]; ok && existing == p {
+				return
+			}
+		}
+		var n int
+		if old != nil {
+			n = len(*old)
+		}
+		next := make(map[netip.Addr]*peerState, n+1)
+		if old != nil {
+			for k, v := range *old {
+				next[k] = v
+			}
+		}
+		next[addr] = p
+		if m.peerBySource.CompareAndSwap(old, &next) {
+			return
+		}
+		// Lost the race with a concurrent bind: reload and retry.
+	}
+}
+
+// dispatchInbound handles one already-decoded inbound frame on the resolved peer's view (ps):
+// it routes to that peer's resequencer / FEC decoder / reflector. The source demux in
+// demuxInbound has already selected ps so a shared socket serving many peers resequences each
+// peer's stream against that peer's own buffer; on the single-peer edge/hub ps.peer is the
+// embedded primary, so this is byte-identical to the pre-split singleton. raw is retained for
+// the probe transport (HandleEcho / Reflect re-decode it under the peer's psk).
+func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byte, srcAP netip.AddrPort) {
 	pr := ps.peer
 	switch f := fr.(type) {
 	case frame.Data:
@@ -1851,6 +1995,9 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 		p.paths = p.paths[:len(p.paths)-1]
 		return nil, fmt.Errorf("bind: scheduler/path index skew after add: sched=%d bind=%d", schedIdx, bindIdx)
 	}
+	// Publish this peer's view of the shared socket for the receive demux (T88): once >1 peer
+	// has a view, handleInbound source-demuxes the socket's datagrams to their owning peer.
+	shared.addViewLocked(pp)
 	return pp, nil
 }
 
