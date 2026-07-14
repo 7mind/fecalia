@@ -126,6 +126,176 @@ func latestHandshakeNano(dump string) int64 {
 	return latest
 }
 
+// perPeerHandshakeNano parses an amneziawg UAPI GET dump into a PER-PEER snapshot: each
+// configured peer's most recent handshake instant as Unix nanoseconds, keyed by the peer's
+// lowercase-hex public key (the same `public_key=<hex>` form uapiConfig renders and the
+// engine's IpcGet dump emits). Unlike latestHandshakeNano — which flattens the whole dump to
+// one global max for the connection-level session gauge — this keeps peers distinct so the
+// concentrator teardown loop can level-check EACH non-primary peer independently. A peer block
+// begins at its `public_key=` line and runs until the next one; a never-handshaked peer emits
+// the 0/0 pair and is recorded with instant 0 (present, but not established). A block with no
+// last-handshake lines at all also maps to 0. Keys are taken verbatim from the dump (already
+// lowercase hex), so a caller compares against hex.EncodeToString(pub[:]).
+func perPeerHandshakeNano(dump string) map[string]int64 {
+	out := make(map[string]int64)
+	var curKey string
+	var sec int64
+	var haveSec bool
+	for _, line := range strings.Split(dump, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "public_key":
+			curKey = val
+			haveSec = false
+			if _, seen := out[curKey]; !seen {
+				// Record presence even for a never-handshaked peer so the level check sees
+				// it as "not established" (instant 0) rather than "absent from the dump".
+				out[curKey] = 0
+			}
+		case "last_handshake_time_sec":
+			if curKey == "" {
+				continue
+			}
+			s, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				haveSec = false
+				continue
+			}
+			sec, haveSec = s, true
+		case "last_handshake_time_nsec":
+			if curKey == "" || !haveSec {
+				continue
+			}
+			haveSec = false
+			ns, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				continue
+			}
+			out[curKey] = sec*int64(time.Second) + ns
+		}
+	}
+	return out
+}
+
+// peerTearer is the seam onto the bind's per-peer teardown: Bind.TearDownPeer frees a dead
+// configured peer's heavy state (resequencer ring, FEC buffers, demux source bindings) and
+// returns true when it actually reclaimed that state, false on a no-op (peer unknown, the
+// embedded primary, still LIVE, or already torn down). *bind.Multipath satisfies it; a fake
+// records calls in unit tests so the level-triggered wiring runs without a live bind.
+type peerTearer interface {
+	TearDownPeer(name string) bool
+}
+
+// monitoredPeer pairs a non-primary configured peer's stable name (the id TearDownPeer is
+// keyed on) with the lowercase-hex public key the engine's UAPI dump identifies it by, so the
+// teardown loop can map a dump entry back to the peer to tear down.
+type monitoredPeer struct {
+	name      string
+	publicKey string // lowercase hex of the 32-byte WG public key (hex.EncodeToString(pub[:]))
+}
+
+// peerTeardownMonitor drives the LEVEL-TRIGGERED reclaim of dead concentrator peers (D50).
+// A peer's heavy receive state is instantiated on its FIRST authenticated PROBE (not on WG
+// handshake), so a valid-psk peer that BINDS via PROBE but never completes a handshake has
+// last_handshake=0 forever and never produces the Established 1->0 EDGE an edge-triggered
+// monitor would need — its state would leak permanently. So this monitor is level-triggered:
+// on each poll it reads the engine's per-peer handshake snapshot and, for EVERY configured
+// non-primary peer that is NOT currently established (no handshake, OR a handshake aged past
+// RejectAfterTime), it calls Bind.TearDownPeer(name). TearDownPeer is idempotent-safe (it
+// refuses live peers and the primary and no-ops on an already-torn/absent name), so repeating
+// the call every poll is harmless and survives a daemon-reload loss of prior edge memory. Only
+// the LOG is deduped (via torn): ONE INFO on the transition to torn-down, reset when the peer
+// re-establishes. It is engaged ONLY in multi-peer (concentrator) mode; the single-peer
+// edge/hub keeps the global sessionMonitor path byte-identical.
+type peerTeardownMonitor struct {
+	engine ipcGetter
+	tearer peerTearer
+	clock  telemetry.Clock
+	// expiry is the session-validity window (WireGuard's RejectAfterTime): a handshake older
+	// than this no longer counts as established, matching sessionMonitor's gate.
+	expiry time.Duration
+	// peers is the ORDERED set of configured non-primary peers to level-check (the primary is
+	// never torn down by session loss — TearDownPeer refuses it — so it is excluded here).
+	peers []monitoredPeer
+	// torn dedupes the transition LOG, NOT the idempotent call: name -> already logged as
+	// torn-down. Cleared when a peer re-establishes so a later loss logs afresh.
+	torn map[string]bool
+}
+
+// newPeerTeardownMonitor builds the level-triggered teardown monitor over the engine and bind
+// for the given non-primary peers. The clock is injected so the handshake-age derivation is
+// deterministic under test; expiry is WireGuard's RejectAfterTime, matching sessionMonitor.
+func newPeerTeardownMonitor(engine ipcGetter, tearer peerTearer, peers []monitoredPeer, clock telemetry.Clock) *peerTeardownMonitor {
+	return &peerTeardownMonitor{
+		engine: engine,
+		tearer: tearer,
+		clock:  clock,
+		expiry: awgdevice.RejectAfterTime,
+		peers:  peers,
+		torn:   make(map[string]bool),
+	}
+}
+
+// poll performs ONE level-triggered sweep: it reads the engine's per-peer handshake snapshot
+// and, for each monitored non-primary peer that is NOT currently established, calls
+// Bind.TearDownPeer(name). The call is repeated every poll while the peer stays dead (idempotent
+// by contract); only the LOG is deduped — one INFO fires on the poll where TearDownPeer actually
+// reclaims state (its true return), and the dedupe clears when the peer re-establishes so a
+// subsequent loss logs again. An engine read error skips the sweep (no spurious teardown). The
+// poll loop is single-goroutine, so the torn map needs no lock.
+func (m *peerTeardownMonitor) poll(lg log.Logger) {
+	dump, err := m.engine.IpcGet()
+	if err != nil {
+		return
+	}
+	handshakes := perPeerHandshakeNano(dump)
+	now := m.clock.Now()
+	for _, p := range m.peers {
+		nano := handshakes[p.publicKey]
+		established := nano != 0 && now.Sub(time.Unix(0, nano)) <= m.expiry
+		if established {
+			// Re-established: allow a future loss to log its teardown afresh.
+			delete(m.torn, p.name)
+			continue
+		}
+		reclaimed := m.tearer.TearDownPeer(p.name)
+		if reclaimed && !m.torn[p.name] {
+			m.torn[p.name] = true
+			lg.Info("concentrator peer session lost; heavy state torn down", "peer", p.name)
+		}
+	}
+}
+
+// startPeerTeardownMonitor starts the background poll loop that level-checks each configured
+// non-primary peer's WG session and tears down any that is not established. Like the session
+// monitor it uses a wall-clock ticker; the age derivation runs through the injected clock the
+// monitor holds. The returned stopper is idempotent and must be invoked BEFORE the engine is
+// torn down so no IpcGet races the close. It is a no-op (no goroutine) when interval <= 0 or
+// no non-primary peer is configured (the single-peer edge/hub).
+func startPeerTeardownMonitor(mon *peerTeardownMonitor, interval time.Duration, lg log.Logger) (stop func()) {
+	if interval <= 0 || len(mon.peers) == 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				mon.poll(lg)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
 // sessionEdge detects the 0->1 (false->true) WG-session-established transition. observe is
 // called on each poll with the current established verdict; it returns true EXACTLY on a
 // false->true edge, so the caller emits the 'session established' record once per newly

@@ -106,6 +106,12 @@ type Tunnel struct {
 	// Close calls it before dev.Close so no IpcGet races the engine teardown. It is idempotent
 	// and never nil.
 	stopSession func()
+	// stopPeerTeardown halts the concentrator per-peer teardown monitor loop (D50/T126): in
+	// multi-peer mode it level-checks each configured non-primary peer's WG session and calls the
+	// bind's idempotent TearDownPeer on any peer whose session is gone, reclaiming its heavy
+	// receive state. Close calls it before dev.Close so no IpcGet races the engine teardown. It is
+	// idempotent and never nil (a no-op for a single-peer config, which monitors no non-primary peer).
+	stopPeerTeardown func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -407,13 +413,24 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// Start the WG-session monitor poll loop AFTER dev.Up so the engine peer it reads exists.
 	// Close stops it before dev.Close, like the probe/reconcile loops.
 	stopSession := startSessionMonitor(sessMon, sessionPollInterval, clg)
+	// Start the concentrator per-peer teardown monitor (D50/T126): in MULTI-PEER mode it
+	// level-checks each configured non-primary peer's WG session every poll and calls the bind's
+	// idempotent TearDownPeer on any peer whose session is gone (no handshake, or aged past
+	// RejectAfterTime), reclaiming its resequencer ring, FEC buffers, and demux cap slots — the
+	// leak the edge-triggered global monitor cannot catch (a valid-psk peer that binds via PROBE
+	// but never completes a handshake produces no 1->0 edge). concentratorMonitoredPeers returns
+	// an EMPTY peer set for a single-peer config, so the loop is a no-op there and the single-peer
+	// monitor path is byte-identical to pre-T126. Started after dev.Up (the engine peers it reads
+	// exist); Close stops it before dev.Close.
+	teardownMon := newPeerTeardownMonitor(dev, mpBind, concentratorMonitoredPeers(cfg, ids), telemetry.SystemClock{})
+	stopPeerTeardown := startPeerTeardownMonitor(teardownMon, sessionPollInterval, clg)
 
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
 		routePrefixes: routePrefixes,
 		stopProbes:    stopProbes, stopReconcile: stopReconcile,
 		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
-		stopSession: stopSession, amnezia: cfg.Amnezia,
+		stopSession: stopSession, stopPeerTeardown: stopPeerTeardown, amnezia: cfg.Amnezia,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). The
 		// WG-session snapshot is read from the engine via sessMon. It is built unconditionally
@@ -441,6 +458,29 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
 	return t, nil
+}
+
+// concentratorMonitoredPeers returns the set of NON-PRIMARY configured peers the per-peer
+// teardown monitor (D50/T126) level-checks: every peer after peers[0], paired with the stable
+// name TearDownPeer is keyed on (from PeerIdentities, so the single-peer/multi-peer name
+// derivation is shared) and the lowercase-hex public key the engine's UAPI dump identifies it
+// by (hex.EncodeToString(pub[:]), the same form uapiConfig renders). ids MUST be
+// cfg.PeerIdentities() — its order matches cfg.WireGuard.Peers, so index i pairs peer i's
+// public key with identity i's name. A single-peer config (edge/hub, or a one-peer
+// concentrator) yields an EMPTY set, so the teardown loop is inert and the pre-T126 single-peer
+// monitor path is unchanged. The primary (peers[0]) is excluded: TearDownPeer refuses it, and
+// its lifecycle is Open/Close, not session teardown.
+func concentratorMonitoredPeers(cfg *config.Config, ids []config.PeerIdentity) []monitoredPeer {
+	peers := cfg.WireGuard.Peers
+	if len(peers) <= 1 {
+		return nil
+	}
+	mon := make([]monitoredPeer, 0, len(peers)-1)
+	for i := 1; i < len(peers); i++ {
+		pub := peers[i].PublicKey.Bytes()
+		mon = append(mon, monitoredPeer{name: ids[i].Name, publicKey: hex.EncodeToString(pub[:])})
+	}
+	return mon
 }
 
 // applyMetricsLocked reconciles the running /metrics endpoint to listen: it starts the
@@ -846,6 +886,12 @@ func (t *Tunnel) Close() {
 	// engine's Close.
 	if t.stopSession != nil {
 		t.stopSession()
+	}
+	// Stop the concentrator per-peer teardown monitor before the engine teardown (D50/T126): no
+	// IpcGet — nor a TearDownPeer on the bind — may race the engine's Close. Inert for a
+	// single-peer config, whose stopper is a no-op.
+	if t.stopPeerTeardown != nil {
+		t.stopPeerTeardown()
 	}
 	// Withdraw the default-route wiring (I6) BEFORE the engine teardown, while wanbond0
 	// still exists: with tun_persist=true the interface survives Close, so its routes
