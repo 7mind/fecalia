@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 120
+  item: 121
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1346,3 +1346,16 @@ archives:
 - ledgerRefs: ["tasks:T99","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-070917-abf23ed9fff393fef.md",".cq/logs/20260714-071939-a959ee680c6a5baab.md",".cq/logs/20260714-071939-a9dd699b4c0bc00c8.md"]
 - rawLogs: [".cq/logs/raw/20260714-070917-abf23ed9fff393fef.jsonl",".cq/logs/raw/20260714-071939-a959ee680c6a5baab.jsonl",".cq/logs/raw/20260714-071939-a9dd699b4c0bc00c8.jsonl"]
+
+### R121 — go-ahead
+
+- createdAt: 2026-07-14T07:54:07.227Z
+- updatedAt: 2026-07-14T07:54:07.227Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T98 unanimous panel approve at ROUND 3 (3-round criticism loop): [opus]+[fable] both approve. Docs-sync for the shipped G4 multi-peer concentrator across AGENTS.md, README.md, docs/design.md, docs/install.md, wanbond.example.toml + an extended config test. Round 1 (both disapprove): the multi-peer example was commented-out prose exercised by NO test (acceptance requires 'parses via the config test suite'), plus 4 doc-vs-source contradictions. Round 2: re-applied on current main (post T79) fixing all 4 — (a) single-peer per-peer psk is REJECTED at load not 'optional/defaults to top-level' (config.go:1132); (b) the top-level psk authenticates NO peer on a multi-peer concentrator though still required by validate (device.go feeds only per-peer PSKs); (c) only ADDITIONAL peers carry a named `peer` metrics label, the primary is peer=\"\" (BoundPeerNames; discrepancy filed D58); (d) 'virtual endpoint' terminology reserved for A1 — and EXTENDED TestExampleConfigLoads with an exampleMultiPeerConcentrator extractor + multi_peer_concentrator subtest that config.Load()s the real commented stanza with two distinct per-peer PSKs/names (mutation-verified). Round 2 approve/disapprove split caught a NEW decisive error: the added design.md multi-peer DATA/PARITY sub-bullet INVERTED the DoS condition. Round 3 corrected it against demuxInbound (an UNBOUND forged source is trial-decoded O(peers) and dropped pre-dispatch — the HMAC in frame.go makes a forged PROBE impossible; only a source spoofing a currently-BOUND peer reaches that peer's resequencer/FEC, dropped by the inner WG AEAD), plus scoped the README per-peer-PSK claim to 2+ edges and redirected a dangling example.toml [metrics] pointer to the runbook G4 note. Both reviewers re-read demuxInbound/Codec.Decode and confirmed the security prose is correct in both directions. Rebased onto current main (over T79/T99/T108); resolved one wanbond.example.toml conflict (kept T108's route-installing mode= description + T98's psk/name comment blocks), re-ran the gate (TestExampleConfigLoads green), ff-merged as d960979. The config.go stale Peer.PSK 'not yet consumed' comment is filed D57."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T98","goals:G4","defects:D57","defects:D58"]
+- sessionLogs: [".cq/logs/20260714-075343-a64dedbc8a4d965d1.md",".cq/logs/20260714-075343-a4e53784a3d3e81cb.md"]
+- rawLogs: [".cq/logs/raw/20260714-075343-a64dedbc8a4d965d1.jsonl",".cq/logs/raw/20260714-075343-a4e53784a3d3e81cb.jsonl"]

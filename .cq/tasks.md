@@ -1128,10 +1128,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-064317-af9870e926cd7a191.md",".cq/logs/20260714-065448-a43bd9a8d80ec37ce.md",".cq/logs/20260714-065448-a377c32726def949b.md"]
 - rawLogs: [".cq/logs/raw/20260714-064317-af9870e926cd7a191.jsonl",".cq/logs/raw/20260714-065448-a43bd9a8d80ec37ce.jsonl",".cq/logs/raw/20260714-065448-a377c32726def949b.jsonl"]
 
-### T98 — wip
+### T98 — done
 
 - createdAt: 2026-07-13T22:29:48.172Z
-- updatedAt: 2026-07-14T07:02:05.278Z
+- updatedAt: 2026-07-14T07:54:17.544Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Sync AGENTS.md, design/install/README docs and example config for multi-peer
@@ -1140,6 +1140,10 @@ archives:
 - suggestedModel: fast
 - dependsOn: ["T97"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: d960979
+- completion: "Docs-sync for the shipped G4 multi-peer concentrator (AGENTS.md, README.md, docs/design.md, docs/install.md, wanbond.example.toml) + an extended config test. Documents the per-peer model, authenticated peerBySource demux + threat model, single-peer back-compat, and the plural [[wireguard.peers]] concentrator schema — every claim grounded in shipped code. TestExampleConfigLoads extended with a multi_peer_concentrator subtest that extracts+config.Load()s the real commented multi-peer stanza from wanbond.example.toml (two distinct per-peer PSKs/names; mutation-verified), satisfying the 'parses via the config test suite' acceptance. 3-round criticism loop resolved: R1 missing test coverage + 4 doc-vs-source contradictions (single-peer psk rejected-not-defaulted; top-level psk authenticates no peer in multi-peer; only additional peers named in metrics; 'virtual endpoint' A1-reserved); R2→R3 corrected an inverted multi-peer DATA-spam DoS claim against demuxInbound (unbound source dropped pre-dispatch; only a spoofed BOUND source reaches reseq/FEC). Unanimous R3 approve. Rebased over T79/T99/T108 (resolved a wanbond.example.toml conflict, gate re-run green) and ff-merged as d960979. Filed D57 (stale config.go Peer.PSK comment) + D58 (primary peer name dropped from metrics label)."
+- sessionLogs: [".cq/logs/20260714-070917-a436e61b729c26ad8.md",".cq/logs/20260714-073515-aeb3c04557caa5a8c.md",".cq/logs/20260714-074711-a1f5adaf73e092e1c.md",".cq/logs/20260714-075343-a64dedbc8a4d965d1.md",".cq/logs/20260714-075343-a4e53784a3d3e81cb.md"]
+- rawLogs: [".cq/logs/raw/20260714-070917-a436e61b729c26ad8.jsonl",".cq/logs/raw/20260714-073515-aeb3c04557caa5a8c.jsonl",".cq/logs/raw/20260714-074711-a1f5adaf73e092e1c.jsonl",".cq/logs/raw/20260714-075343-a64dedbc8a4d965d1.jsonl",".cq/logs/raw/20260714-075343-a4e53784a3d3e81cb.jsonl"]
 
 ### T99 — done
 
