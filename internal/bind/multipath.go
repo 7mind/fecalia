@@ -2527,7 +2527,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 	// bound peer, minting each peer's own Codec + prober and admitting it to that peer's
 	// scheduler. attached[k] is m.peers[k]'s view of the new shared socket. A failure in any
 	// peer rolls back every peer already attached, so a partial fan-out never leaks.
-	attached, err := m.attachSharedPathLocked(shared, def, id)
+	attached, err := m.attachSharedPathLocked(shared, def, id, nil)
 	if err != nil {
 		_ = c.Close()
 		return err
@@ -2560,10 +2560,21 @@ func (m *Multipath) AddPath(def config.Path) error {
 // attached (dropping the scheduler entry and popping the appended peerPathState), so a
 // partial fan-out never leaks a half-admitted path. Caller holds m.mu and, on success, owns
 // appending the shared socket + each peer's prober to the durable membership.
-func (m *Multipath) attachSharedPathLocked(shared *sharedPathState, def config.Path, id uint8) ([]*peerPathState, error) {
+//
+// probers, when non-nil, MUST hold exactly one entry per m.peers (peer order) — that peer's
+// OWN, ALREADY m.defs-aligned prober to REUSE rather than mint fresh (the deferred-promote
+// fan-out, promoteDeferredLocked: a promoted deferred path's probers already exist in every
+// peer's p.probers from the original admission, so promotion must not mint a second, different
+// prober per peer). nil mints a FRESH prober per peer via that peer's newProber factory (the
+// runtime AddPath fan-out for a brand-new path).
+func (m *Multipath) attachSharedPathLocked(shared *sharedPathState, def config.Path, id uint8, probers []*telemetry.Prober) ([]*peerPathState, error) {
 	attached := make([]*peerPathState, 0, len(m.peers))
-	for _, p := range m.peers {
-		pp, err := m.attachPeerPathLocked(p, shared, def, id)
+	for pi, p := range m.peers {
+		var prober *telemetry.Prober
+		if probers != nil {
+			prober = probers[pi]
+		}
+		pp, err := m.attachPeerPathLocked(p, shared, def, id, prober)
 		if err != nil {
 			for k := len(attached) - 1; k >= 0; k-- {
 				_ = m.detachPeerPathBoundLocked(m.peers[k], shared.name)
@@ -2575,26 +2586,30 @@ func (m *Multipath) attachSharedPathLocked(shared *sharedPathState, def config.P
 	return attached, nil
 }
 
-// attachPeerPathLocked builds ONE peer's view of a shared path: its own decode Codec, a
-// freshly-minted prober (stamped with the shared path-id so DATA and PROBE agree on the
-// wire), the seeded return remote, and admission to that peer's scheduler as a NEW
-// LOWEST-PRIORITY path (so it never steals a healthy survivor's active selection). It does
-// NOT touch the durable membership (m.defs / p.probers) — attachSharedPathLocked's caller
-// owns that after the whole fan-out succeeds. Caller holds m.mu.
-func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, def config.Path, id uint8) (*peerPathState, error) {
+// attachPeerPathLocked builds ONE peer's view of a shared path: its own decode Codec, the
+// given prober (or a freshly-minted one, stamped with the shared path-id so DATA and PROBE
+// agree on the wire, when prober is nil), the seeded return remote, and admission to that
+// peer's scheduler as a NEW LOWEST-PRIORITY path (so it never steals a healthy survivor's
+// active selection). It does NOT touch the durable membership (m.defs / p.probers) —
+// attachSharedPathLocked's caller owns that after the whole fan-out succeeds. Caller holds
+// m.mu.
+func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, def config.Path, id uint8, prober *telemetry.Prober) (*peerPathState, error) {
 	dyn, ok := p.scheduler.(sched.DynamicScheduler)
 	if !ok {
 		return nil, errors.New("bind: scheduler does not support runtime path membership")
 	}
-	if p.newProber == nil {
-		return nil, errors.New("bind: cannot add a path at runtime without the probe transport")
+	if prober == nil {
+		if p.newProber == nil {
+			return nil, errors.New("bind: cannot add a path at runtime without the probe transport")
+		}
+		prober = p.newProber(def.Name, id)
 	}
 	// This path binds to peer p; its receive codec is p's codec (derived from p's psk).
 	codec, err := p.newCodec()
 	if err != nil {
 		return nil, err
 	}
-	pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec, prober: p.newProber(def.Name, id)}
+	pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec, prober: prober}
 	switch {
 	case def.DestAddr.IsValid():
 		pp.setRemote(def.DestAddr)
@@ -2702,8 +2717,7 @@ func (m *Multipath) RemovePath(name string) error {
 	if sharedIdx < 0 {
 		// A DEFERRED path: no transport to tear down — just drop it from the durable
 		// membership and the deferred set so it does not resurrect on the next Open.
-		m.removeDurableLocked(defIdx, name)
-		return nil
+		return m.removeDurableLocked(defIdx, name)
 	}
 	// Removing a bound path: refuse if it is the LAST live socket (that tears down the
 	// virtual endpoint the engine holds). A deferred path carries no transport, so it
@@ -2721,7 +2735,14 @@ func (m *Multipath) RemovePath(name string) error {
 		}
 	}
 	m.shared = append(m.shared[:sharedIdx], m.shared[sharedIdx+1:]...)
-	m.removeDurableLocked(defIdx, name)
+	if err := m.removeDurableLocked(defIdx, name); err != nil {
+		// The shared socket + every peer's bound view/scheduler entry are already detached
+		// above; only the durable-membership splice failed (a wiring defect, never expected
+		// in practice — see removeDurableLocked). Close the socket before surfacing the error
+		// rather than leaking it.
+		_ = sp.conn.Close()
+		return err
+	}
 	// Closing the socket unblocks and retires the path's reader; it is NOT waited on
 	// here (it never touches the path slice, and any last in-flight frame it Observes
 	// is delivered normally), so a removal never blocks the caller behind a read.
@@ -2736,7 +2757,24 @@ func (m *Multipath) RemovePath(name string) error {
 // has made them longer than the bound path list — so a subsequent Close→Open rebuilds
 // exactly the surviving membership and neither resurrects the removed path nor loses a
 // deferred one.
-func (m *Multipath) removeDurableLocked(defIdx int, name string) {
+//
+// Fail-fast alignment guard (D42): every runtime admission/promotion fan-out is supposed to
+// keep each peer's p.probers EXACTLY length-aligned with m.defs, but a peer whose prober set
+// has fallen out of alignment (a wiring defect in some other fan-out site) would otherwise
+// either panic with an index-out-of-range slice operation (when the divergence leaves defIdx
+// past the slice end) or, worse, silently splice the WRONG entry (when the divergence is
+// in-range — e.g. probers longer than m.defs, or short at the TAIL with defIdx still valid —
+// so the length check below is required in ADDITION to any index bound: an index check alone
+// would miss every in-range divergence and let it through to corrupt the splice). Detect ANY
+// length divergence BEFORE mutating anything and return a wiring-defect error instead, leaving
+// m.defs/every peer's probers untouched so the caller can decide how to proceed rather than
+// crashing the daemon or corrupting the membership.
+func (m *Multipath) removeDurableLocked(defIdx int, name string) error {
+	for _, p := range m.peers {
+		if p.probers != nil && len(p.probers) != len(m.defs) {
+			return fmt.Errorf("bind: remove path %q: peer %q prober set (len %d) is misaligned with the durable membership (len %d) — per-peer prober fan-out desync (wiring defect)", name, p.name, len(p.probers), len(m.defs))
+		}
+	}
 	m.defs = append(m.defs[:defIdx], m.defs[defIdx+1:]...)
 	for _, p := range m.peers {
 		if p.probers != nil {
@@ -2749,6 +2787,7 @@ func (m *Multipath) removeDurableLocked(defIdx int, name string) {
 			break
 		}
 	}
+	return nil
 }
 
 // PathNames returns the names of the DURABLE configured membership — every path the
