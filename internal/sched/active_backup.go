@@ -175,10 +175,17 @@ func (s *ActiveBackup) AddPath(h PathHealth) (int, error) {
 	s.health = append(s.health, h)
 	if s.cfg.Pacing {
 		// Keep the bucket slice index-aligned with health. A runtime-added path carries
-		// no declared per-path BDP, so its bucket inherits the current tail's pace (the
-		// tail is always present: pacing implies >=1 path). A full bucket, like every
-		// fresh pacer.
-		s.pacers = append(s.pacers, newPacer(1, s.pacers[len(s.pacers)-1].cfg, s.log))
+		// no declared per-path BDP, so its bucket inherits the current tail's pace. The
+		// live bucket slice can be EMPTY here — RemovePath is allowed to drop the set to
+		// empty (a legal DynamicScheduler state; Pick then returns PickNone) and a later
+		// AddPath re-grows it — so fall back to the immutable config tail, which is
+		// guaranteed non-empty whenever pacing is on. A full bucket, like every fresh
+		// pacer.
+		seed := s.cfg.tailPacerConfig()
+		if n := len(s.pacers); n > 0 {
+			seed = s.pacers[n-1].cfg
+		}
+		s.pacers = append(s.pacers, newPacer(1, seed, s.log))
 	}
 	return len(s.health) - 1, nil
 }
@@ -245,8 +252,10 @@ func (s *ActiveBackup) SetPaths(health []PathHealth) error {
 		// otherwise the next Pick indexes tokens[] out of range and panics. Rebuild n
 		// full, reseeded buckets: an overlapping index keeps its per-path pace; a
 		// grown-in path inherits the previous tail's pace (no declared BDP is available
-		// through this interface).
-		s.pacers = resizeActiveBackupPacers(s.pacers, len(health), s.log)
+		// through this interface). When the live bucket slice is EMPTY (a prior
+		// RemovePath dropped the set to empty), every rebuilt bucket falls back to the
+		// immutable config tail.
+		s.pacers = resizeActiveBackupPacers(s.pacers, len(health), s.cfg.tailPacerConfig(), s.log)
 	}
 	s.active = -1
 	s.pending = -1
@@ -258,19 +267,39 @@ func (s *ActiveBackup) SetPaths(health []PathHealth) error {
 // reseeded single-bucket pacers (mirroring the membership-replacement reset in
 // SetPaths). An index present in old keeps its per-path pace; an index beyond old
 // inherits old's LAST pace (a grown-in path has no declared per-path BDP reachable
-// through the health-only SetPaths signature). Caller holds the owner's lock. old is
-// non-empty whenever pacing is enabled (>=1 path is an invariant), so the tail read
-// is safe.
-func resizeActiveBackupPacers(old []pacer, n int, logger log.Logger) []pacer {
+// through the health-only SetPaths signature). When old is EMPTY — a prior
+// RemovePath legitimately dropped the path set to empty (a legal DynamicScheduler
+// state) — there is no tail to inherit, so every bucket falls back to fallback (the
+// immutable config tail, guaranteed non-empty whenever pacing is on). Caller holds
+// the owner's lock.
+func resizeActiveBackupPacers(old []pacer, n int, fallback pacerConfig, logger log.Logger) []pacer {
 	np := make([]pacer, n)
 	for i := 0; i < n; i++ {
-		src := i
-		if src >= len(old) {
-			src = len(old) - 1
+		cfg := fallback
+		switch {
+		case i < len(old):
+			cfg = old[i].cfg
+		case len(old) > 0:
+			cfg = old[len(old)-1].cfg
 		}
-		np[i] = newPacer(1, old[src].cfg, logger)
+		np[i] = newPacer(1, cfg, logger)
 	}
 	return np
+}
+
+// tailPacerConfig returns the pacerConfig seeded from the LAST configured path's
+// per-path BDP. cfg is immutable and, whenever pacing is on, NewActiveBackup
+// validated len(PerPathCapacities) == len(PacingBursts) == len(health) >= 1, so
+// the config tail is ALWAYS a valid capacity/burst to seed a bucket re-grown after
+// RemovePath emptied the live bucket slice. Call only with pacing enabled (the
+// slices are empty and ignored when it is off).
+func (c Config) tailPacerConfig() pacerConfig {
+	last := len(c.PerPathCapacities) - 1
+	return pacerConfig{
+		Pacing:      true,
+		CapacityFPS: c.PerPathCapacities[last],
+		BurstFrames: c.PacingBursts[last],
+	}
 }
 
 // indexOfHealth returns the index of h in hs by identity, or -1 when h is nil or

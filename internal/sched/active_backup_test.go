@@ -451,3 +451,129 @@ func TestActiveBackupConstructorValidation(t *testing.T) {
 		t.Fatal("NewActiveBackup with nil logger succeeded, want error")
 	}
 }
+
+// TestActiveBackupPacingRemoveToEmptyThenAddPath is a regression test for the
+// index-out-of-range panic (criticism 1a, R181): RemovePath is a legal way to drop
+// the DynamicScheduler's path set to EMPTY (the contract only requires i-in-range),
+// and a subsequent AddPath must re-grow the bucket slice WITHOUT reading
+// s.pacers[len-1] off an empty slice. Before the fix this panicked
+// "index out of range [-1]" in AddPath; after it, the re-grown path's bucket is
+// seeded full from the immutable config tail.
+func TestActiveBackupPacingRemoveToEmptyThenAddPath(t *testing.T) {
+	clock := newFakeClock()
+	only := &fakeHealth{s: telemetry.StateUp}
+	const (
+		capFPS = 700.0
+		burst  = 6.0
+	)
+	cfg := Config{
+		FailbackAfter:     time.Second,
+		Pacing:            true,
+		PerPathCapacities: []float64{capFPS},
+		PacingBursts:      []float64{burst},
+	}
+	s, err := NewActiveBackup([]PathHealth{only}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+	// Drop the set to empty — a legal state; Pick then reports PickNone.
+	if err := s.RemovePath(0); err != nil {
+		t.Fatalf("RemovePath to empty: %v", err)
+	}
+	if got := s.Pick(ClassData); got != PickNone {
+		t.Fatalf("Pick on the empty set = %d, want PickNone", got)
+	}
+	// Re-grow. Before the fix this panicked at s.pacers[len(s.pacers)-1] on an empty
+	// slice; it must now seed the new bucket from the config tail (no panic).
+	regrown := &fakeHealth{s: telemetry.StateUp}
+	idx, err := s.AddPath(regrown)
+	if err != nil {
+		t.Fatalf("AddPath after remove-to-empty: %v", err)
+	}
+	if idx != 0 {
+		t.Fatalf("AddPath returned index %d, want 0 (the re-grown sole path)", idx)
+	}
+	// The re-grown bucket carries the config tail's per-path capacity/burst.
+	if got := s.pacers[0].cfg.CapacityFPS; got != capFPS {
+		t.Fatalf("re-grown bucket CapacityFPS = %g, want the config tail %g", got, capFPS)
+	}
+	if got := s.pacers[0].cfg.BurstFrames; got != burst {
+		t.Fatalf("re-grown bucket BurstFrames = %g, want the config tail %g", got, burst)
+	}
+	// A fresh full bucket admits its burst at a frozen instant, then sheds.
+	admitted := 0
+	for i := 0; i < int(burst)+3; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 0:
+			admitted++
+		case PickPaced:
+		default:
+			t.Fatalf("post-regrow Pick #%d = %d, want 0 or PickPaced", i, got)
+		}
+	}
+	if admitted != int(burst) {
+		t.Fatalf("re-grown path admitted %d at a frozen instant, want its full burst %d", admitted, int(burst))
+	}
+}
+
+// TestActiveBackupPacingRemoveToEmptyThenSetPaths is a regression test for the
+// index-out-of-range panic (criticism 1b, R181): after RemovePath empties the path
+// set, SetPaths must rebuild the bucket slice WITHOUT reading old[len-1] off an
+// empty slice. Before the fix this panicked "index out of range [-1]" in
+// resizeActiveBackupPacers; after it, every rebuilt bucket is seeded full from the
+// immutable config tail.
+func TestActiveBackupPacingRemoveToEmptyThenSetPaths(t *testing.T) {
+	clock := newFakeClock()
+	only := &fakeHealth{s: telemetry.StateUp}
+	const (
+		capFPS = 900.0
+		burst  = 5.0
+	)
+	cfg := Config{
+		FailbackAfter:     time.Second,
+		Pacing:            true,
+		PerPathCapacities: []float64{capFPS},
+		PacingBursts:      []float64{burst},
+	}
+	s, err := NewActiveBackup([]PathHealth{only}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+	if err := s.RemovePath(0); err != nil {
+		t.Fatalf("RemovePath to empty: %v", err)
+	}
+	// Rebuild to two paths from the empty state. Before the fix this panicked at
+	// old[len(old)-1] on an empty slice; it must now seed both buckets from the
+	// config tail (no panic).
+	a := &fakeHealth{s: telemetry.StateUp}
+	b := &fakeHealth{s: telemetry.StateUp}
+	if err := s.SetPaths([]PathHealth{a, b}); err != nil {
+		t.Fatalf("SetPaths after remove-to-empty: %v", err)
+	}
+	if len(s.pacers) != 2 {
+		t.Fatalf("bucket slice len = %d after SetPaths, want 2", len(s.pacers))
+	}
+	// Both rebuilt buckets carry the config tail's per-path capacity/burst.
+	for i := range s.pacers {
+		if got := s.pacers[i].cfg.CapacityFPS; got != capFPS {
+			t.Fatalf("rebuilt bucket[%d] CapacityFPS = %g, want the config tail %g", i, got, capFPS)
+		}
+		if got := s.pacers[i].cfg.BurstFrames; got != burst {
+			t.Fatalf("rebuilt bucket[%d] BurstFrames = %g, want the config tail %g", i, got, burst)
+		}
+	}
+	// Active path 0 admits its full burst at a frozen instant, then sheds.
+	admitted := 0
+	for i := 0; i < int(burst)+3; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 0:
+			admitted++
+		case PickPaced:
+		default:
+			t.Fatalf("post-SetPaths Pick #%d = %d, want 0 or PickPaced", i, got)
+		}
+	}
+	if admitted != int(burst) {
+		t.Fatalf("rebuilt active path admitted %d at a frozen instant, want its full burst %d", admitted, int(burst))
+	}
+}

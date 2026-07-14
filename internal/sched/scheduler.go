@@ -32,8 +32,9 @@ type FrameClass uint8
 
 const (
 	// ClassData is bulk/opaque data (a WireGuard transport datagram carrying tunnelled
-	// payload). It is fully paced: under a weighted scheduler with pacing enabled it is
-	// subject to the per-path token buckets and is shed (PickPaced) when they are empty.
+	// payload). It is fully paced: under any pacing-enabled scheduler (the weighted
+	// scheduler, and active-backup per defect D65) it is subject to the per-path token
+	// buckets and is shed (PickPaced) when they are empty.
 	ClassData FrameClass = iota
 	// ClassControl is a WireGuard control frame — handshake initiation/response, cookie
 	// reply, or keepalive. It is pacing-EXEMPT: a pacing scheduler never sheds it for an
