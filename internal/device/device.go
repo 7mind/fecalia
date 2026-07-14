@@ -248,6 +248,12 @@ type resolverFactory func() (dnsresolve.Resolver, error)
 // privileged tun.CreateTUN. The same path drives both roles; the role only changes which UAPI
 // fields cfg carries (the concentrator sets listen_port; the edge sets each peer's endpoint).
 func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newResolver resolverFactory) (*Tunnel, error) {
+	// Wrap the TUN so a write that fails with EIO gets an actionable, rate-limited diagnostic
+	// (naming the interface's link state/MTU and the remedy) alongside the raw errno, instead
+	// of surfacing only as the engine's generic "input/output error" (D39, I3). Every other
+	// Device method is unaffected.
+	tunDev = newDiagnosingTUN(tunDev, name, clg)
+
 	// Claim the single-amnezia-engine-per-process invariant (D2) BEFORE IpcSet
 	// assigns amneziawg-go's process-global message-type state. On any failure
 	// below, ok stays false and the deferred release returns the hold; the

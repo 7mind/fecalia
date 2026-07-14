@@ -10,3 +10,8 @@ import "errors"
 func ifUp(string) error {
 	return errors.New("device: bringing the interface up is only supported on Linux")
 }
+
+// ifState is unavailable off Linux (SIOCGIFFLAGS/SIOCGIFMTU are Linux ioctls); see ifUp.
+func ifState(string) (up bool, mtu int, err error) {
+	return false, 0, errors.New("device: inspecting interface state is only supported on Linux")
+}

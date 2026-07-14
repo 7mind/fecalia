@@ -708,6 +708,14 @@ but owns ONLY the tunnel engine: **it never assigns addresses or routes**
 **systemd-networkd `.network` file**, using the inner addresses from
 `allowed_ips`:
 
+If something ELSE takes the link back down after boot (NetworkManager without
+the unmanaged-devices drop-in below is the common case, D39), a `TUN write`
+`EIO` no longer surfaces only as the engine's raw `input/output error`: the
+daemon inspects the interface's link state and MTU and logs an actionable
+ERROR naming the cause (e.g. `wanbond0 is DOWN — address & bring it up
+(install.md §4)`) alongside the raw errno, rate-limited to one diagnostic per
+30s so a write storm does not flood the log.
+
 ```ini
 # /etc/systemd/network/10-wanbond0.network  (edge; concentrator: 10.77.0.1/24)
 [Match]

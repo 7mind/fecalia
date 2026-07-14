@@ -37,3 +37,36 @@ func ifUp(name string) error {
 	}
 	return nil
 }
+
+// ifState reads the named interface's administrative up/down flag (SIOCGIFFLAGS) and MTU
+// (SIOCGIFMTU) WITHOUT modifying anything — the read-only counterpart to ifUp, used to name
+// the probable cause when a TUN write fails with EIO (I3/D39): a write to a DOWN interface is
+// the textbook case, but naming the ACTUAL state (rather than assuming) also covers the case
+// where the link is up yet writes still fail (a driver/NIC fault), so the diagnostic never
+// asserts a cause it did not verify.
+func ifState(name string) (up bool, mtu int, err error) {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return false, 0, fmt.Errorf("open control socket: %w", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	flagsIfr, err := unix.NewIfreq(name)
+	if err != nil {
+		return false, 0, fmt.Errorf("build ifreq for %q: %w", name, err)
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, flagsIfr); err != nil {
+		return false, 0, fmt.Errorf("SIOCGIFFLAGS %q: %w", name, err)
+	}
+	up = flagsIfr.Uint16()&unix.IFF_UP != 0
+
+	mtuIfr, err := unix.NewIfreq(name)
+	if err != nil {
+		return up, 0, fmt.Errorf("build ifreq for %q: %w", name, err)
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFMTU, mtuIfr); err != nil {
+		return up, 0, fmt.Errorf("SIOCGIFMTU %q: %w", name, err)
+	}
+	mtu = int(int32(mtuIfr.Uint32()))
+	return up, mtu, nil
+}
