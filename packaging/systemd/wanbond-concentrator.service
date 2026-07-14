@@ -27,6 +27,11 @@ RestartSec=2s
 # The daemon needs only CAP_NET_ADMIN (TUN device creation); it does no
 # interface addressing or routing itself (see docs/install.md). Add
 # CAP_NET_BIND_SERVICE here only if wireguard.listen_port is below 1024.
+# Device-bind sockets (SO_BINDTODEVICE, bind = "auto"/"device") need no extra
+# capability here: on Linux >=5.7 SO_BINDTODEVICE requires none at all for a
+# not-yet-bound socket; pre-5.7 needs CAP_NET_RAW, which this unit doesn't
+# grant, so a pre-5.7 daemon falls back to source-IP binding on EPERM (see
+# internal/bind/pathsock_linux.go, D40).
 CapabilityBoundingSet=CAP_NET_ADMIN
 DeviceAllow=/dev/net/tun rw
 NoNewPrivileges=yes

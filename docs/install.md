@@ -871,6 +871,16 @@ systemctl enable --now wanbond-edge      # or wanbond-concentrator
 - The units run with `CapabilityBoundingSet=CAP_NET_ADMIN` (TUN creation) plus
   standard hardening. If you set `wireguard.listen_port` below 1024, add
   `CAP_NET_BIND_SERVICE` to the bounding set.
+- Device-bind paths (`bind = "auto"` or `"device"`, `SO_BINDTODEVICE`) need no
+  further capability on Linux >=5.7: since kernel commit c427bfec18f21 ("net:
+  core: enable SO_BINDTODEVICE for non-root users"), binding a not-yet-bound
+  socket to a device requires no capability at all — empirically confirmed
+  (D40) with `CapabilityBoundingSet=CAP_NET_ADMIN` unchanged. Pre-5.7 kernels
+  need `CAP_NET_RAW`, which these units deliberately don't grant; on such a
+  kernel device-bind fails with EPERM and the daemon transparently falls back
+  to source-IP binding (see [install.md §3b](#3b-policy-routing-edge-topologies-source-ip-pinning-with-bind--source)
+  for when that fallback matters). All kernels this project supports
+  (Debian bookworm 6.1+, Ubuntu 22.04 5.15+) are already >=5.7.
 
 ### NetworkManager unmanaged-devices drop-in
 

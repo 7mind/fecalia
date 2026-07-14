@@ -28,10 +28,14 @@ import (
 // no other path contends for the device (see selectDeviceBinds). When dev is ""
 // the socket pins the specific source IP — the pre-T16 behaviour.
 //
-// Device binding is also BEST-EFFORT even when selected: SO_BINDTODEVICE needs
-// CAP_NET_RAW (the daemon runs privileged, but the unit tests bind loopback
-// unprivileged) and is Linux-only, so a device-bind failure falls back to
-// source-IP binding rather than failing Open.
+// Device binding is also BEST-EFFORT even when selected: on Linux <5.7,
+// SO_BINDTODEVICE needs CAP_NET_RAW, which the shipped systemd units don't
+// grant (CapabilityBoundingSet is CAP_NET_ADMIN only), so a pre-5.7 daemon
+// also falls back to source-IP binding; on >=5.7 it needs no capability at
+// all (see bindToDevice, pathsock_linux.go, D40). The unit tests bind
+// loopback unprivileged too, exercising that same fallback path. It is also
+// Linux-only, so a device-bind failure falls back to source-IP binding
+// rather than failing Open.
 func listenPath(src netip.Addr, port uint16, dev string) (*net.UDPConn, error) {
 	if dev != "" {
 		if c, err := listenOnDevice(src, port, dev); err == nil {
