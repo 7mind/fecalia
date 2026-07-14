@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 46
+  item: 47
 archives: []
 ---
 
@@ -638,10 +638,10 @@ archives: []
 - suggestedFix: Fix the two unchecked Close returns (assign or //nolint with justification per repo convention) and apply the QF1001 De Morgan rewrite, or reconcile the golangci-lint version/config drift in the dev shell if these linters were not previously enabled.
 - ledgerRefs: ["tasks:T70","goals:G5"]
 
-### D46 — open
+### D46 — resolved
 
 - createdAt: 2026-07-14T01:02:05.420Z
-- updatedAt: 2026-07-14T01:02:05.420Z
+- updatedAt: 2026-07-14T01:43:20.545Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "hubFailover: stale active with flattened total < 2 strands the bond despite one live standby record"
@@ -649,3 +649,19 @@ archives: []
 - severity: low
 - suggestedFix: In T73, either never publish an empty expansion (retain last-good records on NXDOMAIN/timeout), or exempt the stale-active case (flatIndexLocked == -1 with total >= 1) from check's total<2 guard.
 - ledgerRefs: ["tasks:T70","tasks:T73","goals:G5"]
+- fix: "Resolved within T73 (0d36a23): the re-resolution controller never publishes an empty expansion — resolveTarget retains the last-good records on lookup failure/NXDOMAIN/empty AND on all-family-filtered answers — so the total<2 stranding precondition is unreachable. Verified by TestResolutionEmptyResultRetainsLastGood and TestResolutionFamilyFilterRetainsLastGood; confirmed by both round-2 reviewers."
+- dependsOn: ["T73"]
+
+## M25
+
+### D47 — open
+
+- createdAt: 2026-07-14T01:43:26.215Z
+- updatedAt: 2026-07-14T01:43:26.215Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Source->peer binding keyed by address only: two peers behind one public IP can never both bind"
+- description: "peerBySource is keyed by netip.Addr (address, not AddrPort) — a granularity inherited from the pre-existing placeholder map. Once peer A's PROBE binds a shared public IP (CGNAT / two edge sites behind one NAT), every frame from that IP — including peer B's PROBEs from a different port — is routed to A's view via lookupPeerBySource, fails A's codec, and is dropped; because bound sources bypass trial-decode entirely, B can never bind or carry traffic through the concentrator. Bindings are also never removed or re-keyed (no unbind path), so the exclusion is permanent. Filed from implement review of T88 round 1 ([fable] reviewer, file-and-defer per K13); settle in the T90 roaming design."
+- severity: medium
+- suggestedFix: "Settle key granularity in the T90 roaming design: either key bindings by AddrPort, or let an authenticated PROBE that fails the bound peer's codec re-enter trial-decode so a MAC-verified PROBE from another peer at the same address can establish/steal the binding."
+- ledgerRefs: ["tasks:T88","tasks:T90","goals:G4"]

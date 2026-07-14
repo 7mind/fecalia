@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 90
+  item: 91
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -942,3 +942,16 @@ archives:
 - ledgerRefs: ["tasks:T70","goals:G5"]
 - sessionLogs: [".cq/logs/20260714-005639-a4a5512b111f43aa0.md",".cq/logs/20260714-005639-a5c7bef556145b214.md",".cq/logs/20260714-010221-a67a4e5aa186a68a1.md",".cq/logs/20260714-010221-a7f9ccd45b1752e7f.md"]
 - rawLogs: [".cq/logs/raw/20260714-005639-a4a5512b111f43aa0.jsonl",".cq/logs/raw/20260714-005639-a5c7bef556145b214.jsonl",".cq/logs/raw/20260714-010221-a67a4e5aa186a68a1.jsonl",".cq/logs/raw/20260714-010221-a7f9ccd45b1752e7f.jsonl"]
+
+### R91 — go-ahead
+
+- createdAt: 2026-07-14T01:43:04.490Z
+- updatedAt: 2026-07-14T01:43:04.490Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T73 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on 2 criticisms — family-filter clause unimplemented (v6-only answer on v4-only paths could strand the bond via the success path) and out-of-band re-arm dropping the TTL clamp; R2 (0d36a23) unanimous approve — pathFamilies filtering with D46-retention on all-filtered answers (fail-first verified), clampPollDelay on both re-arms, docs synced. D46 resolved by the never-publish-empty retention policy. [fable] re-noted the lint-red-at-base finding — duplicates D45, not re-filed."
+- criticism: ["[fable, R1, RESOLVED R2] family-filter clause unimplemented — fixed via pathFamiliesFromPaths + orderAddrPorts filtering + D46 retention path.","[fable, R1, RESOLVED R2] checkLivenessLoss discarded the TTL clamp on the out-of-band re-arm — fixed via clampPollDelay on both re-arms."]
+- new_questions: []
+- ledgerRefs: ["tasks:T73","goals:G5","defects:D46"]
+- sessionLogs: [".cq/logs/20260714-013526-aa5af95a3b03fde16.md",".cq/logs/20260714-013526-a655a1c595ce4648a.md",".cq/logs/20260714-014014-a6681895aad44fda0.md",".cq/logs/20260714-014014-ad33623fb263f9dc1.md"]
+- rawLogs: [".cq/logs/raw/20260714-013526-aa5af95a3b03fde16.jsonl",".cq/logs/raw/20260714-013526-a655a1c595ce4648a.jsonl",".cq/logs/raw/20260714-014014-a6681895aad44fda0.jsonl",".cq/logs/raw/20260714-014014-ad33623fb263f9dc1.jsonl"]

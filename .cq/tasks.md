@@ -692,10 +692,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-004559-a5e1fb1cab9a92f66.md",".cq/logs/20260714-005639-a5279f6a07039286a.md",".cq/logs/20260714-005639-a4a5512b111f43aa0.md",".cq/logs/20260714-005639-a5c7bef556145b214.md",".cq/logs/20260714-010221-a67a4e5aa186a68a1.md",".cq/logs/20260714-010221-a7f9ccd45b1752e7f.md"]
 - rawLogs: [".cq/logs/raw/20260714-004559-a5e1fb1cab9a92f66.jsonl",".cq/logs/raw/20260714-005639-a5279f6a07039286a.jsonl",".cq/logs/raw/20260714-005639-a4a5512b111f43aa0.jsonl",".cq/logs/raw/20260714-005639-a5c7bef556145b214.jsonl",".cq/logs/raw/20260714-010221-a67a4e5aa186a68a1.jsonl",".cq/logs/raw/20260714-010221-a7f9ccd45b1752e7f.jsonl"]
 
-### T73 — planned
+### T73 — done
 
 - createdAt: 2026-07-13T21:55:14.470Z
-- updatedAt: 2026-07-13T21:55:14.470Z
+- updatedAt: 2026-07-14T01:43:10.282Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Implement the re-resolution controller: poll plus liveness-loss triggers, change-suppressed repoint"
@@ -704,6 +704,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T70","T72"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 0d36a23
+- completion: "Re-resolution controller landed (internal/device/resolution.go): poll + edge-triggered liveness-loss out-of-band re-resolve, family-filtered/ordered records via updateResolution (D32 suppression), TTL clamp on both re-arms, never-publish-empty retention (resolves D46); wired into startHubFailover; 2 review rounds; merged ff to main."
+- sessionLogs: [".cq/logs/20260714-011407-ac373e4ef09d0a464.md",".cq/logs/20260714-013526-adf90d11d594f0391.md",".cq/logs/20260714-013526-aa5af95a3b03fde16.md",".cq/logs/20260714-013526-a655a1c595ce4648a.md",".cq/logs/20260714-014014-a6681895aad44fda0.md",".cq/logs/20260714-014014-ad33623fb263f9dc1.md"]
+- rawLogs: [".cq/logs/raw/20260714-011407-ac373e4ef09d0a464.jsonl",".cq/logs/raw/20260714-013526-adf90d11d594f0391.jsonl",".cq/logs/raw/20260714-013526-aa5af95a3b03fde16.jsonl",".cq/logs/raw/20260714-013526-a655a1c595ce4648a.jsonl",".cq/logs/raw/20260714-014014-a6681895aad44fda0.jsonl",".cq/logs/raw/20260714-014014-ad33623fb263f9dc1.jsonl"]
 
 ### T74 — planned
 
@@ -926,10 +930,10 @@ archives:
 
 ## M25
 
-### T88 — planned
+### T88 — wip
 
 - createdAt: 2026-07-13T22:28:09.005Z
-- updatedAt: 2026-07-13T22:28:09.005Z
+- updatedAt: 2026-07-14T01:03:18.275Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Bind source->peer only via authenticated PROBE with trial-decode across peer PSKs
