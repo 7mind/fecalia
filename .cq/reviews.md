@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 113
+  item: 114
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1253,3 +1253,18 @@ archives:
 - ledgerRefs: ["tasks:T94","goals:G4","defects:D56"]
 - sessionLogs: [".cq/logs/20260714-062044-a7f4a8b610cf5aeda.md",".cq/logs/20260714-062044-a31be323657b7a7c5.md"]
 - rawLogs: [".cq/logs/raw/20260714-062044-a7f4a8b610cf5aeda.jsonl",".cq/logs/raw/20260714-062044-a31be323657b7a7c5.jsonl"]
+
+## M27
+
+### R114 — go-ahead
+
+- createdAt: 2026-07-14T06:39:32.009Z
+- updatedAt: 2026-07-14T06:39:32.009Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T95 unanimous panel approve (round 1): [opus]+[fable] both approve. Test-only (internal/bind/per_peer_reseq_isolation_test.go, +120): TestPerPeerReseqIsolation binds two concentrator peers over one shared socket via the PRODUCTION demuxInbound/peerBySource path (authenticated PROBE → bindSourceToPeer → bound-source fast path → dispatchInbound → ps.peer.resequencer.Observe), then feeds each an out-of-order stream over the SAME overlapping numeric outer-seq (0..5) interleaved between peers, asserting each resequencer releases ONLY its own payloads in order with ZERO DroppedSuspect/DroppedOld/DroppedDup. The D32-class per-peer-isolation guarantee at unit level. BOTH reviewers independently mutation-verified in isolated copies (forcing both peers onto ONE shared resequencer in ensurePeerReceiveInstantiated → 'B peer released 0 frames' — A swallows B's overlapping seqs); confirmed the overlapping-seq design is the discriminator and the production binding path (not hand-wired). -race green (count=1 and count=10, no flake). No production defect. ff-merged as b38581f."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T95","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-063906-af7c84761e871fbd1.md",".cq/logs/20260714-063906-aaafa72796608ad29.md"]
+- rawLogs: [".cq/logs/raw/20260714-063906-af7c84761e871fbd1.jsonl",".cq/logs/raw/20260714-063906-aaafa72796608ad29.jsonl"]

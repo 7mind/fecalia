@@ -796,10 +796,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-045408-a6ff3c7de32c86767.md",".cq/logs/20260714-051113-abaaea20708e03b76.md",".cq/logs/20260714-050548-a54ae7c80e1ab909f.md",".cq/logs/20260714-050548-a65d3da77adb4f5b4.md",".cq/logs/20260714-051954-a9e48eb98d4a79d0d.md",".cq/logs/20260714-051954-a01261db5c976ffab.md"]
 - rawLogs: [".cq/logs/raw/20260714-045408-a6ff3c7de32c86767.jsonl",".cq/logs/raw/20260714-051113-abaaea20708e03b76.jsonl",".cq/logs/raw/20260714-050548-a54ae7c80e1ab909f.jsonl",".cq/logs/raw/20260714-050548-a65d3da77adb4f5b4.jsonl",".cq/logs/raw/20260714-051954-a9e48eb98d4a79d0d.jsonl",".cq/logs/raw/20260714-051954-a01261db5c976ffab.jsonl"]
 
-### T79 — planned
+### T79 — wip
 
 - createdAt: 2026-07-13T21:56:16.623Z
-- updatedAt: 2026-07-13T21:56:16.623Z
+- updatedAt: 2026-07-14T06:22:36.780Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Sync docs and example config: DNS endpoints, resolver privacy trade-offs"
@@ -1073,10 +1073,10 @@ archives:
 
 ## M27
 
-### T95 — planned
+### T95 — done
 
 - createdAt: 2026-07-13T22:29:18.595Z
-- updatedAt: 2026-07-13T22:29:18.595Z
+- updatedAt: 2026-07-14T06:39:37.389Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-peer resequencer unit test for interleaved outer-seq isolation
@@ -1085,11 +1085,15 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T87"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: b38581f
+- completion: "Per-peer resequencer interleaved-outer-seq isolation pinned (test-only, internal/bind/per_peer_reseq_isolation_test.go): two concentrator peers bound over one shared socket via the production demuxInbound/peerBySource path each receive an out-of-order stream over the SAME overlapping numeric outer-seq (0..5) interleaved between them; each resequencer releases ONLY its own payloads in order with zero cross-peer suspect/late/dup drops — the D32-class guarantee at unit level. Mutation-verified by BOTH reviewers (a shared resequencer swallows peer B's stream). No production defect. Unanimous 1-round panel approve; ff-merged as b38581f."
+- sessionLogs: [".cq/logs/20260714-063350-ac9d99da59f5190b5.md",".cq/logs/20260714-063906-af7c84761e871fbd1.md",".cq/logs/20260714-063906-aaafa72796608ad29.md"]
+- rawLogs: [".cq/logs/raw/20260714-063350-ac9d99da59f5190b5.jsonl",".cq/logs/raw/20260714-063906-af7c84761e871fbd1.jsonl",".cq/logs/raw/20260714-063906-aaafa72796608ad29.jsonl"]
 
-### T96 — planned
+### T96 — wip
 
 - createdAt: 2026-07-13T22:29:22.171Z
-- updatedAt: 2026-07-13T22:29:22.171Z
+- updatedAt: 2026-07-14T06:22:39.779Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Re-run FEC prefix-stability and FEC suite after per-peer FEC split
@@ -1099,10 +1103,10 @@ archives:
 - dependsOn: ["T87"]
 - ledgerRefs: ["goals:G4"]
 
-### T97 — planned
+### T97 — wip
 
 - createdAt: 2026-07-13T22:29:36.024Z
-- updatedAt: 2026-07-13T22:29:36.024Z
+- updatedAt: 2026-07-14T06:22:42.324Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add netns e2e proving 2+ edges to one concentrator stay isolated
@@ -1188,12 +1192,12 @@ archives:
 - sessionLogs: [".cq/logs/20260714-060518-a116fca10b59541c0.md",".cq/logs/20260714-061135-a8a45233ae279d4cd.md",".cq/logs/20260714-061135-a0b85a40cc20e154c.md"]
 - rawLogs: [".cq/logs/raw/20260714-060518-a116fca10b59541c0.jsonl",".cq/logs/raw/20260714-061135-a8a45233ae279d4cd.jsonl",".cq/logs/raw/20260714-061135-a0b85a40cc20e154c.jsonl"]
 
-### T103 — planned
+### T103 — wip
 
 - createdAt: 2026-07-13T23:22:58.901Z
-- updatedAt: 2026-07-13T23:22:58.901Z
+- updatedAt: 2026-07-14T06:22:41.289Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Downgrade the startup no-healthy-path ERROR spam during the liveness warmup (I4)
 - description: "The engine's 'Failed to send handshake initiation: bind: no healthy path with a known remote endpoint' reaches the operator as ERROR via engineLogger (internal/device/device.go:687) wrapping errNoHealthyPath (internal/bind/multipath.go:64). Add a warmup-aware seam: until the FIRST path reaches liveness UP, surface these as a single coalesced INFO 'waiting for path liveness' line; after first path-up they stay ERROR (a genuine outage signal). Implementation choice: expose a bind-level 'ever had a live path' predicate the engine-logger adapter consults, or filter on the errNoHealthyPath sentinel during the warmup window."
 - acceptance: "Unit test: no-healthy-path records before first path-up yield exactly one INFO 'waiting for path liveness' and zero ERRORs; the same record after a path has been up logs at ERROR. Relates D37 (the wasted-first-init defect stays investigate-flow-owned; this only fixes log severity). go test ./... green; no spurious ERROR on a normal start in the netns e2e logs."
