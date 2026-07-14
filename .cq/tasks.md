@@ -675,10 +675,10 @@ archives:
 
 ## M21
 
-### T70 — planned
+### T70 — wip
 
 - createdAt: 2026-07-13T21:54:32.763Z
-- updatedAt: 2026-07-13T22:05:55.860Z
+- updatedAt: 2026-07-14T00:33:00.857Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Refactor hubFailover to a mutable, spec-keyed endpoint set updated under its lock
@@ -903,10 +903,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-001002-a51702a0c24f1dd5d.md",".cq/logs/20260714-001524-a9eeeffca5db3fd43.md",".cq/logs/20260714-001524-ae44d2e7f23156dd5.md",".cq/logs/20260714-001851-a02773d07a098daaf.md"]
 - rawLogs: [".cq/logs/raw/20260714-001002-a51702a0c24f1dd5d.jsonl",".cq/logs/raw/20260714-001524-a9eeeffca5db3fd43.jsonl",".cq/logs/raw/20260714-001524-ae44d2e7f23156dd5.jsonl",".cq/logs/raw/20260714-001851-a02773d07a098daaf.jsonl"]
 
-### T87 — planned
+### T87 — done
 
 - createdAt: 2026-07-13T22:27:59.938Z
-- updatedAt: 2026-07-13T22:27:59.938Z
+- updatedAt: 2026-07-14T00:48:46.604Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Preserve per-peer resequencer lifecycle and D32 rebaseline
@@ -915,6 +915,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T86"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 603a136
+- completion: Per-peer resequencer/FEC Open lifecycle + peer-scoped D32 rebaseline landed (openPeerDatapathLocked over m.peers; setPeerRemoteLocked(ps,ap)); Close→Open asymmetry fixed; mutation-verified regression guard; merged ff to main.
+- sessionLogs: [".cq/logs/20260714-004427-a78b9fe5eb3d9a9ee.md",".cq/logs/20260714-004825-a19e6e3ee6175b726.md",".cq/logs/20260714-004825-a260f3da7a78a9174.md"]
+- rawLogs: [".cq/logs/raw/20260714-004427-a78b9fe5eb3d9a9ee.jsonl",".cq/logs/raw/20260714-004825-a19e6e3ee6175b726.jsonl",".cq/logs/raw/20260714-004825-a260f3da7a78a9174.jsonl"]
 
 ## M25
 

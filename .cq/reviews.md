@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 88
+  item: 89
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -914,3 +914,16 @@ archives:
 - ledgerRefs: ["tasks:T86","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-001524-a9eeeffca5db3fd43.md",".cq/logs/20260714-001524-ae44d2e7f23156dd5.md"]
 - rawLogs: [".cq/logs/raw/20260714-001524-a9eeeffca5db3fd43.jsonl",".cq/logs/raw/20260714-001524-ae44d2e7f23156dd5.jsonl"]
+
+### R89 — go-ahead
+
+- createdAt: 2026-07-14T00:48:39.352Z
+- updatedAt: 2026-07-14T00:48:39.352Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T87 round 1 reconciled panel verdict (opus + fable, unanimous approve, gate green, mutation-verified guard): per-peer Open datapath rebuild (openPeerDatapathLocked over m.peers, fixing a real Close→Open asymmetry vs closeSocketsLocked) + peer-scoped D32 rebaseline (setPeerRemoteLocked); all three acceptance clauses verified operationally; single-peer path semantics-preserving. [fable] noted the FEC deadline-tick primary-only gap — substance already tracked as D44, no duplicate filed."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T87","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-004825-a19e6e3ee6175b726.md",".cq/logs/20260714-004825-a260f3da7a78a9174.md"]
+- rawLogs: [".cq/logs/raw/20260714-004825-a19e6e3ee6175b726.jsonl",".cq/logs/raw/20260714-004825-a260f3da7a78a9174.jsonl"]
