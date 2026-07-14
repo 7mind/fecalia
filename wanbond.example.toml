@@ -341,6 +341,16 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8, ::1
                                    #   other address is REFUSED when the endpoint
                                    #   binds (not at load).
 
+# ── monitor: OPTIONAL, config-surface only (T160). Commented out: no monitor
+#    server is wired up yet — the endpoint/dashboard + full README/design/
+#    install docs land with the later monitor-server tasks. ──────────────────
+# [monitor]
+# listen = "127.0.0.1:9101"        # Same loopback-only default as metrics; a
+#                                  #   NON-loopback listen REQUIRES token below
+#                                  #   (fail-fast at config load), else fails
+#                                  #   with ErrMonitorNonLoopbackWithoutAuth.
+# token = "..."                    # Only required when listen is non-loopback.
+
 # ── log: OPTIONAL ────────────────────────────────────────────────────────────
 [log]
 level = "info"                     # DEFAULT "info" (empty => info). One of
