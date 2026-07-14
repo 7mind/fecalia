@@ -27,9 +27,11 @@ import (
 // registration and the 0->1 edge are validated by the runnable unit tests in
 // internal/metrics and internal/device.
 const (
-	// i2MetricsListen is the edge's /metrics endpoint for this file's test, on a port none
-	// of the other e2e files use (p2/p3/p4/pacing use 9095-97; tolerant_startup uses 9098).
-	i2MetricsListen = "127.0.0.1:9099"
+	// i2MetricsListen is the edge's /metrics endpoint for this file's test. Each e2e file
+	// must use a port no other e2e file uses (collides under test shuffle/parallelism or a
+	// wedged teardown otherwise) — check the other *MetricsListen constants under test/e2e
+	// before picking a new one.
+	i2MetricsListen = "127.0.0.1:9101"
 	i2MetricsURL    = "http://" + i2MetricsListen + "/metrics"
 
 	// i2SessionUpDeadline bounds how long the WG session may take to establish after the
