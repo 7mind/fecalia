@@ -1477,10 +1477,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G7","defects:D37"]
 
-### T120 — planned
+### T120 — done
 
 - createdAt: 2026-07-14T09:21:59.881Z
-- updatedAt: 2026-07-14T09:21:59.881Z
+- updatedAt: 2026-07-14T11:30:13.842Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Drive a forced WG handshake initiation off first-path-up in the device layer

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 144
+  item: 146
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1543,6 +1543,19 @@ archives:
 - sessionLogs: [".cq/logs/20260714-104922-afe04b49891ef2eb7.md",".cq/logs/20260714-104922-af4f6a49d0ebf98a6.md"]
 - rawLogs: [".cq/logs/raw/20260714-104922-afe04b49891ef2eb7.jsonl",".cq/logs/raw/20260714-104922-af4f6a49d0ebf98a6.jsonl"]
 
+### R146 — revise
+
+- createdAt: 2026-07-14T11:30:31.355Z
+- updatedAt: 2026-07-14T11:30:31.355Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T119 review round 1 — RECONCILED REVISE (BOTH [opus]+[fable] disapprove, independently, each EMPIRICALLY reproducing the defects). The saturated-restart D36 target scenario is correct and green: the epochChanged wiring in dispatchInbound (outside m.mu, resequencer's r.mu never nested — lock discipline sound), the RebaselineToLow low-anchor arithmetic (stale-high straggler SUSPECT-dropped, underflow guard seq<anchor before anchor-seq>window, threshold off-by-one-correct), per-peer scoping (primary + AddConcentratorPeer), and the discriminating tests (fail without wiring AND with plain Rebaseline) all check out; D32 test untouched + green; build/vet/test/-race green. BUT two pendingLow boundary interactions cause PERMANENT per-peer blackholes (both reproduced with throwaway tests):"
+- criticism: ["[opus+fable] PERMANENT BLACKHOLE at small anchor: RebaselineToLow (reseq.go:~602) unconditionally enters pendingLow with anchor=next, but the re-anchor predicate `seq < pendingLowAnchor && pendingLowAnchor - seq > r.window` (reseq.go:305) is UNSATISFIABLE for any seq when anchor <= window+1, and pendingLow is cleared ONLY in that branch (tryResync is bypassed by the early return; repeated restart signals keep the original anchor; no timeout). The restarted sender's first DATA is outerSeq=1 (peer.outerSeq.Add(1)), so re-anchoring needs anchor >= window+2 = 2050 — a peer that released < ~2049 outer-seq on its prior boot then restarts (light traffic, early restart, crash-loop: first restart re-anchors next~1, a second restart within one window pins a tiny anchor) SUSPECT-drops ALL traffic forever. Reproduced: window=64, old boot 50 frames, RebaselineToLow, then 499 new-boot frames → 499/499 dropped, 0 delivered. This is a REGRESSION — pre-T119 the same case self-heals via resync corroboration within ~3 low frames. The acceptance tests only cover anchor>>window (restartHighSeq=9000). FIX: enter pendingLow ONLY when next > window+1; otherwise plain unpin (started=false) which self-heals; ADD a small-anchor (next<=window) restart regression test.","[fable] plain Rebaseline() BREAKS the D32 contract: Rebaseline() (reseq.go:~574) resets `started` but does NOT clear pendingLow, violating its documented 'next Observe re-anchors next' postcondition. After a RebaselineToLow (restart pending, low init not yet arrived), a D32 SetPeerRemote→Rebaseline hub failover leaves the stale pendingLow gate in force: the first frame re-pins next via !started, but every subsequent frame is re-classified against the STALE pendingLowAnchor. Reproduced: anchor=200/window=64, Rebaseline(), then fail-back seqs 300..399 → 0/100 delivered, all SUSPECT-dropped permanently. FIX: clear pendingLow (full unpin supersedes the pending low-anchor) inside Rebaseline(); ADD a RebaselineToLow→Rebaseline interleaving regression test."]
+- new_questions: []
+- ledgerRefs: ["tasks:T119","goals:G7","defects:D36"]
+- sessionLogs: [".cq/logs/20260714-111900-ac937f4001db01ed3.md",".cq/logs/20260714-111900-a4fd5680adb345dca.md"]
+- rawLogs: [".cq/logs/raw/20260714-111900-ac937f4001db01ed3.jsonl",".cq/logs/raw/20260714-111900-a4fd5680adb345dca.jsonl"]
+
 ## M40
 
 ### R135 — go-ahead
@@ -1557,6 +1570,19 @@ archives:
 - ledgerRefs: ["tasks:T117","goals:G7","defects:D37"]
 - sessionLogs: [".cq/logs/20260714-105323-a6bc513252cea77fc.md",".cq/logs/20260714-105323-a38fe4b9603f3e06e.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-a6bc513252cea77fc.jsonl",".cq/logs/raw/20260714-105323-a38fe4b9603f3e06e.jsonl"]
+
+### R145 — go-ahead
+
+- createdAt: 2026-07-14T11:30:12.518Z
+- updatedAt: 2026-07-14T11:30:12.518Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T120 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). The forced-WG-handshake-on-first-path-up seam (startFirstPathUpHandshake in failover.go, wired in device.go up() at :329 immediately after NewDevice and BEFORE IpcSet/dev.Up/StartProbeLoop) is correctly ordered: the non-retroactive T117 everUp latch is neither missed (registration precedes any possible path-up edge — a path only reaches StateUp via echoes of self-sent probes, after StartProbeLoop) nor a nil-peer no-op (IpcSet adds the engine peer before probing). Fires EXACTLY ONCE for the edge (CAS-gated everUp false→true, sticky across Down→Up→Down→Up) and NEVER for the concentrator role (early-return on cfg.Role != RoleEdge). deviceRehandshake/ExpireCurrentKeypairs reuse is correct (backdates lastSentHandshake to defeat RekeyTimeout suppression; cold-boot no-keypairs is a no-op). Peers[0] is panic-safe (zero-peer configs rejected at config.go:1080). The startFailoverAndResolution concentrator noop is untouched. BOTH tests proven NON-VACUOUS by fable's mutation testing (disabling the wiring fails the edge test; unconditional wiring fails the concentrator test). go build/vet/test + -race -count=2 green; design.md synced. Non-blocking nit: the 'never disrupts an established session' doc-comment overlooks a ms-scale race whose worst case is one redundant boot-time handshake. LANDED on main at e8cbc55."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T120","goals:G7","defects:D37"]
+- sessionLogs: [".cq/logs/20260714-111900-a6ced9e51bf1e4003.md",".cq/logs/20260714-111900-a0bf6c6aac53741e8.md"]
+- rawLogs: [".cq/logs/raw/20260714-111900-a6ced9e51bf1e4003.jsonl",".cq/logs/raw/20260714-111900-a0bf6c6aac53741e8.jsonl"]
 
 ## M41
 
