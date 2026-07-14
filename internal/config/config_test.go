@@ -1562,7 +1562,7 @@ func exampleDNSBlock(t *testing.T, content, mode string) string {
 func exampleSchedulerBlock(t *testing.T, content string) string {
 	t.Helper()
 	return extractExampleSection(t, content,
-		"# ── scheduler: OPTIONAL. Omitted => active-backup, all knobs below ignored ────",
+		"# ── scheduler: OPTIONAL. Omitted => active-backup, pacing off ─────────────────",
 		"\n# ── fec: OPTIONAL, OFF by default (no parity on the wire) ─────────────────────",
 	)
 }

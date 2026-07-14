@@ -245,14 +245,17 @@ Setting both `target_residual` and `safety_factor` is rejected at config load.
 ### Optional `[scheduler]` weighted aggregation + pacing
 
 The send scheduler defaults to **active-backup** (one active path, instant
-failover). An optional `[scheduler]` block selects the **weighted-aggregation**
-policy and, off by default, per-path send-**pacing** (token buckets that bound
-bufferbloat under sustained load):
+failover); an optional `[scheduler]` block can instead select the
+**weighted-aggregation** policy. Independently of that choice, `[scheduler]`
+also turns on, off by default, per-path send-**pacing** (token buckets that
+bound bufferbloat under sustained load) — pacing is **policy-independent**
+(D65/T152/T153): it is available, and configured the same way, under either
+`policy = "active-backup"` (the default) or `policy = "weighted"`.
 
 ```toml
 [scheduler]
-policy = "weighted"
-pacing_enabled = true     # OFF by default; when on, size the pace from the links below
+# policy = "weighted"      # optional; omitted/"active-backup" is the default
+pacing_enabled = true       # OFF by default; when on, size the pace from the links below
 ```
 
 When pacing is enabled you may declare each uplink's bandwidth and baseline RTT
@@ -267,16 +270,36 @@ link_bandwidth = "50Mbit"  # SI bit/s: k/M/G = 1e3/1e6/1e9 (e.g. "10Mbit", "1Gbi
 link_rtt = "45ms"          # baseline RTT — the delay term of the pacing burst
 ```
 
+The two policies size the resulting pace **differently**, because they egress
+differently:
+
+- **Weighted** stripes every path simultaneously, so ONE reference capacity
+  applies to every path's token bucket: a heterogeneous link set is sized to
+  the **slowest declared link** (the bottleneck) — pacing any path faster than
+  that would let it build the very standing queue pacing exists to prevent.
+- **Active-backup** egresses on exactly ONE path at a time, so each path is
+  paced from **its own** BDP into a PER-PATH capacity/burst — NOT min-reduced
+  to the bottleneck. A fast active primary paces at its own drain rate even
+  when a much slower path is configured as its backup; only the currently
+  ACTIVE path's bucket is drained.
+
+Common rules, either policy:
+
 - The declaration is **operator-declared, not auto-tuned**: the value is fixed at
   load; wanbond does not adjust it live. Measure it once per link.
 - It is **all-or-nothing**: declare `link_bandwidth` (and `link_rtt`) on *every*
-  path or none. The shared per-path pace is sized to the **slowest declared link**
-  (the bottleneck), so a partial declaration is rejected.
+  path or none — a partial declaration is rejected.
 - A declared bandwidth with `pacing_enabled = false` (the default) is **inert** —
   the synthetic default pace is kept and the tunnel behaves as before.
 - `link_bandwidth` is **mutually exclusive** with the raw `per_path_capacity_fps` /
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
+- Under active-backup, pacing enabled with **neither** a declared
+  `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
+  `pacing_burst_frames` pair fails config load fast — active-backup never
+  falls back to the weighted synthetic default pace, since a nominally-on but
+  unbound pace would silently reproduce the D65 bufferbloat this feature
+  fixes. (Weighted keeps its pre-existing synthetic-default fallback.)
 
 ### Optional `[dns]` resolver block
 
@@ -435,8 +458,10 @@ link_rtt = "45ms"            # higher baseline latency
 
 **Rules:**
 - **Declare on every path or none.** If you declare `link_bandwidth` on one path,
-  you must declare it on all (wanbond sizes pacing to the slowest link, the
-  bottleneck). Partial declarations are rejected at load.
+  you must declare it on all (under the weighted policy wanbond sizes the shared
+  pace to the slowest link, the bottleneck; under active-backup, the default,
+  each path is sized from its own declared link instead). Partial declarations
+  are rejected at load.
 - **Round conservatively.** Round down if unsure (e.g., measure 49.8 Mbit/s →
   declare `49Mbit` rather than `50Mbit`). Under-sized pacing is safe; over-sized
   pacing may not bind and bufferbloat may occur.
@@ -446,7 +471,17 @@ link_rtt = "45ms"            # higher baseline latency
 
 #### Step 4: Enable pacing and deploy
 
-Ensure the edge config has the weighted scheduler and pacing enabled:
+Enable pacing in the edge config; this works under either scheduler policy
+(pacing is policy-independent — see above). Under the default active-backup
+policy:
+
+```toml
+[scheduler]
+# policy defaults to "active-backup"; no need to set it
+pacing_enabled = true
+```
+
+or, under weighted aggregation:
 
 ```toml
 [scheduler]
@@ -651,12 +686,16 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
 # link_bandwidth = "50Mbit"        # OPTIONAL. Operator-declared bottleneck
                                    #   bandwidth. SI bit/s: k/M/G = 1e3/1e6/1e9
                                    #   ("bit" may be written "bps"). Must be > 0.
-                                   #   Used ONLY under weighted policy + pacing;
-                                   #   inert otherwise. No default (undeclared).
+                                   #   Used ONLY with scheduler.pacing_enabled
+                                   #   (either policy — sized to the shared
+                                   #   bottleneck under weighted, per-path under
+                                   #   active-backup); inert otherwise. No
+                                   #   default (undeclared).
 # link_rtt = "45ms"                # OPTIONAL. Operator-declared baseline RTT
                                    #   (Go duration). REQUIRED (> 0) when
-                                   #   link_bandwidth is set under weighted
-                                   #   pacing; ignored otherwise. No default.
+                                   #   link_bandwidth is set with pacing enabled
+                                   #   (either policy); ignored otherwise. No
+                                   #   default.
 
 # A second uplink (edge). Repeat the block per path.
 [[paths]]
@@ -723,28 +762,38 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # h4 = 4                           #   distinct set (values <= 4 mean "standard
                                    #   message type").
 
-# ── scheduler: OPTIONAL. Omitted => active-backup, all knobs below ignored ────
+# ── scheduler: OPTIONAL. Omitted => active-backup, pacing off ─────────────────
 # [scheduler]
 # policy = "active-backup"         # "active-backup" (DEFAULT) | "weighted".
-                                   #   Every knob below applies ONLY to
-                                   #   "weighted"; under active-backup they are
-                                   #   inert and left unset.
-# per_path_capacity_fps = 10000.0  # DEFAULT 10000. Reference per-path capacity
-                                   #   (frame slots/s): aggregation-gate
-                                   #   denominator and pacing refill rate. > 0.
-# engage_fraction    = 0.9         # DEFAULT 0.9. Engage aggregation above
-                                   #   engage_fraction * capacity. In (0, 1].
-# disengage_fraction = 0.5         # DEFAULT 0.5. Collapse below
+                                   #   pacing_enabled/per_path_capacity_fps/
+                                   #   pacing_burst_frames below apply under
+                                   #   EITHER policy (policy-independent
+                                   #   pacing, D65/T152/T153); the
+                                   #   engage_fraction..weight_loss_floor knobs
+                                   #   apply ONLY to "weighted" and stay
+                                   #   inert/unset under active-backup.
+# per_path_capacity_fps = 10000.0  # DEFAULT 10000. Weighted: aggregation-gate
+                                   #   denominator and shared pacing refill
+                                   #   rate. Active-backup: explicit per-path
+                                   #   pacing refill rate (replicated across
+                                   #   paths) when no link_bandwidth is
+                                   #   declared. > 0 when set.
+# engage_fraction    = 0.9         # DEFAULT 0.9. Weighted only. Engage
+                                   #   aggregation above engage_fraction *
+                                   #   capacity. In (0, 1].
+# disengage_fraction = 0.5         # DEFAULT 0.5. Weighted only. Collapse below
                                    #   disengage_fraction * capacity. Must be in
                                    #   [0, engage_fraction) — the hysteresis band.
-# collapse_dwell = "2s"            # DEFAULT 2s. Sustained-low dwell before
-                                   #   collapsing to primary-only. >= 0.
-# load_tau = "200ms"               # DEFAULT 200ms. Offered-load rate estimator
-                                   #   time constant. > 0.
+# collapse_dwell = "2s"            # DEFAULT 2s. Weighted only. Sustained-low
+                                   #   dwell before collapsing to primary-only.
+                                   #   >= 0.
+# load_tau = "200ms"               # DEFAULT 200ms. Weighted only. Offered-load
+                                   #   rate estimator time constant. > 0.
 # pacing_enabled = false           # DEFAULT false. Turn on per-path send-pacing
-                                   #   (token buckets). Off => buckets bypassed.
-# pacing_burst_frames = 64.0       # DEFAULT 64. Token-bucket burst (frames).
-                                   #   > 0 when pacing_enabled.
+                                   #   (token buckets) under EITHER policy. Off
+                                   #   => buckets bypassed.
+# pacing_burst_frames = 64.0       # DEFAULT 64. Token-bucket burst (frames),
+                                   #   either policy. > 0 when pacing_enabled.
 # weight_rtt_floor = "1ms"         # DEFAULT 1ms. RTT floor in the weight
                                    #   formula. > 0.
 # weight_loss_floor = 0.001        # DEFAULT 1e-3. Loss floor under the sqrt in
@@ -836,12 +885,14 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   ends. One obfuscation engine per process.
 - **`link_bandwidth` + `link_rtt` are a pair.** Both-or-neither, and
   **all-or-nothing across every path**: declare on every `[[paths]]` block or
-  none (the shared pace is sized to the slowest declared link, undefined under a
-  partial declaration). They take effect **only** under
-  `scheduler.policy = "weighted"` with `pacing_enabled = true`; otherwise a
-  declared bandwidth is inert. When active they are **mutually exclusive** with
-  the raw `scheduler.per_path_capacity_fps` / `pacing_burst_frames` knobs —
-  declare link bandwidth *or* set the frame-slot knobs, not both.
+  none (under weighted the shared pace is sized to the slowest declared link;
+  under active-backup each path is sized from its own — either way undefined
+  under a partial declaration). They take effect **only** with
+  `pacing_enabled = true`, under **either** `scheduler.policy` (pacing is
+  policy-independent, D65/T152/T153); otherwise a declared bandwidth is inert.
+  When active they are **mutually exclusive** with the raw
+  `scheduler.per_path_capacity_fps` / `pacing_burst_frames` knobs — declare
+  link bandwidth *or* set the frame-slot knobs, not both.
 - **`link_bandwidth` vs. the aggregation engage threshold (weighted only).** When
   `scheduler.policy = "weighted"`, every path that declares `link_bandwidth` is
   checked against the (effective, post-default) engage threshold: `Load` FAILS

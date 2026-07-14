@@ -290,15 +290,29 @@ probes:
 - **`ClassData`** (bulk WireGuard transport) — **fully paced**: subject to the
   per-path token bucket and shed (`PickPaced`) when it is empty.
 
+Pacing is **policy-independent** (defect D65): it is available, and configured
+identically via `[scheduler] pacing_enabled`, under either the active-backup
+default or the weighted policy — active-backup wires it into `sched.Config`'s
+`Pacing`/`PerPathCapacities`/`PacingBursts` fields in `selectScheduler`. The two
+policies size the resulting pace **differently**, because they egress
+differently: weighted stripes every path at once, so ONE shared reference
+capacity applies to every path's bucket; active-backup egresses on exactly ONE
+path at a time, so each path's bucket is sized from that path's OWN pace — a
+fast active primary is never throttled to a slower backup's rate.
+
 When pacing is enabled the per-path pace can be
 sized from an **operator-declared** per-link bandwidth (`link_bandwidth` +
 `link_rtt` on each `[[paths]]`): at config load `SizePacingFromBDP` derives the
-scheduler's `per_path_capacity_fps` and `pacing_burst_frames` from the
-bandwidth-delay product, sized to the **slowest declared link** (the shared pace
-must not exceed the bottleneck). This is operator-*declared*, not runtime
-auto-tuning — the value is fixed at load. With pacing off (the default) a declared
-bandwidth is inert and the synthetic default pace is kept. See "Not yet built" for
-why pacing stays off by default.
+pace from the bandwidth-delay product — under weighted into the scheduler's
+shared `per_path_capacity_fps`/`pacing_burst_frames`, sized to the **slowest
+declared link** (the shared pace must not exceed the bottleneck); under
+active-backup into `Config.Scheduler`'s PER-PATH `PerPathCapacities`/
+`PacingBursts` vectors, each sized from its OWN link, index-aligned to
+`Config.Paths`. This is operator-*declared*, not runtime auto-tuning — the value
+is fixed at load. With pacing off (the default) a declared bandwidth is inert and
+the synthetic default pace is kept (weighted) / active-backup's pre-pacing
+byte-for-byte behaviour is unchanged. See "Not yet built" for why pacing stays
+off by default.
 
 **Sizing from the bandwidth-delay product.** The BDP algorithm (`SizePacingFromBDP`,
 internal/config) sizes the pacing parameters as follows:
@@ -316,9 +330,11 @@ The operator measures two values per link (see [install.md §3a](install.md#3a-t
 milliseconds, e.g. `"21ms"`). The idle RTT is the baseline; pacing bounds the
 queue so RTT under load stays near the idle value, preventing bufferbloat
 (excessive delay inflation). If heterogeneous links are bonded (different
-bandwidths), the operator declares all of them; the scheduler uses the bottleneck
-(slowest link) to size the shared per-path pace, because any link can be the
-path for a given packet.
+bandwidths), the operator declares all of them; under weighted the scheduler
+uses the bottleneck (slowest link) to size the shared per-path pace, because
+every path may carry traffic simultaneously. Under active-backup only one path
+egresses at a time, so each path's bucket is instead sized from its OWN
+declared link — a fast active primary is not held to a slower backup's rate.
 
 **Conservative sizing.** The wire-frame size used in the denominator is the full
 path MTU (1500 bytes), the conservative floor for frame size. This produces a

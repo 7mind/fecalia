@@ -904,9 +904,19 @@ func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sc
 		}, clock, lg)
 	default:
 		// active-backup (and the empty default, normalized to it at config load).
+		// PerPathCapacities/PacingBursts are derived by config.derivePacingFromBDP
+		// (T152) index-aligned to cfg.Paths; buildScheduler builds health over
+		// cfg.Paths in that SAME order (no reorder/filter happens between there and
+		// here), so the pacing vectors line up with health index-for-index.
+		sc := cfg.Scheduler
 		return sched.NewActiveBackup(
 			health,
-			sched.Config{FailbackAfter: defaultFailbackDwell},
+			sched.Config{
+				FailbackAfter:     defaultFailbackDwell,
+				Pacing:            sc.PacingEnabled,
+				PerPathCapacities: sc.PerPathCapacities,
+				PacingBursts:      sc.PacingBursts,
+			},
 			clock,
 			lg,
 		)
