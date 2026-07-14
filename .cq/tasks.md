@@ -1382,10 +1382,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-081229-a2e40c9c076c7fd70.md",".cq/logs/20260714-081736-a440fa701129dfa8e.md",".cq/logs/20260714-081736-a2b12f72790f5bc08.md"]
 - rawLogs: [".cq/logs/raw/20260714-081229-a2e40c9c076c7fd70.jsonl",".cq/logs/raw/20260714-081736-a440fa701129dfa8e.jsonl",".cq/logs/raw/20260714-081736-a2b12f72790f5bc08.jsonl"]
 
-### T113 — wip
+### T113 — done
 
 - createdAt: 2026-07-13T23:24:43.681Z
-- updatedAt: 2026-07-14T07:54:55.036Z
+- updatedAt: 2026-07-14T08:27:29.314Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Docs C3+C6: full-tunnel client-LAN recipe + concentrator NAT/forwarding checklist"
@@ -1394,6 +1394,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T108","T111"]
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 1a8c570
+- completion: "Docs (install.md §9 full-tunnel/client-LAN recipe + §5 C6 concentrator NAT/forwarding checklist) — the primary G6 production use case, previously undocumented. Edge side: mode=default-route (T108-automated /1+/1 split, cross-referenced) + operator-owned policy-route the client subnet to wanbond0 + SNAT to the edge's tunnel IP (validated primary path), OR the widen-concentrator-allowed_ips alternative. Concentrator C6 checklist (operator-owned per Q41): ip_forward=1, MASQUERADE -s <tunnel-net> -o <wan>, the two-directional FORWARD accept (incl. the ESTABLISHED,RELATED return-leg the shipped -i wanbond0 ACCEPT omits), persisted via netfilter-persistent. 3-round loop hardened the material: fixed a self-contradictory D35 /0 warning, a MASQUERADE-source mismatch in the widen alternative, and (R3) completed the widen branch's return path with the required operator `ip route add <client-subnet> dev wanbond0` on the concentrator (the daemon programs no routes there). Never documents a literal 0.0.0.0/0 as unsafe (the daemon splits it). Unanimous R3 approve after full end-to-end data-path re-trace; rebased over T112/T114 and ff-merged as 1a8c570."
+- sessionLogs: [".cq/logs/20260714-082229-ab6bc3476090aaa34.md",".cq/logs/20260714-082657-a554e035011abf6ad.md",".cq/logs/20260714-082657-afee22f11f48ff9b8.md"]
+- rawLogs: [".cq/logs/raw/20260714-082229-ab6bc3476090aaa34.jsonl",".cq/logs/raw/20260714-082657-a554e035011abf6ad.jsonl",".cq/logs/raw/20260714-082657-afee22f11f48ff9b8.jsonl"]
 
 ### T114 — done
 

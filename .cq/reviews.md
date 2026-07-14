@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 123
+  item: 124
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1387,3 +1387,16 @@ archives:
 - ledgerRefs: ["tasks:T114","goals:G6","defects:D36"]
 - sessionLogs: [".cq/logs/20260714-081736-a61c19bcaa76a8b17.md",".cq/logs/20260714-081736-a0bb9d3d0e0db7a83.md"]
 - rawLogs: [".cq/logs/raw/20260714-081736-a61c19bcaa76a8b17.jsonl",".cq/logs/raw/20260714-081736-a0bb9d3d0e0db7a83.jsonl"]
+
+### R124 — go-ahead
+
+- createdAt: 2026-07-14T08:27:20.090Z
+- updatedAt: 2026-07-14T08:27:20.090Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T113 unanimous panel approve at ROUND 3 (3-round criticism loop): [opus]+[fable] both approve. Docs (install.md §9 full-tunnel/client-LAN recipe + §5 C6 concentrator NAT/forwarding checklist) — THE primary G6 use case. The SNAT PRIMARY recipe was sound from round 1 and stayed untouched. The criticism loop hardened the surrounding material: R1 (both disapprove) — the §9 intro bold 'never write literal 0.0.0.0/0' contradicted §9.1's own TOML + §3 (the daemon ALWAYS splits a config-literal /0 to /1+/1 at UAPI render via splitDefaultRoute, so it is safe; the engine-boundary is the real invariant, D35 the engine defect), and the §9.2 widen-allowed_ips ALTERNATIVE broke the C6 MASQUERADE (un-SNAT'd client subnet not in <tunnel-net>). R2 fixed the intro + MASQUERADE-widening note + a misdirected SNAT-address pointer, but [fable]'s deeper end-to-end trace caught that the widen branch was STILL non-functional: the de-NATed RETURN packet to the client subnet had no concentrator kernel route toward wanbond0 (the daemon programs routes only for mode=default-route, rejected on the concentrator role; WireGuard allowed_ips is cryptokey routing only, no kernel route). R3 completed the widen branch with the operator-owned `ip route add <client-subnet> dev wanbond0` on the concentrator (persisted via wanbond-addressing@concentrator.service, §9.4 pattern) + corrected the failure-direction wording (client-OUTBOUND leg, not replies) + qualified the SNAT-pointer parenthetical for the /0-vs-/32 cases. Both reviewers re-traced the full data path (outbound + return) across all three widen-branch steps and confirmed it now closes; Q41 operator-owned boundary held; all code citations verified (config.go:1122 concentrator mode rejection, device.go defaultRoutePrefixes/installRoutes edge-only). Full gate green. Rebased over T112/T114 and ff-merged as 1a8c570."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T113","goals:G6","defects:D35"]
+- sessionLogs: [".cq/logs/20260714-082657-a554e035011abf6ad.md",".cq/logs/20260714-082657-afee22f11f48ff9b8.md"]
+- rawLogs: [".cq/logs/raw/20260714-082657-a554e035011abf6ad.jsonl",".cq/logs/raw/20260714-082657-afee22f11f48ff9b8.jsonl"]
