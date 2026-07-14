@@ -80,10 +80,10 @@ func TestRealDNSDialByName(t *testing.T) {
 	startIperfServer(t, r, cfg.Conc, dnsConcInner)
 
 	t.Run("valid_name", func(t *testing.T) {
-		runDNSDialScenario(t, r, cfg.Edge, cfg.Conc.Addr, edgeSrc, edgePriv, concPub, psk)
+		runDNSDialScenario(t, r, cfg.Edge, cfg.Conc.Addr, edgeSrc, edgePriv, concPub, psk, cfg.ConcPubIP)
 	})
 	t.Run("bogus_name", func(t *testing.T) {
-		runDNSDialScenario(t, r, cfg.Edge, dnsBogusHost, edgeSrc, edgePriv, concPub, psk)
+		runDNSDialScenario(t, r, cfg.Edge, dnsBogusHost, edgeSrc, edgePriv, concPub, psk, cfg.ConcPubIP)
 	})
 }
 
@@ -143,17 +143,19 @@ level = "info"
 // runDNSDialScenario writes and starts the EDGE daemon dialing dialHost:dnsListenPort
 // (the peer's `dns = true` opt-in enabled) against the already-running concentrator,
 // then observes — but does NOT gate on — the resolve-then-dial outcome: the resolved
-// address the daemon's own re-resolution controller installed (read from ITS journal,
-// not a client-side lookup, so this proves wanbond's own resolver path rather than the
-// test host's), the time-to-first-handshake, and a short best-effort traffic sample
-// taken only once a handshake completed.
+// address (sourced from daemon-observable evidence, not a client-side lookup, so this
+// proves wanbond's own resolver path rather than the test host's — see resolveOutcome),
+// the time-to-first-handshake, and a short best-effort traffic sample taken only once a
+// handshake completed. concPubIP is the standing testbed's known concentrator public IP
+// (cfg.ConcPubIP), used only as the reported address on the silent boot-resolve path
+// (see resolveOutcome); it is never itself gated on.
 //
 // Standing up the daemon and its TUN is a PRECONDITION (Fatal on failure, matching the
 // rest of this package); the RESOLUTION / HANDSHAKE / TRAFFIC outcome itself never
 // calls t.Fatalf/t.Errorf — only t.Logf. This is the acceptance property the
 // "bogus_name" subtest exists to demonstrate: an unresolvable hostname reports a
 // failed resolution/handshake/traffic outcome and the subtest still PASSES.
-func runDNSDialScenario(t *testing.T, r *Runner, edge Host, dialHost, edgeSrc, edgePriv, concPub, psk string) {
+func runDNSDialScenario(t *testing.T, r *Runner, edge Host, dialHost, edgeSrc, edgePriv, concPub, psk, concPubIP string) {
 	t.Helper()
 
 	edgeCfg := fmt.Sprintf(`role = "edge"
@@ -212,11 +214,15 @@ level = "info"
 	}
 
 	journal := readDaemonJournal(t, r, edge, dnsEdgeUnit)
-	resolvedAddr, resolveElapsed, resolveOK := firstResolutionAfter(journal, startAt)
+	resolvedAddr, resolveElapsed, resolveOK, viaBootResolve := resolveOutcome(journal, startAt, handshakeOK, concPubIP)
 
-	if resolveOK {
+	switch {
+	case resolveOK && viaBootResolve:
+		t.Logf("RESOLUTION: %q -> %s (inferred: silent Q30 boot-resolve succeeded, evidenced by a completed handshake; no journal marker on this path, see resolveOutcome)",
+			dialHost, resolvedAddr)
+	case resolveOK:
 		t.Logf("RESOLUTION: %q -> %s (%s after daemon start)", dialHost, resolvedAddr, resolveElapsed)
-	} else {
+	default:
 		t.Logf("RESOLUTION: %q did not resolve to a usable endpoint within the window", dialHost)
 	}
 	if handshakeOK {
@@ -264,18 +270,54 @@ func dumpUnitLog(t *testing.T, r *Runner, host Host, unit string) {
 // dnsResolutionRecord is the subset of the "hub failover: first endpoint resolution"
 // slog line (internal/device/failover.go) this tier reads: it is logged exactly once,
 // the moment the re-resolution controller installs the FIRST successfully resolved
-// address on the engine peer.
+// address on the engine peer. This fires ONLY on the R70 DEFERRED-install path — see
+// resolveOutcome for why a hostname can also resolve WITHOUT ever emitting this marker.
 type dnsResolutionRecord struct {
 	Time       time.Time `json:"time"`
 	Msg        string    `json:"msg"`
 	ToEndpoint string    `json:"to_endpoint"`
 }
 
+// resolveOutcome derives the resolution verdict from the TWO disjoint paths a hostname
+// endpoint can resolve through (docs/design.md "Device lifecycle"):
+//
+//   - DEFERRED install (R70): the Q30 bounded boot resolve failed for every spec, so the
+//     peer boots endpoint-less; the re-resolution controller's first successful lookup
+//     then INSTALLS the endpoint via the engine's UAPI path and logs the "first endpoint
+//     resolution" journal marker firstResolutionAfter reads. This is the only path that
+//     is DIRECTLY journal-observable, so it is checked first and, when present, is
+//     authoritative for both the resolved address and the elapsed time.
+//   - SILENT boot resolve (Q30 happy path): the hostname resolves within the boot
+//     window, so resolveBootEndpoints/bootResolveHostname (internal/device/device.go)
+//     seed the endpoint directly into the UAPI render at Up — that path logs NOTHING on
+//     success (only on failure/empty-result), and newHubFailoverFromSpecs seeds
+//     activeSpec from the already-resolved specs, so updateResolution's R70 branch
+//     (activeSpec == -1) is never reached either. There is therefore no daemon-observable
+//     resolved address on this path; a completed handshake against a name-dialed peer is
+//     itself the proof the boot resolve succeeded (the engine can only handshake against
+//     an addressable endpoint), so a handshake with no R70 marker is reported as resolved
+//     using the testbed's known standing concentrator public IP (concPubIP) as the
+//     address — the same static fact the "valid_name" scenario's own dialHost resolves
+//     to (see TestRealDNSDialByName's doc comment), not a fresh client-side lookup.
+//
+// Neither path succeeding (bogus_name: no marker, no handshake) reports ok=false, exactly
+// what that subtest expects to observe.
+func resolveOutcome(journal string, after time.Time, handshakeOK bool, concPubIP string) (endpoint string, elapsed time.Duration, ok bool, viaBootResolve bool) {
+	if endpoint, elapsed, ok := firstResolutionAfter(journal, after); ok {
+		return endpoint, elapsed, true, false
+	}
+	if handshakeOK {
+		return concPubIP, 0, true, true
+	}
+	return "", 0, false, false
+}
+
 // firstResolutionAfter scans journal for the "first endpoint resolution" transition
 // logged strictly after `after` and returns the address it installed and the elapsed
 // time from `after` to that transition. ok is false when no such transition appears
-// — i.e. the hostname never resolved to a usable address in the window, which is
-// exactly what the bogus_name subtest expects to observe and report.
+// — i.e. either the hostname never resolved to a usable address in the window (the
+// bogus_name case), or it resolved via the silent boot-resolve path (see
+// resolveOutcome, which is what callers should use instead of this function directly).
 func firstResolutionAfter(journal string, after time.Time) (endpoint string, elapsed time.Duration, ok bool) {
 	for _, line := range strings.Split(journal, "\n") {
 		if !strings.Contains(line, "first endpoint resolution") {
