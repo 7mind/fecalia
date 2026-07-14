@@ -496,6 +496,100 @@ standing queues needed to validate pacing against real links. Real-link
 verification (this step) is essential: measure on your actual uplinks to confirm
 pacing meets your bufferbloat target.
 
+### 3b. Policy-routing edge topologies: source-IP pinning with `bind = "source"`
+
+**Symptom:** On a VLAN-per-WAN edge with `ip rule from <source_addr>` policy routing,
+the tunnel silently fails (ENETUNREACH on all packets), even though `ping -I <source_ip>`
+proves the WAN interface works.
+
+**Root cause:** wanbond's default `bind` mode is `"auto"`, which selects `SO_BINDTODEVICE`
+(device bind, wildcard source) on one-address interfaces — the exact case of a VLAN-per-WAN
+edge. A wildcard-source socket never matches `ip rule from <source_addr>`, so the route
+lookup falls through to the main table, finds no route to the concentrator via that VLAN,
+and returns ENETUNREACH. The tunnel's UDP packets are silently dropped at the IP layer; no
+error appears in the daemon's logs. This failure was observed in production (D38).
+
+**Workaround 1: Policy rule with output interface (production recipe):**
+
+Add an `oif <dev>` (output interface) clause to your policy rule **instead of** a
+`from <source_ip>` clause. `oif` and `from` are ANDed together, not ORed — and a
+wildcard-source device-bind socket, which is exactly the root cause above, never
+matches `from <source_ip>`. The `from` clause would therefore make the rule just as
+dead as the `ip rule from <source_addr>` rule that caused the symptom. Match on
+output interface alone instead; that stays correct regardless of which source
+address the socket ends up using:
+
+```sh
+# Replace <dev> and <N> with your values.
+# <dev>: the WAN interface name (e.g., eth0.231)
+# <N>: the routing table number (e.g., 10)
+
+ip rule add oif <dev> table <N> prio 100
+ip route add default dev <dev> via <gateway-ip> table <N>
+```
+
+This is the recipe actually used to work around D38 in production. **It is not
+reboot-persistent** — `ip rule`/`ip route` are runtime-only kernel state and do not
+survive a reboot or an interface recreate, regardless of `ip rule` ordering. Persist
+it the same way this document persists other runtime-only `ip`/`nft`/`iptables` state
+elsewhere: fold the `ip rule add`/`ip route add` calls into the role's re-apply script
+under the `wanbond-addressing@.service` oneshot (§4, "Persistence recipe for
+non-networkd hosts"), or into whatever equivalent boot-time mechanism replays your
+policy routing (cf. the `netfilter-persistent` pattern in §5 for the analogous
+firewall-rule case).
+
+**Workaround 2: Per-path `bind = "source"` toggle (recommended):**
+
+Add `bind = "source"` to each `[[paths]]` block in the config. This forces the path socket
+to bind to the source IP (pre-T16 behavior) instead of the device, ensuring the
+wildcard-source collision never occurs. The socket's source IP will match your
+`ip rule from` clauses:
+
+```toml
+[[paths]]
+name = "starlink"
+source_addr = "192.168.1.10"
+bind = "source"
+
+[[paths]]
+name = "5g"
+source_addr = "192.168.2.10"
+bind = "source"
+```
+
+If every path in a VLAN-per-WAN topology needs source binding, set the top-level
+default instead of repeating `bind = "source"` on each `[[paths]]` block — a path
+only needs its own `bind` when it deviates from the default:
+
+```toml
+bind = "source"
+
+[[paths]]
+name = "starlink"
+source_addr = "192.168.1.10"
+
+[[paths]]
+name = "5g"
+source_addr = "192.168.2.10"
+```
+
+Accepted `bind` values (top-level default, and per-path override) are:
+
+- `"source"` — force source-IP binding (defeats device-bind roam tolerance, safe for
+  policy-routed topologies)
+- `"device"` — force device binding (requires manual rule workaround for policy routing)
+- `"auto"` (default) — automatic heuristic: device-bind only when the source resolves to
+  a non-loopback interface, that interface carries exactly one address of the source's
+  family, AND exactly one configured path resolves to that interface (two paths sharing
+  one device fall back to source binding, since two wildcard+device sockets on the same
+  port would collide `EADDRINUSE`); every other case source-binds.
+
+Restart the daemon after changing the config:
+
+```sh
+systemctl restart wanbond-edge
+```
+
 ### 3z. Full configuration reference (all keys)
 
 This is the exhaustive key list — every configuration key wanbond reads, in one
@@ -736,70 +830,6 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 - **metrics loopback-only.** `[metrics] listen` must be a loopback address (or a
   hostname resolving entirely to loopback); a non-loopback bind is refused when
   the endpoint starts. Omit the block to serve no metrics at all.
-
-### 3b. Policy-routing edge topologies: source-IP pinning with `bind = "source"`
-
-**Symptom:** On a VLAN-per-WAN edge with `ip rule from <source_addr>` policy routing,
-the tunnel silently fails (ENETUNREACH on all packets), even though `ping -I <source_ip>`
-proves the WAN interface works.
-
-**Root cause:** wanbond's default `bind` mode is `"auto"`, which selects `SO_BINDTODEVICE`
-(device bind, wildcard source) on one-address interfaces — the exact case of a VLAN-per-WAN
-edge. A wildcard-source socket never matches `ip rule from <source_addr>`, so the route
-lookup falls through to the main table, finds no route to the concentrator via that VLAN,
-and returns ENETUNREACH. The tunnel's UDP packets are silently dropped at the IP layer; no
-error appears in the daemon's logs. This failure was observed in production (D38).
-
-**Workaround 1: Policy rule with output interface:**
-
-Add an `oif <dev>` (output interface) clause to your policy rule. This forces the routing
-lookup to stay in the per-WAN routing table even when the socket has a wildcard source:
-
-```sh
-# Replace <source_ip>, <dev>, and <N> with your values.
-# <source_ip>: the WAN uplink's source IP (e.g., 192.168.1.10)
-# <dev>: the WAN interface name (e.g., eth0.231)
-# <N>: the routing table number (e.g., 10)
-
-ip rule add from <source_ip> oif <dev> table <N> prio 100
-ip route add default dev <dev> via <gateway-ip> table <N>
-```
-
-This rule is persistent across policy-route changes and survives `ip rule` re-ordering,
-but requires manual `ip` management on every WAN topology change.
-
-**Workaround 2: Per-path `bind = "source"` toggle (recommended):**
-
-Add `bind = "source"` to each `[[paths]]` block in the config. This forces the path socket
-to bind to the source IP (pre-T16 behavior) instead of the device, ensuring the
-wildcard-source collision never occurs. The socket's source IP will match your
-`ip rule from` clauses:
-
-```toml
-[[paths]]
-name = "starlink"
-source_addr = "192.168.1.10"
-bind = "source"
-
-[[paths]]
-name = "5g"
-source_addr = "192.168.2.10"
-bind = "source"
-```
-
-Accepted `bind` values (per-path, optional) are:
-
-- `"source"` — force source-IP binding (defeats device-bind roam tolerance, safe for
-  policy-routed topologies)
-- `"device"` — force device binding (requires manual rule workaround for policy routing)
-- `"auto"` (default) — automatic heuristic (device bind on one-address interfaces, source
-  bind on multi-address)
-
-Restart the daemon after changing the config:
-
-```sh
-systemctl restart wanbond-edge
-```
 
 ## 4. systemd units
 
