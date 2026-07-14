@@ -29,6 +29,8 @@ import (
 //	9104  restart_onesided_test.go    (r121MetricsPort; edge on 127.0.0.1, concentrator on its uplink IP)
 //	9105  load_self_test.go           (loadSelfTestMetricsListen)
 //	9106  weighted_capacity_warn_test.go (t144MetricsListen)
+//	9107  multipeer_hardened_test.go  (hwMetricsPort; concentrator on its hw1 uplink IP, not
+//	      loopback — this fixture's concentrator runs in the peer netns, like r121's)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
