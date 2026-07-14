@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -200,5 +201,194 @@ func TestNonLoopbackWithTokenAccepted(t *testing.T) {
 	defer cancel()
 	if err := srv.Close(ctx); err != nil {
 		t.Errorf("Close: %v", err)
+	}
+}
+
+// startAuthTestServer starts a monitor Server on loopback with the given token
+// and returns it, its base http URL, and a client that does NOT auto-follow
+// redirects (so the ?token= bootstrap 302 is observable).
+func startAuthTestServer(t *testing.T, token string) (*Server, string) {
+	t.Helper()
+	srv, err := NewServer("127.0.0.1:0", token, fakeSource{}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+	return srv, "http://" + srv.Addr().String()
+}
+
+func noRedirectClient() *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func closeMonitor(t *testing.T, srv *Server) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Close(ctx); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// TestAuthHostOrigin asserts the unconditional (no-secret) Host/Origin defense:
+// a foreign Origin and a foreign Host (DNS-rebinding) are both 403; a no-Origin
+// request with a loopback Host is allowed.
+func TestAuthHostOrigin(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	srv, base := startAuthTestServer(t, "")
+	defer closeMonitor(t, srv)
+	client := noRedirectClient()
+
+	// Foreign Origin => 403 (cross-origin defense).
+	req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("foreign-Origin request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign Origin => %d, want 403", resp.StatusCode)
+	}
+
+	// Foreign Host (DNS-rebinding) => 403.
+	reqH, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	reqH.Host = "evil.example.com"
+	respH, err := client.Do(reqH)
+	if err != nil {
+		t.Fatalf("foreign-Host request: %v", err)
+	}
+	_ = respH.Body.Close()
+	if respH.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign Host => %d, want 403", respH.StatusCode)
+	}
+
+	// No Origin, loopback Host => 200 (a curl-style request is allowed).
+	resp2, err := client.Get(base + "/")
+	if err != nil {
+		t.Fatalf("no-Origin request: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("no-Origin loopback => %d, want 200", resp2.StatusCode)
+	}
+}
+
+// TestAuthTokenFlow asserts the static-token gate + ?token= bootstrap-cookie
+// flow: no credential 401; Bearer 200; wrong token 401; ?token= sets a
+// SameSite=Strict HttpOnly cookie + 302 redirect stripping the query; the
+// cookie then authorizes subsequent requests.
+func TestAuthTokenFlow(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	const token = "s3cr3t-monitor-token"
+	srv, base := startAuthTestServer(t, token)
+	defer closeMonitor(t, srv)
+	client := noRedirectClient()
+
+	// No credential => 401.
+	resp, err := client.Get(base + "/")
+	if err != nil {
+		t.Fatalf("no-credential request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no credential => %d, want 401", resp.StatusCode)
+	}
+
+	// Authorization: Bearer <token> => 200.
+	reqB, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	reqB.Header.Set("Authorization", "Bearer "+token)
+	respB, err := client.Do(reqB)
+	if err != nil {
+		t.Fatalf("bearer request: %v", err)
+	}
+	_ = respB.Body.Close()
+	if respB.StatusCode != http.StatusOK {
+		t.Fatalf("valid Bearer => %d, want 200", respB.StatusCode)
+	}
+
+	// Wrong token => 401.
+	reqW, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	reqW.Header.Set("Authorization", "Bearer not-the-token")
+	respW, err := client.Do(reqW)
+	if err != nil {
+		t.Fatalf("wrong-token request: %v", err)
+	}
+	_ = respW.Body.Close()
+	if respW.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong token => %d, want 401", respW.StatusCode)
+	}
+
+	// GET /?token=<token> => 302 + Set-Cookie SameSite=Strict HttpOnly, query stripped.
+	respT, err := client.Get(base + "/?token=" + token)
+	if err != nil {
+		t.Fatalf("bootstrap ?token= request: %v", err)
+	}
+	_ = respT.Body.Close()
+	if respT.StatusCode != http.StatusFound {
+		t.Fatalf("?token= => %d, want 302", respT.StatusCode)
+	}
+	if loc := respT.Header.Get("Location"); loc != "/" {
+		t.Fatalf("?token= redirect Location = %q, want %q (query must be stripped)", loc, "/")
+	}
+	var cookie *http.Cookie
+	for _, c := range respT.Cookies() {
+		if c.Name == monitorTokenCookie {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("?token= did not set the monitor token cookie")
+	}
+	if !cookie.HttpOnly {
+		t.Error("token cookie is not HttpOnly")
+	}
+	if cookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("token cookie SameSite = %v, want Strict", cookie.SameSite)
+	}
+	if cookie.Value != token {
+		t.Errorf("token cookie value = %q, want the token", cookie.Value)
+	}
+
+	// The cookie alone authorizes a subsequent request => 200.
+	reqC, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	reqC.AddCookie(&http.Cookie{Name: monitorTokenCookie, Value: token})
+	respC, err := client.Do(reqC)
+	if err != nil {
+		t.Fatalf("cookie request: %v", err)
+	}
+	_ = respC.Body.Close()
+	if respC.StatusCode != http.StatusOK {
+		t.Fatalf("cookie-authorized => %d, want 200", respC.StatusCode)
+	}
+}
+
+// TestHostAllowed unit-checks the DNS-rebinding host classifier directly: allowlisted
+// names and any IP literal pass; an arbitrary domain is rejected.
+func TestHostAllowed(t *testing.T) {
+	allowed := allowedHosts("127.0.0.1:9101")
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1:9101", true},
+		{"localhost:9101", true},
+		{"[::1]:9101", true},
+		{"::1", true},
+		{"192.0.2.10:9101", true}, // IP literal: not DNS-rebindable
+		{"192.0.2.10", true},
+		{"evil.example.com", false},
+		{"evil.example.com:9101", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := hostAllowed(tc.host, allowed); got != tc.want {
+			t.Errorf("hostAllowed(%q) = %v, want %v", tc.host, got, tc.want)
+		}
 	}
 }

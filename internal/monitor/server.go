@@ -2,11 +2,14 @@ package monitor
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -88,10 +91,16 @@ func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Serv
 	mux.HandleFunc("GET "+rootPath, handleRoot)
 	mux.HandleFunc("GET "+wsPath, newWSHandler(src, logger.Component("monitor")))
 
+	// Wrap the mux with the auth layer (T164): unconditional Host/Origin
+	// validation on EVERY route + the /ws upgrade, plus optional static-token
+	// gating when a token is configured. The allowed-host set is derived from
+	// the configured listen host plus the loopback aliases.
+	auth := &authConfig{token: token, allowed: allowedHosts(addr)}
+
 	return &Server{
 		ln: ln,
 		srv: &http.Server{
-			Handler:           mux,
+			Handler:           auth.middleware(mux),
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
 		log: logger.Component("monitor"),
@@ -191,4 +200,123 @@ func verifyLoopbackBind(a net.Addr) error {
 		return fmt.Errorf("%w: bound to non-loopback %s", ErrNonLoopbackBind, tcp.IP)
 	}
 	return nil
+}
+
+// monitorTokenCookie names the SameSite=Strict, HttpOnly cookie the bootstrap
+// flow sets after a valid ?token= navigation, so subsequent requests (including
+// the WebSocket upgrade the browser issues automatically) carry the token
+// without it reappearing in the URL.
+const monitorTokenCookie = "wanbond_monitor_token"
+
+// authConfig is the monitor endpoint's auth policy: the optional static bearer
+// token and the set of Host/Origin host values the endpoint accepts.
+type authConfig struct {
+	token   string
+	allowed map[string]struct{}
+}
+
+// allowedHosts is the Host/Origin allowlist (host without port): the loopback
+// aliases plus the configured listen host. It backs the DNS-rebinding defense —
+// a rebinding attack presents an attacker-owned DOMAIN as Host, which is absent
+// from this set (see hostAllowed).
+func allowedHosts(listenAddr string) map[string]struct{} {
+	set := map[string]struct{}{
+		"localhost": {},
+		"127.0.0.1": {},
+		"::1":       {},
+	}
+	if host, _, err := net.SplitHostPort(listenAddr); err == nil && host != "" {
+		set[host] = struct{}{}
+	}
+	return set
+}
+
+// hostAllowed reports whether a Host/Origin host value is permitted. A value in
+// the allowlist is accepted; an IP literal is accepted because DNS rebinding
+// requires a resolvable DOMAIN and cannot target a raw IP; any other (domain)
+// name is rejected. The value may carry a port and/or v6 brackets, stripped
+// first.
+func hostAllowed(hostport string, allowed map[string]struct{}) bool {
+	h := hostport
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		h = host
+	}
+	h = strings.TrimPrefix(h, "[")
+	h = strings.TrimSuffix(h, "]")
+	if _, ok := allowed[h]; ok {
+		return true
+	}
+	// An IP literal cannot be DNS-rebound (no name resolution); only domain
+	// names are a rebinding vector, so a raw IP Host is always safe.
+	return net.ParseIP(h) != nil
+}
+
+// middleware wraps next with the monitor auth layer: UNCONDITIONAL Host and
+// Origin validation (DNS-rebinding + cross-origin defense, needs no secret),
+// then — when a token is configured — static-token gating with a ?token=
+// bootstrap-cookie flow. Applied to the whole mux so BOTH / and /ws are covered.
+func (a *authConfig) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hostAllowed(r.Host, a.allowed) {
+			http.Error(w, "forbidden: host not allowed", http.StatusForbidden)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || u.Host == "" || !hostAllowed(u.Host, a.allowed) {
+				http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
+				return
+			}
+		}
+		if a.token != "" && !a.authorize(w, r) {
+			return // authorize wrote the 401 or the bootstrap redirect
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authorize reports whether the request carries a valid token via
+// `Authorization: Bearer <token>` or the session cookie. On a first GET
+// navigation with a matching ?token= query it sets the SameSite=Strict HttpOnly
+// cookie and 302-redirects to the same path WITHOUT the query (returning false —
+// the redirect IS the response). A missing/invalid credential yields 401. All
+// token comparisons are constant-time.
+func (a *authConfig) authorize(w http.ResponseWriter, r *http.Request) bool {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		if a.tokenMatches(strings.TrimPrefix(h, "Bearer ")) {
+			return true
+		}
+	}
+	if ck, err := r.Cookie(monitorTokenCookie); err == nil && a.tokenMatches(ck.Value) {
+		return true
+	}
+	if r.Method == http.MethodGet {
+		if q := r.URL.Query().Get("token"); q != "" && a.tokenMatches(q) {
+			http.SetCookie(w, &http.Cookie{
+				Name:     monitorTokenCookie,
+				Value:    a.token,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+				// Secure is intentionally false: the monitor serves plain HTTP
+				// (loopback by default; a non-loopback bind still has no TLS in
+				// v1 — the accepted residual risk, Q58 answer (a)).
+				Secure: false,
+			})
+			stripped := *r.URL
+			q2 := stripped.Query()
+			q2.Del("token")
+			stripped.RawQuery = q2.Encode()
+			http.Redirect(w, r, stripped.RequestURI(), http.StatusFound)
+			return false
+		}
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return false
+}
+
+// tokenMatches is a constant-time comparison of a presented token against the
+// configured one, so a timing side-channel cannot leak the token byte by byte.
+func (a *authConfig) tokenMatches(got string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(a.token)) == 1
 }
