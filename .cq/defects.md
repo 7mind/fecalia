@@ -1000,10 +1000,10 @@ archives: []
 - suggestedFix: In SetPaths, when s.aggregating was true before the reset, emit the canonical 'scheduler aggregation change' record (to=collapsed, from=aggregating, reason='paths replaced', plus the threshold fields from T143) under the already-held s.mu.
 - ledgerRefs: ["tasks:T143","goals:G13"]
 
-### D73 — open
+### D73 — resolved
 
 - createdAt: 2026-07-14T16:26:28.223Z
-- updatedAt: 2026-07-14T16:26:28.223Z
+- updatedAt: 2026-07-14T16:39:14.424Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: test/e2e/load.go (non-test file) references _test.go-only symbols, so `go build -tags e2e ./test/e2e/...` fails
@@ -1011,6 +1011,7 @@ archives: []
 - severity: low
 - suggestedFix: Rename test/e2e/load.go to test/e2e/load_test.go (it is test-support code, belongs in the test binary), OR move proc/lockedBuffer/nsEnvMarker into a non-test e2e-tagged support file. Then add `go build -tags e2e ./test/e2e/...` to the gate so it cannot regress.
 - ledgerRefs: ["tasks:T141","tasks:T143","goals:G13"]
+- rootCause: "test/e2e/load.go (added by T141) was a NON-_test.go file carrying the e2e build tag but referencing proc/lockedBuffer/nsEnvMarker which are defined only in *_test.go files; in Go a non-test file cannot see _test.go symbols outside the test binary, so `go build -tags e2e ./test/e2e/...` failed with 3 undefined symbols (uncaught because the gate used `go test`/`go vet -tags e2e`/golangci, all of which include test files). RESOLVED inline by orchestrator (commit c5335a0): `git mv test/e2e/load.go test/e2e/load_test.go` — load helpers are test-support consumed only by e2e _test.go files, so moving load.go into the test binary makes the symbols resolve while DriveUDPLoad/MetricsSampler/ParseLogLines stay visible to the e2e tests. Verified: `go build -tags e2e ./test/e2e/...` now clean; e2e compiles; just lint 0 issues default+e2e+realhosts. This also unblocked T128 whose acceptance requires `go build -tags e2e` clean."
 
 ### D74 — open
 
