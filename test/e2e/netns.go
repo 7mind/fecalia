@@ -33,6 +33,8 @@ import (
 //	      loopback — this fixture's concentrator runs in the peer netns, like r121's)
 //	9108  aggregation_metrics_test.go   (aggMetricsListen)
 //	9109  probe_headroom_test.go       (t145MetricsListen)
+//	9110  aggregation_visibility_test.go (visMetricsListen; both scenarios share the port,
+//	      each in its own netns, sequentially)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
