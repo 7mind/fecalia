@@ -127,18 +127,32 @@ func (m *Multipath) reconcileDeferred() {
 		}
 		// The listen succeeded: a working conn materialized (either the interface
 		// resolved and device-bound, or the source-IP-pin fallback bound). Re-arm the
-		// dedup latch so a LATER unresolvable transition (e.g. a re-roam) warns again,
-		// and log the two D53 fallback facts now that they are backed by a real socket.
+		// dedup latch so a LATER unresolvable transition (e.g. a re-roam, or THIS SAME
+		// entry going through another failing listen after the promote failure handled
+		// below) warns again. This is keyed to the LISTEN outcome, not the promote
+		// outcome, so it clears unconditionally here — round 3 / CRITICISM 2.
 		dp.warnedUnresolvable = false
-		m.warnForcedDeviceUnresolvable(dp.def.Name, dp.def.Bind, dp.def.SourceAddr, dev)
-		m.warnDeviceBindFallback(dp.def.Name, dp.def.Bind, dev, deviceErr)
 		if err := m.promoteDeferredLocked(dp, c); err != nil {
 			// The bind succeeded but promotion did not (a scheduler/path index skew, or a
 			// codec build error): close the fresh socket and keep the path deferred so the
 			// next tick retries cleanly, rather than leaking the socket or half-admitting.
+			// No fallback socket PERSISTS here — it was just closed — so the two D53
+			// fallback-fact warns below must NOT fire: emitting them would be an
+			// outcome-false "falling back to source-IP pinning" claim, and because
+			// promotion is retried every 1 Hz tick, a persistent promote failure (a
+			// defIdx/prober-fan-out desync, say) would SPAM that false claim once per
+			// tick — the very defect class round 1 fixed for the listen-failure edge,
+			// relocated to the promote-failure edge (round 3 / CRITICISM 1).
 			_ = c.Close()
 			kept = append(kept, dp)
+			continue
 		}
+		// Promotion ALSO succeeded: the fresh socket is now actually installed (every
+		// bound peer has a receive-demux view and a scheduler entry — promoteDeferredLocked's
+		// fan-out) and dp is dropped from m.deferred below, so the D53 fallback facts are
+		// finally backed by a real, live, installed socket — log them only now.
+		m.warnForcedDeviceUnresolvable(dp.def.Name, dp.def.Bind, dp.def.SourceAddr, dev)
+		m.warnDeviceBindFallback(dp.def.Name, dp.def.Bind, dev, deviceErr)
 	}
 	m.deferred = kept
 }

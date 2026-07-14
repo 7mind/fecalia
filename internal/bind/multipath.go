@@ -976,11 +976,14 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: open path %q on %s: %w", def.Name, def.SourceAddr, err)
 		}
-		// The listen succeeded: a working conn materialized, so any forced-device
-		// fallback fact these log is backed by a real socket, not a claim (D53 round 2 /
-		// FIX 2).
-		m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, bindDevs[i])
-		m.warnDeviceBindFallback(def.Name, def.Bind, bindDevs[i], deviceErr)
+		// The listen succeeded: a working conn materialized. The D53 fallback-fact WARNs
+		// are deferred past the peer fan-out below (round 3 / CRITICISM 1): a peer's
+		// codec build or prober-fan-out desync in that loop aborts this ENTIRE Open call
+		// (closeSocketsLocked + a returned error), so warning here — before the path is
+		// actually installed into every peer's paths/scheduler — would log an
+		// outcome-false "falling back to source-IP pinning" claim for a bond that never
+		// came up at all.
+		//
 		// Large SO_RCVBUF, best-effort: the kernel caps at net.core.rmem_max and
 		// SetReadBuffer does not require privilege, so a returned error is rare;
 		// treat it as non-fatal rather than refusing to bind in a restricted env.
@@ -1039,6 +1042,12 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			// source-demuxed to its owning peer on each authenticated PROBE.
 			shared.addViewLocked(pp)
 		}
+		// Every peer is now wired to this path (paths + receive-demux view) — the socket
+		// is actually installed, so the fallback facts these log are backed by a real,
+		// live, staying-up path, not a claim (D53 round 2 / FIX 2; ordering — round 3 /
+		// CRITICISM 1).
+		m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, bindDevs[i])
+		m.warnDeviceBindFallback(def.Name, def.Bind, bindDevs[i], deviceErr)
 		m.shared = append(m.shared, shared)
 		if firstBound {
 			actualPort = uint16(c.LocalAddr().(*net.UDPAddr).Port)
@@ -2673,10 +2682,12 @@ func (m *Multipath) AddPath(def config.Path) error {
 		}
 		return fmt.Errorf("bind: add path %q on %s: %w", def.Name, def.SourceAddr, err)
 	}
-	// The listen succeeded: a working conn materialized, so any forced-device fallback
-	// fact these log is backed by a real socket, not a claim (D53 round 2 / FIX 2).
-	m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, dev)
-	m.warnDeviceBindFallback(def.Name, def.Bind, dev, deviceErr)
+	// The listen succeeded: a working conn materialized. The D53 fallback-fact WARNs are
+	// deferred past the peer fan-out below (round 3 / CRITICISM 1): attachSharedPathLocked
+	// can still fail (a per-peer codec/prober build error) and roll the whole admission
+	// back — closing this socket and returning an error to the caller, with the path
+	// never added — so warning here, before the fan-out is known to succeed, would log an
+	// outcome-false "falling back to source-IP pinning" claim for a path that never came up.
 	_ = c.SetReadBuffer(socketRecvBuffer)
 	shared := &sharedPathState{name: def.Name, id: id, src: def.SourceAddr, conn: c}
 
@@ -2689,6 +2700,11 @@ func (m *Multipath) AddPath(def config.Path) error {
 		_ = c.Close()
 		return err
 	}
+	// The fan-out succeeded: every currently-bound peer now has a view + scheduler entry
+	// for this socket, so the fallback facts these log are backed by a real, live,
+	// installed path, not a claim (D53 round 2 / FIX 2; ordering — round 3 / CRITICISM 1).
+	m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, dev)
+	m.warnDeviceBindFallback(def.Name, def.Bind, dev, deviceErr)
 
 	// Durable membership: the def is SHARED (one socket), recorded once; each peer records
 	// its OWN prober so a subsequent Close→Open rebuilds THIS path and re-pins each peer's

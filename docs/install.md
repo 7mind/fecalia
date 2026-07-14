@@ -893,11 +893,16 @@ systemctl enable --now wanbond-edge      # or wanbond-concentrator
   interface (D53) — it silently loses the roam-survival property `"device"`
   exists for, so it is worth watching for in the daemon's logs on a pre-5.7
   host or an interface that has gone away. The WARN fires only once a
-  source-IP-pinned socket has actually bound; if the interface is
-  unresolvable AND the source-IP fallback itself cannot bind either (the path
-  stays deferred, not falling back to anything), a distinct "still deferred"
-  WARN is logged instead, once per unresolvable spell rather than once per
-  second of the T55 background reconcile retry.
+  source-IP-pinned socket has actually bound AND been installed as a live
+  path in the running bond. If the interface is unresolvable AND the
+  source-IP fallback itself cannot bind either (the path stays deferred, not
+  falling back to anything), a distinct "still deferred" WARN is logged
+  instead, once per unresolvable spell rather than once per second of the T55
+  background reconcile retry. If the fallback bind succeeds but installing it
+  into the running bond then fails (a wiring defect), that reconcile tick logs
+  neither WARN — the socket is closed and the path stays deferred for a clean
+  retry next tick — rather than claiming a fallback that did not actually
+  take.
 
 ### NetworkManager unmanaged-devices drop-in
 

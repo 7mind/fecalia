@@ -175,10 +175,20 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   property was lost; the same setsockopt fallback for an `"auto"`-selected
   device bind — never an operator's explicit choice — logs at INFO instead
   (D53). The WARN fires **only once a source-IP-pinned socket has actually
-  materialized** — a claim of "falling back to source-IP pinning" while the
-  fallback bind itself also failed (the path stays `DEFERRED`, no socket at
-  all) would be false; that case instead logs a distinct, non-fallback-
-  claiming "still deferred" WARN. That still-deferred WARN is deduplicated
+  materialized AND been installed as a live path** — a claim of "falling back
+  to source-IP pinning" while the fallback bind itself also failed (the path
+  stays `DEFERRED`, no socket at all) would be false, and that case instead
+  logs a distinct, non-fallback-claiming "still deferred" WARN. A THIRD case
+  — the fallback bind succeeds but installing the resulting socket into the
+  running bond then fails (a scheduler/peer-fan-out wiring defect) — logs
+  NEITHER WARN: the T55 background reconciler closes that socket and keeps
+  the path deferred for a clean retry next tick, so claiming a fallback that
+  was never actually wired in would be equally false (round 3). The
+  equivalent ordering applies at `Open()` and `AddPath()`, whose fallback
+  WARNs likewise wait until the path is fully wired into every bound peer,
+  not merely bound — a failure there aborts the whole call instead of
+  retrying, so nothing is silently kept half-admitted either way. The
+  still-deferred WARN is deduplicated
   **per condition-transition**, not per background-reconcile tick: the T55
   reconciler (`StartReconcileLoop`/`reconcileDeferred`) retries a deferred
   path every `DefaultReconcileInterval` (1s), and a persistently-unresolvable

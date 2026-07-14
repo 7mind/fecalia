@@ -133,8 +133,12 @@ func TestAddPathWarnsOnUnresolvableForcedDeviceBind(t *testing.T) {
 	}
 	// The unresolvable source_addr also fails the source-IP-pin fallback bind itself
 	// (EADDRNOTAVAIL — nothing on this host owns 192.0.2.1), so AddPath defers the path
-	// rather than binding it live; the WARN under test fires BEFORE that bind attempt,
-	// independent of whether the fallback bind itself later succeeds.
+	// rather than binding it live. The WARN under test fires INSIDE the EADDRNOTAVAIL
+	// deferral branch, AFTER that failed fallback bind (round 2/3 semantics): it is
+	// warnForcedDeviceStillDeferred, the accurate non-fallback-claiming message — a
+	// SUCCESSFUL fallback bind instead logs the OTHER, fallback-claiming message
+	// (warnForcedDeviceUnresolvable), which this test's "no false fallback claim"
+	// assertion below distinguishes it from.
 	if len(m.deferred) != 1 {
 		t.Fatalf("precondition: deferred=%d, want 1 (AddPath should defer an unassignable source)", len(m.deferred))
 	}
@@ -407,5 +411,101 @@ func TestReconcileDeferredReArmsAfterResolveThenUnresolve(t *testing.T) {
 	}
 	if !strings.Contains(got, `"path":"forced-device-2"`) {
 		t.Fatalf("WARN does not name the new path; log:\n%s", got)
+	}
+}
+
+// TestReconcileDeferredKeptEntryClearsLatchOnPromoteFailureThenReArms is the D53 round
+// 3 (CRITICISM 1 + CRITICISM 2) acceptance check. TestReconcileDeferredReArmsAfterResolveThenUnresolve
+// exercises the latch-clear line only on the PROMOTE-SUCCESS path, where the entry
+// PROMOTES out of m.deferred and a later AddPath mints a completely FRESH deferredPath
+// (a trivially-unset latch) — so deleting `dp.warnedUnresolvable = false` from
+// reconcileDeferred left that test passing. The line's only observable effect is on the
+// SAME KEPT entry: a listen-success that clears the latch even though promotion then
+// fails (round 3 CRITICISM 1's promote-failure edge), so a LATER failing listen on that
+// SAME entry re-WARNs. This test forces a promote failure by desyncing the deferred
+// entry's def.Name from m.defs (promoteDeferredLocked's defIdx lookup, "wiring defect")
+// while the listen itself SUCCEEDS, and asserts:
+//  1. the promote-failure tick logs ZERO WARNs (CRITICISM 1: no outcome-false fallback
+//     claim for a socket that was closed, not installed) and keeps the entry deferred;
+//  2. that KEPT entry's dedup latch is CLEARED by the listen success despite the
+//     promote failure (CRITICISM 2's untested line);
+//  3. a SUBSEQUENT failing listen on the SAME entry re-WARNs (the latch actually re-arms).
+//
+// FAILS on a pre-round-3 reconcileDeferred (warns before promoteDeferredLocked) at
+// assertion 1, and on a `dp.warnedUnresolvable = false` deletion at assertion 2 (and
+// transitively 3, since the latch never clears).
+func TestReconcileDeferredKeptEntryClearsLatchOnPromoteFailureThenReArms(t *testing.T) {
+	psk := testKey(t, 0xD9)
+	paths := []config.Path{
+		{Name: "bound", SourceAddr: netip.MustParseAddr("127.0.0.1")},
+		{Name: "forced-device", SourceAddr: netip.MustParseAddr(unassignableSource), Bind: config.BindModeDevice},
+	}
+	m, buf := newWarnCapturingMultipath(t, paths, psk)
+	if len(m.deferred) != 1 {
+		t.Fatalf("precondition: deferred=%d, want 1", len(m.deferred))
+	}
+	if !m.deferred[0].warnedUnresolvable {
+		t.Fatalf("precondition: Open's deferral did not arm the dedup latch")
+	}
+
+	// Desync the KEPT entry's def.Name from m.defs so promoteDeferredLocked's defIdx
+	// lookup fails (defIdx < 0, "not present in the durable membership") even though the
+	// listen below SUCCEEDS — a promote failure on the SAME entry (not a removal, not a
+	// replacement), so its latch is the one under test.
+	m.deferred[0].def.Name = "forced-device-desynced"
+
+	// resolveDeviceBind is left at its real production value (resolveForcedDeviceBind):
+	// unassignableSource resolves to NO interface (dev == ""), which is what makes
+	// warnForcedDeviceUnresolvable/warnForcedDeviceStillDeferred non-no-ops at all — both
+	// guard on dev == "" (an interface that never resolved), the "fallback pinning" case
+	// they exist to describe.
+	listenCalls := 0
+	m.deferredListen = func(_ netip.Addr, _ uint16, _ string) (*net.UDPConn, error, error) {
+		listenCalls++
+		if listenCalls == 1 {
+			// Tick 1: the listen SUCCEEDS (a real, working loopback socket) — but
+			// promotion below fails because of the def.Name desync above.
+			c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+			return c, nil, err
+		}
+		// Tick 2+: a fresh unresolvable transition on the SAME still-deferred entry —
+		// the fallback bind fails again too, exactly like the real unassignableSource.
+		return nil, nil, syscall.EADDRNOTAVAIL
+	}
+
+	// Tick 1: listen succeeds, promote FAILS — CRITICISM 1: no false WARN; the entry
+	// stays deferred; CRITICISM 2: the latch clears anyway.
+	preTick1 := len(buf.String())
+	m.reconcileDeferred()
+	tick1Log := buf.String()[preTick1:]
+	if n := warnCount(tick1Log); n != 0 {
+		t.Fatalf("promote-failure tick logged %d WARN(s), want 0 (round 3 CRITICISM 1: warn only once the socket is actually installed); log:\n%s", n, tick1Log)
+	}
+	if strings.Contains(tick1Log, "falling back to source-IP pinning") {
+		t.Fatalf("promote-failure tick falsely claims a fallback that was closed, not installed; log:\n%s", tick1Log)
+	}
+	if len(m.deferred) != 1 {
+		t.Fatalf("entry count after failed promote = %d, want 1 (kept, not promoted, not dropped)", len(m.deferred))
+	}
+	if m.deferred[0].warnedUnresolvable {
+		t.Fatal("listen success did not clear the dedup latch on the KEPT entry (CRITICISM 2: the clear must be keyed to the listen outcome, independent of the promote outcome)")
+	}
+
+	// Tick 2: a FAILING listen on the SAME kept entry — the cleared latch must allow a
+	// fresh WARN (the re-arm CRITICISM 2 says was untested).
+	preTick2 := len(buf.String())
+	m.reconcileDeferred()
+	tick2Log := buf.String()[preTick2:]
+	if n := warnCount(tick2Log); n != 1 {
+		t.Fatalf("WARN count for the re-armed KEPT entry = %d, want 1; log:\n%s", n, tick2Log)
+	}
+	if !strings.Contains(tick2Log, `"path":"forced-device-desynced"`) {
+		t.Fatalf("WARN does not name the kept entry's (desynced) path; log:\n%s", tick2Log)
+	}
+	if len(m.deferred) != 1 {
+		t.Fatalf("entry count after 2nd tick = %d, want 1 (still deferred: still unresolvable)", len(m.deferred))
+	}
+	if !m.deferred[0].warnedUnresolvable {
+		t.Fatal("2nd failing tick did not re-arm the dedup latch")
 	}
 }
