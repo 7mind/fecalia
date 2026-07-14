@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 56
+  item: 57
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -763,3 +763,13 @@ archives:
     WHY BLOCKED: attributing the 3.67 Mbps between raw-WAN-rate and fixable-tunnel-deficiency, and proving the pacing fix recovers throughput, requires running the tunnel over the real bufferbloated Starlink link — external hardware the repo cannot reproduce. On receiving the measurements, H-F/H-A can be confirmed and the fix file-and-deferred to plan-flow.
 - ledgerRefs: ["defects:D65"]
 - answer: implement the fixes
+
+### Q57 — open
+
+- createdAt: 2026-07-14T12:58:33.154Z
+- updatedAt: 2026-07-14T12:58:33.154Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- question: "Root cause of D65 confirmed and a defect-seeded goal G14 is ready — run `/cq:plan:advance G14` to produce the reviewed fix tasks."
+- context: "Root cause: unshaped egress on the DEFAULT active-backup scheduler lets the external Starlink last-mile buffer bloat to ~1s and drop ~13%, collapsing single-flow TCP cwnd to ~3.67 Mbps (the WAN carries ≥6.9 Mbps per the UDP result; encode CPU and internal queueing ruled out). Suggested fix: (1) add BDP-sized egress pacing (+optional AQM) to active-backup, reusing the existing weighted pacer; (2) MSS-clamp forwarded TCP on wanbond0 + document it. On-hardware validation deferred to verify/implement (user waived pre-fix measurement via Q56, answer 'implement the fixes'). Goal G14 (milestone M56) embeds the full root cause + suggestedFix and is defect-seeded, so plan-flow skips clarification and plans directly."
+- ledgerRefs: ["defects:D65","goals:G14"]

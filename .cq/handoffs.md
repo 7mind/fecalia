@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 20
+  item: 21
 archives: []
 ---
 
@@ -288,5 +288,17 @@ archives: []
 - flow: investigate
 - ledgerRefs: ["defects:D65","questions:Q56"]
 - blockingQuestions: ["Q56"]
+- sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]
+
+### HO21 — drained
+
+- createdAt: 2026-07-14T12:59:02.822Z
+- updatedAt: 2026-07-14T12:59:02.822Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- summary: "D65 round 2 (resume after user answered Q56 = 'implement the fixes'): folded the user's answer in, promoted H9/H-F to CONFIRMED, and root-caused the defect. Confirmed root cause: single-flow TCP collapses to ~3.67 Mbps because the ~13% loss + ~1s bufferbloat originate in the EXTERNAL Starlink last-mile buffer, which wanbond's DEFAULT active-backup scheduler does nothing to shape (egress pacing/AQM is a weighted-only feature). Established by validated code + the defect's own measurements: WAN carries ≥6.9 Mbps (UDP 6.9 vs TCP 3.67 same path); encode CPU has 40-80x headroom (measured); no wanbond-internal queue (synchronous send) so the ~1s queue is external overflow under an unshaped sender. Compounding: no MSS clamp for forwarded TCP. Ruled out H-B/H-C/H-D/H-E (wrong). Filed defect-seeded goal G14 (milestone M56) embedding the root cause + two-part fix (BDP-sized egress pacing on active-backup reusing the weighted pacer; MSS clamp for forwarded TCP). File-and-defer to plan-flow: standalone context, so filed Q57 pointing the user at `/cq:plan:advance G14`. On-hardware validation deferred to verify/implement per the user's waiver. Nothing left to drill — the tree is fully adjudicated (1 confirmed, 4 wrong, 1 uncertain secondary-deficiency H4 folded into the fix)."
+- flow: investigate
+- ledgerRefs: ["defects:D65","goals:G14","questions:Q57"]
 - sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
 - rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]

@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 13
+  item: 14
 archives: []
 ---
 
@@ -340,3 +340,25 @@ archives: []
 - rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl",".cq/logs/raw/20260714-123907-ac5d6e2c7eba4f406.jsonl",".cq/logs/raw/20260714-123907-a525c21bb0638ebf4.jsonl"]
 - milestones: ["M51","M52","M53","M54","M55"]
 - grounding: "Synthesized 2026-07-14 (opus-4.8[1m] orchestrator) from a 2-planner candidate panel (opus 5M/6T + fable 5M/8T; generate-N-then-JUDGE+SYNTHESIS). Both candidates converged on the same DAG shape; fable's 8-task decomposition taken as base, folding in opus's reproduce-first probe acceptance. DAG: M51 harness (root) -> {M53 observability, M54 probe} ; M52 guard (independent root) ; M55 docs (leaf, deps M52+M53+M54). 8 tasks T141-T148. LOAD-BEARING GROUNDING (both planners, independently confirmed): (1) PROBE frames (frame.KindProbe) do NOT traverse scheduler.Pick/token-bucket — emitProbes (internal/bind/probe.go) writes them directly to the path socket; so Q51 protection is NOT a ClassControl-style exemption but exempt-but-charged probe accounting that reserves link headroom against the pacer (T145, reproduce-first). (2) No scheduler->metrics seam exists today (metrics.Source = Paths/FEC/Reseq/Session/PeerNames); item 1 needs a new WeightedScheduler.AggregationSnapshot() accessor (T143) -> Bind PeerSnapshots -> device metricsSource -> collector four per-peer gauges (T146), honoring the T94 single-peer-omits-label back-compat. (3) deriveWeightedPacingFromBDP/SizePacingFromBDP already exist and are G2/Q20-owned — the Q52 capacity guard (T142 hard-fail / T144 WARN) reuses their avg-wire-frame math for consistency but does NOT re-own auto-derive or BDP docs (Q53 Option A). SCOPE per binding answers: item 1 observability (Q54 per-peer gauges + engage/disengage transition log + configured-but-inert e2e scenario), item 2 capacity-sanity guard (Q52 Option 3: hard-fail declared-contradiction / WARN+wanbond_weighted_capacity_sane gauge undeclared), item 3(ii) probe protection (Q51, inner-ICMP explicitly infeasible/out-of-scope), item 3(a) tradeoff+priority-model+infeasibility docs. All behavioral acceptance is -tags e2e via an up-front fixture-extension (Q55); the pure-docs task T148 is the one deliberate Q55 deviation (lint + reviewer prose-check, no runtime surface)."
+
+## M56
+
+### G14 — planning
+
+- createdAt: 2026-07-14T12:58:21.455Z
+- updatedAt: 2026-07-14T12:58:21.455Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- title: "Fix D65: shape egress on the default path + clamp forwarded-TCP MSS"
+- description: |
+    DEFECT-SEEDED goal (from confirmed root cause of D65 — skip clarification, proceed straight to planning).
+    
+    CONFIRMED ROOT CAUSE: single-flow TCP collapses to ~3.67 Mbps because the loss + ~1s bufferbloat originate in the EXTERNAL Starlink last-mile buffer, which wanbond's DEFAULT active-backup scheduler does nothing to shape (egress pacing/AQM is a weighted-only feature: internal/config/config.go:99-108, 218-223). The WAN carries ≥6.9 Mbps (UDP got 6.9 vs TCP 3.67 on the same path); the tunnel's encode CPU has 40-80x headroom (~2429 Mbps/core x86, ~160-300 Mbps/core Pi4) and there is no wanbond-internal queue (synchronous send: multipath.go:2027-2035) — so the unshaped sender overruns the Starlink buffer (build-to-1s-then-13%-drop = overflow signature) and TCP cwnd collapses. Compounding: no TCP MSS clamp is installed anywhere for FORWARDED traffic (daemon installs none: internal/device/device.go:52-55; deploy recipes omit it: docs/p1-mtu.md:76-99, install.md, wanbond-fixes.md).
+    
+    SUGGESTED FIX (verbatim from D65):
+    (1) PRIMARY — add BDP-sized egress send-pacing (optionally a CoDel-style AQM drop) to the DEFAULT active-backup scheduler, reusing the existing weighted-scheduler pacer + BDP-sizing machinery (internal/sched/weighted.go token bucket + internal/config SizePacingFromBDP / BurstFrames), so a single uplink is shaped to its drain rate and cannot self-inflict the ~1s Starlink bufferbloat. Expected: eliminate the standing queue, restore single-flow TCP toward the ≥6.9 Mbps the WAN carries. Design decision: wire pacing into active-backup directly vs expose a policy-independent pacing knob.
+    (2) SECONDARY — install a TCP MSS clamp on wanbond0 for forwarded traffic (mangle FORWARD -o wanbond0 TCPMSS --clamp-mss-to-pmtu) and document it in the deploy recipes (install.md §9.2, wanbond-fixes.md). Design decision: daemon installs it for forwarded peers vs documented operator step.
+    
+    VALIDATION: on-hardware three-way iperf3 (direct-WAN / tunnel / loopback) + loaded-RTT A/B on the Pi4/Starlink/o3 is deferred to verify/implement (the user waived pre-fix field measurement per Q56). NON-GOAL (low priority, NOT the D65 ceiling): send-path micro-optimizations (dst-reuse seam, GSO/sendmmsg batching, SIMD chacha20).
+- sourceRefs: ["defects:D65"]
+- grounding: defect-seeded
