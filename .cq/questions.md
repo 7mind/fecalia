@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 43
+  item: 44
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -575,3 +575,15 @@ archives:
 - recommendation: Keep all docs (C1-C6) + the low-risk code (I1, I2, I3, I4) plus I5 (thin, per your I5 answer) in this goal; land I6 as the thin edge-side variant if D35 timing allows, and defer I7-code and I8-fix to follow-ups. This front-loads the operability + full-tunnel-docs wins with minimal blast radius.
 - ledgerRefs: ["goals:G6"]
 - answer: as recommended
+
+## M28
+
+### Q44 — open
+
+- createdAt: 2026-07-14T08:57:18.103Z
+- updatedAt: 2026-07-14T08:57:18.103Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: "D35 (0.0.0.0/0 handshake wedge): read-only investigation is exhausted and the production path is already mitigated (T107 split shield). Localizing the residual upstream-engine wedge requires a PRIVILEGED 3-arm handshake repro that the sandbox cannot run (no CAP_NET_ADMIN for netns) — it must run on the e2e hosts (o3.7mind.io + llm-ubuntu-0, the G2 pattern). Authorize/queue that privileged repro (drive a real WG handshake with a LITERAL /0 in the UAPI set bypassing the split, vs /32, vs the /1+/1 split; amneziawg-go verbose + pcap on the receiver; also pin o3's actual amneziawg-go commit vs go.mod v1.0.4), OR confirm the split shield is a sufficient disposition and D35 can be closed against the shield with the upstream engine bug tracked separately."
+- context: "H1 adjudged uncertain: the T107 shield is CONFIRMED (device.go:1071-1080/1052-1060, unconditional split before UAPI render — config /0 can no longer reach the engine). The originally-stated trie-zero-length mechanism is RULED OUT against amneziawg-go v1.0.4 (allowedips insert/lookup handle cidr==0 cleanly; the handshake-response path never consults the trie — receive.go:400-417/521-543). The runtime wedge is real but unlocalized read-only; it needs the privileged repro above. No shipped e2e reproduces it (default_route_test.go asserts route wiring only)."
+- ledgerRefs: ["defects:D35"]

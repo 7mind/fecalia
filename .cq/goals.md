@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 6
+  item: 11
 archives: []
 ---
 
@@ -219,3 +219,68 @@ archives: []
 - rawLogs: [".cq/logs/raw/20260713-225618-a6491a1ae0266d482.jsonl",".cq/logs/raw/20260713-232548-a382332a889496d5d.jsonl",".cq/logs/raw/20260713-232548-a795489b23fb6f794.jsonl",".cq/logs/raw/20260713-233226-a31df891879aba85e.jsonl",".cq/logs/raw/20260713-233719-a1999a2a1c65132fa.jsonl",".cq/logs/raw/20260713-234017-aa1ce2b42795fdf8a.jsonl"]
 - milestones: ["M30","M31","M32","M33"]
 - grounding: "Synthesized from 2 configured candidate planners (opus, fable; generate-N-then-judge per Q100/Q101; base = fable's 4-milestone/16-task candidate for its surface-then-wiring splits of I5/I6, the opt-in tun_persist semantics, docs-coupled-to-packaging per AGENTS.md, the two-sided I8 test, and the closing reference-sync sweep; folded in from opus: I7 acceptance = stable ifindex across restart + persistent device stays NM-unmanaged, and the packaging presence-check assertion for the NM drop-in). Repo facts shaping the plan: wanbond0 is created via tun.CreateTUN in internal/device/device.go and never LinkSetUp'd nor TUNSETPERSIST'd (comes up DOWN, non-persistent); the no-healthy-path spam is errNoHealthyPath (internal/bind/multipath.go:64) surfacing at ERROR through the engineLogger adapter (device.go:687) — I4 needs a warmup seam there, not a blanket level change; no session/handshake metric exists (only probe-plane wanbond_path_up) — I2 sources handshake state from the engine (IpcGet last_handshake_time_sec / peer lookup as deviceRehandshake in internal/device/failover.go:181 does) through the metrics.Source seam so the bind stays WG-unaware; the bind decision is planPathBinds/selectDeviceBinds (internal/bind/pathsock.go) and I5's mode must apply to Open, AddPath, AND the deferred-path reconcile; config is plain TOML (no versioning cost); install.md §4 today states the daemon never assigns routes — T108 is the one deliberate, mode-gated exception and design.md must say so (T115). Binding answers: Q37 gate only I6's literal-/0 acceptance on D35 (all D35-D40 references are acceptance-text only, no dependsOn — those defects are investigate-flow-owned under M28 and deliberately unlinked); Q38 I7 = BOTH tun_persist code (T109) AND the C4 oneshot (T111); Q39 I8 = in-goal verification test (T104), refile-as-defect if it exposes a fault; Q40 packaged NM drop-in (T110) + templated oneshot (T111); Q41 thin I6 (internal /1+/1 split at UAPI render T107 + edge default-route wiring T108, NO SNAT/NAT programming); Q42 per-path bind=source|device|auto + global default (T105/T106); Q43 all C1-C6 + I1-I4 + thin I5/I6 in this goal."
+
+## M34
+
+### G7 — planning
+
+- createdAt: 2026-07-14T09:02:04.443Z
+- updatedAt: 2026-07-14T09:02:04.443Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: "Fix D36: re-anchor the resequencer on a detected peer restart (one-sided-restart stall)"
+- description: "DEFECT-SEEDED (skip clarifying — root cause confirmed; refs defects:D36, defects:D32, defects:D37). Fix the multi-minute one-sided-restart outage (defects:D36). CONFIRMED ROOT CAUSE: the outer-plane per-peer resequencer drops a restarted peer's low-outer-seq frames (which wrap the inner WG handshake init/response) as SUSPECT — the same mechanism as defects:D32 — because the Rebaseline() trusted re-anchor is wired ONLY to hub-failover (SetPeerRemote), so a plain one-sided edge restart (live paths, no endpoint change) and any concentrator-role restart (no failover) never re-anchor `next`; the wrapped init is SUSPECT-dropped until unauthenticated tryResync eventually corroborates or a WG rekey timer fires. The WG engine itself supersedes a fresh init immediately (ruled out as the cause) — the init just never reaches it. SUGGESTED FIX: trigger Resequencer.Rebaseline() on a DETECTED PEER RESTART via the T38 responder-challenge session-epoch change (an authenticated trusted control event), wired into BOTH the edge single-concentrator path and the concentrator per-peer path (both currently lack any Rebaseline trigger). VALIDATE with a netns one-sided-restart e2e (deferred to the o3 + llm-ubuntu-0 hosts, G2 pattern): saturate, restart ONLY edge (run A) then ONLY concentrator (run B), assert reconvergence ~= the ~25s both-ends-fresh baseline, capture reseq dropSuspect/rebaseline counters + wanbond_session_established 0→1 per direction. Grounding: internal/reseq/reseq.go (admit SUSPECT branch :285-297, Rebaseline :529-546), internal/bind/multipath.go (rq.Observe :1619-1650, SetPeerRemote→Rebaseline :2167-2182), internal/device/failover.go (concentrator noop :496), the T38 session-epoch machinery (see defects:D12 fix). Compounding defects:D37 (pre-liveness first init, still open) is tracked separately and may be folded in if cheap. On merge, drive defects:D36 to resolved."
+- sourceRefs: ["defects:D36","defects:D32","defects:D37","wanbond-fixes.md §A D2"]
+- tags: ["production-deploy","restart","re-handshake","defect-seeded"]
+
+## M35
+
+### G8 — planning
+
+- createdAt: 2026-07-14T09:07:10.028Z
+- updatedAt: 2026-07-14T09:07:10.028Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Multi-peer concentrator datapath hardening (G4 follow-up)
+- description: "DEFECT-SEEDED (skip clarifying — each defect is reviewer-pinned with a code-grounded root cause + suggestedFix this run). Harden the multi-peer (hub-and-spoke) concentrator datapath that G4 landed. Fix, each per its ledger detail (read the defect item): defects:D42 — deferred AddPath desyncs per-peer probers from m.defs when >1 peer is bound (latent out-of-range/mis-attribution); defects:D44 — fecFlushDeadline drives only the primary peer's FEC group, so additional peers' partial FEC groups miss the deadline flush; defects:D47 — source→peer binding keyed by address only, so two peers behind ONE public IP (same NAT) can never both bind (a real CGNAT topology gap); defects:D49 — the global demux cap is monopolizable by one authenticated insider, starving other peers' bootstrap (per-peer fairness/quota); defects:D50 — device wiring of TearDownPeer (peer session/liveness loss) is untracked by any task (a peer that goes away is never torn down — leak/stale state); defects:D58 — the multi-peer concentrator drops the FIRST configured peer's required name from metrics labels (primary peer always peer=\"\" despite config requiring a unique name). PLANNER: group into coherent fix tasks by subsystem (bind/multipath demux+prober+FEC lifecycle, config/metrics label), each ledgerRef its defects:<D> and drive it resolved on merge; add per-peer unit tests + extend the multi-peer netns e2e (privileged run deferred to the o3 + llm-ubuntu-0 hosts, G2 pattern). Grounding lives on each defect item and in internal/bind/multipath.go, internal/reseq, internal/fec, internal/metrics."
+- sourceRefs: ["defects:D42","defects:D44","defects:D47","defects:D49","defects:D50","defects:D58","goals:G4"]
+- tags: ["multi-peer","concentrator","defect-seeded"]
+
+## M36
+
+### G9 — planning
+
+- createdAt: 2026-07-14T09:07:19.087Z
+- updatedAt: 2026-07-14T09:07:19.087Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Config loader/validation hardening
+- description: "DEFECT-SEEDED (skip clarifying — reviewer-pinned causes + suggestedFixes on each defect). Make the TOML config loader fail-fast and honest at load time. Fix per each defect item: defects:D41 — the loader SILENTLY IGNORES unknown/misspelled TOML keys (a typo'd key is dropped, not rejected — against the fail-fast posture; enable strict/DisallowUnknownFields decoding); defects:D43 — pre-existing docs advertise string-duration config forms ([scheduler]/[...]) that the loader REJECTS (doc-vs-loader mismatch — either accept the string-duration form or correct the docs, planner's call, prefer accepting to match documented UX); defects:D55 — allowed_ips CIDR syntax is NOT validated at config load, so a malformed CIDR fails LATE at daemon start instead of at Load (validate each allowed_ips entry with netip.ParsePrefix in config.validate); defects:D59 — config validation ACCEPTS multiple mode=default-route peers on the edge with overlapping 0.0.0.0/0 (last-writer-wins at the engine — silent misconfig; reject >1 default-route peer / overlapping /0 across peers). PLANNER: one or two coherent config-validation fix tasks; each ledgerRef its defects:<D>, add table-driven config.Load rejection tests, drive resolved on merge. Grounding: internal/config/config.go (Load/normalize/validate)."
+- sourceRefs: ["defects:D41","defects:D43","defects:D55","defects:D59"]
+- tags: ["config","validation","defect-seeded"]
+
+## M37
+
+### G10 — planning
+
+- createdAt: 2026-07-14T09:07:27.096Z
+- updatedAt: 2026-07-14T09:07:27.096Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Observability & metrics accuracy
+- description: "DEFECT-SEEDED (skip clarifying — reviewer-pinned). Fix per each defect item: defects:D48 — wanbond_path_tx_bytes_total omits probe and echo-reflection wire bytes, so per-path tx/rx byte accounting under-reports (count probe/echo frames in the wire-byte counters, or document the exclusion — prefer counting for accurate bufferbloat/BDP math); defects:D52 — reloadWarnings omits the scheduler/fec/dns/bind non-path config sections, so a SIGHUP that changes those sections is silently ignored with no warning (extend reloadWarnings to cover all reload-immutable sections); defects:D53 — the device-bind→source-IP-pinning fallback is SILENT (no WARN) in internal/bind, so an operator never learns the requested device bind was denied/unsupported and fell back (emit a WARN on the listenPath SO_BINDTODEVICE fallback). PLANNER: coherent fix tasks with metrics/log unit tests; each ledgerRef its defects:<D>, drive resolved on merge. Grounding: internal/metrics, internal/device/reload path, internal/bind/pathsock.go listenPath."
+- sourceRefs: ["defects:D48","defects:D52","defects:D53"]
+- tags: ["observability","metrics","defect-seeded"]
+
+## M38
+
+### G11 — planning
+
+- createdAt: 2026-07-14T09:07:37.085Z
+- updatedAt: 2026-07-14T09:07:37.085Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Code, test, and doc-comment hygiene cleanup
+- description: "DEFECT-SEEDED (skip clarifying — all reviewer-pinned, mostly one-line/low-risk). A single coherent hygiene sweep (can be one or a few tasks). Fix per each defect item: defects:D40 — CAP_NET_RAW (pathsock comment) vs CAP_NET_ADMIN (shipped systemd units) mismatch for SO_BINDTODEVICE — reconcile the comment to the actually-required capability; defects:D45 — `just lint` is RED at base (3 pre-existing golangci-lint findings in dnsresolve/doh.go, dot.go, bind/pathsock.go, device/metrics_test.go) — fix the findings so lint is green; defects:D51 — e2e /metrics port collision: pacing_test.go and p3_fec_test.go both bind 127.0.0.1:9096 — give each e2e test a unique port; defects:D54 — golangci-lint scans nested .claude/worktrees, leaking sibling agents' in-progress code into lint — exclude .claude/worktrees in .golangci config; defects:D56 — superseded primary-only bind read seams (PathSnapshots/FECSnapshot) retained with duplicated FEC-stat derivation — migrate bind tests to PeerSnapshots and delete them, or make them thin wrappers so the honest-delivered-count derivation lives once; defects:D57 — stale config.go doc-comments (Peer.PSK/Name 'not yet consumed by any datapath') now false since T93; defects:D60 — stale config.go BindMode + Path.Bind 'config surface only / not yet consumed' comments now false since T106. PLANNER: group into a hygiene task (or split lint/test-hygiene vs stale-comments); each ledgerRef its defects:<D>; keep the gate green; drive resolved on merge. Grounding on each defect item."
+- sourceRefs: ["defects:D40","defects:D45","defects:D51","defects:D54","defects:D56","defects:D57","defects:D60"]
+- tags: ["hygiene","lint","defect-seeded"]

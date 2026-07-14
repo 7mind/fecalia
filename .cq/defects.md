@@ -487,67 +487,79 @@ archives: []
 
 ## M28
 
-### D35 — open
+### D35 — inconclusive
 
 - createdAt: 2026-07-13T22:48:19.299Z
-- updatedAt: 2026-07-13T22:48:19.299Z
+- updatedAt: 2026-07-14T08:57:08.582Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: allowed_ips = 0.0.0.0/0 wedges the WG handshake — full-tunnel config never establishes
 - severity: high
 - description: "[fixes-doc D1, S1 — production deploy, real hardware, bisected and confirmed.] With the concentrator peer's `allowed_ips = [\"0.0.0.0/0\"]` on the edge, the WG handshake NEVER completes — even fresh-restarting BOTH ends and waiting minutes (edge tx≈0; o3 rx floods to 2.3 MB with tx 9 KB, i.e. o3 receives but never answers; no handshake ever logged). Reverting the SAME peer to a concrete prefix (`10.77.0.1/32`) establishes in ~25 s, deterministically. The split default `[\"0.0.0.0/1\",\"128.0.0.0/1\"]` also works. The virtual-endpoint design (the engine never holds the real 89.168.124.91) rules out an endpoint routing loop, so the cause is a `0.0.0.0/0`-specific path — amneziawg-go allowed-ip trie or a wanbond special-case. This silently breaks the single most common full-tunnel config. Observed asymmetry suggests the RECEIVING side (o3) drops/never responds when the initiating peer carries the /0 allowed-ip — investigate the allowed-ips trie insert/lookup for the zero-length prefix and any wanbond handling of the peer allowed_ips."
-- suggestedFix: "Root-cause first (investigate-flow): reproduce in the netns e2e with allowed_ips=0.0.0.0/0 on the edge peer (expected to wedge identically), then bisect between amneziawg-go's allowed-ip trie and wanbond config/uapi plumbing. Once fixed, accept 0.0.0.0/0 natively (see the wanbond-fixes goal, improvement I6: optionally apply the /1+/1 split internally)."
+- suggestedFix: "PRODUCTION PATH ALREADY MITIGATED by the T107 split shield (a config 0.0.0.0/0 is safe). The residual upstream-engine root-cause needs a privileged 3-arm handshake repro DEFERRED to the e2e hosts (o3.7mind.io + llm-ubuntu-0, the G2 pattern — the sandbox lacks CAP_NET_ADMIN for netns): drive a real WG handshake with (i) a LITERAL 0.0.0.0/0 in the UAPI set (bypassing splitDefaultRoute), (ii) 10.x/32, (iii) the /1+/1 split, with amneziawg-go verbose logging + pcap on the receiver, recording ConsumeMessageInitiation / SendHandshakeResponse firing + rx/tx bytes per arm; and pin o3's running amneziawg-go commit vs v1.0.4. If confirmed engine-side, the fix is upstream in amneziawg-go (or a documented wanbond guard that already exists via the shield)."
 - sourceRefs: ["wanbond-fixes.md §A D1","wanbond-fixes.md §B I6","wanbond-fixes.md §C C3"]
 - tags: ["production-deploy","full-tunnel"]
+- rootCause: "PARTIALLY established (H1 uncertain). CONFIRMED: the T107 config-path shield is real and unconditional — splitDefaultRoute (internal/device/device.go:1071-1080) rewrites a config-literal 0.0.0.0/0 (and ::/0) into the /1+/1 pair for EVERY peer in uapiConfig (device.go:1052-1060) before the UAPI render, so wanbond's config surface can no longer hand the engine a raw /0 (production impact MITIGATED). RULED OUT: the originally-stated mechanism (an amneziawg-go allowed-ips trie zero-length-prefix defect suppressing the handshake response) is CONTRADICTED by amneziawg-go v1.0.4 source — insert/lookup handle cidr==0 cleanly (a /0 ALLOWS all, does not wedge), and the handshake-response path (receive.go:400-417 SendHandshakeResponse after ConsumeMessageInitiation) NEVER consults the allowedips trie; the trie is touched only on the decrypted DATA path (receive.go:521-543). The observed hardware wedge (o3 rx floods, tx≈0 with a literal /0; /32 or the split establish in ~25s) therefore remains UNLOCALIZED by read-only analysis — it is NOT the stated trie mechanism, and needs a privileged runtime repro to pin (possibly a version skew: o3's actual amneziawg-go commit vs go.mod v1.0.4, or a sender/route-side effect)."
+- sessionLogs: [".cq/logs/20260714-085530-a300a1198741fda4e.md"]
+- rawLogs: [".cq/logs/raw/20260714-085530-a300a1198741fda4e.jsonl"]
 
-### D36 — open
+### D36 — root-caused
 
 - createdAt: 2026-07-13T22:48:32.358Z
-- updatedAt: 2026-07-13T22:48:32.358Z
+- updatedAt: 2026-07-14T09:00:55.833Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "One-sided restart → multi-minute outage: peer holding the old WG session does not promptly re-handshake"
 - severity: high
 - description: "[fixes-doc D2, S1 — production deploy, confirmed repeatedly.] When EITHER end restarts, the peer still holding the old session does not promptly re-handshake; the tunnel stays down for MINUTES until a rekey timer fires. Restart edge → o3 stale → down for minutes; restart o3 → edge stale → down for minutes; only restarting BOTH ~together (both re-initiate from scratch) converges in ~25 s. For a WAN-failover product this is severe — any reboot of the Pi or the concentrator is a multi-minute client outage. NOTE the layer: this is the INNER WG session going stale, distinct from the already-resolved OUTER probe/liveness restart deadlock (defects:D12, fixed by the T38 responder-challenge session epoch) — outer paths recover, but the stale WG keypair on the surviving side is not superseded. Compounded by fixes-doc D3 (see the startup-handshake defect): the restarted side's first init fires before path liveness and is not aggressively retried."
-- suggestedFix: "Force a fresh handshake on startup AND on the first path-up edge, and/or have the receiver treat a new valid handshake initiation from a known static key as immediately superseding the current session (the kernel-WG behavior). Investigate what amneziawg-go does with an initiation from a peer with an established session, and whether wanbond's bind/virtual-endpoint layer delays or drops the initiation retransmits. Validate with a netns e2e: restart ONE end, assert reconvergence well under the WG rekey timeout (target: comparable to the ~25 s both-ends-fresh case)."
+- suggestedFix: "Extend the trusted resequencer re-anchor (Rebaseline) from the hub-failover-only trigger to a detected PEER RESTART, on BOTH the edge non-failover path AND the concentrator role. The T38 responder-challenge session-epoch (which already authenticates and detects a peer's new session on the OUTER plane, fixing D12) is the natural trusted control event: when a peer's authenticated session epoch changes (restart), call the peer's Resequencer.Rebaseline() so the next inbound DATA frame (the wrapped WG init/response) re-anchors `next` instead of being SUSPECT-dropped. Wire it in the concentrator per-peer path and the edge single-concentrator path (both currently lack any Rebaseline trigger). VALIDATE with a netns one-sided-restart e2e (deferred to the o3 + llm-ubuntu-0 hosts, G2 pattern): saturate the bond so the surviving resequencer's `next` advances past the window, then restart ONLY the edge (run A) and ONLY the concentrator (run B); assert reconvergence well under the WG rekey timeout (target ~= the ~25s both-ends-fresh baseline) and capture reseq dropSuspect/rebaseline counters + the wanbond_session_established 0→1 timestamp per direction. NOTE: static analysis predicts the edge-restart direction should recover in ~10s absent the drop, so the e2e also quantifies the true per-direction magnitude (field-reported as minutes)."
 - sourceRefs: ["wanbond-fixes.md §A D2","wanbond-fixes.md §C C5"]
 - ledgerRefs: ["defects:D12"]
 - tags: ["production-deploy","restart","re-handshake"]
+- rootCause: "CONFIRMED (H2). The multi-minute one-sided-restart outage is the OUTER-plane per-peer resequencer dropping the restarted peer's low-outer-seq frames as SUSPECT — the SAME mechanism as the hardware-root-caused D32, but on the one-sided-restart path which has no rescue trigger. Every inner WG datagram (including the opaque handshake initiation/response) is wrapped in an outer DATA frame and pushed through the peer's resequencer (internal/bind/multipath.go:1619-1650 rq.Observe). After a peer restarts, its outer-seq resets to ~1, far below the stale-high release point `next` the pre-restart high-rate stream advanced the surviving side's resequencer to; admit() (internal/reseq/reseq.go:285-297) treats any frame >1 window below `next` as SUSPECT and drops it (dropSuspect++) unless the unauthenticated tryResync corroborates 3 distinct low seqs within one window — which a freshly re-handshaking peer emitting ~1 DATA frame per RekeyTimeout cannot achieve in time (reseq.go:529-546, the Rebaseline doc naming exactly this as D32). The Rebaseline() trusted re-anchor that defeats this is wired to EXACTLY ONE caller, SetPeerRemote (multipath.go:2167-2182), whose only callers are the edge hub-failover controller — so a plain one-sided EDGE restart (live paths, no endpoint change) never triggers it, and the CONCENTRATOR role runs no failover at all (failover.go:496 noop), so neither side re-anchors on a plain restart. RULED OUT: a WG-layer supersede failure (H2(a)) — amneziawg-go's responder consumes+responds to a fresh init immediately (receive.go:399-417, gated only by tai64n + a 20ms flood window), so the stall is NOT the engine holding the old keypair; the init simply never reaches the engine because the resequencer drops it. COMPOUNDING: the restarted side's first init fires pre-liveness (D37) and is not re-driven off the first path-up edge, but WG's 5s retransmit bounds that to seconds."
+- sessionLogs: [".cq/logs/20260714-090009-a8d87a208742a8de8.md"]
+- rawLogs: [".cq/logs/raw/20260714-090009-a8d87a208742a8de8.jsonl"]
 
-### D37 — open
+### D37 — root-caused
 
 - createdAt: 2026-07-13T22:48:44.390Z
-- updatedAt: 2026-07-13T22:48:44.390Z
+- updatedAt: 2026-07-14T09:05:20.532Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Startup handshake fires before path liveness and is not re-driven off the first path-up edge
 - severity: medium
 - description: "[fixes-doc D3, S2 — production deploy.] On every start the edge logs one `Failed to send handshake initiation: bind: no healthy path with a known remote endpoint` (paths not up yet); paths transition Up ~0.6 s later — and then nothing: the first init is wasted and re-initiation is not visibly driven off the path-up edge, leaving the tunnel waiting on WG's own retransmit timers. Compounds the one-sided-restart outage (defects:D36). WG should (re)initiate the moment the first path becomes live. Related observability: the same startup window logs `no healthy path` at ERROR during the normal ~1 s liveness warmup (fixes-doc I4 — downgrade/rate-limit it; tracked in the wanbond-fixes goal)."
-- suggestedFix: "Drive a handshake (re)initiation off the first path StateUp transition (liveness edge → poke the engine to SendHandshakeInitiation / expire-and-retry), instead of relying on the engine's own back-off after a failed send. Validate in the netns e2e: from cold start, time-to-first-handshake should track path-up (+one RTT), not a retransmit timer."
+- suggestedFix: "Drive a handshake (re)initiation off the FIRST path StateUp transition (the telemetry liveness edge → poke the engine to SendHandshakeInitiation / expire-and-retry), rather than relying on the engine's own back-off. FOLDED INTO the D36 fix goal G7 (same startup/restart handshake-robustness surface — both wire a trusted control event into the handshake/resequencer path). Validate in the same netns e2e: from cold start, time-to-first-handshake tracks path-up (+~1 RTT), not a 5s retransmit timer. The related ERROR-spam downgrade (I4) shipped separately via the engineLogger warmup coalescing (T103)."
 - sourceRefs: ["wanbond-fixes.md §A D3","wanbond-fixes.md §B I4"]
 - ledgerRefs: ["defects:D36"]
 - tags: ["production-deploy","startup","re-handshake"]
+- rootCause: "CONFIRMED (established by the D36/H2 investigation, evidence item 9). The edge's first WG handshake initiation fires before path liveness (every path starts Down; the bind returns ErrNoHealthyPath, 'no healthy path with a known remote endpoint') and is NOT re-driven when the first path reaches StateUp ~0.6s later: internal/device/device.go up() (:258-437) issues NO boot-time forced SendHandshakeInitiation, and startFailoverAndResolution returns a noop for a single-concentrator edge (internal/device/failover.go), so nothing pokes the engine off the liveness edge — the tunnel then waits on amneziawg-go's own RekeyTimeout (5s) retransmit back-off (timers.go:99-107). Confirmed no wanbond hook re-initiates on path-up. This is the compounding startup half of the D36 one-sided-restart outage (the restart half being the resequencer SUSPECT-drop, defects:D36)."
+- sessionLogs: [".cq/logs/20260714-090009-a8d87a208742a8de8.md"]
+- rawLogs: [".cq/logs/raw/20260714-090009-a8d87a208742a8de8.jsonl"]
 
-### D38 — open
+### D38 — resolved
 
 - createdAt: 2026-07-13T22:48:59.152Z
-- updatedAt: 2026-07-13T22:48:59.152Z
+- updatedAt: 2026-07-14T08:56:52.560Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Auto device-bind silently defeats `ip rule from <source_addr>` policy routing on single-address VLAN-per-WAN edges
 - severity: high
 - description: "[fixes-doc D4, S1 — production deploy; workaround applied on the Pi.] selectDeviceBinds (internal/bind/pathsock.go) picks SO_BINDTODEVICE (wildcard source) for a one-address/one-path interface — EXACTLY the VLAN-per-WAN edge topology (eth0.231/eth0.232, one address each, per-WAN pinning via `ip rule from <source_addr>`). A wildcard-source socket never matches `ip rule from <source_addr>`, so the route lookup falls through to `main` (which has no route to the concentrator via that VLAN) → ENETUNREACH → silent path-down, ZERO packets on the wire, while `ping -I <source_ip>` proves the WAN works. Worked around in production with `ip rule add oif <dev> table N`. The T16/R23 conditional device-bind gating (single-address + single-path interface) was designed for roam survival but is precisely the wrong choice under source-based policy routing — the two selection criteria collide. Related: defects:D30 (runtime-added paths never device-bind — the mirror-image gap)."
-- suggestedFix: "Two parts: (1) a config toggle to force source-IP binding per path or globally (`bind = \"source\"`) so source-policy-routing topologies can opt out of device-bind (fixes-doc I5; roam survival is moot there); consider making that mode the DEFAULT when the config implies source-routed WANs, or detecting the `from <source>` rule. (2) Document the collision + the `ip rule add oif <dev> table N` recipe until then (fixes-doc C2). Decide in plan-flow whether detection is feasible or the toggle suffices."
+- suggestedFix: FIX SHIPPED (bind="source" toggle T105/T106 + docs T112) — defect resolved. The suggestedFix's OPTIONAL leg (auto-detect a source-routed WAN / a `from <source>` rule and default to source-bind) did NOT ship and is a non-required enhancement, not a defect; open a separate goal only if the user wants it. The silent no-WARN device-bind fallback is tracked separately as D53. The stale config.go bind doc-comments are D60.
 - sourceRefs: ["wanbond-fixes.md §A D4","wanbond-fixes.md §B I5","wanbond-fixes.md §C C2"]
 - ledgerRefs: ["defects:D30","tasks:T16"]
 - tags: ["production-deploy","device-bind","policy-routing"]
+- rootCause: "CONFIRMED (H3). The collision is real: selectDeviceBinds (internal/bind/pathsock.go:136-139) auto-mode picks SO_BINDTODEVICE (wildcard source) for a one-address/one-path interface (the VLAN-per-WAN edge), and a wildcard-source socket never matches `ip rule from <source_addr>` → route falls to main → ENETUNREACH → silent path-down. THE FIX ALREADY SHIPPED and is verified working end-to-end: the `bind = \"source\"` toggle (config.BindMode, T105/T106) forces out[i]=\"\" (pathsock.go:127-130, \"the D38 escape hatch\") so the path pins the source IP; Open feeds each path's resolved Bind through planPathBinds→selectDeviceBinds (multipath.go:746-752, 613-627); the config surface is source/device/auto with a per-path + top-level default (config.go:84-96, 840-849); and docs/install.md §3b (T112) documents the collision + the `ip rule add oif <dev> table N` recipe + the toggle."
+- sessionLogs: [".cq/logs/20260714-085530-a6ed9f2c043a11557.md"]
+- rawLogs: [".cq/logs/raw/20260714-085530-a6ed9f2c043a11557.jsonl"]
 
-### D39 — open
+### D39 — resolved
 
 - createdAt: 2026-07-13T22:49:13.912Z
-- updatedAt: 2026-07-13T22:49:13.912Z
+- updatedAt: 2026-07-14T09:11:14.336Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "wanbond0 left DOWN + unaddressed; NetworkManager flushes the operator's address → cryptic `TUN write: input/output error`"
 - severity: medium
 - description: "[fixes-doc D5, S2 — production deploy; workaround applied on the Pi.] The daemon creates the tun but never brings the link UP or addresses it. On a NetworkManager host (RPi OS / Debian / Ubuntu desktop — the common edge) the tun is auto-managed: NM FLUSHES the operator's address on link-up and the interface stays DOWN across daemon restarts. Writing into it then yields the cryptic `TUN write: input/output error`. Worked around with NM `unmanaged-devices=interface-name:wanbond0` + an addressing oneshot unit. Note the shipped docs (T22/R27, docs/install.md §4) cover only systemd-networkd addressing — the NM case is undocumented (fixes-doc C1). Fix direction split across: daemon brings the link UP itself (fixes-doc I1, low-risk; addressing stays operator-owned), actionable EIO diagnostics (fixes-doc I3), interface/route persistence across restarts (fixes-doc I7), and the NM + oneshot doc recipes (fixes-doc C1/C4) — the improvements/doc side is tracked in the wanbond-fixes goal; this defect item covers the DOWN-link/NM failure mode itself."
@@ -555,13 +567,14 @@ archives: []
 - sourceRefs: ["wanbond-fixes.md §A D5","wanbond-fixes.md §B I1","wanbond-fixes.md §B I3","wanbond-fixes.md §B I7","wanbond-fixes.md §C C1","wanbond-fixes.md §C C4"]
 - ledgerRefs: ["tasks:T22"]
 - tags: ["production-deploy","networkmanager","tun"]
+- rootCause: "CONFIRMED as filed (wanbond-fixes D5, production deploy). The daemon created wanbond0 but never brought the link UP nor addressed it; on a NetworkManager host NM flushes the operator's address and the interface stays DOWN across restarts, so a TUN write yields the cryptic 'input/output error'. THE FIX SHIPPED across the G6 goal: the daemon now brings the link UP (I1, T100 SIOCSIFFLAGS IFF_UP), EIO writes emit an actionable diagnostic (I3, T102 diagnosingTUN), the tun can persist across restarts (I7, T109 tun_persist), the NetworkManager unmanaged-devices drop-in ships (C1, T110), and the addressing/persistence oneshot ships (C4, T111) — all documented (T112-T115). The DOWN-link/NM failure mode is addressed end-to-end."
 
-### D40 — open
+### D40 — root-caused
 
 - createdAt: 2026-07-13T22:49:25.742Z
-- updatedAt: 2026-07-13T22:49:25.742Z
+- updatedAt: 2026-07-14T09:10:32.042Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: CAP_NET_RAW (pathsock comment) vs CAP_NET_ADMIN (shipped systemd units) mismatch for SO_BINDTODEVICE
 - severity: low
 - description: "[fixes-doc D6, S3 — production deploy.] internal/bind/pathsock.go says SO_BINDTODEVICE needs CAP_NET_RAW; the shipped systemd units (T22) grant only CAP_NET_ADMIN. Per the comment, device-bind should therefore always fall back — yet it bound successfully on o3, so the actual kernel requirement is version/context-dependent and the comment and the unit disagree. Reconcile: either grant CAP_NET_RAW in the units (if the requirement is real on any supported kernel) or fix the comment/fallback logic. (Historically SO_BINDTODEVICE required CAP_NET_RAW; kernels ≥ 5.7 allow it unprivileged — verify against the supported kernel range and encode the finding.)"
@@ -569,13 +582,14 @@ archives: []
 - sourceRefs: ["wanbond-fixes.md §A D6"]
 - ledgerRefs: ["tasks:T22"]
 - tags: ["production-deploy","capabilities","systemd"]
+- rootCause: CONFIRMED as filed (wanbond-fixes D6, production deploy). internal/bind/pathsock.go's comment says SO_BINDTODEVICE needs CAP_NET_RAW; the shipped systemd units (T22) grant only CAP_NET_ADMIN — yet device-bind succeeded on o3, so the actual kernel requirement is version/context-dependent (historically CAP_NET_RAW; kernels ≥5.7 allow it unprivileged) and the comment and unit disagree. File-and-deferred to goal G11 (determine the precise capability across supported kernels; align the unit CapabilityBoundingSet, the pathsock comment, the fallback, and docs/install.md).
 
 ## M23
 
-### D41 — open
+### D41 — root-caused
 
 - createdAt: 2026-07-13T22:55:09.949Z
-- updatedAt: 2026-07-13T22:55:09.949Z
+- updatedAt: 2026-07-14T09:09:55.845Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Config loader silently ignores unknown/misspelled TOML keys
@@ -583,13 +597,14 @@ archives: []
 - severity: low
 - suggestedFix: Use toml.NewDecoder(...).DisallowUnknownFields() (handling *toml.StrictMissingError for a precise message) so an unrecognized key fails config load; add a rejects-table case for a misspelled key.
 - ledgerRefs: ["tasks:T80","goals:G4"]
+- rootCause: "CONFIRMED as filed ([fable] T80 review; internal/config/load.go:34). Load decodes with non-strict toml.Unmarshal (go-toml/v2), so an unknown/misspelled key (link_bandwith, nane) is silently dropped though Load's doc + docs/install.md describe fail-fast; misspelled OPTIONAL keys become silently inert config. File-and-deferred to goal G9 (DisallowUnknownFields + a rejects-table case)."
 
 ## M24
 
-### D42 — open
+### D42 — root-caused
 
 - createdAt: 2026-07-13T23:57:19.238Z
-- updatedAt: 2026-07-13T23:57:19.238Z
+- updatedAt: 2026-07-14T09:09:32.494Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Deferred AddPath desyncs per-peer probers from m.defs when >1 peer is bound (latent out-of-range panic in removeDurableLocked)
@@ -597,11 +612,12 @@ archives: []
 - severity: medium
 - suggestedFix: In the G4 task that implements the concentrator deferred-path fan-out (T85-T88 area), mint per-peer probers for deferred paths so every peer's probers stays m.defs-aligned; until then, fail fast by refusing deferral (returning the bind error) when len(m.peers) > 1, or assert the alignment invariant in removeDurableLocked.
 - ledgerRefs: ["tasks:T83","goals:G4"]
+- rootCause: "CONFIRMED as filed (reviewer-pinned this run with source citations in the description; [fable] T83 review). Deferred AddPath's EADDRNOTAVAIL branch appends the minted prober only to the primary peer's probers while growing m.defs, but removeDurableLocked splices every peer's probers at defIdx assuming m.defs-alignment — with ≥2 bound peers + a deferred path this is a latent slice-bounds panic / mis-splice (internal/bind/multipath.go). Unreachable today (no second peerState constructed). File-and-deferred to goal G8 (multi-peer datapath hardening)."
 
-### D44 — open
+### D44 — root-caused
 
 - createdAt: 2026-07-14T00:14:32.635Z
-- updatedAt: 2026-07-14T00:14:32.635Z
+- updatedAt: 2026-07-14T09:09:35.772Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: fecFlushDeadline drives only the primary peer's FEC group; per-peer fecSend added later (T91/T93) would never receive deadline parity flushes
@@ -609,13 +625,14 @@ archives: []
 - severity: low
 - suggestedFix: When per-peer fecSend is wired (T91/T93), make the flush timer iterate m.peers, ticking each peer's encoder and framing parity with that peer's sendCodec via encodeParityLocked(peer, ...), and drive the adaptive controller per peer.
 - ledgerRefs: ["tasks:T85","goals:G4"]
+- rootCause: "CONFIRMED as filed ([fable] T85 review; citation multipath.go:1271). fecFlushDeadline (and driveAdaptiveControllerLocked) reach m.fecSend/scheduler/paths through the embedded-primary promotion, so only the primary peer's straggler FEC groups get deadline parity; once per-peer fecSend is populated (T91/T93) a non-primary peer's partial groups would only close on fill, silently losing straggler parity. File-and-deferred to goal G8."
 
 ## M20
 
-### D43 — open
+### D43 — root-caused
 
 - createdAt: 2026-07-14T00:14:26.934Z
-- updatedAt: 2026-07-14T00:14:26.934Z
+- updatedAt: 2026-07-14T09:10:00.043Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Pre-existing docs advertise string-duration config forms the loader rejects ([scheduler]/[fec])"
@@ -623,13 +640,14 @@ archives: []
 - severity: medium
 - suggestedFix: Accept Go duration strings uniformly for all operator-facing duration knobs (LinkRTTRaw-style raw string + time.ParseDuration in normalize, or a shared TOML-text-unmarshaling duration wrapper), and add a config test matrix loading every documented string form; alternatively correct the docs to integer nanoseconds (worse operator UX, inconsistent with link_rtt).
 - ledgerRefs: ["tasks:T72","goals:G5"]
+- rootCause: "CONFIRMED as filed ([fable] T72 review; probe-verified). wanbond.example.toml documents string-duration forms (collapse_dwell=\"2s\", [fec] deadline=\"5ms\", etc.) for time.Duration fields that go-toml/v2 cannot decode from a TOML string — config.Load fails with 'cannot decode TOML string into ... time.Duration'; an operator uncommenting the documented example gets a load failure. File-and-deferred to goal G9 (accept Go duration strings uniformly for operator-facing duration knobs + a documented-string-form test matrix)."
 
 ## M21
 
-### D45 — open
+### D45 — root-caused
 
 - createdAt: 2026-07-14T01:02:00.302Z
-- updatedAt: 2026-07-14T01:02:00.302Z
+- updatedAt: 2026-07-14T09:10:36.059Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "just lint red at base: 3 pre-existing findings in dnsresolve and bind"
@@ -637,6 +655,7 @@ archives: []
 - severity: medium
 - suggestedFix: Fix the two unchecked Close returns (assign or //nolint with justification per repo convention) and apply the QF1001 De Morgan rewrite, or reconcile the golangci-lint version/config drift in the dev shell if these linters were not previously enabled.
 - ledgerRefs: ["tasks:T70","goals:G5"]
+- rootCause: "CONFIRMED as filed ([fable] T70 review). golangci-lint exits 1 at base: errcheck on unchecked deferred Close (internal/dnsresolve/doh.go:206 resp.Body.Close, dot.go:168 conn.Close) + staticcheck QF1001 at internal/bind/pathsock.go:166. All three files byte-identical between base and the T70 branch, so the breakage pre-exists T70; a red base masks new lint regressions. File-and-deferred to goal G11 (fix the two unchecked Close + the QF1001 rewrite, or reconcile the lint version/config drift)."
 
 ### D46 — resolved
 
@@ -654,10 +673,10 @@ archives: []
 
 ## M25
 
-### D47 — open
+### D47 — root-caused
 
 - createdAt: 2026-07-14T01:43:26.215Z
-- updatedAt: 2026-07-14T01:43:26.215Z
+- updatedAt: 2026-07-14T09:09:39.788Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Source->peer binding keyed by address only: two peers behind one public IP can never both bind"
@@ -665,11 +684,12 @@ archives: []
 - severity: medium
 - suggestedFix: "Settle key granularity in the T90 roaming design: either key bindings by AddrPort, or let an authenticated PROBE that fails the bound peer's codec re-enter trial-decode so a MAC-verified PROBE from another peer at the same address can establish/steal the binding."
 - ledgerRefs: ["tasks:T88","tasks:T90","goals:G4"]
+- rootCause: "CONFIRMED as filed ([fable] T88 review). peerBySource is keyed by netip.Addr (address, not AddrPort), so once peer A's PROBE binds a shared public IP (CGNAT), every frame from that IP — including peer B's PROBEs from a different port — routes to A's view via lookupPeerBySource, fails A's codec, and is dropped; bound sources bypass trial-decode, so B can never bind. No unbind/re-key path makes the exclusion permanent. File-and-deferred to goal G8 (settle key granularity: AddrPort keying, or let a MAC-verified PROBE that fails the bound peer's codec re-enter trial-decode)."
 
-### D49 — open
+### D49 — root-caused
 
 - createdAt: 2026-07-14T03:21:29.110Z
-- updatedAt: 2026-07-14T03:21:29.110Z
+- updatedAt: 2026-07-14T09:09:44.293Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Global demux cap is monopolizable by one authenticated insider, starving other peers' bootstrap
@@ -677,11 +697,12 @@ archives: []
 - severity: medium
 - suggestedFix: Enforce a PER-PEER quota on source bindings inside bindSourceToPeer (small k per configured peer, summing under the global cap), and add the insider-cap-monopoly adversary case to T92's threat-model tests.
 - ledgerRefs: ["tasks:T91","tasks:T92","goals:G4"]
+- rootCause: "CONFIRMED as filed ([fable] T91 review). peerBySource has a SINGLE global cap (default 1024) with drop-on-exhaustion + never-evict-live; one valid-psk insider can send authenticated PROBEs from ~1024 spoofed sources, bind every slot to its own peer, and keep it live (TearDownPeer refuses live peers) — permanently starving every other peer's bootstrap PROBE. Violates the Q27(1) 'a psk holder disrupts ONLY its own tunnel' isolation intent. File-and-deferred to goal G8 (per-peer quota in bindSourceToPeer + the insider-monopoly threat test)."
 
-### D50 — open
+### D50 — root-caused
 
 - createdAt: 2026-07-14T03:21:33.691Z
-- updatedAt: 2026-07-14T03:21:33.691Z
+- updatedAt: 2026-07-14T09:09:48.334Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Device wiring of TearDownPeer (peer session/liveness loss) is not tracked by any planned task
@@ -689,13 +710,14 @@ archives: []
 - severity: medium
 - suggestedFix: Extend T93's description/acceptance (or add an M26 task) to wire device per-peer session-teardown / liveness-loss events to Bind.TearDownPeer, with a device-level test that a dead peer's ring is freed and a re-handshake re-binds.
 - ledgerRefs: ["tasks:T91","tasks:T93","goals:G4"]
+- rootCause: "CONFIRMED as filed ([fable] T91 review). The T91 TearDownPeer machinery exists but NO planned task wires device WG-session-teardown / liveness-loss events to Bind.TearDownPeer (T93 covers per-peer construction + runtime path add/remove only). Until wired, a dead peer's heavy state (resequencer ring, FEC buffers, demux cap slots) is never reclaimed in production, leaving the T91 machinery inert. File-and-deferred to goal G8 (wire device per-peer teardown to Bind.TearDownPeer + a device test that a dead peer's ring is freed and re-handshake re-binds)."
 
 ## M30
 
-### D48 — open
+### D48 — root-caused
 
 - createdAt: 2026-07-14T03:18:22.478Z
-- updatedAt: 2026-07-14T03:18:22.478Z
+- updatedAt: 2026-07-14T09:10:19.050Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: wanbond_path_tx_bytes_total omits probe and echo-reflection wire bytes (tx/rx accounting asymmetry behind path_up=1/tx=0)
@@ -703,11 +725,12 @@ archives: []
 - severity: medium
 - suggestedFix: "In the fix task decide the counter contract: either count probe emission (emitProbes) + echo reflection into ps.txBytes so tx matches rx's true-wire-volume semantics (optionally add a separate DATA-only series for the data-thrift signal the doc at multipath.go:140-151 describes), or re-document/rename the metric so its help string stops claiming total transmitted bytes. Then flip T104's standby-transmits-when-idle subtest from repro-failure to the green acceptance check."
 - ledgerRefs: ["tasks:T104","goals:G6"]
+- rootCause: "CONFIRMED as filed (both T104 reviewers source-confirmed). ps.txBytes.Add fires only at the two DATA/PARITY sites (Send multipath.go:1477, fecFlushDeadline :1603); PROBE emission (probe.go:44 emitProbes) and echo reflection (multipath.go ~1284) are uncounted, while rxBytes counts every inbound datagram — so a healthy idle standby reads path_up=1 with tx=0 while rx grows (the I8-motivating observation). A metrics-accounting fault, NOT a liveness hole. File-and-deferred to goal G10 (count probe/echo into txBytes or re-document the metric; flip T104's standby-transmits-when-idle subtest to green)."
 
-### D51 — open
+### D51 — root-caused
 
 - createdAt: 2026-07-14T03:53:40.693Z
-- updatedAt: 2026-07-14T03:53:40.693Z
+- updatedAt: 2026-07-14T09:10:39.600Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Pre-existing e2e /metrics port collision: pacing_test.go and p3_fec_test.go both bind 127.0.0.1:9096"
@@ -715,13 +738,14 @@ archives: []
 - severity: low
 - suggestedFix: "Move one of the two (pacing_test.go or p3_fec_test.go) to an unused port and, ideally, centralize e2e metrics-port allocation (a shared registry or per-test ephemeral :0 bind) so the per-file-unique convention can't silently drift again."
 - ledgerRefs: ["goals:G6"]
+- rootCause: "CONFIRMED as filed (T101 round-2 port-inventory). Two -tags e2e files bind the same metrics port 127.0.0.1:9096 (pacing_test.go and p3_fec_test.go), breaking the per-file-unique-port convention — latent under the sequential netns runner, an active bind conflict under shuffle/parallelism. File-and-deferred to goal G11 (move one to an unused port; ideally centralize e2e metrics-port allocation)."
 
 ## M32
 
-### D52 — open
+### D52 — root-caused
 
 - createdAt: 2026-07-14T04:01:04.560Z
-- updatedAt: 2026-07-14T04:01:04.560Z
+- updatedAt: 2026-07-14T09:10:23.050Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: reloadWarnings omits scheduler/fec/dns/bind non-path config sections (SIGHUP silently ignores them)
@@ -729,11 +753,12 @@ archives: []
 - severity: medium
 - suggestedFix: Extend reloadWarnings with reflect.DeepEqual comparisons for Scheduler, FEC, DNS, and Bind (mirroring the existing wireguard/amnezia/log cases) + unit-test cases; OR compare a struct copy with the path/metrics fields zeroed so the warning set is future-proof against new Config fields.
 - ledgerRefs: ["tasks:T109","goals:G6"]
+- rootCause: "CONFIRMED as filed ([fable] T109 review). internal/device/device.go reloadWarnings compares role/psk/wireguard/amnezia/log + path params but omits the Scheduler, FEC, DNS, and Bind sections — a SIGHUP changing any of those is silently ignored, contradicting Reload's documented 'SILENCE is not acceptable' invariant. File-and-deferred to goal G10 (extend reloadWarnings with DeepEqual over Scheduler/FEC/DNS/Bind, or a zeroed-copy comparison future-proof against new Config fields)."
 
-### D54 — open
+### D54 — root-caused
 
 - createdAt: 2026-07-14T04:23:35.572Z
-- updatedAt: 2026-07-14T04:23:35.572Z
+- updatedAt: 2026-07-14T09:10:43.052Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: golangci-lint scans nested .claude/worktrees, leaking sibling agents' in-progress code into every lint run
@@ -741,13 +766,14 @@ archives: []
 - severity: medium
 - suggestedFix: "Exclude the .claude directory from linting: set run.skip-dirs / issues.exclude-dirs to include `.claude` in .golangci.yml, OR lint an explicit package list in the justfile (`golangci-lint run ./cmd/... ./internal/... ./test/...`) instead of the implicit recursive walk."
 - ledgerRefs: ["tasks:T77","goals:G6"]
+- rootCause: "CONFIRMED as filed ([fable] T77 review). `just lint` (golangci-lint) walks the nested .claude/worktrees/, so in-progress code from OTHER concurrent implement-worker worktrees fails the lint gate of every checkout (non-hermetic, non-reproducible). Distinct from D45 (the real findings on the tracked tree). File-and-deferred to goal G11 (set run.skip-dirs/issues.exclude-dirs to include .claude in .golangci.yml, or lint an explicit package list)."
 
 ## M31
 
-### D53 — open
+### D53 — root-caused
 
 - createdAt: 2026-07-14T04:18:15.521Z
-- updatedAt: 2026-07-14T04:18:15.521Z
+- updatedAt: 2026-07-14T09:10:27.605Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Device-bind fallback to source-IP pinning is silent (no WARN) in internal/bind
@@ -755,11 +781,12 @@ archives: []
 - severity: medium
 - suggestedFix: Thread the repo's internal/log logger through NewMultipath into listenPath/planPathBinds/resolveForcedDeviceBind and WARN on every forced-device fallback to source-IP binding (both the unresolvable-interface and the setsockopt-failure layers; covers the pre-existing CAP fallback too), naming the path + interface.
 - ledgerRefs: ["tasks:T106","goals:G6"]
+- rootCause: CONFIRMED as filed (both T106 reviewers). An operator setting bind="device" can silently end up source-IP-pinned (unresolvable interface in selectDeviceBinds/resolveForcedDeviceBind, OR a failed SO_BINDTODEVICE setsockopt in listenPath) with NO log signal — internal/bind holds no logger (NewMultipath takes none) and the pre-existing CAP/setsockopt fallback is itself silent. File-and-deferred to goal G10 (thread internal/log through NewMultipath into listenPath/planPathBinds/resolveForcedDeviceBind and WARN on every forced-device→source fallback, naming path+interface).
 
-### D55 — open
+### D55 — root-caused
 
 - createdAt: 2026-07-14T06:07:16.662Z
-- updatedAt: 2026-07-14T06:07:16.662Z
+- updatedAt: 2026-07-14T09:10:03.342Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: allowed_ips CIDR syntax is not validated at config load (fails late at daemon start)
@@ -767,11 +794,12 @@ archives: []
 - severity: low
 - suggestedFix: netip.ParsePrefix each allowed_ips entry in config.validate() and reject at Load time with the peer index + the offending string (mirroring how endpoint/source_addr are already parsed-and-validated at load).
 - ledgerRefs: ["tasks:T107","goals:G6"]
+- rootCause: "CONFIRMED as filed ([fable] T107 review). config.validate() checks allowed_ips presence + role rules but NOT CIDR syntax, so a malformed entry (10.0.0.0/33, a typo) passes Load and only fails at daemon start when the engine's IpcSet rejects the UAPI allowed_ip= line — a late, less-specific error, violating fail-fast-at-config-load. File-and-deferred to goal G9 (netip.ParsePrefix each entry in validate() with peer index + offending string)."
 
-### D59 — open
+### D59 — root-caused
 
 - createdAt: 2026-07-14T07:35:20.455Z
-- updatedAt: 2026-07-14T07:35:20.455Z
+- updatedAt: 2026-07-14T09:10:06.349Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Config validation accepts multiple mode=default-route peers on the edge (overlapping /0)
@@ -779,13 +807,14 @@ archives: []
 - severity: low
 - suggestedFix: Reject >1 peer with mode=default-route (and/or overlapping /0 allowed_ips across peers) at config validation with a clear error.
 - ledgerRefs: ["tasks:T108","goals:G6"]
+- rootCause: "CONFIRMED as filed ([fable] T108 review). config validation accepts ≥2 edge peers both mode=default-route with overlapping 0.0.0.0/0 — WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins, a silent misconfig, against fail-fast. File-and-deferred to goal G9 (reject >1 default-route peer / overlapping /0 across peers)."
 
 ## M26
 
-### D56 — open
+### D56 — root-caused
 
 - createdAt: 2026-07-14T06:20:31.860Z
-- updatedAt: 2026-07-14T06:20:31.860Z
+- updatedAt: 2026-07-14T09:10:47.067Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Superseded primary-only bind read seams (PathSnapshots/FECSnapshot) retained with duplicated FEC-stat derivation
@@ -793,13 +822,14 @@ archives: []
 - severity: low
 - suggestedFix: "Either migrate bind's fec_test.go/traffic_test.go to PeerSnapshots and delete PathSnapshots/FECSnapshot, OR reimplement both as thin wrappers over PeerSnapshots()[0] so the honest-delivered-count FEC derivation lives in exactly one place."
 - ledgerRefs: ["tasks:T94","goals:G4"]
+- rootCause: "CONFIRMED as filed ([fable] T94 review). After T94 migrated the device metrics adapter to Multipath.PeerSnapshots(), the primary-only seams PathSnapshots (multipath.go:2669) + FECSnapshot (:2053) have no remaining production callers (only bind tests), and PeerSnapshots COPY-PASTES FECSnapshot's honest delivered-count derivation (a two-copy drift risk). File-and-deferred to goal G11 (migrate bind fec_test.go/traffic_test.go to PeerSnapshots and delete the seams, or make them thin wrappers over PeerSnapshots()[0])."
 
 ## M27
 
-### D57 — open
+### D57 — root-caused
 
 - createdAt: 2026-07-14T07:23:55.639Z
-- updatedAt: 2026-07-14T07:23:55.639Z
+- updatedAt: 2026-07-14T09:10:51.146Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Stale doc-comments in internal/config/config.go: Peer.PSK/Name marked 'not yet consumed by any datapath code path'"
@@ -807,11 +837,12 @@ archives: []
 - severity: low
 - suggestedFix: Update the Peer.PSK and Peer.Name doc-comments in internal/config/config.go to state they are now consumed via PeerIdentities() by device.Up and the Bind's peerBySource demux (PSK) and, for additional concentrator peers, the metrics peer label (Name).
 - ledgerRefs: ["tasks:T98","goals:G4"]
+- rootCause: "CONFIRMED as filed ([opus] T98 review). config.go Peer.PSK/Name doc-comments say 'not yet consumed by any datapath code path' — FALSE since T93: device.go PeerIdentities() derives each peer's effective PSK from Peer.PSK, multipath.go consumes them for the peerBySource PROBE-authenticated demux, and Peer.Name surfaces as the metrics 'peer' label for additional peers. File-and-deferred to goal G11 (update the comments to name the real consumers)."
 
-### D58 — open
+### D58 — root-caused
 
 - createdAt: 2026-07-14T07:24:03.514Z
-- updatedAt: 2026-07-14T07:24:03.514Z
+- updatedAt: 2026-07-14T09:09:52.350Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Multi-peer concentrator drops the first configured peer's required name from metrics labels
@@ -819,13 +850,14 @@ archives: []
 - severity: low
 - suggestedFix: "Plumb ids[0].Name into NewMultipath (or set the primary peerState's name during concentrator wiring) so BoundPeerNames reports the configured name whenever >1 peer is bound, keeping \"\" only for the single-peer byte-compat exposition; update TestExpositionTwoPeerSeries and the T94 back-compat test accordingly. OR relax the config name-required rule for the primary peer and document peer=\"\" as its canonical label."
 - ledgerRefs: ["tasks:T98","goals:G4","defects:D56"]
+- rootCause: "CONFIRMED as filed ([fable] T98 review). Config requires a unique name per peer in multi-peer mode, but device.Up never passes ids[0].Name to bind.NewMultipath and BoundPeerNames (multipath.go ~L2608-2622) hard-codes the primary peer's name to \"\" — so the first edge's metrics series carry peer=\"\", defeating the per-peer attribution the name requirement exists for. File-and-deferred to goal G8 (plumb ids[0].Name into NewMultipath so BoundPeerNames reports it whenever >1 peer is bound; keep \"\" only for single-peer byte-compat)."
 
 ## M33
 
-### D60 — open
+### D60 — root-caused
 
 - createdAt: 2026-07-14T08:08:15.604Z
-- updatedAt: 2026-07-14T08:43:32.927Z
+- updatedAt: 2026-07-14T09:10:55.053Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Stale 'config surface only' doc-comment on config.BindMode contradicts the shipped T106 wiring
@@ -833,3 +865,4 @@ archives: []
 - severity: low
 - suggestedFix: Delete the two 'later task / not yet consumed' sentences from BOTH the BindMode type comment (config.go ~L78-81) and the Path.Bind field note (config.go ~L492-493), leaving the now-accurate semantic description; selectDeviceBinds/multipath.AddPath honor the resolved mode since T106.
 - ledgerRefs: ["tasks:T112","goals:G6","defects:D57"]
+- rootCause: "CONFIRMED as filed ([fable] T112/T115 review). Two config.go comments — the BindMode type comment (~L78-81) and the Path.Bind field note (~L492-493) — claim the resolved bind mode is 'config surface only / not yet consumed', FALSE since T106: selectDeviceBinds (~L115-136) switches on the mode and multipath.AddPath (~L2309) honors a forced BindModeDevice. Same class as [[D57]]. File-and-deferred to goal G11 (delete the two stale sentences)."

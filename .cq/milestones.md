@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 33
+  item: 38
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -249,3 +249,33 @@ archives:
 - title: G6-D Full-tunnel & operations docs (C2, C3, C5, C6) + reference sync
 - description: "Work milestone for goal G6 (synthesized opus+fable plan). Standalone docs sequenced after the code they must reference: C2 (source_addr/device-bind collision + oif recipe + bind-mode pointer), C3+C6 (full-tunnel client-LAN recipe + concentrator NAT/forwarding checklist), C5 (reconverge window + restart guidance naming the I2 session metric), closing with the reference/example/design sync sweep so no new key or metric ships undocumented."
 - dependsOn: ["M30","M31","M32"]
+
+### M34 — open
+
+- createdAt: 2026-07-14T09:00:22.044Z
+- updatedAt: 2026-07-14T09:00:22.044Z
+- title: "Plan: fix D36 one-sided-restart resequencer stall"
+
+### M35 — open
+
+- createdAt: 2026-07-14T09:06:46.120Z
+- updatedAt: 2026-07-14T09:06:46.120Z
+- title: "Plan: multi-peer concentrator datapath hardening (D42/D44/D47/D49/D50/D58)"
+
+### M36 — open
+
+- createdAt: 2026-07-14T09:06:46.602Z
+- updatedAt: 2026-07-14T09:06:46.602Z
+- title: "Plan: config loader/validation hardening (D41/D43/D55/D59)"
+
+### M37 — open
+
+- createdAt: 2026-07-14T09:06:47.518Z
+- updatedAt: 2026-07-14T09:06:47.518Z
+- title: "Plan: observability & metrics accuracy (D48/D52/D53)"
+
+### M38 — open
+
+- createdAt: 2026-07-14T09:06:47.767Z
+- updatedAt: 2026-07-14T09:06:47.767Z
+- title: "Plan: code/test/doc-comment hygiene (D40/D45/D51/D54/D56/D57/D60)"
