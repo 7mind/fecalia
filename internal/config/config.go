@@ -47,6 +47,40 @@ type Config struct {
 	Scheduler SchedulerConfig `toml:"scheduler"`
 	FEC       FEC             `toml:"fec"`
 	DNS       DNS             `toml:"dns"`
+	// Bind is the OPTIONAL top-level default bind mode (I5, Q42) applied to every
+	// path that omits its own `bind`. Left empty it defaults to BindModeAuto
+	// (today's selectDeviceBinds heuristic) in normalize(), so an existing config
+	// with no `bind` anywhere keeps exactly today's per-path bind behaviour.
+	Bind BindMode `toml:"bind"`
+}
+
+// BindMode selects, per path, how that path's UDP socket is bound to the
+// network at Open time (I5, Q42):
+//
+//   - BindModeAuto reproduces today's selectDeviceBinds heuristic: device-bind
+//     (SO_BINDTODEVICE) only when provably equivalent to pinning source_addr,
+//     source-IP-bind otherwise.
+//   - BindModeSource forces the pre-T16 source-IP pin unconditionally.
+//   - BindModeDevice forces a device bind unconditionally.
+//
+// This is the CONFIG SURFACE only: parsing, defaulting and validation. Wiring
+// planPathBinds/selectDeviceBinds to consume the resolved mode is a later task
+// — today every path is bound exactly as before, regardless of this field's
+// value.
+type BindMode string
+
+const (
+	// BindModeSource forces the source-IP pin (pre-T16 behaviour).
+	BindModeSource BindMode = "source"
+	// BindModeDevice forces a device bind (SO_BINDTODEVICE).
+	BindModeDevice BindMode = "device"
+	// BindModeAuto reproduces today's selectDeviceBinds heuristic. It is the
+	// default when a path (and the top-level default) both omit `bind`.
+	BindModeAuto BindMode = "auto"
+)
+
+func (b BindMode) valid() bool {
+	return b == BindModeSource || b == BindModeDevice || b == BindModeAuto
 }
 
 // SchedulerPolicy selects the send-side path-selection policy the multipath Bind
@@ -439,6 +473,13 @@ type Path struct {
 	// LinkRTTRaw is the TOML Go-duration string form of LinkRTT, e.g. "45ms". Parsed in
 	// normalize; an unparseable or non-positive value fails fast.
 	LinkRTTRaw string `toml:"link_rtt"`
+	// Bind selects this path's bind mode (I5, Q42): "source", "device", or "auto".
+	// Left empty in TOML, it falls back to the top-level Config.Bind default (itself
+	// defaulted to BindModeAuto); normalize() resolves this field to its EFFECTIVE
+	// value, so after Load it always holds one of the three valid modes, never
+	// empty. See BindMode — this is the config surface only, not yet consumed by
+	// planPathBinds/selectDeviceBinds.
+	Bind BindMode `toml:"bind"`
 }
 
 // WireGuard holds the inner tunnel's key material.
@@ -755,8 +796,20 @@ func (k Key) Bytes() [keyLen]byte { return k.bytes }
 
 // normalize parses the string-typed fields (addresses) into their typed forms.
 func (c *Config) normalize() error {
+	// Resolve the global bind default BEFORE the per-path loop so an omitted
+	// per-path `bind` can fall back to it: an empty top-level Bind defaults to
+	// BindModeAuto (today's selectDeviceBinds behavior), matching an existing
+	// config that never mentions `bind` anywhere. An invalid (non-empty,
+	// unrecognized) value is left untouched here and rejected by validate().
+	if c.Bind == "" {
+		c.Bind = BindModeAuto
+	}
 	for i := range c.Paths {
 		p := &c.Paths[i]
+		// Per-path override beats the global default; empty falls back to it.
+		if p.Bind == "" {
+			p.Bind = c.Bind
+		}
 		if p.SourceAddrRaw != "" {
 			addr, err := netip.ParseAddr(p.SourceAddrRaw)
 			if err != nil {
@@ -950,6 +1003,9 @@ func (c *Config) validate() error {
 	if len(c.Paths) == 0 {
 		return errors.New("at least one path is required")
 	}
+	if !c.Bind.valid() {
+		return fmt.Errorf("bind must be %q, %q or %q, got %q", BindModeSource, BindModeDevice, BindModeAuto, c.Bind)
+	}
 	seen := make(map[string]struct{}, len(c.Paths))
 	// seenSrc maps an already-claimed source_addr to the path that claimed it, so a
 	// second path reusing it can be rejected at LOAD naming both conflicting paths.
@@ -977,6 +1033,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("paths %q and %q share source_addr %s; each path must bind a distinct source address (a shared source collides EADDRINUSE at the second bind)", prev, p.Name, p.SourceAddr)
 		}
 		seenSrc[src] = p.Name
+		if !p.Bind.valid() {
+			return fmt.Errorf("path %q: bind must be %q, %q or %q, got %q", p.Name, BindModeSource, BindModeDevice, BindModeAuto, p.Bind)
+		}
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {
 		return errors.New("wireguard.private_key is required")

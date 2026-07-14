@@ -284,6 +284,10 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 				Name:          "wan",
 				SourceAddr:    netip.MustParseAddr("203.0.113.5"),
 				SourceAddrRaw: "203.0.113.5",
+				// Bind is always resolved by normalize() to the effective mode
+				// (I5, Q42); the fixture sets neither the global nor per-path
+				// bind, so it defaults all the way to BindModeAuto.
+				Bind: BindModeAuto,
 			},
 		},
 		WireGuard: WireGuard{
@@ -314,6 +318,9 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 			PollInterval: defaultDNSPollInterval,
 			Timeout:      defaultDNSTimeout,
 		},
+		// Bind is always resolved by normalize() to the effective global default
+		// (I5, Q42); the fixture omits it, so it defaults to BindModeAuto.
+		Bind: BindModeAuto,
 	}
 
 	if !reflect.DeepEqual(c, want) {
@@ -1056,5 +1063,84 @@ func TestSchedulerPolicyRejects(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+// TestBindModeDefaultAuto: a config that never mentions `bind` anywhere (no
+// top-level default, no per-path override) resolves every path's effective
+// bind mode to BindModeAuto (I5, Q42) — today's selectDeviceBinds behavior —
+// so an existing config keeps its current bind behaviour byte-for-byte.
+func TestBindModeDefaultAuto(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Bind != BindModeAuto {
+		t.Fatalf("top-level bind default = %q, want %q", c.Bind, BindModeAuto)
+	}
+	for _, p := range c.Paths {
+		if p.Bind != BindModeAuto {
+			t.Errorf("path %q bind = %q, want defaulted %q", p.Name, p.Bind, BindModeAuto)
+		}
+	}
+}
+
+// TestBindModePerPathOverridesGlobal: a per-path `bind` wins over the
+// top-level global default, and a path that omits `bind` still falls back to
+// the (non-auto) global default rather than BindModeAuto.
+func TestBindModePerPathOverridesGlobal(t *testing.T) {
+	body := fill(edgeConfig)
+	body = "bind = \"device\"\n" + body
+	body = strings.Replace(body,
+		"name = \"starlink\"\nsource_addr = \"192.0.2.10\"",
+		"name = \"starlink\"\nsource_addr = \"192.0.2.10\"\nbind = \"source\"", 1)
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Bind != BindModeDevice {
+		t.Fatalf("top-level bind = %q, want %q", c.Bind, BindModeDevice)
+	}
+	if len(c.Paths) != 2 {
+		t.Fatalf("paths = %d, want 2", len(c.Paths))
+	}
+	if c.Paths[0].Name != "starlink" || c.Paths[0].Bind != BindModeSource {
+		t.Errorf("path[0] (%q) bind = %q, want per-path override %q", c.Paths[0].Name, c.Paths[0].Bind, BindModeSource)
+	}
+	if c.Paths[1].Name != "cellular" || c.Paths[1].Bind != BindModeDevice {
+		t.Errorf("path[1] (%q) bind = %q, want inherited global default %q", c.Paths[1].Name, c.Paths[1].Bind, BindModeDevice)
+	}
+}
+
+// TestBindModeRejectsUnknownValue: an unrecognized per-path `bind` value fails
+// fast at load with a message naming the offending path.
+func TestBindModeRejectsUnknownValue(t *testing.T) {
+	body := fill(edgeConfig)
+	body = strings.Replace(body,
+		"name = \"cellular\"\nsource_addr = \"192.0.2.20\"",
+		"name = \"cellular\"\nsource_addr = \"192.0.2.20\"\nbind = \"bogus\"", 1)
+	path := writeConfig(t, 0o600, body)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected unknown bind value to be rejected at load, got nil")
+	}
+	if !strings.Contains(err.Error(), `path "cellular"`) || !strings.Contains(err.Error(), "bind must be") {
+		t.Fatalf("error = %q, want it to name path \"cellular\" and say \"bind must be\"", err.Error())
+	}
+}
+
+// TestBindModeRejectsUnknownGlobalValue: an unrecognized top-level `bind`
+// default also fails fast at load.
+func TestBindModeRejectsUnknownGlobalValue(t *testing.T) {
+	body := "bind = \"bogus\"\n" + fill(edgeConfig)
+	path := writeConfig(t, 0o600, body)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected unknown top-level bind value to be rejected at load, got nil")
+	}
+	if !strings.Contains(err.Error(), "bind must be") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "bind must be")
 	}
 }
