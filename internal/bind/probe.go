@@ -47,7 +47,12 @@ func (m *Multipath) emitProbes() {
 		if remote, ok := t.ps.getRemote(); ok {
 			if raw, err := t.pr.SendProbe(); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.
-				_, _ = t.ps.conn.WriteToUDPAddrPort(raw, remote)
+				if _, werr := t.ps.conn.WriteToUDPAddrPort(raw, remote); werr == nil {
+					// True-wire-volume accounting (D48): a PROBE frame is real egress
+					// traffic, so it counts toward txBytes exactly like a DATA/PARITY
+					// write — only on a nil write error, matching the Send hot path.
+					t.ps.txBytes.Add(uint64(len(raw)))
+				}
 			}
 		}
 		t.pr.Tick()

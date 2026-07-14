@@ -340,3 +340,81 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 		t.Fatalf("Send after failover: %v", err)
 	}
 }
+
+// TestMultipathEmitProbesCountsTxBytes is the D48 regression: a PROBE frame that
+// emitProbes writes to the wire must count into the path's txBytes, the same
+// true-wire-volume counter the DATA/PARITY send paths use — not just DATA/PARITY.
+// Fails against the pre-D48 code, where emitProbes never touched ps.txBytes and
+// an idle standby's tx counter stayed flat despite genuinely transmitting probes.
+func TestMultipathEmitProbesCountsTxBytes(t *testing.T) {
+	psk := testKey(t, 0x26)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+
+	if before := m.paths[0].txBytes.Load(); before != 0 {
+		t.Fatalf("txBytes before emitProbes = %d, want 0", before)
+	}
+
+	m.emitProbes()
+
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, maxDatagram)
+	n, err := peer.Read(buf)
+	if err != nil {
+		t.Fatalf("read emitted probe: %v", err)
+	}
+
+	if got, want := m.paths[0].txBytes.Load(), uint64(n); got != want {
+		t.Fatalf("txBytes after emitProbes = %d, want %d (the emitted probe's wire length)", got, want)
+	}
+}
+
+// TestMultipathEchoReflectionCountsTxBytes is the D48 regression for the receive
+// side: an inbound PROBE's echo, written back by dispatchInbound's reflection
+// path, must count into the path's txBytes exactly like a DATA/PARITY write.
+// Fails against the pre-D48 code, where the echo write never touched ps.txBytes.
+func TestMultipathEchoReflectionCountsTxBytes(t *testing.T) {
+	psk := testKey(t, 0x27)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	peer, peerAP := rawPeer(t)
+
+	if before := m.paths[0].txBytes.Load(); before != 0 {
+		t.Fatalf("txBytes before echo reflection = %d, want 0", before)
+	}
+
+	const seq = 3
+	ts := clk.Now().UnixNano()
+	raw, err := frame.Encode(psk, frame.Probe{PathID: 0, ProbeSeq: seq, TimestampNanos: ts, IsEcho: false})
+	if err != nil {
+		t.Fatalf("encode probe: %v", err)
+	}
+	m.handleInbound(m.paths[0], raw, peerAP)
+
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, maxDatagram)
+	n, err := peer.Read(buf)
+	if err != nil {
+		t.Fatalf("read reflected echo: %v", err)
+	}
+
+	if got, want := m.paths[0].txBytes.Load(), uint64(n); got != want {
+		t.Fatalf("txBytes after echo reflection = %d, want %d (the reflected echo's wire length)", got, want)
+	}
+}

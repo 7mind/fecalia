@@ -155,16 +155,18 @@ type peerPathState struct {
 	prober *telemetry.Prober
 
 	// txBytes/rxBytes are cumulative OUTER-wire byte counters for this (peer,path), the
-	// per-path traffic accounting the /metrics exposition reports (T23). txBytes counts
-	// the DATA-frame wire bytes this path egresses on the Send hot path; rxBytes counts
-	// every outer datagram this path's readLoop receives (DATA, PROBE, and echo alike —
-	// the true received wire volume). They are atomics so the send/receive hot paths
-	// increment them WITHOUT taking m.mu (lock-free), and the scrape/snapshot path reads
-	// them with a plain atomic Load; a single writer per counter (Send holds m.mu while
-	// choosing the path, and each path has exactly one readLoop) means the Add is
-	// uncontended in the common case. "Bytes on Starlink vs 5G" — the data-thrift signal
-	// (requirement 2) — is exactly txBytes: when the weighted scheduler collapses to the
-	// primary under sub-capacity load, the backup path's Send count stays ~flat.
+	// per-path traffic accounting the /metrics exposition reports (T23). Both are
+	// TRUE-WIRE-VOLUME counters: txBytes counts every outer datagram this path actually
+	// writes to its socket — DATA/PARITY on the Send hot path (T23/T24), PROBE frames
+	// emitted by emitProbes, and PROBE echoes reflected back by dispatchInbound — each
+	// counted only once the write returns a nil error; rxBytes counts every outer
+	// datagram this path's readLoop receives (DATA, PROBE, and echo alike). Neither
+	// counter is DATA-only or Send-only (D48): a healthy idle standby path still emits
+	// and echoes probes, so its txBytes keeps advancing even while active-backup
+	// collapses all DATA onto the primary. They are atomics so the send/receive/probe
+	// hot paths increment them WITHOUT taking m.mu (lock-free) from whichever goroutine
+	// performs the write (Send's caller, the probe-loop goroutine, or this path's
+	// readLoop), and the scrape/snapshot path reads them with a plain atomic Load.
 	txBytes atomic.Uint64
 	rxBytes atomic.Uint64
 
@@ -1729,7 +1731,12 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			if echo, _, rerr := pr.reflector.Reflect(raw); rerr == nil {
 				// UDP writes are goroutine-safe, so this receive-goroutine reflection
 				// races no in-flight Send on the same socket.
-				_, _ = ps.conn.WriteToUDPAddrPort(echo, srcAP)
+				if _, werr := ps.conn.WriteToUDPAddrPort(echo, srcAP); werr == nil {
+					// True-wire-volume accounting (D48): the echo we just sent back is
+					// real egress traffic on this path, so it counts toward txBytes
+					// exactly like a DATA/PARITY write — only on a nil write error.
+					ps.txBytes.Add(uint64(len(echo)))
+				}
 			}
 		}
 	default:

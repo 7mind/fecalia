@@ -18,12 +18,19 @@ import (
 // whether it can be satisfied by receive-only traffic. The motivating production
 // observation was wanbond_path_up{path="5g"}=1 with wanbond_path_tx_bytes_total{
 // path="5g"}=0 — a standby path reported healthy while its tx counter never moved.
-// Two independent checks:
+// That gap was defect D48: emitProbes and dispatchInbound's echo reflection wrote
+// real PROBE/echo frames to the wire but never counted them into ps.txBytes, which
+// was charged only on the DATA/PARITY send paths (internal/bind/probe.go,
+// internal/bind/multipath.go). D48's fix adopted a true-wire-volume contract — every
+// successful egress write on a path, DATA/PARITY or PROBE/echo, counts — so
+// txBytes now advances on ANY wire activity, and the standby's periodic probes are
+// enough by themselves to move it even with zero DATA. Two independent checks:
 //
 //   - standby-transmits-when-idle: an UP standby that carries no DATA (active-backup
 //     collapses all DATA onto the primary) must still be observed TRANSMITTING —
 //     its own periodic liveness probes are real wire writes (bind.emitProbes ->
-//     conn.WriteToUDPAddrPort) — while the primary carries a live flow.
+//     conn.WriteToUDPAddrPort, now counted per D48) — while the primary carries a
+//     live flow.
 //   - standby-egress-blocked-goes-down: with the standby's EGRESS direction (only)
 //     blocked one-way at the edge veth (BlockEgress, a tc clsact/matchall/drop
 //     filter — see netns.go), the standby must transition DOWN and must NOT be
@@ -37,15 +44,12 @@ import (
 //
 // This harness cannot execute the `-tags e2e` netns tier itself (it requires
 // CAP_NET_ADMIN/root and runs via the dedicated privileged target — see AGENTS.md);
-// it is written to COMPILE and to make BOTH outcomes (pass, or a documented failure
-// kept as a defect repro per Q39) observable once run there. A static read of the
-// send path (internal/bind/probe.go's emitProbes never calls ps.txBytes.Add — only
-// Send() and fecFlushDeadline() in internal/bind/multipath.go do) predicts the first
-// subtest fails against the current implementation, reproducing the production
-// observation; that is an inference from source, not a measured result — the
-// authoritative answer is the hardware run's PASS/FAIL, at which point a genuine
-// failure should be refiled as a defect linked to goals:G6 with this test kept as
-// the repro, per the Q39 either-outcome acceptance.
+// it is written to COMPILE and, once run there, is expected to PASS both subtests
+// against the D48-fixed implementation — the delta>0 assertion below was never
+// inverted, only its surrounding commentary updated once the fix landed (per the
+// Q39 either-outcome acceptance: a genuine failure here now would indicate a fresh
+// regression, not the original D48 gap, and should be refiled as a new defect
+// linked to goals:G6 with this test kept as the reproduction).
 const (
 	t104MetricsListen = "127.0.0.1:9100"
 	t104MetricsURL    = "http://" + t104MetricsListen + "/metrics"
@@ -128,12 +132,13 @@ func testStandbyIdleTransmits(t *testing.T, bin string) {
 		standby.name, t104ProbeWindow, delta)
 	if delta <= 0 {
 		t.Errorf("standby path %q stayed wanbond_path_up=1 for the whole %s window while the primary carried a live "+
-			"flow, but its %s did not grow (delta=%.0f bytes) — this reproduces the production observation "+
-			"path_up{%s}=1 with tx{%s}=0. The standby's own periodic liveness probes ARE written to the wire "+
-			"(internal/bind/probe.go emitProbes -> conn.WriteToUDPAddrPort), but that write never increments "+
-			"ps.txBytes — only Send()/fecFlushDeadline() DATA/PARITY writes do (internal/bind/multipath.go). The "+
-			"path genuinely transmits; the operator-facing tx_bytes series just does not reflect it. Refile as a "+
-			"defect linked to goals:G6 (Q39) and keep this test as the reproduction.",
+			"flow, but its %s did not grow (delta=%.0f bytes) — this would reproduce the pre-D48 production "+
+			"observation path_up{%s}=1 with tx{%s}=0. D48 made emitProbes' and dispatchInbound's echo-reflection "+
+			"writes (internal/bind/probe.go, internal/bind/multipath.go) both count into ps.txBytes alongside "+
+			"Send()/fecFlushDeadline()'s DATA/PARITY writes, so the standby's own periodic probes alone should "+
+			"move this counter even with zero DATA. A failure here now indicates a fresh regression in that "+
+			"accounting, not the original D48 gap — refile as a new defect linked to goals:G6 (Q39) and keep this "+
+			"test as the reproduction.",
 			standby.name, t104ProbeWindow, metrics.MetricTxBytes, delta, standby.name, standby.name)
 	}
 }
