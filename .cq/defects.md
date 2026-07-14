@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 51
+  item: 52
 archives: []
 ---
 
@@ -715,3 +715,17 @@ archives: []
 - severity: low
 - suggestedFix: "Move one of the two (pacing_test.go or p3_fec_test.go) to an unused port and, ideally, centralize e2e metrics-port allocation (a shared registry or per-test ephemeral :0 bind) so the per-file-unique convention can't silently drift again."
 - ledgerRefs: ["goals:G6"]
+
+## M32
+
+### D52 — open
+
+- createdAt: 2026-07-14T04:01:04.560Z
+- updatedAt: 2026-07-14T04:01:04.560Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: reloadWarnings omits scheduler/fec/dns/bind non-path config sections (SIGHUP silently ignores them)
+- description: "Filed from T109 round-1 review ([fable], file-and-defer per K13). internal/device/device.go reloadWarnings compares role/psk/wireguard/amnezia/log + path params/order, but Config also carries Scheduler, FEC, DNS, and Bind sections — a SIGHUP changing any of those is silently ignored with NO warning, contradicting Reload's documented invariant that every ignored non-path change must produce an explicit warning ('SILENCE is not acceptable'). Pre-existing at base 1fd915f (those fields were added after T30 without extending reloadWarnings). NOTE: the [bind] section here is T105's new BindMode; [dns] is G5's DNS block. Out of scope for T109 (which only adds the analogous warning for its own tun_persist field)."
+- severity: medium
+- suggestedFix: Extend reloadWarnings with reflect.DeepEqual comparisons for Scheduler, FEC, DNS, and Bind (mirroring the existing wireguard/amnezia/log cases) + unit-test cases; OR compare a struct copy with the path/metrics fields zeroed so the warning set is future-proof against new Config fields.
+- ledgerRefs: ["tasks:T109","goals:G6"]

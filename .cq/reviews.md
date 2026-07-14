@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 102
+  item: 103
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1106,3 +1106,16 @@ archives:
 - ledgerRefs: ["tasks:T110","goals:G6"]
 - sessionLogs: [".cq/logs/20260714-034834-a38febff249b322f5.md",".cq/logs/20260714-034834-a8fe10de2e74c5ad8.md",".cq/logs/20260714-034834-a3b74d24cfbd0d5a7.md",".cq/logs/20260714-034834-a03fdf59bb32f668c.md"]
 - rawLogs: [".cq/logs/raw/20260714-034834-a38febff249b322f5.jsonl",".cq/logs/raw/20260714-034834-a8fe10de2e74c5ad8.jsonl",".cq/logs/raw/20260714-034834-a3b74d24cfbd0d5a7.jsonl",".cq/logs/raw/20260714-034834-a03fdf59bb32f668c.jsonl"]
+
+### R103 — go-ahead
+
+- createdAt: 2026-07-14T04:07:07.864Z
+- updatedAt: 2026-07-14T04:07:07.864Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T109 terminal reconciled panel verdict after 2 rounds (fresh re-implementation on correct base after a discarded stale-based attempt). R1 [opus] approve / [fable] disapprove (strictest-wins) on ONE criticism — reloadWarnings omitted tun_persist, so a SIGHUP flipping it was silently ignored, violating Reload's warn-on-every-ignored-change contract (which the task's 'must not break SIGHUP reload' clause covers). Mechanism was otherwise verified sound against amneziawg-go v1.0.4 source: NativeTun.Close never RTM_DELLINKs, CreateTUN re-adopts by name preserving ifindex; TUNSETPERSIST via SyscallConn().Control correct; unconditional apply clears on false; Close unchanged; e2e + docs sound. R2 (4175d1b) unanimous approve — reloadWarnings now emits a 'tun_persist X -> Y ... ignored until restart' warning (message follows the established convention) with a reload_test flip case; BOTH reviewers mutation-verified it FAILS ('got []') when the warning line is removed. 2 deferred defects filed at R1: D52 (reloadWarnings scheduler/fec/dns/bind gap, pre-existing) + a lint-at-base dup of D45. Rebased onto current main (clean 3-way merge into device.Up + install.md that T101/T110 also touched; full gate re-run green) and ff-merged as cf3f341."
+- criticism: ["[fable, R1, RESOLVED R2] reloadWarnings omitted tun_persist — a SIGHUP flipping it was silently ignored; fixed with an explicit warning + a mutation-verified reload_test case."]
+- new_questions: []
+- ledgerRefs: ["tasks:T109","goals:G6","defects:D52"]
+- sessionLogs: [".cq/logs/20260714-040623-a21407ed6e6df882a.md",".cq/logs/20260714-040623-a64c1d2ea3184af3e.md"]
+- rawLogs: [".cq/logs/raw/20260714-040623-a21407ed6e6df882a.jsonl",".cq/logs/raw/20260714-040623-a64c1d2ea3184af3e.jsonl"]

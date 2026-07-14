@@ -758,10 +758,10 @@ archives:
 - dependsOn: ["T74"]
 - ledgerRefs: ["goals:G5"]
 
-### T77 — planned
+### T77 — wip
 
 - createdAt: 2026-07-13T21:56:00.076Z
-- updatedAt: 2026-07-13T22:06:03.741Z
+- updatedAt: 2026-07-14T04:02:05.579Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add the netns e2e: dial-by-name, mid-session concentrator IP change, tunnel survives"
@@ -1006,10 +1006,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-030903-aa2065422bfcb3fa2.md",".cq/logs/20260714-032122-acd6bfff48ecc6611.md",".cq/logs/20260714-032122-a43969b0d13dec49c.md",".cq/logs/20260714-035218-a84c7434f6d908139.md",".cq/logs/20260714-035218-a6f8746b8e0351608.md"]
 - rawLogs: [".cq/logs/raw/20260714-030903-aa2065422bfcb3fa2.jsonl",".cq/logs/raw/20260714-032122-acd6bfff48ecc6611.jsonl",".cq/logs/raw/20260714-032122-a43969b0d13dec49c.jsonl",".cq/logs/raw/20260714-035218-a84c7434f6d908139.jsonl",".cq/logs/raw/20260714-035218-a6f8746b8e0351608.jsonl"]
 
-### T92 — planned
+### T92 — wip
 
 - createdAt: 2026-07-13T22:28:47.652Z
-- updatedAt: 2026-07-13T22:28:47.652Z
+- updatedAt: 2026-07-14T04:02:07.051Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Enforce and test cross-peer isolation threat model
@@ -1206,12 +1206,12 @@ archives:
 - sessionLogs: [".cq/logs/20260714-033617-a8066d8a362952bd2.md",".cq/logs/20260714-034050-ad3878949437704f2.md",".cq/logs/20260714-034050-a88c682fa1f564cce.md"]
 - rawLogs: [".cq/logs/raw/20260714-033617-a8066d8a362952bd2.jsonl",".cq/logs/raw/20260714-034050-ad3878949437704f2.jsonl",".cq/logs/raw/20260714-034050-a88c682fa1f564cce.jsonl"]
 
-### T106 — planned
+### T106 — wip
 
 - createdAt: 2026-07-13T23:23:31.897Z
-- updatedAt: 2026-07-13T23:23:31.897Z
+- updatedAt: 2026-07-14T04:02:08.208Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Honor the bind mode in path-socket planning (I5 wiring)
 - description: "Thread the resolved per-path bind mode into planPathBinds/selectDeviceBinds (internal/bind/pathsock.go): `source` forces source-IP pinning (never SO_BINDTODEVICE — the D38 topology's escape hatch), `device` forces device-bind for the path's interface (falling back to source with a WARN when the interface cannot be resolved or the setsockopt fails, matching the existing CAP fallback), `auto` keeps the current one-address-one-path heuristic byte-for-byte. Applies to Open, AddPath, and the deferred-path reconcile alike."
 - acceptance: Unit tests on selectDeviceBinds/planPathBinds cover all three modes including the forced-source case on a one-address interface (which auto would device-bind — the exact D38 trap) and the device-mode fallback path; auto mode reproduces the current planPathBinds output on the existing fixtures. Relates D38 without depending on its fix. go test ./... green.
@@ -1246,10 +1246,10 @@ archives:
 
 ## M32
 
-### T109 — wip
+### T109 — done
 
 - createdAt: 2026-07-13T23:24:00.782Z
-- updatedAt: 2026-07-14T03:23:05.887Z
+- updatedAt: 2026-07-14T04:07:18.983Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Persistent wanbond0 TUN across daemon restarts (I7 code)
@@ -1257,6 +1257,10 @@ archives:
 - acceptance: "Netns e2e: with tun_persist=true, an address assigned to wanbond0 survives a full daemon stop/start (the D5/I7 production failure mode) and the interface keeps the SAME ifindex across the restart; the persistent device does not become NM-managed (documented invariant; asserted where the fixture permits). With the default false, behavior is unchanged (device disappears on Close, existing e2e suite green). Relates D39 in acceptance only. go test ./... and -tags e2e green."
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G6"]
+- resultCommit: cf3f341
+- completion: "Opt-in persistent wanbond0 TUN across daemon restarts (top-level tun_persist, default false). On device.Up (after T100's ifUp, before the amnezia single-engine guard) the daemon issues TUNSETPERSIST via setTUNPersist (tun.Device.File().SyscallConn().Control — avoids racing netpoll; persist_linux.go + !linux stub), called UNCONDITIONALLY so false clears the flag. Close unchanged (amneziawg-go v1.0.4 NativeTun.Close never RTM_DELLINKs) → a persistent wanbond0 outlives Close and the next Up re-adopts it by name preserving ifindex, so addresses/routes/rules survive a full daemon restart (D5/I7). R2 fixed a SIGHUP-reload gap: reloadWarnings now warns on a tun_persist flip (mutation-verified). Config units cover default-false + opt-in; deferred netns e2e (tun_persist_test.go) asserts address+ifindex survival + default-false teardown (compiles/vets under -tags e2e, execution deferred G2). Docs synced (install.md + wanbond.example.toml with the D39/NM caveat). Discarded a stale-based first attempt; re-implemented on correct base; rebased onto current main (clean, full gate re-run green) and ff-merged as cf3f341. Filed D52 (reloadWarnings scheduler/fec/dns/bind gap)."
+- sessionLogs: [".cq/logs/20260714-035334-a499fad4ac5e70f46.md",".cq/logs/20260714-040340-a807331bce82874fa.md",".cq/logs/20260714-040058-aa28850d7ae9798c8.md",".cq/logs/20260714-040058-a4363a876d3b56773.md",".cq/logs/20260714-040623-a21407ed6e6df882a.md",".cq/logs/20260714-040623-a64c1d2ea3184af3e.md"]
+- rawLogs: [".cq/logs/raw/20260714-035334-a499fad4ac5e70f46.jsonl",".cq/logs/raw/20260714-040340-a807331bce82874fa.jsonl",".cq/logs/raw/20260714-040058-aa28850d7ae9798c8.jsonl",".cq/logs/raw/20260714-040058-a4363a876d3b56773.jsonl",".cq/logs/raw/20260714-040623-a21407ed6e6df882a.jsonl",".cq/logs/raw/20260714-040623-a64c1d2ea3184af3e.jsonl"]
 
 ### T110 — done
 
