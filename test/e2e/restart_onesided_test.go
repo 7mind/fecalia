@@ -411,25 +411,21 @@ level = "info"
 // daemon binds EXACTLY ONE peer, metrics.NewCollector sets multiPeer = len(PeerNames())>1
 // = FALSE (internal/metrics/metrics.go:260-266), so the reseq series are emitted UNLABELED
 // — the value lives in the no-label exposition read by Value(name), exactly as
-// internal/metrics' TestExpositionReseqRebaselineAndDropSuspect asserts. A `peer=""` LABEL
-// exists ONLY in a MULTI-peer exposition's unnamed-primary series (BoundPeerNames' primary
-// override), which is NOT present here — so PeerValue(name, "") returns (0,false) for these
-// single-peer daemons. We try PeerValue(name, "") first so the helper also works against a
-// multi-peer exposition, then fall back to the single-peer no-label series. Missing is
-// treated as 0 for a rebaseline/drop counter (a rebaseline/drop that never happened yields
-// no series until the first increment); the caller's deltas remain correct. `released` must
-// be present once traffic flowed, so its absence is surfaced as a real fault rather than
-// silently read as 0.
+// internal/metrics' TestExpositionReseqRebaselineAndDropSuspect asserts. (Since D58 no
+// exposition emits a peer="" label at all: a single-peer exposition is UNLABELED and a
+// multi-peer one carries every peer's configured name, so there is no multi-peer peer=""
+// series to probe here — this survivor is single-peer, so its counter is the no-label
+// Value(name) series.) Missing is treated as 0 for a rebaseline/drop counter (a
+// rebaseline/drop that never happened yields no series until the first increment); the
+// caller's deltas remain correct. `released` must be present once traffic flowed, so its
+// absence is surfaced as a real fault rather than silently read as 0.
 func r121PeerCounter(t *testing.T, exp metrics.Exposition, name, who string) float64 {
 	t.Helper()
-	if v, ok := exp.PeerValue(name, ""); ok {
-		return v
-	}
 	if v, ok := exp.Value(name); ok {
 		return v
 	}
 	if name == metrics.MetricReseqReleased {
-		t.Fatalf("%s absent from the %s /metrics after traffic flowed (checked both the peer=\"\" multi-peer series and the single-peer no-label exposition)", name, who)
+		t.Fatalf("%s absent from the %s /metrics after traffic flowed (single-peer no-label exposition)", name, who)
 	}
 	return 0
 }

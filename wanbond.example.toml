@@ -186,11 +186,11 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # authenticates NO peer once a second peer is configured
 # (internal/device/device.go feeds only per-peer PSKs to the bind — see
 # docs/design.md's Security model). Each peer's `name` is REQUIRED and must be
-# unique; ADDITIONAL peers (all but the first-configured) are exposed under
-# their configured name as the metrics `peer` label, while the first/primary
-# peer's series still carry the empty label peer="" — byte-compatible with the
-# single-peer exposition, but a discrepancy versus the "name required" config
-# rule filed as defect D58 (documented current behavior; not fixed here).
+# unique; once a second peer is configured EVERY bound peer — INCLUDING the
+# first-configured/primary — is exposed under its configured `name` as the
+# metrics `peer` label (D58 fixed). The empty label peer="" appears ONLY in a
+# true single-peer exposition, which stays UNLABELED for byte-compatibility with
+# the historical single-peer metrics.
 #
 # ── live example (two edges, distinct per-peer psk/name) ─────────────────────
 # role = "concentrator"
