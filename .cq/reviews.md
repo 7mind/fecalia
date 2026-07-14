@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 169
+  item: 171
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1771,6 +1771,17 @@ archives:
 - ledgerRefs: ["tasks:T134","goals:G10","defects:D53"]
 - sessionLogs: [".cq/logs/20260714-140500-a24a0b2be975ad925.md",".cq/logs/20260714-140500-a83f17ef8179b04cf.md"]
 - rawLogs: [".cq/logs/raw/20260714-140500-a24a0b2be975ad925.jsonl",".cq/logs/raw/20260714-140500-a83f17ef8179b04cf.jsonl"]
+
+### R170 — go-ahead
+
+- createdAt: 2026-07-14T15:29:43.468Z
+- updatedAt: 2026-07-14T15:29:43.468Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T135 review round 1 — RECONCILED GO-AHEAD (opus claude:opus-4.8[1m] + fable claude:fable-5 panel, strictest-wins; BOTH approve). reloadWarnings extended to Scheduler/FEC/DNS/Bind + D52 future-proof catch-all. Merged to main as 82463bb (cherry-pick of 447dbca onto dfb5d71; device.go+reload_test.go only, clean apply — main was a768452+ledger-only). Full gate green on composed main: go build/vet/test ./internal/device/... ./internal/config/... ok; just lint 0 issues across default+e2e+realhosts. Both reviewers verified EMPIRICALLY: Scheduler/FEC/DNS/top-level-Bind/per-path-Bind each fire exactly one actionable warning (strengthened len(w)==1 assertions); Metrics + membership-only changes fire zero (catch-all zeroes Metrics+Paths, false-positive-free); the catch-all zeroes exactly Config's 12 fields {Role,Paths,WireGuard,Amnezia,PSK,Metrics,Log,Scheduler,FEC,DNS,Bind,TUNPersist} — tautologically DeepEqual-true today, and structurally cannot miss a future 13th field — with TestReloadWarningsCatchAll bidirectionally pinning the field set via reflection (fails on both an unknown field and a stale known-entry); reloadWarnings stays pure (shallow copies only). Non-blocking nuance both noted: the top-level-Bind test uses pre-normalize input (Path.Bind=='') to force exactly-one; on production-normalized configs a top-level default edit additionally fires per-path warnings (1+N total) — conforms to R131's sanctioned design (per-path covers effective changes; the prohibited double-warn was the generic catch-all, structurally unreachable for Bind since it is zeroed in the copies). Every emitted warning is individually true and actionable. BOTH reviewers independently filed ONE identical out-of-scope defect → D70 (per-path link_bandwidth/link_rtt silent acceptance on reload)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T135","goals:G10","defects:D52","defects:D70"]
 
 ## M47
 

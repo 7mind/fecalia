@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 69
+  item: 71
 archives: []
 ---
 
@@ -963,6 +963,18 @@ archives: []
 - suggestedFix: "Make the test synchronize against the async flush: poll FECSnapshot().ParityFrames with a short bounded retry (until it reaches parityShards or a ~200ms deadline) instead of reading it once immediately after the last wire arrives."
 - ledgerRefs: ["tasks:T125","defects:D44"]
 - rootCause: "Test-synchronization defect: TestMultipathFECDeadlineEmitsPartialGroupParity (fec_test.go) read FECSnapshot().ParityFrames immediately after receiving both parity wires, racing the async fecTickLoop goroutine's post-WriteToUDPAddrPort counter increment (~2% flake under -race; NO memory race). RESOLVED by T125 round 2 (landed 3eab82e): the test now polls ParityFrames with a bounded 200ms retry then asserts strict equality — masks neither under- nor over-count. Verified via 50x/100x -race runs (0 failures)."
+
+### D70 — open
+
+- createdAt: 2026-07-14T15:29:16.572Z
+- updatedAt: 2026-07-14T15:29:16.572Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Same-name path link_bandwidth/link_rtt changes are silently accepted on reload (D52 gap at path-sub-field level)
+- description: "Filed by BOTH T135 reviewers (opus+fable) independently as out-of-scope-for-T135. reloadWarnings' same-name-path comparison (internal/device/device.go ~:648-659) checks only SourceAddr/DestAddr/Bind for a surviving same-name path. Path.LinkBandwidthBitsPerSec and Path.LinkRTT (operator-declared BDP pace-sizing params, internal/config/config.go Path struct ~:496-514, inputs to the weighted scheduler's pacing) are (a) NOT applied on reload — Reload applies only path-membership add/remove; runningConfig keeps survivors' ORIGINAL params until restart; (b) NOT warned by the per-path comparison; and (c) NOT caught by the D52 future-proof catch-all — it zeroes Paths entirely (lc.Paths, dc.Paths = nil). So an operator who changes a path's link_bandwidth/link_rtt and SIGHUPs gets NO warning while the running weighted-scheduler pace keeps the booted value — the exact 'SILENCE is not acceptable' violation D52 targets, at the path-sub-field level. Pre-existing (those fields were never compared) and outside T135's stated scope (Scheduler/FEC/DNS/Bind top-level sections + per-path Bind), hence filed rather than blocking T135's go-ahead."
+- severity: medium
+- suggestedFix: Extend the same-name-path comparison to warn on l.LinkBandwidthBitsPerSec/l.LinkRTT != d's (mirroring the source/dest/bind checks with actionable messages), OR generalize the per-path comparison to a whole-struct reflect.DeepEqual per name-matched pair with the already-individually-warned/applied fields (Name) zeroed — so any future Path field is covered symmetrically to the top-level catch-all. Add table cases asserting exactly one warning each.
+- ledgerRefs: ["tasks:T135","defects:D52"]
 
 ## M49
 

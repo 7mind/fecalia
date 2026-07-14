@@ -1702,10 +1702,10 @@ archives:
 - dependsOn: ["T133"]
 - ledgerRefs: ["goals:G10","defects:D53"]
 
-### T135 — planned
+### T135 — done
 
 - createdAt: 2026-07-14T10:07:57.865Z
-- updatedAt: 2026-07-14T10:19:06.772Z
+- updatedAt: 2026-07-14T15:29:44.819Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extend reloadWarnings to cover the Scheduler/FEC/DNS/Bind reload-immutable config sections (D52)
@@ -1714,6 +1714,7 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G10","defects:D52"]
 - dependsOn: ["T134"]
+- resultCommit: 82463bb
 
 ## M47
 
