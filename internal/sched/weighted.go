@@ -81,6 +81,17 @@ func (c WeightedConfig) validate() error {
 	return nil
 }
 
+// pacerConfig projects the pacing-relevant fields (Pacing, PerPathCapacity as the
+// refill rate, PacingBurst as the bucket capacity) onto the sched-owned pacerConfig
+// the extracted pacer consumes (defect D65).
+func (c WeightedConfig) pacerConfig() pacerConfig {
+	return pacerConfig{
+		Pacing:      c.Pacing,
+		CapacityFPS: c.PerPathCapacity,
+		BurstFrames: c.PacingBurst,
+	}
+}
+
 // FECPolicy is the P3+ forward-error-correction extension seam. Given the path a
 // frame was scheduled onto and the current eligible set, it returns ADDITIONAL path
 // indices the frame should ALSO egress on for redundancy (e.g. a repair copy on a
@@ -153,26 +164,17 @@ type WeightedScheduler struct {
 	// Smooth-weighted-round-robin credits, parallel to health (global path index).
 	current []float64
 
-	// Per-path pacing token buckets, parallel to health.
-	tokens   []float64
-	lastFill time.Time
-	haveFill bool
+	// Per-path send-pacing (token buckets + coalesced shed log), extracted into a
+	// caller-locked helper (defect D65) so ActiveBackup can reuse it. It is embedded
+	// so its state (tokens, haveFill, …) and delegated ops promote onto the scheduler
+	// and stay guarded under s.mu exactly as when they were inlined. Every access here
+	// is under s.mu — the pacer holds no lock of its own.
+	pacer
 
 	// Active-primary cache: the best eligible path, for eager-failover transition
 	// logging (parity with ActiveBackup). -1 == none.
 	active int
-
-	// Pacer-shedding log rate limiter: under sustained overload shedding is per-frame
-	// (thousands/s), so the "pacer shedding" diagnostic is coalesced to at most one
-	// record per shedLogInterval, carrying the count shed since the last record.
-	shedCount   int
-	lastShedLog time.Time
 }
-
-// shedLogInterval bounds how often the pacer-shedding diagnostic is emitted, so a
-// sustained overload logs a periodic coalesced record rather than one line per
-// dropped frame.
-const shedLogInterval = 1 * time.Second
 
 // compile-time proof WeightedScheduler is a (dynamic) Scheduler.
 var (
@@ -206,14 +208,15 @@ func NewWeighted(health []PathHealth, quality []PathQuality, cfg WeightedConfig,
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	componentLog := logger.Component("sched")
 	return &WeightedScheduler{
 		health:  append([]PathHealth(nil), health...),
 		quality: append([]PathQuality(nil), quality...),
 		clock:   clock,
 		cfg:     cfg,
-		log:     logger.Component("sched"),
+		log:     componentLog,
 		current: make([]float64, len(health)),
-		tokens:  fullBuckets(len(health), cfg.PacingBurst),
+		pacer:   newPacer(len(health), cfg.pacerConfig(), componentLog),
 		active:  -1,
 	}, nil
 }
@@ -262,7 +265,7 @@ func (s *WeightedScheduler) Pick(class FrameClass) int {
 	s.recomputeLocked(now)       // liveness refresh + eager-failover log
 	s.observeLoadLocked(now)     // this Pick is one offered frame (decays across the gap)
 	s.updateGateLocked(now, gap) // engage/disengage aggregation (hysteresis, idle-aware)
-	s.refillLocked(now)          // top up pacing buckets
+	s.refill(now)                // top up pacing buckets
 
 	eligible := s.eligibleLocked()
 	if len(eligible) == 0 {
@@ -321,10 +324,10 @@ func (s *WeightedScheduler) serveLocked(now time.Time, idx int, class FrameClass
 	if class == ClassControl {
 		return idx
 	}
-	if s.tryConsumeLocked(idx) {
+	if s.tryConsume(idx) {
 		return idx
 	}
-	return s.shedLocked(now)
+	return s.shed(now, s.loadRate)
 }
 
 // selectAggregatingLocked picks a path proportional to weight (smooth weighted round
@@ -339,35 +342,18 @@ func (s *WeightedScheduler) selectAggregatingLocked(now time.Time, eligible []in
 	if class == ClassControl {
 		return ideal
 	}
-	if s.tryConsumeLocked(ideal) {
+	if s.tryConsume(ideal) {
 		return ideal
 	}
 	for _, gi := range eligible {
 		if gi == ideal {
 			continue
 		}
-		if s.tryConsumeLocked(gi) {
+		if s.tryConsume(gi) {
 			return gi
 		}
 	}
-	return s.shedLocked(now)
-}
-
-// shedLocked records one paced-out (shed) frame and emits the coalesced "pacer
-// shedding" diagnostic at most once per shedLogInterval. It returns PickPaced so the
-// Send path can map the drop to a distinct, non-outage error/log (criticism #3): the
-// paths are healthy, this is deliberate rate limiting. Caller holds s.mu.
-func (s *WeightedScheduler) shedLocked(now time.Time) int {
-	s.shedCount++
-	if s.lastShedLog.IsZero() || now.Sub(s.lastShedLog) >= shedLogInterval {
-		s.log.Info("scheduler pacer shedding",
-			"shed_frames", s.shedCount,
-			"load_fps", s.loadRate,
-		)
-		s.lastShedLog = now
-		s.shedCount = 0
-	}
-	return PickPaced
+	return s.shed(now, s.loadRate)
 }
 
 // swrrPickLocked is nginx's smooth weighted round-robin over the eligible set: it
@@ -531,47 +517,6 @@ func (s *WeightedScheduler) updateGateLocked(now time.Time, gap time.Duration) {
 	s.belowSince = time.Time{}
 }
 
-// refillLocked tops up every per-path token bucket by PerPathCapacity·elapsed, capped
-// at PacingBurst. The first call seeds every bucket full. It is a no-op accountant
-// when pacing is disabled (tryConsumeLocked always admits), but the buckets are still
-// maintained so toggling pacing needs no re-seed. Caller holds s.mu.
-func (s *WeightedScheduler) refillLocked(now time.Time) {
-	if !s.haveFill {
-		s.haveFill = true
-		s.lastFill = now
-		for i := range s.tokens {
-			s.tokens[i] = s.cfg.PacingBurst
-		}
-		return
-	}
-	dt := now.Sub(s.lastFill).Seconds()
-	if dt < 0 {
-		dt = 0
-	}
-	add := s.cfg.PerPathCapacity * dt
-	for i := range s.tokens {
-		s.tokens[i] += add
-		if s.tokens[i] > s.cfg.PacingBurst {
-			s.tokens[i] = s.cfg.PacingBurst
-		}
-	}
-	s.lastFill = now
-}
-
-// tryConsumeLocked spends one token from path idx's bucket, reporting whether the
-// frame is admitted. With pacing disabled it always admits (the buckets are inert).
-// Caller holds s.mu.
-func (s *WeightedScheduler) tryConsumeLocked(idx int) bool {
-	if !s.cfg.Pacing {
-		return true
-	}
-	if s.tokens[idx] >= 1 {
-		s.tokens[idx]--
-		return true
-	}
-	return false
-}
-
 // eligibleLocked returns the global indices of paths reporting StateUp, in priority
 // order. Caller holds s.mu.
 func (s *WeightedScheduler) eligibleLocked() []int {
@@ -624,7 +569,7 @@ func (s *WeightedScheduler) AddPath(h PathHealth) (int, error) {
 	s.health = append(s.health, h)
 	s.quality = append(s.quality, asQuality(h))
 	s.current = append(s.current, 0)
-	s.tokens = append(s.tokens, s.cfg.PacingBurst)
+	s.addPath()
 	return len(s.health) - 1, nil
 }
 
@@ -642,7 +587,7 @@ func (s *WeightedScheduler) RemovePath(i int) error {
 	s.health = append(s.health[:i], s.health[i+1:]...)
 	s.quality = append(s.quality[:i], s.quality[i+1:]...)
 	s.current = append(s.current[:i], s.current[i+1:]...)
-	s.tokens = append(s.tokens[:i], s.tokens[i+1:]...)
+	s.removePath(i)
 	s.active = -1
 	return nil
 }
@@ -671,8 +616,7 @@ func (s *WeightedScheduler) SetPaths(health []PathHealth) error {
 		s.quality[i] = asQuality(h)
 	}
 	s.current = make([]float64, len(health))
-	s.tokens = fullBuckets(len(health), s.cfg.PacingBurst)
-	s.haveFill = false
+	s.reset(len(health))
 	s.aggregating = false
 	s.belowSince = time.Time{}
 	s.active = -1
@@ -687,13 +631,4 @@ func asQuality(h PathHealth) PathQuality {
 		return q
 	}
 	return nil
-}
-
-// fullBuckets returns n token buckets each seeded to burst.
-func fullBuckets(n int, burst float64) []float64 {
-	t := make([]float64, n)
-	for i := range t {
-		t[i] = burst
-	}
-	return t
 }
