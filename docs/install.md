@@ -1092,7 +1092,8 @@ timing will improve; until then, use the guidance below.
 **The operational check:** the tunnel is up and carrying traffic when the
 **`wanbond_session_established` metric reads `1`** (or the log shows `session
 established`). These signal the same event: the WireGuard peer has completed a
-handshake within the session-validity window (RejectAfterTime, ~2.5 hours).
+handshake within the session-validity window (RejectAfterTime, ~180 s / ~3
+minutes).
 
 - **`wanbond_session_established` Prometheus gauge:** a binary (0 or 1) metric
   on each daemon's `/metrics` endpoint. Query it to confirm the tunnel is
@@ -1117,11 +1118,14 @@ handshake within the session-validity window (RejectAfterTime, ~2.5 hours).
 When you restart **only one end** (edge or concentrator) while the other remains
 live, the restarted end initiates a new handshake promptly. However, the
 **stale-peer (still running) does not detect the new handshake or re-handshake
-promptly** — it keeps the old session cached and does not poll the new one.
+promptly** — it keeps the old session cached and does not proactively re-initiate.
 Result: the tunnel is down at the restarted end (new session not yet up) and at
-the stale end (old session still valid but peers no longer match on keys). The
-stale end eventually re-handshakes once its session expires (~2.5 hours), causing
-a ~2.5-hour convergence delay.
+the stale end (old session cached, but its peer no longer matches — no traffic
+flows). The stale end does not recover until WireGuard's own rekey timers force
+it: RekeyAfterTime (120 s) is when a healthy sender attempts a proactive rekey,
+and RejectAfterTime (180 s) is the hard ceiling past which the stale session is
+discarded and a fresh handshake is required. The outage is therefore
+**minutes-scale** (bounded by these timers, up to ~3 minutes) — not hours.
 
 **Fast path: restart both ends together (~25 s observed):**
 
@@ -1138,10 +1142,29 @@ Procedure:
    ```
    Typical reconvergence time: 10–25 seconds from the second restart.
 
-**Avoid:** restarting a single end for maintenance; if you must, plan for a ~20 s
-down window on one uplink (one path recovers) or factor in the D36 timeout if
-both ends must be up. Until D36 is fixed, coordinate endpoint restarts; both
-together is faster than one at a time.
+**Distinguishing converging from wedged:** after a coordinated both-end
+restart, expect the `session established` log line (and the gauge flipping to
+`1`) within ~25 s. If `wanbond_session_established` still reads `0` well
+beyond that — or beyond the ~3-minute rekey window following a one-sided
+restart — that indicates the D36 wedge rather than ordinary convergence.
+
+**Stale-end caveat:** for up to ~180 s (~3 min) after the *peer* restarts, the
+end that did **not** restart can still read `wanbond_session_established 1` —
+its own last handshake is still inside the 180 s validity window — even though
+the tunnel carries no traffic (the peer on the other side no longer matches
+keys). A single end reading `1` is therefore not, by itself, a guarantee of
+live traffic during the wedge window; check both ends, or wait out the
+~3-minute window, before concluding the tunnel is healthy.
+
+**Avoid:** restarting a single end for maintenance. This is a D36 issue with
+the **inner WG tunnel session** (the whole encrypted tunnel), distinct from a
+single outer path/uplink flapping — that failure mode is already handled by
+the D12 fix and self-heals in seconds. A one-sided restart instead leaves the
+**entire tunnel** down for minutes (see above), not just one uplink. If you
+must restart one end, budget minutes of full-tunnel downtime; prefer the
+coordinated both-ends restart above (~25 s total) whenever possible. Until
+D36 is fixed, coordinate endpoint restarts — both together is far faster than
+one at a time.
 
 ## 7. MTU
 
