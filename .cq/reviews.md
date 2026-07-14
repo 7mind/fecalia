@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 151
+  item: 152
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1568,6 +1568,19 @@ archives:
 - ledgerRefs: ["tasks:T119","goals:G7","defects:D36"]
 - sessionLogs: [".cq/logs/20260714-114500-a9bbd3ad9b477e347.md",".cq/logs/20260714-114500-a640aac378eddd264.md"]
 - rawLogs: [".cq/logs/raw/20260714-114500-a9bbd3ad9b477e347.jsonl",".cq/logs/raw/20260714-114500-a640aac378eddd264.jsonl"]
+
+### R152 — go-ahead
+
+- createdAt: 2026-07-14T12:19:29.632Z
+- updatedAt: 2026-07-14T12:19:29.632Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T119 review round 3 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after two prior revise rounds (R146 round-1, R150 round-2). This was the run's hardest task: the adversarial panel caught FOUR distinct permanent-blackhole defects across three rounds, each empirically reproduced. Round 3 adds the final two fixes and both reviewers actively tried and FAILED to break the gate: FIX 3 (bounded gate) — a pendingLowDrops counter, after O(window) consecutive armed suspect-drops falls back to a plain unpin (started=false) that self-heals via resync corroboration, so a lost seq-1 init at anchor==window+2 can no longer permanently blackhole (arm boundary next>window+1 exactly matches re-anchor satisfiability); FIX 4a (ring clear) — the low re-anchor branch clears ring/buf/waiting mirroring resync()'s invariants, so no stale old-boot cell survives to jump next high; FIX 4b (gate FEC) — ObserveRecovered drops recovered frames while pendingLow is armed (no buf leak, loses no legitimate re-anchor). fable RE-RAN both round-2 executable probes: the lost-init blackhole now delivers 434/499 (was 0/499) and the ObserveRecovered bypass seats nothing (Skipped==0, no high re-pin); plus 4 NEW attack probes (threshold-edge init, straggler-flood counter-trip, FEC-init-while-armed, post-clear ObserveRecovered) ALL held. opus independently constructed a straggler-flood case and confirmed it degrades to bounded resync-corroboration recovery, never a blackhole. Non-regression confirmed: saturated D36 case, stale-high race, small-anchor self-heal (FIX-1), Rebaseline-clears-pendingLow (FIX-2), per-peer scoping (primary+concentrator, witness undisturbed), same-epoch no-op, lock discipline (RebaselineToLow outside m.mu, race clean), D32 hub-failover. Full suite + -race ./internal/bind/...+./internal/reseq/... + just lint all green. The analogous pre-existing Rebaseline()+ObserveRecovered !started re-pin is filed out-of-scope as D64. Two non-blocking nits noted (pendingLowDrops not reset on idempotent re-arm — zero functional impact; deep-bufferbloat degrades to corroboration — bounded, exceeds acceptance). LANDED on main at b786c25 (branch implement/T119-r3, ff18ccd; applied as the 2-commit range 7d0fc42+ff18ccd since the round-2 base lives in the parent commit)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T119","goals:G7","defects:D36"]
+- sessionLogs: [".cq/logs/20260714-120400-ae85588217ae02a05.md",".cq/logs/20260714-120400-a44db3894da9e4335.md"]
+- rawLogs: [".cq/logs/raw/20260714-120400-ae85588217ae02a05.jsonl",".cq/logs/raw/20260714-120400-a44db3894da9e4335.jsonl"]
 
 ## M40
 

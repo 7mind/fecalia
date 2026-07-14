@@ -1447,10 +1447,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G7","defects:D36"]
 
-### T119 — planned
+### T119 — done
 
 - createdAt: 2026-07-14T09:21:51.992Z
-- updatedAt: 2026-07-14T09:33:20.196Z
+- updatedAt: 2026-07-14T12:19:30.701Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire the peer-restart event to the per-peer Resequencer.Rebaseline in dispatchInbound
