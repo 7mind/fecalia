@@ -1830,10 +1830,10 @@ archives:
 
 ## M53
 
-### T143 — wip
+### T143 — done
 
 - createdAt: 2026-07-14T12:40:52.205Z
-- updatedAt: 2026-07-14T16:26:45.643Z
+- updatedAt: 2026-07-14T16:42:38.276Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Expose WeightedScheduler aggregation-gate snapshot and log engage/disengage transitions
@@ -1842,6 +1842,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T141"]
 - ledgerRefs: ["goals:G13"]
+- resultCommit: d4ed216
 
 ### T146 — planned
 

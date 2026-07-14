@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 75
+  item: 76
 archives: []
 ---
 
@@ -1024,6 +1024,18 @@ archives: []
 - severity: medium
 - suggestedFix: Recompute the capacity-sanity verdict in runningConfig()/reloadTunnel and re-set the gauge (and emit a WARN) whenever the live vs desired WeightedCapacitySane differ; extend reloadWarnings' same-name comparison to LinkBandwidthBitsPerSec/LinkRTT (coordinate with D70's fix to avoid double-work).
 - ledgerRefs: ["tasks:T144","defects:D70","defects:D52","goals:G13"]
+
+### D75 — open
+
+- createdAt: 2026-07-14T16:41:27.769Z
+- updatedAt: 2026-07-14T16:41:27.769Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Idle-gap collapse 'scheduler aggregation change' record's structured fields have no test assertion
+- description: "Filed by the T143-r2 fable reviewer (out-of-scope; pre-existing coverage gap). No test asserts the 'scheduler aggregation change' record emitted by the IDLE-GAP collapse branch (internal/sched/weighted.go ~:535-542). TestWeightedCollapsesAfterOverloadIdle exercises the branch behaviorally (path distribution + gate state) but never inspects the log record, and TestAggregationGateLog deliberately avoids the branch (its widened dwell forces the sustained-low-load branch). So the load_fps-uniformity invariant T143 added + documented in docs/design.md is enforced by tests on only 2 of the 3 record sites (engage + dwell-collapse); the idle-gap record's fields (reason='idle gap', gap, and the newly-added load_fps) are untested. Low severity — the field is present and manually verified, just not regression-locked."
+- severity: low
+- suggestedFix: Extend TestWeightedCollapsesAfterOverloadIdle (or the log-fields unit test) with the existing capturing-logger infra to assert the idle-gap collapse record carries reason='idle gap', gap, load_fps, from, and both threshold fields — locking the schema-uniformity invariant on all three record sites.
+- ledgerRefs: ["tasks:T143","goals:G13"]
 
 ## M49
 

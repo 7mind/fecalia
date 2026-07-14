@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 182
+  item: 183
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2157,3 +2157,14 @@ archives:
 - criticism: ["docs/design.md's new T143 paragraph misdocuments the log schema: it claims EVERY 'scheduler aggregation change' record carries load_fps, but the IDLE-GAP collapse branch (internal/sched/weighted.go:537-538) emits NO load_fps and carries an UNDOCUMENTED 'gap' field. FIX (preferred): add `\"load_fps\", s.loadRate` to the idle-gap collapse record — the EWMA has already decayed across the gap in observeLoadLocked so the value is meaningful, and the schema becomes UNIFORM for the T146 metrics/log consumers; document the 'gap' field too. (Alternative: correct the doc to state load_fps is absent + gap present on idle-gap collapse — but uniformity is better for T146.)","TestAggregationGateLog idle-gap FLAKE hazard: between the engage drive's last frame and the low drive's first frame the harness does AwaitLogLine + log parse + spawns a second nsenter'd UDP sink; if that wall-clock span reaches CollapseDwell (only 800ms) the FIRST low-phase Pick collapses via the idle-gap branch (which lacks load_fps) and assertAggLogFields fails spuriously with a misleading 'missing load_fps'. HARDEN: adopt the load_fps-uniformity fix from criticism 1, AND assert reason=='sustained low load' explicitly, AND widen this test's CollapseDwell (e.g. 2s) so the inter-phase margin dominates harness jitter.","The e2e fixture configures an UNUSED [metrics] listen block (aggLogMetricsListen 127.0.0.1:9106) on both daemons; the test never queries it and the task EXPLICITLY defers all metrics wiring to T146 — REMOVE the block (T146's own e2e adds it). This also frees port 9106 back to the registry."]
 - new_questions: []
 - ledgerRefs: ["tasks:T143","goals:G13","defects:D72","defects:D73"]
+
+### R182 — go-ahead
+
+- createdAt: 2026-07-14T16:42:33.791Z
+- updatedAt: 2026-07-14T16:42:33.791Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T143 review round 2 — GO-AHEAD (single fable reviewer — it filed the round-1 disapprove, proportionate for 3 localized fixes; round-1 core already dual-verified). All 3 round-1 criticisms RESOLVED with evidence: (1) idle-gap collapse record (weighted.go:538-540) now carries load_fps — all THREE 'scheduler aggregation change' sites schema-uniform; design.md's EWMA-decayed-across-gap claim verified against Pick's call order (gap captured before observeLoadLocked decays, then updateGateLocked logs); gap field doc matches gap.String(); NO new/second log call (no-double-log invariant re-verified, TestWeightedAggregationChangeLogFieldsAndNoDoubleLog asserts exactly 2 records total, passes under -race). (2) e2e aggLogCollapseDwell widened 800ms→2s + reason=='sustained low load' asserted explicitly so residual jitter fails loudly not silently; wait budget knob-derived (dwell+10*tau+1s, no magic sleep); low-phase inter-frame gap 50ms<<2s so idle-gap branch can't fire mid-drive. (3) [metrics] block + aggLogMetricsListen + port 9106 fully removed (grep clean); Metrics.Listen confirmed optional (applyMetricsLocked device.go:493), daemon startup unaffected — hardware-validated 9/9 on llm-ubuntu-0. Merged to main as 19bb873 (round-1 core) + d4ed216 (round-2) via clean cherry-pick of 6e26127..cec7ff1 onto a7dfd18 (docs/design.md 3-way auto-merged with T127/T144, no conflicts). Full gate green on composed main: sched tests + -race ok; e2e compiles; just lint 0 issues default+e2e+realhosts. Filed 1 low-severity out-of-scope defect: idle-gap record's fields untested → D75. 0 criticisms / 0 questions."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T143","goals:G13","defects:D75"]
