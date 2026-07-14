@@ -1214,10 +1214,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-033617-a8066d8a362952bd2.md",".cq/logs/20260714-034050-ad3878949437704f2.md",".cq/logs/20260714-034050-a88c682fa1f564cce.md"]
 - rawLogs: [".cq/logs/raw/20260714-033617-a8066d8a362952bd2.jsonl",".cq/logs/raw/20260714-034050-ad3878949437704f2.jsonl",".cq/logs/raw/20260714-034050-a88c682fa1f564cce.jsonl"]
 
-### T106 — wip
+### T106 — done
 
 - createdAt: 2026-07-13T23:23:31.897Z
-- updatedAt: 2026-07-14T04:02:08.208Z
+- updatedAt: 2026-07-14T04:44:46.736Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Honor the bind mode in path-socket planning (I5 wiring)
@@ -1226,6 +1226,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T105"]
 - ledgerRefs: ["goals:G6"]
+- resultCommit: cb6547e
+- completion: Threaded the resolved per-path config.BindMode into internal/bind/pathsock.go's selectDeviceBinds/planPathBinds (source forces source-IP pin, device forces device-bind with fallback-to-source on an unresolvable interface, auto reproduces the pre-I5 heuristic byte-for-byte) and wired it into Open, AddPath, and the T55 deferred-path reconcile. To make the runtime paths (AddPath + reconcile) mutation-provable, refactored resolveForcedDeviceBind into a pure selectForcedDeviceBind decision + a thin real-interfaces wrapper, and added TWO injection seams on Multipath — resolveDeviceBind and addPathListen — so both AddPath and reconcileDeferred thread the resolved dev through env-independently testable seams (TestReconcileThreadsForcedDeviceBind + TestAddPathThreadsForcedDeviceBind, both mutation-verified). Also opportunistically activated forced-device on the runtime AddPath/reconcile paths (relates D30; source/auto behavior there unchanged). 3 review rounds (R1/R2 disapprove drove the coverage-completion of the reconcile then AddPath wiring). auto verified byte-for-byte; go test -race ./internal/bind/... green; rebased onto current main (gate re-run green) and ff-merged as cb6547e. Device-fallback WARN observability deferred to D53.
+- sessionLogs: [".cq/logs/20260714-041243-a45dbb6e85fe5dcff.md",".cq/logs/20260714-042958-a1e4feeb5771405f2.md",".cq/logs/20260714-043959-aeea22edfc42b0b3e.md",".cq/logs/20260714-041808-ae0780df317aa2c57.md",".cq/logs/20260714-041808-aa9c60cbe80cacf55.md",".cq/logs/20260714-043501-a9441e152c838dd6c.md",".cq/logs/20260714-043501-a5ef1e10bfec6b3bf.md",".cq/logs/20260714-044354-a039c99963c717f61.md",".cq/logs/20260714-044354-a439e530d4d66f5bc.md"]
+- rawLogs: [".cq/logs/raw/20260714-041243-a45dbb6e85fe5dcff.jsonl",".cq/logs/raw/20260714-042958-a1e4feeb5771405f2.jsonl",".cq/logs/raw/20260714-043959-aeea22edfc42b0b3e.jsonl",".cq/logs/raw/20260714-041808-ae0780df317aa2c57.jsonl",".cq/logs/raw/20260714-041808-aa9c60cbe80cacf55.jsonl",".cq/logs/raw/20260714-043501-a9441e152c838dd6c.jsonl",".cq/logs/raw/20260714-043501-a5ef1e10bfec6b3bf.jsonl",".cq/logs/raw/20260714-044354-a039c99963c717f61.jsonl",".cq/logs/raw/20260714-044354-a439e530d4d66f5bc.jsonl"]
 
 ### T107 — planned
 

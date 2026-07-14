@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 105
+  item: 106
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1104,6 +1104,19 @@ archives:
 - ledgerRefs: ["tasks:T105","goals:G6"]
 - sessionLogs: [".cq/logs/20260714-034050-ad3878949437704f2.md",".cq/logs/20260714-034050-a88c682fa1f564cce.md"]
 - rawLogs: [".cq/logs/raw/20260714-034050-ad3878949437704f2.jsonl",".cq/logs/raw/20260714-034050-a88c682fa1f564cce.jsonl"]
+
+### R106 — go-ahead
+
+- createdAt: 2026-07-14T04:44:33.251Z
+- updatedAt: 2026-07-14T04:44:33.251Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T106 terminal reconciled panel verdict after 3 rounds. R1 [opus] approve / [fable] disapprove (strictest-wins): the AddPath/deferred-reconcile device-mode wiring was UNVERIFIED (neutering resolveForcedDeviceBind survived the full suite); + a silent device-fallback-WARN defect (→ D53, both reviewers). R2 (97968bb): worker split resolveForcedDeviceBind into a pure selectForcedDeviceBind + real-interfaces wrapper and added a resolveDeviceBind injection seam — but BOTH reviewers disapprove again: Mutation D (hardcode dev=\"\" in AddPath) still SURVIVED because AddPath called package-level listenPath directly (only the RECONCILE half got a seam test). R3 (f6ae3f1): worker added an m.addPathListen injection seam (mirroring deferredListen) + an env-independent TestAddPathThreadsForcedDeviceBind. UNANIMOUS approve — BOTH reviewers independently re-ran Mutation D in isolated copies and confirmed it now reddens deterministically ('threaded dev = \"\", want \"wan0\"'), no real-interface dependency/skip; the seam default is provably identical to the prior direct listenPath call (no behavior change); auto byte-for-byte; -race green. Rebased onto current main (3-commit replay, gate re-run green) and ff-merged as cb6547e. D53 (device-fallback WARN) deferred throughout."
+- criticism: ["[fable, R1, RESOLVED R2/R3] the forced-device-bind wiring was unverified — split into a testable decision + injection seams; reconcile half covered R2, AddPath half covered R3 (m.addPathListen seam), both mutation-verified env-independent."]
+- new_questions: []
+- ledgerRefs: ["tasks:T106","goals:G6","defects:D53"]
+- sessionLogs: [".cq/logs/20260714-041808-ae0780df317aa2c57.md",".cq/logs/20260714-041808-aa9c60cbe80cacf55.md",".cq/logs/20260714-043501-a9441e152c838dd6c.md",".cq/logs/20260714-043501-a5ef1e10bfec6b3bf.md",".cq/logs/20260714-044354-a039c99963c717f61.md",".cq/logs/20260714-044354-a439e530d4d66f5bc.md"]
+- rawLogs: [".cq/logs/raw/20260714-041808-ae0780df317aa2c57.jsonl",".cq/logs/raw/20260714-041808-aa9c60cbe80cacf55.jsonl",".cq/logs/raw/20260714-043501-a9441e152c838dd6c.jsonl",".cq/logs/raw/20260714-043501-a5ef1e10bfec6b3bf.jsonl",".cq/logs/raw/20260714-044354-a039c99963c717f61.jsonl",".cq/logs/raw/20260714-044354-a439e530d4d66f5bc.jsonl"]
 
 ## M32
 
