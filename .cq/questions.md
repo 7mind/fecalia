@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 55
+  item: 56
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -671,62 +671,94 @@ archives:
 
 ## M50
 
-### Q51 — open
+### Q51 — answered
 
 - createdAt: 2026-07-14T12:16:25.034Z
-- updatedAt: 2026-07-14T12:16:25.034Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T12:22:59.940Z
+- author: user
 - session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
 - question: "Item 3(ii) 'latency/priority class so control/probe/ICMP frames aren't dropped under pacer overload': what is the ACTUAL in-scope traffic, given wanbond cannot see inside the encrypted WG tunnel? Confirm the scope split so I can write feasible tasks."
 - context: "The pacer's only frame-type signal is FrameClass = ClassData | ClassControl (internal/sched/scheduler.go). ClassControl (WG handshake/keepalive) is ALREADY pacing-exempt (D22), which is also what G2 CORE-SCOPE-1 validates ('pacing does not starve WireGuard control frames'). Your empirical '~38% ICMP loss under overload' almost certainly refers to ICMP carried INSIDE the tunnel: to wanbond that is opaque ClassData (encrypted WG transport) indistinguishable from bulk data, so wanbond CANNOT give inner ICMP a priority lane without plaintext DPI before encryption (out of architecture). What IS addressable and wanbond-visible: (a) wanbond's OWN telemetry PROBE frames (frame.KindProbe) being shed by the pacer under overload, which would cause spurious path-DOWN / failover flaps; (b) a generic small-frame / low-rate priority lane for ClassData (heuristic, since inner type is invisible). Which of these does item 3(ii) mean, and is inner-ICMP prioritization explicitly OUT of scope?"
 - suggestions: ["Scope item 3(ii) to protecting wanbond-generated PROBE frames from pacer shedding (add a probe/priority class so overload can't induce spurious path-down), and EXCLUDE inner-ICMP prioritization as architecturally infeasible (document why).","Add BOTH a probe-protection class AND a generic small-frame/low-rate ClassData priority lane (best-effort, since inner type is opaque), excluding inner-ICMP as out of scope.","Something else / inner-ICMP really was OUTER host traffic competing on the netns link (then wanbond cannot prioritize it either) - clarify the empirical setup."]
 - recommendation: "Option 1: protect PROBE frames (wanbond-visible, real operability impact - prevents pacer overload from faking path-down), and explicitly document inner-ICMP prioritization as out of scope because the tunnel payload is opaque to the pacer."
 - ledgerRefs: ["goals:G13"]
+- answer: as recommended
 
-### Q52 — open
+### Q52 — answered
 
 - createdAt: 2026-07-14T12:16:37.613Z
-- updatedAt: 2026-07-14T12:16:37.613Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T12:23:22.238Z
+- author: user
 - session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
 - question: "Item 2 capacity-sanity guard: should selecting policy=\"weighted\" with a per_path_capacity_fps the declared link can never approach be a HARD config-load FAILURE (fail-fast, refuse to start) or a startup WARN (log + metric, still runs)? And what is the exact trip criterion?"
 - context: "Today per_path_capacity_fps defaults to a synthetic 10000 (~115 Mbit/s); on a low-throughput/CPU-bound edge, EngageFraction*PerPathCapacity is never reached so aggregation is silently inert (you had to hand-set 250). A precise, testable trip rule is needed. Candidate criterion using the existing SizePacingFromBDP helper: when weighted is selected AND link_bandwidth is declared, compute impliedCapacityFPS = link_bandwidth/(8*avgWireFrameBytes); if the configured EngageFraction*per_path_capacity_fps exceeds impliedCapacityFPS (aggregation mathematically cannot engage at line rate), trip the guard. Open sub-question: if weighted is selected but link_bandwidth is NOT declared, is that itself a WARN/FAIL (no way to sanity-check), or allowed? 'Fail-loud' in your text is ambiguous between a hard fail and a loud warning."
 - suggestions: ["Hard config-load FAILURE (fail-fast per project guidelines): weighted + a capacity the declared link cannot approach refuses to start with an actionable error; weighted + undeclared link_bandwidth also fails (cannot verify).","Startup WARN only (log line + a wanbond_weighted_capacity_sane gauge=0): never blocks startup, surfaces the misconfig for the operator/dashboard to catch.","WARN when link_bandwidth is undeclared, but FAIL when it IS declared and the numbers prove aggregation can never engage."]
 - recommendation: "Option 3: a declared-bandwidth contradiction is a determinable misconfiguration -> fail fast (matches the repo's fail-fast/validate-at-boundary discipline); an undeclared bandwidth can only be WARNed since there is nothing to check against. This also dovetails with the metric from item 1."
 - ledgerRefs: ["goals:G13"]
+- answer: as recommended
 
-### Q53 — open
+### Q53 — answered
 
 - createdAt: 2026-07-14T12:16:52.104Z
-- updatedAt: 2026-07-14T12:16:52.104Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T12:24:07.462Z
+- author: user
 - session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
 - question: "Boundary with G2/Q20: G2 already OWNS (by its locked Q20 decision) auto-wiring SizePacingFromBDP from operator-declared per-link bandwidth PLUS documenting BDP sizing - but that work is NOT yet materialized as tasks (G2's M14/M16/M17 are empty). Does G13 restrict item 2 to only the WARN/FAIL capacity-sanity guard + item 1 observability (deferring the actual auto-derive/auto-wire AND the item 3(a) BDP-sizing docs to G2), or should G13 own the auto-derive/docs too since G2 hasn't decomposed them?"
 - context: "G2 is `planned`; its grounding records 'Q20 pacing = BOTH (wire SizePacingFromBDP from operator-declared per-link bandwidth + document measurement)'. G2 milestones M13 (tolerant startup) and M15 (hub failover) are done, but M14/M16/M17 hold no tasks - so the pacing-sizing + real-link + runbook scope exists as INTENT only. Your goal text says 'if item 2's auto-derive or item 3(a)'s sizing docs would duplicate a G2 task, reference the G2 task instead of restating it' - but there is no G2 task to reference yet. So the dedup must be resolved at the goal-ownership level: either (A) G13 stays operability-only (guard + metric + probe class) and G2 later owns the auto-derive + BDP docs, or (B) G13 absorbs the auto-derive + docs because they are prerequisite to G13's guard and G2 has not claimed them concretely."
 - suggestions: ["A - G13 stays operability-only: capacity-sanity WARN/FAIL guard (item 2), wanbond_aggregation_engaged + offered-load metrics (item 1), and the probe/priority class (item 3(ii)). The per_path_capacity_fps auto-derive from link_bandwidth and the BDP-sizing docs (item 3(a)) remain G2/Q20 and are only REFERENCED here.","B - G13 owns auto-derive + BDP docs too (fold Q20's pacing-sizing into G13 since G2 left it undecomposed), and G2's Q20 pacing-sizing scope is retired/redirected to avoid duplication.","C - G13 owns the runtime guard AND the auto-derive wiring, but the BDP-sizing DOCUMENTATION (install.md §3a / item 3(a)) stays with G2's doc task."]
 - recommendation: "A: keep G13 crisply operability-scoped (guard + observability + probe class); leave the auto-derive wiring and BDP docs to G2's Q20 owner. If G2's pacing-sizing is later dropped, raise a follow-up rather than silently double-owning it now. This keeps the two goals' scopes disjoint and avoids re-planning G2's locked decision."
 - ledgerRefs: ["goals:G13"]
+- answer: as recommended
 
-### Q54 — open
+### Q54 — answered
 
 - createdAt: 2026-07-14T12:17:05.130Z
-- updatedAt: 2026-07-14T12:17:05.130Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T12:24:22.467Z
+- author: user
 - session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
 - question: Item 1 observability - metric SHAPE and cardinality. The weighted scheduler is per-PEER (one scheduler per bound peer). For wanbond_aggregation_engaged (bool) and the offered-load-vs-threshold series, what label cardinality, and should engage/disengage ALSO emit a transition log line?
 - context: "The scheduler already holds all the state (s.aggregating, loadRate EWMA, EngageFraction/DisengageFraction*PerPathCapacity) but exposes NONE to the metrics Source/Collector (internal/metrics). Existing Prometheus series are labeled per-path (labelPath) or per-peer (labelPeer, used by FEC/resequencer). Aggregation is a per-peer-scheduler property, not per-path. Options for the numeric 'offered load vs threshold' visibility: expose (a) wanbond_offered_load_fps gauge, (b) the engage + disengage threshold gauges (fps), so a dashboard can plot load against both bands directly. Separately, liveness/failover already log transitions (path up/down, active-path change); an engage/disengage transition log line would give the same operability for the aggregation gate ('configured but inert' becomes visible in logs too, not only /metrics)."
 - suggestions: ["Per-peer label (labelPeer), matching the FEC/resequencer per-peer series: wanbond_aggregation_engaged{peer} plus wanbond_offered_load_fps{peer} and static wanbond_aggregation_engage_threshold_fps{peer}/..._disengage_threshold_fps{peer}; AND log an INFO transition on every engage<->disengage flip (parity with liveness transitions).","Same metrics but UNLABELED/global (assume the common single-peer edge) to keep cardinality minimal; still log transitions.","Bool gauge only (wanbond_aggregation_engaged{peer}) + transition log, WITHOUT the extra offered-load/threshold gauges (leave load visibility to logs)."]
 - recommendation: "Option 1: per-peer labels (consistent with existing per-peer series and correct on a multi-peer concentrator), expose offered-load + both threshold gauges so 'inert because load never crosses the band' is directly graphable, and add the engage/disengage transition log for parity with liveness. This most directly kills the 'configured but silently inert' blind spot you hit."
 - ledgerRefs: ["goals:G13"]
+- answer: as recommended
 
-### Q55 — open
+### Q55 — answered
 
 - createdAt: 2026-07-14T12:17:19.822Z
-- updatedAt: 2026-07-14T12:17:19.822Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-14T12:24:40.993Z
+- author: user
 - session: 915ea040-10d3-4f13-9cf2-ed8e5149babb
 - question: "Acceptance-harness constraints: each task must be 'reproducible on a bandwidth-capped netns fixture'. Should per-task acceptance be netns e2e tests under `-tags e2e` (privileged, `just e2e`), or default-tag unprivileged unit/integration tests where the behavior allows? And does TestFixtureImpairment (T35) already support the three things these acceptances need - bandwidth cap, /metrics scrape of the new gauges, and injecting a competing/probe-starvation flow - or is extending the fixture itself a task in this plan?"
 - context: "The definition-of-done here is `go test` GREEN plus `just lint` across default+e2e+realhosts tags (per project memory: a test-only view once reddened main's lint gate). Much of item 1 (metric wiring) and item 2 (config-load guard) is testable UNPRIVILEGED at the unit level (metrics.Exposition scrape helper exists; config.validate is pure); only the empirical engage/starvation behavior (aggregation actually engaging under load; the probe/pacer-overload starvation from item 3(ii)) needs the capped netns fixture. TestFixtureImpairment (test/e2e/fixture_impairment_test.go) exposes rateMbit/lossPct capping, and metrics.Fetch scrapes /metrics, but it is unclear whether it can drive a sustained overload that flips wanbond_aggregation_engaged AND concurrently observe probe/small-frame starvation - if not, a fixture-extension task is needed as a dependency."
 - suggestions: ["Prefer unprivileged default-tag unit/integration acceptance wherever the behavior permits (metric registration+values, config-load guard), and use `-tags e2e` netns fixture acceptance ONLY for the empirical engage-under-load and pacer-starvation tasks; add an explicit fixture-extension task if TestFixtureImpairment can't yet drive sustained overload + observe probe starvation.","All acceptance via `-tags e2e` netns fixture for uniformity (heavier, privileged, but end-to-end).","Unit-only wherever possible and treat the empirical netns validations as report-only (M10/Q12-style, non-gating), mirroring G2's real-link tier."]
 - recommendation: "Option 1: push acceptance to the cheapest level that still verifies the behavior (unit for metric/guard, e2e only for the load-dependent effects), and make any needed TestFixtureImpairment extension an explicit up-front task other tasks depend on - so no task's acceptance is blocked on fixture capability that doesn't exist yet."
 - ledgerRefs: ["goals:G13"]
+- answer: All acceptance via `-tags e2e` netns fixture for uniformity (heavier, privileged, but end-to-end).
+
+## M49
+
+### Q56 — open
+
+- createdAt: 2026-07-14T12:36:15.358Z
+- updatedAt: 2026-07-14T12:36:15.358Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- question: |
+    D65 investigation has ruled out the tunnel-internal candidates and isolated the ceiling to an EXTERNAL loss/bufferbloat mechanism the repo cannot reproduce. To CONFIRM attribution and quantify the fix gain, please run these on the actual Pi4/Starlink/o3 deployment and paste the outputs, then re-run `/cq:investigate:advance D65`:
+    (1) THREE-WAY iperf3 to attribute the gap: (a) direct over the WAN, no tunnel (edge WAN IP → o3 WAN IP) = WAN ceiling; (b) single-flow TCP through the tunnel = end-to-end; (c) a loopback/netns tunnel with no WAN (two wanbond instances on one host) = pure CPU/codec ceiling. Report Mbps for each.
+    (2) LOCALIZE the ~1s queue: during the 8 Mbps UDP run, `tc -s qdisc show dev <edge-WAN-iface>` (before/after) and a concurrent `ping <o3>` to show the loaded RTT climb; also `ip -s link show wanbond0`.
+    (3) FLOW ORIGIN: is the failing single-flow TCP Pi-originated (iperf3 Pi→o3 tunnel IP) or VLAN-223-client-FORWARDED through wanbond0? (Determines whether the missing MSS clamp is in play.)
+    (4) A/B (single-flow TCP, report plateau + cwnd + retransmits each): baseline; then WITH `iptables -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu` (add OUTPUT chain if Pi-originated); then WITH scheduler `policy="weighted"` + pacing enabled (BDP-sized). 
+    Alternatively, if you'd rather not measure first: authorize implementing the two candidate fixes directly (default disposition is FIX) and we'll validate on the hardware afterward.
+- context: |
+    DIAGNOSIS (round 1, defect D65 — tunnel single-flow TCP ~3.67 Mbps, cwnd ~30KB, 13 retx/10s; UDP 8Mbps→6.9 delivered, 13% loss, ~1s bufferbloat; Pi4/Starlink/o3). Hypothesis tree (milestone M49): H4/H-A (MSS) uncertain; H5/H-B (reorder) WRONG; H6/H-C (CPU) WRONG; H7/H-D (internal queue) WRONG; H8/H-E (FEC) WRONG; H9/H-F (no egress pacing → external bufferbloat) uncertain — LEADING.
+    
+    RULED OUT (validated repo evidence): (a) FEC — off by default; reported inner MTU=1400 equals InnerMTU(1500,fec=false) exactly (FEC-on=1395), proving FEC off. (b) Scheduler reorder — default active-backup sends single-path; resequencer (window 2048/250ms) reorders BEFORE WireGuard, so TCP never sees reorder; striping is opt-in weighted only. (c) Internal oversized queue/tail-drop — none exists: Send writes synchronously to the socket; the pacer sheds at the head (not tail-drop) and is BDP-bounded; reseq bounded in memory+latency (skips, not tail-drops). (d) CPU-bound encode — inline benchmark: DATA codec encode = 4610 ns/op = 303 MB/s ≈ 2429 Mbps/core (x86_64; pprof: chacha20-dominated, generic non-SIMD path); Pi4 aarch64 extrapolation ~160-300 Mbps/core, 40-80x above 3.67 Mbps. 3.67 Mbps = ~300 pps, trivially within syscall/lock budget.
+    
+    LEADING CAUSE (H-F, code-grounded but needs field confirmation): the loss + ~1s bufferbloat is EXTERNAL to wanbond (Starlink last-mile buffer). Under the DEFAULT active-backup scheduler wanbond applies NO egress pacing/AQM (a weighted-only feature: config.go:99-108, 218-223) — it offers packets unshaped, the Starlink buffer bloats to ~1s and tail-drops ~13%, collapsing TCP cwnd. KEY DATA POINT supporting this: UDP achieved 6.9 Mbps on the SAME path while TCP got only 3.67 — so the WAN carries ≥6.9 Mbps and TCP's shortfall is loss-induced cwnd collapse, NOT a raw WAN rate cap or a tunnel CPU limit.
+    
+    TWO TUNNEL-SIDE DEFICIENCIES (both real, code-confirmed): (1) no egress pacing/AQM on the active-backup path — FIX: add BDP-sized send pacing (+optional CoDel-style AQM) to active-backup (the weighted pacer already exists), or document enabling weighted+pacing on single-uplink Starlink; expected: eliminates the ~1s standing queue, restores single-flow TCP toward the ≥6.9 Mbps the WAN demonstrably carries. (2) no TCP MSS clamp installed anywhere (daemon installs none; install.md/wanbond-fixes.md deploy recipes omit it even for the forwarded client-LAN case) — FIX: install `TCPMSS --clamp-mss-to-pmtu` on wanbond0 for FORWARDED TCP; bites only VLAN-223-forwarded flows (Pi-originated TCP is already MSS-bounded by the TUN route MTU).
+    
+    WHY BLOCKED: attributing the 3.67 Mbps between raw-WAN-rate and fixable-tunnel-deficiency, and proving the pacing fix recovers throughput, requires running the tunnel over the real bufferbloated Starlink link — external hardware the repo cannot reproduce. On receiving the measurements, H-F/H-A can be confirmed and the fix file-and-deferred to plan-flow.
+- ledgerRefs: ["defects:D65"]

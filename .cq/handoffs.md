@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 18
+  item: 19
 archives: []
 ---
 
@@ -263,3 +263,18 @@ archives: []
 - blockingQuestions: ["Q51","Q52","Q53","Q54","Q55"]
 - sessionLogs: [".cq/logs/20260714-121742-a7376892a4d9f68f5.md"]
 - rawLogs: [".cq/logs/raw/20260714-121742-a7376892a4d9f68f5.jsonl"]
+
+## M49
+
+### HO19 — answers-required
+
+- createdAt: 2026-07-14T12:36:46.791Z
+- updatedAt: 2026-07-14T12:36:46.791Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- summary: "D65 round 1: seeded 5 disjoint root hypotheses, dispatched 5 read-only explorers (parallel) + 1 inline encode-benchmark probe. Ruled out 4 candidates — H5/H-B scheduler-reorder, H6/H-C CPU-bound-encode, H7/H-D internal-oversized-queue, H8/H-E FEC — all WRONG on validated repo evidence (+ a measured encode ceiling ~2429 Mbps/core x86, ~160-300 Mbps/core Pi4, 40-80x above the 3.67 Mbps observed). Two tunnel-side deficiencies remain live (uncertain): H4/H-A (no TCP MSS clamp installed for FORWARDED traffic) and H9/H-F (no egress pacing/AQM on the DEFAULT active-backup path). Leading diagnosis: the ~13% loss + ~1s bufferbloat is EXTERNAL to wanbond (Starlink last-mile buffer); the tunnel offers packets unshaped and does nothing to tame it — supported by the observed UDP 6.9 Mbps vs TCP 3.67 Mbps on the same path (the WAN carries ≥6.9, so TCP's shortfall is loss-induced cwnd collapse, not a WAN rate cap or CPU limit). No node reached `confirmed`: attributing the ceiling (raw-WAN vs fixable-tunnel) and proving the pacing/MSS fixes recover throughput requires a field A/B on the Pi4/Starlink/o3 that the repo cannot reproduce (per 'no repro, no fix'). Parked on open question Q56 requesting the three-way iperf3 + tc-qdisc/ping-under-load + flow-origin + clamp/weighted A/B measurements; the tree is intact and durable, resume with /cq:investigate:advance D65 after the answer."
+- flow: investigate
+- ledgerRefs: ["defects:D65","questions:Q56"]
+- blockingQuestions: ["Q56"]
+- sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]

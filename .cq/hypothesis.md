@@ -2,7 +2,7 @@
 ledger: hypothesis
 counters:
   milestone: 0
-  item: 8
+  item: 9
 archives: []
 ---
 
@@ -51,52 +51,77 @@ archives: []
 
 ## M49
 
-### H4 — open
+### H4 — uncertain
 
 - createdAt: 2026-07-14T12:12:54.877Z
-- updatedAt: 2026-07-14T12:12:54.877Z
+- updatedAt: 2026-07-14T12:23:59.657Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: "H-A: No MSS clamping on wanbond0 — inner MTU 1400 (minus FEC parity penalty) not enforced on TCP, so full-size segments fragment over the underlay or hit a PMTUD black-hole, causing per-segment loss + retransmits"
 - description: "TRUE if: the wanbond0 device / setup does NOT install a TCP MSS clamp (iptables TCPMSS --clamp-mss-to-pmtu or --set-mss, or an in-tunnel clamp) matching the effective inner MTU (1400 minus FECParityMTUPenalty when FEC enabled); AND inner TCP therefore emits segments that exceed the tunnel payload budget, forcing IP fragmentation (whole-datagram loss on any fragment drop) or PMTUD black-holing (ICMP frag-needed dropped). This directly explains loss-limited TCP with cwnd stuck ~30KB and 13 retx/10s. Leads: internal/bind/mtu.go (InnerMTU, FECParityMTUPenalty, DefaultPathMTU=1500, references docs/p1-mtu.md MSS-clamping guidance), internal/bind/classify.go, cmd/ + internal/device (wanbond0 link setup), docs/p1-mtu.md."
 - ledgerRefs: ["defects:D65"]
+- evidence: ["[correct] internal/device/device.go:52-55 — tunMTU() sizes wanbond0 to bind.InnerMTU and the daemon sets NOTHING else on the datapath (no MSS logic).","[correct] internal/bind/mtu.go:68-70 — effective inner MTU = InnerMTU(1500,false) = 1400 (well below the 1500 underlay the hypothesis premises).","[correct] docs/p1-mtu.md:76-99 — MSS clamping is documented ONLY as an out-of-band operator iptables FORWARD-chain rule ('the operator action'); it is NOT installed in-code by the daemon.","[correct] docs/install.md:922-926 + 1375-1379 — the daemon 'installs no routes' and programs no iptables; the §9.2 full-tunnel/client-LAN recipe forwards a client subnet through wanbond0 (the exact forwarded-TCP case p1-mtu.md says needs a clamp) yet lists ip_forward/policy-route/SNAT and NO TCPMSS clamp.","[correct] wanbond-fixes.md:123-130 — the real Pi/o3 production deploy recipe (VLAN-223 client LAN forwarded through wanbond0) documents its full plumbing with NO MSS clamp → corroborates none was in the field.","[correct] .cq/defects.md (D65 record) — CONTRADICTS a TCP-MSS-specific cause: UDP (which cannot be MSS-clamped and does not fragment from a missing SYN clamp) shows the SAME ~13% loss + ~1s bufferbloat, so the loss is a shared path effect, not TCP-MSS fragmentation. Also: the daemon-set TUN MTU already bounds Pi-ORIGINATED TCP, so a missing clamp only bites FORWARDED (VLAN-223) TCP."]
+- sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl"]
 
-### H5 — open
+### H5 — wrong
 
 - createdAt: 2026-07-14T12:13:01.248Z
-- updatedAt: 2026-07-14T12:13:01.248Z
+- updatedAt: 2026-07-14T12:23:28.106Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: "H-B: The bonding scheduler reorders packets (active-backup failover flaps or weighted/multipath striping across paths of unequal RTT), and the resequencer's reorder window is too small, so TCP sees dup-ACKs → spurious fast-retransmit → cwnd collapse"
 - description: "TRUE if: the active-backup path selector briefly emits packets on two paths during a switch, OR a weighted/striping scheduler spreads a single flow across paths with differing one-way delay, producing out-of-order arrival at the concentrator that exceeds the resequencer's buffering/timeout, so reordered (not lost) packets are delivered late/dropped and TCP interprets them as loss. Explains 13 retx/10s + cwnd stuck without true WAN loss. Leads: internal/sched/active_backup.go, weighted.go, scheduler.go, internal/reseq/reseq.go (reorder buffer depth/timeout), internal/bind/multipath.go (path selection & send)."
 - ledgerRefs: ["defects:D65"]
+- evidence: ["[correct] internal/config/config.go:99-108 + wanbond.example.toml:244-248 — default scheduler is active-backup ('the default when [scheduler] is omitted'); single active path carries ALL egress, others idle; weighted striping is opt-in only.","[correct] internal/sched/active_backup.go:28-32 — 'a single ACTIVE path ... carries ALL egress; every other path stays idle' → a single flow is never split across unequal-RTT paths under default.","[correct] internal/bind/multipath.go:2027-2030 — Send writes each frame to exactly one resolved socket (one Pick → one path → one conn); no fan-out or duplicate emission on a second path during failover.","[correct] internal/reseq/reseq.go:76-83 — resequencer releases decoded datagrams in strictly ascending outer-seq order BEFORE the WireGuard engine, 'absorbs multipath reorder entirely in the outer layer' so inner TCP/WG never observe reorder as dup-ACKs.","[correct] internal/bind/multipath.go:45-61 — resequencerWindow=2048 / resequencerTimeout=250ms, spanning far more than the ~19ms emulated cross-path skew → over-provisioned, not 'too small'.","[correct] internal/sched/weighted.go:96-99 — CONDITIONAL support: the weighted policy DOES stripe a single flow across paths, but only under the non-default, opt-in policy=\"weighted\" (not the measured config)."]
+- sessionLogs: [".cq/logs/20260714-122159-aa7a4cc064596f222.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl"]
 
-### H6 — open
+### H6 — wrong
 
 - createdAt: 2026-07-14T12:13:13.133Z
-- updatedAt: 2026-07-14T12:13:13.133Z
+- updatedAt: 2026-07-14T12:34:48.291Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: "H-C: CPU-bound send path — single-goroutine serialized DATA-frame codec + per-frame heap allocation + no send batching/GSO, so XChaCha20 + reed-solomon per 1400B frame caps encode throughput on the Pi 4, filling an internal queue that then tail-drops"
 - description: "TRUE if: the TUN→frame→FEC→WG→socket send path serializes on one goroutine and allocates per frame (no buffer pool), and issues one syscall per packet (no sendmmsg/GSO/writev batching), so aggregate encode+send throughput on aarch64 (Pi 4) is capped near ~3.67 Mbps regardless of WAN. The ceiling being far below plain-WireGuard aarch64 throughput points here. Distinguish from H-E: this is CPU cost per frame, not bandwidth overhead. Leads: internal/bind/multipath.go (send loop / goroutine structure), internal/frame, internal/fec/encoder.go (RS encode hot loop, allocations), internal/device (TUN read/write copy), any make([]byte, ...) per-frame allocs. Profile: pprof CPU during a loopback/netns transfer."
 - ledgerRefs: ["defects:D65"]
+- evidence: ["[correct] internal/bind/multipath.go:1943-2025 — the ENTIRE codec+FEC encode runs under one m.mu → concurrent WG workers serialize (single-goroutine-equivalent encode).","[correct] internal/frame/frame.go:306-330 — Send calls Encode with dst=nil, so each frame allocates a fresh backing array + fresh crypto/rand nonce; the dst-reuse seam exists but is UNUSED.","[correct] internal/frame/frame.go:483-500 — per DATA frame: fresh XChaCha20 cipher init + full-body XOR + HMAC-SHA256 tag.","[correct] internal/bind/multipath.go:33-37 — multipathBatchSize=1: one sendto per datagram, no GSO/GRO/sendmmsg batching.","[correct] internal/bind/multipath.go:2027-2035 — CONTRADICTS the 'internal queue tail-drop' mechanism: synchronous WriteToUDPAddrPort per wire in the caller goroutine; NO userspace send queue between encode and socket.","[correct] PROBE (inline, orchestrator-run; dispatched prober died on a session-limit API error): `nix develop -- go test -bench=D65 -benchmem ./internal/frame` → BenchmarkD65DataEncode-16  4610 ns/op  303.68 MB/s  1608 B/op  3 allocs/op. DATA-only codec encode = ~2429 Mbps/core on x86_64. RULES OUT CPU as the ceiling.","[correct] PROBE (inline): `go test -bench=D65 ./internal/fec` → BenchmarkD65FECAdmit-16  2711 ns/op  516.38 MB/s (FEC 10:6 Admit + RS close). FEC-on encode also >> 3.67 Mbps.","[correct] PROBE (inline): `go tool pprof -top cpu_frame.out` → 56% flat chacha20.quarterRound, 68% cum xorKeyStreamBlocksGeneric (GENERIC/non-SIMD path); HMAC tag not in top-10; GC ~10%. Even the un-vectorized chacha path is ~2429 Mbps/core; Pi4 aarch64 extrapolation (~8-15x slower, Cortex-A72 no SHA ext) = ~160-300 Mbps/core — 40-80x above the observed 3.67 Mbps.","DECISIVE: encode ceiling is 40-80x above 3.67 Mbps even after aarch64 extrapolation; 3.67 Mbps = ~300 pps is trivially within any userspace tunnel's syscall/lock budget. CPU-bound send is NOT the ceiling. (The structural inefficiencies are real and worth optimizing — unused dst-reuse seam, no GSO/sendmmsg, generic chacha — but none is the D65 binding constraint.) → H-C WRONG."]
+- sessionLogs: [".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl"]
 
-### H7 — open
+### H7 — wrong
 
 - createdAt: 2026-07-14T12:13:20.148Z
-- updatedAt: 2026-07-14T12:13:20.148Z
+- updatedAt: 2026-07-14T12:23:43.989Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: "H-D: Bufferbloat — an oversized/unbounded internal TX (or reorder) queue with drop-tail and no AQM/BDP bound; the ~1s loaded RTT (idle 40ms) + 13% UDP loss at only 8Mbps offered is the classic oversized-buffer + tail-drop signature"
 - description: "TRUE if: a send-side or resequencer queue is sized in fixed packets/bytes far exceeding the path BDP (~40ms × link rate) with plain drop-tail and no CoDel/AQM, so under load it fills to ~1s of standing queue (matches observed loaded RTT) and then tail-drops ~13% of datagrams. This is a queue-management defect independent of whatever sets the rate ceiling. Leads: channel/queue construction in internal/bind (send queues), internal/reseq/reseq.go (reorder buffer depth & drop policy), internal/sched (per-path queues), any make(chan ..., N) with large N or unbounded slice-backed queues. Check for absence of AQM/pacing."
 - ledgerRefs: ["defects:D65"]
+- evidence: ["[correct] internal/bind/multipath.go:2027-2035 — Send writes each frame SYNCHRONOUSLY to the UDP socket in a loop; there is NO internal software TX queue/channel between the WG engine and the socket that could grow oversized or drop-tail.","[correct] internal/bind/multipath.go:1981-1989 (explorer cited 1960-1968; verbatim text located and corrected here) — when the scheduler rate-limits, the datagram is SHED at the head (PickPaced → errPacerShedding), the antithesis of a drop-tail buffer that accumulates.","[correct] internal/config/config.go:218-223 — pacing burst = one BDP (bandwidth x RTT) 'without building a standing queue' → the pacer is BDP-bounded, not unbounded.","[correct] internal/reseq/reseq.go:90-96 + 315-320 — the only reorder buffer is bounded in BOTH memory (<= window=2048) and latency (held at most 250ms), and its over-capacity policy is a HEAD-advancing skip (advanceTo), not tail-drop of newest arrivals.","[correct] internal/config/config.go:99-108 — REFINEMENT: the DEFAULT active-backup policy applies NO egress pacing/AQM/BDP-bound (a weighted-only feature). So the ~1s loaded RTT lives EXTERNAL to wanbond (the Starlink last-mile buffer / kernel qdisc), and the tunnel does nothing to mitigate it. This mechanism is captured as new hypothesis H-F."]
+- sessionLogs: [".cq/logs/20260714-122159-a7875c1b02b7ec340.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl"]
 
-### H8 — open
+### H8 — wrong
 
 - createdAt: 2026-07-14T12:13:27.755Z
-- updatedAt: 2026-07-14T12:13:27.755Z
+- updatedAt: 2026-07-14T12:23:36.106Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: "H-E: FEC redundancy consumes underlay goodput and/or the adaptive FEC controller over-provisions parity — reed-solomon parity frames eat WAN capacity (goodput ≪ offered) and FEC decode adds a reorder/latency window that amplifies apparent loss"
 - description: "TRUE if: FEC is enabled by default on the active path and the code rate (data:parity) is low enough that parity frames consume a large fraction of underlay bandwidth, so goodput is a fraction of raw WAN capacity (could explain ~3.67 Mbps if effective rate is ~50%); OR the adaptive FEC controller ramps parity up under the very loss it should mask, wasting more capacity; OR the FEC decoder's block-completion wait injects latency/reordering that TCP reads as loss. Distinguish from H-C: this is bandwidth/overhead + decode-latency, not CPU cost. Leads: internal/fec/encoder.go & decoder.go (code rate, block size, parity count), internal/adaptivefec/controller.go & residual.go (parity ramp policy), internal/bind/fec.go, internal/bind/mtu.go FECParityMTUPenalty. Compare goodput with FEC on vs off."
+- ledgerRefs: ["defects:D65"]
+- evidence: ["[correct] internal/bind/fec.go:17-22 — 'FEC is OFF unless a config carries an [fec] block (NewMultipath's fecCfg is nil otherwise), in which case the datapath is byte-for-byte the pre-T24 behaviour' → no parity on the wire by default.","[correct] wanbond.example.toml:269-282 — documented defaults enabled=false, adaptive=false.","[correct] internal/frame/frame.go:66-74 (DataOverhead=24+1+8+1+4+1+1=40) + internal/bind/mtu.go:68-70 — InnerMTU(1500,false)=1500-28-40-32=1400; FEC-on=1395. D65's reported inner MTU=1400 matches FEC-OFF exactly → DECISIVE: FEC was off on the measured path. (docs/p1-mtu.md's 1401 is stale.)","[correct] internal/adaptivefec/controller.go:36-45 — even when adaptive FEC is enabled the controller starts at M=0 (no standing redundancy); parity is added only reactively.","[correct] internal/adaptivefec/config.go:35-43 — DefaultRaiseThreshold=0.05: parity only added above 5% smoothed loss, and it MASKS loss rather than manufacturing it.","[correct] internal/bind/fec.go:48-57 — decoder group-close deadline bounded to resequencerTimeout/2, so the decode reorder window is capped by design (and only exists when FEC is on)."]
+- sessionLogs: [".cq/logs/20260714-122159-a971f55e45232ce3d.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]
+
+### H9 — uncertain
+
+- createdAt: 2026-07-14T12:24:23.789Z
+- updatedAt: 2026-07-14T12:24:23.789Z
+- author: "opus-4.8[1m]"
+- session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
+- headline: "H-F: On the DEFAULT active-backup path wanbond applies no egress pacing/AQM, so it neither builds an internal queue nor protects a bufferbloated last-mile — the tunnel offers packets faster than the Starlink uplink drains, the modem's deep buffer bloats to ~1s and tail-drops ~13%, capping single-flow TCP (cwnd collapse) and losing 13% UDP"
+- description: "Refinement of H-D (H7 wrong: no INTERNAL queue). TRUE mechanism: the loss + bufferbloat is EXTERNAL to wanbond (Starlink last-mile buffer / kernel qdisc), and under the default active-backup scheduler wanbond does nothing to shape egress to the drain rate — unlike the weighted policy, which has BDP-sized per-path pacing that bounds bufferbloat 'without building a standing queue'. This explains BOTH protocols identically: TCP reads the tail-drop as loss (cwnd stuck ~30KB → 3.67 Mbps over 40ms RTT), UDP as 13% datagram loss. Code-grounded from validated evidence: internal/config/config.go:99-108 (active-backup = no pacing; weighted-only feature), config.go:218-223 (weighted BDP pacing 'without building a standing queue'), internal/sched/weighted.go pacing token bucket, multipath.go:2027-2035 (synchronous send, no internal queue). CONFIRMATION of this as THE throughput root cause vs the raw WAN ceiling requires the three-way measurement (direct-WAN vs tunnel-over-WAN vs loopback) + tc-qdisc/ping-under-load on the Pi4/Starlink/o3 — external hardware. Fix candidate: add BDP-sized send pacing (and optionally an AQM/CoDel-style drop) to the active-backup path, or document enabling weighted+pacing on single-uplink Starlink; plus install the MSS clamp for forwarded TCP (H4)."
 - ledgerRefs: ["defects:D65"]
