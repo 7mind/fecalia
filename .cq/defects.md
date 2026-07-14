@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 54
+  item: 55
 archives: []
 ---
 
@@ -755,3 +755,15 @@ archives: []
 - severity: medium
 - suggestedFix: Thread the repo's internal/log logger through NewMultipath into listenPath/planPathBinds/resolveForcedDeviceBind and WARN on every forced-device fallback to source-IP binding (both the unresolvable-interface and the setsockopt-failure layers; covers the pre-existing CAP fallback too), naming the path + interface.
 - ledgerRefs: ["tasks:T106","goals:G6"]
+
+### D55 — open
+
+- createdAt: 2026-07-14T06:07:16.662Z
+- updatedAt: 2026-07-14T06:07:16.662Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: allowed_ips CIDR syntax is not validated at config load (fails late at daemon start)
+- description: "Surfaced during T107 review ([fable]). config.validate() checks allowed_ips presence + role rules but NOT CIDR syntax: a malformed entry (e.g. '10.0.0.0/33' or a typo) passes config.Load and only fails at DAEMON START when the amneziawg engine's IpcSet rejects the rendered UAPI allowed_ip= line — a late, less-specific error instead of a fail-fast config error naming the offending peer + string. Pre-existing (T107's splitDefaultRoute comment notes 'allowed_ips carries no syntax validation upstream'); out of scope for T107, which only renders. Violates the repo's fail-fast-at-boundary (config load) discipline."
+- severity: low
+- suggestedFix: netip.ParsePrefix each allowed_ips entry in config.validate() and reject at Load time with the peer index + the offending string (mirroring how endpoint/source_addr are already parsed-and-validated at load).
+- ledgerRefs: ["tasks:T107","goals:G6"]

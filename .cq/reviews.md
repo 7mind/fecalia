@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 109
+  item: 110
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1117,6 +1117,19 @@ archives:
 - ledgerRefs: ["tasks:T106","goals:G6","defects:D53"]
 - sessionLogs: [".cq/logs/20260714-041808-ae0780df317aa2c57.md",".cq/logs/20260714-041808-aa9c60cbe80cacf55.md",".cq/logs/20260714-043501-a9441e152c838dd6c.md",".cq/logs/20260714-043501-a5ef1e10bfec6b3bf.md",".cq/logs/20260714-044354-a039c99963c717f61.md",".cq/logs/20260714-044354-a439e530d4d66f5bc.md"]
 - rawLogs: [".cq/logs/raw/20260714-041808-ae0780df317aa2c57.jsonl",".cq/logs/raw/20260714-041808-aa9c60cbe80cacf55.jsonl",".cq/logs/raw/20260714-043501-a9441e152c838dd6c.jsonl",".cq/logs/raw/20260714-043501-a5ef1e10bfec6b3bf.jsonl",".cq/logs/raw/20260714-044354-a039c99963c717f61.jsonl",".cq/logs/raw/20260714-044354-a439e530d4d66f5bc.jsonl"]
+
+### R110 — go-ahead
+
+- createdAt: 2026-07-14T06:07:51.891Z
+- updatedAt: 2026-07-14T06:07:51.891Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T107 unanimous panel approve (round 1): [opus]+[fable] both approve. uapiConfig now UNCONDITIONALLY splits a literal 0.0.0.0/0 → 0.0.0.0/1 + 128.0.0.0/1 and ::/0 → ::/1 + 8000::/1 (via splitDefaultRoute) so the amneziawg engine NEVER receives the literal /0 that wedges the handshake (D35 deterministic sidestep). Added an edge-only Peer.Mode=\"default-route\" config surface (PeerMode type), validation-rejected on the concentrator + unknown-value-rejected, fail-fast at Load. BOTH reviewers mutation-verified the split (passthrough-mutating splitDefaultRoute leaks allowed_ip=0.0.0.0/0 + ::/0 and fails both new tests); confirmed the split prefixes are EXACTLY correct for v4+v6, non-/0 CIDRs pass through unchanged, and [fable] verified the UNCONDITIONAL split is a routing no-op vs /0 under cryptokey longest-prefix-match (strictly safer than mode-gating, which would leave the wedge live for a literal /0 written without the mode). No pre-existing uapiConfig test relied on a literal /0. docs (wanbond.example.toml + install.md) synced; full go test ./... green. ff-merged as e958035. [fable] filed a new low defect D55 (allowed_ips CIDR syntax unvalidated at load)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T107","goals:G6","defects:D55"]
+- sessionLogs: [".cq/logs/20260714-060726-a48e2a04e50fbf112.md",".cq/logs/20260714-060726-af9cfffd1ceb8b455.md"]
+- rawLogs: [".cq/logs/raw/20260714-060726-a48e2a04e50fbf112.jsonl",".cq/logs/raw/20260714-060726-af9cfffd1ceb8b455.jsonl"]
 
 ## M32
 

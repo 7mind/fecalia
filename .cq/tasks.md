@@ -745,10 +745,10 @@ archives:
 
 ## M22
 
-### T76 — planned
+### T76 — wip
 
 - createdAt: 2026-07-13T21:55:53.025Z
-- updatedAt: 2026-07-13T21:55:53.025Z
+- updatedAt: 2026-07-14T05:51:56.981Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add DPI-posture guard tests: opt-in OFF means zero DNS and an unchanged wire audit"
@@ -1050,10 +1050,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-050646-ab3db2ecbe75a0a06.md",".cq/logs/20260714-053851-aef05f0eb9f10ec63.md",".cq/logs/20260714-052053-ab385aae86467f7e3.md",".cq/logs/20260714-052053-a70da160c8c02fa61.md",".cq/logs/20260714-054935-aeb82bf6766d4a909.md",".cq/logs/20260714-054935-a0b6f7290c160086e.md"]
 - rawLogs: [".cq/logs/raw/20260714-050646-ab3db2ecbe75a0a06.jsonl",".cq/logs/raw/20260714-053851-aef05f0eb9f10ec63.jsonl",".cq/logs/raw/20260714-052053-ab385aae86467f7e3.jsonl",".cq/logs/raw/20260714-052053-a70da160c8c02fa61.jsonl",".cq/logs/raw/20260714-054935-aeb82bf6766d4a909.jsonl",".cq/logs/raw/20260714-054935-a0b6f7290c160086e.jsonl"]
 
-### T94 — planned
+### T94 — wip
 
 - createdAt: 2026-07-13T22:29:07.891Z
-- updatedAt: 2026-07-13T22:29:07.891Z
+- updatedAt: 2026-07-14T05:51:56.110Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-peer label to /metrics path, resequencer, and FEC series
@@ -1164,12 +1164,12 @@ archives:
 - sessionLogs: [".cq/logs/20260714-034520-a0d7a77e637809a31.md",".cq/logs/20260714-035334-a5d713271e5cc337d.md",".cq/logs/20260714-035711-af7fe1e7fcf138c03.md",".cq/logs/20260714-035711-ac7254fc378c0095a.md",".cq/logs/20260714-035711-a1a5495814cda5845.md",".cq/logs/20260714-035711-ac04c993630a8da43.md"]
 - rawLogs: [".cq/logs/raw/20260714-034520-a0d7a77e637809a31.jsonl",".cq/logs/raw/20260714-035334-a5d713271e5cc337d.jsonl",".cq/logs/raw/20260714-035711-af7fe1e7fcf138c03.jsonl",".cq/logs/raw/20260714-035711-ac7254fc378c0095a.jsonl",".cq/logs/raw/20260714-035711-a1a5495814cda5845.jsonl",".cq/logs/raw/20260714-035711-ac04c993630a8da43.jsonl"]
 
-### T102 — planned
+### T102 — wip
 
 - createdAt: 2026-07-13T23:22:48.514Z
-- updatedAt: 2026-07-13T23:22:48.514Z
+- updatedAt: 2026-07-14T05:51:54.611Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Emit an actionable diagnostic on TUN write EIO instead of the raw input/output error (I3)
 - description: Where the TUN write error surfaces (the engine's tun read/write loop errors reach engineLogger in internal/device/device.go ~L687-697, and/or wrap tun.Device with a thin decorator), detect EIO, inspect the interface state (IFF_UP flags, MTU) and emit an actionable ERROR naming the probable cause and remedy, e.g. 'wanbond0 is DOWN — address & bring it up (install.md §4)'. Rate-limit so a write storm produces one diagnostic, not a flood. Keep the raw errno in the record for debugging.
 - acceptance: Unit test injecting EIO against a fake/DOWN TUN asserts the log record names the interface state and points at install.md §4, with the raw errno included, and that a burst of EIOs yields one rate-limited diagnostic. Relates D39 (diagnoses the D39 symptom) with no dependsOn on its fix. go test ./... green.
@@ -1239,17 +1239,21 @@ archives:
 - sessionLogs: [".cq/logs/20260714-041243-a45dbb6e85fe5dcff.md",".cq/logs/20260714-042958-a1e4feeb5771405f2.md",".cq/logs/20260714-043959-aeea22edfc42b0b3e.md",".cq/logs/20260714-041808-ae0780df317aa2c57.md",".cq/logs/20260714-041808-aa9c60cbe80cacf55.md",".cq/logs/20260714-043501-a9441e152c838dd6c.md",".cq/logs/20260714-043501-a5ef1e10bfec6b3bf.md",".cq/logs/20260714-044354-a039c99963c717f61.md",".cq/logs/20260714-044354-a439e530d4d66f5bc.md"]
 - rawLogs: [".cq/logs/raw/20260714-041243-a45dbb6e85fe5dcff.jsonl",".cq/logs/raw/20260714-042958-a1e4feeb5771405f2.jsonl",".cq/logs/raw/20260714-043959-aeea22edfc42b0b3e.jsonl",".cq/logs/raw/20260714-041808-ae0780df317aa2c57.jsonl",".cq/logs/raw/20260714-041808-aa9c60cbe80cacf55.jsonl",".cq/logs/raw/20260714-043501-a9441e152c838dd6c.jsonl",".cq/logs/raw/20260714-043501-a5ef1e10bfec6b3bf.jsonl",".cq/logs/raw/20260714-044354-a039c99963c717f61.jsonl",".cq/logs/raw/20260714-044354-a439e530d4d66f5bc.jsonl"]
 
-### T107 — planned
+### T107 — done
 
 - createdAt: 2026-07-13T23:23:41.640Z
-- updatedAt: 2026-07-13T23:23:41.640Z
+- updatedAt: 2026-07-14T06:07:59.866Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Full-tunnel config: accept 0.0.0.0/0 allowed_ips via internal /1+/1 split at UAPI render (I6 config)"
 - description: "Per Q41 (thin I6): add an edge-only peer/full-tunnel surface — `mode = \"default-route\"` on the peer (or equivalent) — and make the UAPI renderer (uapiConfig, internal/device/device.go) translate a configured `0.0.0.0/0` (and `::/0`) allowed_ips into the split `0.0.0.0/1 + 128.0.0.0/1` (`::/1 + 8000::/1`) internally, so the engine NEVER receives the literal /0 prefix that wedges the handshake. Config validation: mode is edge-only (rejected on the concentrator, mirroring the existing endpoint rules), and `mode = \"default-route\"` implies/permits the full-tunnel allowed_ips."
 - acceptance: "Unit test on the UAPI set string: a 0.0.0.0/0 config renders exactly the two /1 prefixes and never the literal /0; concentrator-role configs with the mode are rejected at load. Passing the literal /0 THROUGH to the engine unsplit remains gated on defect D35's root cause (acceptance reference only — no dependsOn; the split sidesteps the D35 wedge deterministically per the production bisect). go test ./... green."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- resultCommit: e958035
+- completion: "Full-tunnel /1+/1 split at UAPI render (I6, D35 sidestep): uapiConfig (internal/device/device.go) now unconditionally translates a configured literal 0.0.0.0/0 into 0.0.0.0/1 + 128.0.0.0/1 (and ::/0 into ::/1 + 8000::/1) via splitDefaultRoute, so the engine never receives the literal /0 that wedges the handshake per the D35 production bisect. Non-/0 prefixes pass through unchanged. Added an edge-only Peer.Mode=\"default-route\" config marker (PeerMode type + validation), rejected on the concentrator role and for unknown values, fail-fast at Load. Split mutation-verified by BOTH reviewers; unconditional split is routing-equivalent to /0 under longest-prefix-match (strictly safer than mode-gating). docs synced (wanbond.example.toml + install.md); go test ./... green. Unanimous 1-round panel approve; ff-merged as e958035. OS-level default-route/SNAT wiring for the mode is a separate task (T108). Filed D55 (allowed_ips CIDR syntax unvalidated at load)."
+- sessionLogs: [".cq/logs/20260714-060333-a41c6d5823c2af08c.md",".cq/logs/20260714-060726-a48e2a04e50fbf112.md",".cq/logs/20260714-060726-af9cfffd1ceb8b455.md"]
+- rawLogs: [".cq/logs/raw/20260714-060333-a41c6d5823c2af08c.jsonl",".cq/logs/raw/20260714-060726-a48e2a04e50fbf112.jsonl",".cq/logs/raw/20260714-060726-af9cfffd1ceb8b455.jsonl"]
 
 ### T108 — planned
 
