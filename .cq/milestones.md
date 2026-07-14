@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 60
+  item: 63
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -423,3 +423,26 @@ archives:
 - updatedAt: 2026-07-14T13:15:03.407Z
 - title: "wanbond D65: docs sync + green definition-of-done gate"
 - dependsOn: ["M59"]
+
+### M61 — open
+
+- createdAt: 2026-07-14T18:44:56.901Z
+- updatedAt: 2026-07-14T18:44:56.901Z
+- title: "G12 W1 — Monitor backend: [monitor] config, dedicated listener, auth, WS snapshot feed"
+- description: "Backend foundation for the live-monitoring UI (goal G12). New internal/monitor package: a SEPARATE loopback-default listener (opt-in non-loopback requires a configured token, fail-fast) exposing a WebSocket that pushes JSON snapshots built from a DEDICATED metrics.Source at 1s cadence, behind Host/Origin validation + static-token auth. /metrics stays untouched (Q46). No UI yet — serves the JSON contract the frontend (W2) consumes."
+
+### M62 — open
+
+- createdAt: 2026-07-14T18:45:04.749Z
+- updatedAt: 2026-07-14T18:45:04.749Z
+- title: "G12 W2 — Frontend: Vite+TypeScript resilient dashboard, go:embed + build wiring"
+- description: "The embedded web UI for goal G12. Vite+TypeScript app (Q49) built to a static bundle that Go go:embed-serves from the W1 monitor server. Resilient WebSocket client per the /resilient-ws-ui skill (auto-reconnect + connection-health surfacing), a read-only dashboard rendering per-path link-quality/loss/RTT/jitter/throughput/up + FEC + resequencer + session, per-peer sections on the concentrator, and client-side-only ~5min rolling sparklines (Q48/Q50). Wires the Vite build into the Justfile so it precedes go build/lint/release."
+- dependsOn: ["M61"]
+
+### M63 — open
+
+- createdAt: 2026-07-14T18:45:15.764Z
+- updatedAt: 2026-07-14T18:45:15.764Z
+- title: G12 W3 — Daemon wiring (edge+concentrator parity), e2e, docs & gate
+- description: "Integration for goal G12. Wire the monitor server + its DEDICATED metrics.Source into device.Up with a SIGHUP-reload reconciler mirroring applyMetricsLocked, so both RoleEdge and RoleConcentrator start it (parity). End-to-end test driving a real Source over the WebSocket; docs sync (README/design.md/install.md) for the [monitor] block, the loopback-default + opt-in-non-loopback-requires-token security invariant, the token bootstrap/cookie flow, and the new build step; and a green just lint / test / build gate including the new Go packages and the embed."
+- dependsOn: ["M61","M62"]

@@ -302,16 +302,39 @@ archives: []
 
 ## M48
 
-### G12 — clarifying
+### G12 — planning
 
 - createdAt: 2026-07-14T11:41:52.076Z
-- updatedAt: 2026-07-14T11:45:46.121Z
+- updatedAt: 2026-07-14T18:45:24.251Z
 - author: "opus-4.8[1m]"
-- session: be1a85fd-55c8-4654-ae42-672792fc0238
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Live monitoring web UI on edge and concentrator (WebSocket status, local-API auth)
 - description: "Add live monitoring capabilities to both edge and concentrator instances. We already have some sort of a metrics API; embed a simple webpage which would receive dynamic status updates over WebSocket and display live link quality/peer/loss/RTT/FEC statistics. The /resilient-ws-ui skill (guidelines for reliable WebSocket connections to a backend with clear connection-health surfacing) could help with the frontend. Important open question: how to make such an API safe against unauthorized local calls."
 - sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
 - rawLogs: [".cq/logs/raw/20260714-114510-a2014552ac2ffb804.jsonl"]
+- grounding: |
+    Repo grounding for the live-monitoring UI (verified against source):
+    
+    METRICS LAYER (reuse, do not disturb):
+    - internal/metrics/server.go: metrics.Server binds a loopback-ONLY TCP listener; requireLoopback (pre-check) + verifyLoopbackBind (act-then-verify on kernel-bound Addr) enforce ErrNonLoopbackBind fail-fast. Serves exactly one route /metrics (Prometheus text). ReadHeaderTimeout=5s.
+    - internal/metrics/metrics.go: Source interface = Paths()/FEC()/Reseq()/Aggregation()/Session()/PeerNames(); the DTOs (PathSnapshot{Name,TxBytes,RxBytes,ThroughputBitsPerSecond,Estimate{RTT,Jitter,Loss},State}, FECSnapshot, ReseqSnapshot, AggregationSnapshot, SessionSnapshot) already carry EXACTLY the link-quality/peer/loss/RTT/FEC statistics the goal names. Per-peer `peer` label appears only when PeerNames()>1 (single-peer omits it, byte-compat). No new instrumentation needed.
+    
+    CONCRETE SOURCE + CONCURRENCY CONSTRAINT (load-bearing):
+    - internal/device/metrics.go:43 metricsSource implements Source; built by newMetricsSource (device.go:453) and stored as t.metricsSrc. metricsSource.Paths() DERIVES throughput from byte-counter deltas between successive calls, keyed per-(peer,path), under mu. A SECOND independent reader (the WS monitor) calling the SAME instance's Paths() concurrently with the Prometheus scraper corrupts the shared last-sample rate state. => the monitor MUST get its OWN metricsSource instance (newMetricsSource is safe to call twice; each keeps independent last-sample cadence).
+    
+    DAEMON WIRING / LIFECYCLE:
+    - metrics.NewServer called at internal/device/device.go:515 inside applyMetricsLocked (idempotent reconciler): on startup device.Up runs applyMetricsLocked(cfg.Metrics.Listen) under reloadMu (device.go:459); Start() at :520, Close(ctx) via stopMetricsLocked at :534. Non-loopback listen fails Up. SIGHUP: cmd/wanbond/main.go:117 reloadTunnel -> Tunnel.Reload (device.go:559) which applies a metrics-listen change at device.go:574. Mirror this reconcile+reload pattern for the monitor listener.
+    - cmd/wanbond/main.go:59 device.Up(cfg,lg); main has no role branch.
+    
+    CONFIG:
+    - internal/config/config.go:39 Config struct; Metrics block at config.go:45/834 (struct Metrics{Listen string}; NO enable flag - empty Listen == off). Loaded via internal/config/load.go:22 Load(path) with go-toml/v2 DisallowUnknownFields; 0600 perm enforced at load.go:27 (holds WG private key + PSK, so a static token in TOML is protected identically). Role: config.go:20 Role type, RoleEdge="edge"/RoleConcentrator="concentrator" (config.go:24-26), field config.go:40; SINGLE binary, role from config, both roles flow through device.Up (edge+concentrator parity is free if the monitor is wired in device.Up).
+    
+    GREENFIELD DEPENDENCIES:
+    - go.mod has NO websocket library and NO go:embed anywhere in the tree; deps are Go-only. Adding coder/websocket (server side) + the first //go:embed (frontend assets) are both new. User chose (Q49) a Vite+TypeScript frontend built and go:embed-ed (not the vanilla recommendation); coder/websocket remains the determinable server-side choice.
+    - Justfile (no Makefile): build (go build ./...), lint (go vet + golangci-lint over EXPLICIT lists ./cmd/... ./internal/... ./test/... - D54, skips worktrees), test (go test ./...), fmt-check (gofmt -l cmd internal test), release (CGO_ENABLED=0 cross-compile). A Vite build producing the embedded assets MUST run before build/lint/release (//go:embed needs assets present at go build & golangci typecheck time); a new embed Go package outside cmd/internal/test must be added to the lint package list.
+    
+    ANSWERS DRIVING THE PLAN (Q45-Q50, all answered): loopback default + explicit opt-in non-loopback bind that fail-fast requires the token (Q45); SEPARATE [monitor] listener/port/config block, /metrics untouched (Q46); static bearer token in the 0600 TOML + unconditional Host/Origin validation on WS upgrade & routes, token presented as ?token= once then SameSite=Strict cookie (Q47 - the goal's flagged open question); READ-ONLY dashboard v1 (Q48); Vite+TypeScript go:embed frontend (Q49); Source snapshots as-is pushed at 1s, client-side-only ~5min rolling sparklines, per-peer sections on the concentrator (Q50).
+- milestones: ["M61","M62","M63"]
 
 ## M50
 

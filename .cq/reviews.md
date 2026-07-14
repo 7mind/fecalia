@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 188
+  item: 189
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2227,3 +2227,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T145","goals:G13","defects:D65","defects:D76"]
+
+## M59
+
+### R188 — go-ahead
+
+- createdAt: 2026-07-14T18:47:17.493Z
+- updatedAt: 2026-07-14T18:47:17.493Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T152 review round 1 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Generalized [scheduler] pacing to policy-independent (internal/config): split pacing knobs (PacingEnabled/PerPathCapacityFPS/PacingBurstFrames + derived PerPathCapacities/PacingBursts vectors, toml:'-', index-aligned to Config.Paths for T153) from weighted-only aggregation knobs; deriveWeightedPacingFromBDP→derivePacingFromBDP gated on PacingEnabled under BOTH policies. Merged to main as e093276 (clean cherry-pick of b698322 onto 7d0ffad; config + tests + test/e2e/pacing_test.go). BOTH reviewers verified EMPIRICALLY: (1) WEIGHTED BYTE-IDENTICAL (the load-bearing no-regression) — deriveWeightedBottleneckPacing body line-for-line identical to the old deriveWeightedPacingFromBDP (only the declared-count loop extracted verbatim); a 4-config base-vs-branch probe (hetero BDP, homo BDP, explicit knobs, defaults) loaded at 7d0ffad vs branch shows BYTE-IDENTICAL derived values (hetero bottleneck cap=833.33 from the 10Mbit link, burst=25, all aggregation knobs unchanged); full pre-existing weighted suite green; (2) PER-PATH ACTIVE-BACKUP — deriveActiveBackupPerPathPacing runs SizePacingFromBDP per path over its OWN link_bandwidth/link_rtt, NOT min-reduced; heterogeneous 50Mbit/10Mbit yields DISTINCT caps with strict caps[0]>caps[1] anti-bottleneck assertion; (3) FAIL-FAST non-vacuous — at base 7d0ffad the neither-source config LOADS with cap=0/burst=0 (enabled-but-unbinding pace = the exact D65 hazard); post-impl it fails with a NAMED error; applyDefaults early-return under active-backup + the derive fail-fast together close the synthetic-10000fps hole; (4) mutual-exclusion/all-or-nothing/link_rtt>0 preserved both policies (partial bw, both-sources, missing rtt, cap-without-burst each fail); (5) index alignment caps[i]/bursts[i] from c.Paths[i] declaration order, no Paths sorting; NewActiveBackup pacer validation gated on cfg.Pacing so pre-T153 device wiring stays valid; (6) 3 stale doc comments (SchedulerConfig/LinkBandwidth/LinkRTT) reworded for both policies. Full gate green on composed main: config tests ok; just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects. UNBLOCKS T153 (device.selectScheduler plumbing of the per-path vectors)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T152","goals:G14","defects:D65"]

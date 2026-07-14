@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 77
+  item: 79
 archives: []
 ---
 
@@ -1048,6 +1048,30 @@ archives: []
 - severity: medium
 - suggestedFix: "Implement ProbeBudget on *ActiveBackup: under s.mu, bounds-check pathIdx against s.pacers and call s.pacers[pathIdx].accountProbe(0) (each active-backup pacer is a single-bucket pacer). The existing bind seam (emitProbes + echo reflection) and schedIdx index maintenance then apply unchanged. Mirror the three T145 weighted unit tests (one-token deduction/negative bucket, ClassData-headroom reservation, pacing-off + out-of-range no-op)."
 - ledgerRefs: ["tasks:T145","tasks:T150","defects:D65","goals:G14"]
+
+### D77 — open
+
+- createdAt: 2026-07-14T18:35:44.464Z
+- updatedAt: 2026-07-14T18:35:44.464Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: T128's multipeer_hardened_test.go binds concentrator /metrics to a NON-loopback address, violating the T17 loopback-only invariant — the suite fails deterministically on all hardware
+- description: "Surfaced by T129's privileged hardware run on BOTH o3.7mind.io (aarch64) AND llm-ubuntu-0.pgtr.7mind.io (amd64) — byte-identical FAIL at fixture setup, before any D47/D49/D50/D58 subtest: 'multipeer_hardened_test.go:148: concentrator wanbond0 never appeared' because the concentrator daemon refuses to start with 'wanbond: device: start metrics endpoint: metrics: listen address must be loopback (127.0.0.0/8 or ::1): got \"10.106.1.2:9107\"'. ROOT CAUSE: test/e2e/multipeer_hardened_test.go's metricsAddr() (~:435) deliberately binds the concentrator's /metrics to its hw1 uplink IP (10.106.1.2:9107, non-loopback) with a comment justifying it ('concentrator runs in the peer netns, unreachable at 127.0.0.1 from base'), but internal/metrics/server.go's requireLoopback/ErrNonLoopbackBind check (introduced T17, documented architectural invariant at docs/design.md:740) UNCONDITIONALLY rejects any non-loopback bind. The T128 test is therefore structurally incompatible with a long-standing documented production invariant — deterministic, architecture-independent, cannot pass on any host. NOT caught earlier: T128's reviewer verified compile+vet+skip-not-fail but the privileged run was DEFERRED to T129; the worker's userns SNAT de-risk + config.Load round-trip didn't exercise real daemon startup. BLOCKS T129 (the hardware validation cannot pass until fixed)."
+- severity: high
+- suggestedFix: "Mirror the existing multipeer_test.go concentrator-metrics pattern: bind the concentrator's /metrics to 127.0.0.1:<port> (loopback, reachable from WITHIN the concentrator's own netns) and SCRAPE it via nsenter into that netns (metrics.Fetch executed inside the peer netns), instead of binding the uplink IP. The loopback-only invariant is deliberate (T17 security: never expose /metrics off-box); the fixture must adapt to it, not the production code. Then T129's hardware run should pass."
+- ledgerRefs: ["tasks:T128","tasks:T129","goals:G8"]
+
+### D78 — open
+
+- createdAt: 2026-07-14T18:44:58.189Z
+- updatedAt: 2026-07-14T18:44:58.189Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Intermittent concentrator netns/loopback bring-up race in the shared e2e fixture (flaky -tags e2e under back-to-back netns churn)
+- description: "Flagged by the T147 worker (independently reproduced on the unmodified, already-merged TestProbeHeadroomUnderOverload/T145 with -count=1 on llm-ubuntu-0), so NOT introduced by T147 — a pre-existing shared-harness flake. Symptom: intermittent concentrator startup failure manifesting as EITHER `bind: cannot assign requested address` on the concentrator /metrics listener OR `nsenter ... ip addr add: Cannot find device \"wanbond0\"` during fixture setup, under back-to-back netns churn on a shared 4-vCPU host. Matches the same family of pre-existing netns-setup races already documented (T60 lo-up race, T62 hub-failover veth-visibility race). Manifests as e2e non-determinism (a scenario passes most runs, intermittently fails setup) — test-harness reliability, NOT a production datapath defect. Scenario A of T147 (and most privileged e2e) is deterministic; the race bites the concentrator-in-peer-netns bring-up path specifically."
+- severity: low
+- suggestedFix: "Harden the netns fixture concentrator bring-up: after nsenter-configuring the concentrator veth/loopback, poll-wait for the interface + address to actually appear (retry loop with backoff) before starting the daemon, instead of assuming synchronous visibility; and/or retry the /metrics bind on EADDRNOTAVAIL during the brief post-netns window. Consolidate with the T60/T62 race mitigations into a single fixture readiness barrier in test/e2e/netns.go's SetupWithPaths."
+- ledgerRefs: ["tasks:T147","goals:G13"]
 
 ## M49
 
