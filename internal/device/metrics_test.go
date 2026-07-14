@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -62,6 +63,13 @@ func (c *fakeClock) advance(d time.Duration) {
 
 var _ telemetry.Clock = (*fakeClock)(nil)
 
+// fakeSession is a sessionSnapshotter whose snapshot the test controls, standing in for
+// the engine-backed sessionMonitor so the adapter's Session() pass-through and the
+// newMetricsSource call sites run without a live engine.
+type fakeSession struct{ snap metrics.SessionSnapshot }
+
+func (f fakeSession) SessionSnapshot() metrics.SessionSnapshot { return f.snap }
+
 // TestMetricsSourceMapsFields asserts the adapter copies the per-path byte counters and
 // telemetry verbatim into the metrics.PathSnapshot, preserving order.
 func TestMetricsSourceMapsFields(t *testing.T) {
@@ -70,7 +78,7 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 		{Name: "starlink", TxBytes: 100, RxBytes: 200, Estimate: telemetry.Estimate{RTT: 45 * time.Millisecond, Loss: 0.01}, State: telemetry.StateUp},
 		{Name: "cellular", TxBytes: 5, RxBytes: 7, State: telemetry.StateDown},
 	})
-	src := newMetricsSource(prov, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Paths()
 	if len(got) != 2 {
@@ -96,7 +104,7 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 func TestMetricsSourceMapsFEC(t *testing.T) {
 	prov := &fakeProvider{}
 	prov.setFEC(bind.FECStats{DataFrames: 82, ParityFrames: 33, ParityBytes: 4096, Recovered: 5, Unrecoverable: 1})
-	src := newMetricsSource(prov, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.FEC()
 	if got.DataPackets != 82 {
@@ -118,7 +126,7 @@ func TestMetricsSourceMapsFEC(t *testing.T) {
 func TestMetricsSourceDerivesThroughput(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(0, 0)}
-	src := newMetricsSource(prov, clock)
+	src := newMetricsSource(prov, fakeSession{}, clock)
 
 	prov.set([]bind.PathTraffic{{Name: "starlink", TxBytes: 1000, RxBytes: 0}})
 	if got := src.Paths()[0].ThroughputBitsPerSecond; got != 0 {
@@ -140,7 +148,7 @@ func TestMetricsSourceDerivesThroughput(t *testing.T) {
 func TestMetricsSourceThroughputNonNegativeOnReset(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(0, 0)}
-	src := newMetricsSource(prov, clock)
+	src := newMetricsSource(prov, fakeSession{}, clock)
 
 	prov.set([]bind.PathTraffic{{Name: "starlink", TxBytes: 9_000_000, RxBytes: 0}})
 	_ = src.Paths()

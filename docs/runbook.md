@@ -298,13 +298,21 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_fec_unrecoverable_packets_total`       | DATA lost beyond FEC repair — **should stay near-flat**. |
 | `wanbond_fec_residual_loss_ratio`               | Post-recovery connection loss `[0,1]`; compare to your `target_residual`. |
 | `wanbond_fec_repair_packets_total` / `wanbond_fec_data_packets_total` | Parity vs data counts — the overhead ratio (FEC only). |
+| `wanbond_session_established`                    | WG session liveness, `1`=a handshake has completed and is still fresh, `0`=still converging **or** wedged. **Distinguishes "converging" from "wedged".** |
+| `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
 
-> **Rekey / handshake note.** wanbond exposes **no** rekey or handshake-age
-> metric — the embedded amneziawg-go engine performs the Noise rekey internally
-> and it is transparent to the bonding layer. Confirm rekey survival
-> **operationally**: run a soak longer than one rekey interval and verify
-> `wanbond_path_up` never drops and `wanbond_fec_unrecoverable_packets_total`
-> does not step up across the rekey (see the reference soak in the appendix).
+> **Session vs paths.** `wanbond_session_established` is the WG-session signal the
+> per-path gauges cannot give you: a path can be `up` (probes reflect) while the
+> Noise handshake has not yet completed (**converging**) or has aged out
+> (**wedged**). Read it together with `wanbond_path_up` — a healthy tunnel is
+> `wanbond_path_up=1` **and** `wanbond_session_established=1`; a path up with
+> `wanbond_session_established=0` past the initial convergence window is the wedged
+> case. The daemon also logs one INFO `session established` record on each `0→1`
+> transition. `wanbond_session_last_handshake_seconds` grows between rekeys and
+> resets on each completed handshake; a healthy tunnel keeps it well under the
+> 180s validity window (rekey + edge keepalive refresh it), so a value that climbs
+> toward 180s and drops `wanbond_session_established` to `0` is the wedged signal.
+>
 > The FEC series are emitted only when an `[fec]` block is configured.
 
 ### Basic health check

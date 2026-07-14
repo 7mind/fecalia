@@ -28,7 +28,11 @@ type trafficProvider interface {
 // than a spurious negative.
 type metricsSource struct {
 	provider trafficProvider
-	clock    telemetry.Clock
+	// session yields the connection-scoped WG-session snapshot (I2), read from the
+	// engine at scrape time. It is separate from provider because the bind stays
+	// WG-unaware — the session signal is sourced by the device layer's engine seam.
+	session sessionSnapshotter
+	clock   telemetry.Clock
 
 	mu   sync.Mutex
 	last map[string]byteSample
@@ -41,10 +45,11 @@ type byteSample struct {
 	atNanos int64
 }
 
-// newMetricsSource builds a metrics.Source over the Bind. The clock is injected so the
-// throughput derivation is deterministic under test.
-func newMetricsSource(provider trafficProvider, clock telemetry.Clock) *metricsSource {
-	return &metricsSource{provider: provider, clock: clock, last: make(map[string]byteSample)}
+// newMetricsSource builds a metrics.Source over the Bind (per-path traffic + FEC) and the
+// engine session seam (WG-session snapshot). The clock is injected so the throughput
+// derivation is deterministic under test.
+func newMetricsSource(provider trafficProvider, session sessionSnapshotter, clock telemetry.Clock) *metricsSource {
+	return &metricsSource{provider: provider, session: session, clock: clock, last: make(map[string]byteSample)}
 }
 
 // Paths implements metrics.Source. It is called on the scrape goroutine (the /metrics
@@ -96,4 +101,12 @@ func (s *metricsSource) FEC() metrics.FECSnapshot {
 		RepairBytes:          f.ParityBytes,
 		ResidualLossRatio:    f.ResidualLoss,
 	}
+}
+
+// Session implements metrics.Source: it reads the connection-scoped WG-session snapshot
+// (I2) from the engine seam at scrape time. Like FEC it is a direct pass-through of a
+// snapshot the underlying monitor computes on demand — no per-scrape state is kept here
+// (the 0->1 edge log is driven by the separate session-monitor poll loop, not by scrapes).
+func (s *metricsSource) Session() metrics.SessionSnapshot {
+	return s.session.SessionSnapshot()
 }

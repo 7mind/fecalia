@@ -93,6 +93,11 @@ type Tunnel struct {
 	// and dev.Close. It is idempotent and never nil (a no-op on the concentrator, an all-literal
 	// edge, or when no hostname spec is configured — Q29 inertness).
 	stopResolution func()
+	// stopSession halts the WG-session monitor loop (I2): it polls the engine's last-handshake
+	// state at probe cadence and emits ONE INFO 'session established' record on each 0->1 edge.
+	// Close calls it before dev.Close so no IpcGet races the engine teardown. It is idempotent
+	// and never nil.
+	stopSession func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -306,15 +311,26 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// stops both before dev.Close, like the probe/reconcile loops.
 	stopHubFailover, stopResolution := startFailoverAndResolution(cfg, mpBind, probers, dev, boot, clg)
 
+	// The session monitor reads the engine's peer last-handshake state (I2). It backs BOTH
+	// the /metrics session snapshot (read at scrape time) and the 0->1 'session established'
+	// edge log (driven by its own poll loop). One instance is shared: it is stateless, so the
+	// concurrent scrape goroutine and the poll loop reading the same engine is safe.
+	sessMon := newSessionMonitor(dev, telemetry.SystemClock{})
+	// Start the WG-session monitor poll loop AFTER dev.Up so the engine peer it reads exists.
+	// Close stops it before dev.Close, like the probe/reconcile loops.
+	stopSession := startSessionMonitor(sessMon, sessionPollInterval, clg)
+
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
 		stopProbes: stopProbes, stopReconcile: stopReconcile,
-		stopHubFailover: stopHubFailover, stopResolution: stopResolution, amnezia: cfg.Amnezia,
+		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
+		stopSession: stopSession, amnezia: cfg.Amnezia,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
-		// throughput from the byte-counter delta between scrapes (see metricsSource). It is
-		// built unconditionally (cheap) so a reload that later turns [metrics].listen ON has
-		// a Source ready; the endpoint itself is started only when a listen is configured.
-		metricsSrc: newMetricsSource(mpBind, telemetry.SystemClock{}),
+		// throughput from the byte-counter delta between scrapes (see metricsSource). The
+		// WG-session snapshot is read from the engine via sessMon. It is built unconditionally
+		// (cheap) so a reload that later turns [metrics].listen ON has a Source ready; the
+		// endpoint itself is started only when a listen is configured.
+		metricsSrc: newMetricsSource(mpBind, sessMon, telemetry.SystemClock{}),
 	}
 
 	// Stand up the /metrics endpoint when configured. A non-loopback listen is refused
@@ -729,6 +745,11 @@ func (t *Tunnel) Close() {
 	// re-resolve may race the engine peer's install/repoint or the socket close.
 	if t.stopResolution != nil {
 		t.stopResolution()
+	}
+	// Stop the WG-session monitor before the engine teardown (I2): no IpcGet may race the
+	// engine's Close.
+	if t.stopSession != nil {
+		t.stopSession()
 	}
 	t.dev.Close()
 	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })

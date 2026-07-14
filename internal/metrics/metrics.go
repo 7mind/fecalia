@@ -1,17 +1,20 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-// namespace prefixes every wanbond metric name; pathSubsystem and fecSubsystem
-// partition the per-path and (future) FEC series.
+// namespace prefixes every wanbond metric name; pathSubsystem, fecSubsystem, and
+// sessionSubsystem partition the per-path, FEC, and WG-session series.
 const (
-	namespace     = "wanbond"
-	pathSubsystem = "path"
-	fecSubsystem  = "fec"
+	namespace        = "wanbond"
+	pathSubsystem    = "path"
+	fecSubsystem     = "fec"
+	sessionSubsystem = "session"
 
 	// labelPath is the single label carried by every per-path series; its value is
 	// the stable path name from configuration (e.g. "starlink").
@@ -50,6 +53,17 @@ const (
 	// share of outer-seqs neither natively received nor reconstructed from parity — the loss
 	// FEC did not mask. It is the P4 residual-loss acceptance signal.
 	MetricFECResidualLoss = "wanbond_fec_residual_loss_ratio"
+)
+
+// WG-session metric names (I2). These connection-scoped series (no path label — the WG
+// session is per-connection, not per-uplink) expose whether the amneziawg engine has a
+// live session and how stale its last handshake is. Together they distinguish a tunnel
+// that is STILL CONVERGING (established = 0, no completed handshake) from one that is
+// WEDGED (a path is up but the handshake is absent or has aged out) — the signal
+// D35/D36/D37 all presented identically without.
+const (
+	MetricSessionEstablished   = "wanbond_session_established"
+	MetricSessionLastHandshake = "wanbond_session_last_handshake_seconds"
 )
 
 // FECSnapshot is the current connection-scoped FEC signal set the exposition layer
@@ -96,6 +110,24 @@ type PathSnapshot struct {
 	State telemetry.PathState
 }
 
+// SessionSnapshot is the current WG-session signal set the exposition layer reports
+// (I2). It is sourced at scrape time from the amneziawg engine's peer last-handshake
+// state by the device layer; the bind stays WG-unaware. The device layer owns the
+// freshness policy (whether a completed-but-aged handshake still counts as
+// established), so the metrics layer merely exposes the resolved verdict and age.
+type SessionSnapshot struct {
+	// Established is the current WG-session liveness verdict: true when a handshake has
+	// completed AND is still within the session-validity window (fresh). A tunnel that
+	// has never handshaked (still converging) or whose handshake has aged out (wedged)
+	// reports false.
+	Established bool
+	// LastHandshakeAge is the elapsed time since the peer's most recent completed
+	// handshake. It is zero when no handshake has ever completed (Established is then
+	// false); read together with Established it disambiguates "never handshaked"
+	// (Established=false, age=0) from "handshake aged out" (Established=false, age large).
+	LastHandshakeAge time.Duration
+}
+
 // Source is the read-only seam between the traffic/telemetry planes and the
 // exposition layer. The collector calls Paths at every scrape, so an
 // implementation must be safe for concurrent use and must return a consistent
@@ -105,6 +137,8 @@ type Source interface {
 	Paths() []PathSnapshot
 	// FEC returns the current connection-scoped FEC counters (T24).
 	FEC() FECSnapshot
+	// Session returns the current connection-scoped WG-session snapshot (I2).
+	Session() SessionSnapshot
 }
 
 // collector is a prometheus.Collector that reads a Source at scrape time and
@@ -130,6 +164,9 @@ type collector struct {
 	fecDataBytes     *prometheus.Desc
 	fecRepairBytes   *prometheus.Desc
 	fecResidualLoss  *prometheus.Desc
+
+	sessionEstablished   *prometheus.Desc
+	sessionLastHandshake *prometheus.Desc
 }
 
 // NewCollector builds the wanbond metrics collector over src. Register it into a
@@ -157,6 +194,9 @@ func NewCollector(src Source) prometheus.Collector {
 		fecDataBytes:     desc(fecSubsystem, "data_bytes_total", "FEC DATA-frame wire bytes emitted (the byte overhead denominator).", nil),
 		fecRepairBytes:   desc(fecSubsystem, "repair_bytes_total", "FEC parity-frame wire bytes emitted (the byte overhead numerator).", nil),
 		fecResidualLoss:  desc(fecSubsystem, "residual_loss_ratio", "Post-FEC-recovery connection loss fraction in [0,1] (loss FEC did not mask).", nil),
+
+		sessionEstablished:   desc(sessionSubsystem, "established", "WG session liveness (1 = a handshake has completed and is still fresh, 0 = still converging or wedged).", nil),
+		sessionLastHandshake: desc(sessionSubsystem, "last_handshake_seconds", "Age in seconds of the peer's most recent completed WG handshake (0 when none has completed).", nil),
 	}
 }
 
@@ -177,6 +217,8 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fecDataBytes
 	ch <- c.fecRepairBytes
 	ch <- c.fecResidualLoss
+	ch <- c.sessionEstablished
+	ch <- c.sessionLastHandshake
 }
 
 // Collect reads the Source once and emits one const-metric per per-path series,
@@ -199,6 +241,19 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.fecDataBytes, prometheus.CounterValue, float64(f.DataBytes))
 	ch <- prometheus.MustNewConstMetric(c.fecRepairBytes, prometheus.CounterValue, float64(f.RepairBytes))
 	ch <- prometheus.MustNewConstMetric(c.fecResidualLoss, prometheus.GaugeValue, f.ResidualLossRatio)
+
+	sess := c.src.Session()
+	ch <- prometheus.MustNewConstMetric(c.sessionEstablished, prometheus.GaugeValue, establishedValue(sess.Established))
+	ch <- prometheus.MustNewConstMetric(c.sessionLastHandshake, prometheus.GaugeValue, sess.LastHandshakeAge.Seconds())
+}
+
+// establishedValue maps the WG-session liveness verdict to the
+// wanbond_session_established gauge value.
+func establishedValue(established bool) float64 {
+	if established {
+		return 1
+	}
+	return 0
 }
 
 // upValue maps a liveness verdict to the wanbond_path_up gauge value.

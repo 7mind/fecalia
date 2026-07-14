@@ -16,12 +16,14 @@ import (
 // standing in for the live traffic/telemetry planes so the exposition can be
 // asserted against known values.
 type fakeSource struct {
-	paths []PathSnapshot
-	fec   FECSnapshot
+	paths   []PathSnapshot
+	fec     FECSnapshot
+	session SessionSnapshot
 }
 
-func (f fakeSource) Paths() []PathSnapshot { return f.paths }
-func (f fakeSource) FEC() FECSnapshot      { return f.fec }
+func (f fakeSource) Paths() []PathSnapshot    { return f.paths }
+func (f fakeSource) FEC() FECSnapshot         { return f.fec }
+func (f fakeSource) Session() SessionSnapshot { return f.session }
 
 func testLogger(t *testing.T) log.Logger {
 	t.Helper()
@@ -121,6 +123,56 @@ func TestExpositionPerPathSeries(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s{path=%q} = %v, want %v", c.metric, c.path, got, c.want)
 		}
+	}
+}
+
+// TestExpositionSessionSeries drives the collector with a live-shaped WG-session
+// snapshot and asserts the two connection-scoped session series (I2) register and
+// carry the injected verdict/age: established maps to the 0/1 gauge and the last
+// handshake age maps to the seconds gauge.
+func TestExpositionSessionSeries(t *testing.T) {
+	src := fakeSource{session: SessionSnapshot{
+		Established:      true,
+		LastHandshakeAge: 12 * time.Second,
+	}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if !exp.Has(MetricSessionEstablished) {
+		t.Fatalf("%s not registered", MetricSessionEstablished)
+	}
+	if v, ok := exp.Value(MetricSessionEstablished); !ok || v != 1 {
+		t.Errorf("%s = %v (present=%v), want 1", MetricSessionEstablished, v, ok)
+	}
+	if v, ok := exp.Value(MetricSessionLastHandshake); !ok || v != 12 {
+		t.Errorf("%s = %v (present=%v), want 12", MetricSessionLastHandshake, v, ok)
+	}
+}
+
+// TestExpositionSessionNotEstablished asserts that a not-yet-converged session (no
+// completed handshake) exposes established=0 with a zero handshake age — the "still
+// converging" reading the metric exists to make observable.
+func TestExpositionSessionNotEstablished(t *testing.T) {
+	srv := startServer(t, fakeSource{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if v, ok := exp.Value(MetricSessionEstablished); !ok || v != 0 {
+		t.Errorf("%s = %v (present=%v), want 0", MetricSessionEstablished, v, ok)
+	}
+	if v, ok := exp.Value(MetricSessionLastHandshake); !ok || v != 0 {
+		t.Errorf("%s = %v (present=%v), want 0", MetricSessionLastHandshake, v, ok)
 	}
 }
 
