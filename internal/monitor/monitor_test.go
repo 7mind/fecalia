@@ -1,0 +1,299 @@
+package monitor
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/7mind/wanbond/internal/metrics"
+	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/telemetry"
+)
+
+// fakeSource is a static metrics.Source that returns a fixed set of
+// snapshots, mirroring internal/metrics's own test fakeSource so BuildSnapshot
+// can be exercised with no live engine/bind wiring.
+type fakeSource struct {
+	paths       []metrics.PathSnapshot
+	fec         []metrics.FECSnapshot
+	reseq       []metrics.ReseqSnapshot
+	aggregation []metrics.AggregationSnapshot
+	session     metrics.SessionSnapshot
+	peerNames   []string
+}
+
+func (f fakeSource) Paths() []metrics.PathSnapshot              { return f.paths }
+func (f fakeSource) FEC() []metrics.FECSnapshot                 { return f.fec }
+func (f fakeSource) Reseq() []metrics.ReseqSnapshot             { return f.reseq }
+func (f fakeSource) Aggregation() []metrics.AggregationSnapshot { return f.aggregation }
+func (f fakeSource) Session() metrics.SessionSnapshot           { return f.session }
+func (f fakeSource) PeerNames() []string                        { return f.peerNames }
+
+// TestBuildSnapshotSinglePeer feeds BuildSnapshot a single-bound-peer Source
+// (PeerNames() reporting exactly one name, "" per the metrics package's
+// back-compat rule) and asserts the marshalled JSON's fields and shape,
+// including that MultiPeer is false and durations render as float seconds.
+func TestBuildSnapshotSinglePeer(t *testing.T) {
+	src := fakeSource{
+		paths: []metrics.PathSnapshot{
+			{
+				Peer:                    "",
+				Name:                    "starlink",
+				TxBytes:                 1000,
+				RxBytes:                 2000,
+				ThroughputBitsPerSecond: 12345.5,
+				Estimate: telemetry.Estimate{
+					RTT:    50 * time.Millisecond,
+					Jitter: 5 * time.Millisecond,
+					Loss:   0.01,
+				},
+				State: telemetry.StateUp,
+			},
+		},
+		fec: []metrics.FECSnapshot{
+			{
+				Peer:                 "",
+				DataPackets:          100,
+				RepairPackets:        10,
+				RecoveredPackets:     5,
+				UnrecoverablePackets: 1,
+				DataBytes:            140000,
+				RepairBytes:          14000,
+				ResidualLossRatio:    0.02,
+			},
+		},
+		reseq: []metrics.ReseqSnapshot{
+			{
+				Peer: "",
+				Stats: reseq.Stats{
+					Released:       500,
+					DroppedDup:     3,
+					DroppedOld:     2,
+					DroppedSuspect: 1,
+					Skipped:        4,
+					Resyncs:        6,
+					Rebaselines:    7,
+				},
+			},
+		},
+		aggregation: []metrics.AggregationSnapshot{
+			{
+				Peer:                  "",
+				Aggregating:           true,
+				OfferedLoadFPS:        123.4,
+				EngageThresholdFPS:    200,
+				DisengageThresholdFPS: 100,
+			},
+		},
+		session: metrics.SessionSnapshot{
+			Established:      true,
+			LastHandshakeAge: 30 * time.Second,
+		},
+		peerNames: []string{""},
+	}
+
+	snap := BuildSnapshot(src)
+
+	if snap.MultiPeer {
+		t.Fatalf("MultiPeer = true, want false for a single-bound-peer Source")
+	}
+	if len(snap.PeerNames) != 1 || snap.PeerNames[0] != "" {
+		t.Fatalf("PeerNames = %#v, want [\"\"]", snap.PeerNames)
+	}
+
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	if decoded["multiPeer"] != false {
+		t.Errorf("json multiPeer = %v, want false", decoded["multiPeer"])
+	}
+
+	paths, ok := decoded["paths"].([]any)
+	if !ok || len(paths) != 1 {
+		t.Fatalf("json paths = %#v, want a 1-element array", decoded["paths"])
+	}
+	p := paths[0].(map[string]any)
+	if p["name"] != "starlink" {
+		t.Errorf("path name = %v, want starlink", p["name"])
+	}
+	if p["peer"] != "" {
+		t.Errorf("path peer = %v, want \"\"", p["peer"])
+	}
+	if p["txBytes"] != float64(1000) {
+		t.Errorf("path txBytes = %v, want 1000", p["txBytes"])
+	}
+	if p["rxBytes"] != float64(2000) {
+		t.Errorf("path rxBytes = %v, want 2000", p["rxBytes"])
+	}
+	if p["throughputBps"] != 12345.5 {
+		t.Errorf("path throughputBps = %v, want 12345.5", p["throughputBps"])
+	}
+	if p["rttSeconds"] != 0.05 {
+		t.Errorf("path rttSeconds = %v, want 0.05 (50ms as seconds)", p["rttSeconds"])
+	}
+	if p["jitterSeconds"] != 0.005 {
+		t.Errorf("path jitterSeconds = %v, want 0.005 (5ms as seconds)", p["jitterSeconds"])
+	}
+	if p["loss"] != 0.01 {
+		t.Errorf("path loss = %v, want 0.01", p["loss"])
+	}
+	if p["up"] != true {
+		t.Errorf("path up = %v, want true", p["up"])
+	}
+
+	fec, ok := decoded["fec"].([]any)
+	if !ok || len(fec) != 1 {
+		t.Fatalf("json fec = %#v, want a 1-element array", decoded["fec"])
+	}
+	f := fec[0].(map[string]any)
+	if f["dataPackets"] != float64(100) || f["repairPackets"] != float64(10) {
+		t.Errorf("fec counters = %#v, want dataPackets=100 repairPackets=10", f)
+	}
+	if f["residualLossRatio"] != 0.02 {
+		t.Errorf("fec residualLossRatio = %v, want 0.02", f["residualLossRatio"])
+	}
+
+	reseqArr, ok := decoded["reseq"].([]any)
+	if !ok || len(reseqArr) != 1 {
+		t.Fatalf("json reseq = %#v, want a 1-element array", decoded["reseq"])
+	}
+	r := reseqArr[0].(map[string]any)
+	if r["released"] != float64(500) || r["rebaselines"] != float64(7) {
+		t.Errorf("reseq counters = %#v, want released=500 rebaselines=7", r)
+	}
+
+	agg, ok := decoded["aggregation"].([]any)
+	if !ok || len(agg) != 1 {
+		t.Fatalf("json aggregation = %#v, want a 1-element array", decoded["aggregation"])
+	}
+	a := agg[0].(map[string]any)
+	if a["aggregating"] != true {
+		t.Errorf("aggregation aggregating = %v, want true", a["aggregating"])
+	}
+	if a["offeredLoadFps"] != 123.4 {
+		t.Errorf("aggregation offeredLoadFps = %v, want 123.4", a["offeredLoadFps"])
+	}
+
+	session, ok := decoded["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("json session = %#v, want an object", decoded["session"])
+	}
+	if session["established"] != true {
+		t.Errorf("session established = %v, want true", session["established"])
+	}
+	if session["lastHandshakeSeconds"] != float64(30) {
+		t.Errorf("session lastHandshakeSeconds = %v, want 30 (30s as seconds)", session["lastHandshakeSeconds"])
+	}
+}
+
+// TestBuildSnapshotMultiPeer feeds BuildSnapshot a 2-peer Source and asserts
+// MultiPeer is true and each per-(peer,path)/FEC/Reseq/Aggregation entry
+// carries its bound peer's name.
+func TestBuildSnapshotMultiPeer(t *testing.T) {
+	src := fakeSource{
+		paths: []metrics.PathSnapshot{
+			{Peer: "east", Name: "starlink", State: telemetry.StateUp},
+			{Peer: "west", Name: "starlink", State: telemetry.StateDown},
+		},
+		fec: []metrics.FECSnapshot{
+			{Peer: "east", DataPackets: 10},
+			{Peer: "west", DataPackets: 20},
+		},
+		reseq: []metrics.ReseqSnapshot{
+			{Peer: "east", Stats: reseq.Stats{Released: 1}},
+			{Peer: "west", Stats: reseq.Stats{Released: 2}},
+		},
+		aggregation: []metrics.AggregationSnapshot{
+			{Peer: "east", Aggregating: true},
+		},
+		session:   metrics.SessionSnapshot{Established: false, LastHandshakeAge: 0},
+		peerNames: []string{"east", "west"},
+	}
+
+	snap := BuildSnapshot(src)
+
+	if !snap.MultiPeer {
+		t.Fatalf("MultiPeer = false, want true for a 2-peer Source")
+	}
+	if len(snap.PeerNames) != 2 || snap.PeerNames[0] != "east" || snap.PeerNames[1] != "west" {
+		t.Fatalf("PeerNames = %#v, want [east west]", snap.PeerNames)
+	}
+
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	if decoded["multiPeer"] != true {
+		t.Errorf("json multiPeer = %v, want true", decoded["multiPeer"])
+	}
+
+	peerNames, ok := decoded["peerNames"].([]any)
+	if !ok || len(peerNames) != 2 || peerNames[0] != "east" || peerNames[1] != "west" {
+		t.Fatalf("json peerNames = %#v, want [east west]", decoded["peerNames"])
+	}
+
+	paths := decoded["paths"].([]any)
+	if len(paths) != 2 {
+		t.Fatalf("json paths = %#v, want a 2-element array", decoded["paths"])
+	}
+	p0 := paths[0].(map[string]any)
+	p1 := paths[1].(map[string]any)
+	if p0["peer"] != "east" || p0["up"] != true {
+		t.Errorf("path[0] = %#v, want peer=east up=true", p0)
+	}
+	if p1["peer"] != "west" || p1["up"] != false {
+		t.Errorf("path[1] = %#v, want peer=west up=false", p1)
+	}
+
+	fec := decoded["fec"].([]any)
+	if len(fec) != 2 || fec[0].(map[string]any)["peer"] != "east" || fec[1].(map[string]any)["peer"] != "west" {
+		t.Errorf("json fec = %#v, want peers east then west", decoded["fec"])
+	}
+
+	reseqArr := decoded["reseq"].([]any)
+	if len(reseqArr) != 2 || reseqArr[0].(map[string]any)["peer"] != "east" || reseqArr[1].(map[string]any)["peer"] != "west" {
+		t.Errorf("json reseq = %#v, want peers east then west", decoded["reseq"])
+	}
+
+	agg := decoded["aggregation"].([]any)
+	if len(agg) != 1 || agg[0].(map[string]any)["peer"] != "east" {
+		t.Errorf("json aggregation = %#v, want a single east entry (west has no gate)", decoded["aggregation"])
+	}
+
+	session := decoded["session"].(map[string]any)
+	if session["established"] != false || session["lastHandshakeSeconds"] != float64(0) {
+		t.Errorf("session = %#v, want established=false lastHandshakeSeconds=0", session)
+	}
+}
+
+// TestBuildSnapshotEmptyIsNotNull asserts that empty per-(peer,path)/FEC/
+// Reseq/Aggregation sets marshal as `[]`, not `null` — a nil slice would force
+// the frontend to null-check every field before iterating.
+func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
+	snap := BuildSnapshot(fakeSource{peerNames: []string{""}})
+
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	for _, field := range []string{`"paths":[]`, `"fec":[]`, `"reseq":[]`, `"aggregation":[]`} {
+		if !strings.Contains(string(b), field) {
+			t.Errorf("marshalled JSON %s does not contain %q, want an empty array not null", b, field)
+		}
+	}
+}
