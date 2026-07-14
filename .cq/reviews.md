@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 93
+  item: 94
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -955,6 +955,19 @@ archives:
 - ledgerRefs: ["tasks:T73","goals:G5","defects:D46"]
 - sessionLogs: [".cq/logs/20260714-013526-aa5af95a3b03fde16.md",".cq/logs/20260714-013526-a655a1c595ce4648a.md",".cq/logs/20260714-014014-a6681895aad44fda0.md",".cq/logs/20260714-014014-ad33623fb263f9dc1.md"]
 - rawLogs: [".cq/logs/raw/20260714-013526-aa5af95a3b03fde16.jsonl",".cq/logs/raw/20260714-013526-a655a1c595ce4648a.jsonl",".cq/logs/raw/20260714-014014-a6681895aad44fda0.jsonl",".cq/logs/raw/20260714-014014-ad33623fb263f9dc1.jsonl"]
+
+### R94 — go-ahead
+
+- createdAt: 2026-07-14T02:46:44.540Z
+- updatedAt: 2026-07-14T02:46:44.540Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T74 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on ONE criticism — the R70 first-resolve INSTALL path was never exercised through the PRODUCTION wiring (startFailoverAndResolution's ctrl.install assignment ran in no test; installActive's nil→SetPeerRemote fallback made a lost wiring line a silent R70 regression); acceptance 1/3/4 verified end-to-end. R2 (1df3f11) unanimous approve — worker did BOTH recommendations: added TestUpFirstResolveInstallsEndpointThroughProductionWiring (drives up()→startFailoverAndResolution with a boot-fail-then-succeed resolver, asserts engine peer endpoint via IpcGet) AND made install a REQUIRED newHubFailoverFromSpecs constructor param (removed the silent SetPeerRemote fallback; installActive deleted — lost wiring is now a compile error). BOTH reviewers independently mutation-verified the new test FAILS when the production install line is no-op'd. Rebased onto main (past T89) and ff-merged as 6ceee83; full go build/vet/test green on main."
+- criticism: ["[fable, R1, RESOLVED R2] the R70 install path was untested through production wiring and the install-nil fallback made a lost wiring line a silent regression — fixed via an up()-driven production-wiring test and a required install collaborator."]
+- new_questions: []
+- ledgerRefs: ["tasks:T74","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-023944-a9fac7819e0cf8c3d.md",".cq/logs/20260714-023944-ac7d0d623c6361bff.md",".cq/logs/20260714-024545-a417b8e13ab58fa54.md",".cq/logs/20260714-024545-a534c16da5521baae.md"]
+- rawLogs: [".cq/logs/raw/20260714-023944-a9fac7819e0cf8c3d.jsonl",".cq/logs/raw/20260714-023944-ac7d0d623c6361bff.jsonl",".cq/logs/raw/20260714-024545-a417b8e13ab58fa54.jsonl",".cq/logs/raw/20260714-024545-a534c16da5521baae.jsonl"]
 
 ## M25
 

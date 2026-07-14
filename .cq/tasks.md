@@ -709,10 +709,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-011407-ac373e4ef09d0a464.md",".cq/logs/20260714-013526-adf90d11d594f0391.md",".cq/logs/20260714-013526-aa5af95a3b03fde16.md",".cq/logs/20260714-013526-a655a1c595ce4648a.md",".cq/logs/20260714-014014-a6681895aad44fda0.md",".cq/logs/20260714-014014-ad33623fb263f9dc1.md"]
 - rawLogs: [".cq/logs/raw/20260714-011407-ac373e4ef09d0a464.jsonl",".cq/logs/raw/20260714-013526-adf90d11d594f0391.jsonl",".cq/logs/raw/20260714-013526-aa5af95a3b03fde16.jsonl",".cq/logs/raw/20260714-013526-a655a1c595ce4648a.jsonl",".cq/logs/raw/20260714-014014-a6681895aad44fda0.jsonl",".cq/logs/raw/20260714-014014-ad33623fb263f9dc1.jsonl"]
 
-### T74 — wip
+### T74 — done
 
 - createdAt: 2026-07-13T21:55:31.799Z
-- updatedAt: 2026-07-14T01:56:55.489Z
+- updatedAt: 2026-07-14T02:46:57.215Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire deferred boot-time resolution and the resolution loop into the device lifecycle
@@ -721,6 +721,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T73"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 6ceee83
+- completion: "Boot-time DNS resolution lifecycle wired into internal/device: bounded initial resolve at Up builds the engine/UAPI endpoint only from resolved entries (endpoint-less tolerant boot when nothing resolves); the R70 first-resolve INSTALL path (deviceInstallEndpoint via UAPI endpoint= then rehandshake — SetPeerRemote never sets the engine peer endpoint) is wired as a REQUIRED newHubFailoverFromSpecs collaborator (no silent fallback); separate Tunnel.stopResolution in Close (leak-free under goleak); resolver built only when a hostname spec exists (zero-hostname inertness); injectable up() seam. Acceptance verified via go test ./internal/device/... -race incl. an up()-driven production-wiring test that mutation-fails if the install line is lost. 2 review rounds; rebased past T89 and ff-merged to main as 6ceee83; docs/design.md + docs/install.md synced."
+- sessionLogs: [".cq/logs/20260714-022249-afa803909d4c484b6.md",".cq/logs/20260714-023944-a9fac7819e0cf8c3d.md",".cq/logs/20260714-023944-ac7d0d623c6361bff.md",".cq/logs/20260714-023944-a9e9d35db0d94988e.md",".cq/logs/20260714-024545-a417b8e13ab58fa54.md",".cq/logs/20260714-024545-a534c16da5521baae.md"]
+- rawLogs: [".cq/logs/raw/20260714-022249-afa803909d4c484b6.jsonl",".cq/logs/raw/20260714-023944-a9fac7819e0cf8c3d.jsonl",".cq/logs/raw/20260714-023944-ac7d0d623c6361bff.jsonl",".cq/logs/raw/20260714-023944-a9e9d35db0d94988e.jsonl",".cq/logs/raw/20260714-024545-a417b8e13ab58fa54.jsonl",".cq/logs/raw/20260714-024545-a534c16da5521baae.jsonl"]
 
 ### T75 — planned
 
