@@ -1090,10 +1090,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-063350-ac9d99da59f5190b5.md",".cq/logs/20260714-063906-af7c84761e871fbd1.md",".cq/logs/20260714-063906-aaafa72796608ad29.md"]
 - rawLogs: [".cq/logs/raw/20260714-063350-ac9d99da59f5190b5.jsonl",".cq/logs/raw/20260714-063906-af7c84761e871fbd1.jsonl",".cq/logs/raw/20260714-063906-aaafa72796608ad29.jsonl"]
 
-### T96 — wip
+### T96 — done
 
 - createdAt: 2026-07-13T22:29:22.171Z
-- updatedAt: 2026-07-14T06:22:39.779Z
+- updatedAt: 2026-07-14T06:40:41.004Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Re-run FEC prefix-stability and FEC suite after per-peer FEC split
@@ -1102,6 +1102,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T87"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 010b7ec
+- completion: "Confirmed the per-peer fecSend/fecRecv split (T91/T93) preserves the Reed-Solomon invariants (TestKlauspostParityPrefixStableInvariant + the FEC datapath suite pass unchanged) and added a cross-peer FEC-isolation assertion (test-only, internal/bind/peer_fec_lifecycle_test.go: TestConcentratorFECParityNeverCrossesPeers): two concentrator peers each run an independent fec.Encoder that lands group id 0 (a genuine numeric collision) — peer A's parity recovers ONLY into A's own decoder/resequencer (Recovered +1) while peer B's Recovered stays 0 and B's group-0 stays undisturbed until B's own parity arrives (+ reciprocal). Mutation-verified by BOTH reviewers (parity→primary and parity→cross-peer both redden). No regression. Unanimous 1-round panel approve; rebased past T95 and ff-merged as 010b7ec."
+- sessionLogs: [".cq/logs/20260714-063350-a5cce87613f1ea68b.md",".cq/logs/20260714-064007-a0d31254057d2a3a1.md",".cq/logs/20260714-064007-a278df2d0fc736c97.md"]
+- rawLogs: [".cq/logs/raw/20260714-063350-a5cce87613f1ea68b.jsonl",".cq/logs/raw/20260714-064007-a0d31254057d2a3a1.jsonl",".cq/logs/raw/20260714-064007-a278df2d0fc736c97.jsonl"]
 
 ### T97 — wip
 

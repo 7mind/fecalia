@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 114
+  item: 115
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1268,3 +1268,16 @@ archives:
 - ledgerRefs: ["tasks:T95","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-063906-af7c84761e871fbd1.md",".cq/logs/20260714-063906-aaafa72796608ad29.md"]
 - rawLogs: [".cq/logs/raw/20260714-063906-af7c84761e871fbd1.jsonl",".cq/logs/raw/20260714-063906-aaafa72796608ad29.jsonl"]
+
+### R115 — go-ahead
+
+- createdAt: 2026-07-14T06:40:33.128Z
+- updatedAt: 2026-07-14T06:40:33.128Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T96 unanimous panel approve (round 1): [opus]+[fable] both approve. Test-only (appended TestConcentratorFECParityNeverCrossesPeers to internal/bind/peer_fec_lifecycle_test.go). Confirms the T91/T93 per-peer fecSend/fecRecv split preserves the Reed-Solomon invariants: TestKlauspostParityPrefixStableInvariant + the FEC datapath suite (go test ./internal/... -run FEC) pass UNCHANGED (no masked regression — test-only diff). The new cross-peer FEC-isolation test uses a GENUINE group-id-0 collision (both fresh per-peer fec.Encoders open group 0 since nextGroup is zero-valued) and asserts BOTH directions + payload-level isolation: peer A's parity recovers exactly 1 frame into A's OWN decoder/resequencer, B's Recovered stays 0 and B's group-0 stays undisturbed until B's own parity arrives (+ a reciprocal check). BOTH reviewers independently mutation-verified in isolated copies: routing the frame.Parity case to the primary and cross-feeding to the other peer BOTH redden the test. -race + full internal suite green. ff-merged as 010b7ec."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T96","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-064007-a0d31254057d2a3a1.md",".cq/logs/20260714-064007-a278df2d0fc736c97.md"]
+- rawLogs: [".cq/logs/raw/20260714-064007-a0d31254057d2a3a1.jsonl",".cq/logs/raw/20260714-064007-a278df2d0fc736c97.jsonl"]
