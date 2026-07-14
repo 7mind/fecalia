@@ -255,11 +255,16 @@ gate that advances no per-frame distribution state (unlike `Pick`/`Recompute`).
 It is the seam the `/metrics` plumbing polls. Every engage/disengage flip logs a
 single `"scheduler aggregation change"` record (one-shot on change, mirroring
 `"scheduler active path change"`'s semantics — a saturated `Pick` path never
-logs per-frame); the record carries `to` (`"aggregating"`/`"collapsed"`), `from`
+logs per-frame); every record carries `to` (`"aggregating"`/`"collapsed"`), `from`
 (the prior state, same vocabulary), `load_fps` (the smoothed offered-load
-estimate), `engage_threshold_fps`/`disengage_threshold_fps`
-(`EngageFraction`/`DisengageFraction * PerPathCapacity`), and, on a
-sustained-low-load or idle-gap collapse, `reason`.
+estimate — uniformly present, including on the idle-gap collapse, since the
+EWMA has already decayed across the gap by the time the record logs) and
+`engage_threshold_fps`/`disengage_threshold_fps`
+(`EngageFraction`/`DisengageFraction * PerPathCapacity`). On a collapse the
+record additionally carries `reason` (`"sustained low load"` or `"idle gap"`);
+on an idle-gap collapse specifically it also carries `gap` (the wall-clock
+idle span since the previous offered frame, formatted via `time.Duration.String`)
+that alone reached `CollapseDwell` and forced the collapse.
 
 **Pacing** (per-path token buckets) is a scheduler feature that is **off by
 default** and, when enabled, exempts WireGuard control frames from shedding so

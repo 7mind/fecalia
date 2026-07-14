@@ -535,7 +535,8 @@ func (s *WeightedScheduler) updateGateLocked(now time.Time, gap time.Duration) {
 		s.aggregating = false
 		s.belowSince = time.Time{}
 		s.log.Info("scheduler aggregation change", "to", "collapsed", "from", "aggregating",
-			"reason", "idle gap", "gap", gap.String(), "engage_threshold_fps", engage, "disengage_threshold_fps", disengage)
+			"reason", "idle gap", "gap", gap.String(), "load_fps", s.loadRate,
+			"engage_threshold_fps", engage, "disengage_threshold_fps", disengage)
 		return
 	}
 	if s.loadRate < disengage {

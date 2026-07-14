@@ -40,8 +40,15 @@ const (
 
 	// aggLogCollapseDwell/aggLogLoadTau are configured explicitly (smaller than
 	// internal/config's defaults) so the e2e run stays fast while remaining a real
-	// hysteresis measurement, not an instant flip.
-	aggLogCollapseDwell = 800 * time.Millisecond
+	// hysteresis measurement, not an instant flip. aggLogCollapseDwell is set well
+	// ABOVE the harness's own inter-phase wall-clock jitter (AwaitLogLine + log
+	// parse + spawning the low-phase driver's nsenter'd UDP sink between the
+	// engage drive's last frame and the low drive's first frame): if that jitter
+	// span reached aggLogCollapseDwell, the low phase's first Pick would collapse
+	// via the idle-gap branch (updateGateLocked's gap>=CollapseDwell check)
+	// instead of the sustained-low-load dwell this test measures, flipping the
+	// asserted "reason" nondeterministically. 2s gives that margin comfortably.
+	aggLogCollapseDwell = 2 * time.Second
 	aggLogLoadTau       = 100 * time.Millisecond
 
 	// aggLogEngageOfferedFPS is comfortably above aggLogEngageThresholdFPS (225).
@@ -65,8 +72,6 @@ const (
 
 	aggLogPayloadBytes = 512
 	aggLogSinkPort     = 6002
-
-	aggLogMetricsListen = "127.0.0.1:9106"
 )
 
 // aggLogPath is the single emulated uplink this test's tunnel runs over. An
@@ -109,7 +114,7 @@ func TestAggregationGateLog(t *testing.T) {
 	if to, _ := engageLine.FieldString("to"); to != "aggregating" {
 		t.Fatalf("first 'scheduler aggregation change' record has to=%q, want %q\n%s", to, "aggregating", edge.log())
 	}
-	assertAggLogFields(t, edge, engageLine, "collapsed")
+	assertAggLogFields(t, edge, engageLine, "collapsed", "")
 
 	engageLines := filterAggregationChangeLines(edge, "aggregating")
 	if len(engageLines) != 1 {
@@ -130,7 +135,11 @@ func TestAggregationGateLog(t *testing.T) {
 		t.Fatalf("got %d 'scheduler aggregation change' to=collapsed records within the %s collapse-dwell+tau budget, want exactly 1\n%s",
 			len(collapseLines), aggLogCollapseWaitBudget, edge.log())
 	}
-	assertAggLogFields(t, edge, collapseLines[0], "aggregating")
+	// aggLogCollapseDwell (2s) comfortably exceeds the harness's own inter-phase
+	// wall-clock jitter, so the collapse deterministically takes the
+	// sustained-low-load branch, not the idle-gap branch: assert reason
+	// explicitly, not just the shared uniform fields.
+	assertAggLogFields(t, edge, collapseLines[0], "aggregating", "sustained low load")
 
 	// Exactly one record per flip, end to end: one engage + one collapse, no more.
 	if all := filterAggregationChangeLines(edge, ""); len(all) != 2 {
@@ -158,16 +167,19 @@ func filterAggregationChangeLines(edge *proc, to string) []LogLine {
 }
 
 // assertAggLogFields checks the T143-added structured fields on a "scheduler
-// aggregation change" record: "from" equals wantFrom, the pre-existing
-// "load_fps" field is still present, and the new engage/disengage threshold
-// fields match the configured gate.
-func assertAggLogFields(t *testing.T, edge *proc, l LogLine, wantFrom string) {
+// aggregation change" record: "from" equals wantFrom, the "load_fps" field is
+// present (uniform across every record — including an idle-gap collapse, per
+// R179 fix 1), the new engage/disengage threshold fields match the configured
+// gate, and — when wantReason is non-empty — "reason" equals wantReason
+// exactly (pass "" to skip the reason check, e.g. for the engage record,
+// which carries no reason).
+func assertAggLogFields(t *testing.T, edge *proc, l LogLine, wantFrom, wantReason string) {
 	t.Helper()
 	if from, ok := l.FieldString("from"); !ok || from != wantFrom {
 		t.Fatalf("'scheduler aggregation change' record: from = %q (ok=%v), want %q\n%s", from, ok, wantFrom, edge.log())
 	}
 	if _, ok := l.FieldFloat("load_fps"); !ok {
-		t.Fatalf("'scheduler aggregation change' record missing the pre-existing load_fps field\n%s", edge.log())
+		t.Fatalf("'scheduler aggregation change' record missing the load_fps field (must be uniform across every record)\n%s", edge.log())
 	}
 	if got, ok := l.FieldFloat("engage_threshold_fps"); !ok || got != aggLogEngageThresholdFPS {
 		t.Fatalf("'scheduler aggregation change' record: engage_threshold_fps = %v (ok=%v), want %g\n%s",
@@ -176,6 +188,11 @@ func assertAggLogFields(t *testing.T, edge *proc, l LogLine, wantFrom string) {
 	if got, ok := l.FieldFloat("disengage_threshold_fps"); !ok || got != aggLogDisengageThresholdFPS {
 		t.Fatalf("'scheduler aggregation change' record: disengage_threshold_fps = %v (ok=%v), want %g\n%s",
 			got, ok, aggLogDisengageThresholdFPS, edge.log())
+	}
+	if wantReason != "" {
+		if reason, ok := l.FieldString("reason"); !ok || reason != wantReason {
+			t.Fatalf("'scheduler aggregation change' record: reason = %q (ok=%v), want %q\n%s", reason, ok, wantReason, edge.log())
+		}
 	}
 }
 
@@ -192,10 +209,13 @@ func setupAggLogTunnel(t *testing.T, top *Topology, bin string) (edge, conc *pro
 	psk := randKey(t)
 	p := aggLogPath
 
+	// No [metrics] block: this test never queries /metrics (T146 defers that
+	// wiring), and Metrics.Listen is optional — an unset listen leaves the
+	// endpoint disabled (internal/device.applyMetricsLocked), so the daemon
+	// starts fine without it.
 	schedBlock := fmt.Sprintf(
 		"[scheduler]\npolicy = \"weighted\"\nper_path_capacity_fps = %.1f\nengage_fraction = %g\ndisengage_fraction = %g\ncollapse_dwell = %q\nload_tau = %q\n\n",
 		aggLogPerPathCapacityFPS, aggLogEngageFraction, aggLogDisengageFraction, aggLogCollapseDwell.String(), aggLogLoadTau.String())
-	metricsBlock := fmt.Sprintf("[metrics]\nlisten = %q\n\n", aggLogMetricsListen)
 
 	dir := t.TempDir()
 	edgeCfg := writeConfig(t, filepath.Join(dir, "edge.toml"), fmt.Sprintf(`role = "edge"
@@ -206,7 +226,7 @@ name = %q
 source_addr = "%s"
 dest_addr = "%s:%d"
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = "%s"
 
 [[wireguard.peers]]
@@ -216,7 +236,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, psk, p.name, p.edgeIP, p.concIP, listenPort, schedBlock, metricsBlock, edgePriv, concPub, p.concIP, listenPort, concInner))
+`, psk, p.name, p.edgeIP, p.concIP, listenPort, schedBlock, edgePriv, concPub, p.concIP, listenPort, concInner))
 
 	concCfg := writeConfig(t, filepath.Join(dir, "conc.toml"), fmt.Sprintf(`role = "concentrator"
 psk = "%s"
@@ -225,7 +245,7 @@ psk = "%s"
 name = %q
 source_addr = "%s"
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = "%s"
 listen_port = %d
 
@@ -235,7 +255,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, psk, p.name, p.concIP, schedBlock, metricsBlock, concPriv, listenPort, edgePub, edgeInner))
+`, psk, p.name, p.concIP, schedBlock, concPriv, listenPort, edgePub, edgeInner))
 
 	conc = top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", concCfg)
 	edge = top.startProc(t, "edge", bin, "--config", edgeCfg)
