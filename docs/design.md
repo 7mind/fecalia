@@ -229,10 +229,12 @@ Two *different* failovers exist and must not be conflated:
   uplinks cannot help; the edge must move to a *standby concentrator*.
 
 An edge peer carries an **ordered** concentrator endpoint list
-(`config.Peer.Endpoints`, Q18/T54): index 0 is the active/primary hub, the rest
-are ordered standbys. Endpoints are **IP:port only — no DNS resolution** (the T54
-constraint). All hubs in the set share the peer's **single WireGuard static key**,
-so the same peer identity re-handshakes against whichever hub is active.
+(`config.Peer.EndpointSpecs`, Q18/T54/Q35): index 0 is the active/primary hub, the
+rest are ordered standbys. Each entry is either an **IP:port literal** or, behind
+the peer's explicit `dns = true` opt-in (Q29), a **hostname:port** whose record set
+is resolved at runtime (see *Re-resolution* below). All hubs in the set share the
+peer's **single WireGuard static key**, so the same peer identity re-handshakes
+against whichever hub is active.
 
 The controller (`hubFailover`) runs a device-lifecycle monitor loop (started after
 `dev.Up`, stopped before `dev.Close`, alongside the probe/reconcile loops):
@@ -289,6 +291,38 @@ one-element list) is therefore byte-for-byte the pre-T57 behaviour. The switch a
 this guard are validated by the real-network netns e2e (`TestHubFailoverStandbySwitch`
 + `TestHubFailoverSingleEndpointGuard`, T62) and, over the real internet, by the
 realhosts mid-transfer WAN-kill tier (`TestRealMidTransferWANKill`, T63).
+
+**Re-resolution** (`resolution`, T73). A hostname endpoint spec has no fixed
+address; its expansion is a **mutable, spec-keyed record set** the failover set
+carries (`failoverSpec.addrs`, updated in place by `hubFailover.updateResolution`
+under the endpoint-set lock — the sole mutation point). The re-resolution
+controller keeps those record sets fresh. It mirrors the `hubFailover` shape (a pure
+constructor over an injected `dnsresolve.Resolver`, the failover controller it
+drives, a `telemetry.Clock`, and the `[dns]` poll interval + per-lookup timeout) and
+runs its own device-lifecycle loop **off the send hot path** — all lookups happen on
+its goroutine; results are applied only through `updateResolution`. Each evaluation:
+
+- **Poll** every hostname spec on the fixed `[dns]` cadence; on a **successful,
+  non-empty** lookup the addrs are family-ordered (IPv4 first, then IPv6, deduped —
+  a deterministic order so an unchanged answer yields a byte-identical expansion) and
+  handed to `updateResolution`, which **repoints only on an actual active-IP change**
+  (D32 no-op suppression). When the transport exposes a TTL (DoH/DoT), the next poll
+  is clamped to `min(pollInterval, minTTL)`.
+- **Liveness-loss trigger**: the instant every path to the **active** endpoint reads
+  `StateDown` — the *same* `allDown` sweep the failover loop advances on (Q34: the
+  two controllers coordinate purely through the shared lock and the update API) — the
+  active spec is re-resolved **out of band**, edge-triggered, without waiting for the
+  next poll tick.
+- **Retention invariant (D46)**: a lookup that **fails** (error/timeout/NXDOMAIN) or
+  yields an **empty** set **never publishes** — the spec keeps its last-good
+  expansion and the controller retries next tick. A transient resolver fault
+  therefore never tears down a working endpoint set, and `hubFailover` never sees a
+  previously-resolved active spec collapse to empty (the condition its `total < 2`
+  guard could otherwise strand the bond on).
+
+This controller runs **even for a single-hostname peer** (to track a changing DDNS
+address), independent of hub-failover's `>= 2` guard; the first successful poll of a
+hostname-only peer is what boot-adopts its active endpoint.
 
 ### Per-path telemetry — `internal/telemetry`
 

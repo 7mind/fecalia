@@ -298,6 +298,27 @@ func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
 	h.idx = h.flatIndexLocked(h.activeSpec, h.activeAddr)
 }
 
+// allPathsDown reports HUB LOSS — every path to the active concentrator DOWN — under h.mu.
+// It is the read half of the coordination surface the re-resolution controller (T73) shares
+// with the failover controller (Q34): the resolver reads the SAME liveness sweep the failover
+// loop advances on, so a liveness-loss out-of-band re-resolve and a hub-loss advance derive
+// from one detector, never two that could disagree.
+func (h *hubFailover) allPathsDown() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.allDownLocked()
+}
+
+// activeSpecIndex returns the owning spec index of the currently-active endpoint under h.mu,
+// or -1 when there is no active entry yet (every spec's expansion empty). The re-resolution
+// controller (T73) reads it to know WHICH spec a liveness-loss trigger must re-resolve out of
+// band; the identity is spec-scoped (R70), so this is the spec index, never a flattened index.
+func (h *hubFailover) activeSpecIndex() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.activeSpec
+}
+
 // allDownLocked reports HUB LOSS: every path's liveness to the active concentrator is
 // DOWN simultaneously. An empty health set is NOT hub loss (there is nothing to declare
 // dead — a bind without the probe transport never drives this). Caller holds mu.
@@ -448,9 +469,47 @@ func startHubFailover(cfg *config.Config, mp *bind.Multipath, probers []*telemet
 		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep)
 		// and the settle dwell bounds actual switches, so a responsive poll only tightens
 		// detection latency without churning the remote.
-		return ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval)
+		stopFailover := ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval)
+		// Alongside failover, start the re-resolution controller (T73) over the SAME ctrl for a
+		// peer carrying hostname specs: it re-resolves each on the [dns] poll cadence and out-of-
+		// band on hub loss, feeding fresh records through ctrl.updateResolution (Q34 — the two
+		// coordinate purely through the shared lock and update API). An all-literal peer has no
+		// hostname to track, so it starts nothing.
+		stopResolution := startResolution(cfg, ctrl, peer, lg)
+		return func() {
+			stopFailover()
+			stopResolution()
+		}
 	}
 	return func() {}
+}
+
+// startResolution builds and starts the re-resolution controller for peer's hostname endpoint
+// specs over the already-constructed hub-failover controller, or returns a no-op stopper when the
+// peer carries no hostname spec (an all-literal peer never re-resolves). The resolver transport is
+// the one the (validated) [dns] block selects; a resolver-construction failure is logged and
+// resolution is skipped rather than failing tunnel bring-up, since hub failover itself is
+// independent of re-resolution.
+func startResolution(cfg *config.Config, ctrl *hubFailover, peer config.Peer, lg log.Logger) func() {
+	targets := nameTargetsFromSpecs(peer.EndpointSpecs)
+	if len(targets) == 0 {
+		return func() {}
+	}
+	resolver, err := cfg.DNS.NewResolver()
+	if err != nil {
+		lg.Warn("dns re-resolution: could not build resolver; hostname endpoints will not re-resolve",
+			"error", err.Error())
+		return func() {}
+	}
+	res := newResolution(
+		resolver, ctrl, targets,
+		telemetry.SystemClock{}, cfg.DNS.PollInterval, cfg.DNS.Timeout,
+		lg.Component("dnsresolve"),
+	)
+	// Drive step at the probe cadence: step is cheap in the steady state (a liveness read plus a
+	// clock compare) and gates the actual poll on the [dns] poll interval internally, so a
+	// responsive tick only tightens the liveness-loss re-resolve latency without over-resolving.
+	return res.startResolutionLoop(telemetry.DefaultProbeInterval)
 }
 
 // startHubFailoverLoop launches the failover-evaluation goroutine: it calls check every
