@@ -1729,10 +1729,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G11","defects:D45","defects:D54"]
 
-### T137 — planned
+### T137 — done
 
 - createdAt: 2026-07-14T10:09:29.500Z
-- updatedAt: 2026-07-14T10:09:29.500Z
+- updatedAt: 2026-07-14T11:39:48.359Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Give each e2e metrics listener a unique port (resolve the 9096 collision) (D51)
@@ -1768,10 +1768,10 @@ archives:
 - dependsOn: ["T136"]
 - ledgerRefs: ["goals:G11","defects:D56"]
 
-### T140 — planned
+### T140 — done
 
 - createdAt: 2026-07-14T10:09:59.824Z
-- updatedAt: 2026-07-14T10:09:59.824Z
+- updatedAt: 2026-07-14T11:36:40.387Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Reconcile the SO_BINDTODEVICE capability story: pathsock comment vs CAP_NET_ADMIN units vs docs (D40)"

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 146
+  item: 149
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1682,6 +1682,45 @@ archives:
 - ledgerRefs: ["tasks:T140","goals:G11","defects:D40"]
 - sessionLogs: [".cq/logs/20260714-110600-aa89c285efbeaba6e.md",".cq/logs/20260714-110600-a1757d0d469487eb3.md"]
 - rawLogs: [".cq/logs/raw/20260714-110600-aa89c285efbeaba6e.jsonl",".cq/logs/raw/20260714-110600-a1757d0d469487eb3.jsonl"]
+
+### R147 — go-ahead
+
+- createdAt: 2026-07-14T11:36:38.952Z
+- updatedAt: 2026-07-14T11:36:38.952Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T140 review round 2 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after the round-1 revise (R144). The sole round-1 criticism is resolved: pathsock.go:31-38 is reworded to 'on Linux <5.7, SO_BINDTODEVICE needs CAP_NET_RAW, which the shipped systemd units don't grant (CapabilityBoundingSet is CAP_NET_ADMIN only), so a pre-5.7 daemon also falls back to source-IP binding; on >=5.7 it needs no capability' — it NO LONGER implies the daemon holds CAP_NET_RAW pre-5.7. Both reviewers ran `grep -rn CAP_NET_RAW internal/ packaging/ docs/` (5 hits: pathsock.go, pathsock_linux.go, both units, docs/install.md) and confirmed ALL surfaces agree on the >=5.7-qualified rule with the EPERM→source-IP fallback, none implying daemon CAP_NET_RAW. Diff comment/docs-only; CapabilityBoundingSet=CAP_NET_ADMIN unchanged in both units. Kernel commit c427bfec18f21 (v5.7, 'enable SO_BINDTODEVICE for non-root users', not-yet-bound-socket) verified upstream by both; the o3 probe (uid nobody, zero caps, kernel 6.17, SUCCEEDED) is documented in the commit message. build/vet/test + just lint green. LANDED on main at 831c8d4 (branch implement/T140-r2, c1139e4)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T140","goals:G11","defects:D40"]
+- sessionLogs: [".cq/logs/20260714-113100-afad7cc70124eb736.md",".cq/logs/20260714-113100-abf8c449d30e7dc7a.md"]
+- rawLogs: [".cq/logs/raw/20260714-113100-afad7cc70124eb736.jsonl",".cq/logs/raw/20260714-113100-abf8c449d30e7dc7a.jsonl"]
+
+### R148 — revise
+
+- createdAt: 2026-07-14T11:36:51.391Z
+- updatedAt: 2026-07-14T11:36:51.391Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T137 review round 2 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). The round-1 criticism IS resolved within the branch's own tree (tolerant_startup_test.go:30 + hub_failover_test.go:81 now reference the netns.go registry; vet/lint/test green). BUT [fable] caught a decisive INFRA fault: the branch implement/T137-r2 forked from STALE main 60138a6 (the G2-era tip) instead of current main — the recurring harness worktree-base bug — so its port inventory ran against a tree MISSING three e2e files present on the merge target. [opus] approved only because it reviewed against that same stale merge-base (saw 6 ports). Against CURRENT main the fix is incomplete:"
+- criticism: ["[fable] The netns.go port registry the branch adds lists only 9095-9099 + 9103, but current main has THREE more claimed metrics ports the stale worktree never saw: 9100 (standby_liveness_test.go:54), 9101 (session_established_test.go:34 — the exact 'T101 already claimed 9101' the task text names), 9102 (multipeer_test.go:130). Post-merge the registry omits them, failing the acceptance clause 'the port-inventory comment lists them'. FIX: the port CHOICE 9103 is sound (current main's max is 9102, no collision) — keep it — but extend the registry to enumerate ALL of 9095-9103.","[fable] multipeer_test.go:129 on current main says 'the current max is 9101' — falsified once pacing moves to 9103 (the identical stale-neighbor-comment defect class as round 1, invisible to the stale-based worker). FIX: re-point that comment at the netns.go registry (or update the stated max)."]
+- new_questions: []
+- ledgerRefs: ["tasks:T137","goals:G11","defects:D51"]
+- sessionLogs: [".cq/logs/20260714-113100-a31a4ac311f57014b.md",".cq/logs/20260714-113100-a48436a017bd022d0.md"]
+- rawLogs: [".cq/logs/raw/20260714-113100-a31a4ac311f57014b.jsonl",".cq/logs/raw/20260714-113100-a48436a017bd022d0.jsonl"]
+
+### R149 — go-ahead
+
+- createdAt: 2026-07-14T11:39:47.159Z
+- updatedAt: 2026-07-14T11:39:47.159Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T137 round 3 — GO-AHEAD (orchestrator-completed after two worker rounds hit the recurring stale-worktree-base infra fault). Round 1 + round 2 both had reviewer-approved SUBSTANCE (move pacing 9096→9103 to break the collision with p3_fec; re-point the tolerant_startup/hub_failover survey comments at a netns.go registry), but both worker worktrees were cut from STALE main 60138a6, so round 2's registry omitted 9100/9101/9102 and left multipeer_test.go:129's 'max is 9101' comment falsified on the merge target (R148 [fable]). Rather than risk a THIRD stale-based worker round on a purely mechanical e2e-port/comment change, the orchestrator applied the fix directly on CURRENT main (36f0bd3) and verified it against the full acceptance: (1) all NINE e2e metrics listeners now bind UNIQUE ports — 9095 p2_aggregation, 9096 p3_fec, 9097 p4_adaptive, 9098 tolerant_startup, 9099 hub_failover, 9100 standby_liveness, 9101 session_established, 9102 multipeer, 9103 pacing (grep-confirmed, no shared literal); (2) a COMPLETE metrics-port registry added to netns.go enumerates all nine; (3) ALL THREE ad-hoc port-survey comments (tolerant_startup:30, hub_failover:81, multipeer:129) re-pointed at the registry — no stale port inventory remains (grep for '9095-97'/'9095-9098'/'max is 9101' returns nothing); (4) e2e-test-only. Verified: `go vet -tags e2e ./test/e2e/...`, `golangci-lint run --build-tags e2e ./test/e2e/...` (0 issues), `just lint`, `just test` all green (gofmt-clean after detaching the registry comment). Resolves D51."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T137","goals:G11","defects:D51"]
+- sessionLogs: [".cq/logs/20260714-113100-a48436a017bd022d0.md"]
+- rawLogs: [".cq/logs/raw/20260714-113100-a48436a017bd022d0.jsonl"]
 
 ## M45
 
