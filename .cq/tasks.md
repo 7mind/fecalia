@@ -2087,10 +2087,10 @@ archives:
 
 ## M61
 
-### T160 — wip
+### T160 — done
 
 - createdAt: 2026-07-14T18:46:00.265Z
-- updatedAt: 2026-07-14T22:44:26.272Z
+- updatedAt: 2026-07-14T23:11:26.792Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add [monitor] config block with loopback-default + opt-in-non-loopback-requires-token validation"

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 201
+  item: 202
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2374,3 +2374,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T160 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins). Both confirm the CODE is correct and the gate is green: internal/netutil.IsLoopbackHost is byte-faithful to metrics/server.go requireLoopback and fail-closed on all 20 probed edge cases (0.0.0.0, empty host ':9096', [::], [::1], malformed -> Load error); no input lets a routable addr pass as loopback; ErrMonitorNonLoopbackWithoutAuth is package-level, %w-wrapped, asserted via errors.Is; DisallowUnknownFields genuinely exercised; all 6 acceptance cases present; device D52 reload catch-all extended minimally without pre-empting T169; go build/vet/test + just lint (default+e2e+realhosts) all green. DISAPPROVED on definition-of-done, two autonomously-fixable criticisms: (1) DOC-SYNC (AGENTS.md 'keep docs current'): the new operator-facing [monitor] config keys (monitor.listen/monitor.token) + fail-fast invariant appear in NO doc; add at minimum a commented-out [monitor] block to wanbond.example.toml (the deliberately-exhaustive example that documents [metrics]) noting the endpoint/full docs land with later monitor tasks — the comprehensive README/design/install sync remains T171's scope. (2) internal/netutil ships with NO test files: add a direct table test for IsLoopbackHost covering the fail-closed branches (empty host, [::1], [::], bare-port/missing-port error path) so a regression in the host=='' security branch cannot pass the suite. Filed low out-of-scope defect (classification duplication metrics/server.go vs netutil -> consolidate later). Re-dispatching worker with these two criticisms."
 - ledgerRefs: ["tasks:T160","goals:G12"]
+
+### R202 — go-ahead
+
+- createdAt: 2026-07-14T23:11:25.647Z
+- updatedAt: 2026-07-14T23:11:25.647Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T160 implement review round 2 (fable re-review of the revise). VERDICT = approve/go-ahead. Both round-1 criticisms verified RESOLVED with direct evidence: (1) doc-sync — a commented-out [monitor] block added to wanbond.example.toml (mirrors the [metrics] example) showing listen+token, stating the non-loopback-requires-token invariant with the real ErrMonitorNonLoopbackWithoutAuth identifier, and explicitly deferring the endpoint + full README/design/install docs to T171; (2) internal/netutil/loopback_test.go added directly covering all IsLoopbackHost fail-closed branches (empty host=>non-loopback, [::1]=>loopback, [::]/0.0.0.0=>non-loopback, public IP=>non-loopback, bare-port/missing-port/malformed=>error, localhost resolution) asserting bool AND error — a MUTATION CHECK confirmed the test fails if the host=='' branch regresses to return true. Round-1 code unchanged (round-2 delta = 2 files only). Gate re-run green in worktree AND re-gated on the composed main tree (T160+T161): gofmt clean, go build/vet/test green. Round-1 was opus-approve + fable-disapprove (R201 revise); round-2 both-approve. Merged to main (7ce4752, 2 commits). Low consolidation defect D83 filed+root-caused (ready-to-seed)."
+- ledgerRefs: ["tasks:T160","goals:G12","defects:D83"]
