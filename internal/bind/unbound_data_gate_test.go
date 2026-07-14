@@ -3,9 +3,60 @@ package bind
 import (
 	"bytes"
 	"testing"
+	"time"
 
+	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
+
+// fecReceiveConfig is the fixed-ratio group the strengthened PARITY subtest arms both
+// peers' receivers with. K=1 parity is all that is needed: a DataCount=1 group (one data
+// shard) reconstructs that sole data frame from the single parity shard ALONE, so a PARITY
+// that leaks past the demux gate into dispatchInbound recovers a data frame straight into
+// the dispatching peer's resequencer — which is what makes the leak observable.
+var fecReceiveConfig = fec.Config{DataShards: 4, ParityShards: 1, Deadline: time.Millisecond}
+
+// enableFECReceive arms a peer's receive-side FEC through the SAME seam Open uses
+// (openPeerDatapathLocked, multipath.go:851) to Store a fecReceiver. Without it the Parity
+// case of dispatchInbound is a no-op (fecRecv nil), so a leaked PARITY would touch no
+// resequencer and the drop property this subtest names would be unobservable.
+func enableFECReceive(t testing.TB, p *peerState, cfg fec.Config) {
+	t.Helper()
+	dec, err := fec.NewDecoder(cfg)
+	if err != nil {
+		t.Fatalf("build FEC decoder: %v", err)
+	}
+	p.fecRecv.Store(&fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)})
+}
+
+// singleFrameParity builds a GENUINE parity shard for a one-data-frame group whose sole
+// data shard's coded bytes are seq||inner (fecShardPayload) — the exact shape the datapath
+// codes parity over. Offered to a decoder built at the same cfg, this parity ALONE
+// reconstructs that data frame, so a PARITY carrying it would deliver seq||inner up a
+// resequencer at outer-seq `seq`. It returns the wire fields for a frame.Parity.
+func singleFrameParity(t testing.TB, cfg fec.Config, seq uint64, inner []byte) (group uint32, index uint16, dataCount uint8, payload []byte) {
+	t.Helper()
+	enc, err := fec.NewEncoder(cfg, fec.SystemClock{})
+	if err != nil {
+		t.Fatalf("build FEC encoder: %v", err)
+	}
+	if _, _, aerr := enc.Admit(fecShardPayload(seq, inner)); aerr != nil {
+		t.Fatalf("admit single data shard: %v", aerr)
+	}
+	parity, err := enc.Flush() // close the 1-data group, coding K parity over its sole shard
+	if err != nil {
+		t.Fatalf("flush single-frame group: %v", err)
+	}
+	if len(parity) != cfg.ParityShards {
+		t.Fatalf("single-frame group emitted %d parity, want %d", len(parity), cfg.ParityShards)
+	}
+	pshard := parity[0]
+	if pshard.DataCount != 1 {
+		t.Fatalf("single-frame parity DataCount = %d, want 1", pshard.DataCount)
+	}
+	return uint32(pshard.Group), uint16(pshard.Index), uint8(pshard.DataCount), pshard.Payload
+}
 
 // TestSharedSocketGatesUnboundDataParity is the T89 acceptance: on a SHARED (multi-view)
 // concentrator socket, DATA and PARITY arriving from a source with no established
@@ -59,17 +110,46 @@ func TestSharedSocketGatesUnboundDataParity(t *testing.T) {
 		secondView := peerPathByName(second, "a")
 		_, peerAP := rawPeer(t)
 
-		parity, err := codecB.Encode(nil, frame.Parity{FECGroup: 1, ParityIndex: 0, DataCount: 1, PathID: secondView.id, Payload: []byte("unbound-parity")})
+		// Arm BOTH peers' receive-side FEC exactly as Open does (multipath.go:851). This is
+		// what makes the drop OBSERVABLE: with FEC receive off (the prior fixture), a PARITY
+		// leaked past the gate falls into dispatchInbound's fecRecv-nil no-op and touches no
+		// resequencer, so the subtest could not distinguish a gate that drops from one that
+		// dispatches. With FEC receive on, the DataCount=1 parity below reconstructs its sole
+		// data frame straight into the DISPATCHING peer's resequencer, so a leak is caught by
+		// both the decoder-recovery and the resequencer assertions (mutation-verified).
+		enableFECReceive(t, primary, fecReceiveConfig)
+		enableFECReceive(t, second, fecReceiveConfig)
+
+		// A GENUINE single-frame-group parity: its one data shard's coded bytes are
+		// leakSeq||leakInner, so if this PARITY were dispatched into either peer's decoder it
+		// alone would recover that data frame and resequence leakInner at outer-seq leakSeq.
+		const leakSeq = 42
+		leakInner := []byte("parity-leak-recovers-this")
+		group, index, dataCount, parityPayload := singleFrameParity(t, fecReceiveConfig, leakSeq, leakInner)
+
+		parity, err := codecB.Encode(nil, frame.Parity{FECGroup: group, ParityIndex: index, DataCount: dataCount, PathID: secondView.id, Payload: parityPayload})
 		if err != nil {
 			t.Fatalf("encode PARITY under psk B: %v", err)
 		}
 		m.demuxInbound(m.paths[0], parity, peerAP)
 
-		if it, ok := second.resequencer.Load().Pop(); ok {
-			t.Fatalf("PARITY from an UNBOUND source landed in peer B's resequencer (%q)", it.Payload)
-		}
-		if it, ok := primary.resequencer.Load().Pop(); ok {
-			t.Fatalf("PARITY from an UNBOUND source landed in the PRIMARY resequencer (%q)", it.Payload)
+		// The gate dropped the unbound PARITY BEFORE dispatch: it reached NEITHER peer's FEC
+		// decoder (no reconstruction) NOR any resequencer. A dispatch-without-bind leak would
+		// trip whichever peer the leaked frame was dispatched to, so both are asserted.
+		for _, pc := range []struct {
+			who string
+			p   *peerState
+		}{{"peer B", second}, {"the PRIMARY", primary}} {
+			fr := pc.p.fecRecv.Load()
+			if got := fr.stats().Recovered; got != 0 {
+				t.Fatalf("unbound PARITY reached %s's FEC decoder and reconstructed %d frame(s); a valid decode carries no binding authority and must not be dispatched", pc.who, got)
+			}
+			if got := fr.deliveredRecovered.Load(); got != 0 {
+				t.Fatalf("unbound PARITY delivered %d reconstructed frame(s) up %s's resequencer", got, pc.who)
+			}
+			if it, ok := pc.p.resequencer.Load().Pop(); ok {
+				t.Fatalf("PARITY from an UNBOUND source landed in %s's resequencer (%q)", pc.who, it.Payload)
+			}
 		}
 		if _, ok := m.lookupPeerBySource(peerAP.Addr()); ok {
 			t.Fatal("an unbound PARITY frame established a source->peer binding (D9/D11 violated)")
