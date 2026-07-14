@@ -775,10 +775,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-041618-aa6460b0564523c9f.md",".cq/logs/20260714-042350-ab2788ec23f5df97d.md",".cq/logs/20260714-042350-a0e589c40f828c748.md"]
 - rawLogs: [".cq/logs/raw/20260714-041618-aa6460b0564523c9f.jsonl",".cq/logs/raw/20260714-042350-ab2788ec23f5df97d.jsonl",".cq/logs/raw/20260714-042350-a0e589c40f828c748.jsonl"]
 
-### T78 — wip
+### T78 — done
 
 - createdAt: 2026-07-13T21:56:10.379Z
-- updatedAt: 2026-07-14T04:45:54.074Z
+- updatedAt: 2026-07-14T05:20:26.654Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Realhosts report-only dial-by-name check (stretch)
@@ -787,6 +787,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T77"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 66c1110
+- completion: "Report-only realhosts dial-by-name stretch tier (test-only, test/realhosts/dns_dial_test.go: TestRealDNSDialByName). Brings up the standing two-host testbed with the edge dialing the concentrator via its real DNS name (peer dns=true opt-in) + a bogus-name subtest; reports resolved address / time-to-first-handshake / traffic sample purely via t.Logf (resolution/handshake/traffic outcomes NEVER fail the suite — report-only discipline; only infra bring-up is fatal, matching sibling tiers). R2 fixed a logic error: resolveOutcome() now sources RESOLUTION from BOTH the R70 'first endpoint resolution' marker (deferred-install path) AND handshake-implies-resolution (the silent Q30 boot-resolve happy path), reporting the standing cfg.ConcPubIP — correct on both paths. Bogus name uses the RFC-2606 .example TLD (passes validateHostname so the daemon starts, deterministic NXDOMAIN). Compiles/vets under -tags realhosts; EXECUTION deferred to the realhosts run. 2 review rounds; rebased onto current main and ff-merged as 66c1110."
+- sessionLogs: [".cq/logs/20260714-045408-a6ff3c7de32c86767.md",".cq/logs/20260714-051113-abaaea20708e03b76.md",".cq/logs/20260714-050548-a54ae7c80e1ab909f.md",".cq/logs/20260714-050548-a65d3da77adb4f5b4.md",".cq/logs/20260714-051954-a9e48eb98d4a79d0d.md",".cq/logs/20260714-051954-a01261db5c976ffab.md"]
+- rawLogs: [".cq/logs/raw/20260714-045408-a6ff3c7de32c86767.jsonl",".cq/logs/raw/20260714-051113-abaaea20708e03b76.jsonl",".cq/logs/raw/20260714-050548-a54ae7c80e1ab909f.jsonl",".cq/logs/raw/20260714-050548-a65d3da77adb4f5b4.jsonl",".cq/logs/raw/20260714-051954-a9e48eb98d4a79d0d.jsonl",".cq/logs/raw/20260714-051954-a01261db5c976ffab.jsonl"]
 
 ### T79 — planned
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 107
+  item: 108
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1173,3 +1173,16 @@ archives:
 - ledgerRefs: ["tasks:T77","goals:G5","defects:D54"]
 - sessionLogs: [".cq/logs/20260714-042350-ab2788ec23f5df97d.md",".cq/logs/20260714-042350-a0e589c40f828c748.md"]
 - rawLogs: [".cq/logs/raw/20260714-042350-ab2788ec23f5df97d.jsonl",".cq/logs/raw/20260714-042350-a0e589c40f828c748.jsonl"]
+
+### R108 — go-ahead
+
+- createdAt: 2026-07-14T05:20:16.174Z
+- updatedAt: 2026-07-14T05:20:16.174Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T78 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on ONE LOGIC-ERROR criticism — the valid_name RESOLUTION report read ONLY the R70 'first endpoint resolution' marker (fires only on the deferred-install path), but on the standing testbed the happy path resolves during the SILENT Q30 boot-resolve, so it would misreport 'did not resolve' alongside a successful handshake. R2 (521bbb6) unanimous approve — new resolveOutcome() checks the R70 marker first (authoritative), else infers resolution success from a COMPLETED HANDSHAKE (sound: an edge-initiated hostname-only peer's endpoint has only two sources, the Q30 seed or the R70 install, so a handshake requires the name resolved) reporting the standing cfg.ConcPubIP. BOTH R2 reviewers independently confirmed the boot-resolve happy path is genuinely unobservable over SSH (no success journal line, no endpoint metrics series, no UAPI/status subcommand — grep-verified), so handshake-inference is the correct report-only source. Report-only contract intact (bogus_name reports resolveOK=false and passes). Rebased onto current main and ff-merged as 66c1110; -tags realhosts vet/build + full gate green."
+- criticism: ["[fable, R1, RESOLVED R2] valid_name RESOLUTION report misread the silent Q30 boot-resolve happy path as 'did not resolve' — fixed via resolveOutcome() sourcing from both the R70 marker and handshake inference."]
+- new_questions: []
+- ledgerRefs: ["tasks:T78","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-050548-a54ae7c80e1ab909f.md",".cq/logs/20260714-050548-a65d3da77adb4f5b4.md",".cq/logs/20260714-051954-a9e48eb98d4a79d0d.md",".cq/logs/20260714-051954-a01261db5c976ffab.md"]
+- rawLogs: [".cq/logs/raw/20260714-050548-a54ae7c80e1ab909f.jsonl",".cq/logs/raw/20260714-050548-a65d3da77adb4f5b4.jsonl",".cq/logs/raw/20260714-051954-a9e48eb98d4a79d0d.jsonl",".cq/logs/raw/20260714-051954-a01261db5c976ffab.jsonl"]
