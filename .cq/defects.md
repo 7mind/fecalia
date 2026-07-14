@@ -867,17 +867,18 @@ archives: []
 - ledgerRefs: ["tasks:T112","goals:G6","defects:D57"]
 - rootCause: "CONFIRMED as filed ([fable] T112/T115 review). Two config.go comments — the BindMode type comment (~L78-81) and the Path.Bind field note (~L492-493) — claim the resolved bind mode is 'config surface only / not yet consumed', FALSE since T106: selectDeviceBinds (~L115-136) switches on the mode and multipath.AddPath (~L2309) honors a forced BindModeDevice. Same class as [[D57]]. File-and-deferred to goal G11 (delete the two stale sentences)."
 
-### D61 — open
+### D61 — root-caused
 
 - createdAt: 2026-07-14T10:57:50.319Z
-- updatedAt: 2026-07-14T10:57:50.319Z
+- updatedAt: 2026-07-14T19:52:35.639Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D54 root-cause mechanism does not reproduce: bare golangci-lint run never walked .claude/worktrees (dot-dir skipped); observed leak matched D45's own-tree findings"
 - description: "Filed during T136 review ([fable], out-of-scope). Reviewer experiment in the T136 worktree: with a planted errcheck violation at .claude/worktrees/x/bad.go, the OLD bare `golangci-lint run` (current dev-shell toolchain) exits 0 with '0 issues' — Go package loading skips dot-directories, so the recorded D54 mechanism ('golangci-lint walks nested .claude/worktrees and leaks sibling code') is UNREPRODUCIBLE today. D54's observed evidence (errcheck hits at internal/dnsresolve/{doh,dot}.go) names exactly D45's pre-existing own-tree findings, whose relative paths in lint output are indistinguishable from a sibling-worktree leak — consistent with misattribution. NOTE: T136 (the D54 fix) already LANDED and its explicit-package-list Justfile change remains a sound BY-CONSTRUCTION hermeticity guarantee that meets its acceptance; this defect concerns only the accuracy of the D54 RECORD and the Justfile comment's 'which walks the repo root' clause, which assert an unverified mechanism."
 - severity: low
-- suggestedFix: Re-adjudicate D54's rootCause note against the original T77-era evidence (exact golangci-lint version + output paths at the time). If misattribution is confirmed, amend the D54 record and reword the Justfile lint-recipe comment to state the defense-in-depth rationale without the 'walks the repo root/.claude/worktrees' mechanism claim.
+- suggestedFix: Re-adjudicate D54's rootCause against the original T77-era evidence (exact golangci-lint version + output paths at the time). If misattribution is confirmed, amend the D54 record to state the defense-in-depth rationale WITHOUT the 'walks the repo root/.claude/worktrees' mechanism claim, and reword the Justfile lint-recipe comment identically. Doc/record-only; the hermetic explicit-package-list recipe stays. Low priority.
 - ledgerRefs: ["tasks:T136","defects:D54"]
+- rootCause: "CONFIRMED via the reviewer's own reproduction (documented in the defect body, a T136-worktree experiment). The recorded D54 mechanism — 'a bare golangci-lint run walks nested .claude/worktrees and leaks sibling code' — does NOT reproduce on the current dev-shell toolchain: with a planted errcheck violation at .claude/worktrees/x/bad.go, the OLD bare 'golangci-lint run' exits 0 / '0 issues' because Go package loading skips dot-directories (a '.claude' path component is not walked). D54's original observed evidence (errcheck hits at internal/dnsresolve/{doh,dot}.go) names exactly D45's pre-existing OWN-tree findings, whose relative paths are indistinguishable from a sibling-worktree leak — consistent with misattribution of D45's own-tree lint debt to a phantom worktree-leak mechanism. Cause: the D54 RECORD asserts an unverified walk-the-repo-root mechanism; the actual observation was D45's own-tree errcheck debt. IMPORTANT SCOPE: the T136 fix itself (explicit-package-list Justfile lint recipe) ALREADY LANDED and remains a sound BY-CONSTRUCTION hermeticity guarantee meeting its acceptance — this defect concerns ONLY the accuracy of the D54 narrative + the Justfile comment's 'which walks the repo root' clause, not any code regression."
 
 ### D62 — open
 
@@ -915,17 +916,18 @@ archives: []
 - suggestedFix: Make ObserveRecovered refuse to anchor an unstarted ring (drop the recovered frame and return false when !started) so only a natively-received frame can pin the release point after any unpin; add a Rebaseline-then-ObserveRecovered regression test. Coordinate with T119's fix for the analogous RebaselineToLow-armed ObserveRecovered bypass (same seam).
 - ledgerRefs: ["tasks:T119","defects:D36"]
 
-### D66 — open
+### D66 — root-caused
 
 - createdAt: 2026-07-14T12:55:20.809Z
-- updatedAt: 2026-07-14T12:55:20.809Z
+- updatedAt: 2026-07-14T19:53:17.796Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Stale single-peer-receive comment on AddPath's readLoop spawn (multipath.go:2548-2549)"
 - description: "Filed during T124 review ([fable], out-of-scope; PRE-EXISTING on main, not touched by T124). internal/bind/multipath.go ~:2548-2549 claims 'single-peer receive; the concentrator's shared-socket demux to N peers is a later G4 task', but the multi-view source demux (demuxInbound, T88/T93) is SHIPPED and is exactly what T124's TestReconcilePromotionFansViewAndSchedulerToEveryPeer exercises; the new promoteDeferredLocked comment correctly states the opposite. The stale comment could steer a future change wrong."
 - severity: low
-- suggestedFix: "Reword to match promoteDeferredLocked's spawn-site comment: one reader per shared socket fed by the primary's view; demuxInbound resolves the owning peer per-datagram once the socket has >1 view."
+- suggestedFix: "Reword multipath.go:2779-2780 to match the promoteDeferredLocked spawn-site comment: one reader per shared socket fed by the primary's view; demuxInbound resolves the owning peer per-datagram once the socket has >1 view. Doc-only. Fix the D66 citation to :2779-2780 when seeding. Low priority."
 - ledgerRefs: ["tasks:T124"]
+- rootCause: "CONFIRMED against source (with a corrected citation). The stale comment is at internal/bind/multipath.go:2779-2780 — NOT the D66-cited :2548-2549 (the line ref drifted ~230 lines; :2540-2560 is unrelated SetPeerRemote/D32 code). The real comment reads: 'One reader per SHARED socket, feeding the primary peer (single-peer receive; the concentrator's shared-socket demux to N peers is a later G4 task — see handleInbound).' above 'go m.readLoop(attached[0], m.deliverSignal)' (:2782). The claim 'demux to N peers is a later G4 task' is stale: the multi-view source demux (demuxInbound, T88/T93) IS shipped and is exactly what T124's TestReconcilePromotionFansViewAndSchedulerToEveryPeer exercises; the promoteDeferredLocked spawn-site comment states this correctly. Cause: the attach-path readLoop spawn comment was not updated when the G4 demux landed. NOTE: this concerns the demux ROUTING existing (shipped); it is orthogonal to D81's finding that per-peer rx BYTE ACCOUNTING still keys to the primary — both can hold simultaneously."
 
 ### D67 — open
 
@@ -939,17 +941,18 @@ archives: []
 - suggestedFix: Propagate or at least log the detach error; on detach failure, force-splice the tail peerPathState so p.paths never retains a view of a closed socket.
 - ledgerRefs: ["tasks:T124","defects:D42"]
 
-### D68 — open
+### D68 — root-caused
 
 - createdAt: 2026-07-14T13:15:12.210Z
-- updatedAt: 2026-07-14T13:15:12.210Z
+- updatedAt: 2026-07-14T19:52:05.001Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Stale reseq.go Rebaselines-snapshot comment attributes the counter to hub failover only
 - description: "Filed during T122 review ([fable], out-of-scope; PRE-EXISTING, introduced/left by T119). internal/reseq/reseq.go ~:760 comments the snapshot field as 'release-point re-baselines forced by a trusted control event (hub failover)', but since T119 the counter ALSO increments in RebaselineToLow (peer restart, reseq.go:692). Contradicts the metrics.go:295 help string which correctly covers both."
 - severity: low
-- suggestedFix: "Change the parenthetical to '(hub failover, peer restart)' or '(e.g. hub failover)' to match the metrics.go:295 help string."
+- suggestedFix: "Reword reseq.go:760 (and the parallel counter-decl comment at reseq.go:175) parenthetical to '(hub failover, peer restart)' or '(e.g. hub failover)' to match the metrics.go:397 help string. Doc-only; no code path changes."
 - ledgerRefs: ["tasks:T122","defects:D36"]
+- rootCause: "CONFIRMED against source. internal/reseq/reseq.go:760 comments the RebaselinesSnapshot field as 'release-point re-baselines forced by a trusted control event (hub failover)' — attributing the counter to hub failover ONLY. But since T119 the same rebaselines counter ALSO increments in RebaselineToLow (reseq.go:683, the PEER-RESTART low-anchor path). The metrics help string is correctly inclusive: metrics.go:397 renders 'forced by a trusted control event (e.g. hub failover).' (the 'e.g.' covers both causes; the D68-cited 'metrics.go:295' is the const-decl block — the live Desc help is at :397). So the reseq.go:760 doc-comment is narrower than the code that feeds the counter — a stale/misleading comment, no runtime effect. Cause: the T119 RebaselineToLow addition did not update the reseq.go:760 field comment to name peer restart alongside hub failover."
 
 ### D69 — resolved
 
@@ -1029,17 +1032,18 @@ archives: []
 - ledgerRefs: ["tasks:T144","defects:D70","defects:D52","goals:G13"]
 - rootCause: "CONFIRMED (investigate stage) — documented+source-cited by the T144 fable reviewer. Two coupled reload gaps: (1) a SIGHUP ADDING a path without link_bandwidth under weighted policy is applied to membership but neither re-warns nor recomputes the static wanbond_weighted_capacity_sane gauge — it can read 1 while the running set is no longer capacity-verifiable; (2) [overlaps D70] reloadWarnings ignores per-path link_bandwidth/link_rtt changes. FIX documented (recompute the capacity-sanity verdict in runningConfig()/reloadTunnel + re-set gauge + WARN on live-vs-desired divergence; extend the same-name comparison to LinkBandwidth/LinkRTT — coordinate with D70). READY-TO-SEED into the reload-warning-completeness hardening goal (with D70); awaiting /cq:plan."
 
-### D75 — open
+### D75 — root-caused
 
 - createdAt: 2026-07-14T16:41:27.769Z
-- updatedAt: 2026-07-14T16:41:27.769Z
+- updatedAt: 2026-07-14T19:53:25.955Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Idle-gap collapse 'scheduler aggregation change' record's structured fields have no test assertion
 - description: "Filed by the T143-r2 fable reviewer (out-of-scope; pre-existing coverage gap). No test asserts the 'scheduler aggregation change' record emitted by the IDLE-GAP collapse branch (internal/sched/weighted.go ~:535-542). TestWeightedCollapsesAfterOverloadIdle exercises the branch behaviorally (path distribution + gate state) but never inspects the log record, and TestAggregationGateLog deliberately avoids the branch (its widened dwell forces the sustained-low-load branch). So the load_fps-uniformity invariant T143 added + documented in docs/design.md is enforced by tests on only 2 of the 3 record sites (engage + dwell-collapse); the idle-gap record's fields (reason='idle gap', gap, and the newly-added load_fps) are untested. Low severity — the field is present and manually verified, just not regression-locked."
 - severity: low
-- suggestedFix: Extend TestWeightedCollapsesAfterOverloadIdle (or the log-fields unit test) with the existing capturing-logger infra to assert the idle-gap collapse record carries reason='idle gap', gap, load_fps, from, and both threshold fields — locking the schema-uniformity invariant on all three record sites.
+- suggestedFix: Extend TestWeightedCollapsesAfterOverloadIdle (or add an idle-gap case to the log-fields test) using the existing capturing-logger infra to assert the idle-gap collapse record carries reason='idle gap', gap, load_fps, from, and both threshold fields — locking schema-uniformity on all three record sites. Test-only. Seed into a test-hardening goal (can group with the D80/D81 e2e-fixture fixes or stand alone). Low priority.
 - ledgerRefs: ["tasks:T143","goals:G13"]
+- rootCause: "CONFIRMED against source — genuine test-coverage gap. internal/sched/weighted_test.go's TestWeightedCollapsesAfterOverloadIdle (:219) exercises the idle-gap collapse branch BEHAVIORALLY (path distribution + gate state) but performs NO log-record inspection — the file has no capturingLogger/logRecords/records[] harvesting in that test (grep-confirmed). TestAggregationGateLog (the log-fields test) deliberately avoids the idle-gap branch (its widened dwell forces the sustained-low-load collapse branch instead). So the load_fps schema-uniformity invariant T143 added + documented in docs/design.md is regression-locked on only 2 of the 3 'scheduler aggregation change' record sites (engage + dwell-collapse); the IDLE-GAP record's fields (reason='idle gap', gap, and the newly-added load_fps) are present-and-manually-verified but untested. Cause: T143 added the load_fps field to all three record sites but extended log-field assertions to only two; the idle-gap site was left behaviorally-covered-only. Low severity — no runtime defect, a missing regression lock."
 
 ### D76 — root-caused
 
@@ -1093,29 +1097,31 @@ archives: []
 - ledgerRefs: ["tasks:T153","tasks:T150","defects:D65","defects:D76","goals:G14"]
 - rootCause: "CONFIRMED against source (orchestrator citation-validation, investigate stage). The active-backup per-path pacer config is carried by SLICE POSITION / TAIL-INHERITANCE, never re-sourced from the path's own identity-keyed cfg.Scheduler.PerPathCapacities. Verified: internal/sched/active_backup.go AddPath (:184-186) seeds a re-grown path's pacer from `s.cfg.tailPacerConfig()` or `s.pacers[n-1].cfg` (the LAST existing pacer), NOT the added path's own cfg-derived capacity; SetPaths (:258) calls resizeActiveBackupPacers(s.pacers, len(health), s.cfg.tailPacerConfig(), ...) which (:275-288) rebuilds buckets by INDEX carry-over from the old slice with a tail fallback. Combined with internal/bind/multipath.go Open excluding a T55-deferred path (EADDRNOTAVAIL source_addr) from the health slice handed to SetPaths, a bound path can be paced at a DIFFERENT cfg.Paths entry's capacity (e.g. cfg.Paths=[slow,fast], slow deferred at boot -> fast's bucket = slow's capacity), and promotion/reload AddPath inherits the tail rather than the path's own T152-derived capacity. Construction-time (all paths bindable at boot) is provably 1:1; the hole is the deferral/promotion/reload-churn path. This silently reintroduces the D65 fast-path-throttled-to-slow-rate fault the pacing feature exists to remove. FIX (unchanged from filing): key each path's pacer config by IDENTITY through the DynamicScheduler SetPaths/AddPath/promotion interfaces, sourced from the path's own cfg.Scheduler.PerPathCapacities[identity] (the bind knows the m.defs index of every bound/promoted path), + a regression test (defer path 0, assert path 1 keeps its own capacity; promote path 0, assert it gets its own). READY-TO-SEED into an active-backup-pacing-correctness fix goal together with [[D76]] (active-backup lacks ProbeBudget) — both are churn/coverage holes in the T150/T152/T153 active-backup pacing feature; awaiting /cq:plan to house the fix."
 
-### D80 — open
+### D80 — root-caused
 
 - createdAt: 2026-07-14T19:34:45.404Z
-- updatedAt: 2026-07-14T19:34:45.404Z
+- updatedAt: 2026-07-14T19:52:15.101Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: restart_onesided_test.go (r121/T121) binds concentrator /metrics to a NON-loopback address — same T17 loopback-invariant violation as D77, fails on hardware
 - description: "Reported by the D77-fix worker (out-of-scope for D77). test/e2e/restart_onesided_test.go (the r121/T121 restart fixture) carries the IDENTICAL defect D77 fixed in multipeer_hardened_test.go: it binds the concentrator's /metrics to its uplink IP (port 9104, non-loopback) instead of loopback, which internal/metrics/server.go's requireLoopback (T17 invariant, docs/design.md:740) unconditionally rejects — so the concentrator daemon would refuse to start and the test would FAIL deterministically when run privileged on hardware (it has been compile/skip-validated but likely never executed on real netns, like T128 pre-D77). The registry comment even documents this: '9104 restart_onesided_test.go (r121MetricsPort; edge on 127.0.0.1, concentrator on its uplink IP)'."
 - severity: medium
-- suggestedFix: "Apply the SAME D77 fix: bind the concentrator /metrics to 127.0.0.1:9104 inside the peer netns and scrape via fetchMetricsInNetns (the p2/p3/p4 mechanism, now also used by multipeer_hardened_test.go post-D77). Then run it privileged on o3+llm-ubuntu-0 to confirm."
+- suggestedFix: "Apply the D77 remediation pattern: bind the concentrator /metrics to 127.0.0.1:9104 inside the peer netns and scrape via fetchMetricsInNetns/netnsMetricsClient (the p2/p3/p4 in-netns curl mechanism multipeer_hardened_test.go adopted post-D77), replacing the uplink-IP survivorURL/restartedURL scrapes (restart_onesided_test.go:145,:208). Then run privileged on o3 (aarch64) + llm-ubuntu-0 (amd64) to confirm the concentrator starts and both pre/post-restart scrapes succeed. Seed alongside D77 into the metrics-loopback-hardening fix goal."
 - ledgerRefs: ["tasks:T121","defects:D77","goals:G8"]
+- rootCause: "CONFIRMED against source — real T17-invariant violation. internal/metrics/server.go requireLoopback (:125-155) UNCONDITIONALLY rejects any non-loopback IP literal ('if !ip.IsLoopback() { return ErrNonLoopbackBind }'), NewServer calls it and returns the error WITHOUT binding (:50-52), and verifyLoopbackBind (:157+) act-then-verifies the concrete bound address fail-closed. test/e2e/restart_onesided_test.go builds the concentrator's metrics listen as concMetricsIP+':'+9104 where concMetricsIP is the concentrator's PRIMARY UPLINK address (restart_onesided_test.go:328, r121ConcMetricsListen — a non-loopback veth IP), so on a real privileged run NewServer returns ErrNonLoopbackBind → the concentrator daemon refuses to start → the test fails deterministically. The test's own comment (:82-84,:319 'binds its primary uplink address instead ... reachable over the veth') is the INCORRECT premise — it predates/ignores the T17 requireLoopback invariant (design.md:740). Identical class to D77 (multipeer_hardened_test.go), which this restart fixture never had applied because it has been compile/skip-validated but not executed on real netns. Cause: the r121/T121 fixture was authored assuming the concentrator /metrics could bind a routable veth address for base-netns scraping, which requireLoopback forbids."
 
-### D81 — open
+### D81 — root-caused
 
 - createdAt: 2026-07-14T19:34:55.928Z
-- updatedAt: 2026-07-14T19:34:55.928Z
+- updatedAt: 2026-07-14T19:52:26.088Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: multipeer_test.go (T97) asserts per-peer INBOUND rx_bytes>0 for the non-primary concentrator peer — structurally always 0
 - description: "Reported by the D77-fix worker (out-of-scope). test/e2e/multipeer_test.go (T97) asserts a NON-PRIMARY concentrator peer's per-peer inbound wanbond_path_rx_bytes_total > 0. That is STRUCTURALLY ALWAYS 0 on a multi-peer concentrator: one readLoop per shared path attributes ALL received bytes to the PRIMARY peer only (internal/bind/multipath.go, T23/T93 design — one reader per shared socket, rx accounting keyed to the primary). So the assertion can only pass by luck/misattribution or would fail on a real run. The D77-fix worker hit and fixed the SAME issue in multipeer_hardened_test.go's d47 by switching the per-peer assertion from rx to tx. T97's assertion has the same latent flaw. NOTE: this couples with the deeper production question (D77-fix finding #4): whether per-peer INBOUND byte accounting on a multi-peer concentrator SHOULD attribute per demuxed peer (move rxBytes.Add into demuxInbound) rather than all-to-primary — a design decision, not just a test fix."
 - severity: medium
-- suggestedFix: Switch T97's non-primary per-peer assertion from inbound rx_bytes to outbound tx_bytes (which IS per-peer-attributed), mirroring the D77-fix d47 correction. Separately consider (design decision) whether to move rxBytes.Add into demuxInbound so per-peer INBOUND accounting becomes correct — if so, file a production task and keep the rx assertion.
+- suggestedFix: "Switch T97's non-primary per-peer INBOUND assertion from MetricRxBytes to MetricTxBytes (per-peer-attributed), mirroring the D77-fix d47 correction, and reword the :201 comment to match. SEPARATELY (design decision, own task — couples with D77-fix finding #4): decide whether per-peer INBOUND accounting on a multi-peer concentrator SHOULD attribute per demuxed peer (move rxBytes.Add into demuxInbound); if adopted, keep an rx assertion and file the production task. Seed the test-fix into the same metrics/e2e-hardening goal as D80/D77."
 - ledgerRefs: ["tasks:T97","defects:D58","goals:G8"]
+- rootCause: "CONFIRMED against source. test/e2e/multipeer_test.go DOES assert non-primary per-peer INBOUND rx>0: for each peer label (mpPeerALabel AND mpPeerBLabel) it sums rx across both uplinks via PeerPathValue(MetricRxBytes,...) into peerBytes and then fails on 'if peerBytes <= 0 { t.Fatalf(\"peer %q carried non-positive rx bytes ...\") }' (multipeer_test.go ~:206-213). The inline comment ':201 'counts are report-only ... the asserted invariant is per-peer presence'' is itself CONTRADICTED by that <=0 fatal below it. On a multi-peer concentrator the single readLoop per shared path attributes ALL received bytes to the PRIMARY peer (internal/bind/multipath.go, T23/T93 one-reader-per-shared-socket, rx keyed to primary), so the NON-primary peer's summed rx is structurally 0 → peerBytes<=0 → deterministic fatal on a real run. The parallel tx block (:277 txTotal<=0) is CORRECT because tx IS per-peer attributed. This is the SAME latent flaw the D77-fix worker already hit+fixed in multipeer_hardened_test.go's d47 (switched the non-primary per-peer assertion rx->tx). Cause: T97's per-peer inbound assertion assumes per-demuxed-peer rx accounting that the shipped datapath does not provide."
 
 ## M49
 
