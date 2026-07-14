@@ -989,10 +989,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-025518-ab151251d328f46db.md",".cq/logs/20260714-030657-a4a3590b837613332.md",".cq/logs/20260714-030657-aa1362bb37a2ee5d5.md"]
 - rawLogs: [".cq/logs/raw/20260714-025518-ab151251d328f46db.jsonl",".cq/logs/raw/20260714-030657-a4a3590b837613332.jsonl",".cq/logs/raw/20260714-030657-aa1362bb37a2ee5d5.jsonl"]
 
-### T91 — wip
+### T91 — done
 
 - createdAt: 2026-07-13T22:28:36.021Z
-- updatedAt: 2026-07-14T02:48:35.164Z
+- updatedAt: 2026-07-14T03:53:04.093Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Cap provisional unbound-source demux state; lazy peerState instantiation and dead-peer teardown
@@ -1001,6 +1001,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T89"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: a99c3ed
+- completion: "Bounded the bootstrap DoS surface + pinned the per-peer lifecycle (internal/bind/multipath.go + peer_lifecycle_test.go + peer_fec_lifecycle_test.go): capped source→peer demux map (default 1024, drop-on-exhaustion, never evicts a live binding); heavy per-peer receive datapath (2048-frame resequencer ring + FEC decoder) instantiates LAZILY on first authenticated binding via lock-free atomic-pointer CAS; TearDownPeer (device-facing seam) frees ring/FEC + releases a dead peer's bindings, refusing any live (Up) peer + the primary; dispatchInbound nil-guards a torn-down ring. R2 additionally FIXED a production parity-loss defect (fecSend freed on teardown was never re-instantiated on re-bind → a rebound FEC peer silently sent without parity) by rebuilding fecSend on re-bind, and closed the CAS ordering hole with a per-peer lifecycleMu serializing heavy-trio build vs teardown/close (fecSend made atomic.Pointer). All mechanisms mutation-verified (2 rounds); go test -race ./internal/bind/... -count=2 green incl. a 400-round concurrent teardown/rebind test. Deadlock-free (strict m.mu ⊃ lifecycleMu). Filed 2 deferred defects: D49 (insider cap-monopoly), D50 (untracked TearDownPeer device wiring). ff-merged as a99c3ed."
+- sessionLogs: [".cq/logs/20260714-030903-aa2065422bfcb3fa2.md",".cq/logs/20260714-032122-acd6bfff48ecc6611.md",".cq/logs/20260714-032122-a43969b0d13dec49c.md",".cq/logs/20260714-035218-a84c7434f6d908139.md",".cq/logs/20260714-035218-a6f8746b8e0351608.md"]
+- rawLogs: [".cq/logs/raw/20260714-030903-aa2065422bfcb3fa2.jsonl",".cq/logs/raw/20260714-032122-acd6bfff48ecc6611.jsonl",".cq/logs/raw/20260714-032122-a43969b0d13dec49c.jsonl",".cq/logs/raw/20260714-035218-a84c7434f6d908139.jsonl",".cq/logs/raw/20260714-035218-a6f8746b8e0351608.jsonl"]
 
 ### T92 — planned
 

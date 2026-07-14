@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 100
+  item: 101
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1022,6 +1022,19 @@ archives:
 - ledgerRefs: ["tasks:T90","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-030657-a4a3590b837613332.md",".cq/logs/20260714-030657-aa1362bb37a2ee5d5.md"]
 - rawLogs: [".cq/logs/raw/20260714-030657-a4a3590b837613332.jsonl",".cq/logs/raw/20260714-030657-aa1362bb37a2ee5d5.jsonl"]
+
+### R101 — go-ahead
+
+- createdAt: 2026-07-14T03:52:53.997Z
+- updatedAt: 2026-07-14T03:52:53.997Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T91 terminal reconciled panel verdict after 2 rounds. R1: [opus] disapprove (dispatchInbound nil-guards untested — mutation survived) + [fable] disapprove (FEC-plane lifecycle vacuously tested under the FEC-off fixture; AND a REAL production defect — fecSend freed on teardown but never re-instantiated on re-bind → silent parity loss; + a CAS ordering hole). 2 deferred defects filed (D49 insider cap-monopoly, D50 untracked TearDownPeer device wiring). R2 (2b9a0de) UNANIMOUS approve: worker (1) added TestDispatchInboundNilGuardsDropNotPanic (still-bound source + niled ring) + a -race teardown-vs-demux test; (2) added TestConcentratorFECReceivePlaneLifecycle (FEC-ENABLED, asserts real reconstruction absent→instantiated→freed→re-instantiated); (3) FIXED the production defect — ensurePeerReceiveInstantiated now rebuilds fecSend via newFECSender, a per-peer lifecycleMu serializes heavy-trio build vs teardown/close, fecSend made atomic.Pointer. BOTH R2 reviewers independently (isolated git-archive copies) mutation-verified: deleting fecRecv install → receive-lifecycle test RED; deleting fecSend rebuild → send-reinstantiation test RED (parityFrames counts post-WriteToUDPAddrPort egress, so a rebound peer provably emits parity on the wire); DATA nil-guard removal → nil-deref panic. Deadlock-free: strict m.mu ⊃ lifecycleMu, no cycle. go test -race ./internal/bind/... -count=2 green (incl. a 400-round concurrent teardown/rebind test). Rebased onto current main and ff-merged as a99c3ed."
+- criticism: ["[opus, R1, RESOLVED R2] dispatchInbound DATA+PARITY nil-guards were untested (mutation survived) — added still-bound-source niled-ring guard tests + a -race teardown-vs-demux test.","[fable, R1, RESOLVED R2] FEC-plane lifecycle vacuously tested under the FEC-off fixture — added an FEC-enabled lifecycle test asserting real reconstruction across teardown+re-bind.","[fable, R1, RESOLVED R2] PRODUCTION DEFECT: fecSend freed on teardown but never re-instantiated on re-bind (silent parity loss) + CAS ordering hole — fixed by rebuilding fecSend on re-bind + a per-peer lifecycleMu ordering build vs teardown; fecSend made atomic.Pointer."]
+- new_questions: []
+- ledgerRefs: ["tasks:T91","goals:G4","defects:D49","defects:D50"]
+- sessionLogs: [".cq/logs/20260714-032122-acd6bfff48ecc6611.md",".cq/logs/20260714-032122-a43969b0d13dec49c.md",".cq/logs/20260714-035218-a84c7434f6d908139.md",".cq/logs/20260714-035218-a6f8746b8e0351608.md"]
+- rawLogs: [".cq/logs/raw/20260714-032122-acd6bfff48ecc6611.jsonl",".cq/logs/raw/20260714-032122-a43969b0d13dec49c.jsonl",".cq/logs/raw/20260714-035218-a84c7434f6d908139.jsonl",".cq/logs/raw/20260714-035218-a6f8746b8e0351608.jsonl"]
 
 ## M30
 
