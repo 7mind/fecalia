@@ -70,10 +70,14 @@ type rehandshake func()
 // T57 (the endpoints-list "list" is the one-element normalization of the legacy single
 // endpoint form, per T54).
 type hubFailover struct {
-	// endpoints is the ORDERED concentrator endpoint list (config.Peer.Endpoints):
-	// index 0 = active/primary at boot, the rest ordered standbys. Immutable after
-	// construction. IP:port only — no DNS resolution (the T54 constraint).
-	endpoints []netip.AddrPort
+	// specs is the ORDERED concentrator endpoint set, one failoverSpec per configured
+	// endpoint entry (config.Peer.EndpointSpecs), in TOML order. Each spec OWNS its
+	// current expansion ([]netip.AddrPort): a literal is a fixed single entry; a hostname
+	// is its latest resolved record set (empty until the resolver — wired by a later task —
+	// first calls updateResolution). The FLATTENED concatenation of every spec's expansion,
+	// in spec order, is the failover order; the flattened index is what `check` advances.
+	// The set is MUTABLE: updateResolution swaps a spec's expansion in place under mu.
+	specs []failoverSpec
 	// health is the per-path liveness, one entry per configured path. Immutable after
 	// construction (the prober set is fixed for the tunnel's life).
 	health []hubHealth
@@ -87,7 +91,20 @@ type hubFailover struct {
 	log    log.Logger
 
 	mu sync.Mutex
-	// idx is the ACTIVE endpoint index (0 at boot). Guarded by mu.
+	// activeSpec and activeAddr are the SPEC-SCOPED identity of the ACTIVE endpoint (R70):
+	// the pair (owning spec index, AddrPort) — NEVER a bare flattened index and NEVER a
+	// bare AddrPort. Because a hostname may legitimately re-resolve onto the SAME AddrPort
+	// as another spec's literal (T67's load-time duplicate check is textual host:port
+	// only), duplicate AddrPort VALUES may appear across different specs in the flattened
+	// list; a bare-value re-map could silently bind the active pointer to the wrong spec's
+	// entry, so the active endpoint is addressed by (specIdx, AddrPort). activeSpec == -1
+	// means no active entry yet (every spec's expansion is empty). Guarded by mu.
+	activeSpec int
+	activeAddr netip.AddrPort
+	// idx is the ACTIVE endpoint's position in the FLATTENED list, DERIVED from
+	// (activeSpec, activeAddr) and re-mapped after every mutation. It is a read-only cache
+	// for observation/logging; the source of truth is the spec-scoped identity above. -1
+	// when there is no active entry. Guarded by mu.
 	idx int
 	// lastSwitch is when the active endpoint was last (re)selected — initialized to
 	// construction time so endpoint 0 gets the SAME settle grace at boot that a switched
@@ -96,13 +113,38 @@ type hubFailover struct {
 	lastSwitch time.Time
 }
 
-// newHubFailover builds the controller over the ordered endpoint list and the per-path
-// liveness set. It is a pure constructor (no goroutine, no engine dependency beyond the
-// injected collaborators) so its decision logic is unit-testable against a fake clock,
-// fake health, and fake remote/rehandshake.
+// failoverSpec is one ordered endpoint entry together with its CURRENT expansion. A
+// literal entry's expansion is the fixed single AddrPort; a hostname entry's expansion is
+// its latest resolved record set (Q32 multi-record), swapped in place by updateResolution.
+// The spec itself (config.EndpointSpec) is retained so the controller can tell a hostname
+// spec — which may grow/shrink at runtime — from an immutable literal, e.g. when deciding
+// whether the failover loop may ever have work to do.
+type failoverSpec struct {
+	spec  config.EndpointSpec
+	addrs []netip.AddrPort
+}
+
+// newHubFailover builds the controller over an ordered list of IP-LITERAL endpoints — the
+// legacy all-literal form (each address becomes its own single-entry literal spec). It is
+// a pure constructor (no goroutine, no engine dependency beyond the injected collaborators)
+// so its decision logic is unit-testable against a fake clock, fake health, and fake
+// remote/rehandshake.
 func newHubFailover(endpoints []netip.AddrPort, health []hubHealth, remote peerRemote, rh rehandshake, clock telemetry.Clock, settle time.Duration, lg log.Logger) *hubFailover {
-	return &hubFailover{
-		endpoints:   endpoints,
+	specs := make([]failoverSpec, len(endpoints))
+	for i, ap := range endpoints {
+		specs[i] = failoverSpec{spec: config.EndpointSpec{Addr: ap}, addrs: []netip.AddrPort{ap}}
+	}
+	return newHubFailoverFromSpecs(specs, health, remote, rh, clock, settle, lg)
+}
+
+// newHubFailoverFromSpecs builds the controller over the ordered, spec-keyed endpoint set.
+// The active endpoint is initialized to the FIRST flattened entry (spec order); when every
+// spec's expansion is empty (e.g. a hostname-only peer before the resolver has run) there
+// is no active entry yet (activeSpec == -1) and check takes no action until an expansion
+// appears. Like newHubFailover it injects no goroutine or engine dependency.
+func newHubFailoverFromSpecs(specs []failoverSpec, health []hubHealth, remote peerRemote, rh rehandshake, clock telemetry.Clock, settle time.Duration, lg log.Logger) *hubFailover {
+	h := &hubFailover{
+		specs:       specs,
 		health:      health,
 		remote:      remote,
 		rehandshake: rh,
@@ -111,6 +153,124 @@ func newHubFailover(endpoints []netip.AddrPort, health []hubHealth, remote peerR
 		lastSwitch:  clock.Now(),
 		log:         lg,
 	}
+	h.activeSpec, h.activeAddr = h.entryAtLocked(0)
+	h.idx = h.flatIndexLocked(h.activeSpec, h.activeAddr)
+	return h
+}
+
+// flatLenLocked is the number of endpoints in the FLATTENED list (the sum of every spec's
+// current expansion length). Caller holds mu.
+func (h *hubFailover) flatLenLocked() int {
+	n := 0
+	for i := range h.specs {
+		n += len(h.specs[i].addrs)
+	}
+	return n
+}
+
+// canFailoverLocked reports whether the controller could EVER take a failover action: the
+// flattened list already holds >= 2 endpoints, or SOME spec is a hostname whose runtime
+// resolution may yet grow it. An all-literal set with a single entry can never grow, so its
+// loop is a pure no-op and need not run. Caller holds mu.
+func (h *hubFailover) canFailoverLocked() bool {
+	if h.flatLenLocked() >= 2 {
+		return true
+	}
+	for i := range h.specs {
+		if h.specs[i].spec.IsName {
+			return true
+		}
+	}
+	return false
+}
+
+// flatIndexLocked returns the position of (specIdx, addr) in the FLATTENED list, or -1 if
+// no such entry exists. It matches BOTH the owning spec index AND the AddrPort — never the
+// bare value — so a duplicate AddrPort contributed by a DIFFERENT spec is skipped (R70);
+// within the owning spec the FIRST occurrence wins. Caller holds mu.
+func (h *hubFailover) flatIndexLocked(specIdx int, addr netip.AddrPort) int {
+	flat := 0
+	for si := range h.specs {
+		for _, a := range h.specs[si].addrs {
+			if si == specIdx && a == addr {
+				return flat
+			}
+			flat++
+		}
+	}
+	return -1
+}
+
+// entryAtLocked maps a FLATTENED index back to its (owning spec index, AddrPort), or
+// (-1, zero) when flatIdx is out of range (including an empty flattened list). Caller holds mu.
+func (h *hubFailover) entryAtLocked(flatIdx int) (int, netip.AddrPort) {
+	if flatIdx < 0 {
+		return -1, netip.AddrPort{}
+	}
+	n := 0
+	for si := range h.specs {
+		for _, a := range h.specs[si].addrs {
+			if n == flatIdx {
+				return si, a
+			}
+			n++
+		}
+	}
+	return -1, netip.AddrPort{}
+}
+
+// containsAddrPort reports whether addrs holds target (exact AddrPort equality).
+func containsAddrPort(addrs []netip.AddrPort, target netip.AddrPort) bool {
+	for _, a := range addrs {
+		if a == target {
+			return true
+		}
+	}
+	return false
+}
+
+// updateResolution swaps specIdx's expansion under h.mu — the sole mutation point of the
+// endpoint set — and reconciles the active pointer WITHIN its owning spec (R70 spec-scoped
+// identity):
+//   - A STANDBY-only change (specIdx != activeSpec) NEVER touches the bond: the active
+//     entry is untouched; only the DERIVED flattened idx is re-mapped (an earlier spec
+//     growing/shrinking shifts the active entry's flattened position without moving it).
+//   - When the ACTIVE spec's own expansion changes: if the active AddrPort SURVIVES the
+//     swap within that spec, the active entry is stable — strictly NO repoint (Q31/D32
+//     no-op suppression), only the idx re-maps. If the active AddrPort is GONE, the active
+//     endpoint's IP has genuinely changed: repoint via exactly ONE SetPeerRemote (D32
+//     disruptive → Rebaseline + rehandshake) and one rehandshake to the new expansion's
+//     first entry.
+//
+// A change that empties the active spec (nothing to point at) leaves the active identity
+// stale — the flattened list no longer contains it — and the next check on hub loss
+// advances off it; no repoint is issued to a non-existent endpoint.
+func (h *hubFailover) updateResolution(specIdx int, addrs []netip.AddrPort) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if specIdx < 0 || specIdx >= len(h.specs) {
+		return
+	}
+	h.specs[specIdx].addrs = addrs
+
+	if specIdx == h.activeSpec {
+		if !containsAddrPort(addrs, h.activeAddr) && len(addrs) > 0 {
+			// The active endpoint's own spec re-resolved off the current AddrPort: its IP
+			// changed. Repoint the bond once and re-handshake against the new first entry.
+			prev := h.activeAddr
+			h.activeAddr = addrs[0]
+			h.remote.SetPeerRemote(h.activeAddr)
+			if h.rehandshake != nil {
+				h.rehandshake()
+			}
+			h.log.Warn("hub failover: active concentrator endpoint re-resolved; repointed remote and re-handshaked",
+				"spec_index", specIdx, "from_endpoint", prev.String(), "to_endpoint", h.activeAddr.String())
+		}
+		// Survived (or empty expansion): no repoint. idx re-maps below.
+	}
+
+	h.idx = h.flatIndexLocked(h.activeSpec, h.activeAddr)
 }
 
 // allDownLocked reports HUB LOSS: every path's liveness to the active concentrator is
@@ -137,10 +297,12 @@ func (h *hubFailover) check() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// GUARD: a single-endpoint (or empty) list takes NO failover action — no advance, no
-	// remote repoint, no re-handshake — so a one-concentrator deployment is byte-for-byte
-	// the pre-T57 behaviour.
-	if len(h.endpoints) < 2 {
+	// GUARD: a FLATTENED list of fewer than two endpoints takes NO failover action — no
+	// advance, no remote repoint, no re-handshake — so a one-concentrator deployment is
+	// byte-for-byte the pre-T57 behaviour, and a hostname peer whose resolution has not yet
+	// yielded a second endpoint waits rather than churning.
+	total := h.flatLenLocked()
+	if total < 2 {
 		return
 	}
 	if !h.allDownLocked() {
@@ -154,9 +316,21 @@ func (h *hubFailover) check() {
 		return
 	}
 
-	prev := h.idx
-	h.idx = (h.idx + 1) % len(h.endpoints)
-	next := h.endpoints[h.idx]
+	// Advance in FLATTENED order from the active entry's current flattened position. The
+	// position is re-derived from the spec-scoped identity every step, so a standby spec
+	// that grew/shrank since the last advance is walked at its new offset. A missing active
+	// (activeSpec == -1, or its AddrPort no longer present) resumes from the head.
+	prev := h.flatIndexLocked(h.activeSpec, h.activeAddr)
+	var nextIdx int
+	if prev < 0 {
+		nextIdx = 0
+	} else {
+		nextIdx = (prev + 1) % total
+	}
+	nextSpec, next := h.entryAtLocked(nextIdx)
+	h.activeSpec = nextSpec
+	h.activeAddr = next
+	h.idx = nextIdx
 	h.lastSwitch = now
 
 	// Repoint the DATA/PROBE plane FIRST so probes immediately start re-arming detection
@@ -166,7 +340,7 @@ func (h *hubFailover) check() {
 		h.rehandshake()
 	}
 	h.log.Warn("hub failover: all paths to active concentrator down; switched endpoint and re-handshaked",
-		"from_index", prev, "to_index", h.idx, "to_endpoint", next.String(), "endpoints", len(h.endpoints))
+		"from_index", prev, "to_index", nextIdx, "to_spec", nextSpec, "to_endpoint", next.String(), "endpoints", total)
 }
 
 // deviceRehandshake returns a rehandshake bound to the engine peer identified by pk: it
@@ -193,29 +367,55 @@ func deviceRehandshake(dev *awgdevice.Device, pk config.Key) rehandshake {
 	}
 }
 
+// peerNeedsHubFailover reports whether a peer's endpoint set warrants a hub-failover
+// controller: it does when the peer carries ANY hostname spec (its runtime resolution may
+// yield further endpoints, and even a single hostname can re-resolve onto a new IP the bond
+// must be repointed at) OR when >= 2 IP-literal endpoints are configured (an ordered
+// active-standby list). A single-IP-literal peer needs NO controller — it is byte-for-byte
+// the pre-G5 single-concentrator deployment (Q29), so the failover path never constructs
+// or runs for it.
+func peerNeedsHubFailover(peer config.Peer) bool {
+	for _, s := range peer.EndpointSpecs {
+		if s.IsName {
+			return true
+		}
+	}
+	return len(peer.Endpoints) >= 2
+}
+
 // startHubFailover builds and starts the edge-side hub-failover monitor for cfg's
 // concentrator peer, or returns a NO-OP stopper when hub failover does not apply: the
 // concentrator role (it roams edges dynamically and has no endpoint list), a bind without
-// the probe transport (no probers → no liveness plane), or no peer carrying an ordered
-// (>= 2) endpoint list (a single-concentrator deployment, which the GUARD keeps
-// behaviour-identical to pre-T57). The edge bonds every path to a SINGLE concentrator, so
-// the whole per-path prober set IS the liveness of the paths to that concentrator (hub
-// loss = every one DOWN); the controller drives the first peer carrying an ordered
-// endpoint list. The returned stopper is what device.Close invokes to halt the loop.
+// the probe transport (no probers → no liveness plane), or no peer whose endpoint set
+// warrants a controller (peerNeedsHubFailover — a single-IP-literal deployment gets none,
+// staying behaviour-identical to pre-G5). The edge bonds every path to a SINGLE
+// concentrator, so the whole per-path prober set IS the liveness of the paths to that
+// concentrator (hub loss = every one DOWN); the controller drives the first qualifying
+// peer. The returned stopper is what device.Close invokes to halt the loop.
 func startHubFailover(cfg *config.Config, mp *bind.Multipath, probers []*telemetry.Prober, dev *awgdevice.Device, lg log.Logger) func() {
 	if cfg.Role != config.RoleEdge || len(probers) == 0 {
 		return func() {}
 	}
 	for _, peer := range cfg.WireGuard.Peers {
-		if len(peer.Endpoints) < 2 {
+		if !peerNeedsHubFailover(peer) {
 			continue
 		}
 		health := make([]hubHealth, len(probers))
 		for i, pr := range probers {
 			health[i] = pr
 		}
-		ctrl := newHubFailover(
-			peer.Endpoints, health, mp,
+		// Seed each spec's expansion: a literal is its fixed single AddrPort; a hostname
+		// starts EMPTY — resolution is a later task's job (Q30), not wired here.
+		specs := make([]failoverSpec, len(peer.EndpointSpecs))
+		for i, s := range peer.EndpointSpecs {
+			var addrs []netip.AddrPort
+			if !s.IsName {
+				addrs = []netip.AddrPort{s.Addr}
+			}
+			specs[i] = failoverSpec{spec: s, addrs: addrs}
+		}
+		ctrl := newHubFailoverFromSpecs(
+			specs, health, mp,
 			deviceRehandshake(dev, peer.PublicKey),
 			telemetry.SystemClock{}, hubFailoverSettle,
 			lg.Component("hubfailover"),
@@ -233,10 +433,15 @@ func startHubFailover(cfg *config.Config, mp *bind.Multipath, probers []*telemet
 // StartProbeLoop/StartReconcileLoop lifecycle glue — a wall-clock ticker driving a
 // decision function whose every timing choice runs through the injected Clock, so a test
 // drives check directly against a fake clock and never starts this goroutine. It is a
-// no-op (no-op stopper) for a single-endpoint list (nothing to fail over to) or a
-// non-positive interval.
+// no-op (no-op stopper) for a controller that can NEVER fail over (canFailoverLocked: an
+// all-literal set with fewer than two entries — no hostname to grow it) or a non-positive
+// interval. A hostname peer whose expansion is still empty DOES start the loop: its
+// resolution may later populate a second endpoint, and check no-ops cheaply until then.
 func (h *hubFailover) startHubFailoverLoop(interval time.Duration) (stop func()) {
-	if len(h.endpoints) < 2 || interval <= 0 {
+	h.mu.Lock()
+	can := h.canFailoverLocked()
+	h.mu.Unlock()
+	if !can || interval <= 0 {
 		return func() {}
 	}
 	done := make(chan struct{})
