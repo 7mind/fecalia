@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 173
+  item: 174
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1793,6 +1793,17 @@ archives:
 - criticism: ["[fable] FALSE-FALLBACK + PER-TICK SPAM RELOCATED to the promote-failure edge: in reconcileDeferred (internal/bind/reconcile.go ~L128-135) the two success-path warns (warnForcedDeviceUnresolvable + warnDeviceBindFallback) fire after deferredListen succeeds but BEFORE promoteDeferredLocked. On promotion failure the fresh socket is closed (_ = c.Close()) and the path stays deferred — so 'falling back to source-IP pinning' is OUTCOME-FALSE (no socket persists, path never comes up), and because promotion is retried every 1 Hz tick with NO dedup on these two warns, a persistent promotion failure (defIdx/prober desync or attachSharedPathLocked error — the code's own 'wiring defect' path) spams the false claim once per tick. This is exactly the round-1 defect class (false claim + 1 Hz spam) relocated. FIX: emit both warns ONLY after promoteDeferredLocked returns nil (the fallback socket has actually materialized AND been installed).","[fable] TestReconcileDeferredReArmsAfterResolveThenUnresolve is MUTATION-VACUOUS for the latch-clear it documents: deleting `dp.warnedUnresolvable = false` from reconcileDeferred leaves the test PASSING (verified by mutation). It promotes the entry OUT of m.deferred then AddPath mints a FRESH deferredPath whose latch is trivially unset — the latch-clear line's only observable flow (listen-success → promote-FAILURE → SAME kept entry) is untested. FIX: strengthen to re-arm the SAME kept entry — inject a promoteDeferredLocked failure (e.g. rename m.deferred[0].def.Name so defIdx<0) so listen-success clears the latch on a KEPT entry, then drive a failing listen and assert a NEW WARN fires.","[fable] STALE COMMENT in TestAddPathWarnsOnUnresolvableForcedDeviceBind (internal/bind/devicebind_warn_test.go ~L136): 'the WARN under test fires BEFORE that bind attempt, independent of whether the fallback bind itself later succeeds' — FALSE after round 2: the warn fires INSIDE the EADDRNOTAVAIL deferral branch (AFTER the failed bind), and a successful fallback logs the OTHER (fallback-claiming) message instead. Correct the comment to the round-2/3 semantics."]
 - new_questions: []
 - ledgerRefs: ["tasks:T134","goals:G10","defects:D53","defects:D71"]
+
+### R173 — go-ahead
+
+- createdAt: 2026-07-14T15:50:37.346Z
+- updatedAt: 2026-07-14T15:50:37.346Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T134 review round 3 — RECONCILED GO-AHEAD (opus + fable panel, strictest-wins; BOTH approve). Round-3 fixed the round-2 fable-caught defect (false-fallback + per-tick spam RELOCATED to the promote-failure edge) at ALL THREE listenPath call sites: reconcileDeferred (reconcile.go:154-155, warns after promoteDeferredLocked returns nil, continue at :148 on failure), Open (multipath.go:1049, after the peer fan-out loop), AddPath (multipath.go:2706, after attachSharedPathLocked) — the worker found Open/AddPath had the SAME before-install ordering defect and relocated those too. BOTH reviewers independently MUTATION-VERIFIED: (a) deleting `dp.warnedUnresolvable = false` fails the new TestReconcileDeferredKeptEntryClearsLatchOnPromoteFailureThenReArms at the latch assertion (round-2 vacuity CLOSED); (b) moving warns back before promote fails it at the zero-WARN assertion with the exact outcome-false 'falling back to source-IP pinning' record; fable additionally ran a fresh 5-tick persistent-promote-failure repro emitting ZERO fallback claims, and confirmed exactly three listenPath call paths exist (Open :960, addPathListen :2634, deferredListen :116) — no fourth relocation site, no per-peer N-multiplication. Genuine success-install still warns exactly once (no over-suppression). C3 stale comment + docs (design.md/install.md) corrected to 'materialized AND installed' semantics. Both noted a NON-blocking marginal Open cross-def-abort window (path i warns true-at-emission, then a later sibling def's fatal listen aborts Open — one-shot, no retry loop, not the spam-class defect). Merged to main as ac9274b (round-2 core) + 10f8a4c (round-3) via clean cherry-pick of a768452..f7b605f onto a4406e7 (docs/install.md + device.go 3-way auto-merged with T158/T135, no conflicts). Full gate green on composed main: go build/vet/test bind+device ok; just lint 0 issues default+e2e+realhosts. 3 rounds, defect class provably eliminated."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T134","goals:G10","defects:D53"]
 
 ## M47
 
