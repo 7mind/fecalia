@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 7
+  item: 8
 archives: []
 ---
 
@@ -93,3 +93,17 @@ archives: []
 - headline: "plan review: approved"
 - rationale: Reviewer go-ahead per R82 (unanimous opus+fable panel, empty new_questions/criticism). Plan M30-M33 / T100-T115 approved; DAG verified acyclic (R80 revise -> R81 revise -> R82 go-ahead). Locking to permit planning->planned.
 - ledgerRefs: ["goals:G6"]
+
+## M34
+
+### K8 — locked
+
+- createdAt: 2026-07-14T09:39:07.375Z
+- updatedAt: 2026-07-14T09:39:07.375Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G7 plan approved: D36/D37 restart-handshake fix DAG locked (M39-M41 / T116-T122)"
+- rationale: "Unanimous reviewer go-ahead (R127, round 2, opus+fable) after a round-1 revise (R126) whose two criticisms were resolved. The confirmed root cause: the outer-plane resequencer SUSPECT-drops a restarted peer's low-outer-seq frames (wrapping the WG init) because Rebaseline() is wired only to hub-failover. The locked plan: T116 surface the authenticated T38 peer-restart epoch-change as a Reflect return-flag (restart-vs-bootstrap gated; per-epoch deduped) → T119 consume it at the single dispatchInbound seam (covers edge single-concentrator + every concentrator per-peer resequencer, both directions) with a LOW-ANCHOR re-anchor variant that closes the stale-high re-pin race by reusing the resequencer's own one-window SUSPECT boundary; independently T117 (bind one-shot first-path-up) → T120 (device forced WG (re)init via deviceRehandshake backdating) fixes the compounding D37 pre-liveness startup init; T118 rebaseline/dropSuspect counters, T121 deferred netns one-sided-restart e2e (o3 + llm-ubuntu-0, G2 pattern), T122 docs. Fixes defects:D36, folds defects:D37. Synthesized from opus+fable candidate planners (fable base for the sharper restart-vs-bootstrap distinction + surface→wiring splits; opus's observability-counters task folded in)."
+- landsIn: ["M39","M40","M41"]
+- sourceRefs: ["goals:G7","reviews:R126","reviews:R127"]
+- ledgerRefs: ["goals:G7","defects:D36","defects:D37"]

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 125
+  item: 127
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1413,3 +1413,31 @@ archives:
 - ledgerRefs: ["tasks:T115","goals:G6","defects:D60"]
 - sessionLogs: [".cq/logs/20260714-084317-a1960e942fe11ca6d.md",".cq/logs/20260714-084317-af168e7ecc9a2339a.md"]
 - rawLogs: [".cq/logs/raw/20260714-084317-a1960e942fe11ca6d.jsonl",".cq/logs/raw/20260714-084317-af168e7ecc9a2339a.jsonl"]
+
+## M34
+
+### R126 — revise
+
+- createdAt: 2026-07-14T09:32:37.660Z
+- updatedAt: 2026-07-14T09:32:37.660Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G7 plan review round 1 — RECONCILED verdict REVISE (strictest-wins): [opus] go-ahead, [fable] revise (2 criticisms). Both verified the root-cause→fix mapping sound + grounded (T119 reflect-site is the surviving peer's reflector; one dispatchInbound seam covers edge+concentrator + both directions; T38 adoption authenticated; restart-vs-bootstrap gate correct; deviceRehandshake backdating defeats RekeyTimeout; DAG acyclic, units before deferred e2e). [fable]'s 2 revise findings folded into T116+T119 (below)."
+- criticism: ["[fable] T116/T119 API-form divergence: T116 offered callback OR return-flag; T119's wiring/lock-discipline only cohere with the RETURN-FLAG form. FIX: pin the return-flag form in T116 (Reflect returns (echo, epochChanged, err)); T119 consumes it. [ADDRESSED in the revised T116/T119.]","[fable] Post-Rebaseline re-pin RACE: Rebaseline clears `started` + trusts the NEXT frame; under the D36 saturation precondition a stale OLD-boot high-seq straggler can land between the Rebaseline and the wrapped low-seq init, re-pinning next high, and the once-per-epoch dedup then blocks recovery → silent degrade to the slow tryResync path. FIX: a LOW-ANCHOR-ONLY rebaseline variant (re-anchor only on a frame far below the pre-rebaseline release point; stale-high stragglers stay SUSPECT-dropped until the low init) + a stale-high-between regression test. [ADDRESSED in the revised T119.]"]
+- new_questions: []
+- ledgerRefs: ["goals:G7"]
+- sessionLogs: [".cq/logs/20260714-093144-a63bb8cfc747aa8c7.md",".cq/logs/20260714-093144-a4220290e07861420.md"]
+- rawLogs: [".cq/logs/raw/20260714-093144-a63bb8cfc747aa8c7.jsonl",".cq/logs/raw/20260714-093144-a4220290e07861420.jsonl"]
+
+### R127 — go-ahead
+
+- createdAt: 2026-07-14T09:38:23.713Z
+- updatedAt: 2026-07-14T09:38:23.713Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G7 plan review round 2 — UNANIMOUS GO-AHEAD ([opus]+[fable]). Both R126 revise criticisms verified resolved against source: (1) T116 pins the return-flag Reflect form (echo, epochChanged, err) with no callback — lock-coherent because acceptLocked releases r.mu before Reflect returns, so T119 consumes the flag lock-free at multipath.go:1690 (same atomic-Load+nil-check as the DATA branch), and dependsOn:T116 prevents an incompatible build; (2) T119's low-anchor rebaseline variant closes the post-Rebaseline re-pin race by reusing the resequencer's own one-window SUSPECT boundary (a stale old-boot high-seq straggler fails the 'more than one window below the pre-rebaseline release point' predicate and stays SUSPECT-dropped, while the restarted stream's seq~1 init trivially anchors), with the stale-high-between regression case pinned in acceptance and the D32 hub-failover path explicitly preserved. DAG acyclic; T116 signature change staged compile-green; residual >1-window deep-straggler case bounded (degrades only to the pre-existing tryResync fallback). Plan APPROVED — G7 locked to planned."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["goals:G7"]
+- sessionLogs: [".cq/logs/20260714-093902-a58e381892eb74d71.md",".cq/logs/20260714-093902-ac82af35219680402.md"]
+- rawLogs: [".cq/logs/raw/20260714-093902-a58e381892eb74d71.jsonl",".cq/logs/raw/20260714-093902-ac82af35219680402.jsonl"]

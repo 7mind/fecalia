@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 115
+  item: 122
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1432,3 +1432,100 @@ archives:
 - completion: "The final G6 doc-sync consistency sweep (docs/design.md, docs/install.md §3z, docs/runbook.md, wanbond.example.toml). Inventoried what T101/T105-T114 already documented and filled the genuine gaps: added the `bind` key (top-level + per-path, source/device/auto, default auto) to §3z + wanbond.example.toml; added a design.md section covering tun_persist/TUNSETPERSIST, the mode=default-route routing wiring as the ONE deliberate exception to 'the daemon never assigns routes' (both surviving occurrences now inline-qualified), and the wanbond_session_established session signal; added runbook.md pointers to the C1 NetworkManager drop-in, C4 addressing/persistence oneshot, and C3 full-tunnel recipe. All claims grounded verbatim in source; all cross-reference anchors verified against real headings; TestExampleConfigLoads still green. Unanimous round-1 approve; ff-merged as f2e3fc0. Closes the G6 docs surface. (README needed no change; stale config.go bind comments deferred as D60.)"
 - sessionLogs: [".cq/logs/20260714-083759-ace22219f4e9e9b4e.md",".cq/logs/20260714-084317-a1960e942fe11ca6d.md",".cq/logs/20260714-084317-af168e7ecc9a2339a.md"]
 - rawLogs: [".cq/logs/raw/20260714-083759-ace22219f4e9e9b4e.jsonl",".cq/logs/raw/20260714-084317-a1960e942fe11ca6d.jsonl",".cq/logs/raw/20260714-084317-af168e7ecc9a2339a.jsonl"]
+
+## M39
+
+### T116 — planned
+
+- createdAt: 2026-07-14T09:21:14.157Z
+- updatedAt: 2026-07-14T09:33:02.986Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Surface an authenticated peer-restart adoption event from telemetry.Reflector
+- description: "In internal/telemetry/probe.go, expose the session-epoch adoption that acceptLocked already performs (the `echoedChallenge == st.challenge` branch) as a peer-restart signal the bind can consume. A RESTART is specifically an adoption where the path was ALREADY adopted under a DIFFERENT sessionID (st.adopted && sessionID != st.session) — a first-ever bootstrap adoption (!st.adopted) is NOT a restart and must fire nothing. Because all probers of one boot share one sessionID (probe.go ~:130), DEDUP at the Reflector (per-peer) level: track the last restart-adopted sessionID and report the restart ONCE per new epoch, not once per path. SURFACING FORM — PINNED (plan review R126, [fable]): surface it as an explicit RETURN FLAG from Reflect — change Reflect's signature to `(echo []byte, epochChanged bool, err error)` (or a small typed result). Do NOT use a callback on NewReflector: T119 consumes the flag at the dispatchInbound Reflect call site OUTSIDE the reflector's r.mu, whereas a callback would necessarily fire INSIDE acceptLocked under r.mu and violate T119's lock discipline. Keep the Reflector WG-/resequencer-unaware (it returns a boolean; it knows nothing about reseq). Update ALL current Reflect call sites (dispatchInbound + the ~31 probe/perpsk test sites) to compile green, IGNORING the new flag for now (the wiring lands in T119 — no behavioural change yet). Grounding: internal/telemetry/probe.go acceptLocked adoption branch (:378 same-session swallow, :384 adoption), per-boot sessionID; the surviving-side Reflector is exactly the one whose resequencer SUSPECT-drops the restarted peer's frames."
+- acceptance: "Reflect's signature returns an explicit epochChanged bool (no callback). New unit tests in internal/telemetry/probe_test.go (extend TestProbeSessionEpochSurvivesPeerRestart): (a) restart adoption (already-adopted path, NEW sessionID carrying the live challenge) returns epochChanged=true EXACTLY ONCE even across multiple paths of the same boot; (b) first-ever bootstrap adoption returns epochChanged=false; (c) a cross-session probe WITHOUT the live challenge (replay/forgery) returns false; (d) within-session probes / per-path duplicates return false. `go test ./internal/telemetry/...` passes and `go build ./...` is clean (all call sites green, flag ignored)."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G7","defects:D36"]
+
+### T119 — planned
+
+- createdAt: 2026-07-14T09:21:51.992Z
+- updatedAt: 2026-07-14T09:33:20.196Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Wire the peer-restart event to the per-peer Resequencer.Rebaseline in dispatchInbound
+- description: |
+    In internal/bind/multipath.go dispatchInbound's non-echo Probe branch (around the pr.reflector.Reflect(raw) call, ~:1689), consume T116's epochChanged return flag: when Reflect reports an authenticated peer-restart epoch change, re-anchor THAT peer's resequencer so the restarted peer's low-outer-seq frames (the wrapped WG init/response, outer-seq ~1) admit instead of being SUSPECT-dropped. Atomically Load the resequencer and nil-check it (absent mid-teardown, like the DATA branch; a torn-down peer re-instantiates an UNSTARTED ring that needs no rebaseline). Perform the re-anchor OUTSIDE m.mu with no other lock held — the resequencer keeps its own mutex; NEVER nest it — mirroring the SetPeerRemote→Rebaseline discipline (multipath.go ~:2167-2183). Because `pr` is the demux-resolved per-peer view, this SINGLE site covers BOTH the edge single-concentrator primary resequencer AND every concentrator per-peer resequencer, and both restart directions. Leave the existing SetPeerRemote→Rebaseline hub-failover trigger (D32) untouched.
+    
+    RE-PIN RACE HANDLING — REQUIRED (plan review R126, [fable]): the plain Rebaseline() clears `started` and trusts the NEXT frame to re-anchor, but under the D36 saturation precondition a stale OLD-boot HIGH-seq straggler can still be draining from carrier/modem queues and land between the rebaseline and the wrapped low-seq init, re-pinning `next` HIGH and (with once-per-epoch dedup) blocking recovery. Use a LOW-ANCHOR re-anchor instead: extend internal/reseq with a variant (e.g. Resequencer.RebaselineToLow, or a pending-low-re-anchor mode on Rebaseline) that, after unpinning, re-anchors `next` ONLY on a frame whose outer-seq is MORE THAN one window BELOW the pre-rebaseline release point (the genuine restarted-stream low-seq) — treating stale-high stragglers as ordinary SUSPECT-drops until the low init arrives, and idempotent across repeated restart signals. Keep the existing hub-failover Rebaseline() call (D32) as-is (there the old sender has been dark the whole detection window, so no stale-high race exists) OR migrate it to the same low-anchor variant if that is cleaner — planner-neutral, but do not regress the D32 test.
+- acceptance: "New bind regression test (internal/bind, following concentrator_peer_test.go/probe_test.go fixtures) whose comment documents it fails without this wiring (the D36 repro): advance a peer's resequencer `next` far past resequencerWindow (2048) with high-seq DATA, simulate that peer restarting (new-sessionID probes: learn challenge then adopt → epochChanged=true), then deliver a LOW outer-seq DATA frame (the wrapped init) — assert it is DELIVERED (re-anchored), Stats().Rebaselines increments, and no dropSuspect increment from it. MUST INCLUDE the STALE-HIGH race case: after the restart re-anchor, inject a stale OLD-boot HIGH-seq straggler BEFORE the low-seq init and assert it does NOT re-pin `next` high (it is SUSPECT-dropped) and the subsequent low-seq init still admits. Assert for BOTH the primary peerState AND an AddConcentratorPeer peer, and that another bound peer's resequencer is undisturbed; a same-epoch (non-restart) probe must NOT re-anchor. The existing D32 hub-failover Rebaseline test still passes. `go test ./internal/bind/... ./internal/reseq/... && go test ./...` pass; `go test -race ./internal/bind/...` clean."
+- suggestedModel: frontier
+- dependsOn: ["T116"]
+- ledgerRefs: ["goals:G7","defects:D36"]
+
+## M40
+
+### T117 — planned
+
+- createdAt: 2026-07-14T09:21:21.139Z
+- updatedAt: 2026-07-14T09:21:21.139Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Expose a one-shot first-path-up notification from the bind
+- description: "In internal/bind/multipath.go, the sticky everUp latch (dispatchInbound ~:1677-1685) already observes the exact Down→Up moment on a fresh echo. Add an injectable one-shot callback (Multipath.SetOnFirstPathUp(func()) or a constructor option) invoked EXACTLY ONCE on the false→true everUp edge, keeping the bind WG-unaware (it invokes an opaque func). Fire OFF the receive hot path (dedicated goroutine, or after releasing any locks) and guarantee at-most-once across concurrent per-path receive goroutines (CAS on the atomic everUp latch, or a dedicated sync.Once). This is the D37 detection seam; the device-layer consumer lands in the dependent task."
+- acceptance: "Bind unit test (internal/bind): with two paths receiving fresh echoes concurrently, the callback fires EXACTLY ONCE (race-checked: `go test -race ./internal/bind/...`); no callback set ⇒ no panic (nil-safe); no fire while all paths stay Down; no re-fire across a Down→Up→Down→Up cycle. `go build ./...` clean."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G7","defects:D37"]
+
+### T120 — planned
+
+- createdAt: 2026-07-14T09:21:59.881Z
+- updatedAt: 2026-07-14T09:21:59.881Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Drive a forced WG handshake initiation off first-path-up in the device layer
+- description: "In internal/device/device.go up() (~:258-437), wire the bind's T117 first-path-up callback to a forced WG handshake initiation against the edge's peer. Reuse the deviceRehandshake pattern (internal/device/failover.go ~:426-439): ExpireCurrentKeypairs backdates lastSentHandshake — which MATTERS here because the wasted pre-liveness boot init (the D37 symptom 'Failed to send handshake initiation: bind: no healthy path...') may have stamped lastSentHandshake, so a bare SendHandshakeInitiation ~0.6s later can be silently RekeyTimeout-suppressed by the engine; on a cold boot with no keypairs the expire is a no-op. Wire it for the EDGE role (single-concentrator peer); the concentrator is the responder and initiates nothing (leave startFailoverAndResolution's concentrator noop untouched). Keep the seam fake-able (ipcGetter-style, per lifecycle_test.go) so the unit test runs without a live engine. This replaces reliance on the engine's own 5s retransmit timer with a liveness-edge-driven initiation."
+- acceptance: "Device unit test (internal/device, lifecycle_test.go fake-engine pattern): on the injected first-path-up edge, the initiation func is invoked EXACTLY ONCE for the edge peer (inject a counter as failover_test does for rehandshake); a concentrator-role construction wires NO initiation. `go test ./internal/device/... ./internal/bind/...` passes; `go build ./...` clean; no regression in `go test ./internal/...`."
+- suggestedModel: standard
+- dependsOn: ["T117"]
+- ledgerRefs: ["goals:G7","defects:D37"]
+
+## M41
+
+### T118 — planned
+
+- createdAt: 2026-07-14T09:21:27.432Z
+- updatedAt: 2026-07-14T09:21:27.432Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Expose resequencer rebaseline and drop-suspect counters for restart-recovery observability
+- description: The e2e and field triage must quantify the restart-recovery path via counters. Verify internal/reseq's rebaselines and dropSuspect counters (r.rebaselines / r.dropSuspect, already in Stats) are surfaced through the metrics ReseqSnapshot (internal/metrics) and out the /metrics exposition; if either is not already exposed, add it (e.g. wanbond_reseq_rebaselines_total, wanbond_reseq_drop_suspect_total) following the existing ReseqSnapshot counter wiring, in BOTH the single-peer (no peer label) and per-peer (peer=<name>) exposition forms, preserving the metrics back-compat rules. Observability only — NO datapath behaviour change.
+- acceptance: Both counters are readable at /metrics for the single-peer and multi-peer expositions; a metrics unit test asserts that a Rebaseline() and a dropSuspect increment are reflected in the scraped snapshot. `go test ./internal/reseq/... ./internal/metrics/...` passes; single-peer exposition still omits the peer label.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G7","defects:D36"]
+
+### T121 — planned
+
+- createdAt: 2026-07-14T09:22:18.781Z
+- updatedAt: 2026-07-14T09:22:18.781Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Author the netns one-sided-restart e2e (restart-only-edge and restart-only-concentrator; privileged run deferred to o3 + llm-ubuntu-0)
+- description: "Add a `-tags e2e` netns scenario to test/e2e (G2 pattern, following netns.go / standby_liveness_test.go fixtures; pick a unique metrics port not colliding with existing e2e ports). Bring up edge↔concentrator across network namespaces, SATURATE the bond (iperf3-style) so the surviving side's resequencer `next` advances well past resequencerWindow (2048) — the D36 precondition; then RUN A: restart ONLY the edge process (live paths, no endpoint change); RUN B (separate run): restart ONLY the concentrator process (no failover). For each direction assert: (1) wanbond_session_established transitions 0→1 within a documented budget WELL under the WG rekey timer, targeting ~= the ~25s both-ends-fresh baseline (static analysis predicts ~10s for the edge-restart direction — record the true per-direction magnitude); (2) the SURVIVING side's reseq counters show rebaselines>=1 and ~0 post-restart dropSuspect delta (the wrapped init was NOT suspect-dropped); (3) D37: from cold start, time-to-first-handshake tracks the first path-up edge (+~1 RTT), not a 5s retransmit-timer multiple. Capture the counters + 0→1 timestamps in test output for the D36 record. The PRIVILEGED run is DEFERRED to the o3 (aarch64) + llm-ubuntu-0 (amd64) hosts per the G2 remote-validation pattern (see the o3-hardware-e2e memory for exact SSH/sudo/PATH invocations); locally the test compiles + vets + skips/gates cleanly."
+- acceptance: "`go build -tags e2e ./test/e2e/... && go vet -tags e2e ./test/e2e/...` clean locally; the test is excluded from the default `go test ./...` and skips (not fails) without privileges. It encodes the run-A/run-B restart matrix and the reconvergence + rebaselines>=1 + ~0-dropSuspect-delta + session-established-timing + D37-first-handshake assertions, with a short runbook (exact `ssh -i /run/agenix/llm-ssh-key ...` + sudo + `-tags e2e` invocation for both hosts). Privileged execution is explicitly deferred and NOT part of the merge gate."
+- suggestedModel: frontier
+- dependsOn: ["T119","T120","T118"]
+- ledgerRefs: ["goals:G7","defects:D36","defects:D37"]
+
+### T122 — planned
+
+- createdAt: 2026-07-14T09:22:27.663Z
+- updatedAt: 2026-07-14T09:22:27.663Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Sync docs/design.md with the peer-restart rebaseline trigger and first-path-up rehandshake
+- description: "Per AGENTS.md's docs-in-sync rule, update docs/design.md (and README.md only if it describes restart/failover behaviour) to document: (1) the outer-plane resequencer now re-baselines on a DETECTED, authenticated peer restart (the T38 responder-challenge session-epoch adoption) — extending the D32 hub-failover-only trigger to plain one-sided restarts on BOTH the edge single-concentrator path and the concentrator per-peer path; so there are now THREE trusted re-anchor triggers: hub failover (D32/SetPeerRemote), detected peer restart (D36), plus the unauthenticated tryResync corroboration fallback; (2) the WG handshake is (re)initiated off the first path StateUp edge (D37) rather than only on the engine's retransmit timer, and its interaction with the RekeyTimeout guard (the deviceRehandshake backdating). Cross-reference defects D36/D37/D32/D12; name the rebaselines/dropSuspect counters. State the operational expectation: one-sided restart reconverges ~= the both-ends-fresh baseline, not on the WG rekey timer. Surgical edit — no behavioural claims beyond the merged code; remove any stale claim that Rebaseline is hub-failover-only."
+- acceptance: docs/design.md describes both mechanisms with their trigger conditions and names the rebaselines/dropSuspect counters, with D36/D37/D32/D12 cross-references; `grep -i rebaseline docs/design.md` and a first-path-up/handshake grep each hit the new sections; no stale 'rebaseline is hub-failover-only' / 'only ... failover' claim survives (grep docs/ + README.md). A reviewer can trace each documented behaviour to the merged code.
+- suggestedModel: fast
+- dependsOn: ["T119","T120"]
+- ledgerRefs: ["goals:G7","defects:D36","defects:D37"]

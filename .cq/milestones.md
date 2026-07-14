@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 38
+  item: 41
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -279,3 +279,21 @@ archives:
 - createdAt: 2026-07-14T09:06:47.767Z
 - updatedAt: 2026-07-14T09:06:47.767Z
 - title: "Plan: code/test/doc-comment hygiene (D40/D45/D51/D54/D56/D57/D60)"
+
+### M39 — open
+
+- createdAt: 2026-07-14T09:20:42.638Z
+- updatedAt: 2026-07-14T09:20:42.638Z
+- title: "G7-W1: D36 restart re-anchor (Reflector epoch-change detection + resequencer Rebaseline wiring)"
+
+### M40 — open
+
+- createdAt: 2026-07-14T09:20:42.702Z
+- updatedAt: 2026-07-14T09:20:42.702Z
+- title: "G7-W2: D37 first-path-up handshake (re)initiation"
+
+### M41 — open
+
+- createdAt: 2026-07-14T09:20:42.843Z
+- updatedAt: 2026-07-14T09:20:42.843Z
+- title: "G7-W3: one-sided-restart netns e2e, restart-recovery counters, docs sync"

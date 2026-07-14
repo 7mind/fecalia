@@ -222,16 +222,19 @@ archives: []
 
 ## M34
 
-### G7 — planning
+### G7 — planned
 
 - createdAt: 2026-07-14T09:02:04.443Z
-- updatedAt: 2026-07-14T09:02:04.443Z
+- updatedAt: 2026-07-14T09:39:13.730Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: "Fix D36: re-anchor the resequencer on a detected peer restart (one-sided-restart stall)"
 - description: "DEFECT-SEEDED (skip clarifying — root cause confirmed; refs defects:D36, defects:D32, defects:D37). Fix the multi-minute one-sided-restart outage (defects:D36). CONFIRMED ROOT CAUSE: the outer-plane per-peer resequencer drops a restarted peer's low-outer-seq frames (which wrap the inner WG handshake init/response) as SUSPECT — the same mechanism as defects:D32 — because the Rebaseline() trusted re-anchor is wired ONLY to hub-failover (SetPeerRemote), so a plain one-sided edge restart (live paths, no endpoint change) and any concentrator-role restart (no failover) never re-anchor `next`; the wrapped init is SUSPECT-dropped until unauthenticated tryResync eventually corroborates or a WG rekey timer fires. The WG engine itself supersedes a fresh init immediately (ruled out as the cause) — the init just never reaches it. SUGGESTED FIX: trigger Resequencer.Rebaseline() on a DETECTED PEER RESTART via the T38 responder-challenge session-epoch change (an authenticated trusted control event), wired into BOTH the edge single-concentrator path and the concentrator per-peer path (both currently lack any Rebaseline trigger). VALIDATE with a netns one-sided-restart e2e (deferred to the o3 + llm-ubuntu-0 hosts, G2 pattern): saturate, restart ONLY edge (run A) then ONLY concentrator (run B), assert reconvergence ~= the ~25s both-ends-fresh baseline, capture reseq dropSuspect/rebaseline counters + wanbond_session_established 0→1 per direction. Grounding: internal/reseq/reseq.go (admit SUSPECT branch :285-297, Rebaseline :529-546), internal/bind/multipath.go (rq.Observe :1619-1650, SetPeerRemote→Rebaseline :2167-2182), internal/device/failover.go (concentrator noop :496), the T38 session-epoch machinery (see defects:D12 fix). Compounding defects:D37 (pre-liveness first init, still open) is tracked separately and may be folded in if cheap. On merge, drive defects:D36 to resolved."
 - sourceRefs: ["defects:D36","defects:D32","defects:D37","wanbond-fixes.md §A D2"]
 - tags: ["production-deploy","restart","re-handshake","defect-seeded"]
+- milestones: ["M34","M39","M40","M41"]
+- sessionLogs: [".cq/logs/20260714-092040-a0ca3fd027bd1507c.md",".cq/logs/20260714-092040-a24993ebb08900c82.md"]
+- rawLogs: [".cq/logs/raw/20260714-092040-a0ca3fd027bd1507c.jsonl",".cq/logs/raw/20260714-092040-a24993ebb08900c82.jsonl"]
 
 ## M35
 
