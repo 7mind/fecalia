@@ -332,3 +332,189 @@ date, `wanbond version`, the access-network description, and each tool's verdict
       connect).
 - [ ] Where a UDP-allowing network is available again, confirm the tunnel reconnects
       once UDP egress is restored (no manual intervention beyond the network change).
+
+## D65 — pacing field validation (bufferbloat control)
+
+Defect D65 identifies bufferbloat (standing queue build-up under sustained load)
+on last-mile links (observed on Starlink, D65) that caps single-flow TCP throughput
+at ~3.67 Mbps against a link independently capable of ≥6.9 Mbps. Pacing (per-path
+token buckets, enabled via `[scheduler] pacing_enabled = true`) bounds the queue
+so loaded RTT stays near idle baseline, and single-flow TCP can saturate to the link's
+true rate. This section validates pacing's effectiveness on the real deployment
+(Pi4-edge/Starlink/o3 topology).
+
+**IMPORTANT:** The netns/e2e fixture test suite MUST NOT assert absolute
+throughput thresholds (e.g., "single-flow TCP ≥ X Mbps"). This is a
+**manual/real-host tier validation only**, because the netns fixture is
+CPU-bound and cannot build the standing queues pacing is designed to prevent.
+Absolute throughput assertions belong in this section (real links), never in
+automated netns e2e tests. `TestFixtureImpairment` and any similar capped-fixture
+netns tests remain throughput-measurement **report-only** (informational) with
+no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#pacing)).
+
+### Setup and prerequisites
+
+- [ ] Edge and concentrator both have the tunnel up with both uplinks alive (per §P1
+      setup). Both daemons running from `0600` configs, `/metrics` reachable on
+      `127.0.0.1:9090` each end.
+- [ ] Record date, `wanbond version` output, current build (`git log --oneline -1`).
+- [ ] Measure and record the **idle RTT** and **measured throughput** per uplink
+      (instructions in [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing));
+      these become the basis for pacing config (`link_bandwidth` / `link_rtt`).
+
+### Test 1: Three-way iperf3 attribution (no pacing)
+
+This test measures throughput under three distinct tunnel configurations to
+isolate wanbond's egress path (the pacing effect) from network capacity:
+
+#### 1a. Direct WAN, no tunnel
+
+Baseline: throughput on each uplink without wanbond. Brings one uplink down to
+measure each independently:
+
+**Starlink only (5G disabled or down):**
+- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20 -R`
+      (or use inner tunnel address if both uplinks reach it directly; adjust port
+      if concentrator listens elsewhere)
+- [ ] Record the **sender-side throughput** (edge reports received rate via `-R`
+      reverse mode). This is the Starlink solo capacity.
+
+**5G only (Starlink disabled or down):**
+- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20 -R`
+- [ ] Record the **sender-side throughput**. This is the 5G solo capacity.
+
+Record both as `T_starlink_direct` and `T_5g_direct` (Mbit/s).
+
+#### 1b. Through tunnel, pacing OFF (default)
+
+Single-flow TCP through the tunnel with pacing disabled (the default behavior
+that exhibits D65 bufferbloat). Both uplinks up, active-backup scheduler:
+
+- [ ] Edge: `systemctl stop wanbond-edge` (stop the daemon if running from pacing-enabled
+      config, or confirm config has `pacing_enabled = false` / omitted).
+- [ ] Edge: Verify config `[scheduler]` does NOT contain `pacing_enabled = true`
+      and NO `link_bandwidth` / `link_rtt` are declared on `[[paths]]` blocks:
+      ```sh
+      grep -A 5 '\[scheduler\]' /etc/wanbond/edge.toml
+      grep 'link_bandwidth\|link_rtt' /etc/wanbond/edge.toml
+      ```
+      (should show nothing for pacing-related lines, or `pacing_enabled = false`).
+- [ ] Edge: `systemctl start wanbond-edge`; wait for tunnel up (journal shows both
+      paths `up`), then `ping -c 3 10.77.0.1` succeeds.
+- [ ] Concentrator: `iperf3 -s -B 10.77.0.1`
+- [ ] Edge: `iperf3 -c 10.77.0.1 -t 30` (30-second single-flow TCP, allows queue to
+      build to steady state)
+- [ ] Record the **mean throughput** (final summary line of iperf3 output).
+      Record as `T_tcp_pacing_off` (Mbit/s).
+- [ ] In a separate terminal on edge, while iperf3 is running:
+      `ping -i 0.1 10.77.0.1 | tee ping-pacing-off.txt`
+      Let it run for the full iperf3 duration, then note the **min/avg/max/stddev** RTT.
+      Record as `RTT_pacing_off` (ms, especially the **avg** and how much it increased
+      from idle baseline).
+- [ ] On edge, while iperf3 is still running, read retransmits:
+      ```sh
+      watch -n 1 'ss -i | grep -A 1 10.77.0.1'
+      ```
+      Note the `Recv-Q`, `Send-Q`, and retransmit count. Record the peak retransmit
+      count observed as `Retrans_pacing_off`.
+
+#### 1c. Through tunnel, pacing ON
+
+Single-flow TCP through the tunnel with pacing enabled. This test uses the
+same topology but with pacing active, demonstrating the fix. Both uplinks up,
+active-backup scheduler with pacing:
+
+- [ ] Edge: `systemctl stop wanbond-edge`
+- [ ] Edge: Update the edge config to enable pacing and declare link properties.
+      Edit `/etc/wanbond/edge.toml`, find the `[scheduler]` block and add
+      `pacing_enabled = true`, then add `link_bandwidth` and `link_rtt` to each
+      `[[paths]]` block:
+      ```toml
+      [scheduler]
+      pacing_enabled = true
+      
+      [[paths]]
+      name = "starlink"
+      source_addr = "192.168.1.10"          # adjust to your interface
+      link_bandwidth = "50Mbit"               # from §Setup measurement
+      link_rtt = "21ms"                       # from §Setup measurement
+      
+      [[paths]]
+      name = "5g"
+      source_addr = "192.168.2.10"           # adjust to your interface
+      link_bandwidth = "10Mbit"               # adjust per your measurement
+      link_rtt = "45ms"                       # adjust per your measurement
+      ```
+      (Use your actual measured values; values shown are placeholders.)
+- [ ] Edge: `systemctl start wanbond-edge`; wait for tunnel up.
+      Verify pacing loaded without errors:
+      ```sh
+      journalctl -u wanbond-edge -n 20 | grep -E 'config|pacing|Pacing'
+      ```
+      Should see `config loaded` or `config reloaded` with no errors.
+- [ ] Concentrator: `iperf3 -s -B 10.77.0.1`
+- [ ] Edge: `iperf3 -c 10.77.0.1 -t 30` (same 30-second single-flow TCP)
+- [ ] Record the **mean throughput** from the final summary. Record as
+      `T_tcp_pacing_on` (Mbit/s).
+- [ ] In a separate terminal on edge, while iperf3 is running:
+      `ping -i 0.1 10.77.0.1 | tee ping-pacing-on.txt`
+      Let it run for the full iperf3 duration, then note the **min/avg/max/stddev** RTT.
+      Record as `RTT_pacing_on` (ms, note the **avg** and bufferbloat delta from idle).
+- [ ] On edge, while iperf3 is still running:
+      ```sh
+      watch -n 1 'ss -i | grep -A 1 10.77.0.1'
+      ```
+      Note retransmits. Record the peak retransmit count as `Retrans_pacing_on`.
+
+### Expected observations (D65 validation)
+
+Record your measurements in the table below. These values define success: pacing
+enables single-flow TCP to saturate toward the link's true capacity (UDP goodput),
+loaded RTT stays near idle baseline (no standing queue), and retransmits drop.
+
+| Metric | Pacing OFF | Pacing ON | Expected (pre-fix baseline) | Status |
+|--------|-----------|-----------|-------|--------|
+| **Single-flow TCP (Mbit/s)** | `T_tcp_pacing_off` | `T_tcp_pacing_on` | OFF: ~3.67 (bufferbloated); ON: approaches `T_starlink_direct` (~6.9 in D65 pre-fix test) | ✓ if ON ≥ 1.5× OFF |
+| **Idle RTT (ms, baseline)** | — | — | (from ping before iperf3, e.g. ~21 ms) | — |
+| **Loaded RTT (ms, during iperf3)** | `RTT_pacing_off` | `RTT_pacing_on` | OFF: inflates to ~1000+ ms (standing queue); ON: stays within 5–10 ms of idle | ✓ if ON is close to idle |
+| **Loaded RTT delta (Δ, ms)** | `RTT_pacing_off - idle` | `RTT_pacing_on - idle` | OFF: ~980 ms; ON: ~5 ms | ✓ if ON ≪ OFF |
+| **Retransmits (peak count)** | `Retrans_pacing_off` | `Retrans_pacing_on` | OFF: ~13 per 10s; ON: <1 per 10s | ✓ if ON ≪ OFF |
+
+### Interpretation
+
+- **TCP throughput:** If pacing ON (`T_tcp_pacing_on`) is significantly higher
+  than pacing OFF, and approaches the measured UDP goodput or solo-uplink capacity,
+  pacing is working — bufferbloat was indeed capping the flow.
+- **RTT inflation:** If loaded RTT stays near idle under pacing ON, the queue is
+  bounded as designed. If it still inflates to ~1s under pacing ON, the declared
+  `link_bandwidth` or `link_rtt` may be incorrect (re-measure per
+  [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)).
+- **Retransmit drop:** Fewer retransmits under pacing ON indicate a more stable path
+  (no TCP timeout storms from queue delay). Compare counts, not just raw numbers.
+
+### Record and close-out
+
+- [ ] Date: _____________
+- [ ] `wanbond version`: _____________
+- [ ] Build (`git log --oneline -1`): _____________
+- [ ] Idle RTT per uplink (from Step 1 measurement): _____________
+- [ ] Measured throughput per uplink (from Step 1 measurement): _____________
+- [ ] Test 1a (direct WAN, no tunnel):
+  - Starlink direct: _____________
+  - 5G direct: _____________
+- [ ] Test 1b (through tunnel, pacing OFF):
+  - Single-flow TCP: _____________
+  - Idle RTT: _____________
+  - Loaded RTT: _____________
+  - Retransmits: _____________
+- [ ] Test 1c (through tunnel, pacing ON):
+  - Single-flow TCP: _____________
+  - Idle RTT: _____________
+  - Loaded RTT: _____________
+  - Retransmits: _____________
+- [ ] Go/no-go decision:
+  - Bufferbloat controlled (loaded RTT ≈ idle)? YES / NO
+  - TCP throughput improved with pacing? YES / NO
+  - Configuration valid (no load errors)? YES / NO
+  - Proceeding with pacing enabled for field deployment? YES / NO
+  - Notes: _____________
