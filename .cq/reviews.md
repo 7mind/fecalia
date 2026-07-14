@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 156
+  item: 158
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1625,6 +1625,19 @@ archives:
 - sessionLogs: [".cq/logs/20260714-105323-acd25ba2452d0aed4.md",".cq/logs/20260714-105323-a9e8a6fd89060ba75.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-acd25ba2452d0aed4.jsonl",".cq/logs/raw/20260714-105323-a9e8a6fd89060ba75.jsonl"]
 
+### R158 — revise
+
+- createdAt: 2026-07-14T12:56:52.772Z
+- updatedAt: 2026-07-14T12:56:52.772Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T121 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). [fable] EXECUTED the deferred e2e (opus reviewed statically and missed both blocking defects) and found the test as written CANNOT pass. Verified-green parts: build/vet -tags e2e clean, just lint 0 issues, default just test green, //go:build e2e excludes it from the default build, port 9104 unique + registered in netns.go (no D51-style drift), counter constants resolve to the real T118 names, run-A/run-B saturation directions correct (edge→conc / iperf3 -R), relBefore>2048 precondition guards vacuity, restart discipline sound, D37 4s budget discriminates against the 5s retransmit multiple. TWO BLOCKING defects + one minor:"
+- criticism: ["[fable, BLOCKING] The survivor's reseq counters are NEVER scraped: r121PeerCounter (test/e2e/restart_onesided_test.go:414-426) reads exp.PeerValue(name, \"\"), which matches only a series carrying a peer=\"\" LABEL — but both daemons bind exactly ONE peer, so metrics.NewCollector sets multiPeer=len(PeerNames())>1 = FALSE (internal/metrics/metrics.go:260-266) and the reseq series are emitted UNLABELED. PeerValue returns (0,false) unconditionally: in the privileged run the D36 precondition Fatalfs ('released_frames_total{peer=\"\"} absent after traffic flowed') on a HEALTHY system, and the core rebaselines/dropSuspect assertions would otherwise silently read 0/0. The repo's own TestExpositionReseqRebaselineAndDropSuspect documents+asserts the single-peer NO-label exposition via exp.Value(...). FIX: read the single-peer exposition via exp.Value(name) (or PeerValue-then-fallback-to-Value), and correct the inverted helper comment (peer=\"\" label values exist only in the MULTI-peer exposition's unnamed primary, not in a single-peer daemon).","[fable, BLOCKING] Acceptance clause 'skips (not fails) without privileges' is OPERATIONALLY FALSIFIED: `go test -tags e2e ./test/e2e -run TestOneSidedRestartRecovery` in an unprivileged sandbox does NOT skip — requireNetAdmin's `ip link add … dummy` probe SUCCEEDS inside TestMain's `unshare -Urmn` user namespace (which grants CAP_NET_ADMIN), then both subtests FAIL ~5s later on 'CreateTUN(\"wanbond0\") failed; /dev/net/tun does not exist' (observed: --- FAIL, 11.86s). The file's own doc comment lists /dev/net/tun as a fixture requirement. FIX: extend the skip-gate to ALSO probe /dev/net/tun availability so the unprivileged run SKIPS.","[fable, minor] The post-restart waitLink checks (restart_onesided_test.go:177, 240) are VACUOUS under tun_persist=true — the persisted link exists across the stop, so waitLink succeeds regardless of whether the restarted daemon re-adopted it, yet the failure message claims 'not re-adopted after restart'. Either assert actual re-adoption (e.g. the restarted process's TUN-adoption log record) or reword the check/message to what it actually verifies."]
+- new_questions: []
+- ledgerRefs: ["tasks:T121","goals:G7","defects:D36","defects:D37"]
+- sessionLogs: [".cq/logs/20260714-124500-a490dba7f580b73b3.md",".cq/logs/20260714-124500-a6c1ec1e870de2511.md"]
+- rawLogs: [".cq/logs/raw/20260714-124500-a490dba7f580b73b3.jsonl",".cq/logs/raw/20260714-124500-a6c1ec1e870de2511.jsonl"]
+
 ## M42
 
 ### R137 — go-ahead
@@ -1639,6 +1652,19 @@ archives:
 - ledgerRefs: ["tasks:T123","goals:G8","defects:D47","defects:D49"]
 - sessionLogs: [".cq/logs/20260714-105323-a84dc3152843ba3be.md",".cq/logs/20260714-105323-a26f9969b0d210376.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-a84dc3152843ba3be.jsonl",".cq/logs/raw/20260714-105323-a26f9969b0d210376.jsonl"]
+
+### R157 — revise
+
+- createdAt: 2026-07-14T12:55:15.429Z
+- updatedAt: 2026-07-14T12:55:15.429Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T124 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). Both reviewers verified the SUBSTANCE is sound and green: the promotion now fans a view + scheduler entry to EVERY bound peer (was primary-only), reusing each peer's already-m.defs-aligned prober via attachSharedPathLocked extended with an optional probers param (nil mints fresh for AddPath — byte-identical to before; non-nil reuses for promotion), shared.id=probers[0].PathID() keeps the wire path-id consistent while each peer decodes on its own PSK, rollback publishes `shared` only after full success (no live-state leak), and all 3 new regression tests fail pre-fix for the right reasons (test (a) reproduces the exact D42 slice-bounds [2:1] panic; (b)/(c) show the beta peer view-less on promote / promote+reopen) and pass post-fix. opus empirically confirmed the aligned 2-peer deferred RemovePath never panics at base (validating the worker's narrowing that the durable membership was already aligned). go build/vet/test + -race + just lint all green. The REVISE is one under-strength guard fable pinned:"
+- criticism: ["[fable] removeDurableLocked's alignment guard (internal/bind/multipath.go ~:2769-2774) is WEAKER than the task specifies: the task requires a wiring-defect error 'when ANY p.probers length diverges from m.defs', but the implemented check only fires on `defIdx >= len(p.probers)` (index-out-of-range). A divergent-but-IN-RANGE case passes SILENTLY — the exact 'silently splice the WRONG entry' failure the function's own doc comment claims the guard prevents: (1) a peer whose probers fell short at the TAIL (len 2 vs m.defs len 3) with RemovePath at a low defIdx splices and leaves the desync undetected; (2) probers LONGER than m.defs is never detected; (3) a NON-TAIL desync splices the WRONG prober. FIX: in the guard loop (which runs BEFORE the m.defs splice) check `p.probers != nil && len(p.probers) != len(m.defs)` and return the wiring-defect error — test (a) still passes (beta len 1 vs defs len 2). ADD a regression test for the in-range divergence / wrong-entry case (a peer with a same-length-but-mis-mapped or longer/tail-short probers slice)."]
+- new_questions: []
+- ledgerRefs: ["tasks:T124","goals:G8","defects:D42"]
+- sessionLogs: [".cq/logs/20260714-124000-a5092d8500e5d2467.md",".cq/logs/20260714-124000-a931ad26492d4a88b.md"]
+- rawLogs: [".cq/logs/raw/20260714-124000-a5092d8500e5d2467.jsonl",".cq/logs/raw/20260714-124000-a931ad26492d4a88b.jsonl"]
 
 ## M46
 

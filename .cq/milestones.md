@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 55
+  item: 56
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -391,3 +391,9 @@ archives:
 - title: "G13: Operability documentation"
 - description: Work milestone for G13 item 3(a) docs + the Q51 infeasibility note. Documents the measured pacing on/off tradeoff, the codified frame-class priority model (ClassControl exempt-uncharged, KindProbe exempt-but-charged, ClassData fully paced), the new operability signals, and the explicit architectural note that inner-tunnel ICMP prioritization is infeasible — referencing (not restating) G2/Q20's BDP-sizing docs.
 - dependsOn: ["M53","M52","M54"]
+
+### M56 — open
+
+- createdAt: 2026-07-14T12:57:12.928Z
+- updatedAt: 2026-07-14T12:57:12.928Z
+- title: "Plan: fix D65 (tunnel single-flow throughput / bufferbloat)"

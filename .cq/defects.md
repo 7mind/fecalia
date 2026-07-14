@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 65
+  item: 67
 archives: []
 ---
 
@@ -915,12 +915,36 @@ archives: []
 - suggestedFix: Make ObserveRecovered refuse to anchor an unstarted ring (drop the recovered frame and return false when !started) so only a natively-received frame can pin the release point after any unpin; add a Rebaseline-then-ObserveRecovered regression test. Coordinate with T119's fix for the analogous RebaselineToLow-armed ObserveRecovered bypass (same seam).
 - ledgerRefs: ["tasks:T119","defects:D36"]
 
+### D66 — open
+
+- createdAt: 2026-07-14T12:55:20.809Z
+- updatedAt: 2026-07-14T12:55:20.809Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Stale single-peer-receive comment on AddPath's readLoop spawn (multipath.go:2548-2549)"
+- description: "Filed during T124 review ([fable], out-of-scope; PRE-EXISTING on main, not touched by T124). internal/bind/multipath.go ~:2548-2549 claims 'single-peer receive; the concentrator's shared-socket demux to N peers is a later G4 task', but the multi-view source demux (demuxInbound, T88/T93) is SHIPPED and is exactly what T124's TestReconcilePromotionFansViewAndSchedulerToEveryPeer exercises; the new promoteDeferredLocked comment correctly states the opposite. The stale comment could steer a future change wrong."
+- severity: low
+- suggestedFix: "Reword to match promoteDeferredLocked's spawn-site comment: one reader per shared socket fed by the primary's view; demuxInbound resolves the owning peer per-datagram once the socket has >1 view."
+- ledgerRefs: ["tasks:T124"]
+
+### D67 — open
+
+- createdAt: 2026-07-14T12:55:24.802Z
+- updatedAt: 2026-07-14T12:55:24.802Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: attachSharedPathLocked rollback swallows detachPeerPathBoundLocked errors, leaving a stale peerPathState
+- description: "Filed during T124 review ([fable], out-of-scope; PRE-EXISTING from the T123 AddPath fan-out — T124 only threads the probers param through). internal/bind/multipath.go ~:2580: on a mid-fan-out failure the rollback loop does `_ = m.detachPeerPathBoundLocked(...)`; if dyn.RemovePath fails inside detach, p.paths is NOT spliced, leaving a stale peerPathState (referencing a socket the caller then closes) in that peer's live path slice until the next Close→Open — a scheduler/paths coherence violation surviving an error path that claims 'a partial fan-out never leaks'."
+- severity: low
+- suggestedFix: Propagate or at least log the detach error; on detach failure, force-splice the tail peerPathState so p.paths never retains a view of a closed socket.
+- ledgerRefs: ["tasks:T124","defects:D42"]
+
 ## M49
 
-### D65 — wip
+### D65 — root-caused
 
 - createdAt: 2026-07-14T12:11:27.104Z
-- updatedAt: 2026-07-14T12:11:58.639Z
+- updatedAt: 2026-07-14T12:57:05.518Z
 - author: "opus-4.8[1m]"
 - session: 7295f080-20fa-4cf9-afac-0357b4cf65cb
 - headline: Tunnel single-flow throughput plateaus at ~3.67 Mbps with loss/reorder-limited TCP and ~1s bufferbloat under load
@@ -939,3 +963,23 @@ archives: []
     3. If loss/reorder-bound: is the loss introduced by the tunnel (framing/FEC/scheduler) or by the WAN? Check MSS clamping on `wanbond0` (inner MTU 1400 → is TCP fragmenting/PMTU black-holing?), and whether active-backup ever briefly reorders at path selection.
     
     Deliverable: a profile + the dominant cost, whether ~3.67 Mbps is the true CPU/WAN ceiling or an inefficiency, and a concrete fix candidate (batching, buffer reuse, MSS clamp) with the expected gain.
+- rootCause: |
+    The single-flow throughput collapse is LOSS-INDUCED, not a CPU or raw-WAN rate cap, and the loss originates in the EXTERNAL Starlink last-mile buffer that wanbond does nothing to shape.
+    
+    (1) The WAN demonstrably carries ≥6.9 Mbps: UDP offered at 8 Mbps delivered 6.9 through the same tunnel/path while single-flow TCP got only 3.67, so TCP's shortfall is loss-induced cwnd collapse (cwnd stuck ~30KB over ~40ms RTT), not a rate cap [D65 measurements].
+    (2) The tunnel's own processing is not the ceiling: measured DATA-codec encode = 4610 ns/op ≈ 2429 Mbps/core on x86_64 (pprof: chacha20-dominated, generic non-SIMD path), ~160-300 Mbps/core extrapolated to Pi4 aarch64 — 40-80x above 3.67 Mbps; and 3.67 Mbps ≈ 300 pps is trivially within the syscall/lock budget [internal/frame inline benchmark].
+    (3) There is no wanbond-internal queue: Send writes each frame synchronously to the UDP socket [internal/bind/multipath.go:2027-2035], the pacer sheds at the head and is BDP-bounded [internal/config/config.go:218-223], and the resequencer is bounded in memory+latency [internal/reseq/reseq.go:90-96] — so the observed ~1s loaded RTT is the EXTERNAL Starlink buffer, and its build-to-~1s-then-~13%-drop is the classic buffer-overflow signature of an unshaped sender (random medium loss would not grow the queue).
+    (4) Under the DEFAULT active-backup scheduler wanbond applies NO egress pacing/AQM (pacing is a weighted-only feature) [internal/config/config.go:99-108], so it offers packets to the bloated last-mile unshaped and cannot prevent the overflow. This is the primary controllable root cause.
+    (5) Compounding, for FORWARDED (behind-tunnel) TCP no MSS clamp is installed anywhere — the daemon installs none [internal/device/device.go:52-55] and the deploy recipes omit it even for the client-LAN forwarding case [docs/p1-mtu.md:76-99, docs/install.md, wanbond-fixes.md] — so forwarded segments can fragment/PMTUD-blackhole (Pi-originated TCP is already MSS-bounded by the TUN route MTU; only forwarded flows are affected).
+    
+    Candidates H-B (scheduler reorder), H-C (CPU-bound encode), H-D (internal oversized queue), H-E (FEC overhead) were each ruled out with validated evidence (H5/H6/H7/H8 = wrong). The user reviewed this diagnosis (Q56) and authorized implementing the fixes directly, waiving prior field-measurement confirmation; exact quantified gain is deferred to on-hardware validation.
+- suggestedFix: |
+    Two independent fixes (user authorized direct implementation via Q56):
+    (1) PRIMARY — add BDP-sized egress send-pacing (optionally a CoDel-style AQM drop) to the DEFAULT active-backup scheduler, reusing the existing weighted-scheduler pacer + BDP-sizing machinery (internal/sched/weighted.go token bucket + internal/config SizePacingFromBDP / BurstFrames), so a single uplink is shaped to its drain rate and cannot self-inflict the ~1s Starlink bufferbloat. Expected: eliminate the standing queue and restore single-flow TCP toward the ≥6.9 Mbps the WAN demonstrably carries. (Design choice for plan-flow: wire pacing into active-backup directly vs expose a pacing knob usable independent of policy=weighted.)
+    (2) SECONDARY — install a TCP MSS clamp on wanbond0 for forwarded traffic (iptables/ip6tables mangle FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu) and document it in the deploy recipes (docs/install.md §9.2, wanbond-fixes.md), so behind-tunnel TCP cannot emit oversize segments that fragment/PMTUD-blackhole. Decide in plan-flow whether the daemon should install this itself for peers it forwards vs document it as an operator step.
+    
+    Separately worth noting (NOT the D65 ceiling, low priority): the send path has un-taken optimizations — unused dst-reuse seam in frame.Codec.Encode, no GSO/sendmmsg batching (multipathBatchSize=1), generic (non-SIMD) chacha20 — which matter only at far higher rates.
+    
+    On-hardware validation (three-way iperf3 + loaded-RTT A/B on Pi4/Starlink/o3) is deferred to verify/implement.
+- sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
+- rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]
