@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 96
+  item: 97
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -968,6 +968,19 @@ archives:
 - ledgerRefs: ["tasks:T74","goals:G5"]
 - sessionLogs: [".cq/logs/20260714-023944-a9fac7819e0cf8c3d.md",".cq/logs/20260714-023944-ac7d0d623c6361bff.md",".cq/logs/20260714-024545-a417b8e13ab58fa54.md",".cq/logs/20260714-024545-a534c16da5521baae.md"]
 - rawLogs: [".cq/logs/raw/20260714-023944-a9fac7819e0cf8c3d.jsonl",".cq/logs/raw/20260714-023944-ac7d0d623c6361bff.jsonl",".cq/logs/raw/20260714-024545-a417b8e13ab58fa54.jsonl",".cq/logs/raw/20260714-024545-a534c16da5521baae.jsonl"]
+
+### R97 — go-ahead
+
+- createdAt: 2026-07-14T03:13:57.991Z
+- updatedAt: 2026-07-14T03:13:57.991Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T75 unanimous panel approve (round 1): [opus]+[fable] both approve. Test-only (internal/device/interleave_race_test.go, +321): 3 cross-controller -race interleave tests for the two endpoint-set co-owners (re-resolve mid-advance; failover advance between lookup and apply; simultaneous liveness-loss stress 50×2×20) + a Q36 boot-defer seam unit test. The exactly-one-SetPeerRemote property was verified STRUCTURAL by both reviewers against failover.go/resolution.go (check() and updateResolution() each hold h.mu across their whole body; first repoint arms the settle dwell + spec-scoped/survival guards no-op any second). [fable] independently mutation-tested: removing h.mu from updateResolution failed BOTH the race detector AND the exactly-one assertion (2 calls at iteration 17) — proving schedule 3 is genuine goroutine contention and the assertion non-vacuous. Acceptance `go test -race ./internal/config/... ./internal/device/... ./internal/dnsresolve/...` green (stable -count=2/3, bounded by a 5s per-schedule deadlock guard)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T75","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-031341-ad2d941ce63da2108.md",".cq/logs/20260714-031341-a2380182ab5d80508.md"]
+- rawLogs: [".cq/logs/raw/20260714-031341-ad2d941ce63da2108.jsonl",".cq/logs/raw/20260714-031341-a2380182ab5d80508.jsonl"]
 
 ## M25
 

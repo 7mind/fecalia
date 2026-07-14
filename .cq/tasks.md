@@ -726,10 +726,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-022249-afa803909d4c484b6.md",".cq/logs/20260714-023944-a9fac7819e0cf8c3d.md",".cq/logs/20260714-023944-ac7d0d623c6361bff.md",".cq/logs/20260714-023944-a9e9d35db0d94988e.md",".cq/logs/20260714-024545-a417b8e13ab58fa54.md",".cq/logs/20260714-024545-a534c16da5521baae.md"]
 - rawLogs: [".cq/logs/raw/20260714-022249-afa803909d4c484b6.jsonl",".cq/logs/raw/20260714-023944-a9fac7819e0cf8c3d.jsonl",".cq/logs/raw/20260714-023944-ac7d0d623c6361bff.jsonl",".cq/logs/raw/20260714-023944-a9e9d35db0d94988e.jsonl",".cq/logs/raw/20260714-024545-a417b8e13ab58fa54.jsonl",".cq/logs/raw/20260714-024545-a534c16da5521baae.jsonl"]
 
-### T75 — wip
+### T75 — done
 
 - createdAt: 2026-07-13T21:55:46.889Z
-- updatedAt: 2026-07-14T02:48:36.658Z
+- updatedAt: 2026-07-14T03:14:04.069Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add cross-controller -race interleave tests: re-resolution vs hub-failover coordination"
@@ -738,6 +738,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T73","T74"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 9798ff7
+- completion: "Cross-controller concurrency proof pinned (test-only, internal/device/interleave_race_test.go): 3 -race interleave tests covering the three contested schedules between the re-resolution and hub-failover controllers (co-owners of the mutable endpoint set) + a Q36 boot-defer seam unit test. Proves no data race, no deadlock (5s per-schedule guard), and exactly-one-SetPeerRemote on a simultaneous liveness-loss event — a STRUCTURAL guarantee (both check() and updateResolution() hold h.mu across their whole body), reviewer-verified non-vacuous by a lock-removal mutation that failed both -race and the assertion. No production change needed; the controllers already coordinate correctly. Unanimous 1-round panel approve; rebased past T90/T100 and ff-merged to main as 9798ff7."
+- sessionLogs: [".cq/logs/20260714-030903-abb91a4582d82ce09.md",".cq/logs/20260714-031341-ad2d941ce63da2108.md",".cq/logs/20260714-031341-a2380182ab5d80508.md"]
+- rawLogs: [".cq/logs/raw/20260714-031341-ad2d941ce63da2108.jsonl",".cq/logs/raw/20260714-031341-a2380182ab5d80508.jsonl"]
 
 ## M22
 
