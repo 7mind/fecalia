@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 121
+  item: 122
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1359,3 +1359,18 @@ archives:
 - ledgerRefs: ["tasks:T98","goals:G4","defects:D57","defects:D58"]
 - sessionLogs: [".cq/logs/20260714-075343-a64dedbc8a4d965d1.md",".cq/logs/20260714-075343-a4e53784a3d3e81cb.md"]
 - rawLogs: [".cq/logs/raw/20260714-075343-a64dedbc8a4d965d1.jsonl",".cq/logs/raw/20260714-075343-a4e53784a3d3e81cb.jsonl"]
+
+## M33
+
+### R122 — go-ahead
+
+- createdAt: 2026-07-14T08:18:02.473Z
+- updatedAt: 2026-07-14T08:18:02.473Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T112 unanimous panel approve at ROUND 2 ([opus]+[fable] both approve). Docs (install.md §3b): the D38 source_addr/device-bind collision — per-WAN `ip rule from <source>` pinning silently defeated by the auto device-bind on one-address (VLAN-per-WAN) interfaces. Round 1 (both disapprove) caught a DECISIVE self-defeating recipe: Workaround 1 shipped `ip rule add from <source_ip> oif <dev> table N`, but fib-rule selectors AND together and a wildcard-source SO_BINDTODEVICE socket presents an unset source at route-lookup — so the `from` selector can never match (exactly the section's own root cause), leaving the outage unresolved; the D38 production recipe is OIF-ONLY. Round 2 fixed all 5 findings: (1) oif-only `ip rule add oif <dev> table <N> prio 100` (matches the D38 ledger record); (2) replaced a false 'persistent across policy-route changes' claim with an accurate not-reboot-persistent caveat pointing at the §4 wanbond-addressing@.service oneshot + §5 netfilter-persistent; (3) relocated §3b between §3a and §3z (monotonic order); (4) completed the 'auto' bind-mode description with selectDeviceBinds' third condition (exactly ONE configured path per device — devPaths[dev]==1, verified in internal/bind/pathsock.go); (5) documented the top-level `bind` default (config.go) as the simpler VLAN-per-WAN recommendation. Both reviewers re-verified the oif-only rule (oif set from SO_BINDTODEVICE matches at lookup) + the bind field shape against source. Full gate green. Rebased onto current main and ff-merged as e790a3c. The stale config.go BindMode 'config surface only' comment is filed D60."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T112","goals:G6","defects:D60"]
+- sessionLogs: [".cq/logs/20260714-081736-a440fa701129dfa8e.md",".cq/logs/20260714-081736-a2b12f72790f5bc08.md"]
+- rawLogs: [".cq/logs/raw/20260714-081736-a440fa701129dfa8e.jsonl",".cq/logs/raw/20260714-081736-a2b12f72790f5bc08.jsonl"]

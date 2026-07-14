@@ -1365,25 +1365,29 @@ archives:
 
 ## M33
 
-### T112 — planned
+### T112 — done
 
 - createdAt: 2026-07-13T23:24:31.926Z
-- updatedAt: 2026-07-13T23:24:31.926Z
+- updatedAt: 2026-07-14T08:18:09.310Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Docs C2: source_addr + device-bind collision warning with the oif-rule recipe and bind-mode pointer"
 - description: "install.md: document that per-WAN pinning via `ip rule from <source_addr>` is silently defeated by the auto device-bind on one-address interfaces (the D38 production failure: wildcard-source socket falls to the main table, ENETUNREACH, silent path-down while `ping -I <source_ip>` works), give the `ip rule add oif <dev> table N` workaround recipe, and point at the new per-path `bind = \"source\"` toggle as the clean fix. This is the most common real edge topology (VLAN-per-WAN) and is currently undocumented."
 - acceptance: install.md section exists covering the symptom, the ip-rule recipe verbatim from the production deploy, and the bind= toggle cross-reference matching the shipped I5 field shape. Relates D38 in acceptance only. Docs lint clean.
 - suggestedModel: fast
 - dependsOn: ["T106"]
 - ledgerRefs: ["goals:G6"]
+- resultCommit: e790a3c
+- completion: "Docs (install.md §3b) for the D38 production failure: per-WAN `ip rule from <source>` pinning silently defeated by the auto device-bind on one-address VLAN-per-WAN interfaces (wildcard-source socket → main table → ENETUNREACH silent path-down while `ping -I <source_ip>` works). Section covers the symptom, the OIF-ONLY workaround `ip rule add oif <dev> table N` (verbatim from the D38 production deploy), the three-condition 'auto' bind-mode behavior, and cross-references the per-path + top-level `bind = \"source\"` toggle (T105/T106) as the clean fix. 2-round criticism loop: round 1 caught a self-defeating `from <source_ip>` selector in the recipe (can't match a wildcard-source device-bound socket) + 4 more; round 2 fixed all, gate green. Unanimous R2 approve; rebased and ff-merged as e790a3c. Filed D60 (stale config.go BindMode comment)."
+- sessionLogs: [".cq/logs/20260714-081229-a2e40c9c076c7fd70.md",".cq/logs/20260714-081736-a440fa701129dfa8e.md",".cq/logs/20260714-081736-a2b12f72790f5bc08.md"]
+- rawLogs: [".cq/logs/raw/20260714-081229-a2e40c9c076c7fd70.jsonl",".cq/logs/raw/20260714-081736-a440fa701129dfa8e.jsonl",".cq/logs/raw/20260714-081736-a2b12f72790f5bc08.jsonl"]
 
-### T113 — planned
+### T113 — wip
 
 - createdAt: 2026-07-13T23:24:43.681Z
-- updatedAt: 2026-07-13T23:24:43.681Z
+- updatedAt: 2026-07-14T07:54:55.036Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Docs C3+C6: full-tunnel client-LAN recipe + concentrator NAT/forwarding checklist"
 - description: "install.md: the end-to-end full-tunnel / route-a-client-LAN recipe — THE primary use case, entirely undocumented. Edge side: mode=default-route (or the manual /1+/1 split allowed_ips — never literal 0.0.0.0/0 until D35 is resolved), policy-route the client subnet to wanbond0 and SNAT to the tunnel IP (so the concentrator's `allowed_ips = <edge>/32` still matches) OR widen concentrator allowed_ips to the client subnet. Concentrator side, as an explicit C6 checklist subsection: ip_forward=1, `MASQUERADE -s <tunnel-net> -o <wan>`, and the FORWARD conntrack-ESTABLISHED accept (the shipped `-i wanbond0 ACCEPT` covers only the forward direction — default FORWARD REJECT drops return traffic without it), plus persistence via netfilter-persistent (existing §5 pattern). Reference the addressing oneshot for rule persistence across restarts."
 - acceptance: install.md gains the full-tunnel recipe section and the C6 checklist subsection (copy-pasteable, internally consistent); every command was validated on the production Pi/o3 deploy per wanbond-fixes.md; the recipe cross-references mode=default-route for the edge-automated part and marks the rest operator-owned (Q41 boundary). Relates D35 in acceptance only. Docs lint clean.
@@ -1391,12 +1395,12 @@ archives:
 - dependsOn: ["T108","T111"]
 - ledgerRefs: ["goals:G6"]
 
-### T114 — planned
+### T114 — wip
 
 - createdAt: 2026-07-13T23:24:53.330Z
-- updatedAt: 2026-07-13T23:24:53.330Z
+- updatedAt: 2026-07-14T07:54:56.009Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Docs C5: reconverge window + restart guidance using the session metric"
 - description: "install.md (operations/observability sections): document that until D36 is fixed, restarting ONE end can leave the tunnel down for minutes (stale-session peer does not promptly re-handshake) and that restarting BOTH ends ~together is the fast reconverge path (~25 s observed); present wanbond_session_established / the 'session established' log line as the operational 'is it up yet' check, distinguishing converging from wedged."
 - acceptance: install.md section exists, explicitly marked as interim-until-D36 (acceptance reference only, no dependsOn on the D36 fix) and names the exact metric/log line shipped by the I2 task. Docs lint clean.

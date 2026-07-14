@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 59
+  item: 60
 archives: []
 ---
 
@@ -819,3 +819,17 @@ archives: []
 - severity: low
 - suggestedFix: "Plumb ids[0].Name into NewMultipath (or set the primary peerState's name during concentrator wiring) so BoundPeerNames reports the configured name whenever >1 peer is bound, keeping \"\" only for the single-peer byte-compat exposition; update TestExpositionTwoPeerSeries and the T94 back-compat test accordingly. OR relax the config name-required rule for the primary peer and document peer=\"\" as its canonical label."
 - ledgerRefs: ["tasks:T98","goals:G4","defects:D56"]
+
+## M33
+
+### D60 — open
+
+- createdAt: 2026-07-14T08:08:15.604Z
+- updatedAt: 2026-07-14T08:08:15.604Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Stale 'config surface only' doc-comment on config.BindMode contradicts the shipped T106 wiring
+- description: "Surfaced during T112 review ([fable]). internal/config/config.go (~L78-81) states the BindMode field is 'the CONFIG SURFACE only ... Wiring planPathBinds/selectDeviceBinds to consume the resolved mode is a later task — today every path is bound exactly as before, regardless of this field's value.' That is now FALSE: internal/bind/pathsock.go selectDeviceBinds/resolveForcedDeviceBind consume the resolved mode (T106 shipped the wiring). Pre-existing at T112's base and untouched by that docs-only diff, so out of scope there. Same class as [[D57]] (stale Peer.PSK/Name 'not yet consumed' comment) — both are groundwork-then-wire remnants in config.go."
+- severity: low
+- suggestedFix: Delete or rewrite the trailing paragraph of the BindMode doc-comment to state that planPathBinds/selectDeviceBinds honor the resolved mode since T106.
+- ledgerRefs: ["tasks:T112","goals:G6","defects:D57"]
