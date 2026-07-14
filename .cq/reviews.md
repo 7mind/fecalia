@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 92
+  item: 93
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -970,3 +970,16 @@ archives:
 - ledgerRefs: ["tasks:T88","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-015014-ae4c878a9b8cdabcd.md",".cq/logs/20260714-015014-a76ead6a90c6f25fb.md"]
 - rawLogs: [".cq/logs/raw/20260714-015014-ae4c878a9b8cdabcd.jsonl",".cq/logs/raw/20260714-015014-a76ead6a90c6f25fb.jsonl"]
+
+### R93 — go-ahead
+
+- createdAt: 2026-07-14T02:21:29.069Z
+- updatedAt: 2026-07-14T02:21:29.069Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T89 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on ONE criticism — the PARITY subtest was non-discriminating under the FEC-off fixture (a leaked PARITY dropped at nil fecRecv regardless of the gate); R2 (7900642) unanimous approve — the subtest now arms receive-side FEC on both peers via Open's exact seam and uses a DataCount=1 parity that reconstructs on a leak, mutation-verified discriminating by BOTH reviewers independently. Test-only deliverable pinning the T88 gate; the unbound-DATA/PARITY drop is production behavior from T88's continue-then-drop trial loop."
+- criticism: ["[fable, R1, RESOLVED R2] the PARITY subtest was vacuous under the FEC-off fixture — fixed by arming fecRecv on both peers and observing FEC-decoder reconstruction on a leak."]
+- new_questions: []
+- ledgerRefs: ["tasks:T89","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-021726-a68d4cd936a9aeaec.md",".cq/logs/20260714-021726-a3a44fe24270c9538.md",".cq/logs/20260714-022112-a366f6435dd6b4681.md",".cq/logs/20260714-022112-a4a8424b945a1df11.md"]
+- rawLogs: [".cq/logs/raw/20260714-021726-a68d4cd936a9aeaec.jsonl",".cq/logs/raw/20260714-021726-a3a44fe24270c9538.jsonl",".cq/logs/raw/20260714-022112-a366f6435dd6b4681.jsonl",".cq/logs/raw/20260714-022112-a4a8424b945a1df11.jsonl"]

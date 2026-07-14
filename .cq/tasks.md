@@ -709,10 +709,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-011407-ac373e4ef09d0a464.md",".cq/logs/20260714-013526-adf90d11d594f0391.md",".cq/logs/20260714-013526-aa5af95a3b03fde16.md",".cq/logs/20260714-013526-a655a1c595ce4648a.md",".cq/logs/20260714-014014-a6681895aad44fda0.md",".cq/logs/20260714-014014-ad33623fb263f9dc1.md"]
 - rawLogs: [".cq/logs/raw/20260714-011407-ac373e4ef09d0a464.jsonl",".cq/logs/raw/20260714-013526-adf90d11d594f0391.jsonl",".cq/logs/raw/20260714-013526-aa5af95a3b03fde16.jsonl",".cq/logs/raw/20260714-013526-a655a1c595ce4648a.jsonl",".cq/logs/raw/20260714-014014-a6681895aad44fda0.jsonl",".cq/logs/raw/20260714-014014-ad33623fb263f9dc1.jsonl"]
 
-### T74 — planned
+### T74 — wip
 
 - createdAt: 2026-07-13T21:55:31.799Z
-- updatedAt: 2026-07-13T22:05:45.511Z
+- updatedAt: 2026-07-14T01:56:55.489Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire deferred boot-time resolution and the resolution loop into the device lifecycle
@@ -947,10 +947,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-013631-a8451cdfaa8267fa3.md",".cq/logs/20260714-015014-a6b4e576272a3aa1a.md",".cq/logs/20260714-015014-ae4c878a9b8cdabcd.md",".cq/logs/20260714-015014-a76ead6a90c6f25fb.md"]
 - rawLogs: [".cq/logs/raw/20260714-013631-a8451cdfaa8267fa3.jsonl",".cq/logs/raw/20260714-015014-a6b4e576272a3aa1a.jsonl",".cq/logs/raw/20260714-015014-ae4c878a9b8cdabcd.jsonl",".cq/logs/raw/20260714-015014-a76ead6a90c6f25fb.jsonl"]
 
-### T89 — planned
+### T89 — done
 
 - createdAt: 2026-07-13T22:28:18.062Z
-- updatedAt: 2026-07-13T22:35:33.782Z
+- updatedAt: 2026-07-14T02:21:39.612Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Gate DATA/PARITY from unbound sources
@@ -959,6 +959,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T88","T86"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: "7900642"
+- completion: "Unbound-source DATA/PARITY gate pinned (test-only, TestSharedSocketGatesUnboundDataParity): on a shared multi-view socket, validly-decoding DATA/PARITY from an unbound source reaches NO resequencer/fecRecv and mints no binding; post-PROBE DATA routes to the bound peer only. Production gate is T88's continue-then-drop; PARITY subtest arms fecRecv + observes reconstruction (mutation-verified both rounds). 2 review rounds; merged ff to main."
+- sessionLogs: [".cq/logs/20260714-020133-a60e7a44eaa038405.md",".cq/logs/20260714-021726-a68d4cd936a9aeaec.md",".cq/logs/20260714-021726-a3a44fe24270c9538.md",".cq/logs/20260714-022112-a366f6435dd6b4681.md",".cq/logs/20260714-022112-a4a8424b945a1df11.md"]
+- rawLogs: [".cq/logs/raw/20260714-020133-a60e7a44eaa038405.jsonl",".cq/logs/raw/20260714-021726-a68d4cd936a9aeaec.jsonl",".cq/logs/raw/20260714-021726-a3a44fe24270c9538.jsonl",".cq/logs/raw/20260714-022112-a366f6435dd6b4681.jsonl",".cq/logs/raw/20260714-022112-a4a8424b945a1df11.jsonl"]
 
 ### T90 — planned
 
