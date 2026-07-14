@@ -270,10 +270,10 @@ archives: []
 
 ## M37
 
-### G10 — planning
+### G10 — planned
 
 - createdAt: 2026-07-14T09:07:27.096Z
-- updatedAt: 2026-07-14T10:07:14.795Z
+- updatedAt: 2026-07-14T10:25:10.924Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Observability & metrics accuracy

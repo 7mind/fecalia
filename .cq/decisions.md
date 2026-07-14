@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 11
+  item: 12
 archives: []
 ---
 
@@ -149,3 +149,17 @@ archives: []
 - landsIn: ["M47"]
 - sourceRefs: ["goals:G11","reviews:R132"]
 - ledgerRefs: ["goals:G11","defects:D40","defects:D45","defects:D51","defects:D54","defects:D56","defects:D57","defects:D60"]
+
+## M37
+
+### K12 — locked
+
+- createdAt: 2026-07-14T10:25:05.566Z
+- updatedAt: 2026-07-14T10:25:05.566Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G10 plan approved: metrics-accuracy + reload/bind observability DAG locked (M46 / T133-T135)"
+- rationale: "Unanimous round-2 reviewer go-ahead (R133, opus+fable, 0 criticisms) after a clean round-1 REVISE (R131) that both reviewers confirmed fully addressed. Serialized chain T133→T134→T135: T133 counts probe-emission + echo-reflection wire bytes into ps.txBytes (emitProbes probe.go:50 + dispatchInbound echo multipath.go:~1693, both on nil-error only), rewrites the now-false peerPathState txBytes counter-contract comment (multipath.go:157-167) to true-wire-volume semantics, syncs README/design.md, and updates the T104 standby-idle subtest's stale repro commentary (no assertion inverts — already asserts delta>0), fixing D48. T134 threads a log.Logger through NewMultipath (9 device.go call sites) + WARNs on device-bind fallback, fixing D53. T135 extends reloadWarnings (device.go:549) over Scheduler/FEC/DNS + Bind at BOTH config levels (per-path Path.Bind l.Bind!=d.Bind AND top-level c.Bind default, config.go:841-849) + a zeroed-copy catch-all future-proof, fixing D52. Serialized because T133+T134 both edit multipath.go and T134+T135 both edit device.go (same-file worktree-conflict avoidance, applied consistently). Control frames have no production egress in internal/bind, so probe+echo are the only two uncounted tx writes (completeness verified). Synthesized from convergent opus+fable candidate plans. Fixes defects:D48/D52/D53."
+- landsIn: ["M46"]
+- sourceRefs: ["goals:G10","reviews:R131","reviews:R133"]
+- ledgerRefs: ["goals:G10","defects:D48","defects:D52","defects:D53"]

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 132
+  item: 133
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1499,6 +1499,19 @@ archives:
 - ledgerRefs: ["goals:G10"]
 - sessionLogs: [".cq/logs/20260714-101133-a0a8f038fe804a40b.md",".cq/logs/20260714-101133-afc7473f1aa34cb37.md"]
 - rawLogs: [".cq/logs/raw/20260714-101133-a0a8f038fe804a40b.jsonl",".cq/logs/raw/20260714-101133-afc7473f1aa34cb37.jsonl"]
+
+### R133 — go-ahead
+
+- createdAt: 2026-07-14T10:24:50.751Z
+- updatedAt: 2026-07-14T10:24:50.751Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G10 plan review round 2 — RECONCILED GO-AHEAD (unanimous: both [opus]+[fable] go-ahead, 0 criticisms). Both reviewers independently verified all THREE R131 findings are resolved and source-grounded, with no new problem introduced by the revision: (1) T135 Bind both/and — config.go normalize confirms Bind at BOTH levels (top-level default c.Bind→BindModeAuto :841-843, per-path Path.Bind fallback to c.Bind :847-849); the revised T135 correctly directs the per-path l.Bind!=d.Bind extension of the same-name-path comparison (device.go:589, SourceAddr/DestAddr-only today) PLUS explicit top-level c.Bind handling (own case or deliberate catch-all zeroing to avoid a generic double-warning), and correctly leaves Metrics un-warned (applied at Reload). (2) T135 dependsOn:[T134] is present — codegraph confirms NewMultipath (multipath.go:549) has exactly 9 callers in device.go and reloadWarnings lives in the same file, so the same-file serialization is sound and consistent across the linear T133→T134→T135 chain (every same-file overlap serialized: multipath.go T133+T134, device.go T134+T135). (3) T133 — the peerPathState txBytes comment at multipath.go:157-167 verbatim claims DATA-only/Send-only + 'backup Send count stays ~flat' (both false post-fix); revised item (3) rewrites it, item (4) adds the AGENTS.md docs-sync clause, item (5) correctly reframes the T104 'flip' as stale-repro-commentary-only (standby_liveness_test.go already asserts delta>0 via t.Errorf, no assertion inverts; emitProbes probe.go:50 counts on nil-error only; help string metrics.go:273 already accurate). Both reviewers additionally confirmed control frames have NO production egress site in internal/bind, so probe emission + echo reflection remain the only two uncounted tx writes (the round-1 completeness claim holds). Rubric clean across fine-grained/sequenced/testable/grounded/complete. No revision required."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["goals:G10"]
+- sessionLogs: [".cq/logs/20260714-102427-a1a2e5f635c8365c4.md",".cq/logs/20260714-102427-ae7b4d2f874ed1050.md"]
+- rawLogs: [".cq/logs/raw/20260714-102427-a1a2e5f635c8365c4.jsonl",".cq/logs/raw/20260714-102427-ae7b4d2f874ed1050.jsonl"]
 
 ## M38
 
