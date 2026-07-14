@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 95
+  item: 96
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1009,3 +1009,18 @@ archives:
 - ledgerRefs: ["tasks:T90","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-030657-a4a3590b837613332.md",".cq/logs/20260714-030657-aa1362bb37a2ee5d5.md"]
 - rawLogs: [".cq/logs/raw/20260714-030657-a4a3590b837613332.jsonl",".cq/logs/raw/20260714-030657-aa1362bb37a2ee5d5.jsonl"]
+
+## M30
+
+### R96 — go-ahead
+
+- createdAt: 2026-07-14T03:08:42.637Z
+- updatedAt: 2026-07-14T03:08:42.637Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T100 unanimous panel approve (round 1): [opus]+[fable] both approve. device.Up now sets IFF_UP on wanbond0 via SIOCGIFFLAGS→OR IFF_UP→SIOCSIFFLAGS read-modify-write (golang.org/x/sys/unix, no new dep; consts verified in x/sys v0.35.0), in the production-only Up() wrapper (device.go:210) BEFORE the up() unit-test seam — so fake-TUN unit tests are untouched but real runs get IFF_UP. Control socket closed via defer; TUN closed on ifUp failure; other IFF_ flags preserved; NO address assignment (operator-owned); teardown unchanged; INFO 'interface up' logged. New linkup_linux.go + !linux stub mirroring pathsock_{linux,other}.go; darwin cross-compiles. The -tags e2e netns test (test/e2e/link_up_test.go) compiles/vets and asserts UP-without-external-ip-link + no daemon address on both roles; privileged execution DEFERRED (G2 pattern). docs/install.md synced. Full non-privileged gate green. NOTE: the [fable] reviewer's filed defect (lint red at base: doh.go:206, dot.go:168, pathsock.go:166) is a verified DUPLICATE of open D45 — not re-filed."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T100","goals:G6"]
+- sessionLogs: [".cq/logs/20260714-030756-aa7c68662525d4b3f.md",".cq/logs/20260714-030756-a9196a9bc3bed8ec8.md"]
+- rawLogs: [".cq/logs/raw/20260714-030756-aa7c68662525d4b3f.jsonl",".cq/logs/raw/20260714-030756-a9196a9bc3bed8ec8.jsonl"]

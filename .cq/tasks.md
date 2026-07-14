@@ -1108,10 +1108,10 @@ archives:
 
 ## M30
 
-### T100 — wip
+### T100 — done
 
 - createdAt: 2026-07-13T23:22:25.158Z
-- updatedAt: 2026-07-14T02:48:38.154Z
+- updatedAt: 2026-07-14T03:08:22.199Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Bring the wanbond0 link UP after TUN creation (I1)
@@ -1119,6 +1119,10 @@ archives:
 - acceptance: New netns e2e test (go test -tags e2e ./test/e2e) asserts wanbond0 reports UP immediately after device.Up on both roles with NO external `ip link set up`, and that the daemon assigns no address. go test ./... green; no regression in existing device/reload tests.
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- resultCommit: f3b6a6f
+- completion: "device.Up sets IFF_UP on wanbond0 after TUN creation via SIOCGIFFLAGS/SIOCSIFFLAGS read-modify-write (golang.org/x/sys/unix; new linkup_linux.go + !linux stub mirroring pathsock_{linux,other}.go), in the production-only Up() wrapper (not the fake-TUN up() unit seam), logging INFO 'interface up'. Addressing stays operator-owned; teardown unchanged. New -tags e2e test test/e2e/link_up_test.go asserts UP-without-external-ip-link + no daemon address on both roles; compiles/vets under -tags e2e but privileged netns execution DEFERRED (hardware, G2 pattern) — must be hardware-validated before the e2e acceptance clause is fully closed. Unanimous 1-round panel approve; rebased past T90 and ff-merged to main as f3b6a6f; docs/install.md synced. [fable]'s lint-at-base defect is a duplicate of open D45."
+- sessionLogs: [".cq/logs/20260714-025553-a3d95aaa6b922d19a.md",".cq/logs/20260714-030756-aa7c68662525d4b3f.md",".cq/logs/20260714-030756-a9196a9bc3bed8ec8.md"]
+- rawLogs: [".cq/logs/raw/20260714-025553-a3d95aaa6b922d19a.jsonl",".cq/logs/raw/20260714-030756-aa7c68662525d4b3f.jsonl",".cq/logs/raw/20260714-030756-a9196a9bc3bed8ec8.jsonl"]
 
 ### T101 — planned
 
