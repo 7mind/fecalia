@@ -829,6 +829,35 @@ func TestLoadRejects(t *testing.T) {
 			want: "mode must be",
 		},
 		{
+			// D55: an out-of-range CIDR prefix length must fail fast at load,
+			// naming the peer and the offending entry, instead of surfacing LATE
+			// as an opaque UAPI allowed_ip= rejection at daemon start.
+			name: "peer allowed_ips out-of-range CIDR prefix",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				`allowed_ips = ["10.0.0.0/33"]`, 1)),
+			want: "wireguard peer 0: invalid allowed_ips entry \"10.0.0.0/33\"",
+		},
+		{
+			// D55: a non-CIDR typo must be rejected the same way.
+			name: "peer allowed_ips non-CIDR typo",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				`allowed_ips = ["10.0.0.0-oops"]`, 1)),
+			want: "wireguard peer 0: invalid allowed_ips entry \"10.0.0.0-oops\"",
+		},
+		{
+			// D59: a single edge default-route peer listing 0.0.0.0/0 twice is the
+			// one multi-default-route shape reachable via Load today (multi-peer
+			// default-route configs are unreachable — see the direct
+			// Config.validate() tests in TestPeerAllowedIPsDefaultRouteInvariants).
+			name: "edge default-route peer duplicates 0.0.0.0/0 in allowed_ips",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				"allowed_ips = [\"0.0.0.0/0\", \"0.0.0.0/0\"]\nmode = \"default-route\"", 1)),
+			want: "duplicate 0.0.0.0/0 entry",
+		},
+		{
 			// D41: strict decoding rejects a misspelled key instead of silently
 			// dropping it, and the error names the specific dotted key path.
 			name: "unknown key on path table",
@@ -931,6 +960,87 @@ func TestLoadRejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPeerAllowedIPsAcceptsValidCIDRForms is the D55 accept-table complement to
+// TestLoadRejects' malformed-CIDR cases: a normal narrow prefix and the literal
+// IPv6 default route both still parse and load without error.
+func TestPeerAllowedIPsAcceptsValidCIDRForms(t *testing.T) {
+	body := fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+		`allowed_ips = ["10.0.0.0/24", "::/0"]`, 1))
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"10.0.0.0/24", "::/0"}
+	if got := c.WireGuard.Peers[0].AllowedIPs; !reflect.DeepEqual(got, want) {
+		t.Errorf("allowed_ips = %v, want %v", got, want)
+	}
+}
+
+// minimalPeerConfig returns a Config with every field required to reach the
+// wireguard-peer validation section of Config.validate() already satisfied
+// (role, a single well-formed path, bind modes, and the top-level private
+// key), so a direct validate() call exercises exactly the peer-level
+// invariant under test. role/psk/peers are left for the caller to fill in.
+func minimalPeerConfig(t *testing.T, role Role) *Config {
+	t.Helper()
+	return &Config{
+		Role: role,
+		Paths: []Path{
+			{Name: "wan", SourceAddr: netip.MustParseAddr("203.0.113.5"), Bind: BindModeAuto},
+		},
+		Bind: BindModeAuto,
+		WireGuard: WireGuard{
+			PrivateKey: mustKey(t, 1),
+			ListenPort: 51820,
+		},
+	}
+}
+
+// TestPeerAllowedIPsDefaultRouteInvariants is the D59 direct-validate() table
+// for the two multi-default-route-peer shapes the planner confirmed are
+// unreachable via Load: the edge role caps at one peer (config.go's
+// "edge role supports exactly one wireguard peer" guard) and the concentrator
+// role rejects mode = "default-route" on every peer, so no real TOML config
+// can ever produce two peers that both carry the mode. The cross-peer
+// invariant is still enforced directly in Config.validate() (future-proofing
+// any relaxation of either cap), so these cases construct the Config
+// in-process and call validate() directly, bypassing Load's TOML parsing.
+func TestPeerAllowedIPsDefaultRouteInvariants(t *testing.T) {
+	t.Run("two peers both carry mode = default-route", func(t *testing.T) {
+		c := minimalPeerConfig(t, RoleEdge)
+		c.WireGuard.Peers = []Peer{
+			{PublicKey: mustKey(t, 2), Mode: PeerModeDefaultRoute},
+			{PublicKey: mustKey(t, 3), Mode: PeerModeDefaultRoute},
+		}
+		err := c.validate()
+		if err == nil {
+			t.Fatal("validate: expected error, got nil")
+		}
+		for _, want := range []string{"wireguard peer 0", "wireguard peer 1", "default-route"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), want)
+			}
+		}
+	})
+	t.Run("two peers both list 0.0.0.0/0", func(t *testing.T) {
+		c := minimalPeerConfig(t, RoleConcentrator)
+		c.WireGuard.Peers = []Peer{
+			{PublicKey: mustKey(t, 2), AllowedIPs: []string{"0.0.0.0/0"}},
+			{PublicKey: mustKey(t, 3), AllowedIPs: []string{"0.0.0.0/0"}},
+		}
+		err := c.validate()
+		if err == nil {
+			t.Fatal("validate: expected error, got nil")
+		}
+		for _, want := range []string{"wireguard peer 0", "wireguard peer 1", "0.0.0.0/0"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), want)
+			}
+		}
+	})
 }
 
 // TestLoadRejectsDuplicateSourceAddr is the D10 regression. validate() enforced

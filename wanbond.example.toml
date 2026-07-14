@@ -17,8 +17,8 @@
 # DEFAULT value (uncommenting one at its shown value is a no-op). Cross-field
 # constraints a single example cannot express inline are listed at the bottom.
 # Full prose reference: docs/install.md §3z. Everything here is enforced at
-# config load (fail-fast on the first violation) except the loopback + allowed_ips
-# checks noted below.
+# config load (fail-fast on the first violation) except the loopback check and
+# the allowed_ips non-empty check, noted below.
 
 # ── top level ────────────────────────────────────────────────────────────────
 role = "edge"                      # REQUIRED. "edge" | "concentrator". Never
@@ -352,7 +352,12 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 #   (compared unmapped, so 192.0.2.10 and ::ffff:192.0.2.10 collide). `name` must
 #   also be unique.
 # • allowed_ips: >= 1 CIDR per peer; empty is rejected when the WG config is
-#   assembled (not by config.validate).
+#   assembled (not by config.validate). Every entry's CIDR syntax IS parsed and
+#   validated by config.validate (naming the peer + offending entry on a
+#   malformed prefix), so a bad entry fails fast at load. A 0.0.0.0/0 or ::/0
+#   entry may appear at most once per address family, both within one peer and
+#   across all peers (overlapping allowed_ips is WireGuard cryptokey-routing
+#   last-writer-wins); at most one peer may carry mode = "default-route".
 # • amnezia all-or-nothing: an unconfigured (all-zero) block is plain WireGuard.
 #   Once ANY of jc/jmin/jmax/s1/s2/h1..h4 is set, the full jc,jmin,jmax,s1,s2 set
 #   must be > 0, jmin <= jmax, 148+s1 != 92+s2, and h1..h4 must be a distinct set

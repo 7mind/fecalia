@@ -1100,6 +1100,16 @@ func (s SchedulerConfig) validate() error {
 	return nil
 }
 
+// peerLabel formats a wireguard peer identifier for a validation error: the
+// index always, plus the configured name in parens when set (a single-peer
+// config legitimately leaves Name empty; a multi-peer one requires it).
+func peerLabel(i int, name string) string {
+	if name == "" {
+		return fmt.Sprintf("wireguard peer %d", i)
+	}
+	return fmt.Sprintf("wireguard peer %d (%q)", i, name)
+}
+
 // validate enforces the required-field invariants, failing on the first problem.
 func (c *Config) validate() error {
 	if !c.Role.valid() {
@@ -1148,6 +1158,27 @@ func (c *Config) validate() error {
 	if len(c.WireGuard.Peers) == 0 {
 		return errors.New("at least one wireguard peer is required")
 	}
+	// D59: at most one peer may carry mode = "default-route" — WireGuard
+	// cryptokey routing makes overlapping allowed_ips last-writer-wins, so two
+	// full-tunnel peers would be a silent misconfig regardless of role. Checked
+	// here, ahead of the edge single-peer cap and the concentrator per-peer mode
+	// rejection below, both of which currently make a multi-default-route-peer
+	// config unreachable via Load: the edge caps at one peer (next check) and the
+	// concentrator rejects mode = "default-route" on every peer (per-peer loop
+	// below), so today only a single edge peer can ever carry the mode at all.
+	// This guard is enforced directly anyway so it stays correct if either cap is
+	// ever relaxed later.
+	defaultRoutePeer := -1
+	for i, peer := range c.WireGuard.Peers {
+		if peer.Mode != PeerModeDefaultRoute {
+			continue
+		}
+		if defaultRoutePeer != -1 {
+			return fmt.Errorf("wireguard peers %s and %s both carry mode = %q; at most one peer may be the full-tunnel default route",
+				peerLabel(defaultRoutePeer, c.WireGuard.Peers[defaultRoutePeer].Name), peerLabel(i, peer.Name), PeerModeDefaultRoute)
+		}
+		defaultRoutePeer = i
+	}
 	// The edge dials exactly one concentrator peer per process (Q21); multi-peer
 	// configs are concentrator-only scope. Check this before the per-peer loop
 	// below so an edge config with >1 peer is rejected with this scope-explaining
@@ -1155,6 +1186,12 @@ func (c *Config) validate() error {
 	if c.Role == RoleEdge && len(c.WireGuard.Peers) > 1 {
 		return fmt.Errorf("edge role supports exactly one wireguard peer per process (got %d); the edge dials a single concentrator peer, multi-peer configs are concentrator-only", len(c.WireGuard.Peers))
 	}
+	// v4DefaultPeer/v6DefaultPeer track which peer (if any) has already claimed
+	// the literal default route for that address family (D59): a second peer
+	// duplicating 0.0.0.0/0 or ::/0 is rejected here at LOAD, rather than
+	// producing a last-writer-wins UAPI allowed_ip= clash at the engine.
+	v4DefaultPeer := -1
+	v6DefaultPeer := -1
 	for i, peer := range c.WireGuard.Peers {
 		if !peer.PublicKey.IsSet() {
 			return fmt.Errorf("wireguard peer %d: public_key is required", i)
@@ -1188,6 +1225,48 @@ func (c *Config) validate() error {
 		// on a concentrator-role peer is a config error rather than a silent no-op.
 		if c.Role == RoleConcentrator && peer.Mode == PeerModeDefaultRoute {
 			return fmt.Errorf("wireguard peer %d: mode = %q is not meaningful for the concentrator role (it is an edge-only full-tunnel opt-in)", i, PeerModeDefaultRoute)
+		}
+		// D55: allowed_ips entries are parsed here — not just carried as opaque
+		// strings — so a malformed CIDR (a typo, or an out-of-range prefix length
+		// like /33) fails fast at LOAD naming the peer and offending entry, instead
+		// of surfacing LATE and opaquely when the engine's UAPI allowed_ip= line
+		// fails to parse at daemon start. This mirrors the source_addr/endpoint
+		// parse-at-load discipline elsewhere in this function.
+		var v4SeenInPeer, v6SeenInPeer bool
+		for _, raw := range peer.AllowedIPs {
+			prefix, err := netip.ParsePrefix(raw)
+			if err != nil {
+				return fmt.Errorf("%s: invalid allowed_ips entry %q: %w", peerLabel(i, peer.Name), raw, err)
+			}
+			if prefix.Bits() != 0 {
+				continue
+			}
+			// D59: a literal /0 entry is the full default route for its address
+			// family — reject a second occurrence, both within this peer's own
+			// allowed_ips (a redundant duplicate) and across peers (WireGuard
+			// cryptokey routing makes overlapping allowed_ips last-writer-wins, a
+			// silent misconfig).
+			if prefix.Addr().Is4() {
+				if v4SeenInPeer {
+					return fmt.Errorf("%s: duplicate 0.0.0.0/0 entry in allowed_ips", peerLabel(i, peer.Name))
+				}
+				v4SeenInPeer = true
+				if v4DefaultPeer != -1 {
+					return fmt.Errorf("wireguard peers %s and %s both list 0.0.0.0/0 in allowed_ips; WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins",
+						peerLabel(v4DefaultPeer, c.WireGuard.Peers[v4DefaultPeer].Name), peerLabel(i, peer.Name))
+				}
+				v4DefaultPeer = i
+			} else {
+				if v6SeenInPeer {
+					return fmt.Errorf("%s: duplicate ::/0 entry in allowed_ips", peerLabel(i, peer.Name))
+				}
+				v6SeenInPeer = true
+				if v6DefaultPeer != -1 {
+					return fmt.Errorf("wireguard peers %s and %s both list ::/0 in allowed_ips; WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins",
+						peerLabel(v6DefaultPeer, c.WireGuard.Peers[v6DefaultPeer].Name), peerLabel(i, peer.Name))
+				}
+				v6DefaultPeer = i
+			}
 		}
 	}
 	// Per-peer name/psk (Q21 multi-peer concentrator): with a single peer the

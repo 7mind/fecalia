@@ -599,8 +599,8 @@ keys are shown **commented-out with their default value**. Uncommenting a key
 and leaving it at the shown value is a no-op. The per-section notes after the
 example capture the cross-field constraints a single example cannot express
 inline. All of these are enforced at config load (`config.Load`), which fails
-fast on the first violation — except the loopback and `allowed_ips` checks,
-noted below.
+fast on the first violation — except the loopback check and the `allowed_ips`
+non-empty check, noted below.
 
 > The same content ships as a copy-pasteable file at the repo root,
 > [`wanbond.example.toml`](../wanbond.example.toml): copy it, fill the
@@ -807,10 +807,18 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   `source_addr` (compared unmapped, so `192.0.2.10` and `::ffff:192.0.2.10`
   collide). `name` must also be unique.
 - **`allowed_ips`.** At least one CIDR per peer; empty is rejected when the WG
-  configuration is assembled (not by `config.validate`). A literal `0.0.0.0/0`
-  or `::/0` (full tunnel) is ALWAYS split into the equivalent `/1`+`/1` pair at
-  UAPI render — the engine never receives the literal `/0`, which wedges the
-  handshake.
+  configuration is assembled (not by `config.validate`). Every entry's CIDR
+  syntax IS parsed and validated by `config.validate` (naming the peer and the
+  offending entry on a malformed prefix, e.g. an out-of-range `/33` or a typo),
+  so a bad entry fails fast at load instead of surfacing later as an opaque
+  UAPI `allowed_ip=` rejection at daemon start. A literal `0.0.0.0/0` or `::/0`
+  (full tunnel) is ALWAYS split into the equivalent `/1`+`/1` pair at UAPI
+  render — the engine never receives the literal `/0`, which wedges the
+  handshake. A `0.0.0.0/0`/`::/0` entry may appear at most once per address
+  family, both within one peer's `allowed_ips` and across all of a config's
+  peers — WireGuard cryptokey routing makes overlapping `allowed_ips`
+  last-writer-wins, a silent misconfig — and at most one peer may carry
+  `mode = "default-route"` at all.
 - **`mode` is edge-only.** Peer `mode = "default-route"` marks a peer as the
   edge's full-tunnel concentrator (an opt-in alongside a `0.0.0.0/0`/`::/0`
   `allowed_ips` entry); rejected on the concentrator, mirroring the
