@@ -1755,10 +1755,10 @@ archives:
 - dependsOn: ["T136"]
 - ledgerRefs: ["goals:G11","defects:D57","defects:D60"]
 
-### T139 — planned
+### T139 — done
 
 - createdAt: 2026-07-14T10:09:48.135Z
-- updatedAt: 2026-07-14T10:09:48.135Z
+- updatedAt: 2026-07-14T15:06:39.783Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Consolidate the superseded PathSnapshots/FECSnapshot bind read seams onto PeerSnapshots (D56)

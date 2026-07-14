@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 167
+  item: 169
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1759,6 +1759,19 @@ archives:
 - sessionLogs: [".cq/logs/20260714-105323-a22078d2020cbe7b9.md",".cq/logs/20260714-105323-a68872eff2c279acf.md"]
 - rawLogs: [".cq/logs/raw/20260714-105323-a22078d2020cbe7b9.jsonl",".cq/logs/raw/20260714-105323-a68872eff2c279acf.jsonl"]
 
+### R169 — revise
+
+- createdAt: 2026-07-14T15:06:53.049Z
+- updatedAt: 2026-07-14T15:06:53.049Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T134 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). Both reviewers confirmed the CORE plumbing is correct and green: NewMultipath's required log.Logger param (nil fail-fast, Component('bind')), all call sites updated, listenPath's 3-return restructure preserving a working source-IP fallback socket (pathsock.go stays logging-free), the two WARN layers mutually exclusive (unresolvable dev=='' vs deviceErr!=nil), the FORCED(WARN)/AUTO(INFO) distinction, and the 6 new tests mutation-verified to fail against the silent pre-fix code; build/vet/test + -race + just lint all green. But [fable] reproduced TWO log-correctness defects (opus independently flagged #1 as a defect):"
+- criticism: ["[fable+opus] WARN SPAM at 1 Hz: warnForcedDeviceUnresolvable holds NO per-path state, and reconcileDeferred (internal/bind/reconcile.go:116) runs at 1 Hz in production (StartReconcileLoop(DefaultReconcileInterval), device.go:398). REPRODUCED: a deferred bind='device' path whose interface stays unresolvable emits 5 identical WARNs over 5 reconcileDeferred() calls — one WARN PER SECOND for the whole deferral window (a normal startup transient: mobile edge pre-DHCP, Starlink mid-obstruction). After the first record the information is zero, and sustained per-second WARN trains operators to IGNORE the very signal D53 adds. FIX: log ONCE per condition transition (a 'warned' flag on the deferred-path entry, cleared when the interface resolves or the path promotes), not per tick; ADD a test asserting a SECOND reconcileDeferred() with the same unresolved state emits 0 NEW WARNs.","[fable] FALSE-FALLBACK claim: both WARN sites fire regardless of the listen OUTCOME. In reconcileDeferred (and Open's tolerate-defer / AddPath's defer paths), when the subsequent listen FAILS (EADDRNOTAVAIL) the path stays DEFERRED — NO source-IP-pinned socket exists — yet the layer-(a) WARN text asserts 'falling back to source-IP pinning (roam survival ... is lost)'. Similarly warnDeviceBindFallback WARNs BEFORE err is checked, claiming a fallback that FAILED to bind. FIX: gate the fallback WARN on the fallback socket actually MATERIALIZING (err==nil), or reword the deferred-retry case so it does not assert a fallback that did not occur."]
+- new_questions: []
+- ledgerRefs: ["tasks:T134","goals:G10","defects:D53"]
+- sessionLogs: [".cq/logs/20260714-140500-a24a0b2be975ad925.md",".cq/logs/20260714-140500-a83f17ef8179b04cf.md"]
+- rawLogs: [".cq/logs/raw/20260714-140500-a24a0b2be975ad925.jsonl",".cq/logs/raw/20260714-140500-a83f17ef8179b04cf.jsonl"]
+
 ## M47
 
 ### R139 — go-ahead
@@ -1851,6 +1864,19 @@ archives:
 - ledgerRefs: ["tasks:T137","goals:G11","defects:D51"]
 - sessionLogs: [".cq/logs/20260714-113100-a48436a017bd022d0.md"]
 - rawLogs: [".cq/logs/raw/20260714-113100-a48436a017bd022d0.jsonl"]
+
+### R168 — go-ahead
+
+- createdAt: 2026-07-14T15:06:38.274Z
+- updatedAt: 2026-07-14T15:06:38.274Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T139 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). Deleted the superseded primary-only bind read seams Multipath.PathSnapshots + Multipath.FECSnapshot (no production callers since T94 migrated the device metrics adapter to PeerSnapshots) and migrated the ~9 bind test call sites (fec_test.go, traffic_test.go) to PeerSnapshots()[0].Paths/[0].FEC. The migration is PROVABLY SEMANTICS-PRESERVING (structural, not merely test-observed): Multipath embeds *peerState as the primary and the constructor sets peers:[]*peerState{primary}, so peers[0] IS the same object the deleted seams read via promotion — PeerSnapshots()[0].FEC/.Paths reads the identical slice (same path/priority order) and the same atomic FEC pointers, with verbatim-identical field mapping (PathTraffic{Name,TxBytes,RxBytes,Estimate,State}; FEC.Recovered=deliveredRecovered.Load, Unrecoverable=stats().Unrecoverable, ResidualLoss=connLoss.Loss). The honest Recovered/Unrecoverable delivered-count derivation now lives in EXACTLY ONE place (PeerSnapshots, multipath.go:~2960) — the prior 'mirrors ... verbatim' duplicate is gone (D56 drift risk eliminated). grep confirms ZERO surviving callers of the deleted methods (only 2 honest historical comments in device/metrics.go + tolerant_startup_test.go; the metrics.FECSnapshot STRUCT is correctly kept). Fresh (uncached) go build/vet/test (bind, device, metrics) + just lint all green. Surgical 3-file diff. LANDED on main at a768452."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T139","goals:G11","defects:D56"]
+- sessionLogs: [".cq/logs/20260714-140500-ab95271310335d76f.md",".cq/logs/20260714-140500-ad37fb093af989592.md"]
+- rawLogs: [".cq/logs/raw/20260714-140500-ab95271310335d76f.jsonl",".cq/logs/raw/20260714-140500-ad37fb093af989592.jsonl"]
 
 ## M45
 
