@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 129
+  item: 130
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1469,3 +1469,18 @@ archives:
 - ledgerRefs: ["goals:G8"]
 - sessionLogs: [".cq/logs/20260714-095536-a3a7f395cb395bd56.md",".cq/logs/20260714-095536-a5a35759bbc77ff8a.md"]
 - rawLogs: [".cq/logs/raw/20260714-095536-a3a7f395cb395bd56.jsonl",".cq/logs/raw/20260714-095536-a5a35759bbc77ff8a.jsonl"]
+
+## M36
+
+### R130 — go-ahead
+
+- createdAt: 2026-07-14T10:06:16.839Z
+- updatedAt: 2026-07-14T10:06:16.839Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G9 plan review round 1 — UNANIMOUS GO-AHEAD ([opus]+[fable]). Config loader/validation hardening DAG (M45 / T130→T131→T132 serial chain) verified fine-grained, correctly sequenced, testable, and fully grounded: T130 (D41) strict DisallowUnknownFields decode is safe against the toml:\"-\" derived fields (StrictMissingError per go-toml/v2 contract); T131 (D43) the LinkRTTRaw raw-string precedent + string→Duration gap verified, and CollapseDwell/LoadTau/WeightRTTFloor/FEC.Deadline are the COMPLETE remaining bare-Duration knob set ([dns]/link_rtt already use the pattern), with the mandated wanbond.example.toml/docs sync; T132 (D55+D59) netip.ParsePrefix + /0-exclusivity land at the correct validate() locus — the multi-peer-default-route shapes are Load-unreachable (edge one-peer cap + concentrator mode rejection) but the reachable single-peer-dup-/0 AND two-concentrator-bare-/0 cases are covered, and the guarded shapes are unit-tested via direct validate(). Serial chain justified (all touch config.go; T131's field re-keying must pass under T130's strict decoder). Plan APPROVED — G9 locked to planned."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["goals:G9"]
+- sessionLogs: [".cq/logs/20260714-100557-a19544394bc175b00.md",".cq/logs/20260714-100557-a35b26d6acaee7e2d.md"]
+- rawLogs: [".cq/logs/raw/20260714-100557-a19544394bc175b00.jsonl",".cq/logs/raw/20260714-100557-a35b26d6acaee7e2d.jsonl"]

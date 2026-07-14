@@ -254,16 +254,19 @@ archives: []
 
 ## M36
 
-### G9 — planning
+### G9 — planned
 
 - createdAt: 2026-07-14T09:07:19.087Z
-- updatedAt: 2026-07-14T09:07:19.087Z
+- updatedAt: 2026-07-14T10:06:34.935Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Config loader/validation hardening
 - description: "DEFECT-SEEDED (skip clarifying — reviewer-pinned causes + suggestedFixes on each defect). Make the TOML config loader fail-fast and honest at load time. Fix per each defect item: defects:D41 — the loader SILENTLY IGNORES unknown/misspelled TOML keys (a typo'd key is dropped, not rejected — against the fail-fast posture; enable strict/DisallowUnknownFields decoding); defects:D43 — pre-existing docs advertise string-duration config forms ([scheduler]/[...]) that the loader REJECTS (doc-vs-loader mismatch — either accept the string-duration form or correct the docs, planner's call, prefer accepting to match documented UX); defects:D55 — allowed_ips CIDR syntax is NOT validated at config load, so a malformed CIDR fails LATE at daemon start instead of at Load (validate each allowed_ips entry with netip.ParsePrefix in config.validate); defects:D59 — config validation ACCEPTS multiple mode=default-route peers on the edge with overlapping 0.0.0.0/0 (last-writer-wins at the engine — silent misconfig; reject >1 default-route peer / overlapping /0 across peers). PLANNER: one or two coherent config-validation fix tasks; each ledgerRef its defects:<D>, add table-driven config.Load rejection tests, drive resolved on merge. Grounding: internal/config/config.go (Load/normalize/validate)."
 - sourceRefs: ["defects:D41","defects:D43","defects:D55","defects:D59"]
 - tags: ["config","validation","defect-seeded"]
+- milestones: ["M36","M45"]
+- sessionLogs: [".cq/logs/20260714-100007-a8d1d787e3f65897c.md",".cq/logs/20260714-100007-ad2d48fde7414a99f.md"]
+- rawLogs: [".cq/logs/raw/20260714-100007-a8d1d787e3f65897c.jsonl",".cq/logs/raw/20260714-100007-ad2d48fde7414a99f.jsonl"]
 
 ## M37
 

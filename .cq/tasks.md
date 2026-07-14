@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 129
+  item: 132
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -1634,3 +1634,43 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T128"]
 - ledgerRefs: ["goals:G8","defects:D47","defects:D49","defects:D50","defects:D58"]
+
+## M45
+
+### T130 — planned
+
+- createdAt: 2026-07-14T10:00:28.040Z
+- updatedAt: 2026-07-14T10:00:28.040Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Reject unknown TOML keys at config load via strict decoding (D41)
+- description: "internal/config/load.go:34 decodes with non-strict toml.Unmarshal (go-toml/v2), so a misspelled key (link_bandwith, nane) is silently dropped despite Load's documented fail-fast posture (D41). Replace the decode site with `toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()` + Decode(&c). On failure, detect *toml.StrictMissingError (errors.As) and render its row list into a precise `config %s: unknown key ...` error instead of the raw multiline dump; leave all other decode errors on today's `config %s: %w` path. Confirm every existing loadable config shape still loads (the `toml:\"-\"` derived fields are struct-side only and do not affect strict decoding of INPUT keys). FIRST task in the G9 chain — T131/T132 serialize after it (all touch internal/config) so the D43 field re-keying is itself covered by strict-decode tests."
+- acceptance: "New rejects-table cases in internal/config tests: a config containing a misspelled key (e.g. `link_bandwith` on a path, `nane` on a peer) fails Load with an error identifying the unknown key; all existing accept-table configs still load (incl. wanbond.example.toml via TestExampleConfigLoads). `go test ./internal/config/... && go test ./...` pass."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G9","defects:D41"]
+
+### T131 — planned
+
+- createdAt: 2026-07-14T10:00:43.797Z
+- updatedAt: 2026-07-14T10:00:43.797Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Accept documented string-duration forms for operator-facing duration knobs (D43)
+- description: "wanbond.example.toml documents collapse_dwell=\"2s\", load_tau=\"200ms\", weight_rtt_floor=\"1ms\" and [fec] deadline=\"5ms\", but those fields are bare time.Duration and go-toml/v2 CANNOT decode a TOML string into time.Duration — an operator uncommenting the documented example gets a load failure (D43, probe-confirmed). Accept Go duration STRINGS uniformly for all operator-facing duration knobs: SchedulerConfig.CollapseDwell/LoadTau/WeightRTTFloor and FEC.Deadline. Use the in-repo LinkRTTRaw precedent (config.go ~:874-883): a Raw string field carrying the TOML key + the typed field moved to `toml:\"-\"`, parsed via time.ParseDuration in normalize() with fail-fast on unparseable/non-positive values. (A shared TextUnmarshaler duration wrapper is acceptable ONLY if it keeps ONE mechanism across all knobs.) Decide + document whether the bare-integer-nanoseconds form remains accepted (docs use strings exclusively; dropping it is fine if the error says so). Preserve each knob's applyDefaults defaulting + existing range validation. SAME-CHANGE docs sync (AGENTS.md): keep wanbond.example.toml consistent + audit README.md/docs/design.md/docs/install.md for duration-form mentions. Serialized after T130 (shares config.go; its field re-keying must pass under the T130 strict decoder)."
+- acceptance: "A config-test matrix loads EVERY documented string-duration form (collapse_dwell=\"2s\", load_tau=\"200ms\", weight_rtt_floor=\"1ms\" under [scheduler] policy=\"weighted\", deadline=\"5ms\" under [fec] enabled=true) and asserts the parsed time.Duration values; rejects-table entries cover an unparseable duration (\"5 parsecs\") and a non-positive one (\"-1s\") with errors naming the field; and TestExampleConfigLoads (or an added check) confirms the uncommented wanbond.example.toml duration lines load. `go test ./internal/config/...` passes."
+- suggestedModel: standard
+- dependsOn: ["T130"]
+- ledgerRefs: ["goals:G9","defects:D43"]
+
+### T132 — planned
+
+- createdAt: 2026-07-14T10:00:55.164Z
+- updatedAt: 2026-07-14T10:00:55.164Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Validate allowed_ips CIDR syntax + default-route /0 exclusivity at load (D55+D59)
+- description: "Two folded validate()-only fixes in internal/config/config.go's per-peer loop (~:1090-1124). (D55) config.validate() never parses allowed_ips entries, so a malformed CIDR (10.0.0.0/33, a typo) passes Load and fails LATE at daemon start when the engine's IpcSet rejects the rendered UAPI allowed_ip= line: netip.ParsePrefix each entry and fail fast naming the peer index (+ name when set) + the offending string, mirroring the source_addr/endpoint parse-at-load discipline. (D59) using the parsed prefixes, enforce (a) at most ONE peer carries mode=default-route, (b) a 0.0.0.0/0 or ::/0 entry appears at most once per address family ACROSS peers and never duplicated WITHIN a peer — WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins, a silent misconfig. NUANCE (both candidate planners confirmed): the edge single-peer rule (config.go ~:1087) + the concentrator default-route rejection (~:1121) make the multi-peer default-route shapes UNREACHABLE via Load today — the reachable case is a single edge peer listing /0 twice; enforce the cross-peer invariant DIRECTLY anyway (future-proofs any relaxation of the one-peer cap) and unit-test the guarded-but-unreachable combinations by calling validate() on a constructed Config (package config tests). D59 folds into D55's task because its /0 detection consumes D55's parsed prefixes. Serialized after T131 (shares config.go)."
+- acceptance: "Rejects-table cases: a peer with allowed_ips=[\"10.0.0.0/33\"] (and a non-CIDR typo) fails Load with the peer index + offending entry; a single edge default-route peer with [\"0.0.0.0/0\",\"0.0.0.0/0\"] fails Load as a duplicate /0. Direct Config.validate() unit tests reject a constructed two-default-route-peer Config and a /0-on-two-peers Config (naming the conflicting peers). All existing accept-table configs (incl. the normal single default-route peer with one 0.0.0.0/0, and valid CIDRs \"10.0.0.0/24\"/\"::/0\") still load. `go test ./internal/config/... && go test ./...` pass."
+- suggestedModel: standard
+- dependsOn: ["T131"]
+- ledgerRefs: ["goals:G9","defects:D55","defects:D59"]

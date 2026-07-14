@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 44
+  item: 45
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -315,3 +315,9 @@ archives:
 - createdAt: 2026-07-14T09:46:00.976Z
 - updatedAt: 2026-07-14T09:46:00.976Z
 - title: "G8-C: multi-peer netns e2e extension + deferred privileged run (o3 + llm-ubuntu-0)"
+
+### M45 — open
+
+- createdAt: 2026-07-14T10:00:09.529Z
+- updatedAt: 2026-07-14T10:00:09.529Z
+- title: "G9-W: config loader/validation hardening (serialized: strict-decode → durations → allowed_ips/default-route)"

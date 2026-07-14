@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 9
+  item: 10
 archives: []
 ---
 
@@ -121,3 +121,17 @@ archives: []
 - landsIn: ["M42","M43","M44"]
 - sourceRefs: ["goals:G8","reviews:R128","reviews:R129"]
 - ledgerRefs: ["goals:G8","defects:D42","defects:D44","defects:D47","defects:D49","defects:D50","defects:D58"]
+
+## M36
+
+### K10 — locked
+
+- createdAt: 2026-07-14T10:06:22.734Z
+- updatedAt: 2026-07-14T10:06:22.734Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G9 plan approved: config loader/validation hardening DAG locked (M45 / T130-T132)"
+- rationale: "Unanimous round-1 reviewer go-ahead (R130, opus+fable). Serial 3-task chain in internal/config: T130 strict DisallowUnknownFields decode rejecting unknown/misspelled TOML keys (D41); T131 accept Go duration STRINGS for CollapseDwell/LoadTau/WeightRTTFloor/FEC.Deadline via the LinkRTTRaw raw-string mirror + wanbond.example.toml/docs sync (D43); T132 netip.ParsePrefix allowed_ips at load + default-route/-overlapping-/0 exclusivity in validate() (D55+D59). Serialized (all share config.go; T131's re-keyed fields must pass under T130's strict decoder). Synthesized from convergent opus+fable candidates (fable base: cleaner D41/D43 split so field re-keying is strict-decode-covered; D55+D59 folded since /0-detection consumes D55's parsed prefixes). Fixes defects:D41/D43/D55/D59."
+- landsIn: ["M45"]
+- sourceRefs: ["goals:G9","reviews:R130"]
+- ledgerRefs: ["goals:G9","defects:D41","defects:D43","defects:D55","defects:D59"]
