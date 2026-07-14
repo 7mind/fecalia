@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 133
+  item: 140
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1527,3 +1527,108 @@ archives:
 - ledgerRefs: ["goals:G11"]
 - sessionLogs: [".cq/logs/20260714-102004-a2a60ff2d5102fd65.md",".cq/logs/20260714-102004-a2d056ba8c6f51a5a.md"]
 - rawLogs: [".cq/logs/raw/20260714-102004-a2a60ff2d5102fd65.jsonl",".cq/logs/raw/20260714-102004-a2d056ba8c6f51a5a.jsonl"]
+
+## M39
+
+### R134 — go-ahead
+
+- createdAt: 2026-07-14T10:56:20.435Z
+- updatedAt: 2026-07-14T10:56:20.435Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T116 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). Reflect changed to (echo []byte, epochChanged bool, err error) return-flag (no callback — satisfies T119's outside-r.mu lock discipline). Restart classification `restart := st.adopted && sessionID != st.session` captured BEFORE st.session mutation; per-epoch dedup on lastRestartSession/haveRestartSession under r.mu → exactly-once across concurrent paths of one boot. Acceptance (a)-(d) each covered by TestReflectEpochChangedOnPeerRestart + an exactly-once count through the real Prober handshake; all 33 call sites migrated. fable examined+dismissed 3 theoretical signal-swallow paths (frame.Encode/drawChallenge CSPRNG-unreachable; lagging-path extra-true matches the pinned last-restart-session design). go build/vet/test + -race (telemetry+bind) + e2e vet green. LANDED on main at 124c232 (integration fix 225f98d adapted T117's test to this new signature)."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T116","goals:G7","defects:D36"]
+- sessionLogs: [".cq/logs/20260714-104922-afe04b49891ef2eb7.md",".cq/logs/20260714-104922-af4f6a49d0ebf98a6.md"]
+- rawLogs: [".cq/logs/raw/20260714-104922-afe04b49891ef2eb7.jsonl",".cq/logs/raw/20260714-104922-af4f6a49d0ebf98a6.jsonl"]
+
+## M40
+
+### R135 — go-ahead
+
+- createdAt: 2026-07-14T10:56:28.492Z
+- updatedAt: 2026-07-14T10:56:28.492Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T117 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). Multipath.SetOnFirstPathUp(func()) — nil-safe (double guard cb!=nil && *cb!=nil), fired EXACTLY ONCE off the receive hot path via a dedicated goroutine on the everUp false→true edge. dispatchInbound's everUp.Store(true) became CompareAndSwap(false,true): the CAS is the sole everUp writer package-wide and nothing ever resets it, so at-most-once + no-refire-across-Down→Up→Down→Up hold STRUCTURALLY. 4 non-vacuous tests drive the production demuxInbound path; both reviewers ran uncached `go test -race ./internal/bind/...` green. Non-blocking design notes (for the dependent consumer T120): the seam is edge-triggered (register before Open or consult EverHadLivePath) and the fired goroutine may run after Close. LANDED on main at f5ace40."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T117","goals:G7","defects:D37"]
+- sessionLogs: [".cq/logs/20260714-105323-a6bc513252cea77fc.md",".cq/logs/20260714-105323-a38fe4b9603f3e06e.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-a6bc513252cea77fc.jsonl",".cq/logs/raw/20260714-105323-a38fe4b9603f3e06e.jsonl"]
+
+## M41
+
+### R136 — go-ahead
+
+- createdAt: 2026-07-14T10:56:36.491Z
+- updatedAt: 2026-07-14T10:56:36.491Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T118 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). Both reviewers independently VERIFIED the worker's 'already-wired-at-base' claim against base 735ece3: metrics.go declares reseqRebaselines/reseqDroppedSuspect Descs with peerScopedLabels (L292/295) and emits them unconditionally in the Reseq() Collect loop via peerLabelValues (L360/363) — BOTH single-peer (no peer label) AND per-peer (peer=<name>) forms present, the identical const-metric path proven for the reseq series by the pre-existing TestExpositionTwoPeerSeries; provenance multipath.go:2806 r.rq.Stats() → device/metrics.go:141 → exposition. So NO production wiring was needed. The added test (TestExpositionReseqRebaselineAndDropSuspect) drives a REAL reseq.New resequencer through Rebaseline() + the genuine ObserveRecovered SUSPECT branch (not synthetic Stats), scrapes /metrics, and asserts both counters read 1 in the zero-label (single-peer) exposition — the Value() assertion simultaneously proves the no-peer-label back-compat rule. Test-only diff, no datapath change. go build + go test ./internal/reseq/... ./internal/metrics/... green. LANDED on main at 4bf9c52."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T118","goals:G7","defects:D36"]
+- sessionLogs: [".cq/logs/20260714-105323-acd25ba2452d0aed4.md",".cq/logs/20260714-105323-a9e8a6fd89060ba75.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-acd25ba2452d0aed4.jsonl",".cq/logs/raw/20260714-105323-a9e8a6fd89060ba75.jsonl"]
+
+## M42
+
+### R137 — go-ahead
+
+- createdAt: 2026-07-14T10:56:48.065Z
+- updatedAt: 2026-07-14T10:56:48.065Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T123 review — RECONCILED APPROVE (unanimous opus+fable go-ahead; 2 out-of-scope defects filed → D62/D63). Highest-risk change (lock-free copy-on-write peerBySource restructure). Both reviewers verified all 5 focus invariants: (1) CAS loop recomputes countP/oldestSeq/evictKey per iteration from the reloaded snapshot, lost CAS retries with nothing carried, CoW keeps published maps immutable (no torn/lost updates, no ABA); (2) the eviction scan filters `b.peer != p` (multipath.go:1553-1563) so a peer can STRUCTURALLY never evict another peer's slot — cross-peer isolation, asserted by 4 tests; (3) per-peer quota max(1, maxDemuxSources/len(peersView)) read lock-free, evict is net-zero growth so the global cap holds, maxDemuxSources==0 preserves documented no-cap; (4) T90 roam re-affirm bypasses quota; (5) both demuxInbound sites (:1437 lookup, :1458 bind) AddrPort-keyed. fable's MUTATION-counterfactual proved discrimination: addr-only key → test (a) fails with the exact cross-wiring mode; quota stripped → (b)/(c) fail. go build/vet/test + -race ./internal/bind/... green (verified again on merged main); design.md synced. Two OUT-OF-SCOPE defects filed (file-and-defer, K13): D62 (medium, PRE-EXISTING at base) teardown-vs-bind race installs a dead-peer binding that demuxInbound:1444 then blackholes + leaks a global-cap slot; D63 (low) the 'LRU' is first-bind FIFO (bound sources never refresh recency) — conforms to the pinned insertion-order decision, a refinement not a T123 defect. LANDED on main at ae2d111."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T123","goals:G8","defects:D47","defects:D49"]
+- sessionLogs: [".cq/logs/20260714-105323-a84dc3152843ba3be.md",".cq/logs/20260714-105323-a26f9969b0d210376.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-a84dc3152843ba3be.jsonl",".cq/logs/raw/20260714-105323-a26f9969b0d210376.jsonl"]
+
+## M46
+
+### R138 — go-ahead
+
+- createdAt: 2026-07-14T10:56:58.074Z
+- updatedAt: 2026-07-14T10:56:58.074Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T133 review — RECONCILED APPROVE (unanimous opus+fable go-ahead). Both reviewers confirmed ps.txBytes.Add is on the nil-error path ONLY at both sites (probe.go emitProbes after m.mu released; multipath.go dispatchInbound echo on the lock-free receive goroutine) — exactly 4 Add sites total, probe/echo writes bypass Send + fecFlushDeadline so there is NO double-count, and the atomic add needs no lock change. Both new fake-clock tests were EMPIRICALLY verified fail-first: reverting probe.go/multipath.go to base 735ece3 with the tests kept yields 'txBytes = 0, want 75' (the exact D48 gap, right reason), and the fixed tree passes fresh. The T104 standby-idle subtest's delta>0 assertion (standby_liveness_test.go:133 `if delta <= 0 { t.Errorf }`) is UNCHANGED — only the stale-repro doc-comment + t.Errorf prose were rewritten. The peerPathState counter-contract comment (multipath.go:157-170) now states true-wire-volume ('Neither counter is DATA-only or Send-only (D48)') and the metrics help string ('Total bytes transmitted on the path.') is accurate; README/design.md carry no stale DATA-only tx_bytes wording. go build/vet/test (bind+metrics) + -tags e2e build/vet green. LANDED on main at 0487f0a."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T133","goals:G10","defects:D48"]
+- sessionLogs: [".cq/logs/20260714-105323-a22078d2020cbe7b9.md",".cq/logs/20260714-105323-a68872eff2c279acf.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-a22078d2020cbe7b9.jsonl",".cq/logs/raw/20260714-105323-a68872eff2c279acf.jsonl"]
+
+## M47
+
+### R139 — go-ahead
+
+- createdAt: 2026-07-14T10:57:10.106Z
+- updatedAt: 2026-07-14T10:57:10.106Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T136 review — RECONCILED APPROVE (unanimous opus+fable go-ahead; 1 low out-of-scope defect → D61). Clean-golangci-cache `just lint` exits 0 on the tracked tree; the doh.go:206/dot.go:168 errcheck + pathsock.go/metrics_test.go QF1001 findings are gone, with the Body.Close still bodyclose-recognizable. CRITICAL De Morgan check: both reviewers verified logical equivalence — opus algebraically, fable by EXHAUSTIVE executed truth tables (pathsock.go:242 !(A∧B)≡¬A∨¬B over 4 combos; metrics_test.go !((A∧B)∨(C∧D))≡(¬A∨¬B)∧(¬C∨¬D) over 16 combos, zero mismatches) plus the passing D13 TestFamilyBindCount regression pinning all 4 semantic quadrants. Hermeticity confirmed: a planted .claude/worktrees/x/bad.go leaves `just lint` at exit 0 and is never linted. The explicit package-list Justfile recipe (./cmd/... ./internal/... ./test/...) loses zero coverage (no tracked .go outside those trees). CAP_NET_RAW/D40 comment untouched. go build/vet/test green. ONE OUT-OF-SCOPE defect filed (D61, low): fable's probe shows a bare `golangci-lint run` ALSO exits 0 on the planted dot-dir file (Go package loading skips dot-directories), so D54's recorded 'walks .claude/worktrees' mechanism is unreproducible and the observed leak matches D45's own-tree findings (likely misattribution) — the fix remains sound as a by-construction hermeticity guarantee. LANDED on main at 4a38f8c."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T136","goals:G11","defects:D45","defects:D54"]
+- sessionLogs: [".cq/logs/20260714-105323-a5498c8846b8634b0.md",".cq/logs/20260714-105323-afb3dce8711b40b84.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-a5498c8846b8634b0.jsonl",".cq/logs/raw/20260714-105323-afb3dce8711b40b84.jsonl"]
+
+## M45
+
+### R140 — revise
+
+- createdAt: 2026-07-14T10:58:15.676Z
+- updatedAt: 2026-07-14T10:58:15.676Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T130 review round 1 — RECONCILED REVISE (strictest-wins: [fable] revise overrides [opus] go-ahead). Both reviewers agree the IMPLEMENTATION is correct and the full gate is green: strict decode (toml.NewDecoder(...).DisallowUnknownFields().Decode) genuinely rejects unknown keys, the message renders single-line dotted ('config <path>: unknown key paths.link_bandwith' / 'wireguard.peers.nane'), the 8 toml:\"-\" derived fields are inert to strict decode, errors.As detection is correct, and every accept-table config incl. wanbond.example.toml still loads (opus empirically reverted only load.go to base to confirm the new cases fail-without-fix). The REVISE is a test-coverage gap fable pinned: the two new rejects-table cases (internal/config/config_test.go:139,147) assert only the generic substring 'unknown key', NOT the offending key name — so the diff's ONLY nontrivial new logic, the unknownKeys dotted-path rendering, is UNVERIFIED (a regression returning an empty/wrong key list would still pass). The acceptance clause requires an error IDENTIFYING the unknown key."
+- criticism: ["[fable] Tighten the two new rejects-table assertions to pin the rendered key: change the `want` substrings at internal/config/config_test.go:139 and :147 from the generic 'unknown key' to the specific 'unknown key paths.link_bandwith' and 'unknown key wireguard.peers.nane' respectively (both empirically verified as the actual rendered dotted paths). This operationalizes the acceptance's 'error identifying the unknown key' clause and matches the suite's existing convention of pinning identifiers (cf. config_test.go:1211 `path \"cellular\"`). Re-run `go test ./internal/config/...` to confirm green."]
+- new_questions: []
+- ledgerRefs: ["tasks:T130","goals:G9","defects:D41"]
+- sessionLogs: [".cq/logs/20260714-105323-aa06d4feec9b3da1c.md",".cq/logs/20260714-105323-a9ffe648dbfc97572.md"]
+- rawLogs: [".cq/logs/raw/20260714-105323-aa06d4feec9b3da1c.jsonl",".cq/logs/raw/20260714-105323-a9ffe648dbfc97572.jsonl"]

@@ -1435,10 +1435,10 @@ archives:
 
 ## M39
 
-### T116 — planned
+### T116 — done
 
 - createdAt: 2026-07-14T09:21:14.157Z
-- updatedAt: 2026-07-14T09:33:02.986Z
+- updatedAt: 2026-07-14T10:57:21.988Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Surface an authenticated peer-restart adoption event from telemetry.Reflector
@@ -1465,10 +1465,10 @@ archives:
 
 ## M40
 
-### T117 — planned
+### T117 — done
 
 - createdAt: 2026-07-14T09:21:21.139Z
-- updatedAt: 2026-07-14T09:21:21.139Z
+- updatedAt: 2026-07-14T10:57:23.457Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Expose a one-shot first-path-up notification from the bind
@@ -1492,10 +1492,10 @@ archives:
 
 ## M41
 
-### T118 — planned
+### T118 — done
 
 - createdAt: 2026-07-14T09:21:27.432Z
-- updatedAt: 2026-07-14T09:21:27.432Z
+- updatedAt: 2026-07-14T10:57:25.048Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Expose resequencer rebaseline and drop-suspect counters for restart-recovery observability
@@ -1532,10 +1532,10 @@ archives:
 
 ## M42
 
-### T123 — planned
+### T123 — done
 
 - createdAt: 2026-07-14T09:46:25.389Z
-- updatedAt: 2026-07-14T09:53:31.721Z
+- updatedAt: 2026-07-14T10:57:26.430Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Re-key the source→peer demux by AddrPort and enforce a per-peer binding quota (D47+D49)
@@ -1637,10 +1637,10 @@ archives:
 
 ## M45
 
-### T130 — planned
+### T130 — wip
 
 - createdAt: 2026-07-14T10:00:28.040Z
-- updatedAt: 2026-07-14T10:00:28.040Z
+- updatedAt: 2026-07-14T10:26:22.801Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Reject unknown TOML keys at config load via strict decoding (D41)
@@ -1677,10 +1677,10 @@ archives:
 
 ## M46
 
-### T133 — planned
+### T133 — done
 
 - createdAt: 2026-07-14T10:07:27.505Z
-- updatedAt: 2026-07-14T10:18:34.676Z
+- updatedAt: 2026-07-14T10:57:27.939Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Count probe emission + echo-reflection wire bytes into ps.txBytes and flip the T104 standby-idle subtest green (D48)
@@ -1717,10 +1717,10 @@ archives:
 
 ## M47
 
-### T136 — planned
+### T136 — done
 
 - createdAt: 2026-07-14T10:09:10.921Z
-- updatedAt: 2026-07-14T10:09:10.921Z
+- updatedAt: 2026-07-14T10:57:29.453Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Make `just lint` green and hermetic: fix the 3 base findings (D45) + stop golangci-lint walking .claude/worktrees (D54)"

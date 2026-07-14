@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 60
+  item: 63
 archives: []
 ---
 
@@ -866,3 +866,39 @@ archives: []
 - suggestedFix: Delete the two 'later task / not yet consumed' sentences from BOTH the BindMode type comment (config.go ~L78-81) and the Path.Bind field note (config.go ~L492-493), leaving the now-accurate semantic description; selectDeviceBinds/multipath.AddPath honor the resolved mode since T106.
 - ledgerRefs: ["tasks:T112","goals:G6","defects:D57"]
 - rootCause: "CONFIRMED as filed ([fable] T112/T115 review). Two config.go comments — the BindMode type comment (~L78-81) and the Path.Bind field note (~L492-493) — claim the resolved bind mode is 'config surface only / not yet consumed', FALSE since T106: selectDeviceBinds (~L115-136) switches on the mode and multipath.AddPath (~L2309) honors a forced BindModeDevice. Same class as [[D57]]. File-and-deferred to goal G11 (delete the two stale sentences)."
+
+### D61 — open
+
+- createdAt: 2026-07-14T10:57:50.319Z
+- updatedAt: 2026-07-14T10:57:50.319Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D54 root-cause mechanism does not reproduce: bare golangci-lint run never walked .claude/worktrees (dot-dir skipped); observed leak matched D45's own-tree findings"
+- description: "Filed during T136 review ([fable], out-of-scope). Reviewer experiment in the T136 worktree: with a planted errcheck violation at .claude/worktrees/x/bad.go, the OLD bare `golangci-lint run` (current dev-shell toolchain) exits 0 with '0 issues' — Go package loading skips dot-directories, so the recorded D54 mechanism ('golangci-lint walks nested .claude/worktrees and leaks sibling code') is UNREPRODUCIBLE today. D54's observed evidence (errcheck hits at internal/dnsresolve/{doh,dot}.go) names exactly D45's pre-existing own-tree findings, whose relative paths in lint output are indistinguishable from a sibling-worktree leak — consistent with misattribution. NOTE: T136 (the D54 fix) already LANDED and its explicit-package-list Justfile change remains a sound BY-CONSTRUCTION hermeticity guarantee that meets its acceptance; this defect concerns only the accuracy of the D54 RECORD and the Justfile comment's 'which walks the repo root' clause, which assert an unverified mechanism."
+- severity: low
+- suggestedFix: Re-adjudicate D54's rootCause note against the original T77-era evidence (exact golangci-lint version + output paths at the time). If misattribution is confirmed, amend the D54 record and reword the Justfile lint-recipe comment to state the defense-in-depth rationale without the 'walks the repo root/.claude/worktrees' mechanism claim.
+- ledgerRefs: ["tasks:T136","defects:D54"]
+
+### D62 — open
+
+- createdAt: 2026-07-14T10:57:57.911Z
+- updatedAt: 2026-07-14T10:57:57.911Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Teardown-vs-bind race can install a dead-peer source binding that demuxInbound then permanently blackholes
+- description: "Filed during T123 review ([fable], out-of-scope; PRE-EXISTING at base 735ece3). bindSourceToPeer (internal/bind/multipath.go) is lock-free by design and never rechecks peer liveness/views: a PROBE trial-decoded against a peer's view snapshot CONCURRENT with that peer's teardown re-installs a binding to the torn-down peerState AFTER unbindPeerSources completes (a lost CAS retries against the post-unbind map and installs anyway). demuxInbound then hits the ':1444 return' (bound peer holds no view → drop) for every subsequent frame from that AddrPort — the trial-decode/re-bind loop is unreachable for a bound key — so the AddrPort is blackholed until process restart and the stale entry consumes a global-cap slot forever (nothing reclaims it; a re-instantiated peer is a new pointer, so a repeat TearDownPeer does not match). T123 (AddrPort re-key) neither introduced nor widened it — the same structure exists at base with the netip.Addr key."
+- severity: medium
+- suggestedFix: "After a successful CAS in bindSourceToPeer, revalidate the peer is still wired (peersView membership or a peer.dead flag) and unbind on failure; OR make the ':1444 no-view' drop branch fall through to the trial-decode loop so an authenticated PROBE can re-point a stale binding."
+- ledgerRefs: ["tasks:T123"]
+
+### D63 — open
+
+- createdAt: 2026-07-14T10:58:05.222Z
+- updatedAt: 2026-07-14T10:58:05.222Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Per-peer demux eviction is first-bind order (FIFO), not LRU — a peer's ACTIVE binding can be evicted by its own churn
+- description: "Filed during T123 review ([fable], out-of-scope refinement). sourceBinding.seq is stamped only when a key is inserted/re-pointed in bindSourceToPeer; bound sources short-circuit to handleInbound and NEVER refresh recency, so 'oldest' means first-bound, not least-recently-used. A peer with more concurrently-ACTIVE AddrPorts than its per-peer quota (many paths, or heavy CGNAT port churn alongside a stable path) evicts its own OLDEST — possibly actively-used — binding, blackholing that path's DATA until its next periodic PROBE re-binds it (which evicts the next-oldest: bounded rotating thrash). This CONFORMS to the pinned T123 plan decision (insertion order was explicitly sanctioned) and the default quota (1024/len(peers)) makes it unrealistic for sane deployments — so it is a design refinement for a separate task, not a T123 defect."
+- severity: low
+- suggestedFix: Refresh the binding's seq (recency) when an authenticated PROBE arrives from an already-bound AddrPort (handleInbound path), making eviction true LRU; OR floor the per-peer quota at the peer's configured path count so a peer's active paths are never self-evicted.
+- ledgerRefs: ["tasks:T123","defects:D49"]
