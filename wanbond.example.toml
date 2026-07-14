@@ -161,7 +161,9 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   hostname rather than an IP literal
                                    #   (BOOTSTRAP-IP invariant: the private
                                    #   resolver's own address must be reachable
-                                   #   WITHOUT a DNS lookup). No default.
+                                   #   WITHOUT a DNS lookup). REJECTED (must stay
+                                   #   absent) when the host is already an IP
+                                   #   literal. No default.
 # poll_interval = "30s"            # DEFAULT 30s. Re-resolution cadence for an
                                    #   opted-in hostname peer endpoint. > 0.
 # timeout = "5s"                   # DEFAULT 5s. Per-lookup bound. > 0.
@@ -216,4 +218,4 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 #   exactly the one matching `resolver`, the other (and bootstrap_ip under
 #   resolver = "system") must stay absent. BOOTSTRAP-IP invariant: a
 #   hostname-form doh_url/dot_server host REQUIRES bootstrap_ip; an IP
-#   literal host does not.
+#   literal host REJECTS a non-empty bootstrap_ip (mode mismatch).

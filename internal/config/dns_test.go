@@ -130,6 +130,16 @@ func TestDNSValidateRejects(t *testing.T) {
 			body: fill(edgeConfig) + "\n[dns]\nresolver = \"dot\"\ndot_server = \"resolver.example.com\"\nbootstrap_ip = \"not-an-ip\"\n",
 			want: "is not a valid IP literal",
 		},
+		{
+			name: "bootstrap_ip set with IP-literal dot_server",
+			body: fill(edgeConfig) + "\n[dns]\nresolver = \"dot\"\ndot_server = \"198.51.100.1\"\nbootstrap_ip = \"203.0.113.9\"\n",
+			want: "is not meaningful",
+		},
+		{
+			name: "bootstrap_ip set with IP-literal doh_url host",
+			body: fill(edgeConfig) + "\n[dns]\nresolver = \"doh\"\ndoh_url = \"https://198.51.100.1/dns-query\"\nbootstrap_ip = \"203.0.113.9\"\n",
+			want: "is not meaningful",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

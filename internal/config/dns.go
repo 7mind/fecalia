@@ -73,7 +73,10 @@ type DNS struct {
 	// private resolver's own name would itself require a DNS lookup — via
 	// the system resolver [dns] exists to avoid — defeating the point of
 	// configuring a private resolver. Required iff the doh_url/dot_server
-	// host is a hostname; ignored when it is already an IP literal.
+	// host is a hostname; rejected (must stay empty) when the host is
+	// already an IP literal — there is nothing to bootstrap in that case, so
+	// a non-empty value there is a mode mismatch, rejected fail-fast like the
+	// other stray-field checks in validate.
 	BootstrapIP string `toml:"bootstrap_ip"`
 	// PollInterval is the re-resolution cadence for an opted-in hostname peer
 	// endpoint (Q31), parsed from PollIntervalRaw in applyDefaults. Defaults to
@@ -184,10 +187,16 @@ func (d DNS) validate() error {
 }
 
 // requireBootstrapForHost enforces the BOOTSTRAP-IP invariant for the given
-// (already-extracted) doh_url/dot_server host: an IP literal needs no
-// bootstrap; a hostname requires an explicit, valid bootstrap_ip.
+// (already-extracted) doh_url/dot_server host: an IP-literal host needs no
+// bootstrap and rejects a stray bootstrap_ip as a mode mismatch (mirroring
+// the doh_url/dot_server stray-field checks in validate — NewResolver would
+// otherwise silently pin the dial to bootstrap_ip instead of the configured
+// host); a hostname requires an explicit, valid bootstrap_ip.
 func (d DNS) requireBootstrapForHost(host string) error {
 	if _, err := netip.ParseAddr(host); err == nil {
+		if d.BootstrapIP != "" {
+			return fmt.Errorf("dns.bootstrap_ip is not meaningful when the doh_url/dot_server host %q is already an IP literal", host)
+		}
 		return nil
 	}
 	if d.BootstrapIP == "" {

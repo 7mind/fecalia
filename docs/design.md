@@ -331,7 +331,8 @@ space** and never touches the inner WireGuard counter (a core invariant).
   invariants, unique `source_addr`). The optional `[dns]` block selects the
   resolver transport (system default, DoH, or DoT) a peer's opt-in hostname
   endpoint is resolved through, enforcing the BOOTSTRAP-IP invariant (a
-  hostname-form `doh_url`/`dot_server` requires an explicit `bootstrap_ip`)
+  hostname-form `doh_url`/`dot_server` requires an explicit `bootstrap_ip`;
+  an IP-literal host rejects a non-empty `bootstrap_ip` as a mode mismatch)
   and constructing the matching `internal/dnsresolve` implementation — when
   `bootstrap_ip` is set, that implementation dials it directly instead of
   resolving the configured hostname through the system dialer.

@@ -226,7 +226,9 @@ doh_url = "https://198.51.100.1/dns-query"       # required iff resolver = "doh"
   reachable *without* a DNS lookup (otherwise resolving your private
   resolver's own name would need the very system resolver you configured it
   to avoid). Give it as an IP literal, or set `bootstrap_ip` explicitly when
-  it is a hostname — config load fails fast otherwise.
+  it is a hostname — config load fails fast otherwise. `bootstrap_ip` must
+  stay absent when the host is already an IP literal; a non-empty value
+  there is rejected at load as a mode mismatch.
 - `dot_server` dials the fixed IANA-assigned DoT port (853); an explicit
   `host:port` form must use that exact port.
 - `doh_url`/`dot_server` are mode-specific: setting the wrong one for the
