@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 99
+  item: 100
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1065,3 +1065,18 @@ archives:
 - ledgerRefs: ["tasks:T105","goals:G6"]
 - sessionLogs: [".cq/logs/20260714-034050-ad3878949437704f2.md",".cq/logs/20260714-034050-a88c682fa1f564cce.md"]
 - rawLogs: [".cq/logs/raw/20260714-034050-ad3878949437704f2.jsonl",".cq/logs/raw/20260714-034050-a88c682fa1f564cce.jsonl"]
+
+## M32
+
+### R100 — go-ahead
+
+- createdAt: 2026-07-14T03:48:56.938Z
+- updatedAt: 2026-07-14T03:48:56.938Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T110 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on TWO criticisms — (1) install.md '(or alongside NetworkManager) you do not need this drop-in' was factually WRONG (NM active flushes the address regardless of networkd), (2) packaging_test.go's substring Contains assertion passed on a commented-out directive (vacuity hole). R2 (c3882a8) unanimous approve — worker restated the skip advice (drop-in required whenever NM is active, even alongside networkd) and replaced the substring check with exact trimmed-line equality (== 'unmanaged-devices=interface-name:wanbond0') + a '[keyfile]' section-line assertion. BOTH R2 reviewers independently mutation-verified the test now FAILS on a commented-out directive and a removed [keyfile]. Rebased onto current main and ff-merged as 63a3791; full gate green."
+- criticism: ["[fable, R1, RESOLVED R2] install.md 'alongside NetworkManager' skip advice was factually wrong — restated to require the drop-in whenever NM is active.","[fable, R1, RESOLVED R2] packaging_test.go substring assertion passed on a commented-out directive — replaced with exact-line + [keyfile] checks, mutation-verified."]
+- new_questions: []
+- ledgerRefs: ["tasks:T110","goals:G6"]
+- sessionLogs: [".cq/logs/20260714-034834-a38febff249b322f5.md",".cq/logs/20260714-034834-a8fe10de2e74c5ad8.md",".cq/logs/20260714-034834-a3b74d24cfbd0d5a7.md",".cq/logs/20260714-034834-a03fdf59bb32f668c.md"]
+- rawLogs: [".cq/logs/raw/20260714-034834-a38febff249b322f5.jsonl",".cq/logs/raw/20260714-034834-a8fe10de2e74c5ad8.jsonl",".cq/logs/raw/20260714-034834-a3b74d24cfbd0d5a7.jsonl",".cq/logs/raw/20260714-034834-a03fdf59bb32f668c.jsonl"]

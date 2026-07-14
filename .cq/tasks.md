@@ -1250,10 +1250,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G6"]
 
-### T110 — wip
+### T110 — done
 
 - createdAt: 2026-07-13T23:24:11.417Z
-- updatedAt: 2026-07-14T03:23:01.894Z
+- updatedAt: 2026-07-14T03:49:03.933Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Ship the NetworkManager unmanaged-devices drop-in + install.md NM section (C1 + Q40 artifact)
@@ -1261,6 +1261,10 @@ archives:
 - acceptance: The drop-in file exists under packaging/ with valid NM keyfile syntax, and a lightweight packaging test/CI check asserts the file's presence and the unmanaged-devices key; install.md §4 gains the NM subsection referencing the shipped file (not a hand-typed inline recipe); validated against an NM host where practical (the production Pi validated the setting itself). Relates D39 in acceptance only.
 - suggestedModel: fast
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 63a3791
+- completion: "Shipped packaging/networkmanager/99-wanbond-unmanaged.conf ([keyfile] unmanaged-devices=interface-name:wanbond0) + docs/install.md §4 NM subsection (copy to /etc/NetworkManager/conf.d/, nmcli reload/verify) + a build-time Go check (internal/config/packaging_test.go) asserting the file and the exact directive. Prevents NetworkManager flushing wanbond0's operator address on link-up (D39/D5). 2 review rounds: R2 corrected the install.md skip advice (drop-in required whenever NM is active, even alongside systemd-networkd) and hardened the packaging test from a vacuous substring match to exact-line + [keyfile] assertions (mutation-verified to reject a commented-out directive). Rebased onto current main and ff-merged as 63a3791."
+- sessionLogs: [".cq/logs/20260714-033617-a553d90c5a5d0afc1.md",".cq/logs/20260714-034834-a38febff249b322f5.md",".cq/logs/20260714-034834-a8fe10de2e74c5ad8.md",".cq/logs/20260714-034834-a3b74d24cfbd0d5a7.md",".cq/logs/20260714-034834-a03fdf59bb32f668c.md"]
+- rawLogs: [".cq/logs/raw/20260714-033617-a553d90c5a5d0afc1.jsonl",".cq/logs/raw/20260714-034834-a38febff249b322f5.jsonl",".cq/logs/raw/20260714-034834-a8fe10de2e74c5ad8.jsonl",".cq/logs/raw/20260714-034834-a3b74d24cfbd0d5a7.jsonl",".cq/logs/raw/20260714-034834-a03fdf59bb32f668c.jsonl"]
 
 ### T111 — planned
 
