@@ -107,6 +107,30 @@ func (p *pacer) tryConsume(idx int) bool {
 	return false
 }
 
+// accountProbe deducts one token from path idx's bucket to RESERVE pacing headroom
+// for a frame that egresses OUTSIDE the Pick/tryConsume admission path — wanbond's own
+// PROBE frames (frame.KindProbe) and their reflected echoes, which emitProbes and
+// dispatchInbound write DIRECTLY to the path socket, bypassing Send->Pick->token-bucket
+// (T145). It is the "charged" half of the exempt-but-charged middle tier of the pacing
+// priority model: the probe itself is NEVER shed or delayed here (strict priority — the
+// caller has already written it to the wire, unconditionally), this call only spends the
+// token so the bucket briefly PRE-DRAINS. The bucket MAY go negative; tryConsume then
+// yields (sheds ClassData) until refill catches up, which is exactly the headroom the
+// pacer must budget so paced DATA plus the probe stream (plus reflected echoes) cannot
+// jointly oversubscribe the link and starve probes past DownAfter into a spurious
+// path-DOWN. It is a no-op when pacing is disabled (the buckets are inert) or idx is out
+// of range (a stale index from a concurrent membership change — probe accounting is
+// best-effort headroom, never correctness-critical). Caller holds the owner's lock.
+func (p *pacer) accountProbe(idx int) {
+	if !p.cfg.Pacing {
+		return
+	}
+	if idx < 0 || idx >= len(p.tokens) {
+		return
+	}
+	p.tokens[idx]--
+}
+
 // shed records one paced-out (shed) frame and emits the coalesced "pacer shedding"
 // diagnostic at most once per shedLogInterval, carrying the count shed since the
 // last record and the current offered-load rate (loadFPS). It returns PickPaced so

@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 76
+  item: 77
 archives: []
 ---
 
@@ -1036,6 +1036,18 @@ archives: []
 - severity: low
 - suggestedFix: Extend TestWeightedCollapsesAfterOverloadIdle (or the log-fields unit test) with the existing capturing-logger infra to assert the idle-gap collapse record carries reason='idle gap', gap, load_fps, from, and both threshold fields — locking the schema-uniformity invariant on all three record sites.
 - ledgerRefs: ["tasks:T143","goals:G13"]
+
+### D76 — open
+
+- createdAt: 2026-07-14T18:20:59.440Z
+- updatedAt: 2026-07-14T18:20:59.440Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Active-backup pacing lacks ProbeBudget: probe/echo egress unaccounted under active-backup + pacing (same D65 starvation T145 fixed for weighted)"
+- description: "Filed INDEPENDENTLY by BOTH T145 reviewers (opus + fable) as out-of-scope-for-T145. internal/sched/active_backup.go: ActiveBackup carries per-path token-bucket pacers (added by T150/D65) but does NOT implement sched.ProbeBudget, so the bind's type-assertion at BOTH charge sites (emitProbes in internal/bind/probe.go, dispatchInbound echo reflection in internal/bind/multipath.go) no-ops for an *ActiveBackup — the pacer budgets ZERO headroom for the out-of-band probe/echo stream. This is the EXACT pre-T145 failure mode T145 fixed for the weighted scheduler: under policy=active_backup + pacing_enabled with a pace sized at ~link rate on deep-buffered links, sustained ClassData load plus the unaccounted probe/echo stream oversubscribes the active path and starves probes past DownAfter (1200ms) into a spurious primary path-DOWN — a failover flap on the scheduler whose ENTIRE PURPOSE is failover. Out of scope for T145, which explicitly scoped ProbeBudget to *WeightedScheduler. Related to [[D65]] (the pacing goal) and T150 (active-backup pacing)."
+- severity: medium
+- suggestedFix: "Implement ProbeBudget on *ActiveBackup: under s.mu, bounds-check pathIdx against s.pacers and call s.pacers[pathIdx].accountProbe(0) (each active-backup pacer is a single-bucket pacer). The existing bind seam (emitProbes + echo reflection) and schedIdx index maintenance then apply unchanged. Mirror the three T145 weighted unit tests (one-token deduction/negative bucket, ClassData-headroom reservation, pacing-off + out-of-range no-op)."
+- ledgerRefs: ["tasks:T145","tasks:T150","defects:D65","goals:G14"]
 
 ## M49
 

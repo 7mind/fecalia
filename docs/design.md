@@ -267,8 +267,30 @@ idle span since the previous offered frame, formatted via `time.Duration.String`
 that alone reached `CollapseDwell` and forced the collapse.
 
 **Pacing** (per-path token buckets) is a scheduler feature that is **off by
-default** and, when enabled, exempts WireGuard control frames from shedding so
-overload cannot starve rekey. When pacing is enabled the per-path pace can be
+default** and, when enabled, admits egress under a **three-tier priority model**
+so overload can neither starve WireGuard rekey nor starve wanbond's own liveness
+probes:
+
+- **`ClassControl`** (WireGuard handshake/cookie/keepalive) — pacing-**exempt and
+  uncharged** (defect D22): never shed for an empty bucket and never spends a
+  token, so sustained bulk overload cannot delay rekey.
+- **`frame.KindProbe`** (wanbond's own PROBE frames and their reflected echoes) —
+  pacing-**exempt but charged** (T145): these frames do **not** traverse
+  `Send`→`Pick`→token-bucket at all (`emitProbes` writes each probe, and
+  `dispatchInbound` writes each reflected echo, straight to the path socket), so
+  the pacer would otherwise budget them **zero** headroom. A pace sized at ~link
+  rate then lets paced `ClassData` plus the probe/echo stream oversubscribe the
+  link, building the standing qdisc queue that delays probe echoes past
+  `DownAfter` (1200 ms) into a **spurious path-DOWN / failover flap**. The bind
+  charges each emitted probe and each reflected echo against that path's bucket
+  via `sched.ProbeBudget.AccountProbe` — one token deducted, **never** shedding or
+  delaying the probe (strict priority; the bucket may briefly go negative and
+  pre-drain, so subsequent `ClassData` `Pick`s yield the headroom the probe stream
+  consumes).
+- **`ClassData`** (bulk WireGuard transport) — **fully paced**: subject to the
+  per-path token bucket and shed (`PickPaced`) when it is empty.
+
+When pacing is enabled the per-path pace can be
 sized from an **operator-declared** per-link bandwidth (`link_bandwidth` +
 `link_rtt` on each `[[paths]]`): at config load `SizePacingFromBDP` derives the
 scheduler's `per_path_capacity_fps` and `pacing_burst_frames` from the

@@ -176,10 +176,12 @@ type WeightedScheduler struct {
 	active int
 }
 
-// compile-time proof WeightedScheduler is a (dynamic) Scheduler.
+// compile-time proof WeightedScheduler is a (dynamic) Scheduler that also carries
+// pacing headroom for out-of-band probe egress (ProbeBudget, T145).
 var (
 	_ Scheduler        = (*WeightedScheduler)(nil)
 	_ DynamicScheduler = (*WeightedScheduler)(nil)
+	_ ProbeBudget      = (*WeightedScheduler)(nil)
 )
 
 // NewWeighted builds the weighted-aggregation scheduler over parallel health and
@@ -279,6 +281,22 @@ func (s *WeightedScheduler) Pick(class FrameClass) int {
 	}
 	weights := s.weightsLocked(eligible)
 	return s.selectAggregatingLocked(now, eligible, weights, class)
+}
+
+// AccountProbe implements ProbeBudget (T145): it deducts one pacing token from path
+// pathIdx's bucket for a PROBE frame (or reflected echo) the bind has written to that
+// path's socket OUTSIDE Pick, so the token bucket reserves headroom for wanbond's own
+// probe stream instead of budgeting it zero. The probe is NEVER shed or delayed here —
+// strict priority, the frame is already on the wire — this only CHARGES: the bucket may
+// go negative and pre-drain so a subsequent ClassData Pick yields (PickPaced) until
+// refill catches up. This is the "exempt-but-charged" middle tier of the three-tier
+// priority model (FrameClass doc); ClassControl remains exempt AND uncharged (defect
+// D22), ClassData fully paced. A no-op when pacing is off or pathIdx is out of range. It
+// is safe for concurrent callers.
+func (s *WeightedScheduler) AccountProbe(pathIdx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accountProbe(pathIdx)
 }
 
 // AggregationSnapshot is a point-in-time, mutex-guarded read of the weighted

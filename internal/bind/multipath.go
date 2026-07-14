@@ -219,6 +219,17 @@ type peerPathState struct {
 	txBytes atomic.Uint64
 	rxBytes atomic.Uint64
 
+	// schedIdx is this path's index in its peer's scheduler (== its position in
+	// peer.paths, the invariant attachPeerPathLocked enforces). It is the pathIdx the
+	// bind passes to sched.ProbeBudget.AccountProbe so a directly-written PROBE frame /
+	// reflected echo charges the RIGHT per-path token bucket (T145). It is maintained
+	// under m.mu at every peer.paths (re)build and splice (Open, attachPeerPathLocked,
+	// detachPeerPathBoundLocked) and read lock-free (via atomic) from the receive
+	// goroutine's dispatchInbound, which must not take m.mu. A momentarily-stale value
+	// during a concurrent runtime membership change is benign: AccountProbe bounds-checks
+	// and probe accounting is best-effort headroom, never correctness-critical.
+	schedIdx atomic.Int32
+
 	mu        sync.Mutex
 	remote    netip.AddrPort
 	hasRemote bool
@@ -1070,6 +1081,9 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			case m.hasDefaultRemote:
 				pp.setRemote(m.defaultRemote)
 			}
+			// Stamp the scheduler index (== this path's position in p.paths) BEFORE the append,
+			// so a directly-written probe/echo on this path charges the right token bucket (T145).
+			pp.schedIdx.Store(int32(len(p.paths)))
 			p.paths = append(p.paths, pp)
 			// Publish this peer's view for the receive demux (T88). A single-view socket is the
 			// edge/hub byte-identical fast path in demuxInbound; a socket with >1 view is
@@ -2030,6 +2044,16 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 					// real egress traffic on this path, so it counts toward txBytes
 					// exactly like a DATA/PARITY write — only on a nil write error.
 					ps.txBytes.Add(uint64(len(echo)))
+					// Exempt-but-charged probe accounting (T145): a reflected echo is
+					// out-of-band egress on this path (it never traverses Send->Pick), so
+					// SYMMETRICALLY with emitProbes it is never shed/delayed but IS charged
+					// against the path's token bucket, so paced ClassData yields the headroom
+					// the reflected-echo stream consumes. ps.schedIdx addresses this path's
+					// bucket; AccountProbe locks only the scheduler's own mutex (never m.mu,
+					// which this receive goroutine must not take) and bounds-checks the index.
+					if budget, ok := pr.scheduler.(sched.ProbeBudget); ok {
+						budget.AccountProbe(int(ps.schedIdx.Load()))
+					}
 				}
 				if epochChanged {
 					// Authenticated PEER RESTART (T116/T119): the reflector reports THIS
@@ -2838,6 +2862,9 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 		p.paths = p.paths[:len(p.paths)-1]
 		return nil, fmt.Errorf("bind: scheduler/path index skew after add: sched=%d bind=%d", schedIdx, bindIdx)
 	}
+	// Stamp the scheduler index so a directly-written probe/echo on this path charges the
+	// right token bucket (T145); the skew guard above just proved schedIdx == its position.
+	pp.schedIdx.Store(int32(schedIdx))
 	// Publish this peer's view of the shared socket for the receive demux (T88): once >1 peer
 	// has a view, handleInbound source-demuxes the socket's datagrams to their owning peer.
 	shared.addViewLocked(pp)
@@ -2867,6 +2894,11 @@ func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) error {
 		return err
 	}
 	p.paths = append(p.paths[:idx], p.paths[idx+1:]...)
+	// The scheduler shifted every path above idx down by one; re-stamp the survivors so
+	// their schedIdx keeps addressing the right token bucket for probe accounting (T145).
+	for k := idx; k < len(p.paths); k++ {
+		p.paths[k].schedIdx.Store(int32(k))
+	}
 	return nil
 }
 

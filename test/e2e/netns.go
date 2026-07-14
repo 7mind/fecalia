@@ -32,6 +32,7 @@ import (
 //	9107  multipeer_hardened_test.go  (hwMetricsPort; concentrator on its hw1 uplink IP, not
 //	      loopback — this fixture's concentrator runs in the peer netns, like r121's)
 //	9108  aggregation_metrics_test.go   (aggMetricsListen)
+//	9109  probe_headroom_test.go       (t145MetricsListen)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge

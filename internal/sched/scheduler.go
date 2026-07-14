@@ -28,6 +28,21 @@ const (
 // WireGuard control frames (handshake init/response, cookie reply, keepalive) a
 // different admission policy than bulk data. Pick() has no other frame-type
 // visibility, so this is the ONLY channel by which frame-type reaches the pacer.
+//
+// FrameClass covers only frames that traverse Pick. wanbond's OWN PROBE frames
+// (frame.KindProbe) do NOT reach Pick at all — emitProbes and dispatchInbound write
+// them straight to the path socket, bypassing Send->Pick->token-bucket — so they have
+// no FrameClass; the pacer accounts for them through the separate ProbeBudget seam
+// (T145). Together these define the THREE-TIER pacing-priority model the pacer honours:
+//
+//	ClassControl:     pacing-EXEMPT and UNCHARGED (defect D22) — WireGuard rekey is
+//	                  never shed AND spends no token.
+//	frame.KindProbe:  pacing-EXEMPT but CHARGED (T145) — the probe is never shed or
+//	                  delayed (strict priority), but ProbeBudget.AccountProbe deducts a
+//	                  token so paced ClassData yields the headroom the probe stream
+//	                  (plus reflected echoes) consumes.
+//	ClassData:        FULLY paced — subject to the per-path token bucket, shed
+//	                  (PickPaced) when it is empty.
 type FrameClass uint8
 
 const (
@@ -84,6 +99,30 @@ type Scheduler interface {
 	// for a stateful one (weighted) it is strictly the non-consuming subset. It is
 	// safe for concurrent callers and never calls back into the Bind.
 	Recompute()
+}
+
+// ProbeBudget is the OPTIONAL pacing-headroom seam a pacing scheduler implements so the
+// bind can CHARGE the per-path token bucket for frames that egress OUTSIDE Pick — the
+// MIDDLE tier of the three-tier pacing-priority model documented on FrameClass. wanbond's
+// own PROBE frames (frame.KindProbe) and their reflected echoes do not traverse
+// Send->Pick->token-bucket (emitProbes and dispatchInbound write them straight to the
+// path socket), so the token bucket would otherwise budget ZERO headroom for them: a pace
+// sized at ~link rate then lets paced ClassData plus the probe stream jointly oversubscribe
+// the link, building the standing queue that delays probes past DownAfter into a spurious
+// path-DOWN / failover flap (T145). AccountProbe closes that gap by deducting a token per
+// emitted probe / reflected echo WITHOUT ever shedding or delaying the probe.
+//
+// The bind type-asserts its scheduler to ProbeBudget and charges per emitted probe and per
+// reflected echo (symmetric); a scheduler with no pacing headroom (or pacing off) either
+// does not implement it or no-ops, so the seam is inert when unused. *WeightedScheduler
+// implements it.
+type ProbeBudget interface {
+	// AccountProbe deducts one pacing token from path pathIdx's bucket WITHOUT ever
+	// shedding or delaying the frame (strict priority): the bucket MAY go negative so a
+	// subsequent ClassData Pick yields until refill catches up. pathIdx is the same
+	// priority-ordered index Pick returns and AddPath/RemovePath renumber; an out-of-range
+	// index is a no-op (best-effort headroom). It is safe for concurrent callers.
+	AccountProbe(pathIdx int)
 }
 
 // PathQuality is the per-path measured-quality source the weighted scheduler reads

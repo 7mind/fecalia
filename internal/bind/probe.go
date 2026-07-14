@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -27,6 +28,12 @@ func (m *Multipath) emitProbes() {
 	type target struct {
 		ps *peerPathState
 		pr *telemetry.Prober
+		// budget is this peer's scheduler as a ProbeBudget (nil when it carries no pacing
+		// headroom, e.g. pacing disabled or a non-implementing scheduler); idx is ps's
+		// scheduler index (its position in p.paths). Captured under m.mu so the snapshot is
+		// coherent, then used lock-free below to charge the probe's pacing token (T145).
+		budget sched.ProbeBudget
+		idx    int
 	}
 	// Probe EVERY bound peer's paths (T93): a concentrator initiates its own probe stream to
 	// each edge over that edge-peer's per-(peer,path) prober, so every peer's liveness/RTT is
@@ -34,11 +41,12 @@ func (m *Multipath) emitProbes() {
 	// primary, so this is byte-identical to the pre-split single-peer sweep.
 	targets := make([]target, 0, len(m.paths))
 	for _, p := range m.peers {
-		for _, ps := range p.paths {
+		budget, _ := p.scheduler.(sched.ProbeBudget)
+		for i, ps := range p.paths {
 			if ps.prober == nil {
 				continue
 			}
-			targets = append(targets, target{ps: ps, pr: ps.prober})
+			targets = append(targets, target{ps: ps, pr: ps.prober, budget: budget, idx: i})
 		}
 	}
 	m.mu.Unlock()
@@ -52,6 +60,15 @@ func (m *Multipath) emitProbes() {
 					// traffic, so it counts toward txBytes exactly like a DATA/PARITY
 					// write — only on a nil write error, matching the Send hot path.
 					t.ps.txBytes.Add(uint64(len(raw)))
+					// Exempt-but-charged probe accounting (T145): a PROBE frame egresses
+					// OUTSIDE the paced Send->Pick path, so it is never shed or delayed, but
+					// it IS charged against the path's token bucket so paced ClassData yields
+					// the headroom the probe stream consumes — otherwise DATA + probes jointly
+					// oversubscribe a pace sized at ~link rate and starve probes into a
+					// spurious path-DOWN. No-op when the scheduler carries no pacing headroom.
+					if t.budget != nil {
+						t.budget.AccountProbe(t.idx)
+					}
 				}
 			}
 		}

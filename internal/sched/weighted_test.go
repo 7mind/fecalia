@@ -859,3 +859,113 @@ func TestWeightedAggregationChangeLogFieldsAndNoDoubleLog(t *testing.T) {
 		t.Fatalf("got %d total 'scheduler aggregation change' records, want exactly 2 (1 engage + 1 collapse)", len(all))
 	}
 }
+
+// TestWeightedAccountProbeDeductsOneTokenWithoutShedding is the T145 unit-level contract
+// for exempt-but-charged probe accounting: AccountProbe deducts EXACTLY one token per call
+// from the named path's bucket, never sheds or delays (it returns nothing — the probe is
+// already on the wire), and the bucket MAY go NEGATIVE (strict priority: the probe egress
+// is charged even past the burst, pre-draining the bucket). It is the sched-level proof of
+// the mechanism the -tags e2e TestProbeHeadroomUnderOverload exercises end-to-end.
+func TestWeightedAccountProbeDeductsOneTokenWithoutShedding(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	cfg.Pacing = true
+	cfg.PacingBurst = 4
+	s := newWeighted(t, clock, cfg, primary)
+
+	// Fresh buckets are seeded full (burst).
+	if got := s.tokens[0]; got != cfg.PacingBurst {
+		t.Fatalf("fresh bucket = %g, want burst %g", got, cfg.PacingBurst)
+	}
+
+	// Charge past the burst so the bucket goes NEGATIVE: strict priority means the probe is
+	// always emitted, so its token is always spent even when no headroom remains.
+	const probes = 6 // > burst (4)
+	for i := 0; i < probes; i++ {
+		s.AccountProbe(0)
+	}
+	want := cfg.PacingBurst - float64(probes) // 4 - 6 = -2
+	if got := s.tokens[0]; got != want {
+		t.Fatalf("after %d probes bucket = %g, want %g (exactly one token per probe, may go negative)", probes, got, want)
+	}
+	if want >= 0 {
+		t.Fatal("test misconfigured: expected the charge to drive the bucket negative (strict priority)")
+	}
+}
+
+// TestWeightedAccountProbeReservesClassDataHeadroom is the behavioural T145 assertion: a
+// probe charged via AccountProbe removes EXACTLY one ClassData admission slot, i.e. the
+// out-of-band probe stream reserves data headroom rather than being invisible to the pacer
+// (the pre-T145 gap that let DATA + probes oversubscribe a ~link-rate pace and starve
+// probes into a spurious DOWN). Measured by counting how many ClassData frames a path
+// admits before shedding, with and without a fixed probe charge, at a pinned clock (dt=0 so
+// refill is inert and the burst is the only admission budget) — the difference must equal
+// the charge.
+func TestWeightedAccountProbeReservesClassDataHeadroom(t *testing.T) {
+	admitsAfterCharge := func(charge int) int {
+		clock := newFakeClock()
+		primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+		cfg := weightedCfg()
+		cfg.Pacing = true
+		cfg.PacingBurst = 8
+		s := newWeighted(t, clock, cfg, primary)
+
+		// One Pick seeds the buckets full (haveFill) and consumes one token — identical in
+		// both arms, so it cancels out of the difference. The clock is never advanced, so
+		// every later refill adds 0 and the remaining burst is the whole admission budget.
+		s.Pick(ClassData)
+		for i := 0; i < charge; i++ {
+			s.AccountProbe(0)
+		}
+		admits := 0
+		for i := 0; i < 100; i++ {
+			if s.Pick(ClassData) >= 0 {
+				admits++
+			}
+		}
+		return admits
+	}
+
+	const charge = 3
+	base := admitsAfterCharge(0)
+	charged := admitsAfterCharge(charge)
+	if base <= charge {
+		t.Fatalf("test misconfigured: baseline admitted only %d ClassData frames, need > charge=%d for a non-vacuous difference", base, charge)
+	}
+	if base-charged != charge {
+		t.Fatalf("charging %d probes freed %d ClassData admission slots, want exactly %d (each probe reserves one DATA token, T145): base=%d charged=%d",
+			charge, base-charged, charge, base, charged)
+	}
+}
+
+// TestWeightedAccountProbeNoopWhenInertOrOutOfRange guards the two no-op paths: with pacing
+// OFF the buckets are inert accountants (AccountProbe must not touch them), and an
+// out-of-range index (a stale index from a concurrent membership change — probe accounting
+// is best-effort headroom) must be silently ignored rather than panic.
+func TestWeightedAccountProbeNoopWhenInertOrOutOfRange(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+
+	// Pacing off: inert buckets, AccountProbe is a no-op.
+	off := weightedCfg() // Pacing == false
+	so := newWeighted(t, clock, off, primary)
+	before := so.tokens[0]
+	so.AccountProbe(0)
+	if so.tokens[0] != before {
+		t.Fatalf("AccountProbe mutated an inert (pacing-off) bucket: %g -> %g", before, so.tokens[0])
+	}
+
+	// Pacing on: an out-of-range index must not panic and must not touch any bucket.
+	on := weightedCfg()
+	on.Pacing = true
+	on.PacingBurst = 4
+	son := newWeighted(t, clock, on, primary)
+	snap := son.tokens[0]
+	son.AccountProbe(-1)
+	son.AccountProbe(1)  // len(tokens) == 1, so index 1 is out of range
+	son.AccountProbe(99) // far out of range
+	if son.tokens[0] != snap {
+		t.Fatalf("an out-of-range AccountProbe mutated the in-range bucket: %g -> %g", snap, son.tokens[0])
+	}
+}
