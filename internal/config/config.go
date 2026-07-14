@@ -74,11 +74,6 @@ type Config struct {
 //     source-IP-bind otherwise.
 //   - BindModeSource forces the pre-T16 source-IP pin unconditionally.
 //   - BindModeDevice forces a device bind unconditionally.
-//
-// This is the CONFIG SURFACE only: parsing, defaulting and validation. Wiring
-// planPathBinds/selectDeviceBinds to consume the resolved mode is a later task
-// — today every path is bound exactly as before, regardless of this field's
-// value.
 type BindMode string
 
 const (
@@ -489,8 +484,7 @@ type Path struct {
 	// Left empty in TOML, it falls back to the top-level Config.Bind default (itself
 	// defaulted to BindModeAuto); normalize() resolves this field to its EFFECTIVE
 	// value, so after Load it always holds one of the three valid modes, never
-	// empty. See BindMode — this is the config surface only, not yet consumed by
-	// planPathBinds/selectDeviceBinds.
+	// empty. See BindMode.
 	Bind BindMode `toml:"bind"`
 }
 
@@ -574,14 +568,16 @@ type Peer struct {
 	// With more than one peer, validate requires it to be present and
 	// pairwise-distinct across peers (T81, Q21) — the top-level psk alone
 	// cannot discriminate which peer authenticated an inbound frame, and equal
-	// per-peer psks would defeat that authenticated demux. No datapath code
-	// path consumes PSK yet; it is parsed, validated, and exposed only.
+	// per-peer psks would defeat that authenticated demux. device.go calls
+	// cfg.PeerIdentities() to derive each peer's effective PSK, and
+	// bind/multipath.go consumes those per-peer PSKs for the peerBySource
+	// PROBE-authenticated demux.
 	PSK Key `toml:"psk"`
 	// Name is this peer's human-readable identifier (G4 multi-peer
 	// concentrator groundwork), analogous to Path.Name. Unused and optional
 	// with a single peer; required and must be unique across peers when more
-	// than one is configured (T81, Q21). Not yet consumed by any datapath code
-	// path.
+	// than one is configured (T81, Q21). Surfaces (for additional concentrator
+	// peers) as the metrics 'peer' label via BoundPeerNames/PeerSnapshot.Name.
 	Name string `toml:"name"`
 }
 
