@@ -930,10 +930,10 @@ archives:
 
 ## M25
 
-### T88 — wip
+### T88 — done
 
 - createdAt: 2026-07-13T22:28:09.005Z
-- updatedAt: 2026-07-14T01:03:18.275Z
+- updatedAt: 2026-07-14T01:56:35.943Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Bind source->peer only via authenticated PROBE with trial-decode across peer PSKs
@@ -942,6 +942,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T84","T85"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 7a5a0e6
+- completion: "Authenticated source->peer binding landed: readLoop-only demuxInbound with lock-free CoW peerBySource (atomic.Pointer+CAS), trial-decode across peer psks binding ONLY on the first MAC-verified PROBE (continues past non-PROBE decodes), per-socket views copy-on-write, single-peer fast path byte-identical; 2 review rounds, mutation-verified tests; merged ff to main. D47 filed for the T90 binding-key design."
+- sessionLogs: [".cq/logs/20260714-013631-a8451cdfaa8267fa3.md",".cq/logs/20260714-015014-a6b4e576272a3aa1a.md",".cq/logs/20260714-015014-ae4c878a9b8cdabcd.md",".cq/logs/20260714-015014-a76ead6a90c6f25fb.md"]
+- rawLogs: [".cq/logs/raw/20260714-013631-a8451cdfaa8267fa3.jsonl",".cq/logs/raw/20260714-015014-a6b4e576272a3aa1a.jsonl",".cq/logs/raw/20260714-015014-ae4c878a9b8cdabcd.jsonl",".cq/logs/raw/20260714-015014-a76ead6a90c6f25fb.jsonl"]
 
 ### T89 — planned
 

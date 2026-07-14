@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 91
+  item: 92
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -955,3 +955,18 @@ archives:
 - ledgerRefs: ["tasks:T73","goals:G5","defects:D46"]
 - sessionLogs: [".cq/logs/20260714-013526-aa5af95a3b03fde16.md",".cq/logs/20260714-013526-a655a1c595ce4648a.md",".cq/logs/20260714-014014-a6681895aad44fda0.md",".cq/logs/20260714-014014-ad33623fb263f9dc1.md"]
 - rawLogs: [".cq/logs/raw/20260714-013526-aa5af95a3b03fde16.jsonl",".cq/logs/raw/20260714-013526-a655a1c595ce4648a.jsonl",".cq/logs/raw/20260714-014014-a6681895aad44fda0.jsonl",".cq/logs/raw/20260714-014014-ad33623fb263f9dc1.jsonl"]
+
+## M25
+
+### R92 — go-ahead
+
+- createdAt: 2026-07-14T01:56:30.515Z
+- updatedAt: 2026-07-14T01:56:30.515Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T88 terminal reconciled panel verdict after 2 rounds: R1 [opus] approve / [fable] disapprove (strictest-wins) on 2 criticisms — trial loop stopped on first DECODE not first MAC-verify (unMAC'd cross-psk garble aborted the trial, dropping a genuine later-peer PROBE ~0.4%) and a non-discriminating stop-at-first-match test; R2 (babebc6) unanimous approve — non-PROBE decode continues, comment corrected, two discriminating tests, each independently mutation-verified by BOTH reviewers on clean exports; drop-unbound-DATA guarantee verified intact. D47 filed R1 (Addr-only binding key excludes a second peer behind one public IP — for the T90 design)."
+- criticism: ["[fable, R1, RESOLVED R2] trial-decode stopped on first decode rather than first MAC verification — fixed via continue on non-PROBE decodes.","[fable, R1, RESOLVED R2] stop-at-first-match acceptance clause had no discriminating test — fixed via the shared-psk both-peers test."]
+- new_questions: []
+- ledgerRefs: ["tasks:T88","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-015014-ae4c878a9b8cdabcd.md",".cq/logs/20260714-015014-a76ead6a90c6f25fb.md"]
+- rawLogs: [".cq/logs/raw/20260714-015014-ae4c878a9b8cdabcd.jsonl",".cq/logs/raw/20260714-015014-a76ead6a90c6f25fb.jsonl"]
