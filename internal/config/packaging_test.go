@@ -24,14 +24,17 @@ func TestNetworkManagerDropIn(t *testing.T) {
 	}
 	defer file.Close()
 
-	// Verify the file contains the required unmanaged-devices key
+	// Verify the file contains the required [keyfile] section and unmanaged-devices directive
 	scanner := bufio.NewScanner(file)
-	found := false
+	foundKeyfile := false
+	foundDirective := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.Contains(line, "unmanaged-devices") && strings.Contains(line, "interface-name:wanbond0") {
-			found = true
-			break
+		if line == "[keyfile]" {
+			foundKeyfile = true
+		}
+		if line == "unmanaged-devices=interface-name:wanbond0" {
+			foundDirective = true
 		}
 	}
 
@@ -39,8 +42,11 @@ func TestNetworkManagerDropIn(t *testing.T) {
 		t.Fatalf("Error reading NetworkManager drop-in file: %v", err)
 	}
 
-	if !found {
-		t.Fatal("NetworkManager drop-in file does not contain 'unmanaged-devices=interface-name:wanbond0'")
+	if !foundKeyfile {
+		t.Fatal("NetworkManager drop-in file does not contain '[keyfile]' section")
+	}
+	if !foundDirective {
+		t.Fatal("NetworkManager drop-in file does not contain exact directive 'unmanaged-devices=interface-name:wanbond0'")
 	}
 }
 

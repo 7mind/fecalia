@@ -672,9 +672,10 @@ nmcli device show wanbond0 | grep STATE
 
 The output should show `STATE: unmanaged`.
 
-If your edge box runs **systemd-networkd** instead (or alongside NetworkManager),
+If your edge box runs **systemd-networkd** instead, and NetworkManager is **not running**,
 you do not need this drop-in — skip this subsection and proceed to "Interface
-addressing and routing" below.
+addressing and routing" below. (If NetworkManager is active alongside systemd-networkd,
+the drop-in is still required to prevent the address flush.)
 
 ### Interface addressing and routing (operator-owned)
 
