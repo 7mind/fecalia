@@ -951,10 +951,10 @@ archives: []
 - suggestedFix: "Change the parenthetical to '(hub failover, peer restart)' or '(e.g. hub failover)' to match the metrics.go:295 help string."
 - ledgerRefs: ["tasks:T122","defects:D36"]
 
-### D69 — open
+### D69 — resolved
 
 - createdAt: 2026-07-14T13:47:04.153Z
-- updatedAt: 2026-07-14T13:47:04.153Z
+- updatedAt: 2026-07-14T14:33:35.867Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: TestMultipathFECDeadlineEmitsPartialGroupParity flakes ~2% under -race (counter read races async post-write increment)
@@ -962,6 +962,7 @@ archives: []
 - severity: medium
 - suggestedFix: "Make the test synchronize against the async flush: poll FECSnapshot().ParityFrames with a short bounded retry (until it reaches parityShards or a ~200ms deadline) instead of reading it once immediately after the last wire arrives."
 - ledgerRefs: ["tasks:T125","defects:D44"]
+- rootCause: "Test-synchronization defect: TestMultipathFECDeadlineEmitsPartialGroupParity (fec_test.go) read FECSnapshot().ParityFrames immediately after receiving both parity wires, racing the async fecTickLoop goroutine's post-WriteToUDPAddrPort counter increment (~2% flake under -race; NO memory race). RESOLVED by T125 round 2 (landed 3eab82e): the test now polls ParityFrames with a bounded 200ms retry then asserts strict equality — masks neither under- nor over-count. Verified via 50x/100x -race runs (0 failures)."
 
 ## M49
 
