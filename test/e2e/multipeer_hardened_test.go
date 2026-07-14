@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -67,10 +68,15 @@ const (
 	hwPath2Name = "hw2"
 
 	// hwMetricsPort is the CONCENTRATOR's /metrics port (see the metricsPortRegistry table in
-	// netns.go). UNLIKE multipeer_test.go's mpMetricsListen (127.0.0.1 — that fixture runs the
-	// concentrator IN the base/test-process netns), this fixture's concentrator runs in the
-	// PEER netns (Topology.pid, like p0_test.go / restart_onesided_test.go's r121
-	// concentrator), so its /metrics endpoint binds its hw1 uplink address instead of loopback.
+	// netns.go). This fixture's concentrator runs in the PEER netns (Topology.pid, like
+	// p2_aggregation_test.go's / p3_fec_test.go's concentrator), so — like every wanbond
+	// /metrics endpoint — it binds LOOPBACK (hwMetricsHost, 127.0.0.1): the T17 requireLoopback
+	// invariant (internal/metrics/server.go, docs/design.md:740) UNCONDITIONALLY refuses any
+	// non-loopback bind, so binding the uplink IP would fail the daemon at NewServer before the
+	// TUN is created. 127.0.0.1 is reachable from WITHIN the concentrator's own netns, so the
+	// test scrapes it by dialing INTO that netns (fetchMetricsInNetns / netnsMetricsClient), the
+	// same mechanism p2/p3/p4 use for their peer-netns concentrators.
+	hwMetricsHost = "127.0.0.1"
 	hwMetricsPort = 9107
 
 	// Inner overlay addresses for the three peers; concInner ("10.10.0.2") stays the
@@ -156,7 +162,7 @@ func TestMultiPeerHardenedDatapath(t *testing.T) {
 		t.Fatalf("NATed edge A2 (hw-beta) never came up\n--- A2 ---\n%s\n--- conc ---\n%s", hw.a2.proc.log(), hw.conc.log())
 	}
 	for _, pl := range []string{hwPeerAlphaName, hwPeerBetaName} {
-		waitPeerPathUp(t, hw.metricsURL, pl, hwPath1Name, 1, mpBringUpDeadline)
+		hw.waitPeerPathUp(t, pl, hwPath1Name, 1, mpBringUpDeadline)
 	}
 
 	t.Run("d47-shared-nat-demux-concurrent-traffic", func(t *testing.T) {
@@ -190,7 +196,19 @@ func TestMultiPeerHardenedDatapath(t *testing.T) {
 // share ONE apparent public IP via the base netns's SNAT gateway — and asserts BOTH complete
 // with positive throughput AND attribute independently in /metrics. Two positive,
 // independently attributed transfers through a SHARED apparent source is the D47 proof: a
-// conflated (address-only) demux would corrupt or block one of the two streams.
+// conflated (address-only) demux would corrupt or block one of the two streams — an inbound
+// datagram misrouted to the wrong peer's WireGuard session fails to decrypt, so the affected
+// edge's TCP transfer would stall to non-positive throughput. Both transfers completing is thus
+// the core cross-talk-free proof; the per-peer metric below corroborates independent attribution.
+//
+// Per-peer attribution is asserted on TX bytes, NOT rx: on a multi-peer concentrator the OUTER
+// inbound reader is ONE Bind-owned readLoop per SHARED path socket, and it accounts every
+// received datagram to the PRIMARY peer's (peer,path) rx counter before source-demuxing the
+// frame to its owning peer's session (internal/bind/multipath.go readLoop + demuxInbound,
+// T23/T93). A non-primary peer's rx_bytes is therefore STRUCTURALLY 0 regardless of NAT — rx is
+// a per-path, not per-peer, inbound quantity. TX bytes ARE per-peer (each peer's scheduler
+// writes its OWN return traffic on the shared socket), so positive tx for BOTH shared-apparent-IP
+// peers is the correct proof that the concentrator attributes each peer's stream independently.
 func testD47SharedNATDemux(t *testing.T, hw *hwFixture) {
 	xa := hw.a1.startTransfer(t, concInner, hwIperfPortAlpha, 6)
 	xb := hw.a2.startTransfer(t, concInner, hwIperfPortBeta, 6)
@@ -201,14 +219,14 @@ func testD47SharedNATDemux(t *testing.T, hw *hwFixture) {
 		t.Fatalf("NATed edge A2 (hw-beta) transfer measured non-positive throughput %.2f Mbit/s", mbps)
 	}
 
-	exp := scrapeMetrics(t, hw.metricsURL)
+	exp := hw.scrapeMetrics(t)
 	for _, pl := range []string{hwPeerAlphaName, hwPeerBetaName} {
-		rx, ok := exp.PeerPathValue(metrics.MetricRxBytes, pl, hwPath1Name)
+		tx, ok := exp.PeerPathValue(metrics.MetricTxBytes, pl, hwPath1Name)
 		if !ok {
-			t.Fatalf("no %s{peer=%q,path=%q} series — the shared-apparent-IP peers were not attributed independently", metrics.MetricRxBytes, pl, hwPath1Name)
+			t.Fatalf("no %s{peer=%q,path=%q} series — the shared-apparent-IP peers were not attributed independently", metrics.MetricTxBytes, pl, hwPath1Name)
 		}
-		if rx <= 0 {
-			t.Fatalf("peer %q carried non-positive rx bytes behind the shared NAT — the concentrator did not attribute its traffic", pl)
+		if tx <= 0 {
+			t.Fatalf("peer %q carried non-positive tx bytes behind the shared NAT — the concentrator did not attribute its return traffic independently", pl)
 		}
 	}
 	t.Logf("D47: edges A1+A2 shared one apparent public IP (%s) and both carried traffic independently", hwPaths[0].concIP)
@@ -218,7 +236,7 @@ func testD47SharedNATDemux(t *testing.T, hw *hwFixture) {
 // hw-alpha, the FIRST-configured peer — carries its OWN configured name as the `peer` label
 // (D58), never the empty label a true single-peer exposition would use.
 func testD58PerPeerLabels(t *testing.T, hw *hwFixture) {
-	exp := scrapeMetrics(t, hw.metricsURL)
+	exp := hw.scrapeMetrics(t)
 	for _, pl := range []string{hwPeerAlphaName, hwPeerBetaName} {
 		if _, ok := exp.PeerPathValue(metrics.MetricUp, pl, hwPath1Name); !ok {
 			t.Fatalf("no %s{peer=%q,path=%q} series — peer %q is missing its OWN label", metrics.MetricUp, pl, hwPath1Name, pl)
@@ -256,7 +274,7 @@ func testD49FloodDuringBootstrap(t *testing.T, hw *hwFixture) {
 // concentrator's per-peer FEC repair-packet counter for hw-beta advanced — proving the
 // deadline flush applies to a non-primary peer's partial group, not only the primary's (D44).
 func testD44DeadlineFECParity(t *testing.T, hw *hwFixture) {
-	before := scrapeMetrics(t, hw.metricsURL)
+	before := hw.scrapeMetrics(t)
 	repairBefore, _ := before.PeerValue(metrics.MetricFECRepair, hwPeerBetaName)
 
 	for i := 0; i < 3; i++ {
@@ -265,7 +283,7 @@ func testD44DeadlineFECParity(t *testing.T, hw *hwFixture) {
 	}
 	time.Sleep(6 * hwFECDeadline) // several deadline ticks so a partial group is FLUSHED, not merely opened
 
-	after := scrapeMetrics(t, hw.metricsURL)
+	after := hw.scrapeMetrics(t)
 	repairAfter, ok := after.PeerValue(metrics.MetricFECRepair, hwPeerBetaName)
 	if !ok {
 		t.Fatalf("no %s{peer=%q} series — the concentrator is not exposing per-peer FEC for the non-primary peer", metrics.MetricFECRepair, hwPeerBetaName)
@@ -303,7 +321,7 @@ func testD42DeferredPathAddRemove(t *testing.T, hw *hwFixture) {
 	if !hw.edgeCPingUntil(10 * time.Second) {
 		t.Fatalf("edge C lost connectivity after adding hw2 at runtime\n--- edge C ---\n%s\n--- conc ---\n%s", hw.edgeC.log(), hw.conc.log())
 	}
-	waitPeerPathUp(t, hw.metricsURL, hwPeerGammaName, hwPath2Name, 1, mpBringUpDeadline)
+	hw.waitPeerPathUp(t, hwPeerGammaName, hwPath2Name, 1, mpBringUpDeadline)
 
 	// --- REMOVE hw2 again; edge C falls back to hw1 alone. ---
 	writeReload(t, hw.concCfgPath, hw.concConfig([]pathSpec{hwPaths[0]}))
@@ -333,25 +351,29 @@ func testD42DeferredPathAddRemove(t *testing.T, hw *hwFixture) {
 // asserted via the structured teardown INFO log line AND /metrics liveness reading 0 — then
 // restarts edge C and asserts it re-handshakes and resumes traffic.
 func testD50PeerTeardownAndRebind(t *testing.T, hw *hwFixture) {
+	// Snapshot the concentrator's ALREADY-EMITTED log records BEFORE killing edge C. The
+	// concentrator logs the SAME teardown message ("...heavy state torn down") for its
+	// non-primary peers (hw-beta AND hw-gamma) once at STARTUP, while their heavy state settles
+	// before any edge has connected. Matching the teardown line from the start of the buffer
+	// would therefore fire instantly on that benign startup record (with the wrong/settling
+	// peer); we must wait for a NEW hw-gamma teardown emitted AFTER this kill.
+	baseline := len(ParseLogLines(hw.conc.log()))
 	hw.stopEdgeC()
 	t.Logf("killed edge C (hw-gamma); awaiting the level-triggered teardown (gated on WireGuard's RejectAfterTime, up to %s)", hwTeardownBudget)
 
 	// The fast liveness signal: hw-gamma's own path_up reads 0 well before the heavy-state
 	// teardown fires (path liveness is OUR probe protocol, not gated on RejectAfterTime).
-	waitPeerPathUp(t, hw.metricsURL, hwPeerGammaName, hwPath1Name, 0, PLivenessDetectBudget+5*time.Second)
+	hw.waitPeerPathUp(t, hwPeerGammaName, hwPath1Name, 0, PLivenessDetectBudget+5*time.Second)
 
-	// The slow, level-triggered heavy-state reclaim: log-grep the teardown INFO line (T141's
-	// AwaitLogLine), gated on WireGuard's own RejectAfterTime.
-	line, ok := AwaitLogLine(t, hw.conc, "concentrator peer session lost; heavy state torn down", hwTeardownBudget)
+	// The slow, level-triggered heavy-state reclaim: await the teardown INFO line for hw-gamma
+	// specifically, appearing AFTER the pre-kill baseline, gated on WireGuard's RejectAfterTime.
+	line, ok := awaitPeerTeardown(t, hw.conc, hwPeerGammaName, baseline, hwTeardownBudget)
 	if !ok {
 		t.Fatalf("concentrator never logged the D50 teardown INFO for %q within %s\n--- conc ---\n%s", hwPeerGammaName, hwTeardownBudget, hw.conc.log())
 	}
-	if peer, _ := line.FieldString("peer"); peer != hwPeerGammaName {
-		t.Fatalf("teardown INFO logged peer=%q, want %q", peer, hwPeerGammaName)
-	}
 
 	// /metrics still reflects the dead peer post-teardown.
-	exp := scrapeMetrics(t, hw.metricsURL)
+	exp := hw.scrapeMetrics(t)
 	if v, ok := exp.PeerPathValue(metrics.MetricUp, hwPeerGammaName, hwPath1Name); !ok || v != 0 {
 		t.Fatalf("%s{peer=%q,path=%q} = %v (ok=%v) after teardown, want 0", metrics.MetricUp, hwPeerGammaName, hwPath1Name, v, ok)
 	}
@@ -361,8 +383,35 @@ func testD50PeerTeardownAndRebind(t *testing.T, hw *hwFixture) {
 	if !hw.edgeCPingUntil(mpBringUpDeadline) {
 		t.Fatalf("edge C (hw-gamma) did not recover after restart\n--- edge C ---\n%s\n--- conc ---\n%s", hw.edgeC.log(), hw.conc.log())
 	}
-	waitPeerPathUp(t, hw.metricsURL, hwPeerGammaName, hwPath1Name, 1, mpBringUpDeadline)
+	hw.waitPeerPathUp(t, hwPeerGammaName, hwPath1Name, 1, mpBringUpDeadline)
 	t.Logf("D50: hw-gamma torn down (%s) and re-bound after restart", line.Msg)
+}
+
+// awaitPeerTeardown polls p's captured log for a "concentrator peer session lost; heavy state
+// torn down" record whose peer field equals peer, considering ONLY records at index >= baseline
+// (records parsed after the caller's pre-kill snapshot). This skips the benign STARTUP teardown
+// records the concentrator emits for its non-primary peers before any edge connects, which a
+// bare AwaitLogLine (message-only, from the buffer start) would match instantly with the wrong
+// peer. It is the peer-scoped, baseline-anchored analogue of AwaitLogLine.
+func awaitPeerTeardown(t *testing.T, p *proc, peer string, baseline int, timeout time.Duration) (LogLine, bool) {
+	t.Helper()
+	const msg = "concentrator peer session lost; heavy state torn down"
+	deadline := time.Now().Add(timeout)
+	for {
+		lines := ParseLogLines(p.log())
+		for i := baseline; i < len(lines); i++ {
+			if lines[i].Msg != msg {
+				continue
+			}
+			if pl, _ := lines[i].FieldString("peer"); pl == peer {
+				return lines[i], true
+			}
+		}
+		if time.Now().After(deadline) {
+			return LogLine{}, false
+		}
+		time.Sleep(logLinePollInterval)
+	}
 }
 
 // hwFixture is the assembled T128 fixture handed to every subtest.
@@ -390,6 +439,18 @@ type hwFixture struct {
 }
 
 // concConfig renders the concentrator TOML for the given path set (all 3 peers, unchanged).
+//
+// bind = "source" pins EVERY concentrator path socket to its specific source IP rather than
+// letting the default "auto" mode SO_BINDTODEVICE-bind a single-address-interface path to the
+// WILDCARD 0.0.0.0:<listen_port> (the T16 roam-survival mode, listenOnDevice). That wildcard
+// bind is why D42's RUNTIME path-add (SIGHUP add hw2) fails under auto: AddPath source-IP-pins
+// a runtime-added path (D30 — auto never device-binds at runtime), so hw2's specific
+// 10.106.2.2:<port> bind COLLIDES EADDRINUSE with hw1's already-held wildcard 0.0.0.0:<port>.
+// Source-pinning both makes the two DISTINCT specific-IP sockets coexist on one port, so the
+// runtime add is "reachable" (D42's own hedge) — see the D30 auto-runtime-add gap reported
+// alongside this re-validation. Source-bind is neutral for every other subtest (the
+// concentrator's addresses never move here) and does not weaken the shared-NAT demux (D47),
+// which is app-layer AddrPort keying independent of the socket's bind.
 func (hw *hwFixture) concConfig(paths []pathSpec) string {
 	var pb strings.Builder
 	for _, p := range paths {
@@ -397,6 +458,7 @@ func (hw *hwFixture) concConfig(paths []pathSpec) string {
 	}
 	return fmt.Sprintf(`role = "concentrator"
 psk = %q
+bind = "source"
 
 %s[metrics]
 listen = %q
@@ -431,10 +493,45 @@ level = "info"
 		hw.edgeCPub, hwPeerGammaName, hw.pskGamma, hwInnerGamma)
 }
 
-// metricsAddr is the concentrator's /metrics bind address: its hw1 uplink IP (NOT loopback —
-// this fixture's concentrator runs in the peer netns, unreachable at 127.0.0.1 from base).
+// metricsAddr is the concentrator's /metrics bind address: LOOPBACK (hwMetricsHost), as the
+// T17 requireLoopback invariant demands. The concentrator runs in the peer netns, so this
+// 127.0.0.1 endpoint is unreachable from the base netns directly — the test scrapes it by
+// dialing INTO the peer netns (hw.scrapeMetrics / hw.waitPeerPathUp).
 func (hw *hwFixture) metricsAddr() string {
-	return hwPaths[0].concIP + ":" + strconv.Itoa(hwMetricsPort)
+	return hwMetricsHost + ":" + strconv.Itoa(hwMetricsPort)
+}
+
+// scrapeMetrics is a one-shot scrape of the concentrator's loopback /metrics from INSIDE its
+// peer netns (fatal on error) — the in-netns analogue of the package-level scrapeMetrics,
+// which assumes a base-netns-reachable endpoint. Mirrors p2/p3/p4's fetchMetricsInNetns.
+func (hw *hwFixture) scrapeMetrics(t *testing.T) metrics.Exposition {
+	t.Helper()
+	return fetchMetricsInNetns(t, hw.top.pid, hw.metricsURL)
+}
+
+// waitPeerPathUp polls the concentrator's in-netns loopback /metrics until the PER-PEER
+// wanbond_path_up series for (peer,path) reads want, or fails at deadline. A mid-poll scrape
+// error is tolerated (the endpoint may not be up yet) — the in-netns analogue of the
+// package-level waitPeerPathUp, which dials a base-netns-reachable endpoint on the default
+// client. Reuses ONE netnsMetricsClient across the poll (DisableKeepAlives dials fresh each
+// scrape, so the socket is re-opened inside the peer netns every time).
+func (hw *hwFixture) waitPeerPathUp(t *testing.T, peer, path string, want float64, deadline time.Duration) {
+	t.Helper()
+	client := netnsMetricsClient(hw.top.pid)
+	end := time.Now().Add(deadline)
+	var lastErr error
+	for time.Now().Before(end) {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		exp, err := metrics.Fetch(ctx, client, hw.metricsURL)
+		cancel()
+		if err != nil {
+			lastErr = err
+		} else if v, ok := exp.PeerPathValue(metrics.MetricUp, peer, path); ok && v == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s{peer=%q,path=%q} never reached %v within %s (last scrape error: %v)", metrics.MetricUp, peer, path, want, deadline, lastErr)
 }
 
 // edgeCConfig renders edge C's TOML (direct/unNATed; source_addr is the given paths' own
@@ -513,10 +610,7 @@ func setupHardenedMultiPeer(t *testing.T) *hwFixture {
 
 	dir := t.TempDir()
 	hw.concCfgPath = writeConfig(t, filepath.Join(dir, "conc.toml"), hw.concConfig([]pathSpec{hwPaths[0]}))
-	hw.conc = top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", hw.concCfgPath)
-	if !top.waitLink(tunDev, true, 5*time.Second) {
-		t.Fatalf("concentrator %s never appeared\n%s", tunDev, hw.conc.log())
-	}
+	startConcentrator(t, hw)
 	top.nsenter("ip", "addr", "add", concInner+"/24", "dev", tunDev)
 	top.nsenter("ip", "link", "set", tunDev, "up")
 
@@ -537,6 +631,38 @@ func setupHardenedMultiPeer(t *testing.T) *hwFixture {
 	hw.edgeCArgv = []string{bin, "--config", hw.edgeCCfgPath}
 
 	return hw
+}
+
+// concStartAttempts bounds startConcentrator's retries of the concentrator daemon.
+const concStartAttempts = 4
+
+// startConcentrator launches the concentrator daemon in the peer netns and waits for its TUN,
+// RETRYING if the daemon exits before the TUN is usable. The concentrator binds its /metrics on
+// loopback (127.0.0.1) INSIDE the peer netns; on a fast host that bind can momentarily lose a
+// race with the peer netns's lo coming UP (SetupWithPaths brings it up, but the netlink state
+// can lag a beat), so the daemon exits at Open with "listen 127.0.0.1:<port>: bind: cannot
+// assign requested address" and its TUN disappears. A re-assert of lo up plus a fresh start a
+// beat later succeeds once lo has settled — observed necessary on the amd64 host, never hit on
+// the slower aarch64 one. This is a fixture-timing guard, not a product retry: the shipped
+// daemon fails fast (correctly) when its metrics address is genuinely unbindable.
+func startConcentrator(t *testing.T, hw *hwFixture) {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		hw.top.nsenter("ip", "link", "set", "lo", "up") // idempotent re-assert; closes the lo-up race
+		hw.conc = hw.top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(hw.top.pid), "-n", hw.bin, "--config", hw.concCfgPath)
+		if hw.top.waitLink(tunDev, true, 5*time.Second) {
+			return
+		}
+		log := hw.conc.log()
+		if hw.conc.cmd.Process != nil {
+			_ = hw.conc.cmd.Process.Kill() // reap a hung (alive-but-no-TUN) daemon before retrying
+			_, _ = hw.conc.cmd.Process.Wait()
+		}
+		if attempt >= concStartAttempts {
+			t.Fatalf("concentrator %s never appeared after %d attempts\n%s", tunDev, attempt, log)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 // setupNATGateway turns the base (test-process) netns into the D47 SNAT gateway: enables IPv4
@@ -572,10 +698,16 @@ func requireIPTables(t *testing.T) {
 
 // startEdgeC (re)starts edge C's daemon DIRECTLY in the base (test-process) netns — it needs
 // no NAT and no separate PID-held namespace, exactly like the plain edge in p0_test.go /
-// reload_test.go — and addresses its freshly created TUN.
+// reload_test.go — and addresses its freshly created TUN. The daemon is registered on the
+// PARENT test's t (hw.t), NOT the subtest's, because edge C is a FIXTURE-lifetime process: it
+// is first started inside the D49 subtest but must stay alive across the later D42 (SIGHUP
+// reload) and D50 (teardown/restart) subtests. Registering it on the D49 subtest's t would
+// SIGTERM it via startProc's t.Cleanup the moment D49 returns (leaving D42's SIGHUP and D50's
+// teardown to act on a dead process). The passed t is used only for the immediate bring-up
+// fatals, which belong to whichever subtest is starting edge C.
 func (hw *hwFixture) startEdgeC(t *testing.T) {
 	t.Helper()
-	hw.edgeC = hw.top.startProc(t, "edgeC", hw.edgeCArgv...)
+	hw.edgeC = hw.top.startProc(hw.t, "edgeC", hw.edgeCArgv...)
 	if !hw.top.waitLink(tunDev, false, 5*time.Second) {
 		t.Fatalf("edge C %s never appeared\n%s", tunDev, hw.edgeC.log())
 	}
@@ -700,11 +832,17 @@ func (e *hwEdge) pingUntil(ip string, d time.Duration) bool {
 	return false
 }
 
-// startTransfer starts a background iperf3 transfer from this edge to serverIP, returning
-// immediately; result() awaits it — mirrors multipeer_test.go's mpEdge.startTransfer.
+// startTransfer starts a background iperf3 transfer from this edge to serverIP (the
+// concentrator's inner overlay address), returning immediately; result() awaits it. Unlike
+// multipeer_test.go's mpEdge.startTransfer — whose concentrator runs in the BASE netns, so its
+// inner TUN is bindable there — THIS fixture's concentrator runs in the PEER netns, so the
+// iperf3 SERVER on serverIP must be started INSIDE that peer netns (where concInner's TUN
+// lives); binding it in the base netns fails ("Cannot assign requested address"), the D77
+// re-validation's first surfaced fixture defect. The client still runs in this edge's netns
+// and reaches serverIP over the wanbond tunnel.
 func (e *hwEdge) startTransfer(t *testing.T, serverIP string, port, secs int) *transfer {
 	t.Helper()
-	startBaseIperfServer(t, e.base, serverIP, port)
+	startConcIperfServer(t, e.base, serverIP, port)
 	cmd := exec.Command("nsenter", "-t", strconv.Itoa(e.pid), "-n", "iperf3", "-c", serverIP, "-p", strconv.Itoa(port), "-t", strconv.Itoa(secs), "-J")
 	out := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = out, out
@@ -712,6 +850,39 @@ func (e *hwEdge) startTransfer(t *testing.T, serverIP string, port, secs int) *t
 		t.Fatalf("%s: start iperf3 client: %v", e.name, err)
 	}
 	return &transfer{cmd: cmd, out: out}
+}
+
+// startConcIperfServer starts a one-shot iperf3 server bound to serverIP:port INSIDE the
+// concentrator's peer netns (top.pid) — where the concentrator's inner TUN address lives — and
+// waits until it reaches LISTEN there. The base-netns startBaseIperfServer (multipeer_test.go)
+// cannot be reused because concInner is not an address of the base netns in this fixture.
+func startConcIperfServer(t *testing.T, top *Topology, serverIP string, port int) {
+	t.Helper()
+	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n",
+		"iperf3", "-s", "-1", "-B", serverIP, "-p", strconv.Itoa(port))
+	waitIperfListenInNetns(t, top.pid, port)
+}
+
+// waitIperfListenInNetns polls the netns of pid for a TCP LISTEN socket on port (never
+// connecting — the server is one-shot), failing at iperfListenTimeout. It is the peer-netns
+// analogue of baseWaitIperfListen, reading kernel socket state via `ss -ltn` inside the netns.
+func waitIperfListenInNetns(t *testing.T, pid, port int) {
+	t.Helper()
+	suffix := ":" + strconv.Itoa(port)
+	deadline := time.Now().Add(iperfListenTimeout)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("nsenter", "-t", strconv.Itoa(pid), "-n", "ss", "-ltn").CombinedOutput()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) >= 4 && strings.HasSuffix(fields[3], suffix) {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("concentrator iperf3 server never reached LISTEN on port %d in netns %d within %s", port, pid, iperfListenTimeout)
 }
 
 // run executes a command inside this edge's namespace, failing the test on error.

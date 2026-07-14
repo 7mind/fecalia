@@ -29,8 +29,8 @@ import (
 //	9104  restart_onesided_test.go    (r121MetricsPort; edge on 127.0.0.1, concentrator on its uplink IP)
 //	9105  load_self_test.go           (loadSelfTestMetricsListen)
 //	9106  weighted_capacity_warn_test.go (t144MetricsListen)
-//	9107  multipeer_hardened_test.go  (hwMetricsPort; concentrator on its hw1 uplink IP, not
-//	      loopback — this fixture's concentrator runs in the peer netns, like r121's)
+//	9107  multipeer_hardened_test.go  (hwMetricsPort; concentrator on loopback 127.0.0.1 in the
+//	      peer netns, scraped via fetchMetricsInNetns — like p2/p3/p4)
 //	9108  aggregation_metrics_test.go   (aggMetricsListen)
 //	9109  probe_headroom_test.go       (t145MetricsListen)
 //	9110  aggregation_visibility_test.go (visMetricsListen; both scenarios share the port,
