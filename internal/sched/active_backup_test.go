@@ -577,3 +577,409 @@ func TestActiveBackupPacingRemoveToEmptyThenSetPaths(t *testing.T) {
 		t.Fatalf("rebuilt active path admitted %d at a frozen instant, want its full burst %d", admitted, int(burst))
 	}
 }
+
+// TestActiveBackupPacingDisabledIsNoOp is T151 scenario (a): with Pacing left off
+// (the zero value), Pick is byte-for-byte its pre-pacing self — EVERY ClassData
+// frame is admitted on the active path, even under an offered load far above any
+// per-path capacity a pacing config would impose. This is the regression guard
+// that toggling pacing off truly disables shedding rather than merely raising the
+// bound.
+func TestActiveBackupPacingDisabledIsNoOp(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	// Config{Pacing: false} — the zero value; PerPathCapacities/PacingBursts unset.
+	s := newSched(t, clock, time.Second, primary, backup)
+
+	// Offer at the same overload cadence TestActiveBackupPerPathPacing uses (which,
+	// with pacing ON, sheds thousands of frames): 5000 frames at 0.2ms/frame.
+	const (
+		frames = 5000
+		step   = 200 * time.Microsecond
+	)
+	admitted := 0
+	for i := 0; i < frames; i++ {
+		got := s.Pick(ClassData)
+		if got != 0 {
+			t.Fatalf("Pick #%d = %d, want 0 (pacing disabled: every frame admits on the active path)", i, got)
+		}
+		admitted++
+		clock.advance(step)
+	}
+	if admitted != frames {
+		t.Fatalf("admitted = %d, want all %d frames (pacing disabled is a pure no-op, nothing is ever shed)", admitted, frames)
+	}
+}
+
+// TestActiveBackupPacingFailoverSaturatedPrimaryDoesNotStarveBackup is T151
+// scenario (b): the active path changes on failover, and pacing then draws from
+// the NEW active path's OWN bucket at that path's OWN rate. A primary saturated
+// (fully drained, shedding) right up to the failover must NOT starve the backup
+// — the backup's bucket is independent and full — and a backup far FASTER than
+// the old primary must not be throttled down to the old primary's rate.
+func TestActiveBackupPacingFailoverSaturatedPrimaryDoesNotStarveBackup(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	const (
+		primaryCap   = 50.0 // slow primary
+		primaryBurst = 5.0
+		backupCap    = 2000.0 // fast backup
+		backupBurst  = 20.0
+	)
+	cfg := Config{
+		FailbackAfter:     time.Hour, // no failback interference
+		Pacing:            true,
+		PerPathCapacities: []float64{primaryCap, backupCap},
+		PacingBursts:      []float64{primaryBurst, backupBurst},
+	}
+	s, err := NewActiveBackup([]PathHealth{primary, backup}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+
+	// Saturate the primary at a single frozen instant (no clock advance ⇒ no
+	// refill): exactly its burst admits, then every further frame sheds.
+	primaryAdmitted := 0
+	for i := 0; i < int(primaryBurst)+10; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 0:
+			primaryAdmitted++
+		case PickPaced:
+		default:
+			t.Fatalf("primary saturation Pick #%d = %d, want 0 or PickPaced", i, got)
+		}
+	}
+	if primaryAdmitted != int(primaryBurst) {
+		t.Fatalf("primary admitted %d while saturating, want exactly its burst %d", primaryAdmitted, int(primaryBurst))
+	}
+
+	// Fail over to the backup (still the same frozen instant).
+	primary.down()
+	if got := s.Pick(ClassData); got != 1 {
+		t.Fatalf("first Pick after failover = %d, want 1 (backup active)", got)
+	}
+	backupAdmitted := 1
+	for i := 0; i < int(backupBurst)+10; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 1:
+			backupAdmitted++
+		case PickPaced:
+		default:
+			t.Fatalf("post-failover Pick #%d = %d, want 1 or PickPaced", i, got)
+		}
+	}
+	// The backup's bucket is its OWN — full on failover regardless of the primary
+	// having just been drained to empty — so it admits its OWN (larger) burst, not
+	// the primary's exhausted state and not the primary's smaller burst.
+	if backupAdmitted != int(backupBurst) {
+		t.Fatalf("backup admitted %d at a frozen instant right after failover, want its OWN full burst %d (not starved by the saturated primary)", backupAdmitted, int(backupBurst))
+	}
+
+	// Over an advancing window the backup's sustained admit rate is bounded by ITS
+	// OWN capacity and — the D65 regression this guards — strictly exceeds what the
+	// old (slower) primary's rate would have allowed, proving it is not throttled
+	// down to the old active path's rate.
+	const (
+		windowFrames = 2000
+		step         = 200 * time.Microsecond // windowFrames*step = 400ms
+	)
+	windowAdmitted := 0
+	for i := 0; i < windowFrames; i++ {
+		if got := s.Pick(ClassData); got == 1 {
+			windowAdmitted++
+		}
+		clock.advance(step)
+	}
+	window := (time.Duration(windowFrames) * step).Seconds()
+	backupUpper := backupCap*window + backupBurst
+	primaryUpper := primaryCap*window + primaryBurst
+	if float64(windowAdmitted) > backupUpper {
+		t.Fatalf("backup admitted %d over the window, exceeds its OWN cap bound %.1f", windowAdmitted, backupUpper)
+	}
+	if float64(windowAdmitted) <= primaryUpper {
+		t.Fatalf("backup admitted %d over the window, not above the old primary's rate bound %.1f — the backup was throttled to the old active path's rate (D65 regression)", windowAdmitted, primaryUpper)
+	}
+}
+
+// TestActiveBackupPacingSentinelDistinctness is T151 scenario (c): PickPaced
+// (healthy path, momentarily out of tokens) and PickNone (no eligible path at
+// all) are distinct sentinels returned in the correct, distinct situations —
+// never conflated.
+func TestActiveBackupPacingSentinelDistinctness(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	const burst = 4.0
+	cfg := Config{
+		FailbackAfter:     time.Second,
+		Pacing:            true,
+		PerPathCapacities: []float64{1000.0, 200.0},
+		PacingBursts:      []float64{burst, burst},
+	}
+	s, err := NewActiveBackup([]PathHealth{primary, backup}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+
+	// Drain the (healthy) active path's bucket at a frozen instant, then the next
+	// frame must be PickPaced — the path is up, just momentarily out of tokens.
+	for i := 0; i < int(burst); i++ {
+		if got := s.Pick(ClassData); got != 0 {
+			t.Fatalf("drain Pick #%d = %d, want 0 (within burst)", i, got)
+		}
+	}
+	got := s.Pick(ClassData)
+	if got != PickPaced {
+		t.Fatalf("Pick with an empty bucket on a healthy path = %d, want PickPaced", got)
+	}
+	if got == PickNone {
+		t.Fatalf("a healthy-but-paced path must not report PickNone")
+	}
+
+	// Now take EVERY path down. Regardless of token state, this must report
+	// PickNone (no eligible path) — never PickPaced, which would misreport a total
+	// outage as a mere rate-limit.
+	primary.down()
+	backup.down()
+	got = s.Pick(ClassData)
+	if got != PickNone {
+		t.Fatalf("Pick with all paths down = %d, want PickNone", got)
+	}
+	if got == PickPaced {
+		t.Fatalf("a total outage must not report PickPaced")
+	}
+	if PickPaced == PickNone {
+		t.Fatalf("PickPaced (%d) and PickNone (%d) must be distinct sentinels", PickPaced, PickNone)
+	}
+}
+
+// TestActiveBackupPacingClassControlExemptionColdStartAndSustainedShedding is
+// T151 scenario (d): ClassControl's pacing exemption (defect D22) holds BOTH at
+// cold start (before the bucket has ever been touched) AND while ClassData is
+// under sustained shedding — in neither case does a control Pick consume a
+// token or otherwise perturb the bucket state.
+func TestActiveBackupPacingClassControlExemptionColdStartAndSustainedShedding(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	const (
+		capFPS = 100.0
+		burst  = 5.0
+	)
+	cfg := Config{
+		FailbackAfter:     time.Second,
+		Pacing:            true,
+		PerPathCapacities: []float64{capFPS, capFPS},
+		PacingBursts:      []float64{burst, burst},
+	}
+	s, err := NewActiveBackup([]PathHealth{primary, backup}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+
+	// Cold start: the VERY FIRST Pick is a control frame, before any ClassData Pick
+	// has ever run. It must admit on the active path, and — because the pacing
+	// branch for ClassControl returns before refill/consume — the bucket must be
+	// left untouched (still un-seeded).
+	if got := s.Pick(ClassControl); got != 0 {
+		t.Fatalf("cold-start ClassControl Pick = %d, want 0 (active, exempt)", got)
+	}
+	if s.pacers[0].haveFill {
+		t.Fatalf("cold-start ClassControl Pick touched the bucket (haveFill=true), want it untouched")
+	}
+	// Confirm the bucket really was untouched: the first ClassData Pick still gets
+	// a freshly-seeded FULL bucket (burst admits before the first shed).
+	admitted := 0
+	for i := 0; i < int(burst)+3; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 0:
+			admitted++
+		case PickPaced:
+		default:
+			t.Fatalf("post-cold-start Pick #%d = %d, want 0 or PickPaced", i, got)
+		}
+	}
+	if admitted != int(burst) {
+		t.Fatalf("admitted %d after the cold-start control Pick, want the full burst %d (control Pick spent no token)", admitted, int(burst))
+	}
+
+	// Sustained shedding: the active bucket is now drained (from the loop above).
+	// Keep offering ClassData at the same frozen instant to confirm sustained
+	// shedding, then interleave ClassControl Picks and prove they neither admit
+	// via the data path's accounting nor refill/consume any token.
+	for i := 0; i < 20; i++ {
+		if got := s.Pick(ClassData); got != PickPaced {
+			t.Fatalf("sustained-shedding Pick #%d = %d, want PickPaced (bucket drained)", i, got)
+		}
+	}
+	tokensBefore := s.pacers[0].tokens[0]
+	for i := 0; i < 5; i++ {
+		if got := s.Pick(ClassControl); got != 0 {
+			t.Fatalf("ClassControl during sustained shedding, call #%d = %d, want 0 (still exempt)", i, got)
+		}
+	}
+	if got := s.pacers[0].tokens[0]; got != tokensBefore {
+		t.Fatalf("bucket tokens changed from %g to %g across 5 ClassControl Picks during sustained shedding, want unchanged (exempt)", tokensBefore, got)
+	}
+	// ClassData immediately after is still shed — the control Picks did not refill
+	// or otherwise grant it any token.
+	if got := s.Pick(ClassData); got != PickPaced {
+		t.Fatalf("ClassData Pick right after the ClassControl run = %d, want still PickPaced", got)
+	}
+}
+
+// TestActiveBackupPacingBurstAbsorptionAfterIdle is T151 scenario (e): a burst of
+// frames no larger than PacingBurst, offered after an idle span long enough to
+// fully refill, is admitted WITHOUT shedding — and the refill is capped exactly
+// at the burst (idle does not accumulate unbounded credit).
+func TestActiveBackupPacingBurstAbsorptionAfterIdle(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	const (
+		capFPS = 100.0
+		burst  = 10.0
+	)
+	cfg := Config{
+		FailbackAfter:     time.Second,
+		Pacing:            true,
+		PerPathCapacities: []float64{capFPS, capFPS},
+		PacingBursts:      []float64{burst, burst},
+	}
+	s, err := NewActiveBackup([]PathHealth{primary, backup}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+
+	// Drain the bucket to empty first, so the subsequent refill is observably
+	// earned from the idle span, not left over from the initial full seed.
+	for i := 0; i < int(burst); i++ {
+		if got := s.Pick(ClassData); got != 0 {
+			t.Fatalf("drain Pick #%d = %d, want 0", i, got)
+		}
+	}
+	if got := s.Pick(ClassData); got != PickPaced {
+		t.Fatalf("Pick past the burst = %d, want PickPaced (bucket drained)", got)
+	}
+
+	// Idle for well over burst/capacity seconds (100ms here; 1s is ample margin),
+	// which refills the bucket, capped at burst.
+	clock.advance(1 * time.Second)
+
+	// A burst of exactly `burst` frames, offered back-to-back at this now-refilled
+	// instant, must ALL admit — no shedding.
+	admitted, shed := 0, 0
+	for i := 0; i < int(burst); i++ {
+		switch got := s.Pick(ClassData); got {
+		case 0:
+			admitted++
+		case PickPaced:
+			shed++
+		default:
+			t.Fatalf("post-idle burst Pick #%d = %d, want 0 or PickPaced", i, got)
+		}
+	}
+	if admitted != int(burst) {
+		t.Fatalf("post-idle burst admitted %d, want all %d (burst <= PacingBurst after idle must not shed)", admitted, int(burst))
+	}
+	if shed != 0 {
+		t.Fatalf("post-idle burst shed %d frames, want 0", shed)
+	}
+	// The refill is capped at burst, not unbounded: the NEXT frame (beyond burst)
+	// at the same frozen instant must shed.
+	if got := s.Pick(ClassData); got != PickPaced {
+		t.Fatalf("Pick past the post-idle burst = %d, want PickPaced (refill capped at burst, no unbounded idle credit)", got)
+	}
+}
+
+// TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership is T151
+// scenario (f) — the T30 pacer regression (R162 criticism 3): a SetPaths that
+// CHANGES the path count resizes/reinitializes the per-path bucket slice so the
+// next Pick indexes in range (no panic) AND paces correctly against the NEW
+// membership — not merely "doesn't crash", but bounded by the resized bucket's
+// own (inherited) capacity/burst.
+func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing.T) {
+	clock := newFakeClock()
+	p0 := &fakeHealth{s: telemetry.StateUp}
+	p1 := &fakeHealth{s: telemetry.StateUp}
+	const (
+		tailCap   = 200.0 // PerPathCapacities[1] — the config tail a grown-in path inherits
+		tailBurst = 8.0
+	)
+	cfg := Config{
+		FailbackAfter:     time.Second,
+		Pacing:            true,
+		PerPathCapacities: []float64{1000.0, tailCap},
+		PacingBursts:      []float64{tailBurst, tailBurst},
+	}
+	s, err := NewActiveBackup([]PathHealth{p0, p1}, cfg, clock, discardLogger(t))
+	if err != nil {
+		t.Fatalf("NewActiveBackup: %v", err)
+	}
+	if got := s.Pick(ClassData); got != 0 {
+		t.Fatalf("initial Pick = %d, want 0", got)
+	}
+	if got := len(s.pacers); got != 2 {
+		t.Fatalf("bucket slice len = %d before resize, want 2 == len(health)", got)
+	}
+
+	// Grow to three paths: a Close->Open-style wholesale membership replacement.
+	p2 := &fakeHealth{s: telemetry.StateUp}
+	if err := s.SetPaths([]PathHealth{p0, p1, p2}); err != nil {
+		t.Fatalf("SetPaths grow: %v", err)
+	}
+	if got := len(s.pacers); got != 3 {
+		t.Fatalf("bucket slice len = %d after grow, want 3 == len(health)", got)
+	}
+	// Fail every path but the new (grown-in) tail, so it becomes active and its
+	// bucket — reinitialized by the resize — is the one exercised.
+	p0.down()
+	p1.down()
+	if got := s.Pick(ClassData); got != 2 {
+		t.Fatalf("Pick with only the grown-in path up = %d, want 2", got)
+	}
+	// The grown-in path's bucket, per resizeActiveBackupPacers, inherits the config
+	// tail's capacity/burst — verify it actually paces at that rate: exactly
+	// tailBurst admits at a frozen instant, then a shed. The Pick just above already
+	// consumed the bucket's first token.
+	admitted := 1
+	for i := 0; i < int(tailBurst)+5; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 2:
+			admitted++
+		case PickPaced:
+		default:
+			t.Fatalf("grown-in-path Pick #%d = %d, want 2 or PickPaced", i, got)
+		}
+	}
+	if admitted != int(tailBurst) {
+		t.Fatalf("grown-in path admitted %d at a frozen instant, want its inherited burst %d (resize did not re-pace correctly)", admitted, int(tailBurst))
+	}
+
+	// Shrink to a single (surviving) path — the bucket slice must resize down too,
+	// and the sole survivor must still pace correctly (a fresh, full bucket after
+	// the wholesale SetPaths reset).
+	if err := s.SetPaths([]PathHealth{p2}); err != nil {
+		t.Fatalf("SetPaths shrink: %v", err)
+	}
+	if got := len(s.pacers); got != 1 {
+		t.Fatalf("bucket slice len = %d after shrink, want 1 == len(health)", got)
+	}
+	if got := s.Pick(ClassData); got != 0 {
+		t.Fatalf("Pick after shrink = %d, want 0 (sole survivor)", got)
+	}
+	admitted = 1 // the Pick just above already consumed one token
+	for i := 0; i < int(tailBurst)+5; i++ {
+		switch got := s.Pick(ClassData); got {
+		case 0:
+			admitted++
+		case PickPaced:
+		default:
+			t.Fatalf("post-shrink Pick #%d = %d, want 0 or PickPaced", i, got)
+		}
+	}
+	if admitted != int(tailBurst) {
+		t.Fatalf("post-shrink sole survivor admitted %d at a frozen instant, want its inherited burst %d", admitted, int(tailBurst))
+	}
+}
