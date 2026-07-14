@@ -1128,12 +1128,12 @@ archives:
 - sessionLogs: [".cq/logs/20260714-025553-a3d95aaa6b922d19a.md",".cq/logs/20260714-030756-aa7c68662525d4b3f.md",".cq/logs/20260714-030756-a9196a9bc3bed8ec8.md"]
 - rawLogs: [".cq/logs/raw/20260714-025553-a3d95aaa6b922d19a.jsonl",".cq/logs/raw/20260714-030756-aa7c68662525d4b3f.jsonl",".cq/logs/raw/20260714-030756-a9196a9bc3bed8ec8.jsonl"]
 
-### T101 — planned
+### T101 — wip
 
 - createdAt: 2026-07-13T23:22:37.650Z
-- updatedAt: 2026-07-13T23:32:02.807Z
+- updatedAt: 2026-07-14T03:23:04.948Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add wanbond_session_established metric, last-handshake age, and a 'session established' log line (I2)
 - description: "Add a WG-session signal to the metrics plane: a wanbond_session_established gauge (0/1) and wanbond_session_last_handshake_seconds (age), sourced at scrape time from the amneziawg engine (IpcGet last_handshake_time_sec, or peer lookup as deviceRehandshake in internal/device/failover.go:181 already does). Extend the metrics.Source seam (internal/metrics/metrics.go) with a session snapshot supplied by the device layer; the bind stays WG-unaware. Emit ONE INFO 'session established' log record on the 0→1 transition (poll at probe cadence or scrape-driven with a device-side edge detector). This is the signal that distinguishes 'still converging' from 'wedged' — D35/D36/D37 all presented identically without it."
 - acceptance: Unit tests cover metric registration and the 0→1 edge; netns e2e asserts wanbond_session_established transitions 0→1 after tunnel up (scraped via metrics.Fetch) and that the path-up-before-session-established ordering holds by comparing the path-up and session-established transition timestamps recorded in the logs — NOT by observing a path_up=1/session=0 intermediate scrape, which the netns tier reaches within milliseconds and a scrape-cadence observer would nondeterministically miss (the ~25 s gap is a production/WAN artifact); the 'session established' record appears exactly once per session; go test ./... and -tags e2e suite green.
@@ -1182,17 +1182,21 @@ archives:
 
 ## M31
 
-### T105 — planned
+### T105 — done
 
 - createdAt: 2026-07-13T23:23:19.962Z
-- updatedAt: 2026-07-13T23:23:19.962Z
+- updatedAt: 2026-07-14T03:41:12.354Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Config surface: per-path bind mode with optional global default (I5 config)"
 - description: "Per Q42: add `bind = \"source\"|\"device\"|\"auto\"` to each [[paths]] block (internal/config/config.go Path struct) plus an optional top-level global default; per-path overrides global; default is `auto` (today's selectDeviceBinds behavior). config.validate rejects unknown values and normalizes empty to the global/auto default. Plain TOML — no versioning cost."
 - acceptance: "internal/config/config_test.go covers: default auto when omitted, per-path override beats global, unknown value fails fast at load with a message naming the path. go test ./... green."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- resultCommit: 3ba47e0
+- completion: "Per-path bind-mode config surface landed (internal/config/{config.go,config_test.go}): BindMode enum (\"source\"|\"device\"|\"auto\") on config.Config (top-level `bind` global default) and config.Path (per-path override). normalize() resolves precedence path>global>auto (empty global → auto first, then empty path → global); validate() rejects unknown values on both surfaces and names the offending path; fail-fast at Load. Surface-only — selectDeviceBinds/planPathBinds consumption UNCHANGED (default auto == today's behavior), verified by grep. Unanimous 1-round panel approve; ff-merged to main as 3ba47e0. Doc-sync deferred to T115 (dependsOn T105)."
+- sessionLogs: [".cq/logs/20260714-033617-a8066d8a362952bd2.md",".cq/logs/20260714-034050-ad3878949437704f2.md",".cq/logs/20260714-034050-a88c682fa1f564cce.md"]
+- rawLogs: [".cq/logs/raw/20260714-033617-a8066d8a362952bd2.jsonl",".cq/logs/raw/20260714-034050-ad3878949437704f2.jsonl",".cq/logs/raw/20260714-034050-a88c682fa1f564cce.jsonl"]
 
 ### T106 — planned
 
@@ -1234,24 +1238,24 @@ archives:
 
 ## M32
 
-### T109 — planned
+### T109 — wip
 
 - createdAt: 2026-07-13T23:24:00.782Z
-- updatedAt: 2026-07-13T23:24:00.782Z
+- updatedAt: 2026-07-14T03:23:05.887Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Persistent wanbond0 TUN across daemon restarts (I7 code)
 - description: "Per Q38 (belt-and-suspenders, code half): make wanbond0 survive daemon restarts so addresses/routes/rules referencing it are not dropped on every restart. Opt-in config key (e.g. top-level `tun_persist = true`, default false so existing teardown semantics are unchanged): on start, set TUNSETPERSIST (or adopt an already-existing persistent device by name); on Close, leave the persistent device in place (link stays, session state torn down). Document the interaction with D39/NM (a persistent device still needs the unmanaged-devices drop-in on NM hosts) in the key's reference entry. Beware the single-engine guard and reload paths (internal/device/device.go) — persistence must not break SIGHUP reload or the restart-on-failure supervisor flow."
 - acceptance: "Netns e2e: with tun_persist=true, an address assigned to wanbond0 survives a full daemon stop/start (the D5/I7 production failure mode) and the interface keeps the SAME ifindex across the restart; the persistent device does not become NM-managed (documented invariant; asserted where the fixture permits). With the default false, behavior is unchanged (device disappears on Close, existing e2e suite green). Relates D39 in acceptance only. go test ./... and -tags e2e green."
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G6"]
 
-### T110 — planned
+### T110 — wip
 
 - createdAt: 2026-07-13T23:24:11.417Z
-- updatedAt: 2026-07-13T23:24:11.417Z
+- updatedAt: 2026-07-14T03:23:01.894Z
 - author: fable-5
-- session: cac93b81-5292-42e3-b77e-962544c75e54
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Ship the NetworkManager unmanaged-devices drop-in + install.md NM section (C1 + Q40 artifact)
 - description: "Add packaging/networkmanager/99-wanbond-unmanaged.conf containing `[keyfile] unmanaged-devices=interface-name:wanbond0`, and (coupled, per AGENTS.md docs-with-code) the C1 install.md §4 NetworkManager subsection: today the docs are networkd-only, but most edge boxes (RPi OS/Debian/Ubuntu desktop) run NM, which flushes the operator's address on link-up without this drop-in (the D39/D5 production failure). Docs state the copy destination (/etc/NetworkManager/conf.d/) and the `nmcli device set`/reload verification step."
 - acceptance: The drop-in file exists under packaging/ with valid NM keyfile syntax, and a lightweight packaging test/CI check asserts the file's presence and the unmanaged-devices key; install.md §4 gains the NM subsection referencing the shipped file (not a hand-typed inline recipe); validated against an NM host where practical (the production Pi validated the setting itself). Relates D39 in acceptance only.

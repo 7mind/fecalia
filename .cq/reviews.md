@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 98
+  item: 99
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1050,3 +1050,18 @@ archives:
 - ledgerRefs: ["tasks:T104","goals:G6","defects:D48"]
 - sessionLogs: [".cq/logs/20260714-031845-a6d96b8f39ee0fc04.md",".cq/logs/20260714-031845-ae358e9b638958305.md"]
 - rawLogs: [".cq/logs/raw/20260714-031845-a6d96b8f39ee0fc04.jsonl",".cq/logs/raw/20260714-031845-ae358e9b638958305.jsonl"]
+
+## M31
+
+### R99 — go-ahead
+
+- createdAt: 2026-07-14T03:41:06.708Z
+- updatedAt: 2026-07-14T03:41:06.708Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T105 unanimous panel approve (round 1): [opus]+[fable] both approve. Config-surface-only: BindMode (\"source\"|\"device\"|\"auto\") added to config.Config (top-level `bind` default) + config.Path (per-path override). normalize() defaults an empty global to auto BEFORE resolving each path's empty bind to the global — so precedence is path>global>auto (both reviewers verified the ordering trap: empty global + set path, set global + empty path, both-set). validate() rejects unknown values for BOTH surfaces, naming the offending path. [fable] ran go test ./... green in the worktree and grep-confirmed selectDeviceBinds/planPathBinds are UNCHANGED (no behavior regression; default auto == today's behavior). Golden DeepEqual fixture updated. Doc-sync for the new key deliberately deferred to T115 (dependsOn T105) per the plan."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T105","goals:G6"]
+- sessionLogs: [".cq/logs/20260714-034050-ad3878949437704f2.md",".cq/logs/20260714-034050-a88c682fa1f564cce.md"]
+- rawLogs: [".cq/logs/raw/20260714-034050-ad3878949437704f2.jsonl",".cq/logs/raw/20260714-034050-a88c682fa1f564cce.jsonl"]

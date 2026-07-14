@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 48
+  item: 50
 archives: []
 ---
 
@@ -665,6 +665,30 @@ archives: []
 - severity: medium
 - suggestedFix: "Settle key granularity in the T90 roaming design: either key bindings by AddrPort, or let an authenticated PROBE that fails the bound peer's codec re-enter trial-decode so a MAC-verified PROBE from another peer at the same address can establish/steal the binding."
 - ledgerRefs: ["tasks:T88","tasks:T90","goals:G4"]
+
+### D49 — open
+
+- createdAt: 2026-07-14T03:21:29.110Z
+- updatedAt: 2026-07-14T03:21:29.110Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Global demux cap is monopolizable by one authenticated insider, starving other peers' bootstrap
+- description: "Filed from T91 round-1 review ([fable], file-and-defer per K13). peerBySource has a SINGLE global cap (default 1024) with drop-on-exhaustion and a never-evict-live guard. A party holding ONE valid peer psk can send authenticated PROBEs from ~1024 distinct spoofed source addresses, binding every slot to its OWN peer, then keep that peer live — TearDownPeer refuses live peers, so the slots are never reclaimed and every OTHER configured peer's first PROBE is dropped forever (bootstrap denial). Violates the Q27(1) isolation intent ('a psk holder can disrupt ONLY its own tunnel'). Outside T91's acceptance (which requires only cap + no-evict) and not covered by T92's current acceptance text."
+- severity: medium
+- suggestedFix: Enforce a PER-PEER quota on source bindings inside bindSourceToPeer (small k per configured peer, summing under the global cap), and add the insider-cap-monopoly adversary case to T92's threat-model tests.
+- ledgerRefs: ["tasks:T91","tasks:T92","goals:G4"]
+
+### D50 — open
+
+- createdAt: 2026-07-14T03:21:33.691Z
+- updatedAt: 2026-07-14T03:21:33.691Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Device wiring of TearDownPeer (peer session/liveness loss) is not tracked by any planned task
+- description: "Filed from T91 round-1 review ([fable], file-and-defer per K13). T91's description says teardown is 'wired from device peer events', deferred by the worker as future G4 work — acceptable for T91 since its acceptance is bind-test-only and the M25/M26 DAG defers device wiring. But T93's text covers per-peer CONSTRUCTION and runtime path add/remove only; NO planned task wires WG session-teardown / liveness-loss events to Bind.TearDownPeer. Until wired, dead-peer heavy state (resequencer ring, FEC buffers) and demux cap slots are never reclaimed in production, leaving the T91 machinery inert."
+- severity: medium
+- suggestedFix: Extend T93's description/acceptance (or add an M26 task) to wire device per-peer session-teardown / liveness-loss events to Bind.TearDownPeer, with a device-level test that a dead peer's ring is freed and a re-handshake re-binds.
+- ledgerRefs: ["tasks:T91","tasks:T93","goals:G4"]
 
 ## M30
 
