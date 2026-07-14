@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 118
+  item: 119
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1320,3 +1320,16 @@ archives:
 - ledgerRefs: ["tasks:T97","goals:G4","defects:D51"]
 - sessionLogs: [".cq/logs/20260714-065448-a43bd9a8d80ec37ce.md",".cq/logs/20260714-065448-a377c32726def949b.md"]
 - rawLogs: [".cq/logs/raw/20260714-065448-a43bd9a8d80ec37ce.jsonl",".cq/logs/raw/20260714-065448-a377c32726def949b.jsonl"]
+
+### R119 — go-ahead
+
+- createdAt: 2026-07-14T07:23:03.617Z
+- updatedAt: 2026-07-14T07:23:03.617Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T99 unanimous panel approve (round 1): [opus]+[fable] both approve. Verification + report-only-capture task. Mandatory half: `go test ./...` green (exit 0, all packages). Second half taken as a DOCUMENTED DEFERRAL (per M10/Q12 report-only discipline), adding only docs/drafts/20260714-0705-t99-2edge-realhosts-deferral.md (no code). Both reviewers independently GROUNDED the deferral against source and (fable) via read-only SSH to the live hosts: test/realhosts/runner.go Config carries exactly one Edge + one Conc (env WANBOND_EDGE_HOST/WANBOND_CONC_HOST, no second-edge notion); setupEdgeTwoPaths (multipath_failover_test.go) is a single-NIC secondary-source-IP fake-UPLINK trick, degenerate if repurposed for a second PEER; T97's TestMultiPeerConcentratorIsolation uses THREE independent vantage points (2 edge netns + base). The standing 2-host inventory (o3.7mind.io: single NIC enp0s6 + a LIVE standing concentrator PID 73612; llm-ubuntu-0: single NIC enp1s0) exposes only two vantage points, so a genuine 2-edge+concentrator isolation capture is infeasible without a degenerate single-NIC 2-edge run (observes multiplexing, not isolation — fails the 'per-peer isolation observed' bar even report-only) or mutating o3's live shared concentrator config. Required inventory correctly identified: a third independently-networked edge host (WANBOND_EDGE2_HOST, matching the existing env-var pattern). Deferral judged HONEST, not a dodge. Rebased onto current main and ff-merged as 6e41f4a."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T99","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-070917-abf23ed9fff393fef.md",".cq/logs/20260714-071939-a959ee680c6a5baab.md",".cq/logs/20260714-071939-a9dd699b4c0bc00c8.md"]
+- rawLogs: [".cq/logs/raw/20260714-070917-abf23ed9fff393fef.jsonl",".cq/logs/raw/20260714-071939-a959ee680c6a5baab.jsonl",".cq/logs/raw/20260714-071939-a9dd699b4c0bc00c8.jsonl"]

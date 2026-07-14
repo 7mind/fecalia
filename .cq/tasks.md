@@ -1141,10 +1141,10 @@ archives:
 - dependsOn: ["T97"]
 - ledgerRefs: ["goals:G4"]
 
-### T99 — wip
+### T99 — done
 
 - createdAt: 2026-07-13T22:29:52.474Z
-- updatedAt: 2026-07-14T07:02:06.794Z
+- updatedAt: 2026-07-14T07:23:09.968Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Run full suite and capture report-only 2-edge real-link check
@@ -1153,6 +1153,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T97"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: 6e41f4a
+- completion: "Full go test ./... suite green (mandatory acceptance half). The 2-edge report-only realhosts capture taken as a DOCUMENTED DEFERRAL per M10/Q12: the standing 2-host inventory (o3.7mind.io + llm-ubuntu-0, each single-NIC; o3 runs a live shared concentrator) exposes only two network vantage points, but a genuine 2-edge+concentrator isolation capture needs three (per T97's netns topology). docs/drafts/20260714-0705-t99-2edge-realhosts-deferral.md records the precise topology constraint and the required inventory (a third independently-networked edge host, WANBOND_EDGE2_HOST). Grounded against test/realhosts/runner.go + multipath_failover_test.go + test/e2e/multipeer_test.go and independently reproduced by a reviewer via read-only SSH. Unanimous panel approve; rebased and ff-merged as 6e41f4a."
+- sessionLogs: [".cq/logs/20260714-070917-abf23ed9fff393fef.md",".cq/logs/20260714-071939-a959ee680c6a5baab.md",".cq/logs/20260714-071939-a9dd699b4c0bc00c8.md"]
+- rawLogs: [".cq/logs/raw/20260714-070917-abf23ed9fff393fef.jsonl",".cq/logs/raw/20260714-071939-a959ee680c6a5baab.jsonl",".cq/logs/raw/20260714-071939-a9dd699b4c0bc00c8.jsonl"]
 
 ## M30
 
