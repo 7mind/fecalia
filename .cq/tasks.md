@@ -882,10 +882,10 @@ archives:
 - sessionLogs: [".cq/logs/20260714-001002-a9f753cb838945145.md",".cq/logs/20260714-001524-a370601a73478ca92.md",".cq/logs/20260714-001524-a2b4d488f2a5615f5.md"]
 - rawLogs: [".cq/logs/raw/20260714-001002-a9f753cb838945145.jsonl",".cq/logs/raw/20260714-001524-a370601a73478ca92.jsonl",".cq/logs/raw/20260714-001524-a2b4d488f2a5615f5.jsonl"]
 
-### T86 — wip
+### T86 — done
 
 - createdAt: 2026-07-13T22:27:51.291Z
-- updatedAt: 2026-07-13T23:58:27.464Z
+- updatedAt: 2026-07-14T00:19:21.011Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Demux receive delivery to per-peer resequencer under per-peer virt endpoint
@@ -894,6 +894,10 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T83"]
 - ledgerRefs: ["goals:G4"]
+- resultCommit: d6816b1
+- completion: "Receive demux landed: single ReceiveFunc drains every bound peer's resequencer round-robin (lock-free peersView snapshot) and stamps per-packet endpoints with the owning peer's virt (A1); three-sibling test-helper conflict resolved by conflict-resolver; merged ff to main."
+- sessionLogs: [".cq/logs/20260714-001002-a51702a0c24f1dd5d.md",".cq/logs/20260714-001524-a9eeeffca5db3fd43.md",".cq/logs/20260714-001524-ae44d2e7f23156dd5.md",".cq/logs/20260714-001851-a02773d07a098daaf.md"]
+- rawLogs: [".cq/logs/raw/20260714-001002-a51702a0c24f1dd5d.jsonl",".cq/logs/raw/20260714-001524-a9eeeffca5db3fd43.jsonl",".cq/logs/raw/20260714-001524-ae44d2e7f23156dd5.jsonl",".cq/logs/raw/20260714-001851-a02773d07a098daaf.jsonl"]
 
 ### T87 — planned
 

@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 86
+  item: 87
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -888,3 +888,16 @@ archives:
 - ledgerRefs: ["tasks:T85","goals:G4"]
 - sessionLogs: [".cq/logs/20260714-001524-a370601a73478ca92.md",".cq/logs/20260714-001524-a2b4d488f2a5615f5.md"]
 - rawLogs: [".cq/logs/raw/20260714-001524-a370601a73478ca92.jsonl",".cq/logs/raw/20260714-001524-a2b4d488f2a5615f5.jsonl"]
+
+### R87 — go-ahead
+
+- createdAt: 2026-07-14T00:19:16.295Z
+- updatedAt: 2026-07-14T00:19:16.295Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T86 round 1 reconciled panel verdict (opus + fable, unanimous approve, gate green fresh + -race): single ReceiveFunc drains each bound peer's resequencer round-robin with a lock-free peersView atomic snapshot and stamps each delivered datagram with the owning peer's virt (A1); acceptance test discriminates against base behavior (no cross-peer leak); rr cursor race-free by construction (single drainer goroutine); existing-test edits are mechanical signature plumbing."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T86","goals:G4"]
+- sessionLogs: [".cq/logs/20260714-001524-a9eeeffca5db3fd43.md",".cq/logs/20260714-001524-ae44d2e7f23156dd5.md"]
+- rawLogs: [".cq/logs/raw/20260714-001524-a9eeeffca5db3fd43.jsonl",".cq/logs/raw/20260714-001524-ae44d2e7f23156dd5.jsonl"]
