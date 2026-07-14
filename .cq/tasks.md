@@ -1992,10 +1992,10 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T150","T152"]
 
-### T154 — wip
+### T154 — done
 
 - createdAt: 2026-07-14T13:16:37.344Z
-- updatedAt: 2026-07-14T18:48:07.257Z
+- updatedAt: 2026-07-14T18:57:48.939Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Config unit tests for active-backup pacing and BDP sizing
@@ -2004,6 +2004,7 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T152"]
+- resultCommit: c299f11
 
 ## M60
 

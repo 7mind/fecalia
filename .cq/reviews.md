@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 191
+  item: 192
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2251,6 +2251,17 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T152","goals:G14","defects:D65"]
+
+### R191 — go-ahead
+
+- createdAt: 2026-07-14T18:57:47.511Z
+- updatedAt: 2026-07-14T18:57:47.511Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T154 review round 1 — GO-AHEAD (single opus reviewer, proportionate for a TEST-ONLY parity-coverage task). 3 config tests in internal/config/active_backup_pacing_parity_test.go (per-path BDP parity table; active-backup-vs-weighted heterogeneous distinction; no-[scheduler]-block P1 regression guard). Merged to main as c299f11 (clean cherry-pick of 287c793 onto 195130d; single new test file). Reviewer verified: (1) SCOPE — single test file, zero production code; (2) NON-DUPLICATIVE of T152's active_backup_pacing_test.go (table vs fixed fixture; AB-vs-weighted CROSS-compare which T152 never did; scheduler-block-OMITTED surface vs T152's declared-but-inert); (3) NON-VACUOUS — parity asserts PerPathCapacities[i] == SizePacingFromBDP(parseBandwidth(bw),ParseDuration(rtt)).CapacityFPS via math.Abs>1e-6, a genuine per-path BDP recomputation using the PRODUCTION parseBandwidth (catches cross-wiring/min-reduction/shared-scalar); (4) SUBTLE CORRECTNESS verified — since CapacityFPS depends only on bandwidth, weighted min-reduces to the SLOW link's cap so weighted-scalar==caps[1] numerically; the test asserts divergence on caps[0] (FAST) ONLY (caps[0]!=scalar, caps[0]>scalar) and correctly AVOIDS the false caps[1]!=scalar assertion + pins weighted PerPathCapacities==nil — correct on the right index, not accidentally passing; (5) no-pacing guard asserts policy=active-backup default, PacingEnabled false, scalar knobs zero, vectors nil, all 6 weighted knobs zero. Full gate green on composed main: config tests + Pacing -v ok; just lint 0 issues default+e2e+realhosts. 0 criticisms / 0 questions / 0 defects."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T154","goals:G14","defects:D65"]
 
 ## M48
 
