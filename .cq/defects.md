@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 47
+  item: 48
 archives: []
 ---
 
@@ -665,3 +665,17 @@ archives: []
 - severity: medium
 - suggestedFix: "Settle key granularity in the T90 roaming design: either key bindings by AddrPort, or let an authenticated PROBE that fails the bound peer's codec re-enter trial-decode so a MAC-verified PROBE from another peer at the same address can establish/steal the binding."
 - ledgerRefs: ["tasks:T88","tasks:T90","goals:G4"]
+
+## M30
+
+### D48 — open
+
+- createdAt: 2026-07-14T03:18:22.478Z
+- updatedAt: 2026-07-14T03:18:22.478Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: wanbond_path_tx_bytes_total omits probe and echo-reflection wire bytes (tx/rx accounting asymmetry behind path_up=1/tx=0)
+- description: "Both T104 reviewers ([opus]+[fable]) independently source-confirmed: internal/bind/probe.go emitProbes (probe.go:44) writes each PROBE frame via conn.WriteToUDPAddrPort WITHOUT incrementing ps.txBytes, and dispatchInbound's echo reflection (multipath.go ~1284) is likewise uncounted. ps.txBytes.Add exists at exactly two sites — Send (multipath.go:1477) and fecFlushDeadline (:1603) — both DATA/PARITY paths. Meanwhile rxBytes counts EVERY inbound datagram (DATA, PROBE, echo — multipath.go:881) and the metric help string claims 'Total bytes transmitted on the path.' The asymmetry makes a healthy idle standby (active-backup collapses all DATA onto the primary) read path_up=1 with tx=0 while rx grows — exactly the G6/I8-motivating production observation. [fable] additionally empirically validated the T104 repro fixture (BlockEgress one-way tc-clsact block coexisting with netem). This is a METRICS-ACCOUNTING fault, NOT a liveness hole: liveness is genuinely bidirectional (only HandleEcho on our own probe's authenticated echo marks up; an egress-dead standby goes DOWN within DownAfter). The T104 subtest 'standby-transmits-when-idle' (test/e2e/standby_liveness_test.go) is the ready-made repro, predicted (source-consistent) to FAIL against current code until fixed."
+- severity: medium
+- suggestedFix: "In the fix task decide the counter contract: either count probe emission (emitProbes) + echo reflection into ps.txBytes so tx matches rx's true-wire-volume semantics (optionally add a separate DATA-only series for the data-thrift signal the doc at multipath.go:140-151 describes), or re-document/rename the metric so its help string stops claiming total transmitted bytes. Then flip T104's standby-transmits-when-idle subtest from repro-failure to the green acceptance check."
+- ledgerRefs: ["tasks:T104","goals:G6"]

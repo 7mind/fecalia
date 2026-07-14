@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 97
+  item: 98
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1037,3 +1037,16 @@ archives:
 - ledgerRefs: ["tasks:T100","goals:G6"]
 - sessionLogs: [".cq/logs/20260714-030756-aa7c68662525d4b3f.md",".cq/logs/20260714-030756-a9196a9bc3bed8ec8.md"]
 - rawLogs: [".cq/logs/raw/20260714-030756-aa7c68662525d4b3f.jsonl",".cq/logs/raw/20260714-030756-a9196a9bc3bed8ec8.jsonl"]
+
+### R98 — go-ahead
+
+- createdAt: 2026-07-14T03:19:04.622Z
+- updatedAt: 2026-07-14T03:19:04.622Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T104 unanimous panel approve (round 1): [opus]+[fable] both approve; both independently filed the SAME defect (deduped into D48). Q39 in-goal VERIFICATION task — acceptance is 'well-formed netns test that either proves bidirectional liveness OR fails-and-is-refiled as a repro'; both satisfied. New test/e2e/standby_liveness_test.go (TestStandbyLivenessBidirectional, 2 subtests) + Topology.BlockEgress/UnblockEgress (tc clsact matchall drop). [fable] EMPIRICALLY validated BlockEgress in an unshare -Urmn netns replica (outbound 100% loss, inbound intact, netem coexists+survives unblock, idempotent teardown). BOTH source-confirmed the emitProbes tx-omission (probe/echo writes bypass ps.txBytes; only Send/fecFlushDeadline count) — the real cause of the production path_up=1/tx=0 — and confirmed it is a METRICS fault, NOT a liveness hole (liveness genuinely bidirectional: only HandleEcho marks up). Non-privileged gate + golangci --build-tags e2e green; privileged netns execution DEFERRED to hardware (G2 pattern). Filed defect D48 (goals:G6) with subtest (a) as the kept repro."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T104","goals:G6","defects:D48"]
+- sessionLogs: [".cq/logs/20260714-031845-a6d96b8f39ee0fc04.md",".cq/logs/20260714-031845-ae358e9b638958305.md"]
+- rawLogs: [".cq/logs/raw/20260714-031845-a6d96b8f39ee0fc04.jsonl",".cq/logs/raw/20260714-031845-ae358e9b638958305.jsonl"]

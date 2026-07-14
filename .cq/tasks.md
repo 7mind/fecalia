@@ -1164,10 +1164,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
 
-### T104 — wip
+### T104 — done
 
 - createdAt: 2026-07-13T23:23:09.581Z
-- updatedAt: 2026-07-14T02:48:39.505Z
+- updatedAt: 2026-07-14T03:19:43.063Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Netns verification: standby-path liveness is bidirectional (I8)"
@@ -1175,6 +1175,10 @@ archives:
 - acceptance: "New -tags e2e test exists and runs in the netns tier: passes proving bidirectional liveness, OR fails with the failure documented and refiled as a defects item linked goals:G6 capturing the reproduction (test kept as repro). Either outcome satisfies the task per Q39."
 - suggestedModel: standard
 - ledgerRefs: ["goals:G6"]
+- resultCommit: f9b2adb
+- completion: "Netns standby-liveness verification landed (test-only, test/e2e/standby_liveness_test.go: TestStandbyLivenessBidirectional, 2 subtests; + Topology.BlockEgress/UnblockEgress one-way tc-clsact helper in netns.go). Per Q39's either-outcome acceptance the task is satisfied: the test is well-formed (compiles/vets under -tags e2e, matches harness idioms, BlockEgress empirically validated by a reviewer in a netns replica) and both reviewers source-confirmed subtest (a) will FAIL against current code — that failure is the reproduction of the tx-accounting defect, filed as D48 (goals:G6) with this subtest as the kept repro. Subtest (b) (egress-dead standby transitions DOWN, not selected) is source-consistent to PASS (liveness genuinely bidirectional). Privileged netns EXECUTION deferred to hardware (G2 pattern) — the hardware run will bind subtest (a) to D48 and, once D48 is fixed, flip it green. Unanimous 1-round panel approve; rebased past T75 and ff-merged as f9b2adb."
+- sessionLogs: [".cq/logs/20260714-031845-accde2d95d6ea72dc.md",".cq/logs/20260714-031845-a6d96b8f39ee0fc04.md",".cq/logs/20260714-031845-ae358e9b638958305.md"]
+- rawLogs: [".cq/logs/raw/20260714-031845-accde2d95d6ea72dc.jsonl",".cq/logs/raw/20260714-031845-a6d96b8f39ee0fc04.jsonl",".cq/logs/raw/20260714-031845-ae358e9b638958305.jsonl"]
 
 ## M31
 
