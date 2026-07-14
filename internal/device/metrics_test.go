@@ -290,7 +290,7 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 	if len(names) != 2 {
 		t.Fatalf("PeerNames len = %d, want 2", len(names))
 	}
-	if !((names[0] == "" && names[1] == "edge2") || (names[0] == "edge2" && names[1] == "")) {
+	if (names[0] != "" || names[1] != "edge2") && (names[0] != "edge2" || names[1] != "") {
 		t.Errorf("PeerNames = %v, want [\"\", \"edge2\"] in some order", names)
 	}
 }

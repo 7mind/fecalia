@@ -203,7 +203,7 @@ func (d *DoHResolver) queryFamily(ctx context.Context, host string, qtype dnsmes
 		}
 		return nil, 0, false, fmt.Errorf("dnsresolve: DoH POST to %s failed: %w", d.url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, false, &StatusError{URL: d.url, StatusCode: resp.StatusCode}

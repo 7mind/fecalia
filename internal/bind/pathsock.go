@@ -239,7 +239,7 @@ func familyBindCount(want netip.Addr, addrs []netip.Addr) (familyCount int, owns
 	excludeLinkLocal := !want.Is4() && !want.IsLinkLocalUnicast()
 	for _, ip := range addrs {
 		ip = ip.Unmap()
-		if ip.Is4() == want.Is4() && !(excludeLinkLocal && ip.IsLinkLocalUnicast()) {
+		if ip.Is4() == want.Is4() && (!excludeLinkLocal || !ip.IsLinkLocalUnicast()) {
 			familyCount++
 		}
 		if ip == want {

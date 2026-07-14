@@ -165,7 +165,7 @@ func (d *DoTResolver) queryFamily(ctx context.Context, host string, qtype dnsmes
 		}
 		return nil, 0, false, fmt.Errorf("dnsresolve: DoT dial to %s failed: %w", d.addr, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, 0, false, fmt.Errorf("dnsresolve: setting DoT connection deadline: %w", err)
