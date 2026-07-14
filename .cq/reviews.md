@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 110
+  item: 111
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1199,6 +1199,19 @@ archives:
 - ledgerRefs: ["tasks:T78","goals:G5"]
 - sessionLogs: [".cq/logs/20260714-050548-a54ae7c80e1ab909f.md",".cq/logs/20260714-050548-a65d3da77adb4f5b4.md",".cq/logs/20260714-051954-a9e48eb98d4a79d0d.md",".cq/logs/20260714-051954-a01261db5c976ffab.md"]
 - rawLogs: [".cq/logs/raw/20260714-050548-a54ae7c80e1ab909f.jsonl",".cq/logs/raw/20260714-050548-a65d3da77adb4f5b4.jsonl",".cq/logs/raw/20260714-051954-a9e48eb98d4a79d0d.jsonl",".cq/logs/raw/20260714-051954-a01261db5c976ffab.jsonl"]
+
+### R111 — go-ahead
+
+- createdAt: 2026-07-14T06:10:51.286Z
+- updatedAt: 2026-07-14T06:10:51.286Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T76 unanimous panel approve (round 1): [opus]+[fable] both approve. Operationalizes the Q29/Q33 DPI-posture security target. (1) internal/device.TestUpAllLiteralTripwireNeverCallsLookup: a tripwireResolver whose Lookup calls t.Errorf the instant invoked, injected via the PRODUCTION up()/resolverFactory seam on an all-IP-literal config — BOTH reviewers independently mutation-verified it (opus: unconditional resolver construction trips the factory-count guard, forced literal Lookup trips the t.Errorf; fable: 3 mutation runs in a clean-HEAD scratchpad export incl. the async re-resolution goroutine under -race — the async path is TRIPLY gated so single-gate mutants are caught by the factory count). (2) A protocol-agnostic internal/wireaudit.CountPcapPackets helper (+ its own non-vacuous unit tests) + an e2e extension to test/e2e/p5_dpi_test.go: a concurrent tcpdump on 53/853/443 (TCP+UDP, both directions) over the DNS-off P5 session, assertZeroDNSEgress Fatalf-ing on any packet, capture starting pre-boot so the boot-resolve moment is in-window. Compiles/vets under -tags e2e; privileged P5 execution deferred (G2). Documented the per-mode leaked artifact (cleartext DNS query vs TLS SNI+timing). Full non-e2e gate + go vet -tags e2e green. Rebased onto current main and ff-merged as 9bd121a."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T76","goals:G5"]
+- sessionLogs: [".cq/logs/20260714-061018-aabdf77e0c8e0f30f.md",".cq/logs/20260714-061018-a98cbbd2ae1d05ea6.md"]
+- rawLogs: [".cq/logs/raw/20260714-061018-aabdf77e0c8e0f30f.jsonl",".cq/logs/raw/20260714-061018-a98cbbd2ae1d05ea6.jsonl"]
 
 ## M26
 

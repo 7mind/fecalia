@@ -745,10 +745,10 @@ archives:
 
 ## M22
 
-### T76 — wip
+### T76 — done
 
 - createdAt: 2026-07-13T21:55:53.025Z
-- updatedAt: 2026-07-14T05:51:56.981Z
+- updatedAt: 2026-07-14T06:11:00.880Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add DPI-posture guard tests: opt-in OFF means zero DNS and an unchanged wire audit"
@@ -757,6 +757,10 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T74"]
 - ledgerRefs: ["goals:G5"]
+- resultCommit: 9bd121a
+- completion: "DPI-posture guard tests (Q29/Q33): (1) internal/device tripwire unit test — an all-IP-literal config with a tripwireResolver whose Lookup t.Errorf's the instant invoked (injected via the production up()/resolverFactory seam) proves NO resolver Lookup ever fires on a DNS-off config (Q29 zero-DNS inertness), mutation-verified by BOTH reviewers on both the sync boot-resolve and async re-resolution paths (the async path is triply gated). (2) internal/wireaudit.CountPcapPackets (protocol-agnostic pcap record walk + unit tests) + a test/e2e/p5_dpi_test.go extension: a concurrent tcpdump on ports 53/853/443 (TCP+UDP) over the DNS-off P5 session asserting ZERO egress from the edge namespace (capture starts pre-boot). Compiles/vets under -tags e2e; privileged P5 execution deferred (G2). Documented the exact per-mode leaked artifact for the docs task to cite. Unanimous 1-round panel approve; rebased onto current main and ff-merged as 9bd121a."
+- sessionLogs: [".cq/logs/20260714-060333-ab14171494ebe3742.md",".cq/logs/20260714-061018-aabdf77e0c8e0f30f.md",".cq/logs/20260714-061018-a98cbbd2ae1d05ea6.md"]
+- rawLogs: [".cq/logs/raw/20260714-060333-ab14171494ebe3742.jsonl",".cq/logs/raw/20260714-061018-aabdf77e0c8e0f30f.jsonl",".cq/logs/raw/20260714-061018-a98cbbd2ae1d05ea6.jsonl"]
 
 ### T77 — done
 
