@@ -5,20 +5,43 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-// namespace prefixes every wanbond metric name; pathSubsystem, fecSubsystem, and
-// sessionSubsystem partition the per-path, FEC, and WG-session series.
+// Per-peer labelling (T94). A concentrator (G4) binds multiple peers, each with its own
+// path set, FEC plane, and resequencer, so /metrics must attribute path/resequencer/FEC
+// series to the edge they came from. BACK-COMPAT RULE (pick-one, see G4's open question):
+// the `peer` label is OMITTED ENTIRELY — not emitted with an empty/default value — for a
+// single-bound-peer Source (PeerNames() reports exactly one name, always "" for the
+// single-peer edge/hub/concentrator-primary), so a single-peer scrape's series are
+// byte-identical to the pre-T94 exposition (no label ever added or removed makes a
+// PromQL selector's label set change shape mid-life). ONLY when 2+ peers are bound does
+// the label appear, carrying each peer's BoundPeerNames() value verbatim (which, for a
+// concentrator's first-configured peer, is the empty string "" — a known consequence of
+// the primary always binding unnamed; see bind.Multipath.BoundPeerNames). Because the
+// label set is a property of the whole scrape (Prometheus requires every sample of one
+// metric family to share one label schema), this is decided ONCE at NewCollector
+// construction from Source.PeerNames() — never per-scrape — matching the peer set's
+// documented static cardinality (a peer is bound at Open/AddConcentratorPeer, never
+// added/removed at runtime).
+//
+// namespace prefixes every wanbond metric name; pathSubsystem, fecSubsystem,
+// resequencerSubsystem, and sessionSubsystem partition the per-path, FEC, resequencer,
+// and WG-session series.
 const (
-	namespace        = "wanbond"
-	pathSubsystem    = "path"
-	fecSubsystem     = "fec"
-	sessionSubsystem = "session"
+	namespace            = "wanbond"
+	pathSubsystem        = "path"
+	fecSubsystem         = "fec"
+	resequencerSubsystem = "resequencer"
+	sessionSubsystem     = "session"
 
 	// labelPath is the single label carried by every per-path series; its value is
 	// the stable path name from configuration (e.g. "starlink").
 	labelPath = "path"
+	// labelPeer is the per-bound-peer label (T94) carried by path/resequencer/FEC series
+	// ONLY on a multi-peer Source — see the back-compat rule above.
+	labelPeer = "peer"
 )
 
 // Per-path metric names, exported so tests and future e2e harnesses can assert
@@ -55,6 +78,20 @@ const (
 	MetricFECResidualLoss = "wanbond_fec_residual_loss_ratio"
 )
 
+// Resequencer metric names (T94). Like the FEC series, these are per-PEER (a peer's
+// resequencer buffers its whole bonded stream, not one uplink), so they carry no path
+// label — only the conditional peer label. Sourced verbatim from reseq.Stats (see
+// ReseqSnapshot); see reseq.Stats' field comments for each counter's exact meaning.
+const (
+	MetricReseqReleased       = "wanbond_resequencer_released_frames_total"
+	MetricReseqDroppedDup     = "wanbond_resequencer_dropped_duplicate_frames_total"
+	MetricReseqDroppedOld     = "wanbond_resequencer_dropped_stale_frames_total"
+	MetricReseqDroppedSuspect = "wanbond_resequencer_dropped_suspect_frames_total"
+	MetricReseqSkipped        = "wanbond_resequencer_skipped_seqs_total"
+	MetricReseqResyncs        = "wanbond_resequencer_resyncs_total"
+	MetricReseqRebaselines    = "wanbond_resequencer_rebaselines_total"
+)
+
 // WG-session metric names (I2). These connection-scoped series (no path label — the WG
 // session is per-connection, not per-uplink) expose whether the amneziawg engine has a
 // live session and how stale its last handshake is. Together they distinguish a tunnel
@@ -70,6 +107,10 @@ const (
 // reports (T24). It is sourced from the multipath Bind's FEC counters, read at scrape
 // time like the per-path snapshots. All zero when FEC is disabled.
 type FECSnapshot struct {
+	// Peer attributes this snapshot to a bound peer (T94); see the package-level
+	// back-compat rule for when it surfaces as the `peer` label. "" on a Source with a
+	// single bound peer.
+	Peer string
 	// DataPackets is the cumulative count of DATA frames the FEC encoder emitted — the
 	// denominator of the fixed-ratio overhead (RepairPackets/DataPackets tends to M/K).
 	DataPackets uint64
@@ -96,8 +137,14 @@ type FECSnapshot struct {
 // (Estimate/State, sourced verbatim from a Prober's Estimate()/State()). The
 // metrics layer never measures these itself; it reads a Source at scrape time.
 type PathSnapshot struct {
+	// Peer attributes this snapshot to a bound peer (T94); see the package-level
+	// back-compat rule for when it surfaces as the `peer` label. "" on a Source with a
+	// single bound peer.
+	Peer string
 	// Name is the stable path identifier used as the `path` label. It must be
-	// unique within a single Source.Paths() result.
+	// unique within one peer's entries of a single Source.Paths() result (T94: it need
+	// not be globally unique across peers — a per-(peer,path) pair is the true key, which
+	// is why the throughput last-sample map in internal/device/metrics.go keys on both).
 	Name string
 	// TxBytes and RxBytes are cumulative byte counters for the path.
 	TxBytes uint64
@@ -108,6 +155,19 @@ type PathSnapshot struct {
 	Estimate telemetry.Estimate
 	// State is the per-path liveness verdict, read verbatim from telemetry.
 	State telemetry.PathState
+}
+
+// ReseqSnapshot is the current per-peer resequencer signal set the exposition layer
+// reports (T94). It embeds reseq.Stats verbatim — mirroring how PathSnapshot embeds
+// telemetry.Estimate/PathState fields — read at scrape time from the peer's
+// resequencer with no local aggregation. Like FECSnapshot it is per-PEER, not
+// per-path: a peer's resequencer buffers its whole bonded stream, not one uplink.
+type ReseqSnapshot struct {
+	// Peer attributes this snapshot to a bound peer (T94); see the package-level
+	// back-compat rule for when it surfaces as the `peer` label. "" on a Source with a
+	// single bound peer.
+	Peer string
+	reseq.Stats
 }
 
 // SessionSnapshot is the current WG-session signal set the exposition layer reports
@@ -129,25 +189,38 @@ type SessionSnapshot struct {
 }
 
 // Source is the read-only seam between the traffic/telemetry planes and the
-// exposition layer. The collector calls Paths at every scrape, so an
+// exposition layer. The collector calls Paths/FEC/Reseq at every scrape, so an
 // implementation must be safe for concurrent use and must return a consistent
-// snapshot (unique path names) cheaply — it is on the scrape hot path.
+// snapshot (unique (peer,path) names) cheaply — it is on the scrape hot path.
+// PeerNames, by contrast, is queried ONCE at NewCollector construction (see the
+// package-level back-compat rule) — implementations may compute it fresh from the
+// same underlying per-peer state Paths/FEC/Reseq read; it need not be cached.
 type Source interface {
-	// Paths returns the current per-path snapshots.
+	// Paths returns the current per-(peer,path) snapshots.
 	Paths() []PathSnapshot
-	// FEC returns the current connection-scoped FEC counters (T24).
-	FEC() FECSnapshot
+	// FEC returns the current per-peer connection-scoped FEC counters (T24, T94).
+	FEC() []FECSnapshot
+	// Reseq returns the current per-peer resequencer counters (T94).
+	Reseq() []ReseqSnapshot
 	// Session returns the current connection-scoped WG-session snapshot (I2).
 	Session() SessionSnapshot
+	// PeerNames returns the STATIC set of bound peer names (BoundPeerNames order):
+	// len == 1 selects the single-peer back-compat exposition (the `peer` label is
+	// omitted); len > 1 selects the per-peer exposition (see the package-level
+	// back-compat rule).
+	PeerNames() []string
 }
 
 // collector is a prometheus.Collector that reads a Source at scrape time and
-// emits per-path const-metrics plus the placeholder FEC counters. Reading at
+// emits per-path const-metrics plus the FEC/resequencer counters. Reading at
 // scrape time (rather than mirroring into GaugeVecs on an update path) keeps the
 // exposition consistent with the live telemetry with no duplicated state and no
-// staleness window.
+// staleness window. multiPeer is decided once at construction (see the
+// package-level back-compat rule) and gates whether the `peer` label is ever
+// attached, for the collector's whole life.
 type collector struct {
-	src Source
+	src       Source
+	multiPeer bool
 
 	txBytes    *prometheus.Desc
 	rxBytes    *prometheus.Desc
@@ -165,20 +238,38 @@ type collector struct {
 	fecRepairBytes   *prometheus.Desc
 	fecResidualLoss  *prometheus.Desc
 
+	reseqReleased       *prometheus.Desc
+	reseqDroppedDup     *prometheus.Desc
+	reseqDroppedOld     *prometheus.Desc
+	reseqDroppedSuspect *prometheus.Desc
+	reseqSkipped        *prometheus.Desc
+	reseqResyncs        *prometheus.Desc
+	reseqRebaselines    *prometheus.Desc
+
 	sessionEstablished   *prometheus.Desc
 	sessionLastHandshake *prometheus.Desc
 }
 
 // NewCollector builds the wanbond metrics collector over src. Register it into a
 // dedicated prometheus.Registry (see NewServer); it deliberately does not touch
-// the global default registry (no-globals discipline).
+// the global default registry (no-globals discipline). It queries src.PeerNames()
+// ONCE here to fix the `peer` label's presence for the collector's whole life (T94):
+// Prometheus requires every sample of one metric family to share one label schema,
+// so the omit-vs-include back-compat decision cannot be made per-scrape.
 func NewCollector(src Source) prometheus.Collector {
+	multiPeer := len(src.PeerNames()) > 1
 	pathLabels := []string{labelPath}
+	peerScopedLabels := []string(nil)
+	if multiPeer {
+		pathLabels = []string{labelPath, labelPeer}
+		peerScopedLabels = []string{labelPeer}
+	}
 	desc := func(subsystem, name, help string, labels []string) *prometheus.Desc {
 		return prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, name), help, labels, nil)
 	}
 	return &collector{
 		src:        src,
+		multiPeer:  multiPeer,
 		txBytes:    desc(pathSubsystem, "tx_bytes_total", "Total bytes transmitted on the path.", pathLabels),
 		rxBytes:    desc(pathSubsystem, "rx_bytes_total", "Total bytes received on the path.", pathLabels),
 		loss:       desc(pathSubsystem, "loss_ratio", "Per-path probe loss fraction in [0,1].", pathLabels),
@@ -187,21 +278,30 @@ func NewCollector(src Source) prometheus.Collector {
 		throughput: desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
 		up:         desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
 
-		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", nil),
-		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", nil),
-		fecRecovered:     desc(fecSubsystem, "recovered_packets_total", "Data packets reconstructed via FEC.", nil),
-		fecUnrecoverable: desc(fecSubsystem, "unrecoverable_packets_total", "Data packets lost beyond FEC repair capacity.", nil),
-		fecDataBytes:     desc(fecSubsystem, "data_bytes_total", "FEC DATA-frame wire bytes emitted (the byte overhead denominator).", nil),
-		fecRepairBytes:   desc(fecSubsystem, "repair_bytes_total", "FEC parity-frame wire bytes emitted (the byte overhead numerator).", nil),
-		fecResidualLoss:  desc(fecSubsystem, "residual_loss_ratio", "Post-FEC-recovery connection loss fraction in [0,1] (loss FEC did not mask).", nil),
+		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", peerScopedLabels),
+		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", peerScopedLabels),
+		fecRecovered:     desc(fecSubsystem, "recovered_packets_total", "Data packets reconstructed via FEC.", peerScopedLabels),
+		fecUnrecoverable: desc(fecSubsystem, "unrecoverable_packets_total", "Data packets lost beyond FEC repair capacity.", peerScopedLabels),
+		fecDataBytes:     desc(fecSubsystem, "data_bytes_total", "FEC DATA-frame wire bytes emitted (the byte overhead denominator).", peerScopedLabels),
+		fecRepairBytes:   desc(fecSubsystem, "repair_bytes_total", "FEC parity-frame wire bytes emitted (the byte overhead numerator).", peerScopedLabels),
+		fecResidualLoss:  desc(fecSubsystem, "residual_loss_ratio", "Post-FEC-recovery connection loss fraction in [0,1] (loss FEC did not mask).", peerScopedLabels),
+
+		reseqReleased:       desc(resequencerSubsystem, "released_frames_total", "Frames released for delivery by the resequencer.", peerScopedLabels),
+		reseqDroppedDup:     desc(resequencerSubsystem, "dropped_duplicate_frames_total", "Frames dropped by the resequencer as duplicates.", peerScopedLabels),
+		reseqDroppedOld:     desc(resequencerSubsystem, "dropped_stale_frames_total", "Frames dropped by the resequencer as already past the release point.", peerScopedLabels),
+		reseqDroppedSuspect: desc(resequencerSubsystem, "dropped_suspect_frames_total", "Out-of-band frames dropped by the resequencer while not yet corroborating.", peerScopedLabels),
+		reseqSkipped:        desc(resequencerSubsystem, "skipped_seqs_total", "Sequence numbers skipped (lost) by the resequencer's window-advance or timeout.", peerScopedLabels),
+		reseqResyncs:        desc(resequencerSubsystem, "resyncs_total", "Resequencer release-point re-pins after a corroborated discontinuity.", peerScopedLabels),
+		reseqRebaselines:    desc(resequencerSubsystem, "rebaselines_total", "Resequencer release-point re-baselines forced by a trusted control event (e.g. hub failover).", peerScopedLabels),
 
 		sessionEstablished:   desc(sessionSubsystem, "established", "WG session liveness (1 = a handshake has completed and is still fresh, 0 = still converging or wedged).", nil),
 		sessionLastHandshake: desc(sessionSubsystem, "last_handshake_seconds", "Age in seconds of the peer's most recent completed WG handshake (0 when none has completed).", nil),
 	}
 }
 
-// Describe sends every descriptor; the collector's series set is fixed even
-// though its per-path label values are discovered at Collect time.
+// Describe sends every descriptor; the collector's series set (including whether the
+// `peer` label is attached) is fixed for the collector's whole life even though the
+// label VALUES are discovered at Collect time.
 func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.txBytes
 	ch <- c.rxBytes
@@ -217,34 +317,73 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fecDataBytes
 	ch <- c.fecRepairBytes
 	ch <- c.fecResidualLoss
+	ch <- c.reseqReleased
+	ch <- c.reseqDroppedDup
+	ch <- c.reseqDroppedOld
+	ch <- c.reseqDroppedSuspect
+	ch <- c.reseqSkipped
+	ch <- c.reseqResyncs
+	ch <- c.reseqRebaselines
 	ch <- c.sessionEstablished
 	ch <- c.sessionLastHandshake
 }
 
-// Collect reads the Source once and emits one const-metric per per-path series,
-// then the three connection-scoped FEC counters read from the live FEC plane.
+// Collect reads the Source once and emits one const-metric per per-(peer,path)
+// series, then the per-peer FEC and resequencer counters, then the two
+// connection-scoped WG-session series.
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	for _, p := range c.src.Paths() {
-		ch <- prometheus.MustNewConstMetric(c.txBytes, prometheus.CounterValue, float64(p.TxBytes), p.Name)
-		ch <- prometheus.MustNewConstMetric(c.rxBytes, prometheus.CounterValue, float64(p.RxBytes), p.Name)
-		ch <- prometheus.MustNewConstMetric(c.loss, prometheus.GaugeValue, p.Estimate.Loss, p.Name)
-		ch <- prometheus.MustNewConstMetric(c.rtt, prometheus.GaugeValue, p.Estimate.RTT.Seconds(), p.Name)
-		ch <- prometheus.MustNewConstMetric(c.jitter, prometheus.GaugeValue, p.Estimate.Jitter.Seconds(), p.Name)
-		ch <- prometheus.MustNewConstMetric(c.throughput, prometheus.GaugeValue, p.ThroughputBitsPerSecond, p.Name)
-		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), p.Name)
+		labels := c.pathLabelValues(p.Name, p.Peer)
+		ch <- prometheus.MustNewConstMetric(c.txBytes, prometheus.CounterValue, float64(p.TxBytes), labels...)
+		ch <- prometheus.MustNewConstMetric(c.rxBytes, prometheus.CounterValue, float64(p.RxBytes), labels...)
+		ch <- prometheus.MustNewConstMetric(c.loss, prometheus.GaugeValue, p.Estimate.Loss, labels...)
+		ch <- prometheus.MustNewConstMetric(c.rtt, prometheus.GaugeValue, p.Estimate.RTT.Seconds(), labels...)
+		ch <- prometheus.MustNewConstMetric(c.jitter, prometheus.GaugeValue, p.Estimate.Jitter.Seconds(), labels...)
+		ch <- prometheus.MustNewConstMetric(c.throughput, prometheus.GaugeValue, p.ThroughputBitsPerSecond, labels...)
+		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), labels...)
 	}
-	f := c.src.FEC()
-	ch <- prometheus.MustNewConstMetric(c.fecData, prometheus.CounterValue, float64(f.DataPackets))
-	ch <- prometheus.MustNewConstMetric(c.fecRepair, prometheus.CounterValue, float64(f.RepairPackets))
-	ch <- prometheus.MustNewConstMetric(c.fecRecovered, prometheus.CounterValue, float64(f.RecoveredPackets))
-	ch <- prometheus.MustNewConstMetric(c.fecUnrecoverable, prometheus.CounterValue, float64(f.UnrecoverablePackets))
-	ch <- prometheus.MustNewConstMetric(c.fecDataBytes, prometheus.CounterValue, float64(f.DataBytes))
-	ch <- prometheus.MustNewConstMetric(c.fecRepairBytes, prometheus.CounterValue, float64(f.RepairBytes))
-	ch <- prometheus.MustNewConstMetric(c.fecResidualLoss, prometheus.GaugeValue, f.ResidualLossRatio)
+	for _, f := range c.src.FEC() {
+		labels := c.peerLabelValues(f.Peer)
+		ch <- prometheus.MustNewConstMetric(c.fecData, prometheus.CounterValue, float64(f.DataPackets), labels...)
+		ch <- prometheus.MustNewConstMetric(c.fecRepair, prometheus.CounterValue, float64(f.RepairPackets), labels...)
+		ch <- prometheus.MustNewConstMetric(c.fecRecovered, prometheus.CounterValue, float64(f.RecoveredPackets), labels...)
+		ch <- prometheus.MustNewConstMetric(c.fecUnrecoverable, prometheus.CounterValue, float64(f.UnrecoverablePackets), labels...)
+		ch <- prometheus.MustNewConstMetric(c.fecDataBytes, prometheus.CounterValue, float64(f.DataBytes), labels...)
+		ch <- prometheus.MustNewConstMetric(c.fecRepairBytes, prometheus.CounterValue, float64(f.RepairBytes), labels...)
+		ch <- prometheus.MustNewConstMetric(c.fecResidualLoss, prometheus.GaugeValue, f.ResidualLossRatio, labels...)
+	}
+	for _, r := range c.src.Reseq() {
+		labels := c.peerLabelValues(r.Peer)
+		ch <- prometheus.MustNewConstMetric(c.reseqReleased, prometheus.CounterValue, float64(r.Released), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqDroppedDup, prometheus.CounterValue, float64(r.DroppedDup), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqDroppedOld, prometheus.CounterValue, float64(r.DroppedOld), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqDroppedSuspect, prometheus.CounterValue, float64(r.DroppedSuspect), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqSkipped, prometheus.CounterValue, float64(r.Skipped), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqResyncs, prometheus.CounterValue, float64(r.Resyncs), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqRebaselines, prometheus.CounterValue, float64(r.Rebaselines), labels...)
+	}
 
 	sess := c.src.Session()
 	ch <- prometheus.MustNewConstMetric(c.sessionEstablished, prometheus.GaugeValue, establishedValue(sess.Established))
 	ch <- prometheus.MustNewConstMetric(c.sessionLastHandshake, prometheus.GaugeValue, sess.LastHandshakeAge.Seconds())
+}
+
+// pathLabelValues returns the label values for a per-path series in Desc-declared
+// order ({path} or {path,peer}) — see NewCollector's pathLabels.
+func (c *collector) pathLabelValues(name, peer string) []string {
+	if c.multiPeer {
+		return []string{name, peer}
+	}
+	return []string{name}
+}
+
+// peerLabelValues returns the label values for a per-peer (FEC/resequencer) series:
+// {peer} in multi-peer mode, no labels at all (the pre-T94 shape) otherwise.
+func (c *collector) peerLabelValues(peer string) []string {
+	if c.multiPeer {
+		return []string{peer}
+	}
+	return nil
 }
 
 // establishedValue maps the WG-session liveness verdict to the

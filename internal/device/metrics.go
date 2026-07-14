@@ -9,23 +9,36 @@ import (
 )
 
 // trafficProvider is the read seam the metrics adapter consumes: the multipath Bind's
-// per-path traffic+telemetry snapshot (T23) and its connection-scoped FEC counters
-// (T24). *bind.Multipath satisfies it; a fake satisfies it in the adapter's unit test,
-// so the mapping and rate derivation are testable without a running engine.
+// per-PEER traffic+telemetry, FEC, and resequencer snapshot (T93/T94). *bind.Multipath
+// satisfies it; a fake satisfies it in the adapter's unit test, so the mapping and rate
+// derivation are testable without a running engine. PeerSnapshots generalizes the
+// pre-T94 PathSnapshots/FECSnapshot (primary-peer-only) to every bound peer, so a
+// single-peer edge/hub still maps 1:1 onto today's series (len(PeerSnapshots())==1) and
+// a multi-peer concentrator's additional peers surface as additional entries.
 type trafficProvider interface {
-	PathSnapshots() []bind.PathTraffic
-	FECSnapshot() bind.FECStats
+	PeerSnapshots() []bind.PeerSnapshot
+}
+
+// sampleKey identifies one (peer,path) pair in the throughput last-sample map (T94): a
+// path name alone is only unique WITHIN one peer, not across peers (each peer's path
+// set is independently configured/named in principle), so keying by path name alone
+// would let two peers' samples for a same-named path clobber each other's rate
+// derivation. peer is "" for the single-peer edge/hub and a concentrator's primary,
+// exactly matching PeerSnapshot.Name — so a single-peer config's map degenerates to the
+// pre-T94 keying (peer is always "", so the key varies only by path).
+type sampleKey struct {
+	peer, path string
 }
 
 // metricsSource adapts the multipath Bind onto metrics.Source: at every scrape it
-// reads the Bind's cumulative per-path byte counters + telemetry, and DERIVES the
-// per-path throughput as the rate of the (tx+rx) byte-counter delta since the previous
-// scrape. Deriving the rate here (rather than in the Bind) keeps the Bind's hot path a
-// pair of lock-free atomic Adds with no timekeeping, and confines the only stateful,
-// scrape-cadence-dependent piece to this adapter. The first scrape of a path reports
-// zero throughput (no prior sample); a counter that appears to move backwards (only
-// possible across a Close→Open counter reset) also yields zero for that interval rather
-// than a spurious negative.
+// reads the Bind's cumulative per-(peer,path) byte counters + telemetry, and DERIVES
+// the per-(peer,path) throughput as the rate of the (tx+rx) byte-counter delta since
+// the previous scrape. Deriving the rate here (rather than in the Bind) keeps the
+// Bind's hot path a pair of lock-free atomic Adds with no timekeeping, and confines the
+// only stateful, scrape-cadence-dependent piece to this adapter. The first scrape of a
+// (peer,path) reports zero throughput (no prior sample); a counter that appears to move
+// backwards (only possible across a Close→Open counter reset) also yields zero for that
+// interval rather than a spurious negative.
 type metricsSource struct {
 	provider trafficProvider
 	// session yields the connection-scoped WG-session snapshot (I2), read from the
@@ -35,72 +48,111 @@ type metricsSource struct {
 	clock   telemetry.Clock
 
 	mu   sync.Mutex
-	last map[string]byteSample
+	last map[sampleKey]byteSample
 }
 
-// byteSample is the previous scrape's cumulative (tx+rx) total for one path and the
-// instant it was taken, so the next scrape can divide the delta by the elapsed time.
+// byteSample is the previous scrape's cumulative (tx+rx) total for one (peer,path) and
+// the instant it was taken, so the next scrape can divide the delta by the elapsed time.
 type byteSample struct {
 	total   uint64
 	atNanos int64
 }
 
-// newMetricsSource builds a metrics.Source over the Bind (per-path traffic + FEC) and the
-// engine session seam (WG-session snapshot). The clock is injected so the throughput
-// derivation is deterministic under test.
+// newMetricsSource builds a metrics.Source over the Bind (per-peer path traffic, FEC,
+// and resequencer counters) and the engine session seam (WG-session snapshot). The
+// clock is injected so the throughput derivation is deterministic under test.
 func newMetricsSource(provider trafficProvider, session sessionSnapshotter, clock telemetry.Clock) *metricsSource {
-	return &metricsSource{provider: provider, session: session, clock: clock, last: make(map[string]byteSample)}
+	return &metricsSource{provider: provider, session: session, clock: clock, last: make(map[sampleKey]byteSample)}
 }
 
 // Paths implements metrics.Source. It is called on the scrape goroutine (the /metrics
-// HTTP handler), which the prometheus registry may run concurrently, so the per-path
-// last-sample map is guarded. The underlying provider.PathSnapshots() reads atomics and
-// the prober's synchronized Estimate without holding the Bind's send lock across a
-// prober call, so scraping never blocks Send.
+// HTTP handler), which the prometheus registry may run concurrently, so the per-
+// (peer,path) last-sample map is guarded. The underlying provider.PeerSnapshots() reads
+// atomics and each prober's synchronized Estimate without holding the Bind's send lock
+// across a prober call, so scraping never blocks Send.
 func (s *metricsSource) Paths() []metrics.PathSnapshot {
-	tr := s.provider.PathSnapshots()
+	peers := s.provider.PeerSnapshots()
 	nowNanos := s.clock.Now().UnixNano()
+
+	total := 0
+	for _, peer := range peers {
+		total += len(peer.Paths)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]metrics.PathSnapshot, len(tr))
-	for i, t := range tr {
-		total := t.TxBytes + t.RxBytes
-		var tput float64
-		if prev, ok := s.last[t.Name]; ok {
-			dtSeconds := float64(nowNanos-prev.atNanos) / 1e9
-			if dtSeconds > 0 && total >= prev.total {
-				tput = float64(total-prev.total) * 8 / dtSeconds
+	out := make([]metrics.PathSnapshot, 0, total)
+	for _, peer := range peers {
+		for _, t := range peer.Paths {
+			key := sampleKey{peer: peer.Name, path: t.Name}
+			byteTotal := t.TxBytes + t.RxBytes
+			var tput float64
+			if prev, ok := s.last[key]; ok {
+				dtSeconds := float64(nowNanos-prev.atNanos) / 1e9
+				if dtSeconds > 0 && byteTotal >= prev.total {
+					tput = float64(byteTotal-prev.total) * 8 / dtSeconds
+				}
 			}
-		}
-		s.last[t.Name] = byteSample{total: total, atNanos: nowNanos}
-		out[i] = metrics.PathSnapshot{
-			Name:                    t.Name,
-			TxBytes:                 t.TxBytes,
-			RxBytes:                 t.RxBytes,
-			ThroughputBitsPerSecond: tput,
-			Estimate:                t.Estimate,
-			State:                   t.State,
+			s.last[key] = byteSample{total: byteTotal, atNanos: nowNanos}
+			out = append(out, metrics.PathSnapshot{
+				Peer:                    peer.Name,
+				Name:                    t.Name,
+				TxBytes:                 t.TxBytes,
+				RxBytes:                 t.RxBytes,
+				ThroughputBitsPerSecond: tput,
+				Estimate:                t.Estimate,
+				State:                   t.State,
+			})
 		}
 	}
 	return out
 }
 
-// FEC implements metrics.Source: it reads the Bind's connection-scoped FEC counters
-// (T24) verbatim at scrape time. Unlike the per-path throughput, the FEC counters are
-// cumulative and need no rate derivation or prior-sample state, so this is a direct
-// pass-through of the Bind's lock-free snapshot.
-func (s *metricsSource) FEC() metrics.FECSnapshot {
-	f := s.provider.FECSnapshot()
-	return metrics.FECSnapshot{
-		DataPackets:          f.DataFrames,
-		RepairPackets:        f.ParityFrames,
-		RecoveredPackets:     f.Recovered,
-		UnrecoverablePackets: f.Unrecoverable,
-		DataBytes:            f.DataBytes,
-		RepairBytes:          f.ParityBytes,
-		ResidualLossRatio:    f.ResidualLoss,
+// FEC implements metrics.Source: it reads the Bind's per-peer connection-scoped FEC
+// counters (T24, T94) verbatim at scrape time, one entry per bound peer. Unlike the
+// per-path throughput, the FEC counters are cumulative and need no rate derivation or
+// prior-sample state, so this is a direct pass-through of the Bind's lock-free snapshot.
+func (s *metricsSource) FEC() []metrics.FECSnapshot {
+	peers := s.provider.PeerSnapshots()
+	out := make([]metrics.FECSnapshot, len(peers))
+	for i, peer := range peers {
+		f := peer.FEC
+		out[i] = metrics.FECSnapshot{
+			Peer:                 peer.Name,
+			DataPackets:          f.DataFrames,
+			RepairPackets:        f.ParityFrames,
+			RecoveredPackets:     f.Recovered,
+			UnrecoverablePackets: f.Unrecoverable,
+			DataBytes:            f.DataBytes,
+			RepairBytes:          f.ParityBytes,
+			ResidualLossRatio:    f.ResidualLoss,
+		}
 	}
+	return out
+}
+
+// Reseq implements metrics.Source: it reads the Bind's per-peer resequencer counters
+// (T94) verbatim at scrape time, one entry per bound peer — a direct pass-through of
+// the resequencer's own cumulative Stats(), like FEC needing no rate derivation.
+func (s *metricsSource) Reseq() []metrics.ReseqSnapshot {
+	peers := s.provider.PeerSnapshots()
+	out := make([]metrics.ReseqSnapshot, len(peers))
+	for i, peer := range peers {
+		out[i] = metrics.ReseqSnapshot{Peer: peer.Name, Stats: peer.Reseq}
+	}
+	return out
+}
+
+// PeerNames implements metrics.Source: it returns the current bound-peer name set,
+// queried once by metrics.NewCollector to fix the `peer` label's presence for the
+// collector's whole life (T94) — see the metrics package doc for the back-compat rule.
+func (s *metricsSource) PeerNames() []string {
+	peers := s.provider.PeerSnapshots()
+	names := make([]string, len(peers))
+	for i, peer := range peers {
+		names[i] = peer.Name
+	}
+	return names
 }
 
 // Session implements metrics.Source: it reads the connection-scoped WG-session snapshot

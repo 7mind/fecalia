@@ -2691,6 +2691,93 @@ func (m *Multipath) PathSnapshots() []PathTraffic {
 	return out
 }
 
+// PeerSnapshot is a consistent per-BOUND-PEER snapshot of path traffic+telemetry, FEC
+// counters, and resequencer counters (T94): the read side the per-peer /metrics
+// exposition scrapes. It generalizes PathSnapshots/FECSnapshot — which report only the
+// PRIMARY peer (peers[0], byte-compat with the pre-G4 singleton) — to EVERY bound peer,
+// so a multi-peer concentrator's metrics can attribute each series to the edge it came
+// from. Name is BoundPeerNames()[i]: "" for the primary (single-peer edge/hub AND a
+// concentrator's first-configured peer alike), the peer's configured name otherwise.
+type PeerSnapshot struct {
+	Name  string
+	Paths []PathTraffic
+	FEC   FECStats
+	Reseq reseq.Stats
+}
+
+// PeerSnapshots returns a consistent per-peer snapshot, in bound-peer order (matching
+// BoundPeerNames), for every bound peer's path traffic+telemetry, FEC counters, and
+// resequencer counters. It follows the PathSnapshots/FECSnapshot concurrency
+// discipline: grab each peer's name, per-path counters/prober pointers, and
+// FEC/resequencer pointers under m.mu in one bounded O(peers+paths) copy, then RELEASE
+// m.mu before calling the independently-synchronized prober Estimate()/State(),
+// decoder stats(), and resequencer Stats() — so the scrape never blocks an in-flight
+// Send behind m.mu. len(result) >= 1: NewMultipath always binds at least the primary
+// peer, so this is never empty (unlike PathSnapshots, which can be empty on a peer with
+// no paths — impossible today since NewMultipath requires len(paths) >= 1, but the
+// per-peer Paths slice can still be empty for a peer with a currently-empty path set).
+func (m *Multipath) PeerSnapshots() []PeerSnapshot {
+	type pathRef struct {
+		name   string
+		tx, rx uint64
+		prober *telemetry.Prober
+	}
+	type peerRef struct {
+		name  string
+		paths []pathRef
+		fs    *fecSender
+		fr    *fecReceiver
+		rq    *reseq.Resequencer
+	}
+
+	m.mu.Lock()
+	refs := make([]peerRef, len(m.peers))
+	for i, p := range m.peers {
+		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load()}
+		r.paths = make([]pathRef, len(p.paths))
+		for j, pp := range p.paths {
+			r.paths[j] = pathRef{name: pp.name, tx: pp.txBytes.Load(), rx: pp.rxBytes.Load(), prober: pp.prober}
+		}
+		refs[i] = r
+	}
+	m.mu.Unlock()
+
+	out := make([]PeerSnapshot, len(refs))
+	for i, r := range refs {
+		snap := PeerSnapshot{Name: r.name}
+		snap.Paths = make([]PathTraffic, len(r.paths))
+		for j, pr := range r.paths {
+			pt := PathTraffic{Name: pr.name, TxBytes: pr.tx, RxBytes: pr.rx}
+			if pr.prober != nil {
+				pt.Estimate = pr.prober.Estimate()
+				pt.State = pr.prober.State()
+			}
+			snap.Paths[j] = pt
+		}
+		if r.fs != nil {
+			snap.FEC.DataFrames = r.fs.dataFrames.Load()
+			snap.FEC.DataBytes = r.fs.dataBytes.Load()
+			snap.FEC.ParityFrames = r.fs.parityFrames.Load()
+			snap.FEC.ParityBytes = r.fs.parityBytes.Load()
+		}
+		if r.fr != nil {
+			// Mirrors FECSnapshot's Recovered/Unrecoverable derivation verbatim (see its
+			// comment for why Recovered is the HONEST delivered count, not the decoder's
+			// raw reconstruction count).
+			if r.fr.connLoss != nil {
+				snap.FEC.ResidualLoss = r.fr.connLoss.Loss()
+			}
+			snap.FEC.Recovered = r.fr.deliveredRecovered.Load()
+			snap.FEC.Unrecoverable = r.fr.stats().Unrecoverable
+		}
+		if r.rq != nil {
+			snap.Reseq = r.rq.Stats()
+		}
+		out[i] = snap
+	}
+	return out
+}
+
 // SetMark is a no-op for T12: per-path SO_MARK is a scheduler concern (T15), and
 // the engine only calls SetMark when a fwmark is configured, which wanbond does
 // not set.

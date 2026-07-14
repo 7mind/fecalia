@@ -9,21 +9,29 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-// fakeSource is a static Source that returns a fixed set of per-path snapshots,
-// standing in for the live traffic/telemetry planes so the exposition can be
-// asserted against known values.
+// fakeSource is a static Source that returns a fixed set of per-(peer,path)
+// snapshots, standing in for the live traffic/telemetry planes so the exposition can
+// be asserted against known values. peerNames defaults to nil (len 0), which
+// NewCollector's `len(PeerNames()) > 1` test treats identically to a single bound
+// peer — the pre-T94 back-compat (no `peer` label) exposition — so every EXISTING
+// test below that does not set peerNames keeps exercising the byte-compatible shape.
 type fakeSource struct {
-	paths   []PathSnapshot
-	fec     FECSnapshot
-	session SessionSnapshot
+	paths     []PathSnapshot
+	fec       []FECSnapshot
+	reseq     []ReseqSnapshot
+	session   SessionSnapshot
+	peerNames []string
 }
 
 func (f fakeSource) Paths() []PathSnapshot    { return f.paths }
-func (f fakeSource) FEC() FECSnapshot         { return f.fec }
+func (f fakeSource) FEC() []FECSnapshot       { return f.fec }
+func (f fakeSource) Reseq() []ReseqSnapshot   { return f.reseq }
 func (f fakeSource) Session() SessionSnapshot { return f.session }
+func (f fakeSource) PeerNames() []string      { return f.peerNames }
 
 func testLogger(t *testing.T) log.Logger {
 	t.Helper()
@@ -215,7 +223,7 @@ func TestExpositionRawText(t *testing.T) {
 // TestFECPlaceholdersRegistered asserts the FEC counters are registered now and
 // exposed with a zero value (populated later in P3).
 func TestFECPlaceholdersRegistered(t *testing.T) {
-	srv := startServer(t, fakeSource{})
+	srv := startServer(t, fakeSource{fec: []FECSnapshot{{}}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -244,12 +252,12 @@ func TestFECPlaceholdersRegistered(t *testing.T) {
 // asserts the three connection-scoped FEC series carry the injected values (T24), not
 // the pre-T24 constant zero — the exposition reads the FEC plane, not a placeholder.
 func TestExpositionFECCounters(t *testing.T) {
-	src := fakeSource{fec: FECSnapshot{
+	src := fakeSource{fec: []FECSnapshot{{
 		DataPackets:          300,
 		RepairPackets:        120,
 		RecoveredPackets:     7,
 		UnrecoverablePackets: 2,
-	}}
+	}}}
 	srv := startServer(t, src)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -277,5 +285,103 @@ func TestExpositionFECCounters(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestExpositionSinglePeerByteCompatible asserts a single-bound-peer Source's raw
+// scrape text carries NO `peer` label anywhere — the T94 back-compat rule: a
+// single-peer exposition is byte-identical to the pre-T94 series (path/FEC/
+// resequencer alike), never adding an empty-valued label pair.
+func TestExpositionSinglePeerByteCompatible(t *testing.T) {
+	src := fakeSource{
+		paths: []PathSnapshot{{Name: "starlink", TxBytes: 123456, State: telemetry.StateUp}},
+		fec:   []FECSnapshot{{DataPackets: 300, RepairPackets: 120}},
+		reseq: []ReseqSnapshot{{Stats: reseq.Stats{Released: 42}}},
+	}
+	srv := startServer(t, src)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL(), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	text := string(body)
+
+	if strings.Contains(text, "peer=") {
+		t.Errorf("single-peer exposition unexpectedly carries a `peer` label:\n%s", text)
+	}
+	for _, want := range []string{
+		`wanbond_path_tx_bytes_total{path="starlink"} 123456`,
+		`wanbond_fec_data_packets_total 300`,
+		`wanbond_fec_repair_packets_total 120`,
+		`wanbond_resequencer_released_frames_total 42`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("exposition missing line %q\n---\n%s", want, text)
+		}
+	}
+}
+
+// TestExpositionTwoPeerSeries asserts a 2-peer Source's scrape carries DISTINCT `peer`
+// labels on the path, resequencer, and FEC series, attributable to each edge, with
+// independent counters (T94) — the multi-peer half of the back-compat rule.
+func TestExpositionTwoPeerSeries(t *testing.T) {
+	src := fakeSource{
+		peerNames: []string{"", "edge2"},
+		paths: []PathSnapshot{
+			{Peer: "", Name: "starlink", TxBytes: 100, ThroughputBitsPerSecond: 111, State: telemetry.StateUp},
+			{Peer: "edge2", Name: "starlink", TxBytes: 900, ThroughputBitsPerSecond: 999, State: telemetry.StateUp},
+		},
+		fec: []FECSnapshot{
+			{Peer: "", DataPackets: 10},
+			{Peer: "edge2", DataPackets: 700},
+		},
+		reseq: []ReseqSnapshot{
+			{Peer: "", Stats: reseq.Stats{Released: 5}},
+			{Peer: "edge2", Stats: reseq.Stats{Released: 900}},
+		},
+	}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if got, ok := exp.PeerPathValue(MetricTxBytes, "", "starlink"); !ok || got != 100 {
+		t.Errorf("primary path tx_bytes = %v (present=%v), want 100", got, ok)
+	}
+	if got, ok := exp.PeerPathValue(MetricTxBytes, "edge2", "starlink"); !ok || got != 900 {
+		t.Errorf("edge2 path tx_bytes = %v (present=%v), want 900", got, ok)
+	}
+	if got, ok := exp.PeerPathValue(MetricThroughput, "", "starlink"); !ok || got != 111 {
+		t.Errorf("primary path throughput = %v (present=%v), want 111", got, ok)
+	}
+	if got, ok := exp.PeerPathValue(MetricThroughput, "edge2", "starlink"); !ok || got != 999 {
+		t.Errorf("edge2 path throughput = %v (present=%v), want 999", got, ok)
+	}
+
+	if got, ok := exp.PeerValue(MetricFECData, ""); !ok || got != 10 {
+		t.Errorf("primary FEC data packets = %v (present=%v), want 10", got, ok)
+	}
+	if got, ok := exp.PeerValue(MetricFECData, "edge2"); !ok || got != 700 {
+		t.Errorf("edge2 FEC data packets = %v (present=%v), want 700 (independent of primary)", got, ok)
+	}
+
+	if got, ok := exp.PeerValue(MetricReseqReleased, ""); !ok || got != 5 {
+		t.Errorf("primary resequencer released = %v (present=%v), want 5", got, ok)
+	}
+	if got, ok := exp.PeerValue(MetricReseqReleased, "edge2"); !ok || got != 900 {
+		t.Errorf("edge2 resequencer released = %v (present=%v), want 900 (independent of primary)", got, ok)
 	}
 }

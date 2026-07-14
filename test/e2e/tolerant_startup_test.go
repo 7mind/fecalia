@@ -86,9 +86,10 @@ func TestTolerantStartupDeferredPathPromotes(t *testing.T) {
 	}
 
 	// The deferred path is PRESENT in config but excluded from the live/served set:
-	// bind.Multipath.PathSnapshots() — what the /metrics endpoint scrapes — reports
-	// only BOUND paths (m.paths), so a still-deferred path's wanbond_path_up series is
-	// simply ABSENT, not zero. This operationalizes "present-but-down, not fatal":
+	// bind.Multipath.PeerSnapshots() — what the /metrics endpoint scrapes (T94; the
+	// pre-T94 primary-only PathSnapshots reports the same m.paths set) — reports only
+	// BOUND paths, so a still-deferred path's wanbond_path_up series is simply ABSENT,
+	// not zero. This operationalizes "present-but-down, not fatal":
 	// the daemon is running, the survivor is up, and the deferred path has no live
 	// series until T55 promotes it.
 	before := scrapeMetrics(t, t60MetricsURL)

@@ -298,8 +298,19 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_fec_unrecoverable_packets_total`       | DATA lost beyond FEC repair — **should stay near-flat**. |
 | `wanbond_fec_residual_loss_ratio`               | Post-recovery connection loss `[0,1]`; compare to your `target_residual`. |
 | `wanbond_fec_repair_packets_total` / `wanbond_fec_data_packets_total` | Parity vs data counts — the overhead ratio (FEC only). |
+| `wanbond_resequencer_released_frames_total`     | Frames released for delivery by the receive resequencer. |
+| `wanbond_resequencer_dropped_duplicate_frames_total` / `wanbond_resequencer_dropped_stale_frames_total` / `wanbond_resequencer_dropped_suspect_frames_total` | Frames dropped as duplicate / already-past-release-point / not-yet-corroborated. |
+| `wanbond_resequencer_skipped_seqs_total`        | Sequence numbers skipped (lost) by window-advance or timeout. |
+| `wanbond_resequencer_resyncs_total` / `wanbond_resequencer_rebaselines_total` | Release-point re-pins after a corroborated discontinuity / forced re-baselines (e.g. hub failover). |
 | `wanbond_session_established`                    | WG session liveness, `1`=a handshake has completed and is still fresh, `0`=still converging **or** wedged. **Distinguishes "converging" from "wedged".** |
 | `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
+
+> **Multi-peer concentrator (G4).** A concentrator bound to 2+ edges additionally
+> labels every path/resequencer/FEC series above with `peer="<name>"` (the
+> configured `[[wireguard.peers]]` `name`, or `""` for the concentrator's
+> first-configured peer — see `internal/metrics/metrics.go`'s package doc for the
+> back-compat rule). A single-peer edge/hub/concentrator carries **no** `peer` label
+> at all — the exposition above is unchanged from pre-multi-peer wanbond.
 
 > **Session vs paths.** `wanbond_session_established` is the WG-session signal the
 > per-path gauges cannot give you: a path can be `up` (probes reflect) while the

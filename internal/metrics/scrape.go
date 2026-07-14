@@ -65,6 +65,37 @@ func (e Exposition) PathValue(name, path string) (float64, bool) {
 	return e.labeledValue(name, labelPath, path)
 }
 
+// PeerValue returns the value of a per-peer series `name` (FEC/resequencer, T94) for
+// the given `peer` label value, and whether such a series was found.
+func (e Exposition) PeerValue(name, peer string) (float64, bool) {
+	return e.labeledValue(name, labelPeer, peer)
+}
+
+// PeerPathValue returns the value of a per-(peer,path) series `name` (T94) for the
+// given peer+path label pair, and whether such a series was found.
+func (e Exposition) PeerPathValue(name, peer, path string) (float64, bool) {
+	fam, ok := e.families[name]
+	if !ok {
+		return 0, false
+	}
+	for _, m := range fam.GetMetric() {
+		var gotPeer, gotPath string
+		var havePeer, havePath bool
+		for _, lp := range m.GetLabel() {
+			switch lp.GetName() {
+			case labelPeer:
+				gotPeer, havePeer = lp.GetValue(), true
+			case labelPath:
+				gotPath, havePath = lp.GetValue(), true
+			}
+		}
+		if havePeer && havePath && gotPeer == peer && gotPath == path {
+			return metricValue(m), true
+		}
+	}
+	return 0, false
+}
+
 // Value returns the value of an unlabeled series `name` (e.g. the FEC
 // placeholders), and whether it was found.
 func (e Exposition) Value(name string) (float64, bool) {
