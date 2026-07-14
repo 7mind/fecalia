@@ -1560,10 +1560,10 @@ archives:
 - dependsOn: ["T123"]
 - ledgerRefs: ["goals:G8","defects:D42"]
 
-### T125 — planned
+### T125 — done
 
 - createdAt: 2026-07-14T09:46:54.469Z
-- updatedAt: 2026-07-14T09:46:54.469Z
+- updatedAt: 2026-07-14T14:15:32.944Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Fan the FEC deadline flush + adaptive-controller drive across all bound peers (D44)

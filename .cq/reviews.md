@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 165
+  item: 167
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -1717,6 +1717,32 @@ archives:
 - ledgerRefs: ["tasks:T124","goals:G8","defects:D42"]
 - sessionLogs: [".cq/logs/20260714-125200-a208a987d174ab1a6.md",".cq/logs/20260714-125200-a83001b621c7fea3d.md"]
 - rawLogs: [".cq/logs/raw/20260714-125200-a208a987d174ab1a6.jsonl",".cq/logs/raw/20260714-125200-a83001b621c7fea3d.jsonl"]
+
+### R166 — revise
+
+- createdAt: 2026-07-14T13:46:57.812Z
+- updatedAt: 2026-07-14T13:46:57.812Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T125 review round 1 — RECONCILED REVISE (strictest-wins: [fable] disapprove overrides [opus] approve). BOTH reviewers confirmed the PRODUCT fan-out is CORRECT and race-clean: fecFlushDeadline/driveAdaptiveControllerLocked/maxEligiblePathLossLocked now iterate m.peers (were embedded-primary-only), per-peer fecSend.Load nil-skip torn-down/uninstantiated, encodeParityLocked(peer,...), scheduler.Pick over that peer's paths, writes accumulated under the lock + egressed after unlock (no cross-peer buffer aliasing); the tick-gate widening (m.fecCfg!=nil) no-ops (not busy-spins) when no peer has fecSend; the new test is a valid D44 witness (fails pre-fix at peer-B i/o-timeout, passes post-fix 200/200 under -race); opus found ZERO DATA RACE across ~380 race runs. But TWO distinct flaky-test findings make the acceptance's `go test -race ./internal/bind/...` gate NON-DETERMINISTIC:"
+- criticism: ["[fable, IN-SCOPE] T125's OWN new test TestFECFlushDeadlineFansOutAcrossPeers (fec_multipeer_flush_test.go:169) has a cross-psk assertion that false-fails ~1/256 per run (reproduced 2x in 60 runs): parity frames carry NO MAC by design, so codecA.Decode(rawBBytes) garbles the kind byte to a ~uniform value that lands on KindParity(2) with p≈1/256, whose 8-byte header parses within the 10-byte body with no further validation (internal/frame/frame.go:431-439), so Decode returns nil error and trips `if err==nil { t.Fatal }`. FIX per the perpsk_test.go:70 precedent: on err==nil, fail ONLY if the decoded frame actually matches peer B's parity SEMANTICS (a frame.Parity whose Payload/DataCount equal parB's) — an accidental garbage-decode into a NON-matching frame is the designed behaviour of unauthenticated kinds, not an isolation violation.","[opus, D69 — pre-existing but same gate] TestMultipathFECDeadlineEmitsPartialGroupParity (internal/bind/fec_test.go:585, a file T125 does NOT modify) reads FECSnapshot().ParityFrames the instant it has received both parity wires, RACING the async fecTickLoop goroutine's post-WriteToUDPAddrPort counter increment — ~2% flake post-fix (0% pre-fix, so marginally perturbed by the fan-out, not introduced). Filed out-of-scope as D69. SINCE IT SHARES the same `go test -race ./internal/bind/...` acceptance gate and is a trivial test-only synchronization fix, ALSO harden it in this round: poll FECSnapshot().ParityFrames with a short bounded retry (until it reaches parityShards or a ~200ms deadline) instead of a single immediate read, so the gate becomes deterministic."]
+- new_questions: []
+- ledgerRefs: ["tasks:T125","goals:G8","defects:D44"]
+- sessionLogs: [".cq/logs/20260714-133500-a0d5661f211d7c783.md",".cq/logs/20260714-133500-a9fb280c853bdb098.md"]
+- rawLogs: [".cq/logs/raw/20260714-133500-a0d5661f211d7c783.jsonl",".cq/logs/raw/20260714-133500-a9fb280c853bdb098.jsonl"]
+
+### R167 — go-ahead
+
+- createdAt: 2026-07-14T14:15:23.856Z
+- updatedAt: 2026-07-14T14:15:23.856Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T125 review round 2 — RECONCILED APPROVE (unanimous opus+fable go-ahead) after the round-1 revise (R166). The PRODUCT fan-out (both reviewers approved it in round 1: fecFlushDeadline/driveAdaptiveControllerLocked/maxEligiblePathLossLocked fanned across m.peers with per-peer psk-codec parity + nil-skip, tick-gate m.fecCfg!=nil, race-clean across ~380 round-1 runs) is BYTE-IDENTICAL between rounds (diff 02eebafa..444455eb on multipath.go/adaptive_test.go is EMPTY). Round 2 hardened the TWO flaky test assertions and BOTH reviewers verified the gate is now DETERMINISTIC: FIX 1 [fable, in-scope] — TestFECFlushDeadlineFansOutAcrossPeers's cross-psk assertion now requires a SEMANTIC field+payload match (per perpsk_test.go) instead of any nil-err decode; since the parity body is XOR-obfuscated under a PSK-derived XChaCha20 keystream, a real isolation break de-obfuscates field-exact (fires t.Fatal) while the ~1/256 accidental KindParity garbage-decode yields non-matching fields — proven NON-VACUOUS via an overlay key-collapse probe (fires only on a simulated break), and count=100 -race now shows ZERO false-failures (was ~32% expected over 100). FIX 2 [opus, closes D69] — TestMultipathFECDeadlineEmitsPartialGroupParity now polls FECSnapshot().ParityFrames with a bounded 200ms retry then asserts strict equality, so it masks NEITHER an under- nor over-count (the ~2% counter-lag flake vs the async post-write increment is gone). `go test -race -count=50 -run 'FEC|Flush|Deadline|Adaptive'` passes all 50 iterations; full go test -race ./internal/bind/... + build/vet + just lint green. LANDED on main at 3eab82e (branch implement/T125-r2, 444455eb). Resolves D44; closes D69."
+- criticism: []
+- new_questions: []
+- ledgerRefs: ["tasks:T125","goals:G8","defects:D44","defects:D69"]
+- sessionLogs: [".cq/logs/20260714-135500-a47f4a34704774c02.md",".cq/logs/20260714-135500-a724702fe94bef9ec.md"]
+- rawLogs: [".cq/logs/raw/20260714-135500-a47f4a34704774c02.jsonl",".cq/logs/raw/20260714-135500-a724702fe94bef9ec.jsonl"]
 
 ## M46
 

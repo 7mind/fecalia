@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 68
+  item: 69
 archives: []
 ---
 
@@ -950,6 +950,18 @@ archives: []
 - severity: low
 - suggestedFix: "Change the parenthetical to '(hub failover, peer restart)' or '(e.g. hub failover)' to match the metrics.go:295 help string."
 - ledgerRefs: ["tasks:T122","defects:D36"]
+
+### D69 — open
+
+- createdAt: 2026-07-14T13:47:04.153Z
+- updatedAt: 2026-07-14T13:47:04.153Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: TestMultipathFECDeadlineEmitsPartialGroupParity flakes ~2% under -race (counter read races async post-write increment)
+- description: "Filed during T125 review ([opus], out-of-scope; PRE-EXISTING in fec_test.go, which T125 does not modify — T125's fan-out marginally raised the rate from 0% to ~2%). In internal/bind/multipath.go fecFlushDeadline, the parity counters (fs.parityFrames/parityBytes, ps.txBytes) are incremented AFTER WriteToUDPAddrPort inside the async fecTickLoop goroutine. TestMultipathFECDeadlineEmitsPartialGroupParity (fec_test.go:585) stops reading once it has received both parity wires and IMMEDIATELY asserts FECSnapshot().ParityFrames == parityShards, racing the tick goroutine's counter increment for the last wire. Reproduced ~3/140 (~2%) under `go test -race` combined runs; the race detector reports NO data race across ~380 runs — it is a test-synchronization defect, not a memory race. Makes the `go test -race ./internal/bind/...` gate non-deterministic. NOTE: T125 round 2 is instructed to also harden this test so the gate is deterministic post-merge; if that lands, resolve this on T125's merge."
+- severity: medium
+- suggestedFix: "Make the test synchronize against the async flush: poll FECSnapshot().ParityFrames with a short bounded retry (until it reaches parityShards or a ~200ms deadline) instead of reading it once immediately after the last wire arrives."
+- ledgerRefs: ["tasks:T125","defects:D44"]
 
 ## M49
 
