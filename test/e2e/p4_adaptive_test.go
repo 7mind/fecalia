@@ -272,14 +272,14 @@ func setupP4Tunnel(t *testing.T, top *Topology, bin string, adaptive bool) (edge
 	// The edge encodes: it carries the adaptive flag + safety factor when adaptive. The
 	// concentrator decodes at the fixed ceiling; adaptive is a no-op there, so its block is
 	// the plain fixed ratio (data_shards/parity_shards/deadline).
-	edgeFEC := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = %d\n",
-		p4DataShards, p4ParityCeiling, p4DeadlineNanos)
+	edgeFEC := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n",
+		p4DataShards, p4ParityCeiling, p4DeadlineNanos/1_000_000)
 	if adaptive {
 		edgeFEC += fmt.Sprintf("adaptive = true\nsafety_factor = %g\n", p4SafetyFactor)
 	}
 	edgeFEC += "\n"
-	concFEC := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = %d\n\n",
-		p4DataShards, p4ParityCeiling, p4DeadlineNanos)
+	concFEC := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n\n",
+		p4DataShards, p4ParityCeiling, p4DeadlineNanos/1_000_000)
 	metricsBlock := fmt.Sprintf("[metrics]\nlisten = %q\n\n", p4MetricsListen)
 
 	dir := t.TempDir()

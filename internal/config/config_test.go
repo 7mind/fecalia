@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testKey returns a syntactically valid base64 32-byte key for fixtures.
@@ -878,8 +879,7 @@ func TestLoadRejects(t *testing.T) {
 		{
 			name: "fec deadline exceeds resequencer budget",
 			mode: 0o600,
-			// go-toml/v2 decodes a duration as integer nanoseconds; 500ms = 5e8 ns > 125ms.
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = 500000000\n",
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"500ms\"\n",
 			want: "fec.deadline must be <=",
 		},
 		{
@@ -1149,6 +1149,103 @@ func TestSchedulerPolicyRejects(t *testing.T) {
 	}
 }
 
+// TestDurationKnobsDocumentedStringFormLoads is the acceptance test for the
+// operator-facing duration knobs documented in wanbond.example.toml with Go-duration
+// STRING forms (D43): scheduler.collapse_dwell = "2s", scheduler.load_tau = "200ms",
+// scheduler.weight_rtt_floor = "1ms" (under the weighted policy) and fec.deadline =
+// "5ms" (under an enabled [fec] block) must all load and parse to the documented
+// values — go-toml/v2 cannot decode a TOML string directly into a bare time.Duration,
+// so before the CollapseDwellRaw/LoadTauRaw/WeightRTTFloorRaw/DeadlineRaw fields these
+// forms failed to load.
+func TestDurationKnobsDocumentedStringFormLoads(t *testing.T) {
+	body := fill(edgeConfig) +
+		"\n[scheduler]\npolicy = \"weighted\"\ncollapse_dwell = \"2s\"\nload_tau = \"200ms\"\nweight_rtt_floor = \"1ms\"\n" +
+		"\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"5ms\"\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Scheduler.CollapseDwell != 2*time.Second {
+		t.Fatalf("scheduler.collapse_dwell = %s, want 2s", c.Scheduler.CollapseDwell)
+	}
+	if c.Scheduler.LoadTau != 200*time.Millisecond {
+		t.Fatalf("scheduler.load_tau = %s, want 200ms", c.Scheduler.LoadTau)
+	}
+	if c.Scheduler.WeightRTTFloor != time.Millisecond {
+		t.Fatalf("scheduler.weight_rtt_floor = %s, want 1ms", c.Scheduler.WeightRTTFloor)
+	}
+	if c.FEC.Deadline != 5*time.Millisecond {
+		t.Fatalf("fec.deadline = %s, want 5ms", c.FEC.Deadline)
+	}
+}
+
+// TestDurationKnobsReject is the rejects-table for the four operator-facing duration
+// knobs (D43): an unparseable duration string ("5 parsecs") must fail at parse with an
+// error naming the field, and a value outside each knob's documented range ("-1s",
+// which violates every knob's own >= 0 / > 0 bound) must fail the SAME EXISTING
+// validate() range check the knob had before this change (preserved unchanged).
+func TestDurationKnobsReject(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "collapse_dwell unparseable",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\ncollapse_dwell = \"5 parsecs\"\n",
+			want: "scheduler.collapse_dwell: invalid duration",
+		},
+		{
+			name: "collapse_dwell negative",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\ncollapse_dwell = \"-1s\"\n",
+			want: "scheduler.collapse_dwell must be >= 0",
+		},
+		{
+			name: "load_tau unparseable",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nload_tau = \"5 parsecs\"\n",
+			want: "scheduler.load_tau: invalid duration",
+		},
+		{
+			name: "load_tau non-positive",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nload_tau = \"-1s\"\n",
+			want: "scheduler.load_tau must be > 0",
+		},
+		{
+			name: "weight_rtt_floor unparseable",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nweight_rtt_floor = \"5 parsecs\"\n",
+			want: "scheduler.weight_rtt_floor: invalid duration",
+		},
+		{
+			name: "weight_rtt_floor non-positive",
+			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nweight_rtt_floor = \"-1s\"\n",
+			want: "scheduler.weight_rtt_floor must be > 0",
+		},
+		{
+			name: "fec deadline unparseable",
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"5 parsecs\"\n",
+			want: "fec.deadline: invalid duration",
+		},
+		{
+			name: "fec deadline non-positive",
+			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"-1s\"\n",
+			want: "fec.deadline must be > 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, 0o600, tc.body)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 // TestBindModeDefaultAuto: a config that never mentions `bind` anywhere (no
 // top-level default, no per-path override) resolves every path's effective
 // bind mode to BindModeAuto (I5, Q42) — today's selectDeviceBinds behavior —
@@ -1347,6 +1444,32 @@ func exampleDNSBlock(t *testing.T, content, mode string) string {
 	return extractExampleSection(t, content, m[0], m[1])
 }
 
+// exampleSchedulerBlock extracts and uncomments the documented [scheduler] block
+// (D43), including the collapse_dwell/load_tau/weight_rtt_floor Go-duration-string
+// knobs — the whole block loads even at its documented (commented-out) default
+// policy = "active-backup", since the duration knobs are parsed unconditionally in
+// normalize() regardless of policy.
+func exampleSchedulerBlock(t *testing.T, content string) string {
+	t.Helper()
+	return extractExampleSection(t, content,
+		"# ── scheduler: OPTIONAL. Omitted => active-backup, all knobs below ignored ────",
+		"\n# ── fec: OPTIONAL, OFF by default (no parity on the wire) ─────────────────────",
+	)
+}
+
+// exampleFECBaseBlock extracts and uncomments the documented [fec] block's base
+// fields (enabled/data_shards/parity_shards/deadline) — D43's deadline = "5ms" among
+// them — stopping BEFORE the adaptive/target_residual/safety_factor lines, which are
+// mutually exclusive with each other (see FEC.validate) and not meant to be uncommented
+// together with a plain fixed-ratio block.
+func exampleFECBaseBlock(t *testing.T, content string) string {
+	t.Helper()
+	return extractExampleSection(t, content,
+		"# ── fec: OPTIONAL, OFF by default (no parity on the wire) ─────────────────────",
+		"\n# adaptive = false",
+	)
+}
+
 // exampleMultiPeerConcentrator extracts and uncomments the documented "MULTI-PEER
 // CONCENTRATOR EXAMPLE (G4)" live example — a self-contained two-edge concentrator
 // config (role/psk/paths/wireguard/two peers/metrics, no `top` prefix needed since
@@ -1448,6 +1571,33 @@ func TestExampleConfigLoads(t *testing.T) {
 		}
 		if p0.PSK.Bytes() == p1.PSK.Bytes() {
 			t.Fatal("expected distinct per-peer psks per the documented example, got equal")
+		}
+	})
+
+	// D43: the documented [scheduler]/[fec] duration-string knobs (collapse_dwell,
+	// load_tau, weight_rtt_floor, deadline) must load once uncommented, not just
+	// parse in isolation — an operator following wanbond.example.toml verbatim must
+	// not hit a decode failure.
+	t.Run("scheduler_and_fec_duration_knobs", func(t *testing.T) {
+		body := top + exampleLiteralPeer(t, content) + "\n" +
+			exampleSchedulerBlock(t, content) + "\n" +
+			exampleFECBaseBlock(t, content)
+		path := writeConfig(t, 0o600, body)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load [scheduler]/[fec] duration knobs example:\n%s\n\nerror: %v", body, err)
+		}
+		if cfg.Scheduler.CollapseDwell != 2*time.Second {
+			t.Fatalf("scheduler.collapse_dwell = %s, want 2s", cfg.Scheduler.CollapseDwell)
+		}
+		if cfg.Scheduler.LoadTau != 200*time.Millisecond {
+			t.Fatalf("scheduler.load_tau = %s, want 200ms", cfg.Scheduler.LoadTau)
+		}
+		if cfg.Scheduler.WeightRTTFloor != time.Millisecond {
+			t.Fatalf("scheduler.weight_rtt_floor = %s, want 1ms", cfg.Scheduler.WeightRTTFloor)
+		}
+		if cfg.FEC.Deadline != 5*time.Millisecond {
+			t.Fatalf("fec.deadline = %s, want 5ms", cfg.FEC.Deadline)
 		}
 	})
 }

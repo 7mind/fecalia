@@ -32,8 +32,9 @@ const (
 	p3DataShards   = 10 // K
 	p3ParityShards = 6  // M
 
-	// p3DeadlineNanos is the FEC group-close deadline (TOML time.Duration is integer
-	// nanoseconds). 100ms sits just under maxFECDeadline (125ms = resequencerTimeout/2), so a
+	// p3DeadlineNanos is the FEC group-close deadline in nanoseconds (rendered into the
+	// generated TOML as a Go-duration string, e.g. "100ms" — see setupP3Tunnel). 100ms
+	// sits just under maxFECDeadline (125ms = resequencerTimeout/2), so a
 	// deadline-flushed group's parity still reaches the receive resequencer BEFORE it skips
 	// the gap (recovery stays "in time", counted as delivered) — yet it is 20x the 5ms
 	// default so groups FILL toward K at the fixture's low packet rate. That coupling matters
@@ -361,8 +362,8 @@ func setupP3Tunnel(t *testing.T, top *Topology, bin string) (edge, conc *proc) {
 	concPriv, concPub := genKey(t)
 	psk := randKey(t)
 
-	fecBlock := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = %d\n\n",
-		p3DataShards, p3ParityShards, p3DeadlineNanos)
+	fecBlock := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n\n",
+		p3DataShards, p3ParityShards, p3DeadlineNanos/1_000_000)
 	metricsBlock := fmt.Sprintf("[metrics]\nlisten = %q\n\n", p3MetricsListen)
 
 	dir := t.TempDir()

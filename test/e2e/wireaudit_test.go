@@ -356,8 +356,8 @@ func setupAuditTunnel(t *testing.T, top *Topology, bin string) (edge, conc *proc
 	concPriv, concPub := genKey(t)
 	psk := randKey(t)
 
-	fecBlock := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = %d\n\n",
-		auditFECData, auditFECParity, auditFECDeadlineNanos)
+	fecBlock := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n\n",
+		auditFECData, auditFECParity, auditFECDeadlineNanos/1_000_000)
 
 	dir := t.TempDir()
 	edgeCfg := writeConfig(t, filepath.Join(dir, "edge.toml"), fmt.Sprintf(`role = "edge"

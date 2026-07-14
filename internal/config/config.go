@@ -177,10 +177,18 @@ type SchedulerConfig struct {
 	// band.
 	DisengageFraction float64 `toml:"disengage_fraction"`
 	// CollapseDwell is the sustained-low-load dwell before collapsing to primary-only
-	// (hysteresis). Must be >= 0.
-	CollapseDwell time.Duration `toml:"collapse_dwell"`
-	// LoadTau is the offered-load rate estimator's time constant. Must be > 0.
-	LoadTau time.Duration `toml:"load_tau"`
+	// (hysteresis). Must be >= 0. Parsed from CollapseDwellRaw in normalize.
+	CollapseDwell time.Duration `toml:"-"`
+	// CollapseDwellRaw is the TOML Go-duration string form of CollapseDwell, e.g.
+	// "2s" (D43). Parsed in normalize; an unparseable value fails fast, mirroring
+	// Path.LinkRTTRaw.
+	CollapseDwellRaw string `toml:"collapse_dwell"`
+	// LoadTau is the offered-load rate estimator's time constant. Must be > 0. Parsed
+	// from LoadTauRaw in normalize.
+	LoadTau time.Duration `toml:"-"`
+	// LoadTauRaw is the TOML Go-duration string form of LoadTau, e.g. "200ms" (D43).
+	// Parsed in normalize; an unparseable value fails fast.
+	LoadTauRaw string `toml:"load_tau"`
 
 	// PacingEnabled turns per-path send-pacing on. When false the token buckets are
 	// bypassed (a documented no-op — P0 §7 could not empirically size the pace in the
@@ -191,7 +199,11 @@ type SchedulerConfig struct {
 	PacingBurstFrames float64 `toml:"pacing_burst_frames"`
 
 	// WeightRTTFloor floors RTT in the weight formula (must be > 0 under weighted).
-	WeightRTTFloor time.Duration `toml:"weight_rtt_floor"`
+	// Parsed from WeightRTTFloorRaw in normalize.
+	WeightRTTFloor time.Duration `toml:"-"`
+	// WeightRTTFloorRaw is the TOML Go-duration string form of WeightRTTFloor, e.g.
+	// "1ms" (D43). Parsed in normalize; an unparseable value fails fast.
+	WeightRTTFloorRaw string `toml:"weight_rtt_floor"`
 	// WeightLossFloor floors the loss term under the square root (must be > 0 under
 	// weighted).
 	WeightLossFloor float64 `toml:"weight_loss_floor"`
@@ -344,8 +356,11 @@ type FEC struct {
 	// Deadline bounds grouping latency: a partially-filled group is flushed (parity
 	// emitted over its current data frames) once this much time has elapsed since its
 	// first frame. Defaults to defaultFECDeadline when enabled and left zero; must be
-	// > 0 after defaulting.
-	Deadline time.Duration `toml:"deadline"`
+	// > 0 after defaulting. Parsed from DeadlineRaw in normalize.
+	Deadline time.Duration `toml:"-"`
+	// DeadlineRaw is the TOML Go-duration string form of Deadline, e.g. "5ms" (D43).
+	// Parsed in normalize; an unparseable value fails fast, mirroring Path.LinkRTTRaw.
+	DeadlineRaw string `toml:"deadline"`
 	// Adaptive opts the send-side FEC into the closed-loop controller (T27/T29): the
 	// per-group parity count tracks the measured per-path loss instead of standing at
 	// the fixed ParityShards ratio, so a clean path spends near-zero overhead while a
@@ -374,6 +389,23 @@ type FEC struct {
 	// both. Applies only in adaptive mode; unset (0) selects the safety_factor path. Must
 	// be in (0,1) when set. Ignored (and must stay zero) in fixed mode.
 	TargetResidual float64 `toml:"target_residual"`
+}
+
+// parseDurations parses DeadlineRaw into the typed Deadline field (D43), mirroring
+// the Path.LinkRTTRaw precedent: go-toml/v2 cannot decode a TOML string into a bare
+// time.Duration, so the documented `deadline = "5ms"` form would otherwise fail to
+// load. An empty DeadlineRaw leaves Deadline at zero so applyDefaults' zero-check
+// still fills defaultFECDeadline. Only the parse itself is fail-fast here (unparseable
+// duration syntax); the >0/<=maxFECDeadline range checks stay in validate(), unchanged.
+func (f *FEC) parseDurations() error {
+	if f.DeadlineRaw != "" {
+		d, err := time.ParseDuration(f.DeadlineRaw)
+		if err != nil {
+			return fmt.Errorf("fec.deadline: invalid duration %q: %w", f.DeadlineRaw, err)
+		}
+		f.Deadline = d
+	}
+	return nil
 }
 
 // applyDefaults fills the group-close deadline when FEC is enabled and the deadline
@@ -892,7 +924,13 @@ func (c *Config) normalize() error {
 	if err := c.deriveWeightedPacingFromBDP(); err != nil {
 		return err
 	}
+	if err := c.Scheduler.parseDurations(); err != nil {
+		return err
+	}
 	c.Scheduler.applyDefaults()
+	if err := c.FEC.parseDurations(); err != nil {
+		return err
+	}
 	c.FEC.applyDefaults()
 	if err := c.DNS.applyDefaults(); err != nil {
 		return err
@@ -950,6 +988,40 @@ func (c *Config) deriveWeightedPacingFromBDP() error {
 	}
 	s.PerPathCapacityFPS = bottleneck.CapacityFPS
 	s.PacingBurstFrames = bottleneck.BurstFrames
+	return nil
+}
+
+// parseDurations parses the scheduler's Go-duration-string knobs (CollapseDwellRaw,
+// LoadTauRaw, WeightRTTFloorRaw) into their typed time.Duration fields (D43), mirroring
+// the Path.LinkRTTRaw precedent: go-toml/v2 cannot decode a TOML string into a bare
+// time.Duration, so wanbond.example.toml's documented "2s"/"200ms"/"1ms" forms would
+// otherwise fail to load. An empty Raw string leaves the typed field at its zero value,
+// so applyDefaults' zero-check still fills the documented default. Only the parse
+// itself is fail-fast here (unparseable duration syntax); the >=0/>0 range checks stay
+// in validate(), unchanged — this runs unconditionally (regardless of Policy) exactly
+// like the typed fields decoded unconditionally before this change.
+func (s *SchedulerConfig) parseDurations() error {
+	if s.CollapseDwellRaw != "" {
+		d, err := time.ParseDuration(s.CollapseDwellRaw)
+		if err != nil {
+			return fmt.Errorf("scheduler.collapse_dwell: invalid duration %q: %w", s.CollapseDwellRaw, err)
+		}
+		s.CollapseDwell = d
+	}
+	if s.LoadTauRaw != "" {
+		d, err := time.ParseDuration(s.LoadTauRaw)
+		if err != nil {
+			return fmt.Errorf("scheduler.load_tau: invalid duration %q: %w", s.LoadTauRaw, err)
+		}
+		s.LoadTau = d
+	}
+	if s.WeightRTTFloorRaw != "" {
+		d, err := time.ParseDuration(s.WeightRTTFloorRaw)
+		if err != nil {
+			return fmt.Errorf("scheduler.weight_rtt_floor: invalid duration %q: %w", s.WeightRTTFloorRaw, err)
+		}
+		s.WeightRTTFloor = d
+	}
 	return nil
 }
 
