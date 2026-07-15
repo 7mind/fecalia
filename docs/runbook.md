@@ -20,7 +20,11 @@ procedure. Those live in [docs/install.md](install.md):
   [install.md §4](install.md);
 - **§9 *Full-tunnel / client-LAN recipe*** — the optional edge `mode =
   "default-route"` full-tunnel opt-in and its client-LAN routing recipe —
-  [install.md §9](install.md).
+  [install.md §9](install.md). Use `mode = "default-route"`, not a
+  hand-rolled default route (wg-quick `PostUp`, NetworkManager, a bare `ip
+  route add default`): an unsplit `0.0.0.0/0` installed outside wanbond
+  recurses the encrypted underlay UDP back into the tunnel and the
+  handshake never completes — see install.md §9's operator warning.
 
 The concentrator hub-failover design (why a standby works with no state
 handoff) is [docs/design.md §Concentrator hub failover](design.md).

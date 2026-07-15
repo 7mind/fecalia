@@ -1535,6 +1535,27 @@ Both routes below reach the same result — an edge that can route to the
 whole internet through the tunnel — by relying on that daemon-guaranteed
 split, never a raw `/0` at the engine boundary:
 
+**Operator warning — a literal `0.0.0.0/0` default route installed OUTSIDE
+wanbond bypasses the split above and recurses the underlay.** The daemon's
+`splitDefaultRoute` (`internal/device/device.go:1324-1333`) only rewrites
+`allowed_ips` entries the daemon itself renders (the engine's UAPI config,
+and — under `mode = "default-route"`, §9.1 — the routes it installs into
+`wanbond0`). It has no reach into routes an operator installs by other
+means: a wg-quick `PostUp = ip route add default dev wanbond0`, a
+NetworkManager connection profile, or a bare `ip route add default dev
+wanbond0`. Any of those install the literal, unsplit `/0` as the box's
+default route, which then also captures the encrypted underlay UDP packets
+wanbond itself sends to the concentrator's `endpoint` — routing them back
+INTO the tunnel they are trying to leave through. The underlay recurses and
+the handshake never completes: this is the observed D35 production
+symptom (receiver `rx` floods, `tx≈0`, no handshake). **Use `mode =
+"default-route"` (§9.1)** — it installs the safe `/1`+`/1` split
+automatically and never overrides the physical route to the concentrator's
+underlay endpoint. If you must hand-roll the default route instead, either
+exclude the concentrator's endpoint with a more-specific host route ahead
+of the default, or install the `/1`+`/1` split yourself (§9.1's manual
+`ip route add` fallback) rather than a literal `/0`.
+
 ### 9.1 Edge: install the default-route split (daemon-automated, §3)
 
 Set `mode = "default-route"` on the concentrator peer alongside a
