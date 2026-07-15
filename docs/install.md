@@ -1376,8 +1376,10 @@ engage threshold; see [§3a](#3a-tuning-per-link-bandwidth-and-pacing)). This
 check instead covers the paths that guard cannot see: any path that leaves
 `link_bandwidth` undeclared.
 
-- **`wanbond_weighted_capacity_sane` Prometheus gauge:** a static (fixed at
-  startup, not re-scraped), unlabeled 0/1 metric.
+- **`wanbond_weighted_capacity_sane` Prometheus gauge:** an unlabeled 0/1
+  metric. Its value is config-derived (not re-read at scrape time); it is
+  seeded at startup and **re-set on a `reload`** whose path set changed the
+  verdict (a divergence is logged — see below).
   ```sh
   curl -s http://127.0.0.1:9090/metrics | grep wanbond_weighted_capacity_sane
   ```

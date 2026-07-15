@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/netutil"
 )
 
 // metricsPath is the sole route served by the endpoint.
@@ -35,6 +35,11 @@ type Server struct {
 	ln  net.Listener
 	srv *http.Server
 	log log.Logger
+	// weightedCapacityGauge is the retained wanbond_weighted_capacity_sane gauge (T144),
+	// or nil under the active-backup policy (a nil verdict at construction — the series is
+	// absent entirely). It is retained so a reload can re-set it after a path add/remove
+	// changes the config-derived verdict (D74), instead of leaving it frozen at boot.
+	weightedCapacityGauge prometheus.Gauge
 }
 
 // NewServer validates that addr is loopback, binds a TCP listener, and wires the
@@ -55,8 +60,10 @@ func NewServer(addr string, src Source, weightedCapacitySane *bool, logger log.L
 	if err := reg.Register(NewCollector(src)); err != nil {
 		return nil, fmt.Errorf("metrics: register collector: %w", err)
 	}
+	var weightedCapacityGauge prometheus.Gauge
 	if weightedCapacitySane != nil {
-		if err := reg.Register(newWeightedCapacityGauge(*weightedCapacitySane)); err != nil {
+		weightedCapacityGauge = newWeightedCapacityGauge(*weightedCapacitySane)
+		if err := reg.Register(weightedCapacityGauge); err != nil {
 			return nil, fmt.Errorf("metrics: register weighted-capacity gauge: %w", err)
 		}
 	}
@@ -88,8 +95,22 @@ func NewServer(addr string, src Source, weightedCapacitySane *bool, logger log.L
 			Handler:           mux,
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
-		log: logger.Component("metrics"),
+		log:                   logger.Component("metrics"),
+		weightedCapacityGauge: weightedCapacityGauge,
 	}, nil
+}
+
+// SetWeightedCapacitySane re-sets the retained wanbond_weighted_capacity_sane gauge
+// (T144) to a recomputed verdict after a reload changed the path set (D74). It is a
+// no-op when no gauge was registered (the active-backup policy — a nil verdict at
+// construction; the series is absent for the collector's whole life and a reload never
+// introduces it, since the scheduler policy is fixed for the process). Safe to call
+// while the endpoint serves: prometheus.Gauge.Set is concurrency-safe.
+func (s *Server) SetWeightedCapacitySane(sane bool) {
+	if s.weightedCapacityGauge == nil {
+		return
+	}
+	s.weightedCapacityGauge.Set(weightedCapacitySaneValue(sane))
 }
 
 // Addr returns the actual bound listen address (with the resolved port).
@@ -112,44 +133,39 @@ func (s *Server) Start() {
 	}()
 }
 
-// Close gracefully shuts the endpoint down, bounded by ctx.
+// Close gracefully shuts the endpoint down, bounded by ctx. http.Server.Shutdown only
+// closes listeners it took ownership of via Serve, so a Close on a Server that was never
+// Start()ed would leak the bound socket s.ln (the port stays held, EADDRINUSE on
+// re-listen — D84). Close s.ln explicitly to release the port in both paths, tolerating
+// net.ErrClosed for the Start->Close path where Serve already closed it. The Shutdown
+// error takes precedence; a meaningful listener-close error surfaces only when Shutdown
+// itself succeeded. Mirrors internal/monitor/server.go's Close.
 func (s *Server) Close(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
+	shutdownErr := s.srv.Shutdown(ctx)
+	if err := s.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		return err
+	}
+	return shutdownErr
 }
 
-// requireLoopback enforces that addr's host is a loopback address. An IP literal
-// must satisfy IsLoopback; a hostname (e.g. "localhost") is accepted only if it
-// resolves to at least one address and EVERY resolved address is loopback — a
-// hostname that maps to any routable address is refused. An empty host (":9095")
-// binds every interface and is refused.
+// requireLoopback enforces that addr's host is a loopback address, delegating the
+// host-classification to the shared netutil.IsLoopbackHost (the same helper config
+// validation and the monitor endpoint use — T193, no redundant local classifier). An IP
+// literal must satisfy IsLoopback; a hostname (e.g. "localhost") is accepted only if it
+// resolves and EVERY resolved address is loopback; an empty host (":9095") binds every
+// interface and is refused. A non-loopback classification yields the single generic
+// ErrNonLoopbackBind — IsLoopbackHost's (bool, error) cannot supply per-case detail, and
+// none is needed to fail closed. A syntactic/resolution error is wrapped verbatim.
 func requireLoopback(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
+	ok, err := netutil.IsLoopbackHost(addr)
 	if err != nil {
-		return fmt.Errorf("metrics: invalid listen address %q: %w", addr, err)
+		return fmt.Errorf("metrics: %w", err)
 	}
-	if host == "" {
-		return fmt.Errorf("%w: empty host in %q binds all interfaces", ErrNonLoopbackBind, addr)
-	}
-
-	if ip, err := netip.ParseAddr(host); err == nil {
-		if !ip.IsLoopback() {
-			return fmt.Errorf("%w: got %q", ErrNonLoopbackBind, addr)
-		}
-		return nil
-	}
-
-	// Hostname: resolve and require every resolved address to be loopback.
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("metrics: cannot resolve listen host %q: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return fmt.Errorf("metrics: listen host %q resolved to no addresses", host)
-	}
-	for _, ip := range ips {
-		if !ip.IsLoopback() {
-			return fmt.Errorf("%w: host %q resolves to non-loopback %s", ErrNonLoopbackBind, host, ip)
-		}
+	if !ok {
+		return fmt.Errorf("%w: got %q", ErrNonLoopbackBind, addr)
 	}
 	return nil
 }

@@ -858,6 +858,128 @@ func TestWeightedAggregationChangeLogFieldsAndNoDoubleLog(t *testing.T) {
 	if all := aggregationChangeLines(parseCapturedLogLines(t, buf), ""); len(all) != 2 {
 		t.Fatalf("got %d total 'scheduler aggregation change' records, want exactly 2 (1 engage + 1 collapse)", len(all))
 	}
+
+	// Idle-gap collapse (T194): the idle-gap arm of updateGateLocked (reason="idle gap") was
+	// previously unasserted. A single idle span >= CollapseDwell collapses the gate on the
+	// next Pick, carrying the gap plus the same from/load_fps/threshold fields the other
+	// aggregation-change records carry. A FRESH scheduler+logger keeps this independent of the
+	// sustained-low-load flow above.
+	t.Run("idle gap collapse", func(t *testing.T) {
+		clock := newFakeClock()
+		lg, buf := newCapturingLogger(t)
+		primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+		backup := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+		cfg := weightedCfg()
+		health := []PathHealth{primary, backup}
+		quality := []PathQuality{primary, backup}
+		s, err := NewWeighted(health, quality, cfg, clock, lg)
+		if err != nil {
+			t.Fatalf("NewWeighted: %v", err)
+		}
+		wantEngage := cfg.EngageFraction * cfg.PerPathCapacity
+		wantDisengage := cfg.DisengageFraction * cfg.PerPathCapacity
+
+		driveUntilAggregating(t, s, clock, 100*time.Microsecond)
+		if !s.aggregating {
+			t.Fatal("setup: never engaged")
+		}
+
+		// One idle span strictly longer than the collapse dwell, then a single Pick: the gate
+		// collapses immediately on the idle gap alone (provision (a) of updateGateLocked).
+		clock.advance(cfg.CollapseDwell + 100*time.Millisecond)
+		s.Pick(ClassData)
+		if s.aggregating {
+			t.Fatal("gate still engaged after an idle span >= CollapseDwell, want idle-gap collapse")
+		}
+
+		collapse := aggregationChangeLines(parseCapturedLogLines(t, buf), "collapsed")
+		if len(collapse) != 1 {
+			t.Fatalf("got %d to=collapsed records, want exactly 1", len(collapse))
+		}
+		rec := collapse[0]
+		if reason, _ := rec.Fields["reason"].(string); reason != "idle gap" {
+			t.Fatalf("reason = %q, want %q", reason, "idle gap")
+		}
+		if from, _ := rec.Fields["from"].(string); from != "aggregating" {
+			t.Fatalf("from = %q, want %q", from, "aggregating")
+		}
+		if gap, ok := rec.Fields["gap"].(string); !ok || gap == "" {
+			t.Fatalf("gap = %v (ok=%v), want a non-empty duration string", rec.Fields["gap"], ok)
+		}
+		if _, ok := rec.Fields["load_fps"]; !ok {
+			t.Fatal("missing load_fps field")
+		}
+		if got, ok := rec.Fields["engage_threshold_fps"].(float64); !ok || got != wantEngage {
+			t.Fatalf("engage_threshold_fps = %v (ok=%v), want %g", rec.Fields["engage_threshold_fps"], ok, wantEngage)
+		}
+		if got, ok := rec.Fields["disengage_threshold_fps"].(float64); !ok || got != wantDisengage {
+			t.Fatalf("disengage_threshold_fps = %v (ok=%v), want %g", rec.Fields["disengage_threshold_fps"], ok, wantDisengage)
+		}
+	})
+}
+
+// TestWeightedSetPathsLogsAggregationCollapse is the T190 reproduction/acceptance: a
+// SetPaths that replaces the path set while the gate is ENGAGED must emit the canonical
+// "scheduler aggregation change" record (to=collapsed, from=aggregating, reason="paths
+// replaced", plus load_fps and the two threshold fields), not flip to collapsed silently.
+// On the unfixed code SetPaths set aggregating=false with no record, so the assertion for
+// a to=collapsed line finds none.
+func TestWeightedSetPathsLogsAggregationCollapse(t *testing.T) {
+	clock := newFakeClock()
+	lg, buf := newCapturingLogger(t)
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	backup := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	cfg := weightedCfg()
+	health := []PathHealth{primary, backup}
+	quality := []PathQuality{primary, backup}
+	s, err := NewWeighted(health, quality, cfg, clock, lg)
+	if err != nil {
+		t.Fatalf("NewWeighted: %v", err)
+	}
+	wantEngage := cfg.EngageFraction * cfg.PerPathCapacity
+	wantDisengage := cfg.DisengageFraction * cfg.PerPathCapacity
+
+	driveUntilAggregating(t, s, clock, 100*time.Microsecond)
+	if !s.aggregating {
+		t.Fatal("setup: never engaged")
+	}
+
+	only := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	if err := s.SetPaths([]PathAdmission{admitH(only)}); err != nil {
+		t.Fatalf("SetPaths: %v", err)
+	}
+	if s.aggregating {
+		t.Fatal("SetPaths did not collapse aggregation")
+	}
+
+	collapse := aggregationChangeLines(parseCapturedLogLines(t, buf), "collapsed")
+	if len(collapse) != 1 {
+		t.Fatalf("got %d to=collapsed records after an engaged-gate SetPaths, want exactly 1 (T190: replace must not collapse silently)", len(collapse))
+	}
+	rec := collapse[0]
+	if from, _ := rec.Fields["from"].(string); from != "aggregating" {
+		t.Fatalf("from = %q, want %q", from, "aggregating")
+	}
+	if reason, _ := rec.Fields["reason"].(string); reason != "paths replaced" {
+		t.Fatalf("reason = %q, want %q", reason, "paths replaced")
+	}
+	if _, ok := rec.Fields["load_fps"]; !ok {
+		t.Fatal("missing load_fps field")
+	}
+	if got, ok := rec.Fields["engage_threshold_fps"].(float64); !ok || got != wantEngage {
+		t.Fatalf("engage_threshold_fps = %v (ok=%v), want %g", rec.Fields["engage_threshold_fps"], ok, wantEngage)
+	}
+	if got, ok := rec.Fields["disengage_threshold_fps"].(float64); !ok || got != wantDisengage {
+		t.Fatalf("disengage_threshold_fps = %v (ok=%v), want %g", rec.Fields["disengage_threshold_fps"], ok, wantDisengage)
+	}
+
+	// A SetPaths while ALREADY collapsed is a no-op transition — it must not add a record.
+	if err := s.SetPaths([]PathAdmission{admitH(only)}); err != nil {
+		t.Fatalf("second SetPaths: %v", err)
+	}
+	if all := aggregationChangeLines(parseCapturedLogLines(t, buf), "collapsed"); len(all) != 1 {
+		t.Fatalf("got %d to=collapsed records after a collapsed-gate SetPaths, want still exactly 1 (no record on a no-op transition)", len(all))
+	}
 }
 
 // TestWeightedAccountProbeDeductsOneTokenWithoutShedding is the T145 unit-level contract

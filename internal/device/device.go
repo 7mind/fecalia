@@ -710,6 +710,21 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 		}
 		t.log.Info("reload: path removed", "path", name)
 	}
+	// D74: recompute the config-derived weighted-capacity-sanity verdict from the reloaded
+	// config and re-set the retained gauge on the running /metrics endpoint, so a reload
+	// that changed the path set (add/remove) updates wanbond_weighted_capacity_sane instead
+	// of leaving it frozen at the boot value. WARN when the verdict diverges from the
+	// running one so the operator sees the sanity flip. Skipped when no endpoint runs, or
+	// under the active-backup policy (a nil verdict — the series is absent and the scheduler
+	// policy is fixed for the process, so a reload never introduces it).
+	if t.metricsSrv != nil && cfg.WeightedCapacitySane != nil {
+		newSane := *cfg.WeightedCapacitySane
+		if t.cfg.WeightedCapacitySane == nil || *t.cfg.WeightedCapacitySane != newSane {
+			t.log.Warn("reload: weighted-capacity-sanity verdict changed", "sane", newSane)
+		}
+		t.metricsSrv.SetWeightedCapacitySane(newSane)
+	}
+
 	// Advance the running config to the membership now in service. Survivors keep their
 	// ORIGINAL parameters and all non-path fields stay as booted (the ignored changes
 	// were not applied), so a subsequent identical reload re-warns about a still-diverged
@@ -721,6 +736,9 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	// actually running (mirroring Metrics.Listen above).
 	t.cfg.Monitor.Listen = t.monitorListen
 	t.cfg.Monitor.Token = t.monitorToken
+	// Carry the recomputed weighted-capacity verdict so a subsequent reload's divergence
+	// check compares against the value the gauge now holds (D74).
+	t.cfg.WeightedCapacitySane = cfg.WeightedCapacitySane
 	return nil
 }
 
@@ -792,6 +810,13 @@ func reloadWarnings(live, desired *config.Config) []string {
 		}
 		if l.Bind != d.Bind {
 			w = append(w, fmt.Sprintf("path %q bind mode changed — the running socket keeps its original binding", d.Name))
+		}
+		// D70: a same-name path's declared link capacity (link_bandwidth/link_rtt) is NOT
+		// applied by a membership reload — the running path keeps its original pacing/weight
+		// — and the D52 catch-all zeroes Paths before its DeepEqual, so a change here is
+		// otherwise silent. Warn so the operator knows the new declaration is deferred.
+		if l.LinkBandwidthBitsPerSec != d.LinkBandwidthBitsPerSec || l.LinkRTT != d.LinkRTT {
+			w = append(w, fmt.Sprintf("path %q link_bandwidth/link_rtt changed — the running path keeps its original capacity declaration; restart required", d.Name))
 		}
 	}
 

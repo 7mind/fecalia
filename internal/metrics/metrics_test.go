@@ -656,3 +656,58 @@ func TestWeightedCapacitySaneGaugeValue(t *testing.T) {
 		})
 	}
 }
+
+// TestWeightedCapacitySaneGaugeReSetOnReload is the D74 regression guard: the gauge is
+// NOT frozen at its construction value — SetWeightedCapacitySane (called by device.Reload
+// after a path add/remove recomputes the verdict) must move the LIVE scraped series. Boots
+// SANE-VERIFIED (1), re-sets to UNVERIFIABLE (0), and asserts a fresh scrape reads 0. On
+// the unfixed code the gauge is a throwaway local with no setter, so the value stays 1.
+func TestWeightedCapacitySaneGaugeReSetOnReload(t *testing.T) {
+	sane := true
+	srv := startServerWithCapacity(t, fakeSource{}, &sane)
+
+	scrape := func() float64 {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		got, ok := exp.Value(MetricWeightedCapacitySane)
+		if !ok {
+			t.Fatalf("%s series absent, want present", MetricWeightedCapacitySane)
+		}
+		return got
+	}
+
+	if got := scrape(); got != 1 {
+		t.Fatalf("%s at boot = %v, want 1 (sane-verified)", MetricWeightedCapacitySane, got)
+	}
+
+	// A reload flips the config-derived verdict to unverifiable.
+	srv.SetWeightedCapacitySane(false)
+
+	if got := scrape(); got != 0 {
+		t.Errorf("%s after SetWeightedCapacitySane(false) = %v, want 0 (frozen gauge / no setter — D74)", MetricWeightedCapacitySane, got)
+	}
+}
+
+// TestSetWeightedCapacitySaneNoopWithoutGauge asserts the setter is a safe no-op under
+// the active-backup policy (a nil verdict at construction — no gauge registered): a
+// reload calling SetWeightedCapacitySane must neither panic nor introduce the series.
+func TestSetWeightedCapacitySaneNoopWithoutGauge(t *testing.T) {
+	srv := startServerWithCapacity(t, fakeSource{}, nil)
+
+	srv.SetWeightedCapacitySane(true) // must not panic on a nil retained gauge
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if exp.Has(MetricWeightedCapacitySane) {
+		t.Errorf("%s appeared after SetWeightedCapacitySane on an active-backup server, want absent", MetricWeightedCapacitySane)
+	}
+}

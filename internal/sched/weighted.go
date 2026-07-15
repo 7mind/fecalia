@@ -684,6 +684,18 @@ func (s *WeightedScheduler) SetPaths(paths []PathAdmission) error {
 	// from the immutable scalar config; each admission's per-path Pacing is inert here (no per-
 	// path rate exists to key by identity), so there is no D79-style positional carry to fix.
 	s.reset(len(paths))
+	// T190: collapsing the gate as part of a wholesale path replacement IS an aggregation
+	// state change, so emit the canonical "scheduler aggregation change" record (matching the
+	// engage/idle-gap sites' shape) instead of flipping to collapsed silently. Only when the
+	// gate WAS engaged — a replace while already collapsed is a no-op transition. s.reset (the
+	// pacer) leaves the load EWMA untouched, so s.loadRate still reflects the load at replacement.
+	if s.aggregating {
+		engage := s.cfg.EngageFraction * s.cfg.PerPathCapacity
+		disengage := s.cfg.DisengageFraction * s.cfg.PerPathCapacity
+		s.log.Info("scheduler aggregation change", "to", "collapsed", "from", "aggregating",
+			"reason", "paths replaced", "load_fps", s.loadRate,
+			"engage_threshold_fps", engage, "disengage_threshold_fps", disengage)
+	}
 	s.aggregating = false
 	s.belowSince = time.Time{}
 	s.active = -1

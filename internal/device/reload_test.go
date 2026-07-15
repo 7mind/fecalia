@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/7mind/wanbond/internal/config"
 )
@@ -93,6 +94,24 @@ func TestReloadWarnings(t *testing.T) {
 		{"modified path source", func() *config.Config {
 			c := base()
 			c.Paths = []config.Path{path("a"), modPath("b", "10.0.0.9")}
+			return c
+		}, `path "b"`},
+		{"same-name link_bandwidth changed", func() *config.Config {
+			// D70: a same-name path whose declared link_bandwidth changed must warn —
+			// it is not applied (survivors keep original pacing) and the catch-all
+			// zeroes Paths, so without the same-name link comparison it is silent.
+			c := base()
+			b := path("b")
+			b.LinkBandwidthBitsPerSec = 1_000_000
+			c.Paths = []config.Path{path("a"), b}
+			return c
+		}, `path "b"`},
+		{"same-name link_rtt changed", func() *config.Config {
+			// D70: a same-name path whose declared link_rtt changed must warn, same rationale.
+			c := base()
+			b := path("b")
+			b.LinkRTT = 45 * time.Millisecond
+			c.Paths = []config.Path{path("a"), b}
 			return c
 		}, `path "b"`},
 		{"reordered paths", func() *config.Config {

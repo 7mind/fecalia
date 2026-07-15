@@ -112,9 +112,10 @@ const (
 
 // MetricWeightedCapacitySane is the Q52 WARN-arm capacity-sanity gauge (T144).
 // Unlike every other series above, it is CONFIG-DERIVED, not sourced from Source at
-// scrape time: its value is fixed once at daemon startup from the loaded
-// config.Config.WeightedCapacitySane verdict, registered as a STATIC gauge alongside
-// (not through) the Source-driven collector — see NewServer. It carries no labels at
+// scrape time: its value is seeded at daemon startup from the loaded
+// config.Config.WeightedCapacitySane verdict and re-set on a reload that changes the
+// verdict via a path add/remove (D74, Server.SetWeightedCapacitySane), registered as a
+// gauge alongside (not through) the Source-driven collector — see NewServer. It carries no labels at
 // all (config-derived, not per-peer — exempt from the labelPeer back-compat rule) and
 // the family is ABSENT ENTIRELY under the active-backup policy (a nil verdict). Under
 // the weighted policy it reads 1 when every path declares link_bandwidth (SANE-VERIFIED)
@@ -147,11 +148,12 @@ const (
 	MetricAggregationDisengageThreshold = "wanbond_aggregation_disengage_threshold_fps"
 )
 
-// newWeightedCapacityGauge builds the static wanbond_weighted_capacity_sane gauge
-// (T144) fixed at sane's value for the collector's whole life — unlike collector, it
-// is never re-read at scrape time, matching its config-derived (not live-telemetry)
-// source of truth.
-func newWeightedCapacityGauge(sane bool) prometheus.Collector {
+// newWeightedCapacityGauge builds the wanbond_weighted_capacity_sane gauge (T144) seeded
+// at sane's value. Unlike the collector it is never re-read at scrape time (its truth is
+// config-derived, not live telemetry); the concrete prometheus.Gauge is returned so the
+// Server can retain it and re-set it on a reload that changes the config-derived verdict
+// after a path add/remove (D74) — the value is NOT fixed for the collector's whole life.
+func newWeightedCapacityGauge(sane bool) prometheus.Gauge {
 	g := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "weighted_capacity_sane",

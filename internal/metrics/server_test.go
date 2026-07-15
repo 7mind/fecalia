@@ -99,6 +99,34 @@ func TestVerifyLoopbackBind(t *testing.T) {
 	}
 }
 
+// TestCloseReleasesPortWithoutStart is the regression guard for the listener leak
+// (D84): Close on a NewServer that was never Start()ed must release the bound socket,
+// not merely Shutdown the (never-Serve'd) http.Server. http.Server.Shutdown only
+// closes listeners it took ownership of via Serve, so without an explicit s.ln.Close
+// the bound port stays held and a re-bind of the SAME port fails EADDRINUSE. Proven by
+// re-binding the exact OS-assigned port after Close. Mirrors monitor's equivalent.
+func TestCloseReleasesPortWithoutStart(t *testing.T) {
+	srv, err := NewServer("127.0.0.1:0", fakeSource{}, nil, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	addr := srv.Addr().String() // 127.0.0.1:<assigned port>
+
+	// Close WITHOUT ever calling Start(): only an explicit s.ln.Close in Close can
+	// release the port here, since Shutdown owns no Serve'd listener.
+	if err := srv.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	srv2, err := NewServer(addr, fakeSource{}, nil, testLogger(t))
+	if err != nil {
+		t.Fatalf("re-bind on %q after Close failed (leaked listener): %v", addr, err)
+	}
+	if err := srv2.Close(t.Context()); err != nil {
+		t.Errorf("Close (re-bound server): %v", err)
+	}
+}
+
 // TestHostnameBindVerifiedLoopback asserts that a hostname listen address
 // ("localhost:0") binds and the post-bind verification confirms the kernel
 // bound a loopback interface — the guard ENFORCES loopback on the concrete
