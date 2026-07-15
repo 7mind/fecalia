@@ -2124,11 +2124,11 @@ archives:
 - dependsOn: ["T160","T161"]
 - ledgerRefs: ["goals:G12"]
 
-### T164 — planned
+### T164 — done
 
 - createdAt: 2026-07-14T18:46:46.069Z
-- updatedAt: 2026-07-14T18:46:46.069Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T00:03:58.228Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Monitor auth: unconditional Host/Origin validation + static-token bootstrap cookie"
 - description: "Add an auth layer to the monitor Server covering BOTH adversaries from Q47. (1) UNCONDITIONAL Host/Origin validation on every HTTP route AND on the /ws upgrade: reject (403) requests whose Origin is present and not same-origin, and whose Host is not in the allowed set (the configured Listen host + loopback) — this defeats the DNS-rebinding/CSRF browser vector and needs no secret. coder/websocket's Accept must NOT use InsecureSkipVerify; set OriginPatterns/host check explicitly. (2) When a token is configured: require it on every route and the /ws upgrade — accept it via Authorization: Bearer <token> OR a session cookie; a first navigation with ?token=<token> validates and sets the token as a SameSite=Strict, HttpOnly cookie (not Secure, since loopback is plain http) then redirects to strip the query; missing/invalid token => 401. When no token is configured (loopback-only default), skip the token check but KEEP Host/Origin validation. Use constant-time token comparison."

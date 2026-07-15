@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 204
+  item: 206
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2401,3 +2401,21 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T162 implement review round 2 (fable re-review of the revise). VERDICT = approve/go-ahead. All THREE round-1 criticisms verified RESOLVED with evidence: (1) LISTENER LEAK fixed — Server.Close (internal/monitor/server.go) now runs srv.Shutdown then s.ln.Close() tolerating net.ErrClosed (Start->Close path where Serve already closed it), correct error precedence (Shutdown's error wins; ln-close error surfaces only if Shutdown succeeded); TestCloseReleasesPortWithoutStart re-binds the SAME OS-assigned port read from Addr() (not :0) — a REAL regression guard, FAIL-FIRST VERIFIED (reverting Close to Shutdown-only makes it fail EADDRINUSE, with the fix go test -race passes); the Start->Close path stays goleak/-race clean. (2) TestNonLoopbackWithTokenAccepted added locking the token-authorized non-loopback bind branch (0.0.0.0:0 + token => nil error + bound server). (3) newWSHandler comment corrected to accurately describe c.CloseNow (immediate close, no close frame/status). Round-1 skeleton code otherwise unchanged (opus + fable round-1 vetted the bind guard/WS same-origin default/lifecycle); internal/metrics/ UNTOUCHED (D84 separate). Gate green in worktree AND re-gated on composed main tree: gofmt clean, go build/vet/test (monitor/config/metrics) green. Round-1 = opus-approve + fable-disapprove (R203 revise, fable reproduced the leak); round-2 = approve. Merged to main (47c65af, 2 commits). Pre-existing metrics.Close leak filed as D84 (root-caused, ready-to-seed)."
 - ledgerRefs: ["tasks:T162","goals:G12","defects:D84"]
+
+### R205 — revise
+
+- createdAt: 2026-07-15T00:00:03.434Z
+- updatedAt: 2026-07-15T00:00:03.434Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T164 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise. T164 was implemented INLINE by the orchestrator (three dispatched workers stalled during exploration — an agent-infra hang, zero code written each time). BOTH reviewers INDEPENDENTLY found the SAME real security defect (strong signal): the middleware's Origin check reused hostAllowed(u.Host, allowed), whose IP-literal passthrough (a VALID DNS-rebinding defense for the attacker-uncontrolled HOST header) is WRONG for the ORIGIN header — the Origin is the client PAGE's origin, fully attacker-controlled and serveable from any bare public IP. Empirically (fable): 'Origin: http://203.0.113.7' -> 200, should be 403; opus confirmed from the passing TestHostAllowed assertions. This is a cross-origin/CSRF BYPASS, critical on /ws where the Origin header is the SOLE CSRF control (WebSocket upgrades are not gated by SOP/CORS): an attacker page at http://<any-ip>/ opens ws://127.0.0.1:PORT/ws, the upgrade is accepted, and the monitor snapshot is exfiltrated cross-origin. opus 2nd criticism: missing foreign-IP-Origin test (the suite only had a foreign-DOMAIN case). EVERYTHING ELSE both reviewers verified SOUND: token gate fail-closed + constant-time (subtle.ConstantTimeCompare is the only token compare; the token=='' sites are config-presence checks); ?token= bootstrap sets the cookie to the CONFIGURED token only on a match, HttpOnly+SameSite=Strict+Secure=false+Path=/ (Q58(a)), same-path relative redirect (no open-redirect); middleware wraps the mux so Host/Origin precede token on BOTH / and /ws; unauthenticated /ws with a token => 401; null/opaque/file:// Origin (u.Host=='') => 403; missing/foreign-domain Host => 403; goleak + -race + just lint (0 issues all tags) green. FIX APPLIED (round 2, fc59349): split the classifier — hostAllowed (Host) keeps the IP pass; new originAllowed (Origin) requires EXACT same-origin (Origin==Host, covering legit loopback/LAN direct-IP access) OR an allowlisted host, NO IP passthrough; added foreign-IP-Origin tests on /, /ws (the CSRF-critical path), and an originAllowed unit test. Re-review pending."
+- ledgerRefs: ["tasks:T164","goals:G12"]
+
+### R206 — go-ahead
+
+- createdAt: 2026-07-15T00:03:57.391Z
+- updatedAt: 2026-07-15T00:03:57.391Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T164 implement review round 2 (fable re-review of the Origin fix). VERDICT = approve/go-ahead. The round-1 cross-origin/CSRF bypass (both opus+fable flagged: Origin check reused hostAllowed's IP-literal pass) is CLOSED and verified DIFFERENTIALLY: the new HTTP-route regression test (Origin: http://198.51.100.7 on /) fails against round-1 code with '200, want 403' (the exact bypass) and passes on fc59349. The middleware Origin branch now routes through originAllowed, which grants ONLY exact same-origin (Origin==r.Host) OR an allowlisted host (loopback aliases + configured listen host) with NO IP-literal passthrough; hostAllowed (Host header) keeps the IP pass for its DNS-rebinding role. No legit access regressed: exact same-origin covers loopback AND the wildcard-bind LAN case (browser sends matching host:port in Origin and Host); the full monitor suite (token flow, no-Origin, WS one-shot, goleak) passes under -race; whole-repo go test -race green; just lint 0 issues all tags. No new bypass: cross-site pages cannot force Origin==Host (browser sets them independently); Origin: null fails closed (u.Host==''); hostOnly strips ports/v6-brackets correctly. Fair reviewer note: TestAuthForeignOriginRejectedOnWS also passes on old code (websocket.Accept(nil) retains the library default same-origin check), so it pins the end-to-end /ws invariant while the HTTP-route test is the discriminating guard — both retained. T164 (inline-implemented after 3 worker stalls) merged to main (fc59349). Round-1 = opus+fable disapprove (identical Origin finding); round-2 = approve."
+- ledgerRefs: ["tasks:T164","goals:G12"]
