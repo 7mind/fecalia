@@ -45,9 +45,10 @@ var ErrNonLoopbackBind = errors.New("monitor: non-loopback listen address requir
 // /ws that streams MonitorSnapshot frames built from a metrics.Source. It never
 // touches the global http.DefaultServeMux.
 type Server struct {
-	ln  net.Listener
-	srv *http.Server
-	log log.Logger
+	ln     net.Listener
+	srv    *http.Server
+	log    log.Logger
+	cancel context.CancelFunc // cancels the push-handler context on Close
 }
 
 // NewServer validates the bind, opens a TCP listener, and wires the monitoring
@@ -87,9 +88,15 @@ func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Serv
 		}
 	}
 
+	// srvCtx is cancelled by Close so the /ws push handlers (T165) stop promptly
+	// on shutdown — http.Server.Shutdown does NOT cancel a hijacked WebSocket
+	// connection's context, so without this a push loop would outlive Close and
+	// leak.
+	srvCtx, cancel := context.WithCancel(context.Background())
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+rootPath, handleRoot)
-	mux.HandleFunc("GET "+wsPath, newWSHandler(src, logger.Component("monitor")))
+	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, logger.Component("monitor")))
 
 	// Wrap the mux with the auth layer (T164): unconditional Host/Origin
 	// validation on EVERY route + the /ws upgrade, plus optional static-token
@@ -103,7 +110,8 @@ func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Serv
 			Handler:           auth.middleware(mux),
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
-		log: logger.Component("monitor"),
+		log:    logger.Component("monitor"),
+		cancel: cancel,
 	}, nil
 }
 
@@ -130,6 +138,10 @@ func (s *Server) Start() {
 // already closed it. The Shutdown error takes precedence; a meaningful
 // listener-close error surfaces only when Shutdown itself succeeded.
 func (s *Server) Close(ctx context.Context) error {
+	// Signal the /ws push handlers to stop BEFORE Shutdown waits on them:
+	// Shutdown does not cancel a hijacked WebSocket connection, so a running
+	// push loop must observe this cancellation to return.
+	s.cancel()
 	shutdownErr := s.srv.Shutdown(ctx)
 	if err := s.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		if shutdownErr != nil {
@@ -148,39 +160,85 @@ func handleRoot(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("wanbond monitor\n"))
 }
 
-// newWSHandler returns the /ws upgrade handler. For the skeleton it accepts the
-// WebSocket, sends exactly ONE MonitorSnapshot JSON frame built from src, then
-// closes normally. The 1s push loop is T165; auth/Origin handling is T164 —
-// this handler adds neither.
-func newWSHandler(src metrics.Source, logger log.Logger) http.HandlerFunc {
+// newWSHandler returns the /ws upgrade handler: it accepts the WebSocket and
+// PUSHES a fresh MonitorSnapshot — an immediate first frame, then one every
+// monitorPushInterval (Q50) — until the client disconnects OR srvCtx is
+// cancelled (server Close/shutdown). Each write is bounded by writeTimeout so a
+// stuck client cannot wedge the push goroutine. The read side is drained by
+// CloseRead so the peer's control frames (close/ping) are processed and a client
+// disconnect is detected promptly; the endpoint is push-only, so no application
+// message is expected.
+//
+// INVARIANT (grounding): src MUST be the monitor's OWN metrics.Source instance,
+// NOT the one the Prometheus scraper uses — metricsSource.Paths() derives
+// throughput from cross-call byte deltas under shared last-sample state, so two
+// independent readers on one instance corrupt each other's rates. This handler
+// only consumes whatever Source it was given; the dedicated-instance wiring is
+// enforced at construction (T169 device wiring).
+func newWSHandler(srvCtx context.Context, src metrics.Source, logger log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			logger.Error("monitor ws accept failed", "err", err.Error())
 			return
 		}
-		// CloseNow closes the underlying connection immediately WITHOUT sending a
-		// close frame or status code; it is idempotent, so on the normal path
-		// (the explicit StatusNormalClosure Close below) this deferred call is a
-		// no-op, and on an early bail it just tears the connection down.
+		// CloseNow backstops every exit path (immediate underlying-conn close,
+		// no close frame, idempotent). The graceful teardown below sends a
+		// StatusNormalClosure first on the shutdown path.
 		defer func() { _ = c.CloseNow() }()
 
-		payload, err := json.Marshal(BuildSnapshot(src))
-		if err != nil {
-			logger.Error("monitor ws marshal snapshot failed", "err", err.Error())
-			return
-		}
+		// connCtx cancels when the client closes (CloseRead drains the peer's
+		// control frames in the background — this is a push-only endpoint, so any
+		// application message the client sends is discarded). loopCtx ALSO cancels
+		// on server shutdown (srvCtx via AfterFunc), so even a write blocked on a
+		// stalled client unblocks promptly on Close.
+		connCtx := c.CloseRead(r.Context())
+		loopCtx, stop := context.WithCancel(connCtx)
+		defer stop()
+		defer context.AfterFunc(srvCtx, stop)()
 
-		ctx, cancel := context.WithTimeout(r.Context(), writeTimeout)
-		defer cancel()
-		if err := c.Write(ctx, websocket.MessageText, payload); err != nil {
-			logger.Error("monitor ws write failed", "err", err.Error())
-			return
-		}
+		ticker := time.NewTicker(monitorPushInterval)
+		defer ticker.Stop()
 
-		_ = c.Close(websocket.StatusNormalClosure, "")
+		for {
+			if err := writeSnapshot(loopCtx, c, src); err != nil {
+				// A context cancellation (client close or shutdown) is an
+				// expected teardown, not an application error.
+				if loopCtx.Err() == nil {
+					logger.Error("monitor ws write failed", "err", err.Error())
+				}
+				return
+			}
+			select {
+			case <-loopCtx.Done():
+				// On server shutdown send a graceful close frame; on a
+				// client-initiated close the peer is gone and CloseNow suffices.
+				if srvCtx.Err() != nil {
+					_ = c.Close(websocket.StatusNormalClosure, "")
+				}
+				return
+			case <-ticker.C:
+			}
+		}
 	}
 }
+
+// writeSnapshot marshals one MonitorSnapshot and writes it as a text frame,
+// bounded by writeTimeout so a slow/stuck client reader cannot wedge the push
+// goroutine.
+func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source) error {
+	payload, err := json.Marshal(BuildSnapshot(src))
+	if err != nil {
+		return err
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	return c.Write(writeCtx, websocket.MessageText, payload)
+}
+
+// monitorPushInterval is the cadence at which the /ws handler pushes a fresh
+// MonitorSnapshot to each connected client (Q50: 1 Hz).
+const monitorPushInterval = 1 * time.Second
 
 // writeTimeout bounds a single snapshot-frame write to a slow client.
 const writeTimeout = 5 * time.Second

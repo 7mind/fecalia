@@ -27,11 +27,12 @@ func testLogger(t *testing.T) log.Logger {
 	return lg
 }
 
-// TestServerWSDeliversOneSnapshot asserts the end-to-end skeleton: NewServer
-// binds loopback, Start() serves, a coder/websocket client dials /ws and
-// receives exactly one well-formed MonitorSnapshot JSON frame, and Close(ctx)
-// shuts down cleanly with no leaked goroutine.
-func TestServerWSDeliversOneSnapshot(t *testing.T) {
+// TestServerWSPushesSnapshots asserts the end-to-end push path: NewServer binds
+// loopback, Start() serves, a coder/websocket client dials /ws and receives a
+// first well-formed MonitorSnapshot JSON frame followed by a SECOND pushed frame
+// at the ~1Hz cadence (T165), and Close(ctx) shuts down cleanly with no leaked
+// goroutine.
+func TestServerWSPushesSnapshots(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	src := fakeSource{
@@ -89,14 +90,70 @@ func TestServerWSDeliversOneSnapshot(t *testing.T) {
 		t.Fatalf("snapshot session = %#v, want established=true lastHandshakeSeconds=30", snap.Session)
 	}
 
-	// The skeleton sends exactly one frame then closes normally: the next Read
-	// must observe a normal-closure, not a second frame.
-	read2Ctx, read2Cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// T165: the handler PUSHES snapshots at monitorPushInterval, so the next
+	// Read must observe ANOTHER frame (not a close) within ~1 interval + slack,
+	// verifying the ~1Hz cadence.
+	read2Ctx, read2Cancel := context.WithTimeout(context.Background(), monitorPushInterval+2*time.Second)
 	defer read2Cancel()
-	if _, _, err := c.Read(read2Ctx); err == nil {
-		t.Fatal("second Read succeeded, want a close after exactly one frame")
-	} else if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
-		t.Fatalf("second Read close status = %v, want StatusNormalClosure", websocket.CloseStatus(err))
+	typ2, data2, err := c.Read(read2Ctx)
+	if err != nil {
+		t.Fatalf("Read second (pushed) frame within ~%v: %v", monitorPushInterval+2*time.Second, err)
+	}
+	if typ2 != websocket.MessageText {
+		t.Fatalf("second frame type = %v, want MessageText", typ2)
+	}
+	if err := json.Unmarshal(data2, new(MonitorSnapshot)); err != nil {
+		t.Fatalf("unmarshal second MonitorSnapshot: %v (payload=%s)", err, data2)
+	}
+}
+
+// TestServerWSCloseStopsPush asserts prompt, leak-free teardown: with a client
+// connected and NOT reading further, Close(ctx) cancels the push handler
+// promptly (via the server context) and returns without hanging, and goleak
+// confirms the push goroutine did not outlive Close. This exercises the
+// stalled-client shutdown path (a blocked write unblocked by srvCtx).
+func TestServerWSCloseStopsPush(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	srv, err := NewServer("127.0.0.1:0", "", fakeSource{peerNames: []string{""}}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+
+	url := fmt.Sprintf("ws://%s/ws", srv.Addr().String())
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	c, resp, err := websocket.Dial(dialCtx, url, nil)
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	defer func() { _ = c.CloseNow() }()
+
+	// Read the first frame, then STOP reading (a stalled client). The push loop
+	// keeps running — parked on the ticker between frames, or eventually blocked
+	// on a write once the connection buffer fills — and Close must cancel it
+	// promptly either way (via the server context) rather than waiting out the
+	// per-write timeout.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	if _, _, err := c.Read(readCtx); err != nil {
+		t.Fatalf("Read first frame: %v", err)
+	}
+
+	// Close must return PROMPTLY (well under the 5s write timeout) because the
+	// server context cancels the blocked write.
+	start := time.Now()
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer closeCancel()
+	if err := srv.Close(closeCtx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Close took %v, want prompt (<2s) shutdown of a stalled-client push", elapsed)
 	}
 }
 
