@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 217
+  item: 218
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2369,3 +2369,16 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T148","goals:G13"]
+
+## M64
+
+### R218 — go-ahead
+
+- createdAt: 2026-07-15T06:16:05.731Z
+- updatedAt: 2026-07-15T06:16:05.731Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G15 plan is fine-grained, correctly sequenced, testable, grounded, and complete: both root causes' fix mapping verified against source (D79 identity-keyed pacer config through SetPaths/AddPath/promotion/reload dropping tail/positional carry; D76 AccountProbe on *ActiveBackup via the existing emitProbes/echo seam). Reproduce-first tests precede fixes (T173->T175, T174->T176->T177), interface change precedes bind wiring, DoD gate (build+test+lint+race) last depending on both fixes."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G15"]

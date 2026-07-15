@@ -529,11 +529,11 @@ archives: []
 - sessionLogs: [".cq/logs/20260714-090009-a8d87a208742a8de8.md"]
 - rawLogs: [".cq/logs/raw/20260714-090009-a8d87a208742a8de8.jsonl"]
 
-### D37 — root-caused
+### D37 — resolved
 
 - createdAt: 2026-07-13T22:48:44.390Z
-- updatedAt: 2026-07-14T09:05:20.532Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:19.866Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Startup handshake fires before path liveness and is not re-driven off the first path-up edge
 - severity: medium
@@ -578,11 +578,11 @@ archives: []
 - tags: ["production-deploy","networkmanager","tun"]
 - rootCause: "CONFIRMED as filed (wanbond-fixes D5, production deploy). The daemon created wanbond0 but never brought the link UP nor addressed it; on a NetworkManager host NM flushes the operator's address and the interface stays DOWN across restarts, so a TUN write yields the cryptic 'input/output error'. THE FIX SHIPPED across the G6 goal: the daemon now brings the link UP (I1, T100 SIOCSIFFLAGS IFF_UP), EIO writes emit an actionable diagnostic (I3, T102 diagnosingTUN), the tun can persist across restarts (I7, T109 tun_persist), the NetworkManager unmanaged-devices drop-in ships (C1, T110), and the addressing/persistence oneshot ships (C4, T111) — all documented (T112-T115). The DOWN-link/NM failure mode is addressed end-to-end."
 
-### D40 — root-caused
+### D40 — resolved
 
 - createdAt: 2026-07-13T22:49:25.742Z
-- updatedAt: 2026-07-14T09:10:32.042Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:21.467Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: CAP_NET_RAW (pathsock comment) vs CAP_NET_ADMIN (shipped systemd units) mismatch for SO_BINDTODEVICE
 - severity: low
@@ -595,11 +595,11 @@ archives: []
 
 ## M23
 
-### D41 — root-caused
+### D41 — resolved
 
 - createdAt: 2026-07-13T22:55:09.949Z
-- updatedAt: 2026-07-14T09:09:55.845Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:23.152Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Config loader silently ignores unknown/misspelled TOML keys
 - description: "internal/config/load.go:34 decodes with non-strict toml.Unmarshal (go-toml/v2), so an unknown or misspelled key (e.g. `link_bandwith`, `nane`) is silently dropped even though Load's doc comment and docs/install.md describe the loader as fail-fast. Required keys are backstopped by validate(), but misspelled OPTIONAL keys become silently inert configuration. Pre-existing behavior, untouched by T80's diff. Filed from implement review of T80 round 1 ([fable] reviewer, file-and-defer per K13) as out-of-scope/pre-existing."
@@ -610,11 +610,11 @@ archives: []
 
 ## M24
 
-### D42 — root-caused
+### D42 — resolved
 
 - createdAt: 2026-07-13T23:57:19.238Z
-- updatedAt: 2026-07-14T09:09:32.494Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:24.351Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Deferred AddPath desyncs per-peer probers from m.defs when >1 peer is bound (latent out-of-range panic in removeDurableLocked)
 - description: "internal/bind/multipath.go: AddPath's EADDRNOTAVAIL deferred branch appends the minted prober only to the primary peer's probers (via the peerState embed) while growing m.defs, but removeDurableLocked splices EVERY peer's probers at defIdx assuming each is index-aligned with m.defs. With >=2 bound peers and a deferred path, RemovePath of that path evaluates p.probers[defIdx+1:] past the shorter secondary slice (slice-bounds panic), and removing an earlier path splices the wrong prober silently. Unreachable today — no production code constructs a second peerState — and the omission is a documented later-G4 placeholder, so it was out of scope for T83. Filed from implement review of T83 round 1 ([fable] reviewer, file-and-defer per K13)."
@@ -623,11 +623,11 @@ archives: []
 - ledgerRefs: ["tasks:T83","goals:G4"]
 - rootCause: "CONFIRMED as filed (reviewer-pinned this run with source citations in the description; [fable] T83 review). Deferred AddPath's EADDRNOTAVAIL branch appends the minted prober only to the primary peer's probers while growing m.defs, but removeDurableLocked splices every peer's probers at defIdx assuming m.defs-alignment — with ≥2 bound peers + a deferred path this is a latent slice-bounds panic / mis-splice (internal/bind/multipath.go). Unreachable today (no second peerState constructed). File-and-deferred to goal G8 (multi-peer datapath hardening)."
 
-### D44 — root-caused
+### D44 — resolved
 
 - createdAt: 2026-07-14T00:14:32.635Z
-- updatedAt: 2026-07-14T09:09:35.772Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:27.819Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: fecFlushDeadline drives only the primary peer's FEC group; per-peer fecSend added later (T91/T93) would never receive deadline parity flushes
 - description: "internal/bind/multipath.go:1271 fecFlushDeadline reaches m.fecSend/m.scheduler/m.paths through the embedded-primary promotion, so only the primary's straggler FEC groups get deadline parity (likewise driveAdaptiveControllerLocked). No fault today — no non-primary peerState is ever given a fecSend — but T91 (lazy per-peer FEC instantiation) and T93 (per-peer device wiring) will populate per-peer fecSend, and neither task's text mentions fanning the deadline flush across bound peers; a non-primary peer's partially filled groups would then only close on fill, silently losing straggler parity. Out of scope for T85 (Send-side routing map only). Filed from implement review of T85 round 1 ([fable] reviewer, file-and-defer per K13)."
@@ -638,11 +638,11 @@ archives: []
 
 ## M20
 
-### D43 — root-caused
+### D43 — resolved
 
 - createdAt: 2026-07-14T00:14:26.934Z
-- updatedAt: 2026-07-14T09:10:00.043Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:26.431Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Pre-existing docs advertise string-duration config forms the loader rejects ([scheduler]/[fec])"
 - description: "wanbond.example.toml documents collapse_dwell = \"2s\", load_tau = \"200ms\", weight_rtt_floor = \"1ms\" (~L115-123) and [fec] deadline = \"5ms\" (~L136) for fields typed time.Duration and decoded by go-toml/v2, which cannot decode a TOML string into time.Duration. Probe test confirmed: fec.deadline = \"5ms\" fails config.Load with 'toml: cannot decode TOML string into struct field config.FEC.Deadline of type time.Duration'. An operator uncommenting the documented example gets a load failure. Pre-existing (fields and doc lines pre-date T72). Filed from implement review of T72 round 1 ([fable] reviewer, file-and-defer per K13)."
@@ -653,11 +653,11 @@ archives: []
 
 ## M21
 
-### D45 — root-caused
+### D45 — resolved
 
 - createdAt: 2026-07-14T01:02:00.302Z
-- updatedAt: 2026-07-14T09:10:36.059Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:28.671Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "just lint red at base: 3 pre-existing findings in dnsresolve and bind"
 - description: "golangci-lint (clean cache, nix develop shell) exits 1 at 276a6ea AND at base 817dac4: errcheck on unchecked deferred Close at internal/dnsresolve/doh.go:206 (resp.Body.Close) and internal/dnsresolve/dot.go:168 (conn.Close), plus staticcheck QF1001 at internal/bind/pathsock.go:166. All three files byte-identical between base and the T70 branch, so the breakage pre-exists T70. A red lint gate on the base masks new lint regressions in every in-flight task. Filed from implement review of T70 round 2 ([fable] reviewer, file-and-defer per K13)."
@@ -682,11 +682,11 @@ archives: []
 
 ## M25
 
-### D47 — root-caused
+### D47 — resolved
 
 - createdAt: 2026-07-14T01:43:26.215Z
-- updatedAt: 2026-07-14T09:09:39.788Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:36.651Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Source->peer binding keyed by address only: two peers behind one public IP can never both bind"
 - description: "peerBySource is keyed by netip.Addr (address, not AddrPort) — a granularity inherited from the pre-existing placeholder map. Once peer A's PROBE binds a shared public IP (CGNAT / two edge sites behind one NAT), every frame from that IP — including peer B's PROBEs from a different port — is routed to A's view via lookupPeerBySource, fails A's codec, and is dropped; because bound sources bypass trial-decode entirely, B can never bind or carry traffic through the concentrator. Bindings are also never removed or re-keyed (no unbind path), so the exclusion is permanent. Filed from implement review of T88 round 1 ([fable] reviewer, file-and-defer per K13); settle in the T90 roaming design."
@@ -695,11 +695,11 @@ archives: []
 - ledgerRefs: ["tasks:T88","tasks:T90","goals:G4"]
 - rootCause: "CONFIRMED as filed ([fable] T88 review). peerBySource is keyed by netip.Addr (address, not AddrPort), so once peer A's PROBE binds a shared public IP (CGNAT), every frame from that IP — including peer B's PROBEs from a different port — routes to A's view via lookupPeerBySource, fails A's codec, and is dropped; bound sources bypass trial-decode, so B can never bind. No unbind/re-key path makes the exclusion permanent. File-and-deferred to goal G8 (settle key granularity: AddrPort keying, or let a MAC-verified PROBE that fails the bound peer's codec re-enter trial-decode)."
 
-### D49 — root-caused
+### D49 — resolved
 
 - createdAt: 2026-07-14T03:21:29.110Z
-- updatedAt: 2026-07-14T09:09:44.293Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:39.767Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Global demux cap is monopolizable by one authenticated insider, starving other peers' bootstrap
 - description: "Filed from T91 round-1 review ([fable], file-and-defer per K13). peerBySource has a SINGLE global cap (default 1024) with drop-on-exhaustion and a never-evict-live guard. A party holding ONE valid peer psk can send authenticated PROBEs from ~1024 distinct spoofed source addresses, binding every slot to its OWN peer, then keep that peer live — TearDownPeer refuses live peers, so the slots are never reclaimed and every OTHER configured peer's first PROBE is dropped forever (bootstrap denial). Violates the Q27(1) isolation intent ('a psk holder can disrupt ONLY its own tunnel'). Outside T91's acceptance (which requires only cap + no-evict) and not covered by T92's current acceptance text."
@@ -708,11 +708,11 @@ archives: []
 - ledgerRefs: ["tasks:T91","tasks:T92","goals:G4"]
 - rootCause: "CONFIRMED as filed ([fable] T91 review). peerBySource has a SINGLE global cap (default 1024) with drop-on-exhaustion + never-evict-live; one valid-psk insider can send authenticated PROBEs from ~1024 spoofed sources, bind every slot to its own peer, and keep it live (TearDownPeer refuses live peers) — permanently starving every other peer's bootstrap PROBE. Violates the Q27(1) 'a psk holder disrupts ONLY its own tunnel' isolation intent. File-and-deferred to goal G8 (per-peer quota in bindSourceToPeer + the insider-monopoly threat test)."
 
-### D50 — root-caused
+### D50 — resolved
 
 - createdAt: 2026-07-14T03:21:33.691Z
-- updatedAt: 2026-07-14T09:09:48.334Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:41.167Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Device wiring of TearDownPeer (peer session/liveness loss) is not tracked by any planned task
 - description: "Filed from T91 round-1 review ([fable], file-and-defer per K13). T91's description says teardown is 'wired from device peer events', deferred by the worker as future G4 work — acceptable for T91 since its acceptance is bind-test-only and the M25/M26 DAG defers device wiring. But T93's text covers per-peer CONSTRUCTION and runtime path add/remove only; NO planned task wires WG session-teardown / liveness-loss events to Bind.TearDownPeer. Until wired, dead-peer heavy state (resequencer ring, FEC buffers) and demux cap slots are never reclaimed in production, leaving the T91 machinery inert."
@@ -723,11 +723,11 @@ archives: []
 
 ## M30
 
-### D48 — root-caused
+### D48 — resolved
 
 - createdAt: 2026-07-14T03:18:22.478Z
-- updatedAt: 2026-07-14T09:10:19.050Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:38.155Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: wanbond_path_tx_bytes_total omits probe and echo-reflection wire bytes (tx/rx accounting asymmetry behind path_up=1/tx=0)
 - description: "Both T104 reviewers ([opus]+[fable]) independently source-confirmed: internal/bind/probe.go emitProbes (probe.go:44) writes each PROBE frame via conn.WriteToUDPAddrPort WITHOUT incrementing ps.txBytes, and dispatchInbound's echo reflection (multipath.go ~1284) is likewise uncounted. ps.txBytes.Add exists at exactly two sites — Send (multipath.go:1477) and fecFlushDeadline (:1603) — both DATA/PARITY paths. Meanwhile rxBytes counts EVERY inbound datagram (DATA, PROBE, echo — multipath.go:881) and the metric help string claims 'Total bytes transmitted on the path.' The asymmetry makes a healthy idle standby (active-backup collapses all DATA onto the primary) read path_up=1 with tx=0 while rx grows — exactly the G6/I8-motivating production observation. [fable] additionally empirically validated the T104 repro fixture (BlockEgress one-way tc-clsact block coexisting with netem). This is a METRICS-ACCOUNTING fault, NOT a liveness hole: liveness is genuinely bidirectional (only HandleEcho on our own probe's authenticated echo marks up; an egress-dead standby goes DOWN within DownAfter). The T104 subtest 'standby-transmits-when-idle' (test/e2e/standby_liveness_test.go) is the ready-made repro, predicted (source-consistent) to FAIL against current code until fixed."
@@ -736,11 +736,11 @@ archives: []
 - ledgerRefs: ["tasks:T104","goals:G6"]
 - rootCause: "CONFIRMED as filed (both T104 reviewers source-confirmed). ps.txBytes.Add fires only at the two DATA/PARITY sites (Send multipath.go:1477, fecFlushDeadline :1603); PROBE emission (probe.go:44 emitProbes) and echo reflection (multipath.go ~1284) are uncounted, while rxBytes counts every inbound datagram — so a healthy idle standby reads path_up=1 with tx=0 while rx grows (the I8-motivating observation). A metrics-accounting fault, NOT a liveness hole. File-and-deferred to goal G10 (count probe/echo into txBytes or re-document the metric; flip T104's standby-transmits-when-idle subtest to green)."
 
-### D51 — root-caused
+### D51 — resolved
 
 - createdAt: 2026-07-14T03:53:40.693Z
-- updatedAt: 2026-07-14T09:10:39.600Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:42.632Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Pre-existing e2e /metrics port collision: pacing_test.go and p3_fec_test.go both bind 127.0.0.1:9096"
 - description: Surfaced during T101 round-2 review (port-inventory survey). Two -tags e2e test files declare the SAME metrics-listener port 9096 (pacing_test.go and p3_fec_test.go), breaking the per-file-unique-port convention. Latent under the current SEQUENTIAL netns runner (startProc cleanup waits for process exit), but becomes an active bind conflict under test shuffle/parallelism or a wedged teardown. Pre-existing (NOT introduced by T101, which was fixed to use 9101); out of scope for T101 so filed-and-deferred.
@@ -751,11 +751,11 @@ archives: []
 
 ## M32
 
-### D52 — root-caused
+### D52 — resolved
 
 - createdAt: 2026-07-14T04:01:04.560Z
-- updatedAt: 2026-07-14T09:10:23.050Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:44.156Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: reloadWarnings omits scheduler/fec/dns/bind non-path config sections (SIGHUP silently ignores them)
 - description: "Filed from T109 round-1 review ([fable], file-and-defer per K13). internal/device/device.go reloadWarnings compares role/psk/wireguard/amnezia/log + path params/order, but Config also carries Scheduler, FEC, DNS, and Bind sections — a SIGHUP changing any of those is silently ignored with NO warning, contradicting Reload's documented invariant that every ignored non-path change must produce an explicit warning ('SILENCE is not acceptable'). Pre-existing at base 1fd915f (those fields were added after T30 without extending reloadWarnings). NOTE: the [bind] section here is T105's new BindMode; [dns] is G5's DNS block. Out of scope for T109 (which only adds the analogous warning for its own tun_persist field)."
@@ -764,11 +764,11 @@ archives: []
 - ledgerRefs: ["tasks:T109","goals:G6"]
 - rootCause: "CONFIRMED as filed ([fable] T109 review). internal/device/device.go reloadWarnings compares role/psk/wireguard/amnezia/log + path params but omits the Scheduler, FEC, DNS, and Bind sections — a SIGHUP changing any of those is silently ignored, contradicting Reload's documented 'SILENCE is not acceptable' invariant. File-and-deferred to goal G10 (extend reloadWarnings with DeepEqual over Scheduler/FEC/DNS/Bind, or a zeroed-copy comparison future-proof against new Config fields)."
 
-### D54 — root-caused
+### D54 — resolved
 
 - createdAt: 2026-07-14T04:23:35.572Z
-- updatedAt: 2026-07-14T09:10:43.052Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:51.037Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: golangci-lint scans nested .claude/worktrees, leaking sibling agents' in-progress code into every lint run
 - description: "Surfaced during T77 review ([fable]). `just lint` (golangci-lint) walks the nested implement-worker worktrees under .claude/worktrees/, so in-progress code from OTHER concurrent tasks fails the lint gate of every checkout, including main (observed: errcheck hits from a sibling agent's internal/dnsresolve/{doh,dot}.go leaking into an unrelated task's lint run). The lint gate is NON-HERMETIC with respect to concurrent agent worktrees — it makes `just lint` results depend on what other agents happen to be running, which is both noisy and non-reproducible. (Distinct from D45, which is the pre-existing real lint findings on the tracked tree.)"
@@ -779,11 +779,11 @@ archives: []
 
 ## M31
 
-### D53 — root-caused
+### D53 — resolved
 
 - createdAt: 2026-07-14T04:18:15.521Z
-- updatedAt: 2026-07-14T09:10:27.605Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:45.258Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Device-bind fallback to source-IP pinning is silent (no WARN) in internal/bind
 - description: "Both T106 reviewers ([opus]+[fable]) independently filed this. An operator who explicitly sets bind=\"device\" can silently end up source-IP-pinned — either an unresolvable interface in selectDeviceBinds/resolveForcedDeviceBind, OR a failed SO_BINDTODEVICE setsockopt in listenPath — losing the roam-survival property the mode was chosen for, with NO log signal. internal/bind holds no logger (NewMultipath, multipath.go:514, takes no logger param) and the PRE-EXISTING CAP/setsockopt fallback in listenPath is itself silent, so T106's 'matching the existing CAP fallback' is factually satisfied by silence. Fixing requires threading a logger through NewMultipath — broader than T106's selection-logic scope, so filed-and-deferred."
@@ -792,11 +792,11 @@ archives: []
 - ledgerRefs: ["tasks:T106","goals:G6"]
 - rootCause: CONFIRMED as filed (both T106 reviewers). An operator setting bind="device" can silently end up source-IP-pinned (unresolvable interface in selectDeviceBinds/resolveForcedDeviceBind, OR a failed SO_BINDTODEVICE setsockopt in listenPath) with NO log signal — internal/bind holds no logger (NewMultipath takes none) and the pre-existing CAP/setsockopt fallback is itself silent. File-and-deferred to goal G10 (thread internal/log through NewMultipath into listenPath/planPathBinds/resolveForcedDeviceBind and WARN on every forced-device→source fallback, naming path+interface).
 
-### D55 — root-caused
+### D55 — resolved
 
 - createdAt: 2026-07-14T06:07:16.662Z
-- updatedAt: 2026-07-14T09:10:03.342Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:52.507Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: allowed_ips CIDR syntax is not validated at config load (fails late at daemon start)
 - description: "Surfaced during T107 review ([fable]). config.validate() checks allowed_ips presence + role rules but NOT CIDR syntax: a malformed entry (e.g. '10.0.0.0/33' or a typo) passes config.Load and only fails at DAEMON START when the amneziawg engine's IpcSet rejects the rendered UAPI allowed_ip= line — a late, less-specific error instead of a fail-fast config error naming the offending peer + string. Pre-existing (T107's splitDefaultRoute comment notes 'allowed_ips carries no syntax validation upstream'); out of scope for T107, which only renders. Violates the repo's fail-fast-at-boundary (config load) discipline."
@@ -805,11 +805,11 @@ archives: []
 - ledgerRefs: ["tasks:T107","goals:G6"]
 - rootCause: "CONFIRMED as filed ([fable] T107 review). config.validate() checks allowed_ips presence + role rules but NOT CIDR syntax, so a malformed entry (10.0.0.0/33, a typo) passes Load and only fails at daemon start when the engine's IpcSet rejects the UAPI allowed_ip= line — a late, less-specific error, violating fail-fast-at-config-load. File-and-deferred to goal G9 (netip.ParsePrefix each entry in validate() with peer index + offending string)."
 
-### D59 — root-caused
+### D59 — resolved
 
 - createdAt: 2026-07-14T07:35:20.455Z
-- updatedAt: 2026-07-14T09:10:06.349Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:58.523Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Config validation accepts multiple mode=default-route peers on the edge (overlapping /0)
 - description: "Surfaced during T108 review ([fable]). internal/config/config.go validates only that Peer.Mode is empty-or-'default-route' and rejects mode on the concentrator; nothing rejects TWO OR MORE edge peers both marked mode=default-route with overlapping 0.0.0.0/0 allowed_ips. WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins at the engine, so such a config is silently misconfigured regardless of route programming — contrary to the project's fail-fast validation posture. Pre-existing (T107 config surface), not introduced by or fixable within T108 (which programs routes, not config validation)."
@@ -820,11 +820,11 @@ archives: []
 
 ## M26
 
-### D56 — root-caused
+### D56 — resolved
 
 - createdAt: 2026-07-14T06:20:31.860Z
-- updatedAt: 2026-07-14T09:10:47.067Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:54.000Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Superseded primary-only bind read seams (PathSnapshots/FECSnapshot) retained with duplicated FEC-stat derivation
 - description: "Surfaced during T94 review ([fable]). After T94 migrated the device metrics adapter to Multipath.PeerSnapshots(), the older primary-only seams Multipath.PathSnapshots (internal/bind/multipath.go:2669) and Multipath.FECSnapshot (multipath.go:2053) have NO remaining production callers — only bind's own tests use them. Worse, PeerSnapshots COPY-PASTES FECSnapshot's honest Recovered/Unrecoverable 'delivered count' derivation (the code comment admits 'mirrors ... verbatim'), creating a two-copy DRIFT RISK on that non-trivial rule. Out of scope for T94 (removing them requires migrating ~9 bind test call sites in fec_test.go/traffic_test.go, an unrelated consolidation)."
@@ -835,11 +835,11 @@ archives: []
 
 ## M27
 
-### D57 — root-caused
+### D57 — resolved
 
 - createdAt: 2026-07-14T07:23:55.639Z
-- updatedAt: 2026-07-14T09:10:51.146Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:55.505Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Stale doc-comments in internal/config/config.go: Peer.PSK/Name marked 'not yet consumed by any datapath code path'"
 - description: "Surfaced during T98 review ([opus]). config.go Peer.PSK/Name doc-comments state 'No datapath code path consumes PSK yet; it is parsed, validated, and exposed only' and Name is 'Not yet consumed by any datapath code path'. As of the shipped G4 wiring these are FALSE: device.go calls cfg.PeerIdentities() which derives each peer's effective PSK from Peer.PSK, and internal/bind/multipath.go consumes those per-peer PSKs for peerBySource PROBE-authenticated demux; Peer.Name surfaces (for additional peers) as the metrics 'peer' label. Pre-existing groundwork remnant from T80/T81; out of scope for T98 (docs-sync task that edits AGENTS.md/README/docs/example, not config.go source comments)."
@@ -848,11 +848,11 @@ archives: []
 - ledgerRefs: ["tasks:T98","goals:G4"]
 - rootCause: "CONFIRMED as filed ([opus] T98 review). config.go Peer.PSK/Name doc-comments say 'not yet consumed by any datapath code path' — FALSE since T93: device.go PeerIdentities() derives each peer's effective PSK from Peer.PSK, multipath.go consumes them for the peerBySource PROBE-authenticated demux, and Peer.Name surfaces as the metrics 'peer' label for additional peers. File-and-deferred to goal G11 (update the comments to name the real consumers)."
 
-### D58 — root-caused
+### D58 — resolved
 
 - createdAt: 2026-07-14T07:24:03.514Z
-- updatedAt: 2026-07-14T09:09:52.350Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:56.990Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Multi-peer concentrator drops the first configured peer's required name from metrics labels
 - description: "Surfaced during T98 review ([fable]). Config validation REQUIRES a unique name per peer in multi-peer mode (internal/config/config.go, 'for metrics/logging clarity'), but device.Up never passes ids[0].Name to bind.NewMultipath, and Multipath.BoundPeerNames (internal/bind/multipath.go ~L2608-2622) hard-codes the embedded primary peer's name to \"\" — so on a two-edge concentrator, one edge's metrics series are labeled with its configured name while the primary edge's series carry peer=\"\", defeating the per-peer attribution the name requirement exists for. This is a KNOWN design property that T97's e2e asserts as current behavior (edge A → peer=\"\"), but it contradicts the config-level name requirement. Pre-existing T93/T94 wiring; NOT fixable within T98 (docs-sync). Distinct from [[D56]] (which concerns superseded PathSnapshots/FECSnapshot read seams, not the primary-name label)."
@@ -863,11 +863,11 @@ archives: []
 
 ## M33
 
-### D60 — root-caused
+### D60 — resolved
 
 - createdAt: 2026-07-14T08:08:15.604Z
-- updatedAt: 2026-07-14T09:10:55.053Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:15:59.730Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Stale 'config surface only' doc-comment on config.BindMode contradicts the shipped T106 wiring
 - description: "Surfaced during T112 review ([fable]), re-confirmed + extended during T115 review ([fable]). TWO stale bind-mode doc-comments in internal/config/config.go claim the resolved bind mode is 'CONFIG SURFACE only' / 'not yet consumed': (a) the BindMode type comment (~L78-81): 'Wiring planPathBinds/selectDeviceBinds to consume the resolved mode is a later task — today every path is bound exactly as before, regardless of this field's value'; (b) the parallel Path.Bind field note (~L492-493). Both are FALSE since T106: internal/bind/pathsock.go selectDeviceBinds (~L115-136) switches on config.BindModeSource/Device/Auto and internal/bind/multipath.go (~L2309) AddPath honors a forced BindModeDevice. Groundwork-then-wire remnants, same class as [[D57]] (stale Peer.PSK/Name 'not yet consumed'). Out of scope for the docs-only tasks that surfaced it."
@@ -1061,14 +1061,14 @@ archives: []
 ### D76 — root-caused
 
 - createdAt: 2026-07-14T18:20:59.440Z
-- updatedAt: 2026-07-14T19:46:23.474Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:04:48.236Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Active-backup pacing lacks ProbeBudget: probe/echo egress unaccounted under active-backup + pacing (same D65 starvation T145 fixed for weighted)"
 - description: "Filed INDEPENDENTLY by BOTH T145 reviewers (opus + fable) as out-of-scope-for-T145. internal/sched/active_backup.go: ActiveBackup carries per-path token-bucket pacers (added by T150/D65) but does NOT implement sched.ProbeBudget, so the bind's type-assertion at BOTH charge sites (emitProbes in internal/bind/probe.go, dispatchInbound echo reflection in internal/bind/multipath.go) no-ops for an *ActiveBackup — the pacer budgets ZERO headroom for the out-of-band probe/echo stream. This is the EXACT pre-T145 failure mode T145 fixed for the weighted scheduler: under policy=active_backup + pacing_enabled with a pace sized at ~link rate on deep-buffered links, sustained ClassData load plus the unaccounted probe/echo stream oversubscribes the active path and starves probes past DownAfter (1200ms) into a spurious primary path-DOWN — a failover flap on the scheduler whose ENTIRE PURPOSE is failover. Out of scope for T145, which explicitly scoped ProbeBudget to *WeightedScheduler. Related to [[D65]] (the pacing goal) and T150 (active-backup pacing)."
 - severity: medium
 - suggestedFix: "Implement ProbeBudget on *ActiveBackup: under s.mu, bounds-check pathIdx against s.pacers and call s.pacers[pathIdx].accountProbe(0) (each active-backup pacer is a single-bucket pacer). The existing bind seam (emitProbes + echo reflection) and schedIdx index maintenance then apply unchanged. Mirror the three T145 weighted unit tests (one-token deduction/negative bucket, ClassData-headroom reservation, pacing-off + out-of-range no-op)."
-- ledgerRefs: ["tasks:T145","tasks:T150","defects:D65","goals:G14"]
+- ledgerRefs: ["tasks:T145","tasks:T150","defects:D65","goals:G14","goals:G15"]
 - rootCause: "CONFIRMED (investigate stage) — root cause documented+source-cited by BOTH T145 reviewers (opus+fable, independently) and corroborated by the orchestrator's read of internal/sched/active_backup.go (which carries s.pacers[] single-bucket pacers from T150 but exposes NO ProbeBudget/AccountProbe method, so the bind's `scheduler.(sched.ProbeBudget)` type-assert in emitProbes/dispatchInbound no-ops for *ActiveBackup). Under policy=active_backup + pacing_enabled the probe/echo egress gets ZERO reserved headroom — the exact D65-class probe-starvation→spurious-path-DOWN failover flap T145 fixed for *WeightedScheduler, on the scheduler whose purpose IS failover. Sibling of [[D79]] (both are churn/coverage holes in the T150-T153 active-backup pacing feature). FIX documented (implement ProbeBudget on *ActiveBackup calling s.pacers[pathIdx].accountProbe(0) + the 3 mirror unit tests). READY-TO-SEED into an active-backup-pacing-correctness hardening goal with D79; awaiting /cq:plan."
 
 ### D77 — resolved
@@ -1100,14 +1100,14 @@ archives: []
 ### D79 — root-caused
 
 - createdAt: 2026-07-14T19:05:13.710Z
-- updatedAt: 2026-07-14T19:43:50.937Z
-- author: fable-5
+- updatedAt: 2026-07-15T06:04:46.665Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Active-backup per-path pacing capacities MISASSIGN across bind membership churn (deferred path at Open / T55 promotion / runtime AddPath) — silently reintroduces the D65 fast-path-throttled-to-slow-rate fault
 - description: "Filed by the T153 fable reviewer (out-of-scope for T153, HIGH severity). The per-path pacer configs are carried POSITIONALLY, not by path IDENTITY, across ActiveBackup scheduler membership changes. internal/bind/multipath.go Open (~:1162-1177) EXCLUDES a deferred path (EADDRNOTAVAIL source_addr — the DOCUMENTED T55 deferral case, e.g. a 5G modem without a DHCP lease) from the health slice passed to SetPaths; internal/sched/active_backup.go resizeActiveBackupPacers (~:275-288) then rebuilds buckets by INDEX carry-over. Concretely: cfg.Paths=[slow(cap_l), fast(cap_f)] with the slow path deferred at boot leaves the FAST path's bucket = old[0] = cap_l — the fast path silently throttled to the SLOW path's rate, exactly the D65 failure mode the active-backup pacing feature (T150/T152/T153) exists to remove. T55 promotion (promoteDeferredLocked→attachSharedPathLocked→scheduler AddPath, tail-pace inheritance) AND runtime reload AddPath assign the tail-inherited pace, NEVER the path's own T152-derived capacity, and the config vectors are never re-consulted after construction — so the misassignment PERSISTS even after full recovery/promotion. Construction-time alignment (fresh boot, all paths bindable) is provably 1:1 (verified); the hole is specifically the deferral/churn path. Pre-existing: internal/sched + internal/bind are UNTOUCHED by T153's diff (resize/tail-inheritance shipped with T150 commit 8c86bc3; deferral with T55); T153's wiring merely makes the latent misassignment REACHABLE in production. Relates to [[D65]] (this is D65 resurfacing under churn) and [[D76]] (both are active-backup-pacing correctness holes exposed by the T145/T150-T153 pacing work)."
 - severity: high
 - suggestedFix: "Key each path's pacer config by path IDENTITY, not slice position: extend the DynamicScheduler membership calls (SetPaths/AddPath/promotion) so the bind passes per-path pacer configs (capacity/burst) ALONGSIDE the health sources, sourced from the path's OWN cfg-derived T152 capacity (the bind already knows the m.defs index of every bound/promoted path, and cfg.Scheduler.PerPathCapacities is index-aligned to cfg.Paths). Add a regression test: defer path 0 at Open, assert path 1's bucket carries ITS OWN capacity (not path 0's), then promote path 0 and assert the promoted path's bucket carries ITS own too. Consider whether the weighted scheduler has an analogous positional-carry hole (it uses a shared scalar so likely not, but verify)."
-- ledgerRefs: ["tasks:T153","tasks:T150","defects:D65","defects:D76","goals:G14"]
+- ledgerRefs: ["tasks:T153","tasks:T150","defects:D65","defects:D76","goals:G14","goals:G15"]
 - rootCause: "CONFIRMED against source (orchestrator citation-validation, investigate stage). The active-backup per-path pacer config is carried by SLICE POSITION / TAIL-INHERITANCE, never re-sourced from the path's own identity-keyed cfg.Scheduler.PerPathCapacities. Verified: internal/sched/active_backup.go AddPath (:184-186) seeds a re-grown path's pacer from `s.cfg.tailPacerConfig()` or `s.pacers[n-1].cfg` (the LAST existing pacer), NOT the added path's own cfg-derived capacity; SetPaths (:258) calls resizeActiveBackupPacers(s.pacers, len(health), s.cfg.tailPacerConfig(), ...) which (:275-288) rebuilds buckets by INDEX carry-over from the old slice with a tail fallback. Combined with internal/bind/multipath.go Open excluding a T55-deferred path (EADDRNOTAVAIL source_addr) from the health slice handed to SetPaths, a bound path can be paced at a DIFFERENT cfg.Paths entry's capacity (e.g. cfg.Paths=[slow,fast], slow deferred at boot -> fast's bucket = slow's capacity), and promotion/reload AddPath inherits the tail rather than the path's own T152-derived capacity. Construction-time (all paths bindable at boot) is provably 1:1; the hole is the deferral/promotion/reload-churn path. This silently reintroduces the D65 fast-path-throttled-to-slow-rate fault the pacing feature exists to remove. FIX (unchanged from filing): key each path's pacer config by IDENTITY through the DynamicScheduler SetPaths/AddPath/promotion interfaces, sourced from the path's own cfg.Scheduler.PerPathCapacities[identity] (the bind knows the m.defs index of every bound/promoted path), + a regression test (defer path 0, assert path 1 keeps its own capacity; promote path 0, assert it gets its own). READY-TO-SEED into an active-backup-pacing-correctness fix goal together with [[D76]] (active-backup lacks ProbeBudget) — both are churn/coverage holes in the T150/T152/T153 active-backup pacing feature; awaiting /cq:plan to house the fix."
 
 ### D80 — root-caused

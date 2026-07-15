@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 172
+  item: 178
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -2099,3 +2099,85 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T158"]
 - resultCommit: 479a231
+
+## M65
+
+### T173 — planned
+
+- createdAt: 2026-07-15T06:09:55.114Z
+- updatedAt: 2026-07-15T06:09:55.114Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D76: reproduce-first unit tests for *ActiveBackup ProbeBudget headroom"
+- description: "Add active-backup unit tests in internal/sched mirroring the THREE T145 *WeightedScheduler AccountProbe tests (locate them in internal/sched/weighted*_test.go). Three cases against a pacing-enabled *ActiveBackup: (1) one-token deduction / bucket may go negative — AccountProbe(idx) spends exactly one token from that path's single (n==1) bucket and repeated calls drive it below zero; (2) ClassData headroom reservation — after AccountProbe the paced Pick yields/sheds (PickPaced) until refill catches up; (3) pacing-off + out-of-range no-op — AccountProbe is inert when cfg.Pacing is false and when pathIdx is out of range. Also add the compile-time expectation `var _ sched.ProbeBudget = (*ActiveBackup)(nil)`. Tests are in-package (internal/sched) so they may read s.pacers[i] internals, mirroring the weighted tests. REPRODUCE-FIRST: on current HEAD the suite MUST FAIL (compile: no AccountProbe on *ActiveBackup / the compile-proof line does not build; or, if written via the bind seam, the assert sees zero deduction). Do NOT implement the method in this task."
+- acceptance: New active-backup ProbeBudget tests exist in internal/sched mirroring the 3 weighted cases; on current HEAD `go test ./internal/sched/...` FAILS for the documented reason (*ActiveBackup implements no AccountProbe); test bodies are written against the intended AccountProbe(pathIdx int) signature and the single-bucket (idx 0) semantics.
+- suggestedModel: standard
+- ledgerRefs: ["defects:D76","goals:G15"]
+
+### T175 — planned
+
+- createdAt: 2026-07-15T06:10:18.489Z
+- updatedAt: 2026-07-15T06:10:18.489Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D76: implement AccountProbe(pathIdx) on *ActiveBackup + compile-proof"
+- description: "Implement `func (s *ActiveBackup) AccountProbe(pathIdx int)` in internal/sched/active_backup.go, mirroring WeightedScheduler.AccountProbe (weighted.go:296-300): take s.mu (defer unlock); if pacing is on, bounds-check pathIdx against len(s.pacers), then call s.pacers[pathIdx].accountProbe(0) — each active-backup pacer holds a single (n==1) bucket so the inner bucket index is always 0 (pacer.accountProbe already no-ops on pacing-off/out-of-range for the inner index). Add the compile-time proof `_ ProbeBudget = (*ActiveBackup)(nil)` alongside the existing Scheduler/DynamicScheduler proofs (active_backup.go:93-96). NO bind changes: emitProbes (probe.go:69-71) and the echo-reflection site (multipath.go:2054-2056) already type-assert sched.ProbeBudget and pass the path's schedIdx, so they light up automatically. The T173 tests now pass."
+- acceptance: "`go test ./internal/sched/...` PASSES including the T173 tests; the compile-proof `_ sched.ProbeBudget = (*ActiveBackup)(nil)` holds; AccountProbe is a no-op when pacing is off or pathIdx is out of range; no edits to probe.go / multipath.go charge sites."
+- suggestedModel: standard
+- dependsOn: ["T173"]
+- ledgerRefs: ["defects:D76","goals:G15"]
+
+## M66
+
+### T174 — planned
+
+- createdAt: 2026-07-15T06:10:03.230Z
+- updatedAt: 2026-07-15T06:10:03.230Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D79: reproduce-first regression test for identity-keyed active-backup pacer config across defer/promote"
+- description: "Add an internal/bind regression test exercising T55 deferral + promotion churn against a pacing-enabled active_backup bond. Setup: cfg.Paths = [slow, fast] with DISTINCT per-path capacities (cfg.Scheduler.PerPathCapacities index-aligned: slow=low FPS, fast=high FPS); force path 0 (slow) to DEFER at Open by injecting EADDRNOTAVAIL on its source_addr — reuse the existing deferral scaffolding in internal/bind (runtime_path_test.go / reconcile_test.go). Assert (A): after Open, the sole bound path (fast) — the scheduler's index-0 pacer — carries ITS OWN capacity (fast), NOT path 0's (slow). Then promote path 0 via reconcileDeferred/promoteDeferredLocked and assert (B): the promoted path's pacer carries ITS OWN (slow) capacity and fast keeps fast. Observe effective per-path CapacityFPS/BurstFrames on the scheduler's pacers via an in-package accessor or a test hook. REPRODUCE-FIRST: on current HEAD this MUST FAIL — the deferred-path exclusion shifts indices so fast inherits slow's capacity through the positional carry / tail fallback (resizeActiveBackupPacers + AddPath tail seed), reproducing D65. Do NOT fix in this task."
+- acceptance: "New regression test drives Open-with-deferred-path-0 then promotion on a pacing-enabled active_backup bond; on current HEAD it FAILS asserting the bound (A) and promoted (B) path pacer CapacityFPS/BurstFrames equal their OWN cfg-derived values (observed: a path carries another cfg.Paths entry's capacity); test is deterministic (fake clock, injected EADDRNOTAVAIL) and race-clean."
+- suggestedModel: standard
+- ledgerRefs: ["defects:D79","defects:D65","goals:G15"]
+
+### T176 — planned
+
+- createdAt: 2026-07-15T06:10:28.844Z
+- updatedAt: 2026-07-15T06:10:28.844Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D79: extend DynamicScheduler membership to carry per-path pacer config by identity; seed *ActiveBackup from it"
+- description: "Extend the sched membership API so per-path pacer config (capacity/burst) travels ALONGSIDE the health sources, keyed by path identity rather than slice position. internal/sched/scheduler.go: change DynamicScheduler.SetPaths and AddPath to carry each path's own pacer config — prefer a typed carrier (e.g. a PathAdmission{Health PathHealth; CapacityFPS, BurstFrames float64} or a parallel per-path config slice) over positional coupling. internal/sched/active_backup.go: SetPaths seeds each rebuilt pacer from the SUPPLIED per-path config (drop resizeActiveBackupPacers' old-slice index-carry AND the tailPacerConfig fallback as the CONFIG source; keep the resize/full-seed mechanics and index-alignment); AddPath seeds the new pacer from the SUPPLIED config, not s.pacers[n-1].cfg / tailPacerConfig. Retire tailPacerConfig if it becomes dead. internal/sched/weighted.go: update WeightedScheduler.SetPaths/AddPath to the new signature — it uses a single embedded shared-scalar pacer, so it accepts and ignores per-path config; CONFIRM (comment + a small assertion/test) it has no analogous positional-carry hole. Update all in-tree callers/tests to compile (bind-side identity SOURCING is the next task — here just keep the tree building, threading through whatever the bind currently passes). Keep pacing-disabled paths byte-identical."
+- acceptance: DynamicScheduler.SetPaths/AddPath carry per-path pacer config; *ActiveBackup seeds every pacer (SetPaths rebuild + AddPath grow) from the supplied identity-sourced config with NO tail/positional fallback for the capacity; *WeightedScheduler satisfies the new interface and a comment/test documents it has no positional-carry hole; both scheduler compile-proofs hold; `go build ./... && go test ./internal/sched/...` green.
+- suggestedModel: frontier
+- dependsOn: ["T174"]
+- ledgerRefs: ["defects:D79","goals:G15"]
+
+### T177 — planned
+
+- createdAt: 2026-07-15T06:10:45.048Z
+- updatedAt: 2026-07-15T06:10:45.048Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D79: wire the bind to source each bound/promoted path's pacer config from cfg by m.defs identity"
+- description: "Source each path's pacer config from its OWN cfg entry and pass it through the extended membership calls at EVERY churn site. (1) internal/bind/multipath.go Open reconcile (:1162-1177): when assembling each peer's DynamicScheduler.SetPaths input, pair each BOUND path with its cfg-derived capacity/burst keyed by the path's m.defs index — cfg.Scheduler.PerPathCapacities / PacingBursts are index-aligned to cfg.Paths (== m.defs). The deferred path stays excluded, but bound paths now carry their OWN pace regardless of the index shift the exclusion causes. (2) Promotion: reconcile.go promoteDeferredLocked -> attachSharedPathLocked -> scheduler AddPath must pass the promoted path's own cfg config (defIdx is already resolved in promoteDeferredLocked). (3) Runtime reload AddPath (the device.go / m.AddPath caller) passes the added path's own cfg config. If the per-path capacity/burst vectors are not already reachable from Multipath, thread them in from cfg.Scheduler at bind construction, index-aligned to m.defs (mirror how m.defs itself is held). Keep pacing-disabled and non-dynamic/no-prober binds byte-identical. The T174 regression test now PASSES."
+- acceptance: The T174 regression test PASSES (bound + promoted paths carry their OWN cfg-derived capacity/burst across defer/promote/reload); Open reconcile, promoteDeferredLocked, and runtime AddPath all pass identity-sourced per-path pacer config; pacing-off and no-prober/non-dynamic binds unchanged; `go test ./internal/bind/... ./internal/sched/...` green.
+- suggestedModel: frontier
+- dependsOn: ["T176"]
+- ledgerRefs: ["defects:D79","defects:D65","goals:G15"]
+
+## M67
+
+### T178 — planned
+
+- createdAt: 2026-07-15T06:11:00.174Z
+- updatedAt: 2026-07-15T06:11:00.174Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G15 DoD gate: full build/test/lint + race on sched+bind for the active-backup pacing fix"
+- description: "Run the definition-of-done gate for BOTH fixes and confirm green: `nix develop -c just build && just test && just lint` across the default + e2e + realhosts tag sets (per project memory the go definition-of-done INCLUDES `just lint` / golangci across all tag sets, not only `go test`), plus `go test -race ./internal/sched/... ./internal/bind/...`. Confirm the D76 (T173) and D79 (T174) reproduce-first tests are part of the suite and now PASS, and that no pre-existing test or lint check regresses. On merge, defects:D79 and defects:D76 are driven to `resolved` (orchestrator / implement-flow action — noted here for traceability, not a code change). Make NO source changes here except trivial fixes that lint/race surface within this goal's own diff."
+- acceptance: "`nix develop -c just build && just test && just lint` all pass across default+e2e+realhosts tags; `go test -race ./internal/sched/... ./internal/bind/...` passes with no data races; the D76 + D79 regression/unit tests are present and green; no unrelated test or lint regressions."
+- suggestedModel: standard
+- dependsOn: ["T175","T177"]
+- ledgerRefs: ["defects:D79","defects:D76","goals:G15"]

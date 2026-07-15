@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 63
+  item: 67
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -438,3 +438,32 @@ archives:
 - updatedAt: 2026-07-14T13:15:03.407Z
 - title: "wanbond D65: docs sync + green definition-of-done gate"
 - dependsOn: ["M59"]
+
+### M64 — open
+
+- createdAt: 2026-07-15T06:03:27.624Z
+- updatedAt: 2026-07-15T06:03:27.624Z
+- title: "Plan: fix D79+D76 active-backup pacing correctness"
+- description: Coordination milestone for the defect-seeded fix goal covering D79 (per-path pacer capacities misassigned across bind membership churn — reintroduces the D65 fast-path-throttled-to-slow-rate fault) and D76 (ActiveBackup lacks ProbeBudget — probe/echo egress unaccounted under active-backup+pacing → spurious primary path-DOWN failover flap). Both are churn/coverage holes in the T150–T153 active-backup pacing feature, filed out-of-scope by reviewers, root-caused ready-to-seed. Manually bridged into a fix goal (cq lacks an autonomous root-caused-defect sweep — see the filed cq bug report).
+
+### M65 — open
+
+- createdAt: 2026-07-15T06:08:23.852Z
+- updatedAt: 2026-07-15T06:08:23.852Z
+- title: "G15/D76: ActiveBackup implements sched.ProbeBudget (probe/echo pacing headroom)"
+- description: "Fix defect D76 (MEDIUM): *ActiveBackup does not implement sched.ProbeBudget, so the emitProbes + echo-reflection charge sites no-op and the out-of-band probe/echo stream reserves zero pacing headroom -> spurious active-primary path-DOWN flap under active_backup + pacing. Independent of the D79 track. Links goals:G15, defects:D76."
+
+### M66 — open
+
+- createdAt: 2026-07-15T06:08:26.453Z
+- updatedAt: 2026-07-15T06:08:26.453Z
+- title: "G15/D79: identity-keyed active-backup per-path pacer config across membership churn"
+- description: "Fix defect D79 (HIGH): active-backup per-path pacer config is carried by slice position / tail-inheritance (AddPath, SetPaths/resizeActiveBackupPacers), never re-sourced from the path's own identity-keyed cfg.Scheduler.PerPathCapacities, so a T55 deferral/promotion/reload churn mis-paces a bound path at another cfg.Paths entry's capacity (reintroduces D65). Extend the DynamicScheduler membership calls to carry per-path pacer config by identity and wire the bind to source it from cfg by m.defs index. Independent of the D76 track. Links goals:G15, defects:D79, defects:D65."
+
+### M67 — open
+
+- createdAt: 2026-07-15T06:08:28.604Z
+- updatedAt: 2026-07-15T06:08:36.103Z
+- title: "G15: definition-of-done gate (build + test + lint + race, active-backup pacing fix)"
+- description: "Final green gate for both D76 and D79 fixes: nix develop -c just build && just test && just lint (default+e2e+realhosts tags) + go test -race ./internal/sched/... ./internal/bind/.... Placeholder dependsOn tokens replaced with the real W_D76/W_D79 milestone ids after creation. Links goals:G15."
+- dependsOn: ["M65","M66"]

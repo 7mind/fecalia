@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 14
+  item: 16
 archives: []
 ---
 
@@ -388,3 +388,36 @@ archives: []
 - milestones: ["M57","M59","M60","M58"]
 - sessionLogs: [".cq/logs/20260714-131751-a939da48f71492819.md",".cq/logs/20260714-131751-a4e27ec8438296860.md",".cq/logs/20260714-132929-aa935aed152b4e285.md",".cq/logs/20260714-133525-a3a8224f82f52d214.md"]
 - rawLogs: [".cq/logs/raw/20260714-131751-a939da48f71492819.jsonl",".cq/logs/raw/20260714-131751-a4e27ec8438296860.jsonl",".cq/logs/raw/20260714-132929-aa935aed152b4e285.jsonl",".cq/logs/raw/20260714-133525-a3a8224f82f52d214.jsonl"]
+
+## M64
+
+### G15 — planning
+
+- createdAt: 2026-07-15T06:04:32.461Z
+- updatedAt: 2026-07-15T06:08:38.120Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: "Fix D79+D76: active-backup per-path pacing correctness (identity-keyed pacer config + ProbeBudget)"
+- description: |
+    DEFECT-SEEDED (skip clarifying — both root causes CONFIRMED against source; refs defects:D79, defects:D76, defects:D65). Two churn/coverage holes in the T150–T153 active-backup pacing feature, filed out-of-scope by reviewers and root-caused ready-to-seed. Manually bridged into a fix goal because cq lacks an autonomous root-caused-defect sweep (see the filed cq bug report).
+    
+    === D79 (HIGH) — per-path pacer capacities MISASSIGN across bind membership churn ===
+    CONFIRMED ROOT CAUSE: the active-backup per-path pacer config is carried by SLICE POSITION / TAIL-INHERITANCE, never re-sourced from the path's own identity-keyed cfg.Scheduler.PerPathCapacities. internal/sched/active_backup.go AddPath (~:184-186) seeds a re-grown path's pacer from s.cfg.tailPacerConfig() or s.pacers[n-1].cfg (the LAST existing pacer), NOT the added path's own cfg-derived capacity; SetPaths (~:258) calls resizeActiveBackupPacers(...) which (~:275-288) rebuilds buckets by INDEX carry-over from the old slice with a tail fallback. Combined with internal/bind/multipath.go Open (~:1162-1177) EXCLUDING a T55-deferred path (EADDRNOTAVAIL source_addr) from the health slice handed to SetPaths, a bound path can be paced at a DIFFERENT cfg.Paths entry's capacity (cfg.Paths=[slow,fast], slow deferred at boot -> fast's bucket = slow's capacity), and T55 promotion (promoteDeferredLocked->attachSharedPathLocked->scheduler AddPath) / runtime reload AddPath inherit the tail rather than the path's own T152-derived capacity, and the config vectors are never re-consulted after construction — so the misassignment PERSISTS after full recovery/promotion. Construction-time (all paths bindable at boot) is provably 1:1; the hole is specifically the deferral/promotion/reload-churn path. Silently reintroduces the D65 fast-path-throttled-to-slow-rate fault the pacing feature exists to remove.
+    SUGGESTED FIX: key each path's pacer config by path IDENTITY, not slice position — extend the DynamicScheduler membership calls (SetPaths/AddPath/promotion) so the bind passes per-path pacer configs (capacity/burst) ALONGSIDE the health sources, sourced from the path's OWN cfg-derived T152 capacity (the bind knows the m.defs index of every bound/promoted path, and cfg.Scheduler.PerPathCapacities is index-aligned to cfg.Paths). Regression test: defer path 0 at Open, assert path 1's bucket carries ITS OWN capacity (not path 0's); then promote path 0 and assert the promoted path's bucket carries its own too. Verify the weighted scheduler has no analogous positional-carry hole (it uses a shared scalar — likely not, but confirm).
+    
+    === D76 (MEDIUM) — ActiveBackup lacks ProbeBudget (probe/echo egress unaccounted) ===
+    CONFIRMED ROOT CAUSE: ActiveBackup carries per-path token-bucket pacers (T150) but does NOT implement sched.ProbeBudget, so the bind's type-assertion at BOTH charge sites (emitProbes in internal/bind/probe.go, dispatchInbound echo reflection in internal/bind/multipath.go) no-ops for an *ActiveBackup — the pacer budgets ZERO headroom for the out-of-band probe/echo stream. Exact pre-T145 failure mode T145 fixed for *WeightedScheduler: under policy=active_backup + pacing_enabled with a pace sized ~link rate on deep-buffered links, sustained ClassData load plus the unaccounted probe/echo stream oversubscribes the active path and starves probes past DownAfter (1200ms) into a spurious primary path-DOWN — a failover flap on the scheduler whose ENTIRE PURPOSE is failover.
+    SUGGESTED FIX: implement ProbeBudget on *ActiveBackup — under s.mu, bounds-check pathIdx against s.pacers and call s.pacers[pathIdx].accountProbe(0) (each active-backup pacer is a single-bucket pacer). The existing bind seam (emitProbes + echo reflection) + schedIdx index maintenance then apply unchanged. Mirror the three T145 weighted unit tests (one-token deduction/negative bucket, ClassData-headroom reservation, pacing-off + out-of-range no-op).
+    
+    GROUNDING: internal/sched/active_backup.go (pacers[], AddPath ~:184-186, SetPaths ~:258, resizeActiveBackupPacers ~:275-288, ProbeBudget interface unimplemented), internal/bind/multipath.go (Open deferral ~:1162-1177, dispatchInbound echo-reflection charge site, promoteDeferredLocked/attachSharedPathLocked), internal/bind/probe.go (emitProbes charge site), internal/config/config.go (cfg.Scheduler.PerPathCapacities index-aligned to cfg.Paths, T152 derivePacingFromBDP), internal/sched/weighted.go + the T145 weighted ProbeBudget + its 3 unit tests (the mirror template). DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race ./internal/sched/... ./internal/bind/.... On merge, drive defects:D79 and defects:D76 to resolved.
+- sourceRefs: ["defects:D79","defects:D76"]
+- tags: ["defect-seeded","active-backup-pacing","manual-bridge"]
+- grounding: |
+    Verified all cited symbols against source (codegraph).
+    
+    D79 (positional pacer-config carry): internal/sched/active_backup.go — newActiveBackupPacers (:139-162) IS identity-keyed at CONSTRUCTION (seeds pacers[i] from cfg.PerPathCapacities[i]/PacingBursts[i]); the hole is ONLY the churn path: AddPath (:169-191) seeds a re-grown pacer from s.pacers[n-1].cfg or s.cfg.tailPacerConfig() (:296, LAST configured path), and SetPaths (:237-264) calls resizeActiveBackupPacers (:275-288) which carries cfg by OLD-SLICE INDEX with a tail fallback — neither re-consults the added/re-grown path's OWN cfg. Bind side: multipath.go Open reconcile (:1162-1177) assembles health=[bound probers only] (a T55-deferred path contributes no peerPathState/prober, so it is EXCLUDED, shifting indices) and calls pdyn.SetPaths(health); promotion path is reconcile.go promoteDeferredLocked (:174) -> attachSharedPathLocked (multipath.go:2801) -> scheduler AddPath. cfg.Scheduler.PerPathCapacities is index-aligned to cfg.Paths (== m.defs); the bind knows every bound/promoted path's m.defs index. FIX SURFACE: extend DynamicScheduler.SetPaths/AddPath (scheduler.go:153-175) to carry per-path pacer config (capacity/burst) ALONGSIDE health; *ActiveBackup seeds each pacer from the supplied identity-sourced config (drop tail/positional carry); *WeightedScheduler (embedded shared-scalar pacer, weighted.go:172) updated to accept+ignore — confirmed no analogous positional hole (single shared bucket).
+    
+    D76 (missing ProbeBudget): both charge sites ALREADY type-assert sched.ProbeBudget and no-op for *ActiveBackup — emitProbes (probe.go:69-71) and dispatchInbound echo reflection (multipath.go:2054-2056, uses ps.schedIdx.Load()). *ActiveBackup carries pacers[] (single (n==1) bucket each) but implements no AccountProbe and has no compile-proof (Weighted has _ ProbeBudget at weighted.go:184). FIX: AccountProbe(pathIdx) on *ActiveBackup under s.mu, bounds-check pathIdx vs len(s.pacers), s.pacers[pathIdx].accountProbe(0) (idx 0 = the single bucket); add compile-proof. pacer.accountProbe (pacer.go:124-132) already no-ops on pacing-off/out-of-range. Mirror template = WeightedScheduler.AccountProbe (weighted.go:296-300) + its 3 T145 unit tests.
+    
+    DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race ./internal/sched/... ./internal/bind/...; MEMORY: go gate includes just lint, not only go test.
+- milestones: ["M65","M66","M67"]
