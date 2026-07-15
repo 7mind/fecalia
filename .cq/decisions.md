@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 17
+  item: 19
 archives: []
 ---
 
@@ -213,3 +213,31 @@ archives: []
 - landsIn: ["M65","M66","M67"]
 - sourceRefs: ["goals:G15","reviews:R218"]
 - ledgerRefs: ["goals:G15","defects:D79","defects:D76"]
+
+## M71
+
+### K17 — locked
+
+- createdAt: 2026-07-15T06:29:34.509Z
+- updatedAt: 2026-07-15T06:29:34.509Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G19 plan approved: e2e test-correctness fix DAG locked (M78, T187/T192)"
+- rationale: "Orchestrator inline go-ahead (R219). D81 (T187): rx->tx metric swap in multipeer_test.go non-primary INBOUND assertion. D80 (T192): loopback-in-netns /metrics bind + fetchMetricsInNetns scrape in restart_onesided_test.go (mirror the D77 remediation). Both test-edit-only, reuse proven patterns, independent. Privileged -tags e2e hardware validation deferred to the o3+llm-ubuntu-0 tier. On merge, D80/D81 -> resolved."
+- landsIn: ["M78"]
+- sourceRefs: ["goals:G19","reviews:R219"]
+- ledgerRefs: ["goals:G19","defects:D80","defects:D81"]
+
+## M72
+
+### K18 — locked
+
+- createdAt: 2026-07-15T06:29:47.507Z
+- updatedAt: 2026-07-15T06:29:47.507Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G20 plan approved: docs/operator-guidance fix DAG locked (M77, T185/T189)"
+- rationale: "Orchestrator inline go-ahead (R220). D35 (T185): docs-only external-/0-route operator warning in install.md §9 + runbook pointer (production already mitigated by T107+T108). D61 (T189): Justfile D54-comment reword + D54.rootCause re-adjudication note. Both docs/comment/ledger-only, no code change, independent. On merge, D35/D61 -> resolved."
+- landsIn: ["M77"]
+- sourceRefs: ["goals:G20","reviews:R220"]
+- ledgerRefs: ["goals:G20","defects:D35","defects:D61"]

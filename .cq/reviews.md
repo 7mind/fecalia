@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 218
+  item: 232
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2382,3 +2382,73 @@ archives:
 - new_questions: []
 - criticism: []
 - ledgerRefs: ["goals:G15"]
+
+## M78
+
+### R219 — go-ahead
+
+- createdAt: 2026-07-15T06:29:29.773Z
+- updatedAt: 2026-07-15T06:29:29.773Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G19 plan review (orchestrator inline, proportionate for a 2-task test-edit-only plan against proven existing patterns; T137/R196 inline-review precedent) — VERDICT = go-ahead. Plan (M78): T187 (D81 — swap the non-primary peer INBOUND assertion in test/e2e/multipeer_test.go from MetricRxBytes (structurally 0 for a shared readLoop) to MetricTxBytes, mirroring the already-fixed d47 pattern in multipeer_hardened_test.go + correct the comment; concentrator already scrapes over base-netns loopback so no bind change) and T192 (D80 — bind concentrator /metrics to 127.0.0.1 inside the peer netns and scrape via the existing fetchMetricsInNetns/netnsMetricsClient D77 remediation from p2_aggregation_test.go, replacing the uplink-IP survivorURL/restartedURL scrapes that NewServer requireLoopback-refuses; + a metricsPortRegistry comment in netns.go). Both match the triage-confirmed root causes exactly; both reuse EXISTING proven patterns (no new helper code); independent (different files, no dependsOn) so implement/review in parallel. Acceptance built on go vet -tags e2e + golangci --build-tags e2e + go build -tags e2e, with the privileged netns/TUN hardware run explicitly deferred+documented (these are -tags e2e tests needing root) — correct scoping. 0 criticisms / 0 questions."
+- ledgerRefs: ["goals:G19","tasks:T187","tasks:T192"]
+
+## M77
+
+### R220 — go-ahead
+
+- createdAt: 2026-07-15T06:29:43.234Z
+- updatedAt: 2026-07-15T06:29:43.234Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G20 plan review (orchestrator inline, proportionate for a docs/comment/ledger-only 2-task plan; T137/R196 inline-review precedent) — VERDICT = go-ahead. Plan (M77): T185 (D35 — insert the external-literal-/0-route operator warning into docs/install.md §9 (insertion point ~line 1536) + strengthen the docs/runbook.md pointer; warns that a 0.0.0.0/0 default route installed OUTSIDE wanbond must EXCLUDE the concentrator underlay endpoint or use the /1+/1 split, pointing at mode=default-route/T108 which does the safe split automatically) and T189 (D61 — reword the Justfile:41-44 D54 comment to drop the disproven 'walks the repo root' mechanism claim while keeping the correct hermetic explicit-package-list recipe + append a re-adjudication note to D54.rootCause). Planner confirmed by grep that neither doc currently mentions 'underlay'/'routing loop'/'exclude...endpoint' — the D35 gap is real+locatable; runbook.md has only cross-ref pointers so install.md is the correct home. Both docs/comment/ledger-only (NO datapath code change, matching D35's already-mitigated-by-T107/T108 status); independent. Acceptance grep-verifiable + just fmt-check/lint (Go-only) stays green + go build. 0 criticisms / 0 questions."
+- ledgerRefs: ["goals:G20","tasks:T185","tasks:T189"]
+
+### R230 — go-ahead
+
+- createdAt: 2026-07-15T06:35:58.385Z
+- updatedAt: 2026-07-15T06:35:58.385Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G20 IMPLEMENT review (orchestrator inline, proportionate docs/comment-only) — VERDICT = go-ahead. Merged to main as 740c13c (cherry-pick of implement/G20 10bc2b2; docs/install.md + docs/runbook.md + Justfile, 29+/5-). VERIFIED on main: T185 (D35) — install.md §9 now carries the operator warning (lines ~1539-1555: a literal 0.0.0.0/0 default route installed OUTSIDE wanbond bypasses splitDefaultRoute and recurses the encrypted underlay UDP back into the tunnel -> the D35 handshake-never-completes symptom; recommends mode=default-route or a manual /1+/1 split / more-specific host-route exclusion of the concentrator endpoint); runbook.md §9 pointer strengthened with the same caveat; grep confirms 'underlay'/'recurses'/'exclude' now present. T189 (D61) — Justfile:41-43 comment reworded to drop the misattributed 'walks the repo root'/sibling-worktree-leak mechanism claim while keeping the correct rationale (explicit package list keeps golangci-lint reproducible + scoped to tracked code; D54/D61); recipe commands unchanged. Docs-only, no Go source; gate green (go build clean; just lint 0 issues all tags — after clearing a pre-existing stale golangci-lint cache, reproduced identically on the unmodified base a52b049, unrelated to the diff). 0 criticisms."
+- ledgerRefs: ["goals:G20","tasks:T185","tasks:T189","defects:D35","defects:D61"]
+
+## M68
+
+### R222 — revise
+
+- createdAt: 2026-07-15T06:34:23.118Z
+- updatedAt: 2026-07-15T06:34:23.118Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: Fix designs for D34/D64/D68 are correct, sequenced, testable and reproduce-first; but T179's blast-radius grounding is factually wrong (claims 5 Rebaseline callers in multipath.go — there is 1 prod + 4 test callers elsewhere), which misdirects the implementer and makes T179's acceptance unverifiable as written.
+- new_questions: []
+- criticism: ["T179 is mis-grounded on the plain-Rebaseline blast radius, and its acceptance is not verifiable as written. Both the T179 description and its acceptance state 'all 5 multipath.go Rebaseline callers compile and their existing tests pass' and instruct degrading 'a caller with no meaningful expected source (generic close/reset)' to plain-unpin. Raw grep (grep -rn '\\.Rebaseline(' --include=*.go) shows exactly ONE production caller of plain Rebaseline: SetPeerRemote at internal/bind/multipath.go:2559 — which already holds the standby endpoint `ap` in scope — plus FOUR TEST callers that live in internal/reseq/reseq_test.go (:761, :792, :955) and internal/metrics/metrics_test.go (:435), NOT in multipath.go. There is NO production close/reset Rebaseline caller (Close() at multipath.go:2585 does not call Rebaseline). The '5 callers in multipath.go' figure came from a codegraph blast-radius count that conflated the whole-repo total (1 prod + 4 test) and mis-attributed all of them to multipath.go; the goal's grounding field carries the same error. Consequence for the implementer: (a) they will hunt for nonexistent multipath.go callers, (b) the signature change to Rebaseline(expectedStandby) WILL break the 4 test call sites in reseq_test.go/metrics_test.go and those MUST be updated, yet the acceptance points at the wrong file, and (c) the 'generic close/reset' degrade path is scaffolding for a case that does not occur in production. FIX (planner-only reword, no scope change): restate T179's blast radius and acceptance as 'update the single production caller SetPeerRemote:2559 (pass `ap`) AND the four test callers in internal/reseq/reseq_test.go (:761/:792/:955) and internal/metrics/metrics_test.go (:435), all compile and pass'; re-frame the plain-unpin fallback as the zero/unknown-AddrPort affordance the metrics/idempotence tests exercise, not a nonexistent production close/reset caller. The core fix design (carry `ap` into Rebaseline, source-gate the Observe !started re-anchor, bounded self-heal) is correct and unaffected — only the caller inventory and acceptance wording need correcting."]
+- ledgerRefs: ["goals:G16"]
+
+## M69
+
+### R223 — go-ahead
+
+- createdAt: 2026-07-15T06:35:31.094Z
+- updatedAt: 2026-07-15T06:35:31.094Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G17 plan go-ahead: all six root causes (D30/D62/D63/D66/D67/D71) verified against HEAD; each task's fix targets its confirmed cause; reproduce-first tests mandated where behavior changes (D67/D62/D30/D71), build/vet for comment-only (D66/D63); linear M74 chain justified as multipath.go edit-serialization; D63 correctly scoped to comment-correction + wontfix RECOMMENDATION; D62 fix preserves lock-free receive with no new race. Non-blocking heads-up: T198 must clear BOTH 'LRU' mislabels in bindSourceToPeer (doc :1744-1746 AND inline :1794) to satisfy its 'no longer LRU' acceptance."
+- new_questions: []
+- criticism: []
+- ledgerRefs: ["goals:G17"]
+
+## M70
+
+### R232 — revise
+
+- createdAt: 2026-07-15T06:36:22.313Z
+- updatedAt: 2026-07-15T06:36:22.313Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "revise: plan is accurately grounded and reproduce-first across all six defects, but T188 (D74) undeclares a metrics/server.go edit that overlaps the T184->T193 stream (missing dependsOn), plus two task-text fixes (T193 un-preservable message detail; T188 gauge doc-sync)."
+- new_questions: []
+- criticism: ["SEQUENCING/PARALLELISM (T188, D74): T188 is declared a file-disjoint parallel stream ('device.go+metrics.go'), but re-setting wanbond_weighted_capacity_sane structurally requires editing internal/metrics/server.go. The gauge is created inline in NewServer (server.go:58-62) and never retained on the Server struct (server.go:34-38 holds only ln/srv/log), so exposing a 're-set path' means adding a gauge field + setter to Server and wiring it in NewServer -- both in server.go. That is the SAME file T184 (Close, server.go:116) and T193 (requireLoopback, server.go:125) edit, yet T188 has no dependsOn on T193/T184. This violates the plan's own stated discipline ('same-file tasks dependsOn-sequenced to avoid merge conflict') that motivates the T184->T193 and T190->T194 edges. FIX: add dependsOn T193 to T188 (serializing T184->T193->T188 on server.go), or re-partition D74 so its metrics-server-side gauge exposure joins the metrics/server.go chain instead of running as an independent parallel stream. Combining D70+D74 on the device.go/reload axis is otherwise sound -- the defect is the undeclared server.go overlap, not the combination.","MESSAGE DETAIL OVER-SPEC (T193, D83): the task instructs delegating requireLoopback to netutil.IsLoopbackHost while 'keeping the hostname-resolves-to-non-loopback message' and 'richer per-case ErrNonLoopbackBind detail'. But IsLoopbackHost (loopback.go:21) returns only (bool, error) and collapses empty-host, non-loopback-literal, and hostname-resolves-to-non-loopback ALL to (false, nil) -- with no distinguishing sub-case and no offending resolved IP. The per-case detail (naming the specific non-loopback IP, the empty-host wording) is not reconstructible from the delegated bool. Reconcile the task: either accept a single generic ErrNonLoopbackBind message on the false return (minor observability reduction; acceptance -- ErrNonLoopbackBind on a non-loopback addr, accept 127.0.0.1/[::1] -- is still met), or keep a thin local classification; do not instruct preserving detail the delegated predicate cannot supply.","DOC/COMMENT SYNC (T188, D74): making the gauge recomputed-on-reload contradicts the existing newWeightedCapacityGauge doc comment (internal/metrics/metrics.go ~:151-153: 'fixed at sane's value for the collector's whole life ... never re-read at scrape time') and any docs/install.md text describing the gauge as immutable/config-fixed (the gauge Help even points to docs/install.md). Per the AGENTS.md docs-in-sync-with-code-in-the-same-change invariant, T188's scope should include updating that comment (and install.md if it so describes the gauge). Add this to T188's description/acceptance."]
+- ledgerRefs: ["goals:G18"]

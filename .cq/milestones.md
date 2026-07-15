@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 72
+  item: 78
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -502,3 +502,45 @@ archives:
 - updatedAt: 2026-07-15T06:21:56.416Z
 - title: "Plan: fix docs/operator-guidance residuals (D35/D61)"
 - description: "Defect-seeded fix goal cluster: docs/operator-guidance. D35 (full-tunnel operator guidance — warn that a literal 0.0.0.0/0 default route installed OUTSIDE wanbond must exclude the concentrator underlay endpoint or use the /1+/1 split; production already mitigated by T107+T108, residual is docs-only), D61 (re-adjudicate D54's root-cause mechanism attribution and reword the Justfile lint comment if the 'walks the repo root' claim is a misattribution). Manual bridge for the cq root-caused-defect sweep gap."
+
+### M73 — open
+
+- createdAt: 2026-07-15T06:26:37.568Z
+- updatedAt: 2026-07-15T06:26:37.568Z
+- title: "reseq re-anchor correctness fixes (G16: D34/D64/D68)"
+- description: "Work milestone for plan-flow goal G16. Closes the internal/reseq re-anchor correctness residuals left by T119/G7: D34 (source-identity gate on the plain Rebaseline hub-failover path), D64 (recovered frames must not re-anchor an unstarted ring on the Rebaseline path), D68 (rebaselines-counter doc-comment reword). Reproduce-first regression tests bundled with each fix; DoD gate task closes the milestone."
+
+### M74 — open
+
+- createdAt: 2026-07-15T06:27:20.358Z
+- updatedAt: 2026-07-15T06:27:20.358Z
+- title: "internal/bind path-lifecycle & demux correctness (G17: D67, D62, D30)"
+- description: "Reproduce-first fixes for the three substantive correctness residuals in internal/bind from the G4/G6 multi-peer work: D67 (attach rollback swallows detach error + stale peerPathState on detach failure), D62 (bind-vs-unbind race installs a binding to a torn-down peer with no self-heal), D30 (auto/source runtime-added paths never device-bind, unlike Open). Part of goal G17."
+
+### M75 — open
+
+- createdAt: 2026-07-15T06:27:26.188Z
+- updatedAt: 2026-07-15T06:27:26.188Z
+- title: "internal/bind diagnostics, docs & DoD gate (G17: D71, D66, D63)"
+- description: "Low-risk diagnostics + documentation fixes and the goal's definition-of-done gate: D71 (add a deduped WARN on the reconcileDeferred promote-failure branch), D66 (reword the stale 'demux is a later G4 task' comment), D63 (confirm T123 pinned FIFO as intended, correct the mislabelled 'LRU' comment, recommend wontfix), and a final full-gate task. Part of goal G17; depends on the correctness milestone."
+- dependsOn: ["M74"]
+
+### M76 — open
+
+- createdAt: 2026-07-15T06:27:27.666Z
+- updatedAt: 2026-07-15T06:27:27.666Z
+- title: "G18 fix: metrics/reload/weighted observability residuals (D70,D72,D74,D75,D83,D84)"
+- description: "Work milestone for defect-seeded goal G18. Three disjoint work areas, parallelizable: (A) internal/metrics/server.go [D83,D84]; (B) internal/device/device.go + internal/metrics/metrics.go [D70,D74 overlap]; (C) internal/sched/weighted.go [D72,D75]. Same-file tasks are dependsOn-sequenced to avoid merge conflict; a DoD gate task closes the set."
+- dependsOn: ["M70"]
+
+### M77 — open
+
+- createdAt: 2026-07-15T06:27:40.775Z
+- updatedAt: 2026-07-15T06:27:40.775Z
+- title: G20 — D35/D61 docs & ledger-record residual fixes
+
+### M78 — open
+
+- createdAt: 2026-07-15T06:27:59.473Z
+- updatedAt: 2026-07-15T06:27:59.473Z
+- title: Fix e2e test-correctness (D80/D81 metrics-scrape test bugs)

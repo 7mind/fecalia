@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 178
+  item: 199
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -2181,3 +2181,346 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T175","T177"]
 - ledgerRefs: ["defects:D79","defects:D76","goals:G15"]
+
+## M73
+
+### T179 — planned
+
+- createdAt: 2026-07-15T06:27:08.307Z
+- updatedAt: 2026-07-15T06:27:08.307Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D34: gate the plain-Rebaseline re-anchor on source identity"
+- suggestedModel: frontier
+- description: |
+    Close D34 in internal/reseq/reseq.go. After Rebaseline() (:626-646) clears started, the next Observe (:207-210) re-pins r.next to the FIRST arriving outer-seq SOURCE-AGNOSTICALLY (cell.src :229 is stored but never consulted). A late prior-hub straggler (native DATA or in-flight FEC reconstruction from the dead hub) arriving between SetPeerRemote's Rebaseline() and the standby's handshake response re-pins next to the stale HIGH prior-hub seq, transiently reintroducing the D32 drop.
+    
+    FIX (mirror RebaselineToLow's discipline): carry the EXPECTED STANDBY ENDPOINT into the resequencer so only a frame whose outer src matches the newly-configured standby may re-pin next after a plain Rebaseline. Preferred shape per D34.suggestedFix: extend Rebaseline to accept the expected standby netip.AddrPort (SetPeerRemote :2545-2561 already holds it as `ap`) and gate the Observe !started re-anchor on src match. Preserve BOTH invariants: (i) trusted-control-event property — no wire-frame path may trigger a rebaseline; (ii) BOUNDED self-heal — if the expected source's first frame is lost or the endpoint is unknown, fall back to a plain unpin after O(window) mismatched drops (same pattern as pendingLowDrops :165), never a permanent blackhole. BLAST RADIUS: Rebaseline has 5 callers in internal/bind/multipath.go — update every caller for any signature change; a caller with no meaningful expected source (generic close/reset) must degrade to today's plain-unpin behavior. Reproduce-first per CLAUDE.md 6a.
+- acceptance: "New deterministic table test in internal/reseq/reseq_test.go authored FIRST and shown to FAIL for the right reason on unpatched HEAD (a prior-hub-source straggler arriving after Rebaseline re-pins next to the stale HIGH seq), then PASSES after the fix: a post-Rebaseline frame from a NON-standby source does NOT re-anchor next, while the genuine standby frame does; and the bounded fallback (expected-source frame never arrives) still self-heals via plain unpin within O(window). All 5 multipath.go Rebaseline callers compile and their existing tests pass. go test -race ./internal/reseq/... green. No wire-frame path can trigger a rebaseline (trusted-control-event property intact)."
+- dependsOn: []
+- ledgerRefs: ["goals:G16","defects:D34"]
+
+### T180 — planned
+
+- createdAt: 2026-07-15T06:27:15.072Z
+- updatedAt: 2026-07-15T06:27:15.072Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D68: reword rebaselines-counter doc-comments to name peer restart"
+- suggestedModel: standard
+- description: "Close D68 (doc-only, no code-path change). internal/reseq/reseq.go:175 (the rebaselines counter field decl) and :760 (the Stats.Rebaselines snapshot field) both comment 'release-point re-baselines forced by a trusted control event (hub failover)', attributing the counter to hub failover ONLY. But since T119 RebaselineToLow (:692, the peer-restart low-anchor path) increments the SAME r.rebaselines counter. metrics.go:397 already renders the inclusive help string 'forced by a trusted control event (e.g. hub failover)'. Reword both comments to '(e.g. hub failover, peer restart)' so the field docs match the code that feeds the counter and the metrics help. Independent of the D34/D64 code fixes (touches only comments), so it can land in parallel."
+- acceptance: "internal/reseq/reseq.go:175 and :760 doc-comments both name peer restart alongside hub failover (e.g. '(e.g. hub failover, peer restart)'), consistent with metrics.go:397 and RebaselineToLow incrementing r.rebaselines. Comment-only diff — no code path changes; go build and go test ./internal/reseq/... unaffected and green."
+- dependsOn: []
+- ledgerRefs: ["goals:G16","defects:D68"]
+
+### T181 — planned
+
+- createdAt: 2026-07-15T06:27:31.363Z
+- updatedAt: 2026-07-15T06:27:31.363Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D64: stop FEC-recovered frames re-anchoring an unstarted ring on the Rebaseline path"
+- suggestedModel: frontier
+- description: |
+    Close D64 in internal/reseq/reseq.go. ObserveRecovered (:251) documents (:242) that it NEVER moves or re-pins the release point, yet its !started branch (:271-274) sets started=true; next=seq — pinning next to the FIRST recovered frame. The pendingLow guard (:256-269) suppresses this ONLY while pendingLow is armed (the RebaselineToLow peer-restart path). Plain Rebaseline() (:626) leaves pendingLow=false (:642), so after a hub-failover Rebaseline a parity-recovered OLD-hub HIGH-seq frame landing in the failover window reaches :271-274 and re-pins next HIGH before the standby's low stream arrives — re-opening the D32 blackhole for FEC-enabled deployments.
+    
+    FIX (D64.suggestedFix): make ObserveRecovered refuse to anchor an UNSTARTED ring regardless of which unpin path preceded it — i.e. when !r.started, drop the recovered frame and return false (recovered frames are repairs for PAST gaps and, per the method's own contract, must never establish the release point). Only a NATIVELY-received frame (via Observe, now itself source-gated by T179) may pin next after any unpin. Coordinate with the existing pendingLow guard (:256-269) at the same seam — the new drop-on-!started subsumes/complements it; keep the /metrics recovered counter honest (return false, nothing delivered). Sequenced AFTER T179 (D34) because both edit the ObserveRecovered/Observe re-anchor seam — rebase on T179 to avoid conflicting edits. Reproduce-first per CLAUDE.md 6a.
+- acceptance: "New regression test in internal/reseq/reseq_test.go authored FIRST and shown to FAIL for the right reason on unpatched HEAD (Rebaseline() then ObserveRecovered(highSeq) re-pins next to the recovered HIGH seq), then PASSES after the fix: after a plain Rebaseline, a recovered frame does NOT re-anchor next (ObserveRecovered returns false while !started) and the subsequent genuine native low-seq frame anchors correctly; the pre-existing pendingLow/RebaselineToLow behavior is unchanged. go test -race ./internal/reseq/... green."
+- dependsOn: ["T179"]
+- ledgerRefs: ["goals:G16","defects:D64"]
+
+### T182 — planned
+
+- createdAt: 2026-07-15T06:27:42.342Z
+- updatedAt: 2026-07-15T06:27:42.342Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G16 DoD gate: full build/test/lint/race + resolve D34/D64/D68"
+- suggestedModel: standard
+- description: "Definition-of-done gate for goal G16, run on the composed tree after T179 (D34), T181 (D64), and T180 (D68) merge. Runs the full wanbond gate (per AGENTS.md + go-gate-not-just-test memory: the DoD includes just lint, not only go test) and the reseq race detector, then drives the three defects terminal. No new product code beyond what the fix tasks land — this task is the verification+bookkeeping close-out."
+- acceptance: "On the composed tree (all three fixes merged): `nix develop -c just build` succeeds; `nix develop -c just test` green; `nix develop -c just lint` green across the default+e2e+realhosts tag sets (golangci); `go test -race ./internal/reseq/...` green (no data race). Then defects D34, D64, D68 are updated to `resolved` with a one-line note referencing the merged fix tasks (T179/T181/T180). Milestone M73 has all tasks terminal and is ready to archive."
+- dependsOn: ["T179","T181","T180"]
+- ledgerRefs: ["goals:G16","defects:D34","defects:D64","defects:D68"]
+
+## M74
+
+### T183 — planned
+
+- createdAt: 2026-07-15T06:27:43.817Z
+- updatedAt: 2026-07-15T06:27:43.817Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D67: propagate detach error in attach rollback + force-splice p.paths on detach failure"
+- description: |
+    internal/bind/multipath.go. Two coupled holes in the runtime shared-path rollback:
+    1) attachSharedPathLocked (~:2801-2818) rolls back with `_ = m.detachPeerPathBoundLocked(m.peers[k], shared.name)`, DISCARDING the error.
+    2) detachPeerPathBoundLocked (~:2880-2903) returns early on `dyn.RemovePath(idx)` error (~:2893-2895) WITHOUT executing the p.paths splice (~:2896) or the schedIdx re-stamp, so a failed detach leaves a STALE peerPathState in p.paths (a half-admitted path whose scheduler entry is gone but whose view survives).
+    
+    FIX: (a) in detachPeerPathBoundLocked, on dyn.RemovePath error still FORCE-SPLICE p.paths (drop the entry and re-stamp survivors' schedIdx) so no stale peerPathState survives, and return the wrapped error rather than short-circuiting before the splice; (b) in the attachSharedPathLocked rollback loop, LOG the detach error (WARN, with path + peer) instead of silently discarding it -- the fan-out is already failing, so a best-effort logged rollback that guarantees no stale state is the correct posture. Keep behaviour under m.mu unchanged; do not alter the success path.
+    
+    Reproduce-first: add a unit test in internal/bind driving attachSharedPathLocked (or detachPeerPathBoundLocked directly) with a DynamicScheduler stub whose RemovePath returns an error, asserting BEFORE the fix that p.paths retains the stale entry (fails for that reason), and AFTER the fix that p.paths no longer contains the entry and the error is surfaced/logged.
+- acceptance: "New internal/bind test reproduces the stale-peerPathState-on-detach-failure (red pre-fix for that exact reason), green post-fix: after a forced RemovePath failure during rollback, p.paths contains no entry for the detached path and the detach error is returned/logged (not silently discarded). go test -race ./internal/bind/... passes; no change to the success-path behaviour."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G17","defects:D67"]
+
+### T186 — planned
+
+- createdAt: 2026-07-15T06:28:04.537Z
+- updatedAt: 2026-07-15T06:28:04.537Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D62: revalidate peer liveness after the winning CAS in bindSourceToPeer (no binding to a torn-down peer)"
+- description: |
+    internal/bind/multipath.go. bindSourceToPeer (~:1756-1823) installs srcAP->peer via a lock-free copy-on-write CAS with NO post-CAS peer-liveness recheck. A bind running on a readLoop goroutine can race a concurrent unbindPeerSources (peer teardown / session loss): unbindPeerSources drops p's entries, then the racing bind's CAS re-installs a binding to the now torn-down peer. That stale binding never self-heals -- demuxInbound's fast path (~:1662-1669) resolves the bound peer, finds it holds no view of the socket, and DROPS (return at :1669) instead of falling through to trial-decode/re-bind, so the source is blackholed until... nothing re-binds it.
+    
+    FIX (pick the minimally-invasive correct option, prefer both if cheap): (a) after the winning CAS in bindSourceToPeer, revalidate that p is still a live/bound peer (e.g. present in the peersView snapshot / not marked torn-down); if not, undo the just-installed binding (CAS it back out) and return false so the source stays unbound and a later PROBE re-binds to a live peer; AND/OR (b) in demuxInbound, when the bound peer holds NO view of this socket (the :1669 drop branch), FALL THROUGH to the trial-decode/re-bind loop instead of dropping, so a stale/dead binding self-heals on the next authenticated PROBE. Must remain lock-free on the receive hot path (no m.mu on bind/demux) and preserve copy-on-write immutability for concurrent lookupPeerBySource readers.
+    
+    Reproduce-first: add a -race test in internal/bind that interleaves bindSourceToPeer(srcAP, p) with unbindPeerSources(p) (or a peer teardown) and asserts the final demux map holds NO binding to the dead peer OR that a subsequent PROBE re-binds the source to a live peer's view; assert the pre-fix behaviour blackholes (bound-to-dead, never self-heals).
+- acceptance: "New -race test in internal/bind reproduces the bind-vs-unbind race installing a binding to a torn-down peer (red pre-fix), green post-fix: after the interleaving, no demux binding points at a dead peer, or the next authenticated PROBE self-heals the binding to a live view; demuxInbound no longer permanently drops for a stale binding. go test -race ./internal/bind/... clean; receive path stays lock-free (no m.mu acquired on bind/demux)."
+- suggestedModel: frontier
+- dependsOn: ["T183"]
+- ledgerRefs: ["goals:G17","defects:D62"]
+
+### T191 — planned
+
+- createdAt: 2026-07-15T06:28:22.516Z
+- updatedAt: 2026-07-15T06:28:22.516Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D30: route runtime-added / promoted auto-mode paths through the selectDeviceBinds decision Open uses"
+- description: |
+    internal/bind: multipath.go AddPath (~:2685-2692) and reconcile.go reconcileDeferred (~:115) resolve their per-path bind via m.resolveDeviceBind, which honors ONLY forced config.BindModeDevice; a config.BindModeAuto (or BindModeSource) runtime-added or deferred-then-promoted path ALWAYS source-IP-pins, never device-binds -- unlike Open, which runs planPathBinds/selectDeviceBinds (pathsock.go:84/:133) and device-binds an auto path when its interface holds exactly one address of the family AND no other path claims that device. The AddPath comment (:2687-2690) states this gap explicitly.
+    
+    FIX: give the runtime/promote paths the SAME auto decision Open uses. Add (or extend resolveDeviceBind into) a single-path resolver that, for BindModeAuto, resolves src against a fresh net.Interfaces() snapshot and applies the selectDeviceBinds rule (familyCount==1 and the device not already claimed by a live path); BindModeSource still never device-binds; BindModeDevice unchanged. Apply it at both call sites (AddPath and reconcileDeferred). Reuse selectDeviceBinds/interfaceInfo rather than duplicating the family-count logic. Note the device-uniqueness check at runtime must consider paths ALREADY bound to a device (a snapshot of live paths), matching Open's devPaths de-dup.
+    
+    Reproduce-first: add a test in internal/bind (via the selectDeviceBinds/interfaceInfo seam, as pathsock_select_test.go does) asserting that AddPath (and a deferred-promote) of an AUTO-mode path device-binds when the interface resolution is eligible (familyCount==1, device unclaimed) -- pre-fix it always source-pins (red), post-fix it device-binds; and that a second auto path on the same device still source-pins (uniqueness preserved).
+- acceptance: New internal/bind test shows an auto-mode runtime-added path (and a deferred-promoted auto path) device-binds when eligible (familyCount==1, device unclaimed) and source-pins otherwise -- red pre-fix (always source-pinned), green post-fix; forced BindModeDevice and BindModeSource behaviour unchanged. The AddPath D30 comment is updated to reflect the closed gap. go test -race ./internal/bind/... passes.
+- suggestedModel: frontier
+- dependsOn: ["T186"]
+- ledgerRefs: ["goals:G17","defects:D30"]
+
+## M76
+
+### T184 — planned
+
+- createdAt: 2026-07-15T06:28:00.567Z
+- updatedAt: 2026-07-15T06:28:00.567Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Fix metrics.Server.Close listener leak (D84) + Close-without-Start rebind regression test
+- description: "metrics.Server.Close (internal/metrics/server.go ~:116) is `return s.srv.Shutdown(ctx)` only and never closes s.ln. http.Server.Shutdown closes only listeners registered via Serve(), so on a NewServer-then-Close-WITHOUT-Start teardown (daemon aborting startup before Start, or applyMetricsLocked reconciling a just-built server away) the bound socket leaks (EADDRINUSE on re-listen). Mirror the monitor.Server.Close fix (internal/monitor/server.go:148-161): after srv.Shutdown(ctx), call s.ln.Close() tolerating net.ErrClosed (the normal Start->Close path where Serve already closed it); Shutdown's error takes precedence, the ln-close error surfaces only when it is not net.ErrClosed and Shutdown succeeded. REPRODUCE FIRST: add a regression test to internal/metrics/server_test.go that NewServer(fixed loopback addr) -> Close (no Start) -> NewServer(SAME addr) and asserts the re-listen succeeds; confirm it fails (bind: address already in use) before the Close fix and passes after."
+- acceptance: New test in internal/metrics/server_test.go fails before the fix (EADDRINUSE on re-listen after Close-without-Start) and passes after; `go test ./internal/metrics/` green; `go test -race ./internal/metrics/` green.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G18","defects:D84"]
+
+### T188 — planned
+
+- createdAt: 2026-07-15T06:28:12.050Z
+- updatedAt: 2026-07-15T06:28:12.050Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Warn on same-name link_bandwidth/link_rtt change + recompute weighted-capacity gauge on Reload (D70+D74)
+- description: |
+    Two OVERLAPPING reload-path holes fixed together (both touch reloadWarnings) to avoid conflict.
+    
+    D70: reloadWarnings' same-name-path comparison (internal/device/device.go ~:733/:785-796) checks only SourceAddr/DestAddr/Bind for a surviving same-name path, and the D52 future-proof catch-all zeroes lc.Paths/dc.Paths before DeepEqual, so a SIGHUP changing an existing path's LinkBandwidthBitsPerSec/LinkRTT is silently accepted (no warning) while the running weighted-scheduler pace keeps the booted value -- the D52 'SILENCE is not acceptable' violation at path-sub-field level. FIX: extend the same-name comparison to LinkBandwidthBitsPerSec and LinkRTT with actionable messages (mirroring the source/dest/bind checks), OR generalize to a whole-struct DeepEqual per name-matched pair with already-warned fields zeroed.
+    
+    D74: metrics.newWeightedCapacityGauge (internal/metrics/metrics.go:154) sets wanbond_weighted_capacity_sane once at construction; Tunnel.Reload (device.go ~:665-725) never recomputes it, so adding an undeclared path under weighted policy leaves the gauge reading 1 while the live set is no longer capacity-verifiable. FIX: expose a re-set path for the gauge (a Server/collector method the reload path calls), recompute cfg.WeightedCapacitySane in the reload path and re-set the gauge, emitting a WARN when the recomputed verdict diverges from the prior value.
+    
+    REPRODUCE FIRST: add internal/device/reload_test.go cases that fail before and pass after -- (a) a same-name link_bandwidth (and link_rtt) change on a surviving path produces exactly one same-name-path reload warning; (b) a path add/remove that flips WeightedCapacitySane is reflected by the gauge value (with a WARN logged on divergence).
+- acceptance: "internal/device/reload_test.go gains cases failing before and passing after: same-name link_bandwidth/link_rtt change emits exactly one same-name-path reload warning; wanbond_weighted_capacity_sane gauge reflects the post-reload verdict with a WARN on divergence. `go test ./internal/device/ ./internal/metrics/` green; `go test -race ./internal/device/` green."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G18","defects:D70","defects:D74"]
+
+### T190 — planned
+
+- createdAt: 2026-07-15T06:28:18.651Z
+- updatedAt: 2026-07-15T06:28:18.651Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Emit 'scheduler aggregation change' record on WeightedScheduler.SetPaths reset (D72)
+- description: "WeightedScheduler.SetPaths (internal/sched/weighted.go ~:660-682) sets s.aggregating=false as part of the membership-replacement reset but emits no 'scheduler aggregation change' record, so on every Bind reopen (Close->Open durable-membership swap) a log consumer reconstructing gate state sees two consecutive to='aggregating' records with no intervening collapse. FIX: when s.aggregating was true immediately before the reset, emit the canonical 'scheduler aggregation change' record under the already-held s.mu with to=collapsed, from=aggregating, reason='paths replaced', plus the standard threshold fields carried by the other aggregation transitions (match the existing record shape used by the engage/idle-gap/dwell-collapse sites). Do NOT log when aggregating was already false (no spurious record). REPRODUCE FIRST: add an internal/sched/weighted_test.go case using the existing capturingLogger infra that drives aggregating=true, calls SetPaths, and asserts exactly one record with reason='paths replaced', from=aggregating, to=collapsed and the threshold fields; confirm it fails before the fix."
+- acceptance: "New internal/sched/weighted_test.go case fails before and passes after: SetPaths while aggregating=true logs exactly one 'scheduler aggregation change' record with reason='paths replaced', to=collapsed, from=aggregating and the threshold fields; no record emitted when aggregating was already false. `go test ./internal/sched/` green."
+- suggestedModel: standard
+- ledgerRefs: ["goals:G18","defects:D72"]
+
+### T193 — planned
+
+- createdAt: 2026-07-15T06:28:31.916Z
+- updatedAt: 2026-07-15T06:28:31.916Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Refactor metrics.requireLoopback to delegate to netutil.IsLoopbackHost (D83)
+- description: "requireLoopback (internal/metrics/server.go ~:125) reimplements the full loopback host-classification (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP with every-resolved-must-be-loopback) that internal/netutil.IsLoopbackHost (loopback.go:21) already provides and that monitor/server.go + config/config.go already delegate to. Two independent copies of a security-critical predicate can drift silently. FIX: replace requireLoopback's hand-rolled classification with a call to netutil.IsLoopbackHost, preserving requireLoopback's richer per-case ErrNonLoopbackBind error detail (wrap the returned bool/err into ErrNonLoopbackBind exactly as today, keeping the hostname-resolves-to-non-loopback message). Leave verifyLoopbackBind's kernel-bound-Addr act-then-verify unchanged. Behavior must be identical: loopback literal accepted; wildcard/empty-host and routable refused with ErrNonLoopbackBind; hostname resolving all-loopback accepted. Depends on T184 (both edit internal/metrics/server.go) to keep the merge conflict-free. Confirm/extend a test asserting a non-loopback addr is refused with ErrNonLoopbackBind and a loopback addr accepted."
+- acceptance: "requireLoopback no longer duplicates the netip/LookupIP classification (it calls netutil.IsLoopbackHost); a metrics-server test asserts ErrNonLoopbackBind on a non-loopback addr and acceptance of 127.0.0.1 and [::1]; `go test ./internal/metrics/` green."
+- suggestedModel: standard
+- dependsOn: ["T184"]
+- ledgerRefs: ["goals:G18","defects:D83"]
+
+### T194 — planned
+
+- createdAt: 2026-07-15T06:28:38.324Z
+- updatedAt: 2026-07-15T06:28:38.324Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add idle-gap case to the weighted aggregation-change log-fields test (D75)
+- description: "The idle-gap collapse 'scheduler aggregation change' record (internal/sched/weighted.go ~:555-556, reason='idle gap') is emitted in production and behaviorally exercised (TestWeightedCollapsesAfterOverloadIdle) but its structured fields are never asserted -- the log-fields test (TestWeightedAggregationChangeLogFieldsAndNoDoubleLog / TestAggregationGateLog) covers only the engage and dwell-collapse sites, so the load_fps schema-uniformity invariant is regression-locked on only 2 of the 3 record sites. FIX (test-only): add an idle-gap case to the aggregation-change log-fields test using the existing capturingLogger infra -- drive the scheduler through an idle gap that triggers the collapse and assert the record carries reason='idle gap', gap, load_fps, from, and both threshold fields, and that it is not double-logged. Depends on T190 (both edit internal/sched/weighted_test.go) to keep the merge conflict-free."
+- acceptance: The aggregation-change log-fields test gains an idle-gap sub-case asserting reason='idle gap' with gap, load_fps, from and threshold fields present and no double-log; `go test -run 'AggregationChange|AggregationGate' ./internal/sched/` green.
+- suggestedModel: standard
+- dependsOn: ["T190"]
+- ledgerRefs: ["goals:G18","defects:D75"]
+
+### T196 — planned
+
+- createdAt: 2026-07-15T06:28:52.423Z
+- updatedAt: 2026-07-15T06:28:52.423Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Definition-of-done gate for G18 (build + test + lint + race on the composed tree)
+- description: "After all five fix tasks (T184, T188, T190, T193, T194) merge, run the full G18 definition-of-done gate on the composed tree and repair anything it reddens. Gate: `nix develop -c just build && just test && just lint`, with lint spanning the default+e2e+realhosts tag sets (per the go-gate-not-just-test invariant -- golangci across all three, not go test alone), plus `go test -race ./internal/metrics/ ./internal/device/ ./internal/sched/` on the touched packages. This gate is what lets D70, D72, D74, D75, D83, D84 be driven to resolved on merge; it must pass before the goal's work is considered delivered."
+- acceptance: "`nix develop -c just build` succeeds; `just test` green; `just lint` clean across default+e2e+realhosts tags; `go test -race ./internal/metrics/ ./internal/device/ ./internal/sched/` green."
+- suggestedModel: standard
+- dependsOn: ["T184","T188","T190","T193","T194"]
+- ledgerRefs: ["goals:G18","defects:D70","defects:D72","defects:D74","defects:D75","defects:D83","defects:D84"]
+
+## M77
+
+### T185 — done
+
+- createdAt: 2026-07-15T06:28:01.273Z
+- updatedAt: 2026-07-15T06:35:59.860Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "docs/install.md §9: warn operators that a hand-rolled literal 0.0.0.0/0 default route recurses the encrypted underlay (D35)"
+- description: |
+    D35 is CONFIRMED docs-only: production's allowed_ips=0.0.0.0/0 handshake wedge was never a wanbond code defect. wanbond's own surface already always avoids a literal /0 — splitDefaultRoute (internal/device/device.go:1324-1333) rewrites any config-literal /0 to the wg-quick /1+/1 pair before UAPI render, and mode=default-route (docs/install.md §9.1, install.md:1538-1565) additionally has the daemon install that exact split as scope-link routes (defaultRoutePrefixes/installRoutes, device.go:1346-1363 + route_linux.go), deliberately never touching the physical default route to the concentrator's own underlay endpoint. The confirmed root cause of the production wedge is EXTERNAL: an operator-installed literal 0.0.0.0/0 default route (wg-quick PostUp, NetworkManager, a bare `ip route add default dev wanbond0`) that does NOT exclude the concentrator's real/underlay endpoint address — this recurses the encrypted underlay UDP into the tunnel itself and the handshake never completes. Nowhere in docs/install.md or docs/runbook.md is this pitfall named (grepped for 'underlay'/'routing loop'/'exclude.*endpoint': no hits).
+    
+    Edit docs/install.md §9 'Full-tunnel / client-LAN recipe (C3)': insert a clearly marked warning paragraph after line 1536 (end of the existing '/1+/1 split is safe' paragraph) and before the '### 9.1' heading. State plainly: (a) wanbond's own config-literal 0.0.0.0/0 is always safe (already explained above it) because the daemon splits it before the engine/route layer ever sees it; (b) a SEPARATE, hand-rolled literal 0.0.0.0/0 default route installed OUTSIDE wanbond (wg-quick style, NetworkManager, manual `ip route add default ... dev wanbond0`) is NOT automatically safe — it must either exclude the concentrator's own underlay endpoint address with an explicit host route via the original gateway, or use the /1+/1 split instead of the literal /0 (exactly what §9.1's manual recipe already shows); otherwise the encrypted underlay UDP to the concentrator recurses back into the tunnel and the handshake never establishes; (c) recommend `mode = "default-route"` (§9.1) specifically because it sidesteps this pitfall automatically — operators who skip `mode` and hand-roll routing are the ones who must apply this warning themselves. Use grep-able phrasing: include the literal substrings "encrypted underlay" and "must exclude" (or equivalent unambiguous wording) in the new paragraph. Then strengthen ONE line of docs/runbook.md's existing §9/C3 pointer (runbook.md:21-23, the intro cross-reference list entry for install.md §9) to name the underlay-recursion pitfall explicitly rather than linking generically — a one-line wording change, not new content (runbook.md has no substantive §9 body of its own; keep it that way).
+    
+    This is a DOCS-ONLY change — do not touch internal/device/device.go, route_linux.go, or any Go source. Reference: defects:D35 rootCause + suggestedFix.
+- acceptance: grep -n "encrypted underlay" docs/install.md finds the new warning paragraph inside §9 (between line ~1536 and the '### 9.1' heading); grep -n "must exclude" docs/install.md (or equivalent unambiguous phrasing) also matches there; grep -n "underlay" docs/runbook.md finds the strengthened §9 pointer line; docs/runbook.md gains no new substantive C3 body (still just the pointer). `nix develop -c just fmt-check && just lint` (Go-only) stays green and `go build ./...` succeeds — both unaffected by the docs-only edit, confirming no accidental non-doc change.
+- suggestedModel: standard
+- ledgerRefs: ["goals:G20","defects:D35"]
+
+### T189 — done
+
+- createdAt: 2026-07-15T06:28:13.427Z
+- updatedAt: 2026-07-15T06:36:01.323Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Reword Justfile:41-44 D54 lint comment to drop the disproven 'walks the repo root' mechanism claim + update D54's ledger rootCause note (D61)"
+- description: |
+    D61 is CONFIRMED: the D54 comment at Justfile:41-44 asserts an unverified mechanism ('golangci-lint run ... walks the repo root ... keeps the walk hermetic against .claude/worktrees/ sibling-agent checkouts') that does NOT reproduce on the current toolchain — Go package loading skips dot-directories, so a bare `golangci-lint run` never actually walks .claude/worktrees. D54's original observed evidence (errcheck hits at internal/dnsresolve/{doh,dot}.go) matches D45's pre-existing own-tree findings, not a sibling-worktree leak — consistent with misattribution. D54's actual FIX (T136's explicit package list in the lint recipe, Justfile:45-47: `golangci-lint run ./cmd/... ./internal/... ./test/...`) remains a sound, unchanged, by-construction hermeticity guarantee — it just doesn't depend on the disproven directory-walk mechanism to be worth keeping.
+    
+    1. Reword the Justfile:41-44 comment to preserve the defense-in-depth rationale (explicit package list = hermetic by construction, independent of golangci-lint's actual directory-walk behavior) WITHOUT asserting the disproven 'walks the repo root' claim. Suggested replacement (adjust wording to fit house style, keep it a comment of similar length): "# Explicit package list (not bare `golangci-lint run`): a by-construction hermetic guarantee that the lint gate only ever sees this tree's own tracked packages, independent of golangci-lint's actual directory-walk behavior (D54/D61) — every tracked Go package lives under cmd/, internal/, test/." Do not change the recipe's actual commands (lines 37-40, 45-47) — comment-only edit.
+    2. Update the D54 ledger record (ledger MCP `update_item("defects", "D54", fields: { rootCause: "<existing text> + a short appended note that D61 re-adjudicated the mechanism claim as unreproducible/misattributed (Go's dot-directory package-loading skip means golangci-lint never actually walked .claude/worktrees; the original evidence matched D45's own-tree findings instead), while confirming the T136 fix (explicit package list) remains sound and unchanged" }))`. Do NOT change D54's `status` (stays `resolved`) or its `suggestedFix` field — rootCause narrative only.
+- acceptance: grep -n "walks the repo root" Justfile returns NO matches after the edit. grep -n "D54" Justfile still finds the reworded comment (referencing D54, ideally also D61). The lint recipe's actual commands (lines ~37-40, ~45-47) are byte-for-byte unchanged — comment-only diff. `nix develop -c just fmt-check && just lint` stays green and `go build ./...` succeeds. fetch_item("defects","D54").fields.rootCause contains a note referencing D61's re-adjudication, and fields.status is still "resolved".
+- suggestedModel: fast
+- ledgerRefs: ["goals:G20","defects:D61","defects:D54"]
+
+## M78
+
+### T187 — planned
+
+- createdAt: 2026-07-15T06:28:11.743Z
+- updatedAt: 2026-07-15T06:28:11.743Z
+- author: sonnet-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Fix D81: switch multipeer_test.go non-primary per-peer INBOUND assertion from rx to tx"
+- description: "test/e2e/multipeer_test.go, 'independent-inner-streams' subtest (~lines 197-219): the per-peer loop currently sums metrics.MetricRxBytes via exp.PeerPathValue(metrics.MetricRxBytes, pl, wan) into peerBytes and fatals on <=0 (lines 205-213). Since a single Bind-owned readLoop per shared path attributes ALL inbound bytes to the PRIMARY peer (internal/bind/multipath.go, T23/T93), the non-primary peer's summed rx is structurally 0. Switch this to metrics.MetricTxBytes (same PeerPathValue helper, same wan loop over mpWan1/mpWan2), mirroring the already-correct pattern in the SAME file's 'per-peer-metrics-attribute-to-correct-edge' subtest (~lines 273-283) and the canonical fix testD47SharedNATDemux in test/e2e/multipeer_hardened_test.go (doc comment ~204-211, assertion ~212-233). Update the surrounding comment (~lines 197-201, currently 'Absolute counts are report-only... the asserted invariant is per-peer presence' — contradicted by the <=0 fatal) to state the tx-is-per-peer rationale, matching d47's comment. Update the fatal message wording (currently 'carried non-positive rx bytes') to reference tx. Keep PeerPathValue plumbing identical — only swap the constant metrics.MetricRxBytes -> metrics.MetricTxBytes and adjust prose."
+- acceptance: "`go vet -tags e2e ./test/e2e/...` and `just lint` (golangci-lint incl. -tags e2e) both clean; `go build -tags e2e ./test/e2e` succeeds; git diff on multipeer_test.go shows the peerBytes loop reading metrics.MetricTxBytes (not MetricRxBytes) and the adjacent comment/fatal message updated to match the tx-is-per-peer rationale (mirroring multipeer_hardened_test.go's d47 comment). Full functional confirmation (peerBytes>0 on a real run) is deferred to the privileged -tags e2e run on o3.7mind.io/llm-ubuntu-0.pgtr.7mind.io (see restart_onesided_test.go's header RUNBOOK for the invocation pattern) — document that deferral in the commit message."
+- suggestedModel: standard
+- ledgerRefs: ["defects:D81","goals:G19"]
+
+### T192 — planned
+
+- createdAt: 2026-07-15T06:28:23.355Z
+- updatedAt: 2026-07-15T06:28:23.355Z
+- author: sonnet-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Fix D80: bind restart_onesided_test.go concentrator /metrics to loopback in-netns, scrape via fetchMetricsInNetns"
+- description: |
+    test/e2e/restart_onesided_test.go binds the concentrator's /metrics to its non-loopback uplink IP, which internal/metrics/server.go's requireLoopback (T17 invariant) unconditionally refuses on a real run. Fix, mirroring the proven D77 remediation in test/e2e/multipeer_hardened_test.go (hwMetricsHost=127.0.0.1:9107 bound inside the peer netns) and its scrape helpers fetchMetricsInNetns/netnsMetricsClient (test/e2e/p2_aggregation_test.go:461-475/477-533, also used by p2/p3/p4):
+    1. In r121BringUp (~lines 321-353), change `concMetricsListen := concMetricsIP + ":" + strconv.Itoa(r121MetricsPort)` (line 328) to bind loopback: `concMetricsListen := "127.0.0.1:" + strconv.Itoa(r121MetricsPort)` — safe because the concentrator process itself runs INSIDE the peer netns (concArgv nsenter's into top.pid, line 337), so a loopback bind there is a distinct loopback from the base netns.
+    2. In testRestartOnlyEdge (~line 145) and testRestartOnlyConcentrator (~line 208), replace the uplink-IP survivorURL/restartedURL construction (`"http://" + primary.concIP + ":" + strconv.Itoa(r121MetricsPort) + "/metrics"`) with the loopback URL `"http://127.0.0.1:" + strconv.Itoa(r121MetricsPort) + "/metrics"`.
+    3. Replace every direct scrapeMetrics(t, survivorURL)/scrapeMetrics(t, restartedURL) call (lines ~165, ~192, ~228, ~254) with fetchMetricsInNetns(t, top.pid, survivorURL)/fetchMetricsInNetns(t, top.pid, restartedURL) — the loopback bind is unreachable from the base netns without the netns-dial helper.
+    4. Correct the stale doc comments describing uplink-IP binding: the r121EdgeMetrics const-block comment (~lines 81-84: 'the concentrator runs in the PEER netns where a 127.0.0.1 listener is unreachable from the base netns, so it binds its primary uplink address instead') and r121BringUp's doc comment (~lines 318-320: 'the concentrator binds its primary uplink address so the base netns can scrape it over the veth') — both must now describe the loopback-in-netns + fetchMetricsInNetns mechanism, matching multipeer_hardened_test.go's framing.
+    5. Update test/e2e/netns.go's metricsPortRegistry comment for port 9104 (~lines 15-37) from 'edge on 127.0.0.1, concentrator on its uplink IP' to describe loopback-in-netns scraped via fetchMetricsInNetns, mirroring the port-9107 entry's wording.
+    Check whether concMetricsIP remains needed as an r121BringUp parameter for anything besides the listen bind (e.g. config templating) before removing it; only drop the parameter if it becomes genuinely unused.
+- acceptance: "`go vet -tags e2e ./test/e2e/...` and `just lint` (golangci-lint incl. -tags e2e) both clean; `go build -tags e2e ./test/e2e` succeeds; git diff shows concMetricsListen binding 127.0.0.1 (not primary.concIP), survivorURL/restartedURL built on 127.0.0.1, all four scrape call sites using fetchMetricsInNetns(t, top.pid, ...), the two stale doc comments (~81-84, ~318-320) corrected, and netns.go's port-9104 registry comment updated to match the 9107 entry's wording. Full functional confirmation (concentrator actually starts + scrapes succeed pre/post restart) is deferred to the privileged -tags e2e run — restart_onesided_test.go's own header RUNBOOK (lines 57-79) already documents the exact SSH/sudo invocation for o3.7mind.io (aarch64) and llm-ubuntu-0.pgtr.7mind.io (amd64); no new runbook content is needed, only its now-corrected uplink-IP framing. Document the deferral in the commit message."
+- suggestedModel: standard
+- ledgerRefs: ["defects:D80","goals:G19"]
+
+## M75
+
+### T195 — planned
+
+- createdAt: 2026-07-15T06:28:47.798Z
+- updatedAt: 2026-07-15T06:28:47.798Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D71: WARN (deduped per deferral window) on the reconcileDeferred promote-failure branch"
+- description: |
+    internal/bind/reconcile.go. reconcileDeferred's promote-failure branch (~:135-149) does `_ = c.Close(); kept = append(kept, dp); continue` with NO log when promoteDeferredLocked fails after a successful listen -- so a persistent promote failure (e.g. a defIdx/prober fan-out desync) silently retries every 1 Hz tick and an operator sees nothing. The sibling listen-failure branch (:124) already WARNs deduped via warnForcedDeviceStillDeferred.
+    
+    FIX: emit a WARN (or ERROR) on the promote-failure branch identifying the path and the wrapped promote error, DEDUPLICATED per deferral window in the same style as the warnedUnresolvable latch (add a per-deferredPath bool latch, e.g. warnedPromoteFailure, set on first WARN and re-armed when the entry later promotes or its listen outcome transitions) so a persistently-failing promote WARNs once per window, not once per tick. Do NOT emit the two D53 fallback-fact warns here (the socket was just closed -- that remains correct). Keep the retry/close/continue control flow intact.
+    
+    Reproduce-first (observable via log capture): add a test in internal/bind that forces promoteDeferredLocked to fail across several reconcile ticks (e.g. a defIdx/prober desync stub) and asserts the promote-failure WARN is emitted exactly ONCE across N ticks (deduped), not N times, and is re-armed after a later successful promote.
+- acceptance: New internal/bind test with a captured logger shows the promote-failure branch emits a single deduped WARN across multiple reconcile ticks (not one per tick) identifying the path + promote error, and re-arms after a later success -- red pre-fix (no log at all), green post-fix. The listen-failure branch and the close/continue retry flow are unchanged. go test -race ./internal/bind/... passes.
+- suggestedModel: standard
+- dependsOn: ["T191"]
+- ledgerRefs: ["goals:G17","defects:D71"]
+
+### T197 — planned
+
+- createdAt: 2026-07-15T06:28:54.557Z
+- updatedAt: 2026-07-15T06:28:54.557Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D66: reword the stale 'demux is a later G4 task' comment above AddPath's readLoop"
+- description: "internal/bind/multipath.go ~:2779-2780. The comment above AddPath's `go m.readLoop(attached[0], ...)` still reads 'One reader per SHARED socket, feeding the primary peer (single-peer receive; the concentrator's shared-socket demux to N peers is a later G4 task -- see handleInbound).' That is stale: the shared-socket demux to N peers shipped as demuxInbound (T88/T93), and promoteDeferredLocked already carries the accurate wording ('demuxInbound resolves the actual owning peer per-datagram once the socket has >1 view'). FIX: reword this comment to match reality -- one reader per shared socket; demuxInbound resolves the owning peer per-datagram once the socket has >1 view -- mirroring the promoteDeferredLocked comment. Pure comment change, no behavioural edit."
+- acceptance: "The multipath.go:2779-2780 comment no longer describes shared-socket demux as a future/G4 task and accurately states demuxInbound resolves the owning peer per-datagram (consistent with the promoteDeferredLocked comment). No code/behaviour change. nix develop -c just build passes; go vet clean."
+- suggestedModel: fast
+- dependsOn: ["T191"]
+- ledgerRefs: ["goals:G17","defects:D66"]
+
+### T198 — planned
+
+- createdAt: 2026-07-15T06:29:11.473Z
+- updatedAt: 2026-07-15T06:29:11.473Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "D63: confirm T123 pinned FIFO as intended, correct the mislabelled 'LRU' comment, recommend wontfix"
+- description: |
+    internal/bind/multipath.go bindSourceToPeer (~:1744-1746). D63 is a DESIGN REFINEMENT, NOT a regression: the D63 record (root-caused, severity low) confirms the eviction behaviour 'CONFORMS to the pinned T123 plan decision (insertion order was explicitly sanctioned)'. Therefore this task is CONFIRM-AND-DOCUMENT, NOT a forced LRU change -- do not change the eviction algorithm.
+    
+    What to do:
+    1) The bindSourceToPeer comment (~:1744-1746) currently MISLABELS the same-peer-quota eviction as 'EVICTING p's OWN oldest binding (LRU within p, chosen by sourceBinding.seq)'. That is inaccurate: sourceBinding.seq is stamped only at insert (:1817) and the already-bound fast path never refreshes it, so eviction is FIRST-BIND (FIFO) order, not LRU. Correct the comment to say 'oldest by first-bind (FIFO) order' and add one sentence recording that this FIFO/insertion-order eviction is the INTENDED, T123-sanctioned behaviour, and that true-LRU (refresh seq on authenticated re-affirm) is a sanctioned-but-deferred refinement not adopted here.
+    2) Do NOT alter bindSourceToPeer's logic. No behavioural change.
+    
+    RECOMMENDATION for the user (surface in the task result / review, do not self-decide): recommend closing D63 as WONTFIX -- the behaviour is intended per T123 and the default quota (maxDemuxSources/len(peers), e.g. 1024/N) makes self-eviction of an active binding unrealistic for sane deployments. If the user later wants true LRU, it is a separate follow-up (refresh seq on authenticated re-affirm, OR floor the per-peer quota at the configured path count).
+- acceptance: The bindSourceToPeer comment accurately describes the eviction as first-bind (FIFO) order (no longer 'LRU') and records it as intended per T123 with true-LRU noted as a deferred refinement; bindSourceToPeer's runtime behaviour is UNCHANGED (no logic edit, existing tests unaffected). The task result carries an explicit wontfix recommendation for D63 for the user to adjudicate. nix develop -c just build && go test ./internal/bind/... pass.
+- suggestedModel: standard
+- dependsOn: ["T197"]
+- ledgerRefs: ["goals:G17","defects:D63"]
+
+### T199 — planned
+
+- createdAt: 2026-07-15T06:29:25.874Z
+- updatedAt: 2026-07-15T06:29:25.874Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G17 DoD gate: full build/test/lint (default+e2e+realhosts) + -race, and drive defects to terminal"
+- description: |
+    Final definition-of-done gate for goal G17 after all six fixes (T183 D67, T186 D62, T191 D30, T195 D71, T197 D66, T198 D63) are merged. Run the full gate on the composed tree:
+      nix develop -c just build
+      nix develop -c just test
+      nix develop -c just lint    (must cover the default + e2e + realhosts build-tag sets -- see MEMORY 'go-gate-not-just-test'; a go test-only pass is insufficient)
+      nix develop -c go test -race ./internal/bind/...
+    All must be green. If lint reddens under any tag set (default/e2e/realhosts), fix within scope before declaring done.
+    
+    Closing bookkeeping (surface in the result for the orchestrator/user to record): the five CODE-FIX defects D67, D62, D30, D71, D66 are resolved by their tasks and should be driven to `resolved`; D63 is confirm-and-document and should be closed WONTFIX per the T123-pinned-FIFO finding (user adjudicates). This gate task performs NO ledger goal-phase transition (building->done is user-driven only).
+- acceptance: "On the composed tree with all G17 fix tasks merged: nix develop -c just build, nix develop -c just test, nix develop -c just lint (default+e2e+realhosts tag sets), and nix develop -c go test -race ./internal/bind/... ALL pass with no failures or lint findings. Result reports the recommended terminal status for each defect (D67/D62/D30/D71/D66 -> resolved; D63 -> wontfix)."
+- suggestedModel: standard
+- dependsOn: ["T195","T197","T198"]
+- ledgerRefs: ["goals:G17","defects:D30","defects:D62","defects:D63","defects:D66","defects:D67","defects:D71"]
