@@ -199,23 +199,31 @@ func TestMultiPeerConcentratorIsolation(t *testing.T) {
 		// per-peer resequencer series must exist for both (the two uplinks' distinct
 		// delay reorders frames the connection-scoped resequencer releases). Absolute
 		// counts are report-only (M10/Q12); the asserted invariant is per-peer presence.
+		//
+		// Attribution is asserted on TX bytes, NOT rx: the OUTER inbound reader is ONE
+		// Bind-owned readLoop per SHARED path socket, and it accounts every received
+		// datagram to the PRIMARY peer's (peer,path) rx counter before demuxing the frame
+		// to its owning peer's session — a non-primary peer's rx_bytes is therefore
+		// STRUCTURALLY 0 (internal/bind/multipath.go readLoop + demuxInbound, T23/T93).
+		// TX bytes ARE per-peer (each peer's scheduler writes its own return traffic), so
+		// positive tx for BOTH peers is the correct proof of independent attribution.
 		exp := scrapeMetrics(t, mpMetricsURL)
 		for _, pl := range []string{mpPeerALabel, mpPeerBLabel} {
 			var peerBytes float64
 			for _, wan := range []string{mpWan1, mpWan2} {
-				rx, ok := exp.PeerPathValue(metrics.MetricRxBytes, pl, wan)
+				tx, ok := exp.PeerPathValue(metrics.MetricTxBytes, pl, wan)
 				if !ok {
-					t.Fatalf("no %s{peer=%q,path=%q} series — per-peer attribution missing", metrics.MetricRxBytes, pl, wan)
+					t.Fatalf("no %s{peer=%q,path=%q} series — per-peer attribution missing", metrics.MetricTxBytes, pl, wan)
 				}
-				peerBytes += rx
+				peerBytes += tx
 			}
 			if peerBytes <= 0 {
-				t.Fatalf("peer %q carried non-positive rx bytes across its uplinks — the concentrator did not attribute its traffic", pl)
+				t.Fatalf("peer %q carried non-positive tx bytes across its uplinks — the concentrator did not attribute its traffic", pl)
 			}
 			if _, ok := exp.PeerValue(metrics.MetricReseqReleased, pl); !ok {
 				t.Fatalf("no %s{peer=%q} resequencer series for a bonded peer", metrics.MetricReseqReleased, pl)
 			}
-			t.Logf("peer %q attributed %.0f rx bytes across wan1+wan2 (report-only)", pl, peerBytes)
+			t.Logf("peer %q attributed %.0f tx bytes across wan1+wan2 (report-only)", pl, peerBytes)
 		}
 	})
 

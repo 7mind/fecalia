@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,13 +81,18 @@ import (
 const (
 	// r121EdgeMetrics is the EDGE's /metrics listen (loopback — the edge runs in the base
 	// test-process netns, so 127.0.0.1 is directly scrapeable). The concentrator runs in the
-	// PEER netns where a 127.0.0.1 listener is unreachable from the base netns, so it binds
-	// its primary uplink address instead (r121ConcMetricsListen, reachable over the veth).
-	// Both use the SAME new port 9104 (distinct addresses/netns — no collision); 9104 is this
-	// file's registry entry (see netns.go metricsPortRegistry).
-	r121MetricsPort    = 9104
-	r121EdgeMetrics    = "127.0.0.1:9104"
-	r121EdgeMetricsURL = "http://" + r121EdgeMetrics + "/metrics"
+	// PEER netns, where the T17 requireLoopback invariant (internal/metrics/server.go,
+	// docs/design.md:740) UNCONDITIONALLY refuses any non-loopback bind — so it too binds
+	// 127.0.0.1 (r121ConcMetricsListen/r121ConcMetricsURL), reachable from the base netns only
+	// by dialing INTO the peer netns (fetchMetricsInNetns/netnsMetricsClient — like p2/p3/p4
+	// and multipeer_hardened_test.go's hwMetricsHost). Both sides use the SAME port 9104
+	// (distinct netns — no collision); 9104 is this file's registry entry (see netns.go
+	// metricsPortRegistry).
+	r121MetricsPort       = 9104
+	r121EdgeMetrics       = "127.0.0.1:9104"
+	r121EdgeMetricsURL    = "http://" + r121EdgeMetrics + "/metrics"
+	r121ConcMetricsListen = "127.0.0.1:9104"
+	r121ConcMetricsURL    = "http://" + r121ConcMetricsListen + "/metrics"
 
 	// r121ReconvergeBudget bounds one-sided-restart reconvergence (session_established
 	// 0->1). It sits WELL under WG's own rescue timers and targets the ~25s both-ends-fresh
@@ -141,10 +147,8 @@ func TestOneSidedRestartRecovery(t *testing.T) {
 func testRestartOnlyEdge(t *testing.T, bin string) {
 	t.Helper()
 	top := SetupWithPaths(t, DefaultPaths)
-	primary := DefaultPaths[primaryPathIdx] // starlink — the concentrator uplink the edge targets
-	survivorURL := "http://" + primary.concIP + ":" + strconv.Itoa(r121MetricsPort) + "/metrics"
 
-	edge, conc, edgeArgv, _ := r121BringUp(t, top, bin, DefaultPaths, primary.concIP)
+	edge, conc, edgeArgv, _ := r121BringUp(t, top, bin, DefaultPaths)
 
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("bond never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
@@ -162,7 +166,7 @@ func testRestartOnlyEdge(t *testing.T, bin string) {
 	top.startProc(t, "iperf3-load", "iperf3", "-c", concInner, "-t", strconv.Itoa(r121SatSeconds))
 	time.Sleep(time.Duration(r121SatSeconds+1) * time.Second) // let the flow run to completion + queues drain
 
-	before := scrapeMetrics(t, survivorURL)
+	before := fetchMetricsInNetns(t, top.pid, r121ConcMetricsURL)
 	relBefore := r121PeerCounter(t, before, metrics.MetricReseqReleased, "concentrator survivor")
 	if relBefore <= r121ReseqWindow {
 		t.Fatalf("D36 precondition unmet: concentrator survivor released only %.0f frames (<= window %d) — `next` did not advance past the window, so a restart could not exercise the SUSPECT-drop path",
@@ -189,7 +193,7 @@ func testRestartOnlyEdge(t *testing.T, bin string) {
 
 	// (2) the SURVIVING concentrator re-anchored (rebaselines>=1) and did NOT suspect-drop
 	// the wrapped init (~0 dropSuspect delta).
-	after := scrapeMetrics(t, survivorURL)
+	after := fetchMetricsInNetns(t, top.pid, r121ConcMetricsURL)
 	rebaseAfter := r121PeerCounter(t, after, metrics.MetricReseqRebaselines, "concentrator survivor")
 	dropAfter := r121PeerCounter(t, after, metrics.MetricReseqDroppedSuspect, "concentrator survivor")
 	r121AssertRecovery(t, "edge-restart", reconv, rebaseBefore, rebaseAfter, dropBefore, dropAfter, relBefore)
@@ -204,15 +208,13 @@ func testRestartOnlyEdge(t *testing.T, bin string) {
 func testRestartOnlyConcentrator(t *testing.T, bin string) {
 	t.Helper()
 	top := SetupWithPaths(t, DefaultPaths)
-	primary := DefaultPaths[primaryPathIdx] // starlink
-	restartedURL := "http://" + primary.concIP + ":" + strconv.Itoa(r121MetricsPort) + "/metrics"
 
-	edge, conc, _, concArgv := r121BringUp(t, top, bin, DefaultPaths, primary.concIP)
+	edge, conc, _, concArgv := r121BringUp(t, top, bin, DefaultPaths)
 
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("bond never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 	}
-	waitSessionEstablished(t, restartedURL, r121ReconvergeBudget)
+	waitSessionEstablishedInNetns(t, top.pid, r121ConcMetricsURL, r121ReconvergeBudget)
 	// (3) D37 cold-start first-handshake is an EDGE property; assert it on the edge log at
 	// initial bring-up (the concentrator is the responder and initiates nothing).
 	assertD37FirstHandshake(t, edge)
@@ -243,7 +245,7 @@ func testRestartOnlyConcentrator(t *testing.T, bin string) {
 	}
 
 	// (1) the restarted concentrator's session_established returns 0->1 within budget.
-	waitSessionEstablished(t, restartedURL, r121ReconvergeBudget)
+	waitSessionEstablishedInNetns(t, top.pid, r121ConcMetricsURL, r121ReconvergeBudget)
 	reconv := time.Since(restartAt)
 	if !top.pingUntil(concInner, r121ReconvergeBudget) {
 		t.Fatalf("tunnel did not carry inner traffic within %s of the concentrator restart\n--- edge ---\n%s\n--- conc ---\n%s",
@@ -315,23 +317,23 @@ func assertD37FirstHandshake(t *testing.T, edge *proc) {
 // waits for both wanbond0 TUNs, plumbs the inner overlay addresses, and returns both procs
 // plus the exact argv each was started with (so a restart re-launches an identical process).
 // Both ends run tun_persist=true so the inner address survives a full daemon stop/start, and
-// at [log] level "info" so the D37 path-up / session-established records are emitted. The
-// edge binds its /metrics on loopback; the concentrator binds its primary uplink address so
-// the base netns can scrape it over the veth.
-func r121BringUp(t *testing.T, top *Topology, bin string, paths []pathSpec, concMetricsIP string) (edge, conc *proc, edgeArgv, concArgv []string) {
+// at [log] level "info" so the D37 path-up / session-established records are emitted. Both
+// ends bind their /metrics on loopback (127.0.0.1) — the T17 requireLoopback invariant
+// (internal/metrics/server.go) unconditionally refuses any non-loopback bind — so the
+// concentrator's endpoint (r121ConcMetricsListen) is reachable from the base netns only by
+// dialing INTO the peer netns (fetchMetricsInNetns/waitSessionEstablishedInNetns).
+func r121BringUp(t *testing.T, top *Topology, bin string, paths []pathSpec) (edge, conc *proc, edgeArgv, concArgv []string) {
 	t.Helper()
 
 	edgePriv, edgePub := genKey(t)
 	concPriv, concPub := genKey(t)
 	psk := randKey(t)
 
-	concMetricsListen := concMetricsIP + ":" + strconv.Itoa(r121MetricsPort)
-
 	dir := t.TempDir()
 	edgeCfg := writeConfig(t, filepath.Join(dir, "edge.toml"),
 		r121EdgeConfig(psk, edgePriv, concPub, paths, r121EdgeMetrics))
 	concCfg := writeConfig(t, filepath.Join(dir, "conc.toml"),
-		r121ConcConfig(psk, concPriv, edgePub, paths, concMetricsListen))
+		r121ConcConfig(psk, concPriv, edgePub, paths, r121ConcMetricsListen))
 
 	edgeArgv = []string{bin, "--config", edgeCfg}
 	concArgv = []string{"nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", concCfg}
@@ -381,7 +383,9 @@ level = "info"
 }
 
 // r121ConcConfig renders the concentrator TOML: one source-bound socket per path, tun_persist,
-// a /metrics block bound to the primary uplink address (base-netns-scrapeable), and info logs.
+// a /metrics block bound to loopback (127.0.0.1 — required by the T17 requireLoopback
+// invariant; scraped from the base netns via fetchMetricsInNetns/waitSessionEstablishedInNetns),
+// and info logs.
 func r121ConcConfig(psk, concPriv, edgePub string, paths []pathSpec, metricsListen string) string {
 	var b strings.Builder
 	for _, p := range paths {
@@ -405,6 +409,34 @@ allowed_ips = ["%s/32"]
 [log]
 level = "info"
 `, psk, b.String(), metricsListen, concPriv, listenPort, edgePub, edgeInner)
+}
+
+// waitSessionEstablishedInNetns polls url's /metrics — reached by dialing INTO the peer
+// netns (pid), via netnsMetricsClient — until wanbond_session_established reads 1, or fails
+// at deadline. The netns-aware analogue of waitSessionEstablished (session_established_test.go),
+// needed here because the concentrator's /metrics binds loopback INSIDE the peer netns
+// (r121ConcMetricsListen — the T17 requireLoopback invariant forbids binding its uplink
+// address), unlike i2's base-netns-reachable endpoint. A mid-poll scrape error is tolerated
+// (the endpoint may not be up yet), mirroring waitSessionEstablished's own tolerance and
+// hwFixture.waitPeerPathUp's netns-dial pattern. Reuses ONE netnsMetricsClient across the
+// poll (DisableKeepAlives dials fresh each scrape, so the socket re-opens inside the peer
+// netns every time).
+func waitSessionEstablishedInNetns(t *testing.T, pid int, url string, deadline time.Duration) {
+	t.Helper()
+	client := netnsMetricsClient(pid)
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		exp, err := metrics.Fetch(ctx, client, url)
+		cancel()
+		if err == nil {
+			if v, ok := exp.Value(metrics.MetricSessionEstablished); ok && v == 1 {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("wanbond_session_established never reached 1 within %s", deadline)
 }
 
 // r121PeerCounter reads a resequencer counter for the survivor's sole peer. Because each
