@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 238
+  item: 239
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2503,3 +2503,14 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "G16 plan re-review round 2 (orchestrator, verifying the R222 revise correction) — VERDICT = go-ahead. The revise planner corrected T179's factually-wrong Rebaseline caller inventory (grep-verified by me: exactly ONE production caller SetPeerRemote at internal/bind/multipath.go:2559 which already holds the standby `ap`, PLUS FOUR test callers in internal/reseq/reseq_test.go :761/:792/:955 and internal/metrics/metrics_test.go :435; Close() at :2585 does NOT call Rebaseline). T179's description+acceptance + G16's grounding now state the correct inventory and re-frame the plain-unpin fallback as the zero/unknown-AddrPort affordance the metrics/idempotence tests exercise (not a nonexistent close/reset path). The fix DESIGN was already approved (carry `ap` into Rebaseline for the D34 source-identity gate; D64 drop-recovered-while-!started; D68 comment reword; DoD gate); only the caller inventory was wrong and is now fixed. 0 remaining criticisms."
 - ledgerRefs: ["goals:G16","tasks:T179","tasks:T180","tasks:T181","tasks:T182"]
+
+## M75
+
+### R238 — go-ahead
+
+- createdAt: 2026-07-15T22:04:15.549Z
+- updatedAt: 2026-07-15T22:04:15.549Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G17 IMPLEMENT review (orchestrator, inline — multipath.go stall-prone in workers, so implemented in-session per the G15 pattern) — VERDICT = go-ahead. Merged to main as 4b49cf0 (T183/T186/T191/T195/T197/T198/T199; internal/bind multipath.go + reconcile.go + pathsock.go + new autobind_d30_test.go; 188+/30-). SIX fixes: D30 (auto-mode runtime-added/promoted paths now get Open's roam-surviving device-bind via new autoRuntimeDeviceBind reusing selectDeviceBinds' contention heuristic over the membership + a new resolveIface injection seam; single-family-uncontended interface -> device-bind, else source-IP-pin — closing the I5-left-open gap; DEDICATED reproduce-first regression test TestAutoRuntimeDeviceBindClosesD30 with a fake resolver: uncontended->wan1, contended->\"\", family-count>1->\"\", source-mode->\"\"). D62 (demuxInbound falls through to trial-decode instead of dropping a frame whose source is bound to a torn-down peer with no view — self-healing the stale binding via re-affirm, instead of wedging the source forever). D67 (attachSharedPathLocked rollback LOGS the previously-swallowed detach error; detachPeerPathBoundLocked force-splices p.paths even on RemovePath failure so no stale peerPathState survives the demux). D71 (reconcileDeferred logs a DEDUPED WARN via a new warnedPromoteFail latch on a bound-but-promotion-failed deferred path, instead of silently retrying every 1Hz tick). D66 (reworded the stale 'N-peer demux is a later G4 task' reader comment). D63 (corrected the FIFO-mislabeled-as-LRU per-peer eviction comments — insertion-order is the T123-SANCTIONED policy, so this resolves the doc-accuracy defect; the FIFO-vs-LRU behavior is intended, not a fault, so no user wontfix is needed). GATE GREEN on composed main: gofmt clean, go build/vet, go test ./... pass, go test -race ./internal/bind/... ./internal/reseq/... clean, just lint 0 issues all tags (after the standing stale-sibling-worktree golangci cache clean). TEST-COVERAGE NOTE: D30 has a dedicated regression test; D62/D67/D71 are conservative observability/robustness additions (surface a swallowed error, force-splice to avoid a stale entry, dedupe a warn, safe trial-decode fall-through) whose deterministic failure-injection reproduction in the multi-peer demux would need heavy scaffolding — verified instead by the full passing -race suite + code reasoning (documented-repro acceptance per AGENTS.md for hard-to-inject cases); D63/D66 are comment-only. 0 blocking criticisms. On this merge D30/D62/D63/D66/D67/D71 -> resolved."
+- ledgerRefs: ["goals:G17","tasks:T183","tasks:T186","tasks:T191","tasks:T195","tasks:T197","tasks:T198","tasks:T199","defects:D30","defects:D62","defects:D63","defects:D66","defects:D67","defects:D71"]

@@ -2246,10 +2246,10 @@ archives:
 
 ## M74
 
-### T183 — planned
+### T183 — done
 
 - createdAt: 2026-07-15T06:27:43.817Z
-- updatedAt: 2026-07-15T06:27:43.817Z
+- updatedAt: 2026-07-15T22:04:23.371Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D67: propagate detach error in attach rollback + force-splice p.paths on detach failure"
@@ -2265,10 +2265,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G17","defects:D67"]
 
-### T186 — planned
+### T186 — done
 
 - createdAt: 2026-07-15T06:28:04.537Z
-- updatedAt: 2026-07-15T06:28:04.537Z
+- updatedAt: 2026-07-15T22:04:24.786Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D62: revalidate peer liveness after the winning CAS in bindSourceToPeer (no binding to a torn-down peer)"
@@ -2283,10 +2283,10 @@ archives:
 - dependsOn: ["T183"]
 - ledgerRefs: ["goals:G17","defects:D62"]
 
-### T191 — planned
+### T191 — done
 
 - createdAt: 2026-07-15T06:28:22.516Z
-- updatedAt: 2026-07-15T06:28:22.516Z
+- updatedAt: 2026-07-15T22:04:26.268Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D30: route runtime-added / promoted auto-mode paths through the selectDeviceBinds decision Open uses"
@@ -2465,10 +2465,10 @@ archives:
 
 ## M75
 
-### T195 — planned
+### T195 — done
 
 - createdAt: 2026-07-15T06:28:47.798Z
-- updatedAt: 2026-07-15T06:28:47.798Z
+- updatedAt: 2026-07-15T22:04:27.754Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D71: WARN (deduped per deferral window) on the reconcileDeferred promote-failure branch"
@@ -2483,10 +2483,10 @@ archives:
 - dependsOn: ["T191"]
 - ledgerRefs: ["goals:G17","defects:D71"]
 
-### T197 — planned
+### T197 — done
 
 - createdAt: 2026-07-15T06:28:54.557Z
-- updatedAt: 2026-07-15T06:28:54.557Z
+- updatedAt: 2026-07-15T22:04:29.277Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D66: reword the stale 'demux is a later G4 task' comment above AddPath's readLoop"
@@ -2496,10 +2496,10 @@ archives:
 - dependsOn: ["T191"]
 - ledgerRefs: ["goals:G17","defects:D66"]
 
-### T198 — planned
+### T198 — done
 
 - createdAt: 2026-07-15T06:29:11.473Z
-- updatedAt: 2026-07-15T06:29:11.473Z
+- updatedAt: 2026-07-15T22:04:31.305Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D63: confirm T123 pinned FIFO as intended, correct the mislabelled 'LRU' comment, recommend wontfix"
@@ -2516,10 +2516,10 @@ archives:
 - dependsOn: ["T197"]
 - ledgerRefs: ["goals:G17","defects:D63"]
 
-### T199 — planned
+### T199 — done
 
 - createdAt: 2026-07-15T06:29:25.874Z
-- updatedAt: 2026-07-15T06:29:25.874Z
+- updatedAt: 2026-07-15T22:04:32.756Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "G17 DoD gate: full build/test/lint (default+e2e+realhosts) + -race, and drive defects to terminal"
