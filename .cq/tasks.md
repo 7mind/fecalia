@@ -2178,10 +2178,10 @@ archives:
 - dependsOn: ["T163"]
 - ledgerRefs: ["goals:G12"]
 
-### T167 — wip
+### T167 — done
 
 - createdAt: 2026-07-14T18:47:12.911Z
-- updatedAt: 2026-07-15T00:30:02.163Z
+- updatedAt: 2026-07-15T00:46:09.737Z
 - author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "go:embed the built bundle into the monitor server + wire the Vite build into the Justfile"

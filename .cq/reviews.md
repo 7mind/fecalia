@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 209
+  item: 210
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2448,3 +2448,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T166 implement review (single opus reviewer, proportionate; frontend-only). VERDICT = approve/go-ahead (0 criticisms/questions/defects). The resilient /ws client (web/src/ws-client.ts) meets acceptance verified by a GENUINE deterministic vitest suite (5/5, stub WebSocket): drop -> offline/reconnecting -> live+data-resume (test 2); BOUNDED backoff (nextRetryDelayMs <= maxDelayMs and > 0) with confirmed exponential growth across 6 repeated drops, no tight loop (test 3); clean-close(1000) vs abnormal-drop(1006) classification (test 5); stop() cancels pending reconnects (test 4). State machine connecting/live/reconnecting/offline correct; backoff exponential (base*2**attempt) capped by Math.min(...,maxDelayMs) with full jitter (0.5+rand*0.5); the retry counter resets on actual FRAME RECEIPT (not merely socket open). /ws URL is RELATIVE same-origin (new URL('/ws', window.location.href), ws/wss from page protocol). health-indicator.ts updates the DOM (dot color+shape, label, 'last update Ns ago' staleness ticking every 1s). Reconnect-on-clean-close is sensible for a continuous push-only monitor (only client stop() is terminal). Cookie-auth assumption documented (SameSite=Strict cookie auto-sent on the ws upgrade; no JS token handling). Gates: npx tsc --noEmit clean, npm run build ok, npm test 5/5; NO Go files touched, Go gate unaffected. NON-BLOCKING documented gap (ws-client.ts header): a silently half-open socket that never fires close (Firefox no-keepalive, frozen tab, dead NAT) is not detected — the backend /ws is push-only with no app-level ping, and the acceptance requires no heartbeat; flagged as a future-hardening item (out of T166 scope), not a defect. Merged to main (32bf673)."
 - ledgerRefs: ["tasks:T166","goals:G12"]
+
+### R210 — go-ahead
+
+- createdAt: 2026-07-15T00:46:09.053Z
+- updatedAt: 2026-07-15T00:46:09.053Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T167 implement review (single opus reviewer; inline-implemented after monitor-package worker stalls). VERDICT = approve/go-ahead (0 criticisms/questions/defects). EMBED: //go:embed all:dist compiles with only the committed dist/.gitkeep (fresh go build clean); `all:` is PROVABLY REQUIRED — plain //go:embed dist fails 'contains no embeddable files' on a dotfile-only dir. BUILD PIPELINE: `just build` runs web-build (npm ci + vite build -> index.html + hashed assets/index-*.js), restores .gitkeep (Vite empties the outDir), then go build embeds the REAL bundle; after just build `git status` is CLEAN (only unrelated .cq); the T167 commit tracks ONLY internal/monitor/dist/.gitkeep (built assets gitignored via /dist/* + !/dist/.gitkeep). STATIC HANDLER: no-cache for / and index.html (redeploys picked up), public max-age=31536000 immutable for hashed assets, Content-Type from http.FileServer; TestStaticHandler (synthetic fstest.MapFS) passes. ROUTING/AUTH: GET /ws stays more-specific than GET / (Go 1.22 mux); the mux is still wrapped by auth.middleware. Relaxed T164 auth tests (==200 -> not-401/403 since / body now depends on the build) remain meaningful and pass. LINT: just lint 0 issues all tags, internal/monitor covered. LIVE VERIFICATION (reviewer, isolated worktree): the real embedded server returns GET / -> 200 text/html no-cache (the 326-byte built index with <title>wanbond monitor</title>) and the asset -> 200 text/javascript immutable. NOTE (my process error, not a code fault): I switched the shared main checkout OFF implement/T167 to main to merge T166 WHILE this reviewer ran in the main checkout, causing a transient placeholder result mid-review; the reviewer correctly re-validated 5ef2552 in an isolated worktree — lesson: do not branch-switch the shared checkout while a reviewer operates in it. Cherry-picked to main (093df91). Composed tree (T166 web/ client + T167 embed) re-gated green + just build end-to-end verified."
+- ledgerRefs: ["tasks:T167","goals:G12"]
