@@ -432,7 +432,7 @@ func TestExpositionReseqRebaselineAndDropSuspect(t *testing.T) {
 		t.Fatalf("precondition: DroppedSuspect = %d, want 1", got)
 	}
 
-	r.Rebaseline()
+	r.Rebaseline(netip.AddrPort{})
 	if got := r.Stats().Rebaselines; got != 1 {
 		t.Fatalf("precondition: Rebaselines = %d, want 1", got)
 	}

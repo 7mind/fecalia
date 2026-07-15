@@ -2593,7 +2593,7 @@ func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	// never nest it under m.mu). Nil on a closed bind (a resequencer is Stored per Open) —
 	// the next Open seeds a fresh one whose release point re-pins to its first frame anyway.
 	if rq != nil {
-		rq.Rebaseline()
+		rq.Rebaseline(ap)
 	}
 }
 

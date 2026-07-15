@@ -164,6 +164,23 @@ type Resequencer struct {
 	// cleared.
 	pendingLowDrops uint64
 
+	// pendingSrc / pendingSrcActive arm a SOURCE-IDENTITY gate after a plain Rebaseline (D34,
+	// the D32 hub-failover path): the release point re-anchors only on a frame from the EXPECTED
+	// new standby hub endpoint, so a stale straggler still draining from the OLD hub (a DIFFERENT
+	// source) cannot re-pin `next` to a wrong value before the standby's stream arrives. The
+	// ordered failover endpoints are PUBLIC hub addresses (the edge is the NAT'd side, not the
+	// hub), so the standby's inbound frames carry src == the endpoint the edge failed over to.
+	// Armed only when Rebaseline is given a valid expected source; a zero source leaves it off
+	// (re-anchor on the next frame — the pre-D34 trust-next behaviour). Cleared when next re-anchors.
+	pendingSrc       netip.AddrPort
+	pendingSrcActive bool
+	// pendingSrcDrops BOUNDS the source gate the same way pendingLowDrops bounds the low-anchor
+	// gate: it counts consecutive wrong-source frames SUSPECT-dropped while the gate is armed, and
+	// after O(window) of them (the expected source never arriving — a mis-config or a further
+	// failover) the gate FALLS BACK to re-anchoring on the next frame, so it can never permanently
+	// blackhole the stream. Reset to 0 whenever the gate is (re-)armed or cleared.
+	pendingSrcDrops uint64
+
 	// Diagnostics (read via the accessors; useful for the bounded-memory asserts).
 	highWater   int    // max occupied slots ever held
 	dropDup     uint64 // frames dropped as duplicates
@@ -172,7 +189,7 @@ type Resequencer struct {
 	skipped     uint64 // seqs skipped (treated lost) by window-advance or timeout
 	releasedN   uint64 // frames released for delivery
 	resyncs     uint64 // release-point re-pins after a corroborated discontinuity
-	rebaselines uint64 // release-point re-baselines forced by a trusted control event (hub failover)
+	rebaselines uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
 }
 
 // New returns a resequencer buffering at most window outer-seq positions and
@@ -205,8 +222,23 @@ func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
 	defer r.mu.Unlock()
 
 	if !r.started {
+		if r.pendingSrcActive && src != r.pendingSrc {
+			// D34: a hub-failover Rebaseline armed the source-identity gate — re-anchor only on
+			// a frame from the expected new standby hub, so a stale old-hub straggler (a
+			// different source) cannot re-pin the release point. Bounded self-heal: after
+			// O(window) wrong-source frames the expected source is presumed gone (mis-config or
+			// a further failover) and we re-anchor on the next frame, so the gate never
+			// blackholes the stream.
+			r.pendingSrcDrops++
+			if r.pendingSrcDrops <= r.window {
+				r.dropSuspect++
+				return
+			}
+		}
 		r.started = true
 		r.next = seq
+		r.pendingSrcActive = false
+		r.pendingSrcDrops = 0
 	}
 
 	// Give up on any head-of-line gap whose hold time has elapsed before deciding
@@ -269,8 +301,14 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 	}
 
 	if !r.started {
-		r.started = true
-		r.next = seq
+		// D64: a recovered (parity-reconstructed) frame must NEVER establish or re-pin the
+		// release point — that is Observe's job, and this method's documented contract is that
+		// it "NEVER moves or re-pins the release point". Before the first LIVE Observe (a fresh
+		// ring, or a plain Rebaseline that cleared `started` without arming the pendingLow
+		// gate), seating a recovered frame here would re-pin `next` to a repaired PAST seq and
+		// dump the live buffer. Drop it as too-early; a live Observe pins `next` normally.
+		r.dropSuspect++
+		return false
 	}
 	r.expire(now)
 
@@ -623,7 +661,7 @@ func (r *Resequencer) resyncReset() {
 // prior hub) are discarded in O(window); the already-released FIFO of prior
 // legitimate deliveries is untouched. Idempotent and safe before the first Observe
 // (started stays false). Takes r.mu; the caller must NOT hold it.
-func (r *Resequencer) Rebaseline() {
+func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range r.ring {
@@ -641,6 +679,13 @@ func (r *Resequencer) Rebaseline() {
 	// next" postcondition. Clearing it restores the plain unpin-and-trust-next path.
 	r.pendingLow = false
 	r.pendingLowDrops = 0
+	// Arm the D34 source-identity gate when the caller supplies the expected new hub endpoint:
+	// the next re-anchor accepts only a frame from that source (a stale old-hub straggler is
+	// SUSPECT-dropped, bounded by pendingSrcDrops). A zero/unknown expected source leaves the gate
+	// off — re-anchor on the next frame, the pre-D34 behaviour idempotence/metrics callers rely on.
+	r.pendingSrc = expectedSrc
+	r.pendingSrcActive = expectedSrc.IsValid()
+	r.pendingSrcDrops = 0
 	r.resyncReset()
 	r.rebaselines++
 }
@@ -688,6 +733,12 @@ func (r *Resequencer) RebaselineToLow() {
 	}
 	r.buf = 0
 	r.waiting = false
+	// A peer-restart low-anchor re-baseline SUPERSEDES any pending hub-failover source gate
+	// (D34): the low-anchor gate below arbitrates the re-anchor now, so a stale pendingSrc must
+	// not also gate it.
+	r.pendingSrc = netip.AddrPort{}
+	r.pendingSrcActive = false
+	r.pendingSrcDrops = 0
 	r.resyncReset()
 	r.rebaselines++
 	switch {
@@ -757,7 +808,7 @@ type Stats struct {
 	DroppedSuspect uint64 // out-of-band frames dropped while (not yet) corroborating
 	Skipped        uint64 // seqs skipped (lost) by window-advance or timeout
 	Resyncs        uint64 // release-point re-pins after a corroborated discontinuity
-	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (hub failover)
+	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
 }
 
 // Stats returns a snapshot of the cumulative counters.

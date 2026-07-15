@@ -758,7 +758,7 @@ func TestRebaselineAdmitsStandbyLowSeqAfterHubSwitch(t *testing.T) {
 
 	// The hub-failover switch calls Rebaseline: the DATA-frame sender provably changed to
 	// the operator-configured standby, so the next frame re-anchors the release point.
-	r.Rebaseline()
+	r.Rebaseline(netip.AddrPort{})
 	if s := r.Stats(); s.Rebaselines != 1 {
 		t.Fatalf("Rebaselines = %d, want 1", s.Rebaselines)
 	}
@@ -789,7 +789,7 @@ func TestRebaselineDiscardsBufferedPreSwitchFrames(t *testing.T) {
 		t.Fatalf("precondition: Pending = %d, want 1", r.Pending())
 	}
 
-	r.Rebaseline()
+	r.Rebaseline(netip.AddrPort{})
 	if r.Buffered() != 0 {
 		t.Fatalf("Rebaseline did not discard buffered pre-switch frames: Buffered = %d, want 0", r.Buffered())
 	}
@@ -952,7 +952,7 @@ func TestRebaselineToLowThenRebaselineDelivers(t *testing.T) {
 	// A D32 hub failover now Rebaselines the SAME resequencer. FIX 2: this clears the
 	// pending low-anchor so the standby's fail-back stream is not gated against the stale
 	// anchor.
-	r.Rebaseline()
+	r.Rebaseline(netip.AddrPort{})
 
 	// The standby's fail-back stream (a fresh outer-seq run, here 300..399). Before the fix
 	// these were all SUSPECT-dropped (0/100 delivered) against the stale pendingLowAnchor=200;

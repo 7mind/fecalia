@@ -93,8 +93,10 @@ func TestPerPeerResequencerLifecycle(t *testing.T) {
 		}
 	}
 
-	// The edge hub-failover switch: SetPeerRemote re-baselines ONLY the primary (peer A).
-	m.SetPeerRemote(netip.MustParseAddrPort("192.0.2.9:51820"))
+	// The edge hub-failover switch: SetPeerRemote re-baselines ONLY the primary (peer A) and
+	// arms its D34 source-identity gate on the standby hub endpoint it failed over to.
+	standby := netip.MustParseAddrPort("192.0.2.9:51820")
+	m.SetPeerRemote(standby)
 
 	if got := primary.resequencer.Load().Stats().Rebaselines; got != 1 {
 		t.Fatalf("primary Rebaselines = %d, want 1 (SetPeerRemote must re-baseline the switched peer)", got)
@@ -103,11 +105,12 @@ func TestPerPeerResequencerLifecycle(t *testing.T) {
 		t.Fatalf("second peer Rebaselines = %d, want 0 (a hub switch on peer A must not touch peer B)", got)
 	}
 
-	// A LOW seq now: peer A (re-baselined) re-anchors on it and DELIVERS; peer B (release point
+	// A LOW seq now, arriving FROM THE NEW STANDBY HUB (the source D34's hub-failover gate
+	// re-anchors on): peer A (re-baselined) re-anchors on it and DELIVERS; peer B (release point
 	// still at high+1) rejects it as a suspect out-of-band frame and delivers NOTHING — proof its
 	// `next` was untouched by peer A's re-baseline.
 	const low = uint64(1)
-	primary.resequencer.Load().Observe(low, []byte("A-reanchor"), srcA)
+	primary.resequencer.Load().Observe(low, []byte("A-reanchor"), standby)
 	gotLow, okLow := primary.resequencer.Load().Pop()
 	if !okLow || string(gotLow.Payload) != "A-reanchor" {
 		t.Fatalf("peer A did not re-anchor on the low seq after re-baseline: got %q (ok=%v)", gotLow.Payload, okLow)
