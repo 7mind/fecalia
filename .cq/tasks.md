@@ -2102,10 +2102,10 @@ archives:
 
 ## M65
 
-### T173 — planned
+### T173 — wip
 
 - createdAt: 2026-07-15T06:09:55.114Z
-- updatedAt: 2026-07-15T06:09:55.114Z
+- updatedAt: 2026-07-15T06:19:44.515Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D76: reproduce-first unit tests for *ActiveBackup ProbeBudget headroom"
@@ -2114,10 +2114,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["defects:D76","goals:G15"]
 
-### T175 — planned
+### T175 — wip
 
 - createdAt: 2026-07-15T06:10:18.489Z
-- updatedAt: 2026-07-15T06:10:18.489Z
+- updatedAt: 2026-07-15T06:19:48.054Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D76: implement AccountProbe(pathIdx) on *ActiveBackup + compile-proof"
@@ -2129,10 +2129,10 @@ archives:
 
 ## M66
 
-### T174 — planned
+### T174 — wip
 
 - createdAt: 2026-07-15T06:10:03.230Z
-- updatedAt: 2026-07-15T06:10:03.230Z
+- updatedAt: 2026-07-15T06:19:46.017Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D79: reproduce-first regression test for identity-keyed active-backup pacer config across defer/promote"
@@ -2141,10 +2141,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["defects:D79","defects:D65","goals:G15"]
 
-### T176 — planned
+### T176 — wip
 
 - createdAt: 2026-07-15T06:10:28.844Z
-- updatedAt: 2026-07-15T06:10:28.844Z
+- updatedAt: 2026-07-15T06:19:49.541Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D79: extend DynamicScheduler membership to carry per-path pacer config by identity; seed *ActiveBackup from it"
@@ -2154,10 +2154,10 @@ archives:
 - dependsOn: ["T174"]
 - ledgerRefs: ["defects:D79","goals:G15"]
 
-### T177 — planned
+### T177 — wip
 
 - createdAt: 2026-07-15T06:10:45.048Z
-- updatedAt: 2026-07-15T06:10:45.048Z
+- updatedAt: 2026-07-15T06:19:51.110Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D79: wire the bind to source each bound/promoted path's pacer config from cfg by m.defs identity"
@@ -2169,10 +2169,10 @@ archives:
 
 ## M67
 
-### T178 — planned
+### T178 — wip
 
 - createdAt: 2026-07-15T06:11:00.174Z
-- updatedAt: 2026-07-15T06:11:00.174Z
+- updatedAt: 2026-07-15T06:19:52.105Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "G15 DoD gate: full build/test/lint + race on sched+bind for the active-backup pacing fix"

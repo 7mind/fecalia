@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 67
+  item: 72
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -467,3 +467,38 @@ archives:
 - title: "G15: definition-of-done gate (build + test + lint + race, active-backup pacing fix)"
 - description: "Final green gate for both D76 and D79 fixes: nix develop -c just build && just test && just lint (default+e2e+realhosts tags) + go test -race ./internal/sched/... ./internal/bind/.... Placeholder dependsOn tokens replaced with the real W_D76/W_D79 milestone ids after creation. Links goals:G15."
 - dependsOn: ["M65","M66"]
+
+### M68 — open
+
+- createdAt: 2026-07-15T06:21:43.330Z
+- updatedAt: 2026-07-15T06:21:43.330Z
+- title: "Plan: fix reseq re-anchor correctness residuals (D34/D64/D68)"
+- description: "Defect-seeded fix goal cluster: internal/reseq re-anchor correctness. D34 (Rebaseline lacks source-identity gate on the hub-failover path), D64 (ObserveRecovered re-pins next to a recovered frame's seq after plain Rebaseline — pendingLow guard only covers RebaselineToLow), D68 (stale rebaselines doc-comment scoping to hub-failover only, now also peer-restart). Manual bridge for the cq root-caused-defect sweep gap."
+
+### M69 — open
+
+- createdAt: 2026-07-15T06:21:46.512Z
+- updatedAt: 2026-07-15T06:21:46.512Z
+- title: "Plan: fix bind path-lifecycle & demux hardening (D30/D62/D63/D66/D67/D71)"
+- description: "Defect-seeded fix goal cluster: internal/bind path-lifecycle + source-binding demux correctness. D67 (attachSharedPathLocked rollback swallows detach error), D62 (teardown-vs-bind race installs dead-peer binding), D71 (reconcile promote-failure unlogged), D30 (auto-mode runtime-added paths never device-bind), D66 (stale single-peer-receive comment), D63 (demux eviction FIFO not LRU — design refinement per pinned T123). Manual bridge for the cq root-caused-defect sweep gap."
+
+### M70 — open
+
+- createdAt: 2026-07-15T06:21:50.312Z
+- updatedAt: 2026-07-15T06:21:50.312Z
+- title: "Plan: fix metrics/server + reload observability (D70/D72/D74/D75/D83/D84)"
+- description: "Defect-seeded fix goal cluster: observability + server hygiene. D84 (metrics.Server.Close leaks listener when never Started — mirror the T162 monitor fix), D83 (loopback classification duplicated between metrics/server.go and netutil.IsLoopbackHost — dedup), D70 (reload same-name path link_bandwidth/link_rtt change unwarned), D74 (reload doesn't recompute the weighted-capacity gauge + reloadWarnings gap — overlaps D70), D72 (WeightedScheduler.SetPaths aggregation collapse unlogged), D75 (idle-gap aggregation-change log-field test missing). Manual bridge for the cq root-caused-defect sweep gap."
+
+### M71 — open
+
+- createdAt: 2026-07-15T06:21:53.328Z
+- updatedAt: 2026-07-15T06:21:53.328Z
+- title: "Plan: fix e2e test-correctness (D80/D81)"
+- description: "Defect-seeded fix goal cluster: test/e2e correctness. D81 (multipeer_test.go non-primary peer INBOUND assertion uses MetricRxBytes which is structurally 0 for a shared readLoop — switch to MetricTxBytes, mirror the fixed multipeer_hardened_test.go), D80 (restart_onesided_test.go binds concentrator /metrics to a non-loopback uplink IP which NewServer refuses — apply the D77 netns-loopback fetchMetricsInNetns remediation). Manual bridge for the cq root-caused-defect sweep gap."
+
+### M72 — open
+
+- createdAt: 2026-07-15T06:21:56.416Z
+- updatedAt: 2026-07-15T06:21:56.416Z
+- title: "Plan: fix docs/operator-guidance residuals (D35/D61)"
+- description: "Defect-seeded fix goal cluster: docs/operator-guidance. D35 (full-tunnel operator guidance — warn that a literal 0.0.0.0/0 default route installed OUTSIDE wanbond must exclude the concentrator underlay endpoint or use the /1+/1 split; production already mitigated by T107+T108, residual is docs-only), D61 (re-adjudicate D54's root-cause mechanism attribution and reword the Justfile lint comment if the 'walks the repo root' claim is a misattribution). Manual bridge for the cq root-caused-defect sweep gap."

@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 15
+  item: 17
 archives: []
 ---
 
@@ -199,3 +199,17 @@ archives: []
 - headline: "plan review: approved"
 - rationale: "Reviewer go-ahead (ref review R199, aggregated opus+fable panel: 0 criticisms / 0 new questions / 0 defects). Plan DAG M61/M62/M63 tasks T160-T172 approved; prior blocker Q58 answered (a) and reflected in T171."
 - ledgerRefs: ["goals:G12"]
+
+## M64
+
+### K16 — locked
+
+- createdAt: 2026-07-15T06:19:22.283Z
+- updatedAt: 2026-07-15T06:19:22.283Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G15 plan approved: active-backup pacing correctness fix DAG locked (M65/M66/M67, T173-T178)"
+- rationale: "Reviewer go-ahead (R218, single opus, 0 criticisms/0 questions), root-cause->fix mapping verified against source. D79 (HIGH): active-backup per-path pacer config carried by slice position / tail-inheritance across churn (AddPath tail-seed active_backup.go:184-188; resizeActiveBackupPacers index-carry :275-288) while newActiveBackupPacers is identity-keyed only at construction; FIX = extend DynamicScheduler.SetPaths/AddPath (scheduler.go:153-175) to carry per-path pacer config by identity, seed *ActiveBackup from it (drop tail/positional carry), confirm *WeightedScheduler (shared-scalar pacer) has no analogous hole, and source each bound/promoted path's config from cfg.Scheduler.PerPathCapacities (index-aligned to m.defs) at the bind Open-reconcile/promotion/reload sites. D76 (MEDIUM): *ActiveBackup implements no sched.ProbeBudget so emitProbes/echo-reflection type-asserts no-op -> zero probe headroom -> spurious failover flap; FIX = AccountProbe(pathIdx) on *ActiveBackup (s.pacers[pathIdx].accountProbe(0)) + compile-proof, mirroring the T145 weighted impl+3 tests. Reproduce-first for both. DAG: T173->T175, T174->T176->T177, T178 DoD gate. On merge, defects:D79 and D76 -> resolved. EXECUTION NOTE: T173/T174 are reproduce-first tests that do not build/pass on HEAD and both defects edit internal/sched/active_backup.go, so the six tasks are implemented as ONE coherent worktree diff (reproduce-first verified in-worktree) to keep main green."
+- landsIn: ["M65","M66","M67"]
+- sourceRefs: ["goals:G15","reviews:R218"]
+- ledgerRefs: ["goals:G15","defects:D79","defects:D76"]

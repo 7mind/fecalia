@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 16
+  item: 21
 archives: []
 ---
 
@@ -391,10 +391,10 @@ archives: []
 
 ## M64
 
-### G15 — planning
+### G15 — planned
 
 - createdAt: 2026-07-15T06:04:32.461Z
-- updatedAt: 2026-07-15T06:08:38.120Z
+- updatedAt: 2026-07-15T06:19:30.657Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: "Fix D79+D76: active-backup per-path pacing correctness (identity-keyed pacer config + ProbeBudget)"
@@ -421,3 +421,106 @@ archives: []
     
     DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race ./internal/sched/... ./internal/bind/...; MEMORY: go gate includes just lint, not only go test.
 - milestones: ["M65","M66","M67"]
+
+## M68
+
+### G16 — clarifying
+
+- createdAt: 2026-07-15T06:22:20.444Z
+- updatedAt: 2026-07-15T06:22:20.444Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Fix reseq re-anchor correctness residuals (D34, D64, D68)
+- description: |
+    DEFECT-SEEDED (skip clarifying — root causes confirmed by the 2026-07-15 triage sweep against HEAD; refs defects:D34, D64, D68). internal/reseq re-anchor correctness residuals left open by the T119/G7 restart work (which added RebaselineToLow low-anchor gating for the peer-restart path but left the plain Rebaseline hub-failover path with the original holes).
+    
+    - D34 (M): Rebaseline() (reseq.go ~:626) clears started with NO source-identity gating; Observe/ObserveRecovered re-pin r.next to whatever seq/src arrives FIRST, source-agnostically — src is stored per-cell but never checked against an expected standby endpoint before re-anchoring. FIX: add the source-identity gate the suggestedFix calls for to the plain Rebaseline (D32 hub-failover) path, mirroring RebaselineToLow's discipline; bounded self-healing race, so a deterministic regression test.
+    - D64 (S): ObserveRecovered's pendingLow guard only covers the RebaselineToLow path; plain Rebaseline() sets pendingLow=false, so after a hub-failover Rebaseline the !started branch still re-pins r.next to a RECOVERED frame's seq. FIX: extend the pendingLow-style guard (or drop-on-!started) to the plain Rebaseline path too + a regression test that a recovered frame does not re-anchor next after Rebaseline.
+    - D68 (S/docs): reseq.go ~:175 and ~:760 doc-comments scope 'release-point re-baselines forced by a trusted control event (hub failover)' too narrowly — RebaselineToLow (peer restart) increments the same r.rebaselines counter. FIX: reword to '(e.g. hub failover, peer restart)' (metrics.go:397 already says '(e.g. hub failover)').
+    
+    GROUNDING: internal/reseq/reseq.go (Rebaseline ~:626-646, Observe ~:202-210, ObserveRecovered ~:251/:271-274 pendingLow guard :256-269, RebaselineToLow :683-692, comments :175/:760). DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race ./internal/reseq/.... On merge, drive D34, D64, D68 to resolved.
+- sourceRefs: ["defects:D34","defects:D64","defects:D68"]
+- tags: ["defect-seeded","reseq","manual-bridge"]
+
+## M69
+
+### G17 — clarifying
+
+- createdAt: 2026-07-15T06:22:36.453Z
+- updatedAt: 2026-07-15T06:22:36.453Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Fix bind path-lifecycle & demux hardening (D30, D62, D63, D66, D67, D71)
+- description: |
+    DEFECT-SEEDED (skip clarifying — root causes confirmed by the 2026-07-15 triage sweep against HEAD; refs defects:D30, D62, D63, D66, D67, D71). internal/bind path-lifecycle + source-binding demux correctness residuals (file-and-defer findings from the G4/G6 multi-peer work).
+    
+    - D67 (S): attachSharedPathLocked rollback loop (multipath.go ~:2809-2814) does `_ = m.detachPeerPathBoundLocked(...)`, discarding the error; detachPeerPathBoundLocked (~:2893) can fail its dyn.RemovePath and skip its splice (~:2896). FIX: log or propagate the detach error; force-splice p.paths on detach failure so no stale peerPathState survives.
+    - D62 (M): demuxInbound/bindSourceToPeer (multipath.go ~:1656-1700/:1756-1823) has no post-CAS peer-liveness recheck, so a bind racing a concurrent unbindPeerSources can install a binding to a torn-down peer that never self-heals. FIX: revalidate peer liveness after the winning CAS, or let the no-view demux branch fall through to trial-decode/re-bind.
+    - D71 (S): reconcile.go promoteDeferredLocked failure branch (~:135-149) does `_ = c.Close(); continue` with NO log. FIX: add a WARN/ERROR (deduped per deferral window like warnedUnresolvable).
+    - D30 (M): auto/source-mode runtime-added paths always source-IP-pin (multipath.go AddPath ~:2688-2691 explicitly leaves this open); only forced BindModeDevice device-binds at runtime. FIX: route promoted/runtime-added auto-mode paths through the same planPathBinds/selectDeviceBinds decision Open uses.
+    - D66 (S/docs): multipath.go ~:2779-2780 comment still says 'single-peer receive; the concentrator's shared-socket demux to N peers is a later G4 task' though demuxInbound (T88/T93) shipped. FIX: reword to match the accurate promoteDeferredLocked comment.
+    - D63 (M): source-binding eviction is first-bind (FIFO) order, not LRU — sourceBinding.seq stamped only at insert, the already-bound fast path returns without refreshing seq (multipath.go ~:1756-1823). NOTE: filed as a DESIGN REFINEMENT conforming to a pinned T123 decision, not a regression — lowest priority in this cluster; fix by refreshing seq on authenticated re-affirm (true LRU) OR flooring the per-peer quota at configured path count, OR confirm-and-close as intended-behavior if T123 pinned FIFO.
+    
+    GROUNDING: internal/bind/multipath.go (attachSharedPathLocked/detachPeerPathBoundLocked ~:2809/:2893, demuxInbound/bindSourceToPeer ~:1656/:1756, AddPath ~:2688, comment :2779), internal/bind/reconcile.go (promoteDeferredLocked ~:135, defaultDeferredListen :31). DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race ./internal/bind/.... On merge, drive the resolved defects to resolved (D63 may be confirm-and-close if T123 pinned FIFO).
+- sourceRefs: ["defects:D30","defects:D62","defects:D63","defects:D66","defects:D67","defects:D71"]
+- tags: ["defect-seeded","bind","manual-bridge"]
+
+## M70
+
+### G18 — clarifying
+
+- createdAt: 2026-07-15T06:22:51.505Z
+- updatedAt: 2026-07-15T06:22:51.505Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Fix metrics/server + reload observability residuals (D70, D72, D74, D75, D83, D84)
+- description: |
+    DEFECT-SEEDED (skip clarifying — root causes confirmed by the 2026-07-15 triage sweep against HEAD; refs defects:D70, D72, D74, D75, D83, D84). Observability + server-hygiene residuals across internal/metrics, internal/device reload, and internal/sched weighted logging.
+    
+    - D84 (S): metrics.Server.Close (server.go ~:116-118) is `return s.srv.Shutdown(ctx)` only — never closes s.ln, leaking the bound socket on Close-without-Start (EADDRINUSE on re-listen). FIX: mirror the T162 monitor.Server.Close fix — close s.ln after Shutdown tolerating net.ErrClosed; add a Close-without-Start rebind regression test.
+    - D83 (S): requireLoopback (metrics/server.go ~:120-148) reimplements the full loopback classification instead of delegating to internal/netutil.IsLoopbackHost (loopback.go:21, already used by monitor+config). FIX: refactor requireLoopback to call netutil.IsLoopbackHost, keeping its richer ErrNonLoopbackBind detail.
+    - D70 (S) + D74 (M) [OVERLAP]: device.go reloadWarnings same-name-path comparison (~:785-796) checks only SourceAddr/DestAddr/Bind (no LinkBandwidthBitsPerSec/LinkRTT), and the D52 catch-all zeroes Paths before DeepEqual, so a same-name link_bandwidth/link_rtt change is silently unwarned (D70); additionally Reload never recomputes the weighted-capacity gauge (metrics.go newWeightedCapacityGauge set once at Up) after a path add/remove (D74). FIX (combined): extend the same-name comparison to LinkBandwidthBitsPerSec/LinkRTT AND recompute WeightedCapacitySane + re-set the gauge (+WARN on divergence) in Reload.
+    - D72 (S): WeightedScheduler.SetPaths (weighted.go ~:660-682) sets aggregating=false with NO 'scheduler aggregation change' log. FIX: when aggregating was true before the reset, emit the canonical record (to=collapsed, from=aggregating, reason='paths replaced' + threshold fields) under s.mu.
+    - D75 (S/test): the idle-gap 'scheduler aggregation change' record (weighted.go ~:555-556, reason='idle gap') is untested. FIX: add an idle-gap case to TestWeightedAggregationChangeLogFieldsAndNoDoubleLog with a capturingLogger asserting reason='idle gap', gap, load_fps, from, threshold fields.
+    
+    GROUNDING: internal/metrics/server.go (Close ~:116, requireLoopback ~:120), internal/netutil/loopback.go:21, internal/device/device.go (reloadWarnings ~:785, Reload ~:665-725), internal/metrics/metrics.go (newWeightedCapacityGauge), internal/sched/weighted.go (SetPaths ~:660, idle-gap record ~:555). DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race on the touched packages. On merge, drive D70, D72, D74, D75, D83, D84 to resolved.
+- sourceRefs: ["defects:D70","defects:D72","defects:D74","defects:D75","defects:D83","defects:D84"]
+- tags: ["defect-seeded","observability","manual-bridge"]
+
+## M71
+
+### G19 — clarifying
+
+- createdAt: 2026-07-15T06:23:04.862Z
+- updatedAt: 2026-07-15T06:23:04.862Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Fix e2e test-correctness (D80, D81)
+- description: |
+    DEFECT-SEEDED (skip clarifying — root causes confirmed by the 2026-07-15 triage sweep against HEAD; refs defects:D80, D81). test/e2e correctness residuals — both are metrics-scrape test bugs made moot/latent by shared-readLoop rx attribution and the loopback-only /metrics bind.
+    
+    - D81 (S): test/e2e/multipeer_test.go (~:201-213) asserts non-primary peer INBOUND via PeerPathValue(MetricRxBytes,...) summed into peerBytes with a >0 fatal — but a single readLoop per shared path attributes ALL rx to the primary, so the non-primary's rx is structurally 0. The sibling tx-based assertion (~:277, MetricTxBytes) shows the corrected pattern was not back-applied. FIX: switch the ~:201-213 non-primary INBOUND assertion to MetricTxBytes (mirror the already-fixed d47 in multipeer_hardened_test.go) and correct the comment. Requires -tags e2e privileged run to validate.
+    - D80 (M): test/e2e/restart_onesided_test.go (~:328) binds the concentrator /metrics to its uplink IP (non-loopback); NewServer unconditionally requireLoopback-refuses it (ErrNonLoopbackBind). The D77 remediation (fetchMetricsInNetns/netnsMetricsClient) present in multipeer_hardened/p2/p3/p4 is absent here. FIX: bind concentrator /metrics to 127.0.0.1:<port> inside the peer netns and scrape via fetchMetricsInNetns, replacing the uplink-IP survivorURL/restartedURL scrapes (~:145/:208). Requires -tags e2e privileged run to validate.
+    
+    NOTE: these are -tags e2e privileged tests (netns/TUN); the fixes are deterministic code edits but full validation needs the privileged runner (hardware/root). Gate what can be gated tagless (go vet -tags e2e, golangci --build-tags e2e) + a documented privileged-validation step. DoD gate = nix develop -c just lint (incl. e2e-tagged vet/lint) + go vet -tags e2e ./test/e2e/...; the privileged `just e2e` run is deferred to the hardware tier. On merge, drive D80, D81 to resolved.
+- sourceRefs: ["defects:D80","defects:D81"]
+- tags: ["defect-seeded","e2e-test","manual-bridge"]
+
+## M72
+
+### G20 — clarifying
+
+- createdAt: 2026-07-15T06:23:15.813Z
+- updatedAt: 2026-07-15T06:23:15.813Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Fix docs/operator-guidance residuals (D35, D61)
+- description: |
+    DEFECT-SEEDED (skip clarifying — root causes confirmed; refs defects:D35, D61). Docs/operator-guidance + ledger-record residuals; NO datapath code change.
+    
+    - D35 (HIGH sev but DOCS-ONLY residual): the allowed_ips=0.0.0.0/0 handshake wedge is NOT a wanbond code defect — root cause is an EXTERNAL literal-/0 default route recursing the encrypted underlay; wanbond's surface is already fully mitigated (T107 splitDefaultRoute config shield + T108 /1+/1 split route programming). FIX (docs): in the full-tunnel / route-a-client-LAN recipe (docs/install.md C3 + docs/runbook.md), warn that a literal 0.0.0.0/0 default route installed OUTSIDE wanbond (wg-quick style / manual `ip route`) must EXCLUDE the concentrator's underlay endpoint (or use the /1+/1 split), else the encrypted underlay recurses and the tunnel never establishes; point operators at mode=default-route (T108) which installs the safe split automatically.
+    - D61 (S/docs): re-adjudicate D54's root-cause MECHANISM claim (D54 is resolved — the hermetic explicit-package-list lint recipe is correct; the dispute is only the 'golangci walks the repo root' mechanism attribution in the Justfile:41-44 comment). FIX: verify the mechanism against original T77-era evidence; if the 'walks the repo root' claim is a misattribution, reword the Justfile comment to drop the mechanism claim while keeping the (correct, unchanged) hermetic explicit-package-list recipe; update the D54 ledger record's rootCause note accordingly.
+    
+    GROUNDING: docs/install.md (C3 full-tunnel recipe), docs/runbook.md, internal/device/device.go splitDefaultRoute (T107) + route_linux.go (T108), Justfile:37-47 (lint recipe + D54 comment). DoD gate = nix develop -c just fmt-check && just lint (Go-only; docs edits must not break it) + go build ./.... On merge, drive D35, D61 to resolved.
+- sourceRefs: ["defects:D35","defects:D61"]
+- tags: ["defect-seeded","docs","manual-bridge"]
