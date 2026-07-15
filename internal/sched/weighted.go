@@ -618,15 +618,20 @@ func (s *WeightedScheduler) setActiveLocked(idx int) {
 // existing index unchanged and the new path only carries traffic once aggregation
 // engages, so a runtime admission never disturbs the surviving paths' distribution
 // (T30). It is safe for concurrent callers.
-func (s *WeightedScheduler) AddPath(h PathHealth) (int, error) {
-	if h == nil {
+func (s *WeightedScheduler) AddPath(p PathAdmission) (int, error) {
+	if p.Health == nil {
 		return 0, fmt.Errorf("sched: cannot add a nil path health source")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.health = append(s.health, h)
-	s.quality = append(s.quality, asQuality(h))
+	s.health = append(s.health, p.Health)
+	s.quality = append(s.quality, asQuality(p.Health))
 	s.current = append(s.current, 0)
+	// The weighted scheduler paces with a SINGLE shared-scalar bucket (cfg.pacerConfig()), not a
+	// per-path token bucket, so it has NO analogue of the D79 per-path positional carry: p.Pacing
+	// is accepted for interface symmetry and deliberately ignored. addPath appends one shared
+	// bucket seeded from the immutable scalar config, so a runtime-added path can never inherit a
+	// wrong per-path rate — there is no per-path rate to inherit.
 	s.addPath()
 	return len(s.health) - 1, nil
 }
@@ -657,24 +662,28 @@ func (s *WeightedScheduler) RemovePath(i int) error {
 // every Open to re-align the scheduler with the freshly-rebuilt path slice (T30). It
 // fails fast on an empty set or a nil element, matching NewWeighted. It is safe for
 // concurrent callers.
-func (s *WeightedScheduler) SetPaths(health []PathHealth) error {
-	if len(health) == 0 {
+func (s *WeightedScheduler) SetPaths(paths []PathAdmission) error {
+	if len(paths) == 0 {
 		return fmt.Errorf("sched: at least one path health source is required")
 	}
-	for i, h := range health {
-		if h == nil {
+	for i, p := range paths {
+		if p.Health == nil {
 			return fmt.Errorf("sched: path %d health source is nil", i)
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.health = append([]PathHealth(nil), health...)
-	s.quality = make([]PathQuality, len(health))
-	for i, h := range health {
-		s.quality[i] = asQuality(h)
+	s.health = make([]PathHealth, len(paths))
+	s.quality = make([]PathQuality, len(paths))
+	for i, p := range paths {
+		s.health[i] = p.Health
+		s.quality[i] = asQuality(p.Health)
 	}
-	s.current = make([]float64, len(health))
-	s.reset(len(health))
+	s.current = make([]float64, len(paths))
+	// The weighted pacer is a single shared-scalar bucket set, reset to len(paths) buckets seeded
+	// from the immutable scalar config; each admission's per-path Pacing is inert here (no per-
+	// path rate exists to key by identity), so there is no D79-style positional carry to fix.
+	s.reset(len(paths))
 	s.aggregating = false
 	s.belowSince = time.Time{}
 	s.active = -1

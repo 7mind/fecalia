@@ -1164,13 +1164,13 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		if p.probers == nil || !pdynOK {
 			continue
 		}
-		health := make([]sched.PathHealth, 0, len(p.paths))
+		admissions := make([]sched.PathAdmission, 0, len(p.paths))
 		for _, pp := range p.paths {
 			if pp.prober != nil {
-				health = append(health, pp.prober)
+				admissions = append(admissions, admissionFor(p.scheduler, pp.prober))
 			}
 		}
-		if err := pdyn.SetPaths(health); err != nil {
+		if err := pdyn.SetPaths(admissions); err != nil {
 			_ = m.closeSocketsLocked()
 			return nil, 0, fmt.Errorf("bind: reconcile scheduler on open: %w", err)
 		}
@@ -2824,6 +2824,24 @@ func (m *Multipath) attachSharedPathLocked(shared *sharedPathState, def config.P
 // active selection). It does NOT touch the durable membership (m.defs / p.probers) —
 // attachSharedPathLocked's caller owns that after the whole fan-out succeeds. Caller holds
 // m.mu.
+// admissionFor pairs a path's prober (its scheduler health source) with the path's OWN
+// identity-sourced per-path pacing (defect D79). The pacing is read from the scheduler's
+// configured per-path sizing by the prober's ORIGINAL definition index (PathID), so a
+// bound/promoted path always carries its own declared token-bucket rate regardless of its
+// position in the bound-path slice — the fix for a deferred path shifting the health indices and
+// letting the sole bound path inherit the deferred path's slower pace. When the scheduler does
+// not pace per-path (weighted / pacing-off, i.e. not a PerPathPacingConfig), or the path is
+// outside the configured set, the zero Pacing is inert.
+func admissionFor(scheduler sched.Scheduler, prober *telemetry.Prober) sched.PathAdmission {
+	adm := sched.PathAdmission{Health: prober}
+	if ppc, ok := scheduler.(sched.PerPathPacingConfig); ok && prober != nil {
+		if pacing, ok := ppc.ConfiguredPacing(int(prober.PathID())); ok {
+			adm.Pacing = pacing
+		}
+	}
+	return adm
+}
+
 func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, def config.Path, id uint8, prober *telemetry.Prober) (*peerPathState, error) {
 	dyn, ok := p.scheduler.(sched.DynamicScheduler)
 	if !ok {
@@ -2851,7 +2869,7 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 	// new tail; both are index-aligned, so the scheduler's returned index must equal the new
 	// path's slice index. A mismatch would mis-route datagrams, so fail loudly and roll back.
 	p.paths = append(p.paths, pp)
-	schedIdx, err := dyn.AddPath(pp.prober)
+	schedIdx, err := dyn.AddPath(admissionFor(p.scheduler, pp.prober))
 	if err != nil {
 		p.paths = p.paths[:len(p.paths)-1]
 		return nil, err

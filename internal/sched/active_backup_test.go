@@ -44,6 +44,16 @@ func newSched(t testing.TB, clock telemetry.Clock, failback time.Duration, h ...
 	return s
 }
 
+// admitH builds a pacing-OFF PathAdmission (no per-path pacing) for the DynamicScheduler
+// membership calls — the concise form for the failover/liveness tests that never enable pacing.
+func admitH(h PathHealth) PathAdmission { return PathAdmission{Health: h} }
+
+// admit builds a PathAdmission carrying an explicit identity-sourced per-path pace (defect D79),
+// for the pacing-enabled membership tests.
+func admit(h PathHealth, capFPS, burst float64) PathAdmission {
+	return PathAdmission{Health: h, Pacing: PathPacing{CapacityFPS: capFPS, BurstFrames: burst}}
+}
+
 // TestActiveBackupAllTrafficOnPrimary is acceptance bullet 1: with two paths UP,
 // EVERY Pick selects the active (preferred primary, index 0); the backup carries
 // nothing.
@@ -385,21 +395,21 @@ func TestActiveBackupPacingSetPathsResizeNoPanic(t *testing.T) {
 	// Grow to three paths (a wholesale health replacement) — the bucket slice must
 	// resize so the next Pick does not index out of range.
 	p2 := &fakeHealth{s: telemetry.StateUp}
-	if err := s.SetPaths([]PathHealth{p0, p1, p2}); err != nil {
+	if err := s.SetPaths([]PathAdmission{admit(p0, 1000, 8), admit(p1, 200, 8), admit(p2, 500, 8)}); err != nil {
 		t.Fatalf("SetPaths grow: %v", err)
 	}
 	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after SetPaths grow = %d, want 0", got)
 	}
 	// Shrink to a single path.
-	if err := s.SetPaths([]PathHealth{p2}); err != nil {
+	if err := s.SetPaths([]PathAdmission{admit(p2, 500, 8)}); err != nil {
 		t.Fatalf("SetPaths shrink: %v", err)
 	}
 	if got := s.Pick(ClassData); got != 0 {
 		t.Fatalf("Pick after SetPaths shrink = %d, want 0", got)
 	}
 	// AddPath then RemovePath must keep the bucket slice aligned too.
-	if _, err := s.AddPath(p0); err != nil {
+	if _, err := s.AddPath(admit(p0, 1000, 8)); err != nil {
 		t.Fatalf("AddPath: %v", err)
 	}
 	if err := s.RemovePath(0); err != nil {
@@ -483,22 +493,23 @@ func TestActiveBackupPacingRemoveToEmptyThenAddPath(t *testing.T) {
 	if got := s.Pick(ClassData); got != PickNone {
 		t.Fatalf("Pick on the empty set = %d, want PickNone", got)
 	}
-	// Re-grow. Before the fix this panicked at s.pacers[len(s.pacers)-1] on an empty
-	// slice; it must now seed the new bucket from the config tail (no panic).
+	// Re-grow. Before the D65 fix this panicked at s.pacers[len(s.pacers)-1] on an empty slice;
+	// AddPath now seeds the new bucket from the admission's OWN identity-sourced pace (D79) — no
+	// read of the (empty) live slice at all — so the empty-slice hazard is gone by construction.
 	regrown := &fakeHealth{s: telemetry.StateUp}
-	idx, err := s.AddPath(regrown)
+	idx, err := s.AddPath(admit(regrown, capFPS, burst))
 	if err != nil {
 		t.Fatalf("AddPath after remove-to-empty: %v", err)
 	}
 	if idx != 0 {
 		t.Fatalf("AddPath returned index %d, want 0 (the re-grown sole path)", idx)
 	}
-	// The re-grown bucket carries the config tail's per-path capacity/burst.
+	// The re-grown bucket carries the SUPPLIED per-path capacity/burst.
 	if got := s.pacers[0].cfg.CapacityFPS; got != capFPS {
-		t.Fatalf("re-grown bucket CapacityFPS = %g, want the config tail %g", got, capFPS)
+		t.Fatalf("re-grown bucket CapacityFPS = %g, want the supplied %g", got, capFPS)
 	}
 	if got := s.pacers[0].cfg.BurstFrames; got != burst {
-		t.Fatalf("re-grown bucket BurstFrames = %g, want the config tail %g", got, burst)
+		t.Fatalf("re-grown bucket BurstFrames = %g, want the supplied %g", got, burst)
 	}
 	// A fresh full bucket admits its burst at a frozen instant, then sheds.
 	admitted := 0
@@ -542,24 +553,25 @@ func TestActiveBackupPacingRemoveToEmptyThenSetPaths(t *testing.T) {
 	if err := s.RemovePath(0); err != nil {
 		t.Fatalf("RemovePath to empty: %v", err)
 	}
-	// Rebuild to two paths from the empty state. Before the fix this panicked at
-	// old[len(old)-1] on an empty slice; it must now seed both buckets from the
-	// config tail (no panic).
+	// Rebuild to two paths from the empty state. Before the D65 fix this panicked at
+	// old[len(old)-1] on an empty slice; SetPaths now seeds every bucket from its admission's OWN
+	// identity-sourced pace (D79), reading nothing off the (empty) live slice, so the hazard is
+	// gone by construction.
 	a := &fakeHealth{s: telemetry.StateUp}
 	b := &fakeHealth{s: telemetry.StateUp}
-	if err := s.SetPaths([]PathHealth{a, b}); err != nil {
+	if err := s.SetPaths([]PathAdmission{admit(a, capFPS, burst), admit(b, capFPS, burst)}); err != nil {
 		t.Fatalf("SetPaths after remove-to-empty: %v", err)
 	}
 	if len(s.pacers) != 2 {
 		t.Fatalf("bucket slice len = %d after SetPaths, want 2", len(s.pacers))
 	}
-	// Both rebuilt buckets carry the config tail's per-path capacity/burst.
+	// Both rebuilt buckets carry the SUPPLIED per-path capacity/burst.
 	for i := range s.pacers {
 		if got := s.pacers[i].cfg.CapacityFPS; got != capFPS {
-			t.Fatalf("rebuilt bucket[%d] CapacityFPS = %g, want the config tail %g", i, got, capFPS)
+			t.Fatalf("rebuilt bucket[%d] CapacityFPS = %g, want the supplied %g", i, got, capFPS)
 		}
 		if got := s.pacers[i].cfg.BurstFrames; got != burst {
-			t.Fatalf("rebuilt bucket[%d] BurstFrames = %g, want the config tail %g", i, got, burst)
+			t.Fatalf("rebuilt bucket[%d] BurstFrames = %g, want the supplied %g", i, got, burst)
 		}
 	}
 	// Active path 0 admits its full burst at a frozen instant, then sheds.
@@ -895,23 +907,24 @@ func TestActiveBackupPacingBurstAbsorptionAfterIdle(t *testing.T) {
 
 // TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership is T151
 // scenario (f) — the T30 pacer regression (R162 criticism 3): a SetPaths that
-// CHANGES the path count resizes/reinitializes the per-path bucket slice so the
-// next Pick indexes in range (no panic) AND paces correctly against the NEW
-// membership — not merely "doesn't crash", but bounded by the resized bucket's
-// own (inherited) capacity/burst.
+// CHANGES the path count rebuilds the per-path bucket slice so the next Pick
+// indexes in range (no panic) AND paces correctly against the NEW membership —
+// not merely "doesn't crash", but bounded by each admission's OWN identity-sourced
+// capacity/burst (defect D79: a grown-in path paces at ITS supplied rate, never a
+// positional/tail carry).
 func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing.T) {
 	clock := newFakeClock()
 	p0 := &fakeHealth{s: telemetry.StateUp}
 	p1 := &fakeHealth{s: telemetry.StateUp}
 	const (
-		tailCap   = 200.0 // PerPathCapacities[1] — the config tail a grown-in path inherits
-		tailBurst = 8.0
+		p2Cap   = 500.0 // the grown-in path's OWN identity-sourced pace
+		p2Burst = 6.0
 	)
 	cfg := Config{
 		FailbackAfter:     time.Second,
 		Pacing:            true,
-		PerPathCapacities: []float64{1000.0, tailCap},
-		PacingBursts:      []float64{tailBurst, tailBurst},
+		PerPathCapacities: []float64{1000.0, 200.0},
+		PacingBursts:      []float64{8.0, 8.0},
 	}
 	s, err := NewActiveBackup([]PathHealth{p0, p1}, cfg, clock, discardLogger(t))
 	if err != nil {
@@ -924,27 +937,27 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 		t.Fatalf("bucket slice len = %d before resize, want 2 == len(health)", got)
 	}
 
-	// Grow to three paths: a Close->Open-style wholesale membership replacement.
+	// Grow to three paths: a Close->Open-style wholesale membership replacement. The grown-in
+	// tail p2 is admitted with its OWN distinct pace (p2Cap/p2Burst), NOT the config tail.
 	p2 := &fakeHealth{s: telemetry.StateUp}
-	if err := s.SetPaths([]PathHealth{p0, p1, p2}); err != nil {
+	if err := s.SetPaths([]PathAdmission{admit(p0, 1000, 8), admit(p1, 200, 8), admit(p2, p2Cap, p2Burst)}); err != nil {
 		t.Fatalf("SetPaths grow: %v", err)
 	}
 	if got := len(s.pacers); got != 3 {
 		t.Fatalf("bucket slice len = %d after grow, want 3 == len(health)", got)
 	}
 	// Fail every path but the new (grown-in) tail, so it becomes active and its
-	// bucket — reinitialized by the resize — is the one exercised.
+	// bucket — rebuilt from its OWN admission — is the one exercised.
 	p0.down()
 	p1.down()
 	if got := s.Pick(ClassData); got != 2 {
 		t.Fatalf("Pick with only the grown-in path up = %d, want 2", got)
 	}
-	// The grown-in path's bucket, per resizeActiveBackupPacers, inherits the config
-	// tail's capacity/burst — verify it actually paces at that rate: exactly
-	// tailBurst admits at a frozen instant, then a shed. The Pick just above already
-	// consumed the bucket's first token.
+	// The grown-in path paces at ITS supplied burst (p2Burst) — verify it actually paces at
+	// that rate: exactly p2Burst admits at a frozen instant, then a shed. The Pick just above
+	// already consumed the bucket's first token.
 	admitted := 1
-	for i := 0; i < int(tailBurst)+5; i++ {
+	for i := 0; i < int(p2Burst)+5; i++ {
 		switch got := s.Pick(ClassData); got {
 		case 2:
 			admitted++
@@ -953,14 +966,14 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 			t.Fatalf("grown-in-path Pick #%d = %d, want 2 or PickPaced", i, got)
 		}
 	}
-	if admitted != int(tailBurst) {
-		t.Fatalf("grown-in path admitted %d at a frozen instant, want its inherited burst %d (resize did not re-pace correctly)", admitted, int(tailBurst))
+	if admitted != int(p2Burst) {
+		t.Fatalf("grown-in path admitted %d at a frozen instant, want its OWN supplied burst %d (identity re-pace failed)", admitted, int(p2Burst))
 	}
 
 	// Shrink to a single (surviving) path — the bucket slice must resize down too,
-	// and the sole survivor must still pace correctly (a fresh, full bucket after
-	// the wholesale SetPaths reset).
-	if err := s.SetPaths([]PathHealth{p2}); err != nil {
+	// and the sole survivor must still pace correctly at its OWN supplied rate (a fresh, full
+	// bucket after the wholesale SetPaths rebuild).
+	if err := s.SetPaths([]PathAdmission{admit(p2, p2Cap, p2Burst)}); err != nil {
 		t.Fatalf("SetPaths shrink: %v", err)
 	}
 	if got := len(s.pacers); got != 1 {
@@ -970,7 +983,7 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 		t.Fatalf("Pick after shrink = %d, want 0 (sole survivor)", got)
 	}
 	admitted = 1 // the Pick just above already consumed one token
-	for i := 0; i < int(tailBurst)+5; i++ {
+	for i := 0; i < int(p2Burst)+5; i++ {
 		switch got := s.Pick(ClassData); got {
 		case 0:
 			admitted++
@@ -979,7 +992,7 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 			t.Fatalf("post-shrink Pick #%d = %d, want 0 or PickPaced", i, got)
 		}
 	}
-	if admitted != int(tailBurst) {
-		t.Fatalf("post-shrink sole survivor admitted %d at a frozen instant, want its inherited burst %d", admitted, int(tailBurst))
+	if admitted != int(p2Burst) {
+		t.Fatalf("post-shrink sole survivor admitted %d at a frozen instant, want its OWN supplied burst %d", admitted, int(p2Burst))
 	}
 }

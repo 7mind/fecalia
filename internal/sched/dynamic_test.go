@@ -21,7 +21,7 @@ func TestActiveBackupAddPathLowestPriority(t *testing.T) {
 
 	// Admit a second path (initially down): the active selection is undisturbed.
 	added := &fakeHealth{s: telemetry.StateDown}
-	idx, err := s.AddPath(added)
+	idx, err := s.AddPath(admitH(added))
 	if err != nil {
 		t.Fatalf("AddPath: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestActiveBackupAddPathLowestPriority(t *testing.T) {
 		t.Fatalf("Pick with primary down = %d, want 1 (failover to the added path)", got)
 	}
 
-	if _, err := s.AddPath(nil); err == nil {
+	if _, err := s.AddPath(admitH(nil)); err == nil {
 		t.Fatal("AddPath(nil) succeeded, want error")
 	}
 }
@@ -135,7 +135,7 @@ func TestActiveBackupSetPathsReconciles(t *testing.T) {
 	// Reconcile to a NEW membership (stands in for the path slice the Bind rebuilds from
 	// m.probers on reopen): a single, down path.
 	reopened := &fakeHealth{s: telemetry.StateDown}
-	if err := s.SetPaths([]PathHealth{reopened}); err != nil {
+	if err := s.SetPaths([]PathAdmission{admitH(reopened)}); err != nil {
 		t.Fatalf("SetPaths: %v", err)
 	}
 	if got := s.Pick(ClassData); got != -1 {
@@ -157,7 +157,7 @@ func TestActiveBackupSetPathsReconciles(t *testing.T) {
 	if err := s.SetPaths(nil); err == nil {
 		t.Fatal("SetPaths(nil) succeeded, want error")
 	}
-	if err := s.SetPaths([]PathHealth{nil}); err == nil {
+	if err := s.SetPaths([]PathAdmission{admitH(nil)}); err == nil {
 		t.Fatal("SetPaths([nil]) succeeded, want error")
 	}
 }

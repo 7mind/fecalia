@@ -138,6 +138,46 @@ type PathQuality interface {
 	Estimate() telemetry.Estimate
 }
 
+// PathPacing is a path's per-path token-bucket sizing (defect D79): the refill rate and burst a
+// pacing DynamicScheduler seeds THAT path's bucket from. It travels WITH the path's health
+// through the identity-keyed membership calls (PathAdmission) so a re-seeded or re-grown bucket
+// takes the config of the path's OWN identity — the added/promoted path's own declared BDP —
+// rather than a positional or tail carry that would hand a bound survivor a departed path's
+// rate (the D79 hole: an Open-deferred path shifting the health indices let the sole bound path
+// inherit the deferred path's capacity). It is IGNORED when the scheduler runs pacing-off or
+// uses a single shared-scalar pacer (the weighted scheduler): both zero values are then inert.
+type PathPacing struct {
+	// CapacityFPS is the per-path token-bucket refill rate in frame slots per second.
+	CapacityFPS float64
+	// BurstFrames is the per-path token-bucket burst (capacity) in frame slots.
+	BurstFrames float64
+}
+
+// PathAdmission pairs a path's health source with its per-path pacing config for the
+// identity-keyed DynamicScheduler membership calls (AddPath/SetPaths, defect D79). The bind,
+// which alone knows each path's durable-membership identity, builds one per path so the
+// scheduler seeds every (re)grown token bucket from the path's OWN declared pace rather than a
+// slice-position carry. Health is required (non-nil); Pacing is inert unless the scheduler
+// paces per-path.
+type PathAdmission struct {
+	Health PathHealth
+	Pacing PathPacing
+}
+
+// PerPathPacingConfig exposes a per-path pacing scheduler's CONFIGURED (identity-keyed) per-path
+// token-bucket sizing, indexed by a path's ORIGINAL definition index (its position in the
+// configured path list, == telemetry.Prober.PathID()). The bind reads it to supply each
+// bound/promoted path's OWN declared pace through the identity-keyed membership calls (defect
+// D79) rather than a slice-position carry. *ActiveBackup implements it; a shared-scalar
+// scheduler (weighted) does NOT — it paces with one shared bucket and ignores per-path config,
+// so the bind's admission then carries a zero (inert) Pacing.
+type PerPathPacingConfig interface {
+	// ConfiguredPacing returns the configured per-path pacing for the path at ORIGINAL index
+	// origIdx, and ok=false when the scheduler is not pacing per-path or origIdx is out of the
+	// configured range (e.g. a runtime-added path with no declared per-path BDP).
+	ConfiguredPacing(origIdx int) (PathPacing, bool)
+}
+
 // DynamicScheduler is a Scheduler whose path set can change at runtime (T30): a
 // path may be admitted or dropped WITHOUT rebuilding the scheduler or disturbing
 // the active selection of the surviving paths. The multipath Bind holds its
@@ -152,26 +192,31 @@ type PathQuality interface {
 // safe for concurrent callers.
 type DynamicScheduler interface {
 	Scheduler
-	// AddPath admits h as a NEW lowest-priority path (highest index) and returns
+	// AddPath admits p as a NEW lowest-priority path (highest index) and returns
 	// that index. Appending at the tail cannot change any existing path's index
 	// nor steal the active selection from a higher-priority survivor: an
 	// active-backup policy only ever selects the new path once every
-	// higher-priority path is down. h must be non-nil.
-	AddPath(h PathHealth) (int, error)
+	// higher-priority path is down. p.Health must be non-nil. p.Pacing is the
+	// added path's OWN per-path token-bucket sizing (defect D79): a per-path
+	// pacing scheduler (active-backup) seeds the new bucket from it rather than
+	// inheriting the tail's rate; a shared-scalar scheduler (weighted) ignores it.
+	AddPath(p PathAdmission) (int, error)
 	// RemovePath drops the path at index i (shifting higher indices down by one)
 	// and repairs the cached selection so a surviving path keeps being selected
 	// and, if the dropped path was the active one, egress fails over to the best
 	// remaining path on the next Pick. i must be in range.
 	RemovePath(i int) error
-	// SetPaths replaces the ENTIRE path/health list with health (priority order,
-	// index 0 = preferred primary) and clears any cached selection, so the next
-	// Pick re-derives the active path from live liveness. The Bind calls it on
-	// every Open to re-align the scheduler's membership with the path slice it
-	// rebuilds from the current definitions — the single reconciliation point that
-	// makes a runtime path add/remove survive a Close→Open cycle index-aligned
-	// (T30). It is safe for concurrent callers; health must be non-empty and hold
-	// no nil element.
-	SetPaths(health []PathHealth) error
+	// SetPaths replaces the ENTIRE path list with paths (priority order, index 0 =
+	// preferred primary) and clears any cached selection, so the next Pick
+	// re-derives the active path from live liveness. Each admission carries the
+	// path's OWN per-path pacing config so a per-path pacing scheduler re-seeds
+	// every token bucket by identity, NOT by slice position (defect D79). The Bind
+	// calls it on every Open to re-align the scheduler's membership with the path
+	// slice it rebuilds from the current definitions — the single reconciliation
+	// point that makes a runtime path add/remove survive a Close→Open cycle
+	// index-aligned (T30). It is safe for concurrent callers; paths must be
+	// non-empty and hold no nil Health element.
+	SetPaths(paths []PathAdmission) error
 }
 
 // PathHealth is the per-path liveness the scheduler consumes: the read side of

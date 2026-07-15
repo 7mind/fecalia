@@ -465,7 +465,7 @@ func TestWeightedUnwiredPathIsNeutral(t *testing.T) {
 
 	// Admit a HEALTH-ONLY path (fakeHealth implements State but NOT Estimate), so its
 	// quality is nil — exactly the AddPath seam the criticism flags.
-	if _, err := s.AddPath(&fakeHealth{s: telemetry.StateUp}); err != nil {
+	if _, err := s.AddPath(admitH(&fakeHealth{s: telemetry.StateUp})); err != nil {
 		t.Fatalf("AddPath: %v", err)
 	}
 
@@ -654,7 +654,7 @@ func TestWeightedSetPathsRealignsMembership(t *testing.T) {
 	// Replace with a single up path: aggregation collapses, quality realigns, and Pick
 	// selects the new sole path.
 	only := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
-	if err := s.SetPaths([]PathHealth{only}); err != nil {
+	if err := s.SetPaths([]PathAdmission{admitH(only)}); err != nil {
 		t.Fatalf("SetPaths: %v", err)
 	}
 	if s.aggregating {
@@ -666,7 +666,7 @@ func TestWeightedSetPathsRealignsMembership(t *testing.T) {
 	if err := s.SetPaths(nil); err == nil {
 		t.Fatal("SetPaths(nil) accepted, want error")
 	}
-	if _, err := s.AddPath(nil); err == nil {
+	if _, err := s.AddPath(admitH(nil)); err == nil {
 		t.Fatal("AddPath(nil) accepted, want error")
 	}
 }
