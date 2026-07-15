@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 239
+  item: 240
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2503,6 +2503,15 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "G16 plan re-review round 2 (orchestrator, verifying the R222 revise correction) — VERDICT = go-ahead. The revise planner corrected T179's factually-wrong Rebaseline caller inventory (grep-verified by me: exactly ONE production caller SetPeerRemote at internal/bind/multipath.go:2559 which already holds the standby `ap`, PLUS FOUR test callers in internal/reseq/reseq_test.go :761/:792/:955 and internal/metrics/metrics_test.go :435; Close() at :2585 does NOT call Rebaseline). T179's description+acceptance + G16's grounding now state the correct inventory and re-frame the plain-unpin fallback as the zero/unknown-AddrPort affordance the metrics/idempotence tests exercise (not a nonexistent close/reset path). The fix DESIGN was already approved (carry `ap` into Rebaseline for the D34 source-identity gate; D64 drop-recovered-while-!started; D68 comment reword; DoD gate); only the caller inventory was wrong and is now fixed. 0 remaining criticisms."
 - ledgerRefs: ["goals:G16","tasks:T179","tasks:T180","tasks:T181","tasks:T182"]
+
+### R239 — go-ahead
+
+- createdAt: 2026-07-15T22:15:04.930Z
+- updatedAt: 2026-07-15T22:15:04.930Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G16 IMPLEMENT review (orchestrator, inline — reseq re-anchor touches the delicate D32/D36-hardened ordering path + the multipath.go SetPeerRemote caller, so implemented in-session) — VERDICT = go-ahead. Merged to main as 803d4a7 (T179/T180/T181/T182; internal/reseq/reseq.go + reseq_test.go + new reseq_d34_d64_test.go, internal/bind/multipath.go + per_peer_reseq_test.go, internal/metrics/metrics_test.go; 179+/14-). THREE fixes: D34 (plain Rebaseline — the D32 hub-failover path — now takes the expected standby endpoint and arms a BOUNDED source-identity gate: the release point re-anchors only on a frame from the new standby hub, so a stale straggler still draining from the OLD hub (a different source) is SUSPECT-dropped and cannot re-pin `next`; the ordered failover endpoints are PUBLIC hub addresses so the standby's inbound frames carry src==ap — verified the correctness assumption; bounded self-heal after O(window) wrong-source frames prevents any blackhole, mirroring the pendingLow discipline; SetPeerRemote passes the failover `ap`; RebaselineToLow clears the gate; reproduce-first tests TestRebaselineSourceIdentityGateD34 (drops old-hub straggler + re-anchors on standby) + TestRebaselineSourceGateSelfHealsD34 (bounded no-blackhole)). D64 (ObserveRecovered no longer establishes/re-pins the release point from a parity-recovered frame while !started — honoring its documented 'NEVER moves or re-pins' contract; drops it as too-early, a live Observe pins next; reproduce-first test TestObserveRecoveredNeverRepinsD64). D68 (the rebaselines counter comments (reseq.go field + Stats field) now say '(e.g. hub failover, peer restart)'). Updated the existing TestPerPeerResequencerLifecycle to send peer A's post-failover re-anchor frame from the standby endpoint — which is exactly what D34 now (correctly) requires, since the pre-D34 test sent it from the OLD-hub source (now the dropped-straggler case). GATE GREEN on composed main: gofmt clean, go build/vet, go test ./... pass, go test -race ./internal/reseq/... ./internal/bind/... ./internal/metrics/... clean, just lint 0 issues all tags (after the standing stale-cache clean). 0 criticisms. On this merge D34/D64/D68 -> resolved."
+- ledgerRefs: ["goals:G16","tasks:T179","tasks:T180","tasks:T181","tasks:T182","defects:D34","defects:D64","defects:D68"]
 
 ## M75
 

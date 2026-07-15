@@ -2184,10 +2184,10 @@ archives:
 
 ## M73
 
-### T179 — planned
+### T179 — done
 
 - createdAt: 2026-07-15T06:27:08.307Z
-- updatedAt: 2026-07-15T06:37:35.538Z
+- updatedAt: 2026-07-15T22:15:06.370Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D34: gate the plain-Rebaseline re-anchor on source identity"
@@ -2202,10 +2202,10 @@ archives:
 - dependsOn: []
 - ledgerRefs: ["goals:G16","defects:D34"]
 
-### T180 — planned
+### T180 — done
 
 - createdAt: 2026-07-15T06:27:15.072Z
-- updatedAt: 2026-07-15T06:27:15.072Z
+- updatedAt: 2026-07-15T22:15:07.922Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D68: reword rebaselines-counter doc-comments to name peer restart"
@@ -2215,10 +2215,10 @@ archives:
 - dependsOn: []
 - ledgerRefs: ["goals:G16","defects:D68"]
 
-### T181 — planned
+### T181 — done
 
 - createdAt: 2026-07-15T06:27:31.363Z
-- updatedAt: 2026-07-15T06:27:31.363Z
+- updatedAt: 2026-07-15T22:15:09.354Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D64: stop FEC-recovered frames re-anchoring an unstarted ring on the Rebaseline path"
@@ -2231,10 +2231,10 @@ archives:
 - dependsOn: ["T179"]
 - ledgerRefs: ["goals:G16","defects:D64"]
 
-### T182 — planned
+### T182 — done
 
 - createdAt: 2026-07-15T06:27:42.342Z
-- updatedAt: 2026-07-15T06:27:42.342Z
+- updatedAt: 2026-07-15T22:15:10.900Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "G16 DoD gate: full build/test/lint/race + resolve D34/D64/D68"

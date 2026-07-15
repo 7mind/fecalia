@@ -472,10 +472,10 @@ archives: []
 - ledgerRefs: ["tasks:T62","goals:G2"]
 - suggestedFix: "RESOLVED at dadb69c (on the T62 branch). The first fix (poll `ip link show`) was insufficient -- hardware showed the device can be VISIBLE to link-show yet the immediately-following `ip addr add` still fail 'Cannot find device' (netns attribute propagation lags visibility). Final fix: RETRY the ACTUAL `nsenter ... ip addr add hubIP/24 dev hubCeth` in a bounded 5s loop (50ms interval), breaking on first success (no duplicate-address). HARDWARE-CONFIRMED on llm-ubuntu-0: 13 runs / 26 setups (incl. a cold start) with ZERO 'Cannot find device'/addr-add-timeout failures (vs prior ~13% cold-start rate; expected ~3-4 failures at that rate). All 26 test executions PASS; TestHubFailoverStandbySwitch RESUME_MS 6056-6903ms within the 10200ms window; single-endpoint guard PASS every run."
 
-### D34 — root-caused
+### D34 — resolved
 
 - createdAt: 2026-07-13T16:49:15.745Z
-- updatedAt: 2026-07-15T06:27:49.709Z
+- updatedAt: 2026-07-15T22:15:12.320Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Post-Rebaseline release point can re-anchor to a prior-hub straggler (native or FEC-recovered) frame, briefly reintroducing the D32 drop
@@ -918,10 +918,10 @@ archives: []
 - ledgerRefs: ["tasks:T123","defects:D49"]
 - rootCause: "CONFIRMED against source. sourceBinding.seq is stamped ONLY at insert/re-point in bindSourceToPeer (multipath.go:1817, seq:m.bindSeq.Add(1)); an already-bound source short-circuits before that path (the receive fast path routes a bound key straight through demuxInbound/handleInbound and never re-stamps seq), so eviction-by-oldest-seq is FIRST-BIND order (FIFO), not LRU. A peer with more concurrently-ACTIVE AddrPorts than its per-peer quota (many paths, or CGNAT port churn alongside a stable path) can evict its OWN oldest still-active binding, blackholing that path's DATA until its next periodic PROBE re-binds it (evicting the next-oldest — bounded rotating thrash). Cause: recency is never refreshed for bound sources. SCOPE: this CONFORMS to the pinned T123 plan decision (insertion-order eviction was explicitly sanctioned) and the default quota 1024/len(peers) makes it unrealistic for sane deployments — a design refinement, NOT a T123 regression. Low."
 
-### D64 — root-caused
+### D64 — resolved
 
 - createdAt: 2026-07-14T11:51:23.954Z
-- updatedAt: 2026-07-15T06:27:51.243Z
+- updatedAt: 2026-07-15T22:15:13.719Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Rebaseline()+ObserveRecovered: an FEC-recovered old-hub frame re-pins the unpinned release point, re-opening D32 when FEC is active"
@@ -958,10 +958,10 @@ archives: []
 - ledgerRefs: ["tasks:T124","defects:D42"]
 - rootCause: "CONFIRMED against source (citation corrected :2580→:2811). attachSharedPathLocked (multipath.go:2801) rolls back a mid-fan-out failure at :2811 with '_ = m.detachPeerPathBoundLocked(m.peers[k], shared.name)' — error swallowed — and also swallows the shared-side unwind '_ = dyn.RemovePath(schedIdx)' (:2861). detachPeerPathBoundLocked (:2878) returns an error and its 'if err := dyn.RemovePath(idx); err != nil' (:2893) CAN fail; when it does, the peer's p.paths is NOT spliced, so a stale peerPathState referencing a socket the caller then closes remains in that peer's live path slice until the next Close→Open. That violates scheduler/paths coherence on an error path whose contract claims 'a partial fan-out never leaks'. Cause: rollback discards detach errors and does not force-splice the tail peerPathState on detach failure. Low; PRE-EXISTING from the T123 AddPath fan-out (T124 only threaded the probers param through)."
 
-### D68 — root-caused
+### D68 — resolved
 
 - createdAt: 2026-07-14T13:15:12.210Z
-- updatedAt: 2026-07-15T06:27:52.519Z
+- updatedAt: 2026-07-15T22:15:15.258Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Stale reseq.go Rebaselines-snapshot comment attributes the counter to hub failover only
