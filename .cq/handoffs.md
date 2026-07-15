@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 27
+  item: 28
 archives: []
 ---
 
@@ -333,6 +333,28 @@ archives: []
     RESUME: /cq:plan <goal-or-defect-fix description> to seed new work (the root-caused defect backlog into fix goals, or a new capability), then /cq:advance to build it.
 - ledgerRefs: ["goals:G12","goals:G14","defects:D65","defects:D79","questions:Q57"]
 - tags: ["cq-advance-run-stop","drained","idempotent-rerun","no-op"]
+
+### HO27 — drained
+
+- createdAt: 2026-07-15T22:16:42.832Z
+- updatedAt: 2026-07-15T22:16:42.832Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- flow: advance
+- summary: |
+    /cq:advance run stop = DRAINED. Gate at stop (derive_predicates, authoritative): P-investigate=FALSE / P-plan=FALSE / P-implement=FALSE / open-Q-gate=FALSE — nothing actionable anywhere.
+    
+    WHAT THIS RUN COMPLETED — the final two staged fix goals of the manual root-caused-defect drive, both implemented INLINE (in-session) because they edit the stall-prone internal/bind/multipath.go where dispatched workers reliably hang (the G15 pattern): G17 (bind path-lifecycle & demux hardening — D30 auto-mode runtime device-bind via autoRuntimeDeviceBind+selectDeviceBinds contention over the membership; D62 demux self-heal fall-through for a torn-down-peer stale binding; D67 rollback error surfaced + force-splice; D71 deduped promote-fail WARN; D66/D63 comment corrections; merged 4b49cf0, R238) and G16 (reseq re-anchor correctness — D34 bounded source-identity gate on the D32 hub-failover Rebaseline so a stale old-hub straggler cannot re-pin the release point, with a self-heal that cannot blackhole; D64 ObserveRecovered no-repin-while-!started; D68 counter comments; merged 803d4a7, R239). Each merge was reproduce-first (dedicated regression tests: TestAutoRuntimeDeviceBindClosesD30, TestRebaselineSourceIdentityGateD34, TestRebaselineSourceGateSelfHealsD34, TestObserveRecoveredNeverRepinsD64) + full go test -race + just lint (0 issues, default+e2e+realhosts) gated.
+    
+    WHOLE-SESSION OUTCOME — the user's 'drive the root-caused-defect backlog manually' request is COMPLETE. Of 44 root-caused defects: 42 RESOLVED (21 already-fixed-but-unrecorded, surfaced by a 5-way parallel triage sweep; + G20 D35/D61 docs; G19 D80/D81 e2e-tests; G15 D79/D76 active-backup pacing; G18 D70/D72/D74/D75/D83/D84 observability; G17 D30/D62/D63/D66/D67/D71 bind hardening; G16 D34/D64/D68 reseq). The 7 fix goals G15-G20 (+ the triage cleanup) all landed on main across commits defc990..68fa84e. Independent plan-reviews caught 3 real plan defects before implementation (G16 caller-inventory, G18 file-overlap + un-supplyable error detail). A cq-tooling bug report was filed documenting the root-caused-defect predicate-coverage gap this whole drive was a manual bridge for (see scratchpad; the gap is that root-caused defects unlinked-to-a-planning-goal are unreachable by all three /cq:advance predicates).
+    
+    STANDING RESIDUALS (NOT autonomously actionable; do NOT make a predicate TRUE): (1) defects:D65 + D36 remain root-caused — their CODE fixes are merged + unit/netns-gated (G14 D65 pacing; G7 D36 restart), but ON-HARDWARE validation is deferred by design (Q56 / the G2 real-host tier); resolve them after the o3.7mind.io + llm-ubuntu-0 hardware runs. (2) The cq-tooling predicate-coverage gap itself (filed bug report) is unfixed — a change to the cq repo (commands/cq/*.md + derivePredicates), out of scope for this project. (3) The many pre-existing goals sit `planned`-with-all-tasks-done per the established project convention (planned->done is user-owned); not mass-closed. (4) A stale golangci cross-worktree result-cache repeatedly produced false lint failures referencing removed sibling worktrees — worked around with `golangci-lint cache clean` before each gate; a real hermeticity nit adjacent to D54/D61, worth a `.golangci` cache-scoping follow-up.
+    
+    WORKTREES: all implement worktrees swept; 4 unbindable worktree-agent-* sibling trees from early in the session remain (unmerged, no ledger-task link — conservative guard preserves them). main is the only real checkout, HEAD 68fa84e.
+    
+    RESUME: nothing required for the defect backlog — it is drained. Optionally: run the deferred on-hardware validation to resolve D65/D36; fix the filed cq-tooling gap in the cq repo; close the planned-but-complete goal statuses in the TUI.
+- ledgerRefs: ["goals:G15","goals:G16","goals:G17","goals:G18","goals:G19","goals:G20","defects:D65","defects:D36"]
+- tags: ["cq-advance-run-stop","drained","backlog-drained","manual-defect-drive-complete"]
 
 ## M50
 
