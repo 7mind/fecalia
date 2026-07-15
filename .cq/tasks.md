@@ -2165,11 +2165,11 @@ archives:
 - dependsOn: ["T161"]
 - ledgerRefs: ["goals:G12"]
 
-### T166 — planned
+### T166 — done
 
 - createdAt: 2026-07-14T18:47:04.293Z
-- updatedAt: 2026-07-14T18:47:04.293Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T00:43:37.353Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Resilient WebSocket client with auto-reconnect + connection-health surfacing
 - description: "Implement the frontend WS client per the /resilient-ws-ui skill (invoke that skill during implementation). A typed client that connects to /ws, parses MonitorSnapshot frames into the T163 TypeScript type, exposes a connection-health state machine (connecting / live / reconnecting / offline) with exponential backoff + jitter and a bounded max delay, and surfaces that state via a visible health indicator plus a 'last update Ns ago' staleness readout. Handle clean server close vs abnormal drop, and resume pushing data on reconnect. Include the token/cookie flow: since auth (T-auth) uses a SameSite=Strict cookie set on first navigation, the browser sends it automatically on the ws:// upgrade — no token handling needed in JS; document that assumption."
@@ -2178,11 +2178,11 @@ archives:
 - dependsOn: ["T163"]
 - ledgerRefs: ["goals:G12"]
 
-### T167 — planned
+### T167 — wip
 
 - createdAt: 2026-07-14T18:47:12.911Z
-- updatedAt: 2026-07-14T18:47:12.911Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T00:30:02.163Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "go:embed the built bundle into the monitor server + wire the Vite build into the Justfile"
 - description: "Serve the real UI from the Go monitor server: add a //go:embed of the Vite build output (the dir agreed in T163) in internal/monitor, and make the GET / (and asset) handler serve from that embedded fs.FS with correct Content-Type and cache headers, replacing the T162 placeholder. Then integrate the frontend build into the Justfile (grounding: no generate/asset step exists today; lint/build use EXPLICIT package lists ./cmd/... ./internal/... ./test/... and //go:embed requires the assets present at go build AND golangci typecheck time): add a `web-build` recipe (npm ci && npm run build in web/) and make `build`, `lint`, and `release` depend on it, OR commit the built assets and document the regeneration recipe — pick one and make it consistent (align with T163's commit-vs-CI decision). If the embed lives in a package not already covered by the lint package list, add it. Ensure a non-empty embed target exists so golangci typecheck never sees a missing embed dir."

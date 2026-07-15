@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 208
+  item: 209
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2439,3 +2439,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T163 implement review (single opus reviewer, proportionate for a config/scaffold task). VERDICT = approve/go-ahead (0 criticisms/questions/defects). CONTRACT FIDELITY verified field-for-field: web/src/types.ts mirrors internal/monitor/monitor.go's json tags exactly across all nested types — PathSnapshot (name/peer string, txBytes/rxBytes/throughputBps/rttSeconds/jitterSeconds/loss number, up boolean), FECSnapshot, ReseqSnapshot (uint64->number, peer string), AggregationSnapshot (aggregating boolean, offeredLoadFps/engage/disengage number), SessionSnapshot (established boolean, lastHandshakeSeconds number), MonitorSnapshot (paths/fec/reseq/aggregation arrays, session, peerNames string[], multiPeer boolean) — no dropped/renamed/mistyped field (the contract T166/T168 depend on). BUILD: fresh npm ci (from committed lockfile) + npm run build (vite 8.1.4) emits internal/monitor/dist/index.html + hashed assets/index-*.js with RELATIVE ./assets/ paths (base:'./', serveable from any mount); npx tsc --noEmit clean; TS 7.0.2/vite 8.1.4 are real recent-stable. GITIGNORE: node_modules + build-output (internal/monitor/dist) untracked; package-lock.json committed (reproducible installs); internal/monitor/.gitignore scopes /dist/ only (does not shadow committed Go files). GO GATE unregressed: no Go files changed, NO //go:embed added (T167 wires it + the Justfile web-build), just lint 0 issues all tag sets. main.ts is a valid same-origin /ws client (relative ws URL, ws/wss protocol swap, parses MonitorSnapshot). Non-blocking note: no CSS asset emitted yet (minimal scaffold has no stylesheet; CSS arrives with the T168 dashboard) — 'hashed JS/CSS' acceptance satisfied operationally (hashed JS lands in the embed dir). EMBED-DIR/COMMIT decision for T167: web/ holds source only; npm run build (from web/) -> internal/monitor/dist/ (gitignored, NOT committed); T167's web-build Justfile step must run before go build so the //go:embed dist dir exists. Merged to main (3653d74)."
 - ledgerRefs: ["tasks:T163","goals:G12"]
+
+### R209 — go-ahead
+
+- createdAt: 2026-07-15T00:43:37.042Z
+- updatedAt: 2026-07-15T00:43:37.042Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T166 implement review (single opus reviewer, proportionate; frontend-only). VERDICT = approve/go-ahead (0 criticisms/questions/defects). The resilient /ws client (web/src/ws-client.ts) meets acceptance verified by a GENUINE deterministic vitest suite (5/5, stub WebSocket): drop -> offline/reconnecting -> live+data-resume (test 2); BOUNDED backoff (nextRetryDelayMs <= maxDelayMs and > 0) with confirmed exponential growth across 6 repeated drops, no tight loop (test 3); clean-close(1000) vs abnormal-drop(1006) classification (test 5); stop() cancels pending reconnects (test 4). State machine connecting/live/reconnecting/offline correct; backoff exponential (base*2**attempt) capped by Math.min(...,maxDelayMs) with full jitter (0.5+rand*0.5); the retry counter resets on actual FRAME RECEIPT (not merely socket open). /ws URL is RELATIVE same-origin (new URL('/ws', window.location.href), ws/wss from page protocol). health-indicator.ts updates the DOM (dot color+shape, label, 'last update Ns ago' staleness ticking every 1s). Reconnect-on-clean-close is sensible for a continuous push-only monitor (only client stop() is terminal). Cookie-auth assumption documented (SameSite=Strict cookie auto-sent on the ws upgrade; no JS token handling). Gates: npx tsc --noEmit clean, npm run build ok, npm test 5/5; NO Go files touched, Go gate unaffected. NON-BLOCKING documented gap (ws-client.ts header): a silently half-open socket that never fires close (Firefox no-keepalive, frozen tab, dead NAT) is not detected — the backend /ws is push-only with no app-level ping, and the acceptance requires no heartbeat; flagged as a future-hardening item (out of T166 scope), not a defect. Merged to main (32bf673)."
+- ledgerRefs: ["tasks:T166","goals:G12"]
