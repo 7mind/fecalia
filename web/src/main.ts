@@ -1,25 +1,21 @@
 import type { MonitorSnapshot } from './types';
 import { ResilientWsClient } from './ws-client';
 import { mountHealthIndicator } from './health-indicator';
+import { mountDashboard } from './dashboard';
 
-// Wires the resilient /ws client (T166) to a visible health indicator.
-// Data rendering stays minimal here on purpose — the full stat-card
-// dashboard is T168; this file's job is proving the resilient-client +
-// health-surfacing contract end to end.
+// Wires the resilient /ws client (T166) to the health indicator (T166) and
+// the read-only stat dashboard (T168), sharing the one #app mount point.
 const app = document.getElementById('app');
 if (app === null) {
   throw new Error('main.ts: #app element missing from index.html');
 }
 
 const indicator = mountHealthIndicator(app);
-
-const latest = document.createElement('pre');
-latest.style.cssText = 'font-family:monospace; font-size:0.8em; white-space:pre-wrap;';
-app.appendChild(latest);
+const dashboard = mountDashboard(app);
 
 const client = new ResilientWsClient({
   onSnapshot: (snapshot: MonitorSnapshot) => {
-    latest.textContent = JSON.stringify(snapshot, null, 2);
+    dashboard.onSnapshot(snapshot);
   },
   onHealthChange: indicator.onHealthChange,
 });
