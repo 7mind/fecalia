@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 211
+  item: 214
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2466,3 +2466,23 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T168 implement review (single opus reviewer; frontend-only). VERDICT = approve/go-ahead (0 criticisms/questions/defects). The read-only dashboard (web/src/dashboard.ts + sparkline.ts) meets acceptance, verified by a GENUINE vitest DOM suite (9/9 total: dashboard 4 + ws-client 5, no .only/.skip): multi-peer snapshot -> 2 per-peer sections each with paths/fec/reseq/aggregation groups + cards AND the session-card rendered EXACTLY ONCE (connection-scoped, not per-peer); single-peer -> 1 FLAT section, 0 peer-section, 0 peer-label elements (no empty label), aggregation group omitted when empty; sparkline buffer CAPS at SPARKLINE_MAX_POINTS=300 (polyline points==300 after 350 frames). Per-peer grouping keyed on snapshot.peerNames via groupByPeer over the four peer-tagged arrays (path/FEC/reseq/aggregation); SessionSnapshot (no peer field) rendered once. Sparklines are CLIENT-SIDE-ONLY in-memory Maps, capped via pushSample+shift, rendered as inline SVG polyline with NO charting library. READ-ONLY (Q48) — no control/mutation surface. Number formatting sensible (loss %, RTT/jitter seconds->ms, throughput bytes/s, handshake age seconds). main.ts retains mountHealthIndicator (T166) and wires the dashboard with a correct client subscription; only the T166 placeholder <pre> JSON dump was removed. Gates: tsc --noEmit clean, vite build clean, vitest 9/9; NO Go files touched (Go gate unaffected); committed HEAD keeps internal/monitor/dist/.gitkeep with dist assets gitignored. Merged to main (9ccf63a). M62 (frontend) complete."
 - ledgerRefs: ["tasks:T168","goals:G12"]
+
+## M63
+
+### R212 — revise
+
+- createdAt: 2026-07-15T01:15:52.200Z
+- updatedAt: 2026-07-15T01:15:52.200Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T169 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins; fable EMPIRICALLY reproduced a real defect). BOTH verified the load-bearing invariants HOLD: dedicated t.monitorSrc (2nd newMetricsSource, != t.metricsSrc, test-pinned); D52 catch-all zeroes Monitor + TestReloadWarnings updated (no stale ignored-warning); security preserved (config.validate at load + monitor.NewServer ErrNonLoopbackBind defense-in-depth, surfaced as an Up failure); Reload reconciles WITHOUT recreating the engine (dev-pointer identity asserted); edge+concentrator parity tested; go test -race + just lint (all tags) green + goleak-clean. FABLE'S DEFECT (fixed): applyMonitorLocked (device.go ~:602) called monitor.NewServer (which net.Listen's the new socket) BEFORE stopMonitorLocked released the old, so a token-only rebind at an UNCHANGED FIXED listen address failed EADDRINUSE ('listen tcp 127.0.0.1:PORT: bind: address already in use'), leaving the endpoint on the OLD token permanently AND aborting the reload before the path diff (dropping path changes on a combined SIGHUP). The shipped TestReloadReconcilesMonitorWithoutTearingTunnel MASKED it by using ':0' (fresh OS port each rebind) — operators write concrete ports. FIX APPLIED (round 2, follow-up commit on main after the premature merge): when the listen ADDRESS is unchanged, stop the old server BEFORE constructing the new; keep bind-new-before-stop-old only for address CHANGES (different port, preserves 'never drop a working endpoint'). Added TestReloadTokenRotationAtFixedPort (grabs a free port, up() at that fixed addr, Reload same-listen+new-token) which fails EADDRINUSE on the old order and passes on the fix; corrected the applyMonitorLocked doc comment (was 'stop old, start new' — the opposite of the old order). PROCESS NOTE: I merged T169 (085d524) prematurely on opus-approve after WRONGLY diagnosing fable as stalled (it was finalizing its verdict); fable then returned the disapprove. Lesson: wait for both panel verdicts before merging; do not treat a slow reviewer as an abstention until confirmed. Fix committed; re-review pending."
+- ledgerRefs: ["tasks:T169","goals:G12"]
+
+### R213 — go-ahead
+
+- createdAt: 2026-07-15T01:21:22.595Z
+- updatedAt: 2026-07-15T01:21:22.595Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T169 round-2 review (fable, claude:fable-5) — VERDICT = go-ahead. Re-review of the same-address monitor rebind-order FIX (commit defc990, diff 085d524..defc990) that resolves fable's round-1 disapprove (R212). DEFECT (round 1): applyMonitorLocked bound the new listener (monitor.NewServer -> net.Listen) BEFORE stopMonitorLocked released the old, so a token-only rotation at an UNCHANGED FIXED port failed EADDRINUSE (the ':0' reload test masked it). FIX: sameAddr := listen == t.monitorListen; when sameAddr, stop the old server BEFORE NewServer; on an address CHANGE keep bind-new-first then stopMonitorLocked() only after a successful bind (never-drop-a-working-endpoint preserved for address changes). DIFFERENTIALLY VERIFIED: fable reverted applyMonitorLocked to the old bind-first order in a scratch worktree at defc990 and TestReloadTokenRotationAtFixedPort failed with the exact round-1 symptom ('bind: address already in use' on 127.0.0.1:<fixed>); on the fix it passes — the guard is genuine, not a fixed-port test that passes either way. Same-address failure path coherent (stopMonitorLocked Closes + clears all three bookkeeping fields before NewServer; Reload returns before advancing t.cfg, so a retry does a fresh start). Never-drop preserved for address changes (TestReloadReconcilesMonitorWithoutTearingTunnel green). No leak reintroduced (goleak on the new test; -race green). Token rotation takes effect (server built with rotated token; per-token enforcement locked by TestAuthTokenFlow). GATES: go test -race ./internal/device/... ./internal/monitor/... ok; just lint 0 issues across default/e2e/realhosts tags. 0 criticisms / 0 questions. PROCESS NOTE (from R212): round 1 I merged T169 (085d524) prematurely on the single opus approve after wrongly diagnosing fable as stalled while it was finalizing its disapprove — lesson: await BOTH panel verdicts before merging; a slow reviewer finalizing is not an abstention. Fixed forward at defc990. T169 now DONE."
+- ledgerRefs: ["tasks:T169","goals:G12"]

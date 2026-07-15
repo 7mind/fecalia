@@ -2206,11 +2206,11 @@ archives:
 
 ## M63
 
-### T169 — planned
+### T169 — done
 
 - createdAt: 2026-07-14T18:47:37.031Z
-- updatedAt: 2026-07-14T18:47:37.031Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T01:21:23.631Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire the monitor into device.Up with a dedicated Source + SIGHUP-reload reconciler (edge+concentrator parity)
 - description: "Wire the monitor into the daemon lifecycle mirroring the metrics pattern (grounding: internal/device/device.go). (1) In device.Up, construct a DEDICATED metrics.Source for the monitor via a second newMetricsSource(...) call — NOT t.metricsSrc — so the monitor's throughput derivation does not share last-sample state with the Prometheus scraper (see grounding/T165). (2) Add an applyMonitorLocked(listen, token) idempotent reconciler analogous to applyMetricsLocked (device.go:507): no-op if unchanged; empty listen stops; else monitor.NewServer(...).Start(); stored on the Tunnel; a stopMonitorLocked mirroring stopMetricsLocked. (3) Call it from device.Up under reloadMu at startup (like device.go:459), and apply monitor listen/token changes from Tunnel.Reload (device.go:574 region) so SIGHUP reconciles the monitor. Because role is config-only and both roles flow through device.Up, this gives edge+concentrator parity for free — assert that in a test. Config plumbed from cfg.Monitor (T160)."
