@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 19
+  item: 20
 archives: []
 ---
 
@@ -241,3 +241,17 @@ archives: []
 - landsIn: ["M77"]
 - sourceRefs: ["goals:G20","reviews:R220"]
 - ledgerRefs: ["goals:G20","defects:D35","defects:D61"]
+
+## M69
+
+### K19 — locked
+
+- createdAt: 2026-07-15T06:37:21.497Z
+- updatedAt: 2026-07-15T06:37:21.497Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G17 plan approved: bind path-lifecycle & demux hardening DAG locked (M74/M75, T183-T199)"
+- rationale: "Reviewer go-ahead (R223, single opus, 0 criticisms). All six root causes verified at exact locations. M74 (linear, same-file multipath.go edit-serialization): T183 (D67 rollback detach-error propagate + force-splice) -> T186 (D62 post-CAS peer-liveness recheck) -> T191 (D30 route auto-mode runtime-added paths through selectDeviceBinds). M75: T195 (D71 promote-failure WARN), T197 (D66 stale comment reword) -> T198 (D63 correct the FIFO-as-'LRU' mislabel at BOTH multipath.go:1744-1746 AND :1794 + wontfix RECOMMENDATION for the user, since autonomous flow can't self-wontfix an intended-per-T123 behavior), T199 (DoD gate). Reproduce-first tests mandatory (codegraph: no covering tests for attachSharedPathLocked/detachPeerPathBoundLocked/bindSourceToPeer/promoteDeferredLocked/AddPath). EXECUTION NOTE: implement as one coherent worktree diff AND serialize AFTER G15 merges (both edit internal/bind/multipath.go). On merge, D30/D62/D66/D67/D71 -> resolved; D63 -> comment fixed, FIFO-vs-LRU behavior flagged to the user for a wontfix decision."
+- landsIn: ["M74","M75"]
+- sourceRefs: ["goals:G17","reviews:R223"]
+- ledgerRefs: ["goals:G17","defects:D30","defects:D62","defects:D63","defects:D66","defects:D67","defects:D71"]

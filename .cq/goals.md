@@ -427,7 +427,7 @@ archives: []
 ### G16 — planning
 
 - createdAt: 2026-07-15T06:22:20.444Z
-- updatedAt: 2026-07-15T06:26:53.542Z
+- updatedAt: 2026-07-15T06:37:43.184Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Fix reseq re-anchor correctness residuals (D34, D64, D68)
@@ -441,15 +441,15 @@ archives: []
     GROUNDING: internal/reseq/reseq.go (Rebaseline ~:626-646, Observe ~:202-210, ObserveRecovered ~:251/:271-274 pendingLow guard :256-269, RebaselineToLow :683-692, comments :175/:760). DoD gate = nix develop -c just build && just test && just lint (default+e2e+realhosts) + go test -race ./internal/reseq/.... On merge, drive D34, D64, D68 to resolved.
 - sourceRefs: ["defects:D34","defects:D64","defects:D68"]
 - tags: ["defect-seeded","reseq","manual-bridge"]
-- grounding: "Verified against HEAD internal/reseq/reseq.go: (1) Rebaseline() :626-646 sets started=false + pendingLow=false, resyncReset, rebaselines++, NO source-identity gating. (2) Observe() !started branch :207-210 re-pins r.next=seq source-agnostically; cell.src is stored :229 but never consulted before re-anchor. (3) ObserveRecovered() :251: pendingLow guard :256-269 drops recovered frames ONLY while pendingLow armed (RebaselineToLow/peer-restart path); the plain Rebaseline path leaves pendingLow=false so the !started branch :271-274 re-pins r.next to a RECOVERED frame — contradicting the method's own :242 contract ('NEVER moves or re-pins the release point'). (4) RebaselineToLow() :683-692 is the low-anchor discipline the plain path lacks (pendingLow arm at :693+; bounded self-heal via pendingLowDrops :165). (5) Counter doc-comments :175 and :760 say '(hub failover)' only, but RebaselineToLow :692 increments the SAME r.rebaselines; metrics.go:397 help already says '(e.g. hub failover)'. Blast radius: Rebaseline has 5 callers in internal/bind/multipath.go (SetPeerRemote :2545-2561 holds the standby AddrPort `ap` and is the D32 hub-failover call site); ObserveRecovered has 5 callers (observeRecovered :2097-2114 passes srcAP). Tests: internal/reseq/reseq_test.go, internal/metrics/metrics_test.go. A signature change to Rebaseline to carry the expected standby endpoint must update all 5 callers."
+- grounding: "Verified against HEAD internal/reseq/reseq.go: (1) Rebaseline() :626-646 sets started=false + pendingLow=false, resyncReset, rebaselines++, NO source-identity gating. (2) Observe() !started branch :207-210 re-pins r.next=seq source-agnostically; cell.src is stored :229 but never consulted before re-anchor. (3) ObserveRecovered() :251: pendingLow guard :256-269 drops recovered frames ONLY while pendingLow armed (RebaselineToLow/peer-restart path); the plain Rebaseline path leaves pendingLow=false so the !started branch :271-274 re-pins r.next to a RECOVERED frame — contradicting the method's own :242 contract ('NEVER moves or re-pins the release point'). (4) RebaselineToLow() :683-692 is the low-anchor discipline the plain path lacks (pendingLow arm at :693+; bounded self-heal via pendingLowDrops :165). (5) Counter doc-comments :175 and :760 say '(hub failover)' only, but RebaselineToLow :692 increments the SAME r.rebaselines; metrics.go:397 help already says '(e.g. hub failover)'. Blast radius (verified: grep -rn '\\.Rebaseline(' --include=*.go): Rebaseline has exactly ONE production caller — SetPeerRemote at internal/bind/multipath.go:2559 (holds the standby AddrPort `ap` at :2545, the D32 hub-failover call site) — PLUS FOUR TEST callers in internal/reseq/reseq_test.go (:761/:792/:955) and internal/metrics/metrics_test.go (:435). Close() at multipath.go:2585 does NOT call Rebaseline; there is NO production close/reset caller. A signature change to Rebaseline to carry the expected standby endpoint must update the single SetPeerRemote:2559 site (pass `ap`) plus those four test callers. ObserveRecovered has 5 callers (observeRecovered :2097-2114 passes srcAP). Tests: internal/reseq/reseq_test.go, internal/metrics/metrics_test.go."
 - milestones: ["M73"]
 
 ## M69
 
-### G17 — planning
+### G17 — planned
 
 - createdAt: 2026-07-15T06:22:36.453Z
-- updatedAt: 2026-07-15T06:27:31.419Z
+- updatedAt: 2026-07-15T06:37:22.589Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Fix bind path-lifecycle & demux hardening (D30, D62, D63, D66, D67, D71)

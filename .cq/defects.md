@@ -1067,10 +1067,10 @@ archives: []
 - rootCause: "CONFIRMED against source — genuine test-coverage gap. internal/sched/weighted_test.go's TestWeightedCollapsesAfterOverloadIdle (:219) exercises the idle-gap collapse branch BEHAVIORALLY (path distribution + gate state) but performs NO log-record inspection — the file has no capturingLogger/logRecords/records[] harvesting in that test (grep-confirmed). TestAggregationGateLog (the log-fields test) deliberately avoids the idle-gap branch (its widened dwell forces the sustained-low-load collapse branch instead). So the load_fps schema-uniformity invariant T143 added + documented in docs/design.md is regression-locked on only 2 of the 3 'scheduler aggregation change' record sites (engage + dwell-collapse); the IDLE-GAP record's fields (reason='idle gap', gap, and the newly-added load_fps) are present-and-manually-verified but untested. Cause: T143 added the load_fps field to all three record sites but extended log-field assertions to only two; the idle-gap site was left behaviorally-covered-only. Low severity — no runtime defect, a missing regression lock."
 - dependsOn: ["T194"]
 
-### D76 — root-caused
+### D76 — resolved
 
 - createdAt: 2026-07-14T18:20:59.440Z
-- updatedAt: 2026-07-15T06:04:48.236Z
+- updatedAt: 2026-07-15T06:50:27.133Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Active-backup pacing lacks ProbeBudget: probe/echo egress unaccounted under active-backup + pacing (same D65 starvation T145 fixed for weighted)"
@@ -1106,10 +1106,10 @@ archives: []
 - ledgerRefs: ["tasks:T147","goals:G13"]
 - rootCause: "Intermittent concentrator startup failure on the fast amd64 host: the concentrator's loopback /metrics bind momentarily lost a race with the peer netns's lo coming UP (SetupWithPaths brings lo up, but the netlink state can lag a beat), so the daemon exited at Open with 'bind: cannot assign requested address' and its TUN vanished ('Cannot find device wanbond0'). Matched the T60/T62 netns-setup race family. RESOLVED (commit 8b6a815, reviewed R197) as part of the D77 fix: added a bounded startConcentrator retry helper (concStartAttempts=4) that re-asserts lo-up and retries the daemon start on the transient race, reaping the hung daemon before each retry; a GENUINELY unbindable metrics address still fails fast after 4 attempts (does not convert a real failure into a pass). Validated GREEN on BOTH o3 (aarch64) + llm-ubuntu-0 (amd64) with no skip — the amd64 host that previously flaked now passes deterministically."
 
-### D79 — root-caused
+### D79 — resolved
 
 - createdAt: 2026-07-14T19:05:13.710Z
-- updatedAt: 2026-07-15T06:04:46.665Z
+- updatedAt: 2026-07-15T06:50:26.030Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Active-backup per-path pacing capacities MISASSIGN across bind membership churn (deferred path at Open / T55 promotion / runtime AddPath) — silently reintroduces the D65 fast-path-throttled-to-slow-rate fault
@@ -1119,11 +1119,11 @@ archives: []
 - ledgerRefs: ["tasks:T153","tasks:T150","defects:D65","defects:D76","goals:G14","goals:G15"]
 - rootCause: "CONFIRMED against source (orchestrator citation-validation, investigate stage). The active-backup per-path pacer config is carried by SLICE POSITION / TAIL-INHERITANCE, never re-sourced from the path's own identity-keyed cfg.Scheduler.PerPathCapacities. Verified: internal/sched/active_backup.go AddPath (:184-186) seeds a re-grown path's pacer from `s.cfg.tailPacerConfig()` or `s.pacers[n-1].cfg` (the LAST existing pacer), NOT the added path's own cfg-derived capacity; SetPaths (:258) calls resizeActiveBackupPacers(s.pacers, len(health), s.cfg.tailPacerConfig(), ...) which (:275-288) rebuilds buckets by INDEX carry-over from the old slice with a tail fallback. Combined with internal/bind/multipath.go Open excluding a T55-deferred path (EADDRNOTAVAIL source_addr) from the health slice handed to SetPaths, a bound path can be paced at a DIFFERENT cfg.Paths entry's capacity (e.g. cfg.Paths=[slow,fast], slow deferred at boot -> fast's bucket = slow's capacity), and promotion/reload AddPath inherits the tail rather than the path's own T152-derived capacity. Construction-time (all paths bindable at boot) is provably 1:1; the hole is the deferral/promotion/reload-churn path. This silently reintroduces the D65 fast-path-throttled-to-slow-rate fault the pacing feature exists to remove. FIX (unchanged from filing): key each path's pacer config by IDENTITY through the DynamicScheduler SetPaths/AddPath/promotion interfaces, sourced from the path's own cfg.Scheduler.PerPathCapacities[identity] (the bind knows the m.defs index of every bound/promoted path), + a regression test (defer path 0, assert path 1 keeps its own capacity; promote path 0, assert it gets its own). READY-TO-SEED into an active-backup-pacing-correctness fix goal together with [[D76]] (active-backup lacks ProbeBudget) — both are churn/coverage holes in the T150/T152/T153 active-backup pacing feature; awaiting /cq:plan to house the fix."
 
-### D80 — root-caused
+### D80 — resolved
 
 - createdAt: 2026-07-14T19:34:45.404Z
-- updatedAt: 2026-07-15T06:28:27.831Z
-- author: sonnet-5
+- updatedAt: 2026-07-15T06:50:56.407Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: restart_onesided_test.go (r121/T121) binds concentrator /metrics to a NON-loopback address — same T17 loopback-invariant violation as D77, fails on hardware
 - description: "Reported by the D77-fix worker (out-of-scope for D77). test/e2e/restart_onesided_test.go (the r121/T121 restart fixture) carries the IDENTICAL defect D77 fixed in multipeer_hardened_test.go: it binds the concentrator's /metrics to its uplink IP (port 9104, non-loopback) instead of loopback, which internal/metrics/server.go's requireLoopback (T17 invariant, docs/design.md:740) unconditionally rejects — so the concentrator daemon would refuse to start and the test would FAIL deterministically when run privileged on hardware (it has been compile/skip-validated but likely never executed on real netns, like T128 pre-D77). The registry comment even documents this: '9104 restart_onesided_test.go (r121MetricsPort; edge on 127.0.0.1, concentrator on its uplink IP)'."
@@ -1133,11 +1133,11 @@ archives: []
 - rootCause: "CONFIRMED against source — real T17-invariant violation. internal/metrics/server.go requireLoopback (:125-155) UNCONDITIONALLY rejects any non-loopback IP literal ('if !ip.IsLoopback() { return ErrNonLoopbackBind }'), NewServer calls it and returns the error WITHOUT binding (:50-52), and verifyLoopbackBind (:157+) act-then-verifies the concrete bound address fail-closed. test/e2e/restart_onesided_test.go builds the concentrator's metrics listen as concMetricsIP+':'+9104 where concMetricsIP is the concentrator's PRIMARY UPLINK address (restart_onesided_test.go:328, r121ConcMetricsListen — a non-loopback veth IP), so on a real privileged run NewServer returns ErrNonLoopbackBind → the concentrator daemon refuses to start → the test fails deterministically. The test's own comment (:82-84,:319 'binds its primary uplink address instead ... reachable over the veth') is the INCORRECT premise — it predates/ignores the T17 requireLoopback invariant (design.md:740). Identical class to D77 (multipeer_hardened_test.go), which this restart fixture never had applied because it has been compile/skip-validated but not executed on real netns. Cause: the r121/T121 fixture was authored assuming the concentrator /metrics could bind a routable veth address for base-netns scraping, which requireLoopback forbids."
 - dependsOn: ["T192"]
 
-### D81 — root-caused
+### D81 — resolved
 
 - createdAt: 2026-07-14T19:34:55.928Z
-- updatedAt: 2026-07-15T06:28:26.883Z
-- author: sonnet-5
+- updatedAt: 2026-07-15T06:50:57.895Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: multipeer_test.go (T97) asserts per-peer INBOUND rx_bytes>0 for the non-primary concentrator peer — structurally always 0
 - description: "Reported by the D77-fix worker (out-of-scope). test/e2e/multipeer_test.go (T97) asserts a NON-PRIMARY concentrator peer's per-peer inbound wanbond_path_rx_bytes_total > 0. That is STRUCTURALLY ALWAYS 0 on a multi-peer concentrator: one readLoop per shared path attributes ALL received bytes to the PRIMARY peer only (internal/bind/multipath.go, T23/T93 design — one reader per shared socket, rx accounting keyed to the primary). So the assertion can only pass by luck/misattribution or would fail on a real run. The D77-fix worker hit and fixed the SAME issue in multipeer_hardened_test.go's d47 by switching the per-peer assertion from rx to tx. T97's assertion has the same latent flaw. NOTE: this couples with the deeper production question (D77-fix finding #4): whether per-peer INBOUND byte accounting on a multi-peer concentrator SHOULD attribute per demuxed peer (move rxBytes.Add into demuxInbound) rather than all-to-primary — a design decision, not just a test fix."

@@ -2102,10 +2102,10 @@ archives:
 
 ## M65
 
-### T173 — wip
+### T173 — done
 
 - createdAt: 2026-07-15T06:09:55.114Z
-- updatedAt: 2026-07-15T06:19:44.515Z
+- updatedAt: 2026-07-15T06:50:17.234Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D76: reproduce-first unit tests for *ActiveBackup ProbeBudget headroom"
@@ -2114,10 +2114,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["defects:D76","goals:G15"]
 
-### T175 — wip
+### T175 — done
 
 - createdAt: 2026-07-15T06:10:18.489Z
-- updatedAt: 2026-07-15T06:19:48.054Z
+- updatedAt: 2026-07-15T06:50:20.209Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D76: implement AccountProbe(pathIdx) on *ActiveBackup + compile-proof"
@@ -2129,10 +2129,10 @@ archives:
 
 ## M66
 
-### T174 — wip
+### T174 — done
 
 - createdAt: 2026-07-15T06:10:03.230Z
-- updatedAt: 2026-07-15T06:19:46.017Z
+- updatedAt: 2026-07-15T06:50:18.698Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D79: reproduce-first regression test for identity-keyed active-backup pacer config across defer/promote"
@@ -2141,10 +2141,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["defects:D79","defects:D65","goals:G15"]
 
-### T176 — wip
+### T176 — done
 
 - createdAt: 2026-07-15T06:10:28.844Z
-- updatedAt: 2026-07-15T06:19:49.541Z
+- updatedAt: 2026-07-15T06:50:21.686Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D79: extend DynamicScheduler membership to carry per-path pacer config by identity; seed *ActiveBackup from it"
@@ -2154,10 +2154,10 @@ archives:
 - dependsOn: ["T174"]
 - ledgerRefs: ["defects:D79","goals:G15"]
 
-### T177 — wip
+### T177 — done
 
 - createdAt: 2026-07-15T06:10:45.048Z
-- updatedAt: 2026-07-15T06:19:51.110Z
+- updatedAt: 2026-07-15T06:50:23.181Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D79: wire the bind to source each bound/promoted path's pacer config from cfg by m.defs identity"
@@ -2169,10 +2169,10 @@ archives:
 
 ## M67
 
-### T178 — wip
+### T178 — done
 
 - createdAt: 2026-07-15T06:11:00.174Z
-- updatedAt: 2026-07-15T06:19:52.105Z
+- updatedAt: 2026-07-15T06:50:24.755Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "G15 DoD gate: full build/test/lint + race on sched+bind for the active-backup pacing fix"
@@ -2187,7 +2187,7 @@ archives:
 ### T179 — planned
 
 - createdAt: 2026-07-15T06:27:08.307Z
-- updatedAt: 2026-07-15T06:27:08.307Z
+- updatedAt: 2026-07-15T06:37:35.538Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "D34: gate the plain-Rebaseline re-anchor on source identity"
@@ -2195,8 +2195,10 @@ archives:
 - description: |
     Close D34 in internal/reseq/reseq.go. After Rebaseline() (:626-646) clears started, the next Observe (:207-210) re-pins r.next to the FIRST arriving outer-seq SOURCE-AGNOSTICALLY (cell.src :229 is stored but never consulted). A late prior-hub straggler (native DATA or in-flight FEC reconstruction from the dead hub) arriving between SetPeerRemote's Rebaseline() and the standby's handshake response re-pins next to the stale HIGH prior-hub seq, transiently reintroducing the D32 drop.
     
-    FIX (mirror RebaselineToLow's discipline): carry the EXPECTED STANDBY ENDPOINT into the resequencer so only a frame whose outer src matches the newly-configured standby may re-pin next after a plain Rebaseline. Preferred shape per D34.suggestedFix: extend Rebaseline to accept the expected standby netip.AddrPort (SetPeerRemote :2545-2561 already holds it as `ap`) and gate the Observe !started re-anchor on src match. Preserve BOTH invariants: (i) trusted-control-event property — no wire-frame path may trigger a rebaseline; (ii) BOUNDED self-heal — if the expected source's first frame is lost or the endpoint is unknown, fall back to a plain unpin after O(window) mismatched drops (same pattern as pendingLowDrops :165), never a permanent blackhole. BLAST RADIUS: Rebaseline has 5 callers in internal/bind/multipath.go — update every caller for any signature change; a caller with no meaningful expected source (generic close/reset) must degrade to today's plain-unpin behavior. Reproduce-first per CLAUDE.md 6a.
-- acceptance: "New deterministic table test in internal/reseq/reseq_test.go authored FIRST and shown to FAIL for the right reason on unpatched HEAD (a prior-hub-source straggler arriving after Rebaseline re-pins next to the stale HIGH seq), then PASSES after the fix: a post-Rebaseline frame from a NON-standby source does NOT re-anchor next, while the genuine standby frame does; and the bounded fallback (expected-source frame never arrives) still self-heals via plain unpin within O(window). All 5 multipath.go Rebaseline callers compile and their existing tests pass. go test -race ./internal/reseq/... green. No wire-frame path can trigger a rebaseline (trusted-control-event property intact)."
+    FIX (mirror RebaselineToLow's discipline): carry the EXPECTED STANDBY ENDPOINT into the resequencer so only a frame whose outer src matches the newly-configured standby may re-pin next after a plain Rebaseline. Preferred shape per D34.suggestedFix: extend Rebaseline to accept the expected standby netip.AddrPort (SetPeerRemote :2545-2561 already holds it as `ap`) and gate the Observe !started re-anchor on src match. Preserve BOTH invariants: (i) trusted-control-event property — no wire-frame path may trigger a rebaseline; (ii) BOUNDED self-heal — if the expected source's first frame is lost or the endpoint is unknown/zero, fall back to a plain source-agnostic unpin after O(window) mismatched drops (same pattern as pendingLowDrops :165), never a permanent blackhole.
+    
+    BLAST RADIUS (verified: grep -rn '\.Rebaseline(' --include=*.go): exactly ONE production caller — SetPeerRemote at internal/bind/multipath.go:2559, which already holds the standby endpoint `ap` in scope (:2545) and is the D32 hub-failover call site — PLUS FOUR TEST callers in internal/reseq/reseq_test.go (~:761, :792, :955) and internal/metrics/metrics_test.go (~:435). Close() at multipath.go:2585 does NOT call Rebaseline; there is NO production close/reset caller. For the signature change to Rebaseline(expectedStandby): pass `ap` at SetPeerRemote:2559, and update the four test call sites to pass an endpoint (or the zero AddrPort). The plain-unpin fallback (zero/unknown AddrPort → today's source-agnostic unpin) is the affordance the metrics/idempotence tests exercise, NOT a nonexistent production close/reset path. Reproduce-first per CLAUDE.md 6a.
+- acceptance: "New deterministic table test in internal/reseq/reseq_test.go authored FIRST and shown to FAIL for the right reason on unpatched HEAD (a prior-hub-source straggler arriving after Rebaseline re-pins next to the stale HIGH seq), then PASSES after the fix: a post-Rebaseline frame from a NON-standby source does NOT re-anchor next, while the genuine standby frame does; and the bounded fallback (expected-source frame never arrives, OR the zero/unknown-AddrPort affordance the metrics/idempotence tests exercise) still self-heals via plain source-agnostic unpin within O(window). The single production caller SetPeerRemote (multipath.go:2559, passing the standby `ap`) AND the four test callers in internal/reseq/reseq_test.go (:761/:792/:955) and internal/metrics/metrics_test.go (:435) all compile and their tests pass. go test -race ./internal/reseq/... green. No wire-frame path can trigger a rebaseline (trusted-control-event property intact)."
 - dependsOn: []
 - ledgerRefs: ["goals:G16","defects:D34"]
 
@@ -2316,21 +2318,26 @@ archives:
 ### T188 — planned
 
 - createdAt: 2026-07-15T06:28:12.050Z
-- updatedAt: 2026-07-15T06:28:12.050Z
+- updatedAt: 2026-07-15T06:38:54.005Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Warn on same-name link_bandwidth/link_rtt change + recompute weighted-capacity gauge on Reload (D70+D74)
 - description: |
     Two OVERLAPPING reload-path holes fixed together (both touch reloadWarnings) to avoid conflict.
     
-    D70: reloadWarnings' same-name-path comparison (internal/device/device.go ~:733/:785-796) checks only SourceAddr/DestAddr/Bind for a surviving same-name path, and the D52 future-proof catch-all zeroes lc.Paths/dc.Paths before DeepEqual, so a SIGHUP changing an existing path's LinkBandwidthBitsPerSec/LinkRTT is silently accepted (no warning) while the running weighted-scheduler pace keeps the booted value -- the D52 'SILENCE is not acceptable' violation at path-sub-field level. FIX: extend the same-name comparison to LinkBandwidthBitsPerSec and LinkRTT with actionable messages (mirroring the source/dest/bind checks), OR generalize to a whole-struct DeepEqual per name-matched pair with already-warned fields zeroed.
+    D70: reloadWarnings' same-name-path comparison (internal/device/device.go ~:733/:785-796) checks only SourceAddr/DestAddr/Bind for a surviving same-name path, and the D52 future-proof catch-all zeroes lc.Paths/dc.Paths before DeepEqual, so a SIGHUP changing an existing path's LinkBandwidthBitsPerSec/LinkRTT is silently accepted (no warning) while the running weighted-scheduler pace keeps the booted value -- the D52 'SILENCE is not acceptable' violation at path-sub-field level. FIX: extend the same-name comparison to LinkBandwidthBitsPerSec and LinkRTT with actionable messages (mirroring the source/dest/bind checks), OR generalize to a whole-struct DeepEqual per name-matched pair with already-warned fields zeroed. This part edits internal/device/device.go only and is unchanged from the prior round.
     
     D74: metrics.newWeightedCapacityGauge (internal/metrics/metrics.go:154) sets wanbond_weighted_capacity_sane once at construction; Tunnel.Reload (device.go ~:665-725) never recomputes it, so adding an undeclared path under weighted policy leaves the gauge reading 1 while the live set is no longer capacity-verifiable. FIX: expose a re-set path for the gauge (a Server/collector method the reload path calls), recompute cfg.WeightedCapacitySane in the reload path and re-set the gauge, emitting a WARN when the recomputed verdict diverges from the prior value.
     
+    STRUCTURAL NOTE / SEQUENCING (server.go edit, addresses R232 crit #1): the gauge is created INLINE in NewServer (internal/metrics/server.go:58-62) and is NOT retained on the Server struct (server.go:34-38 holds only ln/srv/log). Exposing a re-set path therefore structurally requires editing internal/metrics/server.go -- add a gauge field to the Server struct, retain the gauge in NewServer, and add a setter method the reload path calls after recomputing cfg.WeightedCapacitySane. Because this edits internal/metrics/server.go -- the SAME file as T184 (Close ~:116) and T193 (requireLoopback ~:125) -- T188 now dependsOn T193, serializing T184->T193->T188 on server.go to keep the merge conflict-free (matching the plan's stated same-file-tasks-dependsOn-sequenced discipline). The D70 device.go/reload part above runs as before.
+    
+    DOC/COMMENT SYNC (addresses R232 crit #3): making the gauge reload-recomputed CONTRADICTS the existing newWeightedCapacityGauge doc comment (internal/metrics/metrics.go ~:151-153: 'fixed at sane's value for the collector's whole life ... never re-read at scrape time') and any docs/install.md text describing the gauge as immutable/config-fixed (the gauge Help points to docs/install.md). Per the AGENTS.md docs-in-sync-with-code-in-the-same-change invariant, this task's scope INCLUDES updating that doc comment (and docs/install.md if it so describes the gauge) in the SAME change so the docs reflect the reload-recompute behavior.
+    
     REPRODUCE FIRST: add internal/device/reload_test.go cases that fail before and pass after -- (a) a same-name link_bandwidth (and link_rtt) change on a surviving path produces exactly one same-name-path reload warning; (b) a path add/remove that flips WeightedCapacitySane is reflected by the gauge value (with a WARN logged on divergence).
-- acceptance: "internal/device/reload_test.go gains cases failing before and passing after: same-name link_bandwidth/link_rtt change emits exactly one same-name-path reload warning; wanbond_weighted_capacity_sane gauge reflects the post-reload verdict with a WARN on divergence. `go test ./internal/device/ ./internal/metrics/` green; `go test -race ./internal/device/` green."
+- acceptance: "internal/device/reload_test.go gains cases failing before and passing after: same-name link_bandwidth/link_rtt change emits exactly one same-name-path reload warning; wanbond_weighted_capacity_sane gauge reflects the post-reload verdict with a WARN on divergence. The newWeightedCapacityGauge doc comment (and docs/install.md if it describes the gauge as immutable/config-fixed) is updated in the SAME change to reflect the reload-recompute behavior. `go test ./internal/device/ ./internal/metrics/` green; `go test -race ./internal/device/` green."
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G18","defects:D70","defects:D74"]
+- dependsOn: ["T193"]
 
 ### T190 — planned
 
@@ -2347,11 +2354,16 @@ archives:
 ### T193 — planned
 
 - createdAt: 2026-07-15T06:28:31.916Z
-- updatedAt: 2026-07-15T06:28:31.916Z
+- updatedAt: 2026-07-15T06:39:03.995Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Refactor metrics.requireLoopback to delegate to netutil.IsLoopbackHost (D83)
-- description: "requireLoopback (internal/metrics/server.go ~:125) reimplements the full loopback host-classification (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP with every-resolved-must-be-loopback) that internal/netutil.IsLoopbackHost (loopback.go:21) already provides and that monitor/server.go + config/config.go already delegate to. Two independent copies of a security-critical predicate can drift silently. FIX: replace requireLoopback's hand-rolled classification with a call to netutil.IsLoopbackHost, preserving requireLoopback's richer per-case ErrNonLoopbackBind error detail (wrap the returned bool/err into ErrNonLoopbackBind exactly as today, keeping the hostname-resolves-to-non-loopback message). Leave verifyLoopbackBind's kernel-bound-Addr act-then-verify unchanged. Behavior must be identical: loopback literal accepted; wildcard/empty-host and routable refused with ErrNonLoopbackBind; hostname resolving all-loopback accepted. Depends on T184 (both edit internal/metrics/server.go) to keep the merge conflict-free. Confirm/extend a test asserting a non-loopback addr is refused with ErrNonLoopbackBind and a loopback addr accepted."
+- description: |
+    requireLoopback (internal/metrics/server.go ~:125) reimplements the full loopback host-classification (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP with every-resolved-must-be-loopback) that internal/netutil.IsLoopbackHost (loopback.go:21) already provides and that monitor/server.go + config/config.go already delegate to. Two independent copies of a security-critical predicate can drift silently. FIX: replace requireLoopback's hand-rolled classification with a call to netutil.IsLoopbackHost.
+    
+    MESSAGE DETAIL (addresses R232 crit #2): netutil.IsLoopbackHost returns only (bool, error) and collapses empty-host, non-loopback-literal, and hostname-resolves-to-non-loopback ALL to (false, nil) -- it does NOT expose the specific offending resolved IP or an empty-host sub-case. The per-case detail requireLoopback previously wove into ErrNonLoopbackBind is therefore NOT reconstructible from the delegated bool. Accept a SINGLE generic ErrNonLoopbackBind message on the false return (a minor, acceptable observability reduction) -- do NOT instruct preserving per-case detail the delegated predicate cannot supply, and do NOT keep a redundant thin local classifier solely to reproduce that message. On the delegated bool==false, return ErrNonLoopbackBind (one generic message); propagate the delegate's error unchanged on the error return.
+    
+    Leave verifyLoopbackBind's kernel-bound-Addr act-then-verify unchanged. Behavior: loopback literal accepted; wildcard/empty-host and routable refused with ErrNonLoopbackBind; hostname resolving all-loopback accepted. Depends on T184 (both edit internal/metrics/server.go) to keep the merge conflict-free. Confirm/extend a test asserting a non-loopback addr is refused with ErrNonLoopbackBind and a loopback addr accepted.
 - acceptance: "requireLoopback no longer duplicates the netip/LookupIP classification (it calls netutil.IsLoopbackHost); a metrics-server test asserts ErrNonLoopbackBind on a non-loopback addr and acceptance of 127.0.0.1 and [::1]; `go test ./internal/metrics/` green."
 - suggestedModel: standard
 - dependsOn: ["T184"]
@@ -2420,11 +2432,11 @@ archives:
 
 ## M78
 
-### T187 — planned
+### T187 — done
 
 - createdAt: 2026-07-15T06:28:11.743Z
-- updatedAt: 2026-07-15T06:28:11.743Z
-- author: sonnet-5
+- updatedAt: 2026-07-15T06:50:53.629Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Fix D81: switch multipeer_test.go non-primary per-peer INBOUND assertion from rx to tx"
 - description: "test/e2e/multipeer_test.go, 'independent-inner-streams' subtest (~lines 197-219): the per-peer loop currently sums metrics.MetricRxBytes via exp.PeerPathValue(metrics.MetricRxBytes, pl, wan) into peerBytes and fatals on <=0 (lines 205-213). Since a single Bind-owned readLoop per shared path attributes ALL inbound bytes to the PRIMARY peer (internal/bind/multipath.go, T23/T93), the non-primary peer's summed rx is structurally 0. Switch this to metrics.MetricTxBytes (same PeerPathValue helper, same wan loop over mpWan1/mpWan2), mirroring the already-correct pattern in the SAME file's 'per-peer-metrics-attribute-to-correct-edge' subtest (~lines 273-283) and the canonical fix testD47SharedNATDemux in test/e2e/multipeer_hardened_test.go (doc comment ~204-211, assertion ~212-233). Update the surrounding comment (~lines 197-201, currently 'Absolute counts are report-only... the asserted invariant is per-peer presence' — contradicted by the <=0 fatal) to state the tx-is-per-peer rationale, matching d47's comment. Update the fatal message wording (currently 'carried non-positive rx bytes') to reference tx. Keep PeerPathValue plumbing identical — only swap the constant metrics.MetricRxBytes -> metrics.MetricTxBytes and adjust prose."
@@ -2432,11 +2444,11 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["defects:D81","goals:G19"]
 
-### T192 — planned
+### T192 — done
 
 - createdAt: 2026-07-15T06:28:23.355Z
-- updatedAt: 2026-07-15T06:28:23.355Z
-- author: sonnet-5
+- updatedAt: 2026-07-15T06:50:55.021Z
+- author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Fix D80: bind restart_onesided_test.go concentrator /metrics to loopback in-netns, scrape via fetchMetricsInNetns"
 - description: |
