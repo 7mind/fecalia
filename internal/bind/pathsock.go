@@ -189,10 +189,11 @@ func resolveForcedDeviceBind(src netip.Addr, mode config.BindMode) string {
 // net.Interfaces() snapshot the same way selectDeviceBinds is split from
 // planPathBinds (T106 round 2), so it is unit-testable with a fake resolver and no
 // real interfaces: source -> "" (never device-bind, the D38 escape hatch),
-// auto/other -> "" (AddPath/reconcile never auto-device-binds at runtime, D30, a
-// still-open gap this task does not close), device+resolvable -> the resolved dev,
-// device+unresolvable -> "" (fallback to source-IP binding, exactly as
-// selectDeviceBinds' unresolvable case).
+// auto/other -> "" HERE (this is the FORCED-device decision only) — a runtime auto path's
+// device-bind is now decided separately by Multipath.autoRuntimeDeviceBind, which applies
+// Open's selectDeviceBinds contention heuristic over the membership (D30, closed), device+
+// resolvable -> the resolved dev, device+unresolvable -> "" (fallback to source-IP binding,
+// exactly as selectDeviceBinds' unresolvable case).
 func selectForcedDeviceBind(src netip.Addr, mode config.BindMode, resolve func(netip.Addr) ifaceInfo) string {
 	if mode != config.BindModeDevice {
 		return ""

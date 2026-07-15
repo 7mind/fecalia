@@ -362,6 +362,14 @@ type deferredPath struct {
 	// again. It has no meaning for a path that is not bind="device" (the WARN it
 	// guards never fires for one).
 	warnedUnresolvable bool
+	// warnedPromoteFail is the D71 per-path dedup latch for the promote-failure WARN in
+	// reconcileDeferred: true once this path has BOUND but FAILED promotion (a scheduler/path
+	// index skew or codec build error), so a persistently un-promotable deferred path WARNs
+	// once for the whole failure window rather than once per 1 Hz reconcile tick. It is NOT
+	// cleared on a later listen success (that would re-spam every tick, since the listen
+	// re-succeeds each tick while promotion keeps failing); a path that finally promotes
+	// leaves m.deferred, discarding the latch with it.
+	warnedPromoteFail bool
 }
 
 func (ps *peerPathState) setRemote(ap netip.AddrPort) {
@@ -463,6 +471,16 @@ type Multipath struct {
 	// path's dev deterministically without a real interface having to appear on the
 	// host (T106 round 2). Immutable after construction, never nil.
 	resolveDeviceBind func(src netip.Addr, mode config.BindMode) string
+
+	// resolveIface resolves a source address to its interface (dev + family count) — the input
+	// to the AUTO-mode runtime device-bind contention decision (D30, autoRuntimeDeviceBind).
+	// Unlike resolveDeviceBind (forced-device only), an auto-mode runtime-added or promoted path
+	// device-binds only when Open's selectDeviceBinds heuristic holds against the whole
+	// membership; that heuristic needs each source's ifaceInfo. Injection seam mirroring
+	// resolveDeviceBind: the default is a fresh net.Interfaces() snapshot per call, and a test
+	// overrides it to drive interface resolution deterministically without real interfaces.
+	// Immutable after construction, never nil.
+	resolveIface func(src netip.Addr) ifaceInfo
 
 	// addPathListen binds AddPath's runtime-admitted path's socket. It is an
 	// injection seam mirroring deferredListen, scoped to AddPath's OWN call site:
@@ -746,15 +764,22 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 		classify:          newWGClassifier(amnezia),
 		deferredListen:    defaultDeferredListen,
 		resolveDeviceBind: resolveForcedDeviceBind,
-		addPathListen:     listenPath,
-		peerState:         primary,
-		peers:             []*peerState{primary},
-		peersByName:       map[string]*peerState{primary.name: primary},
-		peerByEndpoint:    map[netip.AddrPort]*peerState{},
-		peerByVirt:        map[*udpEndpoint]*peerState{primary.virt: primary},
-		maxDemuxSources:   defaultMaxDemuxSources,
-		fecCfg:            fecCfg,
-		adaptiveCfg:       adaptiveCfg,
+		resolveIface: func(s netip.Addr) ifaceInfo {
+			ifaces, err := net.Interfaces()
+			if err != nil {
+				ifaces = nil
+			}
+			return interfaceInfo(s, ifaces)
+		},
+		addPathListen:   listenPath,
+		peerState:       primary,
+		peers:           []*peerState{primary},
+		peersByName:     map[string]*peerState{primary.name: primary},
+		peerByEndpoint:  map[netip.AddrPort]*peerState{},
+		peerByVirt:      map[*udpEndpoint]*peerState{primary.virt: primary},
+		maxDemuxSources: defaultMaxDemuxSources,
+		fecCfg:          fecCfg,
+		adaptiveCfg:     adaptiveCfg,
 	}
 	// Publish the initial (primary-only) peer view the receive drainer iterates. No
 	// concurrency yet — the bind is not open — so this runs without m.mu.
@@ -1666,7 +1691,13 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 				return
 			}
 		}
-		return // the bound peer holds no view of this socket (removed): drop
+		// D62: the source is bound to a peer that holds NO view of this socket — the peer's
+		// views were torn down (a bind racing unbindPeerSources, or a session-loss teardown)
+		// while its stale demux binding survived. Dropping here would wedge the source
+		// FOREVER (lookupPeerBySource keeps returning the dead peer, so it never re-binds).
+		// Instead FALL THROUGH to the trial-decode loop below: it re-authenticates the PROBE
+		// against the live peers' codecs and re-points the binding (bindSourceToPeer re-affirm)
+		// to the peer that actually owns the source, self-healing the stale binding.
 	}
 	for _, v := range *views {
 		fr, err := v.codec.Decode(raw)
@@ -1741,9 +1772,13 @@ func (m *Multipath) perPeerQuota() int {
 // Cap/quota discipline for a NEW srcAP key (D49). The GLOBAL cap is maxDemuxSources; within it
 // each peer's share is perPeerQuota (maxDemuxSources/len(peers), floor 1):
 //   - SAME-peer roam churn: if p is ALREADY at its per-peer quota, admit the new AddrPort by
-//     EVICTING p's OWN oldest binding (LRU within p, chosen by sourceBinding.seq). p's footprint
-//     stays at quota, a live roaming peer is NEVER dropped, and p can never evict ANOTHER peer's
-//     slot — so never-evict-live holds w.r.t. every other peer and cross-peer isolation is total.
+//     EVICTING p's OWN oldest binding in INSERTION ORDER (FIFO within p, by sourceBinding.seq).
+//     NOTE (D63): seq is stamped once at first bind (below) and is NOT refreshed when an
+//     already-present AddrPort is re-affirmed, so this is first-bound-first-evicted (FIFO), NOT
+//     last-recently-used (LRU) — the insertion-order policy the T123 plan decision explicitly
+//     sanctioned. p's footprint stays at quota, a live roaming peer is NEVER dropped, and p can
+//     never evict ANOTHER peer's slot — so never-evict-live holds w.r.t. every other peer and
+//     cross-peer isolation is total.
 //   - CROSS-peer exhaustion: if p is BELOW its quota but the GLOBAL cap is full (only reachable
 //     when the floor-1 quotas sum past the cap), drop-on-exhaustion — return false. p may not
 //     evict another peer's binding to grow past the cap; bootstrap degrades, WG retransmits cover
@@ -1791,8 +1826,10 @@ func (m *Multipath) bindSourceToPeer(srcAP netip.AddrPort, p *peerState) bool {
 			}
 			switch {
 			case countP >= quota:
-				// p is at its per-peer quota: admit by evicting p's OWN oldest binding (LRU).
-				// countP >= quota >= 1, so an oldest binding of p's exists.
+				// p is at its per-peer quota: admit by evicting p's OWN oldest binding in
+				// insertion order (FIFO by sourceBinding.seq — see the bindSourceToPeer doc;
+				// the T123-sanctioned policy, D63). countP >= quota >= 1, so an oldest binding
+				// of p's exists.
 				evict = true
 			case n >= m.maxDemuxSources:
 				// p is below its quota but the GLOBAL cap is exhausted: p may not steal another
@@ -2684,11 +2721,15 @@ func (m *Multipath) AddPath(def config.Path) error {
 	}
 	id := uint8(m.nextPathID)
 
-	// Honor a forced BindModeDevice the same way Open does (I5); BindModeSource and
-	// BindModeAuto keep AddPath's pre-I5 behaviour of always source-IP-pinning a
-	// runtime-added path (D30 — auto never device-binds at runtime — is a separate,
-	// still-open gap this task does not close).
+	// Honor a forced BindModeDevice the same way Open does (I5); BindModeSource always
+	// source-IP-pins. BindModeAuto now (D30) gets Open's roam-surviving device-bind decision
+	// via autoRuntimeDeviceBind — the runtime-added path device-binds when its source resolves
+	// to a single-family interface no other configured path contends for, rather than the
+	// pre-D30 unconditional source-IP-pin.
 	dev := m.resolveDeviceBind(def.SourceAddr, def.Bind)
+	if dev == "" {
+		dev = m.autoRuntimeDeviceBind(def.SourceAddr, def.Bind)
+	}
 	c, deviceErr, err := m.addPathListen(def.SourceAddr, m.openPort, dev)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRNOTAVAIL) {
@@ -2776,11 +2817,43 @@ func (m *Multipath) AddPath(def config.Path) error {
 	}
 	m.nextPathID++
 
-	// One reader per SHARED socket, feeding the primary peer (single-peer receive; the
-	// concentrator's shared-socket demux to N peers is a later G4 task — see handleInbound).
+	// One reader per SHARED socket. The reader feeds demuxInbound, which source-demuxes the
+	// socket's datagrams to their owning peer once more than one peer holds a view of it
+	// (T88/T93 concentrator demux); a single-peer bind delivers straight through to that peer.
+	// (D66: the prior "single-peer receive; N-peer demux is a later G4 task" note was stale —
+	// the shared-socket demux shipped with T88/T93.)
 	m.readersWG.Add(1)
 	go m.readLoop(attached[0], m.deliverSignal)
 	return nil
+}
+
+// autoRuntimeDeviceBind decides an AUTO-mode runtime-added or promoted path's device-bind (D30),
+// applying Open's selectDeviceBinds heuristic over the current durable membership so an auto path
+// device-binds only when its source resolves to a single-family interface that NO OTHER
+// configured path contends for — the same roam-surviving decision Open makes, closing the pre-D30
+// gap where a runtime-added/promoted auto path always source-IP-pinned (AddPath / reconcileDeferred
+// went through resolveForcedDeviceBind, which returns "" for auto). It returns "" (source-IP-bind)
+// for any non-auto mode (forced-device is decided by resolveDeviceBind; source never device-binds)
+// or when the heuristic declines. Caller holds m.mu (reads m.defs).
+func (m *Multipath) autoRuntimeDeviceBind(targetSrc netip.Addr, targetMode config.BindMode) string {
+	if targetMode != config.BindModeAuto {
+		return ""
+	}
+	// Contention set: the target at index 0, then every OTHER configured path by DISTINCT source
+	// address — skipping entries sharing targetSrc avoids double-counting the target when it is
+	// already in m.defs (the promotion path, where the deferred def is present). selectDeviceBinds'
+	// device-uniqueness check then device-binds the target only when no other member resolves to
+	// its interface.
+	srcs := []netip.Addr{targetSrc}
+	modes := []config.BindMode{targetMode}
+	for i := range m.defs {
+		if m.defs[i].SourceAddr == targetSrc {
+			continue
+		}
+		srcs = append(srcs, m.defs[i].SourceAddr)
+		modes = append(modes, m.defs[i].Bind)
+	}
+	return selectDeviceBinds(srcs, modes, m.resolveIface)[0]
 }
 
 // attachSharedPathLocked is the SINGLE OWNER of the runtime shared-path fan-out: for a
@@ -2808,7 +2881,12 @@ func (m *Multipath) attachSharedPathLocked(shared *sharedPathState, def config.P
 		pp, err := m.attachPeerPathLocked(p, shared, def, id, prober)
 		if err != nil {
 			for k := len(attached) - 1; k >= 0; k-- {
-				_ = m.detachPeerPathBoundLocked(m.peers[k], shared.name)
+				if derr := m.detachPeerPathBoundLocked(m.peers[k], shared.name); derr != nil {
+					// D67: a rollback detach must not be silent — surface the failure. The
+					// path was still force-spliced from p.paths, so no stale view survives.
+					m.log.Error("bind: rollback detach failed during shared-path fan-out",
+						"path", shared.name, "err", derr.Error())
+				}
 			}
 			return nil, err
 		}
@@ -2908,16 +2986,18 @@ func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) error {
 	if idx < 0 {
 		return nil
 	}
-	if err := dyn.RemovePath(idx); err != nil {
-		return err
-	}
+	// D67: capture the RemovePath outcome but ALWAYS splice p.paths (and re-stamp survivors)
+	// regardless of it, so a RemovePath failure never leaves a stale peerPathState in p.paths
+	// that the receive demux could still route to. The error is returned (the caller logs it),
+	// not short-circuited before the splice.
+	removeErr := dyn.RemovePath(idx)
 	p.paths = append(p.paths[:idx], p.paths[idx+1:]...)
 	// The scheduler shifted every path above idx down by one; re-stamp the survivors so
 	// their schedIdx keeps addressing the right token bucket for probe accounting (T145).
 	for k := idx; k < len(p.paths); k++ {
 		p.paths[k].schedIdx.Store(int32(k))
 	}
-	return nil
+	return removeErr
 }
 
 // RemovePath drains and closes the named path at runtime (T30). It drops the path

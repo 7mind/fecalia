@@ -113,6 +113,11 @@ func (m *Multipath) reconcileDeferred() {
 	kept := m.deferred[:0]
 	for _, dp := range m.deferred {
 		dev := m.resolveDeviceBind(dp.def.SourceAddr, dp.def.Bind)
+		if dev == "" {
+			// D30: an AUTO-mode promoted path gets Open's roam-surviving device-bind decision
+			// (single-family, uncontended interface) rather than the pre-D30 source-IP-pin.
+			dev = m.autoRuntimeDeviceBind(dp.def.SourceAddr, dp.def.Bind)
+		}
 		c, deviceErr, err := m.deferredListen(dp.def.SourceAddr, m.openPort, dev)
 		if err != nil {
 			// Still deferred (still not assignable, or a transient fault): no fallback
@@ -143,6 +148,14 @@ func (m *Multipath) reconcileDeferred() {
 			// defIdx/prober-fan-out desync, say) would SPAM that false claim once per
 			// tick — the very defect class round 1 fixed for the listen-failure edge,
 			// relocated to the promote-failure edge (round 3 / CRITICISM 1).
+			// D71: surface the promote failure once per failure window (deduped like the
+			// listen-failure warn above), so a persistent defIdx/prober-fan-out desync is
+			// visible instead of silently retried every tick.
+			if !dp.warnedPromoteFail {
+				m.log.Error("bind: deferred path bound but promotion failed; keeping deferred for retry",
+					"path", dp.def.Name, "err", err.Error())
+				dp.warnedPromoteFail = true
+			}
 			_ = c.Close()
 			kept = append(kept, dp)
 			continue
