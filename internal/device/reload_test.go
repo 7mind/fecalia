@@ -139,7 +139,7 @@ func TestReloadWarnings(t *testing.T) {
 			c := base()
 			c.Monitor = config.Monitor{Listen: "127.0.0.1:9200"}
 			return c
-		}, "monitor"},
+		}, ""}, // Monitor IS applied by Reload (reconciles the endpoint, T169); must not warn.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

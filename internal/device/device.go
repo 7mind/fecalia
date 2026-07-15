@@ -30,6 +30,7 @@ import (
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
+	"github.com/7mind/wanbond/internal/monitor"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -38,6 +39,12 @@ import (
 // Close (and on a reload that rebinds it). The endpoint is loopback-only with no
 // long-lived scrapes, so this is comfortably generous.
 const metricsShutdownTimeout = 2 * time.Second
+
+// monitorShutdownTimeout bounds the graceful shutdown of the [monitor] endpoint on
+// Close (and on a reload that reconciles it). It mirrors metricsShutdownTimeout;
+// the monitor's /ws push handlers observe the server-context cancellation Close
+// issues, so a stalled client cannot stretch teardown past this bound.
+const monitorShutdownTimeout = 2 * time.Second
 
 // defaultTUNName is the requested interface name; the kernel honours it unless it
 // collides (it never does across the edge and concentrator network namespaces).
@@ -127,6 +134,22 @@ type Tunnel struct {
 	// is bound to so a reload can detect a listen change without inspecting the server.
 	metricsSrv    *metrics.Server
 	metricsListen string
+
+	// monitorSrc is the DEDICATED metrics.Source feeding the [monitor] endpoint. It is a
+	// SECOND Source over the SAME Bind — separate from metricsSrc — so the monitor's
+	// derived-throughput last-sample state is not shared with the Prometheus scraper: two
+	// independent scrape cadences reading one shared last-sample map would corrupt each
+	// other's rate derivation (T165 invariant). Like metricsSrc it is built unconditionally
+	// (cheap) so a reload that later turns [monitor].listen ON has a Source ready.
+	monitorSrc metrics.Source
+	// monitorSrv is the running [monitor] endpoint, nil when [monitor].listen is empty. It is
+	// (re)assigned by applyMonitorLocked and read by Close; both hold reloadMu, so a
+	// SIGHUP-driven reconcile never races shutdown. monitorListen/monitorToken mirror the
+	// address+token it is bound to so a reload can detect a listen OR token change (either
+	// forces a rebind) without inspecting the server.
+	monitorSrv    *monitor.Server
+	monitorListen string
+	monitorToken  string
 }
 
 // SINGLE-ENGINE-PER-PROCESS INVARIANT (defect D2).
@@ -451,6 +474,12 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// (cheap) so a reload that later turns [metrics].listen ON has a Source ready; the
 		// endpoint itself is started only when a listen is configured.
 		metricsSrc: newMetricsSource(mpBind, sessMon, telemetry.SystemClock{}),
+		// A SECOND, DEDICATED Source for the [monitor] endpoint over the SAME Bind/session
+		// seam — NOT metricsSrc. The two endpoints scrape on independent cadences and each
+		// Source derives throughput from its OWN last-sample state, so sharing one Source
+		// between them would let each scrape reset the other's rate baseline (T165). Built
+		// unconditionally so a reload can turn [monitor].listen ON with a Source ready.
+		monitorSrc: newMetricsSource(mpBind, sessMon, telemetry.SystemClock{}),
 	}
 
 	// Stand up the /metrics endpoint when configured. A non-loopback listen is refused
@@ -467,6 +496,21 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		ok = true
 		t.Close()
 		return nil, fmt.Errorf("device: start metrics endpoint: %w", err)
+	}
+
+	// Stand up the [monitor] endpoint when configured, mirroring the /metrics endpoint
+	// above but fed by the DEDICATED t.monitorSrc. A non-loopback listen without a token
+	// is refused by monitor.NewServer (fail fast) — surface it as an Up failure rather than
+	// booting a tunnel that silently exposes operational data off-host. Because role is a
+	// config-only field and BOTH RoleEdge and RoleConcentrator flow through up(), this one
+	// wiring gives edge+concentrator monitor parity.
+	t.reloadMu.Lock()
+	err = t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token)
+	t.reloadMu.Unlock()
+	if err != nil {
+		ok = true
+		t.Close()
+		return nil, fmt.Errorf("device: start monitor endpoint: %w", err)
 	}
 
 	ok = true
@@ -538,6 +582,51 @@ func (t *Tunnel) stopMetricsLocked() {
 	t.metricsListen = ""
 }
 
+// applyMonitorLocked reconciles the running [monitor] endpoint to (listen, token): it
+// starts the endpoint when one is desired and none runs, stops it when listen is empty,
+// and rebinds (stop old, start new) when EITHER the address OR the token changed — a
+// token change alters the auth layer, so it must rebind even at an unchanged address. It
+// is idempotent for an unchanged (listen, token) pair. The dedicated t.monitorSrc is
+// reused across a rebind so its derived-throughput state is not reset. The caller MUST
+// hold reloadMu (Up and Reload both do), which also serializes it against Close reading
+// monitorSrv. On a NewServer/refuse error the previous server is left running untouched,
+// so a bad reload never drops a working endpoint. Mirrors applyMetricsLocked.
+func (t *Tunnel) applyMonitorLocked(listen, token string) error {
+	if listen == t.monitorListen && token == t.monitorToken {
+		return nil
+	}
+	if listen == "" {
+		t.stopMonitorLocked()
+		return nil
+	}
+	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.log)
+	if err != nil {
+		return err
+	}
+	t.stopMonitorLocked()
+	srv.Start()
+	t.monitorSrv = srv
+	t.monitorListen = listen
+	t.monitorToken = token
+	return nil
+}
+
+// stopMonitorLocked gracefully shuts the running [monitor] endpoint down (if any) and
+// clears the bookkeeping. Caller holds reloadMu. Mirrors stopMetricsLocked.
+func (t *Tunnel) stopMonitorLocked() {
+	if t.monitorSrv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), monitorShutdownTimeout)
+	defer cancel()
+	if err := t.monitorSrv.Close(ctx); err != nil {
+		t.log.Warn("monitor endpoint shutdown error", "error", err.Error())
+	}
+	t.monitorSrv = nil
+	t.monitorListen = ""
+	t.monitorToken = ""
+}
+
 // Reload applies a reloaded configuration to the RUNNING tunnel by diffing its
 // path set against the live one and adding/removing paths at runtime (T30), WITHOUT
 // tearing the tunnel down: the WG session, the surviving paths, and in-flight
@@ -578,6 +667,19 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 		t.log.Info("reload: metrics endpoint rebound", "listen", cfg.Metrics.Listen)
 	}
 
+	// Reconcile the [monitor] endpoint (T169) — the SECOND non-path field a reload applies,
+	// mirroring /metrics. A listen OR token change reconciles the endpoint (start/stop/rebind)
+	// via the dedicated t.monitorSrc without disturbing the WG session or the Bind. On a refuse
+	// (e.g. a newly non-loopback address without a token) the previous endpoint is left running
+	// and the reload fails. Applied BEFORE the path diff so a monitor-refuse aborts before any
+	// membership change.
+	if cfg.Monitor.Listen != t.monitorListen || cfg.Monitor.Token != t.monitorToken {
+		if err := t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token); err != nil {
+			return fmt.Errorf("device: reload monitor endpoint: %w", err)
+		}
+		t.log.Info("reload: monitor endpoint reconciled", "listen", cfg.Monitor.Listen)
+	}
+
 	add, remove := diffPaths(t.bind.PathNames(), cfg.Paths)
 	for _, def := range add {
 		if err := t.bind.AddPath(def); err != nil {
@@ -598,6 +700,10 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	// value so a subsequent reload diffs against the endpoint actually running.
 	t.cfg = runningConfig(t.cfg, add, remove)
 	t.cfg.Metrics.Listen = t.metricsListen
+	// Carry the applied [monitor] state so a subsequent reload diffs against the endpoint
+	// actually running (mirroring Metrics.Listen above).
+	t.cfg.Monitor.Listen = t.monitorListen
+	t.cfg.Monitor.Token = t.monitorToken
 	return nil
 }
 
@@ -632,9 +738,9 @@ func reloadWarnings(live, desired *config.Config) []string {
 	if live.TUNPersist != desired.TUNPersist {
 		w = append(w, fmt.Sprintf("tun_persist %v -> %v — the running interface keeps its original persistence; ignored until restart", live.TUNPersist, desired.TUNPersist))
 	}
-	// NOTE: a Metrics change is NOT warned here — unlike the other non-path fields, the
-	// reload APPLIES it by rebinding the /metrics endpoint (see Reload). Warning about a
-	// change that is honoured would misinform the operator.
+	// NOTE: neither a Metrics nor a Monitor change is warned here — unlike the other
+	// non-path fields, the reload APPLIES both by rebinding their endpoints (see Reload,
+	// T169). Warning about a change that is honoured would misinform the operator.
 	if !reflect.DeepEqual(live.Scheduler, desired.Scheduler) {
 		w = append(w, "scheduler section changed — the running scheduler keeps its original policy/parameters until restart")
 	}
@@ -643,11 +749,6 @@ func reloadWarnings(live, desired *config.Config) []string {
 	}
 	if !reflect.DeepEqual(live.DNS, desired.DNS) {
 		w = append(w, "dns section changed — the running resolver configuration is unchanged until restart")
-	}
-	// Monitor (T160) has no reload wiring yet — unlike Metrics it is not rebound on
-	// SIGHUP — so a change is reported as ignored, mirroring scheduler/fec/dns above.
-	if !reflect.DeepEqual(live.Monitor, desired.Monitor) {
-		w = append(w, "monitor section changed — the running monitor endpoint (if any) is unchanged until restart")
 	}
 	// The top-level Bind default (I5, Q42) is resolved by normalize() into every path
 	// that omits its own `bind`, so a change here has already propagated into
@@ -942,11 +1043,12 @@ func (t *Tunnel) Wait() { <-t.dev.Wait() }
 // process-global amnezia state. Probing is stopped BEFORE the engine tears the
 // bind's sockets down so no emission races the close.
 func (t *Tunnel) Close() {
-	// Shut the scrape endpoint FIRST so no in-flight /metrics scrape reads the Bind while
-	// the engine tears its sockets down. reloadMu serializes this against a concurrent
-	// SIGHUP-driven rebind.
+	// Shut the /metrics scrape endpoint AND the [monitor] endpoint FIRST so no in-flight
+	// scrape (or /ws push) reads the Bind while the engine tears its sockets down. reloadMu
+	// serializes this against a concurrent SIGHUP-driven rebind.
 	t.reloadMu.Lock()
 	t.stopMetricsLocked()
+	t.stopMonitorLocked()
 	t.reloadMu.Unlock()
 	if t.stopProbes != nil {
 		t.stopProbes()
