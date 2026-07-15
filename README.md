@@ -52,10 +52,10 @@ Requires the dev shell (`nix develop`) which puts Go 1.26, golangci-lint, and th
 netem/DPI test tooling on `PATH`.
 
 ```sh
-just build          # go build ./...
+just build          # web-build (embeds the monitoring-UI bundle) + go build ./...
 just test           # unprivileged unit/property tests
 just lint           # go vet + golangci-lint (incl. -tags e2e / -tags realhosts)
-just release        # static linux amd64+arm64 binaries into dist/
+just release        # web-build + static linux amd64+arm64 binaries into dist/
 ```
 
 Deploying the tunnel (build → install → config → systemd → firewall → metrics) is
@@ -86,7 +86,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 
    psk = "…"                        # outer control/probe PSK (not the WG PSK)
 
-   # optional: [amnezia] (obfuscation, all-or-nothing), [fec], [scheduler], [dns], [metrics], [log]
+   # optional: [amnezia] (obfuscation, all-or-nothing), [fec], [scheduler], [dns], [metrics], [monitor], [log]
    ```
 
 3. Install the systemd unit for the role
@@ -112,6 +112,19 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   (per-peer gauges showing whether data-thrift striping is engaged, the smoothed
   offered load driving it, and the static engage/disengage thresholds; absent
   under `active-backup`).
+- **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a read-only,
+  live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
+  a `/ws` WebSocket every 1s) — loopback-only by default like `[metrics]`, but
+  it MAY bind non-loopback if you also set `[monitor].token` (otherwise
+  refused at config load). Every request, including the WebSocket upgrade, is
+  Host/Origin-validated (DNS-rebinding/CSRF defense); a configured token is
+  presented once as `?token=…` and then carried by a `SameSite=Strict`
+  `HttpOnly` cookie. Reach it via `ssh -L 9101:127.0.0.1:9101 …` for the
+  loopback case, or a token + non-loopback bind on a trusted LAN — the monitor
+  has no TLS in v1, so a non-loopback bind trades in an explicitly accepted
+  cleartext-token risk (see [docs/design.md §Security
+  model](docs/design.md#security-model) and [docs/install.md
+  §6c](docs/install.md#6c-monitoring-ui-monitor)).
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
   flip and the coalesced `"scheduler pacer shedding"` record while a pacing-
@@ -158,8 +171,10 @@ internal/config/        TOML load + fail-fast validation
 internal/dnsresolve/    DNS resolution seam (Resolver interface, system + DoH + DoT impls, test fake)
 internal/device/        tunnel lifecycle (Up/Down/Reload), metrics wiring
 internal/metrics/       loopback Prometheus /metrics
+internal/monitor/       read-only monitoring-UI endpoint (auth + /ws push + embedded frontend)
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
+web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
 test/e2e/               -tags e2e netns fixture (P0–P5)
 test/realhosts/         -tags realhosts real-machine tier
 docs/                   design, install, findings, manual checklist

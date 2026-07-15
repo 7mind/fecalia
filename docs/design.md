@@ -896,6 +896,12 @@ by `internal/device`:
   wires metrics, handles SIGHUP path add/remove without teardown.
 - `internal/metrics` — a private-registry Prometheus `/metrics` endpoint that
   **refuses any non-loopback bind**.
+- `internal/monitor` — the read-only monitoring-UI endpoint for the `[monitor]`
+  surface: an embedded (`//go:embed all:dist`) Vite/TypeScript dashboard at `/`
+  showing per-peer throughput/loss/FEC sparklines, fed by a `/ws` upgrade that
+  pushes a fresh snapshot every 1s. Loopback-only by default, like `/metrics`,
+  but MAY bind non-loopback when a `token` is configured (see *Security
+  model* below for the auth layer and the accepted residual risk).
 - `internal/wireaudit` — the requirement-6 DPI wire-format audit (pcap parse +
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
@@ -1113,6 +1119,34 @@ misbehaves subtly. Agents and contributors must preserve them.
 - **Traffic analysis / DPI**: the outer wire has no fingerprint (random nonce,
   obfuscated body, no magic bytes); AmneziaWG junk params add defense-in-depth.
   Protocol *mimicry* (looking like HTTPS) is an explicit non-goal.
+- **Monitoring UI (`[monitor]`, G12)**: like `/metrics`, **loopback-only by
+  default**; UNLIKE `/metrics`, a **non-loopback bind is fail-fast REFUSED at
+  config load unless a `token` is set** (`ErrMonitorNonLoopbackWithoutAuth`,
+  `internal/config/config.go`) — `/metrics` stays loopback-only unconditionally,
+  with no such opt-in. Independent of that gate, EVERY request the endpoint
+  serves — including the `/ws` WebSocket upgrade — passes unconditional Host +
+  Origin validation (`hostAllowed`/`originAllowed`, `internal/monitor/server.go`),
+  defending against DNS-rebinding and cross-origin/CSRF regardless of whether a
+  token is configured. When a token IS configured, it is presented once as
+  `?token=…`; the server then sets a `wanbond_monitor_token` `SameSite=Strict`,
+  `HttpOnly` cookie and 302-redirects to the same path with the query stripped,
+  so the token does not linger in the URL bar or browser history. All token
+  comparisons are constant-time (`crypto/subtle`). The dashboard is READ-ONLY in
+  v1: it surfaces live per-peer stats only, no control/config actions.
+  - **Accepted residual risk: cleartext token over a non-loopback LAN bind
+    (Q58, answer (a)).** The monitor serves plain HTTP — there is no TLS in v1.
+    On a non-loopback `listen` (the explicit off-host opt-in above), the bearer
+    `token` therefore travels in **CLEARTEXT**: once as the `?token=` query
+    parameter and thereafter as the session cookie, on every request. A
+    **passive on-path observer on that LAN segment can capture the token** and
+    thereby gain the same read-only access to live stats as a legitimate
+    operator. This is a knowingly accepted trade-off, not an oversight: the
+    monitor's blast radius is READ-ONLY telemetry (no control-plane actions,
+    no key material), and the mitigation is operational rather than
+    cryptographic. **Recommendation:** keep `[monitor]` on its loopback default
+    and reach it from elsewhere with `ssh -L <local>:127.0.0.1:<port> …`
+    port-forwarding; reserve a non-loopback `listen` + `token` for networks you
+    already trust, and never for an untrusted/shared LAN.
 
 ## Not yet built / deliberate boundaries
 

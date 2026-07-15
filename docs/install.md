@@ -20,6 +20,14 @@ From the repo root, inside the dev shell:
 nix develop -c just release
 ```
 
+`just release` (and `just build`) first runs `just web-build`, which builds the
+monitoring-UI frontend (Vite + TypeScript, under `web/`) and embeds the bundle
+into the binary via `//go:embed all:dist` in `internal/monitor` — this needs
+node/npm, which the dev shell provides. A committed `dist/.gitkeep` keeps the
+embed compilable even without running `web-build` first (so a tagless `go
+build`/`just lint` never fails on a missing directory); `web-build` restores it
+after Vite empties the directory, so the working tree stays clean.
+
 This cross-compiles `cmd/wanbond` with `CGO_ENABLED=0` (fully static, no libc
 dependency) for both deployment architectures into `dist/`:
 
@@ -830,6 +838,20 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8,
                                    #   loopback); any other address is REFUSED
                                    #   when the endpoint binds (not at load).
 
+# ── monitor: OPTIONAL. Omit the block (or leave listen empty) => no monitoring-
+#    UI endpoint is served. Read-only live-stats dashboard; see §6c. ──────────
+# [monitor]
+# listen = "127.0.0.1:9101"        # No default. LOOPBACK-ONLY unless token
+                                   #   (below) is set, in which case a
+                                   #   non-loopback bind is ALLOWED. An
+                                   #   unauthenticated non-loopback bind is
+                                   #   REFUSED AT CONFIG LOAD (fail-fast, not at
+                                   #   bind time — stricter than metrics above).
+# token = "..."                    # OPTIONAL when listen is loopback; REQUIRED
+                                   #   when listen is non-loopback. See §6c for
+                                   #   the token-cookie flow and the accepted
+                                   #   cleartext-on-LAN residual risk.
+
 # ── log: OPTIONAL ────────────────────────────────────────────────────────────
 [log]
 level = "info"                     # DEFAULT "info" (empty => info). One of
@@ -1254,7 +1276,8 @@ must be open on every uplink; no inbound rules are needed — the edge initiates
 ## 6. Observability
 
 Each daemon serves Prometheus metrics on the loopback-only `[metrics] listen`
-address (`curl -s http://127.0.0.1:9090/metrics`). Logs go to stderr →
+address (`curl -s http://127.0.0.1:9090/metrics`) and, optionally, a read-only
+monitoring-UI dashboard on `[monitor] listen` (§6c). Logs go to stderr →
 `journalctl -u wanbond-<role>`.
 
 ### 6a. Tunnel restart guidance and convergence checking (interim, until D36 is fixed)
@@ -1381,6 +1404,57 @@ A path that DOES declare `link_bandwidth` but contradicts the engage
 threshold still hard-fails config load exactly as before (§3a) — this WARN is
 about the paths that declare nothing at all, which the hard guard cannot
 evaluate.
+
+### 6c. Monitoring UI (`[monitor]`)
+
+An OPTIONAL read-only dashboard — live per-peer throughput/loss/FEC
+sparklines — complementing `/metrics`. Omit the block, or leave `listen`
+empty, and no monitoring-UI endpoint is served (the daemon behaves exactly as
+without this section):
+
+```toml
+[monitor]
+listen = "127.0.0.1:9101"
+# token = "..."   # required only if listen is non-loopback
+```
+
+- **Bind rule**: `listen` follows the SAME loopback-only default as `[metrics]`,
+  with one difference — a non-loopback `listen` is *allowed* here, but only as
+  an explicit opt-in: it **requires `token` to be set**, and an unauthenticated
+  non-loopback `listen` is **refused at config load** (fail-fast, before the
+  daemon even attempts to bind), not merely at bind time. See [docs/design.md
+  §Security model](design.md) for the full invariant and the accepted residual
+  risk of running non-loopback.
+- **Auth model**: every request — including the `/ws` WebSocket upgrade — is
+  validated against the request's `Host` and `Origin` headers regardless of
+  whether a token is configured (DNS-rebinding/CSRF defense, no secret
+  needed). When `token` IS set, the browser presents it once as
+  `?token=<value>` in the URL; the server verifies it, sets a
+  `wanbond_monitor_token` cookie (`SameSite=Strict`, `HttpOnly`), and
+  redirects (302) to the same URL with `?token=` stripped, so the token does
+  not persist in the address bar or browser history. Subsequent requests
+  (including the `Authorization: Bearer <token>` form, if you prefer curling
+  it) authenticate off that credential.
+- **How to view it**:
+  - **Loopback (recommended, default)**: leave `listen` on its loopback
+    default and reach it through an SSH tunnel — no LAN exposure at all:
+    ```sh
+    ssh -L 9101:127.0.0.1:9101 user@wanbond-host
+    ```
+    then open `http://127.0.0.1:9101/` locally.
+  - **LAN (opt-in, requires a token)**: set `listen` to a non-loopback
+    address and `token` to a secret, then browse to
+    `http://<host>:9101/?token=<value>` once — the redirect leaves you at a
+    plain `http://<host>:9101/` afterward. **Do this only on a LAN you trust**:
+    the monitor speaks plain HTTP (no TLS in v1), so the token and all
+    dashboard traffic are visible in CLEARTEXT to anyone on-path; see
+    [docs/design.md §Security model](design.md) for the accepted risk this
+    trades off.
+- **Scope (v1)**: read-only. The dashboard shows live stats only — there is
+  no control/config action reachable from it.
+- **Build step**: the dashboard ships as an embedded frontend bundle built by
+  `just web-build` (Vite + TypeScript), which `just build`/`just release` run
+  automatically — see [§1](#1-build-the-release-binaries).
 
 ## 7. MTU
 

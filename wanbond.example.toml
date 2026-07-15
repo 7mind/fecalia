@@ -341,15 +341,29 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8, ::1
                                    #   other address is REFUSED when the endpoint
                                    #   binds (not at load).
 
-# ── monitor: OPTIONAL, config-surface only (T160). Commented out: no monitor
-#    server is wired up yet — the endpoint/dashboard + full README/design/
-#    install docs land with the later monitor-server tasks. ──────────────────
+# ── monitor: OPTIONAL. Omit the block => no monitoring-UI endpoint is served ──
+# Read-only live-stats dashboard (per-peer throughput/loss/FEC sparklines) served
+# over HTTP + a 1s-push WebSocket. Every request (including the /ws upgrade) is
+# gated by unconditional Host + Origin validation (DNS-rebinding/CSRF defense);
+# see docs/design.md §Security model for the full auth model and the accepted
+# cleartext-token residual risk on a non-loopback bind.
 # [monitor]
-# listen = "127.0.0.1:9101"        # Same loopback-only default as metrics; a
-#                                  #   NON-loopback listen REQUIRES token below
-#                                  #   (fail-fast at config load), else fails
-#                                  #   with ErrMonitorNonLoopbackWithoutAuth.
-# token = "..."                    # Only required when listen is non-loopback.
+# listen = "127.0.0.1:9101"        # No default. Same loopback-only rule as
+                                   #   metrics EXCEPT a non-loopback bind is
+                                   #   ALLOWED when token (below) is set — a
+                                   #   non-loopback listen WITHOUT a token fails
+                                   #   fast at config load with
+                                   #   ErrMonitorNonLoopbackWithoutAuth. Prefer
+                                   #   `ssh -L 9101:127.0.0.1:9101 …` over
+                                   #   opening this to the LAN (see design.md).
+# token = "..."                    # OPTIONAL when listen is loopback; REQUIRED
+                                   #   when listen is non-loopback. Presented
+                                   #   once as `?token=...`, which sets a
+                                   #   SameSite=Strict HttpOnly session cookie
+                                   #   and redirects (302) to strip it from the
+                                   #   URL. No TLS in v1: a non-loopback bind
+                                   #   sends this token in CLEARTEXT over the
+                                   #   LAN.
 
 # ── log: OPTIONAL ────────────────────────────────────────────────────────────
 [log]
@@ -399,6 +413,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 # • metrics loopback-only: listen must be a loopback address (or a hostname
 #   resolving entirely to loopback); a non-loopback bind is refused when the
 #   endpoint starts. Omit the block to serve no metrics.
+# • monitor loopback-default: listen must be loopback UNLESS token is set, in
+#   which case a non-loopback bind is allowed — an unauthenticated non-loopback
+#   bind fails fast at config load (ErrMonitorNonLoopbackWithoutAuth). Omit the
+#   block (or leave listen empty) to serve no monitoring UI. token is otherwise
+#   optional. Read-only in v1: the dashboard shows live stats only, no controls.
 # • bind (top-level default + per-path override): "source" | "device" | "auto"
 #   (DEFAULT). A [[paths]] block with no `bind` uses the top-level default
 #   (itself DEFAULT "auto" when also omitted, so an existing config with no
