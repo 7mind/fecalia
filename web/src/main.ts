@@ -1,15 +1,27 @@
 import type { MonitorSnapshot } from './types';
+import { ResilientWsClient } from './ws-client';
+import { mountHealthIndicator } from './health-indicator';
 
-// Minimal placeholder proving the build+serve loop: open a same-origin
-// WebSocket to /ws, parse each frame as a MonitorSnapshot, and log it.
-// The resilient reconnecting client (T166) and the real dashboard (T168)
-// replace this.
-const wsURL = new URL('/ws', window.location.href);
-wsURL.protocol = wsURL.protocol === 'https:' ? 'wss:' : 'ws:';
+// Wires the resilient /ws client (T166) to a visible health indicator.
+// Data rendering stays minimal here on purpose — the full stat-card
+// dashboard is T168; this file's job is proving the resilient-client +
+// health-surfacing contract end to end.
+const app = document.getElementById('app');
+if (app === null) {
+  throw new Error('main.ts: #app element missing from index.html');
+}
 
-const socket = new WebSocket(wsURL);
+const indicator = mountHealthIndicator(app);
 
-socket.addEventListener('message', (event: MessageEvent<string>) => {
-  const snapshot: MonitorSnapshot = JSON.parse(event.data);
-  console.log(snapshot);
+const latest = document.createElement('pre');
+latest.style.cssText = 'font-family:monospace; font-size:0.8em; white-space:pre-wrap;';
+app.appendChild(latest);
+
+const client = new ResilientWsClient({
+  onSnapshot: (snapshot: MonitorSnapshot) => {
+    latest.textContent = JSON.stringify(snapshot, null, 2);
+  },
+  onHealthChange: indicator.onHealthChange,
 });
+
+client.start();
