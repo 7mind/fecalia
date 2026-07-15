@@ -2191,11 +2191,11 @@ archives:
 - dependsOn: ["T162","T163"]
 - ledgerRefs: ["goals:G12"]
 
-### T168 — planned
+### T168 — done
 
 - createdAt: 2026-07-14T18:47:28.958Z
-- updatedAt: 2026-07-14T18:47:28.958Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T00:54:49.434Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Read-only dashboard: per-path/FEC/reseq/session render, per-peer sections, client-side sparklines"
 - description: "Build the read-only (Q48) dashboard view fed by the T166 client. Render, from each MonitorSnapshot: per-path cards showing link quality — loss, RTT, jitter, throughput, tx/rx bytes, and up/down state; the connection-scoped FEC counters (data/repair/recovered/unrecoverable, byte overhead, residual loss); resequencer counters; and WG-session (established + last-handshake age). When the snapshot is multi-peer (concentrator, PeerNames()>1), group paths/FEC/reseq/aggregation into per-peer sections; when single-peer (edge), render one flat section (matching the metrics peer-label omission). Add client-side-only rolling sparklines over the last ~5 minutes (Q50) for the key time series (per-path loss/RTT/throughput, residual loss) held in browser memory only — lost on reload, no server history. Keep styling minimal and dependency-light."

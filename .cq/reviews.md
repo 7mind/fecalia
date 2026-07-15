@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 210
+  item: 211
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2457,3 +2457,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T167 implement review (single opus reviewer; inline-implemented after monitor-package worker stalls). VERDICT = approve/go-ahead (0 criticisms/questions/defects). EMBED: //go:embed all:dist compiles with only the committed dist/.gitkeep (fresh go build clean); `all:` is PROVABLY REQUIRED — plain //go:embed dist fails 'contains no embeddable files' on a dotfile-only dir. BUILD PIPELINE: `just build` runs web-build (npm ci + vite build -> index.html + hashed assets/index-*.js), restores .gitkeep (Vite empties the outDir), then go build embeds the REAL bundle; after just build `git status` is CLEAN (only unrelated .cq); the T167 commit tracks ONLY internal/monitor/dist/.gitkeep (built assets gitignored via /dist/* + !/dist/.gitkeep). STATIC HANDLER: no-cache for / and index.html (redeploys picked up), public max-age=31536000 immutable for hashed assets, Content-Type from http.FileServer; TestStaticHandler (synthetic fstest.MapFS) passes. ROUTING/AUTH: GET /ws stays more-specific than GET / (Go 1.22 mux); the mux is still wrapped by auth.middleware. Relaxed T164 auth tests (==200 -> not-401/403 since / body now depends on the build) remain meaningful and pass. LINT: just lint 0 issues all tags, internal/monitor covered. LIVE VERIFICATION (reviewer, isolated worktree): the real embedded server returns GET / -> 200 text/html no-cache (the 326-byte built index with <title>wanbond monitor</title>) and the asset -> 200 text/javascript immutable. NOTE (my process error, not a code fault): I switched the shared main checkout OFF implement/T167 to main to merge T166 WHILE this reviewer ran in the main checkout, causing a transient placeholder result mid-review; the reviewer correctly re-validated 5ef2552 in an isolated worktree — lesson: do not branch-switch the shared checkout while a reviewer operates in it. Cherry-picked to main (093df91). Composed tree (T166 web/ client + T167 embed) re-gated green + just build end-to-end verified."
 - ledgerRefs: ["tasks:T167","goals:G12"]
+
+### R211 — go-ahead
+
+- createdAt: 2026-07-15T00:54:48.337Z
+- updatedAt: 2026-07-15T00:54:48.337Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T168 implement review (single opus reviewer; frontend-only). VERDICT = approve/go-ahead (0 criticisms/questions/defects). The read-only dashboard (web/src/dashboard.ts + sparkline.ts) meets acceptance, verified by a GENUINE vitest DOM suite (9/9 total: dashboard 4 + ws-client 5, no .only/.skip): multi-peer snapshot -> 2 per-peer sections each with paths/fec/reseq/aggregation groups + cards AND the session-card rendered EXACTLY ONCE (connection-scoped, not per-peer); single-peer -> 1 FLAT section, 0 peer-section, 0 peer-label elements (no empty label), aggregation group omitted when empty; sparkline buffer CAPS at SPARKLINE_MAX_POINTS=300 (polyline points==300 after 350 frames). Per-peer grouping keyed on snapshot.peerNames via groupByPeer over the four peer-tagged arrays (path/FEC/reseq/aggregation); SessionSnapshot (no peer field) rendered once. Sparklines are CLIENT-SIDE-ONLY in-memory Maps, capped via pushSample+shift, rendered as inline SVG polyline with NO charting library. READ-ONLY (Q48) — no control/mutation surface. Number formatting sensible (loss %, RTT/jitter seconds->ms, throughput bytes/s, handshake age seconds). main.ts retains mountHealthIndicator (T166) and wires the dashboard with a correct client subscription; only the T166 placeholder <pre> JSON dump was removed. Gates: tsc --noEmit clean, vite build clean, vitest 9/9; NO Go files touched (Go gate unaffected); committed HEAD keeps internal/monitor/dist/.gitkeep with dist assets gitignored. Merged to main (9ccf63a). M62 (frontend) complete."
+- ledgerRefs: ["tasks:T168","goals:G12"]
