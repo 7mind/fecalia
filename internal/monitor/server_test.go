@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -340,14 +343,16 @@ func TestAuthHostOrigin(t *testing.T) {
 		t.Fatalf("foreign Host => %d, want 403", respH.StatusCode)
 	}
 
-	// No Origin, loopback Host => 200 (a curl-style request is allowed).
+	// No Origin, loopback Host: auth ALLOWS the request through to the static
+	// handler. The / body depends on whether the frontend bundle is built, so
+	// assert the middleware did not reject it (not a specific 200).
 	resp2, err := client.Get(base + "/")
 	if err != nil {
 		t.Fatalf("no-Origin request: %v", err)
 	}
 	_ = resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("no-Origin loopback => %d, want 200", resp2.StatusCode)
+	if resp2.StatusCode == http.StatusForbidden || resp2.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("no-Origin loopback rejected by auth => %d, want allowed through", resp2.StatusCode)
 	}
 }
 
@@ -380,8 +385,8 @@ func TestAuthTokenFlow(t *testing.T) {
 		t.Fatalf("bearer request: %v", err)
 	}
 	_ = respB.Body.Close()
-	if respB.StatusCode != http.StatusOK {
-		t.Fatalf("valid Bearer => %d, want 200", respB.StatusCode)
+	if respB.StatusCode == http.StatusUnauthorized || respB.StatusCode == http.StatusForbidden {
+		t.Fatalf("valid Bearer rejected => %d, want authorized through", respB.StatusCode)
 	}
 
 	// Wrong token => 401.
@@ -435,8 +440,8 @@ func TestAuthTokenFlow(t *testing.T) {
 		t.Fatalf("cookie request: %v", err)
 	}
 	_ = respC.Body.Close()
-	if respC.StatusCode != http.StatusOK {
-		t.Fatalf("cookie-authorized => %d, want 200", respC.StatusCode)
+	if respC.StatusCode == http.StatusUnauthorized || respC.StatusCode == http.StatusForbidden {
+		t.Fatalf("cookie-authorized rejected => %d, want authorized through", respC.StatusCode)
 	}
 }
 
@@ -462,6 +467,49 @@ func TestHostAllowed(t *testing.T) {
 		if got := hostAllowed(tc.host, allowed); got != tc.want {
 			t.Errorf("hostAllowed(%q) = %v, want %v", tc.host, got, tc.want)
 		}
+	}
+}
+
+// TestStaticHandler verifies the embedded-bundle handler (T167) with a synthetic
+// fs.FS (decoupled from the real build-time embed): / serves index.html with a
+// no-cache header, a hashed asset serves with an immutable long-lived cache, and
+// a missing file 404s. Content-Type is set by http.FileServer from the
+// extension.
+func TestStaticHandler(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html":             {Data: []byte("<!doctype html><title>wanbond monitor</title>")},
+		"assets/index-abc123.js": {Data: []byte("console.log('x')")},
+	}
+	h := staticHandler(fsys)
+
+	// GET / serves index.html with no-cache (unhashed entrypoint).
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / => %d, want 200", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("GET / Cache-Control = %q, want no-cache", cc)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("GET / Content-Type = %q, want text/html*", ct)
+	}
+
+	// A content-hashed asset is served with an immutable, long-lived cache.
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/assets/index-abc123.js", nil))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("GET asset => %d, want 200", rec2.Code)
+	}
+	if cc := rec2.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Errorf("asset Cache-Control = %q, want immutable long-lived", cc)
+	}
+
+	// A missing file 404s (no SPA fallback — the monitor UI is a single page).
+	rec3 := httptest.NewRecorder()
+	h.ServeHTTP(rec3, httptest.NewRequest(http.MethodGet, "/nope.js", nil))
+	if rec3.Code != http.StatusNotFound {
+		t.Fatalf("GET missing => %d, want 404", rec3.Code)
 	}
 }
 

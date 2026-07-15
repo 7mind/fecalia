@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -94,8 +95,15 @@ func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Serv
 	// leak.
 	srvCtx, cancel := context.WithCancel(context.Background())
 
+	static, aerr := staticAssets()
+	if aerr != nil {
+		_ = ln.Close()
+		cancel()
+		return nil, fmt.Errorf("monitor: embedded assets: %w", aerr)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+rootPath, handleRoot)
+	mux.Handle("GET "+rootPath, staticHandler(static))
 	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, logger.Component("monitor")))
 
 	// Wrap the mux with the auth layer (T164): unconditional Host/Origin
@@ -152,12 +160,23 @@ func (s *Server) Close(ctx context.Context) error {
 	return shutdownErr
 }
 
-// handleRoot is the placeholder document handler. The real static assets (the
-// built frontend, served via //go:embed) land in T167; for the skeleton this
-// returns a minimal plaintext body so the route is wired and testable.
-func handleRoot(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("wanbond monitor\n"))
+// staticHandler serves the embedded frontend bundle (fsys) via http.FileServer,
+// with cache headers tuned to Vite's content-hashing: hashed asset files are
+// immutable and cached for a year; the unhashed index.html entrypoint is
+// no-cache so a redeploy is picked up immediately. http.FileServer sets
+// Content-Type from the file extension. Taking fsys as a parameter keeps the
+// handler unit-testable with a synthetic fs.FS, independent of the real (build-
+// time) embed.
+func staticHandler(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // newWSHandler returns the /ws upgrade handler: it accepts the WebSocket and

@@ -5,14 +5,26 @@
 default:
     @just --list
 
-# Build all non-privileged packages.
-build:
+# Build the embedded frontend bundle (Vite) into internal/monitor/dist so the
+# //go:embed all:dist in internal/monitor serves the real monitoring UI. Needs
+# node+npm (dev shell). A committed dist/.gitkeep keeps the embed compilable even
+# before this runs (so `go build`/`just lint` never fail on a missing dir); this
+# recipe produces the ACTUAL assets for a real build/release.
+web-build:
+    cd web && npm ci && npm run build
+    # Vite empties internal/monitor/dist on build, deleting the committed
+    # .gitkeep; restore it so the working tree stays clean and the embed keeps a
+    # placeholder for the next from-scratch build.
+    touch internal/monitor/dist/.gitkeep
+
+# Build all non-privileged packages, with the embedded frontend bundle.
+build: web-build
     go build ./...
 
 # Cross-compile static release binaries (CGO_ENABLED=0, stripped, version
 # stamped from git) for linux/amd64 and linux/arm64 into dist/. `file` reports
 # them statically linked; see docs/install.md for the deployment steps.
-release:
+release: web-build
     mkdir -p dist
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" -o dist/wanbond-linux-amd64 ./cmd/wanbond
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=$(git describe --tags --always --dirty)" -o dist/wanbond-linux-arm64 ./cmd/wanbond
