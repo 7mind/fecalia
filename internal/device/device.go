@@ -584,13 +584,15 @@ func (t *Tunnel) stopMetricsLocked() {
 
 // applyMonitorLocked reconciles the running [monitor] endpoint to (listen, token): it
 // starts the endpoint when one is desired and none runs, stops it when listen is empty,
-// and rebinds (stop old, start new) when EITHER the address OR the token changed — a
-// token change alters the auth layer, so it must rebind even at an unchanged address. It
-// is idempotent for an unchanged (listen, token) pair. The dedicated t.monitorSrc is
-// reused across a rebind so its derived-throughput state is not reset. The caller MUST
-// hold reloadMu (Up and Reload both do), which also serializes it against Close reading
-// monitorSrv. On a NewServer/refuse error the previous server is left running untouched,
-// so a bad reload never drops a working endpoint. Mirrors applyMetricsLocked.
+// and rebinds when EITHER the address OR the token changed — a token change alters the
+// auth layer, so it must rebind even at an unchanged address. It is idempotent for an
+// unchanged (listen, token) pair. The dedicated t.monitorSrc is reused across a rebind so
+// its derived-throughput state is not reset. The caller MUST hold reloadMu (Up and Reload
+// both do), which also serializes it against Close reading monitorSrv. The rebind ORDER is
+// address-dependent (see the body): a same-address (token-only) rebind stops the old
+// server before binding the new to avoid EADDRINUSE at a fixed port; an address-changing
+// rebind binds the new server first and only stops the old on success, so a bad
+// address-changing reload never drops a working endpoint. Mirrors applyMetricsLocked.
 func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 	if listen == t.monitorListen && token == t.monitorToken {
 		return nil
@@ -599,11 +601,26 @@ func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 		t.stopMonitorLocked()
 		return nil
 	}
+	// Rebind ordering depends on whether the LISTEN ADDRESS changes:
+	//   - SAME address (e.g. a token-only rotation): the old listener still
+	//     holds the port, so the new bind would collide (EADDRINUSE). Stop the
+	//     old server FIRST, then bind the new. A NewServer failure here leaves
+	//     the endpoint DOWN, but the address is unchanged and a bad token was
+	//     already rejected by config.validate at load, so this is unexpected.
+	//   - DIFFERENT address: the new bind is on a different port, so bind the
+	//     new server FIRST and only stop the old on success — preserving the
+	//     "a bad reload never drops a working endpoint" property.
+	sameAddr := listen == t.monitorListen
+	if sameAddr {
+		t.stopMonitorLocked()
+	}
 	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.log)
 	if err != nil {
 		return err
 	}
-	t.stopMonitorLocked()
+	if !sameAddr {
+		t.stopMonitorLocked()
+	}
 	srv.Start()
 	t.monitorSrv = srv
 	t.monitorListen = listen

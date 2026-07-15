@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -178,4 +179,52 @@ func TestReloadReconcilesMonitorWithoutTearingTunnel(t *testing.T) {
 		t.Fatalf("token change did not rebind the endpoint (addr unchanged %q)", addr3)
 	}
 	_ = addr1 // addr1 retained for symmetry; the invariant asserted is engine-identity + rebind
+}
+
+// TestReloadTokenRotationAtFixedPort is the regression guard for the rebind-order defect: a
+// token-only change at an UNCHANGED FIXED listen address must rebind SUCCESSFULLY, not fail
+// EADDRINUSE. The buggy order bound the new listener (monitor.NewServer -> net.Listen) BEFORE
+// stopping the old one, so at a fixed port the new bind collided with the still-open old
+// listener; the ':0' reload test masked it by getting a fresh OS-assigned port each rebind.
+func TestReloadTokenRotationAtFixedPort(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	// Grab a free loopback port, then release it so up() can bind that exact address. (A small
+	// TOCTOU window between close and re-bind is acceptable for a regression test.)
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	fixedAddr := probe.Addr().String() // 127.0.0.1:<fixed port>
+	_ = probe.Close()
+
+	cfg := writeEdgeConfig(t, `["127.0.0.1:51821"]`, false)
+	cfg.Monitor = config.Monitor{Listen: fixedAddr}
+	chtun := tuntest.NewChannelTUN()
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory)
+	if err != nil {
+		t.Fatalf("up with a fixed-port [monitor] failed: %v", err)
+	}
+	defer tun.Close()
+	if tun.monitorSrv == nil {
+		t.Fatal("monitor endpoint not started at boot")
+	}
+	if got := tun.monitorSrv.Addr().String(); got != fixedAddr {
+		t.Fatalf("monitor bound %q, want the fixed %q", got, fixedAddr)
+	}
+
+	// Token rotation at the SAME fixed address: MUST succeed (rebind releases the old listener
+	// before binding the new), not fail EADDRINUSE, and stay on the same port.
+	next := *tun.cfg
+	next.Monitor = config.Monitor{Listen: fixedAddr, Token: "rotated-token"}
+	if err := tun.Reload(&next); err != nil {
+		t.Fatalf("token rotation at fixed port %q failed (rebind-order defect): %v", fixedAddr, err)
+	}
+	if tun.monitorSrv == nil {
+		t.Fatal("token rotation dropped the endpoint")
+	}
+	if got := tun.monitorSrv.Addr().String(); got != fixedAddr {
+		t.Fatalf("after token rotation monitor bound %q, want the same fixed %q", got, fixedAddr)
+	}
 }
