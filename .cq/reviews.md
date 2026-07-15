@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 216
+  item: 217
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -23,6 +23,21 @@ archives:
     path: ./archive/reviews/M17.md
     summary: "G2/W5 pilot runbook + non-blocking exit criterion + full doc-sync COMPLETE (CORE SCOPE 3, Q19). T59 rollout runbook (docs/runbook.md — key/PSK gen, both-ends config, standby-concentrator via ordered endpoints + shared WG key, D7/D8 firewall persistence, /metrics health checks), T65 `just p0-baseline` automating the P0 real-link baseline (HARDWARE-VALIDATED: PASS 286s, report emitted), T66 recorded the non-blocking pilot exit criterion (runbook §7: capped-fixture W2 + report-only real-link W4 sufficient to enter a supervised pilot; soak runs DURING the pilot) + full doc-sync removing stale not-yet-built phrasing across README/design/install/manual-checklist/runbook. 3 tasks done, 3 reviews go-ahead. All metric/config claims verified against source; no overclaim (aggregation documented as report-only, single-uplink topology)."
     title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
+    status: done
+  - id: M61
+    path: ./archive/reviews/M61.md
+    summary: "G12 W1 — Monitor backend COMPLETE. New internal/monitor package: dedicated loopback-default listener (non-loopback fail-fast requires token; act-then-verify verifyLoopbackBind), Host/Origin validation + static-token auth (?token=→wanbond_monitor_token SameSite=Strict HttpOnly cookie→302), 1Hz WebSocket push of MonitorSnapshot built from a DEDICATED metrics.Source; /metrics untouched (Q46). 5 tasks + 8 reviews, all terminal. Review panel caught+fixed real defects: listener leak on Close-without-Start (D84 filed for the identical metrics.Server bug), Origin CSRF bypass (foreign-IP Origin allowed), config/bind loopback invariant."
+    title: "G12 W1 — Monitor backend: [monitor] config, dedicated listener, auth, WS snapshot feed"
+    status: done
+  - id: M62
+    path: ./archive/reviews/M62.md
+    summary: "G12 W2 — Frontend COMPLETE. Vite+TypeScript (Q49) read-only dashboard go:embed-served by the W1 monitor: ResilientWsClient (connecting/live/reconnecting/offline, exp backoff+jitter, clean-vs-abnormal close), per-path/FEC/reseq/session cards with per-peer vs flat grouping, client-side-only ~5min rolling SVG sparklines (Q48/Q50), TS MonitorSnapshot mirror. web-build wired into the Justfile before go build/lint/release; //go:embed all:dist with committed dist/.gitkeep. 4 tasks + 4 reviews, all terminal."
+    title: "G12 W2 — Frontend: Vite+TypeScript resilient dashboard, go:embed + build wiring"
+    status: done
+  - id: M63
+    path: ./archive/reviews/M63.md
+    summary: "G12 W3 — Daemon wiring + e2e + docs + gate COMPLETE. Monitor wired into device.Up with a DEDICATED 2nd metrics.Source (≠ /metrics scraper's) + applyMonitorLocked idempotent SIGHUP-reload reconciler (edge+concentrator parity); rebind-order fix (T169 r2, defc990) stop-old-before-start-new on same-address token rotation (fable differentially reproduced the EADDRINUSE + confirmed the guard). Live-WS e2e (T170) drives the real adapter reflecting single+multi-peer state. Docs sync (T171) incl. the Q58(a) cleartext-token residual-risk paragraph. Full DoD gate GREEN (T172): just fmt-check + lint (0 issues all tags) + test + build (real Vite bundle embedded). 4 tasks + 5 reviews, all terminal. G12 DONE."
+    title: G12 W3 — Daemon wiring (edge+concentrator parity), e2e, docs & gate
     status: done
 ---
 
@@ -2354,153 +2369,3 @@ archives:
 - criticism: []
 - new_questions: []
 - ledgerRefs: ["tasks:T148","goals:G13"]
-
-## M61
-
-### R200 — go-ahead
-
-- createdAt: 2026-07-14T22:57:47.575Z
-- updatedAt: 2026-07-14T22:57:47.575Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T161 implement review (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = approve/go-ahead (BOTH reviewers approve; 0 criticisms / 0 questions / 0 defects). internal/monitor MonitorSnapshot DTO + BuildSnapshot(metrics.Source) faithfully and completely encode the metrics.Source read model: field-by-field cross-check against all five Source DTOs (PathSnapshot incl State->up, FECSnapshot 8, ReseqSnapshot incl all 7 embedded reseq.Stats, AggregationSnapshot 5, SessionSnapshot 2) found NO dropped/mistyped field; RTT/Jitter/LastHandshakeAge rendered as float SECONDS via .Seconds() and PINNED by marshalled-JSON value assertions (50ms->0.05 catches any 1e9 error); multiPeer=len(PeerNames())>1 tested for 1 and 2 peers with per-entry peer labels; each Source method called EXACTLY ONCE (no rate-state-corrupting double read); NO device import (only metrics + telemetry); empty collections marshal as [] not null (TestBuildSnapshotEmptyIsNotNull); tests assert the MARSHALLED JSON shape (map[string]any) not struct equality; gofmt/go build/vet/test + just lint (default+e2e+realhosts) all green. Surgical diff (2 new files). Merged to main."
-- ledgerRefs: ["tasks:T161","goals:G12"]
-
-### R201 — revise
-
-- createdAt: 2026-07-14T23:02:00.182Z
-- updatedAt: 2026-07-14T23:02:00.182Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T160 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins). Both confirm the CODE is correct and the gate is green: internal/netutil.IsLoopbackHost is byte-faithful to metrics/server.go requireLoopback and fail-closed on all 20 probed edge cases (0.0.0.0, empty host ':9096', [::], [::1], malformed -> Load error); no input lets a routable addr pass as loopback; ErrMonitorNonLoopbackWithoutAuth is package-level, %w-wrapped, asserted via errors.Is; DisallowUnknownFields genuinely exercised; all 6 acceptance cases present; device D52 reload catch-all extended minimally without pre-empting T169; go build/vet/test + just lint (default+e2e+realhosts) all green. DISAPPROVED on definition-of-done, two autonomously-fixable criticisms: (1) DOC-SYNC (AGENTS.md 'keep docs current'): the new operator-facing [monitor] config keys (monitor.listen/monitor.token) + fail-fast invariant appear in NO doc; add at minimum a commented-out [monitor] block to wanbond.example.toml (the deliberately-exhaustive example that documents [metrics]) noting the endpoint/full docs land with later monitor tasks — the comprehensive README/design/install sync remains T171's scope. (2) internal/netutil ships with NO test files: add a direct table test for IsLoopbackHost covering the fail-closed branches (empty host, [::1], [::], bare-port/missing-port error path) so a regression in the host=='' security branch cannot pass the suite. Filed low out-of-scope defect (classification duplication metrics/server.go vs netutil -> consolidate later). Re-dispatching worker with these two criticisms."
-- ledgerRefs: ["tasks:T160","goals:G12"]
-
-### R202 — go-ahead
-
-- createdAt: 2026-07-14T23:11:25.647Z
-- updatedAt: 2026-07-14T23:11:25.647Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T160 implement review round 2 (fable re-review of the revise). VERDICT = approve/go-ahead. Both round-1 criticisms verified RESOLVED with direct evidence: (1) doc-sync — a commented-out [monitor] block added to wanbond.example.toml (mirrors the [metrics] example) showing listen+token, stating the non-loopback-requires-token invariant with the real ErrMonitorNonLoopbackWithoutAuth identifier, and explicitly deferring the endpoint + full README/design/install docs to T171; (2) internal/netutil/loopback_test.go added directly covering all IsLoopbackHost fail-closed branches (empty host=>non-loopback, [::1]=>loopback, [::]/0.0.0.0=>non-loopback, public IP=>non-loopback, bare-port/missing-port/malformed=>error, localhost resolution) asserting bool AND error — a MUTATION CHECK confirmed the test fails if the host=='' branch regresses to return true. Round-1 code unchanged (round-2 delta = 2 files only). Gate re-run green in worktree AND re-gated on the composed main tree (T160+T161): gofmt clean, go build/vet/test green. Round-1 was opus-approve + fable-disapprove (R201 revise); round-2 both-approve. Merged to main (7ce4752, 2 commits). Low consolidation defect D83 filed+root-caused (ready-to-seed)."
-- ledgerRefs: ["tasks:T160","goals:G12","defects:D83"]
-
-### R203 — revise
-
-- createdAt: 2026-07-14T23:22:34.107Z
-- updatedAt: 2026-07-14T23:22:34.107Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T162 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins; fable empirically REPRODUCED a real defect opus missed). Both confirm the bind guard is fail-closed (non-loopback+empty-token returns ErrNonLoopbackBind BEFORE net.Listen, opens no socket; wildcard/empty-host/routable covered), act-then-verify TOCTOU parity with metrics/server.go on the tokenless path, coder/websocket v1.8.15 Accept uses the SAFE same-origin default (authenticateOrigin on unless InsecureSkipVerify — verified accept.go:116; no CSWSH regression, T164 tightens), the /ws frame is the real BuildSnapshot(src) contract with exactly-one-frame-then-StatusNormalClosure, and the full gate is green (go test -race + just lint 0 issues all tags + go mod verify/tidy clean). DISAPPROVED on three autonomously-fixable criticisms: (1) LISTENER LEAK on Close-without-Start — Server.Close is only s.srv.Shutdown(ctx), but http.Server.Shutdown closes ONLY listeners registered via Serve; on the NewServer->Close-without-Start path (which TestLoopbackBindAccepted itself exercises) the bound socket is NEVER released (fable reproduced `bind: address already in use` on re-listen). Fails the 'Close clean' acceptance operationally. FIX: Close must also close s.ln tolerating net.ErrClosed (when Serve already closed it), and TestLoopbackBindAccepted must assert the port is re-bindable after Close. (2) The token-AUTHORIZED bind branch is UNTESTED: no test covers non-loopback + token!='' succeeding (NewServer('0.0.0.0:0','secret',...) must bind, nil error) — a regression inverting the token check would pass. Add it. (3) Stale comment in newWSHandler: says 'StatusInternalError on the deferred close is a no-op' but the code uses c.CloseNow() (sends no status) — fix the comment to match. Filed low out-of-scope defect: metrics.Server.Close has the IDENTICAL leak (pre-existing, T162 copied the pattern; fixing metrics is separate). Re-dispatching worker with the three criticisms."
-- ledgerRefs: ["tasks:T162","goals:G12"]
-
-### R204 — go-ahead
-
-- createdAt: 2026-07-14T23:29:51.253Z
-- updatedAt: 2026-07-14T23:29:51.253Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T162 implement review round 2 (fable re-review of the revise). VERDICT = approve/go-ahead. All THREE round-1 criticisms verified RESOLVED with evidence: (1) LISTENER LEAK fixed — Server.Close (internal/monitor/server.go) now runs srv.Shutdown then s.ln.Close() tolerating net.ErrClosed (Start->Close path where Serve already closed it), correct error precedence (Shutdown's error wins; ln-close error surfaces only if Shutdown succeeded); TestCloseReleasesPortWithoutStart re-binds the SAME OS-assigned port read from Addr() (not :0) — a REAL regression guard, FAIL-FIRST VERIFIED (reverting Close to Shutdown-only makes it fail EADDRINUSE, with the fix go test -race passes); the Start->Close path stays goleak/-race clean. (2) TestNonLoopbackWithTokenAccepted added locking the token-authorized non-loopback bind branch (0.0.0.0:0 + token => nil error + bound server). (3) newWSHandler comment corrected to accurately describe c.CloseNow (immediate close, no close frame/status). Round-1 skeleton code otherwise unchanged (opus + fable round-1 vetted the bind guard/WS same-origin default/lifecycle); internal/metrics/ UNTOUCHED (D84 separate). Gate green in worktree AND re-gated on composed main tree: gofmt clean, go build/vet/test (monitor/config/metrics) green. Round-1 = opus-approve + fable-disapprove (R203 revise, fable reproduced the leak); round-2 = approve. Merged to main (47c65af, 2 commits). Pre-existing metrics.Close leak filed as D84 (root-caused, ready-to-seed)."
-- ledgerRefs: ["tasks:T162","goals:G12","defects:D84"]
-
-### R205 — revise
-
-- createdAt: 2026-07-15T00:00:03.434Z
-- updatedAt: 2026-07-15T00:00:03.434Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T164 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise. T164 was implemented INLINE by the orchestrator (three dispatched workers stalled during exploration — an agent-infra hang, zero code written each time). BOTH reviewers INDEPENDENTLY found the SAME real security defect (strong signal): the middleware's Origin check reused hostAllowed(u.Host, allowed), whose IP-literal passthrough (a VALID DNS-rebinding defense for the attacker-uncontrolled HOST header) is WRONG for the ORIGIN header — the Origin is the client PAGE's origin, fully attacker-controlled and serveable from any bare public IP. Empirically (fable): 'Origin: http://203.0.113.7' -> 200, should be 403; opus confirmed from the passing TestHostAllowed assertions. This is a cross-origin/CSRF BYPASS, critical on /ws where the Origin header is the SOLE CSRF control (WebSocket upgrades are not gated by SOP/CORS): an attacker page at http://<any-ip>/ opens ws://127.0.0.1:PORT/ws, the upgrade is accepted, and the monitor snapshot is exfiltrated cross-origin. opus 2nd criticism: missing foreign-IP-Origin test (the suite only had a foreign-DOMAIN case). EVERYTHING ELSE both reviewers verified SOUND: token gate fail-closed + constant-time (subtle.ConstantTimeCompare is the only token compare; the token=='' sites are config-presence checks); ?token= bootstrap sets the cookie to the CONFIGURED token only on a match, HttpOnly+SameSite=Strict+Secure=false+Path=/ (Q58(a)), same-path relative redirect (no open-redirect); middleware wraps the mux so Host/Origin precede token on BOTH / and /ws; unauthenticated /ws with a token => 401; null/opaque/file:// Origin (u.Host=='') => 403; missing/foreign-domain Host => 403; goleak + -race + just lint (0 issues all tags) green. FIX APPLIED (round 2, fc59349): split the classifier — hostAllowed (Host) keeps the IP pass; new originAllowed (Origin) requires EXACT same-origin (Origin==Host, covering legit loopback/LAN direct-IP access) OR an allowlisted host, NO IP passthrough; added foreign-IP-Origin tests on /, /ws (the CSRF-critical path), and an originAllowed unit test. Re-review pending."
-- ledgerRefs: ["tasks:T164","goals:G12"]
-
-### R206 — go-ahead
-
-- createdAt: 2026-07-15T00:03:57.391Z
-- updatedAt: 2026-07-15T00:03:57.391Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T164 implement review round 2 (fable re-review of the Origin fix). VERDICT = approve/go-ahead. The round-1 cross-origin/CSRF bypass (both opus+fable flagged: Origin check reused hostAllowed's IP-literal pass) is CLOSED and verified DIFFERENTIALLY: the new HTTP-route regression test (Origin: http://198.51.100.7 on /) fails against round-1 code with '200, want 403' (the exact bypass) and passes on fc59349. The middleware Origin branch now routes through originAllowed, which grants ONLY exact same-origin (Origin==r.Host) OR an allowlisted host (loopback aliases + configured listen host) with NO IP-literal passthrough; hostAllowed (Host header) keeps the IP pass for its DNS-rebinding role. No legit access regressed: exact same-origin covers loopback AND the wildcard-bind LAN case (browser sends matching host:port in Origin and Host); the full monitor suite (token flow, no-Origin, WS one-shot, goleak) passes under -race; whole-repo go test -race green; just lint 0 issues all tags. No new bypass: cross-site pages cannot force Origin==Host (browser sets them independently); Origin: null fails closed (u.Host==''); hostOnly strips ports/v6-brackets correctly. Fair reviewer note: TestAuthForeignOriginRejectedOnWS also passes on old code (websocket.Accept(nil) retains the library default same-origin check), so it pins the end-to-end /ws invariant while the HTTP-route test is the discriminating guard — both retained. T164 (inline-implemented after 3 worker stalls) merged to main (fc59349). Round-1 = opus+fable disapprove (identical Origin finding); round-2 = approve."
-- ledgerRefs: ["tasks:T164","goals:G12"]
-
-### R207 — go-ahead
-
-- createdAt: 2026-07-15T00:19:46.874Z
-- updatedAt: 2026-07-15T00:19:46.874Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T165 implement review (panel opus + fable). VERDICT = approve/go-ahead. OPUS: explicit approve, 0 criticisms — adversarial lifecycle analysis confirms the 1s WS push loop is provably LEAK-FREE on BOTH exits: client-close (CloseRead->connCtx->loopCtx; deferred CloseNow closes the conn so the CloseRead reader goroutine exits) and server-Close (srvCtx cancel fires the registered AfterFunc->stop->loopCtx.Done). The `defer context.AfterFunc(srvCtx, stop)()` idiom registers-on-entry/unregisters-on-exit and spawns NO per-conn goroutine (srvCtx is a WithCancel cancelCtx; the AfterFunc goroutine spawns only once at shutdown then exits). Close cancels BEFORE srv.Shutdown so Shutdown does not block on the hijacked-WS handler; Close-without-Start is no-op-safe (TestCloseReleasesPortWithoutStart passes). Stalled-client write unblocks by construction (writeCtx=WithTimeout(loopCtx,writeTimeout); a blocked c.Write cancels on Close via loopCtx). Cadence real (immediate first frame + 1s ticker, per-write 5s timeout). Graceful-vs-abrupt close logic sound (StatusNormalClosure only when srvCtx.Err()!=nil); no spurious error log on cancellation (loopCtx.Err()==nil guard). The dedicated-Source invariant comment is GROUNDED against internal/device/metrics.go's mutable last-sample delta map. go test -race -count=1 goleak-clean in BOTH TestServerWSPushesSnapshots and TestServerWSCloseStopsPush; just lint 0 issues. FABLE: verified via differential scratch probes that 'the real implementation passes both discriminating probes' (cadence + prompt stalled-client shutdown) — trending approve — then stalled (agent-infra hang, same pattern that hit the T164 workers) during a docs-sync check (T165 owns NO docs; the [monitor] docs are T171's) before emitting its final JSON; per the panel abstention rule fable is dropped and the panel proceeds on opus's approve. Opus's ONE non-blocking nit (TestServerWSCloseStopsPush comment overstated the 'block on write' mechanism — a single small frame won't fill the TCP buffer) was addressed by rewording the comment before merge. T165 implemented INLINE (monitor-package workers stalled). Merged to main (70ca59f). M61 backend complete."
-- ledgerRefs: ["tasks:T165","goals:G12"]
-
-## M62
-
-### R208 — go-ahead
-
-- createdAt: 2026-07-15T00:28:46.932Z
-- updatedAt: 2026-07-15T00:28:46.932Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T163 implement review (single opus reviewer, proportionate for a config/scaffold task). VERDICT = approve/go-ahead (0 criticisms/questions/defects). CONTRACT FIDELITY verified field-for-field: web/src/types.ts mirrors internal/monitor/monitor.go's json tags exactly across all nested types — PathSnapshot (name/peer string, txBytes/rxBytes/throughputBps/rttSeconds/jitterSeconds/loss number, up boolean), FECSnapshot, ReseqSnapshot (uint64->number, peer string), AggregationSnapshot (aggregating boolean, offeredLoadFps/engage/disengage number), SessionSnapshot (established boolean, lastHandshakeSeconds number), MonitorSnapshot (paths/fec/reseq/aggregation arrays, session, peerNames string[], multiPeer boolean) — no dropped/renamed/mistyped field (the contract T166/T168 depend on). BUILD: fresh npm ci (from committed lockfile) + npm run build (vite 8.1.4) emits internal/monitor/dist/index.html + hashed assets/index-*.js with RELATIVE ./assets/ paths (base:'./', serveable from any mount); npx tsc --noEmit clean; TS 7.0.2/vite 8.1.4 are real recent-stable. GITIGNORE: node_modules + build-output (internal/monitor/dist) untracked; package-lock.json committed (reproducible installs); internal/monitor/.gitignore scopes /dist/ only (does not shadow committed Go files). GO GATE unregressed: no Go files changed, NO //go:embed added (T167 wires it + the Justfile web-build), just lint 0 issues all tag sets. main.ts is a valid same-origin /ws client (relative ws URL, ws/wss protocol swap, parses MonitorSnapshot). Non-blocking note: no CSS asset emitted yet (minimal scaffold has no stylesheet; CSS arrives with the T168 dashboard) — 'hashed JS/CSS' acceptance satisfied operationally (hashed JS lands in the embed dir). EMBED-DIR/COMMIT decision for T167: web/ holds source only; npm run build (from web/) -> internal/monitor/dist/ (gitignored, NOT committed); T167's web-build Justfile step must run before go build so the //go:embed dist dir exists. Merged to main (3653d74)."
-- ledgerRefs: ["tasks:T163","goals:G12"]
-
-### R209 — go-ahead
-
-- createdAt: 2026-07-15T00:43:37.042Z
-- updatedAt: 2026-07-15T00:43:37.042Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T166 implement review (single opus reviewer, proportionate; frontend-only). VERDICT = approve/go-ahead (0 criticisms/questions/defects). The resilient /ws client (web/src/ws-client.ts) meets acceptance verified by a GENUINE deterministic vitest suite (5/5, stub WebSocket): drop -> offline/reconnecting -> live+data-resume (test 2); BOUNDED backoff (nextRetryDelayMs <= maxDelayMs and > 0) with confirmed exponential growth across 6 repeated drops, no tight loop (test 3); clean-close(1000) vs abnormal-drop(1006) classification (test 5); stop() cancels pending reconnects (test 4). State machine connecting/live/reconnecting/offline correct; backoff exponential (base*2**attempt) capped by Math.min(...,maxDelayMs) with full jitter (0.5+rand*0.5); the retry counter resets on actual FRAME RECEIPT (not merely socket open). /ws URL is RELATIVE same-origin (new URL('/ws', window.location.href), ws/wss from page protocol). health-indicator.ts updates the DOM (dot color+shape, label, 'last update Ns ago' staleness ticking every 1s). Reconnect-on-clean-close is sensible for a continuous push-only monitor (only client stop() is terminal). Cookie-auth assumption documented (SameSite=Strict cookie auto-sent on the ws upgrade; no JS token handling). Gates: npx tsc --noEmit clean, npm run build ok, npm test 5/5; NO Go files touched, Go gate unaffected. NON-BLOCKING documented gap (ws-client.ts header): a silently half-open socket that never fires close (Firefox no-keepalive, frozen tab, dead NAT) is not detected — the backend /ws is push-only with no app-level ping, and the acceptance requires no heartbeat; flagged as a future-hardening item (out of T166 scope), not a defect. Merged to main (32bf673)."
-- ledgerRefs: ["tasks:T166","goals:G12"]
-
-### R210 — go-ahead
-
-- createdAt: 2026-07-15T00:46:09.053Z
-- updatedAt: 2026-07-15T00:46:09.053Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T167 implement review (single opus reviewer; inline-implemented after monitor-package worker stalls). VERDICT = approve/go-ahead (0 criticisms/questions/defects). EMBED: //go:embed all:dist compiles with only the committed dist/.gitkeep (fresh go build clean); `all:` is PROVABLY REQUIRED — plain //go:embed dist fails 'contains no embeddable files' on a dotfile-only dir. BUILD PIPELINE: `just build` runs web-build (npm ci + vite build -> index.html + hashed assets/index-*.js), restores .gitkeep (Vite empties the outDir), then go build embeds the REAL bundle; after just build `git status` is CLEAN (only unrelated .cq); the T167 commit tracks ONLY internal/monitor/dist/.gitkeep (built assets gitignored via /dist/* + !/dist/.gitkeep). STATIC HANDLER: no-cache for / and index.html (redeploys picked up), public max-age=31536000 immutable for hashed assets, Content-Type from http.FileServer; TestStaticHandler (synthetic fstest.MapFS) passes. ROUTING/AUTH: GET /ws stays more-specific than GET / (Go 1.22 mux); the mux is still wrapped by auth.middleware. Relaxed T164 auth tests (==200 -> not-401/403 since / body now depends on the build) remain meaningful and pass. LINT: just lint 0 issues all tags, internal/monitor covered. LIVE VERIFICATION (reviewer, isolated worktree): the real embedded server returns GET / -> 200 text/html no-cache (the 326-byte built index with <title>wanbond monitor</title>) and the asset -> 200 text/javascript immutable. NOTE (my process error, not a code fault): I switched the shared main checkout OFF implement/T167 to main to merge T166 WHILE this reviewer ran in the main checkout, causing a transient placeholder result mid-review; the reviewer correctly re-validated 5ef2552 in an isolated worktree — lesson: do not branch-switch the shared checkout while a reviewer operates in it. Cherry-picked to main (093df91). Composed tree (T166 web/ client + T167 embed) re-gated green + just build end-to-end verified."
-- ledgerRefs: ["tasks:T167","goals:G12"]
-
-### R211 — go-ahead
-
-- createdAt: 2026-07-15T00:54:48.337Z
-- updatedAt: 2026-07-15T00:54:48.337Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T168 implement review (single opus reviewer; frontend-only). VERDICT = approve/go-ahead (0 criticisms/questions/defects). The read-only dashboard (web/src/dashboard.ts + sparkline.ts) meets acceptance, verified by a GENUINE vitest DOM suite (9/9 total: dashboard 4 + ws-client 5, no .only/.skip): multi-peer snapshot -> 2 per-peer sections each with paths/fec/reseq/aggregation groups + cards AND the session-card rendered EXACTLY ONCE (connection-scoped, not per-peer); single-peer -> 1 FLAT section, 0 peer-section, 0 peer-label elements (no empty label), aggregation group omitted when empty; sparkline buffer CAPS at SPARKLINE_MAX_POINTS=300 (polyline points==300 after 350 frames). Per-peer grouping keyed on snapshot.peerNames via groupByPeer over the four peer-tagged arrays (path/FEC/reseq/aggregation); SessionSnapshot (no peer field) rendered once. Sparklines are CLIENT-SIDE-ONLY in-memory Maps, capped via pushSample+shift, rendered as inline SVG polyline with NO charting library. READ-ONLY (Q48) — no control/mutation surface. Number formatting sensible (loss %, RTT/jitter seconds->ms, throughput bytes/s, handshake age seconds). main.ts retains mountHealthIndicator (T166) and wires the dashboard with a correct client subscription; only the T166 placeholder <pre> JSON dump was removed. Gates: tsc --noEmit clean, vite build clean, vitest 9/9; NO Go files touched (Go gate unaffected); committed HEAD keeps internal/monitor/dist/.gitkeep with dist assets gitignored. Merged to main (9ccf63a). M62 (frontend) complete."
-- ledgerRefs: ["tasks:T168","goals:G12"]
-
-## M63
-
-### R212 — revise
-
-- createdAt: 2026-07-15T01:15:52.200Z
-- updatedAt: 2026-07-15T01:15:52.200Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T169 implement review round 1 (aggregated, panel opus + fable, reconciled strictest-wins). VERDICT = revise (opus approve; fable disapprove -> strictest wins; fable EMPIRICALLY reproduced a real defect). BOTH verified the load-bearing invariants HOLD: dedicated t.monitorSrc (2nd newMetricsSource, != t.metricsSrc, test-pinned); D52 catch-all zeroes Monitor + TestReloadWarnings updated (no stale ignored-warning); security preserved (config.validate at load + monitor.NewServer ErrNonLoopbackBind defense-in-depth, surfaced as an Up failure); Reload reconciles WITHOUT recreating the engine (dev-pointer identity asserted); edge+concentrator parity tested; go test -race + just lint (all tags) green + goleak-clean. FABLE'S DEFECT (fixed): applyMonitorLocked (device.go ~:602) called monitor.NewServer (which net.Listen's the new socket) BEFORE stopMonitorLocked released the old, so a token-only rebind at an UNCHANGED FIXED listen address failed EADDRINUSE ('listen tcp 127.0.0.1:PORT: bind: address already in use'), leaving the endpoint on the OLD token permanently AND aborting the reload before the path diff (dropping path changes on a combined SIGHUP). The shipped TestReloadReconcilesMonitorWithoutTearingTunnel MASKED it by using ':0' (fresh OS port each rebind) — operators write concrete ports. FIX APPLIED (round 2, follow-up commit on main after the premature merge): when the listen ADDRESS is unchanged, stop the old server BEFORE constructing the new; keep bind-new-before-stop-old only for address CHANGES (different port, preserves 'never drop a working endpoint'). Added TestReloadTokenRotationAtFixedPort (grabs a free port, up() at that fixed addr, Reload same-listen+new-token) which fails EADDRINUSE on the old order and passes on the fix; corrected the applyMonitorLocked doc comment (was 'stop old, start new' — the opposite of the old order). PROCESS NOTE: I merged T169 (085d524) prematurely on opus-approve after WRONGLY diagnosing fable as stalled (it was finalizing its verdict); fable then returned the disapprove. Lesson: wait for both panel verdicts before merging; do not treat a slow reviewer as an abstention until confirmed. Fix committed; re-review pending."
-- ledgerRefs: ["tasks:T169","goals:G12"]
-
-### R213 — go-ahead
-
-- createdAt: 2026-07-15T01:21:22.595Z
-- updatedAt: 2026-07-15T01:21:22.595Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T169 round-2 review (fable, claude:fable-5) — VERDICT = go-ahead. Re-review of the same-address monitor rebind-order FIX (commit defc990, diff 085d524..defc990) that resolves fable's round-1 disapprove (R212). DEFECT (round 1): applyMonitorLocked bound the new listener (monitor.NewServer -> net.Listen) BEFORE stopMonitorLocked released the old, so a token-only rotation at an UNCHANGED FIXED port failed EADDRINUSE (the ':0' reload test masked it). FIX: sameAddr := listen == t.monitorListen; when sameAddr, stop the old server BEFORE NewServer; on an address CHANGE keep bind-new-first then stopMonitorLocked() only after a successful bind (never-drop-a-working-endpoint preserved for address changes). DIFFERENTIALLY VERIFIED: fable reverted applyMonitorLocked to the old bind-first order in a scratch worktree at defc990 and TestReloadTokenRotationAtFixedPort failed with the exact round-1 symptom ('bind: address already in use' on 127.0.0.1:<fixed>); on the fix it passes — the guard is genuine, not a fixed-port test that passes either way. Same-address failure path coherent (stopMonitorLocked Closes + clears all three bookkeeping fields before NewServer; Reload returns before advancing t.cfg, so a retry does a fresh start). Never-drop preserved for address changes (TestReloadReconcilesMonitorWithoutTearingTunnel green). No leak reintroduced (goleak on the new test; -race green). Token rotation takes effect (server built with rotated token; per-token enforcement locked by TestAuthTokenFlow). GATES: go test -race ./internal/device/... ./internal/monitor/... ok; just lint 0 issues across default/e2e/realhosts tags. 0 criticisms / 0 questions. PROCESS NOTE (from R212): round 1 I merged T169 (085d524) prematurely on the single opus approve after wrongly diagnosing fable as stalled while it was finalizing its disapprove — lesson: await BOTH panel verdicts before merging; a slow reviewer finalizing is not an abstention. Fixed forward at defc990. T169 now DONE."
-- ledgerRefs: ["tasks:T169","goals:G12"]
-
-### R214 — go-ahead
-
-- createdAt: 2026-07-15T01:31:26.776Z
-- updatedAt: 2026-07-15T01:31:26.776Z
-- author: "opus-4.8[1m]"
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T170 review (opus, single reviewer — proportionate for an additive test-only change) — VERDICT = go-ahead. Commit 79db89d on main: one new file internal/device/monitor_e2e_test.go (default-tag). Adversarially verified as a GENUINE liveness guard, not vacuous: (1) drives the PRODUCTION adapter newMetricsSource(prov,sess,clock) behind a real monitor.NewServer over an ACTUAL coder/websocket client (distinct from server_test.go's hand-built fake Source); the fakes are only the input read-seams (trafficProvider/Clock/sessionSnapshotter) — the dual-tests pattern. (2) readUntil predicates are NON-vacuous: the single-peer boot frame (Up=true, TxBytes=1000, FEC DataPackets=0, Session.Established=false) cannot satisfy the mutation predicate (Up=false && TxBytes==1_000_000 && FEC==120 && Established), so a frozen/placeholder feed times out; multi-peer predicate (edge2 FEC==999 && down) likewise unreachable from boot (700/up). (3) Both shapes asserted: single-peer MultiPeer=false + PeerNames=[\"\"] + flat; multi-peer MultiPeer=true + 2 distinct per-peer sections + untouched-peer-not-clobbered. (4) Race-safe: fakeProvider mutex+copy, fakeClock mutex, new syncSession mutex, metricsSource.mu; go test -race clean (6.18s). (5) goleak LIFO ordering correct (VerifyNone deferred before cleanup) — leak-free. (6) approxEq(1e-9) for non-representable RTT/loss, exact == only on representable 15/uint64. (7) Throughput: byte counters (the rate driver) grown but the derived rate deliberately not asserted over the async 1Hz cadence — rate derivation deterministically covered by the existing TestMetricsSourceDerivesThroughput; honest, defensible. golangci-lint 0 issues; no scope creep. 0 criticisms / 0 questions."
-- ledgerRefs: ["tasks:T170","goals:G12"]
-
-### R215 — go-ahead
-
-- createdAt: 2026-07-15T01:32:32.123Z
-- updatedAt: 2026-07-15T01:32:32.123Z
-- author: "opus-4.8[1m]"
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- summary: "T171 review (opus, single reviewer — proportionate docs-only task, with a security-sensitive residual-risk paragraph verified for accuracy) — VERDICT = go-ahead. Merged onto main as f94eb60 (cherry-pick of implement/T171 e142255; 4 files, docs/config only — README.md, docs/design.md, docs/install.md, wanbond.example.toml; NO Go/TS source). All 7 acceptance items verified accurate AGAINST THE CODE (reviewer read internal/monitor/server.go, internal/config/config.go, Justfile — not the prose at face value): (1) [monitor] TOML block documented in README/design/install + commented block in wanbond.example.toml mirroring [metrics] style; (2) security invariant — loopback-default, non-loopback fail-fast REFUSED unless token (ErrMonitorNonLoopbackWithoutAuth) — added to design.md Security model beside the /metrics loopback rule, correctly contrasting the two (fail-fast refusal, not a soft default); (3) auth model — Host/Origin validation on every route incl /ws, ?token= -> wanbond_monitor_token SameSite=Strict HttpOnly cookie -> 302 strip, constant-time compare — matches server.go; (4) how-to-view (ssh -L loopback vs LAN+token); (5) read-only v1 scope; (6) just web-build step (build/release depend on it; //go:embed all:dist) matches Justfile; (7) MANDATORY cleartext-token residual-risk paragraph present + technically correct — plain HTTP no TLS in v1, token in cleartext (?token= then cookie), passive on-path observer can capture -> read-only stats, recommends loopback + ssh -L; does NOT overclaim (matches server.go Secure:false; never implies Secure/encrypted/hashed). Adversarial: no TLS/hashed-token/arbitrary-IP-Origin claims; all internal doc anchors resolve; no broken links; just fmt-check green. 0 criticisms / 0 questions. The stale-worktree-base pattern was correctly applied by the worker (reset --hard 2f4b8a8 before branching)."
-- ledgerRefs: ["tasks:T171","goals:G12"]

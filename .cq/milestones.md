@@ -34,6 +34,21 @@ archives:
     summary: "G2/W5 pilot runbook + non-blocking exit criterion + full doc-sync COMPLETE (CORE SCOPE 3, Q19). T59 rollout runbook (docs/runbook.md — key/PSK gen, both-ends config, standby-concentrator via ordered endpoints + shared WG key, D7/D8 firewall persistence, /metrics health checks), T65 `just p0-baseline` automating the P0 real-link baseline (HARDWARE-VALIDATED: PASS 286s, report emitted), T66 recorded the non-blocking pilot exit criterion (runbook §7: capped-fixture W2 + report-only real-link W4 sufficient to enter a supervised pilot; soak runs DURING the pilot) + full doc-sync removing stale not-yet-built phrasing across README/design/install/manual-checklist/runbook. 3 tasks done, 3 reviews go-ahead. All metric/config claims verified against source; no overclaim (aggregation documented as report-only, single-uplink topology)."
     title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
     status: done
+  - id: M61
+    path: ./archive/milestones/M61.md
+    summary: "G12 W1 — Monitor backend COMPLETE. New internal/monitor package: dedicated loopback-default listener (non-loopback fail-fast requires token; act-then-verify verifyLoopbackBind), Host/Origin validation + static-token auth (?token=→wanbond_monitor_token SameSite=Strict HttpOnly cookie→302), 1Hz WebSocket push of MonitorSnapshot built from a DEDICATED metrics.Source; /metrics untouched (Q46). 5 tasks + 8 reviews, all terminal. Review panel caught+fixed real defects: listener leak on Close-without-Start (D84 filed for the identical metrics.Server bug), Origin CSRF bypass (foreign-IP Origin allowed), config/bind loopback invariant."
+    title: "G12 W1 — Monitor backend: [monitor] config, dedicated listener, auth, WS snapshot feed"
+    status: done
+  - id: M62
+    path: ./archive/milestones/M62.md
+    summary: "G12 W2 — Frontend COMPLETE. Vite+TypeScript (Q49) read-only dashboard go:embed-served by the W1 monitor: ResilientWsClient (connecting/live/reconnecting/offline, exp backoff+jitter, clean-vs-abnormal close), per-path/FEC/reseq/session cards with per-peer vs flat grouping, client-side-only ~5min rolling SVG sparklines (Q48/Q50), TS MonitorSnapshot mirror. web-build wired into the Justfile before go build/lint/release; //go:embed all:dist with committed dist/.gitkeep. 4 tasks + 4 reviews, all terminal."
+    title: "G12 W2 — Frontend: Vite+TypeScript resilient dashboard, go:embed + build wiring"
+    status: done
+  - id: M63
+    path: ./archive/milestones/M63.md
+    summary: "G12 W3 — Daemon wiring + e2e + docs + gate COMPLETE. Monitor wired into device.Up with a DEDICATED 2nd metrics.Source (≠ /metrics scraper's) + applyMonitorLocked idempotent SIGHUP-reload reconciler (edge+concentrator parity); rebind-order fix (T169 r2, defc990) stop-old-before-start-new on same-address token rotation (fable differentially reproduced the EADDRINUSE + confirmed the guard). Live-WS e2e (T170) drives the real adapter reflecting single+multi-peer state. Docs sync (T171) incl. the Q58(a) cleartext-token residual-risk paragraph. Full DoD gate GREEN (T172): just fmt-check + lint (0 issues all tags) + test + build (real Vite bundle embedded). 4 tasks + 5 reviews, all terminal. G12 DONE."
+    title: G12 W3 — Daemon wiring (edge+concentrator parity), e2e, docs & gate
+    status: done
 ---
 
 # milestones
@@ -423,26 +438,3 @@ archives:
 - updatedAt: 2026-07-14T13:15:03.407Z
 - title: "wanbond D65: docs sync + green definition-of-done gate"
 - dependsOn: ["M59"]
-
-### M61 — open
-
-- createdAt: 2026-07-14T18:44:56.901Z
-- updatedAt: 2026-07-14T18:44:56.901Z
-- title: "G12 W1 — Monitor backend: [monitor] config, dedicated listener, auth, WS snapshot feed"
-- description: "Backend foundation for the live-monitoring UI (goal G12). New internal/monitor package: a SEPARATE loopback-default listener (opt-in non-loopback requires a configured token, fail-fast) exposing a WebSocket that pushes JSON snapshots built from a DEDICATED metrics.Source at 1s cadence, behind Host/Origin validation + static-token auth. /metrics stays untouched (Q46). No UI yet — serves the JSON contract the frontend (W2) consumes."
-
-### M62 — open
-
-- createdAt: 2026-07-14T18:45:04.749Z
-- updatedAt: 2026-07-14T18:45:04.749Z
-- title: "G12 W2 — Frontend: Vite+TypeScript resilient dashboard, go:embed + build wiring"
-- description: "The embedded web UI for goal G12. Vite+TypeScript app (Q49) built to a static bundle that Go go:embed-serves from the W1 monitor server. Resilient WebSocket client per the /resilient-ws-ui skill (auto-reconnect + connection-health surfacing), a read-only dashboard rendering per-path link-quality/loss/RTT/jitter/throughput/up + FEC + resequencer + session, per-peer sections on the concentrator, and client-side-only ~5min rolling sparklines (Q48/Q50). Wires the Vite build into the Justfile so it precedes go build/lint/release."
-- dependsOn: ["M61"]
-
-### M63 — open
-
-- createdAt: 2026-07-14T18:45:15.764Z
-- updatedAt: 2026-07-14T18:45:15.764Z
-- title: G12 W3 — Daemon wiring (edge+concentrator parity), e2e, docs & gate
-- description: "Integration for goal G12. Wire the monitor server + its DEDICATED metrics.Source into device.Up with a SIGHUP-reload reconciler mirroring applyMetricsLocked, so both RoleEdge and RoleConcentrator start it (parity). End-to-end test driving a real Source over the WebSocket; docs sync (README/design.md/install.md) for the [monitor] block, the loopback-default + opt-in-non-loopback-requires-token security invariant, the token bootstrap/cookie flow, and the new build step; and a green just lint / test / build gate including the new Go packages and the embed."
-- dependsOn: ["M61","M62"]

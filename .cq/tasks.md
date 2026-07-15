@@ -34,6 +34,21 @@ archives:
     summary: "G2/W5 pilot runbook + non-blocking exit criterion + full doc-sync COMPLETE (CORE SCOPE 3, Q19). T59 rollout runbook (docs/runbook.md — key/PSK gen, both-ends config, standby-concentrator via ordered endpoints + shared WG key, D7/D8 firewall persistence, /metrics health checks), T65 `just p0-baseline` automating the P0 real-link baseline (HARDWARE-VALIDATED: PASS 286s, report emitted), T66 recorded the non-blocking pilot exit criterion (runbook §7: capped-fixture W2 + report-only real-link W4 sufficient to enter a supervised pilot; soak runs DURING the pilot) + full doc-sync removing stale not-yet-built phrasing across README/design/install/manual-checklist/runbook. 3 tasks done, 3 reviews go-ahead. All metric/config claims verified against source; no overclaim (aggregation documented as report-only, single-uplink topology)."
     title: G2/W5 — Pilot runbook, non-blocking exit criterion + full doc sync (CORE SCOPE 3 + Q19)
     status: done
+  - id: M61
+    path: ./archive/tasks/M61.md
+    summary: "G12 W1 — Monitor backend COMPLETE. New internal/monitor package: dedicated loopback-default listener (non-loopback fail-fast requires token; act-then-verify verifyLoopbackBind), Host/Origin validation + static-token auth (?token=→wanbond_monitor_token SameSite=Strict HttpOnly cookie→302), 1Hz WebSocket push of MonitorSnapshot built from a DEDICATED metrics.Source; /metrics untouched (Q46). 5 tasks + 8 reviews, all terminal. Review panel caught+fixed real defects: listener leak on Close-without-Start (D84 filed for the identical metrics.Server bug), Origin CSRF bypass (foreign-IP Origin allowed), config/bind loopback invariant."
+    title: "G12 W1 — Monitor backend: [monitor] config, dedicated listener, auth, WS snapshot feed"
+    status: done
+  - id: M62
+    path: ./archive/tasks/M62.md
+    summary: "G12 W2 — Frontend COMPLETE. Vite+TypeScript (Q49) read-only dashboard go:embed-served by the W1 monitor: ResilientWsClient (connecting/live/reconnecting/offline, exp backoff+jitter, clean-vs-abnormal close), per-path/FEC/reseq/session cards with per-peer vs flat grouping, client-side-only ~5min rolling SVG sparklines (Q48/Q50), TS MonitorSnapshot mirror. web-build wired into the Justfile before go build/lint/release; //go:embed all:dist with committed dist/.gitkeep. 4 tasks + 4 reviews, all terminal."
+    title: "G12 W2 — Frontend: Vite+TypeScript resilient dashboard, go:embed + build wiring"
+    status: done
+  - id: M63
+    path: ./archive/tasks/M63.md
+    summary: "G12 W3 — Daemon wiring + e2e + docs + gate COMPLETE. Monitor wired into device.Up with a DEDICATED 2nd metrics.Source (≠ /metrics scraper's) + applyMonitorLocked idempotent SIGHUP-reload reconciler (edge+concentrator parity); rebind-order fix (T169 r2, defc990) stop-old-before-start-new on same-address token rotation (fable differentially reproduced the EADDRINUSE + confirmed the guard). Live-WS e2e (T170) drives the real adapter reflecting single+multi-peer state. Docs sync (T171) incl. the Q58(a) cleartext-token residual-risk paragraph. Full DoD gate GREEN (T172): just fmt-check + lint (0 issues all tags) + test + build (real Vite bundle embedded). 4 tasks + 5 reviews, all terminal. G12 DONE."
+    title: G12 W3 — Daemon wiring (edge+concentrator parity), e2e, docs & gate
+    status: done
 ---
 
 # tasks
@@ -2084,176 +2099,3 @@ archives:
 - ledgerRefs: ["goals:G14","defects:D65"]
 - dependsOn: ["T158"]
 - resultCommit: 479a231
-
-## M61
-
-### T160 — done
-
-- createdAt: 2026-07-14T18:46:00.265Z
-- updatedAt: 2026-07-14T23:11:26.792Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Add [monitor] config block with loopback-default + opt-in-non-loopback-requires-token validation"
-- description: "In internal/config: add a Monitor struct (toml:\"monitor\") to Config (next to Metrics at config.go:45) with fields Listen string (toml:\"listen\") and Token string (toml:\"token\"). Empty Listen == monitor disabled (mirror Metrics). Add validation in the config.validate() path (config.go): (1) if Listen is set and is NON-loopback, Token MUST be non-empty else fail-fast with a named error (e.g. ErrMonitorNonLoopbackWithoutAuth) — this is the Q45 opt-in-non-loopback-requires-auth invariant; (2) loopback Listen with empty Token is permitted (Token optional on loopback). Reuse the loopback-classification logic pattern from internal/metrics/server.go requireLoopback (do not import server internals; extract or duplicate a small host-classification helper — a shared internal/netutil helper is acceptable if cleaner). go-toml/v2 DisallowUnknownFields is already on, so the struct must be registered on Config. Keep the 0600-load path (load.go) unchanged — the token rides in the already-0600 file."
-- acceptance: "go test ./internal/config/... passes with new table tests covering: empty Listen => disabled/no error; loopback Listen + empty Token => ok; loopback Listen + Token => ok; non-loopback Listen + empty Token => ErrMonitorNonLoopbackWithoutAuth; non-loopback Listen + Token => ok; unknown [monitor] key => decode error (DisallowUnknownFields)."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G12"]
-
-### T161 — done
-
-- createdAt: 2026-07-14T18:46:06.629Z
-- updatedAt: 2026-07-14T22:59:00.439Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: Define the JSON monitor-snapshot DTO + BuildSnapshot(metrics.Source) encoder
-- description: "Create internal/monitor package. Define an exported MonitorSnapshot struct (with json tags) that mirrors the metrics.Source read model: per-(peer,path) entries {name, peer, txBytes, rxBytes, throughputBps, rttSeconds, jitterSeconds, loss, up}, per-peer FEC counters, per-peer resequencer counters, per-peer aggregation-gate snapshot, the connection-scoped session {established, lastHandshakeSeconds}, and peerNames plus a multiPeer bool (derived from len(PeerNames())>1, matching the metrics peer-label rule). Add BuildSnapshot(src metrics.Source) MonitorSnapshot that calls Paths()/FEC()/Reseq()/Aggregation()/Session()/PeerNames() ONCE and marshals telemetry.Estimate (RTT/Jitter as float seconds, Loss float) and durations to seconds — this is the on-the-wire contract W2's frontend consumes. Depends only on the metrics.Source interface (no device import)."
-- acceptance: "go test ./internal/monitor/... passes: a fake metrics.Source (single-peer and multi-peer) feeds BuildSnapshot; the marshalled JSON contains the expected fields, durations rendered as seconds, and multiPeer/peer fields correct for both cases."
-- suggestedModel: standard
-- ledgerRefs: ["goals:G12"]
-
-### T162 — done
-
-- createdAt: 2026-07-14T18:46:21.811Z
-- updatedAt: 2026-07-14T23:29:52.264Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Monitor HTTP server skeleton: dedicated listener + /ws upgrade, Start/Close lifecycle"
-- description: "In internal/monitor/server.go add a Server type analogous to internal/metrics.Server but for the [monitor] surface. NewServer(addr, token string, src metrics.Source, logger) validates the bind: loopback always allowed; NON-loopback allowed ONLY when token != \"\" (mirror config validation, defense-in-depth) and otherwise return a named error WITHOUT binding. Keep metrics' act-then-verify discipline for the loopback case (verify the kernel-bound Addr), but permit a verified non-loopback bind when a token is set. Register routes on a private mux: GET / (placeholder handler for now — real assets come in W2 T-embed) and GET /ws (accept a coder/websocket upgrade and, for the skeleton, send exactly one BuildSnapshot(src) JSON frame then close). Add github.com/coder/websocket to go.mod (go get). Provide Addr(), Start() (background Serve goroutine, ReadHeaderTimeout set) and Close(ctx) exactly like metrics.Server. Do NOT wire into the daemon yet (that is T-daemon in W3)."
-- acceptance: "go test ./internal/monitor/... : NewServer binds on 127.0.0.1:0 and Start() serves; a coder/websocket client dials ws://<addr>/ws and receives one well-formed MonitorSnapshot JSON frame; NewServer with a non-loopback addr and empty token returns the bind error without binding; Close(ctx) shuts down cleanly. go build ./... green with the new dependency."
-- suggestedModel: frontier
-- dependsOn: ["T160","T161"]
-- ledgerRefs: ["goals:G12"]
-
-### T164 — done
-
-- createdAt: 2026-07-14T18:46:46.069Z
-- updatedAt: 2026-07-15T00:03:58.228Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Monitor auth: unconditional Host/Origin validation + static-token bootstrap cookie"
-- description: "Add an auth layer to the monitor Server covering BOTH adversaries from Q47. (1) UNCONDITIONAL Host/Origin validation on every HTTP route AND on the /ws upgrade: reject (403) requests whose Origin is present and not same-origin, and whose Host is not in the allowed set (the configured Listen host + loopback) — this defeats the DNS-rebinding/CSRF browser vector and needs no secret. coder/websocket's Accept must NOT use InsecureSkipVerify; set OriginPatterns/host check explicitly. (2) When a token is configured: require it on every route and the /ws upgrade — accept it via Authorization: Bearer <token> OR a session cookie; a first navigation with ?token=<token> validates and sets the token as a SameSite=Strict, HttpOnly cookie (not Secure, since loopback is plain http) then redirects to strip the query; missing/invalid token => 401. When no token is configured (loopback-only default), skip the token check but KEEP Host/Origin validation. Use constant-time token comparison."
-- acceptance: "go test ./internal/monitor/... table tests: request/WS-upgrade with foreign Origin => 403; with no Origin (curl) allowed; token-configured: no credential => 401, Authorization: Bearer <token> => 200, GET /?token=<token> => Set-Cookie SameSite=Strict HttpOnly + redirect, subsequent cookie-only request => 200, wrong token => 401; token-unset: loopback request with valid Host => 200. Token comparison is constant-time (subtle.ConstantTimeCompare)."
-- suggestedModel: frontier
-- dependsOn: ["T162"]
-- ledgerRefs: ["goals:G12"]
-
-### T165 — done
-
-- createdAt: 2026-07-14T18:46:55.462Z
-- updatedAt: 2026-07-15T00:19:47.589Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: WS push loop at 1s cadence over a dedicated metrics.Source, clean teardown
-- description: "Replace the skeleton's single-frame /ws handler with a push loop: on each accepted connection, marshal BuildSnapshot(src) and write it as a JSON text frame every monitorPushInterval (named const = 1s per Q50), until the client disconnects or the server context is cancelled. Bound each write with a write timeout (context.WithTimeout) so a stuck client cannot wedge the goroutine; on write/read error close the connection with a proper WS status. CRITICAL (grounding): the Source passed here must be the monitor's OWN metrics.Source instance, NOT the one the Prometheus scraper uses — internal/device/metrics.go metricsSource.Paths() derives throughput from cross-call byte deltas under shared last-sample state, so two independent readers on one instance corrupt each other's rates. The Server just consumes whatever metrics.Source it was constructed with (the dedicated-instance wiring is enforced in T-daemon/W3); document the invariant in the handler."
-- acceptance: "go test ./internal/monitor/... : a WS client receives >=2 successive snapshot frames within ~2.5s (verifying ~1Hz cadence via an injected fake clock or a shortened interval); cancelling the server context closes the connection promptly; a slow/blocked client reader triggers the write-timeout path without leaking the goroutine (goleak-clean)."
-- suggestedModel: standard
-- dependsOn: ["T162"]
-- ledgerRefs: ["goals:G12"]
-
-## M62
-
-### T163 — done
-
-- createdAt: 2026-07-14T18:46:29.669Z
-- updatedAt: 2026-07-15T00:28:47.675Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Scaffold the Vite+TypeScript frontend app building to a go:embed-able static bundle"
-- description: "Create a frontend workspace (e.g. web/) with a Vite + TypeScript project: package.json (pinned recent-stable Vite + TypeScript), tsconfig.json, vite.config.ts configured so `npm run build` emits a self-contained static bundle (relative asset paths, single output dir) into the directory the Go monitor package will go:embed (e.g. internal/monitor/dist or web/dist copied in — pick the layout the embed task T-embed will consume and document it). Add web/.gitignore for node_modules and build output. Include a minimal placeholder index that opens a WebSocket to /ws and logs frames, to prove the build+serve loop; the real client/dashboard come in the next tasks. Consume the MonitorSnapshot JSON shape from T161 as the TypeScript type. Decide and document whether built assets are committed or built in CI (coordinated with T-embed/Justfile)."
-- acceptance: "In web/: `npm ci && npm run build` completes and produces static assets (index.html + hashed JS/CSS) in the agreed embed directory; `npx tsc --noEmit` passes; a TypeScript MonitorSnapshot type matching T161's JSON exists."
-- suggestedModel: standard
-- dependsOn: ["T161"]
-- ledgerRefs: ["goals:G12"]
-
-### T166 — done
-
-- createdAt: 2026-07-14T18:47:04.293Z
-- updatedAt: 2026-07-15T00:43:37.353Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: Resilient WebSocket client with auto-reconnect + connection-health surfacing
-- description: "Implement the frontend WS client per the /resilient-ws-ui skill (invoke that skill during implementation). A typed client that connects to /ws, parses MonitorSnapshot frames into the T163 TypeScript type, exposes a connection-health state machine (connecting / live / reconnecting / offline) with exponential backoff + jitter and a bounded max delay, and surfaces that state via a visible health indicator plus a 'last update Ns ago' staleness readout. Handle clean server close vs abnormal drop, and resume pushing data on reconnect. Include the token/cookie flow: since auth (T-auth) uses a SameSite=Strict cookie set on first navigation, the browser sends it automatically on the ws:// upgrade — no token handling needed in JS; document that assumption."
-- acceptance: "Observable check with a stub WS server: on server drop the health indicator transitions to reconnecting/offline within one interval and the staleness readout climbs; on server restart it returns to live and data resumes; backoff delays are bounded (no tight reconnect loop). Covered by a small vitest/DOM test or a documented manual repro with captured before/after states."
-- suggestedModel: standard
-- dependsOn: ["T163"]
-- ledgerRefs: ["goals:G12"]
-
-### T167 — done
-
-- createdAt: 2026-07-14T18:47:12.911Z
-- updatedAt: 2026-07-15T00:46:09.737Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "go:embed the built bundle into the monitor server + wire the Vite build into the Justfile"
-- description: "Serve the real UI from the Go monitor server: add a //go:embed of the Vite build output (the dir agreed in T163) in internal/monitor, and make the GET / (and asset) handler serve from that embedded fs.FS with correct Content-Type and cache headers, replacing the T162 placeholder. Then integrate the frontend build into the Justfile (grounding: no generate/asset step exists today; lint/build use EXPLICIT package lists ./cmd/... ./internal/... ./test/... and //go:embed requires the assets present at go build AND golangci typecheck time): add a `web-build` recipe (npm ci && npm run build in web/) and make `build`, `lint`, and `release` depend on it, OR commit the built assets and document the regeneration recipe — pick one and make it consistent (align with T163's commit-vs-CI decision). If the embed lives in a package not already covered by the lint package list, add it. Ensure a non-empty embed target exists so golangci typecheck never sees a missing embed dir."
-- acceptance: "`just build` (or the documented sequence) produces the frontend bundle then `go build ./...` with assets embedded; GET / on the running monitor returns the index HTML and assets load; `just lint` is green (no empty-//go:embed typecheck failure); the embed package is in the lint list."
-- suggestedModel: frontier
-- dependsOn: ["T162","T163"]
-- ledgerRefs: ["goals:G12"]
-
-### T168 — done
-
-- createdAt: 2026-07-14T18:47:28.958Z
-- updatedAt: 2026-07-15T00:54:49.434Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Read-only dashboard: per-path/FEC/reseq/session render, per-peer sections, client-side sparklines"
-- description: "Build the read-only (Q48) dashboard view fed by the T166 client. Render, from each MonitorSnapshot: per-path cards showing link quality — loss, RTT, jitter, throughput, tx/rx bytes, and up/down state; the connection-scoped FEC counters (data/repair/recovered/unrecoverable, byte overhead, residual loss); resequencer counters; and WG-session (established + last-handshake age). When the snapshot is multi-peer (concentrator, PeerNames()>1), group paths/FEC/reseq/aggregation into per-peer sections; when single-peer (edge), render one flat section (matching the metrics peer-label omission). Add client-side-only rolling sparklines over the last ~5 minutes (Q50) for the key time series (per-path loss/RTT/throughput, residual loss) held in browser memory only — lost on reload, no server history. Keep styling minimal and dependency-light."
-- acceptance: "With a stub WS server emitting a known multi-peer snapshot stream: the page renders per-peer sections with all named stat groups; feeding a single-peer stream renders one flat section (no empty peer label); sparklines accumulate and scroll over successive frames and cap at ~5min of history. Verified by a vitest/DOM test or a documented manual repro with screenshots/DOM assertions."
-- suggestedModel: standard
-- dependsOn: ["T166"]
-- ledgerRefs: ["goals:G12"]
-
-## M63
-
-### T169 — done
-
-- createdAt: 2026-07-14T18:47:37.031Z
-- updatedAt: 2026-07-15T01:21:23.631Z
-- author: fable-5
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: Wire the monitor into device.Up with a dedicated Source + SIGHUP-reload reconciler (edge+concentrator parity)
-- description: "Wire the monitor into the daemon lifecycle mirroring the metrics pattern (grounding: internal/device/device.go). (1) In device.Up, construct a DEDICATED metrics.Source for the monitor via a second newMetricsSource(...) call — NOT t.metricsSrc — so the monitor's throughput derivation does not share last-sample state with the Prometheus scraper (see grounding/T165). (2) Add an applyMonitorLocked(listen, token) idempotent reconciler analogous to applyMetricsLocked (device.go:507): no-op if unchanged; empty listen stops; else monitor.NewServer(...).Start(); stored on the Tunnel; a stopMonitorLocked mirroring stopMetricsLocked. (3) Call it from device.Up under reloadMu at startup (like device.go:459), and apply monitor listen/token changes from Tunnel.Reload (device.go:574 region) so SIGHUP reconciles the monitor. Because role is config-only and both roles flow through device.Up, this gives edge+concentrator parity for free — assert that in a test. Config plumbed from cfg.Monitor (T160)."
-- acceptance: "go test ./internal/device/... : with [monitor] configured, device.Up starts a monitor server reachable over WS (using the dedicated Source, not the metrics one); SIGHUP/Reload changing monitor.listen or monitor.token reconciles (start/stop/rebind) without tearing the tunnel; a RoleEdge config and a RoleConcentrator config BOTH start the monitor (parity test). goleak-clean shutdown."
-- suggestedModel: frontier
-- dependsOn: ["T162","T165"]
-- ledgerRefs: ["goals:G12"]
-
-### T170 — done
-
-- createdAt: 2026-07-14T18:47:52.990Z
-- updatedAt: 2026-07-15T01:31:27.823Z
-- author: "opus-4.8[1m]"
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "End-to-end test: live WS monitor against a real Source reflects path/FEC/session state (single + multi-peer)"
-- description: "Add an integration/e2e test that stands up the monitor server against a REAL metrics.Source (the device metricsSource fed by a test bind/telemetry harness, reusing the existing device/metrics test fixtures) and drives it over an actual coder/websocket client. Assert the streamed MonitorSnapshot reflects live state: path up/down and RTT/loss/throughput change as the underlying fixtures change; FEC and session fields populate; a multi-peer (concentrator) fixture yields per-peer sections and a single-peer (edge) fixture yields the flat shape. Place under the appropriate build tag/dir consistent with the repo's existing test taxonomy (grounding: Justfile has default + e2e + realhosts tag suites; loopback bind needs no privilege so this can be a default-tag test). This is the definition-of-done verification for the backend+contract."
-- acceptance: The new test passes under `go test` (or the tagged suite it belongs to) and fails if the snapshot stops reflecting the Source (guard against a frozen/placeholder feed); it exercises both single-peer and multi-peer Sources over a real WebSocket connection; goleak-clean.
-- suggestedModel: standard
-- dependsOn: ["T169","T168"]
-- ledgerRefs: ["goals:G12"]
-
-### T171 — done
-
-- createdAt: 2026-07-14T18:48:02.948Z
-- updatedAt: 2026-07-15T01:32:33.146Z
-- author: "opus-4.8[1m]"
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Docs sync: [monitor] config, loopback/token security invariant, token-cookie flow, plaintext-LAN residual risk, build step"
-- description: "Per the AGENTS.md doc-sync rule (docs move in the SAME change as code), update README.md, docs/design.md, and docs/install.md for the monitoring UI. Cover: the new [monitor] TOML block (listen, token) and that empty listen disables it; the SECURITY INVARIANT — loopback-only by default, and a non-loopback bind is fail-fast REFUSED unless a token is configured (contrast with /metrics which is loopback-only, unchanged) — update the design.md security-invariants section (near the existing T17 metrics loopback invariant at docs/design.md:740) to add the monitor's rule; the auth model (unconditional Host/Origin validation + optional static token presented as ?token= once, then SameSite=Strict HttpOnly cookie); how to view it (loopback via ssh -L, or LAN via non-loopback bind + token); read-only scope (v1, no control actions); and the new frontend build step (web-build) in install/build instructions. Keep wanbond.example.toml in sync if it enumerates config blocks. RESIDUAL PASSIVE-CAPTURE RISK (Q58 answer (a) — accepted transport posture): the docs MUST explicitly state that a non-loopback [monitor] bind transmits the bearer token in CLEARTEXT over the LAN (no TLS in v1 — the token rides plain HTTP as ?token= then a SameSite=Strict cookie), that a passive on-path observer can therefore CAPTURE the token and gain read-only access to the live stats, and RECOMMEND keeping the monitor on loopback and using `ssh -L` port-forwarding on untrusted networks. Place this residual-risk note in the design.md security-invariants section alongside the monitor's loopback/token rule so the accepted risk is recorded, not implied."
-- acceptance: "README/design.md/install.md describe the [monitor] block, the loopback-default + opt-in-non-loopback-requires-token invariant, the token-cookie flow, the read-only scope, and the build step; design.md security-invariants section includes the monitor rule alongside the metrics one AND an explicit residual-risk paragraph stating that a non-loopback [monitor] bind sends the bearer token in cleartext over the LAN, that a passive on-path observer can capture it (yielding read-only stats access), and recommending loopback + `ssh -L` for untrusted networks; wanbond.example.toml (if it lists blocks) includes a commented [monitor] example; `just fmt-check` and any docs link checks pass."
-- suggestedModel: standard
-- dependsOn: ["T169","T167"]
-- ledgerRefs: ["goals:G12"]
-
-### T172 — planned
-
-- createdAt: 2026-07-14T18:48:10.791Z
-- updatedAt: 2026-07-14T18:48:10.791Z
-- author: "opus-4.8[1m]"
-- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
-- headline: "Green the full gate: just lint (default+e2e+realhosts) + fmt-check + test + build with the new packages and embed"
-- description: "Final definition-of-done gate (grounding: MEMORY 'Go gate is not just test' — the DoD includes golangci across default+e2e+realhosts tags, not only go test). Ensure: internal/monitor (and any new internal/netutil helper) and the embed package are included in the Justfile golangci package lists (./cmd/... ./internal/... ./test/... — add explicitly if a new top-level package sits outside them); the web-build step (T167) runs before lint/build so //go:embed and golangci typecheck see the assets; gofmt clean over the new Go files; go vet across default + e2e + realhosts tags clean; go test ./... green. Resolve any lint findings (bodyclose/gosec on the new HTTP/WS server, e.g. ReadHeaderTimeout, response-body closes) rather than suppressing them."
-- acceptance: "`just fmt-check && just lint && just test && just build` all exit 0 on a clean checkout (after the web-build prerequisite), with the monitor + embed + any netutil packages covered by lint across the default, e2e and realhosts tag sets."
-- suggestedModel: standard
-- dependsOn: ["T167","T169"]
-- ledgerRefs: ["goals:G12"]

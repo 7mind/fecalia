@@ -302,10 +302,10 @@ archives: []
 
 ## M48
 
-### G12 — planned
+### G12 — done
 
 - createdAt: 2026-07-14T11:41:52.076Z
-- updatedAt: 2026-07-14T22:42:39.270Z
+- updatedAt: 2026-07-15T01:35:04.391Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Live monitoring web UI on edge and concentrator (WebSocket status, local-API auth)

@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 24
+  item: 26
 archives: []
 ---
 
@@ -292,6 +292,27 @@ archives: []
 - ledgerRefs: ["goals:G12","questions:Q58"]
 - blockingQuestions: ["Q58"]
 - tags: ["cq-advance-run-stop","blocked-on-questions","idempotent-rerun"]
+
+### HO25 — drained
+
+- createdAt: 2026-07-15T01:41:03.131Z
+- updatedAt: 2026-07-15T01:41:03.131Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- flow: advance
+- summary: |
+    /cq:advance run stop = DRAINED. Gate at stop (mcp derive_predicates, authoritative): P-investigate=FALSE / P-plan=FALSE / P-implement=FALSE / open-Q-gate=FALSE — nothing actionable anywhere, no blocking questions.
+    
+    WHAT THIS RUN COMPLETED — goal G12 (Live monitoring web UI on edge + concentrator). After the earlier mistaken HO24 Q58-block was corrected (user confirmed Q58 answered (a) = accept plaintext-token-over-LAN + document residual risk; Q57 answered), this run drove G12's 13-task DAG T160-T172 to completion across M61 (monitor backend: internal/monitor loopback-default listener + Host/Origin+token auth + 1Hz WS MonitorSnapshot feed off a DEDICATED metrics.Source), M62 (Vite+TS resilient read-only dashboard, go:embed + web-build), and M63 (device.Up wiring w/ SIGHUP reconciler + edge/concentrator parity, live-WS e2e, docs, gate). Review panel caught + fixed REAL defects: metrics.Server-style listener leak on Close-without-Start (D84 filed), Origin CSRF bypass (foreign-IP Origin), and the T169 same-address monitor rebind-order EADDRINUSE on token rotation (fable DIFFERENTIALLY reproduced; fixed at defc990 stop-old-before-start-new). FINAL WINDOW: T169 r2 fix re-reviewed+done (R213); T170 live-WS e2e over the real adapter reflecting single+multi-peer state (79db89d, R214); T171 docs sync incl. the mandatory Q58(a) cleartext-token residual-risk paragraph (f94eb60, R215); T172 full definition-of-done gate GREEN (R216: just fmt-check + just lint 0-issues across default/e2e/realhosts + just test + just build with the REAL embedded Vite bundle). G12 marked done; M61/M62/M63 marked done + archived (explicit implement-completion closure — the established project pattern, NOT the never-run auto-sweep). Main HEAD advances 085d524->defc990->2f4b8a8->79db89d->f94eb60->c652ea7 (+ this ledger commit).
+    
+    STANDING BACKLOG (correctly NON-actionable autonomously — needs USER /cq:plan; none makes a predicate TRUE): (1) Ready-to-seed root-caused defect cluster (D35, D61-D84 incl. this-goal's D83 loopback-classifier-dup + D84 metrics.Server listener-leak + D79 per-path-pacer positional-identity-across-churn) awaiting /cq:plan to house into hardening fix goals — root-caused is excluded from P-investigate by design. (2) TWELVE pre-existing goals (G1-G11, G13, G14) sit `planned` with all tasks done — the project's established convention leaves completed goals `planned` (e.g. G2 is complete with M14/M16/M17 archived yet still `planned`); planned->done is USER-OWNED per HO24, so this run did NOT mass-close them (out of scope; only its own G12 was closed). (3) questions:Q57 — satisfied stale resume-pointer (-> /cq:plan:advance G14; G14 fully implemented T149-T159) — needs closing, cosmetic. (4) defects:D65 root-caused; its fix goal G14 is fully implemented + gated (T157 green), with D79 (HIGH) filed as the tracked residual and on-hardware field validation deferred per Q56 — D65 final disposition left to the user.
+    
+    WORKTREES: 8 stale sibling worktrees from this run's round-workers were swept at run stop (merged-or-terminal safety key; main + cq-ledger never touched).
+    
+    RESUME: /cq:plan to seed the ready-to-seed root-caused defect backlog into fix goals, then /cq:advance to build them; optionally close the cosmetic Q57 + the planned-but-complete goal statuses.
+- ledgerRefs: ["goals:G12","goals:G14","defects:D65","defects:D79","defects:D83","defects:D84","questions:Q57"]
+- sessionLogs: [".cq/logs/20260714-114510-a2014552ac2ffb804.md"]
+- tags: ["cq-advance-run-stop","drained","G12-complete"]
 
 ## M50
 
