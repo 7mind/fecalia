@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 20
+  item: 22
 archives: []
 ---
 
@@ -255,3 +255,31 @@ archives: []
 - landsIn: ["M74","M75"]
 - sourceRefs: ["goals:G17","reviews:R223"]
 - ledgerRefs: ["goals:G17","defects:D30","defects:D62","defects:D63","defects:D66","defects:D67","defects:D71"]
+
+## M70
+
+### K20 — locked
+
+- createdAt: 2026-07-15T06:52:04.463Z
+- updatedAt: 2026-07-15T06:52:04.463Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G18 plan approved (round 2): metrics/server + reload observability DAG locked (M76, T184-T196)"
+- rationale: "Orchestrator go-ahead R235 after the R232 revise corrections landed. DAG: T184 (D84 metrics.Server.Close listener leak, mirror monitor.Server.Close) -> T193 (D83 requireLoopback -> netutil.IsLoopbackHost, generic ErrNonLoopbackBind) -> T188 (D70+D74 reloadWarnings link_bw/rtt + weighted-capacity gauge retain-on-Server + recompute-on-Reload + doc-sync), all serialized on internal/metrics/server.go; T190 (D72 WeightedScheduler.SetPaths aggregation-change record) -> T194 (D75 idle-gap log-field test) on weighted.go; T196 DoD gate. Reproduce-first where observable. EXECUTION NOTE: implement as one coherent worktree diff; worker-safe (internal/metrics + internal/device + internal/sched/weighted, NOT the stall-prone multipath.go/monitor); disjoint from G16/G17 (multipath.go/reseq) so parallel-safe. On merge, D70/D72/D74/D75/D83/D84 -> resolved."
+- landsIn: ["M76"]
+- sourceRefs: ["goals:G18","reviews:R235","reviews:R232"]
+- ledgerRefs: ["goals:G18","defects:D70","defects:D72","defects:D74","defects:D75","defects:D83","defects:D84"]
+
+## M68
+
+### K21 — locked
+
+- createdAt: 2026-07-15T06:52:19.529Z
+- updatedAt: 2026-07-15T06:52:19.529Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G16 plan approved (round 2): reseq re-anchor correctness DAG locked (M73, T179-T182)"
+- rationale: "Orchestrator go-ahead R236 after the R222 revise (T179 caller-inventory) correction. DAG: T179 (D34 source-identity gate on plain Rebaseline, carry `ap`; updates the 1 prod caller SetPeerRemote:2559 + 4 test callers) -> T181 (D64 drop-recovered-while-!started, shared ObserveRecovered/Observe seam), T180 (D68 comment reword, parallel), T182 DoD gate. Reproduce-first regression tests (fail on HEAD, pass after). EXECUTION NOTE: T179/T181 edit internal/reseq/reseq.go AND T179 touches internal/bind/multipath.go (SetPeerRemote Rebaseline caller) — so implement INLINE (multipath.go stall-prone in workers) and SERIALIZE after G17 (also multipath.go). On merge, D34/D64/D68 -> resolved."
+- landsIn: ["M73"]
+- sourceRefs: ["goals:G16","reviews:R236","reviews:R222"]
+- ledgerRefs: ["goals:G16","defects:D34","defects:D64","defects:D68"]

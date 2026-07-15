@@ -424,10 +424,10 @@ archives: []
 
 ## M68
 
-### G16 — planning
+### G16 — planned
 
 - createdAt: 2026-07-15T06:22:20.444Z
-- updatedAt: 2026-07-15T06:37:43.184Z
+- updatedAt: 2026-07-15T06:52:20.379Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Fix reseq re-anchor correctness residuals (D34, D64, D68)
@@ -478,10 +478,10 @@ archives: []
 
 ## M70
 
-### G18 — planning
+### G18 — planned
 
 - createdAt: 2026-07-15T06:22:51.505Z
-- updatedAt: 2026-07-15T06:28:59.914Z
+- updatedAt: 2026-07-15T06:52:05.949Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Fix metrics/server + reload observability residuals (D70, D72, D74, D75, D83, D84)

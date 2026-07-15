@@ -985,10 +985,10 @@ archives: []
 - ledgerRefs: ["tasks:T125","defects:D44"]
 - rootCause: "Test-synchronization defect: TestMultipathFECDeadlineEmitsPartialGroupParity (fec_test.go) read FECSnapshot().ParityFrames immediately after receiving both parity wires, racing the async fecTickLoop goroutine's post-WriteToUDPAddrPort counter increment (~2% flake under -race; NO memory race). RESOLVED by T125 round 2 (landed 3eab82e): the test now polls ParityFrames with a bounded 200ms retry then asserts strict equality — masks neither under- nor over-count. Verified via 50x/100x -race runs (0 failures)."
 
-### D70 — root-caused
+### D70 — resolved
 
 - createdAt: 2026-07-14T15:29:16.572Z
-- updatedAt: 2026-07-15T06:29:03.967Z
+- updatedAt: 2026-07-15T07:13:14.098Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Same-name path link_bandwidth/link_rtt changes are silently accepted on reload (D52 gap at path-sub-field level)
@@ -1012,10 +1012,10 @@ archives: []
 - ledgerRefs: ["tasks:T134","defects:D53"]
 - rootCause: "CONFIRMED (investigate stage) — documented+source-cited by the T134-r2 fable reviewer. internal/bind/reconcile.go: on promoteDeferredLocked failure the error is discarded (`_ = c.Close(); kept = append(kept, dp)`) with NO log, so an attach/wiring failure leaves the path permanently deferred with zero diagnostic signal. Pre-existing (the bind held no logger pre-T134); now fixable since T134 gave Multipath a component-scoped logger. FIX documented (log the promote error at WARN/ERROR, deduped per deferral window like warnedUnresolvable to avoid 1Hz spam). READY-TO-SEED into a bind-diagnostics hardening goal; awaiting /cq:plan."
 
-### D72 — root-caused
+### D72 — resolved
 
 - createdAt: 2026-07-14T16:26:20.289Z
-- updatedAt: 2026-07-15T06:29:07.479Z
+- updatedAt: 2026-07-15T07:13:15.607Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: WeightedScheduler.SetPaths silently collapses the aggregation gate without the canonical log record
@@ -1039,10 +1039,10 @@ archives: []
 - ledgerRefs: ["tasks:T141","tasks:T143","goals:G13"]
 - rootCause: "test/e2e/load.go (added by T141) was a NON-_test.go file carrying the e2e build tag but referencing proc/lockedBuffer/nsEnvMarker which are defined only in *_test.go files; in Go a non-test file cannot see _test.go symbols outside the test binary, so `go build -tags e2e ./test/e2e/...` failed with 3 undefined symbols (uncaught because the gate used `go test`/`go vet -tags e2e`/golangci, all of which include test files). RESOLVED inline by orchestrator (commit c5335a0): `git mv test/e2e/load.go test/e2e/load_test.go` — load helpers are test-support consumed only by e2e _test.go files, so moving load.go into the test binary makes the symbols resolve while DriveUDPLoad/MetricsSampler/ParseLogLines stay visible to the e2e tests. Verified: `go build -tags e2e ./test/e2e/...` now clean; e2e compiles; just lint 0 issues default+e2e+realhosts. This also unblocked T128 whose acceptance requires `go build -tags e2e` clean."
 
-### D74 — root-caused
+### D74 — resolved
 
 - createdAt: 2026-07-14T16:35:30.090Z
-- updatedAt: 2026-07-15T06:29:05.930Z
+- updatedAt: 2026-07-15T07:13:17.052Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Reload silently staleing the wanbond_weighted_capacity_sane gauge (membership add of an undeclared path leaves gauge=1)
@@ -1053,10 +1053,10 @@ archives: []
 - rootCause: "CONFIRMED (investigate stage) — documented+source-cited by the T144 fable reviewer. Two coupled reload gaps: (1) a SIGHUP ADDING a path without link_bandwidth under weighted policy is applied to membership but neither re-warns nor recomputes the static wanbond_weighted_capacity_sane gauge — it can read 1 while the running set is no longer capacity-verifiable; (2) [overlaps D70] reloadWarnings ignores per-path link_bandwidth/link_rtt changes. FIX documented (recompute the capacity-sanity verdict in runningConfig()/reloadTunnel + re-set gauge + WARN on live-vs-desired divergence; extend the same-name comparison to LinkBandwidth/LinkRTT — coordinate with D70). READY-TO-SEED into the reload-warning-completeness hardening goal (with D70); awaiting /cq:plan."
 - dependsOn: ["T188"]
 
-### D75 — root-caused
+### D75 — resolved
 
 - createdAt: 2026-07-14T16:41:27.769Z
-- updatedAt: 2026-07-15T06:29:08.568Z
+- updatedAt: 2026-07-15T07:13:18.590Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Idle-gap collapse 'scheduler aggregation change' record's structured fields have no test assertion
@@ -1147,10 +1147,10 @@ archives: []
 - rootCause: "CONFIRMED against source. test/e2e/multipeer_test.go DOES assert non-primary per-peer INBOUND rx>0: for each peer label (mpPeerALabel AND mpPeerBLabel) it sums rx across both uplinks via PeerPathValue(MetricRxBytes,...) into peerBytes and then fails on 'if peerBytes <= 0 { t.Fatalf(\"peer %q carried non-positive rx bytes ...\") }' (multipeer_test.go ~:206-213). The inline comment ':201 'counts are report-only ... the asserted invariant is per-peer presence'' is itself CONTRADICTED by that <=0 fatal below it. On a multi-peer concentrator the single readLoop per shared path attributes ALL received bytes to the PRIMARY peer (internal/bind/multipath.go, T23/T93 one-reader-per-shared-socket, rx keyed to primary), so the NON-primary peer's summed rx is structurally 0 → peerBytes<=0 → deterministic fatal on a real run. The parallel tx block (:277 txTotal<=0) is CORRECT because tx IS per-peer attributed. This is the SAME latent flaw the D77-fix worker already hit+fixed in multipeer_hardened_test.go's d47 (switched the non-primary per-peer assertion rx->tx). Cause: T97's per-peer inbound assertion assumes per-demuxed-peer rx accounting that the shipped datapath does not provide."
 - dependsOn: ["T187"]
 
-### D83 — root-caused
+### D83 — resolved
 
 - createdAt: 2026-07-14T23:02:08.821Z
-- updatedAt: 2026-07-15T06:29:02.492Z
+- updatedAt: 2026-07-15T07:13:20.078Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Loopback classification duplicated between metrics/server.go requireLoopback and internal/netutil.IsLoopbackHost (security predicate, drift risk)
@@ -1161,10 +1161,10 @@ archives: []
 - rootCause: "CONFIRMED by construction + reviewer verification (no DFS needed). CAUSE: T160 was explicitly directed to add the Q45 monitor loopback classifier WITHOUT importing internal/metrics server internals, so it created internal/netutil.IsLoopbackHost as a deliberate faithful DUPLICATE of internal/metrics/server.go requireLoopback's classification logic (SplitHostPort -> netip IP-literal IsLoopback -> hostname LookupIP requiring EVERY resolved address to be loopback). The T160 fable reviewer empirically verified the two are byte-faithful across 20 edge cases (0.0.0.0, empty host, [::], [::1], IPv4-mapped, malformed). So the duplication is real and confirmed; the DRIFT RISK is inherent to two independent copies of a security-critical predicate (a future change to one not mirrored to the other silently weakens one surface). This is NOT a runtime defect today (both copies correct) — it is a maintainability/consolidation hardening. Disposition: default-FIX, deferred to a separate hygiene task (out-of-scope for T160 per the plan's task boundary + the explicit do-not-touch-metrics-internals instruction). READY-TO-SEED."
 - dependsOn: ["T193"]
 
-### D84 — root-caused
+### D84 — resolved
 
 - createdAt: 2026-07-14T23:22:43.357Z
-- updatedAt: 2026-07-15T06:29:00.991Z
+- updatedAt: 2026-07-15T07:13:21.313Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: metrics.Server.Close leaks its listener when Start was never called (http.Server.Shutdown does not close an unregistered listener)

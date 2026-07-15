@@ -2303,10 +2303,10 @@ archives:
 
 ## M76
 
-### T184 — planned
+### T184 — done
 
 - createdAt: 2026-07-15T06:28:00.567Z
-- updatedAt: 2026-07-15T06:28:00.567Z
+- updatedAt: 2026-07-15T07:13:05.261Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Fix metrics.Server.Close listener leak (D84) + Close-without-Start rebind regression test
@@ -2315,10 +2315,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G18","defects:D84"]
 
-### T188 — planned
+### T188 — done
 
 - createdAt: 2026-07-15T06:28:12.050Z
-- updatedAt: 2026-07-15T06:38:54.005Z
+- updatedAt: 2026-07-15T07:13:06.400Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Warn on same-name link_bandwidth/link_rtt change + recompute weighted-capacity gauge on Reload (D70+D74)
@@ -2339,10 +2339,10 @@ archives:
 - ledgerRefs: ["goals:G18","defects:D70","defects:D74"]
 - dependsOn: ["T193"]
 
-### T190 — planned
+### T190 — done
 
 - createdAt: 2026-07-15T06:28:18.651Z
-- updatedAt: 2026-07-15T06:28:18.651Z
+- updatedAt: 2026-07-15T07:13:07.728Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Emit 'scheduler aggregation change' record on WeightedScheduler.SetPaths reset (D72)
@@ -2351,10 +2351,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["goals:G18","defects:D72"]
 
-### T193 — planned
+### T193 — done
 
 - createdAt: 2026-07-15T06:28:31.916Z
-- updatedAt: 2026-07-15T06:39:03.995Z
+- updatedAt: 2026-07-15T07:13:09.222Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Refactor metrics.requireLoopback to delegate to netutil.IsLoopbackHost (D83)
@@ -2369,10 +2369,10 @@ archives:
 - dependsOn: ["T184"]
 - ledgerRefs: ["goals:G18","defects:D83"]
 
-### T194 — planned
+### T194 — done
 
 - createdAt: 2026-07-15T06:28:38.324Z
-- updatedAt: 2026-07-15T06:28:38.324Z
+- updatedAt: 2026-07-15T07:13:10.684Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add idle-gap case to the weighted aggregation-change log-fields test (D75)
@@ -2382,10 +2382,10 @@ archives:
 - dependsOn: ["T190"]
 - ledgerRefs: ["goals:G18","defects:D75"]
 
-### T196 — planned
+### T196 — done
 
 - createdAt: 2026-07-15T06:28:52.423Z
-- updatedAt: 2026-07-15T06:28:52.423Z
+- updatedAt: 2026-07-15T07:13:12.788Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Definition-of-done gate for G18 (build + test + lint + race on the composed tree)

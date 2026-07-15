@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 235
+  item: 238
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2472,3 +2472,34 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "G15 IMPLEMENT review (orchestrator, salvage+complete-inline) — VERDICT = go-ahead. Merged to main as c2854e7 (T173-T178, D79 HIGH + D76 MEDIUM). PROVENANCE: the dispatched frontier worker completed the SCHED side (D76 AccountProbe + D79 PathAdmission-based identity seeding on *ActiveBackup/scheduler.go/weighted.go + both reproduce-first tests) and GATED it green, but STALLED at the internal/bind wiring (the known multipath.go worker-stall); its final message was 'sched fully green. Now the bind side (T177)'. I stopped it, salvaged its worktree, and completed T177 inline: added sched.PerPathPacingConfig + *ActiveBackup.ConfiguredPacing(origIdx) (reads the immutable Config.PerPathCapacities/PacingBursts by original path index) and a bind admissionFor(scheduler, prober) helper that sources each path's Pacing by the prober's PathID (== original m.defs/cfg.Paths index), wiring it into the Open-reconcile SetPaths (multipath.go:1167) and the promotion/runtime AddPath (attachPeerPathLocked:2854). D79 FIX VERIFIED by the differential reproduce-first test TestPacingConfigKeyedByPathIdentityAcrossDeferral: path 0 (slow) defers at Open, the sole bound path (fast, sched idx 0) carries ITS OWN fast cap/burst (not slow's positional carry), and after promotion the promoted slow path carries its own slow config while fast stays fast — asserts specific distinct values that ONLY match under identity sourcing, fails under the old resizeActiveBackupPacers index-carry. D76 FIX: *ActiveBackup implements sched.ProbeBudget (compile-proof + 3 mirror unit tests); the bind's existing emitProbes/echo-reflection type-asserts now charge the active path's own bucket. *WeightedScheduler takes the new PathAdmission signature and ignores per-path config (single shared bucket, confirmed no positional hole). GATE GREEN on the composed main: gofmt clean, go build/vet, go test ./... pass, go test -race ./internal/sched/... ./internal/bind/... clean, just lint 0 issues across default+e2e+realhosts. NOTE (proportionality): the bind-wiring delta I authored is small (~26 lines: admissionFor + 2 call sites) and validated by the differential test + full race/lint gate; plan was independently reviewed (R218). 0 criticisms. On this merge D79 + D76 -> resolved."
 - ledgerRefs: ["goals:G15","tasks:T173","tasks:T174","tasks:T175","tasks:T176","tasks:T177","tasks:T178","defects:D79","defects:D76"]
+
+## M76
+
+### R235 — go-ahead
+
+- createdAt: 2026-07-15T06:51:57.766Z
+- updatedAt: 2026-07-15T06:51:57.766Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G18 plan re-review round 2 (orchestrator, verifying the R232 revise corrections) — VERDICT = go-ahead. The revise planner applied all three R232 corrections: (1) T188 now dependsOn T193 (serializing T184->T193->T188 on internal/metrics/server.go) and its description names the explicit server.go gauge-retention edit (add gauge field to Server struct + retain in NewServer + setter); (2) T193 reworded to accept a SINGLE generic ErrNonLoopbackBind on the false return (netutil.IsLoopbackHost's bool-only contract can't supply per-case detail) — no redundant local classifier; (3) T188 scope+acceptance now include the gauge doc-comment sync (newWeightedCapacityGauge comment ~:151-153 + install.md). The three-stream partition holds: {T184->T193->T188 server.go/device.go} + {T190->T194 weighted.go} converging at T196 gate; no cross-file cycle. Fix designs (D84 Close listener leak mirror monitor.Server.Close; D83 delegate to netutil.IsLoopbackHost; D70+D74 combined reloadWarnings link_bw/rtt + gauge recompute; D72 SetPaths aggregation-change record; D75 idle-gap log-field test) all trace to their confirmed root causes, reproduce-first where observable. 0 remaining criticisms."
+- ledgerRefs: ["goals:G18","tasks:T184","tasks:T188","tasks:T190","tasks:T193","tasks:T194","tasks:T196"]
+
+### R237 — go-ahead
+
+- createdAt: 2026-07-15T07:13:03.911Z
+- updatedAt: 2026-07-15T07:13:03.911Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G18 IMPLEMENT review (orchestrator, worker + gate-verified) — VERDICT = go-ahead. Merged to main as 7ad8989 (T184/T188/T190/T193/T194/T196; 10 files, 454+/45-). Worker did NOT stall (metrics/device/sched worker-safe). Six residual fixes as one coherent diff, REPRODUCE-FIRST confirmed (each failed for the expected reason before its fix): D84 — metrics.Server.Close now closes s.ln after Shutdown (tolerating net.ErrClosed), no socket leak on Close-without-Start (EADDRINUSE regression test); D83 — requireLoopback delegates to netutil.IsLoopbackHost with a generic ErrNonLoopbackBind (verifyLoopbackBind act-then-verify kept); D74 — wanbond_weighted_capacity_sane gauge retained on Server + SetWeightedCapacitySane setter, Tunnel.Reload recomputes+re-sets it and WARNs on divergence (+ metrics.go doc-comment + docs/install.md sync per the AGENTS.md invariant); D70 — reloadWarnings now warns on a same-name path's link_bandwidth/link_rtt change; D72 — WeightedScheduler.SetPaths emits the canonical 'scheduler aggregation change' record (reason='paths replaced') when collapsing an engaged gate; D75 — idle-gap aggregation-change log-field test case added. GATE GREEN on composed main: gofmt clean, go build/vet, go test ./... (15 pkgs), go test -race ./internal/metrics/... ./internal/device/... ./internal/sched/... clean, just lint 0 issues all tags (after the standing stale-cache clean). Composed-tree re-verified post-merge (metrics/device/sched pass). 0 criticisms. On this merge D70/D72/D74/D75/D83/D84 -> resolved."
+- ledgerRefs: ["goals:G18","tasks:T184","tasks:T188","tasks:T190","tasks:T193","tasks:T194","tasks:T196","defects:D70","defects:D72","defects:D74","defects:D75","defects:D83","defects:D84"]
+
+## M73
+
+### R236 — go-ahead
+
+- createdAt: 2026-07-15T06:52:13.215Z
+- updatedAt: 2026-07-15T06:52:13.215Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "G16 plan re-review round 2 (orchestrator, verifying the R222 revise correction) — VERDICT = go-ahead. The revise planner corrected T179's factually-wrong Rebaseline caller inventory (grep-verified by me: exactly ONE production caller SetPeerRemote at internal/bind/multipath.go:2559 which already holds the standby `ap`, PLUS FOUR test callers in internal/reseq/reseq_test.go :761/:792/:955 and internal/metrics/metrics_test.go :435; Close() at :2585 does NOT call Rebaseline). T179's description+acceptance + G16's grounding now state the correct inventory and re-frame the plain-unpin fallback as the zero/unknown-AddrPort affordance the metrics/idempotence tests exercise (not a nonexistent close/reset path). The fix DESIGN was already approved (carry `ap` into Rebaseline for the D34 source-identity gate; D64 drop-recovered-while-!started; D68 comment reword; DoD gate); only the caller inventory was wrong and is now fixed. 0 remaining criticisms."
+- ledgerRefs: ["goals:G16","tasks:T179","tasks:T180","tasks:T181","tasks:T182"]
