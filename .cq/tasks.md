@@ -2152,11 +2152,11 @@ archives:
 
 ## M62
 
-### T163 — planned
+### T163 — done
 
 - createdAt: 2026-07-14T18:46:29.669Z
-- updatedAt: 2026-07-14T18:46:29.669Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T00:28:47.675Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Scaffold the Vite+TypeScript frontend app building to a go:embed-able static bundle"
 - description: "Create a frontend workspace (e.g. web/) with a Vite + TypeScript project: package.json (pinned recent-stable Vite + TypeScript), tsconfig.json, vite.config.ts configured so `npm run build` emits a self-contained static bundle (relative asset paths, single output dir) into the directory the Go monitor package will go:embed (e.g. internal/monitor/dist or web/dist copied in — pick the layout the embed task T-embed will consume and document it). Add web/.gitignore for node_modules and build output. Include a minimal placeholder index that opens a WebSocket to /ws and logs frames, to prove the build+serve loop; the real client/dashboard come in the next tasks. Consume the MonitorSnapshot JSON shape from T161 as the TypeScript type. Decide and document whether built assets are committed or built in CI (coordinated with T-embed/Justfile)."

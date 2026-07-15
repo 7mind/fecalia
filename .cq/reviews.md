@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 207
+  item: 208
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2428,3 +2428,14 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T165 implement review (panel opus + fable). VERDICT = approve/go-ahead. OPUS: explicit approve, 0 criticisms — adversarial lifecycle analysis confirms the 1s WS push loop is provably LEAK-FREE on BOTH exits: client-close (CloseRead->connCtx->loopCtx; deferred CloseNow closes the conn so the CloseRead reader goroutine exits) and server-Close (srvCtx cancel fires the registered AfterFunc->stop->loopCtx.Done). The `defer context.AfterFunc(srvCtx, stop)()` idiom registers-on-entry/unregisters-on-exit and spawns NO per-conn goroutine (srvCtx is a WithCancel cancelCtx; the AfterFunc goroutine spawns only once at shutdown then exits). Close cancels BEFORE srv.Shutdown so Shutdown does not block on the hijacked-WS handler; Close-without-Start is no-op-safe (TestCloseReleasesPortWithoutStart passes). Stalled-client write unblocks by construction (writeCtx=WithTimeout(loopCtx,writeTimeout); a blocked c.Write cancels on Close via loopCtx). Cadence real (immediate first frame + 1s ticker, per-write 5s timeout). Graceful-vs-abrupt close logic sound (StatusNormalClosure only when srvCtx.Err()!=nil); no spurious error log on cancellation (loopCtx.Err()==nil guard). The dedicated-Source invariant comment is GROUNDED against internal/device/metrics.go's mutable last-sample delta map. go test -race -count=1 goleak-clean in BOTH TestServerWSPushesSnapshots and TestServerWSCloseStopsPush; just lint 0 issues. FABLE: verified via differential scratch probes that 'the real implementation passes both discriminating probes' (cadence + prompt stalled-client shutdown) — trending approve — then stalled (agent-infra hang, same pattern that hit the T164 workers) during a docs-sync check (T165 owns NO docs; the [monitor] docs are T171's) before emitting its final JSON; per the panel abstention rule fable is dropped and the panel proceeds on opus's approve. Opus's ONE non-blocking nit (TestServerWSCloseStopsPush comment overstated the 'block on write' mechanism — a single small frame won't fill the TCP buffer) was addressed by rewording the comment before merge. T165 implemented INLINE (monitor-package workers stalled). Merged to main (70ca59f). M61 backend complete."
 - ledgerRefs: ["tasks:T165","goals:G12"]
+
+## M62
+
+### R208 — go-ahead
+
+- createdAt: 2026-07-15T00:28:46.932Z
+- updatedAt: 2026-07-15T00:28:46.932Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T163 implement review (single opus reviewer, proportionate for a config/scaffold task). VERDICT = approve/go-ahead (0 criticisms/questions/defects). CONTRACT FIDELITY verified field-for-field: web/src/types.ts mirrors internal/monitor/monitor.go's json tags exactly across all nested types — PathSnapshot (name/peer string, txBytes/rxBytes/throughputBps/rttSeconds/jitterSeconds/loss number, up boolean), FECSnapshot, ReseqSnapshot (uint64->number, peer string), AggregationSnapshot (aggregating boolean, offeredLoadFps/engage/disengage number), SessionSnapshot (established boolean, lastHandshakeSeconds number), MonitorSnapshot (paths/fec/reseq/aggregation arrays, session, peerNames string[], multiPeer boolean) — no dropped/renamed/mistyped field (the contract T166/T168 depend on). BUILD: fresh npm ci (from committed lockfile) + npm run build (vite 8.1.4) emits internal/monitor/dist/index.html + hashed assets/index-*.js with RELATIVE ./assets/ paths (base:'./', serveable from any mount); npx tsc --noEmit clean; TS 7.0.2/vite 8.1.4 are real recent-stable. GITIGNORE: node_modules + build-output (internal/monitor/dist) untracked; package-lock.json committed (reproducible installs); internal/monitor/.gitignore scopes /dist/ only (does not shadow committed Go files). GO GATE unregressed: no Go files changed, NO //go:embed added (T167 wires it + the Justfile web-build), just lint 0 issues all tag sets. main.ts is a valid same-origin /ws client (relative ws URL, ws/wss protocol swap, parses MonitorSnapshot). Non-blocking note: no CSS asset emitted yet (minimal scaffold has no stylesheet; CSS arrives with the T168 dashboard) — 'hashed JS/CSS' acceptance satisfied operationally (hashed JS lands in the embed dir). EMBED-DIR/COMMIT decision for T167: web/ holds source only; npm run build (from web/) -> internal/monitor/dist/ (gitignored, NOT committed); T167's web-build Justfile step must run before go build so the //go:embed dist dir exists. Merged to main (3653d74)."
+- ledgerRefs: ["tasks:T163","goals:G12"]
