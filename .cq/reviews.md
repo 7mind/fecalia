@@ -2,7 +2,7 @@
 ledger: reviews
 counters:
   milestone: 0
-  item: 206
+  item: 207
 archives:
   - id: M11
     path: ./archive/reviews/M11.md
@@ -2419,3 +2419,12 @@ archives:
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - summary: "T164 implement review round 2 (fable re-review of the Origin fix). VERDICT = approve/go-ahead. The round-1 cross-origin/CSRF bypass (both opus+fable flagged: Origin check reused hostAllowed's IP-literal pass) is CLOSED and verified DIFFERENTIALLY: the new HTTP-route regression test (Origin: http://198.51.100.7 on /) fails against round-1 code with '200, want 403' (the exact bypass) and passes on fc59349. The middleware Origin branch now routes through originAllowed, which grants ONLY exact same-origin (Origin==r.Host) OR an allowlisted host (loopback aliases + configured listen host) with NO IP-literal passthrough; hostAllowed (Host header) keeps the IP pass for its DNS-rebinding role. No legit access regressed: exact same-origin covers loopback AND the wildcard-bind LAN case (browser sends matching host:port in Origin and Host); the full monitor suite (token flow, no-Origin, WS one-shot, goleak) passes under -race; whole-repo go test -race green; just lint 0 issues all tags. No new bypass: cross-site pages cannot force Origin==Host (browser sets them independently); Origin: null fails closed (u.Host==''); hostOnly strips ports/v6-brackets correctly. Fair reviewer note: TestAuthForeignOriginRejectedOnWS also passes on old code (websocket.Accept(nil) retains the library default same-origin check), so it pins the end-to-end /ws invariant while the HTTP-route test is the discriminating guard — both retained. T164 (inline-implemented after 3 worker stalls) merged to main (fc59349). Round-1 = opus+fable disapprove (identical Origin finding); round-2 = approve."
 - ledgerRefs: ["tasks:T164","goals:G12"]
+
+### R207 — go-ahead
+
+- createdAt: 2026-07-15T00:19:46.874Z
+- updatedAt: 2026-07-15T00:19:46.874Z
+- author: fable-5
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: "T165 implement review (panel opus + fable). VERDICT = approve/go-ahead. OPUS: explicit approve, 0 criticisms — adversarial lifecycle analysis confirms the 1s WS push loop is provably LEAK-FREE on BOTH exits: client-close (CloseRead->connCtx->loopCtx; deferred CloseNow closes the conn so the CloseRead reader goroutine exits) and server-Close (srvCtx cancel fires the registered AfterFunc->stop->loopCtx.Done). The `defer context.AfterFunc(srvCtx, stop)()` idiom registers-on-entry/unregisters-on-exit and spawns NO per-conn goroutine (srvCtx is a WithCancel cancelCtx; the AfterFunc goroutine spawns only once at shutdown then exits). Close cancels BEFORE srv.Shutdown so Shutdown does not block on the hijacked-WS handler; Close-without-Start is no-op-safe (TestCloseReleasesPortWithoutStart passes). Stalled-client write unblocks by construction (writeCtx=WithTimeout(loopCtx,writeTimeout); a blocked c.Write cancels on Close via loopCtx). Cadence real (immediate first frame + 1s ticker, per-write 5s timeout). Graceful-vs-abrupt close logic sound (StatusNormalClosure only when srvCtx.Err()!=nil); no spurious error log on cancellation (loopCtx.Err()==nil guard). The dedicated-Source invariant comment is GROUNDED against internal/device/metrics.go's mutable last-sample delta map. go test -race -count=1 goleak-clean in BOTH TestServerWSPushesSnapshots and TestServerWSCloseStopsPush; just lint 0 issues. FABLE: verified via differential scratch probes that 'the real implementation passes both discriminating probes' (cadence + prompt stalled-client shutdown) — trending approve — then stalled (agent-infra hang, same pattern that hit the T164 workers) during a docs-sync check (T165 owns NO docs; the [monitor] docs are T171's) before emitting its final JSON; per the panel abstention rule fable is dropped and the panel proceeds on opus's approve. Opus's ONE non-blocking nit (TestServerWSCloseStopsPush comment overstated the 'block on write' mechanism — a single small frame won't fill the TCP buffer) was addressed by rewording the comment before merge. T165 implemented INLINE (monitor-package workers stalled). Merged to main (70ca59f). M61 backend complete."
+- ledgerRefs: ["tasks:T165","goals:G12"]

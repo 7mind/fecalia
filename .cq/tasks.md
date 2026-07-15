@@ -2137,11 +2137,11 @@ archives:
 - dependsOn: ["T162"]
 - ledgerRefs: ["goals:G12"]
 
-### T165 — planned
+### T165 — done
 
 - createdAt: 2026-07-14T18:46:55.462Z
-- updatedAt: 2026-07-14T18:46:55.462Z
-- author: "opus-4.8[1m]"
+- updatedAt: 2026-07-15T00:19:47.589Z
+- author: fable-5
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: WS push loop at 1s cadence over a dedicated metrics.Source, clean teardown
 - description: "Replace the skeleton's single-frame /ws handler with a push loop: on each accepted connection, marshal BuildSnapshot(src) and write it as a JSON text frame every monitorPushInterval (named const = 1s per Q50), until the client disconnects or the server context is cancelled. Bound each write with a write timeout (context.WithTimeout) so a stuck client cannot wedge the goroutine; on write/read error close the connection with a proper WS status. CRITICAL (grounding): the Source passed here must be the monitor's OWN metrics.Source instance, NOT the one the Prometheus scraper uses — internal/device/metrics.go metricsSource.Paths() derives throughput from cross-call byte deltas under shared last-sample state, so two independent readers on one instance corrupt each other's rates. The Server just consumes whatever metrics.Source it was constructed with (the dedicated-instance wiring is enforced in T-daemon/W3); document the invariant in the handler."
