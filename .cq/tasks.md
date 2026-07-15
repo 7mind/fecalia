@@ -2219,10 +2219,10 @@ archives:
 - dependsOn: ["T162","T165"]
 - ledgerRefs: ["goals:G12"]
 
-### T170 — planned
+### T170 — done
 
 - createdAt: 2026-07-14T18:47:52.990Z
-- updatedAt: 2026-07-14T18:47:52.990Z
+- updatedAt: 2026-07-15T01:31:27.823Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "End-to-end test: live WS monitor against a real Source reflects path/FEC/session state (single + multi-peer)"
@@ -2232,10 +2232,10 @@ archives:
 - dependsOn: ["T169","T168"]
 - ledgerRefs: ["goals:G12"]
 
-### T171 — planned
+### T171 — done
 
 - createdAt: 2026-07-14T18:48:02.948Z
-- updatedAt: 2026-07-14T22:36:59.994Z
+- updatedAt: 2026-07-15T01:32:33.146Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Docs sync: [monitor] config, loopback/token security invariant, token-cookie flow, plaintext-LAN residual risk, build step"
