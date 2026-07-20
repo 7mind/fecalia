@@ -184,7 +184,7 @@ func scrapeText(t *testing.T, src metrics.Source) string {
 	if err != nil {
 		t.Fatalf("log.New: %v", err)
 	}
-	srv, err := metrics.NewServer("127.0.0.1:0", src, nil, lg)
+	srv, err := metrics.NewServer("127.0.0.1:0", src, nil, nil, lg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

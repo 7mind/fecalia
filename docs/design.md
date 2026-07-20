@@ -504,6 +504,13 @@ behaviour composes the following signals into one picture:
   capacity is UNVERIFIABLE (see [install.md
   §6b](install.md#6b-weighted-policy-capacity-sanity-check-t144) for the
   remedy); absent entirely under `active-backup`.
+- `wanbond_liveness_budget_sane` (static, unlabeled, present for EVERY
+  config — T211) — `1` when the analytical per-direction failover budget
+  (`down_after` + worst-case path `ride_through` + 2×200ms probe interval)
+  fits the 3s P1 transparent-failover recovery deadline, `0` when the
+  operator has widened `down_after`/`ride_through` past it. `0` is
+  WARN-and-allow, never fatal: the daemon still boots and logs one startup
+  WARN naming the numbers.
 - the `"scheduler aggregation change"` log record — one-shot on every
   engage/disengage flip, carrying `to`/`from`, `load_fps`,
   `engage_threshold_fps`, `disengage_threshold_fps`, plus `reason` on a
@@ -714,10 +721,31 @@ the same mirroring pattern `config.defaultAdaptiveSafetyFactor` and
 `down_after` is rejected below `2*livenessProbeInterval` (400ms): fewer than
 two probe intervals cannot even carry one round-trip echo, so the liveness
 `Tick`'s silence check would outrun the echo cadence and every path would
-permanently flap DOWN. No upper bound is enforced yet — that WARN-and-allow
-budget verdict, and the plumbing of `down_after`/`ride_through` into
-`device.go`/`liveness.go`'s running scheduler, are later tasks; this task adds
-only the parse/default/validate config surface.
+permanently flap DOWN.
+
+**Upper-side WARN-and-allow failover budget (D86 decision 4, T211).** The
+lower floor is a hard reject; the UPPER side is soft. The 3s P1
+transparent-failover recovery deadline is hoisted into `internal/telemetry` as
+the single source of truth `telemetry.RecoveryBudget`, alongside a pure
+derivation `telemetry.FailoverBudget(downAfter, rideThrough, probeInterval) =
+downAfter + rideThrough + 2*probeInterval` (the per-direction analytical
+recovery bound). The e2e acceptance table (`test/e2e/thresholds.go`) derives
+`PLivenessFailoverBudget` from `FailoverBudget` and asserts
+`RecoveryBudget == time.Duration(P1RecoverySeconds)*time.Second`, so the
+seconds-count and Duration representations can never drift (honoring D16); the
+seconds-count `P1RecoverySeconds` stays an int for its int-seconds call sites.
+At load, `normalize()` computes a `Config.LivenessBudgetSane` verdict —
+`FailoverBudget(down_after, max path ride_through, livenessProbeInterval) <=
+RecoveryBudget` — following the `weightedCapacitySane()` computed-verdict
+precedent (`internal/telemetry` restated in `internal/config/liveness.go` under
+the same no-cycle cross-reference). It NEVER rejects an over-budget
+`down_after`/`ride_through`; instead the daemon logs ONE startup WARN naming the
+numbers and exports a static, unlabeled `wanbond_liveness_budget_sane` gauge
+(1 = within budget, 0 = over), mirroring the `wanbond_weighted_capacity_sane`
+wiring (seeded at startup, re-set on a reload whose applied path change moves
+the worst-case ride_through). The plumbing of `down_after`/`ride_through` into
+the running scheduler is T207 (already landed); this task adds the shared
+budget derivation plus the WARN-and-allow verdict.
 
 ### Receive resequencer — `internal/reseq`
 

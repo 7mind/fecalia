@@ -337,8 +337,12 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   down_after makes the liveness detector's
                                    #   silence check outrun the echo cadence and
                                    #   permanently flap every path DOWN; rejected
-                                   #   at load. No upper bound is enforced here
-                                   #   (a large value loads fine).
+                                   #   at load. No upper bound is REJECTED, but a
+                                   #   down_after (+ largest path ride_through +
+                                   #   2x200ms) exceeding the 3s transparent-
+                                   #   failover deadline is WARN-and-allow: the
+                                   #   daemon boots, logs one startup WARN, and
+                                   #   sets wanbond_liveness_budget_sane = 0 (T211).
 
 # ── dns: OPTIONAL. Omitted => system resolver, default cadence/timeouts ───────
 # Selects the TRANSPORT a peer's opt-in hostname endpoint (dns = true, above)

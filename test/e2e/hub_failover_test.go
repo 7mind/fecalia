@@ -106,7 +106,10 @@ const hubFailoverSettleUpperBound = 3 * time.Second
 // The load generators here are ICMP/one-shot iperf3 (not a saturating flow), so the
 // jitter term is generous rather than tight. The same window bounds the control test's
 // NON-recovery poll, so the guard is given the FULL opportunity the positive path gets.
-const hubFailoverWindow = PLivenessFailoverBudget +
+// A var (not const): PLivenessFailoverBudget now DERIVES from telemetry.FailoverBudget
+// (a function call, T211), so any composition that includes it can no longer be a
+// constant expression. The value is unchanged.
+var hubFailoverWindow = PLivenessFailoverBudget +
 	hubFailoverSettleUpperBound +
 	time.Duration(telemetry.DefaultUpSuccesses)*telemetry.DefaultProbeInterval +
 	5*time.Second

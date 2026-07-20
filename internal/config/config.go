@@ -84,6 +84,18 @@ type Config struct {
 	// reachable whenever pacing is disabled since deriveWeightedBottleneckPacing then
 	// no-ops and never rejects it). See weightedCapacitySane.
 	WeightedCapacitySane *bool `toml:"-"`
+	// LivenessBudgetSane is the D86-decision-4 WARN-arm failover-budget verdict (T211),
+	// computed by normalize() and never read from TOML: ALWAYS non-nil (the failover
+	// budget applies to every config, unlike WeightedCapacitySane which is nil off the
+	// weighted policy). true when the analytical failover budget for the worst-case path
+	// — livenessFailoverBudget(Liveness.DownAfter, max path ride_through,
+	// livenessProbeInterval) — fits within livenessRecoveryBudget (the 3s P1 deadline);
+	// false when it does NOT. It is WARN-AND-ALLOW: normalize NEVER rejects an over-budget
+	// down_after/ride_through, it only records the verdict so the daemon can log one
+	// startup WARN and export the wanbond_liveness_budget_sane gauge. The lower-side floor
+	// (a too-SMALL down_after that permanently flaps) stays a hard REJECT in validate
+	// (minLivenessDownAfter) — only the UPPER side is soft. See livenessBudgetSane.
+	LivenessBudgetSane *bool `toml:"-"`
 }
 
 // BindMode selects, per path, how that path's UDP socket is bound to the
@@ -1113,7 +1125,30 @@ func (c *Config) normalize() error {
 	// scheduler.policy to its default (PolicyActiveBackup) — see weightedCapacitySane's
 	// doc for why this must run after every path's LinkBandwidthBitsPerSec is parsed.
 	c.WeightedCapacitySane = c.weightedCapacitySane()
+	// Computed after Liveness.applyDefaults has resolved DownAfter and every path's
+	// RideThrough has been parsed, so the verdict sees the EFFECTIVE timing (T211).
+	c.LivenessBudgetSane = c.livenessBudgetSane()
 	return nil
+}
+
+// livenessBudgetSane computes the D86-decision-4 WARN-arm failover-budget verdict
+// (T211), following the weightedCapacitySane() computed-verdict precedent. It returns
+// a non-nil *bool for EVERY config (the budget always applies): true when the
+// worst-case-path analytical failover budget fits within the 3s P1 recovery deadline,
+// false when it exceeds it. The worst-case path is the one with the LARGEST ride_through
+// (its dwell adds directly to the detect term), so the max over paths is the tightest
+// single verdict. It NEVER rejects — an over-budget value is allowed and surfaced only
+// as a startup WARN + gauge; only the lower-side flap floor is a hard reject (validate).
+func (c *Config) livenessBudgetSane() *bool {
+	maxRideThrough := time.Duration(0)
+	for i := range c.Paths {
+		if c.Paths[i].RideThrough > maxRideThrough {
+			maxRideThrough = c.Paths[i].RideThrough
+		}
+	}
+	budget := livenessFailoverBudget(c.Liveness.DownAfter, maxRideThrough, livenessProbeInterval)
+	sane := budget <= livenessRecoveryBudget
+	return &sane
 }
 
 // weightedCapacitySane computes the Q52 WARN-arm capacity-sanity verdict (T144, the

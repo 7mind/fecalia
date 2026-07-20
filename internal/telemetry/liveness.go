@@ -89,6 +89,31 @@ const (
 	DefaultLossWindow    = 0
 )
 
+// RecoveryBudget is the SINGLE SOURCE OF TRUTH for the P1 transparent-failover
+// recovery deadline (D86 decision 4, honoring D16): after the active WAN is
+// killed, the surviving flow must have throughput restored within this budget,
+// in BOTH directions, with no connection reset. It is hoisted here — beside the
+// Default* liveness timing it composes with — so the e2e acceptance table
+// (test/e2e/thresholds.go) and the daemon's startup budget verdict
+// (internal/config) both derive from ONE value instead of two tables that drift.
+// test/e2e asserts RecoveryBudget == time.Duration(P1RecoverySeconds)*time.Second
+// so the seconds-count and Duration representations can never diverge.
+const RecoveryBudget = 3 * time.Second
+
+// FailoverBudget is the PURE analytical per-direction failover-recovery bound for
+// a path with the given liveness timing: the worst-case detect term (downAfter +
+// one probe interval, the strict-'>' Tick needs one full interval past downAfter
+// to fire) plus one interval of headroom that also absorbs the sub-ms reroute —
+// i.e. downAfter + rideThrough + 2*probeInterval. rideThrough is the path's dwell
+// (D86 decision 3): a path that rides through transient silence for rideThrough
+// before being marked down adds exactly that dwell to the detect term. Both ends
+// detect concurrently and symmetrically, so this bounds end-to-end BIDIRECTIONAL
+// recovery. At the defaults (1200ms downAfter, 0 rideThrough, 200ms interval) it
+// is 1.6s. Callers compare it against RecoveryBudget to judge budget sanity.
+func FailoverBudget(downAfter, rideThrough, probeInterval time.Duration) time.Duration {
+	return downAfter + rideThrough + 2*probeInterval
+}
+
 // Liveness is the per-path up/down state machine. It is driven by two events:
 // RecordEcho on every authenticated probe echo, and Tick on a periodic timer.
 // It starts Down and requires UpAfterSuccesses echoes before declaring Up, so a

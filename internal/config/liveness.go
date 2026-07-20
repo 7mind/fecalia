@@ -37,6 +37,25 @@ const livenessProbeInterval = 200 * time.Millisecond
 // WARN-and-allow upper-side budget verdict is T211's job (D86 decision 4).
 const minLivenessDownAfter = 2 * livenessProbeInterval
 
+// livenessRecoveryBudget mirrors telemetry.RecoveryBudget (the 3s P1 transparent-
+// failover deadline, D86 decision 4): internal/telemetry imports internal/config
+// (probe.go), so config cannot import telemetry without a cycle — the value is
+// restated here with this cross-reference, exactly as defaultLivenessDownAfter /
+// livenessProbeInterval restate their telemetry.Default* twins above. It is the
+// ceiling the WARN-and-allow budget verdict (livenessBudgetSane) compares against;
+// test/e2e (which CAN import both) pins telemetry.RecoveryBudget to its own
+// P1RecoverySeconds, so the single source of truth stays telemetry.
+const livenessRecoveryBudget = 3 * time.Second
+
+// livenessFailoverBudget mirrors telemetry.FailoverBudget (same no-cycle restatement
+// as livenessRecoveryBudget): the per-direction failover-recovery bound for a path
+// with the given timing, downAfter + rideThrough + 2*probeInterval. It feeds the
+// WARN-and-allow budget verdict; telemetry.FailoverBudget is the source of truth,
+// exercised by TestFailoverBudgetDerivation.
+func livenessFailoverBudget(downAfter, rideThrough, probeInterval time.Duration) time.Duration {
+	return downAfter + rideThrough + 2*probeInterval
+}
+
 // Liveness configures the D86 top-level up/down detection threshold (decision
 // 3): down_after is the silence duration that marks an UP path DOWN,
 // overriding the compiled-in telemetry.DefaultDownAfter. An ABSENT [liveness]

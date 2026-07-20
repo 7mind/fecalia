@@ -237,6 +237,7 @@ func TestReloadWarningsCatchAll(t *testing.T) {
 		"Role": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
 		"Metrics": true, "Monitor": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
 		"Liveness": true, "Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
+		"LivenessBudgetSane": true,
 	}
 	typ := reflect.TypeOf(config.Config{})
 	for i := 0; i < typ.NumField(); i++ {

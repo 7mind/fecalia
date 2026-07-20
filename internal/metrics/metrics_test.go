@@ -55,10 +55,12 @@ func startServer(t *testing.T, src Source) *Server {
 }
 
 // startServerWithCapacity is startServer plus an explicit T144 weightedCapacitySane
-// verdict, for the wanbond_weighted_capacity_sane registration tests.
+// verdict, for the wanbond_weighted_capacity_sane registration tests. The T211
+// liveness-budget verdict is left nil (no wanbond_liveness_budget_sane series); see
+// startServerWithLivenessBudget for that gauge's registration tests.
 func startServerWithCapacity(t *testing.T, src Source, weightedCapacitySane *bool) *Server {
 	t.Helper()
-	srv, err := NewServer("127.0.0.1:0", src, weightedCapacitySane, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", src, weightedCapacitySane, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -71,6 +73,89 @@ func startServerWithCapacity(t *testing.T, src Source, weightedCapacitySane *boo
 		}
 	})
 	return srv
+}
+
+// startServerWithLivenessBudget is startServer plus an explicit T211 livenessBudgetSane
+// verdict (weighted verdict left nil), for the wanbond_liveness_budget_sane gauge tests.
+func startServerWithLivenessBudget(t *testing.T, src Source, livenessBudgetSane *bool) *Server {
+	t.Helper()
+	srv, err := NewServer("127.0.0.1:0", src, nil, livenessBudgetSane, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := srv.Close(ctx); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return srv
+}
+
+// TestLivenessBudgetSaneGaugeValue asserts the T211 gauge, when a verdict IS supplied,
+// exposes an unlabeled series carrying exactly that value — 1 within budget, 0 over.
+func TestLivenessBudgetSaneGaugeValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sane bool
+		want float64
+	}{
+		{"within-budget", true, 1},
+		{"over-budget", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sane := tc.sane
+			srv := startServerWithLivenessBudget(t, fakeSource{}, &sane)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			got, ok := exp.Value(MetricLivenessBudgetSane)
+			if !ok {
+				t.Fatalf("%s series absent, want present", MetricLivenessBudgetSane)
+			}
+			if got != tc.want {
+				t.Errorf("%s = %v, want %v", MetricLivenessBudgetSane, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLivenessBudgetSaneGaugeReSetOnReload mirrors the D74 weighted-gauge guard: the
+// gauge is NOT frozen at construction — SetLivenessBudgetSane (called by device.Reload
+// when an applied path change moves the worst-case ride_through) must move the LIVE
+// scraped series. Boots within-budget (1), re-sets to over-budget (0), asserts 0.
+func TestLivenessBudgetSaneGaugeReSetOnReload(t *testing.T) {
+	sane := true
+	srv := startServerWithLivenessBudget(t, fakeSource{}, &sane)
+
+	scrape := func() float64 {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		got, ok := exp.Value(MetricLivenessBudgetSane)
+		if !ok {
+			t.Fatalf("%s series absent, want present", MetricLivenessBudgetSane)
+		}
+		return got
+	}
+
+	if got := scrape(); got != 1 {
+		t.Fatalf("%s at boot = %v, want 1 (within budget)", MetricLivenessBudgetSane, got)
+	}
+	srv.SetLivenessBudgetSane(false)
+	if got := scrape(); got != 0 {
+		t.Errorf("%s after SetLivenessBudgetSane(false) = %v, want 0", MetricLivenessBudgetSane, got)
+	}
 }
 
 // TestExpositionPerPathSeries drives the registry with synthetic per-path

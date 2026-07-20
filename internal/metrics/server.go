@@ -40,6 +40,11 @@ type Server struct {
 	// absent entirely). It is retained so a reload can re-set it after a path add/remove
 	// changes the config-derived verdict (D74), instead of leaving it frozen at boot.
 	weightedCapacityGauge prometheus.Gauge
+	// livenessBudgetGauge is the retained wanbond_liveness_budget_sane gauge (T211), or
+	// nil when no verdict was supplied at construction. Retained for the same reason as
+	// weightedCapacityGauge: a reload whose applied path add/remove changes the worst-case
+	// ride_through re-sets it (SetLivenessBudgetSane) rather than leaving it frozen at boot.
+	livenessBudgetGauge prometheus.Gauge
 }
 
 // NewServer validates that addr is loopback, binds a TCP listener, and wires the
@@ -51,7 +56,7 @@ type Server struct {
 // registers no wanbond_weighted_capacity_sane series at all (the non-weighted-policy
 // case — the family is absent entirely); a non-nil bool registers it as a STATIC
 // gauge fixed at that value, alongside (not through) the Source-driven collector.
-func NewServer(addr string, src Source, weightedCapacitySane *bool, logger log.Logger) (*Server, error) {
+func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane *bool, logger log.Logger) (*Server, error) {
 	if err := requireLoopback(addr); err != nil {
 		return nil, err
 	}
@@ -65,6 +70,13 @@ func NewServer(addr string, src Source, weightedCapacitySane *bool, logger log.L
 		weightedCapacityGauge = newWeightedCapacityGauge(*weightedCapacitySane)
 		if err := reg.Register(weightedCapacityGauge); err != nil {
 			return nil, fmt.Errorf("metrics: register weighted-capacity gauge: %w", err)
+		}
+	}
+	var livenessBudgetGauge prometheus.Gauge
+	if livenessBudgetSane != nil {
+		livenessBudgetGauge = newLivenessBudgetGauge(*livenessBudgetSane)
+		if err := reg.Register(livenessBudgetGauge); err != nil {
+			return nil, fmt.Errorf("metrics: register liveness-budget gauge: %w", err)
 		}
 	}
 
@@ -97,6 +109,7 @@ func NewServer(addr string, src Source, weightedCapacitySane *bool, logger log.L
 		},
 		log:                   logger.Component("metrics"),
 		weightedCapacityGauge: weightedCapacityGauge,
+		livenessBudgetGauge:   livenessBudgetGauge,
 	}, nil
 }
 
@@ -111,6 +124,17 @@ func (s *Server) SetWeightedCapacitySane(sane bool) {
 		return
 	}
 	s.weightedCapacityGauge.Set(weightedCapacitySaneValue(sane))
+}
+
+// SetLivenessBudgetSane re-sets the retained wanbond_liveness_budget_sane gauge (T211)
+// to a recomputed verdict after a reload changed the applied path set (the worst-case
+// ride_through can shift), the liveness-budget twin of SetWeightedCapacitySane. No-op
+// when no gauge was registered. Safe to call while the endpoint serves.
+func (s *Server) SetLivenessBudgetSane(sane bool) {
+	if s.livenessBudgetGauge == nil {
+		return
+	}
+	s.livenessBudgetGauge.Set(weightedCapacitySaneValue(sane))
 }
 
 // Addr returns the actual bound listen address (with the resolved port).

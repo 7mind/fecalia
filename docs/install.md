@@ -1451,6 +1451,38 @@ threshold still hard-fails config load exactly as before (§3a) — this WARN is
 about the paths that declare nothing at all, which the hard guard cannot
 evaluate.
 
+#### Failover-budget sanity (`[liveness]` `down_after` / `ride_through`)
+
+Independent of scheduler policy, wanbond also checks that the per-path
+liveness timing still permits transparent failover within the 3s recovery
+deadline. The **analytical per-direction failover budget** is
+`down_after` + the largest path `ride_through` + `2 × 200ms` (the fixed probe
+interval); at the defaults (1200ms `down_after`, 0 `ride_through`) it is 1.6s,
+comfortably inside 3s. Widening `[liveness].down_after` or a path's
+`ride_through` far enough pushes that budget past the deadline — the tunnel
+still comes up (this is **WARN-and-allow**, unlike the too-SMALL `down_after`
+that is rejected outright), but failover will be slower than the P1 target.
+
+- **`wanbond_liveness_budget_sane` Prometheus gauge:** an unlabeled 0/1 metric,
+  present for **every** config (not policy-gated). Config-derived, seeded at
+  startup and **re-set on a `reload`** whose applied path change moved the
+  worst-case `ride_through`.
+  ```sh
+  curl -s http://127.0.0.1:9090/metrics | grep wanbond_liveness_budget_sane
+  ```
+  - `1` — within budget: the failover budget fits the 3s recovery deadline.
+  - `0` — over budget: `down_after` + worst-case `ride_through` + `2×200ms`
+    exceeds 3s.
+- **Startup WARN log line:** emitted once, at daemon start, exactly when the
+  gauge reads `0`:
+  ```sh
+  journalctl -u wanbond-edge | grep "liveness failover budget exceeds"
+  ```
+  The record names `down_after`, `worst_path`, `max_ride_through`,
+  `failover_budget`, and `recovery_budget`. **Remedy:** reduce
+  `[liveness].down_after` and/or the largest path `ride_through` so the sum
+  fits 3s, or accept slower-than-P1 failover for this deployment.
+
 ### 6c. Monitoring UI (`[monitor]`)
 
 An OPTIONAL read-only dashboard — live per-peer throughput/loss/FEC

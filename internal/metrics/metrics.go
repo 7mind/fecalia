@@ -124,6 +124,18 @@ const (
 // docs/install.md §3a for the operator remedy.
 const MetricWeightedCapacitySane = "wanbond_weighted_capacity_sane"
 
+// MetricLivenessBudgetSane is the D86-decision-4 WARN-arm failover-budget gauge (T211),
+// the liveness-timing twin of MetricWeightedCapacitySane. Like it, the value is
+// CONFIG-DERIVED (not sourced from Source at scrape time): seeded at daemon startup from
+// config.Config.LivenessBudgetSane and re-set on a reload whose applied path add/remove
+// changes the worst-case ride_through (Server.SetLivenessBudgetSane). It carries no
+// labels. Unlike the weighted gauge it is present for EVERY config (the failover budget
+// always applies), reading 1 when the analytical per-direction failover budget fits the
+// 3s P1 recovery deadline (SANE) or 0 when it exceeds it (OVER-BUDGET — the operator has
+// widened down_after/ride_through past the transparent-failover deadline; see the startup
+// WARN and docs/design.md).
+const MetricLivenessBudgetSane = "wanbond_liveness_budget_sane"
+
 // Aggregation-gate metric names (T146, Q54). These four PER-PEER series expose the
 // weighted scheduler's data-thrift aggregation gate: whether striping is currently
 // engaged, the smoothed offered load driving it, and the STATIC engage/disengage
@@ -170,6 +182,20 @@ func weightedCapacitySaneValue(sane bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// newLivenessBudgetGauge builds the wanbond_liveness_budget_sane gauge (T211) seeded at
+// sane's value, the liveness-budget twin of newWeightedCapacityGauge. Config-derived, not
+// re-read at scrape time; the concrete gauge is returned so the Server retains it and can
+// re-set it on a reload whose applied path change moved the worst-case ride_through.
+func newLivenessBudgetGauge(sane bool) prometheus.Gauge {
+	g := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "liveness_budget_sane",
+		Help:      "Config-derived failover-budget verdict (1 = per-direction failover budget fits the 3s P1 recovery deadline, 0 = over-budget; see docs/design.md).",
+	})
+	g.Set(weightedCapacitySaneValue(sane))
+	return g
 }
 
 // FECSnapshot is the current connection-scoped FEC signal set the exposition layer

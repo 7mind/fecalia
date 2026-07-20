@@ -537,9 +537,45 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		return nil, fmt.Errorf("device: start monitor endpoint: %w", err)
 	}
 
+	// One-shot startup diagnostic (T211, D86 decision 4): if the operator has widened
+	// down_after/ride_through so the analytical failover budget exceeds the 3s P1 recovery
+	// deadline, WARN once naming the numbers. This is WARN-AND-ALLOW — the tunnel is
+	// already up; the config was NOT rejected. A within-budget config is silent.
+	warnOverBudgetLiveness(clg, cfg)
+
 	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
 	return t, nil
+}
+
+// warnOverBudgetLiveness logs the T211 WARN-arm startup diagnostic (D86 decision 4) when
+// cfg's failover-budget verdict is OVER-BUDGET — the per-direction analytical failover
+// budget for the worst-case (largest-ride_through) path exceeds the 3s P1 transparent-
+// failover recovery deadline. It is a NO-OP when the verdict is sane or nil. This is the
+// soft, non-blocking complement to config.Load's minLivenessDownAfter hard floor (a
+// too-SMALL down_after is rejected; a too-LARGE one is only WARNed here). The single WARN
+// names the effective numbers (down_after, worst-case ride_through, the derived budget,
+// and the 3s deadline) so the operator can see exactly why the budget was blown.
+func warnOverBudgetLiveness(lg log.Logger, cfg *config.Config) {
+	if cfg.LivenessBudgetSane == nil || *cfg.LivenessBudgetSane {
+		return
+	}
+	maxRideThrough := time.Duration(0)
+	worstPath := ""
+	for _, p := range cfg.Paths {
+		if p.RideThrough > maxRideThrough {
+			maxRideThrough = p.RideThrough
+			worstPath = p.Name
+		}
+	}
+	budget := cfg.Liveness.DownAfter + maxRideThrough + 2*telemetry.DefaultProbeInterval
+	lg.Warn("liveness failover budget exceeds the P1 recovery deadline",
+		"down_after", cfg.Liveness.DownAfter.String(),
+		"worst_path", worstPath,
+		"max_ride_through", maxRideThrough.String(),
+		"failover_budget", budget.String(),
+		"recovery_budget", telemetry.RecoveryBudget.String(),
+		"remedy", "reduce liveness.down_after and/or the largest path ride_through so down_after + ride_through + 2*200ms probe interval <= 3s, or accept slower-than-P1 failover for this config")
 }
 
 // concentratorMonitoredPeers returns the set of NON-PRIMARY configured peers the per-peer
@@ -580,7 +616,7 @@ func (t *Tunnel) applyMetricsLocked(listen string) error {
 		t.stopMetricsLocked()
 		return nil
 	}
-	srv, err := metrics.NewServer(listen, t.metricsSrc, t.cfg.WeightedCapacitySane, t.log)
+	srv, err := metrics.NewServer(listen, t.metricsSrc, t.cfg.WeightedCapacitySane, t.cfg.LivenessBudgetSane, t.log)
 	if err != nil {
 		return err
 	}
@@ -749,6 +785,20 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 		t.metricsSrv.SetWeightedCapacitySane(newSane)
 	}
 
+	// T211: recompute the config-derived failover-budget verdict from the reloaded config
+	// and re-set the retained gauge, mirroring the D74 weighted-capacity re-set above. An
+	// applied path add/remove can change the worst-case ride_through (hence the budget
+	// verdict), so the gauge must not stay frozen at boot. The verdict is ALWAYS non-nil
+	// (the budget applies to every config), so — unlike the weighted gauge — no policy
+	// gate is needed; the endpoint-present check suffices.
+	if t.metricsSrv != nil && cfg.LivenessBudgetSane != nil {
+		newBudgetSane := *cfg.LivenessBudgetSane
+		if t.cfg.LivenessBudgetSane == nil || *t.cfg.LivenessBudgetSane != newBudgetSane {
+			t.log.Warn("reload: liveness failover-budget verdict changed", "sane", newBudgetSane)
+		}
+		t.metricsSrv.SetLivenessBudgetSane(newBudgetSane)
+	}
+
 	// Advance the running config to the membership now in service. Survivors keep their
 	// ORIGINAL parameters and all non-path fields stay as booted (the ignored changes
 	// were not applied), so a subsequent identical reload re-warns about a still-diverged
@@ -763,6 +813,9 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	// Carry the recomputed weighted-capacity verdict so a subsequent reload's divergence
 	// check compares against the value the gauge now holds (D74).
 	t.cfg.WeightedCapacitySane = cfg.WeightedCapacitySane
+	// Carry the recomputed failover-budget verdict so a subsequent reload's divergence
+	// check compares against the value the gauge now holds (T211, mirroring D74).
+	t.cfg.LivenessBudgetSane = cfg.LivenessBudgetSane
 	return nil
 }
 
@@ -879,6 +932,11 @@ func reloadWarnings(live, desired *config.Config) []string {
 	// path's link_bandwidth specifically, a pre-existing gap outside T144's scope).
 	// Comparing it directly here would be redundant at best and could double-warn.
 	lc.WeightedCapacitySane, dc.WeightedCapacitySane = nil, nil
+	// LivenessBudgetSane (T211) is likewise a value COMPUTED from Liveness+Paths, never an
+	// independent operator knob (toml:"-") — a change to it is always a symptom of a
+	// Liveness or Paths change, both already compared above. Comparing it directly here
+	// would be redundant and could double-warn; zero it out of the catch-all.
+	lc.LivenessBudgetSane, dc.LivenessBudgetSane = nil, nil
 	if !reflect.DeepEqual(lc, dc) {
 		w = append(w, "other config section changed — reload does not apply it; restart required")
 	}

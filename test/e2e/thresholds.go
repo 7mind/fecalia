@@ -99,15 +99,19 @@ const (
 	PLivenessProbeInterval = telemetry.DefaultProbeInterval
 	PLivenessDownAfter     = telemetry.DefaultDownAfter
 	PLivenessUpSuccesses   = telemetry.DefaultUpSuccesses
-	// PLivenessFailoverBudget is the analytical per-direction failover-recovery bound:
-	// the 1.4s worst-case detect (DownAfter + one interval, strict-'>' Tick) plus one
-	// interval of headroom, = DownAfter + 2 intervals = 1.6s (the sub-ms reroute is
-	// absorbed by that headroom). Both directions are symmetric and detect concurrently,
-	// so it bounds end-to-end BIDIRECTIONAL recovery. It MUST stay below P1RecoverySeconds
-	// (1.6s < 3s, a ~1.4s jitter margin); TestP1Failover asserts measured recovery against
-	// P1RecoverySeconds and reports its margin against this budget.
-	PLivenessFailoverBudget = PLivenessDownAfter + 2*PLivenessProbeInterval
 	// PLivenessDetectBudget is the single-path blackhole assertion deadline (harness
 	// slack added on top of the analytical detect), NOT the failover budget.
 	PLivenessDetectBudget = PLivenessDownAfter + 1500*time.Millisecond
 )
+
+// PLivenessFailoverBudget is the analytical per-direction failover-recovery bound:
+// the 1.4s worst-case detect (DownAfter + one interval, strict-'>' Tick) plus one
+// interval of headroom, = DownAfter + 2 intervals = 1.6s (the sub-ms reroute is
+// absorbed by that headroom). Both directions are symmetric and detect concurrently,
+// so it bounds end-to-end BIDIRECTIONAL recovery. It MUST stay below P1RecoverySeconds
+// (1.6s < 3s, a ~1.4s jitter margin); TestP1Failover asserts measured recovery against
+// P1RecoverySeconds and reports its margin against this budget. It DERIVES from the
+// single-source-of-truth telemetry.FailoverBudget with a zero ride_through (the default
+// no-dwell path) so the e2e budget can never drift from the daemon's own composition
+// (D16); it is a var, not a const, because FailoverBudget is a function call.
+var PLivenessFailoverBudget = telemetry.FailoverBudget(PLivenessDownAfter, 0, PLivenessProbeInterval)

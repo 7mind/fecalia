@@ -378,6 +378,9 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 		// Bind is always resolved by normalize() to the effective global default
 		// (I5, Q42); the fixture omits it, so it defaults to BindModeAuto.
 		Bind: BindModeAuto,
+		// LivenessBudgetSane is always computed by normalize() (T211): the default
+		// 1.6s failover budget fits the 3s P1 deadline, so the verdict is true.
+		LivenessBudgetSane: boolPtr(true),
 	}
 
 	if !reflect.DeepEqual(c, want) {
@@ -1884,8 +1887,9 @@ func TestPathMTURoundTrip(t *testing.T) {
 			// fixture omits the [liveness] block, so the golden shape must carry
 			// the documented default — otherwise this byte-identical assertion
 			// breaks once T200 and T203 compose.
-			Liveness: Liveness{DownAfter: defaultLivenessDownAfter},
-			Bind:     BindModeAuto,
+			Liveness:           Liveness{DownAfter: defaultLivenessDownAfter},
+			Bind:               BindModeAuto,
+			LivenessBudgetSane: boolPtr(true),
 		}
 		if !reflect.DeepEqual(c, want) {
 			t.Fatalf("Load() = %#v, want %#v", c, want)

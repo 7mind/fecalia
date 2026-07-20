@@ -111,7 +111,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   `wanbond_offered_load_fps` / `wanbond_aggregation_{engage,disengage}_threshold_fps`
   (per-peer gauges showing whether data-thrift striping is engaged, the smoothed
   offered load driving it, and the static engage/disengage thresholds; absent
-  under `active-backup`).
+  under `active-backup`). Independent of policy, a static
+  `wanbond_liveness_budget_sane` gauge flags a `[liveness]` `down_after` /
+  per-path `ride_through` widened past the 3s transparent-failover recovery
+  deadline (WARN-and-allow — it never blocks startup).
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a read-only,
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
   a `/ws` WebSocket every 1s) — loopback-only by default like `[metrics]`, but
