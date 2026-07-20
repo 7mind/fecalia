@@ -65,6 +65,16 @@ type pathSpec struct {
 	rateMbit int     // optional per-path bandwidth cap (netem rate); 0 = uncapped
 	lossPct  float64 // optional config-time uniform egress loss (netem loss); 0 = lossless
 
+	// outerMTU, when > 0, pins BOTH ends of this path's veth pair to that link MTU
+	// instead of the kernel default (1500), emulating a constrained underlay uplink
+	// (the field's 5G outer ~1400) whose real path MTU is below what the daemon
+	// assumes (T210, D85). It is orthogonal to the netem impairments above and only
+	// governs the physical link MTU. Zero (the default for every existing path) leaves
+	// the veth at its 1500 default, so DefaultPaths and every other caller are
+	// byte-for-byte unchanged. With the T201 Don't-Fragment policy an over-MTU outer
+	// send on such a link surfaces EMSGSIZE at the edge rather than IP-fragmenting.
+	outerMTU int
+
 	// deferEdgeAddr, when true, makes Setup create and bring up the edge veth WITHOUT
 	// assigning edgeIP to it: the interface exists (so tc/netem still applies and the
 	// link is up) but the configured source_addr is not yet owned by any interface —
@@ -146,6 +156,13 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 		top.run("ip", "link", "set", p.edgeVeth, "up")
 		top.nsenter("ip", "addr", "add", p.concIP+"/24", "dev", p.concVeth)
 		top.nsenter("ip", "link", "set", p.concVeth, "up")
+		// Pin a constrained link MTU on BOTH ends of the veth pair when the path
+		// declares one (T210, D85): the underlay path MTU the daemon's per-path `mtu`
+		// knob must be sized against. Zero leaves the 1500 default untouched.
+		if p.outerMTU > 0 {
+			top.run("ip", "link", "set", p.edgeVeth, "mtu", strconv.Itoa(p.outerMTU))
+			top.nsenter("ip", "link", "set", p.concVeth, "mtu", strconv.Itoa(p.outerMTU))
+		}
 		qargs := append([]string{"qdisc", "add", "dev", p.edgeVeth, "root", "netem"}, top.netemArgs(p)...)
 		top.run("tc", qargs...)
 	}
