@@ -2539,10 +2539,10 @@ archives:
 
 ## M82
 
-### T200 — planned
+### T200 — wip
 
 - createdAt: 2026-07-20T18:00:30.021Z
-- updatedAt: 2026-07-20T18:00:30.021Z
+- updatedAt: 2026-07-20T18:35:05.147Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-path mtu config knob (parse + validate + defaults + round-trip)
@@ -2670,10 +2670,10 @@ archives:
 
 ## M84
 
-### T203 — planned
+### T203 — wip
 
 - createdAt: 2026-07-20T18:00:51.134Z
-- updatedAt: 2026-07-20T18:23:33.390Z
+- updatedAt: 2026-07-20T18:35:09.090Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add [liveness] down_after + per-path ride_through config knobs (parse + validate + defaults + round-trip)"
@@ -2682,10 +2682,10 @@ archives:
 - suggestedModel: standard
 - ledgerRefs: ["defects:D86","goals:G23"]
 
-### T204 — planned
+### T204 — done
 
 - createdAt: 2026-07-20T18:00:57.363Z
-- updatedAt: 2026-07-20T18:00:57.363Z
+- updatedAt: 2026-07-20T18:44:38.677Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Down-side ride-through dwell in telemetry.Liveness (reproduce-first, default 0 = byte-identical)
@@ -2693,6 +2693,7 @@ archives:
 - acceptance: "TestLivenessRideThroughSurvivesMicroOutage fails first (observed DOWN at 1.3s) then passes; TestLivenessRideThroughEventualDown passes; the FULL existing liveness/prober suite passes UNMODIFIED (zero-value identity). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/..."
 - suggestedModel: frontier
 - ledgerRefs: ["defects:D86","goals:G23"]
+- resultCommit: 79a3944
 
 ### T207 — planned
 
