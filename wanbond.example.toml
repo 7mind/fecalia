@@ -415,6 +415,15 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8, ::1
                                    #   URL. No TLS in v1: a non-loopback bind
                                    #   sends this token in CLEARTEXT over the
                                    #   LAN.
+#
+# Addressing visibility: role/version/uptime, per-path bind mode/bound
+# device/declared link bandwidth+RTT, and the truncated WG public-key
+# fingerprint are shown on ANY binding. Per-path source/remote addressing and
+# the hub-endpoint list's addresses (incl. a concentrator's connected-edge
+# source addresses) are REDACTED SERVER-SIDE unless the monitor is ACTUALLY
+# bound to loopback (verified against the kernel-bound address, not this
+# `listen` string) — a token'd non-loopback bind still redacts them; the
+# token authorizes the bind, not addressing disclosure over it.
 
 # ── log: OPTIONAL ────────────────────────────────────────────────────────────
 [log]

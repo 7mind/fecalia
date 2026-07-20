@@ -127,7 +127,22 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   has no TLS in v1, so a non-loopback bind trades in an explicitly accepted
   cleartext-token risk (see [docs/design.md §Security
   model](docs/design.md#security-model) and [docs/install.md
-  §6c](docs/install.md#6c-monitoring-ui-monitor)).
+  §6c](docs/install.md#6c-monitoring-ui-monitor)). Beyond per-peer traffic/
+  quality, the dashboard shows: the daemon's effective **role** (edge/
+  concentrator), **version**, and process **uptime**; per-path **bind mode**
+  (`source`/`device`/`auto`) plus the resolved **bound device**, and the
+  operator-declared **link bandwidth/RTT**; the truncated WireGuard
+  public-key **fingerprint** (never the full key — read-only identity
+  disambiguation only); and, on any binding, an ordered **hub-endpoint
+  failover list** with the active entry highlighted against its standbys.
+  Per-path **source/remote addressing** (the bound local address and the
+  current wire remote — on the concentrator role, a connected edge's observed
+  source) and the endpoint list's **addresses** are the one REDACTABLE
+  surface: they are shown in full only when the monitor is ACTUALLY bound to
+  loopback (verified against the kernel-bound listener address, not the
+  configured `listen` string); on any non-loopback binding — including a
+  token-authorized one — they are redacted server-side and the dashboard
+  renders an "addressing hidden on non-loopback binding" placeholder instead.
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
   flip and the coalesced `"scheduler pacer shedding"` record while a pacing-

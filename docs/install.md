@@ -1536,6 +1536,25 @@ listen = "127.0.0.1:9101"
     trades off.
 - **Scope (v1)**: read-only. The dashboard shows live stats only — there is
   no control/config action reachable from it.
+- **What you see**: beyond per-peer throughput/loss/FEC, the dashboard shows
+  the daemon's role/version/uptime, each path's bind mode + bound device and
+  declared link bandwidth/RTT, the truncated WireGuard public-key
+  fingerprint, and the ordered hub-endpoint failover list with the active
+  entry highlighted — all of these are shown **on ANY binding**, loopback or
+  token'd non-loopback alike.
+  - **On a loopback binding**, you ALSO see full per-path addressing (each
+    path's bound source address and its current remote) and every endpoint's
+    address in the failover list; on the concentrator role, each connected
+    edge's observed source address is shown too.
+  - **On a token'd non-loopback binding**, the addressing above is redacted
+    server-side before it ever leaves the daemon: per-path cards show an
+    "addressing hidden on non-loopback binding" placeholder instead of the
+    source/remote, and the endpoint list shows only the active/standby
+    state with the address blanked. This holds even though you supplied a
+    valid token — the token authorizes the non-loopback bind itself, not
+    disclosure of addressing over it. Everything else (role/version/uptime/
+    bind-mode/link-params/fingerprint) is unaffected and still shown in
+    full.
 - **Build step**: the dashboard ships as an embedded frontend bundle built by
   `just web-build` (Vite + TypeScript), which `just build`/`just release` run
   automatically — see [§1](#1-build-the-release-binaries).

@@ -955,7 +955,20 @@ by `internal/device`:
   showing per-peer throughput/loss/FEC sparklines, fed by a `/ws` upgrade that
   pushes a fresh snapshot every 1s. Loopback-only by default, like `/metrics`,
   but MAY bind non-loopback when a `token` is configured (see *Security
-  model* below for the auth layer and the accepted residual risk).
+  model* below for the auth layer and the accepted residual risk). The
+  `MonitorSnapshot` wire contract (`monitor.go`) also carries a
+  `DaemonSnapshot` (role, version, process uptime, always shown); per-path
+  `bindMode`/`boundDevice` (runtime-resolved, via the `bind.PathTraffic`
+  pass-through) and `linkBandwidthBps`/`linkRttSeconds` (config-declared, via
+  a `monitor.Info` seam threaded from `device.Up`), both shown on any
+  binding; a truncated WireGuard public-key `wgPublicKeyFingerprint` (any
+  binding — see *Security model*); and the REDACTABLE surface gated by the
+  server-side loopback verdict: a per-path `addressing` block (`source`,
+  `remote`) and an ordered `endpoints` hub-failover list (`address`,
+  `active`) whose addresses are omitted/blanked and `addressingHidden` set
+  true when the monitor is not loopback-bound. `monitor.Info.Endpoints` is a
+  LIVE per-snapshot provider (not captured once at construction), so a hub
+  failover after startup is reflected in the next pushed frame.
 - `internal/wireaudit` — the requirement-6 DPI wire-format audit (pcap parse +
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
@@ -1187,6 +1200,48 @@ misbehaves subtly. Agents and contributors must preserve them.
   so the token does not linger in the URL bar or browser history. All token
   comparisons are constant-time (`crypto/subtle`). The dashboard is READ-ONLY in
   v1: it surfaces live per-peer stats only, no control/config actions.
+  - **Addressing redaction gate (Q62/Q64) — server-side, not client-side.**
+    Per-path `addressing` (`source`, `remote`) and the ordered `endpoints`
+    list's `address` values are the one REDACTABLE part of the extended
+    wire contract (role/version/uptime/bind-mode/link-params/fingerprint are
+    NOT gated — see the `internal/monitor` bullet above). `monitor.NewServer`
+    derives a `revealAddressing` verdict via **act-then-verify**:
+    `verifyLoopbackBind(ln.Addr())` inspects the address the KERNEL actually
+    bound (`net.Listen`'s own independent resolution), never the requested
+    `listen` string or a pre-bind DNS lookup — the same TOCTOU-safe
+    discipline the loopback bind guard itself uses. `BuildSnapshot`
+    (`internal/monitor/monitor.go`) then performs the redaction BEFORE
+    `json.Marshal`: when `revealAddressing` is false it omits every per-path
+    `AddressingSnapshot` (a nil, `omitempty` pointer — never serialized),
+    blanks every endpoint's `address` while preserving the ordered
+    active/standby shape, and sets `addressingHidden=true`. A **token-
+    authorized non-loopback bind still redacts** (Q62) — the token gates
+    *whether a non-loopback bind is permitted at all*, not whether addressing
+    is revealed on one. The frontend only ever reads `addressingHidden`; it
+    renders a placeholder and never attempts to reconstruct hidden values.
+    Proven at the marshaled-JSON-bytes level
+    (`TestBuildSnapshot_RedactsAddressingWhenNotRevealed` asserts no address
+    substring appears anywhere in the serialized frame) and at the raw
+    WebSocket-frame level in the e2e suite.
+  - **WG public-key disclosure (Q63): fingerprint only, on any binding — no
+    full key anywhere.** `wgPublicKeyFingerprint` is the truncated (~10
+    base64 chars) local WireGuard public key, present in `DaemonSnapshot`
+    regardless of binding or redaction state; the wire contract has
+    deliberately **no full-key field** to gate (`web/src/types.ts`'s header
+    comment enforces this: it MUST NOT add an optional `wgPublicKey?`). A
+    public key is not secret in WireGuard's threat model, but the literal
+    user answer to Q63 was the fingerprint-only option, not the more
+    permissive "full key, loopback-only" alternative that was also on offer
+    — so v1 ships strictly less disclosure than the security review's own
+    recommendation.
+  - **Concentrator edge-source addressing (Q64).** On the concentrator role,
+    each connected edge's roamed source address is exposed through the SAME
+    per-path `addressing.remote` field and the SAME `revealAddressing` gate
+    as the edge-side remote — `peerPathState.remote` already IS the edge's
+    last-observed source on that role, so no separate mechanism was needed.
+    Consequence: a concentrator's list of connected-client addresses is
+    visible ONLY on a loopback-bound monitor, never on a token-authorized
+    non-loopback one, consistent with Q64's "loopback-binding only" answer.
   - **Accepted residual risk: cleartext token over a non-loopback LAN bind
     (Q58, answer (a)).** The monitor serves plain HTTP — there is no TLS in v1.
     On a non-loopback `listen` (the explicit off-host opt-in above), the bearer
