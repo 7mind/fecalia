@@ -65,7 +65,7 @@ type Server struct {
 // the kernel-bound Addr is asserted loopback and the bind fails closed on any
 // mismatch (TOCTOU defense). When a token is set, a verified non-loopback bind
 // is permitted.
-func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Server, error) {
+func NewServer(addr, token string, src metrics.Source, info Info, logger log.Logger) (*Server, error) {
 	loopback, err := netutil.IsLoopbackHost(addr)
 	if err != nil {
 		return nil, fmt.Errorf("monitor: %w", err)
@@ -88,6 +88,13 @@ func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Serv
 			return nil, err
 		}
 	}
+	// revealAddressing is the Q62/Q64 gate (T219): full per-path addressing + hub
+	// endpoint addresses are revealed ONLY when the kernel ACTUALLY bound a
+	// loopback interface — the same act-then-verify verdict as the guard above,
+	// but computed unconditionally (a token-authorized NON-loopback bind still
+	// redacts, per Q62). BuildSnapshot performs the server-side redaction when
+	// this is false.
+	revealAddressing := verifyLoopbackBind(ln.Addr()) == nil
 
 	// srvCtx is cancelled by Close so the /ws push handlers (T165) stop promptly
 	// on shutdown — http.Server.Shutdown does NOT cancel a hijacked WebSocket
@@ -104,7 +111,7 @@ func NewServer(addr, token string, src metrics.Source, logger log.Logger) (*Serv
 
 	mux := http.NewServeMux()
 	mux.Handle("GET "+rootPath, staticHandler(static))
-	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, logger.Component("monitor")))
+	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, info, revealAddressing, logger.Component("monitor")))
 
 	// Wrap the mux with the auth layer (T164): unconditional Host/Origin
 	// validation on EVERY route + the /ws upgrade, plus optional static-token
@@ -194,7 +201,7 @@ func staticHandler(fsys fs.FS) http.Handler {
 // independent readers on one instance corrupt each other's rates. This handler
 // only consumes whatever Source it was given; the dedicated-instance wiring is
 // enforced at construction (T169 device wiring).
-func newWSHandler(srvCtx context.Context, src metrics.Source, logger log.Logger) http.HandlerFunc {
+func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealAddressing bool, logger log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -220,7 +227,7 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, logger log.Logger)
 		defer ticker.Stop()
 
 		for {
-			if err := writeSnapshot(loopCtx, c, src); err != nil {
+			if err := writeSnapshot(loopCtx, c, src, info, revealAddressing); err != nil {
 				// A context cancellation (client close or shutdown) is an
 				// expected teardown, not an application error.
 				if loopCtx.Err() == nil {
@@ -245,12 +252,12 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, logger log.Logger)
 // writeSnapshot marshals one MonitorSnapshot and writes it as a text frame,
 // bounded by writeTimeout so a slow/stuck client reader cannot wedge the push
 // goroutine.
-func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source) error {
-	// T214 fail-closed default: a zero Info and revealAddressing=false, so the
-	// monitor compiles and REDACTS all addressing by default. T219 threads the
-	// real monitor.Info and the kernel-bound loopback verdict through NewServer →
-	// newWSHandler → here, at which point a loopback binding reveals addressing.
-	payload, err := json.Marshal(BuildSnapshot(src, Info{}, false))
+func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source, info Info, revealAddressing bool) error {
+	// info + revealAddressing are threaded from NewServer (the kernel-bound
+	// loopback verdict); BuildSnapshot performs the Q62/Q64 server-side redaction
+	// when revealAddressing is false. info is a placeholder zero value until the
+	// device layer supplies the real identity/endpoint seam (T222).
+	payload, err := json.Marshal(BuildSnapshot(src, info, revealAddressing))
 	if err != nil {
 		return err
 	}

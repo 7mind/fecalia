@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -46,7 +48,7 @@ func TestServerWSPushesSnapshots(t *testing.T) {
 		peerNames: []string{""},
 	}
 
-	srv, err := NewServer("127.0.0.1:0", "", src, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", src, Info{}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -110,6 +112,120 @@ func TestServerWSPushesSnapshots(t *testing.T) {
 	}
 }
 
+// readOneSnapshot dials the server's /ws on loopback (optionally with a ?token=
+// bootstrap), reads one text frame, and returns the raw bytes + decoded snapshot.
+func readOneSnapshot(t *testing.T, srv *Server, token string) ([]byte, MonitorSnapshot) {
+	t.Helper()
+	port := srv.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("ws://127.0.0.1:%d/ws", port)
+	var opts *websocket.DialOptions
+	if token != "" {
+		opts = &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}}
+	}
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, resp, err := websocket.Dial(dialCtx, url, opts)
+	if err != nil {
+		t.Fatalf("websocket.Dial(%q): %v", url, err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	defer func() { _ = c.CloseNow() }()
+	readCtx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rcancel()
+	typ, data, err := c.Read(readCtx)
+	if err != nil {
+		t.Fatalf("Read frame: %v", err)
+	}
+	if typ != websocket.MessageText {
+		t.Fatalf("frame type = %v, want MessageText", typ)
+	}
+	var snap MonitorSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("unmarshal: %v (payload=%s)", err, data)
+	}
+	return data, snap
+}
+
+// addressingTestSrcInfo builds a Source + Info carrying distinct, unmistakable
+// addresses so a substring scan over the marshaled frame is unambiguous.
+func addressingTestSrcInfo() (fakeSource, Info) {
+	src := fakeSource{
+		paths: []metrics.PathSnapshot{
+			{Name: "starlink", State: telemetry.StateUp,
+				Source: netip.MustParseAddr("192.0.2.51"),
+				Remote: netip.MustParseAddrPort("203.0.113.51:51820")},
+		},
+		peerNames: []string{""},
+	}
+	info := Info{
+		Role: "edge", Version: "vT219", WGPublicKeyFingerprint: "Fp0aBcDeFg",
+		Endpoints: func() []EndpointSnapshot {
+			return []EndpointSnapshot{{Address: "198.51.100.51:51820", Active: true}}
+		},
+	}
+	return src, info
+}
+
+// TestServer_WSRevealsAddressingOnLoopback: a loopback-bound monitor reveals the
+// full per-path addressing + endpoint addresses (T219: the reveal verdict is the
+// kernel-bound Addr), and the Info seam is threaded end-to-end into the frame.
+func TestServer_WSRevealsAddressingOnLoopback(t *testing.T) {
+	src, info := addressingTestSrcInfo()
+	srv, err := NewServer("127.0.0.1:0", "", src, info, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+	defer closeMonitor(t, srv)
+
+	data, snap := readOneSnapshot(t, srv, "")
+	if snap.AddressingHidden {
+		t.Fatalf("loopback bind must reveal addressing (addressingHidden=false)")
+	}
+	if len(snap.Paths) != 1 || snap.Paths[0].Addressing == nil || snap.Paths[0].Addressing.Source != "192.0.2.51" {
+		t.Fatalf("addressing not revealed on loopback: %s", data)
+	}
+	if snap.WGPublicKeyFingerprint != "Fp0aBcDeFg" {
+		t.Fatalf("fingerprint not threaded through Info: %q", snap.WGPublicKeyFingerprint)
+	}
+	if !strings.Contains(string(data), "203.0.113.51") {
+		t.Fatalf("revealed frame missing the remote address: %s", data)
+	}
+}
+
+// TestServer_WSRedactsAddressingOnNonLoopback: a token-authorized NON-loopback
+// bind must REDACT addressing server-side — verifyLoopbackBind(ln.Addr()) fails
+// on the wildcard bind, so revealAddressing is false. No path source/remote or
+// endpoint address may appear in the frame bytes; the fingerprint (Q63) survives.
+func TestServer_WSRedactsAddressingOnNonLoopback(t *testing.T) {
+	src, info := addressingTestSrcInfo()
+	const token = "secret-token"
+	srv, err := NewServer("0.0.0.0:0", token, src, info, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+	defer closeMonitor(t, srv)
+
+	data, snap := readOneSnapshot(t, srv, token)
+	if !snap.AddressingHidden {
+		t.Fatalf("non-loopback bind must redact addressing (addressingHidden=true): %s", data)
+	}
+	for _, a := range []string{"192.0.2.51", "203.0.113.51", "198.51.100.51"} {
+		if strings.Contains(string(data), a) {
+			t.Fatalf("redacted non-loopback frame leaked address %q: %s", a, data)
+		}
+	}
+	if snap.Paths[0].Addressing != nil {
+		t.Fatalf("path addressing must be nil off-loopback, got %+v", snap.Paths[0].Addressing)
+	}
+	if snap.WGPublicKeyFingerprint != "Fp0aBcDeFg" {
+		t.Fatalf("fingerprint must survive redaction (Q63): %q", snap.WGPublicKeyFingerprint)
+	}
+}
+
 // TestServerWSCloseStopsPush asserts prompt, leak-free teardown: with a client
 // connected and NOT reading further, Close(ctx) cancels the push handler
 // promptly (via the server context) and returns without hanging, and goleak
@@ -118,7 +234,7 @@ func TestServerWSPushesSnapshots(t *testing.T) {
 func TestServerWSCloseStopsPush(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	srv, err := NewServer("127.0.0.1:0", "", fakeSource{peerNames: []string{""}}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", fakeSource{peerNames: []string{""}}, Info{}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -174,7 +290,7 @@ func TestNonLoopbackWithoutTokenRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, err := NewServer(tc.addr, "", fakeSource{}, testLogger(t))
+			srv, err := NewServer(tc.addr, "", fakeSource{}, Info{}, testLogger(t))
 			if err == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -196,7 +312,7 @@ func TestNonLoopbackWithoutTokenRefused(t *testing.T) {
 func TestLoopbackBindAccepted(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
 		t.Run(addr, func(t *testing.T) {
-			srv, err := NewServer(addr, "", fakeSource{}, testLogger(t))
+			srv, err := NewServer(addr, "", fakeSource{}, Info{}, testLogger(t))
 			if err != nil {
 				t.Fatalf("NewServer(%q): %v", addr, err)
 			}
@@ -216,7 +332,7 @@ func TestLoopbackBindAccepted(t *testing.T) {
 // fails EADDRINUSE. The first server binds 127.0.0.1:0, its OS-assigned port is
 // read back from Addr(), and the re-bind targets that exact port.
 func TestCloseReleasesPortWithoutStart(t *testing.T) {
-	srv, err := NewServer("127.0.0.1:0", "", fakeSource{}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", fakeSource{}, Info{}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -230,7 +346,7 @@ func TestCloseReleasesPortWithoutStart(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	srv2, err := NewServer(addr, "", fakeSource{}, testLogger(t))
+	srv2, err := NewServer(addr, "", fakeSource{}, Info{}, testLogger(t))
 	if err != nil {
 		t.Fatalf("re-bind on %q after Close failed (leaked listener): %v", addr, err)
 	}
@@ -247,7 +363,7 @@ func TestCloseReleasesPortWithoutStart(t *testing.T) {
 // regression that inverts the token check and refuses authorized binds (or,
 // worse, accepts unauthenticated ones). Close must be clean.
 func TestNonLoopbackWithTokenAccepted(t *testing.T) {
-	srv, err := NewServer("0.0.0.0:0", "secret-token", fakeSource{}, testLogger(t))
+	srv, err := NewServer("0.0.0.0:0", "secret-token", fakeSource{}, Info{}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer(\"0.0.0.0:0\", token): %v", err)
 	}
@@ -269,7 +385,7 @@ func TestNonLoopbackWithTokenAccepted(t *testing.T) {
 // redirects (so the ?token= bootstrap 302 is observable).
 func startAuthTestServer(t *testing.T, token string) (*Server, string) {
 	t.Helper()
-	srv, err := NewServer("127.0.0.1:0", token, fakeSource{}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", token, fakeSource{}, Info{}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

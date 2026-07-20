@@ -68,7 +68,7 @@ func (s *syncSession) set(snap metrics.SessionSnapshot) {
 func dialMonitor(t *testing.T, src metrics.Source) (readSnap func(*testing.T) monitor.MonitorSnapshot, cleanup func()) {
 	t.Helper()
 
-	srv, err := monitor.NewServer("127.0.0.1:0", "", src, discardLogger(t))
+	srv, err := monitor.NewServer("127.0.0.1:0", "", src, monitor.Info{}, discardLogger(t))
 	if err != nil {
 		t.Fatalf("monitor.NewServer: %v", err)
 	}

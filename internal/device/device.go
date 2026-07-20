@@ -638,7 +638,7 @@ func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 	if sameAddr {
 		t.stopMonitorLocked()
 	}
-	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.log)
+	srv, err := monitor.NewServer(listen, token, t.monitorSrc, monitor.Info{}, t.log)
 	if err != nil {
 		return err
 	}
