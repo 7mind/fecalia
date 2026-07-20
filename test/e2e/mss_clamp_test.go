@@ -55,7 +55,7 @@ endpoint = "%s:%d"
 allowed_ips = ["%s/32"]
 
 [log]
-level = "error"
+level = "info"
 `, psk, p.edgeIP, edgePriv, concPub, p.concIP, listenPort, concInner))
 
 	// The rule and the persistent device both outlive a crash, so clean BOTH up so a wedged
@@ -69,6 +69,12 @@ level = "error"
 	edge := top.startProc(t, "edge", bin, "--config", cfg)
 	if !top.waitLink(tunDev, false, 5*time.Second) {
 		t.Fatalf("wanbond0 never appeared\n%s", edge.log())
+	}
+	// Gate on the daemon's OWN readiness marker before reading the clamp: wanbond0
+	// appearing (waitLink) only means up() reached "interface up"; the clamp is installed
+	// LATER, after up() fully returns. Racing the count read against that install flakes.
+	if !waitLogContains(edge, "tunnel interface up", 5*time.Second) {
+		t.Fatalf("edge never finished bring-up (no \"tunnel interface up\")\n%s", edge.log())
 	}
 	if got := top.mssClampCount(t, "iptables"); got != 1 {
 		t.Fatalf("IPv4 MSS clamp count after Up = %d, want 1\n%s", got, edge.log())
@@ -87,6 +93,16 @@ level = "error"
 	edge2 := top.startProc(t, "edge", bin, "--config", cfg)
 	if !top.waitLink(tunDev, false, 5*time.Second) {
 		t.Fatalf("wanbond0 never re-appeared after restart\n%s", edge2.log())
+	}
+	// tun_persist keeps wanbond0 across the crash, so the waitLink above is satisfied by the
+	// LEFTOVER interface and does NOT mean edge2 finished its own bring-up. Gate on edge2's
+	// OWN readiness marker ("tunnel interface up", logged only after Up() re-adopts the
+	// device and re-installs the clamp, and just before main registers its signal handler):
+	// otherwise the idempotency assertion races edge2's re-install, and the stopAndWait
+	// below can SIGTERM edge2 before signal.Notify is set — hitting the default (terminate)
+	// disposition, so Close/removeMSSClamp never runs and the crash-leaked rule survives.
+	if !waitLogContains(edge2, "tunnel interface up", 5*time.Second) {
+		t.Fatalf("edge2 never finished re-adopting the persistent device (no \"tunnel interface up\")\n%s", edge2.log())
 	}
 	if got := top.mssClampCount(t, "iptables"); got != 1 {
 		t.Fatalf("IPv4 MSS clamp count after crash+restart = %d, want 1 (idempotent, no duplicate)\n%s", got, edge2.log())
