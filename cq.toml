@@ -49,3 +49,6 @@
 # git-object backend.
 # [ledger]
 #   backend = "git-object"
+
+[ledger]
+  backend = "xdg"
