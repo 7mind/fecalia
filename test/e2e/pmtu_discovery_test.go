@@ -33,18 +33,16 @@ package e2e
 //     (DOWN->UP re-probe) grows wanbond0 back to InnerMTU(1500) after the loosening dwell.
 //  4. edge-syn-mss-clamped: an edge-originated TCP SYN carries MSS <= innerMTU-40 (T208).
 //
-// WIRING STATUS (as of T212). Asserts (1)/(2)/(3) depend on PMTU auto-discovery being
-// INSTANTIATED in the live datapath — telemetry.PMTUDiscovery (T206) driving the metrics
-// Source's PathSnapshot.PMTU, which the T209 resizer folds. That instantiation is NOT yet
-// present: NewPMTUDiscovery is never constructed by the tunnel/Source, and
-// internal/device.metricsSource.Paths() never populates PathSnapshot.PMTU (it is always 0),
-// so the resizer sees only the configured-or-default path MTU. With NO `mtu` knob, wanbond0
-// therefore stays at InnerMTU(1500) and never auto-shrinks/regrows. Those three subtests are
-// written in full and gated on skipUntilPMTUDiscoveryWired so the hardware tier does NOT
-// fake a pass; flip the skip once the datapath discovery-instantiation follow-up lands.
-// Assert (4) — the T208 edge-originated MSS clamp — IS wired at device.Up (mangle/OUTPUT
-// TCPMSS --clamp-mss-to-pmtu, derived from the LIVE wanbond0 MTU), independent of discovery,
-// so it runs for real against whatever MTU wanbond0 currently carries.
+// WIRING STATUS (as of D88 / T226-T229). Asserts (1)/(2)/(3) exercise PMTU auto-discovery
+// now INSTANTIATED in the live datapath: telemetry.EchoAwaitProbe is constructed per path
+// in the bind (T227), device.Up drives a per-path telemetry.PMTUDiscovery on a dedicated
+// goroutine (T228), and internal/device.metricsSource.Paths() populates PathSnapshot.PMTU
+// from the converged value (T229), which the T209 resizer folds — so with NO `mtu` knob
+// wanbond0 auto-shrinks to a constrained path and regrows on roam. skipUntilPMTUDiscoveryWired
+// is therefore now a NO-OP: all four asserts run for real. Assert (4) — the T208
+// edge-originated MSS clamp — has always been wired at device.Up (mangle/OUTPUT TCPMSS
+// --clamp-mss-to-pmtu, derived from the LIVE wanbond0 MTU) and re-derives after a
+// discovery-driven resize.
 //
 // This file binds no /metrics listener (the asserts read the link MTU and the on-wire SYN
 // directly), so it claims no port in netns.go's metricsPortRegistry. Per AGENTS.md the netns
@@ -169,7 +167,11 @@ func TestE2EPMTUDiscovery(t *testing.T) {
 		// then GROWS wanbond0 back to InnerMTU(1500) after the loosening dwell (mtuResizeDwell).
 		top.setPathMTU(constrained.name, bind.DefaultPathMTU)
 		top.Blackhole(constrained.name)
-		time.Sleep(500 * time.Millisecond)
+		// Hold the blackhole LONGER than the liveness DownAfter (telemetry.DefaultDownAfter
+		// = 1200ms) so the path genuinely transitions UP->DOWN; a shorter drop never marks it
+		// DOWN and so never yields the DOWN->UP re-probe this assert exercises. The healthy
+		// path keeps the tunnel alive throughout.
+		time.Sleep(2500 * time.Millisecond)
 		top.Restore(constrained.name)
 
 		grown := bind.InnerMTU(bind.DefaultPathMTU, false)
@@ -213,17 +215,15 @@ func TestE2EPMTUDiscovery(t *testing.T) {
 	})
 }
 
-// skipUntilPMTUDiscoveryWired skips a subtest whose assertion depends on PMTU auto-discovery
-// being instantiated in the live datapath — which it is NOT yet (see the file header). It
-// skips (never fakes a pass) so the hardware tier records an honest SKIP; flip this to a
-// no-op once the datapath PMTUDiscovery-instantiation follow-up lands.
+// skipUntilPMTUDiscoveryWired is now a NO-OP: PMTU auto-discovery IS instantiated in the
+// live datapath (D88 / T226-T229) — telemetry.EchoAwaitProbe is constructed per path in
+// the bind (T227), device.Up drives a per-path telemetry.PMTUDiscovery on a dedicated
+// goroutine (T228), and internal/device.metricsSource.Paths() populates PathSnapshot.PMTU
+// from the discovered value (T229), so the T209 resizer auto-shrinks/regrows wanbond0 with
+// NO mtu knob. It was a t.Skip until that datapath instantiation landed; it is kept as a
+// no-op so the three discovery subtests retain a documented call site.
 func skipUntilPMTUDiscoveryWired(t *testing.T) {
 	t.Helper()
-	t.Skip("PMTU auto-discovery (telemetry.PMTUDiscovery, T206) is not yet instantiated in the live datapath: " +
-		"NewPMTUDiscovery is never constructed by the tunnel/metrics Source, and internal/device.metricsSource.Paths() " +
-		"never populates PathSnapshot.PMTU (always 0), so the T209 runtime resizer folds only the configured-or-default " +
-		"path MTU — a bond with NO mtu knob keeps wanbond0 at InnerMTU(1500) and never auto-shrinks/regrows. " +
-		"Un-skip once datapath PMTUDiscovery instantiation lands (D85 auto-discovery follow-up).")
 }
 
 // waitLinkMTU polls dev's link MTU (in the peer netns when ns is true) until it equals want
