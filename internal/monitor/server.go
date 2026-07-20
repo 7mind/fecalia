@@ -246,7 +246,11 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, logger log.Logger)
 // bounded by writeTimeout so a slow/stuck client reader cannot wedge the push
 // goroutine.
 func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source) error {
-	payload, err := json.Marshal(BuildSnapshot(src))
+	// T214 fail-closed default: a zero Info and revealAddressing=false, so the
+	// monitor compiles and REDACTS all addressing by default. T219 threads the
+	// real monitor.Info and the kernel-bound loopback verdict through NewServer →
+	// newWSHandler → here, at which point a loopback binding reveals addressing.
+	payload, err := json.Marshal(BuildSnapshot(src, Info{}, false))
 	if err != nil {
 		return err
 	}

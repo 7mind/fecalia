@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -223,6 +224,22 @@ type PathSnapshot struct {
 	Estimate telemetry.Estimate
 	// State is the per-path liveness verdict, read verbatim from telemetry.
 	State telemetry.PathState
+	// The following addressing fields are the runtime-resolved per-path
+	// networking metadata the monitoring UI surfaces (G21). They are DEFINED here
+	// (T214) but the value-wiring from bind.PathTraffic through
+	// internal/device/metrics.go is T220's job — they are zero-valued until then.
+	// The Prometheus collector ignores them (no new series); they exist solely for
+	// the monitor.BuildSnapshot read path.
+	//
+	// BindMode is the resolved bind mode ("source"|"device"|"auto"); BoundDevice
+	// the resolved SO_BINDTODEVICE interface name (empty when source-pinned).
+	BindMode    string
+	BoundDevice string
+	// Source is the bound local source address of the path's socket; Remote the
+	// current wire remote the path points at (on the concentrator role, the
+	// connected edge's observed source). Zero (invalid) until the path is bound.
+	Source netip.Addr
+	Remote netip.AddrPort
 }
 
 // ReseqSnapshot is the current per-peer resequencer signal set the exposition layer

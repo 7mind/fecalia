@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,96 @@ func (f fakeSource) Reseq() []metrics.ReseqSnapshot             { return f.reseq
 func (f fakeSource) Aggregation() []metrics.AggregationSnapshot { return f.aggregation }
 func (f fakeSource) Session() metrics.SessionSnapshot           { return f.session }
 func (f fakeSource) PeerNames() []string                        { return f.peerNames }
+
+// TestBuildSnapshot_ExtendedFields exercises the G21 contract extension (T214):
+// the daemon identity, per-path bind metadata + declared link params + the
+// redactable addressing block, the ordered endpoint list from the LIVE Info
+// provider, and the truncated WG fingerprint. It also asserts the server-side
+// redaction gate: with revealAddressing=false the per-path addressing block is
+// nil, endpoint addresses are blanked (active/standby shape kept), the
+// fingerprint survives (Q63 — no full key), AddressingHidden is set, and the
+// redacted source address is absent from the marshaled frame.
+func TestBuildSnapshot_ExtendedFields(t *testing.T) {
+	src := fakeSource{
+		paths: []metrics.PathSnapshot{
+			{
+				Peer:        "",
+				Name:        "starlink",
+				State:       telemetry.StateUp,
+				BindMode:    "device",
+				BoundDevice: "eth0",
+				Source:      netip.MustParseAddr("192.168.1.10"),
+				Remote:      netip.MustParseAddrPort("203.0.113.7:51820"),
+			},
+		},
+		peerNames: []string{""},
+	}
+	info := Info{
+		Role:                   "edge",
+		Version:                "v1.2.3",
+		UptimeSeconds:          42,
+		WGPublicKeyFingerprint: "AbCdEfGhIj",
+		PathLinks: map[PathKey]PathLink{
+			{Peer: "", Name: "starlink"}: {LinkBandwidthBps: 50e6, LinkRttSeconds: 0.045},
+		},
+		Endpoints: func() []EndpointSnapshot {
+			return []EndpointSnapshot{
+				{Address: "203.0.113.7:51820", Active: true},
+				{Address: "198.51.100.7:51820", Active: false},
+			}
+		},
+	}
+
+	// revealAddressing = true (loopback binding): every new field populated.
+	snap := BuildSnapshot(src, info, true)
+	if snap.Daemon.Role != "edge" || snap.Daemon.Version != "v1.2.3" || snap.Daemon.UptimeSeconds != 42 {
+		t.Fatalf("daemon = %+v", snap.Daemon)
+	}
+	if snap.WGPublicKeyFingerprint != "AbCdEfGhIj" {
+		t.Fatalf("fingerprint = %q", snap.WGPublicKeyFingerprint)
+	}
+	if snap.AddressingHidden {
+		t.Fatalf("AddressingHidden must be false when revealed")
+	}
+	if len(snap.Paths) != 1 {
+		t.Fatalf("paths len = %d", len(snap.Paths))
+	}
+	p := snap.Paths[0]
+	if p.BindMode != "device" || p.BoundDevice != "eth0" {
+		t.Fatalf("bind metadata = %q/%q", p.BindMode, p.BoundDevice)
+	}
+	if p.LinkBandwidthBps != 50e6 || p.LinkRttSeconds != 0.045 {
+		t.Fatalf("link metadata = %v/%v", p.LinkBandwidthBps, p.LinkRttSeconds)
+	}
+	if p.Addressing == nil || p.Addressing.Source != "192.168.1.10" || p.Addressing.Remote != "203.0.113.7:51820" {
+		t.Fatalf("addressing = %+v", p.Addressing)
+	}
+	if len(snap.Endpoints) != 2 || snap.Endpoints[0].Address != "203.0.113.7:51820" || !snap.Endpoints[0].Active {
+		t.Fatalf("endpoints = %+v", snap.Endpoints)
+	}
+
+	// revealAddressing = false (non-loopback binding): server-side redaction.
+	red := BuildSnapshot(src, info, false)
+	if !red.AddressingHidden {
+		t.Fatalf("AddressingHidden must be true when not revealed")
+	}
+	if red.Paths[0].Addressing != nil {
+		t.Fatalf("addressing must be nil when redacted, got %+v", red.Paths[0].Addressing)
+	}
+	if red.WGPublicKeyFingerprint != "AbCdEfGhIj" {
+		t.Fatalf("fingerprint must survive redaction (Q63 fingerprint-only), got %q", red.WGPublicKeyFingerprint)
+	}
+	if len(red.Endpoints) != 2 || red.Endpoints[0].Address != "" || !red.Endpoints[0].Active {
+		t.Fatalf("endpoint addresses must be blanked but active/standby kept, got %+v", red.Endpoints)
+	}
+	b, err := json.Marshal(red)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "192.168.1.10") || strings.Contains(string(b), "203.0.113.7") {
+		t.Fatalf("redacted frame leaked an address: %s", b)
+	}
+}
 
 // TestBuildSnapshotSinglePeer feeds BuildSnapshot a single-bound-peer Source
 // (PeerNames() reporting exactly one name, "" per the metrics package's
@@ -93,7 +184,7 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 		peerNames: []string{""},
 	}
 
-	snap := BuildSnapshot(src)
+	snap := BuildSnapshot(src, Info{}, true)
 
 	if snap.MultiPeer {
 		t.Fatalf("MultiPeer = true, want false for a single-bound-peer Source")
@@ -218,7 +309,7 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 		peerNames: []string{"east", "west"},
 	}
 
-	snap := BuildSnapshot(src)
+	snap := BuildSnapshot(src, Info{}, true)
 
 	if !snap.MultiPeer {
 		t.Fatalf("MultiPeer = false, want true for a 2-peer Source")
@@ -284,7 +375,7 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 // Reseq/Aggregation sets marshal as `[]`, not `null` — a nil slice would force
 // the frontend to null-check every field before iterating.
 func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
-	snap := BuildSnapshot(fakeSource{peerNames: []string{""}})
+	snap := BuildSnapshot(fakeSource{peerNames: []string{""}}, Info{}, true)
 
 	b, err := json.Marshal(snap)
 	if err != nil {

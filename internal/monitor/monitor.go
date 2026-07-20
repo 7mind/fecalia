@@ -6,9 +6,24 @@
 package monitor
 
 import (
+	"net/netip"
+
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
+
+// AddressingSnapshot is the JSON encoding of one path's REDACTABLE addressing
+// block (G21, Q61/Q62): the bound local source address and the current wire
+// remote (on the concentrator role, the connected edge's observed source). It is
+// present on a PathSnapshot ONLY when addressing is revealed (a loopback-bound
+// monitor); on a non-loopback binding BuildSnapshot omits it entirely (the
+// pointer is nil) and sets MonitorSnapshot.AddressingHidden — the redaction
+// happens server-side, before serialization, so a non-loopback observer never
+// receives these values. See BuildSnapshot.
+type AddressingSnapshot struct {
+	Source string `json:"source"`
+	Remote string `json:"remote"`
+}
 
 // PathSnapshot is the JSON encoding of one per-(peer,path) entry
 // (metrics.PathSnapshot): traffic counters fused with the telemetry plane's
@@ -24,6 +39,23 @@ type PathSnapshot struct {
 	JitterSeconds float64 `json:"jitterSeconds"`
 	Loss          float64 `json:"loss"`
 	Up            bool    `json:"up"`
+	// BindMode is the path's runtime-resolved bind mode ("source"|"device"|
+	// "auto"), and BoundDevice the resolved SO_BINDTODEVICE interface name (empty
+	// when source-pinned) — both runtime-resolved and shown on ANY binding (Q60).
+	// They ride the metrics.PathSnapshot pass-through (T220 wires the values); we
+	// collapse the separate "source interface" candidate into BoundDevice (R242).
+	BindMode    string `json:"bindMode"`
+	BoundDevice string `json:"boundDevice"`
+	// LinkBandwidthBps and LinkRttSeconds are the operator-DECLARED link
+	// parameters for this path (config, Q60), 0 when undeclared. They are sourced
+	// from monitor.Info (config-declared), distinct from the runtime-resolved
+	// fields above, and shown on any binding.
+	LinkBandwidthBps float64 `json:"linkBandwidthBps"`
+	LinkRttSeconds   float64 `json:"linkRttSeconds"`
+	// Addressing is the per-path REDACTABLE addressing block (Q61/Q62): non-nil
+	// only when addressing is revealed (loopback binding); nil (omitted) on a
+	// non-loopback binding. See AddressingSnapshot.
+	Addressing *AddressingSnapshot `json:"addressing,omitempty"`
 }
 
 // FECSnapshot is the JSON encoding of one per-peer connection-scoped FEC
@@ -72,13 +104,70 @@ type SessionSnapshot struct {
 	LastHandshakeSeconds float64 `json:"lastHandshakeSeconds"`
 }
 
+// DaemonSnapshot is the JSON encoding of the process-scoped identity fields
+// (G21, Q60): the effective role, the daemon version/build string, and the
+// process uptime in seconds. Sourced from monitor.Info, shown on any binding.
+type DaemonSnapshot struct {
+	Role          string  `json:"role"`
+	Version       string  `json:"version"`
+	UptimeSeconds float64 `json:"uptimeSeconds"`
+}
+
+// EndpointSnapshot is one entry of the ordered hub-endpoint list with its
+// active-vs-standby failover state (G21, Q61c). Address is inside the REDACTABLE
+// addressing surface: on a non-loopback binding BuildSnapshot blanks it while
+// preserving the ordered active/standby shape. Empty on the concentrator (which
+// has no configured endpoint list) — the frontend omits the section.
+type EndpointSnapshot struct {
+	Address string `json:"address"`
+	Active  bool   `json:"active"`
+}
+
+// PathKey identifies a per-(peer,path) entry for monitor.Info lookups, matching
+// metrics.Source's (peer,path) keying (Peer is "" on a single-bound-peer Source).
+type PathKey struct {
+	Peer string
+	Name string
+}
+
+// PathLink carries the operator-declared per-path link parameters that are NOT
+// on the metrics.Source hot path (config-derived, Q60).
+type PathLink struct {
+	LinkBandwidthBps float64
+	LinkRttSeconds   float64
+}
+
+// Info is the monitor-local read seam for the identity/config/failover data the
+// prometheus-facing metrics.Source deliberately does NOT carry (keeping that
+// interface narrow — no new Prometheus series). It is supplied by the device
+// layer (wired in T222) and consumed by BuildSnapshot. The zero value is the
+// FAIL-CLOSED default (no daemon identity, no endpoints, empty fingerprint) that
+// server.go passes until the real Info is threaded in T219/T222.
+type Info struct {
+	// Role, Version, UptimeSeconds populate DaemonSnapshot.
+	Role          string
+	Version       string
+	UptimeSeconds float64
+	// PathLinks carries the config-declared per-path link params, keyed by PathKey.
+	PathLinks map[PathKey]PathLink
+	// WGPublicKeyFingerprint is the truncated (~10 base64 chars) fingerprint of the
+	// local WG public key (Q63 — fingerprint ONLY, never the full key). Shown on any
+	// binding.
+	WGPublicKeyFingerprint string
+	// Endpoints is a LIVE provider evaluated INSIDE BuildSnapshot on every snapshot
+	// (freshness, R242): it returns the ordered hub-endpoint list with the active
+	// entry flagged, so a hub failover after startup is reflected. Nil (or a nil
+	// return) means no endpoint list (e.g. the concentrator role).
+	Endpoints func() []EndpointSnapshot
+}
+
 // MonitorSnapshot is the JSON wire-format contract the monitoring HTTP
 // endpoint (W2) serves to the frontend: a full point-in-time mirror of a
-// metrics.Source read model. PeerNames and MultiPeer mirror the metrics
-// package's peer-label rule (see internal/metrics/metrics.go): MultiPeer is
-// true, and per-(peer,path)/FEC/Reseq/Aggregation entries carry a meaningful
-// Peer, only when 2+ peers are bound; on a single-bound-peer Source, Peer is
-// "" throughout. See BuildSnapshot.
+// metrics.Source read model, plus the G21 identity/addressing/failover surface.
+// PeerNames and MultiPeer mirror the metrics package's peer-label rule (see
+// internal/metrics/metrics.go): MultiPeer is true, and per-(peer,path)/FEC/
+// Reseq/Aggregation entries carry a meaningful Peer, only when 2+ peers are
+// bound; on a single-bound-peer Source, Peer is "" throughout. See BuildSnapshot.
 type MonitorSnapshot struct {
 	Paths       []PathSnapshot        `json:"paths"`
 	FEC         []FECSnapshot         `json:"fec"`
@@ -87,15 +176,56 @@ type MonitorSnapshot struct {
 	Session     SessionSnapshot       `json:"session"`
 	PeerNames   []string              `json:"peerNames"`
 	MultiPeer   bool                  `json:"multiPeer"`
+	// Daemon carries the process identity (role/version/uptime, Q60).
+	Daemon DaemonSnapshot `json:"daemon"`
+	// Endpoints is the ordered hub-endpoint list with active/standby state
+	// (Q61c); endpoint addresses are blanked on a non-loopback binding (redacted),
+	// while the ordered active/standby shape is preserved. Empty on the
+	// concentrator role.
+	Endpoints []EndpointSnapshot `json:"endpoints"`
+	// WGPublicKeyFingerprint is the truncated local WG public-key fingerprint
+	// (Q63 — fingerprint ONLY; there is deliberately NO full-key field). Present
+	// on any binding.
+	WGPublicKeyFingerprint string `json:"wgPublicKeyFingerprint"`
+	// AddressingHidden is true when the monitor is NOT bound to loopback and the
+	// per-path addressing blocks + endpoint addresses have been redacted
+	// server-side (Q62). The frontend renders a "hidden on non-loopback binding"
+	// placeholder; it never reconstructs the hidden values.
+	AddressingHidden bool `json:"addressingHidden"`
+}
+
+// addrString renders a netip.Addr, "" when unset/invalid (so a not-yet-bound
+// path yields an empty string rather than the "invalid IP" sentinel).
+func addrString(a netip.Addr) string {
+	if a.IsValid() {
+		return a.String()
+	}
+	return ""
+}
+
+// addrPortString renders a netip.AddrPort, "" when unset/invalid.
+func addrPortString(a netip.AddrPort) string {
+	if a.IsValid() {
+		return a.String()
+	}
+	return ""
 }
 
 // BuildSnapshot reads src exactly once — one call each to Paths/FEC/Reseq/
-// Aggregation/Session/PeerNames — and marshals the result into the
-// MonitorSnapshot wire format: telemetry.Estimate's RTT/Jitter and the
-// session's LastHandshakeAge are rendered as float seconds, and MultiPeer is
-// derived from len(PeerNames())>1, matching the metrics package's peer-label
-// rule (see internal/metrics/metrics.go).
-func BuildSnapshot(src metrics.Source) MonitorSnapshot {
+// Aggregation/Session/PeerNames — folds in the monitor.Info identity/failover
+// seam (info.Endpoints is evaluated here, once, so the active-hub state is
+// fresh per snapshot), and marshals the result into the MonitorSnapshot wire
+// format. telemetry.Estimate's RTT/Jitter and the session's LastHandshakeAge
+// are rendered as float seconds, and MultiPeer is derived from
+// len(PeerNames())>1, matching the metrics package's peer-label rule.
+//
+// revealAddressing gates the Q62/Q64 addressing surface SERVER-SIDE: when false
+// (any non-loopback binding), every per-path AddressingSnapshot is omitted (nil)
+// and every endpoint Address is blanked while its active/standby shape is kept,
+// and AddressingHidden is set — so a redacted value provably never reaches the
+// wire. The truncated WG fingerprint (Q63) is NOT part of the redactable set: it
+// is present on any binding, and there is deliberately no full key to gate.
+func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) MonitorSnapshot {
 	paths := src.Paths()
 	fec := src.FEC()
 	reseqSnapshots := src.Reseq()
@@ -114,10 +244,17 @@ func BuildSnapshot(src metrics.Source) MonitorSnapshot {
 		},
 		PeerNames: peerNames,
 		MultiPeer: len(peerNames) > 1,
+		Daemon: DaemonSnapshot{
+			Role:          info.Role,
+			Version:       info.Version,
+			UptimeSeconds: info.UptimeSeconds,
+		},
+		WGPublicKeyFingerprint: info.WGPublicKeyFingerprint,
+		AddressingHidden:       !revealAddressing,
 	}
 
 	for i, p := range paths {
-		out.Paths[i] = PathSnapshot{
+		ps := PathSnapshot{
 			Name:          p.Name,
 			Peer:          p.Peer,
 			TxBytes:       p.TxBytes,
@@ -127,6 +264,32 @@ func BuildSnapshot(src metrics.Source) MonitorSnapshot {
 			JitterSeconds: p.Estimate.Jitter.Seconds(),
 			Loss:          p.Estimate.Loss,
 			Up:            p.State == telemetry.StateUp,
+			BindMode:      p.BindMode,
+			BoundDevice:   p.BoundDevice,
+		}
+		if link, ok := info.PathLinks[PathKey{Peer: p.Peer, Name: p.Name}]; ok {
+			ps.LinkBandwidthBps = link.LinkBandwidthBps
+			ps.LinkRttSeconds = link.LinkRttSeconds
+		}
+		if revealAddressing {
+			ps.Addressing = &AddressingSnapshot{
+				Source: addrString(p.Source),
+				Remote: addrPortString(p.Remote),
+			}
+		}
+		out.Paths[i] = ps
+	}
+
+	if info.Endpoints != nil {
+		eps := info.Endpoints()
+		out.Endpoints = make([]EndpointSnapshot, len(eps))
+		for i, e := range eps {
+			if revealAddressing {
+				out.Endpoints[i] = e
+			} else {
+				// Redact the address; keep the ordered active/standby shape.
+				out.Endpoints[i] = EndpointSnapshot{Active: e.Active}
+			}
 		}
 	}
 
