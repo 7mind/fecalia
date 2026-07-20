@@ -53,6 +53,14 @@ func (s PathState) String() string {
 type LivenessConfig struct {
 	DownAfter        time.Duration
 	UpAfterSuccesses int
+	// RideThrough is the extra down-side dwell an UP path tolerates before it is
+	// marked DOWN: an UP path transitions DOWN only after silence exceeds
+	// DownAfter+RideThrough. It adds down-side hysteresis so a brief micro-outage
+	// (silence past DownAfter but within the dwell) does not flap a healthy path.
+	// The DOWN-side streak-reset threshold and RecordEcho's consecutive-echo window
+	// both stay DownAfter, so recovery and up-side hysteresis are unchanged. The
+	// zero value is the historical behavior: an UP path goes DOWN at DownAfter.
+	RideThrough time.Duration
 }
 
 // Default per-path liveness detection timing (T13/T37/T39). These are the SINGLE
@@ -122,27 +130,32 @@ func (l *Liveness) RecordEcho() {
 	l.haveGood = true
 	l.goodStreak++
 	if l.state == StateDown && l.goodStreak >= l.cfg.UpAfterSuccesses {
-		l.transition(StateUp, now)
+		l.transition(StateUp, now, l.cfg.DownAfter)
 	}
 }
 
 // Tick re-evaluates liveness against the clock. An Up path with no heartbeat for
-// longer than DownAfter transitions Down; a Down path that has gone silent past
-// DownAfter has its partial up-streak reset, so recovery requires a fresh run of
-// UpAfterSuccesses consecutive echoes rather than echoes accumulated before the
-// silence. Call Tick at least as often as the probe interval so detection latency
-// stays within DownAfter plus one interval.
+// longer than DownAfter+RideThrough transitions Down — the RideThrough dwell is the
+// down-side hysteresis that lets a healthy path survive a micro-outage. A Down path
+// that has gone silent past DownAfter has its partial up-streak reset, so recovery
+// requires a fresh run of UpAfterSuccesses consecutive echoes rather than echoes
+// accumulated before the silence; the reset threshold stays DownAfter (RideThrough
+// governs only the up->down transition), so recovery semantics are unchanged. With
+// RideThrough=0 the down transition also fires at DownAfter, identical to the
+// historical behavior. Call Tick at least as often as the probe interval so detection
+// latency stays within DownAfter+RideThrough plus one interval.
 func (l *Liveness) Tick() {
 	now := l.clock.Now()
 	if !l.haveGood {
 		return
 	}
-	stale := now.Sub(l.lastGood) > l.cfg.DownAfter
+	silence := now.Sub(l.lastGood)
+	downThreshold := l.cfg.DownAfter + l.cfg.RideThrough
 	switch {
-	case l.state == StateUp && stale:
+	case l.state == StateUp && silence > downThreshold:
 		l.goodStreak = 0
-		l.transition(StateDown, now)
-	case l.state == StateDown && stale:
+		l.transition(StateDown, now, downThreshold)
+	case l.state == StateDown && silence > l.cfg.DownAfter:
 		l.goodStreak = 0
 	}
 }
@@ -150,12 +163,16 @@ func (l *Liveness) Tick() {
 // State returns the current liveness verdict.
 func (l *Liveness) State() PathState { return l.state }
 
-func (l *Liveness) transition(to PathState, now time.Time) {
+// transition records the state change and logs it with the effective threshold the
+// silence had to cross: DownAfter+RideThrough for the up->down transition (the
+// ride-through dwell) and the DownAfter consecutive-echo window for down->up.
+func (l *Liveness) transition(to PathState, now time.Time, threshold time.Duration) {
 	from := l.state
 	l.state = to
 	l.log.Info("path liveness transition",
 		"from", from.String(),
 		"to", to.String(),
 		"silence_ms", now.Sub(l.lastGood).Milliseconds(),
+		"threshold_ms", threshold.Milliseconds(),
 	)
 }

@@ -114,6 +114,59 @@ func TestLivenessDownDetection(t *testing.T) {
 	}
 }
 
+// TestLivenessRideThroughSurvivesMicroOutage is the D86 root-cause reproduction:
+// with a positive RideThrough dwell, an UP path that goes silent past DownAfter but
+// well within DownAfter+RideThrough must NOT flap DOWN. It models the field failure
+// (DownAfter=1s, a 1.3s micro-outage) and fails before the fix, when Tick marks the
+// path DOWN at DownAfter regardless of RideThrough.
+func TestLivenessRideThroughSurvivesMicroOutage(t *testing.T) {
+	clk := newFakeClock()
+	cfg := LivenessConfig{DownAfter: time.Second, UpAfterSuccesses: 3, RideThrough: 2 * time.Second}
+	l := NewLiveness("starlink", cfg, clk, discardLogger(t))
+
+	for i := 0; i < cfg.UpAfterSuccesses; i++ {
+		l.RecordEcho()
+	}
+	if l.State() != StateUp {
+		t.Fatalf("state = %v, want up", l.State())
+	}
+
+	// A 1.3s micro-outage exceeds DownAfter (1s) but is far inside the
+	// DownAfter+RideThrough (3s) dwell: the UP path must ride through it.
+	clk.advance(1300 * time.Millisecond)
+	l.Tick()
+	if l.State() != StateUp {
+		t.Fatalf("state = %v after a 1.3s micro-outage, want up (ride-through dwell)", l.State())
+	}
+}
+
+// TestLivenessRideThroughEventualDown asserts the dwell is bounded: an UP path stays
+// UP at exactly DownAfter+RideThrough (strict >) and transitions DOWN one tick past
+// it. Before the fix it fails, because the path is already DOWN at DownAfter.
+func TestLivenessRideThroughEventualDown(t *testing.T) {
+	clk := newFakeClock()
+	cfg := LivenessConfig{DownAfter: time.Second, UpAfterSuccesses: 3, RideThrough: 2 * time.Second}
+	l := NewLiveness("starlink", cfg, clk, discardLogger(t))
+
+	for i := 0; i < cfg.UpAfterSuccesses; i++ {
+		l.RecordEcho()
+	}
+
+	// Silence at exactly the DownAfter+RideThrough dwell: still up (strict >).
+	clk.advance(cfg.DownAfter + cfg.RideThrough)
+	l.Tick()
+	if l.State() != StateUp {
+		t.Fatalf("at exactly DownAfter+RideThrough state = %v, want up (strict >)", l.State())
+	}
+
+	// One tick past the dwell: down.
+	clk.advance(time.Millisecond)
+	l.Tick()
+	if l.State() != StateDown {
+		t.Fatalf("past DownAfter+RideThrough state = %v, want down", l.State())
+	}
+}
+
 // TestLivenessRecovery asserts a path that flapped Down recovers to Up after the
 // hysteresis count of fresh echoes.
 func TestLivenessRecovery(t *testing.T) {
