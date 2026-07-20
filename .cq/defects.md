@@ -2,7 +2,7 @@
 ledger: defects
 counters:
   milestone: 0
-  item: 84
+  item: 87
 archives: []
 ---
 
@@ -1220,3 +1220,58 @@ archives: []
 - sessionLogs: [".cq/logs/20260714-122159-ac772045578314808.md",".cq/logs/20260714-122159-aa7a4cc064596f222.md",".cq/logs/20260714-122159-ae52507d7fc1a55b7.md",".cq/logs/20260714-122159-a7875c1b02b7ec340.md",".cq/logs/20260714-122159-a971f55e45232ce3d.md",".cq/logs/20260714-123426-H6-inline-probe.md"]
 - rawLogs: [".cq/logs/raw/20260714-122159-ac772045578314808.jsonl",".cq/logs/raw/20260714-122159-aa7a4cc064596f222.jsonl",".cq/logs/raw/20260714-122159-ae52507d7fc1a55b7.jsonl",".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl",".cq/logs/raw/20260714-122159-a971f55e45232ce3d.jsonl"]
 - dependsOn: ["T149","T150","T151","T152","T153","T154","T155","T156","T157","T158","T159"]
+
+## M80
+
+### D85 — root-caused
+
+- createdAt: 2026-07-20T17:26:37.479Z
+- updatedAt: 2026-07-20T17:38:13.983Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Single hardcoded path-MTU (1500) shreds large packets on the smaller-MTU (5G) path — no per-path PMTU, no mtu config knob, overhead constant possibly under-counted
+- severity: high
+- description: |
+    ## H1 (S1) — Single hardcoded path-MTU (1500) silently shreds large packets on the smaller-MTU path
+    
+    **Field evidence (measured on real hardware, multi-ping DF sweeps):**
+    - wanbond sets ONE `wanbond0` MTU (1400), computed from a hardcoded path MTU of 1500 (`internal/config/config.go:277` `bind.DefaultPathMTU`; `internal/bind/mtu.go` `InnerMTU`). There is **no per-path PMTU discovery and no config override** (grep found no `mtu`/`path_mtu` key).
+    - The two bonded paths have **different real MTUs**: Starlink outer ~1500 (inner ~1400); mobile **5G outer ~1400 (inner ~1280)**.
+    - With `wanbond0=1400`, whenever the bond rides 5G, full-size inner packets (~1400) → encapsulated ~1500 → **~90% loss** (20-ping DF sweep *through the tunnel*: 5G inner 1268=0%, 1300=5%, **1328=95%**; Starlink inner 1400=0%, 1428=100%). TCP was shredded in the field (retransmit storms), while pings/probes/failover tests all passed — because they only ever use small packets. Lowering `wanbond0` to 1280 (min across paths) gave 0% loss + 0-retransmit TCP on 5G, confirming the diagnosis.
+    - Measured encapsulation overhead (~100–120 B from inner-vs-outer sweeps) is **larger than the docs' 99 B** — does the newer reseq/framing add a per-frame header that `mtu.go`'s `InnerMTU` accounting doesn't subtract? Confirm true on-wire overhead vs the constant.
+    
+    **Investigate:** the `DefaultPathMTU → wanbond0 MTU` code path; absence of per-path PMTU probing; the true overhead; and exactly where the large encapsulated packet dies on the smaller path (outer DF drop vs fragmentation + reassembly loss — the outer WAN carried DF ~1500 for plain ICMP, yet the encapsulated UDP flow failed, so reconcile).
+    
+    **Fix direction:** PMTU-probe each path and size `wanbond0` to the **minimum inner MTU across paths** (re-probe on roam), and/or expose an `mtu`/`path_mtu` config knob; make MSS-clamping built-in or a first-class documented operator step (there is none today).
+    
+    DISTINCT FROM D65 (bufferbloat, root-caused): D65 concluded MSS/MTU affected only FORWARDED traffic and assumed the single 1400 inner MTU was adequate for the paths; H1 shows the wanbond0 MTU ITSELF exceeds the 5G path's inner MTU, shredding Pi-ORIGINATED full-size TCP whenever the bond rides 5G. Field-confirmed (1280 fix). Deliverable: confirmed/refuted with file:line + minimal repro, the mechanism (where the encapsulated packet dies), and a concrete fix candidate.
+- tags: ["production-deploy","mtu","field-hardening","starlink-5g"]
+- rootCause: "CONFIRMED against source (explorer a6622bbb; orchestrator-validated citations). STRUCTURAL: wanbond sizes ONE global inner MTU for wanbond0 from a HARDCODED bind.DefaultPathMTU=1500 (internal/bind/mtu.go:26-30) via tunMTU(cfg)=bind.InnerMTU(DefaultPathMTU, cfg.FEC.Enabled) (device.go:60-62) applied once at tun.CreateTUN (device.go:239) — the ONLY config input is the FEC toggle. There is NO per-path value, NO PMTU discovery (the outer UDP sockets set only SO_BINDTODEVICE; no IP_MTU_DISCOVER/DF, pathsock.go:279-291), and NO mtu/path_mtu config knob (config.Path has none). MECHANISM: on a path whose real OUTER MTU is below 1500 — the field's 5G outer ~1400 (inner ~1280) — a full-size inner packet at the wanbond0 MTU (1400) encapsulates to ~1500 outer, EXCEEDS the 5G outer MTU, and is dropped/fragmented+lost — shredding Pi-originated full-size TCP (~90% loss at inner 1328; lowering wanbond0 to 1280 gave 0% loss + 0-retransmit, field-confirmed). The field paradox (plain ICMP DF ~1500 crossed but the encapsulated UDP flow failed) reconciles because the 5G OUTER MTU is ~1400: a 1400-inner packet -> ~1500 outer > 1400 -> dropped; 1280 inner -> ~1400 outer -> fits. OVERHEAD SUB-HYPOTHESIS REFUTED: InnerMTU subtracts a COMPLETE 100 B (IPv4UDP 28 + frame.DataOverhead 40 [which already includes the T24 fec-index byte, frame.go:68-74] + WG 32) — 1 B MORE than the stale docs' 99 B (p1-mtu.md:40 still says 39/1401, pre-T24) — so no reseq/framing header is missed. The field's measured 100-120 B excess is the amnezia junk-PREFIX (mtu.go:41-46, genuinely UNaccounted but ONLY when obfuscation is enabled) plus IPv6. So the accounting is correct/conservative; the defect is the single-assumed-1500-path-MTU + no-per-path-PMTU + no-config-knob + no-built-in-MSS-clamp. DISTINCT from D65 (bufferbloat; concluded MSS affected only forwarded traffic). Full positive confirmation of the outer-drop on a constrained path would need a netns e2e capture (cf. TestMultipathNoFragmentation) — deferred to verify/implement; the code-structure root cause is settled statically + field-reproduced."
+- suggestedFix: "(1) PER-PATH PMTU DISCOVERY (preferred): probe each path's real path MTU (DF-bit binary search on the probe plane, or read the kernel IP_MTU after a connected send) and size wanbond0 to the MINIMUM inner MTU across the currently-UP paths, re-probing on roam/failover so a smaller path joining lowers the MTU. (2) OPERATOR KNOB (minimum viable, ship first): a per-path `mtu`/`path_mtu` (or a global override) in config.Path/[scheduler] so a smaller-MTU link (5G/LTE/PPPoE) can be declared without editing the DefaultPathMTU constant + rebuilding; tunMTU then uses min(declared/probed) across paths. (3) BUILT-IN MSS CLAMP or a first-class documented operator step — today only a manual iptables TCPMSS --clamp-mss-to-pmtu (p1-mtu.md:75-100); consider the daemon installing it (as D65's secondary fix considered for forwarded traffic) or a prominent runbook step for edge-originated TCP too. (4) Subtract the amnezia junk-prefix headroom from InnerMTU when obfuscation is enabled (mtu.go:41-46), and CORRECT the doc drift (p1-mtu.md 39 B/1401 -> 40 B/1400). VALIDATE with a netns e2e on a constrained (~1400 outer) path asserting large-inner TCP survives after the MTU is sized to the min (privileged hardware tier for the real 5G confirmation). READY-TO-SEED into a field-hardening fix goal (with D86) via /cq:plan."
+- ledgerRefs: ["goals:G23","hypothesis:H85"]
+
+### D86 — root-caused
+
+- createdAt: 2026-07-20T17:26:48.393Z
+- updatedAt: 2026-07-20T17:38:15.982Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Liveness DownAfter is not tunable — a flappy-but-usable primary (Starlink micro-outages) thrashes the bond onto metered 5G
+- severity: medium
+- description: |
+    ## H2 (S2) — Liveness `DownAfter` is not tunable, so a flappy-but-usable primary thrashes the bond
+    
+    **Field evidence (scheduler log):**
+    - Starlink has periodic **~1.2–1.3 s micro-outages** (satellite handovers/obstructions). The log shows a repeating `starlink up→down (silence ~1.2 s) → failover to 5g → recover ~13–45 s later → failback`, every few minutes.
+    - The liveness `DownAfter` (`telemetry.LivenessConfig`; test default 500 ms, field ~1.2 s) is **hardcoded with no TOML knob** (grep found no probe/liveness/silence/down config).
+    - Effect: the bond oscillates Starlink↔5G, **spending metered 5G data on every blip** and adding failover/reconverge churn — contrary to the data-thrift intent (Starlink primary, 5G standby).
+    
+    **Investigate:** confirm the `DownAfter` default and that it is not configurable; whether an up/down hysteresis or a brief-silence 'ride-through' (hold the primary through sub-N-second gaps) is feasible without unduly delaying a real failover.
+    
+    **Fix direction:** expose `DownAfter` / an up-down hysteresis / a ride-through dwell as config, so a flappy primary (Starlink is the canonical case) doesn't thrash the bond.
+    
+    NOTE vs D15/D16 (resolved): those TUNED DownAfter's VALUE (1200ms) and reconciled the failover-budget composition; they did NOT make it configurable nor add hysteresis/ride-through — H2 is a new tunability/data-thrift hardening. Interacts with the DefaultDownAfter single-source-of-truth (telemetry.Default*) that D16 established + the P1 3s failover budget (a ride-through/larger DownAfter must not regress that). Deliverable: confirmed/refuted with file:line + minimal repro, the mechanism, and a concrete fix candidate.
+- tags: ["production-deploy","liveness","field-hardening","data-thrift","starlink-5g"]
+- rootCause: "CONFIRMED against source (explorer aa029e92; orchestrator-validated citations). The per-path liveness timing — DownAfter (1200ms), ProbeInterval (200ms), UpAfterSuccesses (3) — are PACKAGE CONSTANTS (telemetry.Default*, internal/telemetry/liveness.go:77-82) consumed DIRECTLY in device.buildScheduler (device.go:1002-1007: LivenessConfig{DownAfter: telemetry.DefaultDownAfter, UpAfterSuccesses: telemetry.DefaultUpSuccesses}) + StartProbeLoop(telemetry.DefaultProbeInterval) (device.go:430) with ZERO config indirection. There is NO [liveness]/[probe] TOML section and no probe/down/silence/interval/hysteresis key anywhere (config.go top-level + SchedulerConfig; the only *_dwell is the weighted-only collapse_dwell, unrelated). MECHANISM: Liveness.Tick (liveness.go:135-148) flips UP->DOWN on a SINGLE DownAfter of silence — the ONLY hysteresis is up-side (RecordEcho needs UpAfterSuccesses consecutive echoes); there is NO down-side ride-through. So a Starlink micro-outage of ~1.2-1.3s (at/above the 1200ms DownAfter) immediately marks the path DOWN and the active-backup scheduler fails the bond over to 5G; FailbackAfter=5s (hardcoded, device.go:936) only damps the RETURN to the recovered primary, not the initial failover — so the bond spends metered 5G on every blip and churns, contrary to the data-thrift intent. No operator knob exists to lengthen DownAfter or add a ride-through. Distinct from D15/D16 (resolved) which only TUNED the value (1200ms) + reconciled the failover-budget composition. Statically settled + field-reproduced (scheduler log)."
+- suggestedFix: "Expose the liveness timing as CONFIG, defaulting to today's telemetry.Default* so existing behaviour is byte-identical: (1) a [liveness] section (or per-path override) with down_after, probe_interval, up_successes; (2) crucially a DOWN-SIDE RIDE-THROUGH / hysteresis — hold an UP path through a brief sub-N-second silence before declaring DOWN (e.g. a ride_through dwell, or a longer DownAfter on the primary) so a flappy-but-usable Starlink primary is not failed over on a ~1.2s blip; consider per-path (Starlink primary rides through; 5G standby stays strict). (3) Optionally make FailbackAfter configurable. CONSTRAINTS (from D16/thresholds.go): (a) DownAfter is a SINGLE-SOURCE-OF-TRUTH aliased by test/e2e/thresholds.go — a knob must feed BOTH the daemon AND the e2e failover-budget derivation (or the tables diverge, the exact D16 reconciliation); (b) it must NOT regress the P1 3s failover budget — PLivenessFailoverBudget = DownAfter + 2*interval must stay < P1RecoverySeconds=3s; a config-driven larger DownAfter/ride-through TRADES failover latency for metered-link stability, so validate the invariant against the CONFIGURED value (clamp or warn if it exceeds the budget), acknowledging that an operator who prioritises data-thrift over sub-3s failover may deliberately exceed it. VALIDATE with a netns e2e: a primary with a sub-DownAfter (or sub-ride-through) micro-outage does NOT fail over, while a real (> threshold) outage still fails over within the configured budget. READY-TO-SEED into a field-hardening fix goal (with D85) via /cq:plan."
+- ledgerRefs: ["goals:G23","hypothesis:H86"]

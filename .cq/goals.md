@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 22
+  item: 23
 archives: []
 ---
 
@@ -577,3 +577,26 @@ archives: []
 - tags: ["monitoring-ui","feature-extension"]
 - sessionLogs: [".cq/logs/20260720-155307-a90a4e40d9a115944.md"]
 - rawLogs: [".cq/logs/raw/20260720-155307-a90a4e40d9a115944.jsonl"]
+
+## M81
+
+### G23 — clarifying
+
+- createdAt: 2026-07-20T17:37:59.197Z
+- updatedAt: 2026-07-20T17:38:53.552Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: "Field-hardening: per-path MTU sizing + tunable liveness ride-through"
+- description: |
+    Defect-seeded fix goal (file-and-defer, K8) housing two field-confirmed, root-caused defects from the real Starlink+5G bond deployment. Both are config-exposure/robustness gaps in the same subsystem area (path sizing + path liveness); they are seeded together because an operator hardening the bond for a heterogeneous multi-path WAN needs both.
+    
+    ## D85 (HIGH) — single hardcoded 1500 path MTU shreds large packets on the smaller-MTU 5G path
+    ROOT CAUSE (confirmed, orchestrator-validated citations): wanbond sizes ONE global inner MTU for wanbond0 from a hardcoded bind.DefaultPathMTU=1500 (internal/bind/mtu.go:26-30) via tunMTU=InnerMTU(DefaultPathMTU, cfg.FEC.Enabled) (device.go:60-62) at tun.CreateTUN (device.go:239) — only the FEC toggle comes from config. NO per-path PMTU discovery (outer UDP sockets set only SO_BINDTODEVICE; no IP_MTU_DISCOVER/DF, pathsock.go:279-291), NO mtu/path_mtu config knob (config.Path has none), NO built-in MSS clamp (only a manual iptables step, p1-mtu.md:75-100). On a path whose real outer MTU < 1500 (field 5G outer ~1400), a full-size inner packet at the wanbond0 MTU encapsulates too large and is dropped — ~90% loss on full-size TCP; sizing wanbond0 to 1280 fixed it in the field. The overhead-undercount sub-hypothesis was REFUTED (InnerMTU subtracts a complete 100 B; the field excess is the obfuscation-conditional amnezia junk-prefix, mtu.go:41-46, plus doc drift p1-mtu.md 39/1401 vs code 40/1400).
+    FIX DIRECTION: (1) per-path PMTU discovery -> size wanbond0 to the MIN inner MTU across UP paths, re-probe on roam; and/or (2) an operator mtu/path_mtu knob (ship first, minimum viable); (3) built-in MSS clamp or a first-class documented step; (4) subtract junk-prefix headroom when obfuscation on + correct p1-mtu.md.
+    
+    ## D86 (MEDIUM) — liveness DownAfter not tunable; flappy Starlink primary thrashes the bond onto metered 5G
+    ROOT CAUSE (confirmed, orchestrator-validated citations): DownAfter (1200ms), ProbeInterval (200ms), UpAfterSuccesses (3) are package constants (telemetry.Default*, liveness.go:77-82) consumed directly in buildScheduler (device.go:1002-1007) with zero config indirection; no [liveness]/[probe] TOML key; Tick flips UP->DOWN on a single DownAfter of silence (liveness.go:135-148) with only up-side hysteresis — no down-side ride-through — so a ~1.2-1.3s Starlink micro-outage immediately fails the bond onto metered 5G; FailbackAfter=5s hardcoded (device.go:936) damps only the return.
+    FIX DIRECTION: expose the liveness timing as config (default = today's Default*, byte-identical) + a DOWN-SIDE ride-through/hysteresis dwell so a flappy-but-usable primary is not failed over on a sub-N-second blip (consider per-path). CONSTRAINTS: DownAfter is a single-source-of-truth aliased by test/e2e/thresholds.go — a knob must feed BOTH daemon + the e2e failover-budget; must not silently regress the P1 3s failover budget (PLivenessFailoverBudget = DownAfter + 2*interval < 3s) — validate the invariant against the CONFIGURED value (clamp or warn), acknowledging an operator may deliberately trade failover latency for metered-link stability.
+    
+    Defects: defects:D85, defects:D86. Hypotheses: H85, H86 (both confirmed). Both suggestedFix + rootCause carry the full evidence. A netns e2e (constrained-MTU path for D85; sub-DownAfter micro-outage for D86) plus the privileged hardware tier (o3.7mind.io + llm-ubuntu-0) is the validation path.
+- sourceRefs: ["defects:D85","defects:D86"]

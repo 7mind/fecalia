@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 65
+  item: 66
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -861,3 +861,17 @@ archives:
 - suggestions: ["Yes — read-only display only, no controls","No — I also want interactive control X (specify)"]
 - recommendation: Yes — keep v1 read-only display only; any interactivity is out of scope for this extension.
 - ledgerRefs: ["goals:G21"]
+
+## M81
+
+### Q66 — open
+
+- createdAt: 2026-07-20T17:39:11.525Z
+- updatedAt: 2026-07-20T17:39:11.525Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: "Scope the field-hardening fix goal G23 (D85 MTU + D86 liveness), then run /cq:plan:advance G23. Five decisions: (1) D85 approach/order — (a) operator mtu/path_mtu knob FIRST then per-path PMTU auto-discovery later, (b) go straight to per-path PMTU discovery, or (c) both in one goal? (2) D85 MSS clamp — daemon INSTALLS an MSS clamp on wanbond0 for edge-originated TCP, or keep it a documented manual operator step? (3) D86 ride-through — per-path (Starlink primary rides through a sub-N-second blip; 5G standby strict) or a single global dwell, and what default window (0 = today's byte-identical behaviour)? (4) D86 failover-budget policy — if a configured DownAfter/ride-through pushes PLivenessFailoverBudget past the P1 3s budget, should the daemon CLAMP, WARN-and-allow, or REJECT? (5) Validation bar — is a netns e2e (constrained-MTU path for D85; sub-DownAfter micro-outage for D86) sufficient to mark these resolved, or is on-hardware confirmation on the real Starlink+5G bond required first?"
+- context: "Both defects are root-caused with orchestrator-validated citations (see G23 description, D85/D86 rootCause+suggestedFix, H85/H86). This is a defect-seeded fix goal in clarifying — answer here (or accept the defaults below), then /cq:plan:advance G23 turns it into reviewed fix tasks. D85 is HIGH (shreds full-size TCP whenever the bond rides the smaller-MTU 5G path); D86 is MEDIUM (metered-5G thrash on Starlink micro-outages). The D86 knob must feed BOTH the daemon and test/e2e/thresholds.go (the D16 single-source-of-truth) and must not silently regress the 3s failover budget."
+- suggestions: ["Accept all defaults: 1(c) knob+PMTU, 2 built-in clamp, 3 per-path ride-through default 0, 4 warn-and-allow, 5 netns e2e sufficient + hardware follow-up","Knob-only for D85 v1 (defer PMTU auto-discovery), rest defaults","Reject any config that exceeds the 3s failover budget (decision 4 = REJECT)","Require on-hardware confirmation before resolving (decision 5 = hardware-gated)"]
+- recommendation: "Defaults: 1(c) ship the mtu/path_mtu knob AND per-path PMTU discovery; 2 daemon installs the MSS clamp for edge-originated TCP; 3 per-path ride-through, default window 0 (byte-identical today); 4 WARN-and-allow (an operator may deliberately trade failover latency for metered-link stability); 5 netns e2e sufficient to resolve, with on-hardware confirmation as a follow-up validation."
+- ledgerRefs: ["goals:G23","defects:D85","defects:D86"]

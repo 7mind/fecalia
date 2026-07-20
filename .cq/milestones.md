@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 79
+  item: 81
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -551,3 +551,16 @@ archives:
 - updatedAt: 2026-07-20T15:49:17.959Z
 - title: "Plan: extend monitoring-UI stats page (addressing + more)"
 - description: Coordination milestone for the plan-flow goal to EXTEND the G12 live monitoring web UI (internal/monitor MonitorSnapshot + the web/ Vite dashboard) with additional operator-useful fields — starting with edge/concentrator IP addressing, and inviting the planner to propose what else is worth surfacing. Greenfield feature extension of the completed G12 (done).
+
+### M80 — open
+
+- createdAt: 2026-07-20T17:26:16.511Z
+- updatedAt: 2026-07-20T17:26:16.511Z
+- title: "Investigate: field MTU-shred + liveness flap"
+- description: "Coordination milestone for two real-hardware field-hardening findings from a Starlink+5G edge deployment: H1 (per-path MTU mismatch shreds large packets on the smaller-MTU 5G path — single hardcoded DefaultPathMTU, no per-path PMTU discovery, no mtu config knob, overhead constant possibly under-counted) and H2 (liveness DownAfter not tunable, so a flappy-but-usable primary thrashes the bond onto metered 5G). Investigate + confirm/refute each with file:line + repro, then seed fix goal(s)."
+
+### M81 — open
+
+- createdAt: 2026-07-20T17:37:32.821Z
+- updatedAt: 2026-07-20T17:37:32.821Z
+- title: "Plan: field-hardening (per-path MTU + tunable liveness)"

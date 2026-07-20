@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 29
+  item: 30
 archives: []
 ---
 
@@ -439,3 +439,25 @@ archives: []
 - sessionLogs: [".cq/logs/20260720-155307-a90a4e40d9a115944.md"]
 - rawLogs: [".cq/logs/raw/20260720-155307-a90a4e40d9a115944.jsonl"]
 - tags: ["cq-plan-bootstrap","answers-required","monitoring-ui"]
+
+## M80
+
+### HO30 — answers-required
+
+- createdAt: 2026-07-20T17:39:33.426Z
+- updatedAt: 2026-07-20T17:39:33.426Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- summary: |
+    Standalone /cq:investigate of two field-diagnosed findings from the real Starlink+5G bond: H1 (D85, HIGH — MTU shredding) and H2 (D86, MEDIUM — liveness thrash). BOTH root-caused with orchestrator-validated file:line citations.
+    
+    D85 CONFIRMED (structural): one global wanbond0 inner MTU is sized from a hardcoded bind.DefaultPathMTU=1500 (mtu.go:26-30 -> tunMTU/InnerMTU/CreateTUN, device.go:60-62,239); no per-path PMTU discovery (no IP_MTU_DISCOVER/DF on outer sockets), no mtu/path_mtu config knob, no built-in MSS clamp. On the smaller-MTU 5G path a full-size inner packet encapsulates too large and is dropped (~90% loss; field-fixed by lowering to 1280). The overhead-undercount sub-hypothesis was REFUTED — InnerMTU subtracts a complete 100 B (frame.DataOverhead=40 already includes the T24 fec-index byte); the field's excess is the obfuscation-conditional amnezia junk-prefix, and there is stale doc drift (p1-mtu.md 39/1401 vs code 40/1400).
+    
+    D86 CONFIRMED: DownAfter/ProbeInterval/UpSuccesses are package constants (telemetry.Default*, liveness.go:77-82) consumed directly in buildScheduler (device.go:1002-1007); no [liveness]/[probe] config key; Tick has only up-side hysteresis (no down-side ride-through, liveness.go:135-148), so a ~1.2-1.3s Starlink micro-outage immediately fails the bond onto metered 5G (FailbackAfter=5s damps only the return).
+    
+    FILE-AND-DEFER: seeded defect-seeded plan-flow goal G23 (clarifying, sourceRefs D85+D86) under milestone M81. Filed clarifying question Q66 with five scope decisions (D85 knob-vs-PMTU order + MSS-clamp; D86 per-path-vs-global ride-through + failover-budget policy; validation bar) plus recommended defaults. STANDALONE stop: answer Q66 (or accept the defaults), then run /cq:plan:advance G23 to turn G23 into reviewed fix tasks.
+- flow: investigate
+- ledgerRefs: ["defects:D85","defects:D86","goals:G23","hypothesis:H85","hypothesis:H86"]
+- blockingQuestions: ["Q66"]
+- sessionLogs: [".cq/logs/20260720-173718-a6622bbbcfc8b3b70.md",".cq/logs/20260720-173718-aa029e920680e05c0.md"]
+- rawLogs: [".cq/logs/raw/20260720-173718-a6622bbbcfc8b3b70.jsonl",".cq/logs/raw/20260720-173718-aa029e920680e05c0.jsonl"]

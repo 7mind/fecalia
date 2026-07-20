@@ -2,7 +2,7 @@
 ledger: hypothesis
 counters:
   milestone: 0
-  item: 9
+  item: 87
 archives: []
 ---
 
@@ -128,3 +128,31 @@ archives: []
 - evidence: ["[correct] internal/config/config.go:99-108 — the DEFAULT active-backup scheduler applies NO egress pacing/AQM; pacing is a weighted-only feature ('per-path send-pacing to bound bufferbloat' is described only for PolicyWeighted). So on the default path wanbond offers packets unshaped and cannot prevent a last-mile buffer overflow.","[correct] internal/config/config.go:218-223 — the weighted pacer's BurstFrames = one BDP 'without building a standing queue' — the exact anti-bufferbloat mechanism ABSENT from active-backup; confirms a ready-made pacer exists to reuse.","[correct] internal/bind/multipath.go:2027-2035 + internal/reseq/reseq.go:90-96 — no wanbond-internal queue (synchronous send; reseq bounded in memory+latency), so the observed ~1s loaded RTT is the EXTERNAL Starlink buffer; its build-to-~1s-then-~13%-drop is the classic buffer-overflow signature of an unshaped sender (not random medium loss, which would not grow the queue).","[correct] .cq/defects.md (D65 measurements) — the WAN carries ≥6.9 Mbps: UDP offered 8 Mbps delivered 6.9 through the same tunnel/path while single-flow TCP got only 3.67 → TCP's shortfall is loss-induced cwnd collapse (cwnd stuck ~30KB over 40ms RTT), NOT a raw WAN rate cap.","[correct] internal/frame encode benchmark (inline probe, H6) — encode ceiling ~2429 Mbps/core x86, ~160-300 Mbps/core Pi4 (40-80x above 3.67 Mbps) rules out CPU as the ceiling, leaving external-loss-under-unshaped-egress as the mechanism.","[correct] questions:Q56 (answered by user) — the user reviewed the diagnosis and answered 'implement the fixes', authorizing direct implementation of the pacing + MSS-clamp fixes and waiving the prior request for field-measurement confirmation. Residual (exact quantified throughput gain; whether Starlink adds any irreducible loss) is deferred to on-hardware validation in verify/implement — it does not change the root-cause mechanism, and the fixes are correct improvements regardless."]
 - sessionLogs: [".cq/logs/20260714-122159-a7875c1b02b7ec340.md"]
 - rawLogs: [".cq/logs/raw/20260714-122159-a7875c1b02b7ec340.jsonl"]
+
+## M80
+
+### H85 — confirmed
+
+- createdAt: 2026-07-20T17:33:41.650Z
+- updatedAt: 2026-07-20T17:37:30.212Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: wanbond0's single global inner MTU is sized from a hardcoded 1500 path MTU with no per-path PMTU/knob — too large for the smaller 5G path
+- description: CONFIRMED (structural core); the overhead-undercount sub-claim REFUTED. Explorer a6622bbb, orchestrator-validated citations.
+- evidence: ["[correct] internal/bind/mtu.go:26-30 — DefaultPathMTU = 1500 is a single hardcoded constant; the comment concedes smaller-MTU links 'must lower it' but offers no runtime mechanism.","[correct] internal/device/device.go:60-62 + :239 — tunMTU(cfg)=InnerMTU(DefaultPathMTU, cfg.FEC.Enabled) sets ONE global wanbond0 MTU via CreateTUN; only the FEC toggle is read from config, nothing per-path.","[correct] internal/bind/pathsock.go:279-291 — outer UDP sockets set only SO_BINDTODEVICE; NO IP_MTU_DISCOVER/DF/PMTUD option (grep-confirmed absent) — no per-path PMTU discovery.","[correct] internal/config/config.go Path struct — no mtu/path_mtu key (grep-confirmed absent); no operator MTU override anywhere.","[incorrect] the overhead-undercount sub-claim — InnerMTU subtracts a COMPLETE 100 B (IPv4UDP 28 + frame.DataOverhead 40 + WG 32); frame.DataOverhead (frame.go:68-74) already includes the T24 fec-index byte, so no reseq/framing header is missed. That is 1 B MORE than the stale docs' 99 B (p1-mtu.md:40 still says 39/1401). The field's 100-120 B excess is the amnezia junk-PREFIX (mtu.go:41-46, unaccounted only when obfuscation is enabled) + IPv6, NOT a missed header."]
+- ledgerRefs: ["defects:D85"]
+- sessionLogs: [".cq/logs/20260720-173718-a6622bbbcfc8b3b70.md"]
+- rawLogs: [".cq/logs/raw/20260720-173718-a6622bbbcfc8b3b70.jsonl"]
+
+### H86 — confirmed
+
+- createdAt: 2026-07-20T17:33:50.995Z
+- updatedAt: 2026-07-20T17:37:31.846Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Liveness DownAfter/interval/up-hysteresis are hardcoded package constants with no config knob and no down-side ride-through
+- description: CONFIRMED. Explorer aa029e92, orchestrator-validated citations.
+- evidence: ["[correct] internal/telemetry/liveness.go:77-82 — DefaultProbeInterval=200ms, DefaultDownAfter=1200ms, DefaultUpSuccesses=3 are PACKAGE CONSTANTS, not config-derived.","[correct] internal/device/device.go:1002-1007 — buildScheduler builds every path's LivenessConfig DIRECTLY from telemetry.Default* (DownAfter/UpAfterSuccesses) + StartProbeLoop(DefaultProbeInterval) — ZERO config indirection.","[correct] internal/config/config.go — no [liveness]/[probe] section and no down/silence/interval/hysteresis key (grep-confirmed absent); the only *_dwell is weighted-only collapse_dwell (unrelated).","[correct] internal/telemetry/liveness.go:135-148 — Tick flips UP->DOWN on a SINGLE DownAfter of silence; the ONLY hysteresis is up-side (UpAfterSuccesses). No down-side ride-through, so a ~1.2-1.3s Starlink micro-outage (>= 1200ms) immediately marks the path DOWN.","[correct] internal/device/device.go:936 — FailbackAfter = defaultFailbackDwell = 5s hardcoded (damps failBACK only, not the initial failover) — compounding, also non-configurable.","[correct] test/e2e/thresholds.go — aliases telemetry.Default*; PLivenessFailoverBudget = DownAfter + 2*interval must stay < P1RecoverySeconds=3s — a knob must feed both the daemon AND this budget and preserve the invariant."]
+- ledgerRefs: ["defects:D86"]
+- sessionLogs: [".cq/logs/20260720-173718-aa029e920680e05c0.md"]
+- rawLogs: [".cq/logs/raw/20260720-173718-aa029e920680e05c0.jsonl"]
