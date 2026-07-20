@@ -2849,10 +2849,10 @@ archives:
 
 ## M87
 
-### T218 — wip
+### T218 — done
 
 - createdAt: 2026-07-20T18:10:14.428Z
-- updatedAt: 2026-07-20T19:24:43.803Z
+- updatedAt: 2026-07-20T19:28:47.536Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Mirror the extended wire contract in web/src/types.ts
@@ -2861,6 +2861,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T214"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: "7008327"
 
 ### T221 — planned
 
