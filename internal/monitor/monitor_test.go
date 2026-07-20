@@ -121,6 +121,95 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 	}
 }
 
+// TestBuildSnapshot_RedactsAddressingWhenNotRevealed is the dedicated
+// regression guard for the Q62/Q64 server-side redaction gate (T215). It feeds
+// BuildSnapshot a Source + Info carrying multiple DISTINCT addresses (per-path
+// source/remote across two paths + two hub-endpoint addresses), then asserts on
+// the fully MARSHALED JSON bytes that with revealAddressing=false NONE of those
+// address strings appear anywhere in the frame — the strongest operational form
+// of "redacted server-side, not merely hidden client-side" — while the
+// active/standby endpoint shape and the truncated WG fingerprint (Q63; no full
+// key exists to leak) survive. The revealAddressing=true arm proves the same
+// addresses ARE present when a loopback binding reveals them, so the test cannot
+// pass vacuously.
+func TestBuildSnapshot_RedactsAddressingWhenNotRevealed(t *testing.T) {
+	// Distinct, unmistakable address literals so a substring scan is unambiguous.
+	const (
+		srcA  = "192.0.2.11"
+		remA  = "203.0.113.21:51820"
+		srcB  = "192.0.2.12"
+		remB  = "203.0.113.22:51820"
+		hubA  = "198.51.100.31:51820"
+		hubB  = "198.51.100.32:51820"
+		print = "Fp0aBcDeFg"
+	)
+	secretAddrs := []string{srcA, remA, srcB, remB, hubA, hubB}
+
+	src := fakeSource{
+		paths: []metrics.PathSnapshot{
+			{Peer: "", Name: "starlink", State: telemetry.StateUp,
+				Source: netip.MustParseAddr(srcA), Remote: netip.MustParseAddrPort(remA)},
+			{Peer: "", Name: "cellular", State: telemetry.StateUp,
+				Source: netip.MustParseAddr(srcB), Remote: netip.MustParseAddrPort(remB)},
+		},
+		peerNames: []string{""},
+	}
+	info := Info{
+		Role: "edge", Version: "v9", UptimeSeconds: 1,
+		WGPublicKeyFingerprint: print,
+		Endpoints: func() []EndpointSnapshot {
+			return []EndpointSnapshot{
+				{Address: hubA, Active: true},
+				{Address: hubB, Active: false},
+			}
+		},
+	}
+
+	// revealAddressing = false: the redacted frame must leak nothing.
+	red, err := json.Marshal(BuildSnapshot(src, info, false))
+	if err != nil {
+		t.Fatalf("marshal redacted: %v", err)
+	}
+	for _, a := range secretAddrs {
+		if strings.Contains(string(red), a) {
+			t.Fatalf("redacted frame leaked address %q: %s", a, red)
+		}
+	}
+	var decoded MonitorSnapshot
+	if err := json.Unmarshal(red, &decoded); err != nil {
+		t.Fatalf("unmarshal redacted: %v", err)
+	}
+	if !decoded.AddressingHidden {
+		t.Fatalf("addressingHidden must be true in the redacted frame")
+	}
+	if decoded.WGPublicKeyFingerprint != print {
+		t.Fatalf("fingerprint must survive redaction (Q63), got %q", decoded.WGPublicKeyFingerprint)
+	}
+	for i, p := range decoded.Paths {
+		if p.Addressing != nil {
+			t.Fatalf("path %d addressing must be nil when redacted, got %+v", i, p.Addressing)
+		}
+	}
+	// The ordered active/standby endpoint shape is preserved (addresses blanked).
+	if len(decoded.Endpoints) != 2 || !decoded.Endpoints[0].Active || decoded.Endpoints[1].Active {
+		t.Fatalf("endpoint active/standby shape not preserved: %+v", decoded.Endpoints)
+	}
+	if decoded.Endpoints[0].Address != "" || decoded.Endpoints[1].Address != "" {
+		t.Fatalf("endpoint addresses must be blanked when redacted: %+v", decoded.Endpoints)
+	}
+
+	// revealAddressing = true: the SAME addresses must now be present (non-vacuity).
+	full, err := json.Marshal(BuildSnapshot(src, info, true))
+	if err != nil {
+		t.Fatalf("marshal revealed: %v", err)
+	}
+	for _, a := range secretAddrs {
+		if !strings.Contains(string(full), a) {
+			t.Fatalf("revealed frame missing address %q: %s", a, full)
+		}
+	}
+}
+
 // TestBuildSnapshotSinglePeer feeds BuildSnapshot a single-bound-peer Source
 // (PeerNames() reporting exactly one name, "" per the metrics package's
 // back-compat rule) and asserts the marshalled JSON's fields and shape,
