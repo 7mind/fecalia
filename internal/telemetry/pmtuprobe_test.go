@@ -89,10 +89,11 @@ func TestEchoAwaitProbeTransportError(t *testing.T) {
 		t.Fatalf("transport error: want boom, got %v", err)
 	}
 
-	// onWire outside the padded-probe bounds is rejected by SendPaddedProbe before any send.
+	// A candidate whose derived on-wire size (pathMTU - outerIPUDPOverhead) exceeds the
+	// padded-probe bounds is rejected by SendPaddedProbe before any send.
 	e2 := NewEchoAwaitProbe(p, func([]byte) error { return nil }, 0, neverAfter)
-	if _, err := e2.ProbePMTU(frame.MaxPaddedProbeOnWire + 1); err == nil {
-		t.Fatal("out-of-bounds onWire: want error, got nil")
+	if _, err := e2.ProbePMTU(frame.MaxPaddedProbeOnWire + outerIPUDPOverhead + 1); err == nil {
+		t.Fatal("out-of-bounds path MTU: want error, got nil")
 	}
 }
 
@@ -176,7 +177,11 @@ func TestEchoAwaitProbeStaleSeqDoesNotUnblock(t *testing.T) {
 // to the largest echoing on-wire size, and the intentionally-dropped oversize probes
 // do NOT pollute the path's loss estimate (they are excluded).
 func TestEchoAwaitProbeSearchConvergesWithoutLossPollution(t *testing.T) {
-	const threshold = 1400
+	// The modelled underlay's OUTER IP-level path MTU. ProbePMTU sizes the socket datagram
+	// pathMTU-outerIPUDPOverhead, so the IP datagram is len(raw)+outerIPUDPOverhead; the
+	// path refuses (EMSGSIZE) any IP datagram larger than pathMTU, so the search converges
+	// on pathMTU itself.
+	const pathMTU = 1400
 	psk := testPSK(t, 0x5A)
 	clk := newFakeClock()
 	p := newTestProber(t, psk, clk)
@@ -184,7 +189,7 @@ func TestEchoAwaitProbeSearchConvergesWithoutLossPollution(t *testing.T) {
 
 	var e *EchoAwaitProbe
 	send := func(raw []byte) error {
-		if len(raw) > threshold {
+		if len(raw)+outerIPUDPOverhead > pathMTU {
 			// Oversize under DF: the kernel refuses it locally (EMSGSIZE). The probe is a
 			// deliberate, expected drop — ProbePMTU must exclude its seq from loss.
 			return ErrProbeTooLarge
@@ -207,11 +212,11 @@ func TestEchoAwaitProbeSearchConvergesWithoutLossPollution(t *testing.T) {
 	if err := d.Tick(StateUp); err != nil {
 		t.Fatalf("discovery search: %v", err)
 	}
-	if got := d.PathMTU(); got != threshold {
-		t.Fatalf("converged PMTU = %d, want the largest echoing size %d", got, threshold)
+	if got := d.PathMTU(); got != pathMTU {
+		t.Fatalf("converged PMTU = %d, want the outer path MTU %d", got, pathMTU)
 	}
 	if loss := p.Estimate().Loss; loss != 0 {
-		t.Fatalf("per-path loss = %v after a search with %d dropped oversize probes, want 0 (excluded)", loss, threshold)
+		t.Fatalf("per-path loss = %v after a search with dropped oversize probes, want 0 (excluded)", loss)
 	}
 }
 

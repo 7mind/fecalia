@@ -14,6 +14,18 @@ import (
 // dependency, since the EMSGSIZE detection lives in bind where the socket write is.
 var ErrProbeTooLarge = errors.New("telemetry: padded probe exceeds path MTU (EMSGSIZE)")
 
+// outerIPUDPOverhead is the outer IPv4 (20) + UDP (8) header the kernel prepends to the
+// padded probe's socket payload. The PMTU search works in OUTER IP-level path-MTU units
+// (its floor is the IPv6 minimum LINK MTU 1280 and its ceiling the assumed underlay path
+// MTU — the same units bind.InnerMTU consumes), so ProbePMTU sizes the socket datagram
+// this many bytes BELOW the candidate path MTU to make the resulting IP datagram exactly
+// the candidate size: an echo then confirms a candidate-sized OUTER datagram traverses
+// the path. It mirrors bind.InnerMTU's IPv4/UDP outer term (a deliberate IPv4 assumption;
+// an IPv6 outer header is 20 bytes larger, treated conservatively as elsewhere in the MTU
+// accounting). Duplicated here rather than imported because internal/bind depends on the
+// telemetry plane, not the reverse.
+const outerIPUDPOverhead = 28
+
 // DefaultPMTUProbeDeadline bounds how long EchoAwaitProbe waits for one padded
 // probe's echo before concluding the size did not traverse the path. The PMTU binary
 // search issues ~log2(ceiling-floor) probes, up to about half of which (the oversize
@@ -76,11 +88,15 @@ func NewEchoAwaitProbe(prober *Prober, send func([]byte) error, deadline time.Du
 // echo returned within the deadline. It satisfies telemetry.PMTUProbe. A returned err
 // leaves the search unconverged (the caller retries on a later tick); echoed=false
 // with err=nil is the benign "this size did not traverse" the binary search narrows on.
-func (e *EchoAwaitProbe) ProbePMTU(onWire int) (bool, error) {
-	raw, seq, err := e.prober.SendPaddedProbe(onWire)
+func (e *EchoAwaitProbe) ProbePMTU(pathMTU int) (bool, error) {
+	// pathMTU is the candidate OUTER IP-level path MTU (the units the search and
+	// bind.InnerMTU use). Size the padded probe's socket datagram (its UDP payload)
+	// outerIPUDPOverhead bytes smaller so the resulting IP datagram is EXACTLY pathMTU: a
+	// returned echo confirms a pathMTU-sized outer datagram traversed the path.
+	raw, seq, err := e.prober.SendPaddedProbe(pathMTU - outerIPUDPOverhead)
 	if err != nil {
-		// onWire outside the padded-probe bounds: a caller/config error, not a path
-		// verdict. Leave the search unconverged.
+		// The derived on-wire size is outside the padded-probe bounds: a caller/config
+		// error, not a path verdict. Leave the search unconverged.
 		return false, err
 	}
 	ch := e.register(seq)
