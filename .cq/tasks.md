@@ -2581,10 +2581,10 @@ archives:
 
 ## M83
 
-### T201 — planned
+### T201 — wip
 
 - createdAt: 2026-07-20T18:00:36.902Z
-- updatedAt: 2026-07-20T18:23:24.394Z
+- updatedAt: 2026-07-20T19:50:58.390Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Set DF (IP_MTU_DISCOVER) on path sockets and surface EMSGSIZE sends
@@ -2593,10 +2593,10 @@ archives:
 - suggestedModel: frontier
 - ledgerRefs: ["defects:D85","goals:G23"]
 
-### T202 — planned
+### T202 — wip
 
 - createdAt: 2026-07-20T18:00:43.422Z
-- updatedAt: 2026-07-20T18:00:43.422Z
+- updatedAt: 2026-07-20T19:50:59.014Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Padded MTU-probe frames in the probe transport
@@ -2826,10 +2826,10 @@ archives:
 - ledgerRefs: ["goals:G21"]
 - resultCommit: d4d270f
 
-### T222 — planned
+### T222 — wip
 
 - createdAt: 2026-07-20T18:12:50.842Z
-- updatedAt: 2026-07-20T18:25:39.505Z
+- updatedAt: 2026-07-20T19:50:54.886Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire daemon identity, config link metadata, WG keys, and endpoints into monitor.Info at device.Up
@@ -2868,10 +2868,10 @@ archives:
 - ledgerRefs: ["goals:G21"]
 - resultCommit: "7008327"
 
-### T221 — planned
+### T221 — done
 
 - createdAt: 2026-07-20T18:12:19.671Z
-- updatedAt: 2026-07-20T18:25:47.592Z
+- updatedAt: 2026-07-20T19:57:09.539Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Render daemon, bind, addressing, endpoint-failover, and WG-key sections in the dashboard
@@ -2880,6 +2880,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T218"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: 0caabf4
 
 ## M88
 
