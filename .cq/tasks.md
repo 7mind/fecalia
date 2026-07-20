@@ -2712,10 +2712,10 @@ archives:
 - ledgerRefs: ["defects:D86","goals:G23"]
 - resultCommit: 4e6cf52
 
-### T211 — planned
+### T211 — done
 
 - createdAt: 2026-07-20T18:02:19.713Z
-- updatedAt: 2026-07-20T18:23:55.970Z
+- updatedAt: 2026-07-20T19:48:48.575Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Shared failover-budget derivation with WARN-and-allow over the P1 budget
@@ -2724,6 +2724,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T207"]
 - ledgerRefs: ["defects:D86","goals:G23"]
+- resultCommit: 40cdbbe
 
 ### T213 — planned
 
