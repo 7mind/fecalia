@@ -2698,10 +2698,10 @@ archives:
 - ledgerRefs: ["defects:D86","goals:G23"]
 - resultCommit: 79a3944
 
-### T207 — wip
+### T207 — done
 
 - createdAt: 2026-07-20T18:01:36.094Z
-- updatedAt: 2026-07-20T19:11:40.690Z
+- updatedAt: 2026-07-20T19:26:59.109Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Plumb configured down_after + per-path ride_through into buildScheduler and StartProbeLoop
@@ -2710,6 +2710,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T203","T204"]
 - ledgerRefs: ["defects:D86","goals:G23"]
+- resultCommit: 4e6cf52
 
 ### T211 — planned
 
@@ -2793,10 +2794,10 @@ archives:
 - dependsOn: ["T214"]
 - ledgerRefs: ["goals:G21"]
 
-### T217 — planned
+### T217 — done
 
 - createdAt: 2026-07-20T18:09:17.945Z
-- updatedAt: 2026-07-20T18:09:17.945Z
+- updatedAt: 2026-07-20T19:27:39.169Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Expose the ordered hub-endpoint list with active/standby state from hubFailover
@@ -2805,6 +2806,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T214"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: 5f9401e
 
 ### T220 — planned
 
@@ -2847,10 +2849,10 @@ archives:
 
 ## M87
 
-### T218 — planned
+### T218 — wip
 
 - createdAt: 2026-07-20T18:10:14.428Z
-- updatedAt: 2026-07-20T18:30:12.544Z
+- updatedAt: 2026-07-20T19:24:43.803Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Mirror the extended wire contract in web/src/types.ts
