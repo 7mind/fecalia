@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { AggregationSnapshot, FECSnapshot, MonitorSnapshot, PathSnapshot, ReseqSnapshot } from './types';
+import type { AggregationSnapshot, DaemonSnapshot, FECSnapshot, MonitorSnapshot, PathSnapshot, ReseqSnapshot } from './types';
 import { mountDashboard } from './dashboard';
 import { SPARKLINE_MAX_POINTS } from './sparkline';
 
@@ -14,6 +14,19 @@ function path(overrides: Partial<PathSnapshot> = {}): PathSnapshot {
     jitterSeconds: 0.001,
     loss: 0.01,
     up: true,
+    bindMode: 'auto',
+    boundDevice: '',
+    linkBandwidthBps: 0,
+    linkRttSeconds: 0,
+    ...overrides,
+  };
+}
+
+function daemon(overrides: Partial<DaemonSnapshot> = {}): DaemonSnapshot {
+  return {
+    role: 'edge',
+    version: 'test',
+    uptimeSeconds: 1,
     ...overrides,
   };
 }
@@ -66,6 +79,10 @@ function multiPeerSnapshot(): MonitorSnapshot {
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA', 'peerB'],
     multiPeer: true,
+    daemon: daemon(),
+    endpoints: [],
+    wgPublicKeyFingerprint: '',
+    addressingHidden: true,
   };
 }
 
@@ -78,6 +95,10 @@ function singlePeerSnapshot(): MonitorSnapshot {
     session: { established: true, lastHandshakeSeconds: 1 },
     peerNames: [],
     multiPeer: false,
+    daemon: daemon(),
+    endpoints: [],
+    wgPublicKeyFingerprint: '',
+    addressingHidden: true,
   };
 }
 

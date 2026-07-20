@@ -45,6 +45,10 @@ function makeSnapshot(): MonitorSnapshot {
     session: { established: true, lastHandshakeSeconds: 1 },
     peerNames: [],
     multiPeer: false,
+    daemon: { role: 'edge', version: 'test', uptimeSeconds: 1 },
+    endpoints: [],
+    wgPublicKeyFingerprint: '',
+    addressingHidden: true,
   };
 }
 
