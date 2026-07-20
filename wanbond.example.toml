@@ -80,11 +80,27 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's U
                                    #   duration). REQUIRED (> 0) when link_bandwidth
                                    #   is set with pacing enabled (either policy);
                                    #   else ignored.
+# mtu = 1500                       # OPTIONAL, DEFAULT 0 (unset = auto: falls back to
+                                   #   the datapath's built-in 1500 assumption /
+                                   #   auto-discovery). Operator-declared OUTER path
+                                   #   MTU in bytes — the underlay's IP-level MTU
+                                   #   this path's datagrams must fit without
+                                   #   fragmentation. When set, must be 1280..9000
+                                   #   AND leave a derived inner (TUN) MTU >= 576
+                                   #   after the fixed ~100-byte outer overhead
+                                   #   (IP/UDP + outer DATA frame + WireGuard
+                                   #   transport). Set this on any uplink whose real
+                                   #   path MTU is BELOW 1500 (see the "5g" path
+                                   #   below) — an over-declared MTU IP-fragments or
+                                   #   PMTUD-blackholes, silently stalling the path.
 
 # A second uplink (edge). Repeat the block per path.
 [[paths]]
 name        = "5g"
 source_addr = "192.168.2.10"
+mtu         = 1400                 # This carrier's cellular APN caps the path MTU
+                                   #   below the 1500 Ethernet default — declare it
+                                   #   so the tunnel never IP-fragments on this leg.
 
 # ── wireguard: inner tunnel key material ─────────────────────────────────────
 [wireguard]
@@ -425,6 +441,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 #   heuristic; "source" and "device" force one behavior unconditionally. See
 #   install.md §3b for the VLAN-per-WAN policy-routing case `bind = "source"`
 #   exists to fix.
+# • mtu (per-path, OPTIONAL): 0 (DEFAULT, unset) = auto. When set, must be
+#   1280..9000 and leave a derived inner MTU >= 576 after the fixed ~100-byte
+#   outer overhead (IP/UDP + outer DATA frame + WireGuard transport). Declares
+#   the path's OUTER underlay MTU only; wanbond does not yet size the TUN's
+#   inner MTU from it.
 # • dns off-unless-present: no [dns] => system resolver, default cadence/
 #   timeouts; [dns] only selects the transport a peer's `dns = true` opt-in
 #   uses, never a gate by itself. doh_url/dot_server are mode-specific: set

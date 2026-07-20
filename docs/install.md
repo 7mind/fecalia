@@ -704,11 +704,22 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
                                    #   link_bandwidth is set with pacing enabled
                                    #   (either policy); ignored otherwise. No
                                    #   default.
+# mtu = 1500                       # OPTIONAL, DEFAULT 0 (unset = auto). Operator-
+                                   #   declared OUTER path MTU in bytes. When set,
+                                   #   must be 1280..9000 and leave a derived
+                                   #   inner (TUN) MTU >= 576 after the fixed
+                                   #   ~100-byte outer overhead (IP/UDP + outer
+                                   #   DATA frame + WireGuard transport). Set on
+                                   #   any uplink whose real path MTU is below
+                                   #   1500 (e.g. some cellular APNs).
 
 # A second uplink (edge). Repeat the block per path.
 [[paths]]
 name        = "5g"
 source_addr = "192.168.2.10"
+mtu         = 1400                 # This carrier's cellular APN caps the path
+                                   #   MTU below 1500 — declare it so the tunnel
+                                   #   never IP-fragments on this leg.
 
 # ── wireguard: inner tunnel key material ─────────────────────────────────────
 [wireguard]
@@ -944,6 +955,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   config with no `bind` anywhere keeps exactly today's per-path bind behavior.
   See §3b for the VLAN-per-WAN policy-routing case `bind = "source"` exists to
   fix.
+- **`mtu` (per-path, optional).** `0` (DEFAULT, unset) means auto. When set,
+  must be `1280..9000` and leave a derived inner MTU `>= 576` after the fixed
+  ~100-byte outer overhead (IP/UDP + outer DATA frame + WireGuard transport).
+  Declares the path's OUTER underlay MTU only — see §7 for what wanbond does
+  (and does not yet do) with the declared value.
 
 ## 4. systemd units
 
@@ -1463,6 +1479,13 @@ listen = "127.0.0.1:9101"
 The daemon sets the TUN MTU itself from the bonded-overhead budget (see
 `docs/p1-mtu.md`); do not override it. If an on-path MTU below the default
 1500 is in play, see the TCP MSS-clamp guidance in that document.
+
+A per-path `mtu` config key (§3z) lets an operator DECLARE that path's real
+outer underlay MTU (e.g. a cellular APN capped below 1500) — it is validated
+at config load (1280..9000, and the derived inner MTU must stay >= 576) but,
+as of this writing, is not yet consumed when sizing the TUN's inner MTU; that
+wiring is tracked separately. Declaring it today only documents and validates
+the operator's intent for a future release.
 
 ## 8. Limitations
 

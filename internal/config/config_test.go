@@ -1793,3 +1793,118 @@ func TestMonitorUnknownKeyRejected(t *testing.T) {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "unknown key monitor.tokenn")
 	}
 }
+
+// TestPathMTURoundTrip is the reproduce-first round-trip test for T200 (D85):
+// a path's OPTIONAL `mtu` key round-trips losslessly through Load, and —
+// critically — an EXISTING config that never mentions `mtu` parses to the
+// exact same byte-identical Config as before this field existed (golden
+// struct compare via reflect.DeepEqual, mirroring the
+// TestLoadSinglePeerLegacyPSKGoldenShape precedent): the omitted key leaves
+// Path.MTU at its zero value (0 == "auto").
+func TestPathMTURoundTrip(t *testing.T) {
+	t.Run("omitted_key_is_byte_identical_zero_value", func(t *testing.T) {
+		path := writeConfig(t, 0o600, fill(concentratorConfig))
+		c, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		want := &Config{
+			Role: RoleConcentrator,
+			Paths: []Path{
+				{
+					Name:          "wan",
+					SourceAddr:    netip.MustParseAddr("203.0.113.5"),
+					SourceAddrRaw: "203.0.113.5",
+					Bind:          BindModeAuto,
+					// MTU is left at its zero value (unset/auto): the fixture never
+					// mentions `mtu`, so this must match the pre-T200 golden shape.
+				},
+			},
+			WireGuard: WireGuard{
+				PrivateKey: mustKey(t, 1),
+				ListenPort: 51820,
+				Peers: []Peer{
+					{
+						PublicKey:     mustKey(t, 2),
+						AllowedIPs:    []string{"10.0.0.2/32"},
+						Endpoints:     []netip.AddrPort{},
+						EndpointSpecs: []EndpointSpec{},
+					},
+				},
+			},
+			PSK: mustKey(t, 3),
+			Scheduler: SchedulerConfig{
+				Policy: PolicyActiveBackup,
+			},
+			DNS: DNS{
+				Resolver:     DNSResolverSystem,
+				PollInterval: defaultDNSPollInterval,
+				Timeout:      defaultDNSTimeout,
+			},
+			Bind: BindModeAuto,
+		}
+		if !reflect.DeepEqual(c, want) {
+			t.Fatalf("Load() = %#v, want %#v", c, want)
+		}
+	})
+
+	t.Run("explicit_mtu_round_trips_per_path", func(t *testing.T) {
+		body := strings.Replace(fill(edgeConfig),
+			"name = \"starlink\"\nsource_addr = \"192.0.2.10\"",
+			"name = \"starlink\"\nsource_addr = \"192.0.2.10\"\nmtu = 1400", 1)
+		path := writeConfig(t, 0o600, body)
+		c, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(c.Paths) != 2 {
+			t.Fatalf("paths = %d, want 2", len(c.Paths))
+		}
+		if c.Paths[0].MTU != 1400 {
+			t.Errorf("path[0] (%q) MTU = %d, want 1400", c.Paths[0].Name, c.Paths[0].MTU)
+		}
+		if c.Paths[1].MTU != 0 {
+			t.Errorf("path[1] (%q) MTU = %d, want 0 (unset, no mtu key)", c.Paths[1].Name, c.Paths[1].MTU)
+		}
+	})
+}
+
+// TestPathMTUValidation is the reproduce-first validation test for T200 (D85):
+// mtu is accepted anywhere in [1280,9000] (and the unset zero value), and
+// rejected outside that range — a below-minimum, above-maximum, or negative
+// value must all fail fast at Load, naming the offending path.
+func TestPathMTUValidation(t *testing.T) {
+	accept := []int{0, 1280, 1400, 9000}
+	for _, mtu := range accept {
+		t.Run(fmt.Sprintf("accept_%d", mtu), func(t *testing.T) {
+			body := strings.Replace(fill(edgeConfig),
+				"name = \"starlink\"\nsource_addr = \"192.0.2.10\"",
+				fmt.Sprintf("name = \"starlink\"\nsource_addr = \"192.0.2.10\"\nmtu = %d", mtu), 1)
+			path := writeConfig(t, 0o600, body)
+			c, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load(mtu=%d): unexpected error: %v", mtu, err)
+			}
+			if c.Paths[0].MTU != mtu {
+				t.Errorf("path[0] MTU = %d, want %d", c.Paths[0].MTU, mtu)
+			}
+		})
+	}
+
+	reject := []int{1279, 9001, -1}
+	for _, mtu := range reject {
+		t.Run(fmt.Sprintf("reject_%d", mtu), func(t *testing.T) {
+			body := strings.Replace(fill(edgeConfig),
+				"name = \"starlink\"\nsource_addr = \"192.0.2.10\"",
+				fmt.Sprintf("name = \"starlink\"\nsource_addr = \"192.0.2.10\"\nmtu = %d", mtu), 1)
+			path := writeConfig(t, 0o600, body)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected mtu=%d to be rejected, got nil", mtu)
+			}
+			if !strings.Contains(err.Error(), `path "starlink"`) || !strings.Contains(err.Error(), "mtu must be") {
+				t.Fatalf("error = %q, want it to name path \"starlink\" and say \"mtu must be\"", err.Error())
+			}
+		})
+	}
+}

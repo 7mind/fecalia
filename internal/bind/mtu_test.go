@@ -80,6 +80,21 @@ func TestParityFrameFitsPathMTUWithFEC(t *testing.T) {
 	}
 }
 
+// TestPathMTUOverheadMatchesConfigMirror keeps internal/config's mirrored
+// outerPathOverheadBytes constant (T200, D85, config.go ~L285) honest against
+// this package's real overhead figures. config cannot import internal/bind
+// (bind imports config; importing back would cycle), so config's copy is a
+// hand-mirrored literal (100) rather than a reference to these constants — if
+// any of the three terms below ever changes, this test fails here first, and
+// the config.go mirror must be updated in lockstep.
+func TestPathMTUOverheadMatchesConfigMirror(t *testing.T) {
+	const wantMirroredInConfig = 100 // internal/config/config.go: outerPathOverheadBytes
+	if got := IPv4UDPOverhead + frame.DataOverhead + WGTransportOverhead; got != wantMirroredInConfig {
+		t.Fatalf("IPv4UDPOverhead(%d) + frame.DataOverhead(%d) + WGTransportOverhead(%d) = %d, want %d (must match internal/config's outerPathOverheadBytes mirror)",
+			IPv4UDPOverhead, frame.DataOverhead, WGTransportOverhead, got, wantMirroredInConfig)
+	}
+}
+
 // TestDataOverheadMatchesEncoding confirms DataOverhead equals the real wire cost
 // of a zero-payload DATA frame, so the MTU budget can never silently drift from
 // the codec.

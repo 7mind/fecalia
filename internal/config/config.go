@@ -282,6 +282,43 @@ type BDPSizing struct {
 // would yield a HIGHER frame rate, so this never over-paces a path.
 const defaultAvgWireFrameBytes = 1500.0
 
+// outerPathOverheadBytes is the fixed per-datagram overhead a full-size inner
+// (TUN) packet grows by once wrapped in the outer IPv4/UDP + DATA-frame +
+// WireGuard-transport layers (T200, D85): bind.IPv4UDPOverhead (28) +
+// frame.DataOverhead (40) + bind.WGTransportOverhead (32) = 100. It mirrors
+// bind.InnerMTU's non-FEC IPv4 budget rather than importing it — internal/bind
+// imports internal/config, so config cannot import bind without a cycle (the
+// same mirror-with-cross-reference pattern as defaultAvgWireFrameBytes and
+// maxFECDeadline above). Path.validate uses it to reject an operator-declared
+// `mtu` too small to leave a sane inner MTU; kept honest against drift in
+// bind's actual overhead figures by TestPathMTUOverheadMatchesConfigMirror in
+// internal/bind (that package CAN import config, so the cross-check lives
+// there instead).
+const outerPathOverheadBytes = 100
+
+// minPathMTU is the lower bound accepted for an operator-declared per-path
+// `mtu` (T200, D85): the IPv6 minimum-MTU floor (RFC 8200 §5), chosen as a
+// conservative universal lower bound regardless of whether the underlay runs
+// IPv4 or IPv6.
+const minPathMTU = 1280
+
+// maxPathMTU is the upper bound accepted for an operator-declared per-path
+// `mtu` (T200, D85): the conventional jumbo-frame ceiling: values above this
+// are not a real underlay path MTU on any WAN uplink this project targets and
+// are almost certainly a config typo.
+const maxPathMTU = 9000
+
+// minInnerMTU is the smallest derived inner (TUN) MTU validate() accepts for
+// an operator-declared `mtu` (T200, D85): the classic IPv4 minimum-reassembly
+// MTU (RFC 791), the conventional floor below which an inner tunnel MTU is
+// considered too degenerate to carry real traffic usefully. Given
+// minPathMTU (1280) and outerPathOverheadBytes (100), this bound is currently
+// subsumed by minPathMTU (1280-100 = 1180 > 576) — it stays an explicit,
+// independent check so a future increase in outerPathOverheadBytes (e.g. an
+// IPv6 or FEC-aware budget) cannot silently let the derived inner MTU sink
+// below a sane floor without validate() catching it.
+const minInnerMTU = 576
+
 // SizePacingFromBDP derives the weighted scheduler's per-path pacing parameters from a
 // measured path instead of the synthetic frame-count default (defect D22). The shipped
 // defaultPerPathCapacityFPS (10000, ~115 Mbit/s at full MTU) sits far above a realistic
@@ -570,6 +607,16 @@ type Path struct {
 	// value, so after Load it always holds one of the three valid modes, never
 	// empty. See BindMode.
 	Bind BindMode `toml:"bind"`
+	// MTU is the OPERATOR-DECLARED outer path MTU in bytes: the underlay's IP-level
+	// MTU this path's datagrams must fit without IP fragmentation (T200, D85). Zero
+	// (the default — omitted key) means "unset": the datapath falls back to
+	// bind.DefaultPathMTU / runtime auto-discovery, unchanged from pre-T200
+	// behavior. When set, validate() requires it in [minPathMTU, maxPathMTU] AND
+	// that the derived inner (TUN) MTU stays >= minInnerMTU — see
+	// outerPathOverheadBytes below for why that derivation is mirrored rather than
+	// imported from internal/bind. This field only carries and validates the
+	// operator's declaration; wiring it into the TUN's actual MTU is T205.
+	MTU int `toml:"mtu"`
 }
 
 // WireGuard holds the inner tunnel's key material.
@@ -1462,6 +1509,16 @@ func (c *Config) validate() error {
 		seenSrc[src] = p.Name
 		if !p.Bind.valid() {
 			return fmt.Errorf("path %q: bind must be %q, %q or %q, got %q", p.Name, BindModeSource, BindModeDevice, BindModeAuto, p.Bind)
+		}
+		// mtu = 0 means "unset" (auto): the datapath falls back to bind.DefaultPathMTU /
+		// auto-discovery, so only a nonzero declaration is range-checked (T200, D85).
+		if p.MTU != 0 {
+			if p.MTU < minPathMTU || p.MTU > maxPathMTU {
+				return fmt.Errorf("path %q: mtu must be %d..%d (or 0 for auto), got %d", p.Name, minPathMTU, maxPathMTU, p.MTU)
+			}
+			if innerMTU := p.MTU - outerPathOverheadBytes; innerMTU < minInnerMTU {
+				return fmt.Errorf("path %q: mtu %d leaves an inner MTU of %d after the fixed %d-byte outer overhead, below the required minimum %d", p.Name, p.MTU, innerMTU, outerPathOverheadBytes, minInnerMTU)
+			}
 		}
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {

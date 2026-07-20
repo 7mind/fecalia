@@ -218,6 +218,11 @@ deliberate boundaries you must plan around:
 - **DATA/PARITY frames are unauthenticated by design** (inner WireGuard
   authenticates the real payload; a DoS-grade forgery risk is accepted). PROBE
   and CONTROL are PSK-HMAC authenticated.
+- **Per-path `mtu` is declared but not yet sized into the tunnel** — an
+  optional per-path `mtu` config key lets an operator declare that path's real
+  outer underlay MTU (e.g. a cellular APN capped below 1500); it is validated
+  at config load (1280..9000, derived inner MTU `>= 576`) but not yet consumed
+  when sizing the TUN's inner MTU (see [docs/install.md §7](docs/install.md)).
 
 See [docs/design.md §Security model](docs/design.md) and
 [docs/p0-findings.md](docs/p0-findings.md) for the reasoning behind each.
