@@ -1540,6 +1540,19 @@ The daemon sets the TUN MTU itself from the bonded-overhead budget (see
 `docs/p1-mtu.md`); do not override it. If an on-path MTU below the default
 1500 is in play, see the TCP MSS-clamp guidance in that document.
 
+**TCP MSS clamping is split by ownership (T208, D85).** TCP that the **edge
+host itself originates** over `wanbond0` is clamped by the **daemon**: on the
+edge role it installs a mangle/`OUTPUT`-chain `TCPMSS --clamp-mss-to-pmtu` rule
+(IPv4 and IPv6) at bring-up and withdraws it on shutdown — the operator installs
+nothing for this case. **Forwarded** (routed-LAN) TCP traverses the `FORWARD`
+chain, which the daemon does NOT touch; the operator installs the matching
+`FORWARD`-chain clamp on each forwarding node — see the C6 forwarding recipe
+below and `docs/p1-mtu.md`. The two chains are disjoint (a SYN is either locally
+originated or forwarded), so the daemon-owned OUTPUT clamp and the operator-owned
+FORWARD clamp are complementary. The daemon's OUTPUT clamp requires
+`iptables`/`ip6tables` on the edge; bring-up fails fast with a clear error if the
+front-end is absent.
+
 A per-path `mtu` config key (§3z) lets an operator DECLARE that path's real
 outer underlay MTU (e.g. a cellular APN capped below 1500) — it is validated
 at config load (1280..9000, and the derived inner MTU must stay >= 576) but,

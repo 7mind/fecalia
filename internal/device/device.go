@@ -166,6 +166,14 @@ type Tunnel struct {
 	// Close. Empty (nil) for a config with no default-route peer, so a plain tunnel
 	// programs — and tears down — no routes at all.
 	routePrefixes []netip.Prefix
+	// mssClampInstalled records that Up programmed the daemon-owned OUTPUT-chain TCP MSS
+	// clamp on wanbond0 for edge-originated TCP (T208, D85) so Close withdraws it. It is
+	// set ONLY by the privileged Up() wrapper on the edge role, never by the test-driven
+	// up() seam — so a unit test that calls up() neither programs nor tears down any
+	// netfilter rule. Unlike a route (dropped with the interface), an `-o wanbond0`
+	// iptables rule survives the interface, so this teardown is not optional under
+	// tun_persist. See mssclamp_linux.go.
+	mssClampInstalled bool
 	// bind is the multipath Bind the engine drives; Reload calls its runtime
 	// AddPath/RemovePath to apply a config-reload path diff (T30).
 	bind *bind.Multipath
@@ -370,7 +378,33 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	// as a factory (not eagerly constructed) so up() builds it AT MOST ONCE and ONLY when some peer
 	// carries a hostname endpoint spec — a config with zero hostname specs never constructs a
 	// resolver (Q29 inertness). The injected TUN and factory are also the seams device tests drive.
-	return up(cfg, clg, tunDev, name, cfg.DNS.NewResolver, version)
+	t, err := up(cfg, clg, tunDev, name, cfg.DNS.NewResolver, version)
+	if err != nil {
+		return nil, err
+	}
+	// Install the daemon-owned TCP MSS clamp for EDGE-ORIGINATED TCP egressing wanbond0
+	// (T208, D85, accepted decision 2): a mangle/OUTPUT-chain TCPMSS --clamp-mss-to-pmtu
+	// rule for v4+v6 pins each locally originated TCP SYN's MSS to the tunnel path MTU, so
+	// the edge host's own TCP stays inside wanbond0's inner MTU without relying on PMTUD
+	// (which consumer CPE/carrier NAT routinely black-holes). --clamp-mss-to-pmtu derives
+	// the MSS from the LIVE interface MTU, so it composes with a runtime MTU resize with no
+	// re-install. FORWARDED (routed-LAN) traffic keeps G14's operator-installed FORWARD-chain
+	// clamp — a DISJOINT chain (docs/p1-mtu.md).
+	//
+	// This is PRIVILEGED (it programs netfilter) and therefore lives in Up(), NOT the
+	// test-driven up() seam: a unit test that drives up() with a channel TUN neither programs
+	// nor tears down any rule. It is confined to the edge role (the concentrator's transit
+	// traffic is forwarded, not locally originated). Install is idempotent (a re-run of Up
+	// after a crash never stacks a duplicate) and removed on Close.
+	if cfg.Role == config.RoleEdge {
+		if err := installMSSClamp(name); err != nil {
+			t.Close()
+			return nil, fmt.Errorf("device: install MSS clamp: %w", err)
+		}
+		t.mssClampInstalled = true
+		clg.Info("MSS clamp installed", "interface", name, "table", mssClampTable, "chain", mssClampChain, "mss", clampMSS(tunMTU(cfg)))
+	}
+	return t, nil
 }
 
 // resolverFactory builds the DNS resolver used for hostname endpoint re-resolution. It is injected
@@ -1342,6 +1376,16 @@ func (t *Tunnel) Close() {
 	if len(t.routePrefixes) > 0 {
 		if err := removeRoutes(t.name, t.routePrefixes); err != nil {
 			t.log.Warn("default-route teardown: could not remove routes", "error", err.Error())
+		}
+	}
+	// Withdraw the daemon-owned edge-originated MSS clamp (T208, D85). This teardown is
+	// NOT optional under tun_persist: an `-o wanbond0` iptables rule stores the interface
+	// NAME and survives dev.Close destroying the interface, so it would leak (and re-stack
+	// on the next start, were install not idempotent) if left behind. Only set on the edge
+	// role via Up(); removeMSSClamp is idempotent (a no-op if the rule is already gone).
+	if t.mssClampInstalled {
+		if err := removeMSSClamp(t.name); err != nil {
+			t.log.Warn("MSS clamp teardown: could not remove rule", "error", err.Error())
 		}
 	}
 	t.dev.Close()

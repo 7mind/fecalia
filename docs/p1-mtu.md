@@ -104,21 +104,51 @@ rejects a declared per-path `mtu` whose OWN derived inner MTU would fall below
 `minInnerMTU` (576), independent of what any other path contributes to the
 bond-wide minimum.
 
-## MSS clamping (the operator action)
+## MSS clamping — two disjoint chains (T208, D85)
 
-Setting the TUN MTU bounds what the *local* stack originates, but TCP endpoints
-*behind* the tunnel (a LAN host routed through the edge, or the concentrator's
-downstream) negotiate their MSS from their own link MTU and will happily send
-1460-byte segments that no longer fit once wrapped. The fix is to clamp the TCP
-MSS of forwarded SYNs to the tunnel's inner MTU minus the inner IP+TCP headers:
+Setting the TUN MTU bounds what the *local* stack originates, but a TCP endpoint
+whose SYN carries an MSS negotiated from a LARGER link MTU (1460 bytes for a
+1500-byte LAN) will send segments that no longer fit once wrapped. The fix is to
+clamp the TCP MSS of those SYNs to the tunnel's inner MTU minus the inner IP+TCP
+headers:
 
 ```
 MSS = inner MTU − 40 (IPv4: 20 IP + 20 TCP) = 1400 − 40 = 1360 bytes
       inner MTU − 60 (IPv6: 40 IP + 20 TCP) = 1380 − 60 = 1320 bytes
 ```
 
-Clamp on the forwarding node (edge and concentrator) with the standard
-`TCPMSS --clamp-mss-to-pmtu` target on the tunnel interface, or an explicit value:
+Two DISJOINT netfilter chains carry this clamp, split by ownership — a given SYN
+is either locally originated (OUTPUT) or forwarded (FORWARD), never both, so the
+two are complementary, never redundant:
+
+### Edge-originated TCP → OUTPUT chain, DAEMON-owned (T208)
+
+TCP that the **edge host itself originates** over `wanbond0` (the daemon, a local
+service, an admin ssh out the tunnel) is clamped by the **daemon**: at
+`device.Up` on the **edge role** it installs, and on `Close` it withdraws, an
+`OUTPUT`-chain `TCPMSS --clamp-mss-to-pmtu` rule for BOTH IPv4 and IPv6 —
+equivalent to:
+
+```sh
+iptables  -t mangle -A OUTPUT -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
+          -j TCPMSS --clamp-mss-to-pmtu
+ip6tables -t mangle -A OUTPUT -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
+          -j TCPMSS --clamp-mss-to-pmtu
+```
+
+The operator installs NOTHING for this case — it is programmed automatically. The
+install is idempotent (a re-run of `Up` after a crash never stacks a duplicate);
+because an `-o wanbond0` rule stores the interface NAME and survives the
+interface, the daemon removes it explicitly on `Close` (it does not vanish with a
+`tun_persist` device). The daemon currently emits this only when
+`iptables`/`ip6tables` are present, failing bring-up fast with a clear error when
+a chosen exec front-end is absent.
+
+### Forwarded (routed-LAN) TCP → FORWARD chain, OPERATOR-owned (G14)
+
+TCP that the node **forwards** — a LAN host routed through the edge, or the
+concentrator's downstream — traverses the `FORWARD` chain, which the daemon does
+NOT touch. The operator installs the G14 recipe on each forwarding node:
 
 ```sh
 # Clamp to the discovered PMTU (preferred — tracks the tunnel MTU automatically):
@@ -132,11 +162,11 @@ iptables  -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
           -j TCPMSS --set-mss 1360
 ```
 
-`--clamp-mss-to-pmtu` is preferred: it derives the MSS from the tunnel interface
-MTU, so it stays correct if the inner MTU is retuned (e.g. amnezia enabled, or a
-lower real path MTU). UDP and other non-TCP traffic cannot be MSS-clamped; those
-flows must rely on the inner MTU and, for locally originated traffic, on the
-sender honouring the TUN MTU.
+`--clamp-mss-to-pmtu` is preferred in both chains: it derives the MSS from the
+tunnel interface MTU, so it stays correct if the inner MTU is retuned (e.g.
+amnezia enabled, a lower real path MTU, or a runtime resize). UDP and other
+non-TCP traffic cannot be MSS-clamped; those flows must rely on the inner MTU and,
+for locally originated traffic, on the sender honouring the TUN MTU.
 
 ## What T12 verifies
 
@@ -146,3 +176,8 @@ sender honouring the TUN MTU.
   with DF set and asserts, from a packet capture on the edge egress, that no
   outer datagram is IP-fragmented and that the inner packet fits the computed
   budget. (Runs on hardware with `/dev/net/tun`; compiled under `-tags e2e`.)
+- `internal/device.TestClampMSS` pins the daemon-owned OUTPUT clamp's
+  MSS-derivation (`inner MTU − 40`) in the non-privileged gate; the privileged
+  `TestE2EDaemonMSSClampLifecycle` (`-tags e2e`, hardware-tier) asserts the rule
+  is present after `Up` (v4+v6), idempotent across a crash+restart, and withdrawn
+  on `Close` (T208, D85).
