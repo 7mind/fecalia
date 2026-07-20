@@ -2,7 +2,7 @@
 ledger: handoffs
 counters:
   milestone: 0
-  item: 28
+  item: 29
 archives: []
 ---
 
@@ -423,3 +423,19 @@ archives: []
 - ledgerRefs: ["goals:G14","defects:D65"]
 - sessionLogs: [".cq/logs/20260714-131751-a939da48f71492819.md",".cq/logs/20260714-131751-a4e27ec8438296860.md",".cq/logs/20260714-132348-a4817b0c9903be5f5.md",".cq/logs/20260714-132348-a2ee651df649727fc.md",".cq/logs/20260714-132929-aa935aed152b4e285.md",".cq/logs/20260714-133358-a65ef5ef060923e4e.md",".cq/logs/20260714-133358-a75a6833b6ede96b3.md",".cq/logs/20260714-133525-a3a8224f82f52d214.md"]
 - rawLogs: [".cq/logs/raw/20260714-131751-a939da48f71492819.jsonl",".cq/logs/raw/20260714-131751-a4e27ec8438296860.jsonl",".cq/logs/raw/20260714-132348-a4817b0c9903be5f5.jsonl",".cq/logs/raw/20260714-132348-a2ee651df649727fc.jsonl",".cq/logs/raw/20260714-132929-aa935aed152b4e285.jsonl",".cq/logs/raw/20260714-133358-a65ef5ef060923e4e.jsonl",".cq/logs/raw/20260714-133358-a75a6833b6ede96b3.jsonl",".cq/logs/raw/20260714-133525-a3a8224f82f52d214.jsonl"]
+
+## M79
+
+### HO28 — answers-required
+
+- createdAt: 2026-07-20T15:53:25.296Z
+- updatedAt: 2026-07-20T15:53:25.296Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- flow: plan
+- summary: "/cq:plan bootstrap for goal G21 (extend the G12 monitoring-UI stats page with edge/concentrator addressing + more) — stop = BLOCKED-ON-QUESTIONS (answers-required). Coordination milestone M79 + goal G21 created (clarifying); the plan-advance planner grounded in the G12 monitor/metrics/bind/config/web code and filed the FIRST clarifying batch Q60-Q65 (all open, linked goals:G21). The load-bearing decisions are the security ones (Q62-Q64): the monitor CAN be bound non-loopback (token-gated, cleartext-over-LAN per the accepted Q58(a) posture), so surfacing IP addresses / hub endpoints / WG public keys widens what a captured-token or on-path observer learns — the answers determine whether the plan needs a binding-awareness/redaction seam threaded into BuildSnapshot + the monitor server. Planner found: aggregation thresholds, last-handshake age, and peer names are ALREADY on the MonitorSnapshot wire (no plumbing); role/bind-mode/link_bandwidth/link_rtt are config-cheap; but ALL addressing (per-path source sharedPathState.src, remote peerPathState.remote, ordered hub endpoints config.Peer.Endpoints+failover.go) and the WG public key need new bind->metrics.Source->monitor.Snapshot->web/src/types.ts plumbing. RESUME: answer Q60-Q65 in the TUI/web, then run /cq:plan:advance G21 to emit + review the task DAG."
+- ledgerRefs: ["goals:G21","questions:Q60","questions:Q61","questions:Q62","questions:Q63","questions:Q64","questions:Q65"]
+- blockingQuestions: ["Q60","Q61","Q62","Q63","Q64","Q65"]
+- sessionLogs: [".cq/logs/20260720-155307-a90a4e40d9a115944.md"]
+- rawLogs: [".cq/logs/raw/20260720-155307-a90a4e40d9a115944.jsonl"]
+- tags: ["cq-plan-bootstrap","answers-required","monitoring-ui"]

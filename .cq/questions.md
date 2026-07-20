@@ -2,7 +2,7 @@
 ledger: questions
 counters:
   milestone: 0
-  item: 59
+  item: 65
 archives:
   - id: M2
     path: ./archive/questions/M2.md
@@ -787,3 +787,77 @@ archives:
 - context: "Root cause: unshaped egress on the DEFAULT active-backup scheduler lets the external Starlink last-mile buffer bloat to ~1s and drop ~13%, collapsing single-flow TCP cwnd to ~3.67 Mbps (the WAN carries ≥6.9 Mbps per the UDP result; encode CPU and internal queueing ruled out). Suggested fix: (1) add BDP-sized egress pacing (+optional AQM) to active-backup, reusing the existing weighted pacer; (2) MSS-clamp forwarded TCP on wanbond0 + document it. On-hardware validation deferred to verify/implement (user waived pre-fix measurement via Q56, answer 'implement the fixes'). Goal G14 (milestone M56) embeds the full root cause + suggestedFix and is defect-seeded, so plan-flow skips clarification and plans directly."
 - ledgerRefs: ["defects:D65","goals:G14"]
 - answer: Agreed
+
+## M79
+
+### Q60 — open
+
+- createdAt: 2026-07-20T15:51:41.204Z
+- updatedAt: 2026-07-20T15:51:41.204Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: "SCOPE v1 — low-cost, low-sensitivity fields: which of these do you want in v1? (a) effective ROLE (edge vs concentrator); (b) daemon VERSION/build + process UPTIME; (c) per-path BIND MODE (device/source/auto) + bound device/interface name; (d) config-declared LINK_BANDWIDTH / LINK_RTT per path."
+- context: "These are all cheaply available from config (config.Role, Path.Bind/Device, Path.LinkBandwidthBitsPerSec) or a build-time var, and none exposes a routable address, so their security cost is low. NOTE — three candidates from the goal's list are ALREADY surfaced today and need no work: the aggregation engage/disengage thresholds (AggregationSnapshot), the connection-scoped last-handshake age (SessionSnapshot), and peer names (peerNames). WG public key and the addressing/endpoint fields are handled in separate questions because they carry real security weight."
+- suggestions: ["Include all four (a-d) in v1","Include only role + version/uptime; defer bind-mode + link params","Only a subset — specify which"]
+- recommendation: Include all four (a-d) in v1 — each is config-cheap, operator-useful, and carries no addressing/identity exposure.
+- ledgerRefs: ["goals:G21"]
+
+### Q61 — open
+
+- createdAt: 2026-07-20T15:51:50.173Z
+- updatedAt: 2026-07-20T15:51:50.173Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: "SCOPE v1 — the ADDRESSING fields (your headline ask): which do you want in v1? (a) per-path SOURCE address (the bound socket's local addr) + interface; (b) per-path REMOTE/DEST endpoint (the concentrator address the path currently points at); (c) the ordered peer/hub ENDPOINT LIST with active-vs-standby FAILOVER state (which concentrator is live, which are standbys)."
+- context: "None of these exist in the wire contract today: bind.PathTraffic / PeerSnapshot carry Name/Tx/Rx/Estimate/State only. Source addr lives in sharedPathState.src, the current remote in peerPathState.remote (repointed on hub failover), and the ordered endpoints + active index in config.Peer.Endpoints + device/failover.go. Each requires new plumbing threaded bind -> metrics.Source -> monitor.PathSnapshot/MonitorSnapshot -> web types.ts. Scoping this set fixes how much backend plumbing v1 carries. Security handling for whichever you pick is a separate question."
+- suggestions: ["All three (a-c) — full per-path + hub-failover addressing","Only per-path source + remote (a,b); defer the hub-failover list","Only the hub-endpoint list + failover state (c); defer per-path source/remote"]
+- recommendation: Include all three (a-c) — together they are the operator picture your request describes (where each uplink originates, where it lands, and which hub is active), and they share one plumbing pass.
+- ledgerRefs: ["goals:G21"]
+
+### Q62 — open
+
+- createdAt: 2026-07-20T15:52:01.183Z
+- updatedAt: 2026-07-20T15:52:01.183Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: SECURITY — the monitor CAN be bound non-loopback (token-gated, cleartext over LAN per the accepted Q58(a) posture), so any address/endpoint we add widens what a captured-token or on-path LAN observer learns. What binding-dependent posture do you want for the addressing fields (Q about per-path source/remote + hub endpoints)? (a) surface as-is on ANY binding; (b) surface as-is on loopback, but on a non-loopback binding REDACT/omit the addressing block (placeholder shown); (c) always surface but truncate public-routable addresses (e.g. mask host bits), full only on loopback.
+- context: The loopback-default / non-loopback-requires-token invariant (Q45) and read-only posture (Q48) still hold, but the token is a bearer secret over cleartext LAN — exposure escalates the value of a captured token from 'traffic counters' to 'full network topology + endpoints'. Gating the sensitive block to the loopback binding keeps the default (localhost operator) experience full-fidelity while denying a LAN observer the topology. This choice drives whether the plan needs a binding-awareness seam plumbed into BuildSnapshot / the monitor server.
+- suggestions: ["(a) as-is on any binding — simplest, accept the exposure","(b) full on loopback; redact/omit addressing on non-loopback bindings","(c) always show but truncate routable addresses off-loopback"]
+- recommendation: (b) — full addressing only when the monitor is bound to loopback; on a non-loopback binding, omit the addressing block with a 'hidden on non-loopback' placeholder. Matches the existing binding-tiered security model and keeps the widened exposure opt-in.
+- ledgerRefs: ["goals:G21"]
+
+### Q63 — open
+
+- createdAt: 2026-07-20T15:52:08.676Z
+- updatedAt: 2026-07-20T15:52:08.676Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: SECURITY — the WG PUBLIC-KEY identity is the most sensitive candidate on the list (it names the cryptographic peer identity, not just an address). How should v1 treat it? (a) OMIT from v1 entirely; (b) show a short truncated FINGERPRINT only (e.g. first 8-12 base64 chars); (c) full key, but loopback-binding ONLY (omitted off-loopback); (d) full key on any binding.
+- context: config.Peer.PublicKey is available from config, so plumbing cost is low — the question is purely disclosure. A public key is not secret in WireGuard's threat model, but surfacing it on a token-gated non-loopback monitor still hands an observer a stable identity to correlate. A truncated fingerprint is usually enough for an operator to disambiguate/confirm a peer without publishing the whole identity.
+- suggestions: ["(a) omit v1","(b) truncated fingerprint only, on any binding","(c) full key, loopback-only","(d) full key, any binding"]
+- recommendation: (b) truncated fingerprint (first ~10 base64 chars) shown on any binding, with the FULL key gated to loopback-only if shown at all. Gives operator disambiguation without publishing the full identity over LAN.
+- ledgerRefs: ["goals:G21"]
+
+### Q64 — open
+
+- createdAt: 2026-07-20T15:52:16.692Z
+- updatedAt: 2026-07-20T15:52:16.692Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: CONCENTRATOR per-peer rendering — on the concentrator role the dashboard already shows per-peer sections (multiPeer). Should v1 render each CONNECTED EDGE's observed SOURCE address (the roamed remote the concentrator learns per edge) in its per-peer section, and if so under what privacy handling? (a) yes, full edge source addr; (b) yes, truncated; (c) yes but loopback-binding only; (d) no, defer edge-source addressing to a later version.
+- context: An edge's source address is often a residential/mobile carrier IP — arguably more privacy-sensitive than the concentrator's own well-known endpoint. On the concentrator the edge remote is the roamed address learned at runtime (peerPathState.remote per bound peer), so it is available to surface. This is distinct from the edge-side per-path remote in the addressing question; it is specifically the concentrator disclosing its clients' addresses.
+- suggestions: ["(a) full edge source addr in per-peer section","(b) truncated edge source addr","(c) full, loopback-binding only","(d) defer to a later version"]
+- recommendation: (c) show the edge source address in the concentrator's per-peer section but gate it to loopback-only bindings — consistent with the addressing posture, so a captured LAN token cannot enumerate the concentrator's clients.
+- ledgerRefs: ["goals:G21"]
+
+### Q65 — open
+
+- createdAt: 2026-07-20T15:52:22.652Z
+- updatedAt: 2026-07-20T15:52:22.652Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- question: "BOUNDARY — confirm v1 stays strictly READ-ONLY (Q48): this extension only adds display fields to the existing WS snapshot + dashboard, with no interactive controls (no endpoint editing, no failover triggering, no config mutation from the UI). Correct?"
+- context: The G12 dashboard is read-only and the accepted Q48 posture holds. Confirming this keeps the task DAG to the G12-style backend-contract -> frontend -> wiring/docs/gate shape with no new write path, auth surface, or command channel. If you instead want any interactive control, that is a materially larger, separately-scoped effort and I would replan.
+- suggestions: ["Yes — read-only display only, no controls","No — I also want interactive control X (specify)"]
+- recommendation: Yes — keep v1 read-only display only; any interactivity is out of scope for this extension.
+- ledgerRefs: ["goals:G21"]

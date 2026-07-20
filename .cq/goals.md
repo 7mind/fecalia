@@ -2,7 +2,7 @@
 ledger: goals
 counters:
   milestone: 0
-  item: 21
+  item: 22
 archives: []
 ---
 
@@ -553,3 +553,27 @@ archives: []
     
     DoD gate for both: `nix develop -c just fmt-check && just lint` (Go-only, unaffected by pure doc edits) stays green, plus `go build ./...`.
 - milestones: ["M77"]
+
+## M79
+
+### G21 — clarifying
+
+- createdAt: 2026-07-20T15:49:46.039Z
+- updatedAt: 2026-07-20T15:53:14.851Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- title: Extend the monitoring-UI stats page (edge/concentrator addressing + more)
+- description: |
+    Extend the live monitoring web UI shipped in G12 (the internal/monitor MonitorSnapshot WS feed + the web/ Vite+TypeScript read-only dashboard) with additional operator-useful information.
+    
+    USER REQUEST (verbatim): "I think we should extend the stats page - we could add information about edge/concentrator IP addresses, maybe you could think what else could be useful."
+    
+    STARTING POINT: surface addressing on the dashboard — e.g. each path's source address / bound interface and its remote (concentrator) endpoint, the peer/hub endpoint(s), and (on the concentrator role) the connected edges' source addresses. The user explicitly invites the planner to PROPOSE what else is worth adding — candidates to weigh (planner decides + asks): the effective role (edge vs concentrator), the WG public-key identity / peer name, the active vs standby ordered-endpoint (hub-failover state), per-path bind mode (device/source/auto) + device-bind vs source-IP-pin actual, uptime / daemon version / build, config-derived link_bandwidth/link_rtt, the aggregation gate thresholds, and per-path last-handshake age.
+    
+    GROUNDING (extends G12; verify against source): the JSON contract is internal/monitor/monitor.go MonitorSnapshot (Paths[]/FEC[]/Reseq[]/Aggregation[]/Session/PeerNames/MultiPeer), built by BuildSnapshot from the metrics.Source interface (Paths()/FEC()/Reseq()/Aggregation()/Session()/PeerNames()); the device-side adapter is internal/device/metrics.go metricsSource over the multipath Bind's PeerSnapshot (bind.PathTraffic carries Name/TxBytes/RxBytes/Estimate/State but NOT addressing today — source/dest addrs live in config.Path + the bind's per-path sockets/remotes). The frontend is web/src (types.ts MonitorSnapshot mirror, dashboard.ts render, ws-client.ts). Read-only v1 posture (Q48) + the loopback-default / non-loopback-requires-token security invariant (Q45) still hold. KEY SECURITY QUESTION FOR THE PLANNER: exposing IP addresses / endpoints / WG public keys on a monitor that CAN be bound non-loopback (token-gated, cleartext over LAN per the Q58(a) accepted posture) widens what a captured-token observer learns — the plan must weigh which fields are safe to surface and whether any warrant redaction or a loopback-only gate.
+    
+    This is a GREENFIELD extension (not a defect). The planner should clarify scope (which fields, edge+concentrator parity, per-peer sections), the addressing data-source plumbing (thread source/dest/endpoint from the bind/config into a new PathSnapshot/MonitorSnapshot field), the security posture for the new fields, and the frontend rendering, then emit a task DAG mirroring G12's backend-contract -> frontend -> wiring/docs/gate structure. Keep README/design.md/install.md + wanbond.example.toml in sync per AGENTS.md; DoD gate = the full G12-style gate (fmt + lint all tags + test + web build/test).
+- sourceRefs: ["goals:G12"]
+- tags: ["monitoring-ui","feature-extension"]
+- sessionLogs: [".cq/logs/20260720-155307-a90a4e40d9a115944.md"]
+- rawLogs: [".cq/logs/raw/20260720-155307-a90a4e40d9a115944.jsonl"]

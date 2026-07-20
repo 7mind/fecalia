@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 78
+  item: 79
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -544,3 +544,10 @@ archives:
 - createdAt: 2026-07-15T06:27:59.473Z
 - updatedAt: 2026-07-15T06:27:59.473Z
 - title: Fix e2e test-correctness (D80/D81 metrics-scrape test bugs)
+
+### M79 — open
+
+- createdAt: 2026-07-20T15:49:17.959Z
+- updatedAt: 2026-07-20T15:49:17.959Z
+- title: "Plan: extend monitoring-UI stats page (addressing + more)"
+- description: Coordination milestone for the plan-flow goal to EXTEND the G12 live monitoring web UI (internal/monitor MonitorSnapshot + the web/ Vite dashboard) with additional operator-useful fields — starting with edge/concentrator IP addressing, and inviting the planner to propose what else is worth surfacing. Greenfield feature extension of the completed G12 (done).
