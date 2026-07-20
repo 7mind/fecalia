@@ -1295,15 +1295,18 @@ These are recorded design boundaries, not defects:
   no TCP/TLS fallback for wholesale-UDP-block networks. The endpoint list itself
   is no longer IP:port-only: an entry may also be a hostname behind the peer's
   `dns = true` opt-in (see *DNS endpoints and resolver privacy trade-offs* above).
-- **Per-path `mtu` is a validated config surface only; not yet wired to TUN
-  sizing (T200, D85).** An operator-declared per-path `mtu` (config.Path.MTU)
-  is parsed and validated at config load — `1280..9000`, and the derived inner
-  MTU (path MTU minus the fixed `outerPathOverheadBytes` = 100, mirroring
-  `bind.InnerMTU`'s non-FEC IPv4 budget) must stay `>= 576`. What stays a
-  **deliberate boundary for now**: the daemon still sizes the TUN's actual
-  inner MTU from the built-in `bind.DefaultPathMTU` (1500) budget regardless
-  of a declared per-path value — consuming the declaration to min-size the TUN
-  across paths is tracked as follow-up work, not done here.
+- **Per-path MTU sizing + PMTU auto-discovery (T200/T205 + D88).** An
+  operator-declared per-path `mtu` (config.Path.MTU) is validated at config load
+  (`1280..9000`, derived inner MTU `>= 576`) AND sizes the TUN: `tunMTU` sets
+  `wanbond0` to the **minimum** inner MTU across all paths (`bind.InnerMTU`), so a
+  full-size inner packet fits whichever path the scheduler picks. A path that
+  **omits** `mtu` is PMTU **auto-discovered**: `device.Up` runs a per-path
+  `telemetry.PMTUDiscovery` (on its own goroutine) that DF-padded-probe
+  binary-searches the largest echoing outer size between 1280 and
+  `bind.DefaultPathMTU`; the discovered value flows through `PathSnapshot.PMTU`
+  into the **T209 runtime resizer**, which auto-shrinks/regrows `wanbond0` live
+  (re-probing on DOWN→UP, roam, and a slow refresh). An explicit `mtu` PINS the
+  path (no probing — operator override authoritative). See `docs/p1-mtu.md`.
 
 ## References
 

@@ -112,6 +112,41 @@ rejects a declared per-path `mtu` whose OWN derived inner MTU would fall below
 `minInnerMTU` (576), independent of what any other path contributes to the
 bond-wide minimum.
 
+### Runtime PMTU auto-discovery (D88 / T206, T226–T229)
+
+Omitting `mtu` on a path no longer merely pins the 1500 default — it enables
+**per-path PMTU auto-discovery**. At `device.Up` the daemon starts one
+`telemetry.PMTUDiscovery` per non-pinned path on its **own dedicated goroutine**
+(so a search never stalls liveness probing) and binary-searches the largest
+DF-padded probe that still echoes, between a floor of **1280** (the IPv6 minimum
+link MTU) and a ceiling of `bind.DefaultPathMTU` (1500). The discovered value is
+published as `PathSnapshot.PMTU` and the **T209 runtime resizer** folds it into
+`wanbond0`'s live link MTU — so a bond that rides a constrained underlay (e.g. a
+1400-MTU 5G path) **auto-shrinks** `wanbond0` to fit, and **regrows** when the
+constraint lifts, with **no operator `mtu` knob required**.
+
+- **Pinned override.** A path with an explicit `mtu` is PINNED: discovery never
+  probes it and its configured value is authoritative — the static knob and
+  auto-discovery compose (declare `mtu` when you know the underlay; omit it to
+  measure).
+- **Re-probe triggers.** A path `DOWN→UP` transition, an endpoint roam (the
+  concentrator learning a new edge endpoint, or an edge hub-failover repoint),
+  and a slow periodic refresh each re-run the search.
+- **Boot behaviour (no dip).** A non-pinned path reports **no** discovered PMTU
+  until its first search converges, so `wanbond0` holds `InnerMTU(1500)` at boot
+  and shrinks only once a real smaller PMTU is measured — never a boot-time
+  shrink-then-grow.
+- **Loosening is debounced.** A regrow (looser MTU) waits out the T209 dwell so a
+  flapping path does not thrash the link; a tighten applies immediately.
+- **Obfuscation headroom** is reserved once (see “The overhead stack”): the
+  discovered outer PMTU has the amnezia junk-prefix subtracted a single time in
+  the resizer’s sizing, never doubly.
+- **Metric.** The per-path discovered PMTU is exposed as the `wanbond_path_mtu`
+  gauge (0 until convergence).
+- The T208 MSS clamp derives its MSS from the **live** `wanbond0` MTU
+  (`--clamp-mss-to-pmtu`), so it re-clamps for free after a discovery-driven
+  resize — no re-install.
+
 ## MSS clamping — two disjoint chains (T208, D85)
 
 Setting the TUN MTU bounds what the *local* stack originates, but a TCP endpoint

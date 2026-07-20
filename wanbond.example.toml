@@ -80,10 +80,11 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's U
                                    #   duration). REQUIRED (> 0) when link_bandwidth
                                    #   is set with pacing enabled (either policy);
                                    #   else ignored.
-# mtu = 1500                       # OPTIONAL, DEFAULT 0 (unset = auto: falls back to
-                                   #   the datapath's built-in 1500 assumption /
-                                   #   auto-discovery). Operator-declared OUTER path
-                                   #   MTU in bytes — the underlay's IP-level MTU
+# mtu = 1500                       # OPTIONAL, DEFAULT 0 (unset = AUTO-DISCOVER: the
+                                   #   daemon PMTU-probes this path and sizes wanbond0
+                                   #   to fit, re-probing on roam). Set it to PIN the
+                                   #   path (skip discovery). Operator-declared OUTER
+                                   #   path MTU in bytes — the underlay's IP-level MTU
                                    #   this path's datagrams must fit without
                                    #   fragmentation. When set, must be 1280..9000
                                    #   AND leave a derived inner (TUN) MTU >= 576
@@ -491,11 +492,13 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 #   heuristic; "source" and "device" force one behavior unconditionally. See
 #   install.md §3b for the VLAN-per-WAN policy-routing case `bind = "source"`
 #   exists to fix.
-# • mtu (per-path, OPTIONAL): 0 (DEFAULT, unset) = auto. When set, must be
+# • mtu (per-path, OPTIONAL): 0 (DEFAULT, unset) = AUTO-DISCOVER (the daemon
+#   PMTU-probes the path and sizes wanbond0 to the min inner MTU across paths,
+#   re-probing on roam). When set, PINS the path (no probing) and must be
 #   1280..9000 and leave a derived inner MTU >= 576 after the fixed ~100-byte
 #   outer overhead (IP/UDP + outer DATA frame + WireGuard transport). Declares
-#   the path's OUTER underlay MTU only; wanbond does not yet size the TUN's
-#   inner MTU from it.
+#   the path's OUTER underlay MTU; wanbond0's inner MTU is sized as the minimum
+#   inner MTU across all paths (discovered or declared). See docs/p1-mtu.md.
 # • dns off-unless-present: no [dns] => system resolver, default cadence/
 #   timeouts; [dns] only selects the transport a peer's `dns = true` opt-in
 #   uses, never a gate by itself. doh_url/dot_server are mode-specific: set

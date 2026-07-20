@@ -704,12 +704,14 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
                                    #   link_bandwidth is set with pacing enabled
                                    #   (either policy); ignored otherwise. No
                                    #   default.
-# mtu = 1500                       # OPTIONAL, DEFAULT 0 (unset = auto). Operator-
-                                   #   declared OUTER path MTU in bytes. When set,
+# mtu = 1500                       # OPTIONAL, DEFAULT 0 (unset = AUTO-DISCOVER:
+                                   #   the daemon PMTU-probes the path and sizes
+                                   #   wanbond0 to fit, re-probing on roam). Set
+                                   #   it to PIN the path (skip discovery);
                                    #   must be 1280..9000 and leave a derived
                                    #   inner (TUN) MTU >= 576 after the fixed
                                    #   ~100-byte outer overhead (IP/UDP + outer
-                                   #   DATA frame + WireGuard transport). Set on
+                                   #   DATA frame + WireGuard transport). Pin on
                                    #   any uplink whose real path MTU is below
                                    #   1500 (e.g. some cellular APNs).
 # ride_through = "5s"              # OPTIONAL, DEFAULT 0. This path's liveness
