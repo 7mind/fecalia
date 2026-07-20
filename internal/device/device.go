@@ -235,6 +235,13 @@ type Tunnel struct {
 	// engine teardown so no resize races the interface's destruction. Idempotent; nil on
 	// the up() test seam (the loop is Up()-only).
 	stopMTUResize func()
+	// pmtuDiscoverers holds the per-path PMTU discovery machines (T228, D88), keyed by
+	// path name, that the metrics mapping (T229) reads for each path's discovered PMTU.
+	// Populated ONLY on the privileged Up() path (nil/empty on the up() test seam).
+	pmtuDiscoverers map[string]*telemetry.PMTUDiscovery
+	// stopPMTUDiscovery halts every per-path PMTU discovery goroutine (T228). Close calls
+	// it before the engine teardown. Idempotent; nil on the up() test seam.
+	stopPMTUDiscovery func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -426,6 +433,11 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	// e2e-covered (T212). Close stops it before the engine teardown. The MSS clamp above
 	// tracks the resized MTU automatically (--clamp-mss-to-pmtu reads the live link MTU).
 	t.startMTUResize()
+	// Start per-path PMTU auto-discovery on dedicated goroutines (T228, D88). Like
+	// startMTUResize this is Up()-only (privileged): it feeds discovered PMTUs into the
+	// metrics Source that the resizer above folds, so a constrained/roaming path shrinks
+	// and regrows wanbond0 without an operator mtu knob.
+	t.startPMTUDiscovery()
 	return t, nil
 }
 
@@ -1408,6 +1420,11 @@ func (t *Tunnel) Close() {
 	// nil on the up() test seam (the loop is Up()-only).
 	if t.stopMTUResize != nil {
 		t.stopMTUResize()
+	}
+	// Stop the per-path PMTU discovery goroutines (T228, D88) alongside the resizer, before
+	// the engine teardown so no in-flight padded probe outlives its path socket.
+	if t.stopPMTUDiscovery != nil {
+		t.stopPMTUDiscovery()
 	}
 	if t.stopProbes != nil {
 		t.stopProbes()
