@@ -2767,10 +2767,10 @@ archives:
 - ledgerRefs: ["goals:G21"]
 - resultCommit: "1669792"
 
-### T219 — planned
+### T219 — done
 
 - createdAt: 2026-07-20T18:10:48.136Z
-- updatedAt: 2026-07-20T18:25:29.934Z
+- updatedAt: 2026-07-20T19:46:55.242Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Thread the monitor server's kernel-bound loopback verdict into the /ws push handler
@@ -2779,6 +2779,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T215"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: 9cd6aa1
 
 ## M86
 
@@ -2810,10 +2811,10 @@ archives:
 - ledgerRefs: ["goals:G21"]
 - resultCommit: 5f9401e
 
-### T220 — planned
+### T220 — done
 
 - createdAt: 2026-07-20T18:11:39.149Z
-- updatedAt: 2026-07-20T18:25:31.119Z
+- updatedAt: 2026-07-20T19:46:53.206Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Map bind addressing through metricsSource into metrics.PathSnapshot (pass-through, no exposition change)
@@ -2822,6 +2823,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T216"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: d4d270f
 
 ### T222 — planned
 
