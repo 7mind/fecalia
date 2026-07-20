@@ -4,6 +4,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/7mind/wanbond/internal/config"
 )
 
 // TestMultipathTxBytesCountedOnSend asserts Send accumulates, per path, exactly the
@@ -56,6 +58,61 @@ func TestMultipathTxBytesCountedOnSend(t *testing.T) {
 	// Send does not touch the receive counter.
 	if snaps[0].RxBytes != 0 {
 		t.Errorf("path 0 RxBytes = %d, want 0 (no inbound)", snaps[0].RxBytes)
+	}
+}
+
+// TestPeerSnapshots_CarriesAddressing asserts PeerSnapshots surfaces each path's
+// runtime networking identity on PathTraffic (T216, G21): the bound Source and
+// LocalAddr and the resolved BindMode are populated for a bound path, Remote is
+// zero until a remote is set, and Remote follows a setRemote repoint. It reads
+// the fields off the same lock-free snapshot the counters use.
+func TestPeerSnapshots_CarriesAddressing(t *testing.T) {
+	psk := testKey(t, 0x72)
+	// Set the effective bind mode the way config.normalize would in production
+	// (the loopbackPaths helper leaves it empty); BindModeSource keeps the
+	// harness's existing source-IP-pin behavior so binding is unperturbed.
+	defs := loopbackPaths(2)
+	for i := range defs {
+		defs[i].Bind = config.BindModeSource
+	}
+	m, err := newMultipath(t, defs, psk)
+	if err != nil {
+		t.Fatalf("NewMultipath: %v", err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	snaps := m.PeerSnapshots()[0].Paths
+	if len(snaps) != 2 {
+		t.Fatalf("PeerSnapshots()[0].Paths len = %d, want 2", len(snaps))
+	}
+	p0 := snaps[0]
+	if !p0.Source.IsValid() {
+		t.Errorf("path 0 Source not populated")
+	}
+	if !p0.LocalAddr.IsValid() {
+		t.Errorf("path 0 LocalAddr not populated from the bound socket")
+	}
+	if p0.BindMode != config.BindModeSource {
+		t.Errorf("path 0 BindMode = %q, want %q", p0.BindMode, config.BindModeSource)
+	}
+	if p0.Remote.IsValid() {
+		t.Errorf("path 0 Remote = %v, want zero before any remote is set", p0.Remote)
+	}
+
+	// A setRemote repoint must be reflected in the next snapshot.
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen peer: %v", err)
+	}
+	defer peer.Close()
+	want := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	m.paths[0].setRemote(want)
+
+	if got := m.PeerSnapshots()[0].Paths[0].Remote; got != want {
+		t.Errorf("path 0 Remote = %v, want %v (follows setRemote repoint)", got, want)
 	}
 }
 

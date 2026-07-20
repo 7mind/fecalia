@@ -152,6 +152,14 @@ type sharedPathState struct {
 	id   uint8
 	src  netip.Addr
 	conn *net.UDPConn
+	// bindMode is the path's configured/effective bind mode; boundDevice is the
+	// resolved SO_BINDTODEVICE interface it actually device-bound to ("" when
+	// source-IP-pinned). Both are set once at socket creation and IMMUTABLE for the
+	// socket's life, so PeerSnapshots reads them lock-free after releasing m.mu
+	// (G21 monitoring, surfaced via PathTraffic; the value-wiring into the monitor
+	// snapshot is T220).
+	bindMode    config.BindMode
+	boundDevice string
 
 	// views is the per-peer VIEW set of THIS shared socket — one peerPathState per bound
 	// peer — published copy-on-write through an atomic.Pointer so the single Bind-owned
@@ -1061,7 +1069,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 		// treat it as non-fatal rather than refusing to bind in a restricted env.
 		_ = c.SetReadBuffer(socketRecvBuffer)
 
-		shared := &sharedPathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c}
+		shared := &sharedPathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c, bindMode: def.Bind, boundDevice: bindDevs[i]}
 		// Build EVERY bound peer's view of this shared socket (T93): each peer decodes under its
 		// OWN psk-derived Codec and probes with its OWN per-(peer,path) prober, so a concentrator
 		// socket shared by several peers keeps each peer's authenticated stream isolated
@@ -2790,7 +2798,7 @@ func (m *Multipath) AddPath(def config.Path) error {
 	// never added — so warning here, before the fan-out is known to succeed, would log an
 	// outcome-false "falling back to source-IP pinning" claim for a path that never came up.
 	_ = c.SetReadBuffer(socketRecvBuffer)
-	shared := &sharedPathState{name: def.Name, id: id, src: def.SourceAddr, conn: c}
+	shared := &sharedPathState{name: def.Name, id: id, src: def.SourceAddr, conn: c, bindMode: def.Bind, boundDevice: dev}
 
 	// FAN-OUT (single owner): instantiate the per-(peer,path) state for EVERY currently-
 	// bound peer, minting each peer's own Codec + prober and admitting it to that peer's
@@ -3229,6 +3237,20 @@ type PathTraffic struct {
 	RxBytes  uint64
 	Estimate telemetry.Estimate
 	State    telemetry.PathState
+	// The following addressing fields surface this path's runtime networking
+	// identity for the G21 monitoring UI (value-wiring into the monitor snapshot
+	// is T220; the /metrics prometheus exposition ignores them). Source is the
+	// bound local source address; LocalAddr the authoritative bound addr:port from
+	// the socket; Remote the current wire remote the path points at (on the
+	// concentrator, the edge's last observed source via roaming — Q64). BindMode is
+	// the configured/effective bind mode; BoundDevice the resolved SO_BINDTODEVICE
+	// interface ("" when source-IP-pinned). Zero-valued while a path is unbound/
+	// remoteless.
+	Source      netip.Addr
+	LocalAddr   netip.AddrPort
+	Remote      netip.AddrPort
+	BindMode    config.BindMode
+	BoundDevice string
 }
 
 // PeerSnapshot is a consistent per-BOUND-PEER snapshot of path traffic+telemetry, FEC
@@ -3278,6 +3300,10 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		name   string
 		tx, rx uint64
 		prober *telemetry.Prober
+		// pp is captured under m.mu; its src/conn/bindMode/boundDevice are immutable
+		// and its remote is ps.mu-guarded (getRemote), so the addressing fields are
+		// read AFTER m.mu is released, exactly like the prober Estimate()/State() reads.
+		pp *peerPathState
 	}
 	type peerRef struct {
 		name  string
@@ -3294,7 +3320,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler}
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
-			r.paths[j] = pathRef{name: pp.name, tx: pp.txBytes.Load(), rx: pp.rxBytes.Load(), prober: pp.prober}
+			r.paths[j] = pathRef{name: pp.name, tx: pp.txBytes.Load(), rx: pp.rxBytes.Load(), prober: pp.prober, pp: pp}
 		}
 		refs[i] = r
 	}
@@ -3309,6 +3335,22 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			if pr.prober != nil {
 				pt.Estimate = pr.prober.Estimate()
 				pt.State = pr.prober.State()
+			}
+			// Addressing (G21): src/bindMode/boundDevice are immutable; LocalAddr comes
+			// from the socket; Remote is read under ps.mu via getRemote — all AFTER m.mu
+			// is released, so the scrape never blocks an in-flight Send.
+			if pr.pp != nil {
+				pt.Source = pr.pp.src
+				pt.BindMode = pr.pp.bindMode
+				pt.BoundDevice = pr.pp.boundDevice
+				if pr.pp.conn != nil {
+					if ua, ok := pr.pp.conn.LocalAddr().(*net.UDPAddr); ok {
+						pt.LocalAddr = ua.AddrPort()
+					}
+				}
+				if rem, ok := pr.pp.getRemote(); ok {
+					pt.Remote = rem
+				}
 			}
 			snap.Paths[j] = pt
 		}
