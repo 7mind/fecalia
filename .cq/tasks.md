@@ -2581,10 +2581,10 @@ archives:
 
 ## M83
 
-### T201 — wip
+### T201 — done
 
 - createdAt: 2026-07-20T18:00:36.902Z
-- updatedAt: 2026-07-20T19:50:58.390Z
+- updatedAt: 2026-07-20T20:03:56.676Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Set DF (IP_MTU_DISCOVER) on path sockets and surface EMSGSIZE sends
@@ -2592,11 +2592,12 @@ archives:
 - acceptance: "TestPathSocketSetsDF (getsockopt == PMTUDISC_DO for v4 and v6, linux-tagged) fails first then passes; TestSendEMSGSIZECounted green; the non-Linux build still compiles (portable stub); existing TestMultipathNoFragmentation still green. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/bind/..."
 - suggestedModel: frontier
 - ledgerRefs: ["defects:D85","goals:G23"]
+- resultCommit: 0c19ec8
 
-### T202 — wip
+### T202 — done
 
 - createdAt: 2026-07-20T18:00:43.422Z
-- updatedAt: 2026-07-20T19:50:59.014Z
+- updatedAt: 2026-07-20T20:03:54.634Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Padded MTU-probe frames in the probe transport
@@ -2604,6 +2605,7 @@ archives:
 - acceptance: "New padded-probe codec tests (round-trip at boundary sizes minimum/1400/1500; truncation rejected; echo carries size) fail first then pass; existing probe/liveness tests untouched and green (unpadded probes byte-identical on wire). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/... ./internal/bind/..."
 - suggestedModel: frontier
 - ledgerRefs: ["defects:D85","goals:G23"]
+- resultCommit: 7a2c1ee
 
 ### T206 — planned
 
