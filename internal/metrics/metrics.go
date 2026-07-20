@@ -141,6 +141,14 @@ const MetricWeightedCapacitySane = "wanbond_weighted_capacity_sane"
 // WARN and docs/design.md).
 const MetricLivenessBudgetSane = "wanbond_liveness_budget_sane"
 
+// MetricTunMTU is the current wanbond0 link (TUN) MTU in bytes (T209, defect D85): the
+// min inner MTU across UP paths the runtime resizer holds the interface at. It is
+// seeded at daemon startup from the boot-time tunMTU (T205) and re-set whenever the
+// resizer adjusts the live link (Server.SetTunMTU) as path liveness/PMTU membership
+// changes. It carries no labels (connection-scoped, not per-path — the per-path
+// discovered PMTU is the separate wanbond_path_mtu series).
+const MetricTunMTU = "wanbond_tun_mtu"
+
 // Aggregation-gate metric names (T146, Q54). These four PER-PEER series expose the
 // weighted scheduler's data-thrift aggregation gate: whether striping is currently
 // engaged, the smoothed offered load driving it, and the STATIC engage/disengage
@@ -200,6 +208,22 @@ func newLivenessBudgetGauge(sane bool) prometheus.Gauge {
 		Help:      "Config-derived failover-budget verdict (1 = per-direction failover budget fits the 3s P1 recovery deadline, 0 = over-budget; see docs/design.md).",
 	})
 	g.Set(weightedCapacitySaneValue(sane))
+	return g
+}
+
+// newTunMTUGauge builds the wanbond_tun_mtu gauge (T209, defect D85) seeded to the
+// boot-time TUN MTU. Like the sanity gauges above it is retained (not re-read from
+// Source at scrape time): the concrete prometheus.Gauge is returned so the Server can
+// re-set it via SetTunMTU when the runtime resizer adjusts the live link. It is present
+// for every config (the TUN always has an MTU), unlike the conditionally-registered
+// verdict gauges.
+func newTunMTUGauge(mtu int) prometheus.Gauge {
+	g := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "tun_mtu",
+		Help:      "Current wanbond0 link (TUN) MTU in bytes: the min inner MTU across UP paths (T209, defect D85).",
+	})
+	g.Set(float64(mtu))
 	return g
 }
 

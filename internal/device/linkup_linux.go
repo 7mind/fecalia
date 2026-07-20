@@ -38,6 +38,31 @@ func ifUp(name string) error {
 	return nil
 }
 
+// setLinkMTU sets the named interface's link MTU via SIOCSIFMTU (see netdevice(7)),
+// the runtime counterpart to the boot-time sizing tun.CreateTUN applies from
+// tunMTU(cfg) (T205). It is how the T209/D85 resizer adjusts the LIVE wanbond0 MTU as
+// the min inner MTU across UP paths changes — mirroring the native golang.org/x/sys/unix
+// ioctl idiom ifUp uses for SIOCSIFFLAGS, and the direct-netlink posture of
+// installRoutes (route_linux.go), rather than shelling out to `ip link set mtu`. The
+// value is stored as a uint32 in ifr_mtu; the caller passes a positive inner MTU.
+func setLinkMTU(name string, mtu int) error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return fmt.Errorf("open control socket: %w", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return fmt.Errorf("build ifreq for %q: %w", name, err)
+	}
+	ifr.SetUint32(uint32(mtu))
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFMTU, ifr); err != nil {
+		return fmt.Errorf("SIOCSIFMTU %q=%d: %w", name, mtu, err)
+	}
+	return nil
+}
+
 // ifState reads the named interface's administrative up/down flag (SIOCGIFFLAGS) and MTU
 // (SIOCGIFMTU) WITHOUT modifying anything — the read-only counterpart to ifUp, used to name
 // the probable cause when a TUN write fails with EIO (I3/D39): a write to a DOWN interface is

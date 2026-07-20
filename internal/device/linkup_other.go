@@ -15,3 +15,8 @@ func ifUp(string) error {
 func ifState(string) (up bool, mtu int, err error) {
 	return false, 0, errors.New("device: inspecting interface state is only supported on Linux")
 }
+
+// setLinkMTU is unavailable off Linux (SIOCSIFMTU is a Linux ioctl); see ifUp.
+func setLinkMTU(string, int) error {
+	return errors.New("device: setting the interface MTU is only supported on Linux")
+}

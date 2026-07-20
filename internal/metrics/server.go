@@ -45,6 +45,11 @@ type Server struct {
 	// weightedCapacityGauge: a reload whose applied path add/remove changes the worst-case
 	// ride_through re-sets it (SetLivenessBudgetSane) rather than leaving it frozen at boot.
 	livenessBudgetGauge prometheus.Gauge
+	// tunMTUGauge is the retained wanbond_tun_mtu gauge (T209, D85). Unlike the two verdict
+	// gauges above it is registered for EVERY config (the TUN always has an MTU); it is
+	// seeded to 0 at construction and the device seeds the boot value + re-sets it via
+	// SetTunMTU as the runtime resizer adjusts the live link.
+	tunMTUGauge prometheus.Gauge
 }
 
 // NewServer validates that addr is loopback, binds a TCP listener, and wires the
@@ -79,6 +84,13 @@ func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane
 			return nil, fmt.Errorf("metrics: register liveness-budget gauge: %w", err)
 		}
 	}
+	// wanbond_tun_mtu is present for every config (the TUN always has an MTU). It is
+	// seeded to 0 here; the device seeds the boot-time value and re-sets it via SetTunMTU
+	// as the runtime resizer adjusts the live link (T209, D85).
+	tunMTUGauge := newTunMTUGauge(0)
+	if err := reg.Register(tunMTUGauge); err != nil {
+		return nil, fmt.Errorf("metrics: register tun-mtu gauge: %w", err)
+	}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -110,6 +122,7 @@ func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane
 		log:                   logger.Component("metrics"),
 		weightedCapacityGauge: weightedCapacityGauge,
 		livenessBudgetGauge:   livenessBudgetGauge,
+		tunMTUGauge:           tunMTUGauge,
 	}, nil
 }
 
@@ -135,6 +148,16 @@ func (s *Server) SetLivenessBudgetSane(sane bool) {
 		return
 	}
 	s.livenessBudgetGauge.Set(weightedCapacitySaneValue(sane))
+}
+
+// SetTunMTU re-sets the retained wanbond_tun_mtu gauge (T209, D85) to the current
+// wanbond0 link MTU. The device seeds it to the boot-time tunMTU right after the
+// endpoint starts (and on a reload rebind) and the runtime resizer re-sets it as the
+// min inner MTU across UP paths changes. Safe to call while the endpoint serves
+// (prometheus.Gauge.Set is concurrency-safe); the device serializes the metricsSrv
+// pointer it calls this through under its reload mutex.
+func (s *Server) SetTunMTU(mtu int) {
+	s.tunMTUGauge.Set(float64(mtu))
 }
 
 // Addr returns the actual bound listen address (with the resolved port).

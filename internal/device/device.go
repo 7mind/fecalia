@@ -226,6 +226,15 @@ type Tunnel struct {
 	// receive state. Close calls it before dev.Close so no IpcGet races the engine teardown. It is
 	// idempotent and never nil (a no-op for a single-peer config, which monitors no non-primary peer).
 	stopPeerTeardown func()
+	// resizer drives the runtime wanbond0 link-MTU adjustment (T209, D85): it recomputes
+	// the min inner MTU across UP paths and sets the live link MTU via setLinkMTU when it
+	// changes. Constructed and started ONLY on the privileged Up() path (see startMTUResize);
+	// nil on the up() test seam, so the fake-TUN unit tests never issue a real netlink resize.
+	resizer *mtuResizer
+	// stopMTUResize halts the runtime TUN-resize loop (T209). Close calls it before the
+	// engine teardown so no resize races the interface's destruction. Idempotent; nil on
+	// the up() test seam (the loop is Up()-only).
+	stopMTUResize func()
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -393,9 +402,9 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	// rule for v4+v6 pins each locally originated TCP SYN's MSS to the tunnel path MTU, so
 	// the edge host's own TCP stays inside wanbond0's inner MTU without relying on PMTUD
 	// (which consumer CPE/carrier NAT routinely black-holes). --clamp-mss-to-pmtu derives
-	// the MSS from the LIVE interface MTU, so it composes with a runtime MTU resize with no
-	// re-install. FORWARDED (routed-LAN) traffic keeps G14's operator-installed FORWARD-chain
-	// clamp — a DISJOINT chain (docs/p1-mtu.md).
+	// the MSS from the LIVE interface MTU, so it composes with the T209 runtime MTU resize
+	// with no re-install. FORWARDED (routed-LAN) traffic keeps G14's operator-installed
+	// FORWARD-chain clamp — a DISJOINT chain (docs/p1-mtu.md).
 	//
 	// This is PRIVILEGED (it programs netfilter) and therefore lives in Up(), NOT the
 	// test-driven up() seam: a unit test that drives up() with a channel TUN neither programs
@@ -410,7 +419,47 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 		t.mssClampInstalled = true
 		clg.Info("MSS clamp installed", "interface", name, "table", mssClampTable, "chain", mssClampChain, "mss", clampMSS(tunMTU(cfg)))
 	}
+	// Start the runtime TUN-resize loop on the PRIVILEGED path (T209, D85): it sizes the
+	// LIVE wanbond0 link to the min inner MTU across UP paths as liveness/PMTU membership
+	// changes, via setLinkMTU. Started HERE — not in up() — so the fake-TUN unit tests
+	// (which call up() directly) never issue a real netlink resize; the netlink apply is
+	// e2e-covered (T212). Close stops it before the engine teardown. The MSS clamp above
+	// tracks the resized MTU automatically (--clamp-mss-to-pmtu reads the live link MTU).
+	t.startMTUResize()
 	return t, nil
+}
+
+// startMTUResize constructs the runtime TUN-resizer and starts its loop (T209, D85). The
+// resizer is seeded with the boot-time tunMTU (T205) and applies live changes via
+// setLinkMTU; its gauge sink re-sets wanbond_tun_mtu on the running /metrics endpoint,
+// routed through reloadMu so a concurrent reload rebind of metricsSrv cannot race the
+// pointer read. It reads liveness+PMTU from the tunnel's stable metricsSrc on the probe
+// cadence. Called ONLY from Up() (the privileged path), so it is absent under the up()
+// test seam.
+func (t *Tunnel) startMTUResize() {
+	gauge := func(mtu int) {
+		t.reloadMu.Lock()
+		if t.metricsSrv != nil {
+			t.metricsSrv.SetTunMTU(mtu)
+		}
+		t.reloadMu.Unlock()
+	}
+	t.resizer = newMTUResizer(t.name, tunMTU(t.cfg), t.cfg.FEC.Enabled, mtuResizeDwell,
+		telemetry.SystemClock{},
+		func(mtu int) error { return setLinkMTU(t.name, mtu) },
+		gauge, t.log)
+	t.stopMTUResize = startMTUResizeLoop(t.resizer, t.metricsSrc, t.cfg, telemetry.DefaultProbeInterval)
+}
+
+// currentTunMTU is the wanbond0 link MTU the tunnel currently holds: the runtime
+// resizer's value once it exists (Up()), else the boot-time tunMTU (the up() test seam,
+// and the window in up() before the resizer is started). It seeds wanbond_tun_mtu at
+// endpoint (re)bind so a reload rebind does not reset the gauge to the boot value.
+func (t *Tunnel) currentTunMTU() int {
+	if t.resizer != nil {
+		return t.resizer.currentMTU()
+	}
+	return tunMTU(t.cfg)
 }
 
 // resolverFactory builds the DNS resolver used for hostname endpoint re-resolution. It is injected
@@ -777,6 +826,11 @@ func (t *Tunnel) applyMetricsLocked(listen string) error {
 	srv.Start()
 	t.metricsSrv = srv
 	t.metricsListen = listen
+	// Seed wanbond_tun_mtu (T209, D85) on the freshly-bound endpoint so a boot AND a
+	// reload rebind both start from the CURRENT link MTU (the runtime resizer's value,
+	// or the boot tunMTU before it exists) rather than the gauge's construction-time 0.
+	// The runtime resizer re-sets it on subsequent live changes.
+	srv.SetTunMTU(t.currentTunMTU())
 	return nil
 }
 
@@ -1348,6 +1402,13 @@ func (t *Tunnel) Close() {
 	t.stopMetricsLocked()
 	t.stopMonitorLocked()
 	t.reloadMu.Unlock()
+	// Stop the runtime TUN-resize loop (T209, D85) AFTER releasing reloadMu — its gauge
+	// sink briefly takes reloadMu, so stopping it inside the block above would deadlock —
+	// and BEFORE the engine teardown so no setLinkMTU races the interface's destruction.
+	// nil on the up() test seam (the loop is Up()-only).
+	if t.stopMTUResize != nil {
+		t.stopMTUResize()
+	}
 	if t.stopProbes != nil {
 		t.stopProbes()
 	}
