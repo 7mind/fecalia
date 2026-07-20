@@ -556,10 +556,10 @@ archives: []
 
 ## M79
 
-### G21 — clarifying
+### G21 — planned
 
 - createdAt: 2026-07-20T15:49:46.039Z
-- updatedAt: 2026-07-20T15:53:14.851Z
+- updatedAt: 2026-07-20T18:31:43.286Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: Extend the monitoring-UI stats page (edge/concentrator addressing + more)
@@ -577,13 +577,15 @@ archives: []
 - tags: ["monitoring-ui","feature-extension"]
 - sessionLogs: [".cq/logs/20260720-155307-a90a4e40d9a115944.md"]
 - rawLogs: [".cq/logs/raw/20260720-155307-a90a4e40d9a115944.jsonl"]
+- milestones: ["M85","M86","M87","M88"]
+- grounding: "Synthesized from two parallel candidate planners (opus + fable), both grounded read-only in the G12 monitor stack (monitor.go DTOs + BuildSnapshot, server.go loopback determination, the shared metrics.Source interface, device/metrics.go adapter, bind PathTraffic/PeerSnapshot/sharedPathState/peerPathState, device/failover.go hubFailover, config Role/Path/Peer, cmd/wanbond/main.go version var, web/src types.ts+dashboard.ts). Both candidates converged on the SAME 4-milestone contract->plumbing->frontend->docs/gate spine. TWO load-bearing design decisions folded from both: (1) the Q62/Q63/Q64 loopback gate is enforced SERVER-SIDE as REDACTION before json.Marshal inside BuildSnapshot, with revealAddressing derived from the KERNEL-bound listener address (verifyLoopbackBind(ln.Addr()), act-then-verify — fable's refinement over deriving from the requested addr string); the client only honors an addressingHidden flag and never reconstructs hidden data — proven by BOTH a marshaled-bytes unit scan AND an e2e raw-frame scan. (2) the prometheus-facing metrics.Source stays NARROW (opus's insight): static/semi-static data (role/version/uptime/link_bandwidth/link_rtt/WG keys/ordered endpoints) enters via a NEW monitor.Info seam wired at device.Up, while dynamic per-path addressing rides the EXISTING PeerSnapshot->metrics.PathSnapshot pass-through (asserted to add no new prometheus series). Q64 needs NO new mechanism: peerPathState.remote on the concentrator IS the edge's observed source. Accepted v1 scope from Q60-Q65 (all answered 'as recommended'): all four low-cost fields; all three addressing fields; addressing full-on-loopback / redacted-off-loopback; truncated WG fingerprint any-binding + full key loopback-only; concentrator edge-source loopback-gated; strictly read-only. Reproduce-first on every task (failing snapshot-contract/redaction/bind-snapshot/failover-state test, or frontend render test); full gate = fmt+build+vet+test + just lint (default+e2e+realhosts) + -race per package + the frontend tsc/build/test; docs sync (README/design/install/wanbond.example.toml) in the same change."
 
 ## M81
 
-### G23 — clarifying
+### G23 — planned
 
 - createdAt: 2026-07-20T17:37:59.197Z
-- updatedAt: 2026-07-20T17:38:53.552Z
+- updatedAt: 2026-07-20T18:31:42.397Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - title: "Field-hardening: per-path MTU sizing + tunable liveness ride-through"
@@ -600,3 +602,5 @@ archives: []
     
     Defects: defects:D85, defects:D86. Hypotheses: H85, H86 (both confirmed). Both suggestedFix + rootCause carry the full evidence. A netns e2e (constrained-MTU path for D85; sub-DownAfter micro-outage for D86) plus the privileged hardware tier (o3.7mind.io + llm-ubuntu-0) is the validation path.
 - sourceRefs: ["defects:D85","defects:D86"]
+- milestones: ["M82","M83","M84"]
+- grounding: "Synthesized from two parallel candidate planners (opus + fable), both grounded read-only in the repo (mtu.go, config.go Path/FEC knob precedent, device.go tunMTU/CreateTUN/StartProbeLoop/buildScheduler/failback, liveness.go Tick, pathsock.go sockets, thresholds.go, frame.go, p1-mtu.md). Base = fable's 3-milestone decomposition (splits D85 into a low-risk static-knob half D85-A and a higher-risk dynamic-PMTU half D85-B) with opus's framings folded in. KEY GROUNDED FACTS: (1) config cannot import internal/bind (import cycle; mirror the fixed 100B overhead with a cross-ref comment + lockstep test, per the defaultAvgWireFrameBytes precedent config.go:275-283). (2) InnerMTU already subtracts a COMPLETE 100B (frame.DataOverhead=40 includes the T24 fec-index byte) — the overhead accounting is correct; the doc drift (p1-mtu.md 39/1401) is stale and gets fixed in the sizing task. (3) P1RecoverySeconds lives ONLY under //go:build e2e, so decision-4's daemon-side WARN needs the 3s budget HOISTED into internal/telemetry with thresholds.go re-aliased — extends D16, does not violate it. (4) WeightedCapacitySane *bool computed-verdict (config.go:72-81) is the exact in-repo precedent for WARN-and-allow (config computes verdict, daemon logs WARN, never rejects). (5) --clamp-mss-to-pmtu derives MSS from the live TUN MTU, so the daemon MSS clamp composes with dynamic PMTUD resizing for free; G14 reconciliation = disjoint chains (edge-originated OUTPUT = daemon-owned here; forwarded FORWARD = operator-owned per G14). Accepted scope from Q66 (answered 'as recommended'): D85 ships BOTH knob + PMTU discovery; daemon-installed MSS clamp for edge TCP; per-path ride-through default 0; WARN-and-allow over the 3s budget; netns e2e sufficient to resolve (hardware follow-up). Reproduce-first on every task; full gate = fmt+build+vet+test + just lint (default+e2e+realhosts) + -race per package; docs sync (README/design/install/wanbond.example.toml + p1-mtu.md) in the same change."

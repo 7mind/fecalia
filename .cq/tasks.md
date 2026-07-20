@@ -2,7 +2,7 @@
 ledger: tasks
 counters:
   milestone: 0
-  item: 199
+  item: 225
 archives:
   - id: M2
     path: ./archive/tasks/M2.md
@@ -2536,3 +2536,349 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T195","T197","T198"]
 - ledgerRefs: ["goals:G17","defects:D30","defects:D62","defects:D63","defects:D66","defects:D67","defects:D71"]
+
+## M82
+
+### T200 — planned
+
+- createdAt: 2026-07-20T18:00:30.021Z
+- updatedAt: 2026-07-20T18:00:30.021Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Add per-path mtu config knob (parse + validate + defaults + round-trip)
+- description: "Add `MTU int` (`toml:\"mtu\"`) to config.Path (internal/config/config.go, Path struct ~L529): operator-declared OUTER path MTU in bytes; 0 (unset) = use bind.DefaultPathMTU / auto-discover. validate(): when set, require 1280 <= mtu <= 9000 AND derived inner MTU stays >= 576. config cannot import internal/bind (import-cycle; mirror precedent at defaultAvgWireFrameBytes config.go:275-283) so mirror the fixed overhead constant with a cross-reference comment + lockstep test. Follow existing knob discipline (Path.Bind/FEC): TOML field + applyDefaults (omitted = byte-identical to today) + validate table test + TOML round-trip test proving an existing config with no `mtu` key parses byte-identically (zero value). Reproduce-first: write the round-trip + validation-rejection tests before the field exists; they must fail for the right reason. Docs IN THE SAME CHANGE: wanbond.example.toml ([[paths]] mtu with a 5G ~1400 example), README.md, docs/install.md, docs/design.md config-surface table."
+- acceptance: "New TestPathMTURoundTrip + TestPathMTUValidation (accept 1280..9000 and unset-0; reject 1279, 9001, negative) written first and failing, then green; existing config fixtures unchanged and green. Gate: nix develop -c sh -c 'gofmt -l cmd internal test; go build ./... && go vet ./... && go test ./...' AND nix develop -c just lint AND nix develop -c go test -race ./internal/config/..."
+- suggestedModel: standard
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T205 — planned
+
+- createdAt: 2026-07-20T18:01:22.045Z
+- updatedAt: 2026-07-20T18:01:22.045Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Size wanbond0 from the minimum per-path inner MTU and fix the p1-mtu doc drift
+- description: "Replace device.tunMTU (internal/device/device.go:60-62), which passes the hardcoded bind.DefaultPathMTU, with a computation over cfg.Paths: for each path take its configured mtu (or bind.DefaultPathMTU when 0), map through bind.InnerMTU(pathMTU, cfg.FEC.Enabled), and size the TUN to the MINIMUM across paths (docs/p1-mtu.md already states the smallest-path rule; the code never implemented it). Reproduce-first: a unit test on tunMTU with a two-path config {1500, 1400} expecting bind.InnerMTU(1400, fec) must FAIL against the current single-1500 implementation, then pass. Docs IN THE SAME CHANGE: rewrite docs/p1-mtu.md's stale arithmetic — DataOverhead is 40 bytes (includes the T24 fec-index byte, internal/bind/frame.go:68-74), not 39; inner MTU at 1500 is 1400, not 1401; MSS figures shift accordingly — and document min-across-paths sizing + the new knob. Verify corrected figures against TestInnerMTUFixture / the mtu.go constants, not the old prose."
+- acceptance: "New TestTunMTUMinAcrossPaths (mixed 1500/1400 -> InnerMTU(1400,...); FEC on/off variants) fails first then passes; TestInnerMTUFixture pins the corrected 1400 figure; docs/p1-mtu.md has no remaining 39/1401 overhead figures (grep). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/... ./internal/bind/..."
+- suggestedModel: standard
+- dependsOn: ["T200"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T210 — planned
+
+- createdAt: 2026-07-20T18:02:14.851Z
+- updatedAt: 2026-07-20T18:23:43.961Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "netns e2e: constrained-MTU path carries full-size inner traffic when mtu is declared"
+- description: "New e2e (test/e2e, -tags e2e, netns/veth harness like TestMultipathNoFragmentation) reproducing the field failure: bond two veth paths where one path's outer link MTU is 1400 while the daemon assumes 1500. CRITICAL REPRO MECHANISM (R241): a lossless netns does NOT reproduce the field loss on its own — without DF, a 1500B outer datagram on a 1400-MTU veth is LOCALLY FRAGMENTED and the receiver reassembles it (~0 loss), so a naive 'loss>50%' assert is green-by-fragmentation. The field loss came from the 5G network DROPPING fragments. So this test MUST install its own loss mechanism in the transit netns: an nftables/tc rule DROPPING IP fragments (nft 'ip frag-off & 0x1fff != 0' drop, or ip6 equivalent) mirroring the field middlebox. Phase 1 (reproduction, committed first, negative-control subtest): with NO mtu knob AND the fragment-drop rule active, a full-inner-MTU flow over the constrained path suffers heavy loss (>50%). Phase 2: with `mtu = 1400` on that path, wanbond0 is sized to bind.InnerMTU(1400, fec) so outer datagrams stay <=1400 (never fragmented), and the SAME flow under the SAME fragment-drop rule completes with no fragmentation and ~0 loss. This is the decision-5 resolution gate for the static-knob half of D85. Assert functional success / counter ratios, not absolute throughput."
+- acceptance: "TestE2EConstrainedPathMTUKnob: with the transit-netns fragment-drop rule active, the repro leg (no knob) is lossy >50% (negative control), the knob leg passes: capture shows zero fragmented outer datagrams, TUN MTU == InnerMTU(1400,fec), flow loss ~0. Runs under the privileged netns harness. Gate: full gofmt/build/vet/test + nix develop -c just lint (covers e2e tag) + nix develop -c go test -race ./internal/bind/..."
+- suggestedModel: frontier
+- dependsOn: ["T205"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+## M83
+
+### T201 — planned
+
+- createdAt: 2026-07-20T18:00:36.902Z
+- updatedAt: 2026-07-20T18:23:24.394Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Set DF (IP_MTU_DISCOVER) on path sockets and surface EMSGSIZE sends
+- description: "Set DF (Don't-Fragment) on the outer UDP path sockets so probe-based PMTU discovery is meaningful and silent fragmentation becomes an explicit error. PLATFORM SPLIT (R241): IP_MTU_DISCOVER=IP_PMTUDISC_DO (udp4) / IPV6_MTU_DISCOVER=IPV6_PMTUDISC_DO (udp6) are Linux-only, so add them in a Control hook in pathsock_linux.go behind //go:build linux (mirroring bindToDevice), with a portable no-op stub for non-Linux builds — do NOT put the syscall in the untagged internal/bind/pathsock.go (it would break the non-Linux build). Wire the hook into BOTH socket-creation branches of listenPath (listenOnDevice + the net.ListenUDP fallback). This (a) is the precondition for meaningful padded-probe PMTU discovery (without DF the kernel silently fragments oversized probes + outer data) and (b) converts today's silent-fragmentation loss into an explicit EMSGSIZE at send, which must be COUNTED (per-path metric + rate-limited WARN log), not swallowed (fail-fast invariant). Reproduce-first: a linux-tagged unit test opening a path socket and getsockopt(IP_MTU_DISCOVER)==PMTUDISC_DO (fails, option unset, before the change); plus a send-path unit test asserting EMSGSIZE increments the new counter."
+- acceptance: "TestPathSocketSetsDF (getsockopt == PMTUDISC_DO for v4 and v6, linux-tagged) fails first then passes; TestSendEMSGSIZECounted green; the non-Linux build still compiles (portable stub); existing TestMultipathNoFragmentation still green. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/bind/..."
+- suggestedModel: frontier
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T202 — planned
+
+- createdAt: 2026-07-20T18:00:43.422Z
+- updatedAt: 2026-07-20T18:00:43.422Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Padded MTU-probe frames in the probe transport
+- description: "Extend the outer-control probe codec (internal/telemetry prober + internal/bind probe transport) with a size-parameterized PADDED probe: a probe frame padded to a target ON-WIRE datagram size whose authenticated echo confirms 'a datagram of N outer bytes traverses this path'. Reuse the existing PSK-authenticated probe/echo machinery + anti-replay (buildScheduler prober set, device.go:999-1021) — do NOT invent a parallel channel; add a kind/flag + pad-length to the existing frame schema and have the reflector echo the observed size. Reproduce-first: codec round-trip unit tests (encode padded probe of size N -> decode -> echoed size N; reject truncated/oversized) written before the encoding exists. Keep single-package where possible (telemetry codec first, bind transport wiring minimal). Docs: docs/design.md probe-plane paragraph (same change)."
+- acceptance: "New padded-probe codec tests (round-trip at boundary sizes minimum/1400/1500; truncation rejected; echo carries size) fail first then pass; existing probe/liveness tests untouched and green (unpadded probes byte-identical on wire). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/... ./internal/bind/..."
+- suggestedModel: frontier
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T206 — planned
+
+- createdAt: 2026-07-20T18:01:29.632Z
+- updatedAt: 2026-07-20T18:01:29.632Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Per-path PMTU search state machine with re-probe on path-up and roam
+- description: "New PMTU discovery component (internal/telemetry or internal/bind, colocated with the prober it drives): per path, binary-search the largest echoing padded-probe size between a floor (1280 outer) and a ceiling (the path's configured mtu, else bind.DefaultPathMTU), with DF set (T201) so oversize probes fail locally or drop in-network; converge, then hold. Re-probe triggers: path DOWN->UP transition, endpoint roam (concentrator learned-endpoint change / edge hub-failover repoint), and a slow periodic refresh. A path with an EXPLICIT configured mtu is PINNED: discovery never runs for it (operator override authoritative — this is how the knob + auto-discovery compose). Expose per-path PMTU via the prober snapshot + a wanbond_path_mtu gauge. Driven by the injectable Clock for deterministic tests. Reproduce-first: state-machine unit tests against a fake echo transport (converges to 1400 when >1400 echoes lost; re-probes on up-transition; pinned path never probes) written first."
+- acceptance: "TestPMTUSearchConverges / TestPMTUReprobeOnUp / TestPMTUPinnedPathSkipsDiscovery fail first then pass, all on fake clock + fake transport (no sleeps); metric registered. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/... ./internal/bind/..."
+- suggestedModel: frontier
+- dependsOn: ["T201","T202"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T208 — planned
+
+- createdAt: 2026-07-20T18:01:57.305Z
+- updatedAt: 2026-07-20T18:01:57.305Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Daemon-installed MSS clamp on wanbond0 for edge-originated TCP
+- description: "Per accepted decision 2: at device.Up (edge role), install a TCPMSS --clamp-mss-to-pmtu rule for EDGE-ORIGINATED TCP (OUTPUT chain, -o wanbond0, SYN) for v4+v6, remove it on Close — mirroring the routePrefixes install/withdraw lifecycle (device.go:415-424). clamp-mss-to-pmtu derives MSS from the live TUN MTU, so it composes with dynamic PMTUD resizing with no re-install. Prefer programming the rule natively (nftables via netlink library) over exec'ing iptables; if exec is chosen, fail fast with a clear error when the binary is absent. Idempotent install (re-running Up after a crash must not stack duplicate rules). G14 RECONCILIATION IN THE DOCS, SAME CHANGE: FORWARDED traffic keeps G14's documented operator-installed FORWARD-chain clamp; edge-ORIGINATED TCP is daemon-owned as of this change (disjoint chains — complementary, not contradictory); docs/p1-mtu.md + docs/install.md state the split; README/design updated. Reproduce-first: a privileged e2e subtest asserting the rule set exists after Up and is gone after Close, written first and failing."
+- acceptance: "TestE2EDaemonMSSClampLifecycle (rule present after Up — v4 and v6 — absent after Close, idempotent across double-Up) fails first then passes under the netns harness; docs delineate daemon-owned (OUTPUT) vs operator-owned (FORWARD, G14). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T205"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T209 — planned
+
+- createdAt: 2026-07-20T18:02:04.196Z
+- updatedAt: 2026-07-20T18:02:04.196Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Dynamically resize wanbond0 to the min inner MTU across UP paths
+- description: "In internal/device: subscribe to per-path PMTU updates (T206) + path liveness membership and recompute min(InnerMTU(effectivePathMTU, fec)) across UP paths; when it changes, set the live wanbond0 link MTU via netlink (mirror the ifUp/installRoutes native-netlink precedent in device.go — no shelling out), emit a WARN-level structured log + a wanbond_tun_mtu gauge. Boot-time tunMTU (T205) remains the initial value; this task adds the runtime adjustment decision 1 requires (size wanbond0 to the MIN inner MTU across UP paths, re-probe on roam). Debounce so a flapping path does not thrash the link MTU (reuse the failback-dwell pattern, device.go:936-942). Teardown unchanged. Reproduce-first: unit test on the recompute-and-decide logic (pure function over path states/PMTUs) failing before the component exists; the netlink apply is covered by the e2e task."
+- acceptance: "TestMinInnerMTURecompute (paths {UP:1500, UP:1400} -> InnerMTU(1400); 1400-path goes DOWN -> InnerMTU(1500) after dwell; FEC variant) fails first then passes. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T206","T205"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T212 — planned
+
+- createdAt: 2026-07-20T18:02:39.084Z
+- updatedAt: 2026-07-20T18:24:23.261Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "netns e2e: PMTU discovery converges, resizes on roam, and clamp holds edge TCP"
+- description: "The D85 resolution gate for the auto-discovery half (decision 5: netns e2e sufficient; hardware is follow-up). New e2e: bond two veth paths, one outer MTU 1400, NO mtu knob declared, WITH the same transit-netns IP-fragment-DROP rule as T210 (R241 — a lossless netns cannot reproduce the field loss; the drop rule makes oversize-then-fragmented outer datagrams actually lossy). Assert: (1) DF is set (T201) so oversize probes/data are not locally fragmented; discovery converges and wanbond0 shrinks to bind.InnerMTU(1400, fec) within a bounded time; (2) full-inner-MTU flow then flows with zero outer fragmentation and ~0 loss under the drop rule (capture assert); (3) simulate roam by raising the constrained link to 1500 and triggering re-probe (path bounce) — wanbond0 grows back after the dwell; (4) an edge-originated TCP flow's SYN carries MSS <= innerMTU-40 (capture assert), proving the daemon clamp. Reuses the D85-A harness + drop-rule helper. Assert functional/counter-ratio outcomes, not throughput."
+- acceptance: "TestE2EPMTUDiscovery green under the privileged netns harness (with the fragment-drop rule) with all four asserts; TestE2EConstrainedPathMTUKnob and TestMultipathNoFragmentation remain green. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/bind/... ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T209","T208"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+### T225 — planned
+
+- createdAt: 2026-07-20T18:24:28.328Z
+- updatedAt: 2026-07-20T18:24:28.328Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Subtract amnezia junk-prefix headroom from effective MTU + pad discovery probes when obfuscation is enabled (D85 fix-direction 4)
+- description: "Closes D85's accepted fix-direction 4 (R241 — both reviewers: currently unscoped). internal/bind/mtu.go:41-46 documents the Amnezia junk PREFIX as best-effort headroom that is NOT subtracted from InnerMTU today; the confirmed D85 root cause attributes the field's residual excess overhead to exactly this prefix when obfuscation is enabled. TWO parts: (a) STATIC — when obfuscation (amnezia/junk) is enabled in config, subtract the maximum configured junk-prefix length from the effective path MTU feeding tunMTU/InnerMTU (T205), so wanbond0 is sized for the true obfuscated data-frame envelope; when obfuscation is off, behaviour is byte-identical (subtract 0). (b) DYNAMIC — the padded-probe PMTU discovery (T202/T206) measures PROBE-plane datagrams that do NOT carry the junk prefix real WG DATA carries, so raw discovered PMTU over-estimates usable data size on an obfuscated path; pad discovery probes by the max junk-prefix headroom (or subtract it from the converged result) so discovery measures the true data-frame envelope and cannot converge to a size that still EMSGSIZEs/drops full-size obfuscated DATA. Reproduce-first: a unit test that with obfuscation enabled + junk-prefix length L, the effective MTU (and the discovery ceiling) is L bytes smaller than with obfuscation off — failing before the change; plus a discovery test asserting the converged usable size accounts for L. Docs: docs/p1-mtu.md (obfuscation headroom row), wanbond.example.toml note."
+- acceptance: "TestObfuscationMTUHeadroom (obfuscation on with junk-prefix L -> effective MTU L smaller; off -> byte-identical) and a discovery-accounts-for-junk-prefix test fail first then pass. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/bind/... ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T205","T206"]
+- ledgerRefs: ["defects:D85","goals:G23"]
+
+## M84
+
+### T203 — planned
+
+- createdAt: 2026-07-20T18:00:51.134Z
+- updatedAt: 2026-07-20T18:23:33.390Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "Add [liveness] down_after + per-path ride_through config knobs (parse + validate + defaults + round-trip)"
+- description: "Config surface for D86 decisions 3+4: (a) new top-level [liveness] block with down_after (Go-duration string, Raw-field pattern like FEC.DeadlineRaw config.go:410-458), defaulting to telemetry.DefaultDownAfter when omitted; (b) new per-path ride_through duration on [[paths]] (Path struct), DEFAULT 0 — an unset config must be BYTE-IDENTICAL to today (assert via round-trip on an existing fixture). validate(): down_after > 0 AND (R241 lower bound) down_after >= 2*telemetry.DefaultProbeInterval (i.e. >= 400ms) — because probe cadence stays fixed at 200ms this pass, a down_after at/below one probe interval makes Tick's strict-'>' silence check outrun the echo cadence and permanently flap every path DOWN; reject below the floor (or WARN-and-clamp — choose reject for a hard foot-gun, documented in the field comment). ride_through >= 0. Do NOT reject a large down_after — the WARN-and-allow UPPER-side budget verdict is the T211 budget task's job (decision 4). Keep probe_interval non-configurable this pass (document why). Docs IN THE SAME CHANGE: wanbond.example.toml (Starlink-primary ride_through example + 5G-standby-strict pattern + the down_after floor note), README.md, docs/install.md, docs/design.md."
+- acceptance: "TestLivenessConfigRoundTrip (set + unset; unset yields DefaultDownAfter + 0 ride-through) and TestLivenessConfigValidation (reject down_after<=0, reject down_after<400ms=2*DefaultProbeInterval, reject ride_through<0, unparseable; ACCEPT down_after=5s over-budget — loads fine) fail first then pass. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/config/..."
+- suggestedModel: standard
+- ledgerRefs: ["defects:D86","goals:G23"]
+
+### T204 — planned
+
+- createdAt: 2026-07-20T18:00:57.363Z
+- updatedAt: 2026-07-20T18:00:57.363Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Down-side ride-through dwell in telemetry.Liveness (reproduce-first, default 0 = byte-identical)
+- description: "The root-cause fix: internal/telemetry/liveness.go Tick (L135-148) flips UP->DOWN on a single DownAfter of silence with no down-side hysteresis. Add `RideThrough time.Duration` to LivenessConfig: an UP path transitions DOWN only after silence exceeds DownAfter + RideThrough; the DOWN-side streak-reset threshold stays DownAfter (recovery semantics unchanged); RecordEcho's consecutive-echo window stays DownAfter. RideThrough=0 must be BYTE-IDENTICAL to today — every existing liveness test passes unmodified. Reproduce-first with the fake Clock: a test modeling the field failure — UP path, 1.3s silence, RideThrough=2s, Tick — must currently FAIL (path goes DOWN) before the fix, pass after; a second test asserts DOWN does fire at DownAfter+RideThrough+epsilon. Update the transition log to carry the effective threshold. Single-package change."
+- acceptance: "TestLivenessRideThroughSurvivesMicroOutage fails first (observed DOWN at 1.3s) then passes; TestLivenessRideThroughEventualDown passes; the FULL existing liveness/prober suite passes UNMODIFIED (zero-value identity). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/..."
+- suggestedModel: frontier
+- ledgerRefs: ["defects:D86","goals:G23"]
+
+### T207 — planned
+
+- createdAt: 2026-07-20T18:01:36.094Z
+- updatedAt: 2026-07-20T18:01:36.094Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Plumb configured down_after + per-path ride_through into buildScheduler and StartProbeLoop
+- description: "Replace the zero-indirection constant consumption in internal/device: buildScheduler (device.go:1001-1007) currently builds ONE shared ProberConfig from telemetry.Default*; make it build a PER-PATH LivenessConfig — DownAfter from cfg.Liveness (defaulted at load), RideThrough from that path's ride_through — threaded through the newProber closure (which already receives the path index/name, device.go:1011-1013) and the runtime ProberFactory so T30 runtime-added paths get their configured dwell too. StartProbeLoop (device.go:430) keeps telemetry.DefaultProbeInterval (documented: cadence not yet configurable). Preserve exact current behaviour when the block is omitted (defaults resolve to the same constants). Reproduce-first: a unit test on the cfg->ProberConfig mapping (custom down_after 2s + ride_through {2s,0}) failing against the current hardcoded literals, then passing; defaults-only config maps to exactly telemetry.Default* (identity guard)."
+- acceptance: "TestBuildSchedulerLivenessFromConfig (custom values per path + defaults identity) fails first then passes; existing device tests green. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T203","T204"]
+- ledgerRefs: ["defects:D86","goals:G23"]
+
+### T211 — planned
+
+- createdAt: 2026-07-20T18:02:19.713Z
+- updatedAt: 2026-07-20T18:23:55.970Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Shared failover-budget derivation with WARN-and-allow over the P1 budget
+- description: "Decision 4, honoring the D16 single-source-of-truth. (a) Hoist the 3s recovery budget into internal/telemetry: add telemetry.RecoveryBudget as a time.Duration (= 3*time.Second) + a pure derivation func telemetry.FailoverBudget(downAfter, rideThrough, probeInterval time.Duration) time.Duration = downAfter + rideThrough + 2*probeInterval. TYPE/UNIT SAFETY (R241): test/e2e/thresholds.go's P1RecoverySeconds is currently an untyped int constant = 3 (a count of SECONDS) consumed as int-seconds at its call sites — do NOT alias it to the Duration (that silently changes type+unit and breaks callers like time.Duration(P1RecoverySeconds)*time.Second). Instead: KEEP P1RecoverySeconds as the int-seconds constant, and have thresholds.go DERIVE the Duration budgets from telemetry.RecoveryBudget/FailoverBudget (PLivenessFailoverBudget becomes FailoverBudget(PLivenessDownAfter, 0, PLivenessProbeInterval)); assert RecoveryBudget == time.Duration(P1RecoverySeconds)*time.Second so the two representations can never drift. The e2e budget now reads whatever values a test's CONFIG carries by calling FailoverBudget with them (how the knob feeds thresholds.go). (b) WARN-and-allow: following the weightedCapacitySane() *bool computed-verdict precedent (config.go:1054), normalize() computes a LivenessBudgetSane verdict — FailoverBudget(down_after, max path ride_through, DefaultProbeInterval) <= RecoveryBudget — NEVER rejecting; the daemon logs ONE startup WARN naming the numbers when false + exports a wanbond_liveness_budget_sane gauge. Reproduce-first: budget-arithmetic table test + the RecoveryBudget==P1RecoverySeconds*Second identity assertion + verdict test (over-budget config LOADS with verdict false; default config verdict true) + a device test asserting the WARN is emitted, all failing before the code exists."
+- acceptance: "TestFailoverBudgetDerivation, TestRecoveryBudgetMatchesP1RecoverySeconds (RecoveryBudget == time.Duration(P1RecoverySeconds)*time.Second), TestLivenessBudgetVerdict (5s down_after loads, verdict false; defaults true), TestStartupWarnOnOverBudget fail first then pass; P1RecoverySeconds stays an int-seconds constant (no call-site breakage); every existing e2e threshold value numerically UNCHANGED at defaults (PLivenessFailoverBudget still 1.6s — assert). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/... ./internal/config/... ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T207"]
+- ledgerRefs: ["defects:D86","goals:G23"]
+
+### T213 — planned
+
+- createdAt: 2026-07-20T18:02:51.450Z
+- updatedAt: 2026-07-20T18:02:51.450Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "netns e2e: sub-threshold micro-outage rides through without failing over to the metered path"
+- description: "The D86 resolution gate (decision 5). New e2e reproducing the field thrash: two-path bond, primary configured ride_through=2s (Starlink-primary-rides-through), standby strict (ride_through=0). Phase 1 (repro, committed first, negative-control at DEFAULT config): a ~1.3s blackhole of the primary DOES fail the bond over (bytes appear on the standby) — today's behavior, proving the fixture provokes the defect. Phase 2: with ride_through=2s, the SAME 1.3s blackhole causes NO failover — standby byte-share stays within the P2 data-thrift bound (P2MeteredMaxByteFraction), the flow survives, and the path never transitions DOWN (log/metric assert). Phase 3: a LONG outage (> down_after + ride_through) still fails over, and measured recovery respects FailoverBudget(configured values) read via the new derivation helper — closing the decision-4 thresholds.go loop against CONFIGURED, not default, values. TestP1Failover at defaults must remain green and untouched."
+- acceptance: "TestE2ERideThroughMicroOutage: negative-control (defaults) shows failover at 1.3s; ride-through leg shows zero failover + thrift bound held; long-outage leg fails over within FailoverBudget(2s ride-through config); TestP1Failover unchanged and green. Runs under the privileged netns harness. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/telemetry/... ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T211"]
+- ledgerRefs: ["defects:D86","goals:G23"]
+
+## M85
+
+### T214 — planned
+
+- createdAt: 2026-07-20T18:05:41.116Z
+- updatedAt: 2026-07-20T18:25:09.601Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Extend the MonitorSnapshot wire contract with daemon, bind-metadata, addressing, endpoint, and WG-key fields + define the monitor.Info seam
+- description: "In internal/monitor/monitor.go, extend the wire contract. (1) DaemonSnapshot: role (edge|concentrator), version, uptimeSeconds. (2) PathSnapshot config-static metadata shown on ANY binding: bindMode (source|device|auto), boundDevice, linkBandwidthBps, linkRttSeconds. (3) A per-path addressing block shown ONLY when revealed (nullable pointer, omitempty): source (bound local addr), sourceInterface, remote (current wire remote; on the concentrator = the connected edge's observed source, Q64). (4) Per-peer ordered []EndpointSnapshot{address, active} preserving config order; addresses inside the gated addressing surface. (5) WG key — R242/Q63 LITERAL ANSWER: ship wgPublicKeyFingerprint (first ~10 base64 chars) ONLY, on any binding; DO NOT add a full-key field (the user chose '(b) truncated fingerprint only, on any binding', not the recommendation's full-key-on-loopback). (6) addressingHidden bool. FIELD-AUTHORITY (R242): runtime-resolved bindMode/boundDevice come from the PathTraffic->metrics.PathSnapshot pass-through (NOT config — config.Path has no Device field; boundDevice is runtime-resolved in pathsock.go, so label it runtime-resolved not config-static); config-DECLARED linkBandwidthBps/linkRttSeconds come from monitor.Info. Distinguish boundDevice (SO_BINDTODEVICE device name) from sourceInterface (the source-IP's owning interface) explicitly, OR collapse to one field, so T218's types.ts mirror does not diverge. INFO SEAM + FRESHNESS (R242): define monitor.Info carrying Daemon{Role,Version,StartTime}, per-path config linkBandwidth/linkRtt, key fingerprint, and a LIVE endpoints provider evaluated INSIDE BuildSnapshot each frame (a func/interface call, NOT a value snapshotted once at device.Up — else the active-hub freezes at startup and never reflects a failover). ATOMIC SIGNATURE CHANGE (R242): BuildSnapshot grows to (src metrics.Source, info Info, revealAddressing bool) AND this SAME task updates ALL its existing call sites in internal/monitor/server.go (the 4 newWSHandler/writeSnapshot callers) fail-closed (revealAddressing=false, zero/placeholder Info) so internal/monitor compiles + redacts by default between here and T219. Also ADD the metrics.PathSnapshot addressing field DEFINITIONS here (Source/LocalAddr/BindMode/BoundDevice/Remote) so T215's populate+redact tests can set them; only the bind->metrics VALUE wiring is left to T220. Reproduce-first: TestBuildSnapshot_ExtendedFields against a fake Source+Info asserting every new JSON key on the reveal-ON path (incl. endpoint list from the live provider); fails (fields absent) before the change."
+- acceptance: "TestBuildSnapshot_ExtendedFields fails first then passes; internal/monitor COMPILES after this task (all BuildSnapshot call sites updated, fail-closed); no wgPublicKey field exists anywhere (fingerprint only); the prometheus metrics.Source interface + /metrics exposition unchanged (metrics.PathSnapshot gains fields but no new series). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/monitor/... ./internal/metrics/..."
+- suggestedModel: frontier
+- ledgerRefs: ["goals:G21"]
+
+### T215 — planned
+
+- createdAt: 2026-07-20T18:06:02.841Z
+- updatedAt: 2026-07-20T18:25:22.574Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Enforce addressing redaction server-side inside BuildSnapshot
+- description: "In internal/monitor/monitor.go, implement the Q62/Q64 gate as REDACTION BEFORE SERIALIZATION, not client-side hiding: when revealAddressing is false, BuildSnapshot must (a) omit every per-path addressing block (nil pointer), (b) omit endpoint ADDRESSES from the endpoint list while keeping count+active shape, (c) set addressingHidden=true. When true, all present and addressingHidden=false. WG KEY (R242/Q63): the wgPublicKeyFingerprint is shown on ANY binding and is NOT part of the redactable set (there is no full key to gate — the fingerprint is always present, redacted or not). Reproduce-first: TestBuildSnapshot_RedactsAddressingWhenNotRevealed marshals the snapshot to JSON and asserts via string search that NO source/remote/interface/endpoint address appears anywhere in the serialized BYTES, addressingHidden=true, and the fingerprint IS present — the strongest operational form of 'server-side, not client-side'. Write it against pre-gate code and observe it fail."
+- acceptance: "TestBuildSnapshot_RedactsAddressingWhenNotRevealed fails before the gate exists, passes after; assertion on marshaled JSON bytes (redacted addresses provably never leave the server; fingerprint present in both arms; no full key anywhere). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/monitor/..."
+- suggestedModel: frontier
+- dependsOn: ["T214"]
+- ledgerRefs: ["goals:G21"]
+
+### T219 — planned
+
+- createdAt: 2026-07-20T18:10:48.136Z
+- updatedAt: 2026-07-20T18:25:29.934Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Thread the monitor server's kernel-bound loopback verdict into the /ws push handler
+- description: "In internal/monitor/server.go, derive revealAddressing from the address the kernel ACTUALLY bound — verifyLoopbackBind(ln.Addr()) == nil — at NewServer construction (act-then-verify, the same discipline the existing loopback guard uses; NEVER from the requested addr string), store it on Server, and pass it plus the LIVE monitor.Info seam through to every BuildSnapshot call in the /ws push handler. A token-authorized non-loopback bind STILL redacts (Q62). ALL CALL SITES (R242): NewServer's signature grows the Info parameter — update EVERY monitor.NewServer call site in the SAME task: internal/device/device.go, internal/monitor/server_test.go, internal/device/monitor_e2e_test.go, and internal/device/monitor_wire_test.go (as applicable). Reproduce-first: a server_test.go WebSocket test pair — TestServer_WSRedactsAddressingOnNonLoopback (bind 0.0.0.0:0 with a token, one frame, assert addressingHidden=true and no address strings, fingerprint present) and TestServer_WSRevealsAddressingOnLoopback (127.0.0.1:0, addressing block present) — the first failing before the wiring."
+- acceptance: "Both named ws tests pass, the non-loopback one observed failing first; ALL NewServer call sites compile. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/monitor/... ./internal/device/..."
+- suggestedModel: standard
+- dependsOn: ["T215"]
+- ledgerRefs: ["goals:G21"]
+
+## M86
+
+### T216 — planned
+
+- createdAt: 2026-07-20T18:06:10.839Z
+- updatedAt: 2026-07-20T18:06:10.839Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Surface per-path source, local addr, bind mode, bound device, and current remote in bind.PathTraffic
+- description: "In internal/bind/multipath.go, extend PathTraffic (~L3224) with Source netip.Addr, LocalAddr netip.AddrPort (from the shared socket conn.LocalAddr(), the authoritative bound addr:port), BindMode config.BindMode, BoundDevice string (resolved SO_BINDTODEVICE interface, empty when source-pinned), and Remote netip.AddrPort (peerPathState.remote — the current wire remote; on the concentrator this IS the edge's last observed source via roaming, satisfying Q64 with no extra mechanism). Fill them in PeerSnapshots() from sharedPathState (src, conn, resolved device — persist the resolved device on sharedPathState at bind time if not already retained) and peerPathState, read off the send-lock-free snapshot exactly as the existing counters (do NOT hold the send lock across a prober call). TARGETED edits at PeerSnapshots/sharedPathState/attachSharedPathLocked — do not sweep the whole file. Reproduce-first: extend the PeerSnapshots-covering test with TestPeerSnapshots_CarriesAddressing asserting the new fields for a bound path (incl. Remote following a SetPeerRemote repoint), failing before the change."
+- acceptance: "TestPeerSnapshots_CarriesAddressing fails first then passes. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/bind/..."
+- suggestedModel: standard
+- dependsOn: ["T214"]
+- ledgerRefs: ["goals:G21"]
+
+### T217 — planned
+
+- createdAt: 2026-07-20T18:09:17.945Z
+- updatedAt: 2026-07-20T18:09:17.945Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Expose the ordered hub-endpoint list with active/standby state from hubFailover
+- description: "In internal/device/failover.go, add hubFailover.EndpointsSnapshot() returning the FLATTENED ordered endpoint list ([]struct{Addr netip.AddrPort; Active bool}) under h.mu, marking exactly the (activeSpec, activeAddr) entry active — reusing entryAtLocked/flatIndexLocked semantics so DNS-expanded specs (R70) render every current expansion entry in order. The device layer feeds this into monitor.Info; on a role/config without hub failover (single-IP-literal edge = no controller) the adapter falls back to the peer's config.Peer.Endpoints in order with index 0 Active. Reproduce-first: TestHubFailover_EndpointsSnapshot asserting order + the active flag before AND after a forced switch, failing before the method exists."
+- acceptance: "TestHubFailover_EndpointsSnapshot fails first (method absent) then passes incl. the post-switch active-flag move. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/..."
+- suggestedModel: standard
+- dependsOn: ["T214"]
+- ledgerRefs: ["goals:G21"]
+
+### T220 — planned
+
+- createdAt: 2026-07-20T18:11:39.149Z
+- updatedAt: 2026-07-20T18:25:31.119Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Map bind addressing through metricsSource into metrics.PathSnapshot (pass-through, no exposition change)
+- description: "VALUE-WIRING ONLY (R242 — the metrics.PathSnapshot addressing field DEFINITIONS were moved to T214 to remove the cross-milestone ordering hazard). Make internal/device/metrics.go's metricsSource.Paths() copy the addressing fields (Source, LocalAddr, BindMode, BoundDevice, Remote) VERBATIM from bind.PathTraffic into metrics.PathSnapshot — pass-through only, no derivation. This is the SINGLE authority for runtime-resolved bindMode/boundDevice/source/remote (config-declared linkBandwidth/linkRtt come separately via monitor.Info per T214). Keep the Prometheus collector unaffected (it ignores the new fields; verify NO new label/series). Reproduce-first: extend internal/device/metrics_test.go's fake trafficProvider with addressing values + TestMetricsSource_PathsCarriesAddressing asserting the mapping (fails before the copy), AND assert the /metrics exposition output is byte-identical for the fake (no accidental new series)."
+- acceptance: "TestMetricsSource_PathsCarriesAddressing fails first then passes; existing collector tests in internal/metrics stay green (no exposition change). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/... ./internal/metrics/..."
+- suggestedModel: standard
+- dependsOn: ["T216"]
+- ledgerRefs: ["goals:G21"]
+
+### T222 — planned
+
+- createdAt: 2026-07-20T18:12:50.842Z
+- updatedAt: 2026-07-20T18:25:39.505Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Wire daemon identity, config link metadata, WG keys, and endpoints into monitor.Info at device.Up
+- description: "Thread the static/semi-static inputs into the monitor server via monitor.Info: (1) cmd/wanbond/main.go passes its ldflags version into device.Up (signature extension or options struct — update ALL callers/tests); (2) device.Up records a process StartTime for uptime; (3) build monitor.Info from config: Role, per-path config-DECLARED LinkBandwidthBitsPerSec + LinkRTT keyed to (peer,path) matching metrics.Source's naming rule — do NOT put bindMode/boundDevice/Device here (R242: those are runtime-resolved and ride the PathTraffic->metrics pass-through from T216/T220; config.Path has NO Device field); (4) WG public-key FINGERPRINT via config (own key from PrivateKey + per-peer PublicKey, base64-truncated ~10 chars) computed in ONE place — NO full key (Q63); (5) FRESHNESS (R242): wire hubFailover.EndpointsSnapshot (T217) as a LIVE endpoints PROVIDER (a func/closure the monitor calls each snapshot), NOT a value captured once at device.Up — so a later failover is reflected; on the concentrator/no-failover shape the provider returns an empty list (T221 omits the section). Update every monitor.NewServer call site touched. Reproduce-first: extend monitor_wire_test.go with TestMonitorWire_InfoFields asserting role/version/uptime>0, per-path linkBandwidthBps, fingerprint length ~10, and that the endpoint list reflects a SIMULATED failover through the live provider (active entry moves) — failing before the wiring."
+- acceptance: "TestMonitorWire_InfoFields fails first then passes, including the active-endpoint-moves-after-failover assertion via the live provider; no full WG key surfaced. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/..."
+- suggestedModel: frontier
+- dependsOn: ["T219","T217","T220"]
+- ledgerRefs: ["goals:G21"]
+
+### T223 — planned
+
+- createdAt: 2026-07-20T18:13:01.309Z
+- updatedAt: 2026-07-20T18:25:53.932Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Extend the device monitor e2e test to assert addressing and gating end-to-end
+- description: "Extend internal/device/monitor_e2e_test.go with full-stack assertions over a real device+bind+monitor server. On a LOOPBACK bind (edge topology with >=1 configured hub endpoint): the /ws frame carries per-path source/remote, the ordered endpoint list with exactly one active entry, the truncated fingerprint, and addressingHidden=false; ALSO assert (R242 freshness) that after a FORCED hub failover the active endpoint entry MOVES in a subsequent /ws frame (proves the live per-snapshot provider, not a startup snapshot). On a NON-LOOPBACK bind with a token: the same frame carries the fingerprint but NO address string anywhere in the raw frame BYTES and addressingHidden=true. R242: assert the full WG key is NEVER present in EITHER frame (there is no full-key field). Reproduce-first: write the assertions and observe the freshness + redaction ones fail before the wiring."
+- acceptance: "The e2e assertions pass: loopback-full (incl. active-entry-moves-after-failover), non-loopback-redacted raw-bytes scan, and full-key-never-present on both bindings; observed failing first where applicable. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/device/..."
+- suggestedModel: standard
+- dependsOn: ["T222"]
+- ledgerRefs: ["goals:G21"]
+
+## M87
+
+### T218 — planned
+
+- createdAt: 2026-07-20T18:10:14.428Z
+- updatedAt: 2026-07-20T18:30:12.544Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Mirror the extended wire contract in web/src/types.ts
+- description: "Update web/src/types.ts in lockstep with the extended internal/monitor/monitor.go: DaemonSnapshot, the new PathSnapshot fields (bindMode, boundDevice, linkBandwidthBps, linkRttSeconds), the nullable addressing block (optional property — absent when redacted), EndpointSnapshot[], wgPublicKeyFingerprint, addressingHidden. R242 (round-2): mirror the fingerprint ONLY — there is NO wgPublicKey field in the T214 Go contract (Q63 = fingerprint only), so DO NOT add an optional wgPublicKey? (a phantom optional would type-check but diverge the mirror from the contract and reintroduce the forbidden full-key surface). Field names MUST match the Go json tags exactly; keep the file's 'mirrors monitor.go EXACTLY' header rule intact. Add/extend a unit test parsing a captured redacted frame AND a full frame fixture into MonitorSnapshot, proving the optional-vs-present typing compiles and narrows correctly, and asserting there is no wgPublicKey property. Mechanical mirror — no rendering logic."
+- acceptance: cd web && npm ci && npx tsc --noEmit && npm run build && npm test all clean, with the new fixture-parse test covering both redacted and full frames and asserting no wgPublicKey field exists (fingerprint only).
+- suggestedModel: standard
+- dependsOn: ["T214"]
+- ledgerRefs: ["goals:G21"]
+
+### T221 — planned
+
+- createdAt: 2026-07-20T18:12:19.671Z
+- updatedAt: 2026-07-20T18:25:47.592Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Render daemon, bind, addressing, endpoint-failover, and WG-key sections in the dashboard
+- description: "Extend web/src/dashboard.ts (read-only display only — Q65, no controls): (1) a daemon header line: role badge (edge/concentrator), version, humanized uptime; (2) per-path columns for bind mode + bound device and declared link bandwidth/RTT (reuse formatBytesPerSec/formatMs, add an uptime formatter); (3) the addressing columns (source addr+interface, remote endpoint) from the OPTIONAL block, with a single 'addressing hidden on non-loopback binding' placeholder when addressingHidden is true — the client TRUSTS the server's redaction and never reconstructs hidden data; (4) an ordered endpoint list per peer with an active/standby indicator (highlight the active entry) — R242: when the endpoint list is EMPTY (concentrator role, no config endpoints) OMIT the endpoint section entirely, do NOT render an empty 'active' row; (5) WG key line: show the truncated fingerprint ONLY (R242/Q63 — there is no full key in the contract). All strings via escapeHtml. Extend render unit tests: (a) full snapshot asserts the new sections' text (+ edge vs concentrator role, with the concentrator having an omitted endpoint section); (b) redacted snapshot asserts the placeholder appears and NO address text is rendered (fingerprint still shown); (c) the active endpoint is marked on the edge topology."
+- acceptance: "New dashboard.test.ts cases (full render, redacted-placeholder+fingerprint, endpoint active/standby on edge, concentrator omits empty endpoint section) pass. Gate (frontend): cd web && npm ci && npx tsc --noEmit && npm run build && npm test all clean."
+- suggestedModel: standard
+- dependsOn: ["T218"]
+- ledgerRefs: ["goals:G21"]
+
+## M88
+
+### T224 — planned
+
+- createdAt: 2026-07-20T18:13:13.626Z
+- updatedAt: 2026-07-20T18:13:13.626Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: Sync docs and the example config with the extended monitor surface and run the full gate
+- description: "Same-change docs sync per AGENTS.md: README.md (monitor feature list: new displayed fields), docs/design.md (the extended wire contract, the server-side redaction rule + its act-then-verify bound-address derivation, the Q62/Q63/Q64 security posture), docs/install.md (what an operator sees on loopback vs token'd non-loopback bindings), wanbond.example.toml (monitor section comments noting the addressing visibility rule). No code changes beyond doc/comment text. Then run the COMPLETE gate across backend + frontend as the goal's exit check."
+- acceptance: "Docs mention every newly displayed field + the loopback redaction rule (grep addressingHidden/fingerprint in docs/design.md succeeds). FULL gate: nix develop -c sh -c 'gofmt -l cmd internal test; go build ./... && go vet ./... && go test ./...' + nix develop -c just lint (default+e2e+realhosts) + nix develop -c go test -race ./internal/monitor/... ./internal/device/... ./internal/bind/... + cd web && npm ci && npx tsc --noEmit && npm run build && npm test."
+- suggestedModel: standard
+- dependsOn: ["T223","T221"]
+- ledgerRefs: ["goals:G21"]

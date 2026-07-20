@@ -2,7 +2,7 @@
 ledger: decisions
 counters:
   milestone: 0
-  item: 22
+  item: 24
 archives: []
 ---
 
@@ -283,3 +283,31 @@ archives: []
 - landsIn: ["M73"]
 - sourceRefs: ["goals:G16","reviews:R236","reviews:R222"]
 - ledgerRefs: ["goals:G16","defects:D34","defects:D64","defects:D68"]
+
+## M81
+
+### K22 — locked
+
+- createdAt: 2026-07-20T18:31:27.043Z
+- updatedAt: 2026-07-20T18:31:27.043Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G23 field-hardening plan locked: D85 (per-path MTU knob + PMTU discovery + daemon MSS clamp + junk-prefix headroom) and D86 (tunable liveness ride-through with WARN-and-allow budget), 15 tasks across M82/M83/M84"
+- rationale: "Synthesized from an opus+fable candidate panel and hardened through a two-round opus+fable adversarial plan review. Round 1 (R241) returned REVISE with 5 real findings (non-reproducible netns negative-control, P1RecoverySeconds type/unit break, Linux-only syscall mis-placement, unscoped obfuscation junk-prefix, missing down_after lower bound); all fixed inline (fragment-drop netns mechanism, int-seconds constant + separate RecoveryBudget Duration, //go:build linux split, new task T225, down_after>=2*DefaultProbeInterval floor). Round 2 verified all resolved (go-ahead). Load-bearing invariants honored: config import-cycle mirror, complete-100B InnerMTU overhead (no double-subtraction), D16 3s-budget hoist into telemetry with thresholds.go re-derivation, RideThrough=0 byte-identical, disjoint OUTPUT(daemon)/FORWARD(operator,G14) MSS chains. Scope = accepted Q66 defaults. Both defects resolve via netns e2e (decision 5); on-hardware confirmation is a follow-up."
+- landsIn: ["M82","M83","M84"]
+- sourceRefs: ["goals:G23","defects:D85","defects:D86","reviews:R241"]
+- ledgerRefs: ["goals:G23"]
+
+## M79
+
+### K23 — locked
+
+- createdAt: 2026-07-20T18:31:35.755Z
+- updatedAt: 2026-07-20T18:31:35.755Z
+- author: "opus-4.8[1m]"
+- session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
+- headline: "G21 monitoring-UI extension plan locked: contract->plumbing->frontend->docs/gate (edge/concentrator addressing, role/version/uptime, bind metadata, endpoint failover state, WG fingerprint) with a server-side loopback redaction gate, 11 tasks across M85/M86/M87/M88"
+- rationale: "Synthesized from an opus+fable candidate panel and hardened through a two-round opus+fable adversarial plan review. Round 1 (R242) returned REVISE with 8 findings (non-atomic BuildSnapshot signature, cross-milestone metrics field-def ordering, endpoint freshness, Q63 over-disclosure, dual-sourced bindMode/boundDevice + nonexistent config.Path.Device, non-exhaustive NewServer call sites, empty-endpoint rendering, boundDevice/sourceInterface ambiguity); all fixed inline. Round 2 verified 7/8 + caught a residual (Q63 fix not propagated to the T218 types.ts mirror), now also fixed. Load-bearing decisions: the Q62/Q63/Q64 loopback gate is enforced SERVER-SIDE as redaction-before-marshal, verdict from the kernel-bound listener addr (verifyLoopbackBind(ln.Addr())), proven by marshaled-bytes + e2e raw-frame scans; prometheus metrics.Source stays narrow (static via monitor.Info, dynamic addressing via the PathTraffic pass-through, no new series); WG key = truncated fingerprint ONLY per the user's literal Q63 answer (no full key anywhere); endpoints via a LIVE per-snapshot provider so failover state stays fresh. Strictly read-only v1 (Q65)."
+- landsIn: ["M85","M86","M87","M88"]
+- sourceRefs: ["goals:G21","reviews:R242"]
+- ledgerRefs: ["goals:G21"]

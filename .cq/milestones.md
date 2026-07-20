@@ -2,7 +2,7 @@
 ledger: milestones
 counters:
   milestone: 0
-  item: 81
+  item: 88
 archives:
   - id: M2
     path: ./archive/milestones/M2.md
@@ -564,3 +564,49 @@ archives:
 - createdAt: 2026-07-20T17:37:32.821Z
 - updatedAt: 2026-07-20T17:37:32.821Z
 - title: "Plan: field-hardening (per-path MTU + tunable liveness)"
+
+### M82 — open
+
+- createdAt: 2026-07-20T18:00:04.661Z
+- updatedAt: 2026-07-20T18:00:04.661Z
+- title: "G23 D85-A: per-path MTU knob + min-across-paths TUN sizing"
+
+### M83 — open
+
+- createdAt: 2026-07-20T18:00:06.093Z
+- updatedAt: 2026-07-20T18:00:20.584Z
+- title: "G23 D85-B: per-path PMTU auto-discovery + daemon MSS clamp"
+- dependsOn: ["M82"]
+
+### M84 — open
+
+- createdAt: 2026-07-20T18:00:06.408Z
+- updatedAt: 2026-07-20T18:00:06.408Z
+- title: "G23 D86: tunable liveness ride-through"
+
+### M85 — open
+
+- createdAt: 2026-07-20T18:03:33.205Z
+- updatedAt: 2026-07-20T18:03:33.205Z
+- title: "G21-A: monitor wire contract + server-side loopback gate"
+
+### M86 — open
+
+- createdAt: 2026-07-20T18:03:58.429Z
+- updatedAt: 2026-07-20T18:05:17.297Z
+- title: "G21-B: device/bind addressing plumbing"
+- dependsOn: ["M85"]
+
+### M87 — open
+
+- createdAt: 2026-07-20T18:05:02.550Z
+- updatedAt: 2026-07-20T18:05:24.505Z
+- title: "G21-C: frontend types + render"
+- dependsOn: ["M85"]
+
+### M88 — open
+
+- createdAt: 2026-07-20T18:05:06.854Z
+- updatedAt: 2026-07-20T18:05:35.891Z
+- title: "G21-D: docs sync + full gate"
+- dependsOn: ["M86","M87"]
