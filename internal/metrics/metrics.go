@@ -62,6 +62,11 @@ const (
 	MetricJitter     = "wanbond_path_jitter_seconds"
 	MetricThroughput = "wanbond_path_throughput_bits_per_second"
 	MetricUp         = "wanbond_path_up"
+	// MetricPathMTU is the per-path discovered outer PMTU in bytes (T206, defect D85):
+	// the largest padded-probe on-wire size the per-path discovery machine confirmed
+	// still echoes, the operator-configured mtu on a pinned path, or the conservative
+	// floor before the first search converges. Sourced verbatim from PathSnapshot.PMTU.
+	MetricPathMTU = "wanbond_path_mtu"
 )
 
 // FEC metric names. These connection-scoped series (no path label — FEC
@@ -250,6 +255,13 @@ type PathSnapshot struct {
 	Estimate telemetry.Estimate
 	// State is the per-path liveness verdict, read verbatim from telemetry.
 	State telemetry.PathState
+	// PMTU is the per-path discovered outer path MTU in bytes (T206, defect D85), read
+	// verbatim from the path's telemetry.PMTUDiscovery snapshot accessor -> the
+	// wanbond_path_mtu gauge. Like the addressing fields below, the DEFINITION and
+	// exposition land here now; the value-wiring from the discovery machine through
+	// internal/device/metrics.go rides with the TUN-resize task (T209), so it is
+	// zero-valued until then.
+	PMTU int
 	// The following addressing fields are the runtime-resolved per-path
 	// networking metadata the monitoring UI surfaces (G21). They are DEFINED here
 	// (T214) but the value-wiring from bind.PathTraffic through
@@ -371,6 +383,7 @@ type collector struct {
 	jitter     *prometheus.Desc
 	throughput *prometheus.Desc
 	up         *prometheus.Desc
+	pmtu       *prometheus.Desc
 
 	fecData          *prometheus.Desc
 	fecRepair        *prometheus.Desc
@@ -424,6 +437,7 @@ func NewCollector(src Source) prometheus.Collector {
 		jitter:     desc(pathSubsystem, "jitter_seconds", "Smoothed per-path RTT deviation (jitter) in seconds.", pathLabels),
 		throughput: desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
 		up:         desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
+		pmtu:       desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
 
 		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", peerScopedLabels),
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", peerScopedLabels),
@@ -462,6 +476,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.jitter
 	ch <- c.throughput
 	ch <- c.up
+	ch <- c.pmtu
 	ch <- c.fecData
 	ch <- c.fecRepair
 	ch <- c.fecRecovered
@@ -497,6 +512,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.jitter, prometheus.GaugeValue, p.Estimate.Jitter.Seconds(), labels...)
 		ch <- prometheus.MustNewConstMetric(c.throughput, prometheus.GaugeValue, p.ThroughputBitsPerSecond, labels...)
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), labels...)
+		ch <- prometheus.MustNewConstMetric(c.pmtu, prometheus.GaugeValue, float64(p.PMTU), labels...)
 	}
 	for _, f := range c.src.FEC() {
 		labels := c.peerLabelValues(f.Peer)

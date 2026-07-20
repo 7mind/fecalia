@@ -158,6 +158,43 @@ func TestLivenessBudgetSaneGaugeReSetOnReload(t *testing.T) {
 	}
 }
 
+// TestExpositionPathMTUSeries asserts the wanbond_path_mtu gauge (T206) registers and
+// carries each path's discovered PMTU from PathSnapshot.PMTU verbatim, per `path`
+// label — the discovery machine's snapshot mirrored into the exposition.
+func TestExpositionPathMTUSeries(t *testing.T) {
+	src := fakeSource{paths: []PathSnapshot{
+		{Name: "starlink", State: telemetry.StateUp, PMTU: 1400},
+		{Name: "cellular", State: telemetry.StateUp, PMTU: 1280},
+	}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !exp.Has(MetricPathMTU) {
+		t.Fatalf("%s not registered", MetricPathMTU)
+	}
+	for _, c := range []struct {
+		path string
+		want float64
+	}{
+		{"starlink", 1400},
+		{"cellular", 1280},
+	} {
+		got, ok := exp.PathValue(MetricPathMTU, c.path)
+		if !ok {
+			t.Errorf("%s{path=%q} missing", MetricPathMTU, c.path)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s{path=%q} = %v, want %v", MetricPathMTU, c.path, got, c.want)
+		}
+	}
+}
+
 // TestExpositionPerPathSeries drives the registry with synthetic per-path
 // telemetry, scrapes the running endpoint, and asserts the exposition carries the
 // expected per-path gauges/counters (bytes, loss, RTT, throughput, jitter, up)

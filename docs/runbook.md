@@ -370,6 +370,7 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_path_loss_ratio{path}`                 | Probe loss fraction `[0,1]`; rising loss precedes a path drop. |
 | `wanbond_path_rtt_seconds{path}`                | Smoothed RTT; a jump signals congestion/bufferbloat. |
 | `wanbond_path_jitter_seconds{path}`             | Smoothed RTT deviation. |
+| `wanbond_path_mtu{path}`                        | Per-path discovered outer path MTU (bytes): the operator-configured `mtu` on a pinned path, else the largest padded probe that still echoes. |
 | `wanbond_path_tx_bytes_total{path}` / `wanbond_path_rx_bytes_total{path}` | Per-path byte counters. |
 | `wanbond_fec_recovered_packets_total`           | DATA packets reconstructed by FEC (masked loss). |
 | `wanbond_fec_unrecoverable_packets_total`       | DATA lost beyond FEC repair — **should stay near-flat**. |
