@@ -51,6 +51,15 @@ type PMTUConfig struct {
 	// search. Zero disables periodic refresh (the path is still re-probed on a DOWN->UP
 	// transition and on NotifyRoam).
 	RefreshInterval time.Duration
+	// JunkHeadroom is the maximum AmneziaWG junk-prefix length to reserve from the
+	// discovered USABLE outer envelope (config.Amnezia.MaxJunkPrefix; defect D85,
+	// fix-direction 4). The padded MTU probes measure PROBE-plane datagrams that do NOT
+	// carry the junk prefix real WG DATA carries, so the raw echoing size over-estimates
+	// the usable outer size on an obfuscated path. UsablePathMTU subtracts this headroom
+	// so a full-size obfuscated DATA datagram cannot exceed the path MTU and
+	// EMSGSIZE/black-hole; the raw PathMTU gauge is left unchanged. Zero (plain WireGuard)
+	// leaves usable == raw, byte-identical.
+	JunkHeadroom int
 }
 
 // pmtuState is the discovery machine's search phase.
@@ -82,14 +91,15 @@ const (
 // mutex held only briefly. The mutex is NOT held across a ProbePMTU call, so a probe
 // that blocks awaiting an echo never blocks a concurrent PathMTU/NotifyRoam reader.
 type PMTUDiscovery struct {
-	pathName string
-	floor    int
-	ceiling  int
-	pinned   bool
-	refresh  time.Duration
-	probe    PMTUProbe
-	clock    Clock
-	log      log.Logger
+	pathName     string
+	floor        int
+	ceiling      int
+	pinned       bool
+	refresh      time.Duration
+	junkHeadroom int
+	probe        PMTUProbe
+	clock        Clock
+	log          log.Logger
 
 	mu             sync.Mutex
 	state          pmtuState
@@ -120,16 +130,17 @@ func NewPMTUDiscovery(pathName string, cfg PMTUConfig, probe PMTUProbe, clock Cl
 		discovered = ceiling
 	}
 	return &PMTUDiscovery{
-		pathName:   pathName,
-		floor:      PMTUFloor,
-		ceiling:    ceiling,
-		pinned:     pinned,
-		refresh:    cfg.RefreshInterval,
-		probe:      probe,
-		clock:      clock,
-		log:        logger.Path(pathName),
-		state:      pmtuUnstarted,
-		discovered: discovered,
+		pathName:     pathName,
+		floor:        PMTUFloor,
+		ceiling:      ceiling,
+		pinned:       pinned,
+		refresh:      cfg.RefreshInterval,
+		junkHeadroom: cfg.JunkHeadroom,
+		probe:        probe,
+		clock:        clock,
+		log:          logger.Path(pathName),
+		state:        pmtuUnstarted,
+		discovered:   discovered,
 	}
 }
 
@@ -145,6 +156,25 @@ func (d *PMTUDiscovery) PathMTU() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.discovered
+}
+
+// UsablePathMTU returns the discovered outer PMTU reduced by the obfuscation junk-prefix
+// headroom (PMTUConfig.JunkHeadroom): the largest outer datagram size real WG DATA may
+// occupy on this path WITHOUT the AmneziaWG junk prefix pushing it past the measured path
+// MTU (defect D85, fix-direction 4). PathMTU reports the RAW measured path MTU (the
+// physical property, exposed as the wanbond_path_mtu gauge); UsablePathMTU is the value
+// downstream inner-MTU sizing must use so a full-size obfuscated DATA datagram cannot
+// exceed the path and EMSGSIZE/black-hole. With no obfuscation (JunkHeadroom == 0) the two
+// are byte-identical. The result is clamped to >= 0 (a junk reserve larger than the raw
+// PMTU is degenerate config, not a negative size).
+func (d *PMTUDiscovery) UsablePathMTU() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	usable := d.discovered - d.junkHeadroom
+	if usable < 0 {
+		usable = 0
+	}
+	return usable
 }
 
 // NotifyRoam records an endpoint roam (a concentrator learned-endpoint change or an

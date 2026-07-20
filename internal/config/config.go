@@ -932,6 +932,27 @@ func (a Amnezia) Configured() bool {
 		a.H1 != 0 || a.H2 != 0 || a.H3 != 0 || a.H4 != 0
 }
 
+// MaxJunkPrefix returns the maximum number of junk bytes AmneziaWG may PREPEND to a
+// datagram under this obfuscation profile: max(S1, S2), the larger of the
+// initiation/response junk-prefix lengths (defect D85, fix-direction 4). These are the
+// only size-bearing prefixes in the profile — the s1/s2 bytes prepended ahead of a
+// packet's type word (see internal/bind/classify.go, where they are the initJunk/
+// responseJunk offsets); jc/jmin/jmax size SEPARATE junk PACKETS, not a per-datagram
+// prefix, so they do not enter the DATA-frame MTU envelope. MTU sizing reserves this many
+// bytes on top of the fixed outer overhead so a full-size DATA datagram plus a worst-case
+// junk prefix still fits the path MTU without fragmentation/EMSGSIZE. An unconfigured
+// (all-zero) block returns 0, leaving sizing byte-identical to plain WireGuard.
+func (a Amnezia) MaxJunkPrefix() int {
+	m := a.S1
+	if a.S2 > m {
+		m = a.S2
+	}
+	if m < 0 {
+		m = 0
+	}
+	return m
+}
+
 // applyDefaults fills in the standard magic headers (1..4) when the block is
 // configured but no header was given, so the UAPI renderer emits an explicit,
 // complete header set instead of h1=0..h4=0. It is a no-op for an unconfigured

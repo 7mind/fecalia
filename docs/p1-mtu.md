@@ -36,6 +36,7 @@ A tunnelled inner packet is wrapped in four nested layers before the wire:
 | Outer UDP header | 8 | " |
 | Outer DATA frame | **40** | `frame.DataOverhead` |
 | WireGuard transport | **32** | `WGTransportOverhead` |
+| Amnezia junk prefix (obfuscation only) | **`max(s1, s2)`** | `config.Amnezia.MaxJunkPrefix()` |
 
 The DATA-frame overhead of **40 bytes** decomposes as: XChaCha20 nonce (24) +
 kind discriminant (1) + outer-seq (8) + path-id (1) + fec-group (4) + fec-index
@@ -54,12 +55,19 @@ The WireGuard transport overhead of **32 bytes** is the 16-byte data-message
 header (message type + reserved + receiver index + counter) plus the 16-byte
 Poly1305 tag.
 
-> Amnezia junk **prefixes** add further *variable* bytes on top of a real
-> transport packet when obfuscation is configured. They are not subtracted here
-> (they are per-packet variable and configurable); an amnezia deployment must
-> lower the path MTU it feeds `InnerMTU` by its worst-case junk-prefix size, or
-> accept that the largest junked packets may fragment. Wiring amnezia end-to-end
-> is T19; this note is revisited there.
+> Amnezia junk **prefixes** add further bytes on top of a real transport packet
+> when obfuscation is configured. Since T225 (D85 fix-direction 4) the sizing path
+> reserves the worst-case junk prefix — `config.Amnezia.MaxJunkPrefix()`, i.e.
+> `max(s1, s2)` — automatically: the **static** inner-MTU derivation
+> (`device.tunMTU`) subtracts it from each path's effective MTU before `InnerMTU`,
+> and the **dynamic** per-path PMTU discovery
+> (`telemetry.PMTUDiscovery.UsablePathMTU`) subtracts it from the discovered outer
+> PMTU. So an amnezia deployment is sized for the true obfuscated data-frame
+> envelope with no manual adjustment; the largest junked DATA packet still fits the
+> path MTU. With obfuscation off (`s1 == s2 == 0`) the reserve is 0 and the derived
+> MTU is byte-identical to plain WireGuard. The `jc`/`jmin`/`jmax` knobs size
+> SEPARATE junk *packets*, not a per-datagram prefix, so they do not enter this
+> budget.
 
 ## Computed inner MTU
 

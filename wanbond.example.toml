@@ -266,6 +266,12 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   Constraint: (148 + s1) != (92 + s2) — the
                                    #   obfuscated init/response lengths must differ.
                                    #   (no defaults: required when the block present.)
+                                   #   MTU: when this block is set, wanbond reserves
+                                   #   max(s1, s2) bytes of junk-prefix headroom in the
+                                   #   derived TUN MTU and in per-path PMTU discovery
+                                   #   (D85), so a full-size obfuscated DATA packet still
+                                   #   fits the path MTU. The larger s1/s2 is, the smaller
+                                   #   the resulting inner (wanbond0) MTU.
 # h1 = 1                           # magic header: initiation. Default 1..4 when the
 # h2 = 2                           #   block is configured but NO header is given.
 # h3 = 3                           #   When any is set, h1..h4 must be a DISTINCT set

@@ -53,3 +53,46 @@ func TestTunMTUNoPaths(t *testing.T) {
 		t.Fatalf("tunMTU(no paths) = %d, want %d", got, want)
 	}
 }
+
+// TestObfuscationMTUHeadroom pins D85 fix-direction 4 (T225): when AmneziaWG obfuscation
+// is configured, tunMTU reserves the maximum junk-prefix length
+// (config.Amnezia.MaxJunkPrefix) on top of the fixed outer overhead, so wanbond0 is sized
+// for the true obfuscated data-frame envelope — L bytes smaller than with obfuscation
+// off. With obfuscation OFF the derived MTU is byte-identical to the pre-T225 value
+// (subtract 0). The pre-T225 tunMTU ignores obfuscation entirely and must FAIL the
+// obfuscation-on case. Verified across FEC on/off (the junk reserve composes additively
+// with the FEC parity penalty) and across the min-across-paths and single-path forms.
+func TestObfuscationMTUHeadroom(t *testing.T) {
+	// A complete obfuscation profile with S1=15, S2=92 -> max junk prefix 92.
+	am := config.Amnezia{Jc: 4, Jmin: 8, Jmax: 80, S1: 15, S2: 92, H1: 1_111_111, H2: 2_222_222, H3: 3_333_333, H4: 4_444_444}
+	l := am.MaxJunkPrefix()
+	if l != 92 {
+		t.Fatalf("MaxJunkPrefix() = %d, want 92 (max of S1=15,S2=92)", l)
+	}
+	if off := (config.Amnezia{}).MaxJunkPrefix(); off != 0 {
+		t.Fatalf("MaxJunkPrefix() of unconfigured block = %d, want 0", off)
+	}
+
+	pathSets := map[string][]config.Path{
+		"min-across-paths": {{Name: "a", MTU: 1500}, {Name: "b", MTU: 1400}},
+		"single-unset":     {{Name: "a", MTU: 0}},
+	}
+	// The obfuscation-off effective MTU per path set: min-across-paths sizes to the 1400
+	// path; single-unset falls back to DefaultPathMTU.
+	wantOffPathMTU := map[string]int{"min-across-paths": 1400, "single-unset": bind.DefaultPathMTU}
+
+	for name, paths := range pathSets {
+		for _, fecEnabled := range []bool{false, true} {
+			off := &config.Config{Paths: paths, FEC: config.FEC{Enabled: fecEnabled}}
+			on := &config.Config{Paths: paths, FEC: config.FEC{Enabled: fecEnabled}, Amnezia: am}
+
+			wantOff := bind.InnerMTU(wantOffPathMTU[name], fecEnabled)
+			if got := tunMTU(off); got != wantOff {
+				t.Fatalf("%s fec=%v: tunMTU(obf off) = %d, want %d (byte-identical to pre-T225)", name, fecEnabled, got, wantOff)
+			}
+			if got := tunMTU(on); got != wantOff-l {
+				t.Fatalf("%s fec=%v: tunMTU(obf on, L=%d) = %d, want %d (L smaller than obf-off)", name, fecEnabled, l, got, wantOff-l)
+			}
+		}
+	}
+}

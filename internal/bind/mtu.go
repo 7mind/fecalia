@@ -41,8 +41,12 @@ const (
 	// WGTransportOverhead is WireGuard's per-datagram data-message overhead: the
 	// 16-byte transport header (msg type + reserved + receiver index + counter)
 	// plus the 16-byte Poly1305 authentication tag. Amnezia junk PREFIXES add
-	// further variable bytes on top; they are handled as best-effort headroom, not
-	// subtracted here, because they are configurable and per-packet variable.
+	// further bytes on top; they are NOT part of this fixed constant because they are
+	// configurable. Instead, when obfuscation is enabled the sizing path subtracts the
+	// maximum junk-prefix length (config.Amnezia.MaxJunkPrefix) from the effective path
+	// MTU before InnerMTU — see device.tunMTU (static) and telemetry.PMTUDiscovery's
+	// UsablePathMTU (dynamic discovery) — so a full-size obfuscated DATA datagram still
+	// fits the path MTU (T225, D85 fix-direction 4).
 	WGTransportOverhead = 16 + 16
 )
 

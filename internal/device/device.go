@@ -69,8 +69,14 @@ const wgFingerprintLen = 10
 // the path MTU (T24) rather than fragmenting. A config with no paths (defensive;
 // validate() normally requires at least one) falls back to bind.DefaultPathMTU.
 func tunMTU(cfg *config.Config) int {
+	// When AmneziaWG obfuscation is configured, reserve the maximum junk-prefix length on
+	// top of the fixed outer overhead so wanbond0 is sized for the true obfuscated
+	// data-frame envelope (T225, D85 fix-direction 4). Subtracting it from each path's
+	// effective MTU before bind.InnerMTU keeps the FEC/overhead accounting intact; an
+	// unconfigured block yields 0, leaving the derived MTU byte-identical to plain WG.
+	junk := cfg.Amnezia.MaxJunkPrefix()
 	if len(cfg.Paths) == 0 {
-		return bind.InnerMTU(bind.DefaultPathMTU, cfg.FEC.Enabled)
+		return bind.InnerMTU(bind.DefaultPathMTU-junk, cfg.FEC.Enabled)
 	}
 	min := 0
 	for _, p := range cfg.Paths {
@@ -78,7 +84,7 @@ func tunMTU(cfg *config.Config) int {
 		if pathMTU == 0 {
 			pathMTU = bind.DefaultPathMTU
 		}
-		inner := bind.InnerMTU(pathMTU, cfg.FEC.Enabled)
+		inner := bind.InnerMTU(pathMTU-junk, cfg.FEC.Enabled)
 		if min == 0 || inner < min {
 			min = inner
 		}

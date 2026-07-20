@@ -120,6 +120,48 @@ func TestPMTUPinnedPathSkipsDiscovery(t *testing.T) {
 	}
 }
 
+// TestPMTUDiscoveryReservesJunkPrefix pins D85 fix-direction 4 (T225): the padded MTU
+// probes measure PROBE-plane datagrams that do NOT carry the AmneziaWG junk prefix real WG
+// DATA carries, so the raw echoing size over-estimates the usable outer envelope on an
+// obfuscated path. With JunkHeadroom=L the converged USABLE PMTU is L bytes smaller than
+// the raw discovered PMTU, so downstream inner-MTU sizing cannot settle on a size that
+// still EMSGSIZE/black-holes a full-size obfuscated DATA datagram. With JunkHeadroom=0
+// (plain WireGuard) usable == raw, byte-identical. Covers the searched, pinned, and
+// plain-WG cases.
+func TestPMTUDiscoveryReservesJunkPrefix(t *testing.T) {
+	const junk = 92
+
+	// Searched path: the raw gauge stays honest; the usable envelope reserves the junk.
+	d := NewPMTUDiscovery("starlink", PMTUConfig{DefaultMTU: 1500, JunkHeadroom: junk}, &fakePMTUProbe{threshold: 1400}, newFakeClock(), discardLogger(t))
+	if err := d.Tick(StateUp); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := d.PathMTU(); got != 1400 {
+		t.Fatalf("PathMTU (raw gauge) = %d, want 1400", got)
+	}
+	if got := d.UsablePathMTU(); got != 1400-junk {
+		t.Fatalf("UsablePathMTU = %d, want %d (raw 1400 minus junk %d)", got, 1400-junk, junk)
+	}
+
+	// Plain WireGuard (JunkHeadroom=0): usable and raw are byte-identical.
+	plain := NewPMTUDiscovery("starlink", PMTUConfig{DefaultMTU: 1500}, &fakePMTUProbe{threshold: 1400}, newFakeClock(), discardLogger(t))
+	if err := plain.Tick(StateUp); err != nil {
+		t.Fatalf("plain Tick: %v", err)
+	}
+	if plain.UsablePathMTU() != plain.PathMTU() {
+		t.Fatalf("plain: UsablePathMTU %d != PathMTU %d (junk=0 must be byte-identical)", plain.UsablePathMTU(), plain.PathMTU())
+	}
+
+	// Pinned obfuscated path: junk is reserved against the operator-declared MTU too.
+	pinned := NewPMTUDiscovery("starlink", PMTUConfig{ConfiguredMTU: 1400, DefaultMTU: 1500, JunkHeadroom: junk}, &fakePMTUProbe{}, newFakeClock(), discardLogger(t))
+	if got := pinned.PathMTU(); got != 1400 {
+		t.Fatalf("pinned PathMTU (raw) = %d, want 1400", got)
+	}
+	if got := pinned.UsablePathMTU(); got != 1400-junk {
+		t.Fatalf("pinned UsablePathMTU = %d, want %d", got, 1400-junk)
+	}
+}
+
 // TestPMTUPeriodicRefresh asserts the slow periodic refresh re-probes once the
 // interval elapses on the injected clock (no real sleep), and not before.
 func TestPMTUPeriodicRefresh(t *testing.T) {
