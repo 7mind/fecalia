@@ -242,6 +242,11 @@ type Tunnel struct {
 	// stopPMTUDiscovery halts every per-path PMTU discovery goroutine (T228). Close calls
 	// it before the engine teardown. Idempotent; nil on the up() test seam.
 	stopPMTUDiscovery func()
+	// primaryProbers is the PRIMARY peer's per-path Prober set (index-aligned with
+	// cfg.Paths at boot), the side-effect-free per-path liveness source the PMTU discovery
+	// loops read (State()) rather than the metrics Source (whose Paths() mutates the
+	// throughput last-sample, T165). Set on the privileged Up() path; nil on the up() seam.
+	primaryProbers []*telemetry.Prober
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -691,6 +696,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		stopProbes:    stopProbes, stopReconcile: stopReconcile,
 		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
 		stopSession: stopSession, stopPeerTeardown: stopPeerTeardown, amnezia: cfg.Amnezia,
+		primaryProbers: probers,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). The
 		// WG-session snapshot is read from the engine via sessMon. It is built unconditionally

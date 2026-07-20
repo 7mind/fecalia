@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/bind"
-	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -17,22 +16,24 @@ import (
 const pmtuRefreshInterval = 5 * time.Minute
 
 // startPMTUDiscovery constructs one telemetry.PMTUDiscovery per configured path and
-// drives each on its OWN dedicated goroutine (T228, defect D88). It is called ONLY from
-// the privileged Up() path (never the up() test seam), so the fake-TUN unit tests issue
-// no real padded probes; the netlink/socket behaviour is e2e-covered (T230).
+// drives each on its OWN dedicated goroutine (T228, defect D88), then wires the
+// discovered PMTUs into the metrics/monitor Sources so the T209 resizer folds them
+// (T229). It is called ONLY from the privileged Up() path (never the up() test seam),
+// so the fake-TUN unit tests issue no real padded probes; the netlink/socket behaviour
+// is e2e-covered (T230).
 //
 // A path with an EXPLICIT configured mtu is PINNED (telemetry.PMTUDiscovery treats a
 // non-zero ConfiguredMTU as authoritative and never probes), so the T210 operator knob
-// stays authoritative and composes with auto-discovery. The per-path discovery machine
-// reports its converged PMTU via the metrics mapping (T229), which the T209 resizer
-// folds into wanbond0's link MTU.
+// stays authoritative and composes with auto-discovery.
 //
 // DEDICATED per-path goroutine (R245): PMTUDiscovery.Tick runs a SYNCHRONOUS blocking
 // binary search (each probe waits up to its echo-await deadline), so it must NOT be
 // driven from the shared single-goroutine liveness/probe loop (which would stall
 // liveness for every path and risk a false path-DOWN) NOR from another path's discovery
 // goroutine. Each path's search therefore blocks only its own goroutine; liveness
-// probing (StartProbeLoop) and every other path's discovery run undisturbed.
+// probing (StartProbeLoop) and every other path's discovery run undisturbed. Liveness is
+// read side-effect-free from the primary peer's Prober (State()) — NOT from the metrics
+// Source, whose Paths() mutates the throughput last-sample state (T165).
 func (t *Tunnel) startPMTUDiscovery() {
 	machines := make(map[string]*telemetry.PMTUDiscovery, len(t.cfg.Paths))
 	junk := t.cfg.Amnezia.MaxJunkPrefix()
@@ -58,7 +59,11 @@ func (t *Tunnel) startPMTUDiscovery() {
 		// device-side failover wiring is needed (R245). DOWN->UP re-probe comes from Tick's
 		// PathState input.
 		t.bind.OnPathRoam(p.Name, d.NotifyRoam)
-		stops = append(stops, startPMTUDiscoveryLoop(d, t.metricsSrc, p.Name, telemetry.DefaultProbeInterval))
+		var pr *telemetry.Prober
+		if i < len(t.primaryProbers) {
+			pr = t.primaryProbers[i]
+		}
+		stops = append(stops, startPMTUDiscoveryLoop(d, pr, telemetry.DefaultProbeInterval))
 	}
 	t.pmtuDiscoverers = machines
 	t.stopPMTUDiscovery = func() {
@@ -66,13 +71,31 @@ func (t *Tunnel) startPMTUDiscovery() {
 			s()
 		}
 	}
+
+	// Wire the discovered PMTUs into BOTH Sources (T229): the metrics Source the T209
+	// resizer folds (so a constrained/roaming path shrinks/regrows wanbond0), and the
+	// monitor Source so the /monitor endpoint shows the same value. Uses the T226 converged
+	// accessor (PathMTUOrZero -> 0 until first convergence), so a non-pinned path keeps the
+	// configured-or-default fallback until a REAL PMTU is measured — no boot-time dip.
+	lookup := func(name string) int {
+		if d := machines[name]; d != nil {
+			return d.PathMTUOrZero()
+		}
+		return 0
+	}
+	if ms, ok := t.metricsSrc.(*metricsSource); ok {
+		ms.setPMTULookup(lookup)
+	}
+	if ms, ok := t.monitorSrc.(*metricsSource); ok {
+		ms.setPMTULookup(lookup)
+	}
 }
 
 // startPMTUDiscoveryLoop drives one path's PMTUDiscovery on its own goroutine, ticking
-// on interval with the path's current liveness read from the metrics Source. It returns
-// an idempotent stop func Close invokes. A pinned path still runs the loop, but its Tick
-// is a cheap no-op (it never probes).
-func startPMTUDiscoveryLoop(d *telemetry.PMTUDiscovery, src metrics.Source, pathName string, interval time.Duration) func() {
+// on interval with the path's current liveness read from the primary peer's Prober
+// (side-effect-free). It returns an idempotent stop func Close invokes. A pinned path
+// still runs the loop, but its Tick is a cheap no-op (it never probes).
+func startPMTUDiscoveryLoop(d *telemetry.PMTUDiscovery, pr *telemetry.Prober, interval time.Duration) func() {
 	stop := make(chan struct{})
 	var once sync.Once
 	go func() {
@@ -83,23 +106,14 @@ func startPMTUDiscoveryLoop(d *telemetry.PMTUDiscovery, src metrics.Source, path
 			case <-stop:
 				return
 			case <-tk.C:
+				state := telemetry.StateDown
+				if pr != nil {
+					state = pr.State()
+				}
 				// A transport error leaves the search unconverged; the next tick retries.
-				_ = d.Tick(pathStateFromSource(src, pathName))
+				_ = d.Tick(state)
 			}
 		}
 	}()
 	return func() { once.Do(func() { close(stop) }) }
-}
-
-// pathStateFromSource folds the named path's liveness from the metrics Source: UP when
-// ANY bound peer reports it UP (matching sampleMTU's per-path fold, T225/tunresize),
-// else DOWN. A DOWN path cannot echo a probe, so PMTUDiscovery.Tick defers its search
-// until the path recovers.
-func pathStateFromSource(src metrics.Source, name string) telemetry.PathState {
-	for _, ps := range src.Paths() {
-		if ps.Name == name && ps.State == telemetry.StateUp {
-			return telemetry.StateUp
-		}
-	}
-	return telemetry.StateDown
 }

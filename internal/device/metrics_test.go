@@ -464,3 +464,28 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 		t.Errorf("PeerNames = %v, want [\"\", \"edge2\"] in some order", names)
 	}
 }
+
+// TestMetricsSourcePMTULookup verifies the T229 mapping: PathSnapshot.PMTU carries the
+// per-path discovered PMTU from the wired lookup — 0 before it is wired (no boot dip, the
+// resizer keeps its configured-or-default fallback), and the RAW value verbatim once
+// wired (the amnezia junk headroom is subtracted ONCE downstream in sampleMTU/T225, never
+// here).
+func TestMetricsSourcePMTULookup(t *testing.T) {
+	prov := &fakeProvider{}
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	prov.set([]bind.PeerSnapshot{{Paths: []bind.PathTraffic{{Name: "cellular", TxBytes: 1, RxBytes: 1}}}})
+
+	if got := src.Paths()[0].PMTU; got != 0 {
+		t.Fatalf("unwired PMTU = %d, want 0 (no boot dip)", got)
+	}
+
+	src.setPMTULookup(func(name string) int {
+		if name == "cellular" {
+			return 1400
+		}
+		return 0
+	})
+	if got := src.Paths()[0].PMTU; got != 1400 {
+		t.Fatalf("wired PMTU = %d, want the discovered 1400 (raw, un-junked)", got)
+	}
+}

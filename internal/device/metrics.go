@@ -50,6 +50,11 @@ type metricsSource struct {
 
 	mu   sync.Mutex
 	last map[sampleKey]byteSample
+	// pmtu, when set (device.Up wires it AFTER PMTU discovery is constructed, T229/D88),
+	// returns a path's discovered outer PMTU via the T226 converged accessor: 0 until the
+	// first search converges, so the T209 resizer keeps the configured-or-default fallback
+	// and wanbond0 does not dip at boot. nil before it is wired -> PMTU reported as 0.
+	pmtu func(pathName string) int
 }
 
 // byteSample is the previous scrape's cumulative (tx+rx) total for one (peer,path) and
@@ -64,6 +69,16 @@ type byteSample struct {
 // clock is injected so the throughput derivation is deterministic under test.
 func newMetricsSource(provider trafficProvider, session sessionSnapshotter, clock telemetry.Clock) *metricsSource {
 	return &metricsSource{provider: provider, session: session, clock: clock, last: make(map[sampleKey]byteSample)}
+}
+
+// setPMTULookup wires the per-path discovered-PMTU accessor (device.Up, T229/D88). It is
+// set ONCE after PMTU discovery is constructed (which happens after this Source is built,
+// so it cannot be passed at construction), guarded by mu because Paths reads it on the
+// scrape goroutine. A nil fn (never wired) leaves PMTU reported as 0.
+func (s *metricsSource) setPMTULookup(fn func(pathName string) int) {
+	s.mu.Lock()
+	s.pmtu = fn
+	s.mu.Unlock()
 }
 
 // Paths implements metrics.Source. It is called on the scrape goroutine (the /metrics
@@ -97,6 +112,15 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				}
 			}
 			s.last[key] = byteSample{total: byteTotal, atNanos: nowNanos}
+			// Discovered outer PMTU (T229/D88): the RAW measured value (0 until converged);
+			// the amnezia junk headroom is subtracted ONCE downstream in sampleMTU (T225), so
+			// it must NOT be subtracted here (no double-subtract). Pinned paths report their
+			// configured value. A per-path property, so it is the same across every peer's
+			// snapshot of this path.
+			pmtu := 0
+			if s.pmtu != nil {
+				pmtu = s.pmtu(t.Name)
+			}
 			out = append(out, metrics.PathSnapshot{
 				Peer:                    peer.Name,
 				Name:                    t.Name,
@@ -109,6 +133,7 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				BoundDevice:             t.BoundDevice,
 				Source:                  t.Source,
 				Remote:                  t.Remote,
+				PMTU:                    pmtu,
 			})
 		}
 	}
