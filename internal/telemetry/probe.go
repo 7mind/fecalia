@@ -155,6 +155,34 @@ func NewProber(
 func (p *Prober) SendProbe() ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return frame.Encode(p.psk, p.buildProbeLocked())
+}
+
+// SendPaddedProbe builds and encodes the next authenticated probe padded so its
+// on-wire datagram is exactly onWire bytes (T202, defect D85). It reuses the same
+// PSK-authenticated probe/echo machinery, sequence space, and anti-replay as
+// SendProbe — a padded probe is an ordinary liveness probe that additionally
+// carries pad bytes. The reflector echoes the same on-wire size, so a fresh echo
+// confirms a datagram of onWire outer bytes traverses this path. It fails if onWire
+// is outside the padded-probe bounds (frame.PadLenForOnWire).
+func (p *Prober) SendPaddedProbe(onWire int) ([]byte, error) {
+	padLen, err := frame.PadLenForOnWire(onWire)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	probe := p.buildProbeLocked()
+	probe.Padded = true
+	probe.PadLen = padLen
+	return frame.Encode(p.psk, probe)
+}
+
+// buildProbeLocked constructs the next probe frame, stamping it with the current
+// clock time (so the echo yields a round-trip sample) and the last-learned
+// responder challenge, then advances the sequence counter. The caller must hold
+// p.mu.
+func (p *Prober) buildProbeLocked() frame.Probe {
 	probe := frame.Probe{
 		PathID:         p.pathID,
 		ProbeSeq:       p.nextSeq,
@@ -165,7 +193,7 @@ func (p *Prober) SendProbe() ([]byte, error) {
 		Challenge: p.learnedChallenge,
 	}
 	p.nextSeq++
-	return frame.Encode(p.psk, probe)
+	return probe
 }
 
 // HandleEcho processes one received echo frame. It rejects, without touching

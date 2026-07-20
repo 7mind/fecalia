@@ -182,6 +182,19 @@ type Parity struct {
 //     anti-replay high-water) ONLY when this equals its live issued challenge, so
 //     a replayed probe — which can never carry the responder's current challenge —
 //     can never seize the epoch or lock out the live peer.
+//
+// Padded / PadLen carry the size-parameterized MTU-probe extension (T202, defect
+// D85). A PADDED probe is a probe whose on-wire datagram is inflated to a target
+// size with trailing zero bytes, so that its authenticated echo confirms "a
+// datagram of N outer bytes traverses this path". Padded is a flag riding in the
+// same wire byte as IsEcho (the byte carries bit0=echo, bit1=padded), and PadLen
+// is the uint16 count of trailing pad bytes that follows the fixed probe header.
+// An UNPADDED probe (Padded=false, PadLen=0) is byte-for-byte identical on the
+// wire to the pre-extension encoding: the flags byte is still 0 or 1 and no
+// PadLen/padding is appended. Padded probes MUST NOT also carry a free-form
+// Payload — the padding replaces it (Encode rejects the combination); a decoded
+// padded probe therefore always has Payload=nil. The reflector reflects Padded /
+// PadLen verbatim, so the echo is the same on-wire size as the request.
 type Probe struct {
 	PathID         uint8
 	ProbeSeq       uint64
@@ -189,7 +202,68 @@ type Probe struct {
 	IsEcho         bool
 	SessionID      uint64
 	Challenge      uint64
+	Padded         bool
+	PadLen         uint16
 	Payload        []byte
+}
+
+// Probe flags packed into the single wire byte adjacent to SessionID (formerly the
+// bare IsEcho byte). Only the low bits are defined; the byte is still 0 or 1 for an
+// unpadded probe, preserving the pre-extension wire encoding byte-for-byte.
+const (
+	probeFlagEcho   uint8 = 1 << 0 // IsEcho: this is a reflected echo, not a fresh probe
+	probeFlagPadded uint8 = 1 << 1 // Padded: a PadLen field + PadLen pad bytes follow the header
+)
+
+// probeFixedBody is the plaintext body length of a probe up to and including the
+// Challenge field: kind(1) || pathID(1) || probeSeq(8) || timestamp(8) ||
+// flags(1) || sessionID(8) || challenge(8).
+const probeFixedBody = 1 + 1 + 8 + 8 + 1 + 8 + 8 // 35
+
+// ProbeBaseOnWire is the on-wire datagram size of a PADDED probe carrying zero pad
+// bytes: the clear nonce, the fixed probe body, the 2-byte PadLen field, and the
+// authentication tag. A padded probe cannot be smaller than this, so it is the
+// minimum target size accepted by PadLenForOnWire.
+const ProbeBaseOnWire = nonceLen + probeFixedBody + 2 + tagLen // 24 + 35 + 2 + 16 = 77
+
+// MaxPaddedProbeOnWire caps the target on-wire size of a padded probe. It admits
+// jumbo-frame path probing (9000-byte MTU) while bounding the pad count well inside
+// a uint16, so an oversized request is rejected rather than silently truncated.
+const MaxPaddedProbeOnWire = 9000
+
+// ProbeOnWireSize returns the on-wire datagram size of a padded probe carrying
+// padLen pad bytes.
+func ProbeOnWireSize(padLen uint16) int {
+	return ProbeBaseOnWire + int(padLen)
+}
+
+// PadLenForOnWire converts a desired on-wire datagram size to the PadLen a padded
+// probe must carry to reach it exactly. It rejects a target below ProbeBaseOnWire
+// (too small to hold the probe header) or above MaxPaddedProbeOnWire (oversized).
+func PadLenForOnWire(onWire int) (uint16, error) {
+	if onWire < ProbeBaseOnWire {
+		return 0, fmt.Errorf("%w: padded-probe on-wire size %d below minimum %d", ErrMalformed, onWire, ProbeBaseOnWire)
+	}
+	if onWire > MaxPaddedProbeOnWire {
+		return 0, fmt.Errorf("%w: padded-probe on-wire size %d above maximum %d", ErrMalformed, onWire, MaxPaddedProbeOnWire)
+	}
+	return uint16(onWire - ProbeBaseOnWire), nil
+}
+
+// validate reports whether a Probe is encodable. A padded probe must fit within
+// [ProbeBaseOnWire, MaxPaddedProbeOnWire] and must not also carry a free-form
+// Payload (the padding replaces it).
+func (f Probe) validate() error {
+	if !f.Padded {
+		return nil
+	}
+	if len(f.Payload) > 0 {
+		return fmt.Errorf("%w: a padded probe must not carry a Payload", ErrMalformed)
+	}
+	if onWire := ProbeOnWireSize(f.PadLen); onWire > MaxPaddedProbeOnWire {
+		return fmt.Errorf("%w: padded-probe on-wire size %d above maximum %d", ErrMalformed, onWire, MaxPaddedProbeOnWire)
+	}
+	return nil
 }
 
 // Control is an authenticated out-of-band control frame.
@@ -243,18 +317,30 @@ func (f Probe) appendBody(dst []byte) []byte {
 	dst = append(dst, f.PathID)
 	dst = binary.BigEndian.AppendUint64(dst, f.ProbeSeq)
 	dst = binary.BigEndian.AppendUint64(dst, uint64(f.TimestampNanos))
-	dst = append(dst, boolByte(f.IsEcho))
+	dst = append(dst, f.flags())
 	dst = binary.BigEndian.AppendUint64(dst, f.SessionID)
 	dst = binary.BigEndian.AppendUint64(dst, f.Challenge)
+	if f.Padded {
+		// Padded probe: a 2-byte pad length, then that many zero bytes, replacing
+		// the free-form Payload (which validate() guarantees is empty here).
+		dst = binary.BigEndian.AppendUint16(dst, f.PadLen)
+		return append(dst, make([]byte, int(f.PadLen))...)
+	}
 	return append(dst, f.Payload...)
 }
 
-// boolByte encodes a bool as a single wire byte (0 or 1).
-func boolByte(b bool) byte {
-	if b {
-		return 1
+// flags packs IsEcho and Padded into the single wire byte adjacent to SessionID.
+// For an unpadded probe the byte is 0 or 1, matching the pre-extension boolByte
+// encoding of IsEcho exactly.
+func (f Probe) flags() byte {
+	var b byte
+	if f.IsEcho {
+		b |= probeFlagEcho
 	}
-	return 0
+	if f.Padded {
+		b |= probeFlagPadded
+	}
+	return b
 }
 
 func (f Control) appendBody(dst []byte) []byte {
@@ -304,6 +390,13 @@ func NewCodec(psk config.Key) (*Codec, error) {
 // letting the caller reuse one buffer across sends (pass dst[:0]). It fails only
 // if the system CSPRNG is unavailable.
 func (c *Codec) Encode(dst []byte, f Frame) ([]byte, error) {
+	// appendBody cannot fail, so reject a structurally invalid frame (e.g. an
+	// oversized or Payload-bearing padded probe) here, before serialization.
+	if p, ok := f.(Probe); ok {
+		if err := p.validate(); err != nil {
+			return nil, err
+		}
+	}
 	// Build the plaintext body (kind || header || payload) in reusable scratch.
 	c.encScratch = f.appendBody(c.encScratch[:0])
 	body := c.encScratch
@@ -441,13 +534,39 @@ func decodeBody(kind Kind, b []byte) (Frame, error) {
 		pathID, e1 := r.u8()
 		probeSeq, e2 := r.u64()
 		ts, e3 := r.u64()
-		echo, e4 := r.u8()
+		flags, e4 := r.u8()
 		sessionID, e5 := r.u64()
 		challenge, e6 := r.u64()
 		if err := firstErr(e1, e2, e3, e4, e5, e6); err != nil {
 			return nil, err
 		}
-		return Probe{PathID: pathID, ProbeSeq: probeSeq, TimestampNanos: int64(ts), IsEcho: echo != 0, SessionID: sessionID, Challenge: challenge, Payload: r.rest()}, nil
+		probe := Probe{
+			PathID:         pathID,
+			ProbeSeq:       probeSeq,
+			TimestampNanos: int64(ts),
+			IsEcho:         flags&probeFlagEcho != 0,
+			SessionID:      sessionID,
+			Challenge:      challenge,
+		}
+		if flags&probeFlagPadded != 0 {
+			// Padded probe: read the declared pad length and verify exactly that
+			// many trailing bytes are present. A mismatch is a truncated or
+			// oversized (corrupt) padded probe. The pad bytes carry no information
+			// beyond their count, so they are discarded (Payload stays nil).
+			padLen, e7 := r.u16()
+			if e7 != nil {
+				return nil, e7
+			}
+			pad := r.rest()
+			if len(pad) != int(padLen) {
+				return nil, fmt.Errorf("%w: padded probe declares %d pad bytes but %d present", ErrMalformed, padLen, len(pad))
+			}
+			probe.Padded = true
+			probe.PadLen = padLen
+			return probe, nil
+		}
+		probe.Payload = r.rest()
+		return probe, nil
 	case KindControl:
 		ctype, e1 := r.u8()
 		seq, e2 := r.u64()

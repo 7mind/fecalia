@@ -95,7 +95,13 @@ tag. Frame kinds:
   number, path id, and FEC group/index. **Unauthenticated** (no tag).
 - **PARITY** — a Reed-Solomon parity shard for a FEC group. **Unauthenticated.**
 - **PROBE** — telemetry/liveness. **PSK-HMAC authenticated**, carries a monotonic
-  `ProbeSeq` + timestamp for anti-replay.
+  `ProbeSeq` + timestamp for anti-replay. A PROBE may optionally be **padded** to a
+  target on-wire datagram size (a `Padded` flag riding in the echo/flags byte plus a
+  `PadLen` count of trailing zero bytes): the reflector echoes the same size, so a
+  fresh echo confirms *a datagram of N outer bytes traverses this path* (path-MTU
+  probing). Padding reuses the same authenticated probe/echo channel and anti-replay
+  — it is not a parallel plane — and an **unpadded** PROBE is byte-for-byte identical
+  on the wire to the pre-extension encoding.
 - **CONTROL** — reserved out-of-band control. **PSK-HMAC authenticated**, carries
   a MAC-covered monotonic `Seq`. *(See "Not yet built" — currently unwired.)*
 
