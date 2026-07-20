@@ -227,6 +227,20 @@ type peerPathState struct {
 	txBytes atomic.Uint64
 	rxBytes atomic.Uint64
 
+	// emsgsizeDrops counts DATA/PARITY datagrams this (peer,path) failed to send with
+	// EMSGSIZE — the explicit "exceeds path MTU, DF set" the T201 DF policy surfaces in
+	// place of silent fragmentation (accountSendError). It is the per-path metric the
+	// fail-fast invariant requires: the datagram is dropped and the error still
+	// propagates to the caller, but the loss is COUNTED rather than swallowed, so a
+	// misconfigured over-MTU tunnel is observable at /metrics instead of appearing as an
+	// inexplicable throughput hole. lastEMSGSIZEWarnNanos rate-limits the accompanying
+	// WARN (warnEMSGSIZE) to one line per path per emsgsizeWarnInterval — under a
+	// persistent over-MTU flow the drop is per-datagram (potentially thousands/s), so the
+	// log is coalesced while the counter still advances on every occurrence. Both are
+	// atomics written lock-free from the Send hot path (no m.mu), like txBytes.
+	emsgsizeDrops         atomic.Uint64
+	lastEMSGSIZEWarnNanos atomic.Int64
+
 	// schedIdx is this path's index in its peer's scheduler (== its position in
 	// peer.paths, the invariant attachPeerPathLocked enforces). It is the pathIdx the
 	// bind passes to sched.ProbeBudget.AccountProbe so a directly-written PROBE frame /
@@ -2315,7 +2329,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 
 	for _, w := range wires {
 		if _, err := c.WriteToUDPAddrPort(w.b, remote); err != nil {
-			return err
+			return m.accountSendError(ps, err)
 		}
 		// Per-path egress-wire accounting (T23): count the OUTER frame bytes just written
 		// to this path (DATA and any FEC PARITY alike), lock-free and only for a datagram
@@ -2349,6 +2363,51 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 type fecWire struct {
 	b      []byte
 	parity bool
+}
+
+// emsgsizeWarnInterval bounds how often a path's EMSGSIZE (over-PMTU send, DF set)
+// diagnostic is emitted, so a persistent over-MTU flow — whose drop is per-datagram —
+// logs a coalesced record per path rather than one line per dropped datagram. The
+// counter (emsgsizeDrops) still advances on every occurrence.
+const emsgsizeWarnInterval = 1 * time.Second
+
+// accountSendError classifies a path write failure from the Send hot path. An EMSGSIZE
+// is the explicit "datagram exceeds the path MTU with DF set" that the T201 DF policy
+// (setDontFragment) surfaces in place of the kernel's old silent fragmentation: it is
+// COUNTED per (peer,path) and WARNed (rate-limited per path), then still RETURNED so the
+// engine observes the drop — the fail-fast invariant means the loss is surfaced, never
+// swallowed. Any other write error is returned unchanged (no counter, no log — those are
+// genuine send failures the caller already handles). It runs WITHOUT m.mu, off the Send
+// write loop, so it touches only the path's own lock-free atomics and the (safe-for-
+// concurrent-use) logger.
+func (m *Multipath) accountSendError(ps *peerPathState, err error) error {
+	if errors.Is(err, syscall.EMSGSIZE) {
+		ps.emsgsizeDrops.Add(1)
+		m.warnEMSGSIZE(ps)
+	}
+	return err
+}
+
+// warnEMSGSIZE emits the coalesced per-path over-PMTU WARN at most once per
+// emsgsizeWarnInterval. It gates on ps.lastEMSGSIZEWarnNanos with a load-then-CAS so
+// concurrent Send goroutines on the same path collapse to a single log line per window
+// (a lost CAS means another goroutine already claimed this window). The reported drop
+// count is the running total, so a reader sees the cumulative loss even across coalesced
+// windows.
+func (m *Multipath) warnEMSGSIZE(ps *peerPathState) {
+	now := time.Now().UnixNano()
+	last := ps.lastEMSGSIZEWarnNanos.Load()
+	if last != 0 && now-last < int64(emsgsizeWarnInterval) {
+		return
+	}
+	if !ps.lastEMSGSIZEWarnNanos.CompareAndSwap(last, now) {
+		return
+	}
+	m.log.Warn("bind: path send exceeded PMTU with DF set, datagram dropped (EMSGSIZE)",
+		"path", ps.name,
+		"peer", ps.peer.name,
+		"emsgsize_drops", ps.emsgsizeDrops.Load(),
+	)
 }
 
 // encodeParityLocked encodes one parity shard as a KindParity frame on the given

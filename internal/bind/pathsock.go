@@ -56,9 +56,69 @@ func listenPath(src netip.Addr, port uint16, dev string) (conn *net.UDPConn, dev
 		// SO_BINDTODEVICE denied / unsupported: fall back to source-IP binding.
 		deviceErr = derr
 	}
-	laddr := &net.UDPAddr{IP: net.IP(src.AsSlice()), Port: int(port)}
-	conn, err = net.ListenUDP("udp", laddr)
+	// Source-IP-pinned bind (the pre-T16 behaviour and the device-bind fallback). It
+	// still applies the T201 Don't-Fragment MTU-discovery policy via the SAME Control
+	// hook the device-bind branch uses (pathSocketControl), so BOTH socket-creation
+	// branches egress with DF set — the fallback socket is not left silently
+	// fragmenting just because SO_BINDTODEVICE was unavailable.
+	conn, err = listenSourcePinned(src, port)
 	return conn, deviceErr, err
+}
+
+// pathIsV6 reports whether src's path socket is an AF_INET6 socket: a v4 or
+// v4-in-v6 source binds an AF_INET (udp4) socket, everything else AF_INET6 (udp6).
+// It selects both the wildcard host / network for a device bind and the v4-vs-v6
+// Don't-Fragment sockopt (setDontFragment).
+func pathIsV6(src netip.Addr) bool {
+	return !src.Is4() && !src.Is4In6()
+}
+
+// pathSocketControl returns the ListenConfig.Control hook applied to EVERY outer path
+// socket, on the raw fd before bind. It sets the T201 Don't-Fragment MTU-discovery
+// policy (setDontFragment, platform-specific) so oversized sends surface an explicit
+// EMSGSIZE instead of being silently fragmented, and — for a device-bound socket
+// (dev != "") — also pins the socket to dev via SO_BINDTODEVICE (bindToDevice). DF is
+// set FIRST so that even when a device bind then fails (EPERM on a pre-5.7 kernel) and
+// the caller falls back to source-IP binding, the fallback socket independently re-runs
+// this hook and gets DF too. isV6 selects the v4/v6 DF sockopt.
+func pathSocketControl(isV6 bool, dev string) func(string, string, syscall.RawConn) error {
+	return func(_, _ string, c syscall.RawConn) error {
+		var operr error
+		if err := c.Control(func(fd uintptr) {
+			if operr = setDontFragment(fd, isV6); operr != nil {
+				return
+			}
+			if dev != "" {
+				operr = bindToDevice(fd, dev)
+			}
+		}); err != nil {
+			return err
+		}
+		return operr
+	}
+}
+
+// listenSourcePinned binds a UDP socket to the SPECIFIC source IP src on port (no
+// SO_BINDTODEVICE) with the T201 DF Control hook applied. It replaces a bare
+// net.ListenUDP so the source-pinned path — the device-bind fallback and the pre-T16
+// default — runs the same DF-setting Control hook the device-bind branch does.
+func listenSourcePinned(src netip.Addr, port uint16) (*net.UDPConn, error) {
+	network := "udp4"
+	if pathIsV6(src) {
+		network = "udp6"
+	}
+	lc := net.ListenConfig{Control: pathSocketControl(pathIsV6(src), "")}
+	addr := net.JoinHostPort(src.Unmap().String(), strconv.Itoa(int(port)))
+	pc, err := lc.ListenPacket(context.Background(), network, addr)
+	if err != nil {
+		return nil, err
+	}
+	uc, ok := pc.(*net.UDPConn)
+	if !ok {
+		_ = pc.Close()
+		return nil, fmt.Errorf("bind: source-pinned listener is %T, want *net.UDPConn", pc)
+	}
+	return uc, nil
 }
 
 // ifaceInfo is the resolution of a source address against the host's interfaces:
@@ -273,18 +333,10 @@ func familyBindCount(want netip.Addr, addrs []netip.Addr) (familyCount int, owns
 // returns an error the caller treats as "fall back to source-IP binding".
 func listenOnDevice(src netip.Addr, port uint16, dev string) (*net.UDPConn, error) {
 	host, network := "0.0.0.0", "udp4"
-	if !src.Is4() && !src.Is4In6() {
+	if pathIsV6(src) {
 		host, network = "::", "udp6"
 	}
-	lc := net.ListenConfig{
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var operr error
-			if err := c.Control(func(fd uintptr) { operr = bindToDevice(fd, dev) }); err != nil {
-				return err
-			}
-			return operr
-		},
-	}
+	lc := net.ListenConfig{Control: pathSocketControl(pathIsV6(src), dev)}
 	pc, err := lc.ListenPacket(context.Background(), network, net.JoinHostPort(host, strconv.Itoa(int(port))))
 	if err != nil {
 		return nil, err
