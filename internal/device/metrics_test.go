@@ -1,11 +1,17 @@
 package device
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
@@ -90,6 +96,117 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 	if got[0].ThroughputBitsPerSecond != 0 || got[1].ThroughputBitsPerSecond != 0 {
 		t.Errorf("first-scrape throughput = %g/%g, want 0/0", got[0].ThroughputBitsPerSecond, got[1].ThroughputBitsPerSecond)
 	}
+}
+
+// TestMetricsSource_PathsCarriesAddressing asserts the adapter copies the runtime
+// addressing fields (Source, Remote, BindMode, BoundDevice) verbatim from
+// bind.PathTraffic into metrics.PathSnapshot (T220): pass-through only, no derivation.
+// BindMode is a config.BindMode (defined string type) on the bind side and a plain
+// string on the metrics side, so the mapping is a string conversion, not a rename.
+func TestMetricsSource_PathsCarriesAddressing(t *testing.T) {
+	prov := &fakeProvider{}
+	source := netip.MustParseAddr("10.0.0.5")
+	remote := netip.MustParseAddrPort("203.0.113.7:51820")
+	prov.set([]bind.PeerSnapshot{{
+		Name: "",
+		Paths: []bind.PathTraffic{{
+			Name:        "starlink",
+			BindMode:    config.BindModeDevice,
+			BoundDevice: "eth0",
+			Source:      source,
+			Remote:      remote,
+		}},
+	}})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.Paths()
+	if len(got) != 1 {
+		t.Fatalf("Paths len = %d, want 1", len(got))
+	}
+	if got[0].BindMode != string(config.BindModeDevice) {
+		t.Errorf("BindMode = %q, want %q", got[0].BindMode, config.BindModeDevice)
+	}
+	if got[0].BoundDevice != "eth0" {
+		t.Errorf("BoundDevice = %q, want %q", got[0].BoundDevice, "eth0")
+	}
+	if got[0].Source != source {
+		t.Errorf("Source = %v, want %v", got[0].Source, source)
+	}
+	if got[0].Remote != remote {
+		t.Errorf("Remote = %v, want %v", got[0].Remote, remote)
+	}
+}
+
+// TestMetricsSourcePathsAddressingNoNewSeries asserts the addressing fields carried on
+// metrics.PathSnapshot (T220) do not change the Prometheus exposition: scraping a
+// collector whose Source reports non-zero addressing produces the exact same raw text
+// as one whose Source reports zero-valued addressing, on otherwise-identical path data.
+// This proves the collector still ignores the new fields — no new label or series.
+func TestMetricsSourcePathsAddressingNoNewSeries(t *testing.T) {
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{{
+		Name: "",
+		Paths: []bind.PathTraffic{{
+			Name:    "starlink",
+			TxBytes: 123456,
+			RxBytes: 654321,
+			State:   telemetry.StateUp,
+		}},
+	}})
+	baseline := scrapeText(t, newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)}))
+
+	prov2 := &fakeProvider{}
+	prov2.set([]bind.PeerSnapshot{{
+		Name: "",
+		Paths: []bind.PathTraffic{{
+			Name:        "starlink",
+			TxBytes:     123456,
+			RxBytes:     654321,
+			State:       telemetry.StateUp,
+			Source:      netip.MustParseAddr("10.0.0.5"),
+			Remote:      netip.MustParseAddrPort("203.0.113.7:51820"),
+			BindMode:    config.BindModeDevice,
+			BoundDevice: "eth0",
+		}},
+	}})
+	withAddressing := scrapeText(t, newMetricsSource(prov2, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)}))
+
+	if baseline != withAddressing {
+		t.Errorf("exposition differs when addressing fields are populated:\n--- baseline ---\n%s\n--- with addressing ---\n%s", baseline, withAddressing)
+	}
+}
+
+// scrapeText starts a metrics.Server over src and returns the raw /metrics response
+// body, so tests can compare the exposition's text-format surface byte-for-byte.
+func scrapeText(t *testing.T, src metrics.Source) string {
+	t.Helper()
+	lg, err := log.New("error", io.Discard)
+	if err != nil {
+		t.Fatalf("log.New: %v", err)
+	}
+	srv, err := metrics.NewServer("127.0.0.1:0", src, nil, lg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := srv.Close(ctx); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+
+	resp, err := http.Get(srv.URL())
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	return string(body)
 }
 
 // TestMetricsSourceMapsFEC asserts the adapter passes the Bind's per-peer

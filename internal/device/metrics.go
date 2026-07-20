@@ -70,7 +70,9 @@ func newMetricsSource(provider trafficProvider, session sessionSnapshotter, cloc
 // HTTP handler), which the prometheus registry may run concurrently, so the per-
 // (peer,path) last-sample map is guarded. The underlying provider.PeerSnapshots() reads
 // atomics and each prober's synchronized Estimate without holding the Bind's send lock
-// across a prober call, so scraping never blocks Send.
+// across a prober call, so scraping never blocks Send. The BindMode/BoundDevice/Source/
+// Remote addressing fields (T220) are copied verbatim from bind.PathTraffic — this is the
+// single authority for runtime-resolved addressing; the Prometheus collector ignores them.
 func (s *metricsSource) Paths() []metrics.PathSnapshot {
 	peers := s.provider.PeerSnapshots()
 	nowNanos := s.clock.Now().UnixNano()
@@ -103,6 +105,10 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				ThroughputBitsPerSecond: tput,
 				Estimate:                t.Estimate,
 				State:                   t.State,
+				BindMode:                string(t.BindMode),
+				BoundDevice:             t.BoundDevice,
+				Source:                  t.Source,
+				Remote:                  t.Remote,
 			})
 		}
 	}
