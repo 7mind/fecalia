@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { AggregationSnapshot, DaemonSnapshot, FECSnapshot, MonitorSnapshot, PathSnapshot, ReseqSnapshot } from './types';
+import type {
+  AggregationSnapshot,
+  DaemonSnapshot,
+  EndpointSnapshot,
+  FECSnapshot,
+  MonitorSnapshot,
+  PathSnapshot,
+  ReseqSnapshot,
+} from './types';
 import { mountDashboard } from './dashboard';
 import { SPARKLINE_MAX_POINTS } from './sparkline';
 
@@ -66,6 +74,14 @@ function aggregation(overrides: Partial<AggregationSnapshot> = {}): AggregationS
     offeredLoadFps: 10,
     engageThresholdFps: 5,
     disengageThresholdFps: 2,
+    ...overrides,
+  };
+}
+
+function endpoint(overrides: Partial<EndpointSnapshot> = {}): EndpointSnapshot {
+  return {
+    address: '',
+    active: false,
     ...overrides,
   };
 }
@@ -177,5 +193,98 @@ describe('mountDashboard', () => {
     dashboard.onSnapshot(singlePeerSnapshot());
 
     expect(container.querySelectorAll('[data-testid="flat-section"]').length).toBe(1);
+  });
+
+  it('renders the daemon header, bind/link path columns, populated addressing, and an ordered endpoint list on a full edge snapshot', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot: MonitorSnapshot = {
+      paths: [
+        path({
+          name: 'wan0',
+          peer: '',
+          bindMode: 'device',
+          boundDevice: 'eth0',
+          linkBandwidthBps: 1048576,
+          linkRttSeconds: 0.025,
+          addressing: { source: '10.0.0.5', remote: '203.0.113.9:51820' },
+        }),
+      ],
+      fec: [fec({ peer: '' })],
+      reseq: [reseq({ peer: '' })],
+      aggregation: [],
+      session: { established: true, lastHandshakeSeconds: 1 },
+      peerNames: [],
+      multiPeer: false,
+      daemon: daemon({ role: 'edge', version: '1.2.3', uptimeSeconds: 90061 }),
+      endpoints: [endpoint({ address: '198.51.100.1:51820', active: true }), endpoint({ address: '198.51.100.2:51820', active: false })],
+      wgPublicKeyFingerprint: 'AbCd1234',
+      addressingHidden: false,
+    };
+    dashboard.onSnapshot(snapshot);
+
+    const header = container.querySelector('[data-testid="daemon-header"]');
+    expect(header).not.toBeNull();
+    expect(container.querySelector('[data-testid="role-badge"]')!.textContent).toBe('edge');
+    expect(container.querySelector('[data-testid="daemon-version"]')!.textContent).toContain('1.2.3');
+    expect(container.querySelector('[data-testid="daemon-uptime"]')!.textContent).toContain('1d 1h 1m 1s');
+
+    expect(container.querySelector('[data-testid="path-bind"]')!.textContent).toContain('device');
+    expect(container.querySelector('[data-testid="path-bind"]')!.textContent).toContain('eth0');
+    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('1.0MB/s');
+    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('25.0ms');
+
+    const addressing = container.querySelector('[data-testid="addressing"]');
+    expect(addressing).not.toBeNull();
+    expect(container.textContent).toContain('10.0.0.5');
+    expect(container.textContent).toContain('203.0.113.9:51820');
+    expect(container.querySelector('[data-testid="addressing-hidden"]')).toBeNull();
+
+    const endpointRows = container.querySelectorAll('[data-testid="endpoint-row"]');
+    expect(endpointRows.length).toBe(2);
+    expect(container.textContent).toContain('198.51.100.1:51820');
+    expect(container.textContent).toContain('198.51.100.2:51820');
+
+    expect(container.querySelector('[data-testid="wg-key-line"]')!.textContent).toContain('AbCd1234');
+  });
+
+  it('shows the addressing-hidden placeholder and never renders source/remote address text on a redacted snapshot, while still showing the fingerprint', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = singlePeerSnapshot();
+    snapshot.wgPublicKeyFingerprint = 'RedactedFp99';
+    dashboard.onSnapshot(snapshot);
+
+    const placeholder = container.querySelector('[data-testid="addressing-hidden"]');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder!.textContent).toContain('addressing hidden on non-loopback binding');
+    expect(container.querySelector('[data-testid="addressing"]')).toBeNull();
+
+    expect(container.querySelector('[data-testid="wg-key-line"]')!.textContent).toContain('RedactedFp99');
+  });
+
+  it('marks the active endpoint among an ordered endpoint list on an edge snapshot', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = singlePeerSnapshot();
+    snapshot.endpoints = [endpoint({ address: 'hub-a:51820', active: false }), endpoint({ address: 'hub-b:51820', active: true })];
+    dashboard.onSnapshot(snapshot);
+
+    const rows = container.querySelectorAll('[data-testid="endpoint-row"]');
+    expect(rows.length).toBe(2);
+    expect(rows[0].getAttribute('data-active')).toBe('false');
+    expect(rows[0].textContent).toContain('standby');
+    expect(rows[1].getAttribute('data-active')).toBe('true');
+    expect(rows[1].textContent).toContain('ACTIVE');
+    expect(rows[1].textContent).toContain('hub-b:51820');
+  });
+
+  it('omits the endpoint section entirely when the endpoint list is empty, on a concentrator snapshot', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = multiPeerSnapshot();
+    snapshot.daemon = daemon({ role: 'concentrator' });
+    dashboard.onSnapshot(snapshot);
+
+    expect(snapshot.endpoints).toEqual([]);
+    expect(container.querySelector('[data-testid="stat-group-endpoints"]')).toBeNull();
+    expect(container.querySelector('[data-testid="endpoint-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-badge"]')!.textContent).toBe('concentrator');
   });
 });
