@@ -2671,10 +2671,10 @@ archives:
 
 ## M84
 
-### T203 — wip
+### T203 — done
 
 - createdAt: 2026-07-20T18:00:51.134Z
-- updatedAt: 2026-07-20T18:35:09.090Z
+- updatedAt: 2026-07-20T19:03:56.552Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: "Add [liveness] down_after + per-path ride_through config knobs (parse + validate + defaults + round-trip)"
@@ -2682,6 +2682,7 @@ archives:
 - acceptance: "TestLivenessConfigRoundTrip (set + unset; unset yields DefaultDownAfter + 0 ride-through) and TestLivenessConfigValidation (reject down_after<=0, reject down_after<400ms=2*DefaultProbeInterval, reject ride_through<0, unparseable; ACCEPT down_after=5s over-budget — loads fine) fail first then pass. Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/config/..."
 - suggestedModel: standard
 - ledgerRefs: ["defects:D86","goals:G23"]
+- resultCommit: 2f472a0
 
 ### T204 — done
 
