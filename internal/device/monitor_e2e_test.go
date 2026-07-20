@@ -2,17 +2,24 @@ package device
 
 import (
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/amnezia-vpn/amneziawg-go/tun/tuntest"
 	"github.com/coder/websocket"
 	"go.uber.org/goleak"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/monitor"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -135,6 +142,121 @@ func readUntil(t *testing.T, readSnap func(*testing.T) monitor.MonitorSnapshot, 
 }
 
 func approxEq(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
+
+// dialMonitorWithInfo is dialMonitor with a caller-supplied monitor.Info (dialMonitor always
+// passes the zero Info): it wires src+info into a real monitor.Server, dials /ws for real, and
+// returns the same read-one-snapshot/cleanup idiom.
+func dialMonitorWithInfo(t *testing.T, src metrics.Source, info monitor.Info) (readSnap func(*testing.T) monitor.MonitorSnapshot, cleanup func()) {
+	t.Helper()
+
+	srv, err := monitor.NewServer("127.0.0.1:0", "", src, info, discardLogger(t))
+	if err != nil {
+		t.Fatalf("monitor.NewServer: %v", err)
+	}
+	srv.Start()
+
+	url := fmt.Sprintf("ws://%s/ws", srv.Addr().String())
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	c, resp, err := websocket.Dial(dialCtx, url, nil)
+	if err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Close(ctx)
+		t.Fatalf("websocket.Dial(%q): %v", url, err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	readSnap = func(t *testing.T) monitor.MonitorSnapshot {
+		t.Helper()
+		readCtx, cancel := context.WithTimeout(context.Background(), monitorReadTimeout)
+		defer cancel()
+		typ, data, err := c.Read(readCtx)
+		if err != nil {
+			t.Fatalf("read monitor frame: %v", err)
+		}
+		if typ != websocket.MessageText {
+			t.Fatalf("frame type = %v, want MessageText", typ)
+		}
+		var snap monitor.MonitorSnapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			t.Fatalf("unmarshal MonitorSnapshot: %v (payload=%s)", err, data)
+		}
+		return snap
+	}
+
+	cleanup = func() {
+		_ = c.CloseNow()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Close(ctx); err != nil {
+			t.Errorf("monitor Close: %v", err)
+		}
+	}
+	return readSnap, cleanup
+}
+
+// dialMonitorAt dials /ws on an ALREADY-RUNNING monitor.Server (e.g. the real
+// up()-wired tun.monitorSrv, T223) via 127.0.0.1:<bound port> — mirroring
+// internal/monitor/server_test.go's readOneSnapshot, which dials by extracted port
+// rather than the listener's own Addr().String() because a wildcard ("0.0.0.0:port")
+// bind is not itself a dialable client destination. token, if non-empty, is sent as
+// a Bearer Authorization header. Returns the raw frame bytes (for a byte-level
+// redaction scan) alongside the decoded snapshot, plus a cleanup closing the client.
+func dialMonitorAt(t *testing.T, srv *monitor.Server, token string) (readRaw func(*testing.T) (json.RawMessage, monitor.MonitorSnapshot), cleanup func()) {
+	t.Helper()
+
+	port := srv.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("ws://127.0.0.1:%d/ws", port)
+	var opts *websocket.DialOptions
+	if token != "" {
+		opts = &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}}
+	}
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	c, resp, err := websocket.Dial(dialCtx, url, opts)
+	if err != nil {
+		t.Fatalf("websocket.Dial(%q): %v", url, err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	readRaw = func(t *testing.T) (json.RawMessage, monitor.MonitorSnapshot) {
+		t.Helper()
+		readCtx, cancel := context.WithTimeout(context.Background(), monitorReadTimeout)
+		defer cancel()
+		typ, data, err := c.Read(readCtx)
+		if err != nil {
+			t.Fatalf("read monitor frame: %v", err)
+		}
+		if typ != websocket.MessageText {
+			t.Fatalf("frame type = %v, want MessageText", typ)
+		}
+		var snap monitor.MonitorSnapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			t.Fatalf("unmarshal MonitorSnapshot: %v (payload=%s)", err, data)
+		}
+		return json.RawMessage(data), snap
+	}
+	cleanup = func() { _ = c.CloseNow() }
+	return readRaw, cleanup
+}
+
+// fullPublicKeyB64 derives the FULL (untruncated) base64 WG public key for priv, so a test can
+// scan a frame's raw bytes for its absence (Q63 — only the truncated fingerprint may ever be
+// present on the wire).
+func fullPublicKeyB64(t *testing.T, priv config.Key) string {
+	t.Helper()
+	raw := priv.Bytes()
+	sk, err := ecdh.X25519().NewPrivateKey(raw[:])
+	if err != nil {
+		t.Fatalf("derive full public key: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(sk.PublicKey().Bytes())
+}
 
 // TestMonitorLiveWSReflectsSourceSinglePeer drives the real adapter for an edge
 // (single, unnamed peer): the first frame is the flat single-peer shape, then a
@@ -297,5 +419,202 @@ func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 	}
 	if primaryFEC != 10 || !primaryUp {
 		t.Errorf("primary section = FEC %d / up %v, want 10 / true (unchanged by edge2's mutation)", primaryFEC, primaryUp)
+	}
+}
+
+// TestMonitorE2E_LoopbackFullAddressingEndpointsAndFingerprint is the T223 loopback acceptance:
+// unlike TestMonitorWire_InfoFields (which inspects tun.monitorInfo's Go values in-process), this
+// dials the REAL up()-wired [monitor] endpoint (real device + real Bind + real monitor.Server) over
+// an ACTUAL WebSocket connection and asserts the WIRE frame — the whole T219/T220/T222 gate,
+// end-to-end. The edge config's two literal hub endpoints (peerNeedsHubFailover) give the real
+// up()-wired hubFailover controller a non-empty endpoint list to expose through Info.Endpoints.
+func TestMonitorE2E_LoopbackFullAddressingEndpointsAndFingerprint(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cfg := writeEdgeConfig(t, `["203.0.113.1:51820", "198.51.100.7:51820"]`, false)
+	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
+	chtun := tuntest.NewChannelTUN()
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer tun.Close()
+
+	if tun.monitorSrv == nil {
+		t.Fatal("up did not start the monitor endpoint despite a configured [monitor].listen")
+	}
+
+	readRaw, cleanup := dialMonitorAt(t, tun.monitorSrv, "")
+	defer cleanup()
+
+	raw, snap := readRaw(t)
+
+	if snap.AddressingHidden {
+		t.Fatalf("loopback bind must reveal addressing (addressingHidden=false): %s", raw)
+	}
+	if len(snap.Paths) != 1 || snap.Paths[0].Addressing == nil {
+		t.Fatalf("expected exactly one path with per-path addressing revealed: %s", raw)
+	}
+	if snap.Paths[0].Addressing.Source != "127.0.0.1" {
+		t.Fatalf("path source addr = %q, want the configured 127.0.0.1: %s", snap.Paths[0].Addressing.Source, raw)
+	}
+	if snap.Paths[0].Addressing.Remote == "" {
+		t.Fatalf("path remote addr is empty, want the configured hub endpoint: %s", raw)
+	}
+
+	// Ordered hub-endpoint list with exactly one active entry (the boot default before any
+	// failover), sourced from the up()-wired hubFailover via newEndpointsProvider (T222).
+	if len(snap.Endpoints) != 2 {
+		t.Fatalf("endpoints = %+v, want the 2 configured hub endpoints", snap.Endpoints)
+	}
+	activeCount := 0
+	for _, e := range snap.Endpoints {
+		if e.Address == "" {
+			t.Fatalf("endpoint address blank on a loopback (revealed) bind: %+v", snap.Endpoints)
+		}
+		if e.Active {
+			activeCount++
+		}
+	}
+	if activeCount != 1 {
+		t.Fatalf("active endpoint count = %d, want exactly 1: %+v", activeCount, snap.Endpoints)
+	}
+
+	// Truncated WG fingerprint (Q63), present on any binding.
+	if len(snap.WGPublicKeyFingerprint) != wgFingerprintLen {
+		t.Fatalf("fingerprint length = %d, want %d (%q)", len(snap.WGPublicKeyFingerprint), wgFingerprintLen, snap.WGPublicKeyFingerprint)
+	}
+
+	// R242/Q63: the fingerprint is a PREFIX of the local public key, never the full key, and the
+	// full key must never appear anywhere in the raw frame bytes — there is no full-key field.
+	fullPub := fullPublicKeyB64(t, cfg.WireGuard.PrivateKey)
+	if !strings.HasPrefix(fullPub, snap.WGPublicKeyFingerprint) {
+		t.Fatalf("fingerprint %q is not a prefix of the real public key %q", snap.WGPublicKeyFingerprint, fullPub)
+	}
+	if strings.Contains(string(raw), fullPub) {
+		t.Fatalf("frame leaks the FULL WG public key (Q63 — fingerprint only): %s", raw)
+	}
+}
+
+// TestMonitorE2E_NonLoopbackRedactsAddressingButKeepsFingerprint is the T223 non-loopback
+// acceptance: a token-authorized wildcard bind, dialed over a REAL WebSocket connection to the
+// up()-wired [monitor] endpoint, must carry addressingHidden=true and NO address string anywhere
+// in the raw frame bytes (per-path source/remote AND every hub-endpoint address), while the
+// truncated fingerprint (Q63) still survives — and, as on loopback, the full key is never present.
+func TestMonitorE2E_NonLoopbackRedactsAddressingButKeepsFingerprint(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const token = "e2e-secret-monitor-token"
+	cfg := writeEdgeConfig(t, `["203.0.113.1:51820", "198.51.100.7:51820"]`, false)
+	cfg.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token}
+	chtun := tuntest.NewChannelTUN()
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer tun.Close()
+
+	if tun.monitorSrv == nil {
+		t.Fatal("up did not start the monitor endpoint despite a configured [monitor].listen")
+	}
+
+	readRaw, cleanup := dialMonitorAt(t, tun.monitorSrv, token)
+	defer cleanup()
+
+	raw, snap := readRaw(t)
+
+	if !snap.AddressingHidden {
+		t.Fatalf("non-loopback (wildcard) bind must redact addressing (addressingHidden=true): %s", raw)
+	}
+	if len(snap.Paths) != 1 || snap.Paths[0].Addressing != nil {
+		t.Fatalf("path addressing must be nil off-loopback: %s", raw)
+	}
+	for _, e := range snap.Endpoints {
+		if e.Address != "" {
+			t.Fatalf("endpoint address must be blanked off-loopback, got %+v", snap.Endpoints)
+		}
+	}
+	// No address string of any kind — per-path source/remote OR hub-endpoint — anywhere in the
+	// raw frame BYTES, not merely absent from the typed fields (a byte-level scan catches a
+	// redaction bug that leaks through an untyped/extra JSON field the typed unmarshal ignores).
+	for _, addr := range []string{"127.0.0.1", "203.0.113.1", "198.51.100.7"} {
+		if strings.Contains(string(raw), addr) {
+			t.Fatalf("redacted non-loopback frame leaked address %q: %s", addr, raw)
+		}
+	}
+
+	// The fingerprint (Q63) is NOT part of the redactable surface: it survives on any binding.
+	if len(snap.WGPublicKeyFingerprint) != wgFingerprintLen {
+		t.Fatalf("fingerprint missing/wrong length off-loopback: %q", snap.WGPublicKeyFingerprint)
+	}
+	fullPub := fullPublicKeyB64(t, cfg.WireGuard.PrivateKey)
+	if strings.Contains(string(raw), fullPub) {
+		t.Fatalf("frame leaks the FULL WG public key (Q63 — fingerprint only): %s", raw)
+	}
+}
+
+// TestMonitorE2E_ActiveEndpointMovesAfterForcedHubFailover is the T223/R242 freshness
+// acceptance: the active hub-endpoint entry in a LATER pushed /ws frame must reflect a hub
+// failover that happens AFTER the connection is established — proving BuildSnapshot evaluates
+// info.Endpoints() FRESH on every snapshot (a live per-snapshot provider), not a value captured
+// once at monitor.Server construction.
+//
+// Driving a REAL forced failover through the up()-wired production controller would require the
+// real WG probe transport to observe hub loss over actual UDP sockets within the settle dwell —
+// not deterministically drivable from this untagged channel-TUN harness (no listening peer to
+// bring paths up in the first place, and no in-process access to the up()-internal hubFailover:
+// it is a local variable closed over by Info.Endpoints, never stored on *Tunnel). Per T223's
+// explicit fallback, this test instead drives the failover at the seam T222 actually wires
+// end-to-end: newEndpointsProvider over a directly-constructed *hubFailover, fed as monitor.Info
+// into a REAL monitor.Server (the same production monitor.NewServer/BuildSnapshot/
+// newEndpointsProvider/hubFailover.check code paths up() itself uses), dialed over a REAL
+// WebSocket — so the assertion exercises the wire format and the live-provider re-evaluation
+// exactly as a client would observe it.
+func TestMonitorE2E_ActiveEndpointMovesAfterForcedHubFailover(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	prov := &fakeProvider{}
+	clock := &fakeClock{now: time.Unix(2000, 0)}
+	sess := &syncSession{}
+	src := newMetricsSource(prov, sess, clock)
+	prov.set([]bind.PeerSnapshot{{Name: "", Paths: []bind.PathTraffic{
+		{Name: "a", State: telemetry.StateUp},
+	}}})
+
+	eps := mustEndpoints(t, "203.0.113.9:51820", "198.51.100.9:51820")
+	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	fclk := &fakeClock{now: time.Unix(1000, 0)}
+	fo := newHubFailover(eps, hp, &recordingRemote{}, func() {}, fclk, testSettle, discardLogger(t))
+
+	info := monitor.Info{
+		Role:                   string(config.RoleEdge),
+		WGPublicKeyFingerprint: "AbCdEfGhIj",
+		Endpoints:              newEndpointsProvider(fo),
+	}
+
+	readSnap, cleanup := dialMonitorWithInfo(t, src, info)
+	defer cleanup()
+
+	first := readSnap(t)
+	if len(first.Endpoints) != 2 || !first.Endpoints[0].Active || first.Endpoints[1].Active {
+		t.Fatalf("before failover: endpoints = %+v, want [0] active", first.Endpoints)
+	}
+
+	// Force hub loss (both endpoints' health DOWN) and advance past the settle dwell so check()
+	// switches the active endpoint — the same production check() the up()-wired loop calls.
+	hp[0].(*fakeHealth).state = telemetry.StateDown
+	hp[1].(*fakeHealth).state = telemetry.StateDown
+	fclk.advance(testSettle + time.Second)
+	fo.check()
+
+	// A LATER pushed frame — read AFTER the forced switch — must reflect the moved active entry:
+	// this is the freshness property a value captured once at Server construction would violate.
+	got := readUntil(t, readSnap, "active endpoint moves to [1] after forced hub failover", func(s monitor.MonitorSnapshot) bool {
+		return len(s.Endpoints) == 2 && !s.Endpoints[0].Active && s.Endpoints[1].Active
+	})
+	if got.Endpoints[1].Address != "198.51.100.9:51820" {
+		t.Fatalf("active endpoint after failover = %+v, want [1]=198.51.100.9:51820 active", got.Endpoints)
 	}
 }
