@@ -211,6 +211,15 @@ type peerPathState struct {
 	// what keeps echo handling race-free while paths are added/removed at runtime (T30).
 	prober *telemetry.Prober
 
+	// pmtuProbe is this (peer,path)'s PMTU echo-await backend (T227, defect D88),
+	// constructed alongside prober when the probe transport is present and nil otherwise.
+	// The receive path routes a matched padded-probe echo to it via NotifyEcho (DECOUPLED
+	// from HandleEcho's anti-replay verdict); the per-path PMTUDiscovery that device.Up
+	// builds over the PRIMARY peer drives its ProbePMTU. Like prober it is set at path
+	// creation and immutable, so the receive goroutine reaches it lock-free via the
+	// peerPathState it already holds.
+	pmtuProbe *telemetry.EchoAwaitProbe
+
 	// txBytes/rxBytes are cumulative OUTER-wire byte counters for this (peer,path), the
 	// per-path traffic accounting the /metrics exposition reports (T23). Both are
 	// TRUE-WIRE-VOLUME counters: txBytes counts every outer datagram this path actually
@@ -255,6 +264,12 @@ type peerPathState struct {
 	mu        sync.Mutex
 	remote    netip.AddrPort
 	hasRemote bool
+	// onRoam, when set (device.Up registers it on the PRIMARY peer's path via
+	// Multipath.OnPathRoam), fires whenever setRemote CHANGES this path's learned remote —
+	// a concentrator learned-endpoint repoint — so the per-path PMTUDiscovery re-probes
+	// (NotifyRoam) the possibly-different underlay PMTU (T227, defect D88). It never fires
+	// on the first remote set nor on a same-address re-learn (the common per-probe case).
+	onRoam func()
 }
 
 // peerState holds the per-PEER datapath state that was a process-global singleton before
@@ -396,14 +411,100 @@ type deferredPath struct {
 
 func (ps *peerPathState) setRemote(ap netip.AddrPort) {
 	ps.mu.Lock()
+	// A roam is an actual CHANGE of an already-learned remote (not the first set, not a
+	// same-address re-learn — setRemote is called on every inbound probe at dispatchInbound).
+	changed := ps.hasRemote && ps.remote != ap
 	ps.remote, ps.hasRemote = ap, true
+	cb := ps.onRoam
 	ps.mu.Unlock()
+	if changed && cb != nil {
+		cb()
+	}
 }
 
 func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return ps.remote, ps.hasRemote
+}
+
+// errNoPathRemote is returned by the PMTU send seam when a probe is attempted before
+// this path has learned a remote — a transient startup condition, so the search stays
+// unconverged and retries on a later tick rather than treating it as a size verdict.
+var errNoPathRemote = errors.New("bind: path has no remote for PMTU probe")
+
+// buildPMTUProbe constructs this path's PMTU echo-await backend once its prober and
+// shared socket are set (T227, defect D88). The send func writes the padded probe on
+// this path's OUTER socket to its learned/configured remote and maps a DF EMSGSIZE
+// (the T201 over-PMTU signal) to telemetry.ErrProbeTooLarge, so the binary search reads
+// an oversize probe as "too large" (echoed=false) rather than a transport fault. It
+// returns nil when the path has no prober (the probe transport is disabled), matching
+// pmtuProbe's nil-safe contract at the NotifyEcho call site.
+func (ps *peerPathState) buildPMTUProbe() *telemetry.EchoAwaitProbe {
+	if ps.prober == nil {
+		return nil
+	}
+	send := func(raw []byte) error {
+		remote, ok := ps.getRemote()
+		if !ok {
+			return errNoPathRemote
+		}
+		if _, err := ps.conn.WriteToUDPAddrPort(raw, remote); err != nil {
+			if errors.Is(err, syscall.EMSGSIZE) {
+				return telemetry.ErrProbeTooLarge
+			}
+			return err
+		}
+		return nil
+	}
+	return telemetry.NewEchoAwaitProbe(ps.prober, send, 0, nil)
+}
+
+// PMTUProbe returns the PRIMARY peer's PMTU echo-await backend for the named path, or
+// nil if the path or the probe transport is absent. It is the telemetry.PMTUProbe a
+// per-path PMTUDiscovery drives (device.Up, T228, defect D88). Per-path (NOT per-peer):
+// on a multi-peer concentrator the primary peer's socket carries the representative
+// probe and the discovered PMTU is treated as a per-path property (equal across peers,
+// matching the sampleMTU accounting).
+func (m *Multipath) PMTUProbe(pathName string) *telemetry.EchoAwaitProbe {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pp := m.primaryPathByNameLocked(pathName)
+	if pp == nil {
+		return nil
+	}
+	return pp.pmtuProbe
+}
+
+// OnPathRoam registers cb to fire when the named path's PRIMARY-peer remote actually
+// CHANGES — a concentrator learned-endpoint repoint — so device.Up can trigger a PMTU
+// re-probe (PMTUDiscovery.NotifyRoam). It is a no-op when the path is absent. The edge
+// hub-failover repoint is handled device-side (device.go) and needs no bind callback.
+func (m *Multipath) OnPathRoam(pathName string, cb func()) {
+	m.mu.Lock()
+	pp := m.primaryPathByNameLocked(pathName)
+	m.mu.Unlock()
+	if pp == nil {
+		return
+	}
+	pp.mu.Lock()
+	pp.onRoam = cb
+	pp.mu.Unlock()
+}
+
+// primaryPathByNameLocked returns the PRIMARY peer's path with the given name, or nil.
+// The caller holds m.mu. The primary peer is m.peers[0] (the pre-split single peer the
+// concentrator prepends; every additional bound peer is appended).
+func (m *Multipath) primaryPathByNameLocked(name string) *peerPathState {
+	if len(m.peers) == 0 {
+		return nil
+	}
+	for _, pp := range m.peers[0].paths {
+		if pp.name == name {
+			return pp
+		}
+	}
+	return nil
 }
 
 // Multipath is the P1 bonding conn.Bind: one UDP socket per configured path
@@ -1113,6 +1214,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 					return nil, 0, fmt.Errorf("bind: peer %q prober set (len %d) is shorter than the path membership at index %d — per-peer prober fan-out desync", p.name, len(p.probers), i)
 				}
 				pp.prober = p.probers[i]
+				pp.pmtuProbe = pp.buildPMTUProbe()
 				if pi == 0 {
 					// Reconcile the SHARED DATA-frame path-id to the PRIMARY prober's IMMUTABLE
 					// stamp rather than the slice index i: after a runtime RemovePath the survivor
@@ -2070,6 +2172,14 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				// ps.prober is the path's OWN immutable prober — never a lookup into a
 				// dynamically-mutated slice — so runtime add/remove cannot race this.
 				_ = ps.prober.HandleEcho(raw)
+				// Release any PMTU search probe awaiting THIS echo (T227, defect D88),
+				// matched by ProbeSeq and DECOUPLED from HandleEcho's anti-replay verdict
+				// above: a slow padded echo must still complete its await even when a
+				// faster liveness echo already advanced the guard high-water past its seq
+				// (R245). A no-op for an ordinary liveness echo (no pending PMTU waiter).
+				if ps.pmtuProbe != nil {
+					ps.pmtuProbe.NotifyEcho(f.ProbeSeq)
+				}
 				// Sticky "ever had a live path" latch (I4): a fresh echo that just brought
 				// this path to StateUp (or found it already Up) flips everUp permanently.
 				// Checked here rather than only in Liveness.transition so the bind-level
@@ -3006,6 +3116,7 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 		return nil, err
 	}
 	pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec, prober: prober}
+	pp.pmtuProbe = pp.buildPMTUProbe()
 	switch {
 	case def.DestAddr.IsValid():
 		pp.setRemote(def.DestAddr)
