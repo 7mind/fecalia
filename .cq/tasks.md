@@ -2607,10 +2607,10 @@ archives:
 - ledgerRefs: ["defects:D85","goals:G23"]
 - resultCommit: 7a2c1ee
 
-### T206 — planned
+### T206 — wip
 
 - createdAt: 2026-07-20T18:01:29.632Z
-- updatedAt: 2026-07-20T18:01:29.632Z
+- updatedAt: 2026-07-20T20:04:38.612Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Per-path PMTU search state machine with re-probe on path-up and roam
@@ -2828,10 +2828,10 @@ archives:
 - ledgerRefs: ["goals:G21"]
 - resultCommit: d4d270f
 
-### T222 — wip
+### T222 — done
 
 - createdAt: 2026-07-20T18:12:50.842Z
-- updatedAt: 2026-07-20T19:50:54.886Z
+- updatedAt: 2026-07-20T20:05:58.665Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Wire daemon identity, config link metadata, WG keys, and endpoints into monitor.Info at device.Up
@@ -2840,6 +2840,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T219","T217","T220"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: 9f07ec2
 
 ### T223 — planned
 
