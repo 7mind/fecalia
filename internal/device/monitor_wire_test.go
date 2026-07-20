@@ -2,6 +2,8 @@ package device
 
 import (
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -15,6 +17,7 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/monitor"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // inertFactory is a resolver factory that returns an empty FakeResolver; every test here uses an
@@ -36,7 +39,7 @@ func TestUpStartsMonitorEndpointReachableWS(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
 	if err != nil {
 		t.Fatalf("up with [monitor] configured failed: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestUpMonitorEdgeConcentratorParity(t *testing.T) {
 			cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 			chtun := tuntest.NewChannelTUN()
 
-			tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory)
+			tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
 			if err != nil {
 				t.Fatalf("up (%s) with [monitor] configured failed: %v", tc.name, err)
 			}
@@ -130,7 +133,7 @@ func TestReloadReconcilesMonitorWithoutTearingTunnel(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
 	if err != nil {
 		t.Fatalf("up failed: %v", err)
 	}
@@ -202,7 +205,7 @@ func TestReloadTokenRotationAtFixedPort(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: fixedAddr}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
 	if err != nil {
 		t.Fatalf("up with a fixed-port [monitor] failed: %v", err)
 	}
@@ -226,5 +229,128 @@ func TestReloadTokenRotationAtFixedPort(t *testing.T) {
 	}
 	if got := tun.monitorSrv.Addr().String(); got != fixedAddr {
 		t.Fatalf("after token rotation monitor bound %q, want the same fixed %q", got, fixedAddr)
+	}
+}
+
+// TestMonitorWire_InfoFields is the T222 reproduction: it pins that up() builds the REAL
+// monitor.Info (not the placeholder monitor.Info{} T219 left) and threads it into the
+// [monitor] endpoint. It asserts, over the up()-wired t.monitorInfo:
+//   - Role from config and the ldflags Version passed into up();
+//   - a LIVE Uptime provider that reports a positive elapsed time (R242);
+//   - the config-DECLARED per-path link params keyed to the metrics (peer,path) rule;
+//   - the truncated (~10 base64 char) local WG public-key FINGERPRINT — a prefix of the
+//     real public key, NEVER the recoverable full key (Q63);
+//   - an empty endpoints list on the single-IP-literal edge (no failover controller).
+//
+// It then drives the LIVE hub-endpoints provider through a SIMULATED failover on a
+// directly-constructed controller and asserts the active entry MOVES between two calls —
+// the freshness property (R242) a value captured once at construction would violate.
+//
+// Fails before the wiring: the placeholder monitor.Info{} yields empty Role/Version/
+// fingerprint, no PathLinks, a nil Uptime provider, and newEndpointsProvider does not exist.
+func TestMonitorWire_InfoFields(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const wantVersion = "v9.9.9-wiretest"
+	const wantBandwidthBps = 50_000_000.0
+	const wantRTT = 45 * time.Millisecond
+
+	// A single-IP-literal edge: no hub-failover controller (peerNeedsHubFailover is false),
+	// so the up()-wired endpoints provider returns an empty list. The declared link params
+	// are set post-Load directly on the path (buildPathLinks reads these fields).
+	cfg := writeEdgeConfig(t, `["127.0.0.1:51821"]`, false)
+	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
+	cfg.Paths[0].LinkBandwidthBitsPerSec = wantBandwidthBps
+	cfg.Paths[0].LinkRTT = wantRTT
+	chtun := tuntest.NewChannelTUN()
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, wantVersion)
+	if err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+	defer tun.Close()
+
+	info := tun.monitorInfo
+
+	if info.Role != string(config.RoleEdge) {
+		t.Fatalf("Info.Role = %q, want %q", info.Role, config.RoleEdge)
+	}
+	if info.Version != wantVersion {
+		t.Fatalf("Info.Version = %q, want %q", info.Version, wantVersion)
+	}
+
+	// Uptime MUST be a live provider (R242), reporting a positive elapsed time.
+	if info.Uptime == nil {
+		t.Fatal("Info.Uptime provider is nil; uptime must be a LIVE source, not a captured constant")
+	}
+	if up := info.Uptime(); up <= 0 {
+		t.Fatalf("Info.Uptime() = %v, want > 0", up)
+	}
+
+	// Per-path declared link params, keyed by the single-peer (peer="") rule.
+	link, ok := info.PathLinks[monitor.PathKey{Peer: "", Name: cfg.Paths[0].Name}]
+	if !ok {
+		t.Fatalf("Info.PathLinks missing key {Peer:\"\", Name:%q}; have %+v", cfg.Paths[0].Name, info.PathLinks)
+	}
+	if link.LinkBandwidthBps != wantBandwidthBps {
+		t.Fatalf("PathLink.LinkBandwidthBps = %v, want %v", link.LinkBandwidthBps, wantBandwidthBps)
+	}
+	if link.LinkRttSeconds != wantRTT.Seconds() {
+		t.Fatalf("PathLink.LinkRttSeconds = %v, want %v", link.LinkRttSeconds, wantRTT.Seconds())
+	}
+
+	// The fingerprint is the truncated base64 of the REAL local public key: a prefix of the
+	// full key, exactly wgFingerprintLen chars, and never the full recoverable key (Q63).
+	priv := cfg.WireGuard.PrivateKey.Bytes()
+	sk, err := ecdh.X25519().NewPrivateKey(priv[:])
+	if err != nil {
+		t.Fatalf("derive expected public key: %v", err)
+	}
+	wantFull := base64.StdEncoding.EncodeToString(sk.PublicKey().Bytes())
+	if len(info.WGPublicKeyFingerprint) != wgFingerprintLen {
+		t.Fatalf("fingerprint length = %d, want %d (%q)", len(info.WGPublicKeyFingerprint), wgFingerprintLen, info.WGPublicKeyFingerprint)
+	}
+	if info.WGPublicKeyFingerprint != wantFull[:wgFingerprintLen] {
+		t.Fatalf("fingerprint = %q, want prefix %q of the local public key", info.WGPublicKeyFingerprint, wantFull[:wgFingerprintLen])
+	}
+	if info.WGPublicKeyFingerprint == wantFull {
+		t.Fatal("fingerprint equals the FULL public key; Q63 requires the truncated fingerprint only")
+	}
+
+	// The single-IP-literal edge has no hub-failover controller, so the endpoints provider
+	// yields an empty list (T221 omits the section).
+	if info.Endpoints == nil {
+		t.Fatal("Info.Endpoints provider is nil; it must be a non-nil live provider")
+	}
+	if eps := info.Endpoints(); len(eps) != 0 {
+		t.Fatalf("Info.Endpoints() = %+v on a single-endpoint edge, want empty", eps)
+	}
+
+	// LIVE-provider failover: build a controller with two endpoints directly, wrap it in the
+	// PRODUCTION provider, and assert the active entry MOVES after a forced switch — the same
+	// provider closure returns the fresh active state on its second call (R242 freshness).
+	eps := mustEndpoints(t, "203.0.113.1:51820", "198.51.100.7:51820")
+	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	fo := newHubFailover(eps, hp, &recordingRemote{}, func() {}, clk, testSettle, discardLogger(t))
+	provider := newEndpointsProvider(fo)
+
+	before := provider()
+	if len(before) != 2 || before[0].Address != "203.0.113.1:51820" || !before[0].Active || before[1].Active {
+		t.Fatalf("before failover: endpoints = %+v, want [0] active with address set", before)
+	}
+
+	// Force hub loss and advance past the settle dwell so check() switches the active endpoint.
+	hp[0].(*fakeHealth).state = telemetry.StateDown
+	hp[1].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	fo.check()
+
+	after := provider()
+	if len(after) != 2 || after[0].Active || !after[1].Active {
+		t.Fatalf("after failover: endpoints = %+v, want the active entry MOVED to [1]", after)
+	}
+	if after[1].Address != "198.51.100.7:51820" {
+		t.Fatalf("after failover: active address = %q, want 198.51.100.7:51820", after[1].Address)
 	}
 }

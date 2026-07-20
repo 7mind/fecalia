@@ -148,6 +148,13 @@ type Info struct {
 	Role          string
 	Version       string
 	UptimeSeconds float64
+	// Uptime, when non-nil, is a LIVE provider for the process uptime evaluated
+	// INSIDE BuildSnapshot on every snapshot (freshness, R242): the server holds one
+	// Info for its whole life, so a plain UptimeSeconds captured at construction would
+	// freeze at its near-zero boot value and a long-lived client would never see uptime
+	// advance. The device layer (T222) supplies this closure; when it is nil the plain
+	// UptimeSeconds value is used (the zero-value / test path).
+	Uptime func() float64
 	// PathLinks carries the config-declared per-path link params, keyed by PathKey.
 	PathLinks map[PathKey]PathLink
 	// WGPublicKeyFingerprint is the truncated (~10 base64 chars) fingerprint of the
@@ -233,6 +240,14 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 	session := src.Session()
 	peerNames := src.PeerNames()
 
+	// UptimeSeconds is LIVE when a provider is supplied (R242): evaluated here on every
+	// snapshot so a long-lived client sees uptime advance rather than frozen at the
+	// server-construction value. Falls back to the plain float (zero-value / test path).
+	uptimeSeconds := info.UptimeSeconds
+	if info.Uptime != nil {
+		uptimeSeconds = info.Uptime()
+	}
+
 	out := MonitorSnapshot{
 		Paths:       make([]PathSnapshot, len(paths)),
 		FEC:         make([]FECSnapshot, len(fec)),
@@ -247,7 +262,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 		Daemon: DaemonSnapshot{
 			Role:          info.Role,
 			Version:       info.Version,
-			UptimeSeconds: info.UptimeSeconds,
+			UptimeSeconds: uptimeSeconds,
 		},
 		WGPublicKeyFingerprint: info.WGPublicKeyFingerprint,
 		AddressingHidden:       !revealAddressing,

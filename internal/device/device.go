@@ -9,7 +9,9 @@ package device
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -50,6 +52,12 @@ const monitorShutdownTimeout = 2 * time.Second
 // collides (it never does across the edge and concentrator network namespaces).
 const defaultTUNName = "wanbond0"
 
+// wgFingerprintLen is the number of leading base64 characters of the local WG public
+// key surfaced as its fingerprint (Q63): a short, human-comparable identifier that is
+// NOT the full key. 10 base64 chars encode 60 bits — ample to distinguish daemons at a
+// glance while deliberately withholding the recoverable key material.
+const wgFingerprintLen = 10
+
 // tunMTU is the tunnel (TUN) MTU for a config: the MINIMUM, across all configured
 // paths, of each path's inner MTU — that path's declared MTU (T200, D85; 0 means
 // unset, falling back to bind.DefaultPathMTU) mapped through bind.InnerMTU. Sizing
@@ -76,6 +84,74 @@ func tunMTU(cfg *config.Config) int {
 		}
 	}
 	return min
+}
+
+// wgPublicKeyFingerprint derives the local WireGuard public key from the configured
+// private key and returns its truncated base64 fingerprint (Q63). This is the SINGLE
+// place the local key is turned into an identity: X25519 scalar-base-multiplication of
+// the (clamped, per RFC 7748 — crypto/ecdh clamps internally) private scalar yields the
+// same public key the peer sees, and only its leading wgFingerprintLen base64 characters
+// are surfaced — never the recoverable full key. A malformed private key (impossible
+// after config.Load's IsSet/length validation) surfaces as an error so Up fails closed.
+func wgPublicKeyFingerprint(priv config.Key) (string, error) {
+	raw := priv.Bytes()
+	sk, err := ecdh.X25519().NewPrivateKey(raw[:])
+	if err != nil {
+		return "", fmt.Errorf("derive WG public key: %w", err)
+	}
+	full := base64.StdEncoding.EncodeToString(sk.PublicKey().Bytes())
+	return full[:wgFingerprintLen], nil
+}
+
+// buildPathLinks builds the config-DECLARED per-path link parameters keyed by
+// monitor.PathKey, matching metrics.Source's (peer,path) naming rule (T222, R242): the
+// peer label is "" on a single-peer Source and each configured peer's name on a
+// multi-peer one (the same len(peers)>1 rule metrics.NewCollector applies). The declared
+// bottleneck bandwidth and baseline RTT are properties of the PATH, so a multi-peer
+// concentrator repeats each path's link params under every bound peer's key. Runtime-
+// resolved fields (bindMode/boundDevice) are deliberately absent here — they ride the
+// PathTraffic->metrics pass-through (T216/T220), not this config-derived seam (R242).
+func buildPathLinks(cfg *config.Config) map[monitor.PathKey]monitor.PathLink {
+	ids := cfg.PeerIdentities()
+	// Match the metrics peer-label rule: a single bound peer exposes peer="" (D58);
+	// two or more expose each peer's stable name.
+	peerLabels := []string{""}
+	if len(ids) > 1 {
+		peerLabels = make([]string, len(ids))
+		for i, id := range ids {
+			peerLabels[i] = id.Name
+		}
+	}
+	links := make(map[monitor.PathKey]monitor.PathLink, len(peerLabels)*len(cfg.Paths))
+	for _, peer := range peerLabels {
+		for _, p := range cfg.Paths {
+			links[monitor.PathKey{Peer: peer, Name: p.Name}] = monitor.PathLink{
+				LinkBandwidthBps: p.LinkBandwidthBitsPerSec,
+				LinkRttSeconds:   p.LinkRTT.Seconds(),
+			}
+		}
+	}
+	return links
+}
+
+// newEndpointsProvider returns the LIVE hub-endpoints provider the monitor evaluates on
+// every snapshot (R242): it calls fo.EndpointsSnapshot() at call time — so a hub failover
+// after startup is reflected — and maps each device.EndpointState onto a
+// monitor.EndpointSnapshot. It is always non-nil; when fo is nil (the concentrator role,
+// or any shape with no hub-failover controller) it returns an empty list, so the frontend
+// omits the endpoints section (T221).
+func newEndpointsProvider(fo *hubFailover) func() []monitor.EndpointSnapshot {
+	return func() []monitor.EndpointSnapshot {
+		if fo == nil {
+			return nil
+		}
+		states := fo.EndpointsSnapshot()
+		out := make([]monitor.EndpointSnapshot, len(states))
+		for i, s := range states {
+			out[i] = monitor.EndpointSnapshot{Address: s.Addr.String(), Active: s.Active}
+		}
+		return out
+	}
 }
 
 // Tunnel is a running wanbond tunnel: the amneziawg engine, its TUN, and the
@@ -167,6 +243,14 @@ type Tunnel struct {
 	monitorSrv    *monitor.Server
 	monitorListen string
 	monitorToken  string
+	// monitorInfo is the identity/config/failover read seam (monitor.Info) the [monitor]
+	// endpoint is constructed with (T222): the daemon role/version, a LIVE uptime provider,
+	// the config-declared per-path link params, the truncated local WG public-key
+	// fingerprint (Q63 — never the full key), and a LIVE hub-endpoints provider (R242). It
+	// is built ONCE at up() and reused by every applyMonitorLocked (boot + reload rebind),
+	// so a rebound endpoint keeps the same identity; its Uptime/Endpoints closures stay
+	// live across rebinds because they close over stable device state, not captured values.
+	monitorInfo monitor.Info
 }
 
 // SINGLE-ENGINE-PER-PROCESS INVARIANT (defect D2).
@@ -250,7 +334,7 @@ func (g *amneziaGuard) release(a config.Amnezia) {
 // applies the crypto configuration from cfg, and brings the device up. The same
 // path drives both roles; the role only changes which UAPI fields cfg carries
 // (the concentrator sets listen_port; the edge sets each peer's endpoint).
-func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
+func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	clg := lg.Component("device")
 
 	tunDev, err := tun.CreateTUN(defaultTUNName, tunMTU(cfg))
@@ -286,7 +370,7 @@ func Up(cfg *config.Config, lg log.Logger) (*Tunnel, error) {
 	// as a factory (not eagerly constructed) so up() builds it AT MOST ONCE and ONLY when some peer
 	// carries a hostname endpoint spec — a config with zero hostname specs never constructs a
 	// resolver (Q29 inertness). The injected TUN and factory are also the seams device tests drive.
-	return up(cfg, clg, tunDev, name, cfg.DNS.NewResolver)
+	return up(cfg, clg, tunDev, name, cfg.DNS.NewResolver, version)
 }
 
 // resolverFactory builds the DNS resolver used for hostname endpoint re-resolution. It is injected
@@ -301,7 +385,12 @@ type resolverFactory func() (dnsresolve.Resolver, error)
 // it out of Up gives device tests a seam to inject a channel TUN and a fake resolver without the
 // privileged tun.CreateTUN. The same path drives both roles; the role only changes which UAPI
 // fields cfg carries (the concentrator sets listen_port; the edge sets each peer's endpoint).
-func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newResolver resolverFactory) (*Tunnel, error) {
+func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newResolver resolverFactory, version string) (*Tunnel, error) {
+	// Process start instant for the monitor's LIVE uptime provider (T222): captured at the
+	// very top of bring-up so Info.Uptime() = time.Since(startTime) is a fresh, monotonically
+	// increasing value on every snapshot rather than a boot-time constant.
+	startTime := time.Now()
+
 	// Wrap the TUN so a write that fails with EIO gets an actionable, rate-limited diagnostic
 	// (naming the interface's link state/MTU and the remedy) alongside the raw errno, instead
 	// of surfacing only as the engine's generic "input/output error" (D39, I3). Every other
@@ -322,6 +411,15 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 			globalAmneziaGuard.release(cfg.Amnezia)
 		}
 	}()
+
+	// Derive the local WG public-key fingerprint ONCE (Q63): computed here, early, so a
+	// malformed key (impossible after config.Load validation) fails bring-up before any
+	// engine/loop is started, with cleanup limited to the TUN close + the guard release.
+	fingerprint, err := wgPublicKeyFingerprint(cfg.WireGuard.PrivateKey)
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: %w", err)
+	}
 
 	// One random per-boot probe session id, shared by every path AND every configured peer (it
 	// identifies THIS boot, not a path or peer): a peer restart presents a new id that resets
@@ -464,7 +562,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// single-IP-literal edge, or a bind without the probe transport. Started AFTER dev.Up so the
 	// engine peer the re-handshake / endpoint-install look up exists (IpcSet added it above). Close
 	// stops both before dev.Close, like the probe/reconcile loops.
-	stopHubFailover, stopResolution := startFailoverAndResolution(cfg, mpBind, probers, dev, boot, clg)
+	stopHubFailover, stopResolution, hubFailoverCtrl := startFailoverAndResolution(cfg, mpBind, probers, dev, boot, clg)
 
 	// The session monitor reads the engine's peer last-handshake state (I2). It backs BOTH
 	// the /metrics session snapshot (read at scrape time) and the 0->1 'session established'
@@ -504,6 +602,21 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// between them would let each scrape reset the other's rate baseline (T165). Built
 		// unconditionally so a reload can turn [monitor].listen ON with a Source ready.
 		monitorSrc: newMetricsSource(mpBind, sessMon, telemetry.SystemClock{}),
+		// The identity/config/failover read seam the [monitor] endpoint is constructed with
+		// (T222): daemon role + build version, a LIVE uptime provider (fresh per snapshot,
+		// R242), the config-declared per-path link params keyed to the metrics (peer,path)
+		// rule, the truncated local WG public-key fingerprint (Q63 — no full key), and a LIVE
+		// hub-endpoints provider over the failover controller (empty when none — the
+		// concentrator/single-endpoint shapes). Built once here and reused by every
+		// applyMonitorLocked (boot + reload rebind).
+		monitorInfo: monitor.Info{
+			Role:                   string(cfg.Role),
+			Version:                version,
+			Uptime:                 func() float64 { return time.Since(startTime).Seconds() },
+			PathLinks:              buildPathLinks(cfg),
+			WGPublicKeyFingerprint: fingerprint,
+			Endpoints:              newEndpointsProvider(hubFailoverCtrl),
+		},
 	}
 
 	// Stand up the /metrics endpoint when configured. A non-loopback listen is refused
@@ -674,7 +787,7 @@ func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 	if sameAddr {
 		t.stopMonitorLocked()
 	}
-	srv, err := monitor.NewServer(listen, token, t.monitorSrc, monitor.Info{}, t.log)
+	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.monitorInfo, t.log)
 	if err != nil {
 		return err
 	}

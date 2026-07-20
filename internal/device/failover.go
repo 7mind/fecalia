@@ -538,7 +538,9 @@ func peerNeedsHubFailover(peer config.Peer) bool {
 
 // startFailoverAndResolution builds and starts the edge-side hub-failover monitor AND the
 // re-resolution controller for cfg's concentrator peer, returning their two SEPARATE stoppers
-// (device.Close invokes both). It returns no-op stoppers when hub failover does not apply: the
+// (device.Close invokes both) AND the constructed controller (nil when none applies) so the
+// monitor layer can wire a LIVE endpoints provider over its EndpointsSnapshot (T222). It
+// returns no-op stoppers when hub failover does not apply: the
 // concentrator role (it roams edges dynamically and has no endpoint list), a bind without the
 // probe transport (no probers → no liveness plane), or no peer whose endpoint set warrants a
 // controller (peerNeedsHubFailover — a single-IP-literal deployment gets none, staying
@@ -551,10 +553,10 @@ func peerNeedsHubFailover(peer config.Peer) bool {
 // installed at boot via the UAPI render), while one that did not resolve starts EMPTY (activeSpec
 // == -1) and the re-resolution loop's first success adopts it through the FIRST-RESOLVE INSTALL
 // PATH (ctrl.install, R70). The install collaborator is wired here to the engine peer.
-func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers []*telemetry.Prober, dev *awgdevice.Device, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func()) {
+func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers []*telemetry.Prober, dev *awgdevice.Device, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func(), ctrl *hubFailover) {
 	noop := func() {}
 	if cfg.Role != config.RoleEdge || len(probers) == 0 {
-		return noop, noop
+		return noop, noop, nil
 	}
 	for i, peer := range cfg.WireGuard.Peers {
 		if !peerNeedsHubFailover(peer) {
@@ -570,7 +572,7 @@ func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers 
 		// endpoint on the engine peer through it, then rehandshakes. Passing it at construction
 		// (rather than patching a field afterwards) makes a lost wiring line a compile error, so it
 		// can never silently degrade to a SetPeerRemote that leaves the engine peer endpoint-less.
-		ctrl := newHubFailoverFromSpecs(
+		ctrl = newHubFailoverFromSpecs(
 			boot.specs[i], health, mp,
 			deviceRehandshake(dev, peer.PublicKey),
 			deviceInstallEndpoint(dev, peer.PublicKey, hlg),
@@ -587,9 +589,9 @@ func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers 
 		// coordinate purely through the shared lock and update API). An all-literal peer has no
 		// hostname to track, so it starts nothing.
 		stopResolution = startResolution(cfg, ctrl, peer, boot.resolver, lg)
-		return stopFailover, stopResolution
+		return stopFailover, stopResolution, ctrl
 	}
-	return noop, noop
+	return noop, noop, nil
 }
 
 // startResolution builds and starts the re-resolution controller for peer's hostname endpoint

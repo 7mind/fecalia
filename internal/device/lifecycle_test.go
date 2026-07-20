@@ -149,7 +149,7 @@ func TestUpTolerantBootEndpointless(t *testing.T) {
 		return rslv, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on a never-resolving single-hostname peer failed, want tolerant boot: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestUpZeroHostnameNoResolverNoLoop(t *testing.T) {
 		return &dnsresolve.FakeResolver{Hosts: map[string][]netip.Addr{}}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on an all-literal edge peer failed: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestUpAllLiteralTripwireNeverCallsLookup(t *testing.T) {
 		return &tripwireResolver{t: t}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on an all-literal edge peer failed: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestCloseStopsResolutionLoopNoLeak(t *testing.T) {
 		return &dnsresolve.FakeResolver{Hosts: map[string][]netip.Addr{}}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestUpFirstResolveInstallsEndpointThroughProductionWiring(t *testing.T) {
 	rslv := &flakyThenResolver{host: "hub.example.com", addr: resolved}
 	factory := func() (dnsresolve.Resolver, error) { return rslv, nil }
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on a hostname peer whose boot resolve fails, want tolerant boot: %v", err)
 	}

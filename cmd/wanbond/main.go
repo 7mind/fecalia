@@ -56,7 +56,7 @@ func run(args []string) error {
 	main.Info("wanbond starting", "version", version, "role", string(cfg.Role))
 	warnUnverifiableWeightedCapacity(main, cfg)
 
-	tun, err := device.Up(cfg, lg)
+	tun, err := device.Up(cfg, lg, version)
 	if err != nil {
 		return err
 	}

@@ -75,7 +75,7 @@ func TestUpTwoPeerConcentratorWiresPerPeerState(t *testing.T) {
 		return &dnsresolve.FakeResolver{}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on a 2-peer concentrator failed: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestUpTwoPeerConcentratorKeysEachPeerOnItsOwnPSK(t *testing.T) {
 
 	chtun := tuntest.NewChannelTUN()
 	factory := func() (dnsresolve.Resolver, error) { return &dnsresolve.FakeResolver{}, nil }
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on a 2-peer concentrator failed: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestUpSinglePeerConcentratorOnePeerState(t *testing.T) {
 		return &dnsresolve.FakeResolver{}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
 	if err != nil {
 		t.Fatalf("up on a single-peer concentrator failed: %v", err)
 	}

@@ -82,7 +82,7 @@ func TestReloadRecomputesWeightedCapacityGauge(t *testing.T) {
 	}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
 	if err != nil {
 		t.Fatalf("up (weighted) failed: %v", err)
 	}
