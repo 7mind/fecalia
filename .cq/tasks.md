@@ -2539,10 +2539,10 @@ archives:
 
 ## M82
 
-### T200 — wip
+### T200 — done
 
 - createdAt: 2026-07-20T18:00:30.021Z
-- updatedAt: 2026-07-20T18:35:05.147Z
+- updatedAt: 2026-07-20T18:55:44.704Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Add per-path mtu config knob (parse + validate + defaults + round-trip)
@@ -2550,6 +2550,7 @@ archives:
 - acceptance: "New TestPathMTURoundTrip + TestPathMTUValidation (accept 1280..9000 and unset-0; reject 1279, 9001, negative) written first and failing, then green; existing config fixtures unchanged and green. Gate: nix develop -c sh -c 'gofmt -l cmd internal test; go build ./... && go vet ./... && go test ./...' AND nix develop -c just lint AND nix develop -c go test -race ./internal/config/..."
 - suggestedModel: standard
 - ledgerRefs: ["defects:D85","goals:G23"]
+- resultCommit: 0579b16
 
 ### T205 — planned
 
