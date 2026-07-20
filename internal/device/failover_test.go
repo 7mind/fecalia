@@ -219,6 +219,48 @@ func TestHubFailoverSettleDwellDefersReAdvance(t *testing.T) {
 	}
 }
 
+// TestHubFailover_EndpointsSnapshot is the reproduction for EndpointsSnapshot: the returned
+// FLATTENED ordered list must mark exactly the active entry BEFORE a forced switch (index 0)
+// and AFTER it (index 1), reusing the flatIndexLocked-derived h.idx as the single source of
+// truth for which entry is active — the same semantics entryAtLocked/flatIndexLocked already
+// maintain for check/updateResolution.
+func TestHubFailover_EndpointsSnapshot(t *testing.T) {
+	eps := mustEndpoints(t, "203.0.113.1:51820", "198.51.100.7:51820")
+	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	rem := &recordingRemote{}
+	handshakes := 0
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	h := newHubFailover(eps, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+
+	before := h.EndpointsSnapshot()
+	if len(before) != 2 {
+		t.Fatalf("snapshot length = %d, want 2", len(before))
+	}
+	if before[0] != (EndpointState{Addr: eps[0], Active: true}) {
+		t.Fatalf("before[0] = %+v, want {%v true}", before[0], eps[0])
+	}
+	if before[1] != (EndpointState{Addr: eps[1], Active: false}) {
+		t.Fatalf("before[1] = %+v, want {%v false}", before[1], eps[1])
+	}
+
+	// Force hub loss and let the settle-elapsed check switch the active endpoint.
+	hp[0].(*fakeHealth).state = telemetry.StateDown
+	hp[1].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	h.check()
+
+	after := h.EndpointsSnapshot()
+	if len(after) != 2 {
+		t.Fatalf("post-switch snapshot length = %d, want 2", len(after))
+	}
+	if after[0] != (EndpointState{Addr: eps[0], Active: false}) {
+		t.Fatalf("after[0] = %+v, want {%v false}", after[0], eps[0])
+	}
+	if after[1] != (EndpointState{Addr: eps[1], Active: true}) {
+		t.Fatalf("after[1] = %+v, want {%v true}", after[1], eps[1])
+	}
+}
+
 // mustAP parses a single "ip:port" endpoint or fails the test.
 func mustAP(t *testing.T, s string) netip.AddrPort {
 	t.Helper()

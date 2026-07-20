@@ -414,6 +414,36 @@ func (h *hubFailover) check() {
 		"from_index", prev, "to_index", nextIdx, "to_spec", nextSpec, "to_endpoint", next.String(), "endpoints", total)
 }
 
+// EndpointState is one entry of the FLATTENED ordered endpoint list returned by
+// EndpointsSnapshot: its address and whether it is the currently ACTIVE endpoint.
+type EndpointState struct {
+	Addr   netip.AddrPort
+	Active bool
+}
+
+// EndpointsSnapshot returns the FLATTENED ordered endpoint list (spec order, then
+// within-spec expansion order — the same order flatIndexLocked/entryAtLocked walk) under
+// h.mu, marking exactly the entry at h.idx active. h.idx is the flatIndexLocked-derived
+// cache of the (activeSpec, activeAddr) spec-scoped identity (R70), already re-mapped after
+// every mutation (updateResolution, check), so this reuses that single source of truth
+// rather than re-deriving activeness per entry — a DNS-expanded hostname spec therefore
+// renders every current expansion record in order, with only its live entry marked active.
+// No entry is marked active when h.idx == -1 (activeSpec == -1: every spec's expansion is
+// still empty, e.g. a hostname-only peer before its first resolution).
+func (h *hubFailover) EndpointsSnapshot() []EndpointState {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]EndpointState, 0, h.flatLenLocked())
+	flat := 0
+	for si := range h.specs {
+		for _, a := range h.specs[si].addrs {
+			out = append(out, EndpointState{Addr: a, Active: flat == h.idx})
+			flat++
+		}
+	}
+	return out
+}
+
 // deviceRehandshake returns a rehandshake bound to the engine peer identified by pk: it
 // EXPIRES the peer's current keypairs (dropping the old hub's session — a fresh session
 // with NO hub-to-hub state handoff) and sends a fresh handshake initiation, which the
