@@ -2607,10 +2607,10 @@ archives:
 - ledgerRefs: ["defects:D85","goals:G23"]
 - resultCommit: 7a2c1ee
 
-### T206 — wip
+### T206 — done
 
 - createdAt: 2026-07-20T18:01:29.632Z
-- updatedAt: 2026-07-20T20:04:38.612Z
+- updatedAt: 2026-07-20T20:14:26.551Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Per-path PMTU search state machine with re-probe on path-up and roam
@@ -2619,11 +2619,12 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T201","T202"]
 - ledgerRefs: ["defects:D85","goals:G23"]
+- resultCommit: ce52928
 
-### T208 — planned
+### T208 — wip
 
 - createdAt: 2026-07-20T18:01:57.305Z
-- updatedAt: 2026-07-20T18:01:57.305Z
+- updatedAt: 2026-07-20T20:07:07.542Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Daemon-installed MSS clamp on wanbond0 for edge-originated TCP
