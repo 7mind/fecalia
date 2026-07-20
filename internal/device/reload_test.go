@@ -149,6 +149,11 @@ func TestReloadWarnings(t *testing.T) {
 			c.DNS = config.DNS{Resolver: config.DNSResolverDoH, DoHURL: "https://example.com/dns-query"}
 			return c
 		}, "dns"},
+		{"liveness changed", func() *config.Config {
+			c := base()
+			c.Liveness = config.Liveness{DownAfter: 3 * time.Second}
+			return c
+		}, "liveness"},
 		{"metrics changed", func() *config.Config {
 			c := base()
 			c.Metrics = config.Metrics{Listen: "127.0.0.1:9100"}
@@ -231,7 +236,7 @@ func TestReloadWarningsCatchAll(t *testing.T) {
 	known := map[string]bool{
 		"Role": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
 		"Metrics": true, "Monitor": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
-		"Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
+		"Liveness": true, "Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
 	}
 	typ := reflect.TypeOf(config.Config{})
 	for i := 0; i < typ.NumField(); i++ {

@@ -370,6 +370,11 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 			PollInterval: defaultDNSPollInterval,
 			Timeout:      defaultDNSTimeout,
 		},
+		Liveness: Liveness{
+			// applyDefaults always fills this in for an absent [liveness] block
+			// (D86, T203).
+			DownAfter: defaultLivenessDownAfter,
+		},
 		// Bind is always resolved by normalize() to the effective global default
 		// (I5, Q42); the fixture omits it, so it defaults to BindModeAuto.
 		Bind: BindModeAuto,
@@ -1582,6 +1587,16 @@ func exampleFECBaseBlock(t *testing.T, content string) string {
 	)
 }
 
+// exampleLivenessBlock extracts and uncomments the documented [liveness] block
+// (D86, T203) — down_after = "1200ms" among them, the documented (no-op) default.
+func exampleLivenessBlock(t *testing.T, content string) string {
+	t.Helper()
+	return extractExampleSection(t, content,
+		"# ── liveness: OPTIONAL. Omitted => 1200ms down_after (today's fixed value) ────",
+		"\n# ── dns: OPTIONAL. Omitted => system resolver, default cadence/timeouts ───────",
+	)
+}
+
 // exampleMultiPeerConcentrator extracts and uncomments the documented "MULTI-PEER
 // CONCENTRATOR EXAMPLE (G4)" live example — a self-contained two-edge concentrator
 // config (role/psk/paths/wireguard/two peers/metrics, no `top` prefix needed since
@@ -1710,6 +1725,30 @@ func TestExampleConfigLoads(t *testing.T) {
 		}
 		if cfg.FEC.Deadline != 5*time.Millisecond {
 			t.Fatalf("fec.deadline = %s, want 5ms", cfg.FEC.Deadline)
+		}
+	})
+
+	// T203/D86: the documented [liveness] down_after knob and the per-path
+	// ride_through knob (Starlink-primary example) must load once uncommented,
+	// not just parse in isolation.
+	t.Run("liveness_and_ride_through_knobs", func(t *testing.T) {
+		topWithRideThrough := strings.Replace(top,
+			"# ride_through = \"5s\"", "ride_through = \"5s\"", 1)
+		body := topWithRideThrough + exampleLiteralPeer(t, content) + "\n" +
+			exampleLivenessBlock(t, content)
+		path := writeConfig(t, 0o600, body)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load [liveness]/ride_through example:\n%s\n\nerror: %v", body, err)
+		}
+		if cfg.Liveness.DownAfter != 1200*time.Millisecond {
+			t.Fatalf("liveness.down_after = %s, want 1200ms (documented default)", cfg.Liveness.DownAfter)
+		}
+		if cfg.Paths[0].RideThrough != 5*time.Second {
+			t.Fatalf("path 0 (starlink) ride_through = %s, want 5s", cfg.Paths[0].RideThrough)
+		}
+		if cfg.Paths[1].RideThrough != 0 {
+			t.Fatalf("path 1 (5g, strict standby) ride_through = %s, want 0 (unset)", cfg.Paths[1].RideThrough)
 		}
 	})
 }
@@ -1841,7 +1880,12 @@ func TestPathMTURoundTrip(t *testing.T) {
 				PollInterval: defaultDNSPollInterval,
 				Timeout:      defaultDNSTimeout,
 			},
-			Bind: BindModeAuto,
+			// Liveness.DownAfter is defaulted by normalize (T203) even when the
+			// fixture omits the [liveness] block, so the golden shape must carry
+			// the documented default — otherwise this byte-identical assertion
+			// breaks once T200 and T203 compose.
+			Liveness: Liveness{DownAfter: defaultLivenessDownAfter},
+			Bind:     BindModeAuto,
 		}
 		if !reflect.DeepEqual(c, want) {
 			t.Fatalf("Load() = %#v, want %#v", c, want)

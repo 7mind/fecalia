@@ -699,6 +699,26 @@ frames, and drives liveness/failover decisions. Carries the anti-replay
 primitives (`AntiReplay` high-water, `ControlGuard`) that protect PROBE and
 CONTROL against replay of captured valid-MAC frames.
 
+**Config surface for the up/down threshold (D86, T203).** The compiled-in
+defaults (`telemetry.DefaultDownAfter` = 1200ms, `telemetry.DefaultProbeInterval`
+= 200ms, fixed) are now overridable at the top of the config surface: an
+optional `[liveness]` block's `down_after` replaces the silence threshold that
+marks an UP path DOWN, and an optional per-path `ride_through` on `[[paths]]`
+(default 0) reserves the knob a later task plumbs into the running scheduler to
+let a path tolerate a longer outage before failover. `internal/config` cannot
+import `internal/telemetry` (the reverse import already exists, via
+`probe.go`), so `defaultLivenessDownAfter`/`livenessProbeInterval` are
+restated in `internal/config/liveness.go` with an explicit cross-reference,
+the same mirroring pattern `config.defaultAdaptiveSafetyFactor` and
+`config.defaultAvgWireFrameBytes` already use elsewhere in that package.
+`down_after` is rejected below `2*livenessProbeInterval` (400ms): fewer than
+two probe intervals cannot even carry one round-trip echo, so the liveness
+`Tick`'s silence check would outrun the echo cadence and every path would
+permanently flap DOWN. No upper bound is enforced yet — that WARN-and-allow
+budget verdict, and the plumbing of `down_after`/`ride_through` into
+`device.go`/`liveness.go`'s running scheduler, are later tasks; this task adds
+only the parse/default/validate config surface.
+
 ### Receive resequencer — `internal/reseq`
 
 Bonding across paths of different latency reorders packets. The resequencer holds

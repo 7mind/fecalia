@@ -86,7 +86,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 
    psk = "…"                        # outer control/probe PSK (not the WG PSK)
 
-   # optional: [amnezia] (obfuscation, all-or-nothing), [fec], [scheduler], [dns], [metrics], [monitor], [log]
+   # optional: [amnezia] (obfuscation, all-or-nothing), [fec], [scheduler], [dns], [liveness], [metrics], [monitor], [log]
    ```
 
 3. Install the systemd unit for the role

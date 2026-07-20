@@ -712,6 +712,12 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
                                    #   DATA frame + WireGuard transport). Set on
                                    #   any uplink whose real path MTU is below
                                    #   1500 (e.g. some cellular APNs).
+# ride_through = "5s"              # OPTIONAL, DEFAULT 0. This path's liveness
+                                   #   ride-through duration (Go duration
+                                   #   string; D86). Config-surface-only this
+                                   #   pass (T203) — parses and validates
+                                   #   (>= 0) but is not yet wired into
+                                   #   failover behavior.
 
 # A second uplink (edge). Repeat the block per path.
 [[paths]]
@@ -842,6 +848,18 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   mode. Mutually exclusive with
                                    #   target_residual.
 
+# ── liveness: OPTIONAL. Omitted => 1200ms down_after (today's fixed value) ────
+# [liveness]
+# down_after = "1200ms"            # DEFAULT 1200ms. Silence duration that
+                                   #   marks an UP path DOWN (Go duration
+                                   #   string; D86). FLOOR: must be >= 400ms
+                                   #   (2x the fixed, non-configurable 200ms
+                                   #   probe interval) — a lower value makes
+                                   #   the liveness detector's silence check
+                                   #   outrun the echo cadence and permanently
+                                   #   flap every path DOWN; rejected at load.
+                                   #   No upper bound is enforced.
+
 # ── metrics: OPTIONAL. Omit the block => no /metrics endpoint is served ───────
 [metrics]
 listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8,
@@ -946,6 +964,16 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   parity on the wire. `adaptive = true` requires `enabled = true`. In adaptive
   mode set **either** `target_residual` (recommended, `(0,1)`) **or**
   `safety_factor` (`>= 1`), never both; both must stay 0 (unset) in fixed mode.
+- **liveness off-unless-present (D86, T203).** No `[liveness]` block ⇒
+  `down_after` defaults to `1200ms`, byte-identical to before this key
+  existed. `down_after` must be `>= 400ms` (2x the fixed, non-configurable
+  200ms probe interval — a lower value makes the liveness detector's Tick
+  silence check outrun the echo cadence and permanently flap every path DOWN)
+  or `Load` fails fast; no upper bound is enforced yet (a large `down_after`
+  loads fine — the WARN-and-allow budget check is a later task). Per-path
+  `ride_through` (`>= 0`, DEFAULT 0) is a **config-surface-only** addition
+  this pass: it parses and validates but is not yet consumed by the running
+  scheduler.
 - **metrics loopback-only.** `[metrics] listen` must be a loopback address (or a
   hostname resolving entirely to loopback); a non-loopback bind is refused when
   the endpoint starts. Omit the block to serve no metrics at all.

@@ -93,6 +93,15 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's U
                                    #   path MTU is BELOW 1500 (see the "5g" path
                                    #   below) — an over-declared MTU IP-fragments or
                                    #   PMTUD-blackholes, silently stalling the path.
+# ride_through = "5s"              # OPTIONAL, DEFAULT 0. This path's liveness
+                                   #   ride-through duration (Go duration string;
+                                   #   D86). Starlink-primary pattern: tolerate a
+                                   #   brief dish reboot/obstruction without
+                                   #   flapping to the metered 5G standby. >= 0.
+                                   #   THIS TASK (T203) ADDS THE CONFIG SURFACE
+                                   #   ONLY — plumbing it into the running
+                                   #   scheduler is a separate, later task; it does
+                                   #   not yet change failover behavior.
 
 # A second uplink (edge). Repeat the block per path.
 [[paths]]
@@ -101,6 +110,9 @@ source_addr = "192.168.2.10"
 mtu         = 1400                 # This carrier's cellular APN caps the path MTU
                                    #   below the 1500 Ethernet default — declare it
                                    #   so the tunnel never IP-fragments on this leg.
+# ride_through is left UNSET (default 0) here — the 5G-standby-strict pattern:
+# the standby should fail its own liveness immediately on loss, rather than
+# riding through, so a real problem on the already-metered backup is not masked.
 
 # ── wireguard: inner tunnel key material ─────────────────────────────────────
 [wireguard]
@@ -315,6 +327,19 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   is set. Must stay 0 in fixed mode. Mutually
                                    #   exclusive with target_residual.
 
+# ── liveness: OPTIONAL. Omitted => 1200ms down_after (today's fixed value) ────
+# [liveness]
+# down_after = "1200ms"            # DEFAULT 1200ms. Silence duration that marks
+                                   #   an UP path DOWN (Go duration string; D86).
+                                   #   FLOOR: must be >= 400ms (2x the fixed 200ms
+                                   #   probe interval) — probe_interval itself is
+                                   #   NOT configurable this pass, so a lower
+                                   #   down_after makes the liveness detector's
+                                   #   silence check outrun the echo cadence and
+                                   #   permanently flap every path DOWN; rejected
+                                   #   at load. No upper bound is enforced here
+                                   #   (a large value loads fine).
+
 # ── dns: OPTIONAL. Omitted => system resolver, default cadence/timeouts ───────
 # Selects the TRANSPORT a peer's opt-in hostname endpoint (dns = true, above)
 # is resolved through. [dns] alone never turns hostname resolution on.
@@ -426,6 +451,12 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 # • fec off-unless-present: no [fec] (or enabled = false) => no parity. adaptive =
 #   true requires enabled = true. In adaptive mode set EITHER target_residual OR
 #   safety_factor, never both; both must stay 0 (unset) in fixed mode.
+# • liveness off-unless-present: no [liveness] => down_after defaults to 1200ms
+#   (today's fixed value), byte-identical to before this key existed. down_after
+#   must be >= 400ms (2x the fixed, non-configurable 200ms probe interval) or
+#   load is rejected; no upper bound is enforced (see [liveness] above). Per-path
+#   ride_through (>= 0, DEFAULT 0) is a config-surface-only addition this pass —
+#   it parses and validates but is not yet wired into failover behavior.
 # • metrics loopback-only: listen must be a loopback address (or a hostname
 #   resolving entirely to loopback); a non-loopback bind is refused when the
 #   endpoint starts. Omit the block to serve no metrics.

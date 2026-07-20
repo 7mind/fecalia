@@ -785,6 +785,9 @@ func reloadWarnings(live, desired *config.Config) []string {
 	if !reflect.DeepEqual(live.DNS, desired.DNS) {
 		w = append(w, "dns section changed — the running resolver configuration is unchanged until restart")
 	}
+	if !reflect.DeepEqual(live.Liveness, desired.Liveness) {
+		w = append(w, "liveness section changed — the running liveness thresholds are unchanged until restart")
+	}
 	// The top-level Bind default (I5, Q42) is resolved by normalize() into every path
 	// that omits its own `bind`, so a change here has already propagated into
 	// Path.Bind by the time reloadWarnings runs — but the RUNNING sockets keep the
@@ -841,6 +844,7 @@ func reloadWarnings(live, desired *config.Config) []string {
 	lc.Scheduler, dc.Scheduler = config.SchedulerConfig{}, config.SchedulerConfig{}
 	lc.FEC, dc.FEC = config.FEC{}, config.FEC{}
 	lc.DNS, dc.DNS = config.DNS{}, config.DNS{}
+	lc.Liveness, dc.Liveness = config.Liveness{}, config.Liveness{}
 	lc.Bind, dc.Bind = "", ""
 	lc.Paths, dc.Paths = nil, nil
 	lc.Metrics, dc.Metrics = config.Metrics{}, config.Metrics{}

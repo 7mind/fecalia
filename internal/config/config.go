@@ -50,6 +50,11 @@ type Config struct {
 	Scheduler SchedulerConfig `toml:"scheduler"`
 	FEC       FEC             `toml:"fec"`
 	DNS       DNS             `toml:"dns"`
+	// Liveness configures the D86 top-level up/down detection down_after
+	// threshold (T203). An absent [liveness] block is inert: DownAfter defaults
+	// to defaultLivenessDownAfter, byte-identical to today's fixed
+	// telemetry.DefaultDownAfter. See liveness.go.
+	Liveness Liveness `toml:"liveness"`
 	// Bind is the OPTIONAL top-level default bind mode (I5, Q42) applied to every
 	// path that omits its own `bind`. Left empty it defaults to BindModeAuto
 	// (today's selectDeviceBinds heuristic) in normalize(), so an existing config
@@ -617,6 +622,17 @@ type Path struct {
 	// imported from internal/bind. This field only carries and validates the
 	// operator's declaration; wiring it into the TUN's actual MTU is T205.
 	MTU int `toml:"mtu"`
+	// RideThrough is the OPTIONAL per-path liveness ride-through duration (D86
+	// decision 3, T203): DEFAULT 0, parsed from RideThroughRaw in normalize. An
+	// unset (zero) value reproduces today's behavior byte-for-byte — this task
+	// adds ONLY the config surface; wiring it into the running scheduler is
+	// T207's job (device.go/liveness.go are untouched here). Must be >= 0.
+	RideThrough time.Duration `toml:"-"`
+	// RideThroughRaw is the TOML Go-duration string form of RideThrough, e.g.
+	// "5s" (mirrors Path.LinkRTTRaw — go-toml/v2 cannot decode a TOML string
+	// directly into a bare time.Duration field). Parsed in normalize; an
+	// unparseable value fails fast.
+	RideThroughRaw string `toml:"ride_through"`
 }
 
 // WireGuard holds the inner tunnel's key material.
@@ -1055,6 +1071,13 @@ func (c *Config) normalize() error {
 			}
 			p.LinkRTT = rtt
 		}
+		if p.RideThroughRaw != "" {
+			rt, err := time.ParseDuration(p.RideThroughRaw)
+			if err != nil {
+				return fmt.Errorf("path %q: invalid ride_through %q: %w", p.Name, p.RideThroughRaw, err)
+			}
+			p.RideThrough = rt
+		}
 	}
 	for i := range c.WireGuard.Peers {
 		if err := c.WireGuard.Peers[i].resolveEndpoints(); err != nil {
@@ -1081,6 +1104,9 @@ func (c *Config) normalize() error {
 	}
 	c.FEC.applyDefaults()
 	if err := c.DNS.applyDefaults(); err != nil {
+		return err
+	}
+	if err := c.Liveness.applyDefaults(); err != nil {
 		return err
 	}
 	// Computed LAST, after c.Scheduler.applyDefaults() has resolved an omitted
@@ -1520,6 +1546,9 @@ func (c *Config) validate() error {
 				return fmt.Errorf("path %q: mtu %d leaves an inner MTU of %d after the fixed %d-byte outer overhead, below the required minimum %d", p.Name, p.MTU, innerMTU, outerPathOverheadBytes, minInnerMTU)
 			}
 		}
+		if p.RideThrough < 0 {
+			return fmt.Errorf("path %q: ride_through must be >= 0, got %s", p.Name, p.RideThrough)
+		}
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {
 		return errors.New("wireguard.private_key is required")
@@ -1688,6 +1717,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.DNS.validate(); err != nil {
+		return err
+	}
+	if err := c.Liveness.validate(); err != nil {
 		return err
 	}
 	if err := c.Monitor.validate(); err != nil {
