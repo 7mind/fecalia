@@ -133,7 +133,7 @@ forwarding nodes so forwarded TCP negotiates an MSS that fits the tunnel MTU ins
 emitting segments that fragment / PMTU-blackhole — the routed-client-LAN recipe is broken
 without it. The verbatim rules, persistence, and arithmetic now ship in **docs/install.md
 §9.2** (and `docs/runbook.md`'s firewall-persistence step); see `docs/p1-mtu.md` for the
-MSS=1361/1321 accounting.
+MSS=1360/1320 accounting.
 
 ### C4 — Persistence recipe for non-networkd hosts
 Bless the `PartOf=wanbond-<role>.service` oneshot pattern that, after the daemon starts,

@@ -1725,8 +1725,8 @@ MTU and happily emit oversized segments once wrapped. Clamp the MSS of
 **forwarded** SYNs on **both** forwarding nodes — the edge (this section) and
 the concentrator (§9.3) — to the tunnel's inner MTU; see [docs/p1-mtu.md §MSS
 clamping](p1-mtu.md) for the inner-MTU-minus-headers arithmetic (IPv4:
-`1401 − 40 = 1361` bytes at the default 1500-byte path MTU; IPv6:
-`1381 − 60 = 1321` bytes):
+`1400 − 40 = 1360` bytes at the default 1500-byte path MTU; IPv6:
+`1380 − 60 = 1320` bytes):
 
 ```sh
 sudo iptables  -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \

@@ -50,15 +50,32 @@ const monitorShutdownTimeout = 2 * time.Second
 // collides (it never does across the edge and concentrator network namespaces).
 const defaultTUNName = "wanbond0"
 
-// tunMTU is the tunnel (TUN) MTU for a config: the default path MTU minus the
-// IP+UDP, outer DATA-frame, and WireGuard transport overheads, so a full-MTU inner
-// packet never fragments on the wire (see internal/bind mtu.go and docs/p1-mtu.md).
-// This is smaller than the plain-WireGuard 1420 because the bonding layer adds its
-// own outer DATA frame per datagram; with FEC enabled it is a further
-// bind.FECParityMTUPenalty smaller so a full-size PARITY frame also fits the path MTU
-// (T24) rather than fragmenting.
+// tunMTU is the tunnel (TUN) MTU for a config: the MINIMUM, across all configured
+// paths, of each path's inner MTU — that path's declared MTU (T200, D85; 0 means
+// unset, falling back to bind.DefaultPathMTU) mapped through bind.InnerMTU. Sizing
+// to the smallest path keeps a full-MTU inner packet fragmentation-free no matter
+// which path the scheduler sends it over (see internal/bind mtu.go and
+// docs/p1-mtu.md). This is smaller than the plain-WireGuard 1420 because the
+// bonding layer adds its own outer DATA frame per datagram; with FEC enabled it is
+// a further bind.FECParityMTUPenalty smaller so a full-size PARITY frame also fits
+// the path MTU (T24) rather than fragmenting. A config with no paths (defensive;
+// validate() normally requires at least one) falls back to bind.DefaultPathMTU.
 func tunMTU(cfg *config.Config) int {
-	return bind.InnerMTU(bind.DefaultPathMTU, cfg.FEC.Enabled)
+	if len(cfg.Paths) == 0 {
+		return bind.InnerMTU(bind.DefaultPathMTU, cfg.FEC.Enabled)
+	}
+	min := 0
+	for _, p := range cfg.Paths {
+		pathMTU := p.MTU
+		if pathMTU == 0 {
+			pathMTU = bind.DefaultPathMTU
+		}
+		inner := bind.InnerMTU(pathMTU, cfg.FEC.Enabled)
+		if min == 0 || inner < min {
+			min = inner
+		}
+	}
+	return min
 }
 
 // Tunnel is a running wanbond tunnel: the amneziawg engine, its TUN, and the
