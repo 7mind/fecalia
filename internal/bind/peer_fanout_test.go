@@ -32,7 +32,7 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 	// A DISTINCT probe session id from the primary's: a concentrator peer runs its own probe
 	// session, and it proves the fan-out mints genuinely per-peer probers (not shared handles).
 	const secondPeerSessionID uint64 = 0x0123456789ABCDEF
-	newProber := func(pname string, id uint8) *telemetry.Prober {
+	newProber := func(pname string, id uint8, _ time.Duration) *telemetry.Prober {
 		return telemetry.NewProber(pname, id, secondPeerSessionID, psk, cfg, clk, lg)
 	}
 
@@ -51,7 +51,7 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 				id = sp.id
 			}
 		}
-		probers[i] = newProber(m.defs[i].Name, id)
+		probers[i] = newProber(m.defs[i].Name, id, m.defs[i].RideThrough)
 		health[i] = probers[i]
 		byName[m.defs[i].Name] = probers[i]
 	}

@@ -540,7 +540,7 @@ func TestNewMultipathRejectsUnpairedProberFactory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	factory := func(name string, id uint8) *telemetry.Prober { return nil }
+	factory := func(name string, id uint8, _ time.Duration) *telemetry.Prober { return nil }
 	if _, err := NewMultipath(paths, psk, scheduler, nil, factory, nil, nil, config.Amnezia{}, lg); err == nil {
 		t.Fatal("NewMultipath(newProber!=nil, probers==nil) succeeded, want rejection")
 	}

@@ -444,6 +444,13 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// sockets exist: start the probe cadence now. Close stops it before dev.Close.
 	// The interval is the SINGLE-SOURCE-OF-TRUTH telemetry default, which also arms
 	// the bind's receive-path liveness sweep throttle (D15).
+	//
+	// UNLIKE the up/down thresholds (down_after + per-path ride_through, now config-driven
+	// via buildScheduler/proberConfigForPath — D86/T207), the probe cadence stays the fixed
+	// telemetry.DefaultProbeInterval this pass: it is a global loop period shared by every
+	// path AND every peer and it also gates the D15 receive-path sweep throttle, so making it
+	// configurable is a broader change deferred beyond T207. Detection latency is therefore
+	// bounded by down_after (+ ride_through for an UP path) plus this one interval.
 	stopProbes := mpBind.StartProbeLoop(telemetry.DefaultProbeInterval)
 	// Start the background deferred-path reconciler alongside probing (T55): a path the
 	// tolerant Open left DOWN (its source_addr not yet assignable — a 5G modem without a
@@ -1000,6 +1007,27 @@ func adaptiveFECConfig(f config.FEC) *adaptivefec.Config {
 	return &c
 }
 
+// proberConfigForPath builds ONE path's telemetry.ProberConfig from the loaded config
+// (D86/T207). DownAfter comes from the top-level cfg.Liveness.DownAfter (a single global
+// threshold, DEFAULTED at load by T203 to telemetry.DefaultDownAfter when the [liveness]
+// block is absent), and RideThrough is THIS path's own dwell (cfg.Paths[i].RideThrough,
+// default 0). LossWindow and UpAfterSuccesses stay the fixed telemetry defaults: the probe
+// cadence and up-side hysteresis are NOT yet configurable this pass (StartProbeLoop keeps
+// telemetry.DefaultProbeInterval), so those knobs remain the single-source-of-truth
+// constants. On a fully-defaulted config the result is byte-identical to the pre-T207
+// hardcoded literal — DownAfter=DefaultDownAfter, RideThrough=0 — an exact-behaviour
+// identity guard (see TestBuildSchedulerLivenessFromConfig).
+func proberConfigForPath(cfg *config.Config, rideThrough time.Duration) telemetry.ProberConfig {
+	return telemetry.ProberConfig{
+		LossWindow: telemetry.DefaultLossWindow,
+		Liveness: telemetry.LivenessConfig{
+			DownAfter:        cfg.Liveness.DownAfter,
+			UpAfterSuccesses: telemetry.DefaultUpSuccesses,
+			RideThrough:      rideThrough,
+		},
+	}
+}
+
 // buildScheduler constructs ONE peer's boot-time per-path prober set, its runtime prober
 // factory, and the send scheduler over them — ALL keyed on that peer's effective psk (R72) —
 // in cfg.Paths' configured priority order (index 0 = the preferred primary path). The returned
@@ -1019,24 +1047,20 @@ func adaptiveFECConfig(f config.FEC) *adaptivefec.Config {
 // challenge reset.
 func buildScheduler(cfg *config.Config, psk config.Key, sessionID uint64, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, bind.ProberFactory, error) {
 	clock := telemetry.SystemClock{}
-	proberCfg := telemetry.ProberConfig{
-		LossWindow: telemetry.DefaultLossWindow,
-		Liveness: telemetry.LivenessConfig{
-			DownAfter:        telemetry.DefaultDownAfter,
-			UpAfterSuccesses: telemetry.DefaultUpSuccesses,
-		},
-	}
-	// newProber mints one path's Prober with the shared session/config/clock, keyed on THIS
-	// peer's psk. It is the single construction point for this peer's boot-time AND runtime
-	// paths, so both measure liveness identically.
-	newProber := func(name string, id uint8) *telemetry.Prober {
-		return telemetry.NewProber(name, id, sessionID, psk, proberCfg, clock, lg)
+	// newProber mints one path's Prober with the shared session/clock, keyed on THIS peer's
+	// psk, and a PER-PATH ProberConfig (D86/T207): the global down_after threshold plus this
+	// path's own ride-through dwell. It is the single construction point for this peer's
+	// boot-time AND runtime (T30) paths, so both measure liveness identically. The runtime
+	// bind.ProberFactory carries the path's ride_through so a runtime-added path gets its
+	// configured dwell too — see proberConfigForPath.
+	newProber := func(name string, id uint8, rideThrough time.Duration) *telemetry.Prober {
+		return telemetry.NewProber(name, id, sessionID, psk, proberConfigForPath(cfg, rideThrough), clock, lg)
 	}
 	probers := make([]*telemetry.Prober, len(cfg.Paths))
 	health := make([]sched.PathHealth, len(cfg.Paths))
 	quality := make([]sched.PathQuality, len(cfg.Paths))
 	for i := range cfg.Paths {
-		probers[i] = newProber(cfg.Paths[i].Name, uint8(i))
+		probers[i] = newProber(cfg.Paths[i].Name, uint8(i), cfg.Paths[i].RideThrough)
 		health[i] = probers[i]
 		quality[i] = probers[i]
 	}

@@ -411,13 +411,15 @@ func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 // (P2/P3), but every DATA frame carries its outer-seq and path-id so T18/T24 can
 // consume them.
 // ProberFactory mints a *telemetry.Prober for a path admitted at runtime (T30),
-// stamped with the given stable path-id. The device wires it capturing the SAME
-// per-boot session id, prober config, clock, PSK, and logger the boot-time probers
-// were built with, so a runtime path's liveness is measured identically to a
-// boot-time path (its probes join the same session so the peer's reflector adopts
-// them without a challenge reset). It is nil on a bind built without the probe
-// transport (the T12 unit tests), which therefore cannot add paths at runtime.
-type ProberFactory func(name string, id uint8) *telemetry.Prober
+// stamped with the given stable path-id and the path's OWN ride_through dwell (D86/T207)
+// so a runtime-added path measures liveness with the same configured hysteresis as a
+// boot-time path. The device wires it capturing the SAME per-boot session id, global
+// down_after threshold, clock, PSK, and logger the boot-time probers were built with, so a
+// runtime path's liveness is measured identically to a boot-time path with the same
+// ride_through (its probes join the same session so the peer's reflector adopts them without
+// a challenge reset). It is nil on a bind built without the probe transport (the T12 unit
+// tests), which therefore cannot add paths at runtime.
+type ProberFactory func(name string, id uint8, rideThrough time.Duration) *telemetry.Prober
 
 // sourceBinding is one entry of the source->peer demux map (peerBySource): the peer a learned
 // source AddrPort was bound to by an authenticated PROBE, plus a monotonic insertion sequence
@@ -2765,14 +2767,14 @@ func (m *Multipath) AddPath(def config.Path) error {
 					return fmt.Errorf("bind: add path %q: peer %q cannot defer a path without the probe transport", def.Name, p.name)
 				}
 			}
-			prober := m.newProber(def.Name, id) // the primary's; also the durable deferred record
+			prober := m.newProber(def.Name, id, def.RideThrough) // the primary's; also the durable deferred record
 			m.defs = append(m.defs, def)
 			for pi, p := range m.peers {
 				if pi == 0 {
 					p.probers = append(p.probers, prober)
 					continue
 				}
-				p.probers = append(p.probers, p.newProber(def.Name, id))
+				p.probers = append(p.probers, p.newProber(def.Name, id, def.RideThrough))
 			}
 			warned := m.warnForcedDeviceStillDeferred(def.Name, def.Bind, dev, false)
 			m.deferred = append(m.deferred, deferredPath{def: def, prober: prober, warnedUnresolvable: warned})
@@ -2929,7 +2931,7 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 		if p.newProber == nil {
 			return nil, errors.New("bind: cannot add a path at runtime without the probe transport")
 		}
-		prober = p.newProber(def.Name, id)
+		prober = p.newProber(def.Name, id, def.RideThrough)
 	}
 	// This path binds to peer p; its receive codec is p's codec (derived from p's psk).
 	codec, err := p.newCodec()
