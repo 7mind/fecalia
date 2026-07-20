@@ -163,19 +163,43 @@ func (p *Prober) SendProbe() ([]byte, error) {
 // PSK-authenticated probe/echo machinery, sequence space, and anti-replay as
 // SendProbe — a padded probe is an ordinary liveness probe that additionally
 // carries pad bytes. The reflector echoes the same on-wire size, so a fresh echo
-// confirms a datagram of onWire outer bytes traverses this path. It fails if onWire
-// is outside the padded-probe bounds (frame.PadLenForOnWire).
-func (p *Prober) SendPaddedProbe(onWire int) ([]byte, error) {
+// confirms a datagram of onWire outer bytes traverses this path. It returns the
+// ProbeSeq assigned to this probe so a PMTU echo-awaiter (EchoAwaitProbe, T226/D88)
+// can match the corresponding echo INDEPENDENTLY of HandleEcho's anti-replay verdict
+// (a slow padded-probe echo must still complete its await even after a later, faster
+// liveness echo has advanced the guard high-water). It fails if onWire is outside the
+// padded-probe bounds (frame.PadLenForOnWire).
+func (p *Prober) SendPaddedProbe(onWire int) ([]byte, uint64, error) {
 	padLen, err := frame.PadLenForOnWire(onWire)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	probe := p.buildProbeLocked()
 	probe.Padded = true
 	probe.PadLen = padLen
-	return frame.Encode(p.psk, probe)
+	raw, err := frame.Encode(p.psk, probe)
+	if err != nil {
+		return nil, 0, err
+	}
+	return raw, probe.ProbeSeq, nil
+}
+
+// ExcludePaddedProbeLoss marks seq as RECEIVED in this path's loss window without
+// touching RTT or liveness (T226, defect D88). A PMTU binary search (EchoAwaitProbe)
+// deliberately sends oversized probes it EXPECTS to be dropped; those dropped seqs
+// would otherwise read as genuine per-path loss in the shared 512-wide probe-echo
+// window (estimator ObserveProbeEcho), inflating the loss the scheduler and adaptive
+// FEC controller consume. Calling this on a padded probe that timed out awaiting its
+// echo (or was rejected locally as too large) fills that seq's window slot so the
+// intentional drop is not counted as loss. It is a no-op-safe idempotent mark: an
+// echoed probe already got its ObserveProbeEcho via HandleEcho, so a redundant call
+// is harmless.
+func (p *Prober) ExcludePaddedProbeLoss(seq uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.est.ObserveProbeEcho(seq)
 }
 
 // buildProbeLocked constructs the next probe frame, stamping it with the current

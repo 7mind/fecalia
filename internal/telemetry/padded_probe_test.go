@@ -18,7 +18,7 @@ func TestPaddedProbeReflectedAtSameSize(t *testing.T) {
 	r := NewReflector(psk, newTestRand())
 
 	for _, onWire := range []int{frame.ProbeBaseOnWire, 1400, 1500} {
-		raw, err := p.SendPaddedProbe(onWire)
+		raw, _, err := p.SendPaddedProbe(onWire)
 		if err != nil {
 			t.Fatalf("onWire=%d: send padded probe: %v", onWire, err)
 		}
@@ -60,7 +60,7 @@ func TestPaddedProbeEchoFeedsLiveness(t *testing.T) {
 	p := newTestProber(t, psk, clk)
 	r := NewReflector(psk, newTestRand())
 
-	raw, err := p.SendPaddedProbe(1400)
+	raw, _, err := p.SendPaddedProbe(1400)
 	if err != nil {
 		t.Fatalf("send padded probe: %v", err)
 	}
@@ -78,10 +78,10 @@ func TestPaddedProbeEchoFeedsLiveness(t *testing.T) {
 func TestSendPaddedProbeRejectsOutOfRange(t *testing.T) {
 	psk := testPSK(t, 0x5A)
 	p := newTestProber(t, psk, newFakeClock())
-	if _, err := p.SendPaddedProbe(frame.MaxPaddedProbeOnWire + 1); err == nil {
+	if _, _, err := p.SendPaddedProbe(frame.MaxPaddedProbeOnWire + 1); err == nil {
 		t.Fatal("SendPaddedProbe(max+1) succeeded, want error")
 	}
-	if _, err := p.SendPaddedProbe(frame.ProbeBaseOnWire - 1); err == nil {
+	if _, _, err := p.SendPaddedProbe(frame.ProbeBaseOnWire - 1); err == nil {
 		t.Fatal("SendPaddedProbe(base-1) succeeded, want error")
 	}
 }

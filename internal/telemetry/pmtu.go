@@ -158,6 +158,24 @@ func (d *PMTUDiscovery) PathMTU() int {
 	return d.discovered
 }
 
+// PathMTUOrZero returns the discovered PMTU ONLY once it is authoritative, and 0
+// while it is not yet known (T226, defect D88). A pinned path (operator-declared mtu)
+// is authoritative immediately, so it returns the configured value. A non-pinned path
+// returns 0 until its FIRST search converges, then the discovered value. This is the
+// value the metrics layer maps into metrics.PathSnapshot.PMTU: reporting 0 (rather
+// than PathMTU's conservative 1280 floor) before the first convergence keeps the T209
+// runtime resizer on its configured-or-default fallback, so a fresh unconstrained
+// bond holds InnerMTU(1500) at boot instead of tightening to InnerMTU(1280) and
+// regrowing after the loosen-dwell (the boot-time shrink-then-grow dip, R245).
+func (d *PMTUDiscovery) PathMTUOrZero() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pinned || d.state == pmtuConverged {
+		return d.discovered
+	}
+	return 0
+}
+
 // UsablePathMTU returns the discovered outer PMTU reduced by the obfuscation junk-prefix
 // headroom (PMTUConfig.JunkHeadroom): the largest outer datagram size real WG DATA may
 // occupy on this path WITHOUT the AmneziaWG junk prefix pushing it past the measured path
