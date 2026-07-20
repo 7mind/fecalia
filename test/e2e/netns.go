@@ -37,6 +37,8 @@ import (
 //	9109  probe_headroom_test.go       (t145MetricsListen)
 //	9110  aggregation_visibility_test.go (visMetricsListen; both scenarios share the port,
 //	      each in its own netns, sequentially)
+//	9111  ride_through_test.go         (rtMetricsListen; the three D86 phases share the port,
+//	      each in its own netns, sequentially)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
