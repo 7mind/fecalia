@@ -2753,10 +2753,10 @@ archives:
 - ledgerRefs: ["goals:G21"]
 - resultCommit: c532b85
 
-### T215 — planned
+### T215 — done
 
 - createdAt: 2026-07-20T18:06:02.841Z
-- updatedAt: 2026-07-20T18:25:22.574Z
+- updatedAt: 2026-07-20T19:31:31.433Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Enforce addressing redaction server-side inside BuildSnapshot
@@ -2765,6 +2765,7 @@ archives:
 - suggestedModel: frontier
 - dependsOn: ["T214"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: "1669792"
 
 ### T219 — planned
 
@@ -2781,10 +2782,10 @@ archives:
 
 ## M86
 
-### T216 — planned
+### T216 — done
 
 - createdAt: 2026-07-20T18:06:10.839Z
-- updatedAt: 2026-07-20T18:06:10.839Z
+- updatedAt: 2026-07-20T19:38:13.504Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Surface per-path source, local addr, bind mode, bound device, and current remote in bind.PathTraffic
@@ -2793,6 +2794,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T214"]
 - ledgerRefs: ["goals:G21"]
+- resultCommit: eca38d3
 
 ### T217 — done
 
