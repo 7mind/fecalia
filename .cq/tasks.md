@@ -2552,10 +2552,10 @@ archives:
 - ledgerRefs: ["defects:D85","goals:G23"]
 - resultCommit: 0579b16
 
-### T205 — planned
+### T205 — done
 
 - createdAt: 2026-07-20T18:01:22.045Z
-- updatedAt: 2026-07-20T18:01:22.045Z
+- updatedAt: 2026-07-20T19:23:02.255Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Size wanbond0 from the minimum per-path inner MTU and fix the p1-mtu doc drift
@@ -2564,6 +2564,7 @@ archives:
 - suggestedModel: standard
 - dependsOn: ["T200"]
 - ledgerRefs: ["defects:D85","goals:G23"]
+- resultCommit: 57b1222
 
 ### T210 — planned
 
@@ -2697,10 +2698,10 @@ archives:
 - ledgerRefs: ["defects:D86","goals:G23"]
 - resultCommit: 79a3944
 
-### T207 — planned
+### T207 — wip
 
 - createdAt: 2026-07-20T18:01:36.094Z
-- updatedAt: 2026-07-20T18:01:36.094Z
+- updatedAt: 2026-07-20T19:11:40.690Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Plumb configured down_after + per-path ride_through into buildScheduler and StartProbeLoop
@@ -2738,10 +2739,10 @@ archives:
 
 ## M85
 
-### T214 — planned
+### T214 — done
 
 - createdAt: 2026-07-20T18:05:41.116Z
-- updatedAt: 2026-07-20T18:25:09.601Z
+- updatedAt: 2026-07-20T19:23:03.963Z
 - author: "opus-4.8[1m]"
 - session: 671d5adc-7e2a-440e-b87d-6da40edeb7b7
 - headline: Extend the MonitorSnapshot wire contract with daemon, bind-metadata, addressing, endpoint, and WG-key fields + define the monitor.Info seam
@@ -2749,6 +2750,7 @@ archives:
 - acceptance: "TestBuildSnapshot_ExtendedFields fails first then passes; internal/monitor COMPILES after this task (all BuildSnapshot call sites updated, fail-closed); no wgPublicKey field exists anywhere (fingerprint only); the prometheus metrics.Source interface + /metrics exposition unchanged (metrics.PathSnapshot gains fields but no new series). Gate: full gofmt/build/vet/test + nix develop -c just lint + nix develop -c go test -race ./internal/monitor/... ./internal/metrics/..."
 - suggestedModel: frontier
 - ledgerRefs: ["goals:G21"]
+- resultCommit: c532b85
 
 ### T215 — planned
 
