@@ -1576,9 +1576,13 @@ chain, which the daemon does NOT touch; the operator installs the matching
 `FORWARD`-chain clamp on each forwarding node — see the C6 forwarding recipe
 below and `docs/p1-mtu.md`. The two chains are disjoint (a SYN is either locally
 originated or forwarded), so the daemon-owned OUTPUT clamp and the operator-owned
-FORWARD clamp are complementary. The daemon's OUTPUT clamp requires
-`iptables`/`ip6tables` on the edge; bring-up fails fast with a clear error if the
-front-end is absent.
+FORWARD clamp are complementary. **`iptables` is OPTIONAL** (T232/T233, D92):
+when `iptables`/`ip6tables` are absent — an nft-only host such as Raspberry Pi
+OS or a modern Debian/Ubuntu — the daemon programs the same OUTPUT clamp via the
+`nft` CLI (a daemon-owned `table inet wanbond_mssclamp`), and if NEITHER front-end
+is installed it logs a single WARN and continues. A missing MSS-clamp front-end
+NEVER fails bring-up: the tunnel comes up regardless, and forwarded/routed-LAN
+traffic relies on the operator `FORWARD` clamp (below) in any case.
 
 A per-path `mtu` config key (§3z) lets an operator DECLARE that path's real
 outer underlay MTU (e.g. a cellular APN capped below 1500) — it is validated

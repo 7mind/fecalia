@@ -202,9 +202,20 @@ The operator installs NOTHING for this case — it is programmed automatically. 
 install is idempotent (a re-run of `Up` after a crash never stacks a duplicate);
 because an `-o wanbond0` rule stores the interface NAME and survives the
 interface, the daemon removes it explicitly on `Close` (it does not vanish with a
-`tun_persist` device). The daemon currently emits this only when
-`iptables`/`ip6tables` are present, failing bring-up fast with a clear error when
-a chosen exec front-end is absent.
+`tun_persist` device).
+
+**The clamp front-end is OPTIONAL — a missing one NEVER fails bring-up (T232/T233,
+D92).** The daemon programs the OUTPUT clamp by exec'ing a front-end CLI (it links
+no native netfilter binding). It tries `iptables`/`ip6tables` first; when they are
+absent — an nft-only host such as Raspberry Pi OS or a modern Debian/Ubuntu — it
+FALLS BACK to the `nft` CLI, programming the equivalent clamp in a daemon-owned
+`table inet wanbond_mssclamp` (an `output`-hook chain at mangle priority whose
+`tcp option maxseg size set rt mtu` mirrors `--clamp-mss-to-pmtu`, withdrawn as a
+whole table on `Close`). Only when NEITHER `iptables` nor `nft` resolves does the
+clamp go uninstalled — and even then bring-up merely logs a single WARN and
+continues (the old behaviour, a fatal exit-1 systemd restart loop on nft-only
+hosts, was defect D92). Edge-originated TCP then relies on the TUN MTU / operator
+FORWARD clamp; the tunnel itself stays up.
 
 ### Forwarded (routed-LAN) TCP → FORWARD chain, OPERATOR-owned (G14)
 
