@@ -132,6 +132,25 @@ constraint lifts, with **no operator `mtu` knob required**.
 - **Re-probe triggers.** A path `DOWN→UP` transition, an endpoint roam (the
   concentrator learning a new edge endpoint, or an edge hub-failover repoint),
   and a slow periodic refresh each re-run the search.
+- **Reliability-aware acceptance (D91).** The search accepts a candidate size
+  only after **N consecutive** echoing probes (`Confirmations`, default **3**),
+  and short-circuits a candidate on its **first** non-echo. Single-echo
+  acceptance was the D91 defect: on a partially-lossy carrier (a 5G path
+  dropping ~30 % of packets) a size *above* the reliably-carried MTU still
+  echoes on the ~70 % of probes that pass, so a lone echo accepted it and the
+  search converged tens of bytes too high (field: inner 1331 vs a reliable
+  ~1268–1300) — full-MTU DATA then black-holed (TCP 0 bytes rx). Requiring N
+  consecutive successes rejects such an intermittently-echoing size, so the
+  search settles at/below the size that echoes *reliably*. The short-circuit
+  bounds a candidate to N probes and keeps the failing candidates — the only
+  ones that wait a probe deadline — at ≤ log2(window), so worst-case search time
+  still fits the e2e 20 s window.
+- **Optional safety margin.** `SafetyMargin` (bytes, default **0**) is
+  subtracted from the *reported* path MTU (`PathMTU` / `PathMTUOrZero` and the
+  usable envelope that composes on them) as an extra cushion below the
+  reliably-carried size, clamped to the 1280 floor. It does **not** change the
+  raw discovered value or the `wanbond_path_mtu` gauge; with the default 0 the
+  reported value is byte-identical to the discovered value.
 - **Boot behaviour (no dip).** A non-pinned path reports **no** discovered PMTU
   until its first search converges, so `wanbond0` holds `InnerMTU(1500)` at boot
   and shrinks only once a real smaller PMTU is measured — never a boot-time

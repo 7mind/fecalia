@@ -17,6 +17,19 @@ import (
 // binary search's known-good lower bound.
 const PMTUFloor = 1280
 
+// defaultPMTUConfirmations is the number of CONSECUTIVE echoing probes a candidate
+// on-wire size must accumulate before the binary search accepts it (defect D91). A
+// single echo is not enough on a partially-lossy carrier (e.g. a 5G path dropping a
+// fraction of packets): a size ABOVE the reliably-carried MTU still echoes on the probes
+// that happen to pass, so a single-echo acceptance converges tens of bytes too high and
+// black-holes full-size DATA. Requiring N consecutive successes rejects such a marginal
+// size — the FIRST non-echo short-circuits the candidate as failed — so the search
+// settles at/below the size that echoes RELIABLY. Three is a conservative default: it
+// tolerates the isolated packet loss a genuinely-fitting size occasionally sees while
+// still rejecting a size that only passes intermittently. PMTUConfig.Confirmations
+// overrides it; a zero value maps to this default so existing callers are unchanged.
+const defaultPMTUConfirmations = 3
+
 // PMTUProbe is the seam the PMTU discovery machine drives to test one candidate outer
 // path-MTU: it sends a padded MTU probe sized to onWire outer bytes (DF set, T201; the
 // echo carries the same on-wire size, T202) and reports whether a matching echo
@@ -60,6 +73,20 @@ type PMTUConfig struct {
 	// EMSGSIZE/black-hole; the raw PathMTU gauge is left unchanged. Zero (plain WireGuard)
 	// leaves usable == raw, byte-identical.
 	JunkHeadroom int
+	// Confirmations is the number of CONSECUTIVE echoing probes a candidate on-wire size
+	// must accumulate before the binary search accepts it (defect D91). A zero value maps
+	// to defaultPMTUConfirmations in NewPMTUDiscovery, so existing callers are unchanged.
+	// A value of 1 restores the pre-fix single-echo acceptance (used only to reproduce the
+	// D91 defect in tests). See defaultPMTUConfirmations for the rationale.
+	Confirmations int
+	// SafetyMargin is an OPTIONAL number of bytes subtracted from the REPORTED path MTU
+	// (PathMTU, PathMTUOrZero, and the UsablePathMTU that composes on it) as an extra
+	// cushion below the reliably-carried size (defect D91). It is DEFAULT 0: with no margin
+	// the reported value is byte-identical to the raw discovered value. The raw stored
+	// discovered value (and the raw search() result) are NEVER reduced by it — only the
+	// reported view. A positive margin is clamped so the reported value never drops below
+	// PMTUFloor.
+	SafetyMargin int
 }
 
 // pmtuState is the discovery machine's search phase.
@@ -91,15 +118,17 @@ const (
 // mutex held only briefly. The mutex is NOT held across a ProbePMTU call, so a probe
 // that blocks awaiting an echo never blocks a concurrent PathMTU/NotifyRoam reader.
 type PMTUDiscovery struct {
-	pathName     string
-	floor        int
-	ceiling      int
-	pinned       bool
-	refresh      time.Duration
-	junkHeadroom int
-	probe        PMTUProbe
-	clock        Clock
-	log          log.Logger
+	pathName      string
+	floor         int
+	ceiling       int
+	pinned        bool
+	refresh       time.Duration
+	junkHeadroom  int
+	confirmations int
+	safetyMargin  int
+	probe         PMTUProbe
+	clock         Clock
+	log           log.Logger
 
 	mu             sync.Mutex
 	state          pmtuState
@@ -129,18 +158,25 @@ func NewPMTUDiscovery(pathName string, cfg PMTUConfig, probe PMTUProbe, clock Cl
 		// The operator's declaration is authoritative and needs no measurement.
 		discovered = ceiling
 	}
+	confirmations := cfg.Confirmations
+	if confirmations <= 0 {
+		// Zero-value maps to the default so existing callers are unchanged.
+		confirmations = defaultPMTUConfirmations
+	}
 	return &PMTUDiscovery{
-		pathName:     pathName,
-		floor:        PMTUFloor,
-		ceiling:      ceiling,
-		pinned:       pinned,
-		refresh:      cfg.RefreshInterval,
-		junkHeadroom: cfg.JunkHeadroom,
-		probe:        probe,
-		clock:        clock,
-		log:          logger.Path(pathName),
-		state:        pmtuUnstarted,
-		discovered:   discovered,
+		pathName:      pathName,
+		floor:         PMTUFloor,
+		ceiling:       ceiling,
+		pinned:        pinned,
+		refresh:       cfg.RefreshInterval,
+		junkHeadroom:  cfg.JunkHeadroom,
+		confirmations: confirmations,
+		safetyMargin:  cfg.SafetyMargin,
+		probe:         probe,
+		clock:         clock,
+		log:           logger.Path(pathName),
+		state:         pmtuUnstarted,
+		discovered:    discovered,
 	}
 }
 
@@ -151,11 +187,35 @@ func (d *PMTUDiscovery) Pinned() bool { return d.pinned }
 // PathMTU returns the current per-path discovered outer PMTU: the configured value for
 // a pinned path, the conservative floor before the first search converges, or the
 // largest echoing on-wire size the last search settled on. It is the snapshot accessor
-// the exposition layer reads for the wanbond_path_mtu gauge.
+// the exposition layer reads for the wanbond_path_mtu gauge. With a non-zero
+// PMTUConfig.SafetyMargin the reported value is the discovered value less the margin
+// (clamped to PMTUFloor); the raw stored value is unchanged and the default margin 0
+// reports it byte-identically.
 func (d *PMTUDiscovery) PathMTU() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.discovered
+	return d.reportedLocked()
+}
+
+// reportedLocked applies the optional PMTUConfig.SafetyMargin to the raw discovered value
+// to produce the value the accessors report (defect D91). The raw stored discovered value
+// is NEVER modified — only this reported view. Margin 0 (the default) returns the raw
+// value byte-identically; a positive margin is subtracted and clamped to PMTUFloor so an
+// over-large margin can never report below the known-good floor. The caller holds d.mu.
+//
+// A PINNED path is exempt: the operator's declared MTU is authoritative and needs no
+// measurement (NewPMTUDiscovery), so the safety margin — a cushion below a *measured*
+// reliably-carried size — does not apply; a pinned path always reports its configured
+// value verbatim regardless of SafetyMargin.
+func (d *PMTUDiscovery) reportedLocked() int {
+	if d.pinned || d.safetyMargin <= 0 {
+		return d.discovered
+	}
+	reported := d.discovered - d.safetyMargin
+	if reported < PMTUFloor {
+		reported = PMTUFloor
+	}
+	return reported
 }
 
 // PathMTUOrZero returns the discovered PMTU ONLY once it is authoritative, and 0
@@ -171,7 +231,7 @@ func (d *PMTUDiscovery) PathMTUOrZero() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.pinned || d.state == pmtuConverged {
-		return d.discovered
+		return d.reportedLocked()
 	}
 	return 0
 }
@@ -188,7 +248,9 @@ func (d *PMTUDiscovery) PathMTUOrZero() int {
 func (d *PMTUDiscovery) UsablePathMTU() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	usable := d.discovered - d.junkHeadroom
+	// Compose on the REPORTED path MTU (safety-margined) so the usable envelope never
+	// exceeds the margined reported value; junk headroom is then reserved on top.
+	usable := d.reportedLocked() - d.junkHeadroom
 	if usable < 0 {
 		usable = 0
 	}
@@ -268,17 +330,18 @@ func (d *PMTUDiscovery) decideLocked(state PathState) bool {
 	return false
 }
 
-// search binary-searches the largest on-wire size in [floor, ceiling] that still
-// echoes and returns it. floor is the known-good lower bound (a floor-sized datagram is
-// assumed to always traverse the path), so the result is at least floor. It reads only
-// immutable fields plus the injected probe, so it runs without d.mu held; a transport
-// error aborts the search and is returned to the caller.
+// search binary-searches the largest on-wire size in [floor, ceiling] that echoes
+// RELIABLY (d.confirmations consecutive successes, see confirmCandidate; defect D91) and
+// returns it. floor is the known-good lower bound (a floor-sized datagram is assumed to
+// always traverse the path), so the result is at least floor. It reads only immutable
+// fields plus the injected probe, so it runs without d.mu held; a transport error aborts
+// the search and is returned to the caller.
 func (d *PMTUDiscovery) search() (int, error) {
 	lo, hi := d.floor, d.ceiling
 	for lo < hi {
 		// Round the midpoint up so a two-wide window probes hi, letting lo advance to it.
 		mid := (lo + hi + 1) / 2
-		echoed, err := d.probe.ProbePMTU(mid)
+		echoed, err := d.confirmCandidate(mid)
 		if err != nil {
 			return 0, err
 		}
@@ -289,4 +352,25 @@ func (d *PMTUDiscovery) search() (int, error) {
 		}
 	}
 	return lo, nil
+}
+
+// confirmCandidate reports whether the on-wire size `mid` echoes RELIABLY: it counts as
+// passing (echoed=true) only after d.confirmations CONSECUTIVE ProbePMTU(mid) successes
+// (defect D91). It SHORT-CIRCUITS on the FIRST non-echo — treating the candidate as
+// failed (echoed=false) so the binary search narrows downward (hi = mid-1) — which bounds
+// the probes spent on a candidate to d.confirmations worst-case and rejects a marginal,
+// intermittently-echoing size fast (the deadline-waiting drop is spent at most once per
+// candidate). A genuine transport error (err != nil) aborts the whole search unconverged,
+// exactly as a single-probe error did, so a later tick retries.
+func (d *PMTUDiscovery) confirmCandidate(mid int) (bool, error) {
+	for i := 0; i < d.confirmations; i++ {
+		echoed, err := d.probe.ProbePMTU(mid)
+		if err != nil {
+			return false, err
+		}
+		if !echoed {
+			return false, nil
+		}
+	}
+	return true, nil
 }

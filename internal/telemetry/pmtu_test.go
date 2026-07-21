@@ -2,9 +2,40 @@ package telemetry
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
+
+// intermittentPMTUProbe models a partially-lossy carrier (defect D91): a candidate at or
+// below `reliable` ALWAYS echoes, while a candidate ABOVE `reliable` echoes only on a
+// period-2 pattern per size — the first probe of the size echoes, the next drops, and so
+// on. That is exactly the pathology single-echo acceptance mishandles: an oversize size
+// echoes on its FIRST probe (so pre-fix it is accepted and the search converges ABOVE
+// reliable), yet it can never accumulate two consecutive echoes (so N>=2 consecutive
+// rejects it). It needs no clock and no real network.
+type intermittentPMTUProbe struct {
+	reliable int
+	calls    int
+	sizes    []int
+	perSize  map[int]int
+}
+
+func (f *intermittentPMTUProbe) ProbePMTU(onWire int) (bool, error) {
+	f.calls++
+	f.sizes = append(f.sizes, onWire)
+	if onWire <= f.reliable {
+		return true, nil
+	}
+	if f.perSize == nil {
+		f.perSize = make(map[int]int)
+	}
+	n := f.perSize[onWire]
+	f.perSize[onWire]++
+	// Echo on even attempts (0,2,4…), drop on odd (1,3…): the first probe of a fresh
+	// oversize candidate echoes, but two consecutive echoes never occur.
+	return n%2 == 0, nil
+}
 
 // fakePMTUProbe is a synchronous PMTUProbe standing in for the padded-probe +
 // echo-await transport: it echoes exactly when the candidate on-wire size is within
@@ -52,6 +83,113 @@ func TestPMTUSearchConverges(t *testing.T) {
 		if s < PMTUFloor || s > 1500 {
 			t.Errorf("probed size %d outside [%d,1500]", s, PMTUFloor)
 		}
+	}
+}
+
+// TestPMTUReliabilityRejectsIntermittentOversize is the defect-D91 reproduce-first and
+// its fix (acceptance a): against a partially-lossy carrier where sizes above a reliable
+// threshold echo only intermittently, the PRE-FIX single-echo search (Confirmations:1)
+// converges ABOVE the reliable threshold (the black-holing defect), while the
+// N-consecutive default converges AT/BELOW it. Both cases run on the SAME deterministic
+// fake with no real network or sleep.
+func TestPMTUReliabilityRejectsIntermittentOversize(t *testing.T) {
+	const reliable = 1300
+
+	// PRE-FIX (Confirmations:1 == single-echo): an oversize size echoes on its first probe
+	// and is accepted, so the search climbs ABOVE the reliably-carried threshold — the
+	// D91 field symptom (converged too high, full-MTU DATA black-holes).
+	old := &intermittentPMTUProbe{reliable: reliable}
+	dold := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500, Confirmations: 1}, old, newFakeClock(), discardLogger(t))
+	if err := dold.Tick(StateUp); err != nil {
+		t.Fatalf("single-echo Tick: %v", err)
+	}
+	if got := dold.PathMTU(); got <= reliable {
+		t.Fatalf("single-echo converged to %d, expected ABOVE reliable %d (the D91 defect being reproduced)", got, reliable)
+	}
+
+	// POST-FIX (default N-consecutive): the intermittently-echoing oversize sizes never
+	// accumulate N consecutive echoes, so the search settles at/below the reliable size.
+	f := &intermittentPMTUProbe{reliable: reliable}
+	d := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500}, f, newFakeClock(), discardLogger(t))
+	if err := d.Tick(StateUp); err != nil {
+		t.Fatalf("N-consecutive Tick: %v", err)
+	}
+	if got := d.PathMTU(); got > reliable {
+		t.Fatalf("N-consecutive converged to %d, want <= reliable %d (marginal oversize rejected)", got, reliable)
+	}
+}
+
+// TestPMTUSafetyMargin covers acceptance (b) and (d): with the default margin 0 the
+// reported PathMTU is byte-identical to the raw discovered value; with a positive
+// SafetyMargin the RAW discovered value is unchanged while the REPORTED value is
+// discovered-margin (clamped to PMTUFloor). The raw and reported values are asserted
+// SEPARATELY.
+func TestPMTUSafetyMargin(t *testing.T) {
+	const threshold = 1400
+
+	// (b) Margin 0 (default): reported == raw discovered, byte-identical to today.
+	base := &fakePMTUProbe{threshold: threshold}
+	d0 := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500}, base, newFakeClock(), discardLogger(t))
+	if err := d0.Tick(StateUp); err != nil {
+		t.Fatalf("margin-0 Tick: %v", err)
+	}
+	if d0.discovered != threshold {
+		t.Fatalf("raw discovered = %d, want %d", d0.discovered, threshold)
+	}
+	if got := d0.PathMTU(); got != d0.discovered {
+		t.Fatalf("margin 0: reported PathMTU %d != raw discovered %d (must be byte-identical)", got, d0.discovered)
+	}
+	if got := d0.PathMTUOrZero(); got != threshold {
+		t.Fatalf("margin 0: reported PathMTUOrZero %d, want %d", got, threshold)
+	}
+
+	// (d) Margin M>0: raw discovered UNCHANGED; reported == discovered - M.
+	const margin = 40
+	dm := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500, SafetyMargin: margin}, &fakePMTUProbe{threshold: threshold}, newFakeClock(), discardLogger(t))
+	if err := dm.Tick(StateUp); err != nil {
+		t.Fatalf("margin Tick: %v", err)
+	}
+	if dm.discovered != threshold {
+		t.Fatalf("SafetyMargin must NOT change the raw discovered value: got %d, want %d", dm.discovered, threshold)
+	}
+	if got := dm.PathMTU(); got != threshold-margin {
+		t.Fatalf("reported PathMTU = %d, want %d (discovered - margin)", got, threshold-margin)
+	}
+	if got := dm.PathMTUOrZero(); got != threshold-margin {
+		t.Fatalf("reported PathMTUOrZero = %d, want %d (discovered - margin)", got, threshold-margin)
+	}
+
+	// A margin larger than (discovered - floor) clamps the reported value to PMTUFloor,
+	// never below; the raw value still stands.
+	dbig := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500, SafetyMargin: 10000}, &fakePMTUProbe{threshold: threshold}, newFakeClock(), discardLogger(t))
+	if err := dbig.Tick(StateUp); err != nil {
+		t.Fatalf("over-large-margin Tick: %v", err)
+	}
+	if dbig.discovered != threshold {
+		t.Fatalf("over-large margin changed raw discovered: got %d, want %d", dbig.discovered, threshold)
+	}
+	if got := dbig.PathMTU(); got != PMTUFloor {
+		t.Fatalf("over-large margin: reported PathMTU %d, want floor %d (clamped)", got, PMTUFloor)
+	}
+}
+
+// TestPMTUProbeCountBounded covers acceptance (c): the worst-case probe count stays within
+// N x ceil(log2(window)). A lossless path (every candidate echoes) is the worst case — each
+// binary-search step spends the full N consecutive probes. Because only the failing
+// candidates (at most ceil(log2(window)) of them) ever wait a probe deadline and each does
+// so at most once (short-circuit), the wall-clock cost fits comfortably inside the e2e 20s
+// window (DefaultPMTUProbeDeadline=1s).
+func TestPMTUProbeCountBounded(t *testing.T) {
+	probe := &fakePMTUProbe{threshold: 1500} // lossless up to the ceiling
+	d := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500}, probe, newFakeClock(), discardLogger(t))
+	if err := d.Tick(StateUp); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	iters := int(math.Ceil(math.Log2(float64(d.ceiling - d.floor + 1))))
+	bound := d.confirmations * iters
+	if probe.calls > bound {
+		t.Fatalf("probe count %d exceeds worst-case bound %d (= N=%d x ceil(log2(window=%d))=%d)",
+			probe.calls, bound, d.confirmations, d.ceiling-d.floor, iters)
 	}
 }
 
