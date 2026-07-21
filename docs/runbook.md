@@ -379,11 +379,25 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_fec_repair_packets_total` / `wanbond_fec_data_packets_total` | Parity vs data counts — the overhead ratio (FEC only). |
 | `wanbond_resequencer_released_frames_total`     | Frames released for delivery by the receive resequencer. |
 | `wanbond_resequencer_dropped_duplicate_frames_total` / `wanbond_resequencer_dropped_stale_frames_total` / `wanbond_resequencer_dropped_suspect_frames_total` | Frames dropped as duplicate / already-past-release-point / not-yet-corroborated. |
-| `wanbond_resequencer_skipped_seqs_total`        | Sequence numbers skipped (lost) by window-advance or timeout. |
+| `wanbond_resequencer_skipped_seqs_total`        | Sequence numbers skipped (lost) by window-advance or timeout — **total seqs treated as lost, by whatever mechanism** (its meaning is unchanged by the D93 hold model). |
+| `wanbond_resequencer_hol_holds_total` / `wanbond_resequencer_hol_hold_seconds_total` | Head-of-line gaps that armed a hold / cumulative seconds those gaps spent held before a skip, single-path immediate release, or fill — the count and total time are the denominator and numerator of the mean hold. |
+| `wanbond_resequencer_immediate_releases_total` | Head-of-line gaps released via the D93 **single-delivering-path fast path** (~0 hold), counted DISTINCTLY from timeout skips. |
 | `wanbond_resequencer_resyncs_total` / `wanbond_resequencer_rebaselines_total` | Release-point re-pins after a corroborated discontinuity / forced re-baselines (e.g. hub failover). |
 | `wanbond_session_established`                    | WG session liveness, `1`=a handshake has completed and is still fresh, `0`=still converging **or** wedged. **Distinguishes "converging" from "wedged".** |
 | `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
 
+> **Resequencer head-of-line reading (D93).** The hold behind a gap is no longer a
+> fixed 250 ms — it is an RTT-adaptive per-gap hold (clamped to `[10 ms, 250 ms]`,
+> the 250 ms now the worst-case cap) that collapses to a near-zero **immediate
+> release** whenever only one path is delivering (single-path loss cannot hide a
+> straggler). Read the two skip-adjacent counters together: rising
+> `immediate_releases_total` alongside `skipped_seqs_total` means the D93
+> head-of-line amplifier is **disarmed** (a single delivering path — expected,
+> low-latency loss handling), whereas `skipped_seqs_total` climbing while
+> `immediate_releases_total` stays flat is a **genuine timeout head-of-line stall**
+> (a slow/lossy second path holding gaps to the cap). `hol_hold_seconds_total /
+> hol_holds_total` is the mean time gaps are held.
+>
 > **Multi-peer concentrator (G4).** A concentrator bound to 2+ edges additionally
 > labels every path/resequencer/FEC series above with `peer="<name>"` — the
 > configured `[[wireguard.peers]]` `name`, for EVERY bound peer including the

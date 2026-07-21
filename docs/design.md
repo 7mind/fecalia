@@ -775,6 +775,60 @@ WireGuard anti-replay window sees the traffic — critical, because WG would
 otherwise drop legitimately-reordered datagrams. It runs its **own outer sequence
 space** and never touches the inner WireGuard counter (a core invariant).
 
+**Head-of-line hold model (D93).** When a gap opens at the release point the
+resequencer holds the frames behind it just long enough for a straggler on a
+slower path to arrive, then skips the gap (counts those seqs lost) and releases.
+The hold duration is **not** a fixed 250 ms — that value is now the worst-case
+**cap**, `resequencerTimeout` (`internal/bind/multipath.go`), not the amount every
+gap waits. Two regimes set the actual hold:
+
+1. **RTT-adaptive per-gap hold (multi-path).** While two or more paths are
+   delivering, the bind derives the hold from measured RTT and installs it via
+   `Resequencer.SetHoldBound`: `holdBoundRTTMultiple` (4) × the **max** smoothed
+   RTT across the peer's probed paths (that max bounds how far a genuine
+   cross-path straggler can trail its head), clamped to
+   `[holdBoundFloor` (10 ms)`, resequencerTimeout` (250 ms)`]`. So a low-RTT bond
+   pays a proportionally small reorder hold per gap while the 250 ms cap is
+   preserved for a slow path; a path with no RTT sample yet leaves the bound
+   unset and the resequencer keeps the full cap (conservative). While FEC is
+   active the full cap is kept regardless, so a parity-recovered frame
+   (`ObserveRecovered`) still has time to fill a held gap before it is skipped.
+2. **Single-delivering-path immediate release.** When exactly ONE delivering
+   path has been observed over the trailing `singleSourceTrailingWindow`
+   (500 ms — sized at 2× the 250 ms straggler cap, and it doubles as the re-arm
+   dwell), a head-of-line gap is **genuine loss**: a single path preserves order,
+   so no straggler for that seq can still be in flight, and the successors are
+   released with ~0 hold instead of waiting out the timeout. The delivering path
+   is keyed by an **opaque composite** `pathKey` — the local receiving-path id
+   composed with the sender-stamped frame `PathID` — so the fast path disarms
+   only while one true source is delivering. A second distinct key seen within
+   the window **re-arms** the full hold immediately, and immediate release
+   resumes only once a whole window has elapsed under a single key; FEC-active
+   **suppresses** immediate release (parity may yet fill the gap); and a
+   rebaseline (below) resets the trailing evidence.
+
+This directly disarms the D93 amplifier — a single-path head-of-line stall that
+turned ordinary loss into a 250 ms-per-gap latency multiplier — without
+loosening the guarantee that a genuine cross-path straggler is still awaited up
+to the cap. The preserved contract is unchanged in every other respect: releases
+are **strictly ascending** and **exactly once**, memory stays **bounded** by the
+window, and the timeout guarantees forward progress (a gap is now bounded by the
+per-gap hold rather than the fixed cap). The `Rebaseline`/`RebaselineToLow`
+re-anchor semantics (D32/D34/D36/D64, below) and the inner WireGuard anti-replay
+behaviour are untouched.
+
+Three metrics expose the model alongside the existing `wanbond_resequencer_*`
+series (documented in [runbook.md](runbook.md#series-to-watch)):
+`wanbond_resequencer_hol_holds_total` (gaps that armed a hold) and
+`wanbond_resequencer_hol_hold_seconds_total` (seconds those gaps spent held) are
+the denominator and numerator of the mean hold, and
+`wanbond_resequencer_immediate_releases_total` counts the single-path fast-path
+releases **distinctly** from timeout skips. `wanbond_resequencer_skipped_seqs_total`
+keeps its meaning — total seqs treated as lost, by any mechanism — so rising
+`immediate_releases` alongside `skipped` reads as *the D93 amplifier disarmed on a
+single path*, while `skipped` rising with `immediate_releases` flat is a genuine
+timeout head-of-line stall.
+
 **Two trusted re-anchor triggers, plus an unauthenticated corroboration fallback.**
 A DATA frame is unauthenticated, so the release point is normally moved only by
 the `resync` guard (several distinct low seqs within one window) — which a

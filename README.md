@@ -103,7 +103,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness, WG-session establishment
-  (`wanbond_session_established`), and — under `scheduler.policy = "weighted"`
+  (`wanbond_session_established`), receive-resequencer head-of-line holds vs
+  single-path immediate releases (`wanbond_resequencer_hol_hold_seconds_total` /
+  `wanbond_resequencer_immediate_releases_total`, D93), and — under
+  `scheduler.policy = "weighted"`
   — a static `wanbond_weighted_capacity_sane` gauge that flags an unverifiable
   `link_bandwidth` declaration (see [docs/install.md
   §6b](docs/install.md#6b-weighted-policy-capacity-sanity-check-t144)) plus the
