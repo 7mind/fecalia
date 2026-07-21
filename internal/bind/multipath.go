@@ -282,15 +282,43 @@ type peerPathState struct {
 	// and probe accounting is best-effort headroom, never correctness-critical.
 	schedIdx atomic.Int32
 
-	mu        sync.Mutex
-	remote    netip.AddrPort
-	hasRemote bool
+	mu sync.Mutex
+	// remotes is the per-SENDER-PATH return-address table (T246, defect D94): one entry
+	// per sender-stamped path id seen in this view's authenticated probe plane, replacing
+	// the pre-D94 single scalar whose last-prober-wins overwrite flapped the concentrator's
+	// downlink destination across the edge's WANs at probe cadence. FRESHNESS is owned by
+	// the authenticated probe plane exclusively — a probe request (concentrator side,
+	// stamped with the edge's path id) or an echo (edge side, stamped with this path's own
+	// id) establishes/refreshes an entry — while forgeable-by-design DATA may only SELECT
+	// among established entries (confirmDataRemote's exact address+PathID match gate) and
+	// can never introduce or move an address.
+	remotes map[uint8]*remoteEntry
+	// selKey/selValid name the SELECTED entry — the downlink destination getRemote()
+	// returns (feeding Send, emitProbes, and the PMTU probes alike). Selection is STICKY:
+	// established by the FIRST probe-learned entry (the R253 cold-start rule, so the
+	// destination is valid and stable before any DATA arrives), moved only by an
+	// address-match-gated DATA sample naming a DIFFERENT established entry (the edge's
+	// active WAN changed), by a one-time DEAD fallback when the selected entry's probes go
+	// silent (checkRemoteDead), or by an explicit SetPeerRemote override.
+	selKey   uint8
+	selValid bool
 	// onRoam, when set (device.Up registers it on the PRIMARY peer's path via
-	// Multipath.OnPathRoam), fires whenever setRemote CHANGES this path's learned remote —
-	// a concentrator learned-endpoint repoint — so the per-path PMTUDiscovery re-probes
-	// (NotifyRoam) the possibly-different underlay PMTU (T227, defect D88). It never fires
-	// on the first remote set nor on a same-address re-learn (the common per-probe case).
+	// Multipath.OnPathRoam), fires whenever the SELECTED downlink destination's ADDRESS
+	// changes — initial establishment, a DATA-driven selection move, a DEAD fallback, an
+	// in-place rebind of the selected entry, or a SetPeerRemote override — so the per-path
+	// PMTUDiscovery re-probes (NotifyRoam) the possibly-different underlay PMTU (T227,
+	// defect D88). It never fires on a per-path freshness refresh of a non-selected entry
+	// nor on a same-address re-learn, so the pre-D94 per-probe-cadence churn is gone.
 	onRoam func()
+}
+
+// remoteEntry is one sender-path's learned return address plus its probe freshness.
+// lastProbe is stamped by every authenticated probe that establishes/refreshes the entry
+// (and at seeding/override time, so a stale seed can go DEAD and fall back rather than
+// wedging); checkRemoteDead compares it against remoteDeadAfter for the SELECTED entry.
+type remoteEntry struct {
+	addr      netip.AddrPort
+	lastProbe time.Time
 }
 
 // peerState holds the per-PEER datapath state that was a process-global singleton before
@@ -430,23 +458,159 @@ type deferredPath struct {
 	warnedPromoteFail bool
 }
 
+// remoteDeadAfter is the probe-silence bound on the SELECTED remote entry after which
+// checkRemoteDead performs the one-time sticky fallback to the freshest probe-learned
+// entry (T246, defect D94). It is deliberately ABOVE the liveness DownAfter (1200 ms):
+// path liveness declares the path down first (and the scheduler moves egress where it
+// can); this table-level fallback is the concentrator's belt-and-suspenders — its single
+// path gives the scheduler nothing to switch, so the DESTINATION itself must follow the
+// edge's surviving WAN. 2x DownAfter keeps ordinary probe jitter from ever tripping it
+// while still bounding downlink-failover latency to a couple of liveness windows.
+const remoteDeadAfter = 2 * telemetry.DefaultDownAfter
+
+// setRemote SEEDS or OVERRIDES this view's downlink destination with an operator/
+// control-plane address (edge config dest_addr at Open; SetPeerRemote at hub failover):
+// it CLEARS the learned table (post-override, stale pre-override entries must not win a
+// DEAD fallback) and installs ap as the selected entry under this path's OWN id. The
+// entry is stamped probe-fresh at installation so a dead seed self-heals: if nothing
+// refreshes it (edge side: the echoes keyed by this same own id; concentrator side: a
+// request under a different key establishes a sibling entry) it goes DEAD after
+// remoteDeadAfter and the selection falls back to a genuinely fresh entry.
 func (ps *peerPathState) setRemote(ap netip.AddrPort) {
 	ps.mu.Lock()
-	// A roam is an actual CHANGE of an already-learned remote (not the first set, not a
-	// same-address re-learn — setRemote is called on every inbound probe at dispatchInbound).
-	changed := ps.hasRemote && ps.remote != ap
-	ps.remote, ps.hasRemote = ap, true
+	prev, hadPrev := ps.selectedAddrLocked()
+	ps.remotes = map[uint8]*remoteEntry{ps.id: {addr: ap, lastProbe: time.Now()}}
+	ps.selKey, ps.selValid = ps.id, true
 	cb := ps.onRoam
 	ps.mu.Unlock()
-	if changed && cb != nil {
+	// The override is a deliberate repoint: fire the roam callback on an actual ADDRESS
+	// change (not on a same-address re-seed, and not on the very first seed — the
+	// pre-D94 first-set-silent behaviour Open's config seeding relies on).
+	if hadPrev && prev != ap && cb != nil {
 		cb()
 	}
 }
 
+// learnRemoteFromProbe folds one AUTHENTICATED probe frame (request or echo — the MAC
+// verified in Decode, the same trust setRemote's per-probe overwrite carried pre-D94)
+// into the freshness table under the frame's sender-stamped path id (T246, defect D94).
+// It establishes or refreshes-in-place the entry — the D9/D11 NAT-rebinding property:
+// probes keep EVERY sender path's return address current — and NEVER moves the
+// selection, with two deliberate exceptions: the FIRST entry ever established selects
+// itself (the R253 cold-start rule — the destination must be valid before any DATA so
+// the concentrator's own probe/liveness plane works), and an in-place ADDRESS change of
+// the already-selected entry follows it (same sender path, new NAT binding) with one
+// roam callback.
+func (ps *peerPathState) learnRemoteFromProbe(senderPathID uint8, ap netip.AddrPort) {
+	now := time.Now()
+	ps.mu.Lock()
+	prev, hadPrev := ps.selectedAddrLocked()
+	if ps.remotes == nil {
+		ps.remotes = make(map[uint8]*remoteEntry)
+	}
+	e, ok := ps.remotes[senderPathID]
+	if !ok {
+		e = &remoteEntry{}
+		ps.remotes[senderPathID] = e
+	}
+	e.addr, e.lastProbe = ap, now
+	if !ps.selValid {
+		// R253 cold start: the first probe-established entry is selected, sticky.
+		ps.selKey, ps.selValid = senderPathID, true
+	}
+	next, hadNext := ps.selectedAddrLocked()
+	cb := ps.onRoam
+	ps.mu.Unlock()
+	if hadNext && (!hadPrev || prev != next) && cb != nil {
+		cb()
+	}
+}
+
+// confirmDataRemote lets a DATA frame SELECT — never establish — the downlink
+// destination (T246, defect D94): the edge's uplink DATA rides only its ACTIVE WAN, so a
+// frame whose (sender path id, source address) EXACTLY matches an entry the
+// authenticated probe plane already established marks that entry as the active one. A
+// mismatched or unknown (srcAP, PathID) changes NOTHING — DATA is forgeable by design,
+// so it can only ever pick among probe-vouched addresses, and a same-entry confirmation
+// is a no-op (no roam callback). Selection moves (with one roam callback) only when the
+// match names a DIFFERENT established entry — the edge's active WAN actually changed.
+func (ps *peerPathState) confirmDataRemote(senderPathID uint8, src netip.AddrPort) {
+	ps.mu.Lock()
+	e, ok := ps.remotes[senderPathID]
+	if !ok || e.addr != src || (ps.selValid && ps.selKey == senderPathID) {
+		ps.mu.Unlock()
+		return
+	}
+	prev, hadPrev := ps.selectedAddrLocked()
+	ps.selKey, ps.selValid = senderPathID, true
+	next, _ := ps.selectedAddrLocked()
+	cb := ps.onRoam
+	ps.mu.Unlock()
+	if (!hadPrev || prev != next) && cb != nil {
+		cb()
+	}
+}
+
+// checkRemoteDead performs the one-time sticky DEAD fallback (T246, defect D94): when
+// the SELECTED entry has seen no authenticated probe for remoteDeadAfter, the selection
+// moves ONCE to the freshest probe-learned entry and sticks there (never
+// "whichever probed last" — all WANs probe at cadence, so that would re-flap). Called
+// from the probe cadence (emitProbes), never the per-datagram hot path.
+func (ps *peerPathState) checkRemoteDead(now time.Time) {
+	ps.mu.Lock()
+	if !ps.selValid {
+		ps.mu.Unlock()
+		return
+	}
+	sel := ps.remotes[ps.selKey]
+	if sel == nil || now.Sub(sel.lastProbe) < remoteDeadAfter {
+		ps.mu.Unlock()
+		return
+	}
+	var freshKey uint8
+	var fresh *remoteEntry
+	for k, e := range ps.remotes {
+		if k == ps.selKey {
+			continue
+		}
+		if fresh == nil || e.lastProbe.After(fresh.lastProbe) {
+			freshKey, fresh = k, e
+		}
+	}
+	if fresh == nil || !fresh.lastProbe.After(sel.lastProbe) {
+		// No living alternative: keep the selection (nothing better to fall back to).
+		ps.mu.Unlock()
+		return
+	}
+	prev, hadPrev := ps.selectedAddrLocked()
+	ps.selKey = freshKey
+	next, _ := ps.selectedAddrLocked()
+	cb := ps.onRoam
+	ps.mu.Unlock()
+	if (!hadPrev || prev != next) && cb != nil {
+		cb()
+	}
+}
+
+// selectedAddrLocked returns the selected entry's address, if any. Caller holds ps.mu.
+func (ps *peerPathState) selectedAddrLocked() (netip.AddrPort, bool) {
+	if !ps.selValid {
+		return netip.AddrPort{}, false
+	}
+	e := ps.remotes[ps.selKey]
+	if e == nil {
+		return netip.AddrPort{}, false
+	}
+	return e.addr, true
+}
+
+// getRemote returns the SELECTED downlink destination — the sticky, DATA-confirmed
+// active-path address (T246, defect D94) — feeding Send, emitProbes, and the PMTU
+// probes alike.
 func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	return ps.remote, ps.hasRemote
+	return ps.selectedAddrLocked()
 }
 
 // errNoPathRemote is returned by the PMTU send seam when a probe is attempted before
@@ -2149,6 +2313,10 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 	pr := ps.peer
 	switch f := fr.(type) {
 	case frame.Data:
+		// The edge's uplink DATA rides only its ACTIVE WAN, so an address-match-gated
+		// DATA sample selects (never establishes) the downlink destination among the
+		// probe-established entries (T246, defect D94).
+		ps.confirmDataRemote(f.PathID, srcAP)
 		// Decode already returned a fresh copy of the payload (it aliases nothing
 		// else), so the resequencer may take ownership of it directly.
 		rq := pr.resequencer.Load()
@@ -2193,9 +2361,14 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			m.observeRecovered(fr, rq, recovered, srcAP)
 		}
 	case frame.Probe:
-		// Authenticated (the PROBE MAC verified in Decode): learn the return remote
-		// from it, below the engine's virtual endpoint (no roaming churn).
-		ps.setRemote(srcAP)
+		// Authenticated (the PROBE MAC verified in Decode): fold the frame into the
+		// per-sender-path freshness table under its stamped path id (T246, defect D94) —
+		// establishing/refreshing the return address for THAT sender path, below the
+		// engine's virtual endpoint. Unlike the pre-D94 unconditional overwrite, this
+		// never moves the SELECTED downlink destination (except the R253 cold-start
+		// first-establishment and an in-place rebind of the selected entry), so the
+		// standby WAN's probes no longer flap the concentrator's downlink at cadence.
+		ps.learnRemoteFromProbe(f.PathID, srcAP)
 		if f.IsEcho {
 			if ps.prober != nil {
 				// A replay/forgery/wrong-path echo is rejected inside HandleEcho and

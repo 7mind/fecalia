@@ -91,7 +91,11 @@ func (m *Multipath) emitProbes() {
 		}
 	}
 
+	now := time.Now()
 	for _, t := range targets {
+		// One-time sticky DEAD fallback for the selected downlink destination (T246,
+		// defect D94), evaluated at probe cadence — never the per-datagram hot path.
+		t.ps.checkRemoteDead(now)
 		if remote, ok := t.ps.getRemote(); ok {
 			if raw, err := t.pr.SendProbe(); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.

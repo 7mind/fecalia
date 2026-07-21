@@ -155,6 +155,20 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
 - owns the **per-path UDP sockets**, byte counters, the send-path FEC `Admit`, the
   adaptive-FEC tick loop, and the wiring that hands frames to the scheduler and
   the resequencer.
+- selects each view's **downlink destination** from a per-sender-path
+  return-address table (D94/T246), not a last-prober-wins scalar: the
+  authenticated probe plane owns address **freshness** (requests keyed by the
+  edge's stamped path id; echoes keyed by the path's own id — unauthenticated
+  DATA can never introduce or move an address), while an address-match-gated DATA
+  sample **selects** which established entry is the destination (the edge's
+  uplink DATA rides only its active WAN). Selection is sticky — established by
+  the first probe (cold start), moved only by DATA naming a different established
+  entry, by a one-time DEAD fallback after `2×DownAfter` of probe silence on the
+  selected entry, or by the explicit `SetPeerRemote` hub-failover override — and
+  the roam callback (PMTU re-probe) fires only on selected-destination address
+  changes. Previously the standby WAN's probes flapped the concentrator's
+  downlink at probe cadence, sending ~50% of downlink DATA to the metered
+  standby (D94).
 - classifies each outbound batch by inner WireGuard message type (parameterized by
   the configured AmneziaWG obfuscation profile — custom `h1`–`h4` magic headers
   and `s1`/`s2` junk prefixes) so control frames can be treated specially by the
@@ -1237,8 +1251,9 @@ misbehaves subtly. Agents and contributors must preserve them.
   - **Concentrator edge-source addressing (Q64).** On the concentrator role,
     each connected edge's roamed source address is exposed through the SAME
     per-path `addressing.remote` field and the SAME `revealAddressing` gate
-    as the edge-side remote — `peerPathState.remote` already IS the edge's
-    last-observed source on that role, so no separate mechanism was needed.
+    as the edge-side remote — the view's selected downlink destination already
+    IS the edge's active-path source on that role (D94), so no separate
+    mechanism was needed.
     Consequence: a concentrator's list of connected-client addresses is
     visible ONLY on a loopback-bound monitor, never on a token-authorized
     non-loopback one, consistent with Q64's "loopback-binding only" answer.
