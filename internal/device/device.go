@@ -424,12 +424,11 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	// traffic is forwarded, not locally originated). Install is idempotent (a re-run of Up
 	// after a crash never stacks a duplicate) and removed on Close.
 	if cfg.Role == config.RoleEdge {
-		if err := installMSSClamp(name); err != nil {
-			t.Close()
-			return nil, fmt.Errorf("device: install MSS clamp: %w", err)
-		}
-		t.mssClampInstalled = true
-		clg.Info("MSS clamp installed", "interface", name, "table", mssClampTable, "chain", mssClampChain, "mss", clampMSS(tunMTU(cfg)))
+		// NON-FATAL (T232, defect D92): a missing iptables/nft front-end (or a rule-programming
+		// failure) must NOT abort bring-up into a systemd restart loop — the OUTPUT clamp is a
+		// convenience (forwarded traffic uses G14's operator FORWARD clamp; the min-across-paths
+		// TUN sizing, D85/D88, already MSS-bounds edge-originated TCP by the route MTU).
+		t.installEdgeMSSClamp()
 	}
 	// Start the runtime TUN-resize loop on the PRIVILEGED path (T209, D85): it sizes the
 	// LIVE wanbond0 link to the min inner MTU across UP paths as liveness/PMTU membership
@@ -444,6 +443,34 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	// and regrows wanbond0 without an operator mtu knob.
 	t.startPMTUDiscovery()
 	return t, nil
+}
+
+// errMSSClampBinaryMissing marks a MSS-clamp install that failed ONLY because no
+// iptables/ip6tables/nft front-end binary was found on PATH (T232, defect D92) — a benign,
+// non-fatal condition (the clamp is a convenience), distinct from a genuine rule-programming
+// failure with a front-end present. ensureRule wraps it; installEdgeMSSClamp classifies on it.
+var errMSSClampBinaryMissing = errors.New("device: MSS clamp front-end binary (iptables/ip6tables/nft) not found on PATH")
+
+// installEdgeMSSClamp programs the edge-originated TCP MSS clamp NON-FATALLY (T232, defect
+// D92). A missing front-end (errMSSClampBinaryMissing) degrades to a single WARN and the
+// tunnel still comes up: the OUTPUT clamp is a convenience — forwarded traffic uses the
+// operator FORWARD chain (G14), and the min-across-paths TUN sizing (D85/D88) already
+// MSS-bounds edge-originated TCP by the route MTU. A rule-programming failure with a front-end
+// PRESENT is logged at ERROR but is ALSO non-fatal. It NEVER returns an error, so a failed
+// clamp can never abort bring-up into a systemd restart loop (the D92 crash loop this fixes).
+// It sets t.mssClampInstalled so Close withdraws the clamp iff it was actually installed.
+func (t *Tunnel) installEdgeMSSClamp() {
+	if err := installMSSClamp(t.name); err != nil {
+		if errors.Is(err, errMSSClampBinaryMissing) {
+			t.log.Warn("MSS clamp not installed; edge-originated TCP relies on the TUN MTU / operator FORWARD clamp", "error", err.Error())
+		} else {
+			t.log.Error("MSS clamp install failed; continuing without it (edge-originated TCP relies on the TUN MTU / operator FORWARD clamp)", "error", err.Error())
+		}
+		t.mssClampInstalled = false
+		return
+	}
+	t.mssClampInstalled = true
+	t.log.Info("MSS clamp installed", "interface", t.name, "mss", clampMSS(tunMTU(t.cfg)))
 }
 
 // startMTUResize constructs the runtime TUN-resizer and starts its loop (T209, D85). The

@@ -76,6 +76,10 @@ func iptablesArgs(verb string, rule []string) []string {
 	return append(args, rule...)
 }
 
+// lookPath indirects exec.LookPath so a test can simulate a missing front-end binary
+// without mutating the process PATH (T232, defect D92).
+var lookPath = exec.LookPath
+
 // ruleExists reports whether bin's chain already carries the rule (iptables -C exits 0).
 // A non-zero exit means the rule is absent; it is NOT surfaced as an error here — the
 // caller has already confirmed the binary exists via LookPath, so a non-zero -C is the
@@ -88,8 +92,11 @@ func ruleExists(bin string, rule []string) bool {
 // after a crash never stacks a duplicate (idempotent install). It fails fast with a clear,
 // actionable error when the front-end binary is not installed.
 func ensureRule(bin string, rule []string) error {
-	if _, err := exec.LookPath(bin); err != nil {
-		return fmt.Errorf("%s not found on PATH (install iptables, or program the MSS clamp out of band): %w", bin, err)
+	if _, err := lookPath(bin); err != nil {
+		// A missing front-end binary is BENIGN and NON-FATAL (D92): classify it with the
+		// errMSSClampBinaryMissing sentinel so device.Up degrades to a WARN + continue rather
+		// than aborting bring-up into a restart loop on an nft-only host.
+		return fmt.Errorf("%s not found on PATH (install iptables/nft, or program the MSS clamp out of band): %w", bin, errMSSClampBinaryMissing)
 	}
 	if ruleExists(bin, rule) {
 		return nil
@@ -105,7 +112,7 @@ func ensureRule(bin string, rule []string) error {
 // through it, so there is nothing to withdraw). The bounded loop also clears any duplicate
 // a pre-idempotency crash might have stacked.
 func deleteRule(bin string, rule []string) error {
-	if _, err := exec.LookPath(bin); err != nil {
+	if _, err := lookPath(bin); err != nil {
 		return nil
 	}
 	for i := 0; i < maxMSSClampDeletes && ruleExists(bin, rule); i++ {
