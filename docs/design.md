@@ -804,7 +804,12 @@ gap waits. Two regimes set the actual hold:
    only while one true source is delivering. A second distinct key seen within
    the window **re-arms** the full hold immediately, and immediate release
    resumes only once a whole window has elapsed under a single key; FEC-active
-   **suppresses** immediate release (parity may yet fill the gap); and a
+   **suppresses** immediate release (parity may yet fill the gap); an
+   **aggregating (weighted) bond suppresses it entirely**
+   (`SetMultiPathExpected` — on such a bond a single-key state is only a
+   pre-engage transient, and o3 A/B measurement showed instant loss exposure
+   there starves the aggregation engage heuristic's offered load, defect D95;
+   active-backup — the D93 field case — keeps the full fast path); and a
    rebaseline (below) resets the trailing evidence.
 
 This directly disarms the D93 amplifier — a single-path head-of-line stall that
