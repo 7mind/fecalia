@@ -13,7 +13,8 @@ package e2e
 //       baseline (the worst sampled inner-RTT rises < d93MaxHoLDeltaMs above idle) — NOT the
 //       ~250 ms-per-drop spike the pre-fix fixed hold produced;
 //   (b) single-stream inner TCP under the SAME loss does not collapse — its throughput stays
-//       >= d93MinThroughputFraction of the loss-free baseline measured in the SAME test;
+//       >= d93MinLossyTCPMbps (a Mathis-model-derived absolute floor; the loss itself caps
+//       TCP far below the loss-free baseline, so a fraction-of-baseline bound is unsound);
 //   (c) two-path reorder correctness is unaffected — pinned by TestP2Aggregation (the weighted
 //       two-real-socket aggregation e2e) end-to-end and by internal/bind/multipath_d93_test.go
 //       (TestSameSrcInterleavedPathIDsStillHeld) + internal/reseq at the unit level.
@@ -86,13 +87,18 @@ package e2e
 // generous headroom over veth scheduling/queue noise on a ~ms-RTT path. This is the PRIMARY D93
 // discriminator.
 //
-// THROUGHPUT BOUND (b). d93MinThroughputFraction = 0.5: lossy-tunnel single-stream TCP must
-// retain >= 50% of the loss-free-tunnel baseline measured in the same test. This is the SECONDARY
-// (lenient) gate — on a ~ms-RTT veth path TCP recovers from a drop within ~ms (fast retransmit),
-// so 6.67% loss with the fix's immediate release costs a bounded fraction, whereas the pre-fix
-// 250 ms-per-drop HoL collapsed the flow toward the field's 8-14/31 ratio and transient sub-Mbit
-// dips. The exact surviving fraction is host/RTT-sensitive; the RTT bound in (a) remains the load-
-// bearing discriminator, and this fraction is validated/tuned on the privileged hardware run.
+// THROUGHPUT BOUND (b). d93MinLossyTCPMbps is an ABSOLUTE floor derived from the TCP loss model,
+// not a fraction of the loss-free baseline: at p = 6.67% independent loss TCP is loss-limited
+// regardless of any HoL behaviour — Mathis gives BW ~ (MSS/RTT)*(1.22/sqrt(p)) ~ (1240 B / ~5 ms)
+// * 4.7 ~ 8-12 Mbit/s on this fixture, while the loss-free veth baseline is two orders of
+// magnitude higher, so "retain 50% of baseline" is theoretically unattainable at this p (the
+// first o3 run measured 6.8 Mbit/s lossy vs 249.7 Mbit/s loss-free — exactly the Mathis
+// ceiling's neighbourhood). What DOES discriminate the fix: pre-fix, every drop stalled delivery
+// ~250 ms, inflating the effective RTT ~50x and compounding into the field collapse (iperf3
+// 0 bytes received / sub-Mbit dips) — Mathis at RTT ~250 ms predicts ~0.2 Mbit/s. The floor of
+// 2 Mbit/s sits ~10x above that pre-fix prediction and ~3x below the fixed tree's measured
+// 6.8 Mbit/s, so it is robust in both directions. The RTT bound in (a) remains the PRIMARY
+// discriminator.
 //
 // HARDWARE TIER — DO NOT RUN IN THE DEFAULT GATE. Like every //go:build e2e test here it needs
 // root, /dev/net/tun, tc, and nftables inside a network namespace; the non-privileged gate only
@@ -150,11 +156,12 @@ const (
 	// modest non-saturating bufferbloat. 100 ms is < half the 250 ms pre-fix signature.
 	d93MaxHoLDeltaMs = 100.0
 
-	// d93MinThroughputFraction is the SECONDARY (lenient) gate: lossy single-stream TCP must
-	// retain >= this fraction of the loss-free baseline. On a ~ms-RTT veth path TCP fast-retransmits
-	// within ~ms, so 6.67% loss with immediate release costs a bounded fraction; the pre-fix
-	// 250 ms-per-drop HoL collapsed it far below this. Host/RTT-sensitive; hardware-tuned (T245).
-	d93MinThroughputFraction = 0.5
+	// d93MinLossyTCPMbps is the SECONDARY gate: the ABSOLUTE floor lossy single-stream
+	// TCP must clear, derived from the Mathis loss model (see the THROUGHPUT BOUND doc in
+	// the file header): at p=6.67% the ceiling is ~8-12 Mbit/s with immediate release
+	// (o3 measured 6.8), while the pre-fix 250 ms-per-drop hold predicts ~0.2 Mbit/s.
+	// 2 Mbit/s sits ~10x above the pre-fix prediction and ~3x below the fixed measurement.
+	d93MinLossyTCPMbps = 2.0
 
 	// d93PathDelayMs is the per-path netem egress delay: low, so the veth inner RTT is ~ms and
 	// the pre-fix 250 ms hold is an unmistakable multiple of it (see the file header).
@@ -218,14 +225,17 @@ func TestE2EResequencerHoLLatency(t *testing.T) {
 			loadedDeltaMs, idleRTTms, worstLoadedRTTms, d93MaxHoLDeltaMs, resequencerTimeoutStr, edge.log())
 	}
 
-	// (b) TCP RECOVERY: single-stream inner TCP under the SAME loss must not collapse.
+	// (b) TCP RECOVERY: single-stream inner TCP under the SAME loss must clear the
+	// Mathis-derived absolute floor (see the THROUGHPUT BOUND doc above) — at this loss
+	// rate TCP is loss-limited to ~8-12 Mbit/s with the fix, but the pre-fix 250 ms
+	// per-drop hold inflated the effective RTT ~50x, predicting ~0.2 Mbit/s (the field
+	// collapse). The loss-free baseline is logged for context only.
 	lossyMbps := top.iperf3MbpsPort(t, concInner, d93TCPLoadSecs, d93TCPLossyPort)
-	fraction := lossyMbps / baselineMbps
-	t.Logf("(b) lossy single-stream TCP=%.1f Mbit/s = %.0f%% of loss-free baseline %.1f Mbit/s (want >= %.0f%%)",
-		lossyMbps, fraction*100, baselineMbps, d93MinThroughputFraction*100)
-	if fraction < d93MinThroughputFraction {
-		t.Fatalf("(b) lossy single-stream TCP collapsed to %.1f Mbit/s = %.0f%% of the loss-free baseline %.1f Mbit/s, want >= %.0f%% — a genuine %.1f%% DATA loss should cost a bounded fraction on a ~ms-RTT path (fast retransmit recovers in ~ms); the pre-fix %s-per-drop head-of-line hold collapses it (field: ~8-14 vs ~31 Mbit)\n--- edge ---\n%s",
-			lossyMbps, fraction*100, baselineMbps, d93MinThroughputFraction*100, 100.0/float64(d93DropEveryNth), resequencerTimeoutStr, edge.log())
+	t.Logf("(b) lossy single-stream TCP=%.1f Mbit/s (floor %.1f Mbit/s; loss-free baseline %.1f Mbit/s, Mathis ceiling at p=%.1f%% is ~8-12 Mbit/s)",
+		lossyMbps, d93MinLossyTCPMbps, baselineMbps, 100.0/float64(d93DropEveryNth))
+	if lossyMbps < d93MinLossyTCPMbps {
+		t.Fatalf("(b) lossy single-stream TCP collapsed to %.1f Mbit/s, want >= %.1f Mbit/s — at %.1f%% loss the Mathis ceiling is ~8-12 Mbit/s with immediate release, while the pre-fix %s-per-drop head-of-line hold predicts ~0.2 Mbit/s (the field 0-bytes-rx collapse)\n--- edge ---\n%s",
+			lossyMbps, d93MinLossyTCPMbps, 100.0/float64(d93DropEveryNth), resequencerTimeoutStr, edge.log())
 	}
 
 	// (c) Two-path reorder correctness is UNAFFECTED. It is pinned end-to-end by TestP2Aggregation
@@ -236,8 +246,8 @@ func TestE2EResequencerHoLLatency(t *testing.T) {
 	// two-path-reorder infrastructure.
 	t.Logf("(c) two-path reorder correctness pinned by TestP2Aggregation (e2e) + internal/bind/multipath_d93_test.go and internal/reseq (unit) — not re-implemented here")
 
-	t.Logf("D93 end-to-end: on ONE delivering path with %.1f%% deterministic DATA loss, loaded worst RTT stayed within %.0fms of idle and single-stream TCP kept %.0f%% of baseline — the single-delivering-path immediate release holds (T240/T241, D93, G26)",
-		100.0/float64(d93DropEveryNth), d93MaxHoLDeltaMs, d93MinThroughputFraction*100)
+	t.Logf("D93 end-to-end: on ONE delivering path with %.1f%% deterministic DATA loss, loaded worst RTT stayed within %.0fms of idle and single-stream TCP cleared the %.1f Mbit/s Mathis floor — the single-delivering-path immediate release holds (T240/T241, D93, G26)",
+		100.0/float64(d93DropEveryNth), d93MaxHoLDeltaMs, d93MinLossyTCPMbps)
 }
 
 // resequencerTimeoutStr is the human string of the pre-fix fixed head-of-line hold
