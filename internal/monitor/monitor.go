@@ -82,6 +82,11 @@ type ReseqSnapshot struct {
 	Skipped        uint64 `json:"skipped"`
 	Resyncs        uint64 `json:"resyncs"`
 	Rebaselines    uint64 `json:"rebaselines"`
+	// HoL-stall / hold accounting (T242, D93 observability leg), mirrored verbatim
+	// from reseq.Stats.
+	Holds             uint64 `json:"holds"`
+	HoldNanos         uint64 `json:"holdNanos"`
+	ImmediateReleases uint64 `json:"immediateReleases"`
 }
 
 // AggregationSnapshot is the JSON encoding of one per-peer weighted-scheduler
@@ -323,14 +328,17 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 
 	for i, r := range reseqSnapshots {
 		out.Reseq[i] = ReseqSnapshot{
-			Peer:           r.Peer,
-			Released:       r.Released,
-			DroppedDup:     r.DroppedDup,
-			DroppedOld:     r.DroppedOld,
-			DroppedSuspect: r.DroppedSuspect,
-			Skipped:        r.Skipped,
-			Resyncs:        r.Resyncs,
-			Rebaselines:    r.Rebaselines,
+			Peer:              r.Peer,
+			Released:          r.Released,
+			DroppedDup:        r.DroppedDup,
+			DroppedOld:        r.DroppedOld,
+			DroppedSuspect:    r.DroppedSuspect,
+			Skipped:           r.Skipped,
+			Resyncs:           r.Resyncs,
+			Rebaselines:       r.Rebaselines,
+			Holds:             r.Holds,
+			HoldNanos:         r.HoldNanos,
+			ImmediateReleases: r.ImmediateReleases,
 		}
 	}
 

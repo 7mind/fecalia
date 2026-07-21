@@ -103,6 +103,17 @@ const (
 	MetricReseqSkipped        = "wanbond_resequencer_skipped_seqs_total"
 	MetricReseqResyncs        = "wanbond_resequencer_resyncs_total"
 	MetricReseqRebaselines    = "wanbond_resequencer_rebaselines_total"
+	// HoL-stall / hold signal (T242, D93 observability leg). The holds/hold-seconds
+	// counter PAIR gives operators the mean hold (hold_seconds_total / holds_total —
+	// the 250 ms class of latency that was previously invisible), and
+	// immediate_releases_total counts the D93 single-delivering-path fast-path
+	// releases DISTINCTLY from timeout skips, so a rising immediate-releases signals
+	// the amplifier is disarmed. hold_seconds_total is derived from the resequencer's
+	// nanosecond accumulator (HoldNanos) at scrape time. See reseq.Stats field
+	// comments for the exact Skipped-vs-immediate semantics.
+	MetricReseqHolds             = "wanbond_resequencer_hol_holds_total"
+	MetricReseqHoldSeconds       = "wanbond_resequencer_hol_hold_seconds_total"
+	MetricReseqImmediateReleases = "wanbond_resequencer_immediate_releases_total"
 )
 
 // WG-session metric names (I2). These connection-scoped series (no path label — the WG
@@ -417,13 +428,16 @@ type collector struct {
 	fecRepairBytes   *prometheus.Desc
 	fecResidualLoss  *prometheus.Desc
 
-	reseqReleased       *prometheus.Desc
-	reseqDroppedDup     *prometheus.Desc
-	reseqDroppedOld     *prometheus.Desc
-	reseqDroppedSuspect *prometheus.Desc
-	reseqSkipped        *prometheus.Desc
-	reseqResyncs        *prometheus.Desc
-	reseqRebaselines    *prometheus.Desc
+	reseqReleased          *prometheus.Desc
+	reseqDroppedDup        *prometheus.Desc
+	reseqDroppedOld        *prometheus.Desc
+	reseqDroppedSuspect    *prometheus.Desc
+	reseqSkipped           *prometheus.Desc
+	reseqResyncs           *prometheus.Desc
+	reseqRebaselines       *prometheus.Desc
+	reseqHolds             *prometheus.Desc
+	reseqHoldSeconds       *prometheus.Desc
+	reseqImmediateReleases *prometheus.Desc
 
 	aggregationEngaged    *prometheus.Desc
 	offeredLoad           *prometheus.Desc
@@ -479,6 +493,10 @@ func NewCollector(src Source) prometheus.Collector {
 		reseqResyncs:        desc(resequencerSubsystem, "resyncs_total", "Resequencer release-point re-pins after a corroborated discontinuity.", peerScopedLabels),
 		reseqRebaselines:    desc(resequencerSubsystem, "rebaselines_total", "Resequencer release-point re-baselines forced by a trusted control event (e.g. hub failover).", peerScopedLabels),
 
+		reseqHolds:             desc(resequencerSubsystem, "hol_holds_total", "Head-of-line gaps that armed a hold (denominator of the mean hold; pair with hol_hold_seconds_total).", peerScopedLabels),
+		reseqHoldSeconds:       desc(resequencerSubsystem, "hol_hold_seconds_total", "Cumulative seconds head-of-line gaps spent held before a timeout skip, a single-path immediate release, or a fill (numerator of the mean hold).", peerScopedLabels),
+		reseqImmediateReleases: desc(resequencerSubsystem, "immediate_releases_total", "Head-of-line gaps released via the D93 single-delivering-path fast path (counted distinctly from timeout skips; rising = the D93 amplifier is disarmed).", peerScopedLabels),
+
 		aggregationEngaged:    desc(aggregationSubsystem, "engaged", "Weighted-scheduler aggregation gate (1 = striping across every eligible path, 0 = collapsed to primary-only).", peerScopedLabels),
 		offeredLoad:           desc("", "offered_load_fps", "Smoothed offered load in frames/second (EWMA of Pick calls) driving the aggregation gate.", peerScopedLabels),
 		aggregationEngageTh:   desc(aggregationSubsystem, "engage_threshold_fps", "Static engage threshold in frames/second (engage_fraction * per_path_capacity_fps): offered load above which the gate engages.", peerScopedLabels),
@@ -515,6 +533,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.reseqSkipped
 	ch <- c.reseqResyncs
 	ch <- c.reseqRebaselines
+	ch <- c.reseqHolds
+	ch <- c.reseqHoldSeconds
+	ch <- c.reseqImmediateReleases
 	ch <- c.aggregationEngaged
 	ch <- c.offeredLoad
 	ch <- c.aggregationEngageTh
@@ -557,6 +578,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.reseqSkipped, prometheus.CounterValue, float64(r.Skipped), labels...)
 		ch <- prometheus.MustNewConstMetric(c.reseqResyncs, prometheus.CounterValue, float64(r.Resyncs), labels...)
 		ch <- prometheus.MustNewConstMetric(c.reseqRebaselines, prometheus.CounterValue, float64(r.Rebaselines), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqHolds, prometheus.CounterValue, float64(r.Holds), labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqHoldSeconds, prometheus.CounterValue, float64(r.HoldNanos)/1e9, labels...)
+		ch <- prometheus.MustNewConstMetric(c.reseqImmediateReleases, prometheus.CounterValue, float64(r.ImmediateReleases), labels...)
 	}
 
 	for _, a := range c.src.Aggregation() {

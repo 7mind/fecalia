@@ -157,8 +157,11 @@ type Resequencer struct {
 
 	// Head-of-line timeout: when next is a gap but frames ahead are buffered,
 	// waiting is armed with a deadline measured from when the gap first formed.
+	// armedAt records that same arm instant so the hold's elapsed time can be
+	// accrued into holdNanos when the hold ends (T242, D93).
 	waiting  bool
 	deadline time.Time
+	armedAt  time.Time
 
 	// Discontinuity/resync guard: the current run of out-of-band (suspect) frames.
 	// resyncSeqs holds the DISTINCT suspect seqs seen in the run (a repeated
@@ -216,6 +219,25 @@ type Resequencer struct {
 	releasedN   uint64 // frames released for delivery
 	resyncs     uint64 // release-point re-pins after a corroborated discontinuity
 	rebaselines uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
+
+	// HoL-stall / hold accounting (T242, D93) — the observability leg of the D93
+	// single-path immediate release. holds counts head-of-line gaps that armed a
+	// hold; holdNanos is the cumulative time such gaps spent held before the hold
+	// ended (by a timeout skip, a single-path immediate release, a fill, or a
+	// discontinuity re-pin), measured via the injected Clock; immediateReleases
+	// counts the gaps whose successors were released via the D93 fast path.
+	//
+	// An immediate release ALSO increments skipped (by the lost gap's seq count):
+	// skipped's meaning is UNCHANGED and backward-consistent — total seqs treated as
+	// lost, whether by window-advance, timeout, or fast-path skip. The fast-path-vs-
+	// timeout distinction is recoverable WITHOUT redefining skipped, because
+	// immediateReleases separately counts the fast-path release EVENTS: a rising
+	// immediateReleases with skipped means the D93 amplifier is disarmed (single
+	// path), whereas skipped rising while immediateReleases stays flat is a genuine
+	// timeout HoL stall (the amplifier armed).
+	holds             uint64
+	holdNanos         uint64
+	immediateReleases uint64
 
 	// Single-delivering-path immediate release (D93). A head-of-line gap normally
 	// waits the full timeout in case a straggler reordered across paths fills it.
@@ -375,7 +397,7 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 	// Classify the frame against the release window and the discontinuity guard.
 	// admit adjusts next (window-advance or resync) when warranted and reports
 	// whether the frame now lands inside [next, next+window) and should be placed.
-	if !r.admit(seq) {
+	if !r.admit(seq, now) {
 		return
 	}
 
@@ -482,7 +504,7 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 // appropriate drop counter) when the frame is dropped. It may advance next by a
 // bounded amount on a plausible loss burst, or re-pin next on a corroborated
 // discontinuity. Caller holds r.mu.
-func (r *Resequencer) admit(seq uint64) bool {
+func (r *Resequencer) admit(seq uint64, now time.Time) bool {
 	if r.pendingLow {
 		// A low-anchor re-baseline (peer restart, T119) is in effect: re-anchor the
 		// release point ONLY on the genuine restarted-stream low-seq — a frame more
@@ -534,7 +556,7 @@ func (r *Resequencer) admit(seq uint64) bool {
 		// restart resets outerSeq to 1, so its frames land here). A frame within a
 		// window below next is an ordinary straggler/duplicate.
 		if r.next-seq > r.window {
-			if r.tryResync(seq) {
+			if r.tryResync(seq, now) {
 				return true
 			}
 			r.dropSuspect++
@@ -548,7 +570,7 @@ func (r *Resequencer) admit(seq uint64) bool {
 	if seq-r.next >= resyncFactor*r.window {
 		// Too far ahead to be a plausible loss burst — SUSPECT (garbage-decoded or
 		// forged high seq). A single such frame must not advance next.
-		if r.tryResync(seq) {
+		if r.tryResync(seq, now) {
 			return true
 		}
 		r.dropSuspect++
@@ -661,6 +683,23 @@ func (r *Resequencer) singleSourceImmediate(now time.Time) bool {
 	return true
 }
 
+// endHoldLocked accrues the elapsed time of the currently-armed head-of-line hold
+// into holdNanos and disarms it (T242, D93). It is the SINGLE accounting point for a
+// hold ENDING — whether by a timeout skip, a single-path immediate release, a fill,
+// or a discontinuity re-pin — so holdNanos stays a faithful sum of every armed hold's
+// arm→end lifetime. A no-op when no hold is armed. The now-armedAt guard tolerates a
+// non-advancing fake clock (contributes 0) and never adds a negative interval. Caller
+// holds r.mu.
+func (r *Resequencer) endHoldLocked(now time.Time) {
+	if !r.waiting {
+		return
+	}
+	if d := now.Sub(r.armedAt); d > 0 {
+		r.holdNanos += uint64(d.Nanoseconds())
+	}
+	r.waiting = false
+}
+
 // expire skips a head-of-line gap whose hold time has elapsed — or, over a single
 // delivering path, whose successors may release immediately (D93) — by jumping next
 // to the smallest buffered seq (treating the intervening seqs as lost) and releasing
@@ -669,12 +708,21 @@ func (r *Resequencer) expire(now time.Time) {
 	if !r.waiting {
 		return
 	}
-	if now.Before(r.deadline) && !r.singleSourceImmediate(now) {
-		return
+	// A gap proceeds either because its hold elapsed (a timeout skip) OR — while the
+	// deadline is still in the future — because the single-delivering-path fast path
+	// permits an immediate release (D93). A deadline that has already elapsed is a
+	// timeout skip even if the fast path would also apply, so immediate is set ONLY on
+	// the pre-deadline fast-path branch.
+	immediate := false
+	if now.Before(r.deadline) {
+		if !r.singleSourceImmediate(now) {
+			return
+		}
+		immediate = true
 	}
 	minSeq, ok := r.smallestBuffered()
 	if !ok {
-		r.waiting = false
+		r.endHoldLocked(now)
 		return
 	}
 	// Skip the lost gap [next, minSeq), then release from minSeq onward.
@@ -683,10 +731,17 @@ func (r *Resequencer) expire(now time.Time) {
 		r.next++
 	}
 	r.drain()
-	// Clear the armed state BEFORE re-arming so that a distinct SECOND gap exposed
-	// by this release gets its own full timeout rather than inheriting this gap's
-	// already-elapsed deadline (which would skip it with ~zero hold).
-	r.waiting = false
+	if immediate {
+		// D93 fast-path release EVENT (distinct from a timeout skip; NOT folded into
+		// skipped — see the counter comments). skipped above still counted the lost
+		// gap's seqs, keeping that counter's meaning unchanged.
+		r.immediateReleases++
+	}
+	// Accrue the hold's elapsed time and clear the armed state BEFORE re-arming, so a
+	// distinct SECOND gap exposed by this release gets its own fresh hold (its own
+	// holds++/armedAt/full deadline) rather than inheriting this gap's already-elapsed
+	// deadline (which would skip it with ~zero hold).
+	r.endHoldLocked(now)
 	r.arm(now)
 }
 
@@ -701,9 +756,13 @@ func (r *Resequencer) arm(now time.Time) {
 		if !r.waiting {
 			r.waiting = true
 			r.deadline = now.Add(r.effectiveHoldLocked())
+			r.armedAt = now
+			r.holds++
 		}
 	} else {
-		r.waiting = false
+		// The head is now present (the gap was FILLED) or the buffer emptied: accrue
+		// this hold's elapsed time and disarm (T242). A no-op when no hold was armed.
+		r.endHoldLocked(now)
 	}
 }
 
@@ -755,7 +814,7 @@ func (r *Resequencer) resetPathTracking(now time.Time) {
 // and delivery resumes immediately, without a phantom gap or an extra timeout —
 // and false while still collecting or when the seq fails to corroborate the
 // current run. Caller holds r.mu.
-func (r *Resequencer) tryResync(seq uint64) bool {
+func (r *Resequencer) tryResync(seq uint64, now time.Time) bool {
 	if len(r.resyncSeqs) == 0 || r.spanExceeds(seq) {
 		// Start (or restart) the run at this seq: it does not corroborate the
 		// current run, so it becomes the anchor of a fresh one.
@@ -779,7 +838,7 @@ func (r *Resequencer) tryResync(seq uint64) bool {
 		return false
 	}
 	// Corroborated discontinuity: re-pin to the triggering seq and resume delivery.
-	r.resync(seq)
+	r.resync(seq, now)
 	return true
 }
 
@@ -813,13 +872,13 @@ func (r *Resequencer) spanExceeds(seq uint64) bool {
 // discarding all buffered frames (they belong to the pre-discontinuity stream) in
 // O(window). The already-released FIFO is untouched — those were legitimate prior
 // deliveries. Caller holds r.mu.
-func (r *Resequencer) resync(base uint64) {
+func (r *Resequencer) resync(base uint64, now time.Time) {
 	for i := range r.ring {
 		r.ring[i] = slot{}
 	}
 	r.buf = 0
 	r.next = base
-	r.waiting = false
+	r.endHoldLocked(now) // T242: account the abandoned hold's elapsed time, then disarm.
 	r.resyncReset()
 	r.resyncs++
 }
@@ -858,7 +917,7 @@ func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
 	}
 	r.buf = 0
 	r.started = false
-	r.waiting = false
+	r.endHoldLocked(now) // T242: account the discarded hold's elapsed time, then disarm.
 	// A full unpin SUPERSEDES any pending low-anchor re-baseline (T119). If a peer
 	// restart had armed pendingLow (via RebaselineToLow) and the restarted low-seq
 	// init had not yet re-anchored `next`, a subsequent D32 hub failover must NOT
@@ -923,7 +982,7 @@ func (r *Resequencer) RebaselineToLow() {
 		r.ring[i] = slot{}
 	}
 	r.buf = 0
-	r.waiting = false
+	r.endHoldLocked(now) // T242: account the discarded hold's elapsed time, then disarm.
 	// A peer-restart low-anchor re-baseline SUPERSEDES any pending hub-failover source gate
 	// (D34): the low-anchor gate below arbitrates the re-anchor now, so a stale pendingSrc must
 	// not also gate it.
@@ -997,9 +1056,14 @@ type Stats struct {
 	DroppedDup     uint64 // frames dropped as duplicates
 	DroppedOld     uint64 // frames dropped as already-past the release point
 	DroppedSuspect uint64 // out-of-band frames dropped while (not yet) corroborating
-	Skipped        uint64 // seqs skipped (lost) by window-advance or timeout
+	Skipped        uint64 // seqs skipped (lost) by window-advance or timeout — INCLUDING those skipped by a D93 immediate release; ImmediateReleases separately counts the fast-path release EVENTS so the two are distinguishable
 	Resyncs        uint64 // release-point re-pins after a corroborated discontinuity
 	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
+
+	// HoL-stall / hold accounting (T242, D93 observability leg).
+	Holds             uint64 // head-of-line gaps that armed a hold
+	HoldNanos         uint64 // cumulative nanoseconds gaps spent held before a timeout skip, a single-path immediate release, a fill, or a discontinuity re-pin
+	ImmediateReleases uint64 // gaps released via the D93 single-delivering-path fast path — NOT folded into Skipped (see Skipped): a rising ImmediateReleases means the amplifier is disarmed
 }
 
 // Stats returns a snapshot of the cumulative counters.
@@ -1014,5 +1078,9 @@ func (r *Resequencer) Stats() Stats {
 		Skipped:        r.skipped,
 		Resyncs:        r.resyncs,
 		Rebaselines:    r.rebaselines,
+
+		Holds:             r.holds,
+		HoldNanos:         r.holdNanos,
+		ImmediateReleases: r.immediateReleases,
 	}
 }
