@@ -144,7 +144,11 @@ constraint lifts, with **no operator `mtu` knob required**.
   search settles at/below the size that echoes *reliably*. The short-circuit
   bounds a candidate to N probes and keeps the failing candidates — the only
   ones that wait a probe deadline — at ≤ log2(window), so worst-case search time
-  still fits the e2e 20 s window.
+  still fits the e2e 20 s window. The end-to-end confirmation is
+  `TestE2ELossyPathPMTUConvergence` (`-tags e2e`, hardware-tier): over a real
+  socket path that deterministically drops every 3rd *oversize* outer datagram
+  (nft `ip length > T` + `numgen inc mod 3`), the N-consecutive search converges
+  at/below the reliably-carried threshold `T`, never running away to the ceiling.
 - **Optional safety margin.** `SafetyMargin` (bytes, default **0**) is
   subtracted from the *reported* path MTU (`PathMTU` / `PathMTUOrZero` and the
   usable envelope that composes on them) as an extra cushion below the
