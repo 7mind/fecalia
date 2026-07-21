@@ -71,11 +71,19 @@ func TestConcentratorDownlinkPinsToActivePath(t *testing.T) {
 		t.Fatalf("roam callback fired %d times under stable DATA on A; want <= 1 (initial establishment only)", n)
 	}
 
-	// A genuine active-path change: DATA arrives address-match-gated from WAN B (its entry
-	// was probe-established above). The selection MOVES once.
+	// STRIPING GUARD (the o3 P2Aggregation regression): while WAN A's DATA is fresh, a
+	// foreign DATA frame from WAN B must NOT move the selection — weighted striping
+	// alternates sources per frame, and chasing them would flap the downlink at frame rate.
 	m.demuxInbound(ps, mustEncodeData(t, codec, 8, 2, "d8"), srcB)
+	if got, _ := ps.getRemote(); got != srcA {
+		t.Fatalf("foreign DATA moved getRemote to %v while the selected entry was DATA-fresh; want sticky %v (striping flap)", got, srcA)
+	}
+
+	// A GENUINE active-path change: WAN A's DATA goes silent past remoteDataFreshHorizon,
+	// then address-match-gated DATA from WAN B moves the selection once.
+	ps.confirmDataRemoteAt(2, srcB, time.Now().Add(remoteDataFreshHorizon+time.Second))
 	if got, _ := ps.getRemote(); got != srcB {
-		t.Fatalf("after DATA on WAN B getRemote = %v, want %v (address-match-gated selection move)", got, srcB)
+		t.Fatalf("after A's DATA silence + DATA on WAN B getRemote = %v, want %v (horizon-gated selection move)", got, srcB)
 	}
 
 	// Forged DATA: WAN A's address under WAN B's PathID (mismatch with B's established

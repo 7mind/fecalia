@@ -312,13 +312,17 @@ type peerPathState struct {
 	onRoam func()
 }
 
-// remoteEntry is one sender-path's learned return address plus its probe freshness.
+// remoteEntry is one sender-path's learned return address plus its freshness.
 // lastProbe is stamped by every authenticated probe that establishes/refreshes the entry
 // (and at seeding/override time, so a stale seed can go DEAD and fall back rather than
 // wedging); checkRemoteDead compares it against remoteDeadAfter for the SELECTED entry.
+// lastData is stamped by every address-match-gated DATA confirmation and gates the
+// DATA-driven selection MOVE (remoteDataFreshHorizon): under weighted STRIPING both
+// entries carry DATA continuously, so the selection must not chase every foreign frame.
 type remoteEntry struct {
 	addr      netip.AddrPort
 	lastProbe time.Time
+	lastData  time.Time
 }
 
 // peerState holds the per-PEER datapath state that was a process-global singleton before
@@ -468,6 +472,18 @@ type deferredPath struct {
 // while still bounding downlink-failover latency to a couple of liveness windows.
 const remoteDeadAfter = 2 * telemetry.DefaultDownAfter
 
+// remoteDataFreshHorizon is the DATA-activity horizon gating a DATA-driven selection
+// MOVE (T246, defect D94; the o3 P2Aggregation regression): a foreign address-match-gated
+// DATA sample moves the selection ONLY when the currently-SELECTED entry's own DATA has
+// been silent for at least this long. Under weighted STRIPING both entries carry DATA
+// continuously (alternating per frame), so without this horizon the selection would chase
+// every foreign frame — flapping the downlink destination at FRAME rate (worse than the
+// probe-cadence flap D94 fixed) and shredding the return path. Under active-backup the
+// edge's genuine WAN switch silences the old entry's DATA, so the downlink follows within
+// this horizon. One DefaultDownAfter matches the liveness DOWN detection scale, keeping
+// the downlink-follow latency inside the existing failover budget.
+const remoteDataFreshHorizon = telemetry.DefaultDownAfter
+
 // setRemote SEEDS or OVERRIDES this view's downlink destination with an operator/
 // control-plane address (edge config dest_addr at Open; SetPeerRemote at hub failover):
 // it CLEARS the learned table (post-override, stale pre-override entries must not win a
@@ -527,19 +543,41 @@ func (ps *peerPathState) learnRemoteFromProbe(senderPathID uint8, ap netip.AddrP
 }
 
 // confirmDataRemote lets a DATA frame SELECT — never establish — the downlink
-// destination (T246, defect D94): the edge's uplink DATA rides only its ACTIVE WAN, so a
-// frame whose (sender path id, source address) EXACTLY matches an entry the
-// authenticated probe plane already established marks that entry as the active one. A
-// mismatched or unknown (srcAP, PathID) changes NOTHING — DATA is forgeable by design,
-// so it can only ever pick among probe-vouched addresses, and a same-entry confirmation
-// is a no-op (no roam callback). Selection moves (with one roam callback) only when the
-// match names a DIFFERENT established entry — the edge's active WAN actually changed.
+// destination (T246, defect D94): a frame whose (sender path id, source address) EXACTLY
+// matches an entry the authenticated probe plane already established stamps that entry's
+// DATA freshness, and may mark it the active one. A mismatched or unknown (srcAP, PathID)
+// changes NOTHING — DATA is forgeable by design, so it can only ever pick among
+// probe-vouched addresses — and a same-entry confirmation just refreshes lastData (no
+// roam callback). Selection MOVES (one roam callback) only when the match names a
+// DIFFERENT established entry AND the currently-selected entry's own DATA has been silent
+// past remoteDataFreshHorizon: under active-backup a genuine edge WAN switch silences the
+// old entry so the move follows promptly, while under weighted STRIPING both entries stay
+// DATA-fresh and the selection never chases the per-frame alternation (the o3
+// P2Aggregation regression — a frame-rate destination flap on the return path).
 func (ps *peerPathState) confirmDataRemote(senderPathID uint8, src netip.AddrPort) {
+	ps.confirmDataRemoteAt(senderPathID, src, time.Now())
+}
+
+// confirmDataRemoteAt is confirmDataRemote with an injectable clock for tests.
+func (ps *peerPathState) confirmDataRemoteAt(senderPathID uint8, src netip.AddrPort, now time.Time) {
 	ps.mu.Lock()
 	e, ok := ps.remotes[senderPathID]
-	if !ok || e.addr != src || (ps.selValid && ps.selKey == senderPathID) {
+	if !ok || e.addr != src {
 		ps.mu.Unlock()
 		return
+	}
+	e.lastData = now
+	if ps.selValid && ps.selKey == senderPathID {
+		ps.mu.Unlock()
+		return
+	}
+	if ps.selValid {
+		if sel := ps.remotes[ps.selKey]; sel != nil && !sel.lastData.IsZero() && now.Sub(sel.lastData) < remoteDataFreshHorizon {
+			// The selected entry itself carries fresh DATA (weighted striping, or a
+			// transient duplicate source): stay sticky, never chase per-frame alternation.
+			ps.mu.Unlock()
+			return
+		}
 	}
 	prev, hadPrev := ps.selectedAddrLocked()
 	ps.selKey, ps.selValid = senderPathID, true
