@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -14,6 +15,26 @@ import (
 // DOWN->UP transition or an endpoint roam. It is deliberately coarse — a converged path
 // MTU is stable — so re-probes (which each spend a handful of padded probes) stay rare.
 const pmtuRefreshInterval = 5 * time.Minute
+
+// pmtuConfigFor builds the telemetry.PMTUConfig for one path's discovery machine. It
+// deliberately leaves Confirmations UNSET (zero) so telemetry.NewPMTUDiscovery applies its
+// N-consecutive reliability default (defect D91): reliability-aware convergence is ALWAYS
+// on for a discovered path, with NO operator knob that could be forgotten and no way to
+// weaken it from the device layer. It likewise leaves SafetyMargin at 0 — the
+// byte-identical reporting default; T235 keeps SafetyMargin an available-but-unwired
+// telemetry opt-in (NOT a required operator knob, per the G25 plan), so no config surface
+// is threaded here. A non-zero ConfiguredMTU (the T210 operator mtu) PINS the path so it is
+// never probed; JunkHeadroom reserves the Amnezia junk prefix out of the usable envelope.
+func pmtuConfigFor(p config.Path, junk int) telemetry.PMTUConfig {
+	return telemetry.PMTUConfig{
+		ConfiguredMTU:   p.MTU, // non-zero PINS the path (operator knob authoritative)
+		DefaultMTU:      bind.DefaultPathMTU,
+		RefreshInterval: pmtuRefreshInterval,
+		JunkHeadroom:    junk,
+		// Confirmations omitted -> defaultPMTUConfirmations (D91 reliability-aware convergence).
+		// SafetyMargin omitted (0) -> reported PMTU byte-identical to the raw discovered value.
+	}
+}
 
 // startPMTUDiscovery constructs one telemetry.PMTUDiscovery per configured path and
 // drives each on its OWN dedicated goroutine (T228, defect D88), then wires the
@@ -46,12 +67,7 @@ func (t *Tunnel) startPMTUDiscovery() {
 			// the T209 resizer keeps the configured-or-default sizing.
 			continue
 		}
-		d := telemetry.NewPMTUDiscovery(p.Name, telemetry.PMTUConfig{
-			ConfiguredMTU:   p.MTU, // non-zero PINS the path (operator knob authoritative)
-			DefaultMTU:      bind.DefaultPathMTU,
-			RefreshInterval: pmtuRefreshInterval,
-			JunkHeadroom:    junk,
-		}, probe, telemetry.SystemClock{}, t.log)
+		d := telemetry.NewPMTUDiscovery(p.Name, pmtuConfigFor(p, junk), probe, telemetry.SystemClock{}, t.log)
 		machines[p.Name] = d
 		// A SINGLE bind roam callback covers BOTH re-probe triggers: the concentrator
 		// learned-endpoint change (dispatchInbound setRemote) AND the edge hub-failover
