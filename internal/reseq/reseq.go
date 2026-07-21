@@ -52,6 +52,25 @@ const (
 	resyncCorroborate = 3
 )
 
+// singleSourceTrailingWindow is the trailing look-back over which the resequencer
+// counts DISTINCT delivering-path keys to decide whether immediate release is
+// safe (D93). When exactly one delivering path has been observed within this
+// window a head-of-line gap is genuine loss (a single path preserves order, so a
+// straggler cannot be in flight) and its successors are released with ~0 hold; a
+// second distinct key seen within the window re-arms the full timeout hold, and
+// the window itself IS the re-arm dwell (immediate release resumes only once a
+// whole window has elapsed with a single key).
+//
+// It is sized to EXCEED the failback straggler horizon so the single→multi
+// transition cannot fast-release a straggler: the receive gap hold is capped at
+// resequencerTimeout (250 ms, internal/bind/multipath.go), which bounds how long
+// a genuine cross-path straggler can trail its head, so a 2x margin (500 ms)
+// guarantees that when a second path first appears its key is still inside the
+// window that governs any straggler the first path left behind. A larger window
+// is strictly more conservative (holds longer); a smaller one risks releasing a
+// straggler past its gap at the transition, so 2x is the minimum sound multiple.
+const singleSourceTrailingWindow = 2 * (250 * time.Millisecond)
+
 // Item is one released inner datagram plus the outer source address of the DATA
 // frame that carried it. The source travels with the payload so the multipath
 // Bind can pin its single virtual endpoint to the FIRST delivered frame's
@@ -190,6 +209,24 @@ type Resequencer struct {
 	releasedN   uint64 // frames released for delivery
 	resyncs     uint64 // release-point re-pins after a corroborated discontinuity
 	rebaselines uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
+
+	// Single-delivering-path immediate release (D93). A head-of-line gap normally
+	// waits the full timeout in case a straggler reordered across paths fills it.
+	// When the frames are provably arriving over ONE delivering path, a gap is
+	// genuine loss (that path preserves order) and its successors may release with
+	// ~0 hold. These fields track the trailing distinct-path evidence that gates it.
+	//
+	// pathKnown is ORTHOGONAL to any particular pathKey value (R251): the legacy
+	// Observe ingests with UNKNOWN identity and forces the conservative full hold,
+	// while ObserveFromPath supplies a known, OPAQUE delivering-path key — and a
+	// real path may legitimately compose to key 0, so "unknown" must never be
+	// conflated with key == 0. It reflects the identity of the most recent ingest.
+	fecActive     bool      // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
+	pathKnown     bool      // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
+	trailKey      uint32    // the most recently observed known pathKey (the current single-path candidate)
+	trailKeyValid bool      // trailKey holds a value (at least one known observation since the last reset)
+	multiKeyUntil time.Time // immediate release stays suppressed until this instant (a second distinct key, or a rebaseline, was seen within the trailing window)
+	multiKeyValid bool      // multiKeyUntil holds a live suppression deadline
 }
 
 // New returns a resequencer buffering at most window outer-seq positions and
@@ -211,15 +248,59 @@ func New(window uint64, timeout time.Duration, clock Clock) *Resequencer {
 	}
 }
 
-// Observe ingests one DATA frame's inner payload under its outer-seq. It takes
-// ownership of payload (the caller must not mutate it afterwards); the multipath
-// Bind passes the freshly-decoded frame.Data.Payload, which aliases nothing else.
-// src is the outer source address the frame arrived from. Any frames that become
-// deliverable are appended to the ready FIFO for Pop.
+// Observe ingests one DATA frame's inner payload under its outer-seq with UNKNOWN
+// delivering-path identity — the conservative legacy ingest. An unknown identity
+// never enables single-path immediate release, so every existing call site and
+// test behaves EXACTLY as before D93: a head-of-line gap always waits the full
+// timeout. It is a thin wrapper over ingest; ObserveFromPath is the new primary
+// ingest that carries a known delivering-path key.
+//
+// It takes ownership of payload (the caller must not mutate it afterwards); the
+// multipath Bind passes the freshly-decoded frame.Data.Payload, which aliases
+// nothing else. src is the outer source address the frame arrived from. Any
+// frames that become deliverable are appended to the ready FIFO for Pop.
 func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
+	r.ingest(seq, payload, src, false, 0)
+}
+
+// ObserveFromPath ingests one DATA frame carrying an OPAQUE delivering-path
+// discriminator pathKey (D93). reseq imposes NO structure on pathKey: any distinct
+// value is a distinct delivering path (the bind composes it from the local
+// receiving-path id and the sender-stamped frame PathID). When frames arrive over
+// a single delivering path a head-of-line gap is genuine loss and its successors
+// release with ~0 hold; a second distinct key re-arms the full hold. Semantics are
+// otherwise identical to Observe. A real path may compose to key 0, so key 0 is a
+// perfectly valid KNOWN path — distinct from Observe's unknown identity.
+func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.AddrPort, pathKey uint32) {
+	r.ingest(seq, payload, src, true, pathKey)
+}
+
+// SetFECActive toggles whether an FEC decoder is repairing this stream. While FEC
+// is active a head-of-line gap may still be filled by a parity-reconstructed
+// frame (ObserveRecovered), so immediate release is suppressed entirely and the
+// full hold gives recovery time to land. The bind calls this at FEC setup/teardown.
+func (r *Resequencer) SetFECActive(active bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fecActive = active
+}
+
+// ingest is the shared body of Observe (known == false, unknown identity) and
+// ObserveFromPath (known == true, carrying pathKey). It records the trailing
+// delivering-path evidence before classifying the frame so the head-of-line
+// timeout logic sees the up-to-date single-vs-multi-path state.
+func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, known bool, pathKey uint32) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Record the delivering-path identity FIRST, so a second distinct key arriving
+	// with this frame re-arms the full hold before expire() decides the gap below.
+	if known {
+		r.trackPathKey(pathKey, now)
+	} else {
+		r.pathKnown = false
+	}
 
 	if !r.started {
 		if r.pendingSrcActive && src != r.pendingSrc {
@@ -515,11 +596,34 @@ func (r *Resequencer) release(cell *slot) {
 	r.releasedN++
 }
 
-// expire skips a head-of-line gap whose hold time has elapsed: it jumps next to
-// the smallest buffered seq (treating the intervening seqs as lost) and releases
+// singleSourceImmediate reports whether a head-of-line gap may be released with
+// ~0 hold instead of waiting the full timeout (D93). It holds ONLY when the frames
+// are provably arriving over ONE delivering path — a known identity (not the legacy
+// unknown ingest), FEC not active (a parity repair could still fill the gap), and
+// exactly one distinct pathKey observed within the trailing window (no second key
+// re-armed the hold and no rebaseline cold-start is in force). Over a single path a
+// gap is genuine loss, not reorder, so releasing its successors immediately is
+// sound; every other case degrades to the conservative full hold, never unsafe.
+// Caller holds r.mu.
+func (r *Resequencer) singleSourceImmediate(now time.Time) bool {
+	if r.fecActive || !r.pathKnown || !r.trailKeyValid {
+		return false
+	}
+	if r.multiKeyValid && now.Before(r.multiKeyUntil) {
+		return false
+	}
+	return true
+}
+
+// expire skips a head-of-line gap whose hold time has elapsed — or, over a single
+// delivering path, whose successors may release immediately (D93) — by jumping next
+// to the smallest buffered seq (treating the intervening seqs as lost) and releasing
 // the now-contiguous run. Caller holds r.mu.
 func (r *Resequencer) expire(now time.Time) {
-	if !r.waiting || now.Before(r.deadline) {
+	if !r.waiting {
+		return
+	}
+	if now.Before(r.deadline) && !r.singleSourceImmediate(now) {
 		return
 	}
 	minSeq, ok := r.smallestBuffered()
@@ -555,6 +659,43 @@ func (r *Resequencer) arm(now time.Time) {
 	} else {
 		r.waiting = false
 	}
+}
+
+// trackPathKey folds one known delivering-path key into the trailing single-path
+// evidence (D93). The first key after a reset becomes the current single-path
+// candidate; a key DIFFERENT from the candidate re-arms the full hold for a whole
+// trailing window from now (the window IS the re-arm dwell) and adopts the new key
+// as the candidate, so a return to a single key re-enables immediate release only
+// once the window elapses with no further foreign key. Sustained interleave keeps
+// pushing the deadline forward, so immediate release never flaps on. A garbled or
+// spoofed sender PathID can only ADD distinct keys, which only ever FORCES the
+// conservative full hold — DoS-neutral, never unsafe. Caller holds r.mu.
+func (r *Resequencer) trackPathKey(key uint32, now time.Time) {
+	r.pathKnown = true
+	if !r.trailKeyValid {
+		r.trailKey = key
+		r.trailKeyValid = true
+		return
+	}
+	if key != r.trailKey {
+		r.multiKeyUntil = now.Add(singleSourceTrailingWindow)
+		r.multiKeyValid = true
+		r.trailKey = key
+	}
+}
+
+// resetPathTracking clears the trailing single-path evidence after a rebaseline
+// (hub failover / peer restart) and holds immediate release suppressed for a full
+// trailing window from now (D93). A control-event rebaseline is exactly when the
+// delivering topology is in flux and reorder is likeliest, so the stream must
+// re-establish single-path confidence before the fast path re-engages rather than
+// inheriting the pre-rebaseline candidate. Caller holds r.mu.
+func (r *Resequencer) resetPathTracking(now time.Time) {
+	r.pathKnown = false
+	r.trailKeyValid = false
+	r.trailKey = 0
+	r.multiKeyUntil = now.Add(singleSourceTrailingWindow)
+	r.multiKeyValid = true
 }
 
 // tryResync feeds one out-of-band (suspect) seq into the discontinuity guard. It
@@ -662,8 +803,10 @@ func (r *Resequencer) resyncReset() {
 // legitimate deliveries is untouched. Idempotent and safe before the first Observe
 // (started stays false). Takes r.mu; the caller must NOT hold it.
 func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
+	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
 	for i := range r.ring {
 		r.ring[i] = slot{}
 	}
@@ -726,8 +869,10 @@ func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
 // predicate; admit therefore counts consecutive pending-low suspect-drops and, after
 // O(window) of them, falls back to a plain unpin that self-heals via resync corroboration.
 func (r *Resequencer) RebaselineToLow() {
+	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
 	for i := range r.ring {
 		r.ring[i] = slot{}
 	}
