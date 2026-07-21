@@ -82,6 +82,21 @@ func reseqPathKey(localID, framePathID uint8) uint32 {
 	return uint32(localID)<<8 | uint32(framePathID)
 }
 
+// markMultiPathExpected suppresses the resequencer's single-path immediate release when
+// the peer runs an AGGREGATING (weighted) scheduler (D93 follow-up; the o3
+// TestP2Aggregation regression — see reseq.SetMultiPathExpected). Immediate release is a
+// single-path optimization aimed at active-backup (the D93 field case); on a weighted
+// bond the single-key state is only a pre-engage transient, and skipping loss gaps
+// instantly there starves TCP's offered load below the aggregation engage threshold.
+func markMultiPathExpected(rq *reseq.Resequencer, scheduler sched.Scheduler) {
+	if rq == nil {
+		return
+	}
+	if _, weighted := scheduler.(*sched.WeightedScheduler); weighted {
+		rq.SetMultiPathExpected(true)
+	}
+}
+
 // defaultMaxDemuxSources caps the source->peer demux map (peerBySource), the
 // PROVISIONAL/unbound-source tracking state whose growth an attacker probes at
 // bootstrap (Q26/Q27). It is sized SEPARATELY from the steady-state peer set
@@ -1598,6 +1613,7 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// stale high-water outer-seq. Published atomically so the peer's per-path readLoop
 	// goroutines read it WITHOUT m.mu.
 	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
 
 	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
 	// group state and the decoder's per-group buffers re-pin with the sockets, so a
@@ -1725,6 +1741,7 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 		ps.fecSend.Store(fs)
 	}
 	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
 	if fr != nil {
 		// D93/T241: FEC is repairing this stream (fecRecv stored above), so the fresh
 		// resequencer must keep its full hold — no single-path immediate release and

@@ -113,3 +113,38 @@ func TestFECActiveKeepsFullHoldAndRecoveryFills(t *testing.T) {
 		t.Fatalf("post-recovery delivery = %v, want [p1 p2] (recovered frame fills the held gap)", got)
 	}
 }
+
+// TestMultiPathExpectedSuppressesImmediateRelease pins the weighted-bond suppression
+// (D93 follow-up; the o3 TestP2Aggregation regression): with SetMultiPathExpected(true) a
+// single-pathKey gap is NOT fast-released — it waits the full hold like the pre-D93
+// behaviour — because on an aggregating bond the single-key state is only a pre-engage
+// transient and instant loss exposure starves the engage heuristic's offered load.
+func TestMultiPathExpectedSuppressesImmediateRelease(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(64, 250*time.Millisecond, clk)
+	r.SetMultiPathExpected(true)
+
+	r.ObserveFromPath(0, []byte("p0"), holdSrc, 1)
+	if got := drainHold(r); len(got) != 1 || got[0] != "p0" {
+		t.Fatalf("seed delivery = %v, want [p0]", got)
+	}
+	r.ObserveFromPath(2, []byte("p2"), holdSrc, 1) // single key, genuine gap at seq 1
+	if got := drainHold(r); len(got) != 0 {
+		t.Fatalf("multiPathExpected gap released %v immediately; must wait the full hold", got)
+	}
+	clk.advance(240 * time.Millisecond)
+	if got := drainHold(r); len(got) != 0 {
+		t.Fatalf("multiPathExpected gap released %v before the deadline", got)
+	}
+	clk.advance(20 * time.Millisecond)
+	if got := drainHold(r); len(got) != 1 || got[0] != "p2" {
+		t.Fatalf("post-deadline delivery = %v, want [p2]", got)
+	}
+
+	// Toggling it off restores the single-path fast path.
+	r.SetMultiPathExpected(false)
+	r.ObserveFromPath(4, []byte("p4"), holdSrc, 1) // gap at seq 3
+	if got := drainHold(r); len(got) != 1 || got[0] != "p4" {
+		t.Fatalf("after SetMultiPathExpected(false) single-key gap = %v, want [p4] released immediately", got)
+	}
+}

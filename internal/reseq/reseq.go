@@ -260,12 +260,16 @@ type Resequencer struct {
 	// (dropping the recovered frame as late), neutralizing FEC.
 	holdBound time.Duration
 
-	fecActive     bool      // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
-	pathKnown     bool      // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
-	trailKey      uint32    // the most recently observed known pathKey (the current single-path candidate)
-	trailKeyValid bool      // trailKey holds a value (at least one known observation since the last reset)
-	multiKeyUntil time.Time // immediate release stays suppressed until this instant (a second distinct key, or a rebaseline, was seen within the trailing window)
-	multiKeyValid bool      // multiKeyUntil holds a live suppression deadline
+	fecActive bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
+	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
+	// scheduler, so single-key states are pre-engage transients — suppress immediate
+	// release entirely (see SetMultiPathExpected for the o3-measured rationale).
+	multiPathExpected bool
+	pathKnown         bool      // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
+	trailKey          uint32    // the most recently observed known pathKey (the current single-path candidate)
+	trailKeyValid     bool      // trailKey holds a value (at least one known observation since the last reset)
+	multiKeyUntil     time.Time // immediate release stays suppressed until this instant (a second distinct key, or a rebaseline, was seen within the trailing window)
+	multiKeyValid     bool      // multiKeyUntil holds a live suppression deadline
 }
 
 // New returns a resequencer buffering at most window outer-seq positions and
@@ -322,6 +326,22 @@ func (r *Resequencer) SetFECActive(active bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.fecActive = active
+}
+
+// SetMultiPathExpected marks this stream as one whose sender runs an AGGREGATING
+// (weighted) scheduler, suppressing single-path immediate release entirely (D93 follow-up;
+// the o3 TestP2Aggregation regression). Immediate release is a SINGLE-PATH optimization:
+// on an aggregating bond the single-key state is only ever a pre-engage/ramp transient,
+// and o3 hardware A/B showed that skipping loss gaps instantly during that transient
+// starves TCP's offered load below the weighted engage threshold — the aggregation gate
+// never opens (the pre-fix hold's delayed bursts were, inadvertently, what pushed TCP
+// past it). Suppressing costs nothing real on a weighted bond: sustained striping is
+// multi-key (already held), and the transient windows revert to the pre-D93 status quo.
+// Active-backup — the D93 field target — never sets this and keeps the full benefit.
+func (r *Resequencer) SetMultiPathExpected(expected bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.multiPathExpected = expected
 }
 
 // SetHoldBound installs the dynamic per-gap hold (T241, D93): the bind derives it
@@ -674,7 +694,7 @@ func (r *Resequencer) release(cell *slot) {
 // sound; every other case degrades to the conservative full hold, never unsafe.
 // Caller holds r.mu.
 func (r *Resequencer) singleSourceImmediate(now time.Time) bool {
-	if r.fecActive || !r.pathKnown || !r.trailKeyValid {
+	if r.fecActive || r.multiPathExpected || !r.pathKnown || !r.trailKeyValid {
 		return false
 	}
 	if r.multiKeyValid && now.Before(r.multiKeyUntil) {
