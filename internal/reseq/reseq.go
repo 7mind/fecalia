@@ -71,6 +71,13 @@ const (
 // straggler past its gap at the transition, so 2x is the minimum sound multiple.
 const singleSourceTrailingWindow = 2 * (250 * time.Millisecond)
 
+// holdBoundFloor is the smallest dynamic per-gap hold SetHoldBound will accept
+// (T241, D93). Even an ultra-low-RTT multi-path bond can reorder by a few
+// milliseconds of scheduler/queue jitter that the path RTT does not capture, so
+// the RTT-derived bound is never allowed to shrink the reorder cushion below
+// this; the construction timeout remains the upper cap.
+const holdBoundFloor = 10 * time.Millisecond
+
 // Item is one released inner datagram plus the outer source address of the DATA
 // frame that carried it. The source travels with the payload so the multipath
 // Bind can pin its single virtual endpoint to the FIRST delivered frame's
@@ -221,6 +228,16 @@ type Resequencer struct {
 	// while ObserveFromPath supplies a known, OPAQUE delivering-path key — and a
 	// real path may legitimately compose to key 0, so "unknown" must never be
 	// conflated with key == 0. It reflects the identity of the most recent ingest.
+	// holdBound is the DYNAMIC per-gap hold (T241, D93): the bind derives it from
+	// the measured path RTT (k*SRTT) and installs it via SetHoldBound, already
+	// clamped to [holdBoundFloor, timeout]. Zero means "unset" — arm() then uses
+	// the full construction timeout, so behaviour is byte-identical until the
+	// bind wires a bound in. While fecActive the bound is IGNORED and the full
+	// timeout applies: a parity reconstruction may still fill the gap, and an
+	// RTT-shortened skip would advance the release point past the recovery
+	// (dropping the recovered frame as late), neutralizing FEC.
+	holdBound time.Duration
+
 	fecActive     bool      // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
 	pathKnown     bool      // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
 	trailKey      uint32    // the most recently observed known pathKey (the current single-path candidate)
@@ -283,6 +300,35 @@ func (r *Resequencer) SetFECActive(active bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.fecActive = active
+}
+
+// SetHoldBound installs the dynamic per-gap hold (T241, D93): the bind derives it
+// from the measured delivering-path RTT (k*SRTT) so a low-RTT bond pays only a
+// small multiple of its real reorder horizon per genuine multi-path gap instead
+// of the fixed construction timeout. The bound is clamped to
+// [holdBoundFloor, timeout] — the construction timeout stays the worst-case cap —
+// and is IGNORED while FEC is active (see holdBound). Safe to call at any cadence
+// from the bind's telemetry loop.
+func (r *Resequencer) SetHoldBound(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if d < holdBoundFloor {
+		d = holdBoundFloor
+	}
+	if d > r.timeout {
+		d = r.timeout
+	}
+	r.holdBound = d
+}
+
+// effectiveHoldLocked returns the per-gap hold arm() applies: the full
+// construction timeout when FEC is active or no dynamic bound is installed,
+// otherwise the clamped RTT-derived bound. Caller holds r.mu.
+func (r *Resequencer) effectiveHoldLocked() time.Duration {
+	if r.fecActive || r.holdBound == 0 {
+		return r.timeout
+	}
+	return r.holdBound
 }
 
 // ingest is the shared body of Observe (known == false, unknown identity) and
@@ -654,7 +700,7 @@ func (r *Resequencer) arm(now time.Time) {
 	if !headPresent && r.buf > 0 {
 		if !r.waiting {
 			r.waiting = true
-			r.deadline = now.Add(r.timeout)
+			r.deadline = now.Add(r.effectiveHoldLocked())
 		}
 	} else {
 		r.waiting = false

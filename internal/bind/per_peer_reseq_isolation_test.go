@@ -59,10 +59,23 @@ func TestPerPeerReseqIsolation(t *testing.T) {
 	// Two streams over the SAME outer-seq numbers 0..5, each delivered OUT OF ORDER (0,2,1,4,3,5)
 	// within its own stream, and INTERLEAVED with the other peer's arrivals frame-by-frame. Each
 	// resequencer must reorder its OWN stream to 0,1,2,3,4,5 despite the interleave.
+	//
+	// The early (out-of-order) frames — seqs 2 and 4, which arrive ahead of their predecessors —
+	// are stamped with a SECOND sender path id: since the D93 single-path immediate release
+	// (T240/T241) a gap on ONE delivering path is treated as genuine loss and skipped with ~0
+	// hold, so same-path out-of-order repair is no longer the contract. Stamping the early
+	// frames as arriving over a second sender WAN (the same-socket concentrator-uplink
+	// topology, review R250) makes each stream's reorder a CROSS-PATH one, which the
+	// resequencer still holds for and repairs when the missing seq lands.
 	arrival := []uint64{0, 2, 1, 4, 3, 5}
+	earlyArrivals := map[uint64]bool{2: true, 4: true}
 	for _, seq := range arrival {
-		m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecA, seq, m.paths[0].id, fmt.Sprintf("A-%d", seq)), srcA)
-		m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, seq, secondView.id, fmt.Sprintf("B-%d", seq)), srcB)
+		pidA, pidB := m.paths[0].id, secondView.id
+		if earlyArrivals[seq] {
+			pidA, pidB = pidA+1, pidB+1
+		}
+		m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecA, seq, pidA, fmt.Sprintf("A-%d", seq)), srcA)
+		m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, seq, pidB, fmt.Sprintf("B-%d", seq)), srcB)
 	}
 
 	popAll := func(who string, p *peerState) []string {

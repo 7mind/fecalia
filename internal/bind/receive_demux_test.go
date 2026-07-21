@@ -49,9 +49,9 @@ func TestReceiveDemuxPerPeerResequencerAndEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build feed codec: %v", err)
 	}
-	feed := func(path *peerPathState, seq uint64, payload string, src netip.AddrPort) {
+	feed := func(path *peerPathState, seq uint64, payload string, src netip.AddrPort, senderPathID uint8) {
 		t.Helper()
-		raw, encErr := codec.Encode(nil, frame.Data{OuterSeq: seq, PathID: path.id, Payload: []byte(payload)})
+		raw, encErr := codec.Encode(nil, frame.Data{OuterSeq: seq, PathID: senderPathID, Payload: []byte(payload)})
 		if encErr != nil {
 			t.Fatalf("encode DATA seq=%d: %v", seq, encErr)
 		}
@@ -62,12 +62,20 @@ func TestReceiveDemuxPerPeerResequencerAndEndpoint(t *testing.T) {
 	// (seq 0, then 2, then 1) so a correct result proves each resequencer reorders its OWN
 	// stream to 0,1,2 independently — a shared/leaky resequencer would interleave or reorder
 	// across peers.
-	feed(primaryPath, 0, "a0", srcA)
-	feed(secondPath, 0, "b0", srcB)
-	feed(primaryPath, 2, "a2", srcA)
-	feed(secondPath, 2, "b2", srcB)
-	feed(primaryPath, 1, "a1", srcA)
-	feed(secondPath, 1, "b1", srcB)
+	//
+	// The out-of-order frame (seq 2) is stamped with a SECOND sender path id: since the
+	// D93 single-path immediate release (T240/T241), a gap on ONE delivering path is
+	// treated as genuine loss and skipped with ~0 hold — same-path out-of-order repair is
+	// no longer the contract. Stamping the early frame as arriving over a second sender
+	// WAN (the same-socket concentrator-uplink topology, review R250) makes the reorder a
+	// CROSS-PATH one, which the resequencer still holds for and repairs when the missing
+	// seq 1 lands.
+	feed(primaryPath, 0, "a0", srcA, primaryPath.id)
+	feed(secondPath, 0, "b0", srcB, secondPath.id)
+	feed(primaryPath, 2, "a2", srcA, primaryPath.id+1)
+	feed(secondPath, 2, "b2", srcB, secondPath.id+1)
+	feed(primaryPath, 1, "a1", srcA, primaryPath.id)
+	feed(secondPath, 1, "b1", srcB, secondPath.id)
 
 	// Drain exactly the six buffered frames (each Pop is ready, so no call parks).
 	type delivered struct {

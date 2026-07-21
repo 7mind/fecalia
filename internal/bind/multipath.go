@@ -61,6 +61,27 @@ const (
 	resequencerTimeout = 250 * time.Millisecond
 )
 
+// holdBoundRTTMultiple scales the delivering paths' smoothed RTT into the
+// resequencer's dynamic per-gap hold (T241, D93): hold = multiple x max SRTT,
+// clamped by the resequencer to [its floor, resequencerTimeout]. Four matches the
+// intent documented on resequencerTimeout — the fixed 250 ms cap was chosen as "a
+// few multiples of a Starlink RTT (~45 ms)" — so a genuinely low-RTT bond pays a
+// proportionally small reorder hold per multi-path gap while the 250 ms worst-case
+// bound is preserved for slow paths.
+const holdBoundRTTMultiple = 4
+
+// reseqPathKey composes the OPAQUE delivering-path discriminator the resequencer's
+// single-path immediate release keys on (T240/T241, D93; reviews R249/R250): the
+// LOCAL receiving-path id in the high byte discriminates the edge's downlink paths
+// (which share the single-homed concentrator's src address), and the SENDER-stamped
+// frame PathID in the low byte discriminates the concentrator's uplink view (one
+// local socket, but the edge stamps a distinct ps.id per WAN). Both operands are
+// uint8, so the packing is injective; a spoofed/garbled sender PathID can only add
+// distinct keys, which only ever forces the conservative full hold (DoS-neutral).
+func reseqPathKey(localID, framePathID uint8) uint32 {
+	return uint32(localID)<<8 | uint32(framePathID)
+}
+
 // defaultMaxDemuxSources caps the source->peer demux map (peerBySource), the
 // PROVISIONAL/unbound-source tracking state whose growth an attacker probes at
 // bootstrap (Q26/Q27). It is sized SEPARATELY from the steady-state peer set
@@ -1392,6 +1413,10 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 			return err
 		}
 		ps.fecRecv.Store(fr)
+		// D93/T241: an active FEC decoder can still repair a head-of-line gap, so the
+		// resequencer (stored above) must keep its full hold — no single-path
+		// immediate release and no RTT-shortened bound — while FEC is on.
+		ps.resequencer.Load().SetFECActive(true)
 	}
 	ps.sendCodec = sendCodec
 	return nil
@@ -1498,6 +1523,12 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 		ps.fecSend.Store(fs)
 	}
 	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+	if fr != nil {
+		// D93/T241: FEC is repairing this stream (fecRecv stored above), so the fresh
+		// resequencer must keep its full hold — no single-path immediate release and
+		// no RTT-shortened bound — while FEC is on.
+		ps.resequencer.Load().SetFECActive(true)
+	}
 }
 
 // readLoop is one Bind-OWNED per-path receive goroutine (T30). It reads the path
@@ -2135,7 +2166,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			// OuterSeq || Payload — the same bytes the sender coded parity over.
 			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
 			recovered, _ := fr.offer(shard)
-			rq.Observe(f.OuterSeq, f.Payload, srcAP)
+			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, reseqPathKey(ps.id, f.PathID))
 			// Residual-loss accounting (T29): this outer-seq was natively delivered, so mark
 			// it present in the post-recovery loss estimator. A seq never marked here nor via
 			// a reconstruction below is loss that FEC did not mask.
@@ -2144,7 +2175,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			}
 			m.observeRecovered(fr, rq, recovered, srcAP)
 		} else {
-			rq.Observe(f.OuterSeq, f.Payload, srcAP)
+			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, reseqPathKey(ps.id, f.PathID))
 		}
 	case frame.Parity:
 		// PARITY feeds the FEC decoder (T24); a group that has now accumulated enough

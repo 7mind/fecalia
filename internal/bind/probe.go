@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -39,7 +40,16 @@ func (m *Multipath) emitProbes() {
 	// each edge over that edge-peer's per-(peer,path) prober, so every peer's liveness/RTT is
 	// measured for its OWN scheduler. On the single-peer edge/hub m.peers holds only the
 	// primary, so this is byte-identical to the pre-split single-peer sweep.
+	// holdUpdate carries one peer's resequencer plus its paths' probers so the
+	// RTT-adaptive per-gap hold (T241, D93) can be refreshed lock-free below at
+	// this probe cadence — the natural per-path telemetry consult point, never the
+	// per-datagram hot path.
+	type holdUpdate struct {
+		rq  *reseq.Resequencer
+		prs []*telemetry.Prober
+	}
 	targets := make([]target, 0, len(m.paths))
+	holds := make([]holdUpdate, 0, len(m.peers))
 	for _, p := range m.peers {
 		budget, _ := p.scheduler.(sched.ProbeBudget)
 		for i, ps := range p.paths {
@@ -48,8 +58,38 @@ func (m *Multipath) emitProbes() {
 			}
 			targets = append(targets, target{ps: ps, pr: ps.prober, budget: budget, idx: i})
 		}
+		if rq := p.resequencer.Load(); rq != nil {
+			prs := make([]*telemetry.Prober, 0, len(p.paths))
+			for _, ps := range p.paths {
+				if ps.prober != nil {
+					prs = append(prs, ps.prober)
+				}
+			}
+			if len(prs) > 0 {
+				holds = append(holds, holdUpdate{rq: rq, prs: prs})
+			}
+		}
 	}
 	m.mu.Unlock()
+
+	// Refresh each peer's dynamic per-gap hold from its paths' measured RTT (T241,
+	// D93): the MAX smoothed RTT across the peer's probed paths bounds the
+	// cross-path reorder horizon (a straggler can trail its head by at most about
+	// the slowest path's RTT), so hold = holdBoundRTTMultiple x maxSRTT, clamped by
+	// the resequencer to [its floor, resequencerTimeout]. Paths with no RTT sample
+	// yet contribute nothing; with no sample at all the bound is left unset and the
+	// resequencer keeps the full fixed hold (conservative).
+	for _, h := range holds {
+		var maxRTT time.Duration
+		for _, pr := range h.prs {
+			if rtt := pr.Estimate().RTT; rtt > maxRTT {
+				maxRTT = rtt
+			}
+		}
+		if maxRTT > 0 {
+			h.rq.SetHoldBound(holdBoundRTTMultiple * maxRTT)
+		}
+	}
 
 	for _, t := range targets {
 		if remote, ok := t.ps.getRemote(); ok {
