@@ -851,15 +851,19 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   literal 0.0.0.0/0 or ::/0 is always split
                                    #   into the equivalent /1+/1 pair at UAPI
                                    #   render.
-# mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as
-                                   #   the edge's full-tunnel concentrator: the
-                                   #   daemon installs this peer's allowed_ips
-                                   #   split (wg-quick /1+/1 for 0.0.0.0/0) as
-                                   #   routes via wanbond0 once the interface is
-                                   #   up, and removes them on stop. Routes ONLY —
-                                   #   no policy routing/SNAT/forwarding, which
-                                   #   stay operator-owned (§4). Rejected on the
-                                   #   concentrator.
+# mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as an
+                                   #   exit-capable full-tunnel concentrator:
+                                   #   the daemon installs the active exit
+                                   #   peer's allowed_ips split (wg-quick /1+/1
+                                   #   for 0.0.0.0/0) as routes via wanbond0
+                                   #   once the interface is up, and removes
+                                   #   them on stop. Routes ONLY — no policy
+                                   #   routing/SNAT/forwarding, which stay
+                                   #   operator-owned (§4). Rejected on the
+                                   #   concentrator. SEVERAL edge peers may
+                                   #   carry the mode (T250 multi-exit; first in
+                                   #   config order is the boot-default exit) —
+                                   #   see §Multi-concentrator edge (G28).
 
 # ── amnezia obfuscation: OPTIONAL, OFF by default (plain WireGuard) ───────────
 # ALL-OR-NOTHING: either omit the whole block, or set the entire
@@ -1012,21 +1016,33 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   UAPI `allowed_ip=` rejection at daemon start. A literal `0.0.0.0/0` or `::/0`
   (full tunnel) is ALWAYS split into the equivalent `/1`+`/1` pair at UAPI
   render — the engine never receives the literal `/0`, which wedges the
-  handshake. A `0.0.0.0/0`/`::/0` entry may appear at most once per address
-  family, both within one peer's `allowed_ips` and across all of a config's
-  peers — WireGuard cryptokey routing makes overlapping `allowed_ips`
-  last-writer-wins, a silent misconfig — and at most one peer may carry
-  `mode = "default-route"` at all.
-- **`mode` is edge-only.** Peer `mode = "default-route"` marks a peer as the
-  edge's full-tunnel concentrator (an opt-in alongside a `0.0.0.0/0`/`::/0`
-  `allowed_ips` entry); rejected on the concentrator, mirroring the
-  `endpoint`/`dns` edge-only rules. When set, the daemon installs this peer's
-  `allowed_ips` split (the wg-quick `/1`+`/1` pair for `0.0.0.0/0`) as scope-link
-  routes via `wanbond0` once the interface is up, and withdraws them on stop —
-  the daemon's ONLY route programming. It is deliberately minimal: routes ONLY,
-  **no** client-LAN policy routing, SNAT, or concentrator `ip_forward`/
-  `MASQUERADE`/`FORWARD` — those stay operator-owned recipes (see §4). Without
-  the mode, no route is ever installed.
+  handshake. A duplicate `0.0.0.0/0`/`::/0` entry within ONE peer's
+  `allowed_ips` is rejected on either role. The CROSS-peer default-route rules
+  are role-split (T250):
+  - **Concentrator:** a `0.0.0.0/0`/`::/0` entry may appear on at most ONE
+    peer per address family across the whole config — WireGuard cryptokey
+    routing makes overlapping `allowed_ips` last-writer-wins, a silent
+    misconfig (D59, unchanged).
+  - **Edge:** a `0.0.0.0/0`/`::/0` entry is permitted ONLY on a
+    `mode = "default-route"` (exit-capable) peer. With more than one
+    exit-capable peer, every exit-capable peer must carry the SAME
+    default-route entry set (they are alternates for the same egress role)
+    AND at least one NON-default allowed_ip (its concentrator's inner
+    address, e.g. its inner `/32`); non-default `allowed_ips` must not
+    overlap across peers. See §Multi-concentrator edge (G28) above.
+- **`mode` is edge-only.** Peer `mode = "default-route"` marks a peer as an
+  exit-capable full-tunnel concentrator (an opt-in alongside a
+  `0.0.0.0/0`/`::/0` `allowed_ips` entry); rejected on the concentrator,
+  mirroring the `endpoint`/`dns` edge-only rules. Multiple edge peers may
+  carry the mode (T250 — each is an exit-capable alternate; the FIRST
+  default-route peer in config order is the boot-default exit). When set, the
+  daemon installs the ACTIVE exit peer's `allowed_ips` split (the wg-quick
+  `/1`+`/1` pair for `0.0.0.0/0`) as scope-link routes via `wanbond0` once the
+  interface is up, and withdraws them on stop — the daemon's ONLY route
+  programming. It is deliberately minimal: routes ONLY, **no** client-LAN
+  policy routing, SNAT, or concentrator `ip_forward`/`MASQUERADE`/`FORWARD` —
+  those stay operator-owned recipes (see §4). Without the mode, no route is
+  ever installed.
 - **amnezia all-or-nothing.** An unconfigured (all-zero) block is plain
   WireGuard. Once *any* of `jc/jmin/jmax/s1/s2/h1..h4` is set, the full
   `jc,jmin,jmax,s1,s2` set must be `> 0`, `jmin <= jmax`, the init/response

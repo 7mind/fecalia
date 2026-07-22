@@ -1529,6 +1529,11 @@ func fillExamplePlaceholders(s string) string {
 		"<base64 32-byte PSK for mobile-edge>", testKey(11),
 		"<base64 office-edge public key>", testKey(12),
 		"<base64 mobile-edge public key>", testKey(13),
+		"<base64 edge private key>", testKey(14),
+		"<base64 concentrator-A public key>", testKey(15),
+		"<base64 concentrator-B public key>", testKey(16),
+		"<base64 32-byte PSK for hub-a>", testKey(17),
+		"<base64 32-byte PSK for hub-b>", testKey(18),
 	)
 	return r.Replace(s)
 }
@@ -1632,6 +1637,18 @@ func exampleMultiPeerConcentrator(t *testing.T, content string) string {
 	t.Helper()
 	block := extractExampleSection(t, content,
 		"# ── live example (two edges, distinct per-peer psk/name) ──",
+		"\n# ─────────────────────────────────────────────────────────────────────────────\n# MULTI-CONCENTRATOR EDGE EXAMPLE",
+	)
+	return fillExamplePlaceholders(block)
+}
+
+// exampleMultiConcentratorEdge extracts and uncomments the documented
+// "MULTI-CONCENTRATOR EDGE EXAMPLE (G28/T250)" live example — a self-contained
+// two-uplink, two-exit-concentrator edge config — with placeholders filled.
+func exampleMultiConcentratorEdge(t *testing.T, content string) string {
+	t.Helper()
+	block := extractExampleSection(t, content,
+		"# ── live example (two uplinks × two concentrators = 4 probers) ──",
 		"\n# ── amnezia obfuscation:",
 	)
 	return fillExamplePlaceholders(block)
@@ -1725,6 +1742,29 @@ func TestExampleConfigLoads(t *testing.T) {
 		}
 		if p0.PSK.Bytes() == p1.PSK.Bytes() {
 			t.Fatal("expected distinct per-peer psks per the documented example, got equal")
+		}
+	})
+
+	t.Run("multi_concentrator_edge", func(t *testing.T) {
+		// The documented G28/T250 multi-concentrator edge example is likewise
+		// self-contained (its own role/psk/paths/wireguard header) and must
+		// satisfy the multi-exit validation rules it documents.
+		body := exampleMultiConcentratorEdge(t, content)
+		path := writeConfig(t, 0o600, body)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("load multi-concentrator edge example:\n%s\n\nerror: %v", body, err)
+		}
+		if cfg.Role != RoleEdge {
+			t.Fatalf("role = %q, want edge", cfg.Role)
+		}
+		if got := len(cfg.WireGuard.Peers); got != 2 {
+			t.Fatalf("peers = %d, want 2", got)
+		}
+		for i, p := range cfg.WireGuard.Peers {
+			if p.Mode != PeerModeDefaultRoute {
+				t.Errorf("peer %d mode = %q, want %q", i, p.Mode, PeerModeDefaultRoute)
+			}
 		}
 	})
 

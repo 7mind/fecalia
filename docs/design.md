@@ -1026,9 +1026,11 @@ by `internal/device`:
   posture is: the daemon creates and brings up `wanbond0` but otherwise **never
   assigns addresses and installs no routes** — addressing and routing stay
   operator-owned. `mode = "default-route"` is the **one deliberate exception**:
-  an edge-only opt-in, rejected on the concentrator, that marks a peer as the
-  edge's full-tunnel concentrator. When set, once the interface is up the
-  daemon installs that peer's `allowed_ips` split — the wg-quick-style
+  an edge-only opt-in, rejected on the concentrator, that marks a peer as an
+  exit-capable full-tunnel concentrator (since T250 SEVERAL edge peers may
+  carry the mode as alternates for the same egress role; the first in config
+  order is the boot-default exit). When set, once the interface is up the
+  daemon installs the active exit peer's `allowed_ips` split — the wg-quick-style
   `/1`+`/1` pair for a literal `0.0.0.0/0`/`::/0` (the same split
   `uapiConfig`'s `splitDefaultRoute` already applies when rendering the
   engine's UAPI `allowed_ip=` lines, so the installed routes and the engine's

@@ -155,36 +155,45 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   0.0.0.0/0 or ::/0 (full tunnel) is ALWAYS split
                                    #   into the equivalent /1+/1 pair at UAPI render —
                                    #   the engine never sees the literal /0.
-# mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as the
-                                   #   edge's full-tunnel concentrator (opts into a
-                                   #   0.0.0.0/0 / ::/0 allowed_ips entry above).
-                                   #   Rejected on the concentrator. When set, the
-                                   #   daemon installs this peer's allowed_ips split
-                                   #   (wg-quick /1+/1 for 0.0.0.0/0) as scope-link
-                                   #   routes via wanbond0 once the interface is up,
-                                   #   and removes them on stop. Routes ONLY — no
+# mode = "default-route"           # OPTIONAL, edge-only. Marks this peer as an
+                                   #   exit-capable full-tunnel concentrator (opts
+                                   #   into a 0.0.0.0/0 / ::/0 allowed_ips entry
+                                   #   above). Rejected on the concentrator.
+                                   #   SEVERAL edge peers may carry the mode (T250
+                                   #   multi-exit; the FIRST default-route peer in
+                                   #   config order is the boot-default exit — see
+                                   #   the MULTI-CONCENTRATOR EDGE example below).
+                                   #   When set, the daemon installs the active
+                                   #   exit peer's allowed_ips split (wg-quick
+                                   #   /1+/1 for 0.0.0.0/0) as scope-link routes
+                                   #   via wanbond0 once the interface is up, and
+                                   #   removes them on stop. Routes ONLY — no
                                    #   policy routing, SNAT, or concentrator
                                    #   forwarding (those stay operator-owned).
-# psk = "<base64 32-byte PSK>"      # OPTIONAL. Meaningful only for a MULTI-PEER
-                                   #   concentrator (see the example below). With
-                                   #   exactly one peer configured — as shown live
-                                   #   here — a per-peer psk is REJECTED at load
-                                   #   ("psk is not meaningful with a single peer");
-                                   #   leave it UNSET and the top-level `psk` above
-                                   #   is used, so a legacy single-peer config is
-                                   #   unaffected. With MORE THAN ONE peer, this
-                                   #   field becomes REQUIRED and must be pairwise-
-                                   #   distinct across peers: each peer authenticates
-                                   #   its own PROBE frames with its OWN psk, and the
-                                   #   top-level `psk` authenticates NO peer once a
-                                   #   second peer is configured (T80/T81, Q21).
+# psk = "<base64 32-byte PSK>"      # OPTIONAL. Meaningful only with MORE THAN ONE
+                                   #   peer — on EITHER role: a multi-peer
+                                   #   concentrator (many edges, example below) or
+                                   #   a multi-concentrator edge (T250, example
+                                   #   below). With exactly one peer configured —
+                                   #   as shown live here — a per-peer psk is
+                                   #   REJECTED at load ("psk is not meaningful
+                                   #   with a single peer"); leave it UNSET and the
+                                   #   top-level `psk` above is used, so a legacy
+                                   #   single-peer config is unaffected. With MORE
+                                   #   THAN ONE peer, this field becomes REQUIRED
+                                   #   and must be pairwise-distinct across peers:
+                                   #   each peer authenticates its own PROBE frames
+                                   #   with its OWN psk, and the top-level `psk`
+                                   #   authenticates NO peer once a second peer is
+                                   #   configured (T80/T81, Q21).
                                    #   Generate: head -c 32 /dev/urandom | base64
 # name = "edge1"                    # OPTIONAL. Unused when a single peer is
                                    #   configured, as shown live here (metrics never
                                    #   carry a `peer` label for a single bound peer,
                                    #   see docs/runbook.md's "Multi-peer concentrator
-                                   #   (G4)" metrics note). With MORE THAN ONE peer,
-                                   #   REQUIRED and must be unique across peers
+                                   #   (G4)" metrics note). With MORE THAN ONE peer
+                                   #   (either role — T250 edge included), REQUIRED
+                                   #   and must be unique across peers
                                    #   (T80/T81, Q21). ADDITIONAL peers (all but the
                                    #   first-configured) are exposed under this name
                                    #   as the metrics `peer` label; the first/primary
@@ -204,11 +213,13 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # MULTI-PEER CONCENTRATOR EXAMPLE (G4): TWO EDGES, ONE CONCENTRATOR
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# The plural [[wireguard.peers]] syntax (one block per edge) is supported on the
-# concentrator. Single-peer configs (one [[wireguard.peers]] block, as shown
-# live above) are unaffected: with exactly one peer, a per-peer `psk` is
-# REJECTED at load (the top-level `psk` is used) and a per-peer `name` is
-# optional and inert for metrics.
+# The plural [[wireguard.peers]] syntax is supported on BOTH roles: on the
+# concentrator (one block per edge, this example) and on the edge (one block
+# per concentrator — the T250 multi-exit form, next example). The multi-peer
+# name/psk rules below apply identically on either role. Single-peer configs
+# (one [[wireguard.peers]] block, as shown live above) are unaffected: with
+# exactly one peer, a per-peer `psk` is REJECTED at load (the top-level `psk`
+# is used) and a per-peer `name` is optional and inert for metrics.
 #
 # With MORE THAN ONE peer, every peer authenticates its own PROBE frames with
 # its OWN per-peer `psk` (internal/bind/multipath.go's peerBySource demux binds
@@ -251,6 +262,61 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # allowed_ips = ["10.77.2.0/24"]
 # psk = "<base64 32-byte PSK for mobile-edge>"    # Must differ from office-edge's psk
 # name = "mobile-edge"                             # Must differ from office-edge's name
+#
+# [metrics]
+# listen = "127.0.0.1:9090"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MULTI-CONCENTRATOR EDGE EXAMPLE (G28/T250): ONE EDGE, TWO EXIT CONCENTRATORS
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The EDGE may declare several concentrator peers bonded over the SAME uplinks.
+# Each mode = "default-route" peer is an exit-capable alternate for the
+# full-tunnel egress; the FIRST default-route peer in config order is the
+# boot-default exit (the selection never persists across restarts). Validation
+# (see docs/install.md §Multi-concentrator edge): every exit-capable peer must
+# list the SAME default-route entry set PLUS its own non-default inner
+# allowed_ip (e.g. its inner /32 — a /0-only exit peer is rejected);
+# non-default allowed_ips must not overlap across peers; each peer keeps its
+# OWN endpoint/endpoints failover list, with exact duplicate literal endpoints
+# across peers rejected; name/psk are required and pairwise-distinct as in any
+# multi-peer config; ONE shared [scheduler]/[fec] policy block applies to every
+# peer bond (no per-peer policy keys); and the probe fan-out (peers × uplinks,
+# one liveness prober per pair) must stay within the 32-prober budget.
+#
+# ── live example (two uplinks × two concentrators = 4 probers) ────────────────
+# role = "edge"
+# psk = "<base64 32-byte PSK>"      # REQUIRED by validate; authenticates no
+                                   #   peer once a second peer is configured.
+#
+# [[paths]]
+# name = "starlink"
+# source_addr = "192.168.1.10"
+#
+# [[paths]]
+# name = "5g"
+# source_addr = "192.168.2.10"
+#
+# [wireguard]
+# private_key = "<base64 edge private key>"
+#
+# # Concentrator A — first default-route peer, so the boot-default exit.
+# [[wireguard.peers]]
+# public_key = "<base64 concentrator-A public key>"
+# name = "hub-a"                                  # REQUIRED in multi-peer mode
+# psk = "<base64 32-byte PSK for hub-a>"          # REQUIRED in multi-peer mode
+# endpoint = "203.0.113.7:51820"                  # per-peer endpoint(s) required
+# allowed_ips = ["0.0.0.0/0", "10.77.0.1/32"]     # same /0 set + its inner /32
+# mode = "default-route"
+#
+# # Concentrator B — a warm-standby exit alternate.
+# [[wireguard.peers]]
+# public_key = "<base64 concentrator-B public key>"
+# name = "hub-b"                                  # Must differ from hub-a's name
+# psk = "<base64 32-byte PSK for hub-b>"          # Must differ from hub-a's psk
+# endpoint = "198.51.100.7:51820"                 # Must differ from hub-a's endpoint
+# allowed_ips = ["0.0.0.0/0", "10.77.0.2/32"]     # same /0 set + its OWN inner /32
+# mode = "default-route"
 #
 # [metrics]
 # listen = "127.0.0.1:9090"
@@ -450,10 +516,19 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 # • allowed_ips: >= 1 CIDR per peer; empty is rejected when the WG config is
 #   assembled (not by config.validate). Every entry's CIDR syntax IS parsed and
 #   validated by config.validate (naming the peer + offending entry on a
-#   malformed prefix), so a bad entry fails fast at load. A 0.0.0.0/0 or ::/0
-#   entry may appear at most once per address family, both within one peer and
-#   across all peers (overlapping allowed_ips is WireGuard cryptokey-routing
-#   last-writer-wins); at most one peer may carry mode = "default-route".
+#   malformed prefix), so a bad entry fails fast at load. A duplicate 0.0.0.0/0
+#   or ::/0 entry WITHIN one peer's allowed_ips is rejected on either role. The
+#   CROSS-peer default-route rules are role-split (T250):
+#   - concentrator: a 0.0.0.0/0 / ::/0 entry may appear on at most ONE peer per
+#     address family (overlapping allowed_ips is WireGuard cryptokey-routing
+#     last-writer-wins; D59, unchanged);
+#   - edge: a 0.0.0.0/0 / ::/0 entry is permitted ONLY on a
+#     mode = "default-route" peer; multiple edge peers may carry the mode (each
+#     an exit-capable alternate, first in config order = boot-default exit), in
+#     which case every exit-capable peer must list the SAME default-route entry
+#     set AND at least one non-default inner allowed_ip, and non-default
+#     allowed_ips must not overlap across peers (see the MULTI-CONCENTRATOR
+#     EDGE example above).
 # • amnezia all-or-nothing: an unconfigured (all-zero) block is plain WireGuard.
 #   Once ANY of jc/jmin/jmax/s1/s2/h1..h4 is set, the full jc,jmin,jmax,s1,s2 set
 #   must be > 0, jmin <= jmax, 148+s1 != 92+s2, and h1..h4 must be a distinct set
