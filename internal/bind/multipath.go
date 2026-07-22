@@ -2936,14 +2936,22 @@ func (m *Multipath) fecFlushDeadline() {
 // concentrator peer) — the drive is entirely peer-scoped so one peer's control loop never
 // reads or perturbs another peer's controller/encoder/paths.
 //
-// WHICH LOSS drives the controller (design decision 1): the MAX raw probe-measured loss
-// (Estimate().Loss) across peer's own currently-eligible (StateUp) paths. Parity must mask
-// the loss the DATA actually experiences; under active-backup only the primary carries data
-// and the max collapses to it, and under the weighted scheduler data is striped across the
-// eligible set, so sizing to the worst active path is the defensible, policy-agnostic
-// choice. It is deliberately the RAW per-path loss, NOT the post-recovery ConnLoss: feeding
-// the masked residual back would form a control loop that under-provisions precisely because
-// it is succeeding. A down/probeless path is excluded — it carries no data to protect.
+// WHICH LOSS drives the controller (design decision 1, revised D96 mechanisms 2+3): the loss
+// on the path(s) that ACTUALLY CARRY DATA, consulted through the scheduler's DataPaths seam
+// (T271) rather than a role-agnostic MAX over every StateUp prober. Parity must mask the loss
+// the DATA actually experiences: under active-backup only the active path carries data (so the
+// signal is that one path's raw probe loss), and under the weighted scheduler data is striped
+// across the aggregating set (so the signal is the WEIGHT-WEIGHTED MIX of those paths' losses,
+// per each path's distribution share). A role-agnostic MAX let a lossy but data-idle STANDBY
+// drive M up even though it carried no data to protect — the D96 defect this replaces. A
+// MIN-SAMPLE FLOOR (minAdaptiveLossSamples) additionally excludes any data path still in its
+// early loss-window regime, where a single dropped probe reads as a large fraction against a
+// tiny denominator (D96 mechanism 3); when the weighted mix's eligible subset is a strict
+// subset of the data paths the mix is RENORMALIZED over that subset, and when NO data path is
+// sample-eligible the drive takes the count==0 HOLD branch (below). It is deliberately the RAW
+// per-path loss, NOT the post-recovery ConnLoss: feeding the masked residual back would form a
+// control loop that under-provisions precisely because it is succeeding. A down/probeless path
+// carries no data and is never in DataPaths, so it is excluded by construction.
 func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
 	fs := peer.fecSend.Load()
 	if fs == nil || fs.ctrl == nil {
@@ -2954,17 +2962,30 @@ func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
 		return
 	}
 
-	loss, count := maxEligiblePathLossLocked(peer)
+	// Refresh the scheduler's liveness-derived selection before reading its data-path set: this
+	// drive runs on the FEC flush timer, decoupled from the send-path Pick that otherwise warms
+	// the cached active/eligible set, so without this the data-path signal could lag liveness on
+	// an idle-but-lossy peer. Recompute is non-consuming (advances no distribution/pacing/load
+	// state), takes only the scheduler lock, and never calls back into the Bind — the same
+	// m.mu->scheduler order the eager-failover nudge already relies on — so it composes with the
+	// DataPaths read below (which the T271 seam documents as NOT itself refreshing liveness).
+	peer.scheduler.Recompute()
+
+	loss, count := dataPathLossLocked(peer)
 	if count == 0 {
-		// No eligible probed path this interval: HOLD the current parity/smoothed-loss
-		// target (the controller does not Observe), but still publish the eligible signal
-		// (count 0) — it is the only way an operator sees this hold branch — WITHOUT
-		// clobbering the held decision. The throttle stamp deliberately stays UNtouched on
-		// this branch (it moved below, past the eligibility check): the hold does not Observe,
-		// so it must not consume the interval — the drive stays admitted every tick until an
-		// eligible path returns, at the minor cost of a per-tick maxEligiblePathLossLocked
-		// scan (D97). publishAdaptiveEligible is idempotent/non-clobbering, so the repeated
-		// hold-branch publishes are safe.
+		// No sample-eligible DATA path this interval — either the scheduler reports no path
+		// carrying data (all down/collapsed) or every data path is still below the min-sample
+		// floor (early regime). HOLD the current parity/smoothed-loss target (the controller
+		// does not Observe), but still publish the eligible signal (count 0) — it is the only
+		// way an operator sees this hold branch — WITHOUT clobbering the held decision. The
+		// throttle stamp deliberately stays UNtouched on this branch (it moved below, past the
+		// eligibility check): the hold does not Observe, so it must not consume the interval —
+		// the drive stays admitted every tick until a data path becomes sample-eligible, at the
+		// minor cost of a per-tick dataPathLossLocked scan (D97). Because the stamp lives ONLY on
+		// the Observe branch (G31/T276), a floor-induced early-regime HOLD leaves the throttle
+		// UNSTAMPED, so selection work runs each tick during the early regime — accepted
+		// consciously (D96). publishAdaptiveEligible is idempotent/non-clobbering, so the
+		// repeated hold-branch publishes are safe.
 		fs.publishAdaptiveEligible(loss, count)
 		return
 	}
@@ -2977,25 +2998,66 @@ func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
 	fs.publishAdaptiveDrive(fs.ctrl.Parity(), fs.ctrl.SmoothedLoss(), loss, count)
 }
 
-// maxEligiblePathLossLocked returns the maximum raw probe-measured loss across peer's OWN
-// paths that are currently StateUp and carry a prober, plus the COUNT of such eligible
-// paths (0 when none exist — the caller's 'no eligible path' condition). Caller holds
-// m.mu. It reads each prober's own mutex (State/Estimate) under m.mu; the prober is a LEAF
-// lock (it never calls back into the Bind), so this cannot invert the send-path
-// m.mu→scheduler→prober order the rest of the Bind takes.
-func maxEligiblePathLossLocked(peer *peerState) (float64, int) {
-	maxLoss := 0.0
+// dataPathLossLocked computes the adaptive controller's loss input from the path(s) that
+// ACTUALLY CARRY DATA (D96 mechanisms 2+3), consulting the scheduler's DataPaths seam (T271)
+// instead of a role-agnostic MAX over every StateUp prober. It returns the weight-weighted mix
+// of the data paths' raw probe-measured loss and the COUNT of sample-eligible data paths (0 —
+// the caller's HOLD condition — when the scheduler reports no data path, or every reported data
+// path is still below the min-sample floor). Caller holds m.mu.
+//
+// It calls peer.scheduler.DataPaths() (which takes the scheduler's own lock and returns a
+// caller-owned copy, never calling back into the Bind — the documented m.mu->scheduler order)
+// and then reads each named data path's prober (Estimate) — the prober is a LEAF lock that
+// never calls back into the Bind, so the whole read respects the m.mu->scheduler->prober order
+// the rest of the Bind takes. DataPath.Index is the priority-ordered path index, which by the
+// schedIdx invariant (attachPeerPathLocked) equals the position in peer.paths.
+func dataPathLossLocked(peer *peerState) (float64, int) {
+	dps := peer.scheduler.DataPaths()
+	return weightedDataPathLoss(dps, func(idx int) (telemetry.Estimate, bool) {
+		if idx < 0 || idx >= len(peer.paths) {
+			return telemetry.Estimate{}, false // stale index during a concurrent membership change
+		}
+		pr := peer.paths[idx].prober
+		if pr == nil {
+			return telemetry.Estimate{}, false // no probe transport: no per-path loss to read
+		}
+		return pr.Estimate(), true
+	})
+}
+
+// weightedDataPathLoss folds the per-data-path loss estimates into one controller input: the
+// weight-weighted mix of the RAW loss over the SAMPLE-ELIGIBLE data paths, renormalized over
+// that eligible subset. estimate maps a DataPath.Index to that path's telemetry.Estimate (ok
+// false when the index is unreadable). A data path whose Estimate().LossSamples is below
+// minAdaptiveLossSamples (T270) is excluded — its denominator is too small to trust (D96
+// mechanism 3) — so a sub-threshold single-drop spike cannot cross the raise gate. The returned
+// weight is renormalized over the eligible subset: when the floor excludes a strict subset of a
+// weighted bond's data paths the mix is taken over the survivors (dividing by their weight sum);
+// when the eligible subset is EMPTY it returns (0, 0), the HOLD signal. For the single-carrier
+// active-backup result ([{active, 1.0}]) the mix collapses to the active path's own loss.
+//
+// AGGREGATION-GATE DISCONTINUITY: when a WeightedScheduler stops aggregating mid-stream its
+// DataPaths steps from the striped mix to the primary-only ([{primary, 1.0}]) signal — a step
+// change in the controller input smoothed downstream by the controller's EWMA, not here.
+func weightedDataPathLoss(dps []sched.DataPath, estimate func(idx int) (telemetry.Estimate, bool)) (float64, int) {
+	var weightedSum, weightTotal float64
 	count := 0
-	for _, ps := range peer.paths {
-		if ps.prober == nil || ps.prober.State() != telemetry.StateUp {
+	for _, dp := range dps {
+		est, ok := estimate(dp.Index)
+		if !ok {
 			continue
 		}
-		if l := ps.prober.Estimate().Loss; count == 0 || l > maxLoss {
-			maxLoss = l
+		if est.LossSamples < minAdaptiveLossSamples {
+			continue // early-regime: denominator too small to be a trustworthy loss fraction
 		}
+		weightedSum += dp.Weight * est.Loss
+		weightTotal += dp.Weight
 		count++
 	}
-	return maxLoss, count
+	if count == 0 {
+		return 0, 0
+	}
+	return weightedSum / weightTotal, count
 }
 
 // ParseEndpoint records the peer's wireguard endpoint as the default per-path

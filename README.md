@@ -127,8 +127,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   true, adaptive = true`, four per-peer gauges expose the adaptive controller's
   live decision — `wanbond_fec_adaptive_parity` (current target parity M),
   `wanbond_fec_smoothed_loss` (its EWMA loss estimate),
-  `wanbond_fec_eligible_path_loss` (max raw loss across the paths the drive
-  considered), and `wanbond_fec_eligible_paths` (their count) — absent
+  `wanbond_fec_eligible_path_loss` (the raw per-path loss on the paths that
+  actually carry DATA — the active path under active-backup, the weight-weighted
+  mix under weighted striping, with an early-regime min-sample floor applied),
+  and `wanbond_fec_eligible_paths` (the count of those data paths) — absent
   entirely for a fixed-ratio or FEC-off peer.
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a read-only,
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over

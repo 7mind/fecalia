@@ -85,6 +85,18 @@ const fecResidualLossWindow = 8192
 // the (possibly much smaller) FEC group-close deadline the tick loop runs at.
 const adaptiveControlInterval = telemetry.DefaultProbeInterval
 
+// minAdaptiveLossSamples is the early-regime min-sample floor the adaptive controller drive
+// applies to each data-carrying path's loss estimate (D96 mechanism 3, fix (c)). A path whose
+// Estimate().LossSamples (T270 — the width of the trailing loss window filled so far) is BELOW
+// this is EXCLUDED from the controller input: at a small denominator a single dropped probe
+// reads as a large loss fraction (1 drop at n=8 is 12.5%), a small-denominator spike that must
+// not cross the raise gate and inflate M. Once the window has filled to this many samples the
+// same lost probe reads as a trustworthy fraction and the path drives the controller normally.
+// It is a WINDOW-FILL count, not a fraction — the trailing loss window is 512 wide
+// (telemetry.defaultLossWindow), so this floor is reached a handful of probe intervals into a
+// path's life and then holds for the path's lifetime.
+const minAdaptiveLossSamples = 32
+
 // fecSender is the send-side FEC state: the group-forming encoder (accessed only
 // under the Bind's m.mu, on the Send path and the deadline-tick goroutine) plus the
 // parity-overhead counters the /metrics exposition reports. The counters are
@@ -115,8 +127,8 @@ type fecSender struct {
 	// and reports FECStats.Adaptive == nil.
 	adaptiveParity        atomic.Int64  // target parity M (ctrl.Parity())
 	adaptiveSmoothedLoss  atomic.Uint64 // EWMA smoothed loss, math.Float64bits
-	adaptiveEligibleLoss  atomic.Uint64 // max eligible-path loss, math.Float64bits
-	adaptiveEligiblePaths atomic.Int64  // count of eligible (StateUp+probed) paths
+	adaptiveEligibleLoss  atomic.Uint64 // data-path loss the drive Observed (weighted mix), math.Float64bits
+	adaptiveEligiblePaths atomic.Int64  // count of sample-eligible DATA paths (D96), 0 on HOLD
 
 	dataFrames   atomic.Uint64
 	dataBytes    atomic.Uint64
@@ -227,10 +239,13 @@ type FECStats struct {
 // single serialized drive locus and scraped lock-free through the FEC snapshot chain
 // (T263). Parity is the target parity count M the encoder was retargeted to
 // (ctrl.Parity()); SmoothedLoss the controller's EWMA loss estimate (ctrl.SmoothedLoss());
-// EligibleLoss the max raw probe-measured loss across the drive's eligible (StateUp +
-// probed) paths; EligiblePaths the count of those paths. On the 'no eligible path' hold
-// branch EligiblePaths is 0 (and EligibleLoss 0) while Parity/SmoothedLoss HOLD their last
-// driven value — the count reaching 0 is how an operator observes that hold.
+// EligibleLoss the RAW per-path loss the drive Observed — the loss on the path(s) actually
+// carrying DATA (the scheduler's DataPaths seam, D96): the active path's loss under
+// active-backup, the weight-weighted mix under weighted striping, over the SAMPLE-ELIGIBLE data
+// paths only; EligiblePaths the count of those sample-eligible data paths. On the HOLD branch —
+// no data path carrying, or every data path still below the min-sample floor (early regime) —
+// EligiblePaths is 0 (and EligibleLoss 0) while Parity/SmoothedLoss HOLD their last driven value
+// — the count reaching 0 is how an operator observes that hold.
 type AdaptiveFECStats struct {
 	Parity        int
 	SmoothedLoss  float64
