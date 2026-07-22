@@ -169,42 +169,82 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 
 // TestAdaptiveControllerHoldsWithNoEligiblePath asserts the drive holds the current
 // target when no up/probed path is available (nothing to size against), rather than
-// slewing on a phantom zero-loss sample.
+// slewing on a phantom zero-loss sample — and that the hold-branch publish (T263) still
+// records the eligible signal (count 0) WITHOUT clobbering the held parity/smoothed
+// values. To make the assertions non-vacuous the test first seeds NON-ZERO published
+// state (a driven Parity > 0 against a lossy up path), then forces the path Down and
+// re-drives: the eligible count must transition >=1 -> 0 while Parity and SmoothedLoss
+// retain the previously driven non-zero values (distinguishing the hold from both the
+// zero-initialized atomics and a clobbering full publish).
 func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 	psk := testKey(t, 0x52)
 	clk := newFakeClock()
-	m, _ := newAdaptiveProbingMultipath(t, 1, psk, clk)
+	m, probers := newAdaptiveProbingMultipath(t, 1, psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	// The path is Down (never probed), so the drive finds no eligible loss sample.
+	// Seed: bring the path Up with measured loss and drive once, publishing a non-zero
+	// decision (TestAdaptiveControllerDrivesEncoderParity proves this drive in detail).
+	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
 	m.mu.Lock()
-	before := m.fecSend.Load().ctrl.Parity()
 	m.driveAdaptiveControllerLocked(m.peerState)
-	after := m.fecSend.Load().ctrl.Parity()
+	ctrl := m.fecSend.Load().ctrl
+	drivenParity := ctrl.Parity()
+	drivenSmoothed := ctrl.SmoothedLoss()
 	m.mu.Unlock()
-	if before != after {
-		t.Fatalf("controller moved (%d -> %d) with no eligible path; want held", before, after)
+	if drivenParity <= 0 || drivenSmoothed <= 0 {
+		t.Fatalf("seed drive published parity=%d smoothed=%v, want both > 0", drivenParity, drivenSmoothed)
 	}
-
-	// The snapshot still exists for the adaptive peer and records the eligible signal —
-	// count 0, the only way an operator sees the 'no eligible path' hold — while Parity
-	// holds the pre-drive target (T263).
 	snaps := m.PeerSnapshots()
 	if len(snaps) == 0 {
 		t.Fatalf("PeerSnapshots returned no peer")
 	}
 	adaptive := snaps[0].FEC.Adaptive
+	if adaptive == nil || adaptive.EligiblePaths < 1 {
+		t.Fatalf("seeded snapshot Adaptive = %+v, want EligiblePaths >= 1", adaptive)
+	}
+
+	// Force the path Down: silence it past the liveness deadline, then Tick.
+	clk.advance(testProbeDownAfter + testProbeInterval)
+	probers[0].Tick()
+	if probers[0].State() != telemetry.StateDown {
+		t.Fatalf("prober after silence = %v, want down", probers[0].State())
+	}
+
+	// Re-drive with no eligible path. The drive's self-throttle reads the REAL clock
+	// (time.Now), so reset haveControlTick under m.mu to admit this drive deterministically.
+	m.mu.Lock()
+	fs := m.fecSend.Load()
+	fs.haveControlTick = false
+	before := fs.ctrl.Parity()
+	m.driveAdaptiveControllerLocked(m.peerState)
+	after := fs.ctrl.Parity()
+	m.mu.Unlock()
+	if before != after {
+		t.Fatalf("controller moved (%d -> %d) with no eligible path; want held", before, after)
+	}
+
+	// The snapshot records the eligible signal — the count transitioned >=1 -> 0, the
+	// only way an operator sees the 'no eligible path' hold — while Parity and
+	// SmoothedLoss hold the previously driven non-zero decision (T263).
+	snaps = m.PeerSnapshots()
+	if len(snaps) == 0 {
+		t.Fatalf("PeerSnapshots returned no peer")
+	}
+	adaptive = snaps[0].FEC.Adaptive
 	if adaptive == nil {
 		t.Fatalf("adaptive-mode snapshot FEC.Adaptive == nil, want the held decision")
 	}
 	if adaptive.EligiblePaths != 0 {
 		t.Fatalf("snapshot Adaptive.EligiblePaths = %d, want 0 (no eligible path)", adaptive.EligiblePaths)
 	}
-	if adaptive.Parity != after {
-		t.Fatalf("snapshot Adaptive.Parity = %d, want the held target %d", adaptive.Parity, after)
+	if adaptive.Parity != drivenParity {
+		t.Fatalf("snapshot Adaptive.Parity = %d, want the held driven target %d", adaptive.Parity, drivenParity)
+	}
+	if adaptive.SmoothedLoss != drivenSmoothed {
+		t.Fatalf("snapshot Adaptive.SmoothedLoss = %v, want the held driven value %v", adaptive.SmoothedLoss, drivenSmoothed)
 	}
 }
 
