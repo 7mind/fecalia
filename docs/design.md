@@ -953,6 +953,31 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
   exclusive). Both off by default; enable with `[fec] enabled = true`
   (+ `adaptive = true`).
 
+  **Quantization-aware raise gate in residual-SLA mode (D96, fix b).** The
+  loop only *raises* *M* once smoothed loss crosses a raise gate (below it, the
+  hysteresis deadband holds and *M* stays put). In legacy `safety_factor` mode
+  that gate is the fixed `RaiseThreshold` (5%). In `target_residual` mode the
+  fixed 5% is wrong: because the modeled residual at *M*=0 equals the loss
+  itself (`binomialResidual(K, loss, 0) == loss`), the loss at which the target
+  is first missed — the crossover where the derived *M* first wants to be ≥1 —
+  is `target_residual` itself, far below 5%. Pinning the gate at 5% left a
+  sustained 3–5% loss under a `target_residual = 0.001` SLA stuck at *M*=0 (the
+  D96 symptom). The gate is therefore **derived** in residual-SLA mode:
+  `raise = max(target_residual, 2·quantum)`, where one *quantum* is `1/512`
+  (≈0.00195), the granularity of the trailing-window loss estimator
+  (`internal/telemetry`, window 512). The two-quantum **floor** matters: a tight
+  `target_residual` (e.g. 0.001) sits *below* one quantum, so the bare crossover
+  is ill-posed against estimator quantization — a single sustained lost probe
+  (one quantum) would cross it and flap *M* between 0 and 1 at the dwell/slew
+  cadence. Flooring at two quanta guarantees one quantum of loss can never raise
+  parity; the intended steady state for an isolated lost probe in an otherwise
+  clean saturated window is *M*=0. The lower (shed) gate keeps the configured
+  deadband *shape* (its `LowerThreshold/RaiseThreshold` ratio) scaled onto the
+  derived raise gate, so the raise-fast / lower-after-dwell asymmetry and the
+  slew machinery are unchanged; `Config.Validate` fails fast if the derived band
+  inverts or its deadband collapses below one quantum. Legacy `safety_factor`
+  mode (including its fixed `RaiseThreshold` gate) is byte-for-byte unchanged.
+
 > **Dependency invariant (pinned in `go.mod`):** the adaptive path codes each
 > group `RS(m, k≤ceiling)` yet decodes against a single `RS(m, ceiling)` codec.
 > That is byte-exact only because reedsolomon's default matrix makes parity shard

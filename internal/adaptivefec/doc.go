@@ -45,6 +45,12 @@
 //     deadband is the primary anti-flap mechanism. In the raise region M only
 //     ever increases; in the lower region it only ever decreases; so a moderate
 //     over-band excursion cannot trigger a spurious decrease and vice versa.
+//     In the RESIDUAL-SLA mode these two gates are DERIVED from TargetResidual
+//     quantization-aware (max(TargetResidual, 2 loss quanta) for the raise gate,
+//     the configured deadband shape scaled below it for the lower gate) rather
+//     than taken from the fixed RaiseThreshold/LowerThreshold, so a sub-5% loss
+//     that misses the SLA still raises M while a single estimator quantum cannot
+//     flap parity (D96); see Config.effectiveThresholds.
 //
 //  4. RATE LIMIT + DWELL (slew control, asymmetric). M changes by at most
 //     MaxStep per RateInterval (a min-interval slew limiter), so a single loss

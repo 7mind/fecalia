@@ -17,6 +17,12 @@ type Controller struct {
 	cfg   Config
 	clock Clock
 
+	// raiseGate/lowerGate are the effective hysteresis band gates for the active sizing
+	// mode: the configured RaiseThreshold/LowerThreshold in legacy SafetyFactor mode, or
+	// the derived quantization-aware gates in residual-SLA mode (see Config.effectiveThresholds).
+	raiseGate float64
+	lowerGate float64
+
 	// smoothed EWMA loss; seeded by the first sample.
 	smoothed float64
 	haveEWMA bool
@@ -41,7 +47,8 @@ func NewController(cfg Config, clock Clock) (*Controller, error) {
 	if clock == nil {
 		return nil, errNilClock
 	}
-	return &Controller{cfg: cfg, clock: clock}, nil
+	raise, lower := cfg.effectiveThresholds()
+	return &Controller{cfg: cfg, clock: clock, raiseGate: raise, lowerGate: lower}, nil
 }
 
 // Observe folds one per-path loss sample, measured now (read from the injected
@@ -55,7 +62,7 @@ func (c *Controller) Observe(loss float64) int {
 
 	// Track how long smoothed loss has stayed in the lower (shed-eligible) region;
 	// the dwell for a decrease is measured from lowSince.
-	if s <= c.cfg.LowerThreshold {
+	if s <= c.lowerGate {
 		if !c.haveLowSince {
 			c.lowSince = now
 			c.haveLowSince = true
@@ -82,25 +89,28 @@ func (c *Controller) updateEWMA(loss float64) float64 {
 }
 
 // bandTarget applies the hysteresis bands to pick the parity level m should move
-// toward, giving the loop three regions:
+// toward, giving the loop three regions. The band gates are the EFFECTIVE
+// raiseGate/lowerGate resolved at construction (Config.effectiveThresholds): the
+// configured RaiseThreshold/LowerThreshold in legacy SafetyFactor mode, or the derived
+// quantization-aware gates in residual-SLA mode.
 //
-//   - RAISE (s >= RaiseThreshold): m may only INCREASE, toward the safety-factored
+//   - RAISE (s >= raiseGate): m may only INCREASE, toward the safety-factored
 //     redundancy map. A decrease here would defeat the raise band, so it is
 //     forbidden; this is why m does not oscillate while loss stays elevated.
-//   - LOWER (s <= LowerThreshold): m COLLAPSES toward 0 — but only after the loss
+//   - LOWER (s <= lowerGate): m COLLAPSES toward 0 — but only after the loss
 //     has stayed quiet for the full Dwell. Being below the lower band is exactly
 //     the "near-zero loss" condition, so the shed target is 0 (zero-at-zero), NOT
 //     the raw map: the map's ceil() would pin any infinitesimal EWMA tail at M=1
 //     and standing redundancy would never fully clear on a clean path.
-//   - DEADBAND (in between): HOLD. A loss signal oscillating inside [Lower,Raise]
+//   - DEADBAND (in between): HOLD. A loss signal oscillating inside [lowerGate,raiseGate]
 //     cannot move m, so it cannot flap.
 //
 // The raise-fast / lower-after-dwell asymmetry is the anti-thrash core.
 func (c *Controller) bandTarget(s float64, now time.Time) int {
 	switch {
-	case s >= c.cfg.RaiseThreshold:
+	case s >= c.raiseGate:
 		return maxInt(c.m, c.redundancyMap(s))
-	case s <= c.cfg.LowerThreshold:
+	case s <= c.lowerGate:
 		if c.haveLowSince && now.Sub(c.lowSince) >= c.cfg.Dwell {
 			return 0
 		}

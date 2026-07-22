@@ -76,10 +76,16 @@ type Config struct {
 	// smoothing.
 	Alpha float64
 	// RaiseThreshold is the smoothed-loss level at/above which M may rise. In
-	// (LowerThreshold, 1).
+	// (LowerThreshold, 1). It is the effective raise gate ONLY in legacy SafetyFactor
+	// mode; in residual-SLA mode (TargetResidual set) the raise gate is DERIVED from
+	// TargetResidual (see effectiveThresholds) and this field only supplies the
+	// deadband SHAPE (its ratio to LowerThreshold), not the absolute gate.
 	RaiseThreshold float64
 	// LowerThreshold is the smoothed-loss level at/below which M may fall. In
-	// [0, RaiseThreshold). The gap to RaiseThreshold is the hysteresis deadband.
+	// [0, RaiseThreshold). The gap to RaiseThreshold is the hysteresis deadband. As
+	// with RaiseThreshold, in residual-SLA mode this is not the absolute lower gate —
+	// the derived lower gate preserves this field's LowerThreshold/RaiseThreshold ratio
+	// scaled onto the derived raise gate (see effectiveThresholds).
 	LowerThreshold float64
 	// SafetyFactor is the headroom multiplier on the smoothed loss the parity is
 	// sized to mask. >= 1 in the SafetyFactor sizing mode (TargetResidual unset);
@@ -92,6 +98,11 @@ type Config struct {
 	// M whose modeled residual is <= TargetResidual, clamped to [0, MaxParity]. It
 	// SUPERSEDES SafetyFactor (which must be 0 when this is set). Must be in (0,1)
 	// when set; 0 selects the legacy SafetyFactor path.
+	//
+	// When set it ALSO derives the hysteresis raise gate quantization-aware (D96):
+	// max(TargetResidual, minRaiseGateQuanta*lossQuantum), so a sub-5% loss that would
+	// miss the SLA raises M instead of being pinned by the fixed RaiseThreshold, while
+	// a single loss quantum cannot flap parity (see effectiveThresholds).
 	TargetResidual float64
 	// MaxStep bounds |ΔM| applied per RateInterval. >= 1.
 	MaxStep int
@@ -100,6 +111,56 @@ type Config struct {
 	// Dwell is the minimum time smoothed loss must stay at/below LowerThreshold
 	// before the first decrease. >= 0.
 	Dwell time.Duration
+}
+
+// lossWindowSize mirrors telemetry.defaultLossWindow (512): the per-path loss
+// estimator reports the trailing-window loss fraction quantized to 1/window, so the
+// smallest representable non-zero loss it can report is one quantum = 1/lossWindowSize
+// (~0.00195). It is mirrored here — with this cross-reference rather than an import,
+// exactly like MaxShards — so the residual-mode raise gate can be sized in estimator
+// quanta without coupling the controller to internal/telemetry.
+const lossWindowSize = 512
+
+// lossQuantum is the width of one loss-estimator quantum, 1/lossWindowSize (~0.00195):
+// the granularity below which the measured loss cannot be distinguished from zero.
+const lossQuantum = 1.0 / lossWindowSize
+
+// minRaiseGateQuanta floors the residual-SLA raise gate at this many loss quanta. The
+// residual-mode crossover loss (where residualTargetParity first returns >=1) equals
+// TargetResidual, which for a tight SLA (e.g. 0.001) sits BELOW one quantum and is
+// therefore ill-posed against estimator quantization: a single sustained lost probe
+// (one quantum) would otherwise cross it and flap parity 0<->1 at the dwell/slew
+// cadence. Flooring the gate at two quanta guarantees the smallest raise-triggering
+// loss is >= 2 quanta, so one quantum of loss cannot raise M. Must be >= 2.
+const minRaiseGateQuanta = 2
+
+// effectiveThresholds returns the raise/lower band gates the control law actually uses,
+// resolving the sizing mode:
+//
+//   - LEGACY SafetyFactor mode (TargetResidual unset): the configured
+//     RaiseThreshold/LowerThreshold VERBATIM, so that path is byte-for-byte unchanged.
+//   - RESIDUAL-SLA mode (TargetResidual set): a DERIVED, quantization-aware band. The
+//     raise gate is the crossover loss where residualTargetParity first returns >=1 —
+//     which equals TargetResidual, since binomialResidual(K,loss,0)==loss — floored to
+//     minRaiseGateQuanta quanta so estimator quantization cannot flap parity. The lower
+//     gate preserves the configured deadband SHAPE (its LowerThreshold/RaiseThreshold
+//     ratio) scaled onto the derived raise gate, keeping the raise-fast / lower-after-
+//     dwell hysteresis with a non-empty deadband. Validate rejects a config whose
+//     derived deadband would collapse below one quantum.
+func (c Config) effectiveThresholds() (raise, lower float64) {
+	if c.TargetResidual <= 0 {
+		return c.RaiseThreshold, c.LowerThreshold
+	}
+	raise = c.TargetResidual // crossover: residualTargetParity(loss)>=1 iff loss>TargetResidual
+	if floor := minRaiseGateQuanta * lossQuantum; floor > raise {
+		raise = floor
+	}
+	ratio := 0.0
+	if c.RaiseThreshold > 0 {
+		ratio = c.LowerThreshold / c.RaiseThreshold // configured deadband shape, in [0,1)
+	}
+	lower = raise * ratio
+	return raise, lower
 }
 
 // DefaultConfig returns a Config populated from the documented default control
@@ -153,6 +214,17 @@ func (c Config) Validate() error {
 		}
 		if c.SafetyFactor != 0 {
 			return fmt.Errorf("adaptivefec: SafetyFactor and TargetResidual are mutually exclusive (TargetResidual is the primary residual-SLA surface); leave SafetyFactor 0 when TargetResidual is set, got SafetyFactor=%g", c.SafetyFactor)
+		}
+		// The band the control law actually uses in residual mode is DERIVED (see
+		// effectiveThresholds), not the raw RaiseThreshold/LowerThreshold. Fail fast if the
+		// derivation yields an inverted band or a deadband narrower than one loss quantum:
+		// either would defeat the hysteresis (dwell/slew) the loop relies on to not flap.
+		raise, lower := c.effectiveThresholds()
+		if lower >= raise {
+			return fmt.Errorf("adaptivefec: derived residual-mode band inverted: lower gate %g >= raise gate %g", lower, raise)
+		}
+		if raise-lower < lossQuantum {
+			return fmt.Errorf("adaptivefec: derived residual-mode deadband %g is narrower than one loss quantum %g (widen the configured LowerThreshold/RaiseThreshold gap so the hysteresis holds)", raise-lower, lossQuantum)
 		}
 	} else if math.IsNaN(c.SafetyFactor) || math.IsInf(c.SafetyFactor, 0) || c.SafetyFactor < 1 {
 		return fmt.Errorf("adaptivefec: SafetyFactor must be a finite value >= 1 (or set TargetResidual instead), got %g", c.SafetyFactor)

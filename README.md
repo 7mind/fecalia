@@ -27,7 +27,10 @@ In priority order (earlier properties never regress for later ones):
 4. **FEC loss-masking** — Reed-Solomon parity reconstructs lost frames instead
    of retransmitting.
 5. **Adaptive FEC** — redundancy tracks measured per-path loss (target a residual
-   loss SLA, not a fixed overhead).
+   loss SLA, not a fixed overhead): parity engages as soon as the measured loss
+   would miss the SLA — for a tight `target_residual` that is well under 1% loss,
+   not a fixed 5% threshold — while a single estimator-quantum blip stays at zero
+   overhead.
 6. **DPI resistance** — the outer wire is unidentifiable high-entropy UDP: no
    WireGuard fingerprint, no magic bytes (nDPI/Suricata do not classify it as
    VPN/WireGuard).
