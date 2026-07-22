@@ -176,6 +176,34 @@ func TestConnLossMisusedPerPathReadsStriping(t *testing.T) {
 	}
 }
 
+// TestLossSamplesGrowsThenSaturates asserts Estimate().LossSamples tracks the
+// loss window's denominator: it grows 1..win as echoes arrive on a fresh
+// window (early regime, window not yet full) and then holds at win once the
+// window saturates. This is the denominator the min-sample floor (D96) gates
+// on, so a single drop at a small n (e.g. 1/11) is not conflated with the same
+// drop at a saturated n (e.g. 1/512).
+func TestLossSamplesGrowsThenSaturates(t *testing.T) {
+	const win = 8
+	e := NewEstimator(win)
+	if got := e.Estimate().LossSamples; got != 0 {
+		t.Fatalf("LossSamples before any echo = %d, want 0", got)
+	}
+	for seq := uint64(0); seq < win; seq++ {
+		e.ObserveProbeEcho(seq)
+		want := int(seq) + 1 // early regime: denominator grows 1..win
+		if got := e.Estimate().LossSamples; got != want {
+			t.Fatalf("after seq %d: LossSamples = %d, want %d", seq, got, want)
+		}
+	}
+	// Window now saturated; further echoes must hold the denominator at win.
+	for seq := uint64(win); seq < win*4; seq++ {
+		e.ObserveProbeEcho(seq)
+		if got := e.Estimate().LossSamples; got != win {
+			t.Fatalf("after seq %d (saturated): LossSamples = %d, want %d", seq, got, win)
+		}
+	}
+}
+
 func absDuration(d time.Duration) time.Duration {
 	if d < 0 {
 		return -d

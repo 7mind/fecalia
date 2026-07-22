@@ -32,6 +32,14 @@ type Estimate struct {
 	// Loss is the per-path loss fraction in [0,1] over the current probe-echo
 	// ProbeSeq window.
 	Loss float64
+	// LossSamples is the denominator Loss was computed over: the width of the
+	// window actually filled so far (highest-lower+1, per lossWindow.fraction),
+	// 0 when no probe echo has ever been observed. It grows 1..win as echoes
+	// arrive on a fresh window, then holds at win once saturated. Callers (e.g.
+	// a controller's min-sample floor) use it to distinguish "one drop in a
+	// small sample" from "one drop in a full window" — the same Loss fraction
+	// means very different things at n=11 versus n=512.
+	LossSamples int
 }
 
 // Estimator fuses per-path quality signals: an EWMA RTT and jitter estimator
@@ -91,9 +99,10 @@ func (e *Estimator) ObserveProbeEcho(seq uint64) {
 // Estimate returns the current fused snapshot.
 func (e *Estimator) Estimate() Estimate {
 	return Estimate{
-		RTT:    time.Duration(e.srtt),
-		Jitter: time.Duration(e.rttvar),
-		Loss:   e.loss.fraction(),
+		RTT:         time.Duration(e.srtt),
+		Jitter:      time.Duration(e.rttvar),
+		Loss:        e.loss.fraction(),
+		LossSamples: e.loss.samples(),
 	}
 }
 
@@ -156,16 +165,26 @@ func (w *lossWindow) observe(seq uint64) {
 	}
 }
 
-func (w *lossWindow) fraction() float64 {
+// bounds returns the [lower, highest] range the window currently covers, and
+// ok=false when no sequence has ever been observed (nothing to bound).
+func (w *lossWindow) bounds() (lower uint64, ok bool) {
 	if !w.have {
-		return 0
+		return 0, false
 	}
-	lower := uint64(0)
+	lower = 0
 	if w.highest+1 > uint64(w.win) {
 		lower = w.highest + 1 - uint64(w.win)
 	}
 	if lower < w.first {
 		lower = w.first // never charge loss for sequences before the first observed
+	}
+	return lower, true
+}
+
+func (w *lossWindow) fraction() float64 {
+	lower, ok := w.bounds()
+	if !ok {
+		return 0
 	}
 	n := w.highest - lower + 1
 	missing := 0
@@ -175,6 +194,18 @@ func (w *lossWindow) fraction() float64 {
 		}
 	}
 	return float64(missing) / float64(n)
+}
+
+// samples returns the current window denominator (n): the number of sequence
+// slots fraction() is dividing over, i.e. highest-lower+1. It is 0 when no
+// probe echo has ever been observed, and grows 1..win as echoes arrive on a
+// fresh window before holding at win once the window saturates.
+func (w *lossWindow) samples() int {
+	lower, ok := w.bounds()
+	if !ok {
+		return 0
+	}
+	return int(w.highest - lower + 1)
 }
 
 // ConnLoss estimates CONNECTION-SCOPED loss from the connection-global outer-seq
