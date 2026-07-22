@@ -96,7 +96,11 @@ type fecSender struct {
 	// (Observe) and read (Parity) ONLY from under the Bind's m.mu — the FEC tick loop's
 	// throttled drive and, transitively, the Send path — so it needs no lock of its own,
 	// matching the encoder's single-writer discipline. lastControlTick/haveControlTick
-	// throttle the drive to adaptiveControlInterval and are likewise m.mu-guarded.
+	// throttle the drive to adaptiveControlInterval and are likewise m.mu-guarded. They are
+	// stamped ONLY on the Observe branch (an eligible sample was folded in), never on the
+	// no-eligible-path hold — a hold does not consume the interval (D97), so the drive stays
+	// admitted each tick until an eligible path returns. The interval is measured against the
+	// bind's injected clock (Multipath.clock), not the wall clock.
 	ctrl            *adaptivefec.Controller
 	lastControlTick time.Time
 	haveControlTick bool

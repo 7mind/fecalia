@@ -866,6 +866,18 @@ type Multipath struct {
 	// construction, never nil.
 	addPathListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error, error)
 
+	// clock is the bind-level injectable time source the adaptive drive's self-throttle
+	// reads (driveAdaptiveControllerLocked). It is an injection seam mirroring
+	// deferredListen / resolveDeviceBind / addPathListen: the default is the real
+	// telemetry.SystemClock (set in NewMultipath), and a test overrides it PRE-OPEN with
+	// the same hand-advanced fake clock its probers/scheduler read, so the throttle's
+	// interval arithmetic advances in lockstep with liveness transitions rather than on the
+	// wall clock (D97). Multipath held no injected clock before — the fake clock reached
+	// only probers/scheduler because tests constructed THOSE with it — so the throttle read
+	// bare time.Now() and could not be driven deterministically. Immutable after Open (the
+	// fecTickLoop goroutine reads it concurrently), never nil.
+	clock telemetry.Clock
+
 	mu sync.Mutex
 
 	// The PRIMARY peer, embedded so the single-peer datapath (Send, the receive drainer,
@@ -1143,6 +1155,7 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 			return interfaceInfo(s, ifaces)
 		},
 		addPathListen:   listenPath,
+		clock:           telemetry.SystemClock{},
 		peerState:       primary,
 		peers:           []*peerState{primary},
 		peersByName:     map[string]*peerState{primary.name: primary},
@@ -2936,22 +2949,29 @@ func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
 	if fs == nil || fs.ctrl == nil {
 		return // FEC off for this peer, or fixed-ratio mode
 	}
-	now := time.Now()
+	now := m.clock.Now()
 	if fs.haveControlTick && now.Sub(fs.lastControlTick) < adaptiveControlInterval {
 		return
 	}
-	fs.lastControlTick = now
-	fs.haveControlTick = true
 
 	loss, count := maxEligiblePathLossLocked(peer)
 	if count == 0 {
 		// No eligible probed path this interval: HOLD the current parity/smoothed-loss
 		// target (the controller does not Observe), but still publish the eligible signal
 		// (count 0) — it is the only way an operator sees this hold branch — WITHOUT
-		// clobbering the held decision.
+		// clobbering the held decision. The throttle stamp deliberately stays UNtouched on
+		// this branch (it moved below, past the eligibility check): the hold does not Observe,
+		// so it must not consume the interval — the drive stays admitted every tick until an
+		// eligible path returns, at the minor cost of a per-tick maxEligiblePathLossLocked
+		// scan (D97). publishAdaptiveEligible is idempotent/non-clobbering, so the repeated
+		// hold-branch publishes are safe.
 		fs.publishAdaptiveEligible(loss, count)
 		return
 	}
+	// Stamp the throttle only now that the controller will actually Observe — the interval
+	// is consumed by a real sample, never by a hold (D97).
+	fs.lastControlTick = now
+	fs.haveControlTick = true
 	fs.ctrl.Observe(loss)
 	fs.enc.SetParity(fs.ctrl.Parity())
 	fs.publishAdaptiveDrive(fs.ctrl.Parity(), fs.ctrl.SmoothedLoss(), loss, count)

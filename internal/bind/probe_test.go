@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,15 +18,31 @@ import (
 )
 
 // fakeClock is a hand-advanced telemetry.Clock. The probe-transport tests drive
-// emitProbes / handleInbound synchronously on a single goroutine (no probe-loop
-// goroutine, no receive goroutines), so the clock needs no internal
-// synchronization and liveness transitions are deterministic under -race.
-type fakeClock struct{ now time.Time }
+// emitProbes / handleInbound synchronously on a single goroutine, so those tests
+// need no internal synchronization. The adaptive tests, however, wire this SAME
+// clock into the bind's clock seam (Multipath.clock), where the background
+// fecTickLoop goroutine reads Now() concurrently with the test goroutine's
+// advance() — so the clock IS mutex-guarded (a plain now field would be a
+// -race-flagged data race). In-repo precedent: internal/device/metrics_test.go's
+// fakeClock. Liveness transitions remain deterministic under -race.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
 
 func newFakeClock() *fakeClock { return &fakeClock{now: time.Unix(1_700_000_000, 0)} }
 
-func (c *fakeClock) Now() time.Time          { return c.now }
-func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
 
 // probeLiveness are the detection thresholds these tests use: short enough to
 // keep the fake-clock arithmetic terse, with the same shape as production

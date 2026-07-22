@@ -58,6 +58,10 @@ func newAdaptiveProbingMultipath(t testing.TB, n int, psk config.Key, clk teleme
 	if err != nil {
 		t.Fatalf("NewMultipath(adaptive): %v", err)
 	}
+	// Wire the SAME fake clock the probers/scheduler read into the bind's adaptive-drive
+	// throttle seam (pre-Open), so driveAdaptiveControllerLocked's self-throttle advances in
+	// lockstep with liveness transitions instead of on the wall clock (D97).
+	m.clock = clk
 	return m, probers
 }
 
@@ -206,18 +210,23 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 		t.Fatalf("seeded snapshot Adaptive = %+v, want EligiblePaths >= 1", adaptive)
 	}
 
-	// Force the path Down: silence it past the liveness deadline, then Tick.
+	// Force the path Down and re-drive with no eligible path — the whole sequence under m.mu.
+	// Holding the lock across clk.advance + probers[0].Tick() + driveAdaptiveControllerLocked
+	// EXCLUDES the concurrent fecTickLoop tick (its TryLock skips): otherwise, in the window
+	// after the advance while the prober still reports StateUp, a background tick could Observe
+	// at the advanced fake time and stamp the throttle, spuriously throttling this explicit
+	// drive. The prober is a documented leaf lock (State/Tick take only their own mutex, never
+	// call back into the Bind), so acquiring it under m.mu is legal. After the stamp reorder
+	// (D97) the hold branch never stamps, so this re-drive needs no haveControlTick reset to be
+	// admitted — the throttle sees the 400ms fake-clock advance (> adaptiveControlInterval).
+	m.mu.Lock()
 	clk.advance(testProbeDownAfter + testProbeInterval)
 	probers[0].Tick()
-	if probers[0].State() != telemetry.StateDown {
-		t.Fatalf("prober after silence = %v, want down", probers[0].State())
+	if st := probers[0].State(); st != telemetry.StateDown {
+		m.mu.Unlock()
+		t.Fatalf("prober after silence = %v, want down", st)
 	}
-
-	// Re-drive with no eligible path. The drive's self-throttle reads the REAL clock
-	// (time.Now), so reset haveControlTick under m.mu to admit this drive deterministically.
-	m.mu.Lock()
 	fs := m.fecSend.Load()
-	fs.haveControlTick = false
 	before := fs.ctrl.Parity()
 	m.driveAdaptiveControllerLocked(m.peerState)
 	after := fs.ctrl.Parity()
