@@ -204,6 +204,47 @@ func TestLossSamplesGrowsThenSaturates(t *testing.T) {
 	}
 }
 
+// TestLossSamplesMidStreamAttachClamp pins the first-observed clamp regime of
+// the denominator: when the first RECEIVED echo lands at seq > 0 (the initial
+// probes dropped — ObserveProbeEcho only ever sees received echoes), the
+// window's lower bound is clamped to the first observed seq, and LossSamples
+// must equal highest-first+1 exactly — including the single-echo n=1 case,
+// where an off-by-one denominator of 0 would make fraction() ill-defined
+// (0/0). Kills the `lower = w.first + 1` mutant, which
+// TestLossSamplesGrowsThenSaturates (seq starts at 0, clamp never binds)
+// cannot detect.
+func TestLossSamplesMidStreamAttachClamp(t *testing.T) {
+	const win = 8
+	const first = uint64(100) // echoes for seqs 0..99 lost; first received echo
+	e := NewEstimator(win)
+	// Single echo at seq=first: n must be exactly 1 (not 0), and the loss
+	// fraction over that one received sample must be a well-defined 0.
+	e.ObserveProbeEcho(first)
+	est := e.Estimate()
+	if est.LossSamples != 1 {
+		t.Fatalf("single echo at seq %d: LossSamples = %d, want 1", first, est.LossSamples)
+	}
+	if est.Loss != 0 {
+		t.Fatalf("single echo at seq %d: Loss = %v, want 0 (must be well-defined)", first, est.Loss)
+	}
+	// Clamp regime: while highest-first+1 <= win the lower bound is first, so
+	// the denominator must equal highest-first+1 exactly.
+	for seq := first + 1; seq < first+win; seq++ {
+		e.ObserveProbeEcho(seq)
+		want := int(seq-first) + 1
+		if got := e.Estimate().LossSamples; got != want {
+			t.Fatalf("after seq %d (clamp regime): LossSamples = %d, want %d", seq, got, want)
+		}
+	}
+	// Past the clamp regime the window bound takes over: denominator holds at win.
+	for seq := first + win; seq < first+win*3; seq++ {
+		e.ObserveProbeEcho(seq)
+		if got := e.Estimate().LossSamples; got != win {
+			t.Fatalf("after seq %d (saturated): LossSamples = %d, want %d", seq, got, win)
+		}
+	}
+}
+
 func absDuration(d time.Duration) time.Duration {
 	if d < 0 {
 		return -d
