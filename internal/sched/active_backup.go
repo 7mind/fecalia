@@ -419,6 +419,24 @@ func (s *ActiveBackup) Recompute() {
 	s.recomputeLocked(s.clock.Now())
 }
 
+// DataPaths implements the Scheduler read seam (D96 fix (a)): active-backup carries
+// ALL egress on the single active path, so it reports EXACTLY that path at Weight 1.0,
+// or an EMPTY slice when no path is eligible (the cached active is < 0). It reads the
+// cached active selection under s.mu — the path Pick currently returns — WITHOUT
+// recomputing liveness (a caller wanting a liveness refresh first calls Recompute,
+// mirroring AggregationSnapshot on the weighted scheduler) and never calls back into
+// the Bind, so a caller holding the Bind's m.mu invokes it in the documented
+// m.mu->scheduler order. The one-element (or empty) slice is freshly allocated and
+// owned by the caller. It is safe for concurrent callers.
+func (s *ActiveBackup) DataPaths() []DataPath {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active < 0 {
+		return nil
+	}
+	return []DataPath{{Index: s.active, Weight: 1.0}}
+}
+
 // recomputeLocked re-derives the active path from current liveness and the
 // failback dwell. Caller holds s.mu.
 //

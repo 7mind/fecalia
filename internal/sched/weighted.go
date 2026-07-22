@@ -361,6 +361,41 @@ func (s *WeightedScheduler) Recompute() {
 	s.recomputeLocked(now)
 }
 
+// DataPaths implements the Scheduler read seam (D96 fix (a)): it reports which paths
+// currently CARRY DATA and each one's share of the aggregate flow, in Pick's priority-
+// ordered index space. While AGGREGATING it returns EVERY eligible path (live liveness,
+// eligibleLocked) with its normalized distribution weight (weightsLocked, summing to
+// ~1.0) — exactly the striped set and proportions Pick's swrr draws from. When collapsed
+// to primary-only (data-thrift) it returns the SOLE primary — the best eligible path,
+// eligible[0], the same one Pick's non-aggregating branch serves — at Weight 1.0. It
+// returns an EMPTY slice when no path is eligible.
+//
+// It reads the cached aggregation-gate state (s.aggregating) and the LIVE eligible set
+// under s.mu WITHOUT advancing any per-frame distribution state (load meter, gate,
+// pacing, round-robin credits) — a pure read, mirroring AggregationSnapshot — and never
+// calls back into the Bind, so a caller holding the Bind's m.mu invokes it in the
+// documented m.mu->scheduler order. The returned slice is freshly allocated and owned by
+// the caller. It is safe for concurrent callers.
+func (s *WeightedScheduler) DataPaths() []DataPath {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	eligible := s.eligibleLocked()
+	if len(eligible) == 0 {
+		return nil
+	}
+	if !s.aggregating {
+		// Data-thrift: only the primary (best eligible) carries traffic, matching Pick's
+		// non-aggregating branch (serveLocked over eligible[0]).
+		return []DataPath{{Index: eligible[0], Weight: 1.0}}
+	}
+	weights := s.weightsLocked(eligible)
+	dps := make([]DataPath, len(eligible))
+	for k, gi := range eligible {
+		dps[k] = DataPath{Index: gi, Weight: weights[k]}
+	}
+	return dps
+}
+
 // recomputeLocked refreshes the active-primary cache (best eligible path) and logs a
 // transition on change. Caller holds s.mu.
 func (s *WeightedScheduler) recomputeLocked(_ time.Time) {

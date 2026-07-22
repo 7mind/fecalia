@@ -1091,3 +1091,55 @@ func TestWeightedAccountProbeNoopWhenInertOrOutOfRange(t *testing.T) {
 		t.Fatalf("an out-of-range AccountProbe mutated the in-range bucket: %g -> %g", snap, son.tokens[0])
 	}
 }
+
+// TestWeightedDataPaths is the T271/D96(a) acceptance for the weighted scheduler:
+// below the engage threshold DataPaths reports the primary alone at Weight 1.0
+// (data-thrift, collapsed), while aggregating it reports the whole eligible set with
+// normalized distribution weights summing to ~1.0, and it returns an empty slice when
+// no path is eligible. Primary RTT 10ms vs backup RTT 20ms (zero loss) gives the
+// primary the larger weight.
+func TestWeightedDataPaths(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 10 * time.Millisecond}}
+	backup := &fakeQuality{state: telemetry.StateUp, est: telemetry.Estimate{RTT: 20 * time.Millisecond}}
+	s := newWeighted(t, clock, weightedCfg(), primary, backup)
+
+	// Below the engage threshold (collapsed, data-thrift): primary-only at weight 1.
+	dps := s.DataPaths()
+	if len(dps) != 1 || dps[0].Index != 0 || dps[0].Weight != 1.0 {
+		t.Fatalf("DataPaths below the engage threshold = %+v, want exactly one {Index:0, Weight:1}", dps)
+	}
+
+	// Drive offered load above one path's capacity until the gate engages.
+	const dt = 100 * time.Microsecond // 10 000 fps offered >> 1000 fps capacity
+	driveUntilAggregating(t, s, clock, dt)
+
+	dps = s.DataPaths()
+	if len(dps) != 2 {
+		t.Fatalf("DataPaths while aggregating = %+v, want both eligible paths", dps)
+	}
+	if dps[0].Index != 0 || dps[1].Index != 1 {
+		t.Fatalf("DataPaths indices = %d,%d, want the priority-ordered 0,1", dps[0].Index, dps[1].Index)
+	}
+	var sum float64
+	for _, dp := range dps {
+		if dp.Weight <= 0 {
+			t.Fatalf("DataPaths entry %+v must carry a positive weight", dp)
+		}
+		sum += dp.Weight
+	}
+	if math.Abs(sum-1.0) > 1e-9 {
+		t.Fatalf("DataPaths weights sum = %g, want ~1.0", sum)
+	}
+	// Lower-RTT primary must carry the larger share (weight ratio ~2:1).
+	if dps[0].Weight <= dps[1].Weight {
+		t.Fatalf("primary weight %g must exceed backup weight %g (lower RTT -> higher weight)", dps[0].Weight, dps[1].Weight)
+	}
+
+	// Both paths down: nothing is eligible, so nothing carries data -> empty.
+	primary.down()
+	backup.down()
+	if dps = s.DataPaths(); len(dps) != 0 {
+		t.Fatalf("DataPaths with all paths down = %+v, want empty", dps)
+	}
+}

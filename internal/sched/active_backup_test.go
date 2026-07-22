@@ -996,3 +996,37 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 		t.Fatalf("post-shrink sole survivor admitted %d at a frozen instant, want its OWN supplied burst %d", admitted, int(p2Burst))
 	}
 }
+
+// TestActiveBackupDataPaths is the T271/D96(a) acceptance for active-backup:
+// DataPaths reports EXACTLY the current active index at Weight 1.0 (active-backup
+// carries all egress on one path), follows the active across a failover, and returns
+// an EMPTY slice once every path is down. DataPaths is a pure read of the cached
+// selection, so each phase first refreshes liveness with a non-consuming Recompute.
+func TestActiveBackupDataPaths(t *testing.T) {
+	clock := newFakeClock()
+	primary := &fakeHealth{s: telemetry.StateUp}
+	backup := &fakeHealth{s: telemetry.StateUp}
+	s := newSched(t, clock, time.Second, primary, backup)
+
+	// Both up: the active is the preferred primary (index 0) at weight 1.
+	s.Recompute()
+	dps := s.DataPaths()
+	if len(dps) != 1 || dps[0].Index != 0 || dps[0].Weight != 1.0 {
+		t.Fatalf("DataPaths with both paths up = %+v, want exactly one {Index:0, Weight:1}", dps)
+	}
+
+	// Primary down: egress fails over to the backup (index 1), still a single carrier.
+	primary.down()
+	s.Recompute()
+	dps = s.DataPaths()
+	if len(dps) != 1 || dps[0].Index != 1 || dps[0].Weight != 1.0 {
+		t.Fatalf("DataPaths after primary down = %+v, want exactly one {Index:1, Weight:1}", dps)
+	}
+
+	// All paths down: no path carries data -> empty.
+	backup.down()
+	s.Recompute()
+	if dps = s.DataPaths(); len(dps) != 0 {
+		t.Fatalf("DataPaths with all paths down = %+v, want empty", dps)
+	}
+}

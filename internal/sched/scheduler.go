@@ -60,6 +60,21 @@ const (
 	ClassControl
 )
 
+// DataPath names one path that currently CARRIES DATA and its relative share of the
+// aggregate flow, as reported by Scheduler.DataPaths (D96 fix (a)). Index is the
+// priority-ordered path index Pick returns and AddPath/RemovePath renumber (index 0 =
+// preferred primary); Weight is the path's fraction of the data the scheduler is
+// spreading. The Weights over a single DataPaths result sum to ~1.0.
+type DataPath struct {
+	// Index is the path's priority-ordered index — the SAME space Pick returns and
+	// the Bind's path slice is index-aligned with (index 0 = preferred primary).
+	Index int
+	// Weight is the path's normalized share of the aggregate data flow; the Weights
+	// over one DataPaths result sum to ~1.0. A single-carrier result (active-backup,
+	// or a collapsed data-thrift weighted scheduler) reports its sole path at 1.0.
+	Weight float64
+}
+
 // Scheduler is the send-side path-selection policy the multipath Bind consults
 // for every outbound datagram. It is the extension seam for the send scheduler:
 // active-backup failover (ActiveBackup, the P1 MVP) is one implementation; the
@@ -99,6 +114,28 @@ type Scheduler interface {
 	// for a stateful one (weighted) it is strictly the non-consuming subset. It is
 	// safe for concurrent callers and never calls back into the Bind.
 	Recompute()
+
+	// DataPaths reports which paths currently CARRY DATA and each one's relative
+	// share of the aggregate flow, in the priority-ordered index space Pick returns.
+	// It is a read seam (D96 fix (a)): a caller consults it to learn the data-carrying
+	// path set WITHOUT advancing any per-frame distribution state (as Pick would). It
+	// reads the scheduler's CURRENT selection state — it does not itself refresh
+	// liveness (a caller wanting a liveness refresh first calls Recompute, mirroring
+	// AggregationSnapshot).
+	//
+	// An active-backup scheduler reports the single active path at Weight 1.0, and an
+	// EMPTY slice when no path is eligible (its cached active is < 0). A weighted
+	// scheduler reports, while aggregating, every eligible path with its normalized
+	// distribution weight (the Weights sum to ~1.0), and, when collapsed to primary-
+	// only (data-thrift), the sole primary at Weight 1.0 — empty when no path is
+	// eligible. The Weights over the returned slice sum to ~1.0 (or the slice is
+	// empty).
+	//
+	// It takes the scheduler's own lock, returns a FRESHLY-ALLOCATED copy owned by the
+	// caller, and never calls back into the Bind, so a caller holding the Bind's m.mu
+	// invokes it in the documented m.mu->scheduler lock order without risk of deadlock.
+	// It is safe for concurrent callers.
+	DataPaths() []DataPath
 }
 
 // ProbeBudget is the OPTIONAL pacing-headroom seam a pacing scheduler implements so the

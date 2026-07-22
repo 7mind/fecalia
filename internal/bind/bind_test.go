@@ -389,6 +389,7 @@ type stubScheduler struct{ pick int }
 
 func (s stubScheduler) Pick(_ sched.FrameClass) int { return s.pick }
 func (s stubScheduler) Recompute()                  {}
+func (s stubScheduler) DataPaths() []sched.DataPath { return nil }
 
 // TestMultipathSendPacerSheddingDistinct: a PickPaced shed (paths healthy, rate
 // limited) maps to errPacerShedding, DISTINCT from the ErrNoHealthyPath a PickNone
