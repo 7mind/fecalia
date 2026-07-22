@@ -2935,32 +2935,39 @@ func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
 	fs.lastControlTick = now
 	fs.haveControlTick = true
 
-	loss, have := maxEligiblePathLossLocked(peer)
-	if !have {
-		return // no eligible probed path this interval: hold the current target
+	loss, count := maxEligiblePathLossLocked(peer)
+	if count == 0 {
+		// No eligible probed path this interval: HOLD the current parity/smoothed-loss
+		// target (the controller does not Observe), but still publish the eligible signal
+		// (count 0) — it is the only way an operator sees this hold branch — WITHOUT
+		// clobbering the held decision.
+		fs.publishAdaptiveEligible(loss, count)
+		return
 	}
 	fs.ctrl.Observe(loss)
 	fs.enc.SetParity(fs.ctrl.Parity())
+	fs.publishAdaptiveDrive(fs.ctrl.Parity(), fs.ctrl.SmoothedLoss(), loss, count)
 }
 
 // maxEligiblePathLossLocked returns the maximum raw probe-measured loss across peer's OWN
-// paths that are currently StateUp and carry a prober, plus whether any such path exists.
-// Caller holds m.mu. It reads each prober's own mutex (State/Estimate) under m.mu; the
-// prober is a LEAF lock (it never calls back into the Bind), so this cannot invert the
-// send-path m.mu→scheduler→prober order the rest of the Bind takes.
-func maxEligiblePathLossLocked(peer *peerState) (float64, bool) {
+// paths that are currently StateUp and carry a prober, plus the COUNT of such eligible
+// paths (0 when none exist — the caller's 'no eligible path' condition). Caller holds
+// m.mu. It reads each prober's own mutex (State/Estimate) under m.mu; the prober is a LEAF
+// lock (it never calls back into the Bind), so this cannot invert the send-path
+// m.mu→scheduler→prober order the rest of the Bind takes.
+func maxEligiblePathLossLocked(peer *peerState) (float64, int) {
 	maxLoss := 0.0
-	have := false
+	count := 0
 	for _, ps := range peer.paths {
 		if ps.prober == nil || ps.prober.State() != telemetry.StateUp {
 			continue
 		}
-		if l := ps.prober.Estimate().Loss; !have || l > maxLoss {
+		if l := ps.prober.Estimate().Loss; count == 0 || l > maxLoss {
 			maxLoss = l
-			have = true
 		}
+		count++
 	}
-	return maxLoss, have
+	return maxLoss, count
 }
 
 // ParseEndpoint records the peer's wireguard endpoint as the default per-path
@@ -3788,6 +3795,15 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			snap.FEC.DataBytes = r.fs.dataBytes.Load()
 			snap.FEC.ParityFrames = r.fs.parityFrames.Load()
 			snap.FEC.ParityBytes = r.fs.parityBytes.Load()
+			// The adaptive controller's decision is present only in adaptive mode (ctrl is
+			// set once at construction and never mutated, so this nil-check is race-free
+			// after the fecSend atomic Load). A fixed-ratio peer leaves Adaptive nil so no
+			// adaptive series is fabricated (the Aggregation nil-precedent, T146). The read
+			// is lock-free — the atomics are published at the m.mu-held drive locus (T263).
+			if r.fs.ctrl != nil {
+				adaptive := r.fs.adaptiveSnapshot()
+				snap.FEC.Adaptive = &adaptive
+			}
 		}
 		if r.fr != nil {
 			// Recovered is the HONEST delivered count (frames placed ahead of the release

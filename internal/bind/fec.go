@@ -3,6 +3,7 @@ package bind
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,10 +101,55 @@ type fecSender struct {
 	lastControlTick time.Time
 	haveControlTick bool
 
+	// adaptive{Parity,SmoothedLoss,EligibleLoss,EligiblePaths} publish the controller's
+	// most recent drive decision for the lock-free FEC snapshot (T263). They are written
+	// ONLY at the single serialized drive locus (driveAdaptiveControllerLocked, under
+	// m.mu) and read lock-free at scrape time — the same discipline as
+	// fecReceiver.deliveredRecovered. The two float64 signals are stored as their IEEE-754
+	// bit patterns (math.Float64bits) so an atomic.Uint64 carries them. They are meaningful
+	// only in adaptive mode (ctrl != nil); a fixed-ratio peer never drives the controller
+	// and reports FECStats.Adaptive == nil.
+	adaptiveParity        atomic.Int64  // target parity M (ctrl.Parity())
+	adaptiveSmoothedLoss  atomic.Uint64 // EWMA smoothed loss, math.Float64bits
+	adaptiveEligibleLoss  atomic.Uint64 // max eligible-path loss, math.Float64bits
+	adaptiveEligiblePaths atomic.Int64  // count of eligible (StateUp+probed) paths
+
 	dataFrames   atomic.Uint64
 	dataBytes    atomic.Uint64
 	parityFrames atomic.Uint64
 	parityBytes  atomic.Uint64
+}
+
+// publishAdaptiveDrive records a completed controller drive into the lock-free snapshot
+// fields: the retargeted parity M and EWMA smoothed loss alongside the eligible-path
+// signal that drove them. Called under m.mu from driveAdaptiveControllerLocked after
+// Observe/SetParity.
+func (fs *fecSender) publishAdaptiveDrive(parity int, smoothedLoss, eligibleLoss float64, eligiblePaths int) {
+	fs.adaptiveParity.Store(int64(parity))
+	fs.adaptiveSmoothedLoss.Store(math.Float64bits(smoothedLoss))
+	fs.adaptiveEligibleLoss.Store(math.Float64bits(eligibleLoss))
+	fs.adaptiveEligiblePaths.Store(int64(eligiblePaths))
+}
+
+// publishAdaptiveEligible records ONLY the eligible-path signal, leaving the held
+// parity/smoothed-loss decision untouched. It is the 'no eligible path' hold branch's
+// publish (eligibleLoss/eligiblePaths both 0): the controller did not Observe, so its
+// last driven parity and smoothed loss must NOT be clobbered.
+func (fs *fecSender) publishAdaptiveEligible(eligibleLoss float64, eligiblePaths int) {
+	fs.adaptiveEligibleLoss.Store(math.Float64bits(eligibleLoss))
+	fs.adaptiveEligiblePaths.Store(int64(eligiblePaths))
+}
+
+// adaptiveSnapshot reads the published controller decision lock-free into an
+// AdaptiveFECStats. The caller has already established this is an adaptive-mode sender
+// (ctrl != nil) before fabricating a series.
+func (fs *fecSender) adaptiveSnapshot() AdaptiveFECStats {
+	return AdaptiveFECStats{
+		Parity:        int(fs.adaptiveParity.Load()),
+		SmoothedLoss:  math.Float64frombits(fs.adaptiveSmoothedLoss.Load()),
+		EligibleLoss:  math.Float64frombits(fs.adaptiveEligibleLoss.Load()),
+		EligiblePaths: int(fs.adaptiveEligiblePaths.Load()),
+	}
 }
 
 // fecReceiver is the receive-side FEC state: the recovery decoder guarded by its own
@@ -166,6 +212,26 @@ type FECStats struct {
 	// parity. It is the P4 acceptance signal — the loss FEC did not mask. Zero when FEC is
 	// disabled or no data has flowed.
 	ResidualLoss float64
+	// Adaptive is the adaptive-FEC controller's most recent published decision (T263),
+	// present ONLY for a peer running the adaptive controller (fecSender.ctrl != nil). It
+	// is nil for a fixed-ratio or FEC-off peer, so no adaptive series is fabricated where
+	// none exists — the PeerSnapshot.Aggregation nil-precedent (T146).
+	Adaptive *AdaptiveFECStats
+}
+
+// AdaptiveFECStats is the adaptive-FEC controller's per-drive decision, published at the
+// single serialized drive locus and scraped lock-free through the FEC snapshot chain
+// (T263). Parity is the target parity count M the encoder was retargeted to
+// (ctrl.Parity()); SmoothedLoss the controller's EWMA loss estimate (ctrl.SmoothedLoss());
+// EligibleLoss the max raw probe-measured loss across the drive's eligible (StateUp +
+// probed) paths; EligiblePaths the count of those paths. On the 'no eligible path' hold
+// branch EligiblePaths is 0 (and EligibleLoss 0) while Parity/SmoothedLoss HOLD their last
+// driven value — the count reaching 0 is how an operator observes that hold.
+type AdaptiveFECStats struct {
+	Parity        int
+	SmoothedLoss  float64
+	EligibleLoss  float64
+	EligiblePaths int
 }
 
 // fecShardPayload builds the FEC data-shard coded bytes for outer-seq seq over the

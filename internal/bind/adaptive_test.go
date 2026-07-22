@@ -128,11 +128,37 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 
 	m.mu.Lock()
 	m.driveAdaptiveControllerLocked(m.peerState)
-	target := m.fecSend.Load().ctrl.Parity()
+	ctrl := m.fecSend.Load().ctrl
+	target := ctrl.Parity()
+	smoothed := ctrl.SmoothedLoss()
 	m.mu.Unlock()
 
 	if target <= 0 || target > ac.MaxParity {
 		t.Fatalf("controller target after loss=%.3f is %d, want in (0,%d]", loss, target, ac.MaxParity)
+	}
+
+	// The lock-free FEC snapshot now reports the driven decision (T263): an adaptive-mode
+	// peer fabricates the Adaptive series, the driven parity/smoothed loss match the
+	// controller, and the eligible signal reflects the single up path's measured loss.
+	snaps := m.PeerSnapshots()
+	if len(snaps) == 0 {
+		t.Fatalf("PeerSnapshots returned no peer")
+	}
+	adaptive := snaps[0].FEC.Adaptive
+	if adaptive == nil {
+		t.Fatalf("adaptive-mode snapshot FEC.Adaptive == nil, want the driven decision")
+	}
+	if adaptive.Parity != target {
+		t.Fatalf("snapshot Adaptive.Parity = %d, want ctrl.Parity() %d", adaptive.Parity, target)
+	}
+	if adaptive.SmoothedLoss != smoothed {
+		t.Fatalf("snapshot Adaptive.SmoothedLoss = %v, want ctrl.SmoothedLoss() %v", adaptive.SmoothedLoss, smoothed)
+	}
+	if adaptive.EligibleLoss != loss {
+		t.Fatalf("snapshot Adaptive.EligibleLoss = %v, want the up path's measured loss %v", adaptive.EligibleLoss, loss)
+	}
+	if adaptive.EligiblePaths < 1 {
+		t.Fatalf("snapshot Adaptive.EligiblePaths = %d, want >= 1 (the up path)", adaptive.EligiblePaths)
 	}
 
 	// The encoder now emits exactly the controller's target parity per group.
@@ -161,6 +187,52 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 	m.mu.Unlock()
 	if before != after {
 		t.Fatalf("controller moved (%d -> %d) with no eligible path; want held", before, after)
+	}
+
+	// The snapshot still exists for the adaptive peer and records the eligible signal —
+	// count 0, the only way an operator sees the 'no eligible path' hold — while Parity
+	// holds the pre-drive target (T263).
+	snaps := m.PeerSnapshots()
+	if len(snaps) == 0 {
+		t.Fatalf("PeerSnapshots returned no peer")
+	}
+	adaptive := snaps[0].FEC.Adaptive
+	if adaptive == nil {
+		t.Fatalf("adaptive-mode snapshot FEC.Adaptive == nil, want the held decision")
+	}
+	if adaptive.EligiblePaths != 0 {
+		t.Fatalf("snapshot Adaptive.EligiblePaths = %d, want 0 (no eligible path)", adaptive.EligiblePaths)
+	}
+	if adaptive.Parity != after {
+		t.Fatalf("snapshot Adaptive.Parity = %d, want the held target %d", adaptive.Parity, after)
+	}
+}
+
+// TestFixedRatioPeerHasNilAdaptiveSnapshot asserts a fixed-ratio FEC peer (no adaptive
+// controller) leaves FECStats.Adaptive nil, so the snapshot fabricates no adaptive series
+// where the controller does not exist (the Aggregation nil-precedent, T146).
+func TestFixedRatioPeerHasNilAdaptiveSnapshot(t *testing.T) {
+	psk := testKey(t, 0x53)
+	fc := fec.Config{DataShards: 6, ParityShards: 2, Deadline: 50 * time.Millisecond}
+	m := newMultipathFEC(t, loopbackPaths(1), psk, &fc)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	m.mu.Lock()
+	haveCtrl := m.fecSend.Load().ctrl != nil
+	m.mu.Unlock()
+	if haveCtrl {
+		t.Fatalf("fixed-ratio bind has an adaptive controller; want none")
+	}
+
+	snaps := m.PeerSnapshots()
+	if len(snaps) == 0 {
+		t.Fatalf("PeerSnapshots returned no peer")
+	}
+	if snaps[0].FEC.Adaptive != nil {
+		t.Fatalf("fixed-ratio snapshot FEC.Adaptive = %+v, want nil", snaps[0].FEC.Adaptive)
 	}
 }
 
