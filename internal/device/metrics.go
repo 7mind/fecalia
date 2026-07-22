@@ -149,7 +149,7 @@ func (s *metricsSource) FEC() []metrics.FECSnapshot {
 	out := make([]metrics.FECSnapshot, len(peers))
 	for i, peer := range peers {
 		f := peer.FEC
-		out[i] = metrics.FECSnapshot{
+		snap := metrics.FECSnapshot{
 			Peer:                 peer.Name,
 			DataPackets:          f.DataFrames,
 			RepairPackets:        f.ParityFrames,
@@ -159,6 +159,15 @@ func (s *metricsSource) FEC() []metrics.FECSnapshot {
 			RepairBytes:          f.ParityBytes,
 			ResidualLossRatio:    f.ResidualLoss,
 		}
+		if f.Adaptive != nil {
+			snap.Adaptive = &metrics.AdaptiveFECStats{
+				Parity:        f.Adaptive.Parity,
+				SmoothedLoss:  f.Adaptive.SmoothedLoss,
+				EligibleLoss:  f.Adaptive.EligibleLoss,
+				EligiblePaths: f.Adaptive.EligiblePaths,
+			}
+		}
+		out[i] = snap
 	}
 	return out
 }

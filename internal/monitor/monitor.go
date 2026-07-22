@@ -69,6 +69,19 @@ type FECSnapshot struct {
 	DataBytes            uint64  `json:"dataBytes"`
 	RepairBytes          uint64  `json:"repairBytes"`
 	ResidualLossRatio    float64 `json:"residualLossRatio"`
+	// Adaptive is the JSON encoding of the adaptive-FEC controller's most recent
+	// published decision (metrics.FECSnapshot.Adaptive, T263, D96), omitted (nil) for a
+	// fixed-ratio or FEC-off peer so fixed-ratio-only output stays byte-identical.
+	Adaptive *AdaptiveFECStats `json:"adaptive,omitempty"`
+}
+
+// AdaptiveFECStats is the JSON encoding of the adaptive-FEC controller's per-drive
+// decision (metrics.AdaptiveFECStats, T263, D96).
+type AdaptiveFECStats struct {
+	Parity        int     `json:"parity"`
+	SmoothedLoss  float64 `json:"smoothedLoss"`
+	EligibleLoss  float64 `json:"eligibleLoss"`
+	EligiblePaths int     `json:"eligiblePaths"`
 }
 
 // ReseqSnapshot is the JSON encoding of one per-peer resequencer counter set
@@ -314,7 +327,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 	}
 
 	for i, f := range fec {
-		out.FEC[i] = FECSnapshot{
+		fs := FECSnapshot{
 			Peer:                 f.Peer,
 			DataPackets:          f.DataPackets,
 			RepairPackets:        f.RepairPackets,
@@ -324,6 +337,15 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 			RepairBytes:          f.RepairBytes,
 			ResidualLossRatio:    f.ResidualLossRatio,
 		}
+		if f.Adaptive != nil {
+			fs.Adaptive = &AdaptiveFECStats{
+				Parity:        f.Adaptive.Parity,
+				SmoothedLoss:  f.Adaptive.SmoothedLoss,
+				EligibleLoss:  f.Adaptive.EligibleLoss,
+				EligiblePaths: f.Adaptive.EligiblePaths,
+			}
+		}
+		out.FEC[i] = fs
 	}
 
 	for i, r := range reseqSnapshots {

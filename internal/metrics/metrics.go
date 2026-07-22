@@ -89,6 +89,14 @@ const (
 	// share of outer-seqs neither natively received nor reconstructed from parity — the loss
 	// FEC did not mask. It is the P4 residual-loss acceptance signal.
 	MetricFECResidualLoss = "wanbond_fec_residual_loss_ratio"
+	// Adaptive-FEC controller decision series (T263, D96, G29). Present ONLY for a peer
+	// whose FECSnapshot.Adaptive is non-nil (the adaptive controller is engaged); absent
+	// entirely for a fixed-ratio or FEC-off peer, mirroring the AggregationSnapshot
+	// absent-series behaviour (T146).
+	MetricFECAdaptiveParity   = "wanbond_fec_adaptive_parity"
+	MetricFECSmoothedLoss     = "wanbond_fec_smoothed_loss"
+	MetricFECEligiblePathLoss = "wanbond_fec_eligible_path_loss"
+	MetricFECEligiblePaths    = "wanbond_fec_eligible_paths"
 )
 
 // Resequencer metric names (T94). Like the FEC series, these are per-PEER (a peer's
@@ -264,6 +272,23 @@ type FECSnapshot struct {
 	// ResidualLossRatio is the current post-FEC-recovery connection loss fraction in [0,1]
 	// (T29) — the loss FEC did not mask (the P4 acceptance signal). Zero when FEC is off.
 	ResidualLossRatio float64
+	// Adaptive is the adaptive-FEC controller's most recent published decision (T263,
+	// D96), mirrored verbatim from bind.FECStats.Adaptive. It is nil for a fixed-ratio or
+	// FEC-off peer, so the collector fabricates no adaptive series where none exists — the
+	// AggregationSnapshot absent-series precedent (T146).
+	Adaptive *AdaptiveFECStats
+}
+
+// AdaptiveFECStats is the adaptive-FEC controller's per-drive decision (T263, D96),
+// mirrored verbatim from bind.AdaptiveFECStats: Parity is the target parity count M the
+// encoder was retargeted to (ctrl.Parity()); SmoothedLoss the controller's EWMA loss
+// estimate; EligibleLoss the max raw probe-measured loss across the drive's eligible
+// (StateUp + probed) paths; EligiblePaths the count of those paths.
+type AdaptiveFECStats struct {
+	Parity        int
+	SmoothedLoss  float64
+	EligibleLoss  float64
+	EligiblePaths int
 }
 
 // PathSnapshot is the current per-path signal set the exposition layer reports.
@@ -428,6 +453,11 @@ type collector struct {
 	fecRepairBytes   *prometheus.Desc
 	fecResidualLoss  *prometheus.Desc
 
+	fecAdaptiveParity   *prometheus.Desc
+	fecSmoothedLoss     *prometheus.Desc
+	fecEligiblePathLoss *prometheus.Desc
+	fecEligiblePaths    *prometheus.Desc
+
 	reseqReleased          *prometheus.Desc
 	reseqDroppedDup        *prometheus.Desc
 	reseqDroppedOld        *prometheus.Desc
@@ -485,6 +515,11 @@ func NewCollector(src Source) prometheus.Collector {
 		fecRepairBytes:   desc(fecSubsystem, "repair_bytes_total", "FEC parity-frame wire bytes emitted (the byte overhead numerator).", peerScopedLabels),
 		fecResidualLoss:  desc(fecSubsystem, "residual_loss_ratio", "Post-FEC-recovery connection loss fraction in [0,1] (loss FEC did not mask).", peerScopedLabels),
 
+		fecAdaptiveParity:   desc(fecSubsystem, "adaptive_parity", "Adaptive-FEC controller's current target parity count M (present only while the controller is engaged).", peerScopedLabels),
+		fecSmoothedLoss:     desc(fecSubsystem, "smoothed_loss", "Adaptive-FEC controller's EWMA smoothed loss estimate in [0,1] (present only while the controller is engaged).", peerScopedLabels),
+		fecEligiblePathLoss: desc(fecSubsystem, "eligible_path_loss", "Max raw probe-measured loss across the adaptive-FEC drive's eligible paths (present only while the controller is engaged).", peerScopedLabels),
+		fecEligiblePaths:    desc(fecSubsystem, "eligible_paths", "Count of eligible (StateUp + probed) paths the adaptive-FEC drive considered (present only while the controller is engaged).", peerScopedLabels),
+
 		reseqReleased:       desc(resequencerSubsystem, "released_frames_total", "Frames released for delivery by the resequencer.", peerScopedLabels),
 		reseqDroppedDup:     desc(resequencerSubsystem, "dropped_duplicate_frames_total", "Frames dropped by the resequencer as duplicates.", peerScopedLabels),
 		reseqDroppedOld:     desc(resequencerSubsystem, "dropped_stale_frames_total", "Frames dropped by the resequencer as already past the release point.", peerScopedLabels),
@@ -526,6 +561,10 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fecDataBytes
 	ch <- c.fecRepairBytes
 	ch <- c.fecResidualLoss
+	ch <- c.fecAdaptiveParity
+	ch <- c.fecSmoothedLoss
+	ch <- c.fecEligiblePathLoss
+	ch <- c.fecEligiblePaths
 	ch <- c.reseqReleased
 	ch <- c.reseqDroppedDup
 	ch <- c.reseqDroppedOld
@@ -568,6 +607,12 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.fecDataBytes, prometheus.CounterValue, float64(f.DataBytes), labels...)
 		ch <- prometheus.MustNewConstMetric(c.fecRepairBytes, prometheus.CounterValue, float64(f.RepairBytes), labels...)
 		ch <- prometheus.MustNewConstMetric(c.fecResidualLoss, prometheus.GaugeValue, f.ResidualLossRatio, labels...)
+		if f.Adaptive != nil {
+			ch <- prometheus.MustNewConstMetric(c.fecAdaptiveParity, prometheus.GaugeValue, float64(f.Adaptive.Parity), labels...)
+			ch <- prometheus.MustNewConstMetric(c.fecSmoothedLoss, prometheus.GaugeValue, f.Adaptive.SmoothedLoss, labels...)
+			ch <- prometheus.MustNewConstMetric(c.fecEligiblePathLoss, prometheus.GaugeValue, f.Adaptive.EligibleLoss, labels...)
+			ch <- prometheus.MustNewConstMetric(c.fecEligiblePaths, prometheus.GaugeValue, float64(f.Adaptive.EligiblePaths), labels...)
+		}
 	}
 	for _, r := range c.src.Reseq() {
 		labels := c.peerLabelValues(r.Peer)

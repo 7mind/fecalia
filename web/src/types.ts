@@ -44,6 +44,20 @@ export interface FECSnapshot {
   dataBytes: number;
   repairBytes: number;
   residualLossRatio: number;
+  /**
+   * Mirrors monitor.FECSnapshot.Adaptive (T263, D96): the adaptive-FEC
+   * controller's most recent published decision. Absent (server omits the
+   * field, `omitempty`) for a fixed-ratio or FEC-off peer.
+   */
+  adaptive?: AdaptiveFECStats;
+}
+
+/** Mirrors monitor.AdaptiveFECStats: the adaptive-FEC controller's per-drive decision. */
+export interface AdaptiveFECStats {
+  parity: number;
+  smoothedLoss: number;
+  eligibleLoss: number;
+  eligiblePaths: number;
 }
 
 /** Mirrors monitor.ReseqSnapshot: one per-peer resequencer counter set. */

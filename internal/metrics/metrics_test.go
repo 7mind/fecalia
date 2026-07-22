@@ -422,6 +422,119 @@ func TestExpositionFECCounters(t *testing.T) {
 	}
 }
 
+// TestExpositionAdaptiveFECSinglePeer is the T263/D96 acceptance at the metrics-package
+// seam: a single-peer FECSnapshot carrying a non-nil Adaptive emits all four adaptive
+// series with NO `peer` label (the T94 single-peer back-compat rule) and the exact
+// injected values.
+func TestExpositionAdaptiveFECSinglePeer(t *testing.T) {
+	src := fakeSource{fec: []FECSnapshot{{
+		DataPackets: 300,
+		Adaptive: &AdaptiveFECStats{
+			Parity:        3,
+			SmoothedLoss:  0.021,
+			EligibleLoss:  0.05,
+			EligiblePaths: 2,
+		},
+	}}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		want float64
+	}{
+		{MetricFECAdaptiveParity, 3},
+		{MetricFECSmoothedLoss, 0.021},
+		{MetricFECEligiblePathLoss, 0.05},
+		{MetricFECEligiblePaths, 2},
+	}
+	for _, c := range checks {
+		got, ok := exp.Value(c.name) // unlabeled series (single-peer omits `peer`)
+		if !ok {
+			t.Errorf("%s missing (or carries an unexpected peer label)", c.name)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestExpositionAdaptiveFECMultiPeer is the T263/D96 multi-peer acceptance: a 2-peer
+// Source with one peer running the adaptive controller and the other fixed-ratio
+// carries the `peer` label on the adaptive peer's series, with the fixed-ratio peer
+// contributing none of the four adaptive series.
+func TestExpositionAdaptiveFECMultiPeer(t *testing.T) {
+	src := fakeSource{
+		peerNames: []string{"edge1", "edge2"},
+		fec: []FECSnapshot{
+			{Peer: "edge1", DataPackets: 10, Adaptive: &AdaptiveFECStats{Parity: 4, SmoothedLoss: 0.03, EligibleLoss: 0.06, EligiblePaths: 3}},
+			{Peer: "edge2", DataPackets: 700}, // fixed-ratio: no Adaptive
+		},
+	}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		want float64
+	}{
+		{MetricFECAdaptiveParity, 4},
+		{MetricFECSmoothedLoss, 0.03},
+		{MetricFECEligiblePathLoss, 0.06},
+		{MetricFECEligiblePaths, 3},
+	}
+	for _, c := range checks {
+		got, ok := exp.PeerValue(c.name, "edge1")
+		if !ok {
+			t.Errorf("%s{peer=\"edge1\"} missing", c.name)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s{peer=\"edge1\"} = %v, want %v", c.name, got, c.want)
+		}
+		if _, ok := exp.PeerValue(c.name, "edge2"); ok {
+			t.Errorf("%s{peer=\"edge2\"} present, want absent (fixed-ratio peer carries no Adaptive)", c.name)
+		}
+	}
+}
+
+// TestAdaptiveFECAbsentWhenNil is the T263/D96 absent-series acceptance: a Source whose
+// FECSnapshot.Adaptive is nil (fixed-ratio or FEC-off) exposes NONE of the four adaptive
+// series, mirroring TestAggregationAbsentUnderActiveBackup.
+func TestAdaptiveFECAbsentWhenNil(t *testing.T) {
+	srv := startServer(t, fakeSource{fec: []FECSnapshot{{DataPackets: 300}}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for _, name := range []string{
+		MetricFECAdaptiveParity,
+		MetricFECSmoothedLoss,
+		MetricFECEligiblePathLoss,
+		MetricFECEligiblePaths,
+	} {
+		if exp.Has(name) {
+			t.Errorf("%s registered under a nil Adaptive FECSnapshot, want absent entirely", name)
+		}
+	}
+}
+
 // TestExpositionSinglePeerByteCompatible asserts a single-bound-peer Source's raw
 // scrape text carries NO `peer` label anywhere — the T94 back-compat rule: a
 // single-peer exposition is byte-identical to the pre-T94 series (path/FEC/

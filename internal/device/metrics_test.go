@@ -239,6 +239,41 @@ func TestMetricsSourceMapsFEC(t *testing.T) {
 	if got[0].UnrecoverablePackets != 1 {
 		t.Errorf("UnrecoverablePackets = %d, want 1", got[0].UnrecoverablePackets)
 	}
+	if got[0].Adaptive != nil {
+		t.Errorf("Adaptive = %+v, want nil (fixed-ratio FECStats carries no adaptive decision)", got[0].Adaptive)
+	}
+}
+
+// TestMetricsSourceMapsFECAdaptive asserts the adapter mirrors the Bind's adaptive-FEC
+// controller decision (T263, D96) into metrics.FECSnapshot.Adaptive verbatim when the
+// peer's FECStats carries one.
+func TestMetricsSourceMapsFECAdaptive(t *testing.T) {
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{{
+		Name: "",
+		FEC: bind.FECStats{
+			DataFrames: 82,
+			Adaptive: &bind.AdaptiveFECStats{
+				Parity:        3,
+				SmoothedLoss:  0.02,
+				EligibleLoss:  0.05,
+				EligiblePaths: 2,
+			},
+		},
+	}})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.FEC()
+	if len(got) != 1 {
+		t.Fatalf("FEC len = %d, want 1", len(got))
+	}
+	if got[0].Adaptive == nil {
+		t.Fatalf("Adaptive = nil, want non-nil")
+	}
+	want := metrics.AdaptiveFECStats{Parity: 3, SmoothedLoss: 0.02, EligibleLoss: 0.05, EligiblePaths: 2}
+	if *got[0].Adaptive != want {
+		t.Errorf("Adaptive = %+v, want %+v", *got[0].Adaptive, want)
+	}
 }
 
 // TestMetricsSourceMapsReseq asserts the adapter passes the Bind's per-peer

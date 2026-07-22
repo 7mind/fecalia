@@ -117,7 +117,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   under `active-backup`). Independent of policy, a static
   `wanbond_liveness_budget_sane` gauge flags a `[liveness]` `down_after` /
   per-path `ride_through` widened past the 3s transparent-failover recovery
-  deadline (WARN-and-allow — it never blocks startup).
+  deadline (WARN-and-allow — it never blocks startup). When `[fec] enabled =
+  true, adaptive = true`, four per-peer gauges expose the adaptive controller's
+  live decision — `wanbond_fec_adaptive_parity` (current target parity M),
+  `wanbond_fec_smoothed_loss` (its EWMA loss estimate),
+  `wanbond_fec_eligible_path_loss` (max raw loss across the paths the drive
+  considered), and `wanbond_fec_eligible_paths` (their count) — absent
+  entirely for a fixed-ratio or FEC-off peer.
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a read-only,
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
   a `/ws` WebSocket every 1s) — loopback-only by default like `[metrics]`, but

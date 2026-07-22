@@ -948,6 +948,21 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
 > reedsolomon bump must be re-verified against
 > `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing.
 
+**Adaptive-FEC controller observability (T263, D96).** The controller's most
+recent drive decision (`driveAdaptiveControllerLocked`) is published into the
+lock-free FEC snapshot alongside the fixed-ratio counters above, and surfaced
+on `/metrics` as four PER-PEER gauges, present ONLY while the peer runs the
+adaptive controller (`FECSnapshot.Adaptive != nil`; absent entirely for a
+fixed-ratio or FEC-off peer — the `AggregationSnapshot` absent-series
+precedent, T146): `wanbond_fec_adaptive_parity` (the target parity count M the
+encoder was retargeted to, `ctrl.Parity()`), `wanbond_fec_smoothed_loss` (the
+controller's EWMA loss estimate), `wanbond_fec_eligible_path_loss` (the max raw
+probe-measured loss across the drive's eligible — `StateUp` + probed — paths),
+and `wanbond_fec_eligible_paths` (the count of those paths; 0 on the "no
+eligible path" hold branch, while parity/smoothed-loss hold their last driven
+value). They honour the same T94 single-peer-omits-label back-compat rule as
+the fixed-ratio FEC series.
+
 ### TUN lifecycle: persistence, the default-route exception, and the session signal — `internal/device`
 
 Three device-lifecycle surfaces beyond tunnel bring-up/teardown itself, all owned
