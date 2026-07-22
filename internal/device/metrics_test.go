@@ -98,6 +98,33 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 	}
 }
 
+// TestMetricsSourceMapsProbeSendErrors is the D96 item 4 threading regression: the
+// adapter must copy bind.PathTraffic.ProbeSendErrors verbatim into
+// metrics.PathSnapshot.ProbeSendErrors for exactly the path that accumulated
+// them, leaving an unaffected path at zero.
+func TestMetricsSourceMapsProbeSendErrors(t *testing.T) {
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{{
+		Name: "",
+		Paths: []bind.PathTraffic{
+			{Name: "starlink", ProbeSendErrors: 7},
+			{Name: "cellular", ProbeSendErrors: 0},
+		},
+	}})
+	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.Paths()
+	if len(got) != 2 {
+		t.Fatalf("Paths len = %d, want 2", len(got))
+	}
+	if got[0].Name != "starlink" || got[0].ProbeSendErrors != 7 {
+		t.Errorf("path 0 = %+v, want starlink ProbeSendErrors=7", got[0])
+	}
+	if got[1].Name != "cellular" || got[1].ProbeSendErrors != 0 {
+		t.Errorf("path 1 = %+v, want cellular ProbeSendErrors=0", got[1])
+	}
+}
+
 // TestMetricsSource_PathsCarriesAddressing asserts the adapter copies the runtime
 // addressing fields (Source, Remote, BindMode, BoundDevice) verbatim from
 // bind.PathTraffic into metrics.PathSnapshot (T220): pass-through only, no derivation.

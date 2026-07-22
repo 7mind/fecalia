@@ -19,7 +19,10 @@ import (
 // released before any socket I/O, so emission neither holds the lock across a
 // syscall nor blocks the lock-free receive fast path. A concurrent Close closes
 // the sockets out from under the snapshot; the resulting write error is benign
-// (teardown) and dropped. It is a no-op when the bind has no probers or is closed.
+// (teardown) and count-and-continue (defect D96 item 4): it is tallied into the
+// path's probeSendErrors counter (wanbond_path_probe_send_errors_total) rather than
+// silently dropped, then probing proceeds exactly as before — no behaviour change.
+// It is a no-op when the bind has no probers or is closed.
 func (m *Multipath) emitProbes() {
 	m.mu.Lock()
 	if len(m.paths) == 0 || m.probers == nil {
@@ -113,6 +116,12 @@ func (m *Multipath) emitProbes() {
 					if t.budget != nil {
 						t.budget.AccountProbe(t.idx)
 					}
+				} else {
+					// The write failed (e.g. a concurrent Close raced the probe-loop
+					// goroutine, or a transient socket error): count it so a path whose
+					// probes cannot egress is observable at /metrics instead of reading
+					// identically to a path with 100% probe loss (defect D96 item 4).
+					t.ps.probeSendErrors.Add(1)
 				}
 			}
 		}

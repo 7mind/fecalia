@@ -767,6 +767,18 @@ the worst-case ride_through). The plumbing of `down_after`/`ride_through` into
 the running scheduler is T207 (already landed); this task adds the shared
 budget derivation plus the WARN-and-allow verdict.
 
+**Probe socket write errors are counted, not swallowed (D96 item 4).**
+`emitProbes` (`internal/bind/probe.go`) writes each path's PROBE frame directly
+to its socket, outside the paced `Send`→`Pick` path; a write failure there (a
+concurrent `Close` racing the probe-loop goroutine, or a transient socket
+error) used to be dropped silently, leaving a path whose probes cannot egress
+indistinguishable from a path with 100% probe loss. It is now tallied
+lock-free into a per-path `probeSendErrors` atomic — count-and-continue, no
+behaviour change to probing — threaded through `bind.PathTraffic` →
+`metrics.PathSnapshot` and exposed as the per-path counter
+`wanbond_path_probe_send_errors_total`, mirroring the D90 `accountSendError`
+EMSGSIZE-drop counter's rationale for the Send hot path.
+
 ### Receive resequencer — `internal/reseq`
 
 Bonding across paths of different latency reorders packets. The resequencer holds

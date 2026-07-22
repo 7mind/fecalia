@@ -286,6 +286,14 @@ type peerPathState struct {
 	emsgsizeDrops         atomic.Uint64
 	lastEMSGSIZEWarnNanos atomic.Int64
 
+	// probeSendErrors counts PROBE-frame socket write errors emitProbes currently drops
+	// (defect D96 item 4, composes with D90's emsgsizeDrops): a path whose probe writes
+	// fail (e.g. a Close racing the probe-loop goroutine, or a transient socket error)
+	// was previously indistinguishable from a path with 100% probe loss. Incremented
+	// lock-free (no m.mu) from the probe-loop goroutine at the exact point the write
+	// error is dropped; count-and-continue, no behaviour change to probing.
+	probeSendErrors atomic.Uint64
+
 	// schedIdx is this path's index in its peer's scheduler (== its position in
 	// peer.paths, the invariant attachPeerPathLocked enforces). It is the pathIdx the
 	// bind passes to sched.ProbeBudget.AccountProbe so a directly-written PROBE frame /
@@ -3673,6 +3681,10 @@ type PathTraffic struct {
 	RxBytes  uint64
 	Estimate telemetry.Estimate
 	State    telemetry.PathState
+	// ProbeSendErrors is the cumulative count of PROBE-frame socket write errors
+	// emitProbes has dropped for this path (defect D96 item 4), read verbatim from
+	// peerPathState.probeSendErrors.
+	ProbeSendErrors uint64
 	// The following addressing fields surface this path's runtime networking
 	// identity for the G21 monitoring UI (value-wiring into the monitor snapshot
 	// is T220; the /metrics prometheus exposition ignores them). Source is the
@@ -3733,9 +3745,10 @@ type aggregationReporter interface {
 // still be empty for a peer with a currently-empty path set.
 func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 	type pathRef struct {
-		name   string
-		tx, rx uint64
-		prober *telemetry.Prober
+		name      string
+		tx, rx    uint64
+		probeErrs uint64
+		prober    *telemetry.Prober
 		// pp is captured under m.mu; its src/conn/bindMode/boundDevice are immutable
 		// and its remote is ps.mu-guarded (getRemote), so the addressing fields are
 		// read AFTER m.mu is released, exactly like the prober Estimate()/State() reads.
@@ -3756,7 +3769,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler}
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
-			r.paths[j] = pathRef{name: pp.name, tx: pp.txBytes.Load(), rx: pp.rxBytes.Load(), prober: pp.prober, pp: pp}
+			r.paths[j] = pathRef{name: pp.name, tx: pp.txBytes.Load(), rx: pp.rxBytes.Load(), probeErrs: pp.probeSendErrors.Load(), prober: pp.prober, pp: pp}
 		}
 		refs[i] = r
 	}
@@ -3767,7 +3780,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		snap := PeerSnapshot{Name: r.name}
 		snap.Paths = make([]PathTraffic, len(r.paths))
 		for j, pr := range r.paths {
-			pt := PathTraffic{Name: pr.name, TxBytes: pr.tx, RxBytes: pr.rx}
+			pt := PathTraffic{Name: pr.name, TxBytes: pr.tx, RxBytes: pr.rx, ProbeSendErrors: pr.probeErrs}
 			if pr.prober != nil {
 				pt.Estimate = pr.prober.Estimate()
 				pt.State = pr.prober.State()

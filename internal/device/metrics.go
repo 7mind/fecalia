@@ -134,6 +134,7 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				Source:                  t.Source,
 				Remote:                  t.Remote,
 				PMTU:                    pmtu,
+				ProbeSendErrors:         t.ProbeSendErrors,
 			})
 		}
 	}

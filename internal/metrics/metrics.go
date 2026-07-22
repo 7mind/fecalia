@@ -67,6 +67,11 @@ const (
 	// still echoes, the operator-configured mtu on a pinned path, or the conservative
 	// floor before the first search converges. Sourced verbatim from PathSnapshot.PMTU.
 	MetricPathMTU = "wanbond_path_mtu"
+	// MetricProbeSendErrors is the per-path cumulative count of PROBE-frame socket
+	// write errors emitProbes has dropped (defect D96 item 4, composes with D90):
+	// a path whose probes cannot egress was previously indistinguishable from a
+	// path with 100% probe loss. Sourced verbatim from PathSnapshot.ProbeSendErrors.
+	MetricProbeSendErrors = "wanbond_path_probe_send_errors_total"
 )
 
 // FEC metric names. These connection-scoped series (no path label — FEC
@@ -322,6 +327,10 @@ type PathSnapshot struct {
 	// internal/device/metrics.go rides with the TUN-resize task (T209), so it is
 	// zero-valued until then.
 	PMTU int
+	// ProbeSendErrors is the cumulative count of PROBE-frame socket write errors
+	// emitProbes has dropped for this path (defect D96 item 4), read verbatim from
+	// bind.PathTraffic.ProbeSendErrors.
+	ProbeSendErrors uint64
 	// The following addressing fields are the runtime-resolved per-path
 	// networking metadata the monitoring UI surfaces (G21). They are DEFINED here
 	// (T214) but the value-wiring from bind.PathTraffic through
@@ -444,6 +453,7 @@ type collector struct {
 	throughput *prometheus.Desc
 	up         *prometheus.Desc
 	pmtu       *prometheus.Desc
+	probeErrs  *prometheus.Desc
 
 	fecData          *prometheus.Desc
 	fecRepair        *prometheus.Desc
@@ -506,6 +516,7 @@ func NewCollector(src Source) prometheus.Collector {
 		throughput: desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
 		up:         desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
 		pmtu:       desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
+		probeErrs:  desc(pathSubsystem, "probe_send_errors_total", "Per-path PROBE-frame socket write errors (count-and-continue; a path whose probes cannot egress is otherwise indistinguishable from 100% probe loss).", pathLabels),
 
 		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", peerScopedLabels),
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", peerScopedLabels),
@@ -554,6 +565,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.throughput
 	ch <- c.up
 	ch <- c.pmtu
+	ch <- c.probeErrs
 	ch <- c.fecData
 	ch <- c.fecRepair
 	ch <- c.fecRecovered
@@ -597,6 +609,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.throughput, prometheus.GaugeValue, p.ThroughputBitsPerSecond, labels...)
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), labels...)
 		ch <- prometheus.MustNewConstMetric(c.pmtu, prometheus.GaugeValue, float64(p.PMTU), labels...)
+		ch <- prometheus.MustNewConstMetric(c.probeErrs, prometheus.CounterValue, float64(p.ProbeSendErrors), labels...)
 	}
 	for _, f := range c.src.FEC() {
 		labels := c.peerLabelValues(f.Peer)

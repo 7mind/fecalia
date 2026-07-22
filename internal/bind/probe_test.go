@@ -418,3 +418,57 @@ func TestMultipathEchoReflectionCountsTxBytes(t *testing.T) {
 		t.Fatalf("txBytes after echo reflection = %d, want %d (the reflected echo's wire length)", got, want)
 	}
 }
+
+// TestMultipathEmitProbesCountsSendErrors is the D96 item 4 regression: a PROBE
+// socket write error emitProbes drops must accumulate the path's probeSendErrors
+// counter (wanbond_path_probe_send_errors_total) rather than vanish silently.
+// Two paths are probed; only path 0's socket is closed before emitProbes runs, so
+// only its write fails — asserting the counter rises for EXACTLY that path, not
+// path 1's, and that path 1's probe still egresses normally (count-and-continue,
+// no behaviour change to probing).
+func TestMultipathEmitProbesCountsSendErrors(t *testing.T) {
+	psk := testKey(t, 0x28)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	_, peerAP0 := rawPeer(t)
+	peer1, peerAP1 := rawPeer(t)
+	m.paths[0].setRemote(peerAP0)
+	m.paths[1].setRemote(peerAP1)
+
+	if before := m.paths[0].probeSendErrors.Load(); before != 0 {
+		t.Fatalf("path 0 probeSendErrors before emitProbes = %d, want 0", before)
+	}
+	if before := m.paths[1].probeSendErrors.Load(); before != 0 {
+		t.Fatalf("path 1 probeSendErrors before emitProbes = %d, want 0", before)
+	}
+
+	// Force path 0's write to fail: close its socket out from under the snapshot
+	// (mirroring the doc comment's "concurrent Close" scenario) while leaving path
+	// 1's socket open.
+	if err := m.paths[0].conn.Close(); err != nil {
+		t.Fatalf("close path 0 conn: %v", err)
+	}
+
+	m.emitProbes()
+
+	if got := m.paths[0].probeSendErrors.Load(); got != 1 {
+		t.Fatalf("path 0 probeSendErrors after emitProbes = %d, want 1", got)
+	}
+	if got := m.paths[1].probeSendErrors.Load(); got != 0 {
+		t.Fatalf("path 1 probeSendErrors after emitProbes = %d, want 0 (its socket never failed)", got)
+	}
+
+	// path 1's probe still egresses normally: the drop on path 0 must not perturb it.
+	if err := peer1.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, maxDatagram)
+	if _, err := peer1.Read(buf); err != nil {
+		t.Fatalf("read path 1 probe: %v", err)
+	}
+}

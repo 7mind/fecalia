@@ -195,6 +195,44 @@ func TestExpositionPathMTUSeries(t *testing.T) {
 	}
 }
 
+// TestExpositionProbeSendErrorsSeries is the D96 item 4 exposition regression: a
+// path whose probe write seam accumulated send errors must expose
+// wanbond_path_probe_send_errors_total rising for EXACTLY that path, leaving an
+// unaffected path's series at zero.
+func TestExpositionProbeSendErrorsSeries(t *testing.T) {
+	src := fakeSource{paths: []PathSnapshot{
+		{Name: "starlink", State: telemetry.StateUp, ProbeSendErrors: 3},
+		{Name: "cellular", State: telemetry.StateUp, ProbeSendErrors: 0},
+	}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !exp.Has(MetricProbeSendErrors) {
+		t.Fatalf("%s not registered", MetricProbeSendErrors)
+	}
+	for _, c := range []struct {
+		path string
+		want float64
+	}{
+		{"starlink", 3},
+		{"cellular", 0},
+	} {
+		got, ok := exp.PathValue(MetricProbeSendErrors, c.path)
+		if !ok {
+			t.Errorf("%s{path=%q} missing", MetricProbeSendErrors, c.path)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s{path=%q} = %v, want %v", MetricProbeSendErrors, c.path, got, c.want)
+		}
+	}
+}
+
 // TestExpositionPerPathSeries drives the registry with synthetic per-path
 // telemetry, scrapes the running endpoint, and asserts the exposition carries the
 // expected per-path gauges/counters (bytes, loss, RTT, throughput, jitter, up)
@@ -255,6 +293,8 @@ func TestExpositionPerPathSeries(t *testing.T) {
 		{MetricRTT, "cellular", 0.12},
 		{MetricThroughput, "cellular", 500_000},
 		{MetricUp, "cellular", 0},
+		{MetricProbeSendErrors, "starlink", 0},
+		{MetricProbeSendErrors, "cellular", 0},
 	}
 	for _, c := range checks {
 		got, ok := exp.PathValue(c.metric, c.path)
