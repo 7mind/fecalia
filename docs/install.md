@@ -212,6 +212,97 @@ address (its public IP + port); it does not know or care that multiple edges
 are connected to the same concentrator. The concentrator's internal demux is
 entirely transparent to the edge.
 
+### Multi-concentrator edge (G28) — multiple exit-capable concentrators
+
+The **edge** may declare **several concentrator peers** and bond to all of them
+concurrently over the **same set of uplinks** (G28/Q74). Each peer is a separate
+tunnel to a separate concentrator; the sockets are shared (one UDP socket per
+uplink, fanned out to every peer), while the per-peer scheduler / FEC /
+resequencer state stays independent. Every peer marked `mode = "default-route"`
+is an **exit-capable** alternate for the full-tunnel egress; the **first**
+default-route peer in config order is the **boot-default exit** (the selection is
+not persisted — the daemon always boots to the config default, Q74). On-the-fly
+switching of the active exit and per-concentrator statistics are surfaced by the
+web UI (later tasks); this section covers only the **config surface**.
+
+```toml
+role = "edge"
+psk = "<base64 32-byte outer-control PSK, same on all ends>"
+
+# The SAME uplinks carry every concentrator bond.
+[[paths]]
+name = "starlink"
+source_addr = "192.168.1.10"
+
+[[paths]]
+name = "5g"
+source_addr = "192.168.2.10"
+
+[wireguard]
+private_key = "<base64 edge private key>"
+
+# Concentrator A — the boot-default exit (first default-route peer).
+[[wireguard.peers]]
+public_key = "<base64 concentrator-A public key>"
+name = "hub-a"                        # REQUIRED with more than one peer
+psk = "<base64 32-byte PSK for hub-a>" # REQUIRED and pairwise-distinct
+endpoint = "203.0.113.7:51820"        # each peer keeps its OWN endpoint /
+                                      # endpoints failover list (Q72)
+allowed_ips = ["0.0.0.0/0", "10.77.0.1/32"]  # full default route + its inner /32
+mode = "default-route"
+
+# Concentrator B — a warm-standby exit alternate.
+[[wireguard.peers]]
+public_key = "<base64 concentrator-B public key>"
+name = "hub-b"
+psk = "<base64 32-byte PSK for hub-b>"
+endpoint = "198.51.100.7:51820"
+allowed_ips = ["0.0.0.0/0", "10.77.0.2/32"]  # SAME default route + its OWN /32
+mode = "default-route"
+
+[metrics]
+listen = "127.0.0.1:9090"
+```
+
+**Validation rules (enforced at config load, fail-fast):**
+
+- A `0.0.0.0/0` / `::/0` entry is permitted **only** on a `mode = "default-route"`
+  peer. With more than one exit-capable peer, they are alternates for the same
+  egress role, so **every** exit-capable peer must list the **same** default-route
+  entry set.
+- **Each exit-capable peer must also carry at least one non-default allowed_ip**
+  (its concentrator's inner address, e.g. its inner `/32`). A peer listing
+  **solely** `0.0.0.0/0` is rejected, naming the offending peer — a standby exit
+  renders only its non-default routes, so a `/0`-only peer would render an empty
+  allowed_ips at boot. (The single-peer legacy full-tunnel form
+  `allowed_ips = ["0.0.0.0/0"]` is unaffected — it still loads unchanged.)
+- **Non-default** allowed_ips must **not overlap** across peers (each
+  concentrator's inner address stays unambiguous). The shared `/0` default route
+  is exempt — it is intentionally identical across the exit-capable peers.
+- Every peer needs its **own** `endpoint` / `endpoints` (the per-concentrator
+  T57 failover list is retained per peer); an **exact duplicate literal
+  endpoint** `address:port` across two peers is rejected.
+- With more than one peer the usual multi-peer rules apply on the edge exactly as
+  on the concentrator: each peer's `name` and `psk` are **required and
+  pairwise-distinct**.
+- There is **one shared** `[scheduler]` / `[fec]` / `[reseq]` policy block that
+  applies uniformly to every peer bond (Q71) — there are no per-peer policy
+  fields (a per-peer `policy` key or `[wireguard.peers.scheduler]` sub-table is
+  rejected as an unknown key).
+
+**Probe fan-out budget (N × U):** the edge runs one liveness/RTT prober per
+`(concentrator peer, uplink)` pair, so the probe fan-out is **N concentrator
+peers × U uplinks**. The uplink **sockets** do not multiply by N (all peers share
+each uplink's socket), but the **probers** do: each emits one PROBE per fixed
+200 ms interval plus its reflected echo, and those frames bypass the pacer
+(charged-but-never-shed), drawing on each uplink's token bucket. Config load
+rejects a config whose computed fan-out exceeds the budget of **32 probers**,
+with a message stating the computed value vs. the available budget. Worked
+example: the 2-concentrator edge above over its 2 uplinks is `2 × 2 = 4` probers,
+well within budget; an 8-concentrator edge over 4 uplinks is `8 × 4 = 32`, at the
+ceiling; adding a 5th uplink (`8 × 5 = 40`) is rejected — reduce the concentrator
+or uplink count.
+
 ### Optional `[fec]` forward-error-correction plane
 
 FEC is **off** unless an `[fec]` block is present. A fixed-ratio block protects

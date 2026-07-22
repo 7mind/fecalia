@@ -439,9 +439,11 @@ func fillTwoPeer(name0, psk0, name1, psk1 string) string {
 	return r.Replace(twoPeerConcentratorTemplate)
 }
 
-// edgeTwoPeersConfig is an edge config with two wireguard peers, used only to
-// exercise the Q21 concentrator-only-scope rejection (the edge dials exactly
-// one concentrator peer per process).
+// edgeTwoPeersConfig is an edge config with two wireguard peers, both listing
+// 0.0.0.0/0 without mode = "default-route". Since T250 the edge admits multiple
+// concentrator peers, so this is no longer a scope rejection; instead it trips
+// the multi-exit rule that a full default route is permitted ONLY on an
+// exit-capable (mode = "default-route") peer.
 const edgeTwoPeersConfig = `
 role = "edge"
 psk = "%PSK%"
@@ -491,9 +493,11 @@ func TestPeerPSKAndNameValidation(t *testing.T) {
 			wantErr: "must be unique",
 		},
 		{
-			name:    "edge role with 2 peers fails with a scope-explaining message",
+			// T250: an edge with 2 peers is now admitted; this fixture is rejected
+			// instead for listing 0.0.0.0/0 on a non-default-route peer.
+			name:    "edge 2-peer config with 0.0.0.0/0 on a non-default-route peer is rejected",
 			body:    strings.NewReplacer("%PRIV%", testKey(1), "%PUB%", testKey(2), "%PSK%", testKey(3), "%PUB2%", testKey(4)).Replace(edgeTwoPeersConfig),
-			wantErr: "concentrator-only",
+			wantErr: "permitted only on a mode",
 		},
 		{
 			name:    "single-peer top-level-only passes",
@@ -886,6 +890,26 @@ func TestLoadRejects(t *testing.T) {
 			want: "unknown key wireguard.peers.nane",
 		},
 		{
+			// T250 rule 6 (Q71): ONE shared [scheduler]/[fec]/[reseq] policy block
+			// applies uniformly to every peer bond — there is no per-peer policy
+			// surface, so a per-peer policy scalar is rejected as an unknown key by
+			// the strict decoder rather than silently ignored.
+			name: "per-peer policy field is rejected (one shared policy block, Q71)",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				"allowed_ips = [\"0.0.0.0/0\"]\npolicy = \"weighted\"", 1)),
+			want: "unknown key wireguard.peers.policy",
+		},
+		{
+			// T250 rule 6 (Q71): a per-peer [scheduler] sub-table is likewise not a
+			// config surface — the single top-level [scheduler] block is shared.
+			name: "per-peer scheduler sub-table is rejected (one shared policy block, Q71)",
+			mode: 0o600,
+			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
+				"allowed_ips = [\"0.0.0.0/0\"]\n[wireguard.peers.scheduler]\npolicy = \"weighted\"", 1)),
+			want: "unknown key wireguard.peers.scheduler",
+		},
+		{
 			name: "concentrator without listen_port",
 			mode: 0o600,
 			body: fill(strings.Replace(concentratorConfig, "listen_port = 51820", "", 1)),
@@ -1009,21 +1033,21 @@ func minimalPeerConfig(t *testing.T, role Role) *Config {
 	}
 }
 
-// TestPeerAllowedIPsDefaultRouteInvariants is the D59 direct-validate() table
-// for the two multi-default-route-peer shapes the planner confirmed are
-// unreachable via Load: the edge role caps at one peer (config.go's
-// "edge role supports exactly one wireguard peer" guard) and the concentrator
-// role rejects mode = "default-route" on every peer, so no real TOML config
-// can ever produce two peers that both carry the mode. The cross-peer
-// invariant is still enforced directly in Config.validate() (future-proofing
-// any relaxation of either cap), so these cases construct the Config
-// in-process and call validate() directly, bypassing Load's TOML parsing.
+// TestPeerAllowedIPsDefaultRouteInvariants is the direct-validate() table for the
+// cross-peer default-route rules. Since T250 the edge admits multiple
+// exit-capable (mode = "default-route") peers, but they are alternates for the
+// same egress role, so their default-route entry SETS must match (rule 2); a
+// mismatched pair is rejected. The concentrator keeps the pre-T250 D59 guard: a
+// literal /0 may appear on at most one peer per family. Both cases construct the
+// Config in-process and call validate() directly, bypassing Load's TOML parsing.
 func TestPeerAllowedIPsDefaultRouteInvariants(t *testing.T) {
-	t.Run("two peers both carry mode = default-route", func(t *testing.T) {
+	t.Run("two edge exit-capable peers with mismatched default-route sets", func(t *testing.T) {
 		c := minimalPeerConfig(t, RoleEdge)
 		c.WireGuard.Peers = []Peer{
-			{PublicKey: mustKey(t, 2), Mode: PeerModeDefaultRoute},
-			{PublicKey: mustKey(t, 3), Mode: PeerModeDefaultRoute},
+			{PublicKey: mustKey(t, 2), Mode: PeerModeDefaultRoute, AllowedIPs: []string{"0.0.0.0/0", "10.77.0.1/32"},
+				EndpointSpecs: []EndpointSpec{{Addr: netip.MustParseAddrPort("203.0.113.5:51820")}}},
+			{PublicKey: mustKey(t, 3), Mode: PeerModeDefaultRoute, AllowedIPs: []string{"::/0", "10.77.0.2/32"},
+				EndpointSpecs: []EndpointSpec{{Addr: netip.MustParseAddrPort("203.0.113.9:51820")}}},
 		}
 		err := c.validate()
 		if err == nil {
@@ -1952,6 +1976,239 @@ func TestPathMTUValidation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), `path "starlink"`) || !strings.Contains(err.Error(), "mtu must be") {
 				t.Fatalf("error = %q, want it to name path \"starlink\" and say \"mtu must be\"", err.Error())
+			}
+		})
+	}
+}
+
+// edgePeerSpec is one wireguard peer for edgeMultiPeerTOML. An empty name/psk/
+// mode renders no key (== unset); a nil allowedIPs renders no allowed_ips key.
+type edgePeerSpec struct {
+	pub        byte
+	name       string
+	psk        string
+	endpoint   string
+	allowedIPs []string
+	mode       string
+}
+
+// edgePathSrcs returns n distinct path source_addr literals for the multi-exit
+// fixtures (each edge uplink must bind a distinct source, D10).
+func edgePathSrcs(n int) []string {
+	s := make([]string, n)
+	for i := range s {
+		s[i] = fmt.Sprintf("10.10.%d.1", i)
+	}
+	return s
+}
+
+// edgeMultiPeerTOML renders an edge config with the given path source addresses
+// and wireguard peers, for the T250 multi-exit validation table. The top-level
+// psk/private_key are always set; [amnezia] is omitted (plain WireGuard).
+func edgeMultiPeerTOML(pathSrcs []string, peers []edgePeerSpec) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "role = \"edge\"\npsk = %q\n\n", testKey(3))
+	for i, src := range pathSrcs {
+		fmt.Fprintf(&b, "[[paths]]\nname = \"p%d\"\nsource_addr = %q\n\n", i, src)
+	}
+	fmt.Fprintf(&b, "[wireguard]\nprivate_key = %q\n", testKey(1))
+	for _, p := range peers {
+		b.WriteString("\n[[wireguard.peers]]\n")
+		fmt.Fprintf(&b, "public_key = %q\n", testKey(p.pub))
+		if p.name != "" {
+			fmt.Fprintf(&b, "name = %q\n", p.name)
+		}
+		if p.psk != "" {
+			fmt.Fprintf(&b, "psk = %q\n", p.psk)
+		}
+		if p.endpoint != "" {
+			fmt.Fprintf(&b, "endpoint = %q\n", p.endpoint)
+		}
+		if p.allowedIPs != nil {
+			quoted := make([]string, len(p.allowedIPs))
+			for j, a := range p.allowedIPs {
+				quoted[j] = fmt.Sprintf("%q", a)
+			}
+			fmt.Fprintf(&b, "allowed_ips = [%s]\n", strings.Join(quoted, ", "))
+		}
+		if p.mode != "" {
+			fmt.Fprintf(&b, "mode = %q\n", p.mode)
+		}
+	}
+	return b.String()
+}
+
+// TestEdgeMultiExitValidation is the T250 acceptance table for the multi-exit
+// edge peer semantics (G28/Q68b/Q74): the edge admits N concentrator peers over
+// the same uplinks, each mode = "default-route" peer being an exit-capable
+// alternate for the shared egress role. It exercises every numbered validation
+// rule plus the R255 inner-/32 invariant and the N×U probe-fan-out budget, and
+// asserts the single-peer legacy form is unaffected.
+func TestEdgeMultiExitValidation(t *testing.T) {
+	// Two well-formed default-route concentrator peers — the documented
+	// 2-concentrator edge. Reused (mutated) by several reject cases below.
+	twoExit := func() []edgePeerSpec {
+		return []edgePeerSpec{
+			{pub: 2, name: "c0", psk: testKey(5), endpoint: "203.0.113.5:51820", allowedIPs: []string{"0.0.0.0/0", "10.77.0.1/32"}, mode: "default-route"},
+			{pub: 4, name: "c1", psk: testKey(6), endpoint: "203.0.113.9:51820", allowedIPs: []string{"0.0.0.0/0", "10.77.0.2/32"}, mode: "default-route"},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string // "" => Load must succeed
+	}{
+		{
+			name: "two default-route concentrator peers load (documented 2-concentrator edge)",
+			body: edgeMultiPeerTOML(edgePathSrcs(2), twoExit()),
+		},
+		{
+			name: "duplicate cross-peer literal endpoint rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].endpoint = p[0].endpoint
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "share endpoint",
+		},
+		{
+			name: "0.0.0.0/0 on a non-default-route peer rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].mode = "" // still lists 0.0.0.0/0 but is no longer exit-capable
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "permitted only on a mode",
+		},
+		{
+			name: "missing name with 2 edge peers rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].name = ""
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "name is required",
+		},
+		{
+			name: "missing psk with 2 edge peers rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].psk = ""
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "psk is required",
+		},
+		{
+			name: "duplicate name with 2 edge peers rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].name = p[0].name
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "must be unique",
+		},
+		{
+			name: "equal per-peer psks with 2 edge peers rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].psk = p[0].psk
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "pairwise distinct",
+		},
+		{
+			name: "overlapping non-default allowed_ips across peers rejected",
+			body: func() string {
+				p := twoExit()
+				p[0].allowedIPs = []string{"0.0.0.0/0", "10.77.0.0/24"}
+				p[1].allowedIPs = []string{"0.0.0.0/0", "10.77.0.5/32"}
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "overlapping non-default",
+		},
+		{
+			name: "exit-capable peers with mismatched default-route sets rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].allowedIPs = []string{"::/0", "10.77.0.2/32"}
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "different default-route entry sets",
+		},
+		{
+			// R255: an exit-capable peer carrying ONLY the default route (no inner
+			// address) is rejected, naming the offending peer — a standby render
+			// (T254) would otherwise strip the /0 splits and leave zero allowed_ips.
+			name: "R255 exit-capable peer with only 0.0.0.0/0 rejected",
+			body: func() string {
+				p := twoExit()
+				p[1].allowedIPs = []string{"0.0.0.0/0"}
+				return edgeMultiPeerTOML(edgePathSrcs(2), p)
+			}(),
+			wantErr: "inner address",
+		},
+		{
+			// R255 companion: the SAME topology loads once each exit-capable peer
+			// also carries its inner /32.
+			name: "R255 exit-capable peers each with an inner /32 load",
+			body: edgeMultiPeerTOML(edgePathSrcs(2), twoExit()),
+		},
+		{
+			// Q74 probe budget: N peers × U uplinks probers must not exceed the
+			// documented budget; 17 peers × 2 uplinks = 34 > 32.
+			name: "probe fan-out over budget rejected",
+			body: func() string {
+				peers := make([]edgePeerSpec, (maxProbeFanout/2)+1)
+				for i := range peers {
+					peers[i] = edgePeerSpec{pub: byte(10 + i), endpoint: fmt.Sprintf("203.0.113.%d:51820", i+1)}
+				}
+				return edgeMultiPeerTOML(edgePathSrcs(2), peers)
+			}(),
+			wantErr: "exceeds the available probe budget",
+		},
+		{
+			// Boundary: exactly at budget (16 peers × 2 uplinks = 32) loads.
+			name: "probe fan-out exactly at budget loads",
+			body: func() string {
+				peers := make([]edgePeerSpec, maxProbeFanout/2)
+				for i := range peers {
+					peers[i] = edgePeerSpec{
+						pub:        byte(10 + i),
+						name:       fmt.Sprintf("c%d", i),
+						psk:        testKey(byte(100 + i)),
+						endpoint:   fmt.Sprintf("203.0.113.%d:51820", i+1),
+						allowedIPs: []string{fmt.Sprintf("10.20.%d.1/32", i)},
+					}
+				}
+				return edgeMultiPeerTOML(edgePathSrcs(2), peers)
+			}(),
+		},
+		{
+			// Single-peer legacy full-tunnel edge (0.0.0.0/0 WITHOUT mode) still
+			// loads byte-identically — the multi-exit rules bind only at N>1.
+			name: "single-peer legacy full-tunnel edge loads",
+			body: edgeMultiPeerTOML(edgePathSrcs(2), []edgePeerSpec{
+				{pub: 2, endpoint: "203.0.113.5:51820", allowedIPs: []string{"0.0.0.0/0"}},
+			}),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, 0o600, tc.body)
+			_, err := Load(path)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.wantErr)
 			}
 		})
 	}

@@ -1551,6 +1551,193 @@ func peerLabel(i int, name string) string {
 	return fmt.Sprintf("wireguard peer %d (%q)", i, name)
 }
 
+// maxProbeFanout bounds an edge's total per-(peer,path) probe fan-out (Q74). The
+// edge runs ONE liveness/RTT prober per (concentrator peer, uplink) pair, so the
+// fan-out is N concentrator peers × U uplinks. The uplink SOCKETS do not multiply
+// by N — every peer shares each uplink's socket (bind's attachSharedPathLocked) —
+// but the PROBERS do: each emits one PROBE per fixed livenessProbeInterval
+// (200ms) plus its reflected echo, and those frames bypass the pacer's Pick
+// (charged-but-never-shed, D22/T145), drawing directly on each uplink's token
+// bucket. The ceiling keeps the aggregate probe emission bounded (32 probers ×
+// 5 PROBE/s = 160 PROBE/s across the shared uplink sockets) so N concentrators'
+// probe/echo streams sharing one uplink bucket cannot pre-drain the ClassData
+// headroom into a spurious path-DOWN flap. It admits realistic multi-concentrator
+// edges (e.g. 8 concentrators × 4 uplinks) and rejects a pathological fan-out at
+// config LOAD with a computed-vs-available message, rather than deferring the
+// overload to runtime.
+const maxProbeFanout = 32
+
+// defaultRouteMask records which address families' full default route
+// (0.0.0.0/0, ::/0) a peer's allowed_ips carry (T250 rule 2).
+type defaultRouteMask struct {
+	v4 bool
+	v6 bool
+}
+
+// defaultRouteMaskOf returns which families' full default route the prefixes
+// carry. Exit-capable peers are alternates for the SAME egress role, so with
+// more than one their default-route entry sets must match (T250 rule 2).
+func defaultRouteMaskOf(prefixes []netip.Prefix) defaultRouteMask {
+	var m defaultRouteMask
+	for _, p := range prefixes {
+		if p.Bits() != 0 {
+			continue
+		}
+		if p.Addr().Is4() {
+			m.v4 = true
+		} else {
+			m.v6 = true
+		}
+	}
+	return m
+}
+
+// hasNonDefaultAllowedIP reports whether prefixes carry at least one non-default
+// entry (a prefix narrower than /0 — e.g. a concentrator's inner /32). T250 rule
+// 8 (R255): every exit-capable peer in an N>1-exit config must carry one, so
+// T254's standby render (which strips the /1+/1 default-route splits) still leaves
+// a non-empty allowed_ips and an inner address for the T261 warm-session ping.
+func hasNonDefaultAllowedIP(prefixes []netip.Prefix) bool {
+	for _, p := range prefixes {
+		if p.Bits() != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// validateConcentratorDefaultRoutes preserves the pre-T250 D59 cross-peer
+// default-route guard for the concentrator role: a literal /0 entry may appear on
+// at most ONE peer per address family (WireGuard cryptokey routing makes
+// overlapping allowed_ips last-writer-wins). The concentrator rejects
+// mode = "default-route" entirely (checked in validate's per-peer loop), so this
+// is its only default-route surface; the within-peer duplicate /0 is likewise
+// already rejected there.
+func (c *Config) validateConcentratorDefaultRoutes(peerPrefixes [][]netip.Prefix) error {
+	v4DefaultPeer := -1
+	v6DefaultPeer := -1
+	for i, prefixes := range peerPrefixes {
+		name := c.WireGuard.Peers[i].Name
+		for _, prefix := range prefixes {
+			if prefix.Bits() != 0 {
+				continue
+			}
+			if prefix.Addr().Is4() {
+				if v4DefaultPeer != -1 {
+					return fmt.Errorf("wireguard peers %s and %s both list 0.0.0.0/0 in allowed_ips; WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins",
+						peerLabel(v4DefaultPeer, c.WireGuard.Peers[v4DefaultPeer].Name), peerLabel(i, name))
+				}
+				v4DefaultPeer = i
+			} else {
+				if v6DefaultPeer != -1 {
+					return fmt.Errorf("wireguard peers %s and %s both list ::/0 in allowed_ips; WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins",
+						peerLabel(v6DefaultPeer, c.WireGuard.Peers[v6DefaultPeer].Name), peerLabel(i, name))
+				}
+				v6DefaultPeer = i
+			}
+		}
+	}
+	return nil
+}
+
+// validateEdgePeerSet enforces the T250 multi-exit edge peer semantics
+// (Q68b/Q74). The edge admits N concentrator peers over the SAME set of uplinks;
+// each mode = "default-route" peer is an exit-capable alternate for the shared
+// egress role. A single-peer edge config keeps the pre-T250 behavior
+// byte-identically — the multi-exit rules below bind only at N>1.
+func (c *Config) validateEdgePeerSet(peerPrefixes [][]netip.Prefix) error {
+	peers := c.WireGuard.Peers
+	// Rule 7 (Q74 probe budget): reject a config whose per-(peer,path) probe
+	// fan-out exceeds the documented budget before validating the arrangement —
+	// the fan-out is unsupportable regardless of how the peers are configured.
+	if fanout := len(peers) * len(c.Paths); fanout > maxProbeFanout {
+		return fmt.Errorf("edge probe fan-out of %d probers (%d concentrator peers × %d uplinks) exceeds the available probe budget of %d; reduce the concentrator or uplink count (one liveness prober runs per peer-uplink pair)",
+			fanout, len(peers), len(c.Paths), maxProbeFanout)
+	}
+	if len(peers) == 1 {
+		// Single-peer legacy edge: the pre-T250 full-tunnel form
+		// (allowed_ips = ["0.0.0.0/0"], with or without mode = "default-route")
+		// loads byte-identically. Every multi-exit rule below binds only at N>1.
+		return nil
+	}
+	// Rule 2 (part 1): a literal /0 entry is the full default route and is
+	// permitted ONLY on a mode = "default-route" (exit-capable) peer. Collect the
+	// exit-capable peers while rejecting a /0 on any non-exit peer.
+	exitPeers := make([]int, 0, len(peers))
+	for i := range peers {
+		exitCapable := peers[i].Mode == PeerModeDefaultRoute
+		if exitCapable {
+			exitPeers = append(exitPeers, i)
+		}
+		for _, prefix := range peerPrefixes[i] {
+			if prefix.Bits() == 0 && !exitCapable {
+				return fmt.Errorf("%s: allowed_ips entry %s is the full default route and is permitted only on a mode = %q peer", peerLabel(i, peers[i].Name), prefix, PeerModeDefaultRoute)
+			}
+		}
+	}
+	// Rules 2 (part 2) and 8 (R255): with more than one exit-capable peer, they
+	// are alternates for the same egress role, so each must carry (a) the SAME
+	// default-route entry set and (b) at least one NON-default allowed_ip (its
+	// concentrator inner address, e.g. its inner /32). A peer carrying SOLELY
+	// 0.0.0.0/0 / ::/0 would render ZERO allowed_ips once T254 strips the
+	// default-route splits on a standby, tripping the boot-time uapiConfig
+	// >=1-allowed_ip invariant.
+	if len(exitPeers) > 1 {
+		first := exitPeers[0]
+		firstMask := defaultRouteMaskOf(peerPrefixes[first])
+		for _, i := range exitPeers {
+			if mask := defaultRouteMaskOf(peerPrefixes[i]); mask != firstMask {
+				return fmt.Errorf("exit-capable wireguard peers %s and %s carry different default-route entry sets; with more than one mode = %q peer every exit-capable peer must list the same default-route entries (they are alternates for the same egress role)",
+					peerLabel(first, peers[first].Name), peerLabel(i, peers[i].Name), PeerModeDefaultRoute)
+			}
+			if !hasNonDefaultAllowedIP(peerPrefixes[i]) {
+				return fmt.Errorf("exit-capable %s carries only the full default route; with more than one mode = %q peer each must ALSO carry its concentrator inner address (e.g. its inner /32) so a standby exit still renders a non-empty allowed_ips",
+					peerLabel(i, peers[i].Name), PeerModeDefaultRoute)
+			}
+		}
+	}
+	// Rule 5: non-default allowed_ips must not overlap across peers, so each
+	// concentrator's inner address stays unambiguous under WireGuard cryptokey
+	// routing (the shared /0 default route is excluded — it is intentionally
+	// identical across exit-capable peers per rule 2).
+	for a := range peers {
+		for _, pa := range peerPrefixes[a] {
+			if pa.Bits() == 0 {
+				continue
+			}
+			for b := a + 1; b < len(peers); b++ {
+				for _, pb := range peerPrefixes[b] {
+					if pb.Bits() == 0 {
+						continue
+					}
+					if pa.Overlaps(pb) {
+						return fmt.Errorf("wireguard peers %s and %s have overlapping non-default allowed_ips %s and %s; each concentrator's inner address must stay unambiguous",
+							peerLabel(a, peers[a].Name), peerLabel(b, peers[b].Name), pa, pb)
+					}
+				}
+			}
+		}
+	}
+	// Rule 3: reject an exact duplicate literal endpoint address:port across two
+	// peers (the per-peer T57 failover list is retained; within-peer duplicates
+	// are already rejected in resolveEndpoints). A hostname entry (Q35) carries no
+	// literal Addr at load, so only literal endpoints are compared here.
+	seenEndpoint := make(map[netip.AddrPort]int, len(peers))
+	for i := range peers {
+		for _, spec := range peers[i].EndpointSpecs {
+			if spec.IsName {
+				continue
+			}
+			if prev, dup := seenEndpoint[spec.Addr]; dup {
+				return fmt.Errorf("wireguard peers %s and %s share endpoint %s; each concentrator peer must be reachable at a distinct endpoint",
+					peerLabel(prev, peers[prev].Name), peerLabel(i, peers[i].Name), spec.Addr)
+			}
+			seenEndpoint[spec.Addr] = i
+		}
+	}
+	return nil
+}
+
 // validate enforces the required-field invariants, failing on the first problem.
 func (c *Config) validate() error {
 	if !c.Role.valid() {
@@ -1612,47 +1799,22 @@ func (c *Config) validate() error {
 	if len(c.WireGuard.Peers) == 0 {
 		return errors.New("at least one wireguard peer is required")
 	}
-	// D59: at most one peer may carry mode = "default-route" — WireGuard
-	// cryptokey routing makes overlapping allowed_ips last-writer-wins, so two
-	// full-tunnel peers would be a silent misconfig regardless of role. Checked
-	// here, ahead of the edge single-peer cap and the concentrator per-peer mode
-	// rejection below, both of which currently make a multi-default-route-peer
-	// config unreachable via Load: the edge caps at one peer (next check) and the
-	// concentrator rejects mode = "default-route" on every peer (per-peer loop
-	// below), so today only a single edge peer can ever carry the mode at all.
-	// This guard is enforced directly anyway so it stays correct if either cap is
-	// ever relaxed later.
-	defaultRoutePeer := -1
-	for i, peer := range c.WireGuard.Peers {
-		if peer.Mode != PeerModeDefaultRoute {
-			continue
-		}
-		if defaultRoutePeer != -1 {
-			return fmt.Errorf("wireguard peers %s and %s both carry mode = %q; at most one peer may be the full-tunnel default route",
-				peerLabel(defaultRoutePeer, c.WireGuard.Peers[defaultRoutePeer].Name), peerLabel(i, peer.Name), PeerModeDefaultRoute)
-		}
-		defaultRoutePeer = i
-	}
-	// The edge dials exactly one concentrator peer per process (Q21); multi-peer
-	// configs are concentrator-only scope. Check this before the per-peer loop
-	// below so an edge config with >1 peer is rejected with this scope-explaining
-	// message regardless of whether the peers are otherwise well-formed.
-	if c.Role == RoleEdge && len(c.WireGuard.Peers) > 1 {
-		return fmt.Errorf("edge role supports exactly one wireguard peer per process (got %d); the edge dials a single concentrator peer, multi-peer configs are concentrator-only", len(c.WireGuard.Peers))
-	}
-	// v4DefaultPeer/v6DefaultPeer track which peer (if any) has already claimed
-	// the literal default route for that address family (D59): a second peer
-	// duplicating 0.0.0.0/0 or ::/0 is rejected here at LOAD, rather than
-	// producing a last-writer-wins UAPI allowed_ip= clash at the engine.
-	v4DefaultPeer := -1
-	v6DefaultPeer := -1
+	// Per-peer field invariants + allowed_ips parse (T250). Every peer's
+	// public_key, edge/concentrator endpoint+dns+mode rules, D55 malformed-CIDR
+	// parse, and the within-peer duplicate-default-route guard are enforced here,
+	// for BOTH roles and any peer count, unchanged from pre-T250. The parsed
+	// prefixes feed the role-specific cross-peer default-route / overlap /
+	// endpoint / probe-budget checks below.
+	peerPrefixes := make([][]netip.Prefix, len(c.WireGuard.Peers))
 	for i, peer := range c.WireGuard.Peers {
 		if !peer.PublicKey.IsSet() {
 			return fmt.Errorf("wireguard peer %d: public_key is required", i)
 		}
 		// EndpointSpecs (not Endpoints) is the "any endpoint entry configured" check:
 		// a hostname-only peer contributes nothing to Endpoints at load time (Q30 —
-		// resolution is deferred to runtime) but must still count as configured.
+		// resolution is deferred to runtime) but must still count as configured. Every
+		// edge peer carries its own endpoint/endpoints list (T57 per-concentrator
+		// failover is retained per peer, Q72 — T250).
 		if c.Role == RoleEdge && len(peer.EndpointSpecs) == 0 {
 			return fmt.Errorf("wireguard peer %d: endpoint is required for the edge role", i)
 		}
@@ -1686,42 +1848,44 @@ func (c *Config) validate() error {
 		// of surfacing LATE and opaquely when the engine's UAPI allowed_ip= line
 		// fails to parse at daemon start. This mirrors the source_addr/endpoint
 		// parse-at-load discipline elsewhere in this function.
+		prefixes := make([]netip.Prefix, 0, len(peer.AllowedIPs))
 		var v4SeenInPeer, v6SeenInPeer bool
 		for _, raw := range peer.AllowedIPs {
 			prefix, err := netip.ParsePrefix(raw)
 			if err != nil {
 				return fmt.Errorf("%s: invalid allowed_ips entry %q: %w", peerLabel(i, peer.Name), raw, err)
 			}
-			if prefix.Bits() != 0 {
-				continue
-			}
 			// D59: a literal /0 entry is the full default route for its address
-			// family — reject a second occurrence, both within this peer's own
-			// allowed_ips (a redundant duplicate) and across peers (WireGuard
-			// cryptokey routing makes overlapping allowed_ips last-writer-wins, a
-			// silent misconfig).
-			if prefix.Addr().Is4() {
-				if v4SeenInPeer {
-					return fmt.Errorf("%s: duplicate 0.0.0.0/0 entry in allowed_ips", peerLabel(i, peer.Name))
+			// family — reject a REDUNDANT duplicate within this peer's own
+			// allowed_ips. The cross-peer default-route rules are role-specific and
+			// enforced below (validateEdgePeerSet / validateConcentratorDefaultRoutes).
+			if prefix.Bits() == 0 {
+				if prefix.Addr().Is4() {
+					if v4SeenInPeer {
+						return fmt.Errorf("%s: duplicate 0.0.0.0/0 entry in allowed_ips", peerLabel(i, peer.Name))
+					}
+					v4SeenInPeer = true
+				} else {
+					if v6SeenInPeer {
+						return fmt.Errorf("%s: duplicate ::/0 entry in allowed_ips", peerLabel(i, peer.Name))
+					}
+					v6SeenInPeer = true
 				}
-				v4SeenInPeer = true
-				if v4DefaultPeer != -1 {
-					return fmt.Errorf("wireguard peers %s and %s both list 0.0.0.0/0 in allowed_ips; WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins",
-						peerLabel(v4DefaultPeer, c.WireGuard.Peers[v4DefaultPeer].Name), peerLabel(i, peer.Name))
-				}
-				v4DefaultPeer = i
-			} else {
-				if v6SeenInPeer {
-					return fmt.Errorf("%s: duplicate ::/0 entry in allowed_ips", peerLabel(i, peer.Name))
-				}
-				v6SeenInPeer = true
-				if v6DefaultPeer != -1 {
-					return fmt.Errorf("wireguard peers %s and %s both list ::/0 in allowed_ips; WireGuard cryptokey routing makes overlapping allowed_ips last-writer-wins",
-						peerLabel(v6DefaultPeer, c.WireGuard.Peers[v6DefaultPeer].Name), peerLabel(i, peer.Name))
-				}
-				v6DefaultPeer = i
 			}
+			prefixes = append(prefixes, prefix)
 		}
+		peerPrefixes[i] = prefixes
+	}
+	// Cross-peer default-route / overlap / endpoint / probe-budget validation is
+	// role-specific (T250). The edge admits N concentrator peers with multi-exit
+	// semantics (Q68b/Q74 — arbitrary N, static set); the concentrator keeps the
+	// pre-T250 D59 single-default-route-per-family guard.
+	if c.Role == RoleEdge {
+		if err := c.validateEdgePeerSet(peerPrefixes); err != nil {
+			return err
+		}
+	} else if err := c.validateConcentratorDefaultRoutes(peerPrefixes); err != nil {
+		return err
 	}
 	// Per-peer name/psk (Q21 multi-peer concentrator): with a single peer the
 	// top-level Config.PSK remains the sole authenticator (T80) and a per-peer
