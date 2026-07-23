@@ -344,6 +344,78 @@ func TestConcentratorMonitoredPeers(t *testing.T) {
 	})
 }
 
+// TestAllMonitoredPeers asserts the T256/G28/M106 generalization of
+// concentratorMonitoredPeers to EVERY role: a single-peer config yields ONE entry with
+// Peer "" (the D58 primary-naming rule), while a multi-peer config — of ANY role,
+// including the edge (T251/Q68b warm-standby concentrators) — yields EVERY configured
+// peer, PRIMARY INCLUDED, each paired with its own configured name and the lowercase-hex
+// public key the UAPI dump identifies it by.
+func TestAllMonitoredPeers(t *testing.T) {
+	t.Run("single-peer config yields one entry named \"\"", func(t *testing.T) {
+		k0 := testPubKey(t, 0x11)
+		cfg := &config.Config{}
+		cfg.WireGuard.Peers = []config.Peer{{PublicKey: k0, Name: "solo"}}
+		got := allMonitoredPeers(cfg, cfg.PeerIdentities())
+		b0 := k0.Bytes()
+		want := []monitoredPeer{{name: "", publicKey: hex.EncodeToString(b0[:])}}
+		if len(got) != len(want) || got[0] != want[0] {
+			t.Fatalf("allMonitoredPeers = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("multi-peer concentrator config yields every peer including the primary", func(t *testing.T) {
+		k0 := testPubKey(t, 0x11)
+		k1 := testPubKey(t, 0x22)
+		cfg := &config.Config{Role: config.RoleConcentrator}
+		cfg.WireGuard.Peers = []config.Peer{
+			{PublicKey: k0, Name: "primary"},
+			{PublicKey: k1, Name: "peer-b"},
+		}
+		got := allMonitoredPeers(cfg, cfg.PeerIdentities())
+		b0, b1 := k0.Bytes(), k1.Bytes()
+		want := []monitoredPeer{
+			{name: "primary", publicKey: hex.EncodeToString(b0[:])},
+			{name: "peer-b", publicKey: hex.EncodeToString(b1[:])},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("allMonitoredPeers = %+v, want %+v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("peer %d = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	})
+
+	// Generalized to the EDGE role (T256): a multi-peer edge's additional peers are
+	// warm-standby concentrators, not concentrator-side edges, but PeerSessions() still
+	// needs a session verdict for EACH — unlike concentratorMonitoredPeers' D50 teardown
+	// set, which is deliberately EMPTY on the edge.
+	t.Run("multi-peer edge config yields every peer including the primary", func(t *testing.T) {
+		k0 := testPubKey(t, 0x11)
+		k1 := testPubKey(t, 0x22)
+		cfg := &config.Config{Role: config.RoleEdge}
+		cfg.WireGuard.Peers = []config.Peer{
+			{PublicKey: k0, Name: "primary"},
+			{PublicKey: k1, Name: "standby"},
+		}
+		got := allMonitoredPeers(cfg, cfg.PeerIdentities())
+		b0, b1 := k0.Bytes(), k1.Bytes()
+		want := []monitoredPeer{
+			{name: "primary", publicKey: hex.EncodeToString(b0[:])},
+			{name: "standby", publicKey: hex.EncodeToString(b1[:])},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("allMonitoredPeers = %+v, want %+v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("peer %d = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	})
+}
+
 // TestStartPeerTeardownMonitorLoop drives the background loop end to end against a dead peer and
 // asserts the ticker-driven poll tears it down; the empty-peer-set constructor is a no-op.
 func TestStartPeerTeardownMonitorLoop(t *testing.T) {

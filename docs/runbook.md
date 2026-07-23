@@ -385,6 +385,7 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_resequencer_resyncs_total` / `wanbond_resequencer_rebaselines_total` | Release-point re-pins after a corroborated discontinuity / forced re-baselines (e.g. hub failover). |
 | `wanbond_session_established`                    | WG session liveness, `1`=a handshake has completed and is still fresh, `0`=still converging **or** wedged. **Distinguishes "converging" from "wedged".** |
 | `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
+| `wanbond_peer_session_established{peer}`         | **Per-peer** WG session liveness (T256): the SAME `established` verdict as `wanbond_session_established`, but attributed to ONE specific bound peer rather than "some session is live" — the proof of session health a warm-standby promotion decision needs for a SPECIFIC candidate concentrator. |
 
 > **Resequencer head-of-line reading (D93).** The hold behind a gap is no longer a
 > fixed 250 ms — it is an RTT-adaptive per-gap hold (clamped to `[10 ms, 250 ms]`,
@@ -399,11 +400,11 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 > hol_holds_total` is the mean time gaps are held.
 >
 > **Multi-peer concentrator (G4).** A concentrator bound to 2+ edges additionally
-> labels every path/resequencer/FEC series above with `peer="<name>"` — the
-> configured `[[wireguard.peers]]` `name`, for EVERY bound peer including the
-> first-configured one (`device.Up` plumbs its configured name into the bind via
-> `bind.Multipath.SetPrimaryPeerName`; see `internal/metrics/metrics.go`'s package
-> doc for the back-compat rule, D58). A single-peer edge/hub/concentrator carries
+> labels every path/resequencer/FEC series above — and `wanbond_peer_session_established`
+> — with `peer="<name>"` — the configured `[[wireguard.peers]]` `name`, for EVERY bound
+> peer including the first-configured one (`device.Up` plumbs its configured name into
+> the bind via `bind.Multipath.SetPrimaryPeerName`; see `internal/metrics/metrics.go`'s
+> package doc for the back-compat rule, D58). A single-peer edge/hub/concentrator carries
 > **no** `peer` label at all — the exposition above is unchanged from
 > pre-multi-peer wanbond.
 

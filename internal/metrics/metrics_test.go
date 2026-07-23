@@ -21,20 +21,22 @@ import (
 // peer — the pre-T94 back-compat (no `peer` label) exposition — so every EXISTING
 // test below that does not set peerNames keeps exercising the byte-compatible shape.
 type fakeSource struct {
-	paths       []PathSnapshot
-	fec         []FECSnapshot
-	reseq       []ReseqSnapshot
-	aggregation []AggregationSnapshot
-	session     SessionSnapshot
-	peerNames   []string
+	paths        []PathSnapshot
+	fec          []FECSnapshot
+	reseq        []ReseqSnapshot
+	aggregation  []AggregationSnapshot
+	session      SessionSnapshot
+	peerSessions []PeerSessionSnapshot
+	peerNames    []string
 }
 
-func (f fakeSource) Paths() []PathSnapshot              { return f.paths }
-func (f fakeSource) FEC() []FECSnapshot                 { return f.fec }
-func (f fakeSource) Reseq() []ReseqSnapshot             { return f.reseq }
-func (f fakeSource) Aggregation() []AggregationSnapshot { return f.aggregation }
-func (f fakeSource) Session() SessionSnapshot           { return f.session }
-func (f fakeSource) PeerNames() []string                { return f.peerNames }
+func (f fakeSource) Paths() []PathSnapshot               { return f.paths }
+func (f fakeSource) FEC() []FECSnapshot                  { return f.fec }
+func (f fakeSource) Reseq() []ReseqSnapshot              { return f.reseq }
+func (f fakeSource) Aggregation() []AggregationSnapshot  { return f.aggregation }
+func (f fakeSource) Session() SessionSnapshot            { return f.session }
+func (f fakeSource) PeerSessions() []PeerSessionSnapshot { return f.peerSessions }
+func (f fakeSource) PeerNames() []string                 { return f.peerNames }
 
 func testLogger(t *testing.T) log.Logger {
 	t.Helper()
@@ -355,6 +357,58 @@ func TestExpositionSessionNotEstablished(t *testing.T) {
 	}
 	if v, ok := exp.Value(MetricSessionLastHandshake); !ok || v != 0 {
 		t.Errorf("%s = %v (present=%v), want 0", MetricSessionLastHandshake, v, ok)
+	}
+}
+
+// TestExpositionPeerSessionSinglePeer asserts a single-peer Source's PeerSessions()
+// entry (Peer "") exposes wanbond_peer_session_established UNLABELLED — following the
+// same T94/D58 back-compat rule as FEC/Reseq/Aggregation, distinct from the
+// connection-scoped wanbond_session_established (T256, G28, M106).
+func TestExpositionPeerSessionSinglePeer(t *testing.T) {
+	src := fakeSource{peerSessions: []PeerSessionSnapshot{{Established: true, LastHandshakeSeconds: 3}}}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if !exp.Has(MetricPeerSessionEstablished) {
+		t.Fatalf("%s not registered", MetricPeerSessionEstablished)
+	}
+	if v, ok := exp.Value(MetricPeerSessionEstablished); !ok || v != 1 {
+		t.Errorf("%s = %v (present=%v), want 1 unlabelled", MetricPeerSessionEstablished, v, ok)
+	}
+}
+
+// TestExpositionPeerSessionTwoPeers asserts a 2-peer Source's PeerSessions() carries a
+// DISTINCT `peer`-labelled wanbond_peer_session_established series per bound peer, with
+// independent established verdicts — the multi-peer half of the back-compat rule
+// (T256, G28, M106).
+func TestExpositionPeerSessionTwoPeers(t *testing.T) {
+	src := fakeSource{
+		peerNames: []string{"edge1", "edge2"},
+		peerSessions: []PeerSessionSnapshot{
+			{Peer: "edge1", Established: true, LastHandshakeSeconds: 3},
+			{Peer: "edge2", Established: false, LastHandshakeSeconds: 0},
+		},
+	}
+	srv := startServer(t, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, srv.URL())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if got, ok := exp.PeerValue(MetricPeerSessionEstablished, "edge1"); !ok || got != 1 {
+		t.Errorf("edge1 %s = %v (present=%v), want 1", MetricPeerSessionEstablished, got, ok)
+	}
+	if got, ok := exp.PeerValue(MetricPeerSessionEstablished, "edge2"); !ok || got != 0 {
+		t.Errorf("edge2 %s = %v (present=%v), want 0", MetricPeerSessionEstablished, got, ok)
 	}
 }
 

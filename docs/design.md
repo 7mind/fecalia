@@ -1256,6 +1256,25 @@ by `internal/device`:
   through the UAPI seam only (there is no public accessor for a peer's
   last-handshake instant), and takes no WG-session coupling anywhere else in
   the bind — the Bind stays WG-unaware.
+- **Per-peer WG-session snapshots** (`wanbond_peer_session_established{peer}`,
+  T256/G28/M106, `session.go`). `sessionMonitor` above collapses every
+  configured peer into ONE connection-scoped "is SOME session live" verdict —
+  fine for a single-peer edge/hub, but insufficient for warm-standby
+  promotion (the auto-promotion bullet above), which needs proof of session
+  health for a SPECIFIC candidate concentrator, not "some session is live". A
+  `peerSessionMonitor` generalizes the same UAPI-dump read to EVERY configured
+  peer: it reuses `perPeerHandshakeNano` — the identical hex-pubkey dump parse
+  `deviceExitHealth.healthy` (T269, the auto-promotion health check) already
+  drives — so the parse logic is written once and shared by both the
+  auto-promotion decision and this observability leg. The peer set is built by
+  `allMonitoredPeers`, a generalization of `concentratorMonitoredPeers` (T126)
+  from the concentrator-only non-primary teardown set to EVERY role and EVERY
+  peer including the primary, following the same D58 primary-naming rule:
+  `Peer` is `""` for a true single-peer config so `metrics.Source.PeerSessions()`
+  still returns exactly one (back-compat) entry there, and each peer's own
+  configured name once 2+ are bound — the same T94/D58 rule the path/FEC/
+  resequencer series already follow. `metrics.Source.Session()` (the
+  connection-scoped verdict above) is untouched.
 
 ### Supporting packages
 

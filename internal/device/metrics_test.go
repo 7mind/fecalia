@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
+
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
@@ -65,6 +67,14 @@ type fakeSession struct{ snap metrics.SessionSnapshot }
 
 func (f fakeSession) SessionSnapshot() metrics.SessionSnapshot { return f.snap }
 
+// fakePeerSessions is a peerSessionSnapshotter whose per-peer snapshot list the test
+// controls, standing in for the engine-backed peerSessionMonitor so the adapter's
+// PeerSessions() pass-through and the newMetricsSource call sites run without a live
+// engine (T256, G28, M106).
+type fakePeerSessions struct{ snaps []metrics.PeerSessionSnapshot }
+
+func (f fakePeerSessions) PeerSessionSnapshots() []metrics.PeerSessionSnapshot { return f.snaps }
+
 // TestMetricsSourceMapsFields asserts the adapter copies the per-(peer,path) byte
 // counters and telemetry verbatim into the metrics.PathSnapshot, preserving order, for
 // a single-peer (unnamed primary) source.
@@ -77,7 +87,7 @@ func TestMetricsSourceMapsFields(t *testing.T) {
 			{Name: "cellular", TxBytes: 5, RxBytes: 7, State: telemetry.StateDown},
 		},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Paths()
 	if len(got) != 2 {
@@ -111,7 +121,7 @@ func TestMetricsSourceMapsProbeSendErrors(t *testing.T) {
 			{Name: "cellular", ProbeSendErrors: 0},
 		},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Paths()
 	if len(got) != 2 {
@@ -144,7 +154,7 @@ func TestMetricsSource_PathsCarriesAddressing(t *testing.T) {
 			Remote:      remote,
 		}},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Paths()
 	if len(got) != 1 {
@@ -180,7 +190,7 @@ func TestMetricsSourcePathsAddressingNoNewSeries(t *testing.T) {
 			State:   telemetry.StateUp,
 		}},
 	}})
-	baseline := scrapeText(t, newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)}))
+	baseline := scrapeText(t, newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)}))
 
 	prov2 := &fakeProvider{}
 	prov2.set([]bind.PeerSnapshot{{
@@ -196,7 +206,7 @@ func TestMetricsSourcePathsAddressingNoNewSeries(t *testing.T) {
 			BoundDevice: "eth0",
 		}},
 	}})
-	withAddressing := scrapeText(t, newMetricsSource(prov2, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)}))
+	withAddressing := scrapeText(t, newMetricsSource(prov2, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)}))
 
 	if baseline != withAddressing {
 		t.Errorf("exposition differs when addressing fields are populated:\n--- baseline ---\n%s\n--- with addressing ---\n%s", baseline, withAddressing)
@@ -245,7 +255,7 @@ func TestMetricsSourceMapsFEC(t *testing.T) {
 		Name: "",
 		FEC:  bind.FECStats{DataFrames: 82, ParityFrames: 33, ParityBytes: 4096, Recovered: 5, Unrecoverable: 1},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.FEC()
 	if len(got) != 1 {
@@ -288,7 +298,7 @@ func TestMetricsSourceMapsFECAdaptive(t *testing.T) {
 			},
 		},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.FEC()
 	if len(got) != 1 {
@@ -312,7 +322,7 @@ func TestMetricsSourceMapsReseq(t *testing.T) {
 		Name:  "",
 		Reseq: reseq.Stats{Released: 900, DroppedDup: 3, DroppedOld: 2, DroppedSuspect: 1, Skipped: 4, Resyncs: 2, Rebaselines: 1},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Reseq()
 	if len(got) != 1 {
@@ -340,7 +350,7 @@ func TestMetricsSourceMapsAggregation(t *testing.T) {
 			DisengageThresholdFPS: 350,
 		},
 	}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Aggregation()
 	if len(got) != 1 {
@@ -367,7 +377,7 @@ func TestMetricsSourceAggregationAbsentForActiveBackup(t *testing.T) {
 		{Name: "edge1", Aggregation: nil}, // active-backup: no gate
 		{Name: "edge2", Aggregation: &sched.AggregationSnapshot{Aggregating: true, EngageThresholdFPS: 630, DisengageThresholdFPS: 350}},
 	})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 
 	got := src.Aggregation()
 	if len(got) != 1 {
@@ -383,7 +393,7 @@ func TestMetricsSourceAggregationAbsentForActiveBackup(t *testing.T) {
 func TestMetricsSourceDerivesThroughput(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(0, 0)}
-	src := newMetricsSource(prov, fakeSession{}, clock)
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, clock)
 
 	prov.set([]bind.PeerSnapshot{{Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 1000, RxBytes: 0}}}})
 	if got := src.Paths()[0].ThroughputBitsPerSecond; got != 0 {
@@ -405,7 +415,7 @@ func TestMetricsSourceDerivesThroughput(t *testing.T) {
 func TestMetricsSourceThroughputNonNegativeOnReset(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(0, 0)}
-	src := newMetricsSource(prov, fakeSession{}, clock)
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, clock)
 
 	prov.set([]bind.PeerSnapshot{{Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 9_000_000, RxBytes: 0}}}})
 	_ = src.Paths()
@@ -422,7 +432,7 @@ func TestMetricsSourceThroughputNonNegativeOnReset(t *testing.T) {
 func TestMetricsSourcePeerNamesSinglePeer(t *testing.T) {
 	prov := &fakeProvider{}
 	prov.set([]bind.PeerSnapshot{{Name: ""}})
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(0, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(0, 0)})
 
 	got := src.PeerNames()
 	if len(got) != 1 || got[0] != "" {
@@ -439,7 +449,7 @@ func TestMetricsSourcePeerNamesSinglePeer(t *testing.T) {
 func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(0, 0)}
-	src := newMetricsSource(prov, fakeSession{}, clock)
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, clock)
 
 	prov.set([]bind.PeerSnapshot{
 		{
@@ -527,6 +537,60 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 	}
 }
 
+// TestMetricsSourcePeerSessionsTwoPeers is the T256/G28/M106 acceptance check at the
+// adapter level: a 2-peer source's PeerSessions() carries the correct names, Established
+// verdicts, and handshake ages, sourced from a REAL peerSessionMonitor reading a
+// fakeEngine's UAPI dump — proving the metricsSource.PeerSessions() wiring end to end,
+// not merely a fake pass-through.
+func TestMetricsSourcePeerSessionsTwoPeers(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	fresh := now.Add(-3 * time.Second)
+	aged := now.Add(-(awgdevice.RejectAfterTime + time.Second))
+	dump := uapiPeerKey("aaaa", fresh) + uapiPeerKey("bbbb", aged)
+	peerMon := newPeerSessionMonitor(fakeEngine{dump: dump}, &fakeClock{now: now}, []monitoredPeer{
+		{name: "edge1", publicKey: "aaaa"},
+		{name: "edge2", publicKey: "bbbb"},
+	})
+	src := newMetricsSource(&fakeProvider{}, fakeSession{}, peerMon, &fakeClock{now: now})
+
+	got := src.PeerSessions()
+	if len(got) != 2 {
+		t.Fatalf("PeerSessions len = %d, want 2", len(got))
+	}
+	byPeer := map[string]metrics.PeerSessionSnapshot{}
+	for _, p := range got {
+		byPeer[p.Peer] = p
+	}
+	if !byPeer["edge1"].Established || byPeer["edge1"].LastHandshakeSeconds != 3 {
+		t.Errorf("edge1 = %+v, want Established=true age=3s", byPeer["edge1"])
+	}
+	wantAge := (awgdevice.RejectAfterTime + time.Second).Seconds()
+	if byPeer["edge2"].Established || byPeer["edge2"].LastHandshakeSeconds != wantAge {
+		t.Errorf("edge2 = %+v, want Established=false age=%gs (aged out)", byPeer["edge2"], wantAge)
+	}
+}
+
+// TestMetricsSourcePeerSessionsSinglePeerBackCompat asserts a single-bound-peer source's
+// PeerSessions() returns exactly one entry with Peer "" (T94/D58 back-compat), matching
+// the existing FEC/Reseq/Aggregation single-peer shape, while still resolving that one
+// peer's real established verdict.
+func TestMetricsSourcePeerSessionsSinglePeerBackCompat(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	fresh := now.Add(-3 * time.Second)
+	peerMon := newPeerSessionMonitor(fakeEngine{dump: uapiPeerKey("aaaa", fresh)}, &fakeClock{now: now}, []monitoredPeer{
+		{name: "", publicKey: "aaaa"},
+	})
+	src := newMetricsSource(&fakeProvider{}, fakeSession{}, peerMon, &fakeClock{now: now})
+
+	got := src.PeerSessions()
+	if len(got) != 1 || got[0].Peer != "" {
+		t.Fatalf("PeerSessions = %+v, want one entry with Peer \"\"", got)
+	}
+	if !got[0].Established || got[0].LastHandshakeSeconds != 3 {
+		t.Errorf("PeerSessions[0] = %+v, want Established=true age=3s", got[0])
+	}
+}
+
 // TestMetricsSourcePMTULookup verifies the T229 mapping: PathSnapshot.PMTU carries the
 // per-path discovered PMTU from the wired lookup — 0 before it is wired (no boot dip, the
 // resizer keeps its configured-or-default fallback), and the RAW value verbatim once
@@ -534,7 +598,7 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 // here).
 func TestMetricsSourcePMTULookup(t *testing.T) {
 	prov := &fakeProvider{}
-	src := newMetricsSource(prov, fakeSession{}, &fakeClock{now: time.Unix(1000, 0)})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
 	prov.set([]bind.PeerSnapshot{{Paths: []bind.PathTraffic{{Name: "cellular", TxBytes: 1, RxBytes: 1}}}})
 
 	if got := src.Paths()[0].PMTU; got != 0 {

@@ -112,7 +112,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   `wanbond_path_probe_send_errors_total` (per-path PROBE socket write errors,
   count-and-continue — a path whose probes cannot egress no longer reads
   identically to a path with 100% probe loss, D96), WG-session establishment
-  (`wanbond_session_established`), receive-resequencer head-of-line holds vs
+  (`wanbond_session_established`, plus a per-peer
+  `wanbond_peer_session_established{peer}` on a multi-peer concentrator, T256),
+  receive-resequencer head-of-line holds vs
   single-path immediate releases (`wanbond_resequencer_hol_hold_seconds_total` /
   `wanbond_resequencer_immediate_releases_total`, D93), and — under
   `scheduler.policy = "weighted"`

@@ -819,6 +819,13 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// Start the WG-session monitor poll loop AFTER dev.Up so the engine peer it reads exists.
 	// Close stops it before dev.Close, like the probe/reconcile loops.
 	stopSession := startSessionMonitor(sessMon, sessionPollInterval, clg)
+	// The per-peer session monitor (T256, G28, M106) backs the /metrics and [monitor]
+	// PeerSessions() series: warm-standby promotion needs proof of a SPECIFIC candidate
+	// peer's session health, not just "some session is live" (sessMon above). It is read
+	// at scrape time only (no poll loop of its own — unlike sessMon/teardownMon it drives
+	// no edge log or teardown decision), over EVERY configured peer (allMonitoredPeers),
+	// generalizing concentratorMonitoredPeers to every role.
+	peerSessMon := newPeerSessionMonitor(dev, telemetry.SystemClock{}, allMonitoredPeers(cfg, ids))
 	// Start the concentrator per-peer teardown monitor (D50/T126): in MULTI-PEER mode it
 	// level-checks each configured non-primary peer's WG session every poll and calls the bind's
 	// idempotent TearDownPeer on any peer whose session is gone (no handshake, or aged past
@@ -844,13 +851,13 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// WG-session snapshot is read from the engine via sessMon. It is built unconditionally
 		// (cheap) so a reload that later turns [metrics].listen ON has a Source ready; the
 		// endpoint itself is started only when a listen is configured.
-		metricsSrc: newMetricsSource(mpBind, sessMon, telemetry.SystemClock{}),
+		metricsSrc: newMetricsSource(mpBind, sessMon, peerSessMon, telemetry.SystemClock{}),
 		// A SECOND, DEDICATED Source for the [monitor] endpoint over the SAME Bind/session
 		// seam — NOT metricsSrc. The two endpoints scrape on independent cadences and each
 		// Source derives throughput from its OWN last-sample state, so sharing one Source
 		// between them would let each scrape reset the other's rate baseline (T165). Built
 		// unconditionally so a reload can turn [monitor].listen ON with a Source ready.
-		monitorSrc: newMetricsSource(mpBind, sessMon, telemetry.SystemClock{}),
+		monitorSrc: newMetricsSource(mpBind, sessMon, peerSessMon, telemetry.SystemClock{}),
 		// The identity/config/failover read seam the [monitor] endpoint is constructed with
 		// (T222): daemon role + build version, a LIVE uptime provider (fresh per snapshot,
 		// R242), the config-declared per-path link params keyed to the metrics (peer,path)
@@ -959,14 +966,34 @@ func warnOverBudgetLiveness(lg log.Logger, cfg *config.Config) {
 // standby the moment its session momentarily aged, discarding its per-(peer,path) probers/
 // scheduler/FEC/reseq — so the monitored set is EMPTY on any non-concentrator role.
 func concentratorMonitoredPeers(cfg *config.Config, ids []config.PeerIdentity) []monitoredPeer {
-	peers := cfg.WireGuard.Peers
-	if cfg.Role != config.RoleConcentrator || len(peers) <= 1 {
+	if cfg.Role != config.RoleConcentrator || len(cfg.WireGuard.Peers) <= 1 {
 		return nil
 	}
-	mon := make([]monitoredPeer, 0, len(peers)-1)
-	for i := 1; i < len(peers); i++ {
-		pub := peers[i].PublicKey.Bytes()
-		mon = append(mon, monitoredPeer{name: ids[i].Name, publicKey: hex.EncodeToString(pub[:])})
+	return allMonitoredPeers(cfg, ids)[1:]
+}
+
+// allMonitoredPeers returns EVERY configured peer — primary included — each paired with
+// the stable name metrics/exposition attributes it to and the lowercase-hex public key
+// the engine's UAPI dump identifies it by (T256, G28, M106). It generalizes
+// concentratorMonitoredPeers' hex-pubkey parse machinery (which covers only the
+// concentrator-role NON-PRIMARY teardown set) to EVERY role, so the per-peer session
+// monitor (peerSessionMonitor) reports the SAME peer names FEC/Reseq/Aggregation already
+// use — including on the edge role, where the additional peers are warm-standby
+// concentrators (T251/Q68b) rather than concentrator-side edges. Mirrors the D58
+// primary-naming rule bind.Multipath.SetPrimaryPeerName applies: the primary carries
+// name "" for a true single-peer config (edge/hub/one-peer concentrator) and its own
+// configured name once a second peer is present. ids MUST be cfg.PeerIdentities() (see
+// concentratorMonitoredPeers) — its order matches cfg.WireGuard.Peers.
+func allMonitoredPeers(cfg *config.Config, ids []config.PeerIdentity) []monitoredPeer {
+	peers := cfg.WireGuard.Peers
+	mon := make([]monitoredPeer, len(peers))
+	for i, p := range peers {
+		pub := p.PublicKey.Bytes()
+		name := ids[i].Name
+		if len(ids) == 1 {
+			name = ""
+		}
+		mon[i] = monitoredPeer{name: name, publicKey: hex.EncodeToString(pub[:])}
 	}
 	return mon
 }

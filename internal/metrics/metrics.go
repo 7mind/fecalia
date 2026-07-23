@@ -140,6 +140,15 @@ const (
 	MetricSessionLastHandshake = "wanbond_session_last_handshake_seconds"
 )
 
+// MetricPeerSessionEstablished is the per-peer WG-session liveness gauge (T256, G28,
+// M106): unlike wanbond_session_established above (the connection-scoped, most-recent-
+// handshake-across-all-peers reading), this attributes the SAME 1/0 established verdict
+// to ONE specific bound peer — the proof of session health a warm-standby promotion
+// decision needs for a SPECIFIC candidate concentrator, not "some session is live".
+// Follows the T94/D58 per-peer label rule below (peerLabelValues): labelled `peer=<name>`
+// only once 2+ peers are bound; a single-peer Source still emits this series, unlabelled.
+const MetricPeerSessionEstablished = "wanbond_peer_session_established"
+
 // MetricWeightedCapacitySane is the Q52 WARN-arm capacity-sanity gauge (T144).
 // Unlike every other series above, it is CONFIG-DERIVED, not sourced from Source at
 // scrape time: its value is seeded at daemon startup from the loaded
@@ -408,6 +417,28 @@ type SessionSnapshot struct {
 	LastHandshakeAge time.Duration
 }
 
+// PeerSessionSnapshot is ONE bound peer's OWN WG-session health (T256, G28, M106).
+// Unlike SessionSnapshot above — which collapses every configured peer into a single
+// connection-scoped "is SOME session live" verdict (the most recent handshake across
+// all peers) — this is keyed to a SPECIFIC peer, the signal warm-standby promotion needs
+// ("is THIS candidate concentrator's session established", not "is some session
+// established"). Follows the T94/D58 per-peer back-compat rule: Peer is meaningful only
+// once 2+ peers are bound; a single-peer Source's PeerSessions() still returns exactly
+// one entry, with Peer "", so the existing exposition is unchanged (see the
+// package-level back-compat rule and PeerNames()).
+type PeerSessionSnapshot struct {
+	// Peer attributes this snapshot to a bound peer; see the package-level back-compat rule.
+	Peer string
+	// Established is this peer's own WG-session liveness verdict — a completed handshake
+	// still within the session-validity window — computed the same way as
+	// SessionSnapshot.Established but keyed to THIS peer's own last handshake rather than
+	// the connection-wide max.
+	Established bool
+	// LastHandshakeSeconds is the elapsed time, in seconds, since this peer's most recent
+	// completed handshake; zero when it has never handshaked (Established is then false).
+	LastHandshakeSeconds float64
+}
+
 // Source is the read-only seam between the traffic/telemetry planes and the
 // exposition layer. The collector calls Paths/FEC/Reseq at every scrape, so an
 // implementation must be safe for concurrent use and must return a consistent
@@ -429,6 +460,12 @@ type Source interface {
 	Aggregation() []AggregationSnapshot
 	// Session returns the current connection-scoped WG-session snapshot (I2).
 	Session() SessionSnapshot
+	// PeerSessions returns the current per-peer WG-session snapshot (T256, G28, M106):
+	// ONE entry per bound peer's OWN session health, distinct from the connection-scoped
+	// Session() above. Follows the same PeerNames()-driven back-compat rule as
+	// Paths/FEC/Reseq/Aggregation: exactly one entry (Peer "") for a single-bound-peer
+	// Source, one meaningful entry per peer once 2+ are bound.
+	PeerSessions() []PeerSessionSnapshot
 	// PeerNames returns the STATIC set of bound peer names (BoundPeerNames order):
 	// len == 1 selects the single-peer back-compat exposition (the `peer` label is
 	// omitted); len > 1 selects the per-peer exposition (see the package-level
@@ -488,6 +525,8 @@ type collector struct {
 
 	sessionEstablished   *prometheus.Desc
 	sessionLastHandshake *prometheus.Desc
+
+	peerSessionEstablished *prometheus.Desc
 }
 
 // NewCollector builds the wanbond metrics collector over src. Register it into a
@@ -552,6 +591,8 @@ func NewCollector(src Source) prometheus.Collector {
 
 		sessionEstablished:   desc(sessionSubsystem, "established", "WG session liveness (1 = a handshake has completed and is still fresh, 0 = still converging or wedged).", nil),
 		sessionLastHandshake: desc(sessionSubsystem, "last_handshake_seconds", "Age in seconds of the peer's most recent completed WG handshake (0 when none has completed).", nil),
+
+		peerSessionEstablished: desc("", "peer_session_established", "Per-peer WG session liveness (1 = that peer's own handshake has completed and is still fresh, 0 = still converging or wedged); distinct from the connection-scoped wanbond_session_established.", peerScopedLabels),
 	}
 }
 
@@ -595,6 +636,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.aggregationDisengageT
 	ch <- c.sessionEstablished
 	ch <- c.sessionLastHandshake
+	ch <- c.peerSessionEstablished
 }
 
 // Collect reads the Source once and emits one const-metric per per-(peer,path)
@@ -654,6 +696,11 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	sess := c.src.Session()
 	ch <- prometheus.MustNewConstMetric(c.sessionEstablished, prometheus.GaugeValue, establishedValue(sess.Established))
 	ch <- prometheus.MustNewConstMetric(c.sessionLastHandshake, prometheus.GaugeValue, sess.LastHandshakeAge.Seconds())
+
+	for _, ps := range c.src.PeerSessions() {
+		labels := c.peerLabelValues(ps.Peer)
+		ch <- prometheus.MustNewConstMetric(c.peerSessionEstablished, prometheus.GaugeValue, establishedValue(ps.Established), labels...)
+	}
 }
 
 // pathLabelValues returns the label values for a per-path series in Desc-declared

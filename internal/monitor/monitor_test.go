@@ -16,20 +16,22 @@ import (
 // snapshots, mirroring internal/metrics's own test fakeSource so BuildSnapshot
 // can be exercised with no live engine/bind wiring.
 type fakeSource struct {
-	paths       []metrics.PathSnapshot
-	fec         []metrics.FECSnapshot
-	reseq       []metrics.ReseqSnapshot
-	aggregation []metrics.AggregationSnapshot
-	session     metrics.SessionSnapshot
-	peerNames   []string
+	paths        []metrics.PathSnapshot
+	fec          []metrics.FECSnapshot
+	reseq        []metrics.ReseqSnapshot
+	aggregation  []metrics.AggregationSnapshot
+	session      metrics.SessionSnapshot
+	peerSessions []metrics.PeerSessionSnapshot
+	peerNames    []string
 }
 
-func (f fakeSource) Paths() []metrics.PathSnapshot              { return f.paths }
-func (f fakeSource) FEC() []metrics.FECSnapshot                 { return f.fec }
-func (f fakeSource) Reseq() []metrics.ReseqSnapshot             { return f.reseq }
-func (f fakeSource) Aggregation() []metrics.AggregationSnapshot { return f.aggregation }
-func (f fakeSource) Session() metrics.SessionSnapshot           { return f.session }
-func (f fakeSource) PeerNames() []string                        { return f.peerNames }
+func (f fakeSource) Paths() []metrics.PathSnapshot               { return f.paths }
+func (f fakeSource) FEC() []metrics.FECSnapshot                  { return f.fec }
+func (f fakeSource) Reseq() []metrics.ReseqSnapshot              { return f.reseq }
+func (f fakeSource) Aggregation() []metrics.AggregationSnapshot  { return f.aggregation }
+func (f fakeSource) Session() metrics.SessionSnapshot            { return f.session }
+func (f fakeSource) PeerSessions() []metrics.PeerSessionSnapshot { return f.peerSessions }
+func (f fakeSource) PeerNames() []string                         { return f.peerNames }
 
 // TestBuildSnapshot_ExtendedFields exercises the G21 contract extension (T214):
 // the daemon identity, per-path bind metadata + declared link params + the

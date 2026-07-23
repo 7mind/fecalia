@@ -16,12 +16,13 @@ import (
 // sampleMTU without a live bind/engine.
 type stubMTUSource struct{ paths []metrics.PathSnapshot }
 
-func (s stubMTUSource) Paths() []metrics.PathSnapshot              { return s.paths }
-func (s stubMTUSource) FEC() []metrics.FECSnapshot                 { return nil }
-func (s stubMTUSource) Reseq() []metrics.ReseqSnapshot             { return nil }
-func (s stubMTUSource) Aggregation() []metrics.AggregationSnapshot { return nil }
-func (s stubMTUSource) Session() metrics.SessionSnapshot           { return metrics.SessionSnapshot{} }
-func (s stubMTUSource) PeerNames() []string                        { return []string{""} }
+func (s stubMTUSource) Paths() []metrics.PathSnapshot               { return s.paths }
+func (s stubMTUSource) FEC() []metrics.FECSnapshot                  { return nil }
+func (s stubMTUSource) Reseq() []metrics.ReseqSnapshot              { return nil }
+func (s stubMTUSource) Aggregation() []metrics.AggregationSnapshot  { return nil }
+func (s stubMTUSource) Session() metrics.SessionSnapshot            { return metrics.SessionSnapshot{} }
+func (s stubMTUSource) PeerSessions() []metrics.PeerSessionSnapshot { return nil }
+func (s stubMTUSource) PeerNames() []string                         { return []string{""} }
 
 // TestSampleMTUReservesJunkPrefix locks the T225<->T209 reconciliation: the runtime
 // resizer reserves the amnezia junk-prefix headroom on the effective outer MTU, matching

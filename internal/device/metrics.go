@@ -46,7 +46,11 @@ type metricsSource struct {
 	// engine at scrape time. It is separate from provider because the bind stays
 	// WG-unaware — the session signal is sourced by the device layer's engine seam.
 	session sessionSnapshotter
-	clock   telemetry.Clock
+	// peerSessions yields the per-peer WG-session snapshot (T256, G28, M106), read from
+	// the engine at scrape time. Like session, it is separate from provider because the
+	// bind stays WG-unaware.
+	peerSessions peerSessionSnapshotter
+	clock        telemetry.Clock
 
 	mu   sync.Mutex
 	last map[sampleKey]byteSample
@@ -65,10 +69,11 @@ type byteSample struct {
 }
 
 // newMetricsSource builds a metrics.Source over the Bind (per-peer path traffic, FEC,
-// and resequencer counters) and the engine session seam (WG-session snapshot). The
-// clock is injected so the throughput derivation is deterministic under test.
-func newMetricsSource(provider trafficProvider, session sessionSnapshotter, clock telemetry.Clock) *metricsSource {
-	return &metricsSource{provider: provider, session: session, clock: clock, last: make(map[sampleKey]byteSample)}
+// and resequencer counters) and the engine session seams (the connection-scoped and the
+// per-peer WG-session snapshots, T256/G28/M106). The clock is injected so the
+// throughput derivation is deterministic under test.
+func newMetricsSource(provider trafficProvider, session sessionSnapshotter, peerSessions peerSessionSnapshotter, clock telemetry.Clock) *metricsSource {
+	return &metricsSource{provider: provider, session: session, peerSessions: peerSessions, clock: clock, last: make(map[sampleKey]byteSample)}
 }
 
 // setPMTULookup wires the per-path discovered-PMTU accessor (device.Up, T229/D88). It is
@@ -229,4 +234,11 @@ func (s *metricsSource) PeerNames() []string {
 // (the 0->1 edge log is driven by the separate session-monitor poll loop, not by scrapes).
 func (s *metricsSource) Session() metrics.SessionSnapshot {
 	return s.session.SessionSnapshot()
+}
+
+// PeerSessions implements metrics.Source: it reads the per-peer WG-session snapshot
+// (T256, G28, M106) from the engine seam at scrape time — a direct pass-through, like
+// Session(), of a snapshot the underlying per-peer session monitor computes on demand.
+func (s *metricsSource) PeerSessions() []metrics.PeerSessionSnapshot {
+	return s.peerSessions.PeerSessionSnapshots()
 }

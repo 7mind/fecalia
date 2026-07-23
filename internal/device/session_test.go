@@ -110,6 +110,93 @@ func TestSessionMonitorEngineError(t *testing.T) {
 	}
 }
 
+// TestPeerSessionMonitorTwoPeers is the T256/G28/M106 acceptance check: given a dump
+// carrying two distinct peers, PeerSessionSnapshots() resolves EACH peer's OWN
+// established verdict and handshake age from THAT peer's own last-handshake pair,
+// independent of the other peer's — unlike sessionMonitor's connection-wide max.
+func TestPeerSessionMonitorTwoPeers(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	fresh := now.Add(-3 * time.Second)
+	aged := now.Add(-(awgdevice.RejectAfterTime + time.Second))
+	dump := uapiPeerKey("aaaa", fresh) + uapiPeerKey("bbbb", aged)
+	mon := newPeerSessionMonitor(fakeEngine{dump: dump}, &fakeClock{now: now}, []monitoredPeer{
+		{name: "edge1", publicKey: "aaaa"},
+		{name: "edge2", publicKey: "bbbb"},
+	})
+
+	got := mon.PeerSessionSnapshots()
+	if len(got) != 2 {
+		t.Fatalf("PeerSessionSnapshots len = %d, want 2", len(got))
+	}
+	if got[0].Peer != "edge1" || !got[0].Established || got[0].LastHandshakeSeconds != 3 {
+		t.Errorf("edge1 = %+v, want Peer=edge1 Established=true age=3s", got[0])
+	}
+	wantAge := (awgdevice.RejectAfterTime + time.Second).Seconds()
+	if got[1].Peer != "edge2" || got[1].Established || got[1].LastHandshakeSeconds != wantAge {
+		t.Errorf("edge2 = %+v, want Peer=edge2 Established=false age=%gs (aged out)", got[1], wantAge)
+	}
+}
+
+// TestPeerSessionMonitorNeverHandshaked asserts a peer with the 0/0 never-handshaked
+// pair resolves to the zero snapshot for THAT peer (Established=false, age=0), even
+// while another peer in the same dump is established — proving the per-peer keying,
+// not a global fallback.
+func TestPeerSessionMonitorNeverHandshaked(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	fresh := now.Add(-3 * time.Second)
+	dump := uapiPeerKey("aaaa", fresh) + uapiPeerKey("bbbb", time.Time{})
+	mon := newPeerSessionMonitor(fakeEngine{dump: dump}, &fakeClock{now: now}, []monitoredPeer{
+		{name: "edge1", publicKey: "aaaa"},
+		{name: "edge2", publicKey: "bbbb"},
+	})
+
+	got := mon.PeerSessionSnapshots()
+	if len(got) != 2 {
+		t.Fatalf("PeerSessionSnapshots len = %d, want 2", len(got))
+	}
+	if got[1].Peer != "edge2" || got[1].Established || got[1].LastHandshakeSeconds != 0 {
+		t.Errorf("edge2 = %+v, want Peer=edge2 Established=false age=0 (never handshaked)", got[1])
+	}
+}
+
+// TestPeerSessionMonitorEngineError asserts an engine read error yields the zero
+// snapshot for EVERY monitored peer (by name), matching sessionMonitor's error handling.
+func TestPeerSessionMonitorEngineError(t *testing.T) {
+	mon := newPeerSessionMonitor(fakeEngine{err: errors.New("device closed")}, &fakeClock{now: time.Unix(10_000, 0)}, []monitoredPeer{
+		{name: "edge1", publicKey: "aaaa"},
+		{name: "edge2", publicKey: "bbbb"},
+	})
+
+	got := mon.PeerSessionSnapshots()
+	if len(got) != 2 {
+		t.Fatalf("PeerSessionSnapshots len = %d, want 2", len(got))
+	}
+	for _, p := range got {
+		if p.Established || p.LastHandshakeSeconds != 0 {
+			t.Errorf("peer %+v on engine error, want zero value", p)
+		}
+	}
+}
+
+// TestPeerSessionMonitorSinglePeerBackCompat asserts a single-peer monitored set (Peer
+// "", the D58 primary-naming rule via allMonitoredPeers) still resolves that one peer's
+// established verdict correctly — the back-compat shape PeerSessions() must preserve.
+func TestPeerSessionMonitorSinglePeerBackCompat(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	fresh := now.Add(-3 * time.Second)
+	mon := newPeerSessionMonitor(fakeEngine{dump: uapiPeerKey("aaaa", fresh)}, &fakeClock{now: now}, []monitoredPeer{
+		{name: "", publicKey: "aaaa"},
+	})
+
+	got := mon.PeerSessionSnapshots()
+	if len(got) != 1 || got[0].Peer != "" {
+		t.Fatalf("PeerSessionSnapshots = %+v, want one entry with Peer \"\"", got)
+	}
+	if !got[0].Established || got[0].LastHandshakeSeconds != 3 {
+		t.Errorf("PeerSessionSnapshots[0] = %+v, want Established=true age=3s", got[0])
+	}
+}
+
 // TestSessionEdge0to1 is the core acceptance check: the edge detector fires EXACTLY once on
 // the false->true transition and NOT on steady-state true polls. The steady-state assertion
 // is the mutation discriminator — an implementation that returned true on every established

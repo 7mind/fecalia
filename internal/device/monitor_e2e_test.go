@@ -270,7 +270,7 @@ func TestMonitorLiveWSReflectsSourceSinglePeer(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(1000, 0)}
 	sess := &syncSession{}
-	src := newMetricsSource(prov, sess, clock)
+	src := newMetricsSource(prov, sess, fakePeerSessions{}, clock)
 
 	prov.set([]bind.PeerSnapshot{{
 		Name: "",
@@ -348,7 +348,7 @@ func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(1000, 0)}
 	sess := &syncSession{snap: metrics.SessionSnapshot{Established: true, LastHandshakeAge: 5 * time.Second}}
-	src := newMetricsSource(prov, sess, clock)
+	src := newMetricsSource(prov, sess, fakePeerSessions{}, clock)
 
 	prov.set([]bind.PeerSnapshot{
 		{Name: "", Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 10, State: telemetry.StateUp}}, FEC: bind.FECStats{DataFrames: 10}},
@@ -578,7 +578,7 @@ func TestMonitorE2E_ActiveEndpointMovesAfterForcedHubFailover(t *testing.T) {
 	prov := &fakeProvider{}
 	clock := &fakeClock{now: time.Unix(2000, 0)}
 	sess := &syncSession{}
-	src := newMetricsSource(prov, sess, clock)
+	src := newMetricsSource(prov, sess, fakePeerSessions{}, clock)
 	prov.set([]bind.PeerSnapshot{{Name: "", Paths: []bind.PathTraffic{
 		{Name: "a", State: telemetry.StateUp},
 	}}})

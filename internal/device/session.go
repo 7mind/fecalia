@@ -180,6 +180,79 @@ func perPeerHandshakeNano(dump string) map[string]int64 {
 	return out
 }
 
+// peerSessionSnapshotter yields the current per-peer WG-session snapshot list that
+// metrics.Source.PeerSessions() exposes (T256, G28, M106). *peerSessionMonitor satisfies
+// it against the live engine; a fake satisfies it in unit tests.
+type peerSessionSnapshotter interface {
+	PeerSessionSnapshots() []metrics.PeerSessionSnapshot
+}
+
+// peerSessionMonitor reads the amneziawg engine's per-peer last-handshake state at
+// scrape time and resolves it into ONE metrics.PeerSessionSnapshot per configured peer
+// (T256, G28, M106). Where sessionMonitor collapses every peer into a single
+// connection-scoped "is SOME session live" verdict, this keeps peers distinct so a
+// warm-standby promotion decision can ask "is THIS candidate peer's session live" — the
+// per-concentrator proof of session health M106 needs. It reuses perPeerHandshakeNano —
+// the SAME hex-pubkey dump parse deviceExitHealth.healthy (T269) already drives — rather
+// than duplicating the parse. Stateless like sessionMonitor: safe for the concurrent
+// scrape goroutine.
+type peerSessionMonitor struct {
+	engine ipcGetter
+	clock  telemetry.Clock
+	// expiry is the session-validity window, matching sessionMonitor/deviceExitHealth
+	// (WireGuard's RejectAfterTime).
+	expiry time.Duration
+	// peers is the STATIC ordered set of every configured peer (primary included), each
+	// paired with the stable name metrics/exposition attributes it to (the D58
+	// primary-naming rule: "" for a true single-peer config, else its own configured
+	// name — see allMonitoredPeers) and the lowercase-hex public key the engine's UAPI
+	// dump identifies it by.
+	peers []monitoredPeer
+}
+
+// newPeerSessionMonitor builds the per-peer session monitor over the engine for the
+// given peer set (see allMonitoredPeers). The clock is injected so the age derivation is
+// deterministic under test; expiry is WireGuard's RejectAfterTime, matching
+// sessionMonitor/deviceExitHealth.
+func newPeerSessionMonitor(engine ipcGetter, clock telemetry.Clock, peers []monitoredPeer) *peerSessionMonitor {
+	return &peerSessionMonitor{engine: engine, clock: clock, expiry: awgdevice.RejectAfterTime, peers: peers}
+}
+
+// PeerSessionSnapshots reads the engine ONCE and resolves each configured peer's OWN
+// session verdict from that single dump. An engine read error yields every peer at the
+// zero snapshot (Established=false, age=0) — the "still converging" reading, matching
+// sessionMonitor.SessionSnapshot's error handling. A negative age (clock skew) is
+// clamped to zero, like sessionMonitor.
+func (m *peerSessionMonitor) PeerSessionSnapshots() []metrics.PeerSessionSnapshot {
+	out := make([]metrics.PeerSessionSnapshot, len(m.peers))
+	dump, err := m.engine.IpcGet()
+	if err != nil {
+		for i, p := range m.peers {
+			out[i] = metrics.PeerSessionSnapshot{Peer: p.name}
+		}
+		return out
+	}
+	handshakes := perPeerHandshakeNano(dump)
+	now := m.clock.Now()
+	for i, p := range m.peers {
+		nano := handshakes[p.publicKey]
+		if nano == 0 {
+			out[i] = metrics.PeerSessionSnapshot{Peer: p.name}
+			continue
+		}
+		age := now.Sub(time.Unix(0, nano))
+		if age < 0 {
+			age = 0
+		}
+		out[i] = metrics.PeerSessionSnapshot{
+			Peer:                 p.name,
+			Established:          age <= m.expiry,
+			LastHandshakeSeconds: age.Seconds(),
+		}
+	}
+	return out
+}
+
 // exitPeerHealth is one exit-capable peer's health-probe inputs (T269): the lowercase-hex public
 // key its engine-session handshake is keyed by, and its OWN per-path liveness plane (that peer's
 // prober set). Both are needed to answer the auto-promotion health question — session established
