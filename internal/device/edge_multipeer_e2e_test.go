@@ -65,7 +65,9 @@ func writeLoadedConfig(t *testing.T, name, body string) *config.Config {
 // TestEdgeMultiPeerWarmBringUp is the T251/Q68b/M105 acceptance: device.Up brings up ONE edge with
 // TWO configured concentrator peers, both warm CONCURRENTLY, over TWO loopback uplinks against TWO
 // in-process concentrator engines — no root, the pattern of monitor_e2e_test.go (real engines +
-// real Binds over loopback UDP, driven through the production up() wiring). It asserts, end to end:
+// real Binds over loopback UDP, driven through the production up() wiring). All three engines use
+// the same non-default Amnezia profile, making this the configured multi-Device race/isolation
+// regression for the local upstream #155 patch. It asserts, end to end:
 //
 //	(a) per-(peer,path) probers reach StateUp for ALL FOUR (peer,uplink) combinations — the edge's
 //	    shared-socket fan-out probes every peer over every uplink (attachSharedPathLocked);
@@ -158,6 +160,14 @@ psk = "%s"
 `, randB64Key(t), b64(edgePrivRaw),
 		b64(conc0PubRaw), port0, psk0,
 		b64(conc1PubRaw), port1, psk1))
+
+	amnezia := config.Amnezia{
+		Jc: 4, Jmin: 8, Jmax: 80, S1: 15, S2: 92,
+		H1: 1_111_111, H2: 2_222_222, H3: 3_333_333, H4: 4_444_444,
+	}
+	conc0Cfg.Amnezia = amnezia
+	conc1Cfg.Amnezia = amnezia
+	edgeCfg.Amnezia = amnezia
 
 	inert := func() (dnsresolve.Resolver, error) { return &dnsresolve.FakeResolver{}, nil }
 

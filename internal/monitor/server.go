@@ -425,8 +425,8 @@ func (a *authConfig) middleware(next http.Handler) http.Handler {
 // the redirect IS the response). A missing/invalid credential yields 401. All
 // token comparisons are constant-time.
 func (a *authConfig) authorize(w http.ResponseWriter, r *http.Request) bool {
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		if a.tokenMatches(strings.TrimPrefix(h, "Bearer ")) {
+	if scheme, credential, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
+		if a.tokenMatches(strings.TrimSpace(credential)) {
 			return true
 		}
 	}

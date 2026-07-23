@@ -213,6 +213,9 @@ type Info struct {
 	// active-exit concept applies: the concentrator role, or an edge with fewer
 	// than two exit-capable peers / no default-route peer.
 	ActiveExit func() string
+	// ExitCapablePeers is the configured, config-order set of peer names that may
+	// own the default route. It is empty off the edge role.
+	ExitCapablePeers []string
 }
 
 // MonitorSnapshot is the JSON wire-format contract the monitoring HTTP
@@ -248,6 +251,10 @@ type MonitorSnapshot struct {
 	// concentrator role and on an edge with no default-route ownership to
 	// report. It is a peer NAME, never an address, so it is NOT redacted.
 	ActiveExit string `json:"activeExit"`
+	// ExitCapablePeers is the configured, config-order set of peers eligible to
+	// own the default route. The control applies only when this set has 2+ names;
+	// it is not inferred from endpoint or session telemetry.
+	ExitCapablePeers []string `json:"exitCapablePeers"`
 	// WGPublicKeyFingerprint is the truncated local WG public-key fingerprint
 	// (Q63 — fingerprint ONLY; there is deliberately NO full-key field). Present
 	// on any binding.
@@ -335,12 +342,13 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 	}
 
 	out := MonitorSnapshot{
-		Paths:        make([]PathSnapshot, len(paths)),
-		FEC:          make([]FECSnapshot, len(fec)),
-		Reseq:        make([]ReseqSnapshot, len(reseqSnapshots)),
-		Aggregation:  make([]AggregationSnapshot, len(aggregation)),
-		PeerSessions: make([]PeerSessionSnapshot, len(peerSessions)),
-		ActiveExit:   activeExit,
+		Paths:            make([]PathSnapshot, len(paths)),
+		FEC:              make([]FECSnapshot, len(fec)),
+		Reseq:            make([]ReseqSnapshot, len(reseqSnapshots)),
+		Aggregation:      make([]AggregationSnapshot, len(aggregation)),
+		PeerSessions:     make([]PeerSessionSnapshot, len(peerSessions)),
+		ActiveExit:       activeExit,
+		ExitCapablePeers: append([]string{}, info.ExitCapablePeers...),
 		Session: SessionSnapshot{
 			Established:          session.Established,
 			LastHandshakeSeconds: session.LastHandshakeAge.Seconds(),

@@ -126,6 +126,19 @@ func twoExitEdgeConfig(t *testing.T) (cfg *config.Config, aHex, bHex string) {
 	return cfg, hex.EncodeToString(aPubRaw), hex.EncodeToString(bPubRaw)
 }
 
+func TestExitCapablePeerNamesPreservesConfigOrder(t *testing.T) {
+	cfg, _, _ := twoExitEdgeConfig(t)
+	got := exitCapablePeerNames(cfg, cfg.PeerIdentities())
+	if joined := strings.Join(got, ","); joined != "a,b" {
+		t.Fatalf("exitCapablePeerNames = %q, want %q", joined, "a,b")
+	}
+
+	cfg.Role = config.RoleConcentrator
+	if got := exitCapablePeerNames(cfg, cfg.PeerIdentities()); len(got) != 0 {
+		t.Fatalf("concentrator exitCapablePeerNames = %v, want empty", got)
+	}
+}
+
 // TestExitSelectorStealOnInsert is T254 acceptance (a): it proves the vendored amneziawg-go engine
 // REPOINTS ownership of an allowed-ips prefix on insert (steal-on-insert) — an IpcSet inserting a
 // prefix already owned by peer A onto peer B moves it to B and removes it from A, per prefix, with

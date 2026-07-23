@@ -511,6 +511,19 @@ func TestAuthTokenFlow(t *testing.T) {
 		t.Fatalf("valid Bearer rejected => %d, want authorized through", respB.StatusCode)
 	}
 
+	// RFC 7235 §2.1: auth-scheme matching is case-insensitive, so a lowercase
+	// bearer scheme must authorize the same token too (regression: D105).
+	reqLower, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	reqLower.Header.Set("Authorization", "bearer "+token)
+	respLower, err := client.Do(reqLower)
+	if err != nil {
+		t.Fatalf("lowercase-bearer request: %v", err)
+	}
+	_ = respLower.Body.Close()
+	if respLower.StatusCode == http.StatusUnauthorized || respLower.StatusCode == http.StatusForbidden {
+		t.Fatalf("valid lowercase bearer rejected => %d, want authorized through", respLower.StatusCode)
+	}
+
 	// Wrong token => 401.
 	reqW, _ := http.NewRequest(http.MethodGet, base+"/", nil)
 	reqW.Header.Set("Authorization", "Bearer not-the-token")

@@ -17,14 +17,30 @@ jobs:
         with:
           go-version: stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: frontend typecheck and test
+        working-directory: web
+        run: npm ci && npm run typecheck && npm test
+
       - name: build
         run: go build ./...
 
       - name: vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          # v1.0.4 tun/netstack is excluded: its pinned gVisor module is not
+          # Go-module-buildable (upstream #156), and wanbond does not import it.
+          (cd third_party/amneziawg-go && go vet ./device/...)
 
       - name: test
-        run: go test ./...
+        run: |
+          go test ./...
+          (cd third_party/amneziawg-go && go test ./device/...)
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6

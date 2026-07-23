@@ -28,17 +28,13 @@ import (
 // ceiling. Fixed runs at the ceiling (M=6, the P3 baseline). Adaptive runs the controller
 // with the ceiling as MaxParity, sizing M in [0,6] from the measured loss.
 //
-// SAFETY FACTOR. The controller sizes M so M/(K+M) >= SafetyFactor*loss. The simulation
-// default (1.5) sizes M=1 at 5% with K=10 — which leaves ~1% residual (E[max(0,D-1)]/K for
-// D~Bin(10,0.05)), ABOVE the 0.5% bound. Meeting a 0.5% residual SLA under binomial per-
-// group variance needs more headroom, so P4 configures p4SafetyFactor to lift M to ~3 (e =
-// 4.0*0.05 = 0.20 -> M = ceil(10*0.2/0.8) = 3), whose residual is far under 0.5% AND whose
-// overhead (~3 parity/group) is still well under the fixed M=6 baseline. The knob is the
-// residual-tuning lever the deployment sets for its SLA; the controller itself is unchanged.
+// RESIDUAL TARGET. The adaptive phase configures target_residual to the same 0.5% bound
+// the acceptance asserts. The controller inverts its binomial residual model to the smallest
+// M that meets that bound, so its raise gate engages even when a constrained worker's sampled
+// probe loss lands below the legacy safety-factor mode's fixed 5% raise threshold.
 const (
-	p4DataShards    = 10  // K
-	p4ParityCeiling = 6   // M ceiling (== the fixed P3 baseline M)
-	p4SafetyFactor  = 4.0 // adaptive redundancy headroom -> M~3 at 5% loss (see above)
+	p4DataShards    = 10 // K
+	p4ParityCeiling = 6  // M ceiling (== the fixed P3 baseline M)
 
 	// p4DeadlineNanos mirrors p3DeadlineNanos: 100ms sits under maxFECDeadline yet is large
 	// enough that groups FILL toward K at the fixture's low frame rate (see p3_fec_test.go).
@@ -53,10 +49,10 @@ const (
 	// intervals), so the window measures the controller's STEADY overhead, not its ramp.
 	p4WarmupSecs = 8
 
-	// p4LoadSecs is the saturating single-flow measurement window: long enough to accumulate
-	// thousands of DATA frames / hundreds of groups so the byte ratios and the residual are
-	// statistically meaningful at the fixture's low frame rate (mirrors p3LoadSecs).
-	p4LoadSecs = 30
+	// p4LoadSecs is sized for the fixture's slowest supported 1-vCPU worker: 30s produced
+	// only ~1,600 DATA frames there, below p4MinDataFrames. Sixty seconds leaves margin above
+	// that floor while keeping both phases bounded.
+	p4LoadSecs = 60
 
 	// p4SettleSecs lets in-flight recovery land before the residual gauge is scraped: with
 	// loss still injected but the flow stopped, no new outer-seqs advance the residual window,
@@ -132,8 +128,8 @@ func TestP4AdaptiveFEC(t *testing.T) {
 			fixed.residual, P4ResidualLossMax)
 	}
 	if adaptive.residual > P4ResidualLossMax {
-		t.Errorf("adaptive residual %.4f > %.4f (P4ResidualLossMax) at %.0f%% loss — adaptive did not mask to the required bound; raise fec.safety_factor (currently %.1f) to lift M",
-			adaptive.residual, P4ResidualLossMax, P4SteadyLossRate*100, p4SafetyFactor)
+		t.Errorf("adaptive residual %.4f > %.4f (P4ResidualLossMax) at %.0f%% loss — adaptive did not meet its configured target_residual",
+			adaptive.residual, P4ResidualLossMax, P4SteadyLossRate*100)
 	}
 
 	// The overhead-BYTES comparison: at equal masking, adaptive spends <= the fixed baseline.
@@ -235,7 +231,7 @@ func runP4Phase(t *testing.T, bin string, adaptive bool) p4Result {
 			label, edgeLoss, P4SteadyLossRate*0.4, P4SteadyLossRate*3, P4SteadyLossRate)
 	}
 	if recovered < p4MinRecovered {
-		t.Fatalf("p4 %s: concentrator recovered only %.0f packets (< %d) while edge probe loss reads %.4f — injected loss did not reach the decoder as recovered erasures. If edge loss is ~%.2f the fixture is fine and the FEC send side under-provisioned (adaptive M stuck at 0 / raise band not engaging — raise fec.safety_factor or the injected loss); a low residual here would be vacuous",
+		t.Fatalf("p4 %s: concentrator recovered only %.0f packets (< %d) while edge probe loss reads %.4f — injected loss did not reach the decoder as recovered erasures. If edge loss is ~%.2f the fixture is fine and the FEC send side under-provisioned (adaptive M stuck at 0 / target_residual raise gate not engaging); a low residual here would be vacuous",
 			label, recovered, p4MinRecovered, edgeLoss, P4SteadyLossRate)
 	}
 
@@ -258,7 +254,7 @@ func runP4Phase(t *testing.T, bin string, adaptive bool) p4Result {
 
 // setupP4Tunnel brings up the edge+concentrator tunnel over the single p4Path with the FEC
 // plane enabled and the /metrics endpoint on both ends. When adaptive is true the edge's
-// [fec] block adds `adaptive = true` + the p4SafetyFactor; the concentrator (decoder) is
+// [fec] block adds `adaptive = true` + the P4 residual target; the concentrator (decoder) is
 // unchanged either way — a group coded with fewer parity shards decodes against the
 // parity_shards-ceiling codec unchanged — but it too gets the [fec] block so it builds the
 // decoder at the ceiling. It mirrors setupP3Tunnel's addressing/bring-up.
@@ -269,13 +265,13 @@ func setupP4Tunnel(t *testing.T, top *Topology, bin string, adaptive bool) (edge
 	concPriv, concPub := genKey(t)
 	psk := randKey(t)
 
-	// The edge encodes: it carries the adaptive flag + safety factor when adaptive. The
+	// The edge encodes: it carries the adaptive flag + residual target when adaptive. The
 	// concentrator decodes at the fixed ceiling; adaptive is a no-op there, so its block is
 	// the plain fixed ratio (data_shards/parity_shards/deadline).
 	edgeFEC := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n",
 		p4DataShards, p4ParityCeiling, p4DeadlineNanos/1_000_000)
 	if adaptive {
-		edgeFEC += fmt.Sprintf("adaptive = true\nsafety_factor = %g\n", p4SafetyFactor)
+		edgeFEC += fmt.Sprintf("adaptive = true\ntarget_residual = %g\n", P4ResidualLossMax)
 	}
 	edgeFEC += "\n"
 	concFEC := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n\n",
@@ -364,8 +360,8 @@ func appendP4Checklist(t *testing.T) {
 	t.Logf("appended P4 scripted checklist to %s", path)
 }
 
-// p4ChecklistSection renders the P4 scripted real-setup section. The geometry, safety
-// factor, and thresholds are interpolated from the same constants the automated test
+// p4ChecklistSection renders the P4 scripted real-setup section. The geometry,
+// residual target, and thresholds are interpolated from the same constants the automated test
 // asserts, so the manual and automated criteria never drift.
 func p4ChecklistSection() string {
 	var b strings.Builder
@@ -376,17 +372,17 @@ func p4ChecklistSection() string {
 	b.WriteString("Fixed (baseline) edge+conc [fec]:\n```toml\n")
 	fmt.Fprintf(&b, "[fec]\nenabled = true\ndata_shards = %d   # K\nparity_shards = %d  # M ceiling\ndeadline = \"%dms\"\n", p4DataShards, p4ParityCeiling, p4DeadlineNanos/1_000_000)
 	b.WriteString("```\n\nAdaptive edge [fec] (conc keeps the fixed block above — it decodes at the ceiling):\n```toml\n")
-	fmt.Fprintf(&b, "[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d  # ceiling\ndeadline = \"%dms\"\nadaptive = true\nsafety_factor = %g\n", p4DataShards, p4ParityCeiling, p4DeadlineNanos/1_000_000, p4SafetyFactor)
+	fmt.Fprintf(&b, "[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d  # ceiling\ndeadline = \"%dms\"\nadaptive = true\ntarget_residual = %g\n", p4DataShards, p4ParityCeiling, p4DeadlineNanos/1_000_000, P4ResidualLossMax)
 	b.WriteString("```\n\n")
 	fmt.Fprintf(&b, "The fixed ratio M/K = %.2f over-provisions for %.0f%% loss; adaptive sizes M to the\n", fixedRatio, P4SteadyLossRate*100)
-	fmt.Fprintf(&b, "measured loss (safety_factor %.1f -> M~3 at %.0f%%), masking to the same residual for less\n", p4SafetyFactor, P4SteadyLossRate*100)
+	fmt.Fprintf(&b, "measured loss to hold target_residual %.3f, masking to the same residual for less\n", P4ResidualLossMax)
 	b.WriteString("overhead. `FEC()` below is `curl -s http://127.0.0.1:9090/metrics | grep wanbond_fec`.\n")
 	b.WriteString("Record date, `wanbond version`, and observed numbers next to each item.\n\n")
 
 	b.WriteString("### Per phase (fixed, then adaptive)\n")
 	fmt.Fprintf(&b, "- [ ] Bring the tunnel up; induce steady uniform loss on the edge uplink (`tc ... netem loss %.0f%%`).\n", P4SteadyLossRate*100)
 	b.WriteString("- [ ] Warm up (~8s) so the adaptive controller reaches steady M, then take a saturating\n")
-	b.WriteString("      upload (`iperf3 -c 10.77.0.1 -t 30`).\n")
+	fmt.Fprintf(&b, "      upload (`iperf3 -c 10.77.0.1 -t %d`).\n", p4LoadSecs)
 	b.WriteString("- [ ] EDGE `/metrics`: DELTAS of `wanbond_fec_data_bytes_total` and\n")
 	b.WriteString("      `wanbond_fec_repair_bytes_total` over the window; overhead bytes = `dRepair/dData`.\n")
 	b.WriteString("- [ ] CONCENTRATOR `/metrics`: `wanbond_fec_residual_loss_ratio` (post-recovery residual).\n\n")

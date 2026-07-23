@@ -17,7 +17,7 @@
           version = "0.0.0";
           src = ./.;
           # Updated whenever go.mod dependencies change; see `nix build` error output.
-          vendorHash = "sha256-Y48M+39zAAHpLmzL+grtKVN1ClYv0WzD0pdBX4MSYqk=";
+          vendorHash = "sha256-CCZVhJlVB2p43YIzfdkSowDTD3friOhjEKTI1h4g12M=";
           subPackages = [ "cmd/wanbond" ];
           env.CGO_ENABLED = 0;
           ldflags = [ "-s" "-w" ];
@@ -33,6 +33,7 @@
             golangci-lint
             gnumake
             just
+            nodejs_24
             # privileged e2e harness tooling
             iproute2
             util-linux # unshare / nsenter for the netns fixture

@@ -399,6 +399,9 @@ func TestMonitorWire_InfoFields(t *testing.T) {
 	if eps := info.Endpoints(); len(eps) != 0 {
 		t.Fatalf("Info.Endpoints() = %+v on a single-endpoint edge, want empty", eps)
 	}
+	if len(info.ExitCapablePeers) != 0 {
+		t.Fatalf("Info.ExitCapablePeers = %v for an inner-only edge, want empty", info.ExitCapablePeers)
+	}
 
 	// LIVE-provider failover: build a controller with two endpoints directly, wrap it in the
 	// PRODUCTION provider, and assert the active entry MOVES after a forced switch — the same
@@ -463,8 +466,9 @@ func buildTwoPeerWireFixture(t *testing.T) (metrics.Source, monitor.Info) {
 	src := newMetricsSource(prov, fakeSession{}, peerSessions, &fakeClock{now: time.Unix(1000, 0)})
 
 	info := monitor.Info{
-		Endpoints:  newEndpointsProvider(ids, ctrls),
-		ActiveExit: func() string { return "west" },
+		Endpoints:        newEndpointsProvider(ids, ctrls),
+		ActiveExit:       func() string { return "west" },
+		ExitCapablePeers: []string{"east", "west"},
 	}
 	return src, info
 }
@@ -514,6 +518,9 @@ func TestMonitorWire_PerPeerEndpointGroupsSessionsActiveExit(t *testing.T) {
 	// activeExit is the exit selector's ActiveExit() verbatim — a peer NAME.
 	if snap.ActiveExit != "west" {
 		t.Fatalf("activeExit = %q, want %q", snap.ActiveExit, "west")
+	}
+	if got := strings.Join(snap.ExitCapablePeers, ","); got != "east,west" {
+		t.Fatalf("exitCapablePeers = %q, want %q", got, "east,west")
 	}
 }
 

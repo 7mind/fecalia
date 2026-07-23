@@ -167,7 +167,10 @@ export interface PeerSessionSnapshot {
  * exit-capable peer currently carrying the default route on a multi-exit
  * edge — "" on the concentrator role and on an edge with no default-route
  * ownership to report. It is a peer NAME, never an address, so it is NOT
- * part of the redactable addressing surface.
+ * part of the redactable addressing surface. exitCapablePeers is the
+ * authoritative config-order set eligible to own the default route; the
+ * control applies only with 2+ names, and the frontend must not infer the set
+ * from generic endpoint or session telemetry.
  *
  * exitControlAvailable (T280, G32) mirrors the Go RAW loopbackBound verdict —
  * the SAME hard gate the mutating POST /api/exit control enforces
@@ -188,6 +191,7 @@ export interface MonitorSnapshot {
   endpoints: EndpointSnapshot[];
   peerSessions: PeerSessionSnapshot[];
   activeExit: string;
+  exitCapablePeers: string[];
   wgPublicKeyFingerprint: string;
   addressingHidden: boolean;
   exitControlAvailable: boolean;

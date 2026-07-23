@@ -462,6 +462,19 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotExitCapablePeersUsesAuthoritativeInfo(t *testing.T) {
+	info := Info{ExitCapablePeers: []string{"tokyo", "osaka"}}
+	snap := BuildSnapshot(fakeSource{peerNames: []string{"tokyo", "osaka"}}, info, true, true)
+
+	if got := strings.Join(snap.ExitCapablePeers, ","); got != "tokyo,osaka" {
+		t.Fatalf("exitCapablePeers = %q, want config-order %q", got, "tokyo,osaka")
+	}
+	info.ExitCapablePeers[0] = "mutated"
+	if snap.ExitCapablePeers[0] != "tokyo" {
+		t.Fatalf("snapshot aliases Info.ExitCapablePeers: got %q after source mutation", snap.ExitCapablePeers[0])
+	}
+}
+
 // TestBuildSnapshotEmptyIsNotNull asserts that empty per-(peer,path)/FEC/
 // Reseq/Aggregation sets marshal as `[]`, not `null` — a nil slice would force
 // the frontend to null-check every field before iterating.
@@ -473,7 +486,7 @@ func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	for _, field := range []string{`"paths":[]`, `"fec":[]`, `"reseq":[]`, `"aggregation":[]`} {
+	for _, field := range []string{`"paths":[]`, `"fec":[]`, `"reseq":[]`, `"aggregation":[]`, `"exitCapablePeers":[]`} {
 		if !strings.Contains(string(b), field) {
 			t.Errorf("marshalled JSON %s does not contain %q, want an empty array not null", b, field)
 		}
@@ -482,10 +495,10 @@ func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 
 // TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields is the T257 back-compat
 // acceptance: for a single-bound-peer edge, the marshalled snapshot is JSON-identical to the
-// pre-T257 wire shape once the three additive fields (peerSessions, activeExit, and each
-// endpoint's peer) are stripped. The pre-T257 "want" shape below is the literal pre-change
-// BuildSnapshot/EndpointSnapshot behaviour for this fixture (no peerSessions/activeExit fields
-// existed, and EndpointSnapshot carried no peer field).
+// pre-T257 wire shape once the additive fields (peerSessions, activeExit,
+// exitCapablePeers, and each endpoint's peer) are stripped. The pre-T257 "want"
+// shape below is the literal pre-change BuildSnapshot/EndpointSnapshot behaviour
+// for this fixture.
 func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T) {
 	src := fakeSource{
 		paths: []metrics.PathSnapshot{
@@ -522,6 +535,9 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	if _, ok := got["exitControlAvailable"]; !ok {
 		t.Fatalf("exitControlAvailable field missing from %s", b)
 	}
+	if _, ok := got["exitCapablePeers"]; !ok {
+		t.Fatalf("exitCapablePeers field missing from %s", b)
+	}
 	eps, ok := got["endpoints"].([]any)
 	if !ok || len(eps) != 1 {
 		t.Fatalf("endpoints = %#v, want a 1-element array", got["endpoints"])
@@ -535,6 +551,7 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	delete(got, "peerSessions")
 	delete(got, "activeExit")
 	delete(got, "exitControlAvailable")
+	delete(got, "exitCapablePeers")
 	delete(ep0, "peer")
 
 	want := map[string]any{

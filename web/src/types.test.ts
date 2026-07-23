@@ -39,6 +39,7 @@ const REDACTED_FRAME = `{
     { "address": "", "active": true },
     { "address": "", "active": false }
   ],
+  "exitCapablePeers": [],
   "wgPublicKeyFingerprint": "aGVsbG8gd29",
   "addressingHidden": true,
   "exitControlAvailable": false
@@ -77,12 +78,13 @@ const FULL_FRAME = `{
     { "address": "198.51.100.9:51820", "active": true },
     { "address": "198.51.100.10:51820", "active": false }
   ],
+  "exitCapablePeers": [],
   "wgPublicKeyFingerprint": "aGVsbG8gd29",
   "addressingHidden": false,
   "exitControlAvailable": true
 }`;
 
-// 2-peer concentrator binding, addressing revealed: exercises the T257/T259
+// 2-peer multi-exit edge binding, addressing revealed: exercises the T257/T259
 // additive fields — per-entry `peer` on `endpoints` (grouping the flat
 // hub-failover list per bound edge peer, in configured order), one
 // `peerSessions` entry per bound peer, and `activeExit` naming the peer
@@ -103,7 +105,7 @@ const TWO_PEER_FRAME = `{
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": ["tokyo", "osaka"],
   "multiPeer": true,
-  "daemon": { "role": "concentrator", "version": "v0.1.0", "uptimeSeconds": 3600 },
+  "daemon": { "role": "edge", "version": "v0.1.0", "uptimeSeconds": 3600 },
   "endpoints": [
     { "peer": "tokyo", "address": "hub-a1:51820", "active": true },
     { "peer": "tokyo", "address": "hub-a2:51820", "active": false },
@@ -114,6 +116,7 @@ const TWO_PEER_FRAME = `{
     { "peer": "osaka", "established": false, "lastHandshakeSeconds": 0 }
   ],
   "activeExit": "osaka",
+  "exitCapablePeers": ["tokyo", "osaka"],
   "wgPublicKeyFingerprint": "aGVsbG8gd29",
   "addressingHidden": false,
   "exitControlAvailable": true
@@ -184,7 +187,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     expect(withPhantomKey).toBeTruthy();
   });
 
-  it('T257/T259: parses a 2-peer concentrator frame — per-entry peer on endpoints in configured order, one peerSessions entry per peer, and activeExit', () => {
+  it('T257/T259: parses a 2-peer multi-exit edge frame with authoritative exit peers', () => {
     const snapshot: MonitorSnapshot = JSON.parse(TWO_PEER_FRAME) as MonitorSnapshot;
 
     expect(snapshot.multiPeer).toBe(true);
@@ -216,8 +219,10 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
       { peer: 'osaka', established: false, lastHandshakeSeconds: 0 },
     ]);
 
-    // activeExit names the peer currently carrying the default route.
+    // activeExit names the current owner; exitCapablePeers is the authoritative
+    // config-order candidate set for the multi-exit control.
     expect(snapshot.activeExit).toBe('osaka');
+    expect(snapshot.exitCapablePeers).toEqual(['tokyo', 'osaka']);
 
     // reseq HoL-stall/hold accounting (T242, D93) round-trips per peer.
     expect(snapshot.reseq).toEqual([

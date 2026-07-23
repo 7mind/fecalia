@@ -113,6 +113,7 @@ function multiPeerSnapshot(): MonitorSnapshot {
     endpoints: [],
     peerSessions: [],
     activeExit: '',
+    exitCapablePeers: [],
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
     exitControlAvailable: false,
@@ -132,6 +133,7 @@ function singlePeerSnapshot(): MonitorSnapshot {
     endpoints: [],
     peerSessions: [],
     activeExit: '',
+    exitCapablePeers: [],
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
     exitControlAvailable: false,
@@ -139,9 +141,8 @@ function singlePeerSnapshot(): MonitorSnapshot {
 }
 
 /**
- * T259/G28/M107: a 2-peer concentrator stream carrying per-peer endpoints,
- * peerSessions, and activeExit — the shape the T259 per-concentrator
- * grouping renders.
+ * T259/G28/M107: a 2-peer multi-exit edge stream carrying per-peer endpoints,
+ * peerSessions, activeExit, and the authoritative exit-capable set.
  */
 function twoPeerConcentratorSnapshot(): MonitorSnapshot {
   return {
@@ -152,7 +153,7 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA', 'peerB'],
     multiPeer: true,
-    daemon: daemon({ role: 'concentrator' }),
+    daemon: daemon({ role: 'edge' }),
     endpoints: [
       endpoint({ peer: 'peerA', address: 'hub-a1:51820', active: true }),
       endpoint({ peer: 'peerA', address: 'hub-a2:51820', active: false }),
@@ -160,6 +161,7 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
     ],
     peerSessions: [peerSession({ peer: 'peerA', established: true, lastHandshakeSeconds: 7 }), peerSession({ peer: 'peerB', established: false, lastHandshakeSeconds: 0 })],
     activeExit: 'peerB',
+    exitCapablePeers: ['peerA', 'peerB'],
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
     exitControlAvailable: true,
@@ -170,10 +172,9 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
  * T260 round 2: isolates the single-peer exit-control hide from the
  * exitControlAvailable gate (re-keyed T280/G32; was addressingHidden). Unlike
  * singlePeerSnapshot() (exitControlAvailable:false, peerNames:[]), this
- * fixture sets exitControlAvailable:true and gives exitCapablePeers(...) a
- * non-empty result (a named endpoint + peerSession for 'peerA'), so the ONLY
- * thing that can suppress the control is the `grouped` (peerNames.length > 1)
- * gate itself.
+ * fixture sets exitControlAvailable:true and carries one authoritative
+ * exit-capable peer, so both the single-peer grouping gate and the absence of
+ * an alternate exit suppress the control.
  */
 function singlePeerNamedSnapshot(): MonitorSnapshot {
   return {
@@ -184,10 +185,11 @@ function singlePeerNamedSnapshot(): MonitorSnapshot {
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA'],
     multiPeer: false,
-    daemon: daemon({ role: 'concentrator' }),
+    daemon: daemon({ role: 'edge' }),
     endpoints: [endpoint({ peer: 'peerA', address: 'hub-a1:51820', active: true })],
     peerSessions: [peerSession({ peer: 'peerA', established: true, lastHandshakeSeconds: 7 })],
     activeExit: 'peerA',
+    exitCapablePeers: ['peerA'],
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
     exitControlAvailable: true,
@@ -309,6 +311,7 @@ describe('mountDashboard', () => {
       endpoints: [endpoint({ address: '198.51.100.1:51820', active: true }), endpoint({ address: '198.51.100.2:51820', active: false })],
       peerSessions: [],
       activeExit: '',
+      exitCapablePeers: [],
       wgPublicKeyFingerprint: 'AbCd1234',
       addressingHidden: false,
       exitControlAvailable: true,
@@ -499,8 +502,8 @@ describe('mountDashboard', () => {
     // `grouped` gate were dropped from the exitControlHtml condition — those
     // two other conditions mask it. This fixture isolates the `grouped`
     // (peerNames.length > 1) gate: exitControlAvailable is true and
-    // exitCapablePeers(...) is non-empty (a named endpoint + peerSession), so
-    // `grouped` is the only remaining reason the control can be absent.
+    // one exitCapablePeers entry is present, so `grouped` is the only remaining
+    // reason the control can be absent.
     // Confirmed: reverting `grouped` out of
     // `snapshot.exitControlAvailable && grouped` in dashboard.ts's render()
     // makes this assertion fail (the control renders) while the above test
@@ -510,6 +513,41 @@ describe('mountDashboard', () => {
       dashboard.onSnapshot(singlePeerNamedSnapshot());
 
       expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
+    });
+
+    it('D107: does not render on an edge when the authoritative exit-capable set is empty', () => {
+      const dashboard = mountDashboard(container);
+      const snapshot = twoPeerConcentratorSnapshot();
+      snapshot.activeExit = '';
+      snapshot.exitCapablePeers = [];
+      dashboard.onSnapshot(snapshot);
+
+      expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
+    });
+
+    it('D107: does not render off the edge role even if a malformed frame carries candidates', () => {
+      const dashboard = mountDashboard(container);
+      const snapshot = twoPeerConcentratorSnapshot();
+      snapshot.daemon = daemon({ role: 'concentrator' });
+      dashboard.onSnapshot(snapshot);
+
+      expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
+    });
+
+    it('D107: lists only the authoritative exit-capable peers on a mixed edge', () => {
+      const dashboard = mountDashboard(container);
+      const snapshot = twoPeerConcentratorSnapshot();
+      snapshot.daemon = daemon({ role: 'edge' });
+      snapshot.peerNames.push('inner-only');
+      snapshot.paths.push(path({ name: 'wan2', peer: 'inner-only' }));
+      snapshot.endpoints.push(endpoint({ peer: 'inner-only', address: 'inner.example:51820', active: true }));
+      snapshot.peerSessions.push(peerSession({ peer: 'inner-only' }));
+      snapshot.exitCapablePeers = ['peerA', 'peerB'];
+      dashboard.onSnapshot(snapshot);
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]');
+      expect(select).not.toBeNull();
+      expect(Array.from(select!.options).map((o) => o.value)).toEqual(['peerA', 'peerB']);
     });
 
     it('renders for a multi-peer, exitControlAvailable fixture, listing every exit-capable peer', () => {

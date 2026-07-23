@@ -272,11 +272,6 @@ type Tunnel struct {
 	// the current owner for the monitor. T269 (auto-promotion) and T255 (composition)
 	// wire triggers onto it next.
 	exitSelector *exitSelector
-	// amnezia is the obfuscation profile this tunnel holds against the
-	// process-global amnezia guard (see amneziaGuard); Close releases it.
-	amnezia     config.Amnezia
-	releaseOnce sync.Once
-
 	// metricsSrc is the live metrics.Source over the Bind; it is stable for the tunnel's
 	// life (the Bind pointer never changes), so a reload that rebinds the endpoint reuses
 	// the SAME Source — its derived-throughput last-sample state survives the rebind.
@@ -316,83 +311,6 @@ type Tunnel struct {
 	monitorInfo monitor.Info
 }
 
-// SINGLE-ENGINE-PER-PROCESS INVARIANT (defect D2).
-//
-// amneziawg-go stores the amnezia magic-header message types in PACKAGE-GLOBAL
-// variables — device.MessageInitiationType, MessageResponseType,
-// MessageCookieReplyType, MessageTransportType. (*device.Device).IpcSet assigns
-// them (in handlePostConfig) from a configured engine's profile, and
-// (*device.Device).Close restores them to the WireGuard defaults (in
-// resetProtocol) UNCONDITIONALLY — closing ANY engine, plain or configured,
-// reverts the process-global message types to their defaults.
-//
-// Two consequences make a CONFIGURED (amnezia) engine require PROCESS
-// EXCLUSIVITY:
-//   - a second configured engine would overwrite the first engine's message-type
-//     framing at IpcSet; and even with the SAME profile, closing the first engine
-//     runs resetProtocol and reverts the globals to defaults under the second,
-//     still-live engine, silently dropping its tunnel to plain-WireGuard framing.
-//   - closing ANY other engine — a PLAIN (unconfigured) one included — runs
-//     resetProtocol and resets the globals out from under a live configured engine.
-//
-// So the rule wanbond ASSERTS (rather than vendor-patching the fork) is:
-//   - a configured engine may come up only when NO other engine is live, and
-//   - no engine (plain or configured) may come up while a configured engine is live.
-//
-// PLAIN engines may coexist with each other: they never set the globals, and
-// resetProtocol on their Close only restores the defaults they already use, so it
-// is idempotent among them. wanbond runs exactly one tunnel per process, so the
-// guard only ever trips on genuine misuse.
-type amneziaGuard struct {
-	mu         sync.Mutex
-	plainLive  int  // number of live plain-WireGuard (unconfigured) engines
-	configLive bool // whether a configured (amnezia) engine is live (at most one)
-}
-
-// globalAmneziaGuard enforces the single-amnezia-engine-per-process invariant for
-// every Tunnel brought up in this process.
-var globalAmneziaGuard amneziaGuard
-
-// acquire registers an about-to-start engine against the process-exclusivity rule
-// (see amneziaGuard). A configured (amnezia) engine is admitted only when NO other
-// engine is live. A plain engine is admitted only when no configured engine is
-// live; plain engines may coexist with one another. The caller must release the
-// SAME profile exactly once when the engine is torn down (plain engines included —
-// release is no longer a no-op for them).
-func (g *amneziaGuard) acquire(a config.Amnezia) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if a.Configured() {
-		if g.configLive || g.plainLive > 0 {
-			return fmt.Errorf("device: refusing to start an amnezia-configured engine while another engine is live: " +
-				"amneziawg-go keeps the magic-header message types in process-global state and resets them to defaults on ANY engine's Close, " +
-				"so a configured engine requires process exclusivity — at most one, with no other engine alongside it (D2)")
-		}
-		g.configLive = true
-		return nil
-	}
-	if g.configLive {
-		return fmt.Errorf("device: refusing to start a second engine while an amnezia-configured engine is live: " +
-			"closing this engine would reset amneziawg-go's process-global message types to defaults under the live amnezia tunnel (D2)")
-	}
-	g.plainLive++
-	return nil
-}
-
-// release drops an engine's hold on the guard. A configured engine clears the
-// single configured slot; a plain engine decrements the live plain count.
-func (g *amneziaGuard) release(a config.Amnezia) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if a.Configured() {
-		g.configLive = false
-		return
-	}
-	if g.plainLive > 0 {
-		g.plainLive--
-	}
-}
-
 // Up creates the TUN, wires the multipath Bind into the amneziawg engine,
 // applies the crypto configuration from cfg, and brings the device up. The same
 // path drives both roles; the role only changes which UAPI fields cfg carries
@@ -417,8 +335,8 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: bring interface up: %w", err)
 	}
-	// Apply the TUN persistence policy (I7, Q38) BEFORE the amnezia single-engine
-	// guard in up(): with tun_persist=true the kernel keeps wanbond0 (and its
+	// Apply the TUN persistence policy (I7, Q38): with tun_persist=true the
+	// kernel keeps wanbond0 (and its
 	// operator-owned addresses/routes) across a daemon restart; with the default
 	// false it explicitly CLEARS the flag so the device disappears on Close exactly
 	// as before. This composes with the ifUp above and does not touch the reload or
@@ -558,24 +476,9 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// Device method is unaffected.
 	tunDev = newDiagnosingTUN(tunDev, name, clg)
 
-	// Claim the single-amnezia-engine-per-process invariant (D2) BEFORE IpcSet
-	// assigns amneziawg-go's process-global message-type state. On any failure
-	// below, ok stays false and the deferred release returns the hold; the
-	// successful path transfers the hold to the returned Tunnel.
-	if err := globalAmneziaGuard.acquire(cfg.Amnezia); err != nil {
-		_ = tunDev.Close()
-		return nil, err
-	}
-	ok := false
-	defer func() {
-		if !ok {
-			globalAmneziaGuard.release(cfg.Amnezia)
-		}
-	}()
-
 	// Derive the local WG public-key fingerprint ONCE (Q63): computed here, early, so a
 	// malformed key (impossible after config.Load validation) fails bring-up before any
-	// engine/loop is started, with cleanup limited to the TUN close + the guard release.
+	// engine/loop is started, with cleanup limited to the TUN close.
 	fingerprint, err := wgPublicKeyFingerprint(cfg.WireGuard.PrivateKey)
 	if err != nil {
 		_ = tunDev.Close()
@@ -842,7 +745,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		routePrefixes: routePrefixes,
 		stopProbes:    stopProbes, stopReconcile: stopReconcile,
 		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
-		stopSession: stopSession, stopPeerTeardown: stopPeerTeardown, amnezia: cfg.Amnezia,
+		stopSession: stopSession, stopPeerTeardown: stopPeerTeardown,
 		exitSelector:   exitSel,
 		primaryProbers: probers,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
@@ -863,7 +766,8 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// rule, the truncated local WG public-key fingerprint (Q63 — no full key), a LIVE
 		// PER-PEER hub-endpoints provider over every eligible peer's own failover controller
 		// (empty when none — the concentrator/single-endpoint shapes, T257), and a LIVE
-		// active-exit provider over the exit selector (empty when it does not apply, T257).
+		// active-exit provider over the exit selector (empty when it does not apply, T257),
+		// plus the authoritative config-order set of peers that may own the default route.
 		// Built once here and reused by every applyMonitorLocked (boot + reload rebind).
 		monitorInfo: monitor.Info{
 			Role:                   string(cfg.Role),
@@ -872,6 +776,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 			PathLinks:              buildPathLinks(cfg),
 			WGPublicKeyFingerprint: fingerprint,
 			Endpoints:              newEndpointsProvider(ids, hubFailoverCtrls),
+			ExitCapablePeers:       exitCapablePeerNames(cfg, ids),
 			ActiveExit: func() string {
 				if exitSel == nil {
 					return ""
@@ -888,11 +793,6 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	err = t.applyMetricsLocked(cfg.Metrics.Listen)
 	t.reloadMu.Unlock()
 	if err != nil {
-		// The tunnel is fully constructed and holds the amnezia guard, so transfer that
-		// ownership to it (ok=true) BEFORE tearing it down: t.Close releases the guard via
-		// releaseOnce, and suppressing the !ok defer avoids a double release. t.Close also
-		// stops the probe loop and closes the engine/TUN.
-		ok = true
 		t.Close()
 		return nil, fmt.Errorf("device: start metrics endpoint: %w", err)
 	}
@@ -907,7 +807,6 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	err = t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token, cfg.Monitor.RevealAddressing)
 	t.reloadMu.Unlock()
 	if err != nil {
-		ok = true
 		t.Close()
 		return nil, fmt.Errorf("device: start monitor endpoint: %w", err)
 	}
@@ -918,7 +817,6 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// already up; the config was NOT rejected. A within-budget config is silent.
 	warnOverBudgetLiveness(clg, cfg)
 
-	ok = true
 	clg.Info("tunnel up", "interface", name, "role", string(cfg.Role))
 	return t, nil
 }
@@ -1631,10 +1529,8 @@ func (t *Tunnel) switchActiveExit(peer string) (string, error) {
 }
 
 // Close stops the probe loop, brings the device down, and releases the TUN and
-// Bind. Idempotent. It also releases this tunnel's hold on the single-amnezia-
-// engine-per-process guard exactly once, so a later Up may reconfigure the
-// process-global amnezia state. Probing is stopped BEFORE the engine tears the
-// bind's sockets down so no emission races the close.
+// Bind. Idempotent. Probing is stopped BEFORE the engine tears the bind's sockets
+// down so no emission races the close.
 func (t *Tunnel) Close() {
 	// Shut the /metrics scrape endpoint AND the [monitor] endpoint FIRST so no in-flight
 	// scrape (or /ws push) reads the Bind while the engine tears its sockets down. reloadMu
@@ -1702,7 +1598,6 @@ func (t *Tunnel) Close() {
 		}
 	}
 	t.dev.Close()
-	t.releaseOnce.Do(func() { globalAmneziaGuard.release(t.amnezia) })
 }
 
 // engineLogger adapts the amneziawg engine's logger onto wanbond's structured
@@ -1952,6 +1847,15 @@ func exitCapablePeerIndices(cfg *config.Config) []int {
 	return idx
 }
 
+func exitCapablePeerNames(cfg *config.Config, ids []config.PeerIdentity) []string {
+	idx := exitCapablePeerIndices(cfg)
+	names := make([]string, len(idx))
+	for i, peerIndex := range idx {
+		names[i] = ids[peerIndex].Name
+	}
+	return names
+}
+
 // standbyExitPeers returns, as a set of config-order indices, the STANDBY
 // exit-capable peers on a multi-exit edge (T254): every mode=default-route peer
 // EXCEPT the first in config order, which is the boot-active exit (Q74). The
@@ -2034,9 +1938,9 @@ func defaultRoutePrefixes(cfg *config.Config) []netip.Prefix {
 const keepaliveSeconds = 25
 
 // writeAmnezia emits the nine amneziawg obfuscation UAPI keys, but only when the
-// block is configured. When amnezia is unused, wanbond leaves the engine's
-// PROCESS-GLOBAL message-type state untouched (see the amneziaGuard invariant).
-// Config validation guarantees a configured block is complete and self-consistent
+// block is configured. The patched engine keeps the resulting message types and
+// packet-shape maps on this Device. Config validation guarantees a configured
+// block is complete and self-consistent
 // (D1), and applyDefaults has already filled the standard magic headers (1..4)
 // when they were omitted, so the emitted set never carries an h*=0 sentinel.
 func writeAmnezia(b *strings.Builder, a config.Amnezia) {

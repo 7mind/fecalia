@@ -5,13 +5,18 @@
 default:
     @just --list
 
+# Install and validate the frontend contract before any frontend build or
+# repository test gate.
+web-check:
+    cd web && npm ci && npm run typecheck && npm test
+
 # Build the embedded frontend bundle (Vite) into internal/monitor/dist so the
 # //go:embed all:dist in internal/monitor serves the real monitoring UI. Needs
 # node+npm (dev shell). A committed dist/.gitkeep keeps the embed compilable even
 # before this runs (so `go build`/`just lint` never fail on a missing dir); this
 # recipe produces the ACTUAL assets for a real build/release.
-web-build:
-    cd web && npm ci && npm run build
+web-build: web-check
+    cd web && npm run build
     # Vite empties internal/monitor/dist on build, deleting the committed
     # .gitkeep; restore it so the working tree stays clean and the embed keeps a
     # placeholder for the next from-scratch build.
@@ -37,6 +42,9 @@ release: web-build
 # Vet + lint the default build plus the e2e- and realhosts-tagged sources.
 lint:
     go vet ./...
+    # Limit the local fork gate to the patched package: upstream v1.0.4's
+    # unrelated tun/netstack package is not Go-module-buildable (upstream #156).
+    cd third_party/amneziawg-go && go vet ./device/...
     go vet -tags e2e ./test/e2e/...
     go vet -tags e2e ./internal/...
     go vet -tags realhosts ./test/realhosts/...
@@ -50,12 +58,16 @@ lint:
 
 # Format check (fails if anything is unformatted).
 fmt-check:
-    test -z "$(gofmt -l cmd internal test)"
+    test -z "$(gofmt -l cmd internal test third_party/amneziawg-go/device)"
 
-# Unprivileged unit/property tests only (the e2e build tag is never set here, so
-# no privileged test compiles or runs).
-test:
+# Unprivileged Go and frontend tests only (the e2e build tag is never set here,
+# so no privileged test compiles or runs). The nested patched dependency module
+# is tested explicitly because the root ./... pattern does not cross module boundaries.
+# The upstream v1.0.4 tun/netstack package is excluded because its pinned gVisor
+# module is not Go-module-buildable (upstream #156); wanbond does not import it.
+test: web-check
     go test ./...
+    cd third_party/amneziawg-go && go test ./device/...
 
 # Privileged end-to-end suite: netns/netem + TUN tunnel bring-up. Requires root
 # (CAP_NET_ADMIN + /dev/net/tun); run on real or emulated hardware, not CI.

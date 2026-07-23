@@ -21,21 +21,20 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 //
 // Peer-label rule (mirrors metrics.md / types.ts's multiPeer contract):
 // single-bound-peer sources render ONE flat section with no peer label at
-// all; multi-peer (concentrator) sources group paths/FEC/reseq/aggregation/
+// all; multi-peer sources on either role group paths/FEC/reseq/aggregation/
 // endpoints into one section PER peer, keyed off snapshot.peerNames (T259,
 // G28/M107), each carrying its own session state (from peerSessions) and an
 // ACTIVE-EXIT badge when that peer is snapshot.activeExit.
 //
 // Exit-switch control (T260, G28/M107): a single top-level <select> listing
-// every exit-capable peer (those named in endpoints/peerSessions — the
-// concentrator/remote-monitor case has none of either, so nothing renders
-// there), issuing a same-origin POST /api/exit {peer} on selection. Cookie
+// the authoritative snapshot.exitCapablePeers candidate set, issuing a same-
+// origin POST /api/exit {peer} on selection. Cookie
 // auth rides automatically (ws-client.ts precedent — no token handling
-// here). Hidden entirely when !snapshot.exitControlAvailable (T280, G32:
-// mirrors the server's loopback-only 403 gate on POST /api/exit — this is
+// here). Hidden off the edge role and when !snapshot.exitControlAvailable
+// (T280, G32: mirrors the server's loopback-only 403 gate on POST /api/exit — this is
 // deliberately NOT addressingHidden, since a reveal_addressing opt-in can
 // unhide addressing on a non-loopback bind without enabling the mutating
-// control) or on a single-peer snapshot (no alternate to switch to).
+// control) or when fewer than two exit-capable peers exist (no alternate).
 // Pending/error state is held OUTSIDE onSnapshot's per-frame render (in
 // `exitControlState`, a mountDashboard-scoped closure variable) so it
 // survives the innerHTML replacement every snapshot frame triggers; the
@@ -119,22 +118,6 @@ function groupByPeer<T extends { peer: string }>(items: T[]): Map<string, T[]> {
     }
   }
   return map;
-}
-
-/** Derives the exit-capable candidate list: peerNames that appear in endpoints or peerSessions. */
-function exitCapablePeers(snapshot: MonitorSnapshot): string[] {
-  const named = new Set<string>();
-  for (const e of snapshot.endpoints) {
-    if (e.peer !== '') {
-      named.add(e.peer);
-    }
-  }
-  for (const s of snapshot.peerSessions) {
-    if (s.peer !== '') {
-      named.add(s.peer);
-    }
-  }
-  return snapshot.peerNames.filter((p) => named.has(p));
 }
 
 /** Mutable state for the exit-switch control, held outside the per-frame render (T260). */
@@ -326,7 +309,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   }
 
   function renderExitControl(candidates: string[], activeExit: string, state: ExitControlState): string {
-    if (candidates.length === 0) {
+    if (candidates.length < 2) {
       return '';
     }
     const options = candidates
@@ -509,7 +492,9 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     // a reveal_addressing opt-in can make addressingHidden false on a
     // non-loopback bind while the mutating control stays unavailable there.
     const exitControlHtml =
-      snapshot.exitControlAvailable && grouped ? renderExitControl(exitCapablePeers(snapshot), effectiveActiveExit, exitControlState) : '';
+      snapshot.daemon.role === 'edge' && snapshot.exitControlAvailable && grouped
+        ? renderExitControl(snapshot.exitCapablePeers, effectiveActiveExit, exitControlState)
+        : '';
 
     root.innerHTML = `
       ${renderDaemonHeader(snapshot.daemon)}

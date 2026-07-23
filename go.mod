@@ -2,6 +2,11 @@ module github.com/7mind/wanbond
 
 go 1.26.4
 
+// v1.0.4 stores Amnezia message headers in package globals, so concurrent
+// Device instances race and overwrite one another (upstream #155). Keep the
+// source patch local until a stable per-device upstream release is available.
+replace github.com/amnezia-vpn/amneziawg-go => ./third_party/amneziawg-go
+
 require (
 	github.com/amnezia-vpn/amneziawg-go v1.0.4
 	// PINNED (D25): the adaptive FEC datapath codes each group RS(m,k<=ceiling) yet
