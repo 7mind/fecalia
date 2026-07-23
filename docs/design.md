@@ -156,7 +156,14 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   resolves the new remote to the peer's OWN virt. Seeding these unconditionally lets the
   seam **install** a remote for a previously-unseeded (endpoint-less hostname) peer, closing
   the **D100** `ParseEndpoint` install-misresolution leg (an `ap` absent from
-  `edgePeerByRemote` otherwise falls back to the primary's virt). **T253** then wires one
+  `edgePeerByRemote` otherwise falls back to the primary's virt). Because
+  `edgePeerByRemote` is keyed by remote and cannot represent two peers at one
+  `addr:port`, the seam **fails fast** (returning an error and mutating no state) when
+  `ap` is already owned by a DIFFERENT peer: config load rejects duplicate LITERAL
+  endpoints across peers, but a hostname-only peer carries no literal to compare, so
+  the seam is the only guard against two hostname peers resolving to the same
+  `addr:port` and one silently stealing the other's send-routing key (repointing a peer
+  onto its OWN current remote stays a valid idempotent no-op). **T253** then wires one
   per-concentrator hub-failover/re-resolution controller per peer, routing each controller's
   hub switch and initial install through this seam. The concentrator never uses this — its
   peers learn remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
@@ -738,7 +745,9 @@ resequencer without disturbing the bind-global `defaultRemote` another controlle
 relies on, and — because it also updates that peer's `configuredRemote`/`edgePeerByRemote`
 keying — a re-resolve or first install of a NON-primary peer re-seeds and resolves to that
 peer's OWN virt across a Close/Open cycle (D101) instead of mis-resolving to the primary's
-(D100); T253 routes each per-concentrator controller's install/repoint through it. The
+(D100); it fails fast (no state mutated) if two peers would map to one `addr:port`, since
+`edgePeerByRemote` cannot key both. T253 routes each per-concentrator controller's
+install/repoint through it. The
 re-resolution loop's stopper is held on the
 `Tunnel` and invoked by `Close` between the hub-failover stop and the engine teardown.
 The whole flow — endpoint-less boot while the name is unresolvable, the R70

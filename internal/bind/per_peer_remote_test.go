@@ -253,3 +253,86 @@ func TestSetPeerRemoteForUnknownPeer(t *testing.T) {
 		t.Fatal("SetPeerRemoteFor accepted an unknown peer name, want a fail-fast error")
 	}
 }
+
+// TestSetPeerRemoteForRejectsCrossPeerRemoteCollision pins the fail-fast collision guard: the
+// edgePeerByRemote map is keyed by remote and cannot represent two peers at one addr:port. Config
+// load rejects duplicate LITERAL endpoints across peers, but a hostname-only peer carries no
+// literal to compare, so once T253 drives two hostname peers that resolve to the SAME addr:port
+// through this seam, keying that remote to peer B would (a) steal peer A's send-routing key now and
+// (b) leave B's remote unmapped when a later repoint of A away from it deletes what is by then B's
+// key — ParseEndpoint would misresolve B to the primary's virt (the D100 cross-wiring class).
+// SetPeerRemoteFor must therefore refuse to repoint a peer onto a remote another peer already owns,
+// mutating NO state (no partial delete/insert, no configuredRemote write, no path repoint, no
+// resequencer re-baseline).
+func TestSetPeerRemoteForRejectsCrossPeerRemoteCollision(t *testing.T) {
+	pskA := testKey(t, 0x99)
+	pskB := testKey(t, 0xAA)
+	remoteA := netip.MustParseAddrPort("203.0.113.10:51820")  // primary's concentrator
+	remoteB := netip.MustParseAddrPort("198.51.100.20:51820") // beta's concentrator
+	m, primary, beta := buildTwoPeerEdge(t, pskA, pskB, remoteA, remoteB)
+
+	betaRQ := beta.resequencer.Load()
+	if betaRQ == nil {
+		t.Fatal("beta resequencer not instantiated")
+	}
+	betaRebaselinesBefore := betaRQ.Stats().Rebaselines
+	betaRemotesBefore := remotesOfPeer(t, beta)
+
+	// Attempt to repoint beta onto the primary's OWN remote — a cross-peer collision.
+	err := m.SetPeerRemoteFor("beta", remoteA)
+	if err == nil {
+		t.Fatal("SetPeerRemoteFor(beta, remoteA) accepted a cross-peer remote collision, want a fail-fast error")
+	}
+
+	// The primary still owns remoteA (its key was NOT stolen).
+	if m.edgePeerByRemote[remoteA] != primary {
+		t.Errorf("edgePeerByRemote[remoteA] = %v, want primary — beta's rejected repoint stole the key", m.edgePeerByRemote[remoteA])
+	}
+	// Beta's durable seeds are untouched: still its own remote, still keyed to it.
+	if !beta.hasConfiguredRemote || beta.configuredRemote != remoteB {
+		t.Errorf("beta.configuredRemote = %v (has=%v), want %v — a rejected repoint must not mutate state",
+			beta.configuredRemote, beta.hasConfiguredRemote, remoteB)
+	}
+	if m.edgePeerByRemote[remoteB] != beta {
+		t.Errorf("edgePeerByRemote[remoteB] != beta — a rejected repoint disturbed beta's own key")
+	}
+	// Beta's per-path remotes are byte-identical (no partial path repoint).
+	for name, before := range betaRemotesBefore {
+		if after := remotesOfPeer(t, beta)[name]; after != before {
+			t.Errorf("beta path %q remote mutated by a rejected repoint: %v → %v", name, before, after)
+		}
+	}
+	// Beta's resequencer was NOT re-baselined (the re-baseline runs only past a successful seam call).
+	if got := betaRQ.Stats().Rebaselines; got != betaRebaselinesBefore {
+		t.Errorf("beta resequencer Rebaselines = %d, want %d — a rejected repoint must not resync", got, betaRebaselinesBefore)
+	}
+}
+
+// TestSetPeerRemoteForSelfRepointIsIdempotent pins that the cross-peer collision guard does NOT
+// reject a peer being repointed onto ITS OWN current remote: owner == p is a valid no-op path, so a
+// controller re-asserting a peer's existing endpoint must succeed and leave the durable seeds
+// consistent (still keyed to that peer at that remote).
+func TestSetPeerRemoteForSelfRepointIsIdempotent(t *testing.T) {
+	pskA := testKey(t, 0xBB)
+	pskB := testKey(t, 0xCC)
+	remoteA := netip.MustParseAddrPort("203.0.113.10:51820")
+	remoteB := netip.MustParseAddrPort("198.51.100.20:51820")
+	m, _, beta := buildTwoPeerEdge(t, pskA, pskB, remoteA, remoteB)
+
+	// Repoint beta onto its OWN current remote — must be accepted (owner == p), not rejected.
+	if err := m.SetPeerRemoteFor("beta", remoteB); err != nil {
+		t.Fatalf("SetPeerRemoteFor(beta, remoteB) self-repoint rejected: %v", err)
+	}
+	if !beta.hasConfiguredRemote || beta.configuredRemote != remoteB {
+		t.Errorf("beta.configuredRemote = %v (has=%v), want %v after an idempotent self-repoint",
+			beta.configuredRemote, beta.hasConfiguredRemote, remoteB)
+	}
+	if m.edgePeerByRemote[remoteB] != beta {
+		t.Errorf("edgePeerByRemote[remoteB] != beta after an idempotent self-repoint")
+	}
+	for _, pp := range beta.paths {
+		if ap, ok := pp.getRemote(); !ok || ap != remoteB {
+			t.Errorf("beta path %q remote after self-repoint = %v (ok=%v), want %v", pp.name, ap, ok, remoteB)
+		}
+	}
+}

@@ -3262,8 +3262,13 @@ func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
 		m.mu.Unlock()
 		return fmt.Errorf("bind: SetPeerRemoteFor unknown peer %q", peerName)
 	}
-	rq := m.setPeerRemoteForLocked(p, ap)
+	rq, err := m.setPeerRemoteForLocked(p, ap)
 	m.mu.Unlock()
+	if err != nil {
+		// A cross-peer remote collision left ALL state untouched (the guard runs before any
+		// mutation), so there is nothing to re-baseline — surface the wiring defect.
+		return err
+	}
 
 	// Re-baseline OUTSIDE m.mu (the resequencer owns its own mutex; never nest it under m.mu),
 	// mirroring SetPeerRemote — the standby hub's outer-seq restarts low and must re-anchor the
@@ -3297,7 +3302,20 @@ func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
 // peer had no configuredRemote and no edgePeerByRemote key, so ParseEndpoint(ap) would fall back
 // to the primary's virt and its WG traffic would egress to the wrong concentrator; after it, the
 // peer owns ap. (T253 routes each controller's initial install through this same seam.)
-func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) *reseq.Resequencer {
+//
+// It FAILS FAST — returning an error and mutating NO state — when ap is already owned by a
+// DIFFERENT peer (edgePeerByRemote is keyed by remote and cannot represent two peers at one
+// addr:port). Config load rejects duplicate LITERAL endpoints across peers, but a hostname-only
+// peer carries no literal to compare, so once T253 drives two hostname peers that resolve to the
+// same addr:port through this seam, keying ap to p unconditionally would (a) steal peer q's
+// send-routing key now and (b) leave p's remote UNMAPPED when a later repoint of q away from ap
+// deletes what is by then p's key — ParseEndpoint would then misresolve p to the primary's virt,
+// the same silent cross-wiring class as D100. Keying ap to p when it ALREADY maps to p is fine:
+// an idempotent self-repoint (or a repoint to p's own current remote) is a valid no-op path.
+func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) (*reseq.Resequencer, error) {
+	if owner, ok := m.edgePeerByRemote[ap]; ok && owner != p {
+		return nil, fmt.Errorf("bind: SetPeerRemoteFor: remote %s is already owned by peer %q; refusing to repoint peer %q onto it (edgePeerByRemote cannot map two peers to one addr:port)", ap, owner.name, p.name)
+	}
 	if p.hasConfiguredRemote && p.configuredRemote != ap {
 		delete(m.edgePeerByRemote, p.configuredRemote)
 	}
@@ -3306,7 +3324,7 @@ func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) *res
 	for _, pp := range p.paths {
 		pp.setRemote(ap)
 	}
-	return p.resequencer.Load()
+	return p.resequencer.Load(), nil
 }
 
 // Close tears down every per-path socket and CLEARS the bind's path state so a
