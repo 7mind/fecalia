@@ -143,10 +143,23 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   never installed (and if the first-qualifying peer is itself non-primary, its install
   path `deviceInstallEndpoint`→`IpcSet`→`ParseEndpoint(ap)` mis-resolves to the
   primary's virt because `ap` is not in `edgePeerByRemote`). T251's acceptance scope is
-  all-literal edge peers, where this is latent; the per-peer failover/re-resolution seam
-  is deferred to **T252** (per-peer remote repoint) → **T253** (per-concentrator
-  controllers), tracked as defect **D100**. The concentrator never uses this — its peers
-  learn remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
+  all-literal edge peers, where this is latent. The per-peer **remote-repoint/install
+  seam** lands in **T252**: `Multipath.SetPeerRemoteFor(peerName, ap)` repoints exactly
+  the named peer's paths at `ap` and re-baselines only that peer's resequencer (the D32
+  resync), WITHOUT touching the bind-global `defaultRemote` — so with N independent
+  hub-failover controllers peer B's endpoint switch cannot clobber the remote peer A
+  relies on (unlike `SetPeerRemote`, which drives the primary and does write
+  `defaultRemote` for single-peer-edge back-compat). `SetPeerRemoteFor` ALSO updates the
+  two durable seeds — the peer's `configuredRemote` and the `edgePeerByRemote` keying (old
+  remote key out, new key in) — so an engine Close/Open re-seeds that peer's fresh paths at
+  its CURRENT hub rather than its stale boot hub (**D101**), and `ParseEndpoint(ap)`
+  resolves the new remote to the peer's OWN virt. Seeding these unconditionally lets the
+  seam **install** a remote for a previously-unseeded (endpoint-less hostname) peer, closing
+  the **D100** `ParseEndpoint` install-misresolution leg (an `ap` absent from
+  `edgePeerByRemote` otherwise falls back to the primary's virt). **T253** then wires one
+  per-concentrator hub-failover/re-resolution controller per peer, routing each controller's
+  hub switch and initial install through this seam. The concentrator never uses this — its
+  peers learn remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
   `peerTeardownMonitor`, which sheds a dead edge's per-peer resequencer/FEC/demux
   state on session loss) is **inert on the edge role**: a multi-exit edge's standby
   peers are healthy warm standbys by design even while carrying no data, so
@@ -719,7 +732,14 @@ successful resolve must **install** the resolved endpoint on the engine peer via
 UAPI/IpcSet path (`deviceInstallEndpoint`) **then** re-handshake — the initiation now
 has an addressable endpoint. Subsequent re-resolves of an already-installed peer take
 the normal `SetPeerRemote` repoint path (the engine's virtual endpoint stays stable per
-A1; only the bind remotes move). The re-resolution loop's stopper is held on the
+A1; only the bind remotes move). On a **multi-exit edge** the per-peer analogue is
+`SetPeerRemoteFor(peerName, ap)` (T252): it repoints ONLY the named peer's remotes and
+resequencer without disturbing the bind-global `defaultRemote` another controller's peer
+relies on, and — because it also updates that peer's `configuredRemote`/`edgePeerByRemote`
+keying — a re-resolve or first install of a NON-primary peer re-seeds and resolves to that
+peer's OWN virt across a Close/Open cycle (D101) instead of mis-resolving to the primary's
+(D100); T253 routes each per-concentrator controller's install/repoint through it. The
+re-resolution loop's stopper is held on the
 `Tunnel` and invoked by `Close` between the hub-failover stop and the engine teardown.
 The whole flow — endpoint-less boot while the name is unresolvable, the R70
 first-resolve install, a mid-session concentrator-IP change, and the re-resolve repoint

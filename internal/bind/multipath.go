@@ -980,6 +980,15 @@ type Multipath struct {
 	// defaultRemote is the fallback per-path remote (the peer's wireguard
 	// endpoint) applied to any path without its own dest_addr. It may be set by
 	// ParseEndpoint BEFORE Open, so it is stored here and applied at Open time.
+	//
+	// It is a SINGLE-PEER-EDGE (bind-global) concept, NOT a per-peer one. Reader audit
+	// (T252): its ONLY seeding readers are attachPeerPathLocked (Open) and
+	// attachSharedPathLocked (runtime AddPath), and BOTH read it only under
+	// `len(m.edgePeerByRemote)==0` — i.e. single-peer-edge/hub mode; in a MULTI-EXIT edge
+	// (edgePeerByRemote non-empty) each peer seeds from its OWN p.configuredRemote and this
+	// field is inert. Written by ParseEndpoint and by setPeerRemoteLocked (the single-
+	// controller SetPeerRemote). The per-peer repoint seam (setPeerRemoteForLocked) does NOT
+	// write it — a per-peer hub switch has no bind-global meaning (T252/G28/M105).
 	defaultRemote    netip.AddrPort
 	hasDefaultRemote bool
 
@@ -3218,12 +3227,86 @@ func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 // resequencer, so a hub switch on one peer never disturbs another bound peer's wire remotes
 // or release point — the per-peer D32 boundary. Returns nil on a closed bind (no
 // resequencer Stored yet). Caller holds m.mu.
+//
+// It is the SINGLE-CONTROLLER (primary-peer) path: writing the bind-global m.defaultRemote
+// here is correct ONLY because exactly one hub-failover controller exists and it drives the
+// primary peer. The MULTI-controller per-peer seam is setPeerRemoteForLocked, which repoints
+// one peer WITHOUT touching m.defaultRemote (a per-peer hub switch has no bind-global meaning;
+// see that function and the m.defaultRemote field doc for the reader audit).
 func (m *Multipath) setPeerRemoteLocked(ps *peerState, ap netip.AddrPort) *reseq.Resequencer {
 	m.defaultRemote, m.hasDefaultRemote = ap, true
 	for _, pp := range ps.paths {
 		pp.setRemote(ap)
 	}
 	return ps.resequencer.Load()
+}
+
+// SetPeerRemoteFor is the PER-PEER hub-failover repoint seam (T252/G28/M105): it repoints
+// exactly the named peer's paths at ap, WITHOUT clobbering the bind-global m.defaultRemote or
+// any OTHER peer's wire remotes and resequencer. It is the multi-exit-edge / N-controller dual
+// of SetPeerRemote (which drives the primary and does write m.defaultRemote for single-peer-
+// edge back-compat): with N independent hub-failover controllers, peer B's endpoint switch must
+// not disturb the remote peer A relies on, so each controller repoints only ITS peer through
+// this seam. The existing single-controller SetPeerRemote call sites are unchanged.
+//
+// It returns an error for an unknown peer name (a wiring defect — fail fast rather than
+// silently repoint nothing). The resequencer re-baseline (D32) runs OUTSIDE m.mu, exactly as
+// SetPeerRemote does.
+//
+// T253 will hand each per-peer controller an adapter that routes its hub switch — and its
+// initial endpoint install for an endpoint-less (hostname-only) peer — through this seam.
+func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
+	m.mu.Lock()
+	p, ok := m.peersByName[peerName]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("bind: SetPeerRemoteFor unknown peer %q", peerName)
+	}
+	rq := m.setPeerRemoteForLocked(p, ap)
+	m.mu.Unlock()
+
+	// Re-baseline OUTSIDE m.mu (the resequencer owns its own mutex; never nest it under m.mu),
+	// mirroring SetPeerRemote — the standby hub's outer-seq restarts low and must re-anchor the
+	// release point instead of being SUSPECT-dropped (D32).
+	if rq != nil {
+		rq.Rebaseline(ap)
+	}
+	return nil
+}
+
+// setPeerRemoteForLocked is the per-peer core of SetPeerRemoteFor: it repoints ONLY peer p's
+// per-path remotes at ap and returns p's receive resequencer for the caller to re-baseline
+// outside m.mu (nil on a closed bind — no resequencer Stored yet). Unlike setPeerRemoteLocked
+// it does NOT write m.defaultRemote: that field is the SINGLE-PEER-EDGE bind-global fallback
+// (its only readers, in attachPeerPathLocked / attachSharedPathLocked, are gated on
+// len(m.edgePeerByRemote)==0), so a per-peer repoint has no business mutating it. Caller holds
+// m.mu.
+//
+// It ALSO updates the two DURABLE per-peer seeds so the repoint survives an engine Close/Open
+// and resolves correctly on the send-routing seam (D101):
+//   - p.configuredRemote — Open/attachPeerPathLocked re-seed each multi-exit peer's fresh paths
+//     from it, so without this a repointed peer would re-seed at its ORIGINAL (stale) hub after
+//     any Close/Open cycle (configuredRemote was otherwise written only at boot by
+//     SeedEdgePeerRemotes).
+//   - m.edgePeerByRemote — the endpoint→owning-peer map ParseEndpoint resolves the send-side
+//     virt through. The OLD remote's key is removed and the NEW remote keyed to p, so
+//     ParseEndpoint(newAP) returns p's virt and ParseEndpoint(oldAP) no longer misresolves to p.
+//
+// Seeding these unconditionally ALSO INSTALLS a remote for a previously-unseeded peer (one that
+// booted endpoint-less because its hostname had no address yet — D100): before this call such a
+// peer had no configuredRemote and no edgePeerByRemote key, so ParseEndpoint(ap) would fall back
+// to the primary's virt and its WG traffic would egress to the wrong concentrator; after it, the
+// peer owns ap. (T253 routes each controller's initial install through this same seam.)
+func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) *reseq.Resequencer {
+	if p.hasConfiguredRemote && p.configuredRemote != ap {
+		delete(m.edgePeerByRemote, p.configuredRemote)
+	}
+	p.configuredRemote, p.hasConfiguredRemote = ap, true
+	m.edgePeerByRemote[ap] = p
+	for _, pp := range p.paths {
+		pp.setRemote(ap)
+	}
+	return p.resequencer.Load()
 }
 
 // Close tears down every per-path socket and CLEARS the bind's path state so a
