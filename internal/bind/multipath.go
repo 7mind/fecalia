@@ -392,6 +392,16 @@ type peerState struct {
 	// probe transport; a nil here also gates the whole probe loop off.
 	probers []*telemetry.Prober
 
+	// configuredRemote is THIS peer's CONFIGURED wire remote — the concentrator endpoint an EDGE
+	// peer statically targets (T251/Q68b). It seeds every one of this peer's paths at Open (and any
+	// path added at runtime) so a MULTI-EXIT edge sends each peer's DATA/PROBE frames to ITS OWN
+	// concentrator, never a single bind-global default that would conflate two peers onto one hub.
+	// Unset on a concentrator peer (which learns its edge remote dynamically from authenticated
+	// inbound) and on a single-peer edge/hub (which keeps the bind-global defaultRemote, byte-
+	// identical to pre-T251). Seeded by SeedEdgePeerRemotes; durable across the Open/Close cycle.
+	configuredRemote    netip.AddrPort
+	hasConfiguredRemote bool
+
 	// Per-Open state, (re)built by Open and cleared by Close.
 	sendCodec *frame.Codec
 	paths     []*peerPathState
@@ -942,6 +952,17 @@ type Multipath struct {
 	// the Send path; written under m.mu (or at single-threaded construction).
 	peerByVirt map[*udpEndpoint]*peerState
 
+	// edgePeerByRemote resolves an EDGE peer's CONFIGURED endpoint (netip.AddrPort) to its
+	// peerState, so ParseEndpoint returns the OWNING peer's virt — each multi-exit edge peer holds
+	// a DISTINCT virt and Send routes on it (peerByVirt). Without this a second edge peer's
+	// configured endpoint would resolve to the primary's virt and its WG traffic would egress to the
+	// WRONG concentrator (T251/Q68b). Populated by SeedEdgePeerRemotes before Open for a multi-peer
+	// edge; empty on the single-peer edge/hub and the concentrator (which need no configured→peer
+	// map — the former uses the bind-global default, the latter learns remotes from inbound). Its
+	// non-emptiness ALSO marks "multi-exit edge mode" for the per-path remote-seeding precedence in
+	// attachPeerPathLocked. Read/written under m.mu (or at single-threaded construction).
+	edgePeerByRemote map[netip.AddrPort]*peerState
+
 	// shared is the SHARED per-socket path list (the sockets themselves), rebuilt from
 	// m.defs on every Open and mutated by the runtime add/remove. Each bound peer holds a
 	// peerPathState VIEW over a subset of these; on the single-peer edge/hub primary.paths
@@ -1154,16 +1175,17 @@ func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler
 			}
 			return interfaceInfo(s, ifaces)
 		},
-		addPathListen:   listenPath,
-		clock:           telemetry.SystemClock{},
-		peerState:       primary,
-		peers:           []*peerState{primary},
-		peersByName:     map[string]*peerState{primary.name: primary},
-		peerByEndpoint:  map[netip.AddrPort]*peerState{},
-		peerByVirt:      map[*udpEndpoint]*peerState{primary.virt: primary},
-		maxDemuxSources: defaultMaxDemuxSources,
-		fecCfg:          fecCfg,
-		adaptiveCfg:     adaptiveCfg,
+		addPathListen:    listenPath,
+		clock:            telemetry.SystemClock{},
+		peerState:        primary,
+		peers:            []*peerState{primary},
+		peersByName:      map[string]*peerState{primary.name: primary},
+		peerByEndpoint:   map[netip.AddrPort]*peerState{},
+		peerByVirt:       map[*udpEndpoint]*peerState{primary.virt: primary},
+		edgePeerByRemote: map[netip.AddrPort]*peerState{},
+		maxDemuxSources:  defaultMaxDemuxSources,
+		fecCfg:           fecCfg,
+		adaptiveCfg:      adaptiveCfg,
 	}
 	// Publish the initial (primary-only) peer view the receive drainer iterates. No
 	// concurrency yet — the bind is not open — so this runs without m.mu.
@@ -1487,8 +1509,19 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 			}
 			switch {
 			case def.DestAddr.IsValid():
+				// A path-specific dest_addr (multi-address fronting of the peer's active
+				// concentrator) wins over the peer/bind default.
 				pp.setRemote(def.DestAddr)
-			case m.hasDefaultRemote:
+			case p.hasConfiguredRemote:
+				// This peer's OWN configured concentrator endpoint (multi-exit edge, T251) — so
+				// each edge peer's paths reach ITS concentrator, not a single bind-global default
+				// that would collapse every peer onto one hub (the last ParseEndpoint's address).
+				pp.setRemote(p.configuredRemote)
+			case len(m.edgePeerByRemote) == 0 && m.hasDefaultRemote:
+				// Single-peer edge/hub: the bind-global default (ParseEndpoint's sole endpoint).
+				// Deliberately NOT used in multi-exit edge mode (edgePeerByRemote non-empty): there
+				// a peer without its own configuredRemote booted endpoint-less (tolerant boot) and
+				// must stay remoteless until its endpoint is installed, not inherit another's hub.
 				pp.setRemote(m.defaultRemote)
 			}
 			// Stamp the scheduler index (== this path's position in p.paths) BEFORE the append,
@@ -3067,10 +3100,17 @@ func weightedDataPathLoss(dps []sched.DataPath, estimate func(idx int) (telemetr
 	return weightedSum / weightTotal, count
 }
 
-// ParseEndpoint records the peer's wireguard endpoint as the default per-path
-// remote and returns the single virtual endpoint. It may run before Open (the
-// engine applies UAPI config before binding), so the parsed address is stashed
-// and also applied to any already-open path lacking its own dest_addr.
+// ParseEndpoint records a peer's wireguard endpoint as its per-path remote and returns THAT
+// peer's virtual endpoint. It may run before Open (the engine applies UAPI config before
+// binding), so the parsed address is stashed and also applied to any already-open path lacking
+// its own dest_addr.
+//
+// It resolves the OWNING peer from the configured endpoint (edgePeerByRemote, seeded by
+// SeedEdgePeerRemotes for a multi-exit edge): each edge peer holds a DISTINCT virt, and Send
+// routes on it (peerByVirt), so a second edge peer's endpoint MUST return that peer's virt — not
+// the primary's — or its WG traffic would egress to the wrong concentrator (T251/Q68b). An
+// endpoint not in the map (the single-peer edge/hub, or a runtime repoint) resolves to the
+// primary and seeds the bind-global default, byte-identical to the pre-T251 behaviour.
 func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 	ap, err := netip.ParseAddrPort(s)
 	if err != nil {
@@ -3078,16 +3118,47 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.defaultRemote, m.hasDefaultRemote = ap, true
-	if !m.virt.dstValid() {
-		m.virt.setDst(ap)
+	peer := m.peerState
+	if p, ok := m.edgePeerByRemote[ap]; ok {
+		peer = p
 	}
-	for _, ps := range m.paths {
+	m.defaultRemote, m.hasDefaultRemote = ap, true
+	if !peer.virt.dstValid() {
+		peer.virt.setDst(ap)
+	}
+	for _, ps := range peer.paths {
 		if _, ok := ps.getRemote(); !ok {
 			ps.setRemote(ap)
 		}
 	}
-	return m.virt, nil
+	return peer.virt, nil
+}
+
+// SeedEdgePeerRemotes records each BOUND peer's CONFIGURED concentrator endpoint (the edge role,
+// T251/Q68b), index-aligned with the bound peers (primary first, then each AddConcentratorPeer in
+// order — the same order as cfg.WireGuard.Peers / cfg.PeerIdentities). A zero/invalid AddrPort
+// leaves that peer endpoint-less (tolerant boot — the re-resolution loop installs it later). It
+// seeds two durable maps: the per-peer configuredRemote (Open seeds that peer's paths from it) and
+// the endpoint→peer map ParseEndpoint resolves the OWNING peer's virt through — so a multi-exit
+// edge routes each peer's DATA/PROBE frames to ITS OWN concentrator, not a single bind-global
+// default. It touches NO per-Open path state (only the durable seeds), so it MUST run before
+// dev.IpcSet/Open. The concentrator (peers learn remotes from inbound) and the single-peer edge
+// (one endpoint, bind-global default) never call it.
+func (m *Multipath) SeedEdgePeerRemotes(remotes []netip.AddrPort) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(remotes) != len(m.peers) {
+		return fmt.Errorf("bind: SeedEdgePeerRemotes got %d remotes for %d bound peers", len(remotes), len(m.peers))
+	}
+	for i, ap := range remotes {
+		if !ap.IsValid() {
+			continue
+		}
+		p := m.peers[i]
+		p.configuredRemote, p.hasConfiguredRemote = ap, true
+		m.edgePeerByRemote[ap] = p
+	}
+	return nil
 }
 
 // SetPeerRemote repoints EVERY path's wire remote — and the default remote seeded onto
@@ -3482,8 +3553,18 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 	pp.pmtuProbe = pp.buildPMTUProbe()
 	switch {
 	case def.DestAddr.IsValid():
+		// A path-specific dest_addr (multi-address fronting of the peer's active concentrator)
+		// wins over the peer/bind default.
 		pp.setRemote(def.DestAddr)
-	case m.hasDefaultRemote:
+	case p.hasConfiguredRemote:
+		// This peer's OWN configured concentrator endpoint (multi-exit edge, T251) — so each
+		// edge peer's paths reach ITS concentrator, not a single bind-global default.
+		pp.setRemote(p.configuredRemote)
+	case len(m.edgePeerByRemote) == 0 && m.hasDefaultRemote:
+		// Single-peer edge/hub: the bind-global default (ParseEndpoint's sole endpoint). It is
+		// deliberately NOT used in multi-exit edge mode (edgePeerByRemote non-empty): there a
+		// peer without its own configuredRemote booted endpoint-less (tolerant boot) and must
+		// stay remoteless until its endpoint is installed, rather than inherit another peer's hub.
 		pp.setRemote(m.defaultRemote)
 	}
 	// Append to the peer's path slice, then admit the prober to that peer's scheduler as the

@@ -125,6 +125,25 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
 - **learns edge endpoints dynamically** — the concentrator needs no edge endpoint
   config; it discovers each path's (possibly NAT'd) source from inbound traffic,
   enabling real CGNAT traversal.
+- **routes each edge peer's send-traffic to ITS OWN concentrator (multi-exit edge,
+  T251/Q68b)** — the send-side dual of the concentrator's dynamic learning. A
+  multi-exit edge statically configures N concentrator peers, each with its own
+  endpoint; `device.Up` seeds every peer's configured endpoint into the Bind
+  (`SeedEdgePeerRemotes`) BEFORE the engine parses the UAPI config, so
+  `ParseEndpoint` returns the **owning peer's DISTINCT virtual endpoint** (resolved
+  via `edgePeerByRemote`) rather than the primary's, and `Open` seeds that peer's
+  paths at ITS concentrator (per-peer `configuredRemote`, not a single bind-global
+  default). Without this, the engine would map every edge peer's endpoint to the
+  primary's virt and every peer's WG traffic — and probes — would egress to one
+  hub. A single-peer edge keeps the bind-global-default path byte-identical; an
+  endpoint-less (unresolved-hostname) edge peer boots remoteless and is installed by
+  the re-resolution loop (R70). The concentrator never uses this — its peers learn
+  remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
+  `peerTeardownMonitor`, which sheds a dead edge's per-peer resequencer/FEC/demux
+  state on session loss) is **inert on the edge role**: a multi-exit edge's standby
+  peers are healthy warm standbys by design even while carrying no data, so
+  `concentratorMonitoredPeers` returns an empty set off the concentrator and no warm
+  standby is ever torn down.
 - **demuxes multiple peers by authenticated source binding (G4 multi-peer)** — on a
   concentrator with more than one configured peer, inbound datagrams are routed to
   the owning peer via `peerBySource`, an atomic-pointer map keyed by the full source
@@ -707,6 +726,10 @@ role only (a no-op for the concentrator, which is the responder to every edge an
 initiates nothing). It is **not** part of hub failover or re-resolution — it fires
 **once**, at most, per tunnel lifetime, on the bind's `Multipath.SetOnFirstPathUp`
 latch (T117), regardless of whether the peer's endpoint list has one entry or many.
+On a **multi-exit edge** (T251/Q68b) the single latch initiates to **every** configured
+concentrator peer, not just the primary (`deviceRehandshakeAllPeers` composes one
+`deviceRehandshake` per peer), so all N sessions are driven warm concurrently the instant
+the first uplink is usable; a single-peer edge composes exactly one, byte-identical to before.
 The problem it addresses: the engine's own boot-time handshake initiation can race
 `bind.Multipath.Open` — issued before any path telemetry exists, it may hit
 `bind: no healthy path` and get dropped, yet the engine still stamps

@@ -468,6 +468,33 @@ func deviceRehandshake(dev *awgdevice.Device, pk config.Key) rehandshake {
 	}
 }
 
+// composeRehandshakes fans ONE trigger out to every supplied per-peer rehandshake, in order. The
+// edge multi-peer bring-up (T251/Q68b) composes one deviceRehandshake per configured concentrator
+// peer so a single first-path-up edge initiates to ALL of them, not just the primary. It is a pure
+// combinator over the rehandshake collaborator (no engine dependency), so a test drives it with
+// counters to prove every peer's initiation fires.
+func composeRehandshakes(rhs []rehandshake) rehandshake {
+	return func() {
+		for _, rh := range rhs {
+			rh()
+		}
+	}
+}
+
+// deviceRehandshakeAllPeers returns a rehandshake that forces a fresh WG handshake initiation
+// against EVERY configured peer's static key — the edge multi-peer warm bring-up (T251/Q68b):
+// the first-path-up latch drives all N concentrator sessions warm concurrently, not only the
+// primary (peers[0]). It composes the per-peer deviceRehandshake for each peer, so every peer's
+// keypair expiry + initiation is byte-identical to the single-peer path; a single-peer edge yields
+// exactly one, matching the pre-T251 primary-only trigger.
+func deviceRehandshakeAllPeers(dev *awgdevice.Device, peers []config.Peer) rehandshake {
+	rhs := make([]rehandshake, len(peers))
+	for i, p := range peers {
+		rhs[i] = deviceRehandshake(dev, p.PublicKey)
+	}
+	return composeRehandshakes(rhs)
+}
+
 // startFirstPathUpHandshake wires the bind's first-path-up latch (T117, Multipath.SetOnFirstPathUp)
 // to a forced WG handshake initiation against the edge's single concentrator peer (D37/T120).
 //

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +122,51 @@ func TestFirstPathUpHandshakeEdgeFiresExactlyOnce(t *testing.T) {
 	}
 	if !mp.EverHadLivePath() {
 		t.Fatalf("EverHadLivePath = false after the callback fired")
+	}
+}
+
+// TestComposeRehandshakesFiresEveryPeer is the T251/Q68b acceptance for the multi-exit edge
+// first-path-up fan-out: composeRehandshakes must invoke EVERY per-peer rehandshake exactly once
+// per trigger (in order), so a single first-path-up edge initiates to all N concentrator peers —
+// not just the primary. A mutant that fires only the first (the pre-T251 primary-only behaviour)
+// leaves the standby peers' counters at zero and fails here.
+func TestComposeRehandshakesFiresEveryPeer(t *testing.T) {
+	const peers = 3
+	var calls [peers]atomic.Int32
+	var order []int
+	var mu sync.Mutex
+	rhs := make([]rehandshake, peers)
+	for i := range rhs {
+		i := i
+		rhs[i] = func() {
+			calls[i].Add(1)
+			mu.Lock()
+			order = append(order, i)
+			mu.Unlock()
+		}
+	}
+
+	trigger := composeRehandshakes(rhs)
+	trigger()
+
+	for i := range calls {
+		if got := calls[i].Load(); got != 1 {
+			t.Errorf("peer %d rehandshake fired %d times per trigger, want exactly 1 (every peer must initiate)", i, got)
+		}
+	}
+	mu.Lock()
+	gotOrder := append([]int(nil), order...)
+	mu.Unlock()
+	if len(gotOrder) != peers || gotOrder[0] != 0 || gotOrder[1] != 1 || gotOrder[2] != 2 {
+		t.Fatalf("fan-out order = %v, want [0 1 2] (every peer, in configured order)", gotOrder)
+	}
+
+	// A second trigger fires each peer once more (idempotent per-call fan-out, not a one-shot).
+	trigger()
+	for i := range calls {
+		if got := calls[i].Load(); got != 2 {
+			t.Errorf("peer %d rehandshake fired %d times over two triggers, want 2", i, got)
+		}
 	}
 }
 

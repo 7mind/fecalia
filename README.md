@@ -248,17 +248,21 @@ deliberate boundaries you must plan around:
   resolver — and only selects the transport (system/DoH/DoT) that opt-in
   uses; see
   [docs/design.md §DNS endpoints and resolver privacy trade-offs](docs/design.md).
-- **Multi-concentrator edge: config surface validated (G28)** — the edge may
-  declare **several concentrator peers** and bond to all of them over the same
-  uplinks. Each `mode = "default-route"` peer is an exit-capable alternate for
+- **Multi-concentrator edge: N warm bonds brought up concurrently (G28)** — the
+  edge may declare **several concentrator peers** and bond to all of them over the
+  same uplinks. Each `mode = "default-route"` peer is an exit-capable alternate for
   the full-tunnel egress (the first in config order is the boot-default; the
   selection does not persist). Config load enforces the multi-exit invariants —
   matching default-route sets across exit peers, a mandatory non-default inner
   `/32` per exit peer, non-overlapping non-default allowed_ips, distinct
   per-peer endpoints, per-peer name/psk, one shared scheduler/FEC/reseq policy
-  block, and an `N × U` probe-fan-out budget (≤ 32 probers). This task ships the
-  **config semantics only**; establishing the simultaneous bonds, on-the-fly
-  exit switching, and per-concentrator web-UI stats are later tasks. See
+  block, and an `N × U` probe-fan-out budget (≤ 32 probers). `device.Up` brings
+  **all N peers up warm concurrently** (T251): each peer's configured endpoint is
+  routed to ITS concentrator (distinct per-peer virtual endpoint + per-path
+  remotes), every peer gets a persistent keepalive and a first-path-up handshake
+  so all sessions stay warm, and the concentrator-role dead-peer reclaim never
+  tears down a healthy edge warm-standby. On-the-fly exit switching and
+  per-concentrator web-UI stats are later tasks. See
   [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.

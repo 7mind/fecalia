@@ -618,9 +618,12 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// Drive a forced WG handshake initiation off the bind's first-path-up latch (T117/D37/T120):
 	// registered HERE, before StartProbeLoop below can flip any path Up — see
 	// startFirstPathUpHandshake's doc comment for why the ordering matters and why it is inert for
-	// the concentrator role (peers[0] is the edge's sole peer per config validation; unused, and
-	// harmless, when cfg.Role is concentrator).
-	startFirstPathUpHandshake(cfg, mpBind, deviceRehandshake(dev, cfg.WireGuard.Peers[0].PublicKey))
+	// the concentrator role. On the EDGE the trigger initiates to EVERY configured concentrator
+	// peer (T251/Q68b — a multi-exit edge brings all N peers up warm concurrently), not just the
+	// primary: deviceRehandshakeAllPeers composes one per-peer deviceRehandshake so a single
+	// first-path-up edge fires an initiation against each peer's static key. A single-peer edge
+	// composes exactly one, byte-identical to the pre-T251 primary-only call.
+	startFirstPathUpHandshake(cfg, mpBind, deviceRehandshakeAllPeers(dev, cfg.WireGuard.Peers))
 
 	// Bounded initial hostname resolution (Q30): construct the resolver ONCE (only when some peer
 	// carries a hostname spec — Q29 inertness), resolve each hostname spec under a short timeout,
@@ -631,6 +634,28 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// first success via the FIRST-RESOLVE INSTALL PATH (R70). Literal specs are seeded verbatim, so
 	// an all-literal peer boots byte-for-byte as before.
 	boot := resolveBootEndpoints(cfg, newResolver, clg)
+
+	// Multi-exit edge (T251/Q68b): seed each bound peer's CONFIGURED concentrator endpoint into the
+	// Bind BEFORE the engine parses the UAPI config. The engine calls Bind.ParseEndpoint once per
+	// peer's endpoint= line and stores the returned virtual endpoint as THAT peer's send target; the
+	// seed lets ParseEndpoint return the OWNING peer's DISTINCT virt (and Open seed that peer's paths
+	// at its own hub), so each peer's DATA/PROBE frames egress to ITS concentrator rather than all
+	// collapsing onto the primary's virt/remote. Edge-only and only with 2+ peers: a single-peer edge
+	// keeps the bind-global-default path byte-identical, and a concentrator learns remotes from
+	// inbound. An endpoint-less (unresolved-hostname) peer contributes a zero AddrPort — SeedEdge
+	// PeerRemotes skips it, and it boots remoteless until the re-resolution loop installs it (R70).
+	if cfg.Role == config.RoleEdge && len(cfg.WireGuard.Peers) > 1 {
+		remotes := make([]netip.AddrPort, len(boot.endpoints))
+		for i, ep := range boot.endpoints {
+			if ep.valid {
+				remotes[i] = ep.ap
+			}
+		}
+		if err := mpBind.SeedEdgePeerRemotes(remotes); err != nil {
+			dev.Close()
+			return nil, fmt.Errorf("device: seed edge peer remotes: %w", err)
+		}
+	}
 
 	uapi, err := uapiConfig(cfg, boot.endpoints)
 	if err != nil {
@@ -835,9 +860,17 @@ func warnOverBudgetLiveness(lg log.Logger, cfg *config.Config) {
 // concentrator) yields an EMPTY set, so the teardown loop is inert and the pre-T126 single-peer
 // monitor path is unchanged. The primary (peers[0]) is excluded: TearDownPeer refuses it, and
 // its lifecycle is Open/Close, not session teardown.
+//
+// The D50 reclaim is CONCENTRATOR-ROLE ONLY: a concentrator sheds a dead EDGE's per-peer state
+// (resequencer ring, FEC buffers, demux cap slots) once that edge's WG session is gone. On the
+// EDGE role the additional peers are WARM-STANDBY CONCENTRATORS (T251/Q68b): each is healthy by
+// design even while carrying no data (kept warm by persistent keepalive), and its lifecycle is
+// Open/Close, not session teardown. Running the level check on the edge would tear down a warm
+// standby the moment its session momentarily aged, discarding its per-(peer,path) probers/
+// scheduler/FEC/reseq — so the monitored set is EMPTY on any non-concentrator role.
 func concentratorMonitoredPeers(cfg *config.Config, ids []config.PeerIdentity) []monitoredPeer {
 	peers := cfg.WireGuard.Peers
-	if len(peers) <= 1 {
+	if cfg.Role != config.RoleConcentrator || len(peers) <= 1 {
 		return nil
 	}
 	mon := make([]monitoredPeer, 0, len(peers)-1)

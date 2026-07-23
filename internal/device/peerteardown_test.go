@@ -297,11 +297,11 @@ func TestConcentratorMonitoredPeers(t *testing.T) {
 		}
 	})
 
-	t.Run("multi-peer config monitors every non-primary peer", func(t *testing.T) {
+	t.Run("multi-peer concentrator config monitors every non-primary peer", func(t *testing.T) {
 		k0 := testPubKey(t, 0x11)
 		k1 := testPubKey(t, 0x22)
 		k2 := testPubKey(t, 0x33)
-		cfg := &config.Config{}
+		cfg := &config.Config{Role: config.RoleConcentrator}
 		cfg.WireGuard.Peers = []config.Peer{
 			{PublicKey: k0, Name: "primary"},
 			{PublicKey: k1, Name: "peer-b"},
@@ -320,6 +320,26 @@ func TestConcentratorMonitoredPeers(t *testing.T) {
 			if got[i] != want[i] {
 				t.Errorf("monitored peer %d = %+v, want %+v", i, got[i], want[i])
 			}
+		}
+	})
+
+	// D50 guard (T251/Q68b): a MULTI-PEER EDGE config monitors NOTHING. The additional edge peers
+	// are warm-standby concentrators — healthy by design even carrying no data — so the level-check
+	// teardown must never engage on the edge, where it would tear a warm standby down the moment its
+	// session momentarily aged. This is the exact shape that, before the role gate, wrongly returned
+	// the non-primary set (identical to the concentrator subtest above but for the role).
+	t.Run("multi-peer edge config monitors nothing", func(t *testing.T) {
+		k0 := testPubKey(t, 0x11)
+		k1 := testPubKey(t, 0x22)
+		k2 := testPubKey(t, 0x33)
+		cfg := &config.Config{Role: config.RoleEdge}
+		cfg.WireGuard.Peers = []config.Peer{
+			{PublicKey: k0, Name: "primary"},
+			{PublicKey: k1, Name: "peer-b"},
+			{PublicKey: k2, Name: "peer-c"},
+		}
+		if got := concentratorMonitoredPeers(cfg, cfg.PeerIdentities()); len(got) != 0 {
+			t.Fatalf("multi-peer EDGE config produced %v monitored peers, want none (warm standbys must never be torn down)", got)
 		}
 	})
 }
