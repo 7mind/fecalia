@@ -264,6 +264,13 @@ type Tunnel struct {
 	// loops read (State()) rather than the metrics Source (whose Paths() mutates the
 	// throughput last-sample, T165). Set on the privileged Up() path; nil on the up() seam.
 	primaryProbers []*telemetry.Prober
+	// exitSelector owns WHICH exit-capable peer carries the default route on a
+	// multi-exit edge (T254, G28/M105); nil when the selector does not apply
+	// (concentrator, single-exit edge, or fewer than two exit-capable peers). It
+	// holds no goroutine — it acts only when Switch is invoked; ActiveExit reports
+	// the current owner for the monitor. T269 (auto-promotion) and T255 (composition)
+	// wire triggers onto it next.
+	exitSelector *exitSelector
 	// amnezia is the obfuscation profile this tunnel holds against the
 	// process-global amnezia guard (see amneziaGuard); Close releases it.
 	amnezia     config.Amnezia
@@ -758,6 +765,17 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// monitor output for both single-peer and multi-exit shapes. nil when no controller was built.
 	hubFailoverCtrl := firstEligibleCtrl(cfg, ids, hubFailoverCtrls)
 
+	// Active-exit selector (T254, G28/M105): on a multi-exit edge (>1 exit-capable
+	// peer) it owns which peer carries the default route in the engine's allowed-ips
+	// trie, matching the boot render (uapiConfig gave the FIRST exit peer the /1
+	// splits and left the standbys with only their inner /32). Constructed AFTER
+	// dev.IpcSet/dev.Up so every peer exists in the engine — Switch then REPOINTS an
+	// existing peer by steal-on-insert rather than creating one. nil for the
+	// single-exit and concentrator shapes (no default-route ownership to move). It
+	// holds no goroutine, so Close needs no exit-selector stopper. T269/T255 wire the
+	// auto-promotion trigger and monitor exposure onto it.
+	exitSel := newExitSelector(cfg, dev, clg)
+
 	// The session monitor reads the engine's peer last-handshake state (I2). It backs BOTH
 	// the /metrics session snapshot (read at scrape time) and the 0->1 'session established'
 	// edge log (driven by its own poll loop). One instance is shared: it is stateless, so the
@@ -784,6 +802,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		stopProbes:    stopProbes, stopReconcile: stopReconcile,
 		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
 		stopSession: stopSession, stopPeerTeardown: stopPeerTeardown, amnezia: cfg.Amnezia,
+		exitSelector:   exitSel,
 		primaryProbers: probers,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). The
@@ -1503,6 +1522,17 @@ func (t *Tunnel) Name() string { return t.name }
 // engine error).
 func (t *Tunnel) Wait() { <-t.dev.Wait() }
 
+// ActiveExit reports the name of the exit-capable peer currently carrying the
+// default route on a multi-exit edge (T254), or "" when the active-exit selector
+// does not apply (concentrator, single-exit edge, or fewer than two exit-capable
+// peers). Exposed for the monitor (T255).
+func (t *Tunnel) ActiveExit() string {
+	if t.exitSelector == nil {
+		return ""
+	}
+	return t.exitSelector.ActiveExit()
+}
+
 // Close stops the probe loop, brings the device down, and releases the TUN and
 // Bind. Idempotent. It also releases this tunnel's hold on the single-amnezia-
 // engine-per-process guard exactly once, so a later Up may reconfigure the
@@ -1753,6 +1783,19 @@ func uapiConfig(cfg *config.Config, bootEndpoints []bootEndpoint) (string, error
 	}
 	writeAmnezia(&b, cfg.Amnezia)
 
+	// Active-exit selector boot render (T254, G28/M105): on a multi-exit edge (>1
+	// exit-capable peer) exactly ONE peer boots carrying the default route — the
+	// first mode=default-route peer in config order (Q74, no persistence). The
+	// STANDBY exit peers boot with only their non-default allowed_ips (their inner
+	// /32), so the engine's allowed-ips trie hands the default route to a single
+	// owner and exitSelector.Switch can later repoint it by steal-on-insert without
+	// wiping any standby's inner /32. R255 (config validation, T250) guarantees every
+	// exit-capable peer in an N>1-exit config carries a non-default allowed_ip, so a
+	// stripped standby still renders >=1 allowed_ip and satisfies the invariant below.
+	// standbyExit is empty (render byte-identical) for the single-exit and
+	// concentrator shapes.
+	standbyExit := standbyExitPeers(cfg)
+
 	for i, peer := range cfg.WireGuard.Peers {
 		pub := peer.PublicKey.Bytes()
 		fmt.Fprintf(&b, "public_key=%s\n", hex.EncodeToString(pub[:]))
@@ -1772,16 +1815,73 @@ func uapiConfig(cfg *config.Config, bootEndpoints []bootEndpoint) (string, error
 			// initiating (edge) side sets it.
 			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", keepaliveSeconds)
 		}
-		if len(peer.AllowedIPs) == 0 {
-			return "", fmt.Errorf("peer %d (%s): at least one allowed_ip is required", i, hex.EncodeToString(pub[:8]))
-		}
+		// emitted counts the allowed_ip lines actually rendered for this peer. On a
+		// standby exit peer the default-route entries are stripped (T254), so the >=1
+		// invariant is checked against the RENDERED count, not the config list — R255
+		// guarantees a non-default entry survives the strip, so this only ever trips on
+		// a genuinely empty config list (which config.validate already rejects).
+		emitted := 0
 		for _, cidr := range peer.AllowedIPs {
+			if standbyExit[i] && isDefaultRoute(cidr) {
+				continue
+			}
 			for _, split := range splitDefaultRoute(cidr) {
 				fmt.Fprintf(&b, "allowed_ip=%s\n", split)
+				emitted++
 			}
+		}
+		if emitted == 0 {
+			return "", fmt.Errorf("peer %d (%s): at least one allowed_ip is required", i, hex.EncodeToString(pub[:8]))
 		}
 	}
 	return b.String(), nil
+}
+
+// exitCapablePeerIndices returns the config-order indices of the edge's
+// exit-capable (mode=default-route) peers (T254, G28/M105). It is empty off the
+// edge role (mode=default-route is edge-only, rejected on the concentrator at
+// config load) and for an edge with no exit peer, so callers gate multi-exit
+// behavior on len()>1.
+func exitCapablePeerIndices(cfg *config.Config) []int {
+	if cfg.Role != config.RoleEdge {
+		return nil
+	}
+	var idx []int
+	for i := range cfg.WireGuard.Peers {
+		if cfg.WireGuard.Peers[i].Mode == config.PeerModeDefaultRoute {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// standbyExitPeers returns, as a set of config-order indices, the STANDBY
+// exit-capable peers on a multi-exit edge (T254): every mode=default-route peer
+// EXCEPT the first in config order, which is the boot-active exit (Q74). The
+// standby peers' default-route allowed_ips are stripped from the boot UAPI render
+// so exactly one peer owns the default route in the engine trie; exitSelector
+// repoints it at runtime. It is empty (render byte-identical) unless the edge has
+// MORE THAN ONE exit-capable peer — the single-exit and concentrator shapes are
+// unaffected.
+func standbyExitPeers(cfg *config.Config) map[int]bool {
+	idx := exitCapablePeerIndices(cfg)
+	if len(idx) < 2 {
+		return nil
+	}
+	standby := make(map[int]bool, len(idx)-1)
+	for _, i := range idx[1:] {
+		standby[i] = true
+	}
+	return standby
+}
+
+// isDefaultRoute reports whether cidr is a full default route (0.0.0.0/0 or ::/0)
+// — the entry a standby exit peer's boot render strips (T254). An unparseable
+// entry is not a default route (defensive only; config.validate parse-checks every
+// allowed_ips entry at load, T132/D55).
+func isDefaultRoute(cidr string) bool {
+	p, err := netip.ParsePrefix(cidr)
+	return err == nil && p.Bits() == 0
 }
 
 // splitDefaultRoute expands a literal 0.0.0.0/0 or ::/0 allowed_ip entry into

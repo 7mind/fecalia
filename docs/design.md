@@ -1147,6 +1147,39 @@ by `internal/device`:
   A literal `0.0.0.0/0`/`::/0` is never installed or handed to the engine —
   only its `/1`+`/1` split, so the encrypted underlay path to the concentrator
   endpoint itself is never captured by the tunnel's own default route.
+- **The active-exit selector: warm standbys + allowed-ips-ownership switching**
+  (`exitSelector`, T254/G28/M105, `exitselector.go`). With SEVERAL
+  `mode = "default-route"` peers (T250 admits N exit-capable alternates for the
+  same egress role), exactly ONE carries the default route at a time — the
+  **active exit** — while the others are **warm standbys**. The switching model
+  lives entirely in the engine's **allowed-ips trie**, NOT in kernel routes: all
+  peers share the one `wanbond0` TUN and the split `/1`+`/1` scope-link routes
+  point at that interface unconditionally (`defaultRoutePrefixes` is unchanged),
+  so the trie alone decides which peer a default-route packet egresses to.
+  - **Boot render** (`uapiConfig`/`standbyExitPeers`): the FIRST exit-capable peer
+    in config order boots owning the `/1`+`/1` split (Q74 — the selection does not
+    persist); every STANDBY exit peer boots with its default-route entries
+    **stripped**, carrying only its non-default allowed_ips (its inner `/32`). This
+    relies on the T250 **R255** validation rule — every exit-capable peer in an
+    N>1 config must carry at least one non-default allowed_ip — so a stripped
+    standby still renders `>= 1` allowed_ip and satisfies `uapiConfig`'s invariant;
+    the only-`0.0.0.0/0` shape is config-rejected, so the standby render can rely on
+    the guaranteed inner `/32` (kept warm end-to-end by keepalive, provable via the
+    inner ping). The stripping is inert (render byte-identical) for the single-exit
+    and concentrator shapes.
+  - **Switch** (`exitSelector.Switch(name)`): validates `name` is a configured
+    exit-capable peer (a typed `*unknownExitError`, mutating nothing, otherwise),
+    no-ops idempotently when the peer is already active, and otherwise issues ONE
+    `IpcSet` inserting the target peer's `/1` splits. WireGuard's allowed-ips trie
+    **steals each prefix from its current owner on insert** (steal-on-insert), so
+    the previous owner loses the `/1`s atomically per prefix while BOTH peers keep
+    their inner `/32`. The switch deliberately does **not** use
+    `replace_allowed_ips` (which would wipe the target's inner `/32`) and issues **no
+    re-handshake** — the target session is already warm. Every effected switch logs
+    at Info with `from`/`to`; `ActiveExit()` reports the current owner for the
+    monitor. The API is deliberately narrow (Q69): a single active exit, no
+    split-by-destination policy hooks. T269 (auto-promotion) and T255 (composition)
+    wire the automatic trigger and monitor exposure onto this seam.
 - **WG-session liveness signal** (`wanbond_session_established`, T101,
   `session.go`). The per-path liveness plane (probes) tells you a path's
   **transport** is reachable; it says nothing about whether the **inner**

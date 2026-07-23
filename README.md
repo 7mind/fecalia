@@ -266,8 +266,15 @@ deliberate boundaries you must plan around:
   controller over its OWN prober set and repoints only its OWN remote through the
   T252 per-peer seam, so one exit's failover cannot disturb another's (defect D100
   fixed). Each per-peer controller also raises an endpoint-list-exhaustion signal
-  for the cross-concentrator exit selector (T269). On-the-fly cross-concentrator
-  exit switching (T269) and per-concentrator web-UI stats are later tasks.
+  for the cross-concentrator exit selector (T269). **The active-exit selector
+  (T254)** owns WHICH exit-capable peer carries the default route: the first
+  `mode = "default-route"` peer boots owning the wg-quick `/1`+`/1` split while the
+  other exit peers boot as **warm standbys** carrying only their inner `/32`;
+  switching the active exit repoints the split onto the target peer in the engine's
+  allowed-ips trie (WireGuard's steal-on-insert moves ownership atomically per
+  prefix, no re-handshake — the standby session is already warm) with kernel routes
+  untouched. **Auto-promotion** on hub exhaustion (T269, wiring the selector to the
+  exhaustion signal) and per-concentrator web-UI stats are later tasks.
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
