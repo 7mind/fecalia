@@ -1647,14 +1647,21 @@ listen = "127.0.0.1:9101"
 - **Scope (v1)**: read-only EXCEPT one loopback-only control. The dashboard
   shows live stats only, with a single mutating action: `POST /api/exit`
   (`{"peer": "<name>"}`) switches the active exit-capable peer on a multi-exit
-  edge, returning `200 {"activeExit": "<name>"}`. This control is
-  **LOOPBACK-ONLY**: it is refused with **403 on any non-loopback bind,
-  regardless of a valid token**, so a token'd LAN-exposed monitor stays strictly
-  read-only — you can watch the exits from off-host but can only *switch* them
-  from a loopback-bound session (e.g. over the SSH tunnel above). The usual auth
-  applies (cross-origin → 403, missing/invalid token → 401); a non-POST method
-  is 405 and an unknown/non-exit-capable peer is 400. See [docs/design.md
-  §Security model](design.md) for the full posture.
+  edge, returning `200 {"activeExit": "<name>"}`. In the dashboard itself
+  (T260) this is a `<select>` listing every exit-capable peer with the current
+  `activeExit` marked, disabled while a switch is in flight, and showing a
+  visible error notice (reverting the display) on a non-2xx or network
+  failure — no manual `curl`/token handling needed in the browser. This
+  control is **LOOPBACK-ONLY**: it is refused with **403 on any non-loopback
+  bind, regardless of a valid token**, so a token'd LAN-exposed monitor stays
+  strictly read-only — you can watch the exits from off-host but can only
+  *switch* them from a loopback-bound session (e.g. over the SSH tunnel
+  above); the dashboard hides the `<select>` entirely on a token'd
+  non-loopback bind (mirroring this gate) and on a single-peer edge (nothing
+  to switch to). The usual auth applies (cross-origin → 403, missing/invalid
+  token → 401); a non-POST method is 405 and an unknown/non-exit-capable peer
+  is 400. See [docs/design.md §Security model](design.md) for the full
+  posture.
 - **What you see**: beyond per-peer throughput/loss/FEC, the dashboard shows
   the daemon's role/version/uptime, each path's bind mode + bound device and
   declared link bandwidth/RTT, the truncated WireGuard public-key

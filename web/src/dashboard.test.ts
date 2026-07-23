@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AggregationSnapshot,
   DaemonSnapshot,
@@ -161,6 +161,20 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
   };
+}
+
+/** Flushes the microtask queue enough times for a fetch().then(async ...).finally() chain to settle. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Builds a minimal fetch Response stub carrying a JSON body. */
+function jsonResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as Response;
 }
 
 describe('mountDashboard', () => {
@@ -404,5 +418,145 @@ describe('mountDashboard', () => {
     expect(container.querySelector('[data-testid="peer-session-card"]')).toBeNull();
     expect(container.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
     expect(container.querySelectorAll('[data-testid="endpoint-row"]').length).toBe(1);
+  });
+
+  describe('T260/G28/M107: exit-switch control', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('does not render for an addressingHidden fixture', () => {
+      const dashboard = mountDashboard(container);
+      const snapshot = twoPeerConcentratorSnapshot();
+      snapshot.addressingHidden = true;
+      dashboard.onSnapshot(snapshot);
+
+      expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
+    });
+
+    it('does not render for a single-peer fixture', () => {
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(singlePeerSnapshot());
+
+      expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
+    });
+
+    it('renders for a multi-peer, non-addressingHidden fixture, listing every exit-capable peer', () => {
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const control = container.querySelector('[data-testid="exit-control"]');
+      expect(control).not.toBeNull();
+      const select = control!.querySelector('select')!;
+      const values = Array.from(select.options).map((o) => o.value);
+      expect(values).toEqual(['peerA', 'peerB']);
+      expect(select.value).toBe('peerB'); // marks the current activeExit
+    });
+
+    it('selecting a standby concentrator issues POST /api/exit with the exact JSON body', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'peerA';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('/api/exit');
+      expect(init.method).toBe('POST');
+      expect(init.body).toBe(JSON.stringify({ peer: 'peerA' }));
+    });
+
+    it('a 200 response updates the badge (optimistically, ahead of the next snapshot)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'peerA';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+
+      const sections = container.querySelectorAll('[data-testid="peer-section"]');
+      const [sectionA, sectionB] = Array.from(sections);
+      expect(sectionA.querySelector('[data-testid="active-exit-badge"]')).not.toBeNull();
+      expect(sectionB.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
+      expect(container.querySelector('[data-testid="exit-control-error"]')).toBeNull();
+    });
+
+    it('a 403 response shows the error notice and leaves the badge unchanged', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        jsonResponse(403, { error: 'exit control is available only on a loopback-bound monitor' }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'peerA';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+
+      const errorNotice = container.querySelector('[data-testid="exit-control-error"]');
+      expect(errorNotice).not.toBeNull();
+      expect(errorNotice!.textContent).toContain('exit control is available only on a loopback-bound monitor');
+
+      // Badge reverts to the ORIGINAL activeExit (peerB) — the optimistic
+      // update never happened for a non-2xx response.
+      const sections = container.querySelectorAll('[data-testid="peer-section"]');
+      const [sectionA, sectionB] = Array.from(sections);
+      expect(sectionA.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
+      expect(sectionB.querySelector('[data-testid="active-exit-badge"]')).not.toBeNull();
+    });
+
+    it('a network error also shows the error notice and leaves the badge unchanged', async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new TypeError('network error'));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'peerA';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+
+      expect(container.querySelector('[data-testid="exit-control-error"]')).not.toBeNull();
+      const sections = container.querySelectorAll('[data-testid="peer-section"]');
+      const [, sectionB] = Array.from(sections);
+      expect(sectionB.querySelector('[data-testid="active-exit-badge"]')).not.toBeNull();
+    });
+
+    it('the next snapshot frame reconciles the optimistic update with the server truth', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'peerA';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+
+      // Next real frame still reports the old activeExit (server hasn't
+      // caught up yet in this simulation) — it must win over the client's
+      // optimistic guess.
+      const stale = twoPeerConcentratorSnapshot();
+      dashboard.onSnapshot(stale);
+
+      const sections = container.querySelectorAll('[data-testid="peer-section"]');
+      const [sectionA, sectionB] = Array.from(sections);
+      expect(sectionA.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
+      expect(sectionB.querySelector('[data-testid="active-exit-badge"]')).not.toBeNull();
+    });
   });
 });

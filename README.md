@@ -140,8 +140,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
   a `/ws` WebSocket every 1s) — read-only except the loopback-only `POST
-  /api/exit` control (which 403s on any non-loopback bind) — loopback-only by
-  default like `[metrics]`, but
+  /api/exit` control (which 403s on any non-loopback bind), exposed in the
+  dashboard itself as an exit-switch `<select>` listing every exit-capable
+  peer on a multi-exit edge — loopback-only by default like `[metrics]`, but
   it MAY bind non-loopback if you also set `[monitor].token` (otherwise
   refused at config load). Every request, including the WebSocket upgrade, is
   Host/Origin-validated (DNS-rebinding/CSRF defense); a configured token is

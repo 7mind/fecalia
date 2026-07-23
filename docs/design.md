@@ -1569,6 +1569,23 @@ misbehaves subtly. Agents and contributors must preserve them.
     never imports `internal/device`, matching the `monitor.Info` provider-
     injection seam. Every OTHER route stays a pure read. The mutating route is
     protected in depth:
+    - **Frontend widget (T260, G28/M107).** `web/src/dashboard.ts` renders a
+      single `<select>` exit-switch control listing every exit-capable peer
+      (those named in `endpoints`/`peerSessions`), issuing the `POST` on
+      selection via a same-origin `fetch` — no token/cookie handling in JS,
+      the browser's `SameSite=Strict` cookie jar carries auth automatically
+      (the `ws-client.ts` precedent). The control mirrors the server's gate
+      client-side rather than relying on it: it is omitted entirely when
+      `snapshot.addressingHidden` (a non-loopback bind would 403 the POST
+      anyway) or on a single-peer snapshot (nothing to switch to). Pending
+      state disables the `<select>` while the POST is in flight; a 2xx
+      response adopts the returned `activeExit` optimistically (reconciled
+      against the next real snapshot frame, which always wins); a non-2xx or
+      network failure surfaces a visible error notice and leaves the prior
+      `activeExit` in place. This client-side state is held OUTSIDE the
+      per-snapshot `innerHTML` re-render (a dashboard-scoped closure
+      variable) and the `change` listener is re-attached after every render,
+      so neither is lost on the next pushed frame.
     - **HARD loopback gate (act-then-verify), independent of the token.** The
       handler refuses with **403** whenever the server's ACTUAL kernel-bound
       address is non-loopback — the SAME `verifyLoopbackBind(ln.Addr())` verdict

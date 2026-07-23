@@ -2,6 +2,9 @@ import type {
   AggregationSnapshot,
   DaemonSnapshot,
   EndpointSnapshot,
+  ExitError,
+  ExitRequest,
+  ExitResponse,
   FECSnapshot,
   MonitorSnapshot,
   PathSnapshot,
@@ -11,9 +14,10 @@ import type {
 } from './types';
 import { pushSample, renderSparklineSvg } from './sparkline';
 
-// Read-only monitoring dashboard (T168, Q48): renders each MonitorSnapshot
-// pushed by the T166 ResilientWsClient. No control surface, no writes back
-// to the server — display only.
+// Monitoring dashboard (T168, Q48): renders each MonitorSnapshot pushed by
+// the T166 ResilientWsClient. Read-only display EXCEPT the one exit-switch
+// control (T260, G28/M107) wired onto the T258 POST /api/exit mutating
+// route — see below.
 //
 // Peer-label rule (mirrors metrics.md / types.ts's multiPeer contract):
 // single-bound-peer sources render ONE flat section with no peer label at
@@ -21,6 +25,19 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 // endpoints into one section PER peer, keyed off snapshot.peerNames (T259,
 // G28/M107), each carrying its own session state (from peerSessions) and an
 // ACTIVE-EXIT badge when that peer is snapshot.activeExit.
+//
+// Exit-switch control (T260, G28/M107): a single top-level <select> listing
+// every exit-capable peer (those named in endpoints/peerSessions — the
+// concentrator/remote-monitor case has none of either, so nothing renders
+// there), issuing a same-origin POST /api/exit {peer} on selection. Cookie
+// auth rides automatically (ws-client.ts precedent — no token handling
+// here). Hidden entirely when snapshot.addressingHidden (mirrors the
+// server's 403 gate — a remote/token'd monitor is read-only, so don't even
+// offer the control) or on a single-peer snapshot (no alternate to switch
+// to). Pending/error state is held OUTSIDE onSnapshot's per-frame render (in
+// `exitControlState`, a mountDashboard-scoped closure variable) so it
+// survives the innerHTML replacement every snapshot frame triggers; the
+// change listener is re-attached after every render for the same reason.
 
 interface PathBuffers {
   loss: number[];
@@ -100,6 +117,30 @@ function groupByPeer<T extends { peer: string }>(items: T[]): Map<string, T[]> {
     }
   }
   return map;
+}
+
+/** Derives the exit-capable candidate list: peerNames that appear in endpoints or peerSessions. */
+function exitCapablePeers(snapshot: MonitorSnapshot): string[] {
+  const named = new Set<string>();
+  for (const e of snapshot.endpoints) {
+    if (e.peer !== '') {
+      named.add(e.peer);
+    }
+  }
+  for (const s of snapshot.peerSessions) {
+    if (s.peer !== '') {
+      named.add(s.peer);
+    }
+  }
+  return snapshot.peerNames.filter((p) => named.has(p));
+}
+
+/** Mutable state for the exit-switch control, held outside the per-frame render (T260). */
+interface ExitControlState {
+  pending: boolean;
+  /** Adopted from a 2xx POST /api/exit response; cleared once the next snapshot frame reconciles it. */
+  optimisticActiveExit: string | null;
+  error: string | null;
 }
 
 /**
@@ -282,6 +323,31 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
+  function renderExitControl(candidates: string[], activeExit: string, state: ExitControlState): string {
+    if (candidates.length === 0) {
+      return '';
+    }
+    const options = candidates
+      .map((peer) => {
+        const isActive = peer === activeExit;
+        return `<option value="${escapeHtml(peer)}" ${isActive ? 'selected' : ''}>${escapeHtml(peer)}${isActive ? ' (active)' : ''}</option>`;
+      })
+      .join('');
+    const pendingNote = state.pending
+      ? `<span data-testid="exit-control-pending" style="color:#666;">switching&hellip;</span>`
+      : '';
+    const errorNote = state.error
+      ? `<div class="exit-control-error" data-testid="exit-control-error" style="color:#c62828;">${escapeHtml(state.error)}</div>`
+      : '';
+    return `
+      <div class="exit-control" data-testid="exit-control" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; display:flex; align-items:center; gap:0.5em; flex-wrap:wrap;">
+        <label for="exit-control-select">Active exit</label>
+        <select id="exit-control-select" data-testid="exit-control-select" ${state.pending ? 'disabled' : ''}>${options}</select>
+        ${pendingNote}
+        ${errorNote}
+      </div>`;
+  }
+
   function renderSection(
     peerLabel: string | null,
     paths: PathSnapshot[],
@@ -338,7 +404,62 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </section>`;
   }
 
-  function onSnapshot(snapshot: MonitorSnapshot): void {
+  // Held outside render(): must survive the innerHTML replacement every
+  // snapshot frame triggers (see the T260 header comment above).
+  let lastSnapshot: MonitorSnapshot | null = null;
+  const exitControlState: ExitControlState = {
+    pending: false,
+    optimisticActiveExit: null,
+    error: null,
+  };
+
+  function handleExitChange(peer: string): void {
+    exitControlState.pending = true;
+    exitControlState.error = null;
+    render();
+
+    const body: ExitRequest = { peer };
+    fetch('/api/exit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(async (res) => {
+        if (res.ok) {
+          const parsed = (await res.json()) as ExitResponse;
+          exitControlState.optimisticActiveExit = parsed.activeExit;
+        } else {
+          let message = `exit switch failed (HTTP ${res.status})`;
+          try {
+            const parsed = (await res.json()) as ExitError;
+            if (parsed.error) {
+              message = parsed.error;
+            }
+          } catch {
+            // non-JSON error body: keep the generic status message
+          }
+          exitControlState.error = message;
+        }
+      })
+      .catch(() => {
+        exitControlState.error = 'network error switching exit';
+      })
+      .finally(() => {
+        exitControlState.pending = false;
+        render();
+      });
+  }
+
+  function render(): void {
+    const snapshot = lastSnapshot;
+    if (snapshot === null) {
+      return;
+    }
+    // Reconcile the optimistic override with the server's own truth on
+    // every real snapshot frame (T260) — a stale client-side guess never
+    // outlives the next push.
+    const effectiveActiveExit = exitControlState.optimisticActiveExit ?? snapshot.activeExit;
+
     let sectionsHtml: string;
     const grouped = snapshot.multiPeer && snapshot.peerNames.length > 1;
     if (grouped) {
@@ -359,7 +480,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
             snapshot.addressingHidden,
             endpointsByPeer.get(peer) ?? [],
             peerSessionsByPeer.get(peer)?.[0],
-            snapshot.activeExit !== '' && snapshot.activeExit === peer,
+            effectiveActiveExit !== '' && effectiveActiveExit === peer,
           ),
         )
         .join('');
@@ -378,15 +499,35 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       );
     }
 
+    // Exit-switch control (T260): hidden entirely on an addressing-hidden
+    // (remote/token'd) monitor or a single-peer snapshot — mirrors the
+    // server's loopback-only 403 gate rather than relying on it, and there is
+    // no alternate exit to switch to with only one peer bound.
+    const exitControlHtml =
+      !snapshot.addressingHidden && grouped ? renderExitControl(exitCapablePeers(snapshot), effectiveActiveExit, exitControlState) : '';
+
     root.innerHTML = `
       ${renderDaemonHeader(snapshot.daemon)}
       ${renderWgKeyLine(snapshot.wgPublicKeyFingerprint)}
+      ${exitControlHtml}
       ${sectionsHtml}
       ${grouped ? '' : renderEndpointsSection(snapshot.endpoints, snapshot.addressingHidden)}
       <div class="stat-group" data-kind="session" data-testid="stat-group-session">
         <h4>WG Session</h4>
         ${renderSessionCard(snapshot.session)}
       </div>`;
+
+    // innerHTML wipes all listeners on every render — re-attach after each one.
+    const selectEl = root.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]');
+    if (selectEl) {
+      selectEl.addEventListener('change', () => handleExitChange(selectEl.value));
+    }
+  }
+
+  function onSnapshot(snapshot: MonitorSnapshot): void {
+    lastSnapshot = snapshot;
+    exitControlState.optimisticActiveExit = null;
+    render();
   }
 
   return { onSnapshot };
