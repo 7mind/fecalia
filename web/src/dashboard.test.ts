@@ -163,6 +163,32 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
   };
 }
 
+/**
+ * T260 round 2: isolates the single-peer exit-control hide from the
+ * addressingHidden gate. Unlike singlePeerSnapshot() (addressingHidden:true,
+ * peerNames:[]), this fixture sets addressingHidden:false and gives
+ * exitCapablePeers(...) a non-empty result (a named endpoint + peerSession
+ * for 'peerA'), so the ONLY thing that can suppress the control is the
+ * `grouped` (peerNames.length > 1) gate itself.
+ */
+function singlePeerNamedSnapshot(): MonitorSnapshot {
+  return {
+    paths: [path({ name: 'wan0', peer: 'peerA' })],
+    fec: [fec({ peer: 'peerA' })],
+    reseq: [reseq({ peer: 'peerA' })],
+    aggregation: [aggregation({ peer: 'peerA' })],
+    session: { established: true, lastHandshakeSeconds: 3 },
+    peerNames: ['peerA'],
+    multiPeer: false,
+    daemon: daemon({ role: 'concentrator' }),
+    endpoints: [endpoint({ peer: 'peerA', address: 'hub-a1:51820', active: true })],
+    peerSessions: [peerSession({ peer: 'peerA', established: true, lastHandshakeSeconds: 7 })],
+    activeExit: 'peerA',
+    wgPublicKeyFingerprint: 'ConcFp01',
+    addressingHidden: false,
+  };
+}
+
 /** Flushes the microtask queue enough times for a fetch().then(async ...).finally() chain to settle. */
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -441,6 +467,23 @@ describe('mountDashboard', () => {
       expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
     });
 
+    // T260 round 2: singlePeerSnapshot() above also has addressingHidden:true
+    // and peerNames:[], so it passes even if the `grouped` gate were dropped
+    // from the exitControlHtml condition — those two other conditions mask
+    // it. This fixture isolates the `grouped` (peerNames.length > 1) gate:
+    // addressingHidden is false and exitCapablePeers(...) is non-empty
+    // (a named endpoint + peerSession), so `grouped` is the only remaining
+    // reason the control can be absent. Confirmed: reverting `grouped` out of
+    // `!snapshot.addressingHidden && grouped` in dashboard.ts's render() makes
+    // this assertion fail (the control renders) while the above test still
+    // passes vacuously.
+    it('does not render for a single-peer fixture, even when addressingHidden is false and exit-capable peers exist', () => {
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(singlePeerNamedSnapshot());
+
+      expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
+    });
+
     it('renders for a multi-peer, non-addressingHidden fixture, listing every exit-capable peer', () => {
       const dashboard = mountDashboard(container);
       dashboard.onSnapshot(twoPeerConcentratorSnapshot());
@@ -557,6 +600,42 @@ describe('mountDashboard', () => {
       const [sectionA, sectionB] = Array.from(sections);
       expect(sectionA.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
       expect(sectionB.querySelector('[data-testid="active-exit-badge"]')).not.toBeNull();
+    });
+
+    // T260 round 2: docs claim the select is "disabled while a switch is in
+    // flight" but no prior test observed the mid-flight DOM — every fetch
+    // mock above resolves/rejects immediately under `await flush()`, so the
+    // pending render was never asserted. Uses an unresolved fetch promise to
+    // freeze mid-flight and inspect the DOM before settling it. Confirmed:
+    // dropping the `state.pending ? 'disabled' : ''` conditional in
+    // renderExitControl (dashboard.ts) makes this assertion fail.
+    it('disables the select and shows a pending note while a switch is in flight, then restores normal state on resolution', async () => {
+      let resolveFetch!: (response: Response) => void;
+      const fetchMock = vi.fn().mockReturnValue(
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'peerA';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+
+      // Mid-flight, before the fetch settles: select disabled, pending note shown.
+      const pendingSelect = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      expect(pendingSelect.disabled).toBe(true);
+      expect(container.querySelector('[data-testid="exit-control-pending"]')).not.toBeNull();
+
+      resolveFetch(jsonResponse(200, { activeExit: 'peerA' }));
+      await flush();
+
+      const settledSelect = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      expect(settledSelect.disabled).toBe(false);
+      expect(container.querySelector('[data-testid="exit-control-pending"]')).toBeNull();
     });
   });
 });
