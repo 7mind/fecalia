@@ -31,10 +31,12 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 // concentrator/remote-monitor case has none of either, so nothing renders
 // there), issuing a same-origin POST /api/exit {peer} on selection. Cookie
 // auth rides automatically (ws-client.ts precedent — no token handling
-// here). Hidden entirely when snapshot.addressingHidden (mirrors the
-// server's 403 gate — a remote/token'd monitor is read-only, so don't even
-// offer the control) or on a single-peer snapshot (no alternate to switch
-// to). Pending/error state is held OUTSIDE onSnapshot's per-frame render (in
+// here). Hidden entirely when !snapshot.exitControlAvailable (T280, G32:
+// mirrors the server's loopback-only 403 gate on POST /api/exit — this is
+// deliberately NOT addressingHidden, since a reveal_addressing opt-in can
+// unhide addressing on a non-loopback bind without enabling the mutating
+// control) or on a single-peer snapshot (no alternate to switch to).
+// Pending/error state is held OUTSIDE onSnapshot's per-frame render (in
 // `exitControlState`, a mountDashboard-scoped closure variable) so it
 // survives the innerHTML replacement every snapshot frame triggers; the
 // change listener is re-attached after every render for the same reason.
@@ -499,12 +501,15 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       );
     }
 
-    // Exit-switch control (T260): hidden entirely on an addressing-hidden
-    // (remote/token'd) monitor or a single-peer snapshot — mirrors the
-    // server's loopback-only 403 gate rather than relying on it, and there is
-    // no alternate exit to switch to with only one peer bound.
+    // Exit-switch control (T260, re-keyed T280/G32): hidden entirely when the
+    // monitor's kernel loopback bind is unavailable (mirrors the server's
+    // hard loopback-only 403 gate on POST /api/exit) or on a single-peer
+    // snapshot — there is no alternate exit to switch to with only one peer
+    // bound. Deliberately keyed on exitControlAvailable, NOT addressingHidden:
+    // a reveal_addressing opt-in can make addressingHidden false on a
+    // non-loopback bind while the mutating control stays unavailable there.
     const exitControlHtml =
-      !snapshot.addressingHidden && grouped ? renderExitControl(exitCapablePeers(snapshot), effectiveActiveExit, exitControlState) : '';
+      snapshot.exitControlAvailable && grouped ? renderExitControl(exitCapablePeers(snapshot), effectiveActiveExit, exitControlState) : '';
 
     root.innerHTML = `
       ${renderDaemonHeader(snapshot.daemon)}

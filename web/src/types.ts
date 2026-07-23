@@ -165,6 +165,13 @@ export interface PeerSessionSnapshot {
  * edge — "" on the concentrator role and on an edge with no default-route
  * ownership to report. It is a peer NAME, never an address, so it is NOT
  * part of the redactable addressing surface.
+ *
+ * exitControlAvailable (T280, G32) mirrors the Go RAW loopbackBound verdict —
+ * the SAME hard gate the mutating POST /api/exit control enforces
+ * server-side — and is deliberately independent of addressingHidden: a
+ * reveal_addressing opt-in can set addressingHidden false on a non-loopback
+ * bind while exit control stays unavailable there, so the frontend MUST key
+ * exit-widget visibility off this field, never off addressingHidden.
  */
 export interface MonitorSnapshot {
   paths: PathSnapshot[];
@@ -180,6 +187,7 @@ export interface MonitorSnapshot {
   activeExit: string;
   wgPublicKeyFingerprint: string;
   addressingHidden: boolean;
+  exitControlAvailable: boolean;
 }
 
 /**

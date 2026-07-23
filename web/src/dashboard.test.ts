@@ -115,6 +115,7 @@ function multiPeerSnapshot(): MonitorSnapshot {
     activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
+    exitControlAvailable: false,
   };
 }
 
@@ -133,6 +134,7 @@ function singlePeerSnapshot(): MonitorSnapshot {
     activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
+    exitControlAvailable: false,
   };
 }
 
@@ -160,16 +162,18 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
     activeExit: 'peerB',
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
+    exitControlAvailable: true,
   };
 }
 
 /**
  * T260 round 2: isolates the single-peer exit-control hide from the
- * addressingHidden gate. Unlike singlePeerSnapshot() (addressingHidden:true,
- * peerNames:[]), this fixture sets addressingHidden:false and gives
- * exitCapablePeers(...) a non-empty result (a named endpoint + peerSession
- * for 'peerA'), so the ONLY thing that can suppress the control is the
- * `grouped` (peerNames.length > 1) gate itself.
+ * exitControlAvailable gate (re-keyed T280/G32; was addressingHidden). Unlike
+ * singlePeerSnapshot() (exitControlAvailable:false, peerNames:[]), this
+ * fixture sets exitControlAvailable:true and gives exitCapablePeers(...) a
+ * non-empty result (a named endpoint + peerSession for 'peerA'), so the ONLY
+ * thing that can suppress the control is the `grouped` (peerNames.length > 1)
+ * gate itself.
  */
 function singlePeerNamedSnapshot(): MonitorSnapshot {
   return {
@@ -186,6 +190,7 @@ function singlePeerNamedSnapshot(): MonitorSnapshot {
     activeExit: 'peerA',
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
+    exitControlAvailable: true,
   };
 }
 
@@ -306,6 +311,7 @@ describe('mountDashboard', () => {
       activeExit: '',
       wgPublicKeyFingerprint: 'AbCd1234',
       addressingHidden: false,
+      exitControlAvailable: true,
     };
     dashboard.onSnapshot(snapshot);
 
@@ -451,10 +457,31 @@ describe('mountDashboard', () => {
       vi.unstubAllGlobals();
     });
 
-    it('does not render for an addressingHidden fixture', () => {
+    // T280/G32: exit-widget visibility is now keyed on exitControlAvailable,
+    // NOT addressingHidden — flipping addressingHidden alone must not affect
+    // it, since twoPeerConcentratorSnapshot() has exitControlAvailable:true.
+    it('renders for an exitControlAvailable fixture even when addressingHidden is (independently) true', () => {
       const dashboard = mountDashboard(container);
       const snapshot = twoPeerConcentratorSnapshot();
       snapshot.addressingHidden = true;
+      dashboard.onSnapshot(snapshot);
+
+      expect(container.querySelector('[data-testid="exit-control"]')).not.toBeNull();
+    });
+
+    // T280/G32: the remote-reveal case — a reveal_addressing opt-in can unhide
+    // addressing on a non-loopback bind (addressingHidden:false) WITHOUT
+    // enabling the mutating POST /api/exit control server-side
+    // (exitControlAvailable:false), so the widget must stay hidden. This is
+    // the case the old `!snapshot.addressingHidden && grouped` gate got wrong.
+    // MUTATION-VERIFY: temporarily reverting the dashboard.ts gate back to
+    // `!snapshot.addressingHidden && grouped` makes this exact assertion fail
+    // (the control renders, since addressingHidden is false here) — confirmed
+    // by hand before reverting; see task T281 summary.
+    it('does not render for exitControlAvailable=false, even when addressingHidden=false (the remote-reveal case)', () => {
+      const dashboard = mountDashboard(container);
+      const snapshot = twoPeerConcentratorSnapshot();
+      snapshot.exitControlAvailable = false;
       dashboard.onSnapshot(snapshot);
 
       expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
@@ -467,24 +494,25 @@ describe('mountDashboard', () => {
       expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
     });
 
-    // T260 round 2: singlePeerSnapshot() above also has addressingHidden:true
-    // and peerNames:[], so it passes even if the `grouped` gate were dropped
-    // from the exitControlHtml condition — those two other conditions mask
-    // it. This fixture isolates the `grouped` (peerNames.length > 1) gate:
-    // addressingHidden is false and exitCapablePeers(...) is non-empty
-    // (a named endpoint + peerSession), so `grouped` is the only remaining
-    // reason the control can be absent. Confirmed: reverting `grouped` out of
-    // `!snapshot.addressingHidden && grouped` in dashboard.ts's render() makes
-    // this assertion fail (the control renders) while the above test still
-    // passes vacuously.
-    it('does not render for a single-peer fixture, even when addressingHidden is false and exit-capable peers exist', () => {
+    // T260 round 2: singlePeerSnapshot() above also has
+    // exitControlAvailable:false and peerNames:[], so it passes even if the
+    // `grouped` gate were dropped from the exitControlHtml condition — those
+    // two other conditions mask it. This fixture isolates the `grouped`
+    // (peerNames.length > 1) gate: exitControlAvailable is true and
+    // exitCapablePeers(...) is non-empty (a named endpoint + peerSession), so
+    // `grouped` is the only remaining reason the control can be absent.
+    // Confirmed: reverting `grouped` out of
+    // `snapshot.exitControlAvailable && grouped` in dashboard.ts's render()
+    // makes this assertion fail (the control renders) while the above test
+    // still passes vacuously.
+    it('does not render for a single-peer fixture, even when exitControlAvailable is true and exit-capable peers exist', () => {
       const dashboard = mountDashboard(container);
       dashboard.onSnapshot(singlePeerNamedSnapshot());
 
       expect(container.querySelector('[data-testid="exit-control"]')).toBeNull();
     });
 
-    it('renders for a multi-peer, non-addressingHidden fixture, listing every exit-capable peer', () => {
+    it('renders for a multi-peer, exitControlAvailable fixture, listing every exit-capable peer', () => {
       const dashboard = mountDashboard(container);
       dashboard.onSnapshot(twoPeerConcentratorSnapshot());
 

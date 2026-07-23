@@ -51,6 +51,7 @@ function makeSnapshot(): MonitorSnapshot {
     activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
+    exitControlAvailable: false,
   };
 }
 

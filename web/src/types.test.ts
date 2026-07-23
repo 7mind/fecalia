@@ -40,7 +40,8 @@ const REDACTED_FRAME = `{
     { "address": "", "active": false }
   ],
   "wgPublicKeyFingerprint": "aGVsbG8gd29",
-  "addressingHidden": true
+  "addressingHidden": true,
+  "exitControlAvailable": false
 }`;
 
 // Loopback-bound monitor: addressing is revealed, so every `addressing`
@@ -77,7 +78,8 @@ const FULL_FRAME = `{
     { "address": "198.51.100.10:51820", "active": false }
   ],
   "wgPublicKeyFingerprint": "aGVsbG8gd29",
-  "addressingHidden": false
+  "addressingHidden": false,
+  "exitControlAvailable": true
 }`;
 
 // 2-peer concentrator binding, addressing revealed: exercises the T257/T259
@@ -113,7 +115,8 @@ const TWO_PEER_FRAME = `{
   ],
   "activeExit": "osaka",
   "wgPublicKeyFingerprint": "aGVsbG8gd29",
-  "addressingHidden": false
+  "addressingHidden": false,
+  "exitControlAvailable": true
 }`;
 
 describe('MonitorSnapshot wire fixtures (T218)', () => {
