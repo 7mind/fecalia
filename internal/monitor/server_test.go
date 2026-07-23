@@ -193,6 +193,12 @@ func TestServer_WSRevealsAddressingOnLoopback(t *testing.T) {
 	if !strings.Contains(string(data), "203.0.113.51") {
 		t.Fatalf("revealed frame missing the remote address: %s", data)
 	}
+	// T280: a loopback-bound server must advertise the exit control ON THE WIRE —
+	// exitControlAvailable follows the RAW kernel-bound loopback verdict NewServer
+	// threads into the /ws handler, so a real loopback bind serves it true.
+	if !snap.ExitControlAvailable {
+		t.Fatalf("loopback bind must serve exitControlAvailable=true: %s", data)
+	}
 }
 
 // TestServer_WSRedactsAddressingOnNonLoopback: a token-authorized NON-loopback

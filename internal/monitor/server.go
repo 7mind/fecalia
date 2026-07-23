@@ -511,9 +511,12 @@ type exitError struct {
 // any state is read, regardless of a valid token) → decode (400 on malformed
 // JSON) → switchExit (400 on an unknown/non-exit-capable peer, 500 on an engine
 // failure, 200 with the active exit otherwise, including an idempotent same-name
-// switch). loopbackBound is the kernel-bound act-then-verify verdict (the same
-// one that reveals addressing), captured at construction — the bound address does
-// not change over the listener's life.
+// switch). loopbackBound is the RAW kernel-bound act-then-verify verdict,
+// DISTINCT from the widened revealAddressing gate (T280): revealAddressing is
+// loopbackBound OR the reveal_addressing opt-in, so on a reveal-override
+// non-loopback bind addressing is revealed while this gate still refuses. It is
+// captured at construction — the bound address does not change over the
+// listener's life.
 func newExitHandler(loopbackBound bool, switchExit ExitSwitcher, logger log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -522,9 +525,11 @@ func newExitHandler(loopbackBound bool, switchExit ExitSwitcher, logger log.Logg
 			return
 		}
 		// HARD loopback gate: the mutating control surface exists ONLY on a monitor
-		// the kernel actually bound to loopback. A remote/exposed (token-authorized
-		// non-loopback) monitor stays strictly read-only, so this 403 fires even
-		// with a valid token — the same condition that sets AddressingHidden.
+		// the kernel actually bound to loopback — the RAW loopbackBound verdict,
+		// NOT the widened revealAddressing/AddressingHidden gate (T280). A
+		// remote/exposed (token-authorized non-loopback) monitor stays strictly
+		// read-only, so this 403 fires even with a valid token AND even when a
+		// reveal_addressing opt-in has unhidden addressing (AddressingHidden=false).
 		if !loopbackBound {
 			writeExitError(w, http.StatusForbidden, "exit control is available only on a loopback-bound monitor")
 			return
