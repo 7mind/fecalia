@@ -180,6 +180,56 @@ func perPeerHandshakeNano(dump string) map[string]int64 {
 	return out
 }
 
+// exitPeerHealth is one exit-capable peer's health-probe inputs (T269): the lowercase-hex public
+// key its engine-session handshake is keyed by, and its OWN per-path liveness plane (that peer's
+// prober set). Both are needed to answer the auto-promotion health question — session established
+// AND at least one path up — for a candidate warm standby.
+type exitPeerHealth struct {
+	publicKeyHex string
+	health       []hubHealth
+}
+
+// deviceExitHealth is the PRODUCTION exitHealth (T269): it answers whether a candidate exit-capable
+// peer is a HEALTHY warm standby fit for auto-promotion — its WG session is established (the
+// engine's last-handshake for that peer is within RejectAfterTime, the same gate sessionMonitor
+// uses) AND at least one of its paths is up (its own liveness plane, mirroring hubFailover's
+// allDownLocked: up = some path not Down). A peer not in peers, an engine read error, an
+// unestablished session, or an all-down liveness plane all read UNHEALTHY, so promotion never
+// moves egress onto a peer that could not carry it. A fake drives the selector's promotion logic
+// in unit tests, so this concrete path stays engine-coupled.
+type deviceExitHealth struct {
+	engine ipcGetter
+	clock  telemetry.Clock
+	expiry time.Duration
+	peers  map[string]exitPeerHealth
+}
+
+func (d *deviceExitHealth) healthy(name string) bool {
+	ph, ok := d.peers[name]
+	if !ok {
+		return false
+	}
+	// At least one path up (the liveness plane). Checked first: it is a cheap in-memory read and
+	// avoids an engine IpcGet for an obviously-down candidate.
+	anyUp := false
+	for _, hp := range ph.health {
+		if hp.State() != telemetry.StateDown {
+			anyUp = true
+			break
+		}
+	}
+	if !anyUp {
+		return false
+	}
+	// Session established: the engine's last-handshake for this peer is within the validity window.
+	dump, err := d.engine.IpcGet()
+	if err != nil {
+		return false
+	}
+	nano := perPeerHandshakeNano(dump)[ph.publicKeyHex]
+	return nano != 0 && d.clock.Now().Sub(time.Unix(0, nano)) <= d.expiry
+}
+
 // peerTearer is the seam onto the bind's per-peer teardown: Bind.TearDownPeer frees a dead
 // configured peer's heavy state (resequencer ring, FEC buffers, demux source bindings) and
 // returns true when it actually reclaimed that state, false on a no-op (peer unknown, the

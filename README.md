@@ -277,8 +277,11 @@ deliberate boundaries you must plan around:
   switching the active exit repoints the split onto the target peer in the engine's
   allowed-ips trie (WireGuard's steal-on-insert moves ownership atomically per
   prefix, no re-handshake — the standby session is already warm) with kernel routes
-  untouched. **Auto-promotion** on hub exhaustion (T269, wiring the selector to the
-  exhaustion signal) and per-concentrator web-UI stats are later tasks.
+  untouched. **Auto-promotion (T269)** moves egress off a FULLY-failed active exit
+  (its endpoint list exhausted — every endpoint tried and down, distinct from
+  within-concentrator failover) onto the first healthy warm standby, logged with
+  `reason=auto-promotion`; a manual switch always wins and there is no auto-failback
+  onto a recovered exit. Per-concentrator web-UI stats are a later task.
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.

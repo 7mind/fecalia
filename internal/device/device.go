@@ -772,9 +772,40 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// dev.IpcSet/dev.Up so every peer exists in the engine — Switch then REPOINTS an
 	// existing peer by steal-on-insert rather than creating one. nil for the
 	// single-exit and concentrator shapes (no default-route ownership to move). It
-	// holds no goroutine, so Close needs no exit-selector stopper. T269/T255 wire the
-	// auto-promotion trigger and monitor exposure onto it.
+	// holds no goroutine, so Close needs no exit-selector stopper. T255 wires the
+	// monitor exposure onto it.
 	exitSel := newExitSelector(cfg, dev, clg)
+
+	// Auto-promotion wiring (T269, G28/M105): subscribe the exit selector to each exit-capable
+	// peer's hub-failover ENDPOINT-LIST-EXHAUSTION signal (SetOnExhausted, T253) so a FULL failure
+	// of the active exit — every configured endpoint tried and down, distinct from within-
+	// concentrator T57 failover — auto-promotes egress to the first HEALTHY warm standby (session
+	// established + >=1 path up), reusing the selector's steal-on-insert repoint (no re-handshake).
+	// The selector re-subscribes on every Switch so the signal tracks the current active exit.
+	// Skipped for the single-exit / concentrator shapes (exitSel nil). A single-endpoint exit peer
+	// carries no controller (peerNeedsHubFailover false) and is simply absent from exitCtrls — it
+	// has no exhaustion signal to promote off. The health seam reads each exit peer's OWN liveness
+	// plane (perPeerProbers[i]) and the engine's per-peer last-handshake age.
+	if exitSel != nil {
+		exitCtrls := make(map[string]exitController)
+		healthPeers := make(map[string]exitPeerHealth)
+		for _, i := range exitCapablePeerIndices(cfg) {
+			name := ids[i].Name
+			if c, ok := hubFailoverCtrls[name]; ok {
+				exitCtrls[name] = c
+			}
+			pub := cfg.WireGuard.Peers[i].PublicKey.Bytes()
+			probers := perPeerProbers[i]
+			hp := make([]hubHealth, len(probers))
+			for j, pr := range probers {
+				hp[j] = pr
+			}
+			healthPeers[name] = exitPeerHealth{publicKeyHex: hex.EncodeToString(pub[:]), health: hp}
+		}
+		exitSel.enableAutoPromotion(exitCtrls, &deviceExitHealth{
+			engine: dev, clock: telemetry.SystemClock{}, expiry: awgdevice.RejectAfterTime, peers: healthPeers,
+		})
+	}
 
 	// The session monitor reads the engine's peer last-handshake state (I2). It backs BOTH
 	// the /metrics session snapshot (read at scrape time) and the 0->1 'session established'

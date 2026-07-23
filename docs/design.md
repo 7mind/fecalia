@@ -1192,10 +1192,44 @@ by `internal/device`:
     their inner `/32`. The switch deliberately does **not** use
     `replace_allowed_ips` (which would wipe the target's inner `/32`) and issues **no
     re-handshake** — the target session is already warm. Every effected switch logs
-    at Info with `from`/`to`; `ActiveExit()` reports the current owner for the
-    monitor. The API is deliberately narrow (Q69): a single active exit, no
-    split-by-destination policy hooks. T269 (auto-promotion) and T255 (composition)
-    wire the automatic trigger and monitor exposure onto this seam.
+    at Info with `from`/`to` and a `reason` — `reason=manual` for this operator
+    path, `reason=auto-promotion` for the health-driven path below — so the two
+    switch causes are distinguishable in logs; `ActiveExit()` reports the current
+    owner for the monitor. The API is deliberately narrow (Q69): a single active
+    exit, no split-by-destination policy hooks. T255 (composition) wires the
+    monitor exposure onto this seam.
+  - **Auto-promotion** (`exitSelector.onActiveExhausted`, T269/G28/M105,
+    reverses the earlier no-auto-jump scoping per Q75): the selector subscribes to
+    the CURRENTLY-ACTIVE exit's per-peer hub-failover **endpoint-list-exhaustion**
+    signal (`SetOnExhausted`, T253) and, when that exit FULLY fails — every one of
+    its configured endpoints tried and down, distinct from the within-concentrator
+    single/partial-endpoint T57 failover (Q72) which stays inside the controller —
+    automatically `Switch`es egress to the first **healthy** warm-standby
+    exit-capable peer in config order (healthy = WG session established AND at least
+    one path up), reusing the same steal-on-insert repoint (no re-handshake — the
+    standby is already warm). Because T253's signal also fires for a
+    single-endpoint concentrator (its sole endpoint allDown past the dwell),
+    auto-promotion is exercised even for a one-endpoint-per-concentrator config.
+    The trigger is **re-subscribed on every switch** (manual or auto) so it always
+    tracks the current active exit; a stale signal for a peer egress has already
+    moved off is a no-op (an active-guard). The callback fires OUTSIDE the
+    controller's own lock (`hubFailover.check` releases it before invoking the
+    subscriber), so the selector taking its own lock — and re-subscribing, which
+    re-takes controller locks — cannot deadlock against the firing poll loop
+    (`s.mu` → `controller.mu` ordering, never inverted).
+    - **MANUAL WINS**: an operator's manual switch during or after a promotion
+      stands; auto-promotion never overrides a standing choice beyond moving egress
+      off a dead exit.
+    - **NO auto-failback** (anti-flap): a promoted exit stays active until IT
+      itself fully fails or the operator switches — the selector does NOT
+      auto-fail-BACK to the original when it recovers, so an intermittent
+      partial/full recovery of the original never flaps egress. Return to a
+      preferred exit is operator-driven.
+    - **No healthy standby**: if no warm standby is healthy, egress stays on the
+      failed exit (nothing to promote to) and the condition is logged — the
+      selector does not thrash.
+    - **No persistence** (Q74): auto-promotion does not rewrite the boot default;
+      on restart the edge still boots to the config-default (first) exit.
 - **WG-session liveness signal** (`wanbond_session_established`, T101,
   `session.go`). The per-path liveness plane (probes) tells you a path's
   **transport** is reachable; it says nothing about whether the **inner**
