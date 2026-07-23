@@ -67,8 +67,13 @@ package e2e
 //	    exit-b, exit-a untouched;
 //	(6) Q75 auto-promotion: kill ALL of exit-b's remaining endpoints (exhaustion) → the
 //	    edge auto-promotes exit-a, activeExit becomes exit-a, the switch is logged
-//	    reason=auto-promotion; a subsequent PARTIAL recovery of exit-b does NOT
-//	    auto-fail-back (activeExit stays exit-a).
+//	    reason=auto-promotion; then a PARTIAL recovery of exit-b (restore .3) drives exit-b
+//	    back to HEALTHY — the auto-promotion health gate's own predicate: session established
+//	    AND a path up (observed FALSE->TRUE within a derived budget, activeExit asserted to
+//	    stay exit-a throughout the wait) — and STILL does NOT auto-fail-back (activeExit holds
+//	    exit-a through a further steady-state dwell). Proving exit-b healthy-again FIRST makes
+//	    the no-failback assertion non-vacuous: a still-unhealthy exit-b is not a promotion
+//	    candidate, so a hypothetical failback regression could not fire against it.
 //
 // HARDWARE TIER — DO NOT RUN IN THE DEFAULT GATE. Like every //go:build e2e test here it
 // needs root, /dev/net/tun, and network namespaces; it is compiled and vet/lint GREEN
@@ -189,6 +194,23 @@ const mcSettle = 3 * time.Second
 var mcEndpointFailoverBudget = PLivenessFailoverBudget +
 	mcSettle +
 	time.Duration(PLivenessUpSuccesses)*PLivenessProbeInterval +
+	6*time.Second
+
+// mcBHealthyAgainBudget bounds exit-b's return to HEALTHY (per the auto-promotion health
+// gate: session established + at least one path up) after the phase-(6) partial recovery
+// (restore .3). The session-established half is already true (it survives the outage within
+// RejectAfterTime); the gating half is the LIVENESS-PLANE UP-recovery — once exit-b's
+// keepalive traffic resumes over the restored underlay address, a path's prober must
+// re-detect it UP. It composes the daemon's own timing constants (the D16 single-source-of-
+// truth style, not a guessed sleep), with generous shared-host slack over the ~1.5s MEASURED
+// on o3:
+//
+//	DefaultUpSuccesses*DefaultProbeInterval (path UP-recovery detect once keepalive resumes) 0.6s
+//	+ mcSettle                              (probe/keepalive resume + EWMA warm-up headroom)  3.0s
+//	+ 6s                                    (shared-host PPS/scheduling jitter)
+//	                                        ≈ 9.6s
+var mcBHealthyAgainBudget = time.Duration(PLivenessUpSuccesses)*PLivenessProbeInterval +
+	mcSettle +
 	6*time.Second
 
 // mcAutoPromoteBudget bounds Q75 auto-promotion after exit-b's endpoints are ALL killed:
@@ -335,7 +357,41 @@ func TestMultiConcentratorWarmStandby(t *testing.T) {
 	// No auto-fail-back: bring exit-b PARTIALLY back (restore .3). exit-b re-establishes,
 	// but egress must STAY on exit-a — a promoted exit holds until it itself exhausts.
 	f.concB.addAddr(mcConcB1IP)
+	recoverStart := time.Now()
 	t.Logf("(6) partial recovery of exit-b (restored %s); activeExit must NOT fail back", mcConcB1IP)
+	// First PROVE exit-b is HEALTHY AGAIN, otherwise the no-failback dwell is vacuous: a
+	// still-down exit-b can never trigger a failback-on-recovery regression, so a dwell that
+	// only checks activeExit while exit-b is down would pass even if such a regression
+	// existed. "Healthy again" is not a spare invention here — it is EXACTLY the predicate
+	// the auto-promotion selector's own health gate (device.deviceExitHealth.healthy) keys
+	// on for a warm-standby candidate: its WG session is established (last handshake within
+	// RejectAfterTime) AND at least one of its paths is up. A failback-on-recovery
+	// regression, if it existed, would consult that same gate, so observing it flip to
+	// healthy makes the no-failback assertion non-vacuous in the precise operational sense.
+	//
+	// The session-established half alone is INSUFFICIENT: it survives a brief endpoint outage
+	// within RejectAfterTime, so it stays true across the whole phase and would resolve
+	// trivially. The PATH-UP half is the signal that genuinely flips on the .3 restore —
+	// measured on o3, at the instant of addAddr BOTH exit-b paths read DOWN (healthy=false),
+	// and a path recovers to UP ~1.5s later once exit-b's keepalive traffic resumes over the
+	// restored underlay address. So this wait is a real FALSE->TRUE health transition, not a
+	// tautology. Note exit-b's ACTIVE endpoint stays .4 (a standby exit does NOT re-home its
+	// active endpoint onto a restored address), which is why health — not active-endpoint
+	// identity — is the correct recovery signal.
+	//
+	// activeExit is asserted to STAY exit-a throughout the wait: a failback regression would
+	// flip ActiveExit to exit-b, so the combined predicate would never hold and readSnapUntil
+	// fails here (its last frame carries the offending activeExit). Only once exit-b is proven
+	// healthy again AND no failback has occurred do we enter the steady-state dwell below, so
+	// the dwell observes 'exit-b healthy again AND no failback', not 'no failback while exit-b
+	// may still be down'.
+	reest := readSnapUntil(t, readSnap, "exit-b healthy again (session established + a path up) AND activeExit still exit-a", mcBHealthyAgainBudget,
+		func(s monitor.MonitorSnapshot) bool {
+			return peerSessionEstablished(s, mcPeerB) && anyPeerPathUp(s, mcPeerB) && s.ActiveExit == mcPeerA
+		})
+	t.Logf("(6) exit-b healthy again (session established + a path up) %v after partial recovery (budget %v); activeExit still %q — now dwelling to confirm no auto-fail-back",
+		time.Since(recoverStart).Round(time.Millisecond), mcBHealthyAgainBudget, reest.ActiveExit)
+
 	const noFailbackDwell = 6 * time.Second
 	deadline := time.Now().Add(noFailbackDwell)
 	for time.Now().Before(deadline) {
@@ -862,6 +918,19 @@ func peerPathCount(s monitor.MonitorSnapshot, peer string) int {
 		}
 	}
 	return n
+}
+
+// anyPeerPathUp reports whether peer has at least one path currently up — the liveness-plane
+// half of the auto-promotion health gate (device.deviceExitHealth.healthy: session
+// established AND some path not down). Used to observe exit-b's FALSE->TRUE health transition
+// after its underlay address is restored (phase 6 no-auto-fail-back).
+func anyPeerPathUp(s monitor.MonitorSnapshot, peer string) bool {
+	for _, p := range s.Paths {
+		if p.Peer == peer && p.Up {
+			return true
+		}
+	}
+	return false
 }
 
 func fecPeers(s monitor.MonitorSnapshot) []string {
