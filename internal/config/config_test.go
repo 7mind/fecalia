@@ -1534,6 +1534,7 @@ func fillExamplePlaceholders(s string) string {
 		"<base64 concentrator-B public key>", testKey(16),
 		"<base64 32-byte PSK for hub-a>", testKey(17),
 		"<base64 32-byte PSK for hub-b>", testKey(18),
+		"<base64 32-byte outer-control PSK, same on all ends>", testKey(3),
 	)
 	return r.Replace(s)
 }
@@ -1818,6 +1819,87 @@ func TestExampleConfigLoads(t *testing.T) {
 			t.Fatalf("path 1 (5g, strict standby) ride_through = %s, want 0 (unset)", cfg.Paths[1].RideThrough)
 		}
 	})
+}
+
+// readInstallMD returns the verbatim content of the repo's docs/install.md, so
+// TestInstallMDMultiConcentratorEdgeExampleLoads exercises the ACTUAL shipped
+// doc rather than a hand-copied literal that could silently drift from it.
+func readInstallMD(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "install.md"))
+	if err != nil {
+		t.Fatalf("read docs/install.md: %v", err)
+	}
+	return string(raw)
+}
+
+// extractFencedTOMLAfter returns the content of the first ```toml fenced code
+// block that appears after headingMarker in a markdown document — unlike
+// extractExampleSection (which uncomments a "#"-prefixed block inside
+// wanbond.example.toml), docs/install.md's worked examples are already live,
+// un-commented TOML, so no uncommenting step applies here.
+func extractFencedTOMLAfter(t *testing.T, content, headingMarker string) string {
+	t.Helper()
+	idx := strings.Index(content, headingMarker)
+	if idx < 0 {
+		t.Fatalf("heading %q not found in docs/install.md", headingMarker)
+	}
+	rest := content[idx:]
+	const fenceOpen = "```toml\n"
+	start := strings.Index(rest, fenceOpen)
+	if start < 0 {
+		t.Fatalf("no ```toml fence found after heading %q in docs/install.md", headingMarker)
+	}
+	rest = rest[start+len(fenceOpen):]
+	end := strings.Index(rest, "\n```")
+	if end < 0 {
+		t.Fatalf("unterminated ```toml fence after heading %q in docs/install.md", headingMarker)
+	}
+	return rest[:end]
+}
+
+// TestInstallMDMultiConcentratorEdgeExampleLoads verifies that docs/install.md's
+// "Multi-concentrator edge (G28)" worked example — read from the ACTUAL shipped
+// doc, not a hand-copied literal — loads and validates. This is the fixture the
+// operator actually copies; wanbond.example.toml's own (commented-out)
+// multi-concentrator-edge example is covered separately by
+// TestExampleConfigLoads/multi_concentrator_edge, but that extraction never
+// touches docs/install.md, so a doc-only edit could drift from the shipped
+// validator undetected without this test (T262).
+func TestInstallMDMultiConcentratorEdgeExampleLoads(t *testing.T) {
+	content := readInstallMD(t)
+	body := extractFencedTOMLAfter(t, content,
+		"### Multi-concentrator edge (G28) — multiple exit-capable concentrators")
+	body = fillExamplePlaceholders(body)
+	path := writeConfig(t, 0o600, body)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load docs/install.md multi-concentrator edge example:\n%s\n\nerror: %v", body, err)
+	}
+	if cfg.Role != RoleEdge {
+		t.Fatalf("role = %q, want edge", cfg.Role)
+	}
+	if got := len(cfg.WireGuard.Peers); got != 2 {
+		t.Fatalf("peers = %d, want 2", got)
+	}
+	p0, p1 := cfg.WireGuard.Peers[0], cfg.WireGuard.Peers[1]
+	if p0.Name != "hub-a" {
+		t.Errorf("peer 0 name = %q, want %q", p0.Name, "hub-a")
+	}
+	if p1.Name != "hub-b" {
+		t.Errorf("peer 1 name = %q, want %q", p1.Name, "hub-b")
+	}
+	for i, p := range cfg.WireGuard.Peers {
+		if p.Mode != PeerModeDefaultRoute {
+			t.Errorf("peer %d mode = %q, want %q", i, p.Mode, PeerModeDefaultRoute)
+		}
+	}
+	if !p0.PSK.IsSet() || !p1.PSK.IsSet() {
+		t.Fatal("expected both peers to carry a psk")
+	}
+	if p0.PSK.Bytes() == p1.PSK.Bytes() {
+		t.Fatal("expected distinct per-peer psks per the documented example, got equal")
+	}
 }
 
 // TestMonitorDefaultOff is the T160/Q45 default-unchanged case: a config that
