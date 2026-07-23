@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -412,26 +413,17 @@ func TestMonitorWire_PerPeerEndpointGroupsSessionsActiveExit(t *testing.T) {
 		t.Fatalf("MultiPeer = false, want true for a 2-peer Source")
 	}
 
-	// 3 total endpoints: east's 2 + west's 1, grouped in configured (ids) order.
-	if len(snap.Endpoints) != 3 {
-		t.Fatalf("endpoints = %+v, want 3 (east x2 + west x1)", snap.Endpoints)
+	// Endpoints must appear as one ordered active/standby section per peer, side by side in
+	// CONFIGURED order (docs/design.md): east's 2 entries (its own active/standby shape) first,
+	// then west's 1 entry — not merely bucketable by peer. Assert the exact slice so a
+	// nondeterministic-order regression (e.g. iterating ctrls as a bare map) fails deterministically.
+	want := []monitor.EndpointSnapshot{
+		{Peer: "east", Address: "203.0.113.10:51820", Active: true},
+		{Peer: "east", Address: "198.51.100.10:51820", Active: false},
+		{Peer: "west", Address: "203.0.113.20:51820", Active: true},
 	}
-	byPeer := map[string][]monitor.EndpointSnapshot{}
-	for _, e := range snap.Endpoints {
-		byPeer[e.Peer] = append(byPeer[e.Peer], e)
-	}
-	east, west := byPeer["east"], byPeer["west"]
-	if len(east) != 2 || len(west) != 1 {
-		t.Fatalf("endpoint groups = east:%d west:%d, want 2/1: %+v", len(east), len(west), snap.Endpoints)
-	}
-	if !east[0].Active || east[1].Active {
-		t.Fatalf("east group active flags = %+v, want [0] active", east)
-	}
-	if east[0].Address != "203.0.113.10:51820" || east[1].Address != "198.51.100.10:51820" {
-		t.Fatalf("east group addresses = %+v, want the configured order preserved", east)
-	}
-	if !west[0].Active || west[0].Address != "203.0.113.20:51820" {
-		t.Fatalf("west group = %+v, want its sole entry active with the configured address", west)
+	if !reflect.DeepEqual(snap.Endpoints, want) {
+		t.Fatalf("endpoints = %+v, want exact ordered slice %+v", snap.Endpoints, want)
 	}
 
 	// peerSessions mirrors metrics.PeerSessions(): one entry per bound peer.
@@ -467,25 +459,16 @@ func TestMonitorWire_PerPeerEndpointsRedactedKeepsGroupingAndActiveExit(t *testi
 	if !snap.AddressingHidden {
 		t.Fatalf("AddressingHidden = false, want true when not revealed")
 	}
-	if len(snap.Endpoints) != 3 {
-		t.Fatalf("endpoints = %+v, want 3 (east x2 + west x1)", snap.Endpoints)
+	// Same exact-order assertion as the unredacted test (docs/design.md's configured-order
+	// invariant survives redaction): east's 2 entries then west's 1, addresses blanked but peer
+	// grouping and active/standby flags intact.
+	want := []monitor.EndpointSnapshot{
+		{Peer: "east", Address: "", Active: true},
+		{Peer: "east", Address: "", Active: false},
+		{Peer: "west", Address: "", Active: true},
 	}
-	byPeer := map[string][]monitor.EndpointSnapshot{}
-	for _, e := range snap.Endpoints {
-		if e.Address != "" {
-			t.Fatalf("endpoint address must be blanked when redacted, got %+v", snap.Endpoints)
-		}
-		byPeer[e.Peer] = append(byPeer[e.Peer], e)
-	}
-	east, west := byPeer["east"], byPeer["west"]
-	if len(east) != 2 || len(west) != 1 {
-		t.Fatalf("endpoint groups (redacted) = east:%d west:%d, want 2/1: %+v", len(east), len(west), snap.Endpoints)
-	}
-	if !east[0].Active || east[1].Active {
-		t.Fatalf("east group active flags (redacted) = %+v, want [0] active", east)
-	}
-	if !west[0].Active {
-		t.Fatalf("west group (redacted) = %+v, want its sole entry active", west)
+	if !reflect.DeepEqual(snap.Endpoints, want) {
+		t.Fatalf("endpoints (redacted) = %+v, want exact ordered slice %+v", snap.Endpoints, want)
 	}
 
 	// activeExit is a peer NAME, never redacted.
