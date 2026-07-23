@@ -750,7 +750,8 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// single-IP-literal edge, or a bind without the probe transport. Started AFTER dev.Up so the
 	// engine peer the re-handshake / endpoint-install look up exists (IpcSet added it above). Close
 	// stops both before dev.Close, like the probe/reconcile loops.
-	stopHubFailover, stopResolution, hubFailoverCtrls := startFailoverAndResolution(cfg, mpBind, perPeerProbers, ids, dev, boot, clg)
+	failoverDeps := deviceFailoverDeps{cfg: cfg, mp: mpBind, perPeerProbers: perPeerProbers, dev: dev, lg: clg}
+	stopHubFailover, stopResolution, hubFailoverCtrls := startFailoverAndResolution(cfg, failoverDeps, ids, boot, clg)
 	// The [monitor] endpoints provider renders ONE controller's flattened endpoint list (the monitor
 	// contract is a single flat list; per-peer endpoint groups are a later task). Pick the FIRST
 	// eligible peer's controller in configured order, preserving the pre-T253 single-controller

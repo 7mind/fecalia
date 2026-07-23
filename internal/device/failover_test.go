@@ -800,19 +800,128 @@ func TestExhaustionSignalSingleEndpoint(t *testing.T) {
 		t.Fatalf("single-endpoint exhaustion re-fired while latched, want 1, got %d", exhaustions)
 	}
 
-	// Recovery clears the latch; a fresh outage re-signals.
+	// Recovery clears the latch AND the down-onset. A FRESH MID-LIFE outage must get its OWN full settle
+	// dwell measured from the transition INTO allDown — NOT fire on the first allDown reading. A single-
+	// endpoint peer never switches, so its lastSwitch is frozen at construction; gating exhaustion on
+	// lastSwitch would exhaust a fresh sub-second blackout blip mid-life (only the BOOT outage would ever
+	// get the dwell), and T269's sticky auto-promotion would then permanently move egress off this exit.
 	hp[0].(*fakeHealth).state = telemetry.StateUp
 	hp[1].(*fakeHealth).state = telemetry.StateUp
 	h.check()
+
+	// Fresh outage onset. The FIRST allDown reading — before the settle dwell elapses relative to THIS
+	// onset — must NOT exhaust, even though lastSwitch is now ancient (construction time).
 	hp[0].(*fakeHealth).state = telemetry.StateDown
 	hp[1].(*fakeHealth).state = telemetry.StateDown
-	clk.advance(testSettle + time.Second)
+	h.check()
+	if exhaustions != 1 {
+		t.Fatalf("fresh mid-life outage exhausted on its FIRST allDown reading (dwell not measured from the outage onset), want 1, got %d", exhaustions)
+	}
+	// Still within the dwell relative to the onset: no exhaustion yet.
+	clk.advance(testSettle - time.Millisecond)
+	h.check()
+	if exhaustions != 1 {
+		t.Fatalf("fresh mid-life outage exhausted within the settle dwell, want 1, got %d", exhaustions)
+	}
+	// Past the dwell relative to the OUTAGE ONSET: now it fires, exactly once.
+	clk.advance(2 * time.Millisecond)
 	h.check()
 	if exhaustions != 2 {
-		t.Fatalf("fresh single-endpoint outage exhaustion total=%d, want 2", exhaustions)
+		t.Fatalf("fresh single-endpoint outage exhaustion total=%d, want 2 (must fire once the onset dwell elapses)", exhaustions)
 	}
 	// Still no round-robin action across the whole single-endpoint lifetime.
 	if rem.calls != 0 || handshakes != 0 || h.idx != 0 {
 		t.Fatalf("single-endpoint peer took round-robin action over its lifetime: remote=%d handshakes=%d idx=%d, want 0,0,0", rem.calls, handshakes, h.idx)
+	}
+}
+
+// fakeFailoverDeps is a seam-injected failoverDeps for the per-peer wiring test: it hands each peer
+// index its OWN fakeHealth slice and OWN recordingRemote, with no-op rehandshake/install and a shared
+// fake clock. It lets the test drive one peer's liveness down and assert that ONLY that peer's
+// controller reacts and repoints ITS OWN remote — the per-peer isolation contract (D100).
+type fakeFailoverDeps struct {
+	healthByPeer [][]hubHealth
+	remotes      []*recordingRemote
+	clk          telemetry.Clock
+}
+
+func (d *fakeFailoverDeps) health(i int) []hubHealth                  { return d.healthByPeer[i] }
+func (d *fakeFailoverDeps) remote(i int, _ string, _ bool) peerRemote { return d.remotes[i] }
+func (d *fakeFailoverDeps) rehandshake(i int) rehandshake             { return func() {} }
+func (d *fakeFailoverDeps) install(i int, _ string, _ bool) func(netip.AddrPort) {
+	return func(netip.AddrPort) {}
+}
+func (d *fakeFailoverDeps) clock() telemetry.Clock { return d.clk }
+
+// TestStartFailoverAndResolutionPerPeerWiring is the T253 WIRING-level acceptance (D100): with TWO
+// eligible peers, startFailoverAndResolution must build one controller PER peer — each wired to ITS OWN
+// probers and ITS OWN remote seam — not merely the first-qualifying one. It fails under the mutation
+// that reintroduces an early return after the first ctrls[name]=ctrl (which the controller-level
+// acceptance tests, constructing controllers directly, cannot catch): that mutation drops peerB, so the
+// returned map has one entry and peerB is undriven. The isolation half — driving ONLY peerB's probers
+// down and observing that only peerB's controller reacts / repoints via its own seam — pins that each
+// controller reads its own liveness plane and moves its own remote.
+func TestStartFailoverAndResolutionPerPeerWiring(t *testing.T) {
+	epsA := mustEndpoints(t, "203.0.113.1:51820", "203.0.113.2:51820")
+	epsB := mustEndpoints(t, "198.51.100.1:51820", "198.51.100.2:51820")
+	cfg := &config.Config{
+		Role: config.RoleEdge,
+		WireGuard: config.WireGuard{Peers: []config.Peer{
+			{Endpoints: epsA, EndpointSpecs: []config.EndpointSpec{{Addr: epsA[0]}, {Addr: epsA[1]}}},
+			{Endpoints: epsB, EndpointSpecs: []config.EndpointSpec{{Addr: epsB[0]}, {Addr: epsB[1]}}},
+		}},
+	}
+	ids := []config.PeerIdentity{{Name: "peerA"}, {Name: "peerB"}}
+	boot := bootEndpoints{specs: [][]failoverSpec{
+		{litSpec(t, "203.0.113.1:51820"), litSpec(t, "203.0.113.2:51820")},
+		{litSpec(t, "198.51.100.1:51820"), litSpec(t, "198.51.100.2:51820")},
+	}}
+	hpA := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	hpB := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	remA, remB := &recordingRemote{}, &recordingRemote{}
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	deps := &fakeFailoverDeps{
+		healthByPeer: [][]hubHealth{hpA, hpB},
+		remotes:      []*recordingRemote{remA, remB},
+		clk:          clk,
+	}
+
+	stopFailover, stopResolution, ctrls := startFailoverAndResolution(cfg, deps, ids, boot, discardLogger(t))
+	// Halt the per-peer failover goroutines started above so the test drives check() deterministically.
+	stopFailover()
+	stopResolution()
+
+	// BOTH eligible peers must get their OWN controller. A first-qualifying-only wiring (an early return
+	// after the first ctrls[name]=ctrl) would drop peerB and leave it undriven — exactly D100.
+	if len(ctrls) != 2 {
+		t.Fatalf("startFailoverAndResolution built %d controllers, want 2 (one PER eligible peer, not first-qualifying-only)", len(ctrls))
+	}
+	ctrlA, okA := ctrls["peerA"]
+	ctrlB, okB := ctrls["peerB"]
+	if !okA || !okB {
+		t.Fatalf("controllers keyed by name: peerA present=%v peerB present=%v, want both", okA, okB)
+	}
+
+	// Each controller reads its OWN prober set: driving ONLY peerB's paths down makes peerB's controller
+	// see hub loss while peerA's does not (no shared/cross-wired liveness plane).
+	hpB[0].(*fakeHealth).state = telemetry.StateDown
+	hpB[1].(*fakeHealth).state = telemetry.StateDown
+	if !ctrlB.allPathsDown() {
+		t.Fatalf("peerB controller not wired to peerB's own probers: allPathsDown=false after driving peerB down")
+	}
+	if ctrlA.allPathsDown() {
+		t.Fatalf("peerA controller reacted to peerB's probers (shared liveness plane): allPathsDown=true")
+	}
+
+	// Each controller repoints its OWN remote seam: past the settle dwell, peerB advances onto peerB's
+	// own standby via remB, while peerA (still up) never touches remA.
+	clk.advance(testSettle + time.Second)
+	ctrlB.check()
+	ctrlA.check()
+	if remB.calls != 1 || remB.last != epsB[1] {
+		t.Fatalf("peerB repoint: remB.calls=%d last=%v, want 1 and %v (peerB's own standby via its own seam)", remB.calls, remB.last, epsB[1])
+	}
+	if remA.calls != 0 {
+		t.Fatalf("peerA's remote moved (remA.calls=%d) when only peerB failed — per-peer remote seam not isolated", remA.calls)
 	}
 }

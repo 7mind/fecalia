@@ -139,6 +139,15 @@ type hubFailover struct {
 	// path recovers). A MULTI-endpoint peer is EXHAUSTED once this reaches the flattened list length —
 	// a full wrap in which every configured endpoint was tried and found down (R267). Guarded by mu.
 	downAdvances int
+	// downSince is the onset of the CURRENT hub-loss episode — set on the transition INTO allDown
+	// (checkLocked, when the previous reading was not allDown) and cleared the instant any path
+	// recovers. It is the reference the SINGLE-endpoint exhaustion dwell is measured from, because a
+	// single-endpoint peer never switches, so its lastSwitch is frozen at construction and cannot time
+	// a mid-life outage's dwell: without this, a fresh sub-second blackout on a single-endpoint exit
+	// would raise exhaustion on its FIRST allDown reading and let T269's sticky auto-promotion
+	// permanently move egress off it (D100 follow-up). Zero when not currently in a hub-loss episode.
+	// Guarded by mu.
+	downSince time.Time
 }
 
 // failoverSpec is one ordered endpoint entry together with its CURRENT expansion. A
@@ -419,30 +428,48 @@ func (h *hubFailover) checkLocked() (raisedExhaustion bool) {
 
 	if !h.allDownLocked() {
 		// The active concentrator is reachable on at least one path: clear the down-episode
-		// tracking so a subsequent outage starts a fresh wrap/exhaustion evaluation, and re-arm
-		// the exhaustion latch so a fresh outage re-signals.
+		// tracking so a subsequent outage starts a fresh wrap/exhaustion evaluation, clear the
+		// down-onset so the next episode's dwell is timed from its OWN transition into allDown, and
+		// re-arm the exhaustion latch so a fresh outage re-signals.
 		h.downAdvances = 0
 		h.exhaustedLatched = false
+		h.downSince = time.Time{}
 		return false
 	}
 
-	// Settle dwell: give the currently-active endpoint time for its liveness to recover before
-	// advancing OR declaring exhaustion, so a not-yet-echoed (transiently DOWN) healthy endpoint is
-	// neither skipped nor prematurely declared exhausted. Applies at boot (endpoint 0) and after
-	// every switch, and gates BOTH the round-robin advance and the exhaustion signal.
 	now := h.clock.Now()
-	if now.Sub(h.lastSwitch) < h.settle {
-		return false
+	// Record the ONSET of this hub-loss episode (the transition INTO allDown). The single-endpoint
+	// exhaustion dwell is measured from this onset — see the total == 1 branch below.
+	if h.downSince.IsZero() {
+		h.downSince = now
 	}
 
 	// GUARD (total == 1, single-endpoint peer): take NO round-robin action — no advance, no remote
 	// repoint, no re-handshake — so a one-concentrator, single-endpoint deployment is byte-for-byte
-	// the pre-T57 behaviour. Its sole endpoint being allDown past the dwell IS endpoint-list
-	// exhaustion (R267), so the signal — and ONLY the signal — is raised for it. The exhaustion
-	// detection therefore runs for total == 1 too, WITHOUT relaxing the no-advance/no-repoint/
-	// no-rehandshake guard.
+	// the pre-T57 behaviour. Its sole endpoint being allDown persisting PAST the settle dwell IS
+	// endpoint-list exhaustion (R267), so the signal — and ONLY the signal — is raised for it. The
+	// dwell here is measured from the OUTAGE ONSET (downSince), NOT lastSwitch: a single-endpoint peer
+	// never switches, so lastSwitch is frozen at construction and would only ever dwell the BOOT
+	// outage — a mid-life fresh outage would then exhaust on its first allDown reading. Gating on the
+	// onset gives every fresh outage its full settle dwell, so a sub-second blackout blip cannot raise
+	// exhaustion (which T269's sticky auto-promotion would treat as a permanent move off this exit).
 	if total < 2 {
+		if now.Sub(h.downSince) < h.settle {
+			return false
+		}
 		return h.raiseExhaustedLocked()
+	}
+
+	// Settle dwell (total >= 2): give the currently-active endpoint time for its liveness to recover
+	// before advancing, so a not-yet-echoed (transiently DOWN) healthy endpoint is not skipped. Applies
+	// at boot (endpoint 0) and after every switch. This gate is measured from lastSwitch (re-armed on
+	// every advance), so a full exhaustion wrap already requires `total` settle-separated advances of
+	// CONTINUOUS hub loss (>= total*settle of persistence). That advance cadence already imposes
+	// settle-scale onset persistence, so the onset (downSince) gate is deliberately NOT additionally
+	// applied to the multi-endpoint wrap path: it would be redundant and would perturb the existing
+	// multi-endpoint advance timing.
+	if now.Sub(h.lastSwitch) < h.settle {
+		return false
 	}
 
 	// MULTI-endpoint peer (total >= 2): advance in FLATTENED order from the active entry's current
@@ -700,6 +727,73 @@ func peerNeedsHubFailover(peer config.Peer) bool {
 	return len(peer.Endpoints) >= 2
 }
 
+// failoverDeps supplies, per eligible peer index i, the engine/bind collaborators a hub-failover
+// controller needs — that peer's OWN liveness plane, remote-repoint seam, WG rehandshake, engine-
+// endpoint install, and clock. It abstracts *bind.Multipath + *awgdevice.Device + the per-(peer,path)
+// prober sets OUT of the per-peer wiring loop (startFailoverAndResolution), so that loop — and its
+// per-peer isolation contract (D100: EVERY eligible peer gets its own controller, none dropped) — is
+// exercisable by a wiring test with fakes, while production wires it to the real bind + engine
+// (deviceFailoverDeps). i indexes cfg.WireGuard.Peers; name is ids[i].Name; multiExit is len(peers) > 1
+// (whether the per-peer T252 seam applies rather than the bind-global legacy path).
+type failoverDeps interface {
+	// health is peer i's OWN liveness plane (one hubHealth per that peer's probe path). An EMPTY slice
+	// means peer i has no probe transport, so the loop builds no controller for it (pre-G5 behaviour).
+	health(i int) []hubHealth
+	// remote is peer i's repoint seam: the bind-global SetPeerRemote for a single-peer edge, or the
+	// per-peer SetPeerRemoteFor seam (keyed by name) for a multi-exit edge (D100).
+	remote(i int, name string, multiExit bool) peerRemote
+	// rehandshake is peer i's WG re-handshake, keyed by that peer's public key.
+	rehandshake(i int) rehandshake
+	// install is peer i's engine-endpoint install (the FIRST-RESOLVE INSTALL PATH, R70): the plain
+	// engine install for a single-peer edge, or the seeded per-peer install path for a multi-exit edge.
+	install(i int, name string, multiExit bool) func(netip.AddrPort)
+	// clock is the controllers' time source (production: the system clock).
+	clock() telemetry.Clock
+}
+
+// deviceFailoverDeps is the PRODUCTION failoverDeps: it wires each eligible peer's controller to the
+// real bind (mp), that peer's per-(peer,path) prober set (perPeerProbers[i]), and the engine (dev),
+// exactly as the pre-refactor inline loop did — the seam selection (bind-global vs per-peer T252) and
+// the public-key-keyed rehandshake/install are byte-for-byte identical.
+type deviceFailoverDeps struct {
+	cfg            *config.Config
+	mp             *bind.Multipath
+	perPeerProbers [][]*telemetry.Prober
+	dev            *awgdevice.Device
+	lg             log.Logger
+}
+
+func (d deviceFailoverDeps) health(i int) []hubHealth {
+	probers := d.perPeerProbers[i]
+	health := make([]hubHealth, len(probers))
+	for j, pr := range probers {
+		health[j] = pr
+	}
+	return health
+}
+
+func (d deviceFailoverDeps) remote(i int, name string, multiExit bool) peerRemote {
+	if multiExit {
+		return peerRemoteFor{mp: d.mp, name: name, log: d.lg.Component("hubfailover")}
+	}
+	return d.mp
+}
+
+func (d deviceFailoverDeps) rehandshake(i int) rehandshake {
+	return deviceRehandshake(d.dev, d.cfg.WireGuard.Peers[i].PublicKey)
+}
+
+func (d deviceFailoverDeps) install(i int, name string, multiExit bool) func(netip.AddrPort) {
+	hlg := d.lg.Component("hubfailover")
+	pk := d.cfg.WireGuard.Peers[i].PublicKey
+	if multiExit {
+		return deviceInstallEndpointFor(d.dev, d.mp, name, pk, hlg)
+	}
+	return deviceInstallEndpoint(d.dev, pk, hlg)
+}
+
+func (d deviceFailoverDeps) clock() telemetry.Clock { return telemetry.SystemClock{} }
+
 // startFailoverAndResolution builds and starts, PER ELIGIBLE PEER, an edge-side hub-failover monitor
 // AND its re-resolution controller (T253/D100), returning two AGGREGATE stoppers (device.Close invokes
 // both — each fans out to every per-peer loop) AND the per-peer controllers keyed by stable peer name.
@@ -727,7 +821,7 @@ func peerNeedsHubFailover(peer config.Peer) bool {
 // re-resolution loop's first success adopts it through the FIRST-RESOLVE INSTALL PATH (ctrl.install,
 // R70) — now correctly routed per-peer, so a NON-primary endpoint-less peer is driven by its OWN
 // controller instead of never (or cross-wiring onto the primary's virt): the D100 mechanism.
-func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, perPeerProbers [][]*telemetry.Prober, ids []config.PeerIdentity, dev *awgdevice.Device, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func(), ctrls map[string]*hubFailover) {
+func startFailoverAndResolution(cfg *config.Config, deps failoverDeps, ids []config.PeerIdentity, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func(), ctrls map[string]*hubFailover) {
 	noop := func() {}
 	if cfg.Role != config.RoleEdge {
 		return noop, noop, nil
@@ -741,39 +835,27 @@ func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, perPeerP
 		if !peerNeedsHubFailover(peer) {
 			continue
 		}
-		probers := perPeerProbers[i]
-		if len(probers) == 0 {
+		health := deps.health(i)
+		if len(health) == 0 {
 			// This peer has no probe transport (a bind built without probers): no liveness plane, so
 			// no hub-loss detector. Skip it — the controllerless behaviour is byte-for-byte pre-G5.
 			continue
 		}
-		health := make([]hubHealth, len(probers))
-		for j, pr := range probers {
-			health[j] = pr
-		}
 		name := ids[i].Name
 		hlg := lg.Component("hubfailover")
 
-		// Remote + install seam selection: the multi-exit edge routes ONLY this peer's repoint/install
-		// through SetPeerRemoteFor / the seeded install path (D100); the single-peer edge keeps the
-		// bind-global SetPeerRemote / plain engine-install legacy path intact.
-		var remote peerRemote = mp
-		install := deviceInstallEndpoint(dev, peer.PublicKey, hlg)
-		if multiExit {
-			remote = peerRemoteFor{mp: mp, name: name, log: hlg}
-			install = deviceInstallEndpointFor(dev, mp, name, peer.PublicKey, hlg)
-		}
-
-		// The engine-endpoint install used by the FIRST-RESOLVE INSTALL PATH (R70) is a REQUIRED
-		// constructor collaborator: boot adoption of an endpoint-less peer installs the resolved
-		// endpoint on the engine peer through it, then rehandshakes. Passing it at construction
-		// (rather than patching a field afterwards) makes a lost wiring line a compile error, so it
-		// can never silently degrade to a SetPeerRemote that leaves the engine peer endpoint-less.
+		// The remote-repoint + engine-endpoint install seams come from deps: on a MULTI-EXIT edge the
+		// per-peer SetPeerRemoteFor / seeded install path (D100), on a single-peer edge the bind-global
+		// SetPeerRemote / plain engine install. The engine-endpoint install (the FIRST-RESOLVE INSTALL
+		// PATH, R70) is a REQUIRED constructor collaborator — boot adoption of an endpoint-less peer
+		// installs the resolved endpoint on the engine peer through it, then rehandshakes — so passing it
+		// at construction (not patching a field afterwards) keeps a lost wiring line a compile error.
 		ctrl := newHubFailoverFromSpecs(
-			boot.specs[i], health, remote,
-			deviceRehandshake(dev, peer.PublicKey),
-			install,
-			telemetry.SystemClock{}, hubFailoverSettle,
+			boot.specs[i], health,
+			deps.remote(i, name, multiExit),
+			deps.rehandshake(i),
+			deps.install(i, name, multiExit),
+			deps.clock(), hubFailoverSettle,
 			hlg,
 		)
 		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep) and the
