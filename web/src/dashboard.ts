@@ -5,6 +5,7 @@ import type {
   FECSnapshot,
   MonitorSnapshot,
   PathSnapshot,
+  PeerSessionSnapshot,
   ReseqSnapshot,
   SessionSnapshot,
 } from './types';
@@ -16,8 +17,10 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 //
 // Peer-label rule (mirrors metrics.md / types.ts's multiPeer contract):
 // single-bound-peer sources render ONE flat section with no peer label at
-// all; multi-peer (concentrator) sources group paths/FEC/reseq/aggregation
-// into one section PER peer, keyed off snapshot.peerNames.
+// all; multi-peer (concentrator) sources group paths/FEC/reseq/aggregation/
+// endpoints into one section PER peer, keyed off snapshot.peerNames (T259,
+// G28/M107), each carrying its own session state (from peerSessions) and an
+// ACTIVE-EXIT badge when that peer is snapshot.activeExit.
 
 interface PathBuffers {
   loss: number[];
@@ -237,7 +240,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
-  function renderEndpointsSection(endpoints: EndpointSnapshot[]): string {
+  function renderEndpointsSection(endpoints: EndpointSnapshot[], addressingHidden: boolean): string {
     // R242: an empty endpoint list (concentrator role, no configured
     // failover endpoints) omits the whole section — never render an empty
     // "active" row.
@@ -247,9 +250,17 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     const rows = endpoints
       .map((e) => {
         const style = e.active ? 'font-weight:600; color:#2e7d32;' : 'color:#666;';
+        // Q62: a blanked address (empty string) on a redacted (non-loopback)
+        // binding is the server-side redaction, not a data gap — render the
+        // same established placeholder copy as path addressing, never the
+        // raw empty string.
+        const addressCell =
+          e.address === '' && addressingHidden
+            ? `<span data-testid="endpoint-address-hidden">hidden on non-loopback binding</span>`
+            : escapeHtml(e.address);
         return `
         <div class="endpoint-row" data-testid="endpoint-row" data-active="${e.active}" style="${style}">
-          <span>${e.active ? 'ACTIVE' : 'standby'}</span> <span>${escapeHtml(e.address)}</span>
+          <span>${e.active ? 'ACTIVE' : 'standby'}</span> <span>${addressCell}</span>
         </div>`;
       })
       .join('');
@@ -260,6 +271,17 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
+  function renderPeerSessionCard(s: PeerSessionSnapshot): string {
+    const color = s.established ? '#2e7d32' : '#c62828';
+    return `
+      <div class="stat-group" data-kind="peer-session" data-testid="stat-group-peer-session">
+        <div class="peer-session-card" data-testid="peer-session-card" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; display:inline-block;">
+          <span style="color:${color}; font-weight:600;">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
+          <span> &middot; last handshake ${formatHandshakeAge(s.lastHandshakeSeconds, s.established)}</span>
+        </div>
+      </div>`;
+  }
+
   function renderSection(
     peerLabel: string | null,
     paths: PathSnapshot[],
@@ -267,10 +289,18 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     reseq: ReseqSnapshot[],
     aggregation: AggregationSnapshot[],
     addressingHidden: boolean,
+    endpoints: EndpointSnapshot[] = [],
+    peerSession?: PeerSessionSnapshot,
+    isActiveExit = false,
   ): string {
     const keyPrefix = peerLabel ?? ' flat';
+    const activeExitBadge = isActiveExit
+      ? `<span class="active-exit-badge" data-testid="active-exit-badge" style="text-transform:uppercase; font-weight:600; color:#fff; background:#2e7d32; border-radius:4px; padding:0.1em 0.5em; margin-left:0.5em;">ACTIVE-EXIT</span>`
+      : '';
     const heading =
-      peerLabel !== null ? `<h3 class="peer-label" data-testid="peer-label">${escapeHtml(peerLabel)}</h3>` : '';
+      peerLabel !== null
+        ? `<h3 class="peer-label" data-testid="peer-label">${escapeHtml(peerLabel)}${activeExitBadge}</h3>`
+        : '';
     const aggregationGroup =
       aggregation.length > 0
         ? `
@@ -279,11 +309,18 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
         ${aggregation.map((a) => renderAggregationCard(a)).join('')}
       </div>`
         : '';
+    // Per-concentrator session state (T259, G28/M107): each peer's OWN
+    // WG-session health, sourced from MonitorSnapshot.peerSessions — distinct
+    // from the connection-scoped SessionSnapshot rendered once outside every
+    // section. Only present in grouped (multiPeer) mode.
+    const peerSessionGroup = peerSession ? renderPeerSessionCard(peerSession) : '';
+    const endpointsGroup = renderEndpointsSection(endpoints, addressingHidden);
     return `
       <section class="${peerLabel !== null ? 'dashboard-peer-section' : 'dashboard-flat-section'}"
                data-testid="${peerLabel !== null ? 'peer-section' : 'flat-section'}"
                ${peerLabel !== null ? `data-peer="${escapeHtml(peerLabel)}"` : ''}>
         ${heading}
+        ${peerSessionGroup}
         <div class="stat-group" data-kind="paths" data-testid="stat-group-paths">
           <h4>Paths</h4>
           <div style="display:flex; flex-wrap:wrap; gap:0.5em;">${paths.map((p) => renderPathCard(p, addressingHidden)).join('')}</div>
@@ -297,16 +334,20 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           ${reseq.map((r) => renderReseqCard(r)).join('')}
         </div>
         ${aggregationGroup}
+        ${endpointsGroup}
       </section>`;
   }
 
   function onSnapshot(snapshot: MonitorSnapshot): void {
     let sectionsHtml: string;
-    if (snapshot.multiPeer && snapshot.peerNames.length > 1) {
+    const grouped = snapshot.multiPeer && snapshot.peerNames.length > 1;
+    if (grouped) {
       const pathsByPeer = groupByPeer(snapshot.paths);
       const fecByPeer = groupByPeer(snapshot.fec);
       const reseqByPeer = groupByPeer(snapshot.reseq);
       const aggByPeer = groupByPeer(snapshot.aggregation);
+      const endpointsByPeer = groupByPeer(snapshot.endpoints);
+      const peerSessionsByPeer = groupByPeer(snapshot.peerSessions);
       sectionsHtml = snapshot.peerNames
         .map((peer) =>
           renderSection(
@@ -316,12 +357,17 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
             reseqByPeer.get(peer) ?? [],
             aggByPeer.get(peer) ?? [],
             snapshot.addressingHidden,
+            endpointsByPeer.get(peer) ?? [],
+            peerSessionsByPeer.get(peer)?.[0],
+            snapshot.activeExit !== '' && snapshot.activeExit === peer,
           ),
         )
         .join('');
     } else {
-      // Single-peer (edge): one flat section, no peer label — matches the
-      // metrics package's peer-label omission when only one peer is bound.
+      // Single-peer (edge): one flat section, no peer label, no per-peer
+      // endpoints/session/active-exit grouping — matches the metrics
+      // package's peer-label omission when only one peer is bound. Endpoints
+      // are rendered in their own top-level section below, as before T259.
       sectionsHtml = renderSection(
         null,
         snapshot.paths,
@@ -336,7 +382,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       ${renderDaemonHeader(snapshot.daemon)}
       ${renderWgKeyLine(snapshot.wgPublicKeyFingerprint)}
       ${sectionsHtml}
-      ${renderEndpointsSection(snapshot.endpoints)}
+      ${grouped ? '' : renderEndpointsSection(snapshot.endpoints, snapshot.addressingHidden)}
       <div class="stat-group" data-kind="session" data-testid="stat-group-session">
         <h4>WG Session</h4>
         ${renderSessionCard(snapshot.session)}

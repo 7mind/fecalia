@@ -6,6 +6,7 @@ import type {
   FECSnapshot,
   MonitorSnapshot,
   PathSnapshot,
+  PeerSessionSnapshot,
   ReseqSnapshot,
 } from './types';
 import { mountDashboard } from './dashboard';
@@ -63,6 +64,9 @@ function reseq(overrides: Partial<ReseqSnapshot> = {}): ReseqSnapshot {
     skipped: 0,
     resyncs: 0,
     rebaselines: 0,
+    holds: 0,
+    holdNanos: 0,
+    immediateReleases: 0,
     ...overrides,
   };
 }
@@ -83,6 +87,15 @@ function endpoint(overrides: Partial<EndpointSnapshot> = {}): EndpointSnapshot {
     peer: '',
     address: '',
     active: false,
+    ...overrides,
+  };
+}
+
+function peerSession(overrides: Partial<PeerSessionSnapshot> = {}): PeerSessionSnapshot {
+  return {
+    peer: '',
+    established: true,
+    lastHandshakeSeconds: 5,
     ...overrides,
   };
 }
@@ -120,6 +133,33 @@ function singlePeerSnapshot(): MonitorSnapshot {
     activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
+  };
+}
+
+/**
+ * T259/G28/M107: a 2-peer concentrator stream carrying per-peer endpoints,
+ * peerSessions, and activeExit — the shape the T259 per-concentrator
+ * grouping renders.
+ */
+function twoPeerConcentratorSnapshot(): MonitorSnapshot {
+  return {
+    paths: [path({ name: 'wan0', peer: 'peerA' }), path({ name: 'wan1', peer: 'peerB' })],
+    fec: [fec({ peer: 'peerA' }), fec({ peer: 'peerB' })],
+    reseq: [reseq({ peer: 'peerA' }), reseq({ peer: 'peerB' })],
+    aggregation: [aggregation({ peer: 'peerA' }), aggregation({ peer: 'peerB' })],
+    session: { established: true, lastHandshakeSeconds: 3 },
+    peerNames: ['peerA', 'peerB'],
+    multiPeer: true,
+    daemon: daemon({ role: 'concentrator' }),
+    endpoints: [
+      endpoint({ peer: 'peerA', address: 'hub-a1:51820', active: true }),
+      endpoint({ peer: 'peerA', address: 'hub-a2:51820', active: false }),
+      endpoint({ peer: 'peerB', address: 'hub-b1:51820', active: true }),
+    ],
+    peerSessions: [peerSession({ peer: 'peerA', established: true, lastHandshakeSeconds: 7 }), peerSession({ peer: 'peerB', established: false, lastHandshakeSeconds: 0 })],
+    activeExit: 'peerB',
+    wgPublicKeyFingerprint: 'ConcFp01',
+    addressingHidden: false,
   };
 }
 
@@ -293,5 +333,76 @@ describe('mountDashboard', () => {
     expect(container.querySelector('[data-testid="stat-group-endpoints"]')).toBeNull();
     expect(container.querySelector('[data-testid="endpoint-row"]')).toBeNull();
     expect(container.querySelector('[data-testid="role-badge"]')!.textContent).toBe('concentrator');
+  });
+
+  it('T259/G28/M107: groups endpoints and per-peer session state under each peer section, badging the activeExit peer and omitting the top-level endpoints section', () => {
+    const dashboard = mountDashboard(container);
+    dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+    const sections = container.querySelectorAll('[data-testid="peer-section"]');
+    expect(sections.length).toBe(2);
+    const [sectionA, sectionB] = Array.from(sections);
+
+    // Per-peer endpoints group, in configured order, nested inside that
+    // peer's own section — not duplicated at the top level.
+    expect(container.querySelectorAll('[data-testid="stat-group-endpoints"]').length).toBe(2);
+    const rowsA = sectionA.querySelectorAll('[data-testid="endpoint-row"]');
+    expect(rowsA.length).toBe(2);
+    expect(rowsA[0].textContent).toContain('hub-a1:51820');
+    expect(rowsA[1].textContent).toContain('hub-a2:51820');
+    const rowsB = sectionB.querySelectorAll('[data-testid="endpoint-row"]');
+    expect(rowsB.length).toBe(1);
+    expect(rowsB[0].textContent).toContain('hub-b1:51820');
+
+    // Per-peer session state (distinct from the connection-scoped session
+    // rendered once outside the sections) with each peer's own handshake age.
+    expect(sectionA.querySelector('[data-testid="peer-session-card"]')!.textContent).toContain('ESTABLISHED');
+    expect(sectionA.querySelector('[data-testid="peer-session-card"]')!.textContent).toContain('7s ago');
+    expect(sectionB.querySelector('[data-testid="peer-session-card"]')!.textContent).toContain('NOT ESTABLISHED');
+    expect(sectionB.querySelector('[data-testid="peer-session-card"]')!.textContent).toContain('never');
+
+    // ACTIVE-EXIT badge on peerB only (snapshot.activeExit === 'peerB').
+    expect(sectionA.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
+    expect(sectionB.querySelector('[data-testid="active-exit-badge"]')).not.toBeNull();
+    expect(sectionB.querySelector('[data-testid="peer-label"]')!.textContent).toContain('ACTIVE-EXIT');
+
+    // The flat top-level endpoints section (pre-T259 shape) is suppressed in
+    // grouped mode — every endpoint lives inside its own peer section.
+    const allEndpointRows = container.querySelectorAll('[data-testid="endpoint-row"]');
+    expect(allEndpointRows.length).toBe(3);
+  });
+
+  it('T259: renders the blanked-address redaction placeholder for a grouped (per-peer) endpoint on a non-loopback binding', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = twoPeerConcentratorSnapshot();
+    snapshot.addressingHidden = true;
+    snapshot.endpoints = [
+      endpoint({ peer: 'peerA', address: '', active: true }),
+      endpoint({ peer: 'peerB', address: '', active: true }),
+    ];
+    dashboard.onSnapshot(snapshot);
+
+    const placeholders = container.querySelectorAll('[data-testid="endpoint-address-hidden"]');
+    expect(placeholders.length).toBe(2);
+    for (const placeholder of Array.from(placeholders)) {
+      expect(placeholder.textContent).toContain('hidden on non-loopback binding');
+    }
+    expect(container.textContent).not.toContain('hub-a1:51820');
+  });
+
+  it('T259: a single-peer stream renders no per-peer grouping artifacts (no peer-session card, no active-exit badge)', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = singlePeerSnapshot();
+    snapshot.endpoints = [endpoint({ address: 'hub-a:51820', active: true })];
+    snapshot.peerSessions = [peerSession({ established: true, lastHandshakeSeconds: 9 })];
+    snapshot.activeExit = '';
+    dashboard.onSnapshot(snapshot);
+
+    // Flat-mode output is exactly as before T259: one top-level endpoints
+    // section, no per-peer session card, no active-exit badge.
+    expect(container.querySelectorAll('[data-testid="stat-group-endpoints"]').length).toBe(1);
+    expect(container.querySelector('[data-testid="peer-session-card"]')).toBeNull();
+    expect(container.querySelector('[data-testid="active-exit-badge"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="endpoint-row"]').length).toBe(1);
   });
 });

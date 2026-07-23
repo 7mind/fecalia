@@ -60,7 +60,11 @@ export interface AdaptiveFECStats {
   eligiblePaths: number;
 }
 
-/** Mirrors monitor.ReseqSnapshot: one per-peer resequencer counter set. */
+/**
+ * Mirrors monitor.ReseqSnapshot: one per-peer resequencer counter set.
+ * holds/holdNanos/immediateReleases (T242, D93) mirror reseq.Stats' HoL-stall
+ * / hold accounting verbatim.
+ */
 export interface ReseqSnapshot {
   peer: string;
   released: number;
@@ -70,6 +74,9 @@ export interface ReseqSnapshot {
   skipped: number;
   resyncs: number;
   rebaselines: number;
+  holds: number;
+  holdNanos: number;
+  immediateReleases: number;
 }
 
 /**

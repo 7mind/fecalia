@@ -80,6 +80,40 @@ const FULL_FRAME = `{
   "addressingHidden": false
 }`;
 
+// 2-peer concentrator binding, loopback-bound (addressing revealed): exercises
+// the T257/T259 additive fields — per-entry `peer` on `endpoints` (grouping
+// the flat hub-failover list per bound edge peer, in configured order), one
+// `peerSessions` entry per bound peer, and `activeExit` naming the peer
+// currently carrying the default route.
+const TWO_PEER_FRAME = `{
+  "paths": [
+    { "name": "wan0", "peer": "tokyo", "txBytes": 1000, "rxBytes": 2000, "throughputBps": 5000, "rttSeconds": 0.02, "jitterSeconds": 0.001, "loss": 0.01, "up": true, "bindMode": "device", "boundDevice": "eth0", "linkBandwidthBps": 1000000, "linkRttSeconds": 0.03 },
+    { "name": "wan1", "peer": "osaka", "txBytes": 500, "rxBytes": 900, "throughputBps": 2500, "rttSeconds": 0.04, "jitterSeconds": 0.002, "loss": 0.02, "up": true, "bindMode": "device", "boundDevice": "eth1", "linkBandwidthBps": 500000, "linkRttSeconds": 0.05 }
+  ],
+  "fec": [],
+  "reseq": [
+    { "peer": "tokyo", "released": 10, "droppedDup": 0, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 3, "holdNanos": 1500000, "immediateReleases": 1 },
+    { "peer": "osaka", "released": 20, "droppedDup": 1, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 0, "holdNanos": 0, "immediateReleases": 0 }
+  ],
+  "aggregation": [],
+  "session": { "established": true, "lastHandshakeSeconds": 12.5 },
+  "peerNames": ["tokyo", "osaka"],
+  "multiPeer": true,
+  "daemon": { "role": "concentrator", "version": "v0.1.0", "uptimeSeconds": 3600 },
+  "endpoints": [
+    { "peer": "tokyo", "address": "hub-a1:51820", "active": true },
+    { "peer": "tokyo", "address": "hub-a2:51820", "active": false },
+    { "peer": "osaka", "address": "hub-b1:51820", "active": true }
+  ],
+  "peerSessions": [
+    { "peer": "tokyo", "established": true, "lastHandshakeSeconds": 8 },
+    { "peer": "osaka", "established": false, "lastHandshakeSeconds": 0 }
+  ],
+  "activeExit": "osaka",
+  "wgPublicKeyFingerprint": "aGVsbG8gd29",
+  "addressingHidden": false
+}`;
+
 describe('MonitorSnapshot wire fixtures (T218)', () => {
   it('parses a redacted (non-loopback) frame: addressing is absent, endpoint addresses are blank', () => {
     const snapshot: MonitorSnapshot = JSON.parse(REDACTED_FRAME) as MonitorSnapshot;
@@ -143,5 +177,36 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     // @ts-expect-error -- wgPublicKey is deliberately not part of the contract
     const withPhantomKey: MonitorSnapshot = { ...(JSON.parse(FULL_FRAME) as MonitorSnapshot), wgPublicKey: 'full-key' };
     expect(withPhantomKey).toBeTruthy();
+  });
+
+  it('T257/T259: parses a 2-peer concentrator frame — per-entry peer on endpoints in configured order, one peerSessions entry per peer, and activeExit', () => {
+    const snapshot: MonitorSnapshot = JSON.parse(TWO_PEER_FRAME) as MonitorSnapshot;
+
+    expect(snapshot.multiPeer).toBe(true);
+    expect(snapshot.peerNames).toEqual(['tokyo', 'osaka']);
+
+    // endpoints: grouped per bound edge peer, configured order preserved
+    // both across peers and within each peer's own ordered active/standby set.
+    expect(snapshot.endpoints).toEqual([
+      { peer: 'tokyo', address: 'hub-a1:51820', active: true },
+      { peer: 'tokyo', address: 'hub-a2:51820', active: false },
+      { peer: 'osaka', address: 'hub-b1:51820', active: true },
+    ]);
+
+    // peerSessions: exactly one entry per bound peer.
+    expect(snapshot.peerSessions).toHaveLength(2);
+    expect(snapshot.peerSessions).toEqual([
+      { peer: 'tokyo', established: true, lastHandshakeSeconds: 8 },
+      { peer: 'osaka', established: false, lastHandshakeSeconds: 0 },
+    ]);
+
+    // activeExit names the peer currently carrying the default route.
+    expect(snapshot.activeExit).toBe('osaka');
+
+    // reseq HoL-stall/hold accounting (T242, D93) round-trips per peer.
+    expect(snapshot.reseq).toEqual([
+      { peer: 'tokyo', released: 10, droppedDup: 0, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 3, holdNanos: 1500000, immediateReleases: 1 },
+      { peer: 'osaka', released: 20, droppedDup: 1, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 0, holdNanos: 0, immediateReleases: 0 },
+    ]);
   });
 });
