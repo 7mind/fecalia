@@ -1306,13 +1306,30 @@ by `internal/device`:
   pass-through) and `linkBandwidthBps`/`linkRttSeconds` (config-declared, via
   a `monitor.Info` seam threaded from `device.Up`), both shown on any
   binding; a truncated WireGuard public-key `wgPublicKeyFingerprint` (any
-  binding — see *Security model*); and the REDACTABLE surface gated by the
-  server-side loopback verdict: a per-path `addressing` block (`source`,
-  `remote`) and an ordered `endpoints` hub-failover list (`address`,
-  `active`) whose addresses are omitted/blanked and `addressingHidden` set
-  true when the monitor is not loopback-bound. `monitor.Info.Endpoints` is a
-  LIVE per-snapshot provider (not captured once at construction), so a hub
-  failover after startup is reflected in the next pushed frame.
+  binding — see *Security model*); a `peerSessions` array mirroring
+  `metrics.Source.PeerSessions()` (T256/T257, G28/M106) — one entry per bound
+  peer's own WG-session health (`peer`, `established`,
+  `lastHandshakeSeconds`), following the same D58 peer-label back-compat rule
+  as `peerNames`/`multiPeer`: `peer` is `""` throughout on a single-bound-peer
+  config; an `activeExit` string (T254/T257) naming the exit-capable peer
+  currently carrying the default route on a multi-exit edge — sourced from
+  `exitSelector.ActiveExit()`, `""` on the concentrator role and on an edge
+  with no default-route ownership to report, and (being a peer NAME, never an
+  address) NOT part of the redactable surface; and the REDACTABLE surface
+  gated by the server-side loopback verdict: a per-path `addressing` block
+  (`source`, `remote`) and an ordered `endpoints` hub-failover list
+  (`peer`, `address`, `active`) whose addresses are omitted/blanked (while
+  `peer` and `active` survive) and `addressingHidden` set true when the
+  monitor is not loopback-bound. Since T257, `endpoints` is GROUPED per
+  bound edge peer — each entry's `peer` names the owning peer's OWN
+  hub-failover controller (`hubFailover.EndpointsSnapshot()`, keyed by stable
+  peer name, T253), so a multi-exit edge renders one ordered active/standby
+  section per peer side by side in configured order; `peer` is `""`
+  throughout on a single-bound-peer config, keeping that shape byte-compatible
+  with the pre-T257 flat list. `monitor.Info.Endpoints` and
+  `monitor.Info.ActiveExit` are both LIVE per-snapshot providers (not captured
+  once at construction), so a hub failover or an exit switch/auto-promotion
+  after startup is reflected in the next pushed frame.
 - `internal/wireaudit` — the requirement-6 DPI wire-format audit (pcap parse +
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
@@ -1575,10 +1592,11 @@ misbehaves subtly. Agents and contributors must preserve them.
       switch — and an idempotent same-name switch — is **200**
       `{"activeExit": "<name>"}`.
   - **Addressing redaction gate (Q62/Q64) — server-side, not client-side.**
-    Per-path `addressing` (`source`, `remote`) and the ordered `endpoints`
-    list's `address` values are the one REDACTABLE part of the extended
-    wire contract (role/version/uptime/bind-mode/link-params/fingerprint are
-    NOT gated — see the `internal/monitor` bullet above). `monitor.NewServer`
+    Per-path `addressing` (`source`, `remote`) and the ordered, per-peer-grouped
+    `endpoints` list's `address` values are the one REDACTABLE part of the
+    extended wire contract (role/version/uptime/bind-mode/link-params/
+    fingerprint/`peerSessions`/`activeExit` are NOT gated — see the
+    `internal/monitor` bullet above). `monitor.NewServer`
     derives a `revealAddressing` verdict via **act-then-verify**:
     `verifyLoopbackBind(ln.Addr())` inspects the address the KERNEL actually
     bound (`net.Listen`'s own independent resolution), never the requested
@@ -1587,8 +1605,8 @@ misbehaves subtly. Agents and contributors must preserve them.
     (`internal/monitor/monitor.go`) then performs the redaction BEFORE
     `json.Marshal`: when `revealAddressing` is false it omits every per-path
     `AddressingSnapshot` (a nil, `omitempty` pointer — never serialized),
-    blanks every endpoint's `address` while preserving the ordered
-    active/standby shape, and sets `addressingHidden=true`. A **token-
+    blanks every endpoint's `address` while preserving the peer grouping and
+    ordered active/standby shape, and sets `addressingHidden=true`. A **token-
     authorized non-loopback bind still redacts** (Q62) — the token gates
     *whether a non-loopback bind is permitted at all*, not whether addressing
     is revealed on one. The frontend only ever reads `addressingHidden`; it

@@ -110,10 +110,30 @@ export interface DaemonSnapshot {
  * list with its active-vs-standby failover state. `address` is inside the
  * REDACTABLE addressing surface: blanked (empty string) on a non-loopback
  * binding while the ordered active/standby shape is preserved.
+ *
+ * `peer` (T257) attributes this entry to the bound edge peer whose OWN
+ * endpoint list it belongs to, grouping the flat list into per-peer sections
+ * on a multi-exit edge; it follows the same peer-label back-compat rule as
+ * every other per-entry `peer` field on this contract — "" on a
+ * single-bound-peer source.
  */
 export interface EndpointSnapshot {
+  peer: string;
   address: string;
   active: boolean;
+}
+
+/**
+ * Mirrors monitor.PeerSessionSnapshot (T256/T257): one bound peer's OWN
+ * WG-session health, distinct from the connection-scoped SessionSnapshot
+ * above. `peer` follows the package-wide back-compat rule: meaningful only
+ * once 2+ peers are bound; a single-bound-peer snapshot still carries exactly
+ * one entry, with peer "".
+ */
+export interface PeerSessionSnapshot {
+  peer: string;
+  established: boolean;
+  lastHandshakeSeconds: number;
 }
 
 /**
@@ -130,6 +150,14 @@ export interface EndpointSnapshot {
  * per-path addressing blocks + endpoint addresses have been redacted
  * server-side; the frontend renders a placeholder and never reconstructs the
  * hidden values.
+ *
+ * peerSessions (T257) mirrors metrics.PeerSessions(): one entry per bound
+ * peer's own WG-session health, following the same peer-label back-compat
+ * rule as peerNames/multiPeer. activeExit (T257) is the name of the
+ * exit-capable peer currently carrying the default route on a multi-exit
+ * edge — "" on the concentrator role and on an edge with no default-route
+ * ownership to report. It is a peer NAME, never an address, so it is NOT
+ * part of the redactable addressing surface.
  */
 export interface MonitorSnapshot {
   paths: PathSnapshot[];
@@ -141,6 +169,8 @@ export interface MonitorSnapshot {
   multiPeer: boolean;
   daemon: DaemonSnapshot;
   endpoints: EndpointSnapshot[];
+  peerSessions: PeerSessionSnapshot[];
+  activeExit: string;
   wgPublicKeyFingerprint: string;
   addressingHidden: boolean;
 }

@@ -587,11 +587,12 @@ func TestMonitorE2E_ActiveEndpointMovesAfterForcedHubFailover(t *testing.T) {
 	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
 	fclk := &fakeClock{now: time.Unix(1000, 0)}
 	fo := newHubFailover(eps, hp, &recordingRemote{}, func() {}, fclk, testSettle, discardLogger(t))
+	solo := []config.PeerIdentity{{Name: "solo"}}
 
 	info := monitor.Info{
 		Role:                   string(config.RoleEdge),
 		WGPublicKeyFingerprint: "AbCdEfGhIj",
-		Endpoints:              newEndpointsProvider(fo),
+		Endpoints:              newEndpointsProvider(solo, map[string]*hubFailover{"solo": fo}),
 	}
 
 	readSnap, cleanup := dialMonitorWithInfo(t, src, info)

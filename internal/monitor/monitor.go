@@ -122,6 +122,17 @@ type SessionSnapshot struct {
 	LastHandshakeSeconds float64 `json:"lastHandshakeSeconds"`
 }
 
+// PeerSessionSnapshot is the JSON encoding of one bound peer's OWN WG-session
+// health (metrics.PeerSessionSnapshot, T256/T257, G28/M106), mirroring the
+// package-level peer-label rule (D58): Peer is meaningful only once 2+ peers are
+// bound; a single-bound-peer snapshot still carries exactly one entry, with Peer
+// "".
+type PeerSessionSnapshot struct {
+	Peer                 string  `json:"peer"`
+	Established          bool    `json:"established"`
+	LastHandshakeSeconds float64 `json:"lastHandshakeSeconds"`
+}
+
 // DaemonSnapshot is the JSON encoding of the process-scoped identity fields
 // (G21, Q60): the effective role, the daemon version/build string, and the
 // process uptime in seconds. Sourced from monitor.Info, shown on any binding.
@@ -136,7 +147,15 @@ type DaemonSnapshot struct {
 // addressing surface: on a non-loopback binding BuildSnapshot blanks it while
 // preserving the ordered active/standby shape. Empty on the concentrator (which
 // has no configured endpoint list) — the frontend omits the section.
+//
+// Peer attributes this entry to the bound edge peer whose OWN endpoint list it
+// belongs to (T257, G28/M106), grouping the flat list into per-peer sections on a
+// multi-exit edge — one ordered active/standby group per peer with a hub-failover
+// controller — while following the metrics-package peer-label rule (D58): "" on a
+// single-bound-peer config, so that shape stays byte-compatible with the
+// pre-T257 flat list.
 type EndpointSnapshot struct {
+	Peer    string `json:"peer"`
 	Address string `json:"address"`
 	Active  bool   `json:"active"`
 }
@@ -181,9 +200,19 @@ type Info struct {
 	WGPublicKeyFingerprint string
 	// Endpoints is a LIVE provider evaluated INSIDE BuildSnapshot on every snapshot
 	// (freshness, R242): it returns the ordered hub-endpoint list with the active
-	// entry flagged, so a hub failover after startup is reflected. Nil (or a nil
-	// return) means no endpoint list (e.g. the concentrator role).
+	// entry flagged, grouped per-peer since T257 (each entry's Peer names the
+	// owning edge peer, "" throughout on a single-bound-peer config), so a hub
+	// failover after startup is reflected. Nil (or a nil return) means no endpoint
+	// list (e.g. the concentrator role).
 	Endpoints func() []EndpointSnapshot
+	// ActiveExit is a LIVE provider (T257, G28/M106), evaluated INSIDE BuildSnapshot on
+	// every snapshot (freshness, R242), reporting the name of the exit-capable peer
+	// currently carrying the default route (the exit selector's ActiveExit(), T254).
+	// It is a peer NAME, not an address, so it is NOT part of the redactable
+	// addressing surface (never blanked). Nil (or a nil return of "") means no
+	// active-exit concept applies: the concentrator role, or an edge with fewer
+	// than two exit-capable peers / no default-route peer.
+	ActiveExit func() string
 }
 
 // MonitorSnapshot is the JSON wire-format contract the monitoring HTTP
@@ -204,10 +233,21 @@ type MonitorSnapshot struct {
 	// Daemon carries the process identity (role/version/uptime, Q60).
 	Daemon DaemonSnapshot `json:"daemon"`
 	// Endpoints is the ordered hub-endpoint list with active/standby state
-	// (Q61c); endpoint addresses are blanked on a non-loopback binding (redacted),
-	// while the ordered active/standby shape is preserved. Empty on the
-	// concentrator role.
+	// (Q61c), grouped per-peer since T257 (Endpoints[i].Peer names the owning
+	// edge peer); endpoint addresses are blanked on a non-loopback binding
+	// (redacted), while the ordered active/standby shape is preserved. Empty on
+	// the concentrator role.
 	Endpoints []EndpointSnapshot `json:"endpoints"`
+	// PeerSessions mirrors metrics.Source.PeerSessions() (T256/T257, G28/M106):
+	// one entry per bound peer's OWN WG-session health. Peer is meaningful only
+	// once 2+ peers are bound (D58 back-compat rule) — a single-bound-peer
+	// snapshot still carries exactly one entry, with Peer "".
+	PeerSessions []PeerSessionSnapshot `json:"peerSessions"`
+	// ActiveExit is the name of the exit-capable peer currently carrying the
+	// default route on a multi-exit edge (T254/T257, G28/M106); "" on the
+	// concentrator role and on an edge with no default-route ownership to
+	// report. It is a peer NAME, never an address, so it is NOT redacted.
+	ActiveExit string `json:"activeExit"`
 	// WGPublicKeyFingerprint is the truncated local WG public-key fingerprint
 	// (Q63 — fingerprint ONLY; there is deliberately NO full-key field). Present
 	// on any binding.
@@ -237,12 +277,13 @@ func addrPortString(a netip.AddrPort) string {
 }
 
 // BuildSnapshot reads src exactly once — one call each to Paths/FEC/Reseq/
-// Aggregation/Session/PeerNames — folds in the monitor.Info identity/failover
-// seam (info.Endpoints is evaluated here, once, so the active-hub state is
-// fresh per snapshot), and marshals the result into the MonitorSnapshot wire
-// format. telemetry.Estimate's RTT/Jitter and the session's LastHandshakeAge
-// are rendered as float seconds, and MultiPeer is derived from
-// len(PeerNames())>1, matching the metrics package's peer-label rule.
+// Aggregation/Session/PeerSessions/PeerNames — folds in the monitor.Info
+// identity/failover seam (info.Endpoints and info.ActiveExit are each evaluated
+// here, once, so the active-hub/active-exit state is fresh per snapshot), and
+// marshals the result into the MonitorSnapshot wire format. telemetry.Estimate's
+// RTT/Jitter and the session's LastHandshakeAge are rendered as float seconds,
+// and MultiPeer is derived from len(PeerNames())>1, matching the metrics
+// package's peer-label rule.
 //
 // revealAddressing gates the Q62/Q64 addressing surface SERVER-SIDE: when false
 // (any non-loopback binding), every per-path AddressingSnapshot is omitted (nil)
@@ -256,6 +297,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 	reseqSnapshots := src.Reseq()
 	aggregation := src.Aggregation()
 	session := src.Session()
+	peerSessions := src.PeerSessions()
 	peerNames := src.PeerNames()
 
 	// UptimeSeconds is LIVE when a provider is supplied (R242): evaluated here on every
@@ -266,11 +308,21 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 		uptimeSeconds = info.Uptime()
 	}
 
+	// ActiveExit is LIVE when a provider is supplied (R242/T257): evaluated here on
+	// every snapshot so a manual switch or auto-promotion after startup is
+	// reflected. Falls back to "" (no provider / concentrator / single-exit edge).
+	var activeExit string
+	if info.ActiveExit != nil {
+		activeExit = info.ActiveExit()
+	}
+
 	out := MonitorSnapshot{
-		Paths:       make([]PathSnapshot, len(paths)),
-		FEC:         make([]FECSnapshot, len(fec)),
-		Reseq:       make([]ReseqSnapshot, len(reseqSnapshots)),
-		Aggregation: make([]AggregationSnapshot, len(aggregation)),
+		Paths:        make([]PathSnapshot, len(paths)),
+		FEC:          make([]FECSnapshot, len(fec)),
+		Reseq:        make([]ReseqSnapshot, len(reseqSnapshots)),
+		Aggregation:  make([]AggregationSnapshot, len(aggregation)),
+		PeerSessions: make([]PeerSessionSnapshot, len(peerSessions)),
+		ActiveExit:   activeExit,
 		Session: SessionSnapshot{
 			Established:          session.Established,
 			LastHandshakeSeconds: session.LastHandshakeAge.Seconds(),
@@ -320,8 +372,8 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 			if revealAddressing {
 				out.Endpoints[i] = e
 			} else {
-				// Redact the address; keep the ordered active/standby shape.
-				out.Endpoints[i] = EndpointSnapshot{Active: e.Active}
+				// Redact the address; keep the peer grouping and active/standby shape.
+				out.Endpoints[i] = EndpointSnapshot{Peer: e.Peer, Active: e.Active}
 			}
 		}
 	}
@@ -371,6 +423,14 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 			OfferedLoadFPS:        a.OfferedLoadFPS,
 			EngageThresholdFPS:    a.EngageThresholdFPS,
 			DisengageThresholdFPS: a.DisengageThresholdFPS,
+		}
+	}
+
+	for i, ps := range peerSessions {
+		out.PeerSessions[i] = PeerSessionSnapshot{
+			Peer:                 ps.Peer,
+			Established:          ps.Established,
+			LastHandshakeSeconds: ps.LastHandshakeSeconds,
 		}
 	}
 

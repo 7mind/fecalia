@@ -140,41 +140,42 @@ func buildPathLinks(cfg *config.Config) map[monitor.PathKey]monitor.PathLink {
 	return links
 }
 
-// newEndpointsProvider returns the LIVE hub-endpoints provider the monitor evaluates on
-// every snapshot (R242): it calls fo.EndpointsSnapshot() at call time — so a hub failover
-// after startup is reflected — and maps each device.EndpointState onto a
-// monitor.EndpointSnapshot. It is always non-nil; when fo is nil (the concentrator role,
-// or any shape with no hub-failover controller) it returns an empty list, so the frontend
-// omits the endpoints section (T221).
-func newEndpointsProvider(fo *hubFailover) func() []monitor.EndpointSnapshot {
+// newEndpointsProvider returns the LIVE PER-PEER hub-endpoints provider the monitor
+// evaluates on every snapshot (R242, T257): for each configured peer, in configured
+// order, that has a hub-failover controller (ctrls, keyed by stable peer name, T253),
+// it calls that peer's OWN fo.EndpointsSnapshot() at call time — so a hub failover
+// after startup is reflected — and flattens the result onto monitor.EndpointSnapshot,
+// tagging each entry with the owning peer's name so a multi-exit edge's endpoint
+// groups render side by side, each with its own active/standby state. This replaces
+// the pre-T257 single-controller flat list (which rendered only the FIRST eligible
+// peer's endpoints via firstEligibleCtrl, now retired).
+//
+// Peer follows the metrics-package peer-label rule (D58): "" throughout on a
+// single-bound-peer config — even when that one peer has a controller — so the
+// single-peer wire shape stays byte-compatible with the pre-T257 flat list; the
+// owning peer's stable name otherwise. It is always non-nil; when no configured peer
+// has a controller (the concentrator role, or an edge with only single-literal
+// non-exit peers) it returns an empty list, so the frontend omits the endpoints
+// section (T221).
+func newEndpointsProvider(ids []config.PeerIdentity, ctrls map[string]*hubFailover) func() []monitor.EndpointSnapshot {
+	multiPeer := len(ids) > 1
 	return func() []monitor.EndpointSnapshot {
-		if fo == nil {
-			return nil
-		}
-		states := fo.EndpointsSnapshot()
-		out := make([]monitor.EndpointSnapshot, len(states))
-		for i, s := range states {
-			out[i] = monitor.EndpointSnapshot{Address: s.Addr.String(), Active: s.Active}
+		var out []monitor.EndpointSnapshot
+		for _, id := range ids {
+			fo, ok := ctrls[id.Name]
+			if !ok {
+				continue
+			}
+			peer := ""
+			if multiPeer {
+				peer = id.Name
+			}
+			for _, s := range fo.EndpointsSnapshot() {
+				out = append(out, monitor.EndpointSnapshot{Peer: peer, Address: s.Addr.String(), Active: s.Active})
+			}
 		}
 		return out
 	}
-}
-
-// firstEligibleCtrl returns the hub-failover controller of the FIRST peer (configured order) for
-// which one was built, or nil when the map is empty. It reconstructs the pre-T253 "first qualifying
-// peer" selection the flat [monitor] endpoints provider still renders, deterministically (a bare map
-// range would not) and without re-deriving eligibility — a peer is present in ctrls IFF its controller
-// was built. ids is index-aligned with cfg.WireGuard.Peers, so its Name is the map key.
-func firstEligibleCtrl(cfg *config.Config, ids []config.PeerIdentity, ctrls map[string]*hubFailover) *hubFailover {
-	if len(ctrls) == 0 {
-		return nil
-	}
-	for i := range cfg.WireGuard.Peers {
-		if c, ok := ctrls[ids[i].Name]; ok {
-			return c
-		}
-	}
-	return nil
 }
 
 // Tunnel is a running wanbond tunnel: the amneziawg engine, its TUN, and the
@@ -759,11 +760,6 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// stops both before dev.Close, like the probe/reconcile loops.
 	failoverDeps := deviceFailoverDeps{cfg: cfg, mp: mpBind, perPeerProbers: perPeerProbers, dev: dev, lg: clg}
 	stopHubFailover, stopResolution, hubFailoverCtrls := startFailoverAndResolution(cfg, failoverDeps, ids, boot, clg)
-	// The [monitor] endpoints provider renders ONE controller's flattened endpoint list (the monitor
-	// contract is a single flat list; per-peer endpoint groups are a later task). Pick the FIRST
-	// eligible peer's controller in configured order, preserving the pre-T253 single-controller
-	// monitor output for both single-peer and multi-exit shapes. nil when no controller was built.
-	hubFailoverCtrl := firstEligibleCtrl(cfg, ids, hubFailoverCtrls)
 
 	// Active-exit selector (T254, G28/M105): on a multi-exit edge (>1 exit-capable
 	// peer) it owns which peer carries the default route in the engine's allowed-ips
@@ -861,17 +857,24 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// The identity/config/failover read seam the [monitor] endpoint is constructed with
 		// (T222): daemon role + build version, a LIVE uptime provider (fresh per snapshot,
 		// R242), the config-declared per-path link params keyed to the metrics (peer,path)
-		// rule, the truncated local WG public-key fingerprint (Q63 — no full key), and a LIVE
-		// hub-endpoints provider over the failover controller (empty when none — the
-		// concentrator/single-endpoint shapes). Built once here and reused by every
-		// applyMonitorLocked (boot + reload rebind).
+		// rule, the truncated local WG public-key fingerprint (Q63 — no full key), a LIVE
+		// PER-PEER hub-endpoints provider over every eligible peer's own failover controller
+		// (empty when none — the concentrator/single-endpoint shapes, T257), and a LIVE
+		// active-exit provider over the exit selector (empty when it does not apply, T257).
+		// Built once here and reused by every applyMonitorLocked (boot + reload rebind).
 		monitorInfo: monitor.Info{
 			Role:                   string(cfg.Role),
 			Version:                version,
 			Uptime:                 func() float64 { return time.Since(startTime).Seconds() },
 			PathLinks:              buildPathLinks(cfg),
 			WGPublicKeyFingerprint: fingerprint,
-			Endpoints:              newEndpointsProvider(hubFailoverCtrl),
+			Endpoints:              newEndpointsProvider(ids, hubFailoverCtrls),
+			ActiveExit: func() string {
+				if exitSel == nil {
+					return ""
+				}
+				return exitSel.ActiveExit()
+			},
 		},
 	}
 

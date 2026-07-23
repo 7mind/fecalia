@@ -47,6 +47,8 @@ function makeSnapshot(): MonitorSnapshot {
     multiPeer: false,
     daemon: { role: 'edge', version: 'test', uptimeSeconds: 1 },
     endpoints: [],
+    peerSessions: [],
+    activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
   };

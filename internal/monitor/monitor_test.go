@@ -479,3 +479,91 @@ func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields is the T257 back-compat
+// acceptance: for a single-bound-peer edge, the marshalled snapshot is JSON-identical to the
+// pre-T257 wire shape once the three additive fields (peerSessions, activeExit, and each
+// endpoint's peer) are stripped. The pre-T257 "want" shape below is the literal pre-change
+// BuildSnapshot/EndpointSnapshot behaviour for this fixture (no peerSessions/activeExit fields
+// existed, and EndpointSnapshot carried no peer field).
+func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T) {
+	src := fakeSource{
+		paths: []metrics.PathSnapshot{
+			{Peer: "", Name: "solo", TxBytes: 100, RxBytes: 200,
+				Estimate: telemetry.Estimate{RTT: 10 * time.Millisecond}, State: telemetry.StateUp},
+		},
+		peerSessions: []metrics.PeerSessionSnapshot{{Peer: "", Established: false, LastHandshakeSeconds: 0}},
+		peerNames:    []string{""},
+	}
+	info := Info{
+		Endpoints: func() []EndpointSnapshot {
+			return []EndpointSnapshot{{Address: "9.9.9.9:1", Active: true}}
+		},
+	}
+
+	snap := BuildSnapshot(src, info, true)
+
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	// The additive fields must be present...
+	if _, ok := got["peerSessions"]; !ok {
+		t.Fatalf("peerSessions field missing from %s", b)
+	}
+	if _, ok := got["activeExit"]; !ok {
+		t.Fatalf("activeExit field missing from %s", b)
+	}
+	eps, ok := got["endpoints"].([]any)
+	if !ok || len(eps) != 1 {
+		t.Fatalf("endpoints = %#v, want a 1-element array", got["endpoints"])
+	}
+	ep0 := eps[0].(map[string]any)
+	if peer, ok := ep0["peer"]; !ok || peer != "" {
+		t.Fatalf("endpoints[0].peer = %#v, want present and \"\"", peer)
+	}
+
+	// ...and, once stripped, the remainder must equal the pre-T257 shape exactly.
+	delete(got, "peerSessions")
+	delete(got, "activeExit")
+	delete(ep0, "peer")
+
+	want := map[string]any{
+		"paths": []any{
+			map[string]any{
+				"name": "solo", "peer": "", "txBytes": float64(100), "rxBytes": float64(200),
+				"throughputBps": float64(0), "rttSeconds": 0.01, "jitterSeconds": float64(0),
+				"loss": float64(0), "up": true, "bindMode": "", "boundDevice": "",
+				"linkBandwidthBps": float64(0), "linkRttSeconds": float64(0),
+				"addressing": map[string]any{"source": "", "remote": ""},
+			},
+		},
+		"fec": []any{}, "reseq": []any{}, "aggregation": []any{},
+		"session":   map[string]any{"established": false, "lastHandshakeSeconds": float64(0)},
+		"peerNames": []any{""},
+		"multiPeer": false,
+		"daemon":    map[string]any{"role": "", "version": "", "uptimeSeconds": float64(0)},
+		"endpoints": []any{
+			map[string]any{"address": "9.9.9.9:1", "active": true},
+		},
+		"wgPublicKeyFingerprint": "",
+		"addressingHidden":       false,
+	}
+
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("re-marshal stripped got: %v", err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal want: %v", err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("stripped snapshot != pre-T257 shape:\n got=%s\nwant=%s", gotJSON, wantJSON)
+	}
+}

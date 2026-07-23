@@ -80,6 +80,7 @@ function aggregation(overrides: Partial<AggregationSnapshot> = {}): AggregationS
 
 function endpoint(overrides: Partial<EndpointSnapshot> = {}): EndpointSnapshot {
   return {
+    peer: '',
     address: '',
     active: false,
     ...overrides,
@@ -97,6 +98,8 @@ function multiPeerSnapshot(): MonitorSnapshot {
     multiPeer: true,
     daemon: daemon(),
     endpoints: [],
+    peerSessions: [],
+    activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
   };
@@ -113,6 +116,8 @@ function singlePeerSnapshot(): MonitorSnapshot {
     multiPeer: false,
     daemon: daemon(),
     endpoints: [],
+    peerSessions: [],
+    activeExit: '',
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
   };
@@ -217,6 +222,8 @@ describe('mountDashboard', () => {
       multiPeer: false,
       daemon: daemon({ role: 'edge', version: '1.2.3', uptimeSeconds: 90061 }),
       endpoints: [endpoint({ address: '198.51.100.1:51820', active: true }), endpoint({ address: '198.51.100.2:51820', active: false })],
+      peerSessions: [],
+      activeExit: '',
       wgPublicKeyFingerprint: 'AbCd1234',
       addressingHidden: false,
     };

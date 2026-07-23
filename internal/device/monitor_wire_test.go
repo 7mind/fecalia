@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 	"github.com/coder/websocket"
 	"go.uber.org/goleak"
 
+	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
+	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/monitor"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -333,7 +336,8 @@ func TestMonitorWire_InfoFields(t *testing.T) {
 	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
 	clk := &fakeClock{now: time.Unix(1000, 0)}
 	fo := newHubFailover(eps, hp, &recordingRemote{}, func() {}, clk, testSettle, discardLogger(t))
-	provider := newEndpointsProvider(fo)
+	solo := []config.PeerIdentity{{Name: "solo"}}
+	provider := newEndpointsProvider(solo, map[string]*hubFailover{"solo": fo})
 
 	before := provider()
 	if len(before) != 2 || before[0].Address != "203.0.113.1:51820" || !before[0].Active || before[1].Active {
@@ -352,5 +356,181 @@ func TestMonitorWire_InfoFields(t *testing.T) {
 	}
 	if after[1].Address != "198.51.100.7:51820" {
 		t.Fatalf("after failover: active address = %q, want 198.51.100.7:51820", after[1].Address)
+	}
+}
+
+// buildTwoPeerWireFixture builds a 2-peer (east/west) production monitor wiring: each peer gets
+// its OWN directly-constructed *hubFailover (east has 2 endpoints with [0] active, west has 1
+// endpoint), composed through the PRODUCTION newEndpointsProvider (T257) into monitor.Info,
+// alongside a 2-peer metrics.Source (newMetricsSource over a fakeProvider, carrying a
+// fakePeerSessions with one entry per peer) and a fixed ActiveExit provider — the same seam up()
+// wires end to end, without requiring a running engine/websocket.
+func buildTwoPeerWireFixture(t *testing.T) (metrics.Source, monitor.Info) {
+	t.Helper()
+
+	ids := []config.PeerIdentity{{Name: "east"}, {Name: "west"}}
+
+	eastEPs := mustEndpoints(t, "203.0.113.10:51820", "198.51.100.10:51820")
+	eastHealth := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	foEast := newHubFailover(eastEPs, eastHealth, &recordingRemote{}, func() {}, &fakeClock{now: time.Unix(1000, 0)}, testSettle, discardLogger(t))
+
+	westEPs := mustEndpoints(t, "203.0.113.20:51820")
+	westHealth := []hubHealth{&fakeHealth{telemetry.StateUp}}
+	foWest := newHubFailover(westEPs, westHealth, &recordingRemote{}, func() {}, &fakeClock{now: time.Unix(1000, 0)}, testSettle, discardLogger(t))
+
+	ctrls := map[string]*hubFailover{"east": foEast, "west": foWest}
+
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{
+		{Name: "east", Paths: []bind.PathTraffic{{Name: "p", State: telemetry.StateUp}}},
+		{Name: "west", Paths: []bind.PathTraffic{{Name: "p", State: telemetry.StateUp}}},
+	})
+	peerSessions := fakePeerSessions{snaps: []metrics.PeerSessionSnapshot{
+		{Peer: "east", Established: true, LastHandshakeSeconds: 5},
+		{Peer: "west", Established: false, LastHandshakeSeconds: 0},
+	}}
+	src := newMetricsSource(prov, fakeSession{}, peerSessions, &fakeClock{now: time.Unix(1000, 0)})
+
+	info := monitor.Info{
+		Endpoints:  newEndpointsProvider(ids, ctrls),
+		ActiveExit: func() string { return "west" },
+	}
+	return src, info
+}
+
+// TestMonitorWire_PerPeerEndpointGroupsSessionsActiveExit is the T257 primary acceptance: a
+// 2-peer edge snapshot groups the flat endpoint list by owning peer (each entry tagged with its
+// OWN failover controller's peer name, preserving that controller's active/standby shape), carries
+// one peerSessions entry per bound peer mirroring metrics.PeerSessions(), and surfaces the exit
+// selector's ActiveExit() verbatim (a peer NAME, not an address).
+func TestMonitorWire_PerPeerEndpointGroupsSessionsActiveExit(t *testing.T) {
+	src, info := buildTwoPeerWireFixture(t)
+
+	snap := monitor.BuildSnapshot(src, info, true)
+
+	if !snap.MultiPeer {
+		t.Fatalf("MultiPeer = false, want true for a 2-peer Source")
+	}
+
+	// 3 total endpoints: east's 2 + west's 1, grouped in configured (ids) order.
+	if len(snap.Endpoints) != 3 {
+		t.Fatalf("endpoints = %+v, want 3 (east x2 + west x1)", snap.Endpoints)
+	}
+	byPeer := map[string][]monitor.EndpointSnapshot{}
+	for _, e := range snap.Endpoints {
+		byPeer[e.Peer] = append(byPeer[e.Peer], e)
+	}
+	east, west := byPeer["east"], byPeer["west"]
+	if len(east) != 2 || len(west) != 1 {
+		t.Fatalf("endpoint groups = east:%d west:%d, want 2/1: %+v", len(east), len(west), snap.Endpoints)
+	}
+	if !east[0].Active || east[1].Active {
+		t.Fatalf("east group active flags = %+v, want [0] active", east)
+	}
+	if east[0].Address != "203.0.113.10:51820" || east[1].Address != "198.51.100.10:51820" {
+		t.Fatalf("east group addresses = %+v, want the configured order preserved", east)
+	}
+	if !west[0].Active || west[0].Address != "203.0.113.20:51820" {
+		t.Fatalf("west group = %+v, want its sole entry active with the configured address", west)
+	}
+
+	// peerSessions mirrors metrics.PeerSessions(): one entry per bound peer.
+	if len(snap.PeerSessions) != 2 {
+		t.Fatalf("peerSessions = %+v, want 2 entries", snap.PeerSessions)
+	}
+	psByPeer := map[string]monitor.PeerSessionSnapshot{}
+	for _, ps := range snap.PeerSessions {
+		psByPeer[ps.Peer] = ps
+	}
+	if !psByPeer["east"].Established || psByPeer["east"].LastHandshakeSeconds != 5 {
+		t.Fatalf("east peerSession = %+v, want established=true lastHandshakeSeconds=5", psByPeer["east"])
+	}
+	if psByPeer["west"].Established {
+		t.Fatalf("west peerSession = %+v, want established=false", psByPeer["west"])
+	}
+
+	// activeExit is the exit selector's ActiveExit() verbatim — a peer NAME.
+	if snap.ActiveExit != "west" {
+		t.Fatalf("activeExit = %q, want %q", snap.ActiveExit, "west")
+	}
+}
+
+// TestMonitorWire_PerPeerEndpointsRedactedKeepsGroupingAndActiveExit is the T257 addressingHidden
+// acceptance: on a non-loopback (redacted) binding, every endpoint address is blanked but the peer
+// grouping and active/standby flags survive, and activeExit — a peer NAME, not an address — is NOT
+// redacted.
+func TestMonitorWire_PerPeerEndpointsRedactedKeepsGroupingAndActiveExit(t *testing.T) {
+	src, info := buildTwoPeerWireFixture(t)
+
+	snap := monitor.BuildSnapshot(src, info, false)
+
+	if !snap.AddressingHidden {
+		t.Fatalf("AddressingHidden = false, want true when not revealed")
+	}
+	if len(snap.Endpoints) != 3 {
+		t.Fatalf("endpoints = %+v, want 3 (east x2 + west x1)", snap.Endpoints)
+	}
+	byPeer := map[string][]monitor.EndpointSnapshot{}
+	for _, e := range snap.Endpoints {
+		if e.Address != "" {
+			t.Fatalf("endpoint address must be blanked when redacted, got %+v", snap.Endpoints)
+		}
+		byPeer[e.Peer] = append(byPeer[e.Peer], e)
+	}
+	east, west := byPeer["east"], byPeer["west"]
+	if len(east) != 2 || len(west) != 1 {
+		t.Fatalf("endpoint groups (redacted) = east:%d west:%d, want 2/1: %+v", len(east), len(west), snap.Endpoints)
+	}
+	if !east[0].Active || east[1].Active {
+		t.Fatalf("east group active flags (redacted) = %+v, want [0] active", east)
+	}
+	if !west[0].Active {
+		t.Fatalf("west group (redacted) = %+v, want its sole entry active", west)
+	}
+
+	// activeExit is a peer NAME, never redacted.
+	if snap.ActiveExit != "west" {
+		t.Fatalf("activeExit (redacted) = %q, want %q (never redacted)", snap.ActiveExit, "west")
+	}
+
+	// Round trip through JSON, byte-scanning the raw frame: no configured address literal may
+	// appear anywhere, matching the existing addressing-redaction rule.
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, addr := range []string{"203.0.113.10", "198.51.100.10", "203.0.113.20"} {
+		if strings.Contains(string(b), addr) {
+			t.Fatalf("redacted frame leaked endpoint address %q: %s", addr, b)
+		}
+	}
+}
+
+// TestMonitorWire_SinglePeerEndpointsByteCompatible is the T257 back-compat acceptance: a
+// single-bound-peer edge's endpoints provider still renders the flat pre-T257 shape byte-for-byte
+// (Peer "" throughout), even though the underlying controller is now reached through the per-peer
+// ctrls map/newEndpointsProvider machinery rather than firstEligibleCtrl (retired).
+func TestMonitorWire_SinglePeerEndpointsByteCompatible(t *testing.T) {
+	ids := []config.PeerIdentity{{Name: "onlypeer"}}
+	eps := mustEndpoints(t, "203.0.113.30:51820", "198.51.100.30:51820")
+	health := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	fo := newHubFailover(eps, health, &recordingRemote{}, func() {}, &fakeClock{now: time.Unix(1000, 0)}, testSettle, discardLogger(t))
+
+	provider := newEndpointsProvider(ids, map[string]*hubFailover{"onlypeer": fo})
+	got := provider()
+
+	if len(got) != 2 {
+		t.Fatalf("endpoints = %+v, want 2", got)
+	}
+	for i, e := range got {
+		if e.Peer != "" {
+			t.Fatalf("endpoint[%d].Peer = %q, want \"\" on a single-bound-peer config (back-compat)", i, e.Peer)
+		}
+	}
+	if !got[0].Active || got[1].Active {
+		t.Fatalf("active flags = %+v, want [0] active", got)
+	}
+	if got[0].Address != "203.0.113.30:51820" || got[1].Address != "198.51.100.30:51820" {
+		t.Fatalf("addresses = %+v, want the configured order preserved", got)
 	}
 }
