@@ -48,7 +48,7 @@ func TestServerWSPushesSnapshots(t *testing.T) {
 		peerNames: []string{""},
 	}
 
-	srv, err := NewServer("127.0.0.1:0", "", src, Info{}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", src, Info{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -173,7 +173,7 @@ func addressingTestSrcInfo() (fakeSource, Info) {
 // kernel-bound Addr), and the Info seam is threaded end-to-end into the frame.
 func TestServer_WSRevealsAddressingOnLoopback(t *testing.T) {
 	src, info := addressingTestSrcInfo()
-	srv, err := NewServer("127.0.0.1:0", "", src, info, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", src, info, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestServer_WSRevealsAddressingOnLoopback(t *testing.T) {
 func TestServer_WSRedactsAddressingOnNonLoopback(t *testing.T) {
 	src, info := addressingTestSrcInfo()
 	const token = "secret-token"
-	srv, err := NewServer("0.0.0.0:0", token, src, info, testLogger(t))
+	srv, err := NewServer("0.0.0.0:0", token, src, info, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestServer_WSRedactsAddressingOnNonLoopback(t *testing.T) {
 func TestServerWSCloseStopsPush(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	srv, err := NewServer("127.0.0.1:0", "", fakeSource{peerNames: []string{""}}, Info{}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", fakeSource{peerNames: []string{""}}, Info{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestNonLoopbackWithoutTokenRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, err := NewServer(tc.addr, "", fakeSource{}, Info{}, testLogger(t))
+			srv, err := NewServer(tc.addr, "", fakeSource{}, Info{}, nil, testLogger(t))
 			if err == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -312,7 +312,7 @@ func TestNonLoopbackWithoutTokenRefused(t *testing.T) {
 func TestLoopbackBindAccepted(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
 		t.Run(addr, func(t *testing.T) {
-			srv, err := NewServer(addr, "", fakeSource{}, Info{}, testLogger(t))
+			srv, err := NewServer(addr, "", fakeSource{}, Info{}, nil, testLogger(t))
 			if err != nil {
 				t.Fatalf("NewServer(%q): %v", addr, err)
 			}
@@ -332,7 +332,7 @@ func TestLoopbackBindAccepted(t *testing.T) {
 // fails EADDRINUSE. The first server binds 127.0.0.1:0, its OS-assigned port is
 // read back from Addr(), and the re-bind targets that exact port.
 func TestCloseReleasesPortWithoutStart(t *testing.T) {
-	srv, err := NewServer("127.0.0.1:0", "", fakeSource{}, Info{}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", "", fakeSource{}, Info{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestCloseReleasesPortWithoutStart(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	srv2, err := NewServer(addr, "", fakeSource{}, Info{}, testLogger(t))
+	srv2, err := NewServer(addr, "", fakeSource{}, Info{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("re-bind on %q after Close failed (leaked listener): %v", addr, err)
 	}
@@ -363,7 +363,7 @@ func TestCloseReleasesPortWithoutStart(t *testing.T) {
 // regression that inverts the token check and refuses authorized binds (or,
 // worse, accepts unauthenticated ones). Close must be clean.
 func TestNonLoopbackWithTokenAccepted(t *testing.T) {
-	srv, err := NewServer("0.0.0.0:0", "secret-token", fakeSource{}, Info{}, testLogger(t))
+	srv, err := NewServer("0.0.0.0:0", "secret-token", fakeSource{}, Info{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer(\"0.0.0.0:0\", token): %v", err)
 	}
@@ -385,7 +385,7 @@ func TestNonLoopbackWithTokenAccepted(t *testing.T) {
 // redirects (so the ?token= bootstrap 302 is observable).
 func startAuthTestServer(t *testing.T, token string) (*Server, string) {
 	t.Helper()
-	srv, err := NewServer("127.0.0.1:0", token, fakeSource{}, Info{}, testLogger(t))
+	srv, err := NewServer("127.0.0.1:0", token, fakeSource{}, Info{}, nil, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

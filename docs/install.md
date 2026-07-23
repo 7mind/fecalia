@@ -1600,8 +1600,9 @@ that is rejected outright), but failover will be slower than the P1 target.
 
 ### 6c. Monitoring UI (`[monitor]`)
 
-An OPTIONAL read-only dashboard — live per-peer throughput/loss/FEC
-sparklines — complementing `/metrics`. Omit the block, or leave `listen`
+An OPTIONAL dashboard — live per-peer throughput/loss/FEC sparklines —
+complementing `/metrics`. It is read-only except for one loopback-only control
+(`POST /api/exit`, see **Scope** below). Omit the block, or leave `listen`
 empty, and no monitoring-UI endpoint is served (the daemon behaves exactly as
 without this section):
 
@@ -1643,8 +1644,17 @@ listen = "127.0.0.1:9101"
     dashboard traffic are visible in CLEARTEXT to anyone on-path; see
     [docs/design.md §Security model](design.md) for the accepted risk this
     trades off.
-- **Scope (v1)**: read-only. The dashboard shows live stats only — there is
-  no control/config action reachable from it.
+- **Scope (v1)**: read-only EXCEPT one loopback-only control. The dashboard
+  shows live stats only, with a single mutating action: `POST /api/exit`
+  (`{"peer": "<name>"}`) switches the active exit-capable peer on a multi-exit
+  edge, returning `200 {"activeExit": "<name>"}`. This control is
+  **LOOPBACK-ONLY**: it is refused with **403 on any non-loopback bind,
+  regardless of a valid token**, so a token'd LAN-exposed monitor stays strictly
+  read-only — you can watch the exits from off-host but can only *switch* them
+  from a loopback-bound session (e.g. over the SSH tunnel above). The usual auth
+  applies (cross-origin → 403, missing/invalid token → 401); a non-POST method
+  is 405 and an unknown/non-exit-capable peer is 400. See [docs/design.md
+  §Security model](design.md) for the full posture.
 - **What you see**: beyond per-peer throughput/loss/FEC, the dashboard shows
   the daemon's role/version/uptime, each path's bind mode + bound device and
   declared link bandwidth/RTT, the truncated WireGuard public-key

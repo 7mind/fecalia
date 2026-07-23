@@ -75,7 +75,7 @@ func (s *syncSession) set(snap metrics.SessionSnapshot) {
 func dialMonitor(t *testing.T, src metrics.Source) (readSnap func(*testing.T) monitor.MonitorSnapshot, cleanup func()) {
 	t.Helper()
 
-	srv, err := monitor.NewServer("127.0.0.1:0", "", src, monitor.Info{}, discardLogger(t))
+	srv, err := monitor.NewServer("127.0.0.1:0", "", src, monitor.Info{}, nil, discardLogger(t))
 	if err != nil {
 		t.Fatalf("monitor.NewServer: %v", err)
 	}
@@ -149,7 +149,7 @@ func approxEq(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
 func dialMonitorWithInfo(t *testing.T, src metrics.Source, info monitor.Info) (readSnap func(*testing.T) monitor.MonitorSnapshot, cleanup func()) {
 	t.Helper()
 
-	srv, err := monitor.NewServer("127.0.0.1:0", "", src, info, discardLogger(t))
+	srv, err := monitor.NewServer("127.0.0.1:0", "", src, info, nil, discardLogger(t))
 	if err != nil {
 		t.Fatalf("monitor.NewServer: %v", err)
 	}

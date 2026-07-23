@@ -1076,7 +1076,7 @@ func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 	if sameAddr {
 		t.stopMonitorLocked()
 	}
-	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.monitorInfo, t.log)
+	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.monitorInfo, t.switchActiveExit, t.log)
 	if err != nil {
 		return err
 	}
@@ -1593,6 +1593,29 @@ func (t *Tunnel) ActiveExit() string {
 		return ""
 	}
 	return t.exitSelector.ActiveExit()
+}
+
+// switchActiveExit is the monitor.ExitSwitcher the [monitor] endpoint's POST
+// /api/exit route invokes (T258): it repoints default-route ownership onto the
+// named exit-capable peer via exitSelector.Switch (reason=manual, logged by the
+// selector) and returns the resulting active exit. The selector's typed
+// *unknownExitError — an unknown name, a non-exit-capable peer, or the absence of
+// any multi-exit selector on this role — is adapted to monitor.ErrUnknownExitPeer
+// so the handler maps it to 400 WITHOUT the monitor package importing
+// internal/device or learning any selector internals; every other Switch error
+// (an engine IpcSet failure) propagates unwrapped for the handler's 500 path.
+func (t *Tunnel) switchActiveExit(peer string) (string, error) {
+	if t.exitSelector == nil {
+		return "", fmt.Errorf("%w: %q", monitor.ErrUnknownExitPeer, peer)
+	}
+	if err := t.exitSelector.Switch(peer); err != nil {
+		var ue *unknownExitError
+		if errors.As(err, &ue) {
+			return "", fmt.Errorf("%w: %q", monitor.ErrUnknownExitPeer, peer)
+		}
+		return "", err
+	}
+	return t.exitSelector.ActiveExit(), nil
 }
 
 // Close stops the probe loop, brings the device down, and releases the TUN and

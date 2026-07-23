@@ -1292,8 +1292,10 @@ by `internal/device`:
   wires metrics, handles SIGHUP path add/remove without teardown.
 - `internal/metrics` — a private-registry Prometheus `/metrics` endpoint that
   **refuses any non-loopback bind**.
-- `internal/monitor` — the read-only monitoring-UI endpoint for the `[monitor]`
-  surface: an embedded (`//go:embed all:dist`) Vite/TypeScript dashboard at `/`
+- `internal/monitor` — the monitoring-UI endpoint for the `[monitor]` surface,
+  read-only EXCEPT the single loopback-only `POST /api/exit` control (T258; see
+  *Security model* below): an embedded (`//go:embed all:dist`) Vite/TypeScript
+  dashboard at `/`
   showing per-peer throughput/loss/FEC sparklines, fed by a `/ws` upgrade that
   pushes a fresh snapshot every 1s. Loopback-only by default, like `/metrics`,
   but MAY bind non-loopback when a `token` is configured (see *Security
@@ -1540,8 +1542,38 @@ misbehaves subtly. Agents and contributors must preserve them.
   `?token=…`; the server then sets a `wanbond_monitor_token` `SameSite=Strict`,
   `HttpOnly` cookie and 302-redirects to the same path with the query stripped,
   so the token does not linger in the URL bar or browser history. All token
-  comparisons are constant-time (`crypto/subtle`). The dashboard is READ-ONLY in
-  v1: it surfaces live per-peer stats only, no control/config actions.
+  comparisons are constant-time (`crypto/subtle`).
+  - **Control surface — read-only EXCEPT `POST /api/exit`, loopback-only
+    (T258, G28/M106, Q73 user-approved).** The dashboard is read-only in v1 with
+    ONE deliberate exception: `POST /api/exit` (`internal/monitor/server.go`)
+    switches the active exit-capable peer on a multi-exit edge, wired to
+    `exitSelector.Switch` (`reason=manual`) through a `monitor.ExitSwitcher`
+    callback the device injects (`Tunnel.switchActiveExit`) — the monitor package
+    never imports `internal/device`, matching the `monitor.Info` provider-
+    injection seam. Every OTHER route stays a pure read. The mutating route is
+    protected in depth:
+    - **HARD loopback gate (act-then-verify), independent of the token.** The
+      handler refuses with **403** whenever the server's ACTUAL kernel-bound
+      address is non-loopback — the SAME `verifyLoopbackBind(ln.Addr())` verdict
+      (`revealAddressing`) that sets `addressingHidden`. A token-authorized
+      **non-loopback** monitor therefore stays **strictly read-only**: the 403
+      fires REGARDLESS of a valid token, so an off-host operator can watch but
+      never steer. This is stricter than the read surface (which a token exposes
+      off-host); the control surface is loopback-ONLY, full stop.
+    - **The auth middleware covers it like every route.** Host/Origin validation
+      (DNS-rebinding + cross-origin/CSRF defense) and, when configured, token
+      gating apply to the whole mux, so a cross-origin `POST` is **403** and a
+      missing/invalid credential is **401** before the handler runs. The
+      `SameSite=Strict`, `HttpOnly` session cookie carries the `POST` on a
+      same-origin fetch (the legitimate dashboard case).
+    - **Method + input contract.** A non-`POST` method is **405** (the handler is
+      registered for both `GET` and `POST` so a `GET` returns a clean 405 rather
+      than falling through to the `/` static subtree); malformed JSON or an
+      unknown / non-exit-capable peer is **400** (the selector's typed
+      `*unknownExitError` adapted to `monitor.ErrUnknownExitPeer`, the body naming
+      ONLY the caller-supplied peer, never selector internals); a successful
+      switch — and an idempotent same-name switch — is **200**
+      `{"activeExit": "<name>"}`.
   - **Addressing redaction gate (Q62/Q64) — server-side, not client-side.**
     Per-path `addressing` (`source`, `remote`) and the ordered `endpoints`
     list's `address` values are the one REDACTABLE part of the extended
@@ -1593,9 +1625,11 @@ misbehaves subtly. Agents and contributors must preserve them.
     **passive on-path observer on that LAN segment can capture the token** and
     thereby gain the same read-only access to live stats as a legitimate
     operator. This is a knowingly accepted trade-off, not an oversight: the
-    monitor's blast radius is READ-ONLY telemetry (no control-plane actions,
-    no key material), and the mitigation is operational rather than
-    cryptographic. **Recommendation:** keep `[monitor]` on its loopback default
+    blast radius of a captured non-loopback token is READ-ONLY telemetry (no key
+    material, and NO control-plane actions — the sole mutating route
+    `POST /api/exit` is loopback-ONLY and 403s on any non-loopback bind
+    regardless of the token, so a LAN token-capturer cannot steer the exit), and
+    the mitigation is operational rather than cryptographic. **Recommendation:** keep `[monitor]` on its loopback default
     and reach it from elsewhere with `ssh -L <local>:127.0.0.1:<port> …`
     port-forwarding; reserve a non-loopback `listen` + `token` for networks you
     already trust, and never for an untrusted/shared LAN.

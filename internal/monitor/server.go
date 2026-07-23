@@ -26,6 +26,12 @@ import (
 const (
 	rootPath = "/"
 	wsPath   = "/ws"
+	// exitPath is the SOLE mutating control route (T258, G28/M106): POST switches
+	// the active exit-capable peer. The handler is registered for both GET and
+	// POST (see NewServer) so a non-POST returns a clean 405 instead of falling
+	// through to the "/" static subtree; the handler also enforces the hard
+	// loopback-only gate, independent of the auth layer.
+	exitPath = "/api/exit"
 )
 
 // readHeaderTimeout bounds how long a client may take to send request headers,
@@ -65,7 +71,7 @@ type Server struct {
 // the kernel-bound Addr is asserted loopback and the bind fails closed on any
 // mismatch (TOCTOU defense). When a token is set, a verified non-loopback bind
 // is permitted.
-func NewServer(addr, token string, src metrics.Source, info Info, logger log.Logger) (*Server, error) {
+func NewServer(addr, token string, src metrics.Source, info Info, switchExit ExitSwitcher, logger log.Logger) (*Server, error) {
 	loopback, err := netutil.IsLoopbackHost(addr)
 	if err != nil {
 		return nil, fmt.Errorf("monitor: %w", err)
@@ -112,6 +118,19 @@ func NewServer(addr, token string, src metrics.Source, info Info, logger log.Log
 	mux := http.NewServeMux()
 	mux.Handle("GET "+rootPath, staticHandler(static))
 	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, info, revealAddressing, logger.Component("monitor")))
+	// POST /api/exit — the sole mutating route (T258). It is gated by the SAME
+	// kernel-bound loopback verdict (revealAddressing) that reveals addressing: a
+	// non-loopback bind refuses the control REGARDLESS of a valid token, so a
+	// remote/exposed monitor stays strictly read-only. The auth middleware
+	// (Host/Origin + token) wraps it exactly like every other route. The handler
+	// is registered for BOTH GET and POST: POST is the real control; GET is
+	// shadowed here (rather than falling through to the "/" static subtree and
+	// 404ing) so a non-POST method returns a clean 405 from the handler's own
+	// method check. Any other method (PUT/DELETE/…) matches neither /api/exit
+	// pattern and the mux returns 405 for it directly.
+	exitHandler := newExitHandler(revealAddressing, switchExit, logger.Component("monitor"))
+	mux.HandleFunc("POST "+exitPath, exitHandler)
+	mux.HandleFunc("GET "+exitPath, exitHandler)
 
 	// Wrap the mux with the auth layer (T164): unconditional Host/Origin
 	// validation on EVERY route + the /ws upgrade, plus optional static-token
@@ -431,4 +450,96 @@ func (a *authConfig) authorize(w http.ResponseWriter, r *http.Request) bool {
 // configured one, so a timing side-channel cannot leak the token byte by byte.
 func (a *authConfig) tokenMatches(got string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(a.token)) == 1
+}
+
+// ErrUnknownExitPeer is the sentinel an ExitSwitcher returns (wrapped) when the
+// requested peer is not a configured exit-capable peer. It lets the device adapt
+// the exit selector's typed internal error across the package boundary WITHOUT
+// the monitor importing internal/device: the POST /api/exit handler maps any
+// error wrapping it to 400, echoing only the caller-supplied name.
+var ErrUnknownExitPeer = errors.New("monitor: unknown or non-exit-capable exit peer")
+
+// ExitSwitcher is the mutating control seam the POST /api/exit handler invokes to
+// repoint default-route ownership onto the named exit-capable peer, returning the
+// resulting active exit name on success. The device layer supplies it (adapting
+// exitSelector.Switch); the monitor package never imports internal/device — the
+// provider is injected exactly like the Info read-seam closures. A nil switcher
+// (a role with no multi-exit selector, or the test/read-only path) makes every
+// request a 400. The implementation MUST return an error wrapping
+// ErrUnknownExitPeer when peer is not a configured exit-capable peer, and MUST
+// NOT leak any selector internals beyond the caller-supplied name.
+type ExitSwitcher func(peer string) (activeExit string, err error)
+
+// exitRequest is the POST /api/exit JSON body: the name of the exit-capable peer
+// to make active.
+type exitRequest struct {
+	Peer string `json:"peer"`
+}
+
+// exitResponse is the 200 body: the resulting active exit name (the requested
+// peer, whether an actual switch occurred or an idempotent same-name no-op).
+type exitResponse struct {
+	ActiveExit string `json:"activeExit"`
+}
+
+// exitError is the stable JSON error body every non-200 exit response carries.
+type exitError struct {
+	Error string `json:"error"`
+}
+
+// newExitHandler builds the POST /api/exit control handler. Check order: method
+// (405 for non-POST) → HARD loopback gate (403 on any non-loopback bind, before
+// any state is read, regardless of a valid token) → decode (400 on malformed
+// JSON) → switchExit (400 on an unknown/non-exit-capable peer, 500 on an engine
+// failure, 200 with the active exit otherwise, including an idempotent same-name
+// switch). loopbackBound is the kernel-bound act-then-verify verdict (the same
+// one that reveals addressing), captured at construction — the bound address does
+// not change over the listener's life.
+func newExitHandler(loopbackBound bool, switchExit ExitSwitcher, logger log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeExitError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// HARD loopback gate: the mutating control surface exists ONLY on a monitor
+		// the kernel actually bound to loopback. A remote/exposed (token-authorized
+		// non-loopback) monitor stays strictly read-only, so this 403 fires even
+		// with a valid token — the same condition that sets AddressingHidden.
+		if !loopbackBound {
+			writeExitError(w, http.StatusForbidden, "exit control is available only on a loopback-bound monitor")
+			return
+		}
+		if switchExit == nil {
+			writeExitError(w, http.StatusBadRequest, "no exit-capable peer configured")
+			return
+		}
+		var req exitRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeExitError(w, http.StatusBadRequest, "malformed request body")
+			return
+		}
+		active, err := switchExit(req.Peer)
+		if err != nil {
+			if errors.Is(err, ErrUnknownExitPeer) {
+				// Echo ONLY the caller-supplied name — never selector internals.
+				writeExitError(w, http.StatusBadRequest, fmt.Sprintf("unknown or non-exit-capable peer: %q", req.Peer))
+				return
+			}
+			logger.Error("monitor exit switch failed", "peer", req.Peer, "err", err.Error())
+			writeExitError(w, http.StatusInternalServerError, "exit switch failed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(exitResponse{ActiveExit: active}); err != nil {
+			logger.Error("monitor exit response encode failed", "err", err.Error())
+		}
+	}
+}
+
+// writeExitError writes the stable {"error": msg} JSON body with the given status.
+func writeExitError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(exitError{Error: msg})
 }

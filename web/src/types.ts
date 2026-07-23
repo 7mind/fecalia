@@ -144,3 +144,33 @@ export interface MonitorSnapshot {
   wgPublicKeyFingerprint: string;
   addressingHidden: boolean;
 }
+
+/**
+ * Mirrors the POST /api/exit request body (monitor.exitRequest in
+ * internal/monitor/server.go): the name of the exit-capable peer to make
+ * active. This is the ONE mutating control call (T258); it is available ONLY on
+ * a loopback-bound monitor (a non-loopback bind refuses it with 403, regardless
+ * of a valid token). T259/T260 wire the UI switch onto it.
+ */
+export interface ExitRequest {
+  peer: string;
+}
+
+/**
+ * Mirrors the POST /api/exit 200 response body (monitor.exitResponse): the
+ * resulting active exit name (the requested peer, whether an actual switch
+ * occurred or an idempotent same-name no-op).
+ */
+export interface ExitResponse {
+  activeExit: string;
+}
+
+/**
+ * Mirrors the stable error body (monitor.exitError) every non-200 POST
+ * /api/exit response carries: 403 (non-loopback bind), 400 (malformed JSON or an
+ * unknown/non-exit-capable peer — the body names only the caller-supplied peer,
+ * never selector internals), 401 (missing/invalid token), 405 (non-POST method).
+ */
+export interface ExitError {
+  error: string;
+}
