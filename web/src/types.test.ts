@@ -80,15 +80,17 @@ const FULL_FRAME = `{
   "addressingHidden": false
 }`;
 
-// 2-peer concentrator binding, loopback-bound (addressing revealed): exercises
-// the T257/T259 additive fields — per-entry `peer` on `endpoints` (grouping
-// the flat hub-failover list per bound edge peer, in configured order), one
+// 2-peer concentrator binding, addressing revealed: exercises the T257/T259
+// additive fields — per-entry `peer` on `endpoints` (grouping the flat
+// hub-failover list per bound edge peer, in configured order), one
 // `peerSessions` entry per bound peer, and `activeExit` naming the peer
-// currently carrying the default route.
+// currently carrying the default route. addressingHidden is false, so per
+// monitor.BuildSnapshot (revealAddressing=true) every path carries an
+// `addressing` block, matching FULL_FRAME's documented invariant above.
 const TWO_PEER_FRAME = `{
   "paths": [
-    { "name": "wan0", "peer": "tokyo", "txBytes": 1000, "rxBytes": 2000, "throughputBps": 5000, "rttSeconds": 0.02, "jitterSeconds": 0.001, "loss": 0.01, "up": true, "bindMode": "device", "boundDevice": "eth0", "linkBandwidthBps": 1000000, "linkRttSeconds": 0.03 },
-    { "name": "wan1", "peer": "osaka", "txBytes": 500, "rxBytes": 900, "throughputBps": 2500, "rttSeconds": 0.04, "jitterSeconds": 0.002, "loss": 0.02, "up": true, "bindMode": "device", "boundDevice": "eth1", "linkBandwidthBps": 500000, "linkRttSeconds": 0.05 }
+    { "name": "wan0", "peer": "tokyo", "txBytes": 1000, "rxBytes": 2000, "throughputBps": 5000, "rttSeconds": 0.02, "jitterSeconds": 0.001, "loss": 0.01, "up": true, "bindMode": "device", "boundDevice": "eth0", "linkBandwidthBps": 1000000, "linkRttSeconds": 0.03, "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" } },
+    { "name": "wan1", "peer": "osaka", "txBytes": 500, "rxBytes": 900, "throughputBps": 2500, "rttSeconds": 0.04, "jitterSeconds": 0.002, "loss": 0.02, "up": true, "bindMode": "device", "boundDevice": "eth1", "linkBandwidthBps": 500000, "linkRttSeconds": 0.05, "addressing": { "source": "192.0.2.2", "remote": "198.51.100.8:51820" } }
   ],
   "fec": [],
   "reseq": [
@@ -184,6 +186,17 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
 
     expect(snapshot.multiPeer).toBe(true);
     expect(snapshot.peerNames).toEqual(['tokyo', 'osaka']);
+    expect(snapshot.addressingHidden).toBe(false);
+
+    // addressingHidden is false, so both paths must carry an `addressing`
+    // block (BuildSnapshot sets it unconditionally when revealAddressing).
+    for (const path of snapshot.paths) {
+      if (!path.addressing) {
+        throw new Error('revealed frame must carry an addressing block on every path');
+      }
+    }
+    expect(snapshot.paths[0].addressing?.source).toBe('192.0.2.1');
+    expect(snapshot.paths[1].addressing?.remote).toBe('198.51.100.8:51820');
 
     // endpoints: grouped per bound edge peer, configured order preserved
     // both across peers and within each peer's own ordered active/standby set.
