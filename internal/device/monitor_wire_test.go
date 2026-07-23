@@ -188,6 +188,76 @@ func TestReloadReconcilesMonitorWithoutTearingTunnel(t *testing.T) {
 	_ = addr1 // addr1 retained for symmetry; the invariant asserted is engine-identity + rebind
 }
 
+// TestReloadRevealAddressingFlipRebindsMonitorWithoutTearingTunnel is the T280 reload acceptance
+// (f), modeled on TestReloadReconcilesMonitorWithoutTearingTunnel: a SIGHUP/Reload that flips ONLY
+// [monitor].reveal_addressing at an UNCHANGED listen+token must REBIND the endpoint (the reveal
+// verdict is baked in at monitor.NewServer construction, so a live flip requires a fresh server)
+// WITHOUT recreating the engine, and the new reveal verdict must be OBSERVABLE over /ws. It uses a
+// token-authorized non-loopback (wildcard) bind so the reveal verdict is visible on the wire
+// (reveal off => addressingHidden=true; reveal on => false). MUTATION-VERIFY (T280): reverting the
+// applyMonitorLocked change-detection guard extension (the reveal==t.monitorReveal term, device.go)
+// makes the reveal-only reload an early-return no-op, so the endpoint never rebinds and the second
+// frame still reads addressingHidden=true — turning this test red.
+func TestReloadRevealAddressingFlipRebindsMonitorWithoutTearingTunnel(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const token = "reveal-reload-token"
+	cfg := writeEdgeConfig(t, `["203.0.113.1:51820", "198.51.100.7:51820"]`, false)
+	cfg.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token, RevealAddressing: false}
+	chtun := tuntest.NewChannelTUN()
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	if err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+	defer tun.Close()
+
+	if tun.monitorSrv == nil {
+		t.Fatal("monitor endpoint not started at boot")
+	}
+	engine := tun.dev // must survive the reveal-only reload untouched
+	addrBefore := tun.monitorSrv.Addr().String()
+
+	// assertReveal dials the CURRENT running endpoint over a real /ws and asserts the addressing
+	// verdict; exit control must stay unavailable on this non-loopback bind either way.
+	assertReveal := func(desc string, wantHidden bool) {
+		t.Helper()
+		readRaw, cleanup := dialMonitorAt(t, tun.monitorSrv, token)
+		defer cleanup()
+		raw, snap := readRaw(t)
+		if snap.AddressingHidden != wantHidden {
+			t.Fatalf("%s: addressingHidden = %v, want %v: %s", desc, snap.AddressingHidden, wantHidden, raw)
+		}
+		if snap.ExitControlAvailable {
+			t.Fatalf("%s: exitControlAvailable must stay false on a non-loopback bind: %s", desc, raw)
+		}
+	}
+
+	// Boot: reveal off on a non-loopback bind => addressing redacted.
+	assertReveal("boot (reveal off)", true)
+
+	// Flip reveal_addressing ON at the UNCHANGED listen+token: MUST rebind (a fresh OS-assigned
+	// port proves a new listener/server) WITHOUT tearing the tunnel down.
+	next := *tun.cfg
+	next.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token, RevealAddressing: true}
+	if err := tun.Reload(&next); err != nil {
+		t.Fatalf("reveal-only reload failed: %v", err)
+	}
+	if tun.dev != engine {
+		t.Fatal("reveal-only reload recreated the engine (tunnel torn down)")
+	}
+	if tun.monitorSrv == nil {
+		t.Fatal("reveal-only reload dropped the endpoint")
+	}
+	addrAfter := tun.monitorSrv.Addr().String()
+	if addrAfter == addrBefore {
+		t.Fatalf("reveal-only flip did not rebind the endpoint (addr unchanged %q) — silent no-op", addrAfter)
+	}
+
+	// After the flip: the new reveal verdict is observable over /ws (addressing now revealed).
+	assertReveal("after reveal flip (reveal on)", false)
+}
+
 // TestReloadTokenRotationAtFixedPort is the regression guard for the rebind-order defect: a
 // token-only change at an UNCHANGED FIXED listen address must rebind SUCCESSFULLY, not fail
 // EADDRINUSE. The buggy order bound the new listener (monitor.NewServer -> net.Listen) BEFORE
@@ -407,7 +477,7 @@ func buildTwoPeerWireFixture(t *testing.T) (metrics.Source, monitor.Info) {
 func TestMonitorWire_PerPeerEndpointGroupsSessionsActiveExit(t *testing.T) {
 	src, info := buildTwoPeerWireFixture(t)
 
-	snap := monitor.BuildSnapshot(src, info, true)
+	snap := monitor.BuildSnapshot(src, info, true, false)
 
 	if !snap.MultiPeer {
 		t.Fatalf("MultiPeer = false, want true for a 2-peer Source")
@@ -454,7 +524,7 @@ func TestMonitorWire_PerPeerEndpointGroupsSessionsActiveExit(t *testing.T) {
 func TestMonitorWire_PerPeerEndpointsRedactedKeepsGroupingAndActiveExit(t *testing.T) {
 	src, info := buildTwoPeerWireFixture(t)
 
-	snap := monitor.BuildSnapshot(src, info, false)
+	snap := monitor.BuildSnapshot(src, info, false, false)
 
 	if !snap.AddressingHidden {
 		t.Fatalf("AddressingHidden = false, want true when not revealed")

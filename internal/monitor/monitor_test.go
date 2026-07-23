@@ -73,7 +73,7 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 	}
 
 	// revealAddressing = true (loopback binding): every new field populated.
-	snap := BuildSnapshot(src, info, true)
+	snap := BuildSnapshot(src, info, true, false)
 	if snap.Daemon.Role != "edge" || snap.Daemon.Version != "v1.2.3" || snap.Daemon.UptimeSeconds != 42 {
 		t.Fatalf("daemon = %+v", snap.Daemon)
 	}
@@ -101,7 +101,7 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 	}
 
 	// revealAddressing = false (non-loopback binding): server-side redaction.
-	red := BuildSnapshot(src, info, false)
+	red := BuildSnapshot(src, info, false, false)
 	if !red.AddressingHidden {
 		t.Fatalf("AddressingHidden must be true when not revealed")
 	}
@@ -168,7 +168,7 @@ func TestBuildSnapshot_RedactsAddressingWhenNotRevealed(t *testing.T) {
 	}
 
 	// revealAddressing = false: the redacted frame must leak nothing.
-	red, err := json.Marshal(BuildSnapshot(src, info, false))
+	red, err := json.Marshal(BuildSnapshot(src, info, false, false))
 	if err != nil {
 		t.Fatalf("marshal redacted: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestBuildSnapshot_RedactsAddressingWhenNotRevealed(t *testing.T) {
 	}
 
 	// revealAddressing = true: the SAME addresses must now be present (non-vacuity).
-	full, err := json.Marshal(BuildSnapshot(src, info, true))
+	full, err := json.Marshal(BuildSnapshot(src, info, true, false))
 	if err != nil {
 		t.Fatalf("marshal revealed: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 		peerNames: []string{""},
 	}
 
-	snap := BuildSnapshot(src, Info{}, true)
+	snap := BuildSnapshot(src, Info{}, true, false)
 
 	if snap.MultiPeer {
 		t.Fatalf("MultiPeer = true, want false for a single-bound-peer Source")
@@ -400,7 +400,7 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 		peerNames: []string{"east", "west"},
 	}
 
-	snap := BuildSnapshot(src, Info{}, true)
+	snap := BuildSnapshot(src, Info{}, true, false)
 
 	if !snap.MultiPeer {
 		t.Fatalf("MultiPeer = false, want true for a 2-peer Source")
@@ -466,7 +466,7 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 // Reseq/Aggregation sets marshal as `[]`, not `null` — a nil slice would force
 // the frontend to null-check every field before iterating.
 func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
-	snap := BuildSnapshot(fakeSource{peerNames: []string{""}}, Info{}, true)
+	snap := BuildSnapshot(fakeSource{peerNames: []string{""}}, Info{}, true, false)
 
 	b, err := json.Marshal(snap)
 	if err != nil {
@@ -501,7 +501,7 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 		},
 	}
 
-	snap := BuildSnapshot(src, info, true)
+	snap := BuildSnapshot(src, info, true, false)
 
 	b, err := json.Marshal(snap)
 	if err != nil {
@@ -519,6 +519,9 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	if _, ok := got["activeExit"]; !ok {
 		t.Fatalf("activeExit field missing from %s", b)
 	}
+	if _, ok := got["exitControlAvailable"]; !ok {
+		t.Fatalf("exitControlAvailable field missing from %s", b)
+	}
 	eps, ok := got["endpoints"].([]any)
 	if !ok || len(eps) != 1 {
 		t.Fatalf("endpoints = %#v, want a 1-element array", got["endpoints"])
@@ -531,6 +534,7 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	// ...and, once stripped, the remainder must equal the pre-T257 shape exactly.
 	delete(got, "peerSessions")
 	delete(got, "activeExit")
+	delete(got, "exitControlAvailable")
 	delete(ep0, "peer")
 
 	want := map[string]any{
@@ -565,5 +569,37 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	}
 	if string(gotJSON) != string(wantJSON) {
 		t.Fatalf("stripped snapshot != pre-T257 shape:\n got=%s\nwant=%s", gotJSON, wantJSON)
+	}
+}
+
+// TestBuildSnapshotExitControlAvailableTracksRawLoopbackVerdict pins the T280
+// split: ExitControlAvailable follows the RAW loopbackBound verdict, NOT
+// revealAddressing, while AddressingHidden follows revealAddressing. The critical
+// row is the reveal-override non-loopback bind (revealAddressing=true,
+// loopbackBound=false): addressing is unhidden yet exit control stays UNAVAILABLE,
+// so the two verdicts are provably independent on the wire.
+func TestBuildSnapshotExitControlAvailableTracksRawLoopbackVerdict(t *testing.T) {
+	src := fakeSource{peerNames: []string{""}}
+	cases := []struct {
+		name             string
+		revealAddressing bool
+		loopbackBound    bool
+		wantExit         bool
+		wantHidden       bool
+	}{
+		{"loopback bind", true, true, true, false},
+		{"non-loopback redacted", false, false, false, true},
+		{"reveal-override non-loopback", true, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := BuildSnapshot(src, Info{}, tc.revealAddressing, tc.loopbackBound)
+			if snap.ExitControlAvailable != tc.wantExit {
+				t.Errorf("ExitControlAvailable = %v, want %v", snap.ExitControlAvailable, tc.wantExit)
+			}
+			if snap.AddressingHidden != tc.wantHidden {
+				t.Errorf("AddressingHidden = %v, want %v", snap.AddressingHidden, tc.wantHidden)
+			}
+		})
 	}
 }

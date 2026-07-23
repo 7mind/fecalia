@@ -297,12 +297,15 @@ type Tunnel struct {
 	monitorSrc metrics.Source
 	// monitorSrv is the running [monitor] endpoint, nil when [monitor].listen is empty. It is
 	// (re)assigned by applyMonitorLocked and read by Close; both hold reloadMu, so a
-	// SIGHUP-driven reconcile never races shutdown. monitorListen/monitorToken mirror the
-	// address+token it is bound to so a reload can detect a listen OR token change (either
-	// forces a rebind) without inspecting the server.
+	// SIGHUP-driven reconcile never races shutdown. monitorListen/monitorToken/monitorReveal
+	// mirror the address+token+reveal_addressing verdict it is bound to so a reload can detect
+	// a listen, token, OR reveal-flag change (any of the three forces a rebind) without
+	// inspecting the server — a reveal_addressing-only flip at unchanged listen+token must
+	// still rebind, else a SIGHUP would be a silent no-op (T280).
 	monitorSrv    *monitor.Server
 	monitorListen string
 	monitorToken  string
+	monitorReveal bool
 	// monitorInfo is the identity/config/failover read seam (monitor.Info) the [monitor]
 	// endpoint is constructed with (T222): the daemon role/version, a LIVE uptime provider,
 	// the config-declared per-path link params, the truncated local WG public-key
@@ -901,7 +904,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// config-only field and BOTH RoleEdge and RoleConcentrator flow through up(), this one
 	// wiring gives edge+concentrator monitor parity.
 	t.reloadMu.Lock()
-	err = t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token)
+	err = t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token, cfg.Monitor.RevealAddressing)
 	t.reloadMu.Unlock()
 	if err != nil {
 		ok = true
@@ -1047,19 +1050,22 @@ func (t *Tunnel) stopMetricsLocked() {
 	t.metricsListen = ""
 }
 
-// applyMonitorLocked reconciles the running [monitor] endpoint to (listen, token): it
+// applyMonitorLocked reconciles the running [monitor] endpoint to (listen, token, reveal): it
 // starts the endpoint when one is desired and none runs, stops it when listen is empty,
-// and rebinds when EITHER the address OR the token changed — a token change alters the
-// auth layer, so it must rebind even at an unchanged address. It is idempotent for an
-// unchanged (listen, token) pair. The dedicated t.monitorSrc is reused across a rebind so
-// its derived-throughput state is not reset. The caller MUST hold reloadMu (Up and Reload
-// both do), which also serializes it against Close reading monitorSrv. The rebind ORDER is
+// and rebinds when the address, the token, OR the reveal_addressing flag changed — a token
+// change alters the auth layer and a reveal flip alters the addressing-redaction verdict
+// baked in at construction, so either must rebind even at an unchanged address (a
+// reveal-only flip is a same-address rebind, stop-first per the ordering rule below). It is
+// idempotent for an unchanged (listen, token, reveal) triple. The dedicated t.monitorSrc is
+// reused across a rebind so its derived-throughput state is not reset. The caller MUST hold
+// reloadMu (Up and Reload both do), which also serializes it against Close reading
+// monitorSrv. The rebind ORDER is
 // address-dependent (see the body): a same-address (token-only) rebind stops the old
 // server before binding the new to avoid EADDRINUSE at a fixed port; an address-changing
 // rebind binds the new server first and only stops the old on success, so a bad
 // address-changing reload never drops a working endpoint. Mirrors applyMetricsLocked.
-func (t *Tunnel) applyMonitorLocked(listen, token string) error {
-	if listen == t.monitorListen && token == t.monitorToken {
+func (t *Tunnel) applyMonitorLocked(listen, token string, reveal bool) error {
+	if listen == t.monitorListen && token == t.monitorToken && reveal == t.monitorReveal {
 		return nil
 	}
 	if listen == "" {
@@ -1079,7 +1085,7 @@ func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 	if sameAddr {
 		t.stopMonitorLocked()
 	}
-	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.monitorInfo, t.switchActiveExit, t.log)
+	srv, err := monitor.NewServer(listen, token, t.monitorSrc, t.monitorInfo, t.switchActiveExit, reveal, t.log)
 	if err != nil {
 		return err
 	}
@@ -1090,6 +1096,7 @@ func (t *Tunnel) applyMonitorLocked(listen, token string) error {
 	t.monitorSrv = srv
 	t.monitorListen = listen
 	t.monitorToken = token
+	t.monitorReveal = reveal
 	return nil
 }
 
@@ -1107,6 +1114,7 @@ func (t *Tunnel) stopMonitorLocked() {
 	t.monitorSrv = nil
 	t.monitorListen = ""
 	t.monitorToken = ""
+	t.monitorReveal = false
 }
 
 // Reload applies a reloaded configuration to the RUNNING tunnel by diffing its
@@ -1155,8 +1163,8 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	// (e.g. a newly non-loopback address without a token) the previous endpoint is left running
 	// and the reload fails. Applied BEFORE the path diff so a monitor-refuse aborts before any
 	// membership change.
-	if cfg.Monitor.Listen != t.monitorListen || cfg.Monitor.Token != t.monitorToken {
-		if err := t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token); err != nil {
+	if cfg.Monitor.Listen != t.monitorListen || cfg.Monitor.Token != t.monitorToken || cfg.Monitor.RevealAddressing != t.monitorReveal {
+		if err := t.applyMonitorLocked(cfg.Monitor.Listen, cfg.Monitor.Token, cfg.Monitor.RevealAddressing); err != nil {
 			return fmt.Errorf("device: reload monitor endpoint: %w", err)
 		}
 		t.log.Info("reload: monitor endpoint reconciled", "listen", cfg.Monitor.Listen)
@@ -1215,6 +1223,7 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	// actually running (mirroring Metrics.Listen above).
 	t.cfg.Monitor.Listen = t.monitorListen
 	t.cfg.Monitor.Token = t.monitorToken
+	t.cfg.Monitor.RevealAddressing = t.monitorReveal
 	// Carry the recomputed weighted-capacity verdict so a subsequent reload's divergence
 	// check compares against the value the gauge now holds (D74).
 	t.cfg.WeightedCapacitySane = cfg.WeightedCapacitySane

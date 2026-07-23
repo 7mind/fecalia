@@ -71,7 +71,12 @@ type Server struct {
 // the kernel-bound Addr is asserted loopback and the bind fails closed on any
 // mismatch (TOCTOU defense). When a token is set, a verified non-loopback bind
 // is permitted.
-func NewServer(addr, token string, src metrics.Source, info Info, switchExit ExitSwitcher, logger log.Logger) (*Server, error) {
+//
+// revealOptIn is the operator's [monitor].reveal_addressing config flag (T280):
+// it widens the addressing-reveal verdict to cover an authenticated non-loopback
+// bind, but it does NOT widen the RAW loopbackBound verdict — the mutating exit
+// control's hard loopback-only gate is unaffected by it.
+func NewServer(addr, token string, src metrics.Source, info Info, switchExit ExitSwitcher, revealOptIn bool, logger log.Logger) (*Server, error) {
 	loopback, err := netutil.IsLoopbackHost(addr)
 	if err != nil {
 		return nil, fmt.Errorf("monitor: %w", err)
@@ -94,13 +99,20 @@ func NewServer(addr, token string, src metrics.Source, info Info, switchExit Exi
 			return nil, err
 		}
 	}
-	// revealAddressing is the Q62/Q64 gate (T219): full per-path addressing + hub
-	// endpoint addresses are revealed ONLY when the kernel ACTUALLY bound a
-	// loopback interface — the same act-then-verify verdict as the guard above,
-	// but computed unconditionally (a token-authorized NON-loopback bind still
-	// redacts, per Q62). BuildSnapshot performs the server-side redaction when
-	// this is false.
-	revealAddressing := verifyLoopbackBind(ln.Addr()) == nil
+	// Two DISTINCT verdicts are computed here and threaded separately (T280):
+	//
+	//   - loopbackBound is the RAW kernel-bound act-then-verify verdict: true ONLY
+	//     when the kernel ACTUALLY bound a loopback interface (the same
+	//     act-then-verify check as the tokenless guard above, but computed
+	//     unconditionally). It is the HARD gate for the mutating POST /api/exit
+	//     control (T258) and feeds MonitorSnapshot.ExitControlAvailable — a
+	//     reveal_addressing opt-in must NOT widen it.
+	//   - revealAddressing is the Q62/Q64 addressing-reveal gate: loopbackBound OR
+	//     the operator reveal_addressing opt-in. A token-authorized NON-loopback
+	//     bind still redacts per Q62 UNLESS the operator opted in. BuildSnapshot
+	//     performs the server-side redaction when this is false.
+	loopbackBound := verifyLoopbackBind(ln.Addr()) == nil
+	revealAddressing := loopbackBound || revealOptIn
 
 	// srvCtx is cancelled by Close so the /ws push handlers (T165) stop promptly
 	// on shutdown — http.Server.Shutdown does NOT cancel a hijacked WebSocket
@@ -117,18 +129,18 @@ func NewServer(addr, token string, src metrics.Source, info Info, switchExit Exi
 
 	mux := http.NewServeMux()
 	mux.Handle("GET "+rootPath, staticHandler(static))
-	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, info, revealAddressing, logger.Component("monitor")))
-	// POST /api/exit — the sole mutating route (T258). It is gated by the SAME
-	// kernel-bound loopback verdict (revealAddressing) that reveals addressing: a
-	// non-loopback bind refuses the control REGARDLESS of a valid token, so a
-	// remote/exposed monitor stays strictly read-only. The auth middleware
-	// (Host/Origin + token) wraps it exactly like every other route. The handler
-	// is registered for BOTH GET and POST: POST is the real control; GET is
-	// shadowed here (rather than falling through to the "/" static subtree and
-	// 404ing) so a non-POST method returns a clean 405 from the handler's own
-	// method check. Any other method (PUT/DELETE/…) matches neither /api/exit
-	// pattern and the mux returns 405 for it directly.
-	exitHandler := newExitHandler(revealAddressing, switchExit, logger.Component("monitor"))
+	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, info, revealAddressing, loopbackBound, logger.Component("monitor")))
+	// POST /api/exit — the sole mutating route (T258). It is gated by the RAW
+	// loopbackBound verdict, NOT revealAddressing: a non-loopback bind refuses the
+	// control REGARDLESS of a valid token OR a reveal_addressing opt-in, so a
+	// remote/exposed monitor stays strictly read-only even when it reveals
+	// addressing (T280). The auth middleware (Host/Origin + token) wraps it exactly
+	// like every other route. The handler is registered for BOTH GET and POST: POST
+	// is the real control; GET is shadowed here (rather than falling through to the
+	// "/" static subtree and 404ing) so a non-POST method returns a clean 405 from
+	// the handler's own method check. Any other method (PUT/DELETE/…) matches
+	// neither /api/exit pattern and the mux returns 405 for it directly.
+	exitHandler := newExitHandler(loopbackBound, switchExit, logger.Component("monitor"))
 	mux.HandleFunc("POST "+exitPath, exitHandler)
 	mux.HandleFunc("GET "+exitPath, exitHandler)
 
@@ -220,7 +232,7 @@ func staticHandler(fsys fs.FS) http.Handler {
 // independent readers on one instance corrupt each other's rates. This handler
 // only consumes whatever Source it was given; the dedicated-instance wiring is
 // enforced at construction (T169 device wiring).
-func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealAddressing bool, logger log.Logger) http.HandlerFunc {
+func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealAddressing, loopbackBound bool, logger log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -246,7 +258,7 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealA
 		defer ticker.Stop()
 
 		for {
-			if err := writeSnapshot(loopCtx, c, src, info, revealAddressing); err != nil {
+			if err := writeSnapshot(loopCtx, c, src, info, revealAddressing, loopbackBound); err != nil {
 				// A context cancellation (client close or shutdown) is an
 				// expected teardown, not an application error.
 				if loopCtx.Err() == nil {
@@ -271,12 +283,12 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealA
 // writeSnapshot marshals one MonitorSnapshot and writes it as a text frame,
 // bounded by writeTimeout so a slow/stuck client reader cannot wedge the push
 // goroutine.
-func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source, info Info, revealAddressing bool) error {
-	// info + revealAddressing are threaded from NewServer (the kernel-bound
-	// loopback verdict); BuildSnapshot performs the Q62/Q64 server-side redaction
-	// when revealAddressing is false. info is a placeholder zero value until the
-	// device layer supplies the real identity/endpoint seam (T222).
-	payload, err := json.Marshal(BuildSnapshot(src, info, revealAddressing))
+func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source, info Info, revealAddressing, loopbackBound bool) error {
+	// info + both verdicts are threaded from NewServer: revealAddressing (loopback
+	// OR reveal opt-in) drives the Q62/Q64 server-side redaction, while the raw
+	// loopbackBound drives ExitControlAvailable. info is a placeholder zero value
+	// until the device layer supplies the real identity/endpoint seam (T222).
+	payload, err := json.Marshal(BuildSnapshot(src, info, revealAddressing, loopbackBound))
 	if err != nil {
 		return err
 	}

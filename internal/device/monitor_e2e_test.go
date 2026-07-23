@@ -75,7 +75,7 @@ func (s *syncSession) set(snap metrics.SessionSnapshot) {
 func dialMonitor(t *testing.T, src metrics.Source) (readSnap func(*testing.T) monitor.MonitorSnapshot, cleanup func()) {
 	t.Helper()
 
-	srv, err := monitor.NewServer("127.0.0.1:0", "", src, monitor.Info{}, nil, discardLogger(t))
+	srv, err := monitor.NewServer("127.0.0.1:0", "", src, monitor.Info{}, nil, false, discardLogger(t))
 	if err != nil {
 		t.Fatalf("monitor.NewServer: %v", err)
 	}
@@ -149,7 +149,7 @@ func approxEq(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
 func dialMonitorWithInfo(t *testing.T, src metrics.Source, info monitor.Info) (readSnap func(*testing.T) monitor.MonitorSnapshot, cleanup func()) {
 	t.Helper()
 
-	srv, err := monitor.NewServer("127.0.0.1:0", "", src, info, nil, discardLogger(t))
+	srv, err := monitor.NewServer("127.0.0.1:0", "", src, info, nil, false, discardLogger(t))
 	if err != nil {
 		t.Fatalf("monitor.NewServer: %v", err)
 	}
@@ -552,6 +552,60 @@ func TestMonitorE2E_NonLoopbackRedactsAddressingButKeepsFingerprint(t *testing.T
 	fullPub := fullPublicKeyB64(t, cfg.WireGuard.PrivateKey)
 	if strings.Contains(string(raw), fullPub) {
 		t.Fatalf("frame leaks the FULL WG public key (Q63 — fingerprint only): %s", raw)
+	}
+}
+
+// TestMonitorE2E_NonLoopbackRevealAddressingServesAddressing is the T280 reveal-opt-in
+// acceptance (a): a token-authorized wildcard bind with reveal_addressing=TRUE, dialed over a
+// REAL WebSocket to the up()-wired [monitor] endpoint, serves per-path Addressing AND hub-endpoint
+// addresses with addressingHidden=false — the operator opt-in unhides the addressing surface on a
+// non-loopback bind. But the RAW loopback verdict is still false, so exitControlAvailable is false:
+// the reveal opt-in unhides addressing WITHOUT enabling the mutating exit control (T280 split).
+func TestMonitorE2E_NonLoopbackRevealAddressingServesAddressing(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const token = "e2e-reveal-monitor-token"
+	cfg := writeEdgeConfig(t, `["203.0.113.1:51820", "198.51.100.7:51820"]`, false)
+	cfg.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token, RevealAddressing: true}
+	chtun := tuntest.NewChannelTUN()
+
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	defer tun.Close()
+
+	if tun.monitorSrv == nil {
+		t.Fatal("up did not start the monitor endpoint despite a configured [monitor].listen")
+	}
+
+	readRaw, cleanup := dialMonitorAt(t, tun.monitorSrv, token)
+	defer cleanup()
+
+	raw, snap := readRaw(t)
+
+	if snap.AddressingHidden {
+		t.Fatalf("reveal_addressing opt-in must unhide addressing on a non-loopback bind (addressingHidden=false): %s", raw)
+	}
+	if len(snap.Paths) != 1 || snap.Paths[0].Addressing == nil {
+		t.Fatalf("expected exactly one path with per-path addressing revealed under reveal opt-in: %s", raw)
+	}
+	if snap.Paths[0].Addressing.Source != "127.0.0.1" {
+		t.Fatalf("path source addr = %q, want the configured 127.0.0.1: %s", snap.Paths[0].Addressing.Source, raw)
+	}
+	// Hub-endpoint addresses are revealed too (the whole redactable surface is unhidden).
+	if len(snap.Endpoints) != 2 {
+		t.Fatalf("endpoints = %+v, want the 2 configured hub endpoints", snap.Endpoints)
+	}
+	for _, e := range snap.Endpoints {
+		if e.Address == "" {
+			t.Fatalf("endpoint address blank under reveal opt-in: %+v", snap.Endpoints)
+		}
+	}
+	// The RAW loopback verdict is still false off-loopback: exit control stays unavailable even
+	// though addressing is revealed — the T280 split between the two verdicts, observed on the wire.
+	if snap.ExitControlAvailable {
+		t.Fatalf("exitControlAvailable must be false on a non-loopback bind even with reveal_addressing: %s", raw)
 	}
 }
 

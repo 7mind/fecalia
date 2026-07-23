@@ -252,11 +252,20 @@ type MonitorSnapshot struct {
 	// (Q63 — fingerprint ONLY; there is deliberately NO full-key field). Present
 	// on any binding.
 	WGPublicKeyFingerprint string `json:"wgPublicKeyFingerprint"`
-	// AddressingHidden is true when the monitor is NOT bound to loopback and the
-	// per-path addressing blocks + endpoint addresses have been redacted
-	// server-side (Q62). The frontend renders a "hidden on non-loopback binding"
-	// placeholder; it never reconstructs the hidden values.
+	// AddressingHidden is true when addressing is NOT revealed and the per-path
+	// addressing blocks + endpoint addresses have been redacted server-side (Q62).
+	// It is the negation of revealAddressing (loopbackBound OR the reveal opt-in),
+	// so it can be false even on a non-loopback bind when the operator opted in.
+	// The frontend renders a "hidden" placeholder; it never reconstructs the values.
 	AddressingHidden bool `json:"addressingHidden"`
+	// ExitControlAvailable is true ONLY when the kernel ACTUALLY bound a loopback
+	// interface (the raw loopbackBound verdict) — the SAME hard gate the POST
+	// /api/exit control enforces (T258). It is deliberately independent of
+	// AddressingHidden: a reveal_addressing opt-in can unhide addressing on a
+	// non-loopback bind WITHOUT enabling the mutating exit control, so the frontend
+	// hides/disables the exit switch whenever this is false even if addressing is
+	// visible. (T280, G32.)
+	ExitControlAvailable bool `json:"exitControlAvailable"`
 }
 
 // addrString renders a netip.Addr, "" when unset/invalid (so a not-yet-bound
@@ -286,12 +295,21 @@ func addrPortString(a netip.AddrPort) string {
 // package's peer-label rule.
 //
 // revealAddressing gates the Q62/Q64 addressing surface SERVER-SIDE: when false
-// (any non-loopback binding), every per-path AddressingSnapshot is omitted (nil)
-// and every endpoint Address is blanked while its active/standby shape is kept,
-// and AddressingHidden is set — so a redacted value provably never reaches the
-// wire. The truncated WG fingerprint (Q63) is NOT part of the redactable set: it
-// is present on any binding, and there is deliberately no full key to gate.
-func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) MonitorSnapshot {
+// (a non-loopback binding with no reveal opt-in), every per-path
+// AddressingSnapshot is omitted (nil) and every endpoint Address is blanked while
+// its active/standby shape is kept, and AddressingHidden is set — so a redacted
+// value provably never reaches the wire. The truncated WG fingerprint (Q63) is
+// NOT part of the redactable set: it is present on any binding, and there is
+// deliberately no full key to gate.
+//
+// loopbackBound is the RAW kernel-bound act-then-verify verdict, distinct from
+// revealAddressing (which is loopbackBound OR the operator reveal opt-in): it
+// feeds ExitControlAvailable, which mirrors the HARD loopback-only gate on the
+// mutating POST /api/exit control (T258/T280). A reveal_addressing opt-in can set
+// revealAddressing true on a non-loopback bind, but loopbackBound stays false
+// there, so exit control remains unavailable — the two verdicts are threaded
+// separately on purpose.
+func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBound bool) MonitorSnapshot {
 	paths := src.Paths()
 	fec := src.FEC()
 	reseqSnapshots := src.Reseq()
@@ -336,6 +354,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing bool) Monitor
 		},
 		WGPublicKeyFingerprint: info.WGPublicKeyFingerprint,
 		AddressingHidden:       !revealAddressing,
+		ExitControlAvailable:   loopbackBound,
 	}
 
 	for i, p := range paths {
