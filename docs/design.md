@@ -135,10 +135,18 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   paths at ITS concentrator (per-peer `configuredRemote`, not a single bind-global
   default). Without this, the engine would map every edge peer's endpoint to the
   primary's virt and every peer's WG traffic — and probes — would egress to one
-  hub. A single-peer edge keeps the bind-global-default path byte-identical; an
-  endpoint-less (unresolved-hostname) edge peer boots remoteless and is installed by
-  the re-resolution loop (R70). The concentrator never uses this — its peers learn
-  remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
+  hub. A single-peer edge keeps the bind-global-default path byte-identical. An
+  endpoint-less (unresolved-hostname) edge peer boots remoteless — but as shipped in
+  T251 only the **primary (first-qualifying) peer** is driven by the R70 re-resolution
+  loop: `startFailoverAndResolution` builds ONE controller for the FIRST peer
+  satisfying `peerNeedsHubFailover` and returns, so a NON-primary endpoint-less peer is
+  never installed (and if the first-qualifying peer is itself non-primary, its install
+  path `deviceInstallEndpoint`→`IpcSet`→`ParseEndpoint(ap)` mis-resolves to the
+  primary's virt because `ap` is not in `edgePeerByRemote`). T251's acceptance scope is
+  all-literal edge peers, where this is latent; the per-peer failover/re-resolution seam
+  is deferred to **T252** (per-peer remote repoint) → **T253** (per-concentrator
+  controllers), tracked as defect **D100**. The concentrator never uses this — its peers
+  learn remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
   `peerTeardownMonitor`, which sheds a dead edge's per-peer resequencer/FEC/demux
   state on session loss) is **inert on the edge role**: a multi-exit edge's standby
   peers are healthy warm standbys by design even while carrying no data, so

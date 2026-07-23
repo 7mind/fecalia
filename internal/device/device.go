@@ -643,7 +643,12 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// collapsing onto the primary's virt/remote. Edge-only and only with 2+ peers: a single-peer edge
 	// keeps the bind-global-default path byte-identical, and a concentrator learns remotes from
 	// inbound. An endpoint-less (unresolved-hostname) peer contributes a zero AddrPort — SeedEdge
-	// PeerRemotes skips it, and it boots remoteless until the re-resolution loop installs it (R70).
+	// PeerRemotes skips it, and it boots remoteless. It is installed by the R70 re-resolution loop
+	// ONLY when it is the primary/first-qualifying peer: startFailoverAndResolution builds one
+	// controller for the FIRST peer satisfying peerNeedsHubFailover and returns, so a NON-primary
+	// endpoint-less peer is never driven (and a non-primary first-qualifying peer's install path
+	// mis-resolves to the primary's virt). All-literal edge peers (T251's acceptance scope) make
+	// this latent; the per-peer failover/re-resolution seam is deferred to T252 → T253 (defect D100).
 	if cfg.Role == config.RoleEdge && len(cfg.WireGuard.Peers) > 1 {
 		remotes := make([]netip.AddrPort, len(boot.endpoints))
 		for i, ep := range boot.endpoints {

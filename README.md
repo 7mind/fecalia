@@ -261,9 +261,11 @@ deliberate boundaries you must plan around:
   routed to ITS concentrator (distinct per-peer virtual endpoint + per-path
   remotes), every peer gets a persistent keepalive and a first-path-up handshake
   so all sessions stay warm, and the concentrator-role dead-peer reclaim never
-  tears down a healthy edge warm-standby. On-the-fly exit switching and
-  per-concentrator web-UI stats are later tasks. See
-  [docs/install.md §Multi-concentrator edge](docs/install.md).
+  tears down a healthy edge warm-standby. Per-peer hub-failover / DNS
+  re-resolution (only the primary/first-qualifying peer is driven today — defect
+  D100; per-peer remote seam T252 → per-concentrator controllers T253),
+  on-the-fly exit switching, and per-concentrator web-UI stats are later tasks.
+  See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
 - **DATA/PARITY frames are unauthenticated by design** (inner WireGuard
