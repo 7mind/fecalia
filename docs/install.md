@@ -985,6 +985,12 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8,
                                    #   when listen is non-loopback. See §6c for
                                    #   the token-cookie flow and the accepted
                                    #   cleartext-on-LAN residual risk.
+# reveal_addressing = false        # OPTIONAL, DEFAULT false. Opt-in that
+                                   #   discloses per-path source IPs, hub
+                                   #   endpoint addresses, and connected-edge
+                                   #   sources to token holders on a
+                                   #   non-loopback bind. Does NOT bypass the
+                                   #   token requirement above; see §6c.
 
 # ── log: OPTIONAL ────────────────────────────────────────────────────────────
 [log]

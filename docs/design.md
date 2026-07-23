@@ -1316,11 +1316,13 @@ by `internal/device`:
   `exitSelector.ActiveExit()`, `""` on the concentrator role and on an edge
   with no default-route ownership to report, and (being a peer NAME, never an
   address) NOT part of the redactable surface; and the REDACTABLE surface
-  gated by the server-side loopback verdict: a per-path `addressing` block
-  (`source`, `remote`) and an ordered `endpoints` hub-failover list
+  gated by the server-side `revealAddressing` verdict: a per-path `addressing`
+  block (`source`, `remote`) and an ordered `endpoints` hub-failover list
   (`peer`, `address`, `active`) whose addresses are omitted/blanked (while
-  `peer` and `active` survive) and `addressingHidden` set true when the
-  monitor is not loopback-bound. Since T257, `endpoints` is GROUPED per
+  `peer` and `active` survive) and `addressingHidden` set true when addressing
+  is NOT revealed — revealed meaning the monitor is loopback-bound OR the
+  operator set the default-off, token-gated `[monitor] reveal_addressing`
+  opt-in (see *Security model*). Since T257, `endpoints` is GROUPED per
   bound edge peer — each entry's `peer` names the owning peer's OWN
   hub-failover controller (`hubFailover.EndpointsSnapshot()`, keyed by stable
   peer name, T253), so a multi-exit edge renders one ordered active/standby
@@ -1576,8 +1578,12 @@ misbehaves subtly. Agents and contributors must preserve them.
       the browser's `SameSite=Strict` cookie jar carries auth automatically
       (the `ws-client.ts` precedent). The control mirrors the server's gate
       client-side rather than relying on it: it is omitted entirely when
-      `snapshot.addressingHidden` (a non-loopback bind would 403 the POST
-      anyway) or on a single-peer snapshot (nothing to switch to). Pending
+      `!snapshot.exitControlAvailable` (T281 — the wire field mirroring the
+      server's RAW `loopbackBound` verdict; a non-loopback bind would 403 the
+      POST anyway; deliberately NOT keyed on `addressingHidden`, which a
+      `reveal_addressing` opt-in can clear on a non-loopback bind while exit
+      control stays unavailable) or on a single-peer snapshot (nothing to
+      switch to). Pending
       state disables the `<select>` while the POST is in flight; a 2xx
       response adopts the returned `activeExit` optimistically (reconciled
       against the next real snapshot frame, which always wins); a non-2xx or
@@ -1588,12 +1594,16 @@ misbehaves subtly. Agents and contributors must preserve them.
       so neither is lost on the next pushed frame.
     - **HARD loopback gate (act-then-verify), independent of the token.** The
       handler refuses with **403** whenever the server's ACTUAL kernel-bound
-      address is non-loopback — the SAME `verifyLoopbackBind(ln.Addr())` verdict
-      (`revealAddressing`) that sets `addressingHidden`. A token-authorized
-      **non-loopback** monitor therefore stays **strictly read-only**: the 403
-      fires REGARDLESS of a valid token, so an off-host operator can watch but
-      never steer. This is stricter than the read surface (which a token exposes
-      off-host); the control surface is loopback-ONLY, full stop.
+      address is non-loopback — the RAW `loopbackBound` verdict from
+      `verifyLoopbackBind(ln.Addr())` (T280). This is a DISTINCT verdict from
+      `revealAddressing` (which is `loopbackBound` OR the `reveal_addressing`
+      opt-in and drives `addressingHidden`): the exit gate uses `loopbackBound`
+      alone, so a `reveal_addressing` opt-in never widens the control surface. A
+      token-authorized **non-loopback** monitor therefore stays **strictly
+      read-only**: the 403 fires REGARDLESS of a valid token, so an off-host
+      operator can watch but never steer. This is stricter than the read surface
+      (which a token exposes off-host); the control surface is loopback-ONLY,
+      full stop.
     - **The auth middleware covers it like every route.** Host/Origin validation
       (DNS-rebinding + cross-origin/CSRF defense) and, when configured, token
       gating apply to the whole mux, so a cross-origin `POST` is **403** and a

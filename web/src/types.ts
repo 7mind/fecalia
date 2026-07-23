@@ -27,9 +27,9 @@ export interface PathSnapshot {
   linkBandwidthBps: number;
   linkRttSeconds: number;
   /**
-   * Present ONLY when addressing is revealed (loopback-bound monitor); absent
-   * (server omits the field, `omitempty`) on a non-loopback binding — see
-   * MonitorSnapshot.addressingHidden.
+   * Present ONLY when addressing is revealed (loopback bind, or the
+   * default-off token-gated reveal_addressing opt-in); absent (server omits
+   * the field, `omitempty`) otherwise — see MonitorSnapshot.addressingHidden.
    */
   addressing?: AddressingSnapshot;
 }
@@ -115,8 +115,10 @@ export interface DaemonSnapshot {
 /**
  * Mirrors monitor.EndpointSnapshot: one entry of the ordered hub-endpoint
  * list with its active-vs-standby failover state. `address` is inside the
- * REDACTABLE addressing surface: blanked (empty string) on a non-loopback
- * binding while the ordered active/standby shape is preserved.
+ * REDACTABLE addressing surface: blanked (empty string) when addressing is
+ * NOT revealed (revealed = loopback bind, or the default-off token-gated
+ * reveal_addressing opt-in) while the ordered active/standby shape is
+ * preserved.
  *
  * `peer` (T257) attributes this entry to the bound edge peer whose OWN
  * endpoint list it belongs to, grouping the flat list into per-peer sections
@@ -153,8 +155,9 @@ export interface PeerSessionSnapshot {
  * wgPublicKeyFingerprint is the truncated local WG public-key fingerprint
  * (Q63 — fingerprint ONLY; there is deliberately NO full-key field on the Go
  * contract, so this file MUST NOT add an optional `wgPublicKey?` either).
- * addressingHidden is true when the monitor is not loopback-bound and the
- * per-path addressing blocks + endpoint addresses have been redacted
+ * addressingHidden is true when addressing is NOT revealed (revealed =
+ * loopback bind, or the default-off token-gated reveal_addressing opt-in)
+ * and the per-path addressing blocks + endpoint addresses have been redacted
  * server-side; the frontend renders a placeholder and never reconstructs the
  * hidden values.
  *
