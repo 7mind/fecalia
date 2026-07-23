@@ -201,9 +201,12 @@ func TestExit_NoCredential_Unauthorized(t *testing.T) {
 	}
 }
 
-// TestExit_GetMethod_NotAllowed asserts a non-POST method on the route is 405
-// (the route is registered without a method verb precisely so a GET reaches the
-// handler rather than the static "/" subtree).
+// TestExit_GetMethod_NotAllowed asserts a non-POST method on the route is 405.
+// NewServer registers the route under BOTH method-verbed patterns
+// ("POST /api/exit" and "GET /api/exit") bound to the same handler, so a GET is
+// routed to the exit handler (rather than falling through to the static "/"
+// subtree and 404ing) and the handler's own method check returns 405 with an
+// Allow: POST header.
 func TestExit_GetMethod_NotAllowed(t *testing.T) {
 	sw := &recordingSwitcher{known: map[string]bool{"tokyo": true}}
 	srv, base := startExitServer(t, "127.0.0.1:0", "", sw.fn)
@@ -267,6 +270,52 @@ func TestExit_MalformedJSON_BadRequest(t *testing.T) {
 	}
 	if sw.callCount() != 0 {
 		t.Fatalf("selector called %d times on malformed JSON, want 0", sw.callCount())
+	}
+}
+
+// TestExit_NilSwitcher_BadRequest asserts the nil-ExitSwitcher branch: a
+// loopback-bound monitor wired with NO switcher (a role with no multi-exit
+// selector, or the read-only path) rejects every POST with 400 "no exit-capable
+// peer configured" — the loopback gate passes, so this exercises the nil branch
+// specifically rather than the 403 loopback refusal.
+func TestExit_NilSwitcher_BadRequest(t *testing.T) {
+	srv, base := startExitServer(t, "127.0.0.1:0", "", nil)
+	defer closeMonitor(t, srv)
+
+	resp := postExit(t, exitClient(), base, `{"peer":"tokyo"}`, nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("nil-switcher POST => %d, want 400", resp.StatusCode)
+	}
+	var e exitError
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatalf("decode exitError: %v", err)
+	}
+	if !strings.Contains(e.Error, "no exit-capable peer configured") {
+		t.Errorf("400 body = %q, want it to name the nil-switcher reason", e.Error)
+	}
+}
+
+// TestExit_OversizedBody_BadRequest asserts the http.MaxBytesReader bound on the
+// sole body-accepting route: a body exceeding maxExitBodyBytes makes the decode
+// error and maps to 400, and the selector is never called.
+func TestExit_OversizedBody_BadRequest(t *testing.T) {
+	sw := &recordingSwitcher{known: map[string]bool{"tokyo": true}}
+	srv, base := startExitServer(t, "127.0.0.1:0", "", sw.fn)
+	defer closeMonitor(t, srv)
+
+	// A syntactically valid JSON object whose peer value alone exceeds the bound,
+	// so the decode fails on the MaxBytesReader limit rather than on JSON syntax.
+	oversized := `{"peer":"` + strings.Repeat("a", maxExitBodyBytes+1) + `"}`
+	resp := postExit(t, exitClient(), base, oversized, nil)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized-body POST => %d, want 400", resp.StatusCode)
+	}
+	if sw.callCount() != 0 {
+		t.Fatalf("selector called %d times on an oversized body, want 0", sw.callCount())
 	}
 }
 

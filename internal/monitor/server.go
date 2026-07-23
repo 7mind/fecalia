@@ -470,6 +470,13 @@ var ErrUnknownExitPeer = errors.New("monitor: unknown or non-exit-capable exit p
 // NOT leak any selector internals beyond the caller-supplied name.
 type ExitSwitcher func(peer string) (activeExit string, err error)
 
+// maxExitBodyBytes bounds the POST /api/exit request body. The only accepted
+// payload is a single short peer name ({"peer":"<name>"}), so a few KiB is
+// generous; the bound closes an unbounded-read DoS on the sole body-accepting
+// route (an over-limit body is mapped to the same 400 as malformed JSON via
+// http.MaxBytesReader).
+const maxExitBodyBytes = 4 << 10 // 4 KiB
+
 // exitRequest is the POST /api/exit JSON body: the name of the exit-capable peer
 // to make active.
 type exitRequest struct {
@@ -514,8 +521,11 @@ func newExitHandler(loopbackBound bool, switchExit ExitSwitcher, logger log.Logg
 			writeExitError(w, http.StatusBadRequest, "no exit-capable peer configured")
 			return
 		}
+		// Bound the body before decoding: the only valid payload is a short peer
+		// name, so cap the read at maxExitBodyBytes. An over-limit body makes the
+		// decoder error, mapped to the same 400 as malformed JSON.
 		var req exitRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxExitBodyBytes)).Decode(&req); err != nil {
 			writeExitError(w, http.StatusBadRequest, "malformed request body")
 			return
 		}

@@ -137,9 +137,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   mix under weighted striping, with an early-regime min-sample floor applied),
   and `wanbond_fec_eligible_paths` (the count of those data paths) — absent
   entirely for a fixed-ratio or FEC-off peer.
-- **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a read-only,
+- **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
-  a `/ws` WebSocket every 1s) — loopback-only by default like `[metrics]`, but
+  a `/ws` WebSocket every 1s) — read-only except the loopback-only `POST
+  /api/exit` control (which 403s on any non-loopback bind) — loopback-only by
+  default like `[metrics]`, but
   it MAY bind non-loopback if you also set `[monitor].token` (otherwise
   refused at config load). Every request, including the WebSocket upgrade, is
   Host/Origin-validated (DNS-rebinding/CSRF defense); a configured token is
@@ -212,7 +214,7 @@ internal/config/        TOML load + fail-fast validation
 internal/dnsresolve/    DNS resolution seam (Resolver interface, system + DoH + DoT impls, test fake)
 internal/device/        tunnel lifecycle (Up/Down/Reload), metrics wiring
 internal/metrics/       loopback Prometheus /metrics
-internal/monitor/       read-only monitoring-UI endpoint (auth + /ws push + embedded frontend)
+internal/monitor/       monitoring-UI endpoint, read-only except the loopback-only POST /api/exit control (auth + /ws push + embedded frontend)
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
