@@ -285,6 +285,63 @@ func nameSpec(host string, port uint16, addrs ...netip.AddrPort) failoverSpec {
 	return failoverSpec{spec: config.EndpointSpec{Host: host, Port: port, IsName: true}, addrs: addrs}
 }
 
+// TestStartHubFailoverLoopRunsForExhaustionOnly pins the R267/T269 poll-guard restructure: a
+// single-literal controller can NEVER round-robin (canFailoverLocked false), so startHubFailoverLoop
+// would ordinarily leave its poll a no-op — meaning a single-endpoint exit peer's exhaustion would
+// never be DETECTED in production even though the wiring built a controller. With exhaustionOnly=true
+// the poll MUST run so check's total==1 branch raises the exhaustion signal. Settle 0 + an
+// already-down sole path make the FIRST poll tick raise exhaustion, so the test is deterministic
+// (channel-synchronized, no clock stepping). It fails (2s timeout, no signal) under a mutation that
+// drops the exhaustionOnly override and re-gates the loop on canFailoverLocked alone.
+func TestStartHubFailoverLoopRunsForExhaustionOnly(t *testing.T) {
+	ep := mustEndpoints(t, "203.0.113.1:51820")
+	hp := &fakeHealth{telemetry.StateDown} // the sole path is already down
+	ctrl := newHubFailover(ep, []hubHealth{hp}, &recordingRemote{}, func() {}, telemetry.SystemClock{}, 0, discardLogger(t))
+	fired := make(chan struct{}, 1)
+	ctrl.SetOnExhausted(func() {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
+
+	stop := ctrl.startHubFailoverLoop(5*time.Millisecond, true)
+	defer stop()
+
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("exhaustion-only poll never ran: no exhaustion signal within 2s — startHubFailoverLoop did not start the goroutine for a single-literal exit controller")
+	}
+}
+
+// TestStartHubFailoverLoopNoOpWithoutExhaustionOnly is the negative half: the SAME single-literal
+// controller, started with exhaustionOnly=false, must keep the pre-G5 no-op behaviour — canFailover
+// is false, so no goroutine runs and no exhaustion signal is ever raised. It pins that the poll-guard
+// widening is SCOPED to the exhaustionOnly flag and does not run polls for controllers that never
+// asked for one.
+func TestStartHubFailoverLoopNoOpWithoutExhaustionOnly(t *testing.T) {
+	ep := mustEndpoints(t, "203.0.113.1:51820")
+	hp := &fakeHealth{telemetry.StateDown}
+	ctrl := newHubFailover(ep, []hubHealth{hp}, &recordingRemote{}, func() {}, telemetry.SystemClock{}, 0, discardLogger(t))
+	fired := make(chan struct{}, 1)
+	ctrl.SetOnExhausted(func() {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
+
+	stop := ctrl.startHubFailoverLoop(5*time.Millisecond, false)
+	defer stop()
+
+	select {
+	case <-fired:
+		t.Fatalf("a single-literal controller polled with exhaustionOnly=false (canFailover false): the loop must be a no-op")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestHubFailoverStandbyRecordSwapNoRepoint is acceptance (1): swapping a STANDBY spec's
 // expansion (a hostname re-resolving off the active spec) must NOT touch the bond — zero
 // SetPeerRemote, zero re-handshake — and must leave the active pointer on its own entry.

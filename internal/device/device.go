@@ -782,10 +782,14 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// concentrator T57 failover — auto-promotes egress to the first HEALTHY warm standby (session
 	// established + >=1 path up), reusing the selector's steal-on-insert repoint (no re-handshake).
 	// The selector re-subscribes on every Switch so the signal tracks the current active exit.
-	// Skipped for the single-exit / concentrator shapes (exitSel nil). A single-endpoint exit peer
-	// carries no controller (peerNeedsHubFailover false) and is simply absent from exitCtrls — it
-	// has no exhaustion signal to promote off. The health seam reads each exit peer's OWN liveness
-	// plane (perPeerProbers[i]) and the engine's per-peer last-handshake age.
+	// Skipped for the single-exit / concentrator shapes (exitSel nil). On a multi-exit edge EVERY
+	// exit-capable peer gets a controller — including one carrying a SINGLE literal endpoint, which
+	// gets an EXHAUSTION-ONLY controller (R267): it can never round-robin, but its sole endpoint
+	// going down past the dwell raises the total==1 exhaustion signal auto-promotion promotes off (so
+	// the minimal one-endpoint-per-concentrator topology works). An exit peer with NO probe transport
+	// (no liveness plane) still carries no controller and is absent from exitCtrls. The health seam
+	// reads each exit peer's OWN liveness plane (perPeerProbers[i]) and the engine's per-peer
+	// last-handshake age.
 	if exitSel != nil {
 		exitCtrls := make(map[string]exitController)
 		healthPeers := make(map[string]exitPeerHealth)

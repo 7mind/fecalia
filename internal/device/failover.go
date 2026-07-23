@@ -801,9 +801,16 @@ func (d deviceFailoverDeps) clock() telemetry.Clock { return telemetry.SystemClo
 // EndpointsSnapshot (T222) and lets the cross-concentrator exit selector (T269) subscribe to each
 // controller's exhaustion signal. It returns no-op stoppers and a nil map when hub failover does not
 // apply anywhere: the concentrator role (it roams edges dynamically and has no endpoint list), a bind
-// without the probe transport (no probers → no liveness plane), or no peer whose endpoint set warrants
-// a controller (peerNeedsHubFailover — a single-IP-literal deployment gets none, staying
-// behaviour-identical to pre-G5).
+// without the probe transport (no probers → no liveness plane), or no peer that warrants a controller.
+//
+// A peer warrants a controller when it can round-robin / re-resolve (peerNeedsHubFailover: >=2
+// literals or a hostname) OR — on a MULTI-EXIT edge — it is an exit-capable (mode=default-route) peer
+// carrying a SINGLE literal endpoint (R267). That single-literal exit peer can never fail over, but
+// its sole endpoint staying down past the dwell IS endpoint-list exhaustion, the signal T269's
+// cross-concentrator auto-promotion acts on; it gets an EXHAUSTION-ONLY controller whose poll runs
+// (startHubFailoverLoop exhaustionOnly) purely to raise that signal — no advance/repoint/rehandshake.
+// A SINGLE-peer edge, and any non-exit single-literal peer, get NO controller, staying
+// behaviour-identical to pre-G5.
 //
 // Per-peer isolation (D100 structurally gone): EVERY eligible peer — not merely the first qualifying
 // one — gets its OWN controller wired to that peer's OWN per-(peer,path) prober set (perPeerProbers[i],
@@ -829,10 +836,27 @@ func startFailoverAndResolution(cfg *config.Config, deps failoverDeps, ids []con
 	// Multi-exit edge (2+ peers): each per-peer controller repoints/installs through the T252 per-peer
 	// seam keyed by the peer's stable name. A single-peer edge keeps the bind-global legacy path.
 	multiExit := len(cfg.WireGuard.Peers) > 1
+	// Exit-capable (mode=default-route) peers, by config-order index — the peers whose endpoint-list
+	// exhaustion the cross-concentrator exit selector (T269) promotes off. On a multi-exit edge such a
+	// peer needs an EXHAUSTION-ONLY controller even when it carries a single literal endpoint (R267:
+	// the minimal one-endpoint-per-concentrator topology), which peerNeedsHubFailover alone does not
+	// cover.
+	exitCapable := make(map[int]bool)
+	if multiExit {
+		for _, i := range exitCapablePeerIndices(cfg) {
+			exitCapable[i] = true
+		}
+	}
 	ctrls = make(map[string]*hubFailover)
 	var failStops, resStops []func()
 	for i, peer := range cfg.WireGuard.Peers {
-		if !peerNeedsHubFailover(peer) {
+		// A peer warrants a controller when it can round-robin/re-resolve (peerNeedsHubFailover) OR —
+		// on a multi-exit edge — it is an exit-capable peer with a single literal endpoint: it can
+		// never fail over, but its sole endpoint going down past the dwell IS endpoint-list exhaustion
+		// (R267), the signal T269's auto-promotion acts on. A SINGLE-peer edge, and any non-exit
+		// single-literal peer, keep the pre-G5 no-controller behaviour (byte-identical).
+		exhaustionOnly := !peerNeedsHubFailover(peer) && exitCapable[i]
+		if !peerNeedsHubFailover(peer) && !exhaustionOnly {
 			continue
 		}
 		health := deps.health(i)
@@ -860,8 +884,10 @@ func startFailoverAndResolution(cfg *config.Config, deps failoverDeps, ids []con
 		)
 		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep) and the
 		// settle dwell bounds actual switches, so a responsive poll only tightens detection latency
-		// without churning the remote.
-		failStops = append(failStops, ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval))
+		// without churning the remote. exhaustionOnly forces the poll to run for a single-literal exit
+		// peer (which canFailoverLocked would otherwise leave un-polled) so its total==1 exhaustion is
+		// still detected — signal only, no round-robin (R267/T269).
+		failStops = append(failStops, ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval, exhaustionOnly))
 		// Alongside failover, start the re-resolution controller (T73) over THIS peer's ctrl for a
 		// peer carrying hostname specs: it re-resolves each on the [dns] poll cadence and out-of-band
 		// on hub loss, feeding fresh records through ctrl.updateResolution (Q34 — the two coordinate
@@ -907,11 +933,18 @@ func startResolution(cfg *config.Config, ctrl *hubFailover, peer config.Peer, re
 // all-literal set with fewer than two entries — no hostname to grow it) or a non-positive
 // interval. A hostname peer whose expansion is still empty DOES start the loop: its
 // resolution may later populate a second endpoint, and check no-ops cheaply until then.
-func (h *hubFailover) startHubFailoverLoop(interval time.Duration) (stop func()) {
+//
+// exhaustionOnly overrides the canFailoverLocked gate for the R267/T269 single-literal EXIT peer
+// (one literal endpoint, so it can NEVER round-robin): its poll must still run so check's total==1
+// branch can raise endpoint-list EXHAUSTION when that sole endpoint stays down past the dwell — the
+// signal-only path (no advance/repoint/rehandshake) the cross-concentrator exit selector promotes
+// off. Such a controller runs iff it has an endpoint to exhaust (flatLen >= 1); a zero-endpoint
+// controller has nothing to signal, so the loop stays a no-op.
+func (h *hubFailover) startHubFailoverLoop(interval time.Duration, exhaustionOnly bool) (stop func()) {
 	h.mu.Lock()
-	can := h.canFailoverLocked()
+	run := h.canFailoverLocked() || (exhaustionOnly && h.flatLenLocked() >= 1)
 	h.mu.Unlock()
-	if !can || interval <= 0 {
+	if !run || interval <= 0 {
 		return func() {}
 	}
 	done := make(chan struct{})

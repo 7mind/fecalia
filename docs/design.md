@@ -1209,7 +1209,16 @@ by `internal/device`:
     one path up), reusing the same steal-on-insert repoint (no re-handshake — the
     standby is already warm). Because T253's signal also fires for a
     single-endpoint concentrator (its sole endpoint allDown past the dwell),
-    auto-promotion is exercised even for a one-endpoint-per-concentrator config.
+    auto-promotion is exercised even for the minimal
+    one-endpoint-per-concentrator config (R267). That minimal shape needs explicit
+    wiring: a single-literal exit peer can never round-robin, so
+    `peerNeedsHubFailover` alone would build it no controller. On a multi-exit edge
+    `startFailoverAndResolution` therefore gives every exit-capable peer an
+    **exhaustion-only controller** — one whose failover poll runs (via
+    `startHubFailoverLoop`'s `exhaustionOnly` override of the `canFailoverLocked`
+    gate) solely to raise the `total==1` exhaustion signal, taking no
+    advance/repoint/rehandshake action. A single-peer edge, and any non-exit
+    single-literal peer, still get no controller (behaviour-identical to pre-G5).
     The trigger is **re-subscribed on every switch** (manual or auto) so it always
     tracks the current active exit; a stale signal for a peer egress has already
     moved off is a no-op (an active-guard). The callback fires OUTSIDE the

@@ -1,6 +1,7 @@
 package device
 
 import (
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 
+	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -224,7 +226,15 @@ func TestExitSelectorManualSwitchWins(t *testing.T) {
 		t.Fatalf("manual switch not logged with reason=manual; log:\n%s", h.buf.String())
 	}
 
-	// a now fully exhausts. The stale exhaustion signal must NOT move egress off the operator's b.
+	// Make the DEMOTED exit "a" a HEALTHY promotion candidate. This is what makes the assertion
+	// non-vacuous: a stale exhaustion signal for "a" now HAS a target to (wrongly) fail back to, so
+	// only the manual-wins enforcement — the SetOnExhausted(nil) clear on the manual switch AND
+	// onActiveExhausted's active-guard — keeps egress on b. Without this line, firstHealthyStandby
+	// returns "" regardless, and deleting BOTH guards survives (nothing to promote to).
+	h.health.set("a", true)
+
+	// a now fully exhausts. The stale exhaustion signal must NOT move egress off the operator's b —
+	// even though a is (per the health seam) a healthy candidate.
 	h.stepA() // wrap 1 -> 0 -> exhaustion on a's controller.
 	if got := h.sel.ActiveExit(); got != "b" {
 		t.Fatalf("a's exhaustion overrode the manual choice: ActiveExit() = %q, want b (MANUAL WINS)", got)
@@ -263,6 +273,19 @@ func TestExitSelectorNoAutoFailback(t *testing.T) {
 	}
 	if got := h.sel.ActiveExit(); got != "b" {
 		t.Fatalf("a's full recovery auto-failed-back: ActiveExit() = %q, want b (no auto-failback)", got)
+	}
+
+	// Non-vacuity: mark the recovered exit "a" HEALTHY, then drive it to fully fail AGAIN (a stale
+	// re-exhaustion of the demoted exit). This gives a naive/mutated selector a live target to fail
+	// back to, so the assertion actually exercises no-failback enforcement (the promotion switch's
+	// SetOnExhausted(nil) clear + onActiveExhausted's active-guard) rather than "nothing to promote
+	// to". Egress must STILL stay on b. Deleting BOTH guards fails here (egress moves back to a).
+	h.health.set("a", true)
+	h.driveADown() // a fully fails again
+	h.stepA()      // advance 0 -> 1
+	h.stepA()      // wrap 1 -> 0 -> stale re-exhaustion on a's controller
+	if got := h.sel.ActiveExit(); got != "b" {
+		t.Fatalf("a's stale re-exhaustion failed back: ActiveExit() = %q, want b (no auto-failback even on a healthy re-failing demoted exit)", got)
 	}
 	h.assertOwnsDefaultRoute(t, h.bHex, h.aHex, "10.0.1.1/32", "10.0.0.1/32")
 }
@@ -334,3 +357,197 @@ func TestDeviceExitHealth(t *testing.T) {
 type fakeIpcGetter string
 
 func (f fakeIpcGetter) IpcGet() (string, error) { return string(f), nil }
+
+// threeExitEdgeConfig builds a multi-exit edge with THREE exit-capable (mode=default-route) peers
+// a, b, c in config order — each carrying the default route plus its own distinct inner /32 —
+// returning the config and the three peers' lowercase-hex public keys. It exists to pin the "first
+// HEALTHY exit-capable peer in config order" standby walk when MORE THAN ONE candidate is healthy.
+func threeExitEdgeConfig(t *testing.T) (cfg *config.Config, aHex, bHex, cHex string) {
+	t.Helper()
+	privRaw, _ := genX25519(t)
+	_, aPubRaw := genX25519(t)
+	_, bPubRaw := genX25519(t)
+	_, cPubRaw := genX25519(t)
+	mkPeer := func(pub []byte, inner, name string) config.Peer {
+		return config.Peer{
+			PublicKey:  keyFromRaw(t, pub),
+			AllowedIPs: []string{"0.0.0.0/0", inner},
+			Mode:       config.PeerModeDefaultRoute,
+			Name:       name,
+			PSK:        keyFromRaw(t, mustRandom(t, 32)),
+		}
+	}
+	cfg = &config.Config{
+		Role: config.RoleEdge,
+		WireGuard: config.WireGuard{
+			PrivateKey: keyFromRaw(t, privRaw),
+			Peers: []config.Peer{
+				mkPeer(aPubRaw, "10.0.0.1/32", "a"),
+				mkPeer(bPubRaw, "10.0.1.1/32", "b"),
+				mkPeer(cPubRaw, "10.0.2.1/32", "c"),
+			},
+		},
+	}
+	return cfg, hex.EncodeToString(aPubRaw), hex.EncodeToString(bPubRaw), hex.EncodeToString(cPubRaw)
+}
+
+// TestExitSelectorPromotesFirstHealthyInConfigOrder pins Q75's "first HEALTHY exit-capable peer in
+// CONFIG order" standby walk when MORE THAN ONE standby is healthy. With exit "a" active and BOTH
+// "b" and "c" healthy warm standbys, exhausting a must promote to b (first in config order), never
+// c. The single-healthy-candidate tests only ever offer one target, so they cannot catch a mutation
+// that reverses the order walk or keeps the LAST healthy candidate — this test does (it would read
+// ActiveExit()="c").
+func TestExitSelectorPromotesFirstHealthyInConfigOrder(t *testing.T) {
+	lg := discardLogger(t)
+	cfg, aHex, bHex, cHex := threeExitEdgeConfig(t)
+
+	dev := newAllowedIPsTestEngine(t, lg)
+	boot, err := uapiConfig(cfg, []bootEndpoint{{}, {}, {}})
+	if err != nil {
+		t.Fatalf("uapiConfig: %v", err)
+	}
+	if err := dev.IpcSet(boot); err != nil {
+		t.Fatalf("IpcSet boot config: %v", err)
+	}
+
+	sel := newExitSelector(cfg, dev, lg)
+	if sel == nil {
+		t.Fatalf("newExitSelector returned nil for a three-exit edge")
+	}
+	if got := sel.ActiveExit(); got != "a" {
+		t.Fatalf("boot ActiveExit() = %q, want a (first exit peer in config order)", got)
+	}
+
+	// Controller for "a": two literal endpoints so exhaustion requires a FULL wrap.
+	epsA := mustEndpoints(t, "203.0.113.1:51820", "203.0.113.2:51820")
+	hpA := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	ctrlA := newHubFailover(epsA, hpA, &recordingRemote{}, func() {}, clk, testSettle, lg)
+
+	// BOTH b and c are healthy warm standbys — the discriminating condition.
+	health := newFakeExitHealth()
+	health.set("b", true)
+	health.set("c", true)
+	sel.enableAutoPromotion(map[string]exitController{"a": ctrlA}, exitHealthFunc(health.isHealthy))
+
+	// Exhaust a (2-endpoint list: advance 0->1, then wrap 1->0 = exhaustion).
+	hpA[0].(*fakeHealth).state = telemetry.StateDown
+	hpA[1].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	ctrlA.check()
+	clk.advance(testSettle + time.Second)
+	ctrlA.check()
+
+	if got := sel.ActiveExit(); got != "b" {
+		t.Fatalf("promoted to %q with both b and c healthy; want b (FIRST healthy in config order, not last/reversed)", got)
+	}
+	owned := perPeerAllowedIPs(mustIpcGet(t, dev))
+	for _, split := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		if !owned[bHex][split] {
+			t.Fatalf("%s not under b after promotion; b owns %v", split, keys(owned[bHex]))
+		}
+		if owned[cHex][split] {
+			t.Fatalf("%s under c — promotion skipped the first healthy standby; c owns %v", split, keys(owned[cHex]))
+		}
+		if owned[aHex][split] {
+			t.Fatalf("%s still under a after promotion; a owns %v", split, keys(owned[aHex]))
+		}
+	}
+}
+
+// TestStartFailoverAndResolutionSingleLiteralExitWiring is the R267 WIRING-level acceptance for
+// T269 (round 2): the minimal one-endpoint-per-concentrator topology — a MULTI-EXIT edge whose two
+// exit-capable peers each carry EXACTLY ONE literal endpoint. peerNeedsHubFailover is false for such
+// a peer (no hostname, <2 literals), so BEFORE the fix startFailoverAndResolution built ZERO
+// controllers and auto-promotion had nothing to subscribe — INERT in exactly the topology R267
+// requires (T253's total==1 exhaustion signal). The fix builds an exhaustion-only controller (with a
+// RUNNING poll, despite canFailoverLocked being false) for each exit-capable single-literal peer,
+// preserving the no-action guarantee (no advance/repoint/rehandshake — signal only). This test drives
+// exit "a"'s SOLE path down past the dwell and asserts BOTH controllers were built AND that a's
+// total==1 exhaustion promotes egress to the healthy warm standby "b" through the real engine's
+// steal-on-insert. It fails (0 controllers built) under a revert of the peerNeedsHubFailover/wiring
+// change.
+func TestStartFailoverAndResolutionSingleLiteralExitWiring(t *testing.T) {
+	lg := discardLogger(t)
+	cfg, aHex, bHex := twoExitEdgeConfig(t)
+	// Give each exit peer EXACTLY ONE literal endpoint (the R267 minimal topology).
+	epA := mustEndpoints(t, "203.0.113.1:51820")
+	epB := mustEndpoints(t, "198.51.100.1:51820")
+	cfg.WireGuard.Peers[0].Endpoints = epA
+	cfg.WireGuard.Peers[0].EndpointSpecs = []config.EndpointSpec{{Addr: epA[0]}}
+	cfg.WireGuard.Peers[1].Endpoints = epB
+	cfg.WireGuard.Peers[1].EndpointSpecs = []config.EndpointSpec{{Addr: epB[0]}}
+
+	// Real engine booted from uapiConfig so the promotion's steal-on-insert is real.
+	dev := newAllowedIPsTestEngine(t, lg)
+	boot, err := uapiConfig(cfg, []bootEndpoint{{}, {}})
+	if err != nil {
+		t.Fatalf("uapiConfig: %v", err)
+	}
+	if err := dev.IpcSet(boot); err != nil {
+		t.Fatalf("IpcSet boot config: %v", err)
+	}
+
+	// Controllers built through the PRODUCTION wiring (startFailoverAndResolution) with fake per-peer
+	// liveness + a shared fake clock so the single-endpoint exhaustion step is deterministic.
+	hpA := &fakeHealth{telemetry.StateUp}
+	hpB := &fakeHealth{telemetry.StateUp}
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	deps := &fakeFailoverDeps{
+		healthByPeer: [][]hubHealth{{hpA}, {hpB}},
+		remotes:      []*recordingRemote{{}, {}},
+		clk:          clk,
+	}
+	bootEps := bootEndpoints{specs: [][]failoverSpec{
+		{litSpec(t, "203.0.113.1:51820")},
+		{litSpec(t, "198.51.100.1:51820")},
+	}}
+	ids := cfg.PeerIdentities()
+	stopFailover, stopResolution, ctrls := startFailoverAndResolution(cfg, deps, ids, bootEps, lg)
+	// Halt the per-peer poll goroutines so the test drives check() deterministically.
+	stopFailover()
+	stopResolution()
+
+	// THE R267 WIRING GAP FIX: both single-literal exit peers get a controller. Before the fix this
+	// map was EMPTY (peerNeedsHubFailover false → continue), so auto-promotion was inert.
+	if len(ctrls) != 2 {
+		t.Fatalf("startFailoverAndResolution built %d controllers for single-literal exit peers, want 2 (R267: exhaustion-only controller per exit-capable single-literal peer on a multi-exit edge)", len(ctrls))
+	}
+	ctrlA, okA := ctrls["a"]
+	ctrlB, okB := ctrls["b"]
+	if !okA || !okB {
+		t.Fatalf("controllers keyed by name: a present=%v b present=%v, want both", okA, okB)
+	}
+
+	// Auto-promotion over the real engine; b is a healthy warm standby.
+	sel := newExitSelector(cfg, dev, lg)
+	if sel == nil {
+		t.Fatalf("newExitSelector returned nil for a two-exit edge")
+	}
+	health := newFakeExitHealth()
+	health.set("b", true)
+	sel.enableAutoPromotion(
+		map[string]exitController{"a": ctrlA, "b": ctrlB},
+		exitHealthFunc(health.isHealthy),
+	)
+
+	// Drive a's SOLE path down past the dwell: total==1 exhaustion (onset step + one past-dwell step)
+	// raises the signal with NO advance/repoint (single endpoint), promoting egress to b.
+	hpA.state = telemetry.StateDown
+	ctrlA.check() // onset: records downSince, no signal yet
+	clk.advance(hubFailoverSettle + time.Second)
+	ctrlA.check() // past the dwell → total==1 exhaustion → auto-promotion fires
+
+	if got := sel.ActiveExit(); got != "b" {
+		t.Fatalf("after single-endpoint exhaustion ActiveExit() = %q, want b (auto-promotion off the one-endpoint exit)", got)
+	}
+	owned := perPeerAllowedIPs(mustIpcGet(t, dev))
+	for _, split := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+		if !owned[bHex][split] {
+			t.Fatalf("%s not under b after promotion; b owns %v", split, keys(owned[bHex]))
+		}
+		if owned[aHex][split] {
+			t.Fatalf("%s still under a after promotion; a owns %v", split, keys(owned[aHex]))
+		}
+	}
+}
