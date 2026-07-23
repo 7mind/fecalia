@@ -995,6 +995,13 @@ type Monitor struct {
 	// Listen is non-loopback. Optional when Listen is loopback; ignored when
 	// Listen is empty.
 	Token string `toml:"token"`
+	// RevealAddressing controls whether the monitoring-UI endpoint reveals
+	// addressing detail that is otherwise redacted. Default false preserves
+	// today's non-loopback redaction; the flag composes with — never
+	// weakens — the Token requirement enforced by validate(), so a
+	// non-loopback Listen still REQUIRES a non-empty Token regardless of
+	// this setting. On a loopback Listen it is a harmless no-op.
+	RevealAddressing bool `toml:"reveal_addressing"`
 }
 
 // validate enforces the Q45 opt-in-non-loopback-requires-auth invariant: a

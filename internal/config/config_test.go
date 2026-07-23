@@ -1982,6 +1982,82 @@ func TestMonitorUnknownKeyRejected(t *testing.T) {
 	}
 }
 
+// TestMonitorRevealAddressingParsesTrue is the T279/G32 case: an explicit
+// `reveal_addressing = true` under [monitor] decodes to true.
+func TestMonitorRevealAddressingParsesTrue(t *testing.T) {
+	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"127.0.0.1:9096\"\nreveal_addressing = true\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Monitor.RevealAddressing {
+		t.Fatalf("monitor.reveal_addressing = %v, want true", c.Monitor.RevealAddressing)
+	}
+}
+
+// TestMonitorRevealAddressingAbsentDefaultsFalse is the T279/G32 case: a
+// config that omits reveal_addressing entirely (mirroring
+// TestMonitorDefaultOff) decodes it to false, preserving today's behavior
+// byte-for-byte.
+func TestMonitorRevealAddressingAbsentDefaultsFalse(t *testing.T) {
+	path := writeConfig(t, 0o600, fill(edgeConfig))
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Monitor.RevealAddressing {
+		t.Fatalf("monitor.reveal_addressing = %v, want false", c.Monitor.RevealAddressing)
+	}
+}
+
+// TestMonitorRevealAddressingLoopbackNoop is the T279/G32 case: a loopback
+// Listen with reveal_addressing=true validates OK — the flag is a harmless
+// no-op when access is already host-local.
+func TestMonitorRevealAddressingLoopbackNoop(t *testing.T) {
+	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"127.0.0.1:9096\"\nreveal_addressing = true\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Monitor.RevealAddressing {
+		t.Fatalf("monitor.reveal_addressing = %v, want true", c.Monitor.RevealAddressing)
+	}
+}
+
+// TestMonitorRevealAddressingNonLoopbackWithTokenOK is the T279/G32 case: a
+// non-loopback Listen with reveal_addressing=true AND a non-empty Token
+// validates OK — the flag composes with the existing token gate rather than
+// replacing it.
+func TestMonitorRevealAddressingNonLoopbackWithTokenOK(t *testing.T) {
+	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"0.0.0.0:9096\"\ntoken = \"s3cret\"\nreveal_addressing = true\n"
+	path := writeConfig(t, 0o600, body)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Monitor.RevealAddressing {
+		t.Fatalf("monitor.reveal_addressing = %v, want true", c.Monitor.RevealAddressing)
+	}
+}
+
+// TestMonitorRevealAddressingNonLoopbackWithoutTokenStillRejected is the
+// T279/G32 case: a non-loopback Listen with reveal_addressing=true but an
+// EMPTY Token still fails with ErrMonitorNonLoopbackWithoutAuth — the new
+// flag never replaces the token requirement.
+func TestMonitorRevealAddressingNonLoopbackWithoutTokenStillRejected(t *testing.T) {
+	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"0.0.0.0:9096\"\nreveal_addressing = true\n"
+	path := writeConfig(t, 0o600, body)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected ErrMonitorNonLoopbackWithoutAuth, got nil")
+	}
+	if !errors.Is(err, ErrMonitorNonLoopbackWithoutAuth) {
+		t.Fatalf("error = %v, want ErrMonitorNonLoopbackWithoutAuth", err)
+	}
+}
+
 // TestPathMTURoundTrip is the reproduce-first round-trip test for T200 (D85):
 // a path's OPTIONAL `mtu` key round-trips losslessly through Load, and —
 // critically — an EXISTING config that never mentions `mtu` parses to the
