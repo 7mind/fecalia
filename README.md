@@ -286,7 +286,10 @@ deliberate boundaries you must plan around:
   (its endpoint list exhausted — every endpoint tried and down, distinct from
   within-concentrator failover) onto the first healthy warm standby, logged with
   `reason=auto-promotion`; a manual switch always wins and there is no auto-failback
-  onto a recovered exit. Per-concentrator web-UI stats are a later task.
+  onto a recovered exit. Per-concentrator stats are grouped per-peer on the
+  monitor dashboard, and on-the-fly exit switching is exposed there through a
+  loopback-only exit-switch widget (T259/T260, G28/M107; see
+  [docs/design.md §Security model](docs/design.md)).
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.

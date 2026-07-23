@@ -223,7 +223,9 @@ is an **exit-capable** alternate for the full-tunnel egress; the **first**
 default-route peer in config order is the **boot-default exit** (the selection is
 not persisted — the daemon always boots to the config default, Q74). On-the-fly
 switching of the active exit and per-concentrator statistics are surfaced by the
-web UI (later tasks); this section covers only the **config surface**.
+monitor dashboard's web UI (T259/T260, G28/M107; see
+[docs/design.md §Security model](design.md)); this section covers only the
+**config surface**.
 
 ```toml
 role = "edge"
