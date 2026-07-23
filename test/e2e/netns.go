@@ -41,6 +41,9 @@ import (
 //	      each in its own netns, sequentially)
 //	9112  two_wan_downlink_pin_test.go (t248MetricsListen; edge in the base netns, scraped
 //	      directly — the single-socket-concentrator two-WAN downlink-pin e2e, T248/D94)
+//	9113  multi_concentrator_warm_standby_test.go (mcMonitorListen; edge in the base netns,
+//	      a [monitor] endpoint — NOT /metrics — dialed directly over 127.0.0.1 for the /ws
+//	      snapshot and POST /api/exit control, the T261 multi-exit warm-standby e2e, G28/M108)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
