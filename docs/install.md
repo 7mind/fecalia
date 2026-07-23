@@ -1611,7 +1611,11 @@ without this section):
 ```toml
 [monitor]
 listen = "127.0.0.1:9101"
-# token = "..."   # required only if listen is non-loopback
+# token = "..."           # required only if listen is non-loopback
+# reveal_addressing = false # optional, default false; enables addressing
+                             # disclosure to token holders on non-loopback
+                             # binds (per-path sources, hub endpoints,
+                             # concentrator connected-edge sources)
 ```
 
 - **Bind rule**: `listen` follows the SAME loopback-only default as `[metrics]`,
@@ -1674,15 +1678,19 @@ listen = "127.0.0.1:9101"
     path's bound source address and its current remote) and every endpoint's
     address in the failover list; on the concentrator role, each connected
     edge's observed source address is shown too.
-  - **On a token'd non-loopback binding**, the addressing above is redacted
+  - **On a token'd non-loopback binding**, by default addressing is redacted
     server-side before it ever leaves the daemon: per-path cards show an
     "addressing hidden on non-loopback binding" placeholder instead of the
     source/remote, and the endpoint list shows only the active/standby
     state with the address blanked. This holds even though you supplied a
     valid token — the token authorizes the non-loopback bind itself, not
-    disclosure of addressing over it. Everything else (role/version/uptime/
-    bind-mode/link-params/fingerprint) is unaffected and still shown in
-    full.
+    disclosure of addressing. However, if the operator sets the default-off
+    `reveal_addressing` opt-in in `[monitor]`, per-path source addresses,
+    hub endpoint addresses, and (on the concentrator) connected-edge source
+    addresses become visible to anyone holding the token; the token gate is
+    still enforced and unaffected. Everything else (role/version/uptime/
+    bind-mode/link-params/fingerprint) is shown in full regardless of
+    binding or the addressing flag.
 - **Build step**: the dashboard ships as an embedded frontend bundle built by
   `just web-build` (Vite + TypeScript), which `just build`/`just release` run
   automatically — see [§1](#1-build-the-release-binaries).

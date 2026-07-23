@@ -1618,17 +1618,22 @@ misbehaves subtly. Agents and contributors must preserve them.
     `verifyLoopbackBind(ln.Addr())` inspects the address the KERNEL actually
     bound (`net.Listen`'s own independent resolution), never the requested
     `listen` string or a pre-bind DNS lookup — the same TOCTOU-safe
-    discipline the loopback bind guard itself uses. `BuildSnapshot`
+    discipline the loopback bind guard itself uses. The verdict is `true` when
+    the kernel bound a loopback interface OR the operator sets the default-off,
+    token-gated `[monitor] reveal_addressing` opt-in. `BuildSnapshot`
     (`internal/monitor/monitor.go`) then performs the redaction BEFORE
     `json.Marshal`: when `revealAddressing` is false it omits every per-path
     `AddressingSnapshot` (a nil, `omitempty` pointer — never serialized),
     blanks every endpoint's `address` while preserving the peer grouping and
-    ordered active/standby shape, and sets `addressingHidden=true`. A **token-
-    authorized non-loopback bind still redacts** (Q62) — the token gates
-    *whether a non-loopback bind is permitted at all*, not whether addressing
-    is revealed on one. The frontend only ever reads `addressingHidden`; it
-    renders a placeholder and never attempts to reconstruct hidden values.
-    Proven at the marshaled-JSON-bytes level
+    ordered active/standby shape, and sets `addressingHidden=true`. **No
+    tokenless-reveal path exists**: non-loopback `listen` without a `token`
+    still fails at config load with `ErrMonitorNonLoopbackWithoutAuth`. A
+    **token-authorized non-loopback bind redacts by default** (Q62) — the token
+    gates *whether a non-loopback bind is permitted at all*, not whether
+    addressing is revealed; the operator must explicitly opt into `reveal_addressing`
+    to disclose addressing to token holders. The frontend only ever reads
+    `addressingHidden`; it renders a placeholder and never attempts to reconstruct
+    hidden values. Proven at the marshaled-JSON-bytes level
     (`TestBuildSnapshot_RedactsAddressingWhenNotRevealed` asserts no address
     substring appears anywhere in the serialized frame) and at the raw
     WebSocket-frame level in the e2e suite.
@@ -1650,8 +1655,13 @@ misbehaves subtly. Agents and contributors must preserve them.
     IS the edge's active-path source on that role (D94), so no separate
     mechanism was needed.
     Consequence: a concentrator's list of connected-client addresses is
-    visible ONLY on a loopback-bound monitor, never on a token-authorized
-    non-loopback one, consistent with Q64's "loopback-binding only" answer.
+    visible ONLY when the kernel bound a loopback interface OR the operator
+    sets `reveal_addressing`, never on a token-authorized non-loopback bind by
+    default, consistent with Q64's "loopback-binding only" answer. The
+    `POST /api/exit` loopback-only gate (control surface, separate from
+    addressing redaction) remains entirely independent of `reveal_addressing`
+    and continues to refuse the control with 403 on any non-loopback bind,
+    regardless of token or addressing disclosure setting.
   - **Accepted residual risk: cleartext token over a non-loopback LAN bind
     (Q58, answer (a)).** The monitor serves plain HTTP — there is no TLS in v1.
     On a non-loopback `listen` (the explicit off-host opt-in above), the bearer

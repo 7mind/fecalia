@@ -482,15 +482,28 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8, ::1
                                    #   URL. No TLS in v1: a non-loopback bind
                                    #   sends this token in CLEARTEXT over the
                                    #   LAN.
+# reveal_addressing = false        # OPTIONAL, default false. A default-off
+                                   #   opt-in that enables addressing disclosure
+                                   #   on non-loopback binds. When set true,
+                                   #   per-path source IPs, the concentrator's
+                                   #   public endpoint, and hub addressing become
+                                   #   visible to anyone holding the token. Token
+                                   #   is still REQUIRED for non-loopback and
+                                   #   this flag does NOT weaken the token gate.
+                                   #   A loopback bind shows full addressing
+                                   #   regardless; a config reload (SIGHUP) takes
+                                   #   effect live.
 #
 # Addressing visibility: role/version/uptime, per-path bind mode/bound
 # device/declared link bandwidth+RTT, and the truncated WG public-key
 # fingerprint are shown on ANY binding. Per-path source/remote addressing and
 # the hub-endpoint list's addresses (incl. a concentrator's connected-edge
-# source addresses) are REDACTED SERVER-SIDE unless the monitor is ACTUALLY
-# bound to loopback (verified against the kernel-bound address, not this
-# `listen` string) — a token'd non-loopback bind still redacts them; the
-# token authorizes the bind, not addressing disclosure over it.
+# source addresses) are REDACTED SERVER-SIDE by default unless the monitor is
+# ACTUALLY bound to loopback (verified against the kernel-bound address, not
+# this `listen` string) OR the operator sets the default-off reveal_addressing
+# opt-in; a token-authorized non-loopback bind still redacts addressing by
+# default — the token authorizes the bind, not addressing disclosure, but the
+# reveal_addressing flag is a separate, explicit opt-in for disclosure.
 
 # ── log: OPTIONAL ────────────────────────────────────────────────────────────
 [log]
@@ -559,7 +572,10 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
 #   which case a non-loopback bind is allowed — an unauthenticated non-loopback
 #   bind fails fast at config load (ErrMonitorNonLoopbackWithoutAuth). Omit the
 #   block (or leave listen empty) to serve no monitoring UI. token is otherwise
-#   optional. Read-only in v1: the dashboard shows live stats only, no controls.
+#   optional. The dashboard is read-only EXCEPT for one loopback-only control:
+#   POST /api/exit switches the active exit peer on a multi-exit edge, refused
+#   with 403 on any non-loopback bind (regardless of token), so a remote monitor
+#   stays strictly read-only even when authorized.
 # • bind (top-level default + per-path override): "source" | "device" | "auto"
 #   (DEFAULT). A [[paths]] block with no `bind` uses the top-level default
 #   (itself DEFAULT "auto" when also omitted, so an existing config with no

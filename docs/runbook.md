@@ -119,6 +119,16 @@ allowed_ips = ["10.77.0.1/32"]      # the concentrator's inner tunnel address
 [metrics]
 listen = "127.0.0.1:9090"           # loopback only; a non-loopback bind is refused
 
+[monitor]
+listen = "127.0.0.1:9101"           # optional; omit or leave empty to disable.
+                                    # loopback-only by default; non-loopback
+                                    # requires token (below) to be set
+# token = "..."                     # optional when listen is loopback; required
+                                    # when listen is non-loopback
+# reveal_addressing = false         # optional, default false; when true enables
+                                    # addressing disclosure on non-loopback binds
+                                    # (token is still required and not weakened)
+
 [log]
 level = "info"
 ```
@@ -146,6 +156,16 @@ allowed_ips = ["10.77.0.2/32"]      # the edge's inner tunnel address; no endpoi
 
 [metrics]
 listen = "127.0.0.1:9090"
+
+[monitor]
+listen = "127.0.0.1:9101"           # optional; omit or leave empty to disable.
+                                    # loopback-only by default; non-loopback
+                                    # requires token (below) to be set
+# token = "..."                     # optional when listen is loopback; required
+                                    # when listen is non-loopback
+# reveal_addressing = false         # optional, default false; when true enables
+                                    # addressing disclosure on non-loopback binds
+                                    # (token is still required and not weakened)
 
 [log]
 level = "info"

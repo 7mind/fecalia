@@ -163,11 +163,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   Per-path **source/remote addressing** (the bound local address and the
   current wire remote — on the concentrator role, a connected edge's observed
   source) and the endpoint list's **addresses** are the one REDACTABLE
-  surface: they are shown in full only when the monitor is ACTUALLY bound to
+  surface: they are shown in full when the monitor is ACTUALLY bound to
   loopback (verified against the kernel-bound listener address, not the
-  configured `listen` string); on any non-loopback binding — including a
-  token-authorized one — they are redacted server-side and the dashboard
-  renders an "addressing hidden on non-loopback binding" placeholder instead.
+  configured `listen` string) OR the operator sets the default-off
+  `reveal_addressing` opt-in; on any non-loopback binding by default —
+  including a token-authorized one — they are redacted server-side and the
+  dashboard renders an "addressing hidden on non-loopback binding" placeholder
+  instead (unless `reveal_addressing` is explicitly set).
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
   flip and the coalesced `"scheduler pacer shedding"` record while a pacing-
