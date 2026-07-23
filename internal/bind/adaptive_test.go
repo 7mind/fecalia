@@ -31,13 +31,24 @@ func adaptiveFECConfigs() (fec.Config, adaptivefec.Config) {
 // newProbingMultipath but threads the FEC + adaptive configs through NewMultipath.
 func newAdaptiveProbingMultipath(t testing.TB, n int, psk config.Key, clk telemetry.Clock) (*Multipath, []*telemetry.Prober) {
 	t.Helper()
+	fc, ac := adaptiveFECConfigs()
+	return newAdaptiveProbingMultipathCfg(t, n, psk, clk, 0, fc, ac)
+}
+
+// newAdaptiveProbingMultipathCfg generalizes newAdaptiveProbingMultipath over the FEC/
+// adaptive configs and each prober's loss window (window<=0 uses the telemetry default,
+// 512 — matching newAdaptiveProbingMultipath). It is the E3 anti-phase trajectory's entry
+// point (adaptive_e3_test.go), which needs the D96 residual-SLA field shape rather than
+// the legacy safety-factor default adaptiveFECConfigs returns.
+func newAdaptiveProbingMultipathCfg(t testing.TB, n int, psk config.Key, clk telemetry.Clock, window int, fc fec.Config, ac adaptivefec.Config) (*Multipath, []*telemetry.Prober) {
+	t.Helper()
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
 		t.Fatalf("build logger: %v", err)
 	}
 	paths := loopbackPaths(n)
 	cfg := telemetry.ProberConfig{
-		LossWindow: 0,
+		LossWindow: window,
 		Liveness:   telemetry.LivenessConfig{DownAfter: testProbeDownAfter, UpAfterSuccesses: testProbeUpSucc},
 	}
 	newProber := func(name string, id uint8, _ time.Duration) *telemetry.Prober {
@@ -53,7 +64,6 @@ func newAdaptiveProbingMultipath(t testing.TB, n int, psk config.Key, clk teleme
 	if err != nil {
 		t.Fatalf("build scheduler: %v", err)
 	}
-	fc, ac := adaptiveFECConfigs()
 	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, &fc, &ac, config.Amnezia{}, lg)
 	if err != nil {
 		t.Fatalf("NewMultipath(adaptive): %v", err)
@@ -309,8 +319,10 @@ func TestAdaptiveControllerSinglePathEarlyRegimeHoldThenObserve(t *testing.T) {
 	}
 }
 
-// TestWeightedDataPathLossMix is the deterministic weighted-striping unit oracle over the pure
-// mix helper weightedDataPathLoss (which dataPathLossLocked delegates to): under weighted
+// TestWeightedDataPathLossMix is the deterministic weighted-striping unit oracle (T272,
+// folded into the E-suite as E1's weighted-aggregation counterpart — see
+// TestAdaptiveControllerDrivesFromActivePathNotStandby for the active-backup case) over the
+// pure mix helper weightedDataPathLoss (which dataPathLossLocked delegates to): under weighted
 // aggregation the controller input is the WEIGHT-WEIGHTED MIX of the aggregating paths' losses,
 // with the per-path min-sample floor applied and the surviving weights RENORMALIZED over the
 // sample-eligible subset. It asserts the full mix, the renormalization when the floor excludes a

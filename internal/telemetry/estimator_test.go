@@ -245,6 +245,66 @@ func TestLossSamplesMidStreamAttachClamp(t *testing.T) {
 	}
 }
 
+// TestSingleDropSmallSampleReadsLargeFraction is the D96 mechanism-3 / E4 telemetry-side
+// oracle: it pins the DENOMINATOR PRECONDITION the adaptive-FEC min-sample floor
+// (internal/bind.minAdaptiveLossSamples, 32) exists to guard against. A single dropped
+// probe at a SMALL window denominator (n=8, early regime, well below the floor) reads as a
+// large loss FRACTION (1/8 = 12.5%) — indistinguishable, from Loss alone, from a
+// genuinely lossy path, even though only one probe was ever lost. The IDENTICAL single
+// drop, diluted across a saturated 512-sample window (the telemetry default), reads as a
+// small, trustworthy fraction (1/512 ~= 0.195%). Estimate() exposes LossSamples precisely
+// so a caller can tell these two cases apart from Loss alone; this test pins the exact
+// numbers the floor is calibrated against — a single drop CANNOT, by itself, cross any
+// reasonable raise gate once the denominator has grown past the floor.
+func TestSingleDropSmallSampleReadsLargeFraction(t *testing.T) {
+	const floor = 32 // mirrors internal/bind.minAdaptiveLossSamples (D96 mechanism 3)
+	const dropSeq = 3
+
+	// n=8: one drop among the first 8 probes — early regime, well below the floor.
+	small := NewEstimator(512)
+	for seq := uint64(0); seq < 8; seq++ {
+		if seq == dropSeq {
+			continue // this probe's echo is dropped: never observed
+		}
+		small.ObserveProbeEcho(seq)
+	}
+	smallEst := small.Estimate()
+	if smallEst.LossSamples != 8 {
+		t.Fatalf("small-sample LossSamples = %d, want 8", smallEst.LossSamples)
+	}
+	if smallEst.LossSamples >= floor {
+		t.Fatalf("setup: LossSamples = %d, want < floor %d (early regime)", smallEst.LossSamples, floor)
+	}
+	if got, want := smallEst.Loss, 1.0/8; got != want {
+		t.Fatalf("small-sample Loss = %v, want exactly %v (1 drop / 8 samples)", got, want)
+	}
+
+	// n=512 (saturated default window): the SAME single drop, diluted across a full window,
+	// reads as a small fraction — the precondition the floor exists to exploit.
+	full := NewEstimator(512)
+	for seq := uint64(0); seq < 512; seq++ {
+		if seq == dropSeq {
+			continue // the identical single drop, now at the saturated denominator
+		}
+		full.ObserveProbeEcho(seq)
+	}
+	fullEst := full.Estimate()
+	if fullEst.LossSamples != 512 {
+		t.Fatalf("saturated LossSamples = %d, want 512", fullEst.LossSamples)
+	}
+	if got, want := fullEst.Loss, 1.0/512; got != want {
+		t.Fatalf("saturated Loss = %v, want exactly %v (1 drop / 512 samples)", got, want)
+	}
+
+	// The precondition itself: an IDENTICAL drop count (1) reads as a wildly different
+	// FRACTION purely as a function of the denominator — exactly what a caller must gate on
+	// (LossSamples), rather than trusting Loss alone, to avoid a small-sample spike crossing
+	// a raise gate that a saturated-window reading of the same single drop never would.
+	if !(smallEst.Loss > 10*fullEst.Loss) {
+		t.Fatalf("small-sample fraction %.4f is not >> saturated fraction %.4f; the denominator precondition is not exercised", smallEst.Loss, fullEst.Loss)
+	}
+}
+
 func absDuration(d time.Duration) time.Duration {
 	if d < 0 {
 		return -d

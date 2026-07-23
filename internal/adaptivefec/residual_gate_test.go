@@ -26,8 +26,8 @@ func newResidualControllerCfg(t *testing.T, k, ceiling int, target float64) (*Co
 	return ctrl, clk
 }
 
-// TestResidualRaiseGateDerivedFromTarget is the D96 mechanism-1 acceptance (fix b) and the
-// FAILING-FIRST oracle: in residual-SLA mode the raise gate must be DERIVED from
+// TestResidualRaiseGateDerivedFromTarget is the D96 mechanism-1 acceptance (fix b) / E2
+// oracle: in residual-SLA mode the raise gate must be DERIVED from
 // TargetResidual, not pinned at the fixed 5% RaiseThreshold. With target_residual=0.001,
 // K=8, MaxParity>=3 a sustained smoothed loss in [0.03,0.05] — BELOW the legacy 5% gate —
 // must raise Parity() to residualTargetParity (>=1), while a clean trace keeps M=0 (zero
@@ -64,7 +64,8 @@ func TestResidualRaiseGateDerivedFromTarget(t *testing.T) {
 	}
 }
 
-// TestResidualNearGateNoFlapAndRaise exercises losses AROUND the derived thresholds — the
+// TestResidualNearGateNoFlapAndRaise is the D96 mechanism-1 / E2 near-gate sweep: it
+// exercises losses AROUND the derived thresholds — the
 // regime where the new quantization-aware gate/deadband actually live (D96). The derived
 // raise gate is floored at two loss quanta (2/512) so estimator quantization cannot flap
 // parity, and the lower gate sits below it with a non-empty deadband.

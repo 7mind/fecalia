@@ -1680,7 +1680,14 @@ func (m *Multipath) newFECSender() (*fecSender, error) {
 	}
 	fs := &fecSender{enc: enc}
 	if m.adaptiveCfg != nil {
-		ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, adaptivefec.SystemClock{})
+		// m.clock (telemetry.Clock) satisfies adaptivefec.Clock — both are the identical
+		// Now() time.Time shape — so the controller's own slew/dwell timing rides the SAME
+		// injectable clock seam T276 threaded through the drive throttle (m.clock), rather
+		// than a separately hardcoded adaptivefec.SystemClock{}. Immutable-post-construction
+		// (like fecCfg/adaptiveCfg), so reading it here without m.mu is safe; NewMultipath
+		// defaults it to telemetry.SystemClock{} (identical Now() = time.Now() as
+		// adaptivefec.SystemClock{}), so production behavior is byte-for-byte unchanged.
+		ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, m.clock)
 		if err != nil {
 			return nil, fmt.Errorf("bind: build adaptive FEC controller: %w", err)
 		}
