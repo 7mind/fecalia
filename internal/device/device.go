@@ -160,6 +160,23 @@ func newEndpointsProvider(fo *hubFailover) func() []monitor.EndpointSnapshot {
 	}
 }
 
+// firstEligibleCtrl returns the hub-failover controller of the FIRST peer (configured order) for
+// which one was built, or nil when the map is empty. It reconstructs the pre-T253 "first qualifying
+// peer" selection the flat [monitor] endpoints provider still renders, deterministically (a bare map
+// range would not) and without re-deriving eligibility — a peer is present in ctrls IFF its controller
+// was built. ids is index-aligned with cfg.WireGuard.Peers, so its Name is the map key.
+func firstEligibleCtrl(cfg *config.Config, ids []config.PeerIdentity, ctrls map[string]*hubFailover) *hubFailover {
+	if len(ctrls) == 0 {
+		return nil
+	}
+	for i := range cfg.WireGuard.Peers {
+		if c, ok := ctrls[ids[i].Name]; ok {
+			return c
+		}
+	}
+	return nil
+}
+
 // Tunnel is a running wanbond tunnel: the amneziawg engine, its TUN, and the
 // multipath Bind. Close tears all three down.
 type Tunnel struct {
@@ -577,6 +594,13 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build scheduler: %w", err)
 	}
+	// perPeerProbers holds each configured peer's OWN per-(peer,path) prober set, index-aligned with
+	// cfg.WireGuard.Peers / ids (primary at [0], each AddConcentratorPeer peer at its own index). The
+	// per-peer hub-failover controllers (T253) read each entry as that peer's liveness plane — hub loss
+	// is EVERY one of THAT peer's probers DOWN — so a multi-exit edge never derives one peer's hub-loss
+	// from the primary's flat prober slice (D100). Populated as each peer's scheduler is built below.
+	perPeerProbers := make([][]*telemetry.Prober, len(ids))
+	perPeerProbers[0] = probers
 	mpBind, err := bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, clg)
 	if err != nil {
 		_ = tunDev.Close()
@@ -602,7 +626,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// view of every bound socket, reconciles its scheduler, and reports its stable virtual
 	// endpoint to the engine (A1). A single-peer config has exactly one identity, so this loop
 	// is empty and the wiring stays byte-identical to the pre-G4 single-peer path.
-	for _, id := range ids[1:] {
+	for k, id := range ids[1:] {
 		psched, pprobers, pfactory, perr := buildScheduler(cfg, id.PSK, sessionID, clg)
 		if perr != nil {
 			_ = tunDev.Close()
@@ -612,6 +636,8 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 			_ = tunDev.Close()
 			return nil, fmt.Errorf("device: wire concentrator peer %q: %w", id.Name, perr)
 		}
+		// ids[1:] is offset by one from ids/perPeerProbers, so peer index is k+1.
+		perPeerProbers[k+1] = pprobers
 	}
 	dev := awgdevice.NewDevice(tunDev, mpBind, engineLogger(clg, cfg.Log.Level, mpBind.EverHadLivePath))
 
@@ -643,12 +669,11 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// collapsing onto the primary's virt/remote. Edge-only and only with 2+ peers: a single-peer edge
 	// keeps the bind-global-default path byte-identical, and a concentrator learns remotes from
 	// inbound. An endpoint-less (unresolved-hostname) peer contributes a zero AddrPort — SeedEdge
-	// PeerRemotes skips it, and it boots remoteless. It is installed by the R70 re-resolution loop
-	// ONLY when it is the primary/first-qualifying peer: startFailoverAndResolution builds one
-	// controller for the FIRST peer satisfying peerNeedsHubFailover and returns, so a NON-primary
-	// endpoint-less peer is never driven (and a non-primary first-qualifying peer's install path
-	// mis-resolves to the primary's virt). All-literal edge peers (T251's acceptance scope) make
-	// this latent; the per-peer failover/re-resolution seam is deferred to T252 → T253 (defect D100).
+	// PeerRemotes skips it, and it boots remoteless. It is installed by the R70 re-resolution loop:
+	// startFailoverAndResolution now builds one controller PER eligible peer (T253), each driving its
+	// OWN endpoint-less install through the T252 per-peer seam (SetPeerRemoteFor / the seeded install
+	// path), so EVERY peer — primary or not — is driven and none cross-wires onto the primary's virt.
+	// This closed defect D100 (the T251-era first-qualifying-peer limitation is structurally gone).
 	if cfg.Role == config.RoleEdge && len(cfg.WireGuard.Peers) > 1 {
 		remotes := make([]netip.AddrPort, len(boot.endpoints))
 		for i, ep := range boot.endpoints {
@@ -725,7 +750,12 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// single-IP-literal edge, or a bind without the probe transport. Started AFTER dev.Up so the
 	// engine peer the re-handshake / endpoint-install look up exists (IpcSet added it above). Close
 	// stops both before dev.Close, like the probe/reconcile loops.
-	stopHubFailover, stopResolution, hubFailoverCtrl := startFailoverAndResolution(cfg, mpBind, probers, dev, boot, clg)
+	stopHubFailover, stopResolution, hubFailoverCtrls := startFailoverAndResolution(cfg, mpBind, perPeerProbers, ids, dev, boot, clg)
+	// The [monitor] endpoints provider renders ONE controller's flattened endpoint list (the monitor
+	// contract is a single flat list; per-peer endpoint groups are a later task). Pick the FIRST
+	// eligible peer's controller in configured order, preserving the pre-T253 single-controller
+	// monitor output for both single-peer and multi-exit shapes. nil when no controller was built.
+	hubFailoverCtrl := firstEligibleCtrl(cfg, ids, hubFailoverCtrls)
 
 	// The session monitor reads the engine's peer last-handshake state (I2). It backs BOTH
 	// the /metrics session snapshot (read at scrape time) and the 0->1 'session established'

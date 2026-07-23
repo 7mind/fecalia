@@ -124,6 +124,21 @@ type hubFailover struct {
 	// endpoint gets, preventing a boot-time false failover while probers are still DOWN
 	// before the first echo returns. Guarded by mu.
 	lastSwitch time.Time
+	// onExhausted is the endpoint-list-EXHAUSTION subscriber (T269's exit selector subscribes via
+	// SetOnExhausted). It is invoked ONCE per outage — on the RISING edge into the exhausted state —
+	// OUTSIDE h.mu (a subscriber may read this controller, so invoking it under the lock could
+	// deadlock). nil until a subscriber registers: within-concentrator round-robin failover (Q72)
+	// needs no subscriber, so the single/legacy shapes leave it unset. Guarded by mu.
+	onExhausted func()
+	// exhaustedLatched latches the exhaustion signal so onExhausted fires only on the RISING edge of
+	// the exhausted state, not every tick while the outage persists. Cleared the instant any path to
+	// the active concentrator recovers (checkLocked's not-allDown branch), so a fresh outage
+	// re-signals. Guarded by mu.
+	exhaustedLatched bool
+	// downAdvances counts round-robin advances taken under CONTINUOUS hub loss (reset the instant any
+	// path recovers). A MULTI-endpoint peer is EXHAUSTED once this reaches the flattened list length —
+	// a full wrap in which every configured endpoint was tried and found down (R267). Guarded by mu.
+	downAdvances int
 }
 
 // failoverSpec is one ordered endpoint entry together with its CURRENT expansion. A
@@ -359,38 +374,81 @@ func (h *hubFailover) allDownLocked() bool {
 	return true
 }
 
-// check is one failover-evaluation step: on confirmed hub loss (and once the active
-// endpoint's settle dwell has elapsed) it advances to the next endpoint, repoints the
-// bond's remote, and initiates a fresh re-handshake. It is idempotent and cheap in the
-// steady state (any path up, or a single-endpoint list) — a length check plus a liveness
-// sweep — so a periodic loop may call it at the probe cadence.
+// SetOnExhausted registers (or clears, with nil) the endpoint-list-EXHAUSTION subscriber — the
+// cross-concentrator exit selector (T269) that promotes to another concentrator once THIS peer's
+// own endpoint list is fully exhausted. Within-concentrator single/partial endpoint failure stays
+// this controller's own round-robin business (Q72); only full exhaustion crosses the boundary, and
+// it does so through this one seam. The callback fires OUTSIDE h.mu (see onExhausted).
+func (h *hubFailover) SetOnExhausted(cb func()) {
+	h.mu.Lock()
+	h.onExhausted = cb
+	h.mu.Unlock()
+}
+
+// check is one failover-evaluation step: on confirmed hub loss (and once the active endpoint's
+// settle dwell has elapsed) it advances to the next endpoint, repoints the bond's remote, initiates
+// a fresh re-handshake, and — on a full flattened-list wrap (or a single-endpoint peer's sole
+// endpoint down) — raises the endpoint-list-exhaustion signal (R267). It is idempotent and cheap in
+// the steady state (any path up) — a length check plus a liveness sweep — so a periodic loop may
+// call it at the probe cadence. The exhaustion subscriber is invoked here, AFTER the lock is
+// released, so a subscriber that reads this controller cannot deadlock against check's own mu.
 func (h *hubFailover) check() {
+	if h.checkLocked() {
+		h.mu.Lock()
+		cb := h.onExhausted
+		h.mu.Unlock()
+		if cb != nil {
+			cb()
+		}
+	}
+}
+
+// checkLocked performs the failover-evaluation step under h.mu and reports whether it just crossed
+// into endpoint-list exhaustion (the caller then fires onExhausted outside the lock). It is factored
+// out of check ONLY to keep the exhaustion callback off the lock.
+func (h *hubFailover) checkLocked() (raisedExhaustion bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// GUARD: a FLATTENED list of fewer than two endpoints takes NO failover action — no
-	// advance, no remote repoint, no re-handshake — so a one-concentrator deployment is
-	// byte-for-byte the pre-T57 behaviour, and a hostname peer whose resolution has not yet
-	// yielded a second endpoint waits rather than churning.
+	// An endpoint-less controller (no expansion yet — a hostname-only peer before its first
+	// resolution) has nothing to evaluate or exhaust: neither advance nor signal.
 	total := h.flatLenLocked()
-	if total < 2 {
-		return
-	}
-	if !h.allDownLocked() {
-		return
-	}
-	// Settle dwell: give the currently-active endpoint time for its liveness to recover
-	// before advancing, so a not-yet-echoed (transiently DOWN) healthy endpoint is not
-	// skipped. Applies at boot (endpoint 0) and after every switch.
-	now := h.clock.Now()
-	if now.Sub(h.lastSwitch) < h.settle {
-		return
+	if total == 0 {
+		return false
 	}
 
-	// Advance in FLATTENED order from the active entry's current flattened position. The
-	// position is re-derived from the spec-scoped identity every step, so a standby spec
-	// that grew/shrank since the last advance is walked at its new offset. A missing active
-	// (activeSpec == -1, or its AddrPort no longer present) resumes from the head.
+	if !h.allDownLocked() {
+		// The active concentrator is reachable on at least one path: clear the down-episode
+		// tracking so a subsequent outage starts a fresh wrap/exhaustion evaluation, and re-arm
+		// the exhaustion latch so a fresh outage re-signals.
+		h.downAdvances = 0
+		h.exhaustedLatched = false
+		return false
+	}
+
+	// Settle dwell: give the currently-active endpoint time for its liveness to recover before
+	// advancing OR declaring exhaustion, so a not-yet-echoed (transiently DOWN) healthy endpoint is
+	// neither skipped nor prematurely declared exhausted. Applies at boot (endpoint 0) and after
+	// every switch, and gates BOTH the round-robin advance and the exhaustion signal.
+	now := h.clock.Now()
+	if now.Sub(h.lastSwitch) < h.settle {
+		return false
+	}
+
+	// GUARD (total == 1, single-endpoint peer): take NO round-robin action — no advance, no remote
+	// repoint, no re-handshake — so a one-concentrator, single-endpoint deployment is byte-for-byte
+	// the pre-T57 behaviour. Its sole endpoint being allDown past the dwell IS endpoint-list
+	// exhaustion (R267), so the signal — and ONLY the signal — is raised for it. The exhaustion
+	// detection therefore runs for total == 1 too, WITHOUT relaxing the no-advance/no-repoint/
+	// no-rehandshake guard.
+	if total < 2 {
+		return h.raiseExhaustedLocked()
+	}
+
+	// MULTI-endpoint peer (total >= 2): advance in FLATTENED order from the active entry's current
+	// flattened position. The position is re-derived from the spec-scoped identity every step, so a
+	// standby spec that grew/shrank since the last advance is walked at its new offset. A missing
+	// active (activeSpec == -1, or its AddrPort no longer present) resumes from the head.
 	prev := h.flatIndexLocked(h.activeSpec, h.activeAddr)
 	var nextIdx int
 	if prev < 0 {
@@ -412,6 +470,29 @@ func (h *hubFailover) check() {
 	}
 	h.log.Warn("hub failover: all paths to active concentrator down; switched endpoint and re-handshaked",
 		"from_index", prev, "to_index", nextIdx, "to_spec", nextSpec, "to_endpoint", next.String(), "endpoints", total)
+
+	// Endpoint-list-exhaustion detection (R267): a FULL flattened-list wrap — `total` advances under
+	// CONTINUOUS hub loss (downAdvances is reset the instant any path recovers, above) — means every
+	// configured endpoint has been tried and found down. Raise the signal once per outage (the latch
+	// suppresses repeats), then re-arm the wrap counter so the round-robin keeps retrying regardless.
+	h.downAdvances++
+	if h.downAdvances >= total {
+		h.downAdvances = 0
+		return h.raiseExhaustedLocked()
+	}
+	return false
+}
+
+// raiseExhaustedLocked latches the endpoint-list-exhaustion state, returning true EXACTLY on the
+// rising edge into that state so the caller fires onExhausted once per outage. The latch clears when
+// any path to the active concentrator recovers (checkLocked's not-allDown branch), so a fresh outage
+// re-signals. Caller holds h.mu.
+func (h *hubFailover) raiseExhaustedLocked() bool {
+	if h.exhaustedLatched {
+		return false
+	}
+	h.exhaustedLatched = true
+	return true
 }
 
 // EndpointState is one entry of the FLATTENED ordered endpoint list returned by
@@ -547,6 +628,62 @@ func deviceInstallEndpoint(dev *awgdevice.Device, pk config.Key, lg log.Logger) 
 	}
 }
 
+// peerRemoteFor adapts Multipath.SetPeerRemoteFor (the T252 per-peer repoint seam) to the
+// peerRemote interface for ONE named peer, so a per-peer hub-failover controller repoints ONLY its
+// own peer's per-path remotes — never the bind-global default or another peer's remotes (D100). It
+// is the multi-exit-edge dual of handing the controller *bind.Multipath directly (whose SetPeerRemote
+// drives the primary/single-peer bind-global path). A cross-peer collision (SetPeerRemoteFor's
+// fail-fast guard) is a wiring defect, so it is LOGGED rather than silently dropped; SetPeerRemoteFor
+// leaves all state untouched on that error, so nothing is half-repointed.
+type peerRemoteFor struct {
+	mp   *bind.Multipath
+	name string
+	log  log.Logger
+}
+
+func (p peerRemoteFor) SetPeerRemote(ap netip.AddrPort) {
+	if err := p.mp.SetPeerRemoteFor(p.name, ap); err != nil {
+		p.log.Warn("hub failover: per-peer remote repoint failed",
+			"peer", p.name, "endpoint", ap.String(), "error", err.Error())
+	}
+}
+
+// deviceInstallEndpointFor is the MULTI-EXIT edge install collaborator (the FIRST-RESOLVE INSTALL
+// PATH, R70) for one named peer. Unlike the single-peer deviceInstallEndpoint — which only issues the
+// engine `endpoint=` line and relies on the bind-global default — it FIRST routes the resolved
+// endpoint through the T252 per-peer seam (SetPeerRemoteFor), which seeds edgePeerByRemote +
+// configuredRemote and repoints the peer's paths, THEN issues the engine `endpoint=` line. Order is
+// load-bearing: the engine's IpcSet calls Bind.ParseEndpoint(ap), which resolves the OWNING peer's
+// virt through edgePeerByRemote — so an endpoint-less (hostname-only) peer whose remote was NOT seeded
+// at boot must be keyed to this peer BEFORE ParseEndpoint runs, or ParseEndpoint would misresolve it
+// onto the primary's virt and its WG traffic would egress to the wrong concentrator (exactly the D100
+// cross-wiring). A SetPeerRemoteFor error (cross-peer collision — a wiring defect) is logged and the
+// engine install is skipped, leaving all state untouched.
+func deviceInstallEndpointFor(dev *awgdevice.Device, mp *bind.Multipath, name string, pk config.Key, lg log.Logger) func(netip.AddrPort) {
+	ipcInstall := deviceInstallEndpoint(dev, pk, lg)
+	return func(ap netip.AddrPort) {
+		if err := mp.SetPeerRemoteFor(name, ap); err != nil {
+			lg.Warn("hub failover: per-peer endpoint install (seam repoint) failed; skipping engine install",
+				"peer", name, "endpoint", ap.String(), "error", err.Error())
+			return
+		}
+		ipcInstall(ap)
+	}
+}
+
+// composeStops fans one aggregate stopper out to every supplied per-peer stopper (in order). It lets
+// startFailoverAndResolution return ONE stopFailover / stopResolution that halts EVERY per-peer loop,
+// while the device retains its existing two-stopper Close contract. Each supplied stopper is already
+// idempotent (startHubFailoverLoop / startResolutionLoop guard with sync.Once), so the composed
+// stopper is too.
+func composeStops(stops []func()) func() {
+	return func() {
+		for _, s := range stops {
+			s()
+		}
+	}
+}
+
 // peerNeedsHubFailover reports whether a peer's endpoint set warrants a hub-failover
 // controller: it does when the peer carries ANY hostname spec (its runtime resolution may
 // yield further endpoints, and even a single hostname can re-resolve onto a new IP the bond
@@ -563,62 +700,98 @@ func peerNeedsHubFailover(peer config.Peer) bool {
 	return len(peer.Endpoints) >= 2
 }
 
-// startFailoverAndResolution builds and starts the edge-side hub-failover monitor AND the
-// re-resolution controller for cfg's concentrator peer, returning their two SEPARATE stoppers
-// (device.Close invokes both) AND the constructed controller (nil when none applies) so the
-// monitor layer can wire a LIVE endpoints provider over its EndpointsSnapshot (T222). It
-// returns no-op stoppers when hub failover does not apply: the
-// concentrator role (it roams edges dynamically and has no endpoint list), a bind without the
-// probe transport (no probers → no liveness plane), or no peer whose endpoint set warrants a
-// controller (peerNeedsHubFailover — a single-IP-literal deployment gets none, staying
-// behaviour-identical to pre-G5). The edge bonds every path to a SINGLE concentrator, so the whole
-// per-path prober set IS the liveness of the paths to that concentrator (hub loss = every one
-// DOWN); the controller drives the first qualifying peer.
+// startFailoverAndResolution builds and starts, PER ELIGIBLE PEER, an edge-side hub-failover monitor
+// AND its re-resolution controller (T253/D100), returning two AGGREGATE stoppers (device.Close invokes
+// both — each fans out to every per-peer loop) AND the per-peer controllers keyed by stable peer name.
+// The keyed map lets the monitor layer wire a LIVE endpoints provider over each controller's
+// EndpointsSnapshot (T222) and lets the cross-concentrator exit selector (T269) subscribe to each
+// controller's exhaustion signal. It returns no-op stoppers and a nil map when hub failover does not
+// apply anywhere: the concentrator role (it roams edges dynamically and has no endpoint list), a bind
+// without the probe transport (no probers → no liveness plane), or no peer whose endpoint set warrants
+// a controller (peerNeedsHubFailover — a single-IP-literal deployment gets none, staying
+// behaviour-identical to pre-G5).
 //
-// The controller's spec expansions come from boot (the bounded initial resolve, Q30): a hostname
-// that resolved at boot starts with a non-empty expansion (activeSpec set, endpoint already
-// installed at boot via the UAPI render), while one that did not resolve starts EMPTY (activeSpec
-// == -1) and the re-resolution loop's first success adopts it through the FIRST-RESOLVE INSTALL
-// PATH (ctrl.install, R70). The install collaborator is wired here to the engine peer.
-func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, probers []*telemetry.Prober, dev *awgdevice.Device, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func(), ctrl *hubFailover) {
+// Per-peer isolation (D100 structurally gone): EVERY eligible peer — not merely the first qualifying
+// one — gets its OWN controller wired to that peer's OWN per-(peer,path) prober set (perPeerProbers[i],
+// its OWN liveness plane — hub loss = every one of THAT peer's probers DOWN), its OWN rehandshake and
+// engine-endpoint install keyed by that peer's public key, and, on a MULTI-EXIT edge, its OWN remote
+// seam (SetPeerRemoteFor / the seeded install path, NOT the bind-global SetPeerRemote — so peer B's hub
+// switch never disturbs the remote peer A relies on). A SINGLE-peer edge keeps the legacy bind-global
+// SetPeerRemote / plain engine-install path byte-for-byte (its Bind primary peer is unnamed, so the
+// per-peer seam does not apply). ids is index-aligned with cfg.WireGuard.Peers (config.PeerIdentities),
+// supplying each peer's stable name — the SetPeerRemoteFor / peersByName key and the map key.
+//
+// Each controller's spec expansions come from boot (the bounded initial resolve, Q30): a hostname that
+// resolved at boot starts with a non-empty expansion (activeSpec set, endpoint already installed at
+// boot via the UAPI render), while one that did not resolve starts EMPTY (activeSpec == -1) and the
+// re-resolution loop's first success adopts it through the FIRST-RESOLVE INSTALL PATH (ctrl.install,
+// R70) — now correctly routed per-peer, so a NON-primary endpoint-less peer is driven by its OWN
+// controller instead of never (or cross-wiring onto the primary's virt): the D100 mechanism.
+func startFailoverAndResolution(cfg *config.Config, mp *bind.Multipath, perPeerProbers [][]*telemetry.Prober, ids []config.PeerIdentity, dev *awgdevice.Device, boot bootEndpoints, lg log.Logger) (stopFailover, stopResolution func(), ctrls map[string]*hubFailover) {
 	noop := func() {}
-	if cfg.Role != config.RoleEdge || len(probers) == 0 {
+	if cfg.Role != config.RoleEdge {
 		return noop, noop, nil
 	}
+	// Multi-exit edge (2+ peers): each per-peer controller repoints/installs through the T252 per-peer
+	// seam keyed by the peer's stable name. A single-peer edge keeps the bind-global legacy path.
+	multiExit := len(cfg.WireGuard.Peers) > 1
+	ctrls = make(map[string]*hubFailover)
+	var failStops, resStops []func()
 	for i, peer := range cfg.WireGuard.Peers {
 		if !peerNeedsHubFailover(peer) {
+			continue
+		}
+		probers := perPeerProbers[i]
+		if len(probers) == 0 {
+			// This peer has no probe transport (a bind built without probers): no liveness plane, so
+			// no hub-loss detector. Skip it — the controllerless behaviour is byte-for-byte pre-G5.
 			continue
 		}
 		health := make([]hubHealth, len(probers))
 		for j, pr := range probers {
 			health[j] = pr
 		}
+		name := ids[i].Name
 		hlg := lg.Component("hubfailover")
+
+		// Remote + install seam selection: the multi-exit edge routes ONLY this peer's repoint/install
+		// through SetPeerRemoteFor / the seeded install path (D100); the single-peer edge keeps the
+		// bind-global SetPeerRemote / plain engine-install legacy path intact.
+		var remote peerRemote = mp
+		install := deviceInstallEndpoint(dev, peer.PublicKey, hlg)
+		if multiExit {
+			remote = peerRemoteFor{mp: mp, name: name, log: hlg}
+			install = deviceInstallEndpointFor(dev, mp, name, peer.PublicKey, hlg)
+		}
+
 		// The engine-endpoint install used by the FIRST-RESOLVE INSTALL PATH (R70) is a REQUIRED
 		// constructor collaborator: boot adoption of an endpoint-less peer installs the resolved
 		// endpoint on the engine peer through it, then rehandshakes. Passing it at construction
 		// (rather than patching a field afterwards) makes a lost wiring line a compile error, so it
 		// can never silently degrade to a SetPeerRemote that leaves the engine peer endpoint-less.
-		ctrl = newHubFailoverFromSpecs(
-			boot.specs[i], health, mp,
+		ctrl := newHubFailoverFromSpecs(
+			boot.specs[i], health, remote,
 			deviceRehandshake(dev, peer.PublicKey),
-			deviceInstallEndpoint(dev, peer.PublicKey, hlg),
+			install,
 			telemetry.SystemClock{}, hubFailoverSettle,
 			hlg,
 		)
 		// Poll at the probe cadence: check is cheap (a length check plus a liveness sweep) and the
 		// settle dwell bounds actual switches, so a responsive poll only tightens detection latency
 		// without churning the remote.
-		stopFailover = ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval)
-		// Alongside failover, start the re-resolution controller (T73) over the SAME ctrl for a
-		// peer carrying hostname specs: it re-resolves each on the [dns] poll cadence and out-of-
-		// band on hub loss, feeding fresh records through ctrl.updateResolution (Q34 — the two
-		// coordinate purely through the shared lock and update API). An all-literal peer has no
-		// hostname to track, so it starts nothing.
-		stopResolution = startResolution(cfg, ctrl, peer, boot.resolver, lg)
-		return stopFailover, stopResolution, ctrl
+		failStops = append(failStops, ctrl.startHubFailoverLoop(telemetry.DefaultProbeInterval))
+		// Alongside failover, start the re-resolution controller (T73) over THIS peer's ctrl for a
+		// peer carrying hostname specs: it re-resolves each on the [dns] poll cadence and out-of-band
+		// on hub loss, feeding fresh records through ctrl.updateResolution (Q34 — the two coordinate
+		// purely through the shared lock and update API), so it updates ONLY this peer's specs. An
+		// all-literal peer has no hostname to track, so it starts nothing.
+		resStops = append(resStops, startResolution(cfg, ctrl, peer, boot.resolver, lg))
+		ctrls[name] = ctrl
 	}
-	return noop, noop, nil
+	if len(ctrls) == 0 {
+		return noop, noop, nil
+	}
+	return composeStops(failStops), composeStops(resStops), ctrls
 }
 
 // startResolution builds and starts the re-resolution controller for peer's hostname endpoint

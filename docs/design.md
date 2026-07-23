@@ -136,14 +136,18 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   default). Without this, the engine would map every edge peer's endpoint to the
   primary's virt and every peer's WG traffic — and probes — would egress to one
   hub. A single-peer edge keeps the bind-global-default path byte-identical. An
-  endpoint-less (unresolved-hostname) edge peer boots remoteless — but as shipped in
-  T251 only the **primary (first-qualifying) peer** is driven by the R70 re-resolution
-  loop: `startFailoverAndResolution` builds ONE controller for the FIRST peer
-  satisfying `peerNeedsHubFailover` and returns, so a NON-primary endpoint-less peer is
-  never installed (and if the first-qualifying peer is itself non-primary, its install
-  path `deviceInstallEndpoint`→`IpcSet`→`ParseEndpoint(ap)` mis-resolves to the
-  primary's virt because `ap` is not in `edgePeerByRemote`). T251's acceptance scope is
-  all-literal edge peers, where this is latent. The per-peer **remote-repoint/install
+  endpoint-less (unresolved-hostname) edge peer boots remoteless and is driven by the
+  R70 re-resolution loop: as of **T253** `startFailoverAndResolution` builds one
+  hub-failover/re-resolution controller **per eligible peer** (every peer satisfying
+  `peerNeedsHubFailover`, not just the first), each reading that peer's OWN
+  per-(peer,path) prober set as its liveness plane and routing its OWN repoint and
+  endpoint-less install through the per-peer seam below — so EVERY peer, primary or
+  not, is driven and none cross-wires onto the primary's virt. This closed **D100**
+  (the earlier T251 build drove only the first-qualifying peer — a non-primary
+  endpoint-less peer was never installed, and a non-primary first-qualifying peer's
+  install path `deviceInstallEndpoint`→`IpcSet`→`ParseEndpoint(ap)` mis-resolved to the
+  primary's virt because `ap` was absent from `edgePeerByRemote`; that limitation is now
+  structurally gone). The per-peer **remote-repoint/install
   seam** lands in **T252**: `Multipath.SetPeerRemoteFor(peerName, ap)` repoints exactly
   the named peer's paths at `ap` and re-baselines only that peer's resequencer (the D32
   resync), WITHOUT touching the bind-global `defaultRemote` — so with N independent
@@ -163,9 +167,14 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   endpoints across peers, but a hostname-only peer carries no literal to compare, so
   the seam is the only guard against two hostname peers resolving to the same
   `addr:port` and one silently stealing the other's send-routing key (repointing a peer
-  onto its OWN current remote stays a valid idempotent no-op). **T253** then wires one
+  onto its OWN current remote stays a valid idempotent no-op). **T253** wires one
   per-concentrator hub-failover/re-resolution controller per peer, routing each controller's
-  hub switch and initial install through this seam. The concentrator never uses this — its
+  hub switch and initial install through this seam, and surfaces a per-peer **endpoint-list-
+  exhaustion** signal (`SetOnExhausted`) the cross-concentrator exit selector (T269) subscribes
+  to: within-concentrator single/partial endpoint failure stays that controller's own
+  round-robin business (Q72); only a full flattened-list wrap with hub loss persisting past the
+  settle dwell — or, for a single-endpoint peer, its sole endpoint down past the dwell — raises
+  the signal (R267). The concentrator never uses this — its
   peers learn remotes from inbound. The **concentrator-role dead-peer reclaim** (the D50
   `peerTeardownMonitor`, which sheds a dead edge's per-peer resequencer/FEC/demux
   state on session loss) is **inert on the edge role**: a multi-exit edge's standby

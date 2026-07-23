@@ -614,3 +614,205 @@ func TestHubFailoverCrossSpecDuplicateNoSpuriousReMap(t *testing.T) {
 		t.Fatalf("advance re-handshakes=%d, want 1", handshakes)
 	}
 }
+
+// TestPerPeerFailoverIsolation is T253 acceptance (1): with two peers each carrying two concentrator
+// endpoints, driving EVERY path of peer A DOWN past the settle dwell advances ONLY peer A's controller
+// — repointing A's remote to A's own standby and re-handshaking A — while peer B's controller (its
+// remote, active endpoint, handshake counter) stays untouched. This is the structural absence of D100:
+// each peer's hub loss is derived from its OWN prober set and drives its OWN remote/rehandshake seam,
+// so one peer's failover can never move another's endpoint or session.
+func TestPerPeerFailoverIsolation(t *testing.T) {
+	epsA := mustEndpoints(t, "203.0.113.1:51820", "203.0.113.2:51820")
+	epsB := mustEndpoints(t, "198.51.100.1:51820", "198.51.100.2:51820")
+	hpA := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	hpB := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateUp}}
+	remA, remB := &recordingRemote{}, &recordingRemote{}
+	hsA, hsB := 0, 0
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	foA := newHubFailover(epsA, hpA, remA, func() { hsA++ }, clk, testSettle, discardLogger(t))
+	foB := newHubFailover(epsB, hpB, remB, func() { hsB++ }, clk, testSettle, discardLogger(t))
+
+	// Peer A loses its hub: every A path DOWN. B stays fully UP.
+	hpA[0].(*fakeHealth).state = telemetry.StateDown
+	hpA[1].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	foA.check()
+	foB.check()
+
+	// A advanced to its OWN standby and re-handshaked A exactly once.
+	if remA.calls != 1 || remA.last != epsA[1] {
+		t.Fatalf("peer A: remote switches=%d last=%v, want 1 and %v (A's own standby)", remA.calls, remA.last, epsA[1])
+	}
+	if hsA != 1 {
+		t.Fatalf("peer A re-handshakes=%d, want 1", hsA)
+	}
+	if foA.idx != 1 {
+		t.Fatalf("peer A active idx=%d, want 1", foA.idx)
+	}
+	// B is entirely untouched: no repoint, no re-handshake, still on its primary endpoint.
+	if remB.calls != 0 || hsB != 0 || foB.idx != 0 {
+		t.Fatalf("peer B disturbed by peer A's failover: remote switches=%d handshakes=%d idx=%d, want 0,0,0", remB.calls, hsB, foB.idx)
+	}
+	if remB.last != (netip.AddrPort{}) {
+		t.Fatalf("peer B remote moved to %v, want unset", remB.last)
+	}
+}
+
+// TestPerPeerResolutionIsolation is T253 acceptance (2): per-peer DNS re-resolution updates ONLY the
+// owning peer's specs. Two peers each track their own hostname spec over their own controller;
+// re-resolving peer A's hostname onto a NEW address repoints A only, while peer B — polling its own
+// unchanged hostname over its own controller — never moves.
+func TestPerPeerResolutionIsolation(t *testing.T) {
+	oldA := mustAP(t, "203.0.113.1:51820")
+	newAPA := netip.AddrPortFrom(mustAddr(t, "203.0.113.9"), 51820)
+	activeB := mustAP(t, "198.51.100.1:51820")
+	hA := newResolutionHarness(t, "a.example.com", 51820, oldA, telemetry.StateUp)
+	hB := newResolutionHarness(t, "b.example.com", 51820, activeB, telemetry.StateUp)
+
+	hA.rslv.set("a.example.com", newAPA.Addr())  // A's hostname now resolves to a new address
+	hB.rslv.set("b.example.com", activeB.Addr()) // B's hostname resolves to its SAME address (no change)
+
+	for i := 0; i < 4; i++ {
+		hA.advancePastPoll()
+		hA.res.step()
+		hB.advancePastPoll()
+		hB.res.step()
+	}
+
+	// A repointed exactly once, onto its own new record.
+	if hA.rem.calls != 1 || hA.rem.last != newAPA {
+		t.Fatalf("peer A: SetPeerRemote=%d last=%v, want 1 and %v", hA.rem.calls, hA.rem.last, newAPA)
+	}
+	if hA.fo.activeAddr != newAPA {
+		t.Fatalf("peer A active addr=%v, want %v", hA.fo.activeAddr, newAPA)
+	}
+	// B never moved: its own re-resolution (unchanged IP, suppressed) and A's re-resolution both leave
+	// B's active endpoint and remote alone.
+	if hB.rem.calls != 0 {
+		t.Fatalf("peer B repointed %d times, want 0 (its own IP unchanged; peer A's change is isolated)", hB.rem.calls)
+	}
+	if hB.fo.activeSpec != 0 || hB.fo.activeAddr != activeB {
+		t.Fatalf("peer B active endpoint = (%d,%v), want (0,%v) untouched", hB.fo.activeSpec, hB.fo.activeAddr, activeB)
+	}
+}
+
+// TestExhaustionSignalMultiEndpoint is T253 acceptance (3): the endpoint-list-exhaustion signal fires
+// EXACTLY when every endpoint of a MULTI-endpoint (>=2) peer has been tried and found down — a full
+// flattened-list wrap with hub loss persisting past the settle dwell — and NOT on partial failure or a
+// single (half-list) advance. It is latched (once per outage) and re-arms after a path recovers.
+func TestExhaustionSignalMultiEndpoint(t *testing.T) {
+	eps := mustEndpoints(t, "203.0.113.1:51820", "203.0.113.2:51820")
+	hp := []hubHealth{&fakeHealth{telemetry.StateUp}, &fakeHealth{telemetry.StateDown}}
+	rem := &recordingRemote{}
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	h := newHubFailover(eps, hp, rem, func() {}, clk, testSettle, discardLogger(t))
+	exhaustions := 0
+	h.SetOnExhausted(func() { exhaustions++ })
+
+	// Partial failure (one path UP) never exhausts, however long it persists.
+	for i := 0; i < 5; i++ {
+		clk.advance(testSettle + time.Second)
+		h.check()
+	}
+	if exhaustions != 0 {
+		t.Fatalf("partial failure raised exhaustion %d times, want 0", exhaustions)
+	}
+
+	// Full hub loss: every path DOWN. First advance 0 -> 1 tries ONE of two endpoints — not yet a wrap.
+	hp[0].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	h.check()
+	if h.idx != 1 {
+		t.Fatalf("first advance idx=%d, want 1", h.idx)
+	}
+	if exhaustions != 0 {
+		t.Fatalf("exhaustion raised after a single advance (half the list), want 0, got %d", exhaustions)
+	}
+
+	// Second advance wraps 1 -> 0: the whole list has now been tried and found down -> exhaustion, once.
+	clk.advance(testSettle + time.Second)
+	h.check()
+	if h.idx != 0 {
+		t.Fatalf("wrap advance idx=%d, want 0", h.idx)
+	}
+	if exhaustions != 1 {
+		t.Fatalf("full-wrap exhaustion fired %d times, want exactly 1", exhaustions)
+	}
+
+	// Still down across further full wraps: the latch suppresses repeats until a path recovers.
+	clk.advance(testSettle + time.Second)
+	h.check() // advance 0 -> 1
+	clk.advance(testSettle + time.Second)
+	h.check() // wrap 1 -> 0 (second full wrap, no recovery between)
+	if exhaustions != 1 {
+		t.Fatalf("exhaustion re-fired while latched (no recovery), want 1, got %d", exhaustions)
+	}
+
+	// A path recovers (clears the latch) then fails again: the NEW outage re-signals on its next wrap.
+	hp[0].(*fakeHealth).state = telemetry.StateUp
+	clk.advance(testSettle + time.Second)
+	h.check() // any-up: clears latch + counter, no action
+	hp[0].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	h.check() // advance
+	clk.advance(testSettle + time.Second)
+	h.check() // wrap -> exhaustion #2
+	if exhaustions != 2 {
+		t.Fatalf("fresh-outage exhaustion total=%d, want 2", exhaustions)
+	}
+}
+
+// TestExhaustionSignalSingleEndpoint is T253 acceptance (4): a SINGLE-endpoint peer raises the
+// exhaustion signal when its sole endpoint is allDown past the settle dwell, while taking NO
+// round-robin action — no advance, no remote repoint, no re-handshake — preserving the single-endpoint
+// guard. The exhaustion detection therefore runs for total == 1 too, without relaxing the guard. The
+// signal is latched (once per outage) and re-arms after a recovery.
+func TestExhaustionSignalSingleEndpoint(t *testing.T) {
+	eps := mustEndpoints(t, "203.0.113.1:51820")
+	hp := []hubHealth{&fakeHealth{telemetry.StateDown}, &fakeHealth{telemetry.StateDown}}
+	rem := &recordingRemote{}
+	handshakes := 0
+	clk := &fakeClock{now: time.Unix(1000, 0)}
+	h := newHubFailover(eps, hp, rem, func() { handshakes++ }, clk, testSettle, discardLogger(t))
+	exhaustions := 0
+	h.SetOnExhausted(func() { exhaustions++ })
+
+	// Within the dwell: a boot-time all-down reading must not false-exhaust.
+	h.check()
+	if exhaustions != 0 {
+		t.Fatalf("exhaustion raised within the settle dwell, want 0, got %d", exhaustions)
+	}
+
+	// Past the dwell: sole endpoint down -> exhaustion, exactly once, and NO round-robin action.
+	clk.advance(testSettle + time.Second)
+	h.check()
+	if exhaustions != 1 {
+		t.Fatalf("single-endpoint exhaustion fired %d times, want 1", exhaustions)
+	}
+	if rem.calls != 0 || handshakes != 0 || h.idx != 0 {
+		t.Fatalf("single-endpoint peer took round-robin action: remote=%d handshakes=%d idx=%d, want 0,0,0", rem.calls, handshakes, h.idx)
+	}
+
+	// Latched: still down past more dwells does not re-fire.
+	clk.advance(testSettle + time.Second)
+	h.check()
+	if exhaustions != 1 {
+		t.Fatalf("single-endpoint exhaustion re-fired while latched, want 1, got %d", exhaustions)
+	}
+
+	// Recovery clears the latch; a fresh outage re-signals.
+	hp[0].(*fakeHealth).state = telemetry.StateUp
+	hp[1].(*fakeHealth).state = telemetry.StateUp
+	h.check()
+	hp[0].(*fakeHealth).state = telemetry.StateDown
+	hp[1].(*fakeHealth).state = telemetry.StateDown
+	clk.advance(testSettle + time.Second)
+	h.check()
+	if exhaustions != 2 {
+		t.Fatalf("fresh single-endpoint outage exhaustion total=%d, want 2", exhaustions)
+	}
+	// Still no round-robin action across the whole single-endpoint lifetime.
+	if rem.calls != 0 || handshakes != 0 || h.idx != 0 {
+		t.Fatalf("single-endpoint peer took round-robin action over its lifetime: remote=%d handshakes=%d idx=%d, want 0,0,0", rem.calls, handshakes, h.idx)
+	}
+}

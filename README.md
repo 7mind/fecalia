@@ -261,10 +261,13 @@ deliberate boundaries you must plan around:
   routed to ITS concentrator (distinct per-peer virtual endpoint + per-path
   remotes), every peer gets a persistent keepalive and a first-path-up handshake
   so all sessions stay warm, and the concentrator-role dead-peer reclaim never
-  tears down a healthy edge warm-standby. Per-peer hub-failover / DNS
-  re-resolution (only the primary/first-qualifying peer is driven today — defect
-  D100; per-peer remote seam T252 → per-concentrator controllers T253),
-  on-the-fly exit switching, and per-concentrator web-UI stats are later tasks.
+  tears down a healthy edge warm-standby. **Per-peer hub-failover / DNS
+  re-resolution is per-concentrator (T253):** every eligible peer gets its OWN
+  controller over its OWN prober set and repoints only its OWN remote through the
+  T252 per-peer seam, so one exit's failover cannot disturb another's (defect D100
+  fixed). Each per-peer controller also raises an endpoint-list-exhaustion signal
+  for the cross-concentrator exit selector (T269). On-the-fly cross-concentrator
+  exit switching (T269) and per-concentrator web-UI stats are later tasks.
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
