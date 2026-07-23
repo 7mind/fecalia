@@ -1104,6 +1104,22 @@ every data path still below the min-sample floor — while parity/smoothed-loss
 hold their last driven value). They honour the same T94 single-peer-omits-label
 back-compat rule as the fixed-ratio FEC series.
 
+**D96 permanent netns regressions.** Two real (kernel-forwarded, netem-lossy)
+`//go:build e2e` fixtures under `internal/device/` read these four gauges
+end-to-end from `/metrics` against the production `driveAdaptiveControllerLocked`
+path, so a future regression in the signal-selection/raise-gate/observability
+wiring above is caught automatically rather than requiring another field
+incident: `TestAdaptiveFECUnderRealLoss`
+(`adaptive_real_loss_e2e_test.go`, T266) is the single-path fixture — sustained
+real loss on the only path ramps parity and the gauges track it —
+and `TestAdaptiveFECAntiPhaseTwoPath` (`adaptive_antiphase_e2e_test.go`, T275)
+is the two-path active-backup fixture proving both halves of the D96 field
+incident at once against the T272 `DataPaths()` signal selection: the ACTIVE
+path's own sustained loss ramps parity (the "inert" half), and a noisy but
+data-idle STANDBY's sustained loss — while it stays liveness `StateUp`, so a
+role-agnostic MAX-over-`StateUp`-probers drive would have seen it — does NOT
+(the "over" half of the field's anti-phase symptom).
+
 ### TUN lifecycle: persistence, the default-route exception, and the session signal — `internal/device`
 
 Three device-lifecycle surfaces beyond tunnel bring-up/teardown itself, all owned

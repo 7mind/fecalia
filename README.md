@@ -26,11 +26,14 @@ In priority order (earlier properties never regress for later ones):
 3. **On-demand aggregation** — under load, traffic stripes across both links.
 4. **FEC loss-masking** — Reed-Solomon parity reconstructs lost frames instead
    of retransmitting.
-5. **Adaptive FEC** — redundancy tracks measured per-path loss (target a residual
-   loss SLA, not a fixed overhead): parity engages as soon as the measured loss
-   would miss the SLA — for a tight `target_residual` that is well under 1% loss,
-   not a fixed 5% threshold — while a single estimator-quantum blip stays at zero
-   overhead.
+5. **Adaptive FEC** — redundancy tracks the measured loss on the path(s) that
+   **actually carry data** (the active path under active-backup, the
+   weight-weighted mix under weighted striping — a lossy but data-idle standby
+   never inflates parity), targeting a residual loss SLA rather than a fixed
+   overhead: parity engages as soon as the measured loss would miss the SLA —
+   for a tight `target_residual` that is well under 1% loss, not a fixed 5%
+   threshold — while a single estimator-quantum blip, or an early loss spike
+   measured over too few probe samples to trust, stays at zero overhead.
 6. **DPI resistance** — the outer wire is unidentifiable high-entropy UDP: no
    WireGuard fingerprint, no magic bytes (nDPI/Suricata do not classify it as
    VPN/WireGuard).
@@ -184,6 +187,7 @@ Three tiers (see [docs/design.md §Testing](docs/design.md) and
 |------|---------|----------------|
 | unit / property | `just test` (`go test ./...`) | codec, FEC math, adaptive control law, anti-replay, schedulers, config |
 | netns e2e | `just e2e` (`sudo -E go test -tags e2e ./test/e2e/...`) | two-netns tunnel bring-up, bonding, failover, FEC recovery, DPI audit (P0–P5) |
+| netns e2e (device) | `sudo -E go test -tags e2e ./internal/device/` | the permanent D96 adaptive-FEC regressions against the real daemon under netem loss: single-path parity ramp (T266) + two-path active/standby anti-phase (T275); self-isolating (each re-execs into a fresh netns) |
 | real-host e2e | `just realhosts` (`-tags realhosts`) | two real machines over the internet (NAT edge + public concentrator); report-only |
 
 > **Important fixture limitation:** the netns fixture is CPU/PPS-bound, so it
