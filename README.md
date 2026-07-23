@@ -54,12 +54,12 @@ full picture and the exact list of what we built on top of amneziawg-go, read
 
 ## Quick start
 
-Requires the dev shell (`nix develop`) which puts Go 1.26, golangci-lint, and the
-netem/DPI test tooling on `PATH`.
+Requires the dev shell (`nix develop`) which puts Go 1.26, Node.js 24/npm,
+golangci-lint, and the netem/DPI test tooling on `PATH`.
 
 ```sh
-just build          # web-build (embeds the monitoring-UI bundle) + go build ./...
-just test           # unprivileged unit/property tests
+just build          # frontend typecheck/test/build + embedded UI + go build ./...
+just test           # frontend typecheck/test + unprivileged Go tests
 just lint           # go vet + golangci-lint (incl. -tags e2e / -tags realhosts)
 just release        # web-build + static linux amd64+arm64 binaries into dist/
 ```
@@ -113,8 +113,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   count-and-continue — a path whose probes cannot egress no longer reads
   identically to a path with 100% probe loss, D96), WG-session establishment
   (`wanbond_session_established`, plus a per-peer
-  `wanbond_peer_session_established{peer}` on a multi-peer concentrator, T256),
-  receive-resequencer head-of-line holds vs
+  `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
+  including the first configured one, carries its configured `peer` label, while
+  a true single-peer exposition omits the label), receive-resequencer head-of-line holds vs
   single-path immediate releases (`wanbond_resequencer_hol_hold_seconds_total` /
   `wanbond_resequencer_immediate_releases_total`, D93), and — under
   `scheduler.policy = "weighted"`
@@ -141,8 +142,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
   a `/ws` WebSocket every 1s) — read-only except the loopback-only `POST
   /api/exit` control (which 403s on any non-loopback bind), exposed in the
-  dashboard itself as an exit-switch `<select>` listing every exit-capable
-  peer on a multi-exit edge — loopback-only by default like `[metrics]`, but
+  dashboard itself as an exit-switch `<select>` populated from the daemon's
+  authoritative configured exit-capable peer set — loopback-only by default
+  like `[metrics]`, but
   it MAY bind non-loopback if you also set `[monitor].token` (otherwise
   refused at config load). Every request, including the WebSocket upgrade, is
   Host/Origin-validated (DNS-rebinding/CSRF defense); a configured token is
@@ -192,7 +194,7 @@ Three tiers (see [docs/design.md §Testing](docs/design.md) and
 
 | Tier | Command | What it covers |
 |------|---------|----------------|
-| unit / property | `just test` (`go test ./...`) | codec, FEC math, adaptive control law, anti-replay, schedulers, config |
+| frontend + unit / property | `just test` (TypeScript typecheck/Vitest + root and patched `amneziawg-go/device` tests) | monitor wire/UI contract, codec, FEC math, adaptive control law, anti-replay, schedulers, config |
 | netns e2e | `just e2e` (`sudo -E go test -tags e2e ./test/e2e/...`) | two-netns tunnel bring-up, bonding, failover, FEC recovery, DPI audit (P0–P5) |
 | netns e2e (device) | `sudo -E go test -tags e2e ./internal/device/` | the permanent D96 adaptive-FEC regressions against the real daemon under netem loss: single-path parity ramp (T266) + two-path active/standby anti-phase (T275); self-isolating (each re-execs into a fresh netns) |
 | real-host e2e | `just realhosts` (`-tags realhosts`) | two real machines over the internet (NAT edge + public concentrator); report-only |
@@ -221,6 +223,7 @@ internal/monitor/       monitoring-UI endpoint, read-only except the loopback-on
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
+third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), test vet fix (#157)
 test/e2e/               -tags e2e netns fixture (P0–P5)
 test/realhosts/         -tags realhosts real-machine tier
 docs/                   design, install, findings, manual checklist

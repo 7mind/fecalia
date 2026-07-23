@@ -194,11 +194,11 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   (G4)" metrics note). With MORE THAN ONE peer
                                    #   (either role — T250 edge included), REQUIRED
                                    #   and must be unique across peers
-                                   #   (T80/T81, Q21). ADDITIONAL peers (all but the
-                                   #   first-configured) are exposed under this name
-                                   #   as the metrics `peer` label; the first/primary
-                                   #   peer's series always carry the empty label
-                                   #   peer="" regardless of this field (D58).
+                                   #   (T80/T81, Q21). In multi-peer mode EVERY
+                                   #   peer, including the first-configured peer,
+                                   #   is exposed under this name as the metrics
+                                   #   `peer` label (D58 fixed). A true single-peer
+                                   #   exposition omits the label.
 
 # ── second peer example (hostname endpoint with DNS opt-in) ──────────────────────
 # [[wireguard.peers]]
@@ -247,8 +247,8 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # private_key = "<base64 32-byte private key>"
 # listen_port = 51820
 #
-# # Edge 1: office — bound FIRST, so its metrics series carry peer="" (D58)
-# # even though `name` is set and required in multi-peer mode.
+# # Edge 1: office — although bound first, its multi-peer metrics series carry
+# # peer="office-edge"; peer="" is reserved for a true single-peer exposition.
 # [[wireguard.peers]]
 # public_key = "<base64 office-edge public key>"
 # allowed_ips = ["10.77.1.0/24"]

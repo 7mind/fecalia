@@ -33,8 +33,8 @@ The dev shell (`nix develop`) puts Go 1.26, golangci-lint, and the netem/DPI
 tooling on `PATH`. Run tools from it (e.g. `nix develop --command bash -c '…'`).
 
 ```sh
-just build      # go build ./...
-just test       # unprivileged unit/property tests (go test ./...)
+just build      # frontend typecheck/test/build + go build ./...
+just test       # frontend typecheck/test + root and patched-dependency Go tests
 just lint       # go vet + golangci-lint, INCLUDING -tags e2e and -tags realhosts
 just e2e        # privileged netns fixture: sudo -E go test -tags e2e ./test/e2e/...
 just realhosts  # opt-in real-machine tier (-tags realhosts), report-only
@@ -43,7 +43,10 @@ just realhosts  # opt-in real-machine tier (-tags realhosts), report-only
 The non-privileged gate a change must pass before merge:
 
 ```sh
-go build ./... && go vet ./... && test -z "$(gofmt -l cmd internal test)" && go test ./...
+(cd web && npm ci && npm run typecheck && npm test) && \
+go build ./... && go vet ./... && \
+(cd third_party/amneziawg-go && go vet ./device/... && go test ./device/...) && \
+test -z "$(gofmt -l cmd internal test third_party/amneziawg-go/device)" && go test ./...
 ```
 
 `-tags e2e` / `-tags realhosts` need root / real hosts and are **not** part of the
@@ -68,8 +71,10 @@ short:
    accepted — do not "fix" this without a design decision).
 5. All engine (`conn`) coupling stays isolated to **`internal/bind/bind.go`** —
    preserve the fork-swap hedge.
-6. Amnezia config is **all-or-nothing** and the engine is **single-per-process**
-   (package-level globals). Keep the config validation that enforces this.
+6. Amnezia config is **all-or-nothing per device**. The local v1.0.4 source patch
+   keeps message headers and packet-shape maps per `Device` (upstream #155), so
+   concurrent engines must remain race-free and configuration-isolated. Keep the
+   all-or-nothing config validation and the multi-device race regression.
 7. On **any `klauspost/reedsolomon` (or amneziawg-go) version bump**, re-verify
    `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing —
    a flipped default matrix silently corrupts every reconstructed payload.

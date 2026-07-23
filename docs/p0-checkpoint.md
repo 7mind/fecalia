@@ -85,12 +85,11 @@ pace-sizing run against T35's capped fixture.
 
 ## Added scope from P0 defects (not gating P1)
 
-- **D1** (partial-amnezia config validation gap) and **D2** (amnezia
-  magic-header package-level globals — one engine per process) are `root-caused`
-  and linked to **T19**. T19 (amnezia end-to-end) must therefore also: validate
-  a configured amnezia block for internal consistency (D1), and document/assert
-  the single-engine-per-process constraint (D2). These refine A4; they do not
-  gate P1.
+- **D1** (partial-amnezia config validation gap) and **D2** (the upstream
+  v1.0.4 magic-header package globals) were `root-caused` and linked to **T19**.
+  T19 validated complete Amnezia blocks. The original D2 process-exclusivity
+  guard was later superseded by the local per-`Device` state patch (upstream
+  #155), so concurrent engines no longer share mutable protocol state.
 - **D3** (e2e iperf3 readiness uses fixed sleeps) is `root-caused`, out-of-scope
   test-hardening, tracked for a future pass. Does not gate any phase.
 

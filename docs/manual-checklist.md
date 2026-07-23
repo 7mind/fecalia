@@ -47,6 +47,9 @@ gate.
 - [ ] FEC overhead ≤ `P3MaxOverheadFactor` × parity ratio (`/metrics`).
 
 ## P4 — adaptive FEC
+- [ ] Run `sudo -E go test -tags e2e -run '^TestP4AdaptiveFEC$' -v ./test/e2e`
+      on the slowest supported worker (including a 1-vCPU aarch64 host); each
+      60-second phase must collect at least 2,000 DATA frames.
 - [ ] Under steady `P4SteadyLossRate` path loss, adaptive total overhead ≤ the
       fixed-FEC baseline for equal masking.
 - [ ] Post-recovery residual loss ≤ `P4ResidualLossMax` (`/metrics`).

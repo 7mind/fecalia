@@ -141,9 +141,9 @@ amnezia without misclassifying junk. Because junk datagrams are
 indistinguishable from real WG traffic by design, the bonding layer cannot
 sniff the inner WG type to decide what to forward — it must wrap/route by its
 OWN outer framing and pass the entire opaque payload (junk included) through.
-See defects **D1** (partial-amnezia config validation gap) and **D2** (amnezia
-magic-header package-level globals — one engine per process) for the
-config-plumbing caveats.
+See defect **D1** for complete-block validation. The original **D2** upstream
+v1.0.4 package-global magic-header constraint has since been removed by the
+local per-`Device` state patch (upstream #155).
 
 ---
 

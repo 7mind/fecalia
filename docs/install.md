@@ -20,8 +20,9 @@ From the repo root, inside the dev shell:
 nix develop -c just release
 ```
 
-`just release` (and `just build`) first runs `just web-build`, which builds the
-monitoring-UI frontend (Vite + TypeScript, under `web/`) and embeds the bundle
+`just release` (and `just build`) first runs `just web-build`, which typechecks
+and tests the monitoring-UI frontend before building it (Vite + TypeScript,
+under `web/`) and embeds the bundle
 into the binary via `//go:embed all:dist` in `internal/monitor` — this needs
 node/npm, which the dev shell provides. A committed `dist/.gitkeep` keeps the
 embed compilable even without running `web-build` first (so a tagless `go
@@ -1640,7 +1641,8 @@ listen = "127.0.0.1:9101"
   redirects (302) to the same URL with `?token=` stripped, so the token does
   not persist in the address bar or browser history. Subsequent requests
   (including the `Authorization: Bearer <token>` form, if you prefer curling
-  it) authenticate off that credential.
+  it; the `Bearer` auth-scheme match is case-insensitive per RFC 7235)
+  authenticate off that credential.
 - **How to view it**:
   - **Loopback (recommended, default)**: leave `listen` on its loopback
     default and reach it through an SSH tunnel — no LAN exposure at all:
@@ -1660,8 +1662,9 @@ listen = "127.0.0.1:9101"
   shows live stats only, with a single mutating action: `POST /api/exit`
   (`{"peer": "<name>"}`) switches the active exit-capable peer on a multi-exit
   edge, returning `200 {"activeExit": "<name>"}`. In the dashboard itself
-  (T260) this is a `<select>` listing every exit-capable peer with the current
-  `activeExit` marked, disabled while a switch is in flight, and showing a
+  (T260) this is a `<select>` populated from the daemon's authoritative
+  config-order `exitCapablePeers` set, with the current `activeExit` marked,
+  disabled while a switch is in flight, and showing a
   visible error notice (reverting the display) on a non-2xx or network
   failure — no manual `curl`/token handling needed in the browser. This
   control is **LOOPBACK-ONLY**: it is refused with **403 on any non-loopback
@@ -1669,8 +1672,8 @@ listen = "127.0.0.1:9101"
   strictly read-only — you can watch the exits from off-host but can only
   *switch* them from a loopback-bound session (e.g. over the SSH tunnel
   above); the dashboard hides the `<select>` entirely on a token'd
-  non-loopback bind (mirroring this gate) and on a single-peer edge (nothing
-  to switch to). The usual auth applies (cross-origin → 403, missing/invalid
+  non-loopback bind (mirroring this gate) and whenever fewer than two
+  exit-capable peers are configured (nothing to switch to). The usual auth applies (cross-origin → 403, missing/invalid
   token → 401); a non-POST method is 405 and an unknown/non-exit-capable peer
   is 400. See [docs/design.md §Security model](design.md) for the full
   posture.
@@ -1698,8 +1701,9 @@ listen = "127.0.0.1:9101"
     bind-mode/link-params/fingerprint) is shown in full regardless of
     binding or the addressing flag.
 - **Build step**: the dashboard ships as an embedded frontend bundle built by
-  `just web-build` (Vite + TypeScript), which `just build`/`just release` run
-  automatically — see [§1](#1-build-the-release-binaries).
+  `just web-build` (TypeScript typecheck + Vitest + Vite), which `just build`/
+  `just release` run automatically. `just test` and CI run the same frontend
+  typecheck/test gate — see [§1](#1-build-the-release-binaries).
 
 ## 7. MTU
 

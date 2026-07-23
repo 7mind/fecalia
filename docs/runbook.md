@@ -419,12 +419,14 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 > (a slow/lossy second path holding gaps to the cap). `hol_hold_seconds_total /
 > hol_holds_total` is the mean time gaps are held.
 >
-> **Multi-peer concentrator (G4).** A concentrator bound to 2+ edges additionally
-> labels every path/resequencer/FEC series above — and `wanbond_peer_session_established`
-> — with `peer="<name>"` — the configured `[[wireguard.peers]]` `name`, for EVERY bound
-> peer including the first-configured one (`device.Up` plumbs its configured name into
-> the bind via `bind.Multipath.SetPrimaryPeerName`; see `internal/metrics/metrics.go`'s
-> package doc for the back-compat rule, D58). A single-peer edge/hub/concentrator carries
+> **Multi-peer labels (G4/G28).** Any node bound to 2+ peers — a concentrator
+> serving multiple edges or a multi-exit edge with warm-standby concentrators —
+> labels every path/resequencer/FEC series above and
+> `wanbond_peer_session_established` with `peer="<name>"`, the configured
+> `[[wireguard.peers]]` `name`, for EVERY bound peer including the first-configured
+> one (`device.Up` plumbs its configured name into the bind via
+> `bind.Multipath.SetPrimaryPeerName`; see `internal/metrics/metrics.go`'s package
+> doc for the back-compat rule, D58). A single-peer edge/hub/concentrator carries
 > **no** `peer` label at all — the exposition above is unchanged from
 > pre-multi-peer wanbond.
 

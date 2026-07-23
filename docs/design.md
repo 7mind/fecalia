@@ -7,17 +7,20 @@ see [install.md](install.md); for the front-door overview see the
 
 ## Thesis
 
-> Keep the WireGuard engine **unmodified**. Put **all** bonding logic in a custom
-> `conn.Bind` beneath it, operating only on opaque, already-encrypted datagrams.
+> Put **all bonding logic** in a custom `conn.Bind` beneath WireGuard, operating
+> only on opaque, already-encrypted datagrams. Keep engine changes limited to
+> correctness patches that do not couple the engine to wanbond.
 
 We embed [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) as a library
-and use it exactly as intended — for TUN management, the Noise handshake, AEAD
-encryption, key rotation (rekey), endpoint roaming, and keepalives. We add
-**nothing** inside the engine. Everything wanbond does — multipath scheduling,
-outer-frame obfuscation, forward error correction, receive resequencing, and
-per-path telemetry — lives in an implementation of the engine's `conn.Bind`
-transport interface, which the engine drives for every packet it sends and
-receives.
+for TUN management, the Noise handshake, AEAD encryption, key rotation (rekey),
+endpoint roaming, and keepalives. The local `third_party/amneziawg-go` source is
+v1.0.4 plus one upstream-reported runtime correctness patch (#155): Amnezia
+message headers and packet-shape maps live per `Device`, not in package globals,
+so two concurrent devices cannot race or overwrite one another. It also carries
+the one-line upstream #157 test fix so `go vet ./device/...` remains a valid gate. Everything wanbond-
+specific — multipath scheduling, outer-frame obfuscation, forward error
+correction, receive resequencing, and per-path telemetry — remains in the
+engine's `conn.Bind` transport implementation.
 
 This gives a clean separation: WireGuard owns confidentiality, integrity, and
 authenticity of the *payload*; wanbond owns *delivery* across multiple lossy
@@ -38,7 +41,12 @@ for free while the obfuscation knobs are available when configured.
 security/perf fixes. We contain that risk: the entire dependency on the engine's
 `conn` package is isolated to **one file**, `internal/bind/bind.go`, via type
 aliases (`Bind = conn.Bind`, `Endpoint = conn.Endpoint`,
-`ReceiveFunc = conn.ReceiveFunc`). The `conn.Bind`/`conn.Endpoint` contracts are
+`ReceiveFunc = conn.ReceiveFunc`). The local source patch is engine-generic and
+covered both by the root multi-device race regression and the nested module's
+`device/...` tests; the unrelated `tun/netstack` package is excluded because
+v1.0.4 pins a gVisor module that cannot be built by the Go module toolchain
+(upstream #156), and wanbond does not import it. Remove the `replace` once a
+stable upstream release contains the per-device state. The `conn.Bind`/`conn.Endpoint` contracts are
 byte-identical between the two forks, so swapping back to upstream wireguard-go
 (dropping obfuscation) touches only that file.
 
@@ -1315,7 +1323,11 @@ by `internal/device`:
   currently carrying the default route on a multi-exit edge — sourced from
   `exitSelector.ActiveExit()`, `""` on the concentrator role and on an edge
   with no default-route ownership to report, and (being a peer NAME, never an
-  address) NOT part of the redactable surface; and the REDACTABLE surface
+  address) NOT part of the redactable surface; an `exitCapablePeers` array
+  containing exactly the configured `mode = "default-route"` peer names in
+  config order (empty off the edge role), which is the authoritative UI switch
+  candidate set rather than an inference from generic telemetry; and the
+  REDACTABLE surface
   gated by the server-side `revealAddressing` verdict: a per-path `addressing`
   block (`source`, `remote`) and an ordered `endpoints` hub-failover list
   (`peer`, `address`, `active`) whose addresses are omitted/blanked (while
@@ -1330,8 +1342,9 @@ by `internal/device`:
   throughout on a single-bound-peer config, keeping that shape byte-compatible
   with the pre-T257 flat list. `monitor.Info.Endpoints` and
   `monitor.Info.ActiveExit` are both LIVE per-snapshot providers (not captured
-  once at construction), so a hub failover or an exit switch/auto-promotion
-  after startup is reflected in the next pushed frame.
+  once at construction), while `monitor.Info.ExitCapablePeers` is immutable
+  config metadata copied into every snapshot. A hub failover or an exit switch/
+  auto-promotion after startup is reflected in the next pushed frame.
 - `internal/wireaudit` — the requirement-6 DPI wire-format audit (pcap parse +
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
@@ -1497,11 +1510,13 @@ misbehaves subtly. Agents and contributors must preserve them.
 4. **Inner fail-closed; outer control authenticated.** WireGuard authenticates the
    payload; PROBE/CONTROL are PSK-HMAC authenticated with monotonic anti-replay;
    DATA/PARITY are deliberately unauthenticated (see Security model).
-5. **Amnezia is isolated to `bind.go`.** All engine coupling goes through the type
-   aliases there.
-6. **Amnezia is all-or-nothing** and **single-engine-per-process** (its magic-
-   header logic uses package-level globals). Config validation enforces the
-   former; deployments must honor the latter.
+5. **Amnezia `conn` coupling is isolated to `bind.go`.** All transport-interface
+   coupling goes through the type aliases there; the engine-generic source patch
+   under `third_party/` contains no wanbond logic.
+6. **Amnezia is all-or-nothing per device.** Config validation enforces the
+   complete parameter set. The local #155 patch keeps magic headers and packet-
+   shape maps per `Device`, so concurrent engines do not share mutable protocol
+   state.
 7. **Re-verify the reedsolomon prefix invariant** on any FEC-dependency bump.
 
 ## Security model
@@ -1572,18 +1587,19 @@ misbehaves subtly. Agents and contributors must preserve them.
     injection seam. Every OTHER route stays a pure read. The mutating route is
     protected in depth:
     - **Frontend widget (T260, G28/M107).** `web/src/dashboard.ts` renders a
-      single `<select>` exit-switch control listing every exit-capable peer
-      (those named in `endpoints`/`peerSessions`), issuing the `POST` on
+      single `<select>` exit-switch control from the snapshot's authoritative
+      config-order `exitCapablePeers` field — never by inferring candidates from
+      generic `endpoints`/`peerSessions` telemetry — and issues the `POST` on
       selection via a same-origin `fetch` — no token/cookie handling in JS,
       the browser's `SameSite=Strict` cookie jar carries auth automatically
       (the `ws-client.ts` precedent). The control mirrors the server's gate
-      client-side rather than relying on it: it is omitted entirely when
-      `!snapshot.exitControlAvailable` (T281 — the wire field mirroring the
+      client-side rather than relying on it: it is omitted off the edge role,
+      when `!snapshot.exitControlAvailable` (T281 — the wire field mirroring the
       server's RAW `loopbackBound` verdict; a non-loopback bind would 403 the
       POST anyway; deliberately NOT keyed on `addressingHidden`, which a
       `reveal_addressing` opt-in can clear on a non-loopback bind while exit
-      control stays unavailable) or on a single-peer snapshot (nothing to
-      switch to). Pending
+      control stays unavailable) or whenever fewer than two exit-capable peers
+      are configured (nothing to switch to). Pending
       state disables the `<select>` while the POST is in flight; a 2xx
       response adopts the returned `activeExit` optimistically (reconciled
       against the next real snapshot frame, which always wins); a non-2xx or
@@ -1622,7 +1638,7 @@ misbehaves subtly. Agents and contributors must preserve them.
     Per-path `addressing` (`source`, `remote`) and the ordered, per-peer-grouped
     `endpoints` list's `address` values are the one REDACTABLE part of the
     extended wire contract (role/version/uptime/bind-mode/link-params/
-    fingerprint/`peerSessions`/`activeExit` are NOT gated — see the
+    fingerprint/`peerSessions`/`activeExit`/`exitCapablePeers` are NOT gated — see the
     `internal/monitor` bullet above). `monitor.NewServer`
     derives a `revealAddressing` verdict via **act-then-verify**:
     `verifyLoopbackBind(ln.Addr())` inspects the address the KERNEL actually
