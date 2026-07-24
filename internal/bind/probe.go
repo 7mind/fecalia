@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/reseq"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -21,8 +20,9 @@ import (
 // the sockets out from under the snapshot; the resulting write error is benign
 // (teardown) and count-and-continue (defect D96 item 4): it is tallied into the
 // path's probeSendErrors counter (wanbond_path_probe_send_errors_total) rather than
-// silently dropped, then probing proceeds exactly as before — no behaviour change.
-// It is a no-op when the bind has no probers or is closed.
+// silently dropped. A successful direct write becomes receiver-visible before its
+// exact encoded byte length advances future shaper priority debt; a failed write
+// creates no debt. It is a no-op when the bind has no probers or is closed.
 func (m *Multipath) emitProbes() {
 	m.mu.Lock()
 	if len(m.paths) == 0 || m.probers == nil {
@@ -32,12 +32,6 @@ func (m *Multipath) emitProbes() {
 	type target struct {
 		ps *peerPathState
 		pr *telemetry.Prober
-		// budget is this peer's scheduler as a ProbeBudget (nil when it carries no pacing
-		// headroom, e.g. pacing disabled or a non-implementing scheduler); idx is ps's
-		// scheduler index (its position in p.paths). Captured under m.mu so the snapshot is
-		// coherent, then used lock-free below to charge the probe's pacing token (T145).
-		budget sched.ProbeBudget
-		idx    int
 	}
 	// Probe EVERY bound peer's paths (T93): a concentrator initiates its own probe stream to
 	// each edge over that edge-peer's per-(peer,path) prober, so every peer's liveness/RTT is
@@ -54,12 +48,11 @@ func (m *Multipath) emitProbes() {
 	targets := make([]target, 0, len(m.paths))
 	holds := make([]holdUpdate, 0, len(m.peers))
 	for _, p := range m.peers {
-		budget, _ := p.scheduler.(sched.ProbeBudget)
-		for i, ps := range p.paths {
+		for _, ps := range p.paths {
 			if ps.prober == nil {
 				continue
 			}
-			targets = append(targets, target{ps: ps, pr: ps.prober, budget: budget, idx: i})
+			targets = append(targets, target{ps: ps, pr: ps.prober})
 		}
 		if rq := p.resequencer.Load(); rq != nil {
 			prs := make([]*telemetry.Prober, 0, len(p.paths))
@@ -107,15 +100,7 @@ func (m *Multipath) emitProbes() {
 					// traffic, so it counts toward txBytes exactly like a DATA/PARITY
 					// write — only on a nil write error, matching the Send hot path.
 					t.ps.txBytes.Add(uint64(len(raw)))
-					// Exempt-but-charged probe accounting (T145): a PROBE frame egresses
-					// OUTSIDE the paced Send->Pick path, so it is never shed or delayed, but
-					// it IS charged against the path's token bucket so paced ClassData yields
-					// the headroom the probe stream consumes — otherwise DATA + probes jointly
-					// oversubscribe a pace sized at ~link rate and starve probes into a
-					// spurious path-DOWN. No-op when the scheduler carries no pacing headroom.
-					if t.budget != nil {
-						t.budget.AccountProbe(t.idx)
-					}
+					m.accountGeneratedPriorityAfterWrite(t.ps, len(raw))
 				} else {
 					// The write failed (e.g. a concurrent Close raced the probe-loop
 					// goroutine, or a transient socket error): count it so a path whose

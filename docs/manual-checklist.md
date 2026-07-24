@@ -475,6 +475,23 @@ active-backup scheduler with pacing:
       watch -n 1 'ss -i | grep -A 1 10.77.0.1'
       ```
       Note retransmits. Record the peak retransmit count as `Retrans_pacing_on`.
+- [ ] While the paced upload fills the DATA budget, confirm every configured
+      path remains live and
+      `wanbond_path_probe_send_errors_total` does not increase. Generated
+      authenticated PROBE/echo frames bypass retained DATA and debit their exact
+      encoded length only after a successful direct write; a failed write must
+      increment the error counter without adding debt.
+
+For interpreting a transient, let `P0` denote generated-priority debt at the
+start of a send call. With one coincident post-call `Pburst=2*Lmax`, sustained
+generated priority no greater than `Rp=Pburst/200ms`, and configured byte rate
+`R>Rp`, admission is bounded by
+`Dp=(P0+Pburst)/(R-Rp)` (not `P0/R`). With `C=Lmax` and `Q=B+C`, local egress is
+bounded by `Dp+Q/R+Lmax/R`; receiver-visible delivery additionally includes the
+active resequencer hold for a missing lower outer sequence. These bounds cover
+the built-in PROBE/echo producer. Do not rely on them if a future authenticated
+outer CONTROL producer sustains traffic beyond the declared `Rp`/`Pburst`
+model; that condition constitutes explicit overload.
 
 ### Expected observations (D65 validation)
 

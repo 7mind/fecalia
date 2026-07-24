@@ -313,13 +313,14 @@ type peerPathState struct {
 	// schedIdx is this path's index in its peer's scheduler (== its position in
 	// peer.paths, the invariant attachPeerPathLocked enforces). It is the pathIdx the
 	// bind passes to the legacy sched.ProbeBudget seam for directly-written PROBE/echo
-	// accounting. Production exact-byte composition disables the scheduler buckets, so
-	// generated PROBE/echo remains uncharged until T300. The index is maintained
-	// under m.mu at every peer.paths (re)build and splice (Open, attachPeerPathLocked,
-	// detachPeerPathBoundLocked) and read lock-free (via atomic) from the receive
-	// goroutine's dispatchInbound, which must not take m.mu. A momentarily-stale value
-	// during a concurrent runtime membership change is benign: AccountProbe bounds-checks
-	// and probe accounting is best-effort headroom, never correctness-critical.
+	// accounting when exact-byte shaping is absent. Production exact-byte composition
+	// charges the encoded byte count through pathShaper.AccountPriority instead and does
+	// not read this index. The index is maintained under m.mu at every peer.paths
+	// (re)build and splice (Open, attachPeerPathLocked, detachPeerPathBoundLocked) and
+	// read lock-free (via atomic) from the receive goroutine's dispatchInbound, which
+	// must not take m.mu. A momentarily-stale value during a concurrent runtime
+	// membership change is benign: AccountProbe bounds-checks and legacy probe
+	// accounting remains best-effort headroom, never correctness-critical.
 	schedIdx atomic.Int32
 
 	mu sync.Mutex
@@ -843,6 +844,7 @@ type ProberFactory func(name string, id uint8, rideThrough time.Duration) *telem
 
 type pathShaper interface {
 	WriteDatagrams(context.Context, []shaper.Datagram) (shaper.BatchResult, error)
+	AccountPriority(int) error
 	Close() error
 }
 
@@ -869,9 +871,11 @@ type Multipath struct {
 
 	// classify maps each outbound datagram to its pacer traffic class from the inner
 	// WireGuard message type, parameterized by the tunnel's Amnezia obfuscation profile
-	// so a WireGuard control frame (handshake/keepalive) is recognised — and pacing-
-	// exempted — under advanced security too, not only in vanilla mode (defect D22). It
-	// is immutable after construction and holds no lock, so Send reads it off m.mu.
+	// so a WireGuard control frame (handshake/keepalive) is recognised under advanced
+	// security too, not only in vanilla mode (defect D22). Inner control uses the C
+	// reserve but keeps selected-path FIFO, outer sequencing, and FEC; it does not join
+	// the direct generated-outer-priority path. The classifier is immutable after
+	// construction and holds no lock, so Send reads it off m.mu.
 	classify wgClassifier
 
 	// log is this bind's component-scoped logger (log.Component("bind"), D53), set once
@@ -1146,11 +1150,12 @@ var _ Bind = (*Multipath)(nil)
 //
 // amnezia is the tunnel's AmneziaWG obfuscation profile (config.Amnezia). It
 // parameterizes the send-path frame-type classifier so a WireGuard control frame is
-// recognised and pacing-exempted under advanced security — custom magic headers and
-// handshake junk prefixes — as well as in vanilla mode (defect D22). Pass the zero value
-// for a vanilla (unobfuscated) tunnel; the classifier then uses the default type words
-// and no junk prefix. It does NOT need to match the config's validated state — an
-// all-zero profile is exactly the vanilla classifier.
+// recognised for the bounded C reserve under advanced security — custom magic headers
+// and handshake junk prefixes — as well as in vanilla mode (defect D22). It still
+// traverses selected-path FIFO/outer sequence/FEC and never overtakes earlier DATA.
+// Pass the zero value for a vanilla (unobfuscated) tunnel; the classifier then uses the
+// default type words and no junk prefix. It does NOT need to match the config's validated
+// state — an all-zero profile is exactly the vanilla classifier.
 //
 // lg is the structured logger (internal/log); it is component-scoped to "bind"
 // (log.Logger.Component) and stored so the SO_BINDTODEVICE→source-IP fallback a
@@ -2684,13 +2689,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 					// real egress traffic on this path, so it counts toward txBytes
 					// exactly like a DATA/PARITY write — only on a nil write error.
 					ps.txBytes.Add(uint64(len(echo)))
-					// Preserve the legacy scheduler's out-of-band probe accounting seam.
-					// Production exact-byte composition has inert scheduler buckets, so this
-					// generated echo remains direct and uncharged until T300 integrates it
-					// with the byte shaper. AccountProbe never takes m.mu.
-					if budget, ok := pr.scheduler.(sched.ProbeBudget); ok {
-						budget.AccountProbe(int(ps.schedIdx.Load()))
-					}
+					m.accountGeneratedPriorityAfterWrite(ps, len(echo))
 				}
 				if epochChanged {
 					// Authenticated PEER RESTART (T116/T119): the reflector reports THIS
@@ -3062,6 +3061,31 @@ func (m *Multipath) sendDirectBatchLocked(peer *peerState, bufs [][]byte, class 
 		recordWireEmission(ps, peer, sendFEC, wire)
 	}
 	return nil
+}
+
+// accountGeneratedPriorityAfterWrite accounts an authenticated outer PROBE/echo
+// only after its direct socket write succeeds. Exact-byte shaping advances future
+// admission/serialization debt by the encoded datagram length without moving any
+// already-admitted deadline. Legacy composition retains the one-token ProbeBudget
+// contract. Callers must use this only for locally generated, authenticated outer
+// priority traffic; arbitrary/on-demand CONTROL is outside the configured Rp/Pburst
+// model.
+func (m *Multipath) accountGeneratedPriorityAfterWrite(ps *peerPathState, size int) {
+	if ps.shaper != nil {
+		if err := ps.shaper.AccountPriority(size); err != nil {
+			m.log.Warn(
+				"bind: generated outer priority accounting failed after socket write",
+				"path", ps.name,
+				"peer", ps.peer.name,
+				"bytes", size,
+				"error", err.Error(),
+			)
+		}
+		return
+	}
+	if budget, ok := ps.peer.scheduler.(sched.ProbeBudget); ok {
+		budget.AccountProbe(int(ps.schedIdx.Load()))
+	}
 }
 
 func (m *Multipath) recordShapedResult(ps *peerPathState, peer *peerState, fs *fecSender, wires []fecWire, result shaper.BatchResult, err error) {

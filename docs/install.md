@@ -298,9 +298,9 @@ listen = "127.0.0.1:9090"
 peers × U uplinks**. The uplink **sockets** do not multiply by N (all peers share
 each uplink's socket), but the **probers** do: each emits one PROBE per fixed
 200 ms interval plus its reflected echo. Those generated frames currently use
-the direct strict-priority socket path and remain uncharged by the exact-byte
-shaper until T300; the fan-out ceiling independently bounds their aggregate
-emission. Config load
+the direct strict-priority socket path and debit the exact-byte shaper by their
+encoded length after each successful write; failed writes create no debt. The
+fan-out ceiling independently bounds their aggregate emission. Config load
 rejects a config whose computed fan-out exceeds the budget of **32 probers**,
 with a message stating the computed value vs. the available budget. Worked
 example: the 2-concentrator edge above over its 2 uplinks is `2 × 2 = 4` probers,
@@ -409,11 +409,23 @@ Common rules, either policy:
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.
-  The live per-(peer,path) shaper admits encoded DATA/control and all immediate
-  and deadline-produced FEC parity by exact byte length. A full DATA/control budget blocks the
-  sender until capacity becomes available; it no longer produces
-  `PickPaced` loss. Generated PROBE/echo frames remain direct strict-priority
-  writes and uncharged until T300 integrates their separate priority budget.
+  The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
+  and all immediate and deadline-produced FEC parity by exact byte length. Inner
+  handshake/cookie/keepalive frames use `C=Lmax` one buffer at a time but remain
+  behind lower DATA in selected-path FIFO/outer sequence/FEC order; DATA cannot
+  borrow `C`. A full DATA/control budget blocks the sender until capacity
+  becomes available; it no longer produces `PickPaced` loss. Authenticated
+  outer PROBE/echo frames remain direct strict-priority writes and, after each
+  successful write, add their exact encoded bytes to future priority debt
+  without changing already-admitted deadlines.
+  If a call starts with debt `P0`, allows one coincident post-call `Pburst`, and
+  generated priority remains bounded by `Rp`, then
+  `Dp=(P0+Pburst)/(R-Rp)` bounds admission; the obsolete `P0/R` expression omits
+  both the post-call burst and continuing priority traffic. With `Q=B+C`, local
+  egress is bounded by `Dp+Q/R+Lmax/R`; receiver delivery additionally includes
+  the active resequencer hold. Sustained authenticated on-demand outer CONTROL
+  beyond this `Rp`/`Pburst` model constitutes overload and invalidates the
+  bound; no live outer CONTROL protocol currently exists.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=2,944 B`, and `Rp=14,720 B/s`.

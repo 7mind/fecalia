@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/shaper"
@@ -40,6 +42,40 @@ func (s *classRecordingShaper) WriteDatagrams(_ context.Context, datagrams []sha
 }
 
 func (*classRecordingShaper) Close() error { return nil }
+func (*classRecordingShaper) AccountPriority(int) error {
+	return nil
+}
+
+type forwardingRecordingShaper struct {
+	write        shaper.WriteFunc
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	once         sync.Once
+
+	mu      sync.Mutex
+	classes []shaper.Class
+	sizes   []int
+}
+
+func (s *forwardingRecordingShaper) WriteDatagrams(_ context.Context, datagrams []shaper.Datagram) (shaper.BatchResult, error) {
+	s.once.Do(func() {
+		close(s.firstEntered)
+		<-s.releaseFirst
+	})
+	for i, datagram := range datagrams {
+		s.mu.Lock()
+		s.classes = append(s.classes, datagram.Class)
+		s.sizes = append(s.sizes, len(datagram.Payload))
+		s.mu.Unlock()
+		if err := s.write(datagram.Payload); err != nil {
+			return shaper.BatchResult{Accepted: i + 1, Emitted: i, FailedIndex: i}, err
+		}
+	}
+	return shaper.BatchResult{Accepted: len(datagrams), Emitted: len(datagrams), FailedIndex: -1}, nil
+}
+
+func (*forwardingRecordingShaper) AccountPriority(int) error { return nil }
+func (*forwardingRecordingShaper) Close() error              { return nil }
 
 func TestShapedSendStopsSuffixAndReportsAcceptedVersusEmitted(t *testing.T) {
 	paths := loopbackPaths(1)
@@ -261,5 +297,140 @@ func TestShapedMixedBatchSelectsAndObservesOnceWithoutLegacyAdmission(t *testing
 		if _, _, err := wirePeer.ReadFromUDPAddrPort(buf); err != nil {
 			t.Fatalf("wire datagram %d: %v", i, err)
 		}
+	}
+}
+
+func TestMaximumMixedBatchControlLastPreservesFIFOAndUsesCurrentRemote(t *testing.T) {
+	paths := loopbackPaths(1)
+	recorder := &unpacedSelectionRecorder{}
+	lg, err := log.New("error", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const lmax = 1472
+	cfg := config.PathShaperConfig{
+		RateBytesPerSecond:      10_000_000,
+		DataBurstBytes:          2 * lmax,
+		ControlReserveBytes:     lmax,
+		MaxEncodedDatagramBytes: lmax,
+		ProbeRateBytesPerSecond: 14_720,
+		ProbeBurstBytes:         2 * lmax,
+	}
+	m, err := NewMultipathWithShapers(
+		paths,
+		testKey(t, 0xD7),
+		recorder,
+		nil,
+		nil,
+		nil,
+		nil,
+		config.Amnezia{},
+		[]config.PathShaperConfig{cfg},
+		lg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwarder := &forwardingRecordingShaper{
+		firstEntered: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	m.newPathShaper = func(_ shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
+		forwarder.write = write
+		return forwarder, nil
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+
+	oldRemote, oldAddr := rawPeer(t)
+	newRemote, newAddr := rawPeer(t)
+	m.paths[0].setRemote(oldAddr)
+
+	dataA := wgMsg(wgMessageTransportType, 0, lmax-frame.DataOverhead)
+	dataB := wgMsg(wgMessageTransportType, 0, lmax-frame.DataOverhead)
+	controlLast := wgMsg(wgMessageInitiationType, 0, 148)
+	sendResult := make(chan error, 1)
+	go func() {
+		sendResult <- m.Send([][]byte{dataA, dataB, controlLast}, m.virt)
+	}()
+	select {
+	case <-forwarder.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first maximum DATA datagram did not reach the selected path shaper")
+	}
+
+	// Rekey the path while its first shaped datagram is retained. The writer must
+	// resolve the current remote at actual emission, not retain the old address
+	// captured at admission/selection time.
+	m.paths[0].setRemote(newAddr)
+	close(forwarder.releaseFirst)
+	select {
+	case err := <-sendResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mixed batch did not make progress after the first write was released")
+	}
+
+	recorder.mu.Lock()
+	if recorder.legacyCalls != 0 || recorder.unpacedCalls != 1 || recorder.offeredFrames != 3 || recorder.class != sched.ClassData {
+		t.Fatalf("selection = legacy:%d unpaced:%d frames:%d class:%d, want 0/1/3/ClassData",
+			recorder.legacyCalls, recorder.unpacedCalls, recorder.offeredFrames, recorder.class)
+	}
+	recorder.mu.Unlock()
+
+	forwarder.mu.Lock()
+	gotClasses := append([]shaper.Class(nil), forwarder.classes...)
+	gotSizes := append([]int(nil), forwarder.sizes...)
+	forwarder.mu.Unlock()
+	wantClasses := []shaper.Class{shaper.ClassData, shaper.ClassData, shaper.ClassControl}
+	if len(gotClasses) != len(wantClasses) {
+		t.Fatalf("classes = %v, want %v", gotClasses, wantClasses)
+	}
+	for i := range wantClasses {
+		if gotClasses[i] != wantClasses[i] {
+			t.Fatalf("classes = %v, want %v", gotClasses, wantClasses)
+		}
+	}
+	if gotSizes[0]+gotSizes[1] != cfg.DataBurstBytes {
+		t.Fatalf("maximum bulk encoded bytes = %d, want exact B=%d", gotSizes[0]+gotSizes[1], cfg.DataBurstBytes)
+	}
+	if gotSizes[2] > cfg.ControlReserveBytes {
+		t.Fatalf("control encoded bytes = %d, exceed C=%d", gotSizes[2], cfg.ControlReserveBytes)
+	}
+
+	codec, err := frame.NewCodec(testKey(t, 0xD7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPayloads := [][]byte{dataA, dataB, controlLast}
+	buf := make([]byte, maxDatagram)
+	if err := newRemote.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range wantPayloads {
+		n, err := newRemote.Read(buf)
+		if err != nil {
+			t.Fatalf("new remote datagram %d: %v", i, err)
+		}
+		decoded, err := codec.Decode(buf[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, ok := decoded.(frame.Data)
+		if !ok || !bytes.Equal(data.Payload, want) {
+			t.Fatalf("new remote datagram %d = %#v, want DATA payload length %d", i, decoded, len(want))
+		}
+	}
+	if err := oldRemote.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oldRemote.Read(buf); err == nil {
+		t.Fatal("old remote received a datagram admitted before the remote rekey")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("old remote read error = %v, want timeout", err)
 	}
 }

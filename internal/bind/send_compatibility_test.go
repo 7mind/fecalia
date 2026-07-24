@@ -71,6 +71,9 @@ func (s *generationBlockingShaper) WriteDatagrams(_ context.Context, datagrams [
 }
 
 func (*generationBlockingShaper) Close() error { return nil }
+func (*generationBlockingShaper) AccountPriority(int) error {
+	return nil
+}
 
 func TestShapedSendAbortsWhenFECPlaneReinstantiates(t *testing.T) {
 	lg, err := log.New("error", io.Discard)

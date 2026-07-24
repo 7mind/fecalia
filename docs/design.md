@@ -358,14 +358,16 @@ admission. The currently integrated traffic classes are:
 
 - **`ClassControl`** (WireGuard handshake/cookie/keepalive) — classified per
   input buffer before sequence/FEC mutation and admitted from the dedicated
-  `C=Lmax` reserve, so a DATA-full queue cannot reject it.
+  `C=Lmax` reserve one buffer at a time, so a DATA-full queue cannot reject it.
+  It remains in selected-path FIFO/outer-sequence/FEC order and cannot overtake
+  lower DATA; DATA cannot borrow unused `C`.
 - **`ClassData`** (bulk WireGuard transport) and every FEC parity datagram —
   charged by the exact encoded UDP payload length and retained under the DATA
   budget `B`. A full budget applies backpressure; it does not drop.
 - **`frame.KindProbe`** (wanbond's own PROBE frames and their reflected echoes) —
-  still uses the direct, strict-priority socket path. Charging that generated
-  traffic into the new shaper's priority-debt clock is the next integration
-  step; T299 deliberately changes only encoded DATA/control and FEC parity.
+  uses the direct, strict-priority socket path. A successful receiver-visible
+  write then charges its exact encoded bytes to future priority debt; a failed
+  write creates no debt and already-admitted deadlines remain fixed.
 
 **Why inner-tunnel prioritization (e.g. inner ICMP) is infeasible (Q51).** The
 three-tier model above is the full extent of frame-type-aware pacing wanbond
@@ -385,8 +387,9 @@ plaintext deep-packet inspection BEFORE encryption, which is out of
 architecture (wanbond is designed to carry the inner tunnel opaquely, not to
 terminate or inspect it). The only wanbond-addressable priority signal below
 `ClassControl` is `frame.KindProbe` (wanbond's own generated PROBE frames,
-currently direct and uncharged until T300) — there is no path to prioritizing traffic the pacer cannot
-see inside the tunnel.
+which use the direct generated-priority path and exact post-write byte
+accounting) — there is no path to prioritizing traffic the pacer cannot see
+inside the tunnel.
 
 **Motivation (defects D65/D112).** In the pre-T299 implementation, `Send` wrote
 each admitted frame synchronously to the path socket and the frame-token pacer
@@ -495,7 +498,10 @@ path's shaper. Deadline-produced parity uses the same selected path shaper.
 Writer failure returns the terminal error, reports the accepted versus
 kernel-emitted prefix, and leaves the unstarted suffix unencoded; later calls
 may continue. Close drains/stops each shaper before closing its UDP socket.
-Generated PROBE/echo priority accounting remains a separate integration step.
+T300 completes generated-priority integration: authenticated outer PROBE and
+reflected echo frames bypass retained DATA, write directly to the selected path
+socket, and call `AccountPriority` with the exact encoded length only after a
+successful write. A failed direct write creates no priority debt.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
@@ -529,24 +535,43 @@ offered wire bytes, independently of TUN/GSO batch cardinality. At admission,
 the existing `Q` retained bytes plus the one possible in-flight datagram bound
 the local virtual-deadline offset by `Q/R + Lmax/R`.
 
-Generated strict-priority traffic does not enter this queue.
-`AccountPriority(L)` instead advances the priority-debt clock and only the
-**future** virtual tail by `L/R`; it never rewrites deadlines already assigned
-to queued DATA or CONTROL. Let a call begin with `P0` outstanding generated
-priority bytes. Under the configured model — at most one post-call burst
-`Pburst`, followed by generated priority traffic bounded by `Rp` — DATA/CONTROL
-admission occurs within
+Inner WireGuard handshake, cookie, and keepalive datagrams use `ClassControl`.
+They reserve `C=Lmax` one buffer at a time, but otherwise follow the same single
+selected path, FIFO, outer sequence, and FEC pipeline as DATA. Consequently
+inner control never overtakes lower-sequence retained DATA; DATA cannot borrow
+unused `C`. This class differs from authenticated **outer** PROBE/echo priority.
+
+Generated authenticated outer PROBE/echo traffic does not enter the retained
+queue. It writes immediately, bypassing retained DATA, and only after a
+successful receiver-visible socket write calls `AccountPriority(L)` with the
+exact encoded length. `AccountPriority` advances the priority-debt clock and
+only the **future** virtual tail by `L/R`; it never rewrites deadlines already
+assigned to queued DATA or inner CONTROL. Let a call begin with `P0` outstanding
+generated-priority bytes. Under the configured model — at most one coincident
+post-call burst `Pburst`, followed by generated priority traffic bounded by
+`Rp` — DATA/inner-CONTROL admission occurs no later than
 
 `Dp = (P0 + Pburst) / (R - Rp)`.
 
 The denominator is the net debt-clearance rate, not `R`; the simpler `P0/R`
 bound fails as soon as the post-call burst or continuing `Rp` traffic exists.
-The `R > Rp` constructor invariant makes `Dp` finite.
+This covers both `P0=0` and non-zero existing debt, and the `R > Rp`
+constructor invariant makes `Dp` finite. With `Q=B+C`, local socket egress
+occurs no later than
+
+`Dp + Q/R + Lmax/R`.
+
+Receiver delivery adds that peer's active resequencer hold: a higher outer
+sequence cannot overtake a missing lower DATA sequence, and heterogeneous-path
+delay or FEC recovery may retain it for the configured or dynamically bounded
+hold.
 
 This bound covers the authenticated probe/echo workload from which `Pburst` and
 `Rp` are derived. Sustained authenticated, on-demand outer CONTROL generation
-beyond that declared model is explicitly excluded overload: callers must bound
-and account such a producer before relying on `Dp`. The primitive does not
+beyond that declared model constitutes explicit overload and invalidates the
+bound. No live outer CONTROL protocol currently exists; any future trusted
+local producer must use the same write-first/exact-debit path and fit the
+declared `Rp`/`Pburst` envelope before relying on `Dp`. The primitive does not
 classify frames, select paths, generate FEC, or own tunnel lifecycle; those
 remain integration responsibilities.
 
@@ -640,9 +665,9 @@ rate emits them. Hardware measurements must therefore be rerun against T299
 before claiming a new throughput/RTT delta. **Current guidance:** enable
 `pacing_enabled = true` when the operator has a defensible per-link bandwidth
 and RTT declaration and wants bounded egress admission; leave it off for the
-legacy direct-send behavior. Generated PROBE/echo remains direct and uncharged
-until T300, so the historical probe-headroom interpretation above does not
-describe the current byte shaper.
+legacy direct-send behavior. Generated PROBE/echo remains direct but now incurs
+an exact post-write priority debit, so the historical probe-headroom
+interpretation above does not describe the current byte shaper.
 
 **Operability runbook: reading the pacing/aggregation signals together
 (G13).** Diagnosing a weighted-policy deployment's pacing/aggregation

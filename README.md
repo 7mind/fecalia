@@ -213,7 +213,7 @@ cmd/wanbond/            entry point; role selection; SIGHUP reload
 internal/bind/          the custom conn.Bind — multipath fan-out/coalesce, the amnezia boundary
 internal/frame/         outer bonding frame codec (obfuscation + optional HMAC)
 internal/sched/         send-side scheduler (active-backup, weighted, pacing)
-internal/shaper/        live per-(peer,path) exact-byte DATA/parity shaping; generated PROBE/CONTROL priority is T300
+internal/shaper/        per-(peer,path) DATA/inner-control shaping and generated outer-priority debt
 internal/telemetry/     per-path PROBE/liveness, RTT/loss/jitter
 internal/reseq/         receive resequencer (bounded-window reorder)
 internal/fec/           Reed-Solomon FEC encoder/decoder
@@ -257,9 +257,19 @@ deliberate boundaries you must plan around:
   `(peer,path)` owns one shaper: encoded DATA and every immediate/deadline FEC
   parity datagram consume their exact byte length, and a full bounded budget
   backpressures the sender instead of shedding. Per-path accepted, emitted,
-  shaper-error, and socket-error counters expose every terminal prefix. Generated
-  outer PROBE/echo traffic remains on its direct, uncharged socket path until
-  T300 integrates the derived priority budget.
+  shaper-error, and socket-error counters expose every terminal prefix. Inner
+  WireGuard handshake/cookie/keepalive frames use the `C=Lmax` reserve one
+  buffer at a time, but retain selected-path FIFO, outer sequencing, and FEC;
+  they never overtake lower DATA, and DATA cannot borrow `C`. Authenticated
+  outer PROBE/echo frames bypass retained DATA and write immediately; each
+  successful write then debits its exact encoded byte length, while a failed
+  write creates no debt and already-admitted deadlines remain fixed.
+  For existing priority debt `P0`, a coincident `Pburst`, and sustained
+  generated priority bounded by `Rp<R`, admission is bounded by
+  `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; local egress is bounded by
+  `Dp+(B+C)/R+Lmax/R`, and receiver delivery adds the active resequencer hold.
+  Sustained on-demand authenticated outer CONTROL beyond the declared
+  `Rp`/`Pburst` model constitutes overload; no live CONTROL protocol exists.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
   them instead; validate on your own uplinks before a production rollout.
