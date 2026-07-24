@@ -109,9 +109,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness,
-  `wanbond_path_probe_send_errors_total` (per-path PROBE socket write errors,
-  count-and-continue — a path whose probes cannot egress no longer reads
-  identically to a path with 100% probe loss, D96), exact-byte shaper
+  `wanbond_path_probe_send_errors_total` (unexpected locally-originated ordinary
+  and PMTU PROBE socket write failures; expected PMTU `EMSGSIZE` too-large
+  verdicts are excluded; PMTU failures return to discovery, while ordinary
+  failures are counted then discarded so other paths continue, D96), exact-byte shaper
   accepted/emitted/error counters (`wanbond_path_shaper_*`) plus underlying
   `wanbond_path_socket_write_errors_total`, WG-session establishment
   (`wanbond_session_established`, plus a per-peer
@@ -269,10 +270,13 @@ deliberate boundaries you must plan around:
   always ordinary liveness before another PMTU attempt, while a peer-requested
   reactive echo still writes immediately. PMTU sequence allocation, timestamping,
   and echo registration begin in the selected slot, so queueing time does not
-  inflate path RTT. The configured `Pburst=2*Lmax` therefore covers one maximum
-  local probe (ordinary or PMTU) plus one maximum echo. An unexpected PMTU socket
-  failure preserves its error, increments the probe-send-error counter, and adds
-  neither wire bytes nor debt; `EMSGSIZE` remains the expected too-large verdict.
+  inflate path RTT. Each search candidate remains an outer-IP MTU; the generated
+  UDP payload subtracts the validated path family's header cost (28 bytes for IPv4,
+  48 for IPv6), matching that path's `Lmax` and exact debit. The configured
+  `Pburst=2*Lmax` therefore covers one maximum local probe (ordinary or PMTU) plus
+  one maximum echo. An unexpected PMTU socket failure preserves its error,
+  increments the probe-send-error counter, and adds neither wire bytes nor debt;
+  `EMSGSIZE` remains the expected too-large verdict.
   For existing priority debt `P0`, a coincident `Pburst`, and sustained
   generated priority bounded by `Rp<R`, admission is bounded by
   `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; local egress is bounded by

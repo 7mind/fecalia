@@ -509,11 +509,15 @@ reserved for ordinary liveness before another PMTU attempt, so consecutive
 immediate search failures cannot suppress the ordinary stream. Sequence
 allocation, timestamping, and echo-waiter registration happen only when the
 selected PMTU slot executes, excluding cadence wait from RTT and the echo
-deadline. PMTU therefore does not add a second local producer to `Rp`; a
-peer-requested reactive echo remains immediate. An unexpected socket failure
-preserves its transport error, increments the path's probe-send-error counter,
-and adds neither wire bytes nor debt. `EMSGSIZE` maps to the expected PMTU
-too-large verdict and does not count as an unexpected send failure.
+deadline. Search candidates remain outer-IP MTU units; generation subtracts the
+validated socket family's IP+UDP overhead (28 bytes for IPv4, 48 for IPv6), so
+the encoded UDP length equals that path's `Lmax` at the ceiling and remains
+admissible to its exact-byte shaper. PMTU therefore does not add a second local
+producer to `Rp`; a peer-requested reactive echo remains immediate. An
+unexpected socket failure preserves its transport error, increments the path's
+probe-send-error counter, and adds neither wire bytes nor debt. `EMSGSIZE` maps
+to the expected PMTU too-large verdict and does not count as an unexpected send
+failure.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
@@ -1055,17 +1059,18 @@ the worst-case ride_through). The plumbing of `down_after`/`ride_through` into
 the running scheduler is T207 (already landed); this task adds the shared
 budget derivation plus the WARN-and-allow verdict.
 
-**Probe socket write errors are counted, not swallowed (D96 item 4).**
-`emitProbes` (`internal/bind/probe.go`) writes each path's PROBE frame directly
-to its socket, outside the paced `Send`→`Pick` path; a write failure there (a
-concurrent `Close` racing the probe-loop goroutine, or a transient socket
-error) used to be dropped silently, leaving a path whose probes cannot egress
-indistinguishable from a path with 100% probe loss. It is now tallied
-lock-free into a per-path `probeSendErrors` atomic — count-and-continue, no
-behaviour change to probing — threaded through `bind.PathTraffic` →
-`metrics.PathSnapshot` and exposed as the per-path counter
-`wanbond_path_probe_send_errors_total`, mirroring the D90 `accountSendError`
-EMSGSIZE-drop counter's rationale for the Send hot path.
+**Unexpected originating-PROBE socket write failures are counted (D96 item 4).**
+`emitProbes` (`internal/bind/probe.go`) writes each path's ordinary or PMTU
+originating PROBE directly to its socket, outside the paced `Send`→`Pick` path.
+An unexpected failure (a concurrent `Close` racing the probe-loop goroutine, or
+a transient socket error) increments the per-path `probeSendErrors` atomic.
+For PMTU the same error is returned to discovery so the search stays
+unconverged; for an ordinary probe it is counted then discarded so other paths'
+cadence work continues. Expected PMTU `EMSGSIZE` is different: it maps to the
+search's benign too-large verdict and is excluded from this unexpected-error
+counter. The atomic is threaded through `bind.PathTraffic` →
+`metrics.PathSnapshot` and exposed as
+`wanbond_path_probe_send_errors_total`.
 
 The shaped send path separately exports accepted and kernel-emitted datagram
 prefixes (`wanbond_path_shaper_accepted_datagrams_total` and

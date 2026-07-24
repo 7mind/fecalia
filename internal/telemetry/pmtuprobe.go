@@ -14,18 +14,6 @@ import (
 // dependency, since the EMSGSIZE detection lives in bind where the socket write is.
 var ErrProbeTooLarge = errors.New("telemetry: padded probe exceeds path MTU (EMSGSIZE)")
 
-// outerIPUDPOverhead is the outer IPv4 (20) + UDP (8) header the kernel prepends to the
-// padded probe's socket payload. The PMTU search works in OUTER IP-level path-MTU units
-// (its floor is the IPv6 minimum LINK MTU 1280 and its ceiling the assumed underlay path
-// MTU — the same units bind.InnerMTU consumes), so ProbePMTU sizes the socket datagram
-// this many bytes BELOW the candidate path MTU to make the resulting IP datagram exactly
-// the candidate size: an echo then confirms a candidate-sized OUTER datagram traverses
-// the path. It mirrors bind.InnerMTU's IPv4/UDP outer term (a deliberate IPv4 assumption;
-// an IPv6 outer header is 20 bytes larger, treated conservatively as elsewhere in the MTU
-// accounting). Duplicated here rather than imported because internal/bind depends on the
-// telemetry plane, not the reverse.
-const outerIPUDPOverhead = 28
-
 // DefaultPMTUProbeDeadline bounds how long EchoAwaitProbe waits for one padded
 // probe's echo before concluding the size did not traverse the path. The PMTU binary
 // search issues ~log2(ceiling-floor) probes, up to about half of which (the oversize
@@ -53,7 +41,11 @@ type EchoAwaitProbe struct {
 	prober   *Prober
 	send     func([]byte) error
 	dispatch func(func() error) error
-	deadline time.Duration
+	// outerIPUDPOverhead is selected from the validated path socket's address
+	// family by bind. ProbePMTU candidates remain outer IP MTU units; subtracting
+	// this exact family cost yields the UDP payload passed to SendPaddedProbe.
+	outerIPUDPOverhead int
+	deadline           time.Duration
 	// after returns a channel that fires after d; time.After in production, injectable
 	// so unit tests drive the deadline deterministically with no real sleep.
 	after func(d time.Duration) <-chan time.Time
@@ -67,12 +59,19 @@ var _ PMTUProbe = (*EchoAwaitProbe)(nil)
 
 // NewEchoAwaitProbe builds the probe backend for one path. send transmits an encoded
 // probe on that path's outer DF socket and returns ErrProbeTooLarge on a local
-// EMSGSIZE; a non-positive deadline uses DefaultPMTUProbeDeadline; a nil after uses
-// time.After (production).
-func NewEchoAwaitProbe(prober *Prober, send func([]byte) error, deadline time.Duration, after func(time.Duration) <-chan time.Time) *EchoAwaitProbe {
+// EMSGSIZE. outerIPUDPOverhead is the required family-specific IP+UDP cost selected
+// by the transport; a non-positive deadline uses DefaultPMTUProbeDeadline; a nil
+// after uses time.After (production).
+func NewEchoAwaitProbe(
+	prober *Prober,
+	send func([]byte) error,
+	outerIPUDPOverhead int,
+	deadline time.Duration,
+	after func(time.Duration) <-chan time.Time,
+) *EchoAwaitProbe {
 	return newEchoAwaitProbe(prober, send, func(work func() error) error {
 		return work()
-	}, deadline, after)
+	}, outerIPUDPOverhead, deadline, after)
 }
 
 // NewCadencedEchoAwaitProbe builds a probe backend whose dispatch function chooses
@@ -83,19 +82,24 @@ func NewCadencedEchoAwaitProbe(
 	prober *Prober,
 	send func([]byte) error,
 	dispatch func(func() error) error,
+	outerIPUDPOverhead int,
 	deadline time.Duration,
 	after func(time.Duration) <-chan time.Time,
 ) *EchoAwaitProbe {
-	return newEchoAwaitProbe(prober, send, dispatch, deadline, after)
+	return newEchoAwaitProbe(prober, send, dispatch, outerIPUDPOverhead, deadline, after)
 }
 
 func newEchoAwaitProbe(
 	prober *Prober,
 	send func([]byte) error,
 	dispatch func(func() error) error,
+	outerIPUDPOverhead int,
 	deadline time.Duration,
 	after func(time.Duration) <-chan time.Time,
 ) *EchoAwaitProbe {
+	if outerIPUDPOverhead <= 0 {
+		panic("telemetry: outer IP/UDP overhead must be positive")
+	}
 	if deadline <= 0 {
 		deadline = DefaultPMTUProbeDeadline
 	}
@@ -103,12 +107,13 @@ func newEchoAwaitProbe(
 		after = time.After
 	}
 	return &EchoAwaitProbe{
-		prober:   prober,
-		send:     send,
-		dispatch: dispatch,
-		deadline: deadline,
-		after:    after,
-		pending:  make(map[uint64]chan struct{}),
+		prober:             prober,
+		send:               send,
+		dispatch:           dispatch,
+		outerIPUDPOverhead: outerIPUDPOverhead,
+		deadline:           deadline,
+		after:              after,
+		pending:            make(map[uint64]chan struct{}),
 	}
 }
 
@@ -126,7 +131,7 @@ func (e *EchoAwaitProbe) ProbePMTU(pathMTU int) (bool, error) {
 		// pathMTU is the candidate OUTER IP-level path MTU (the units the search and
 		// bind.InnerMTU use). Generate and register inside the selected transport slot
 		// so its timestamp excludes any dispatch/cadence wait.
-		raw, generatedSeq, err := e.prober.SendPaddedProbe(pathMTU - outerIPUDPOverhead)
+		raw, generatedSeq, err := e.prober.SendPaddedProbe(pathMTU - e.outerIPUDPOverhead)
 		if err != nil {
 			return err
 		}

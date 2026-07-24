@@ -198,7 +198,7 @@ func TestExpositionPathMTUSeries(t *testing.T) {
 }
 
 // TestExpositionProbeSendErrorsSeries is the D96 item 4 exposition regression: a
-// path whose probe write seam accumulated send errors must expose
+// path whose originating-PROBE seam accumulated unexpected send failures must expose
 // wanbond_path_probe_send_errors_total rising for EXACTLY that path, leaving an
 // unaffected path's series at zero.
 func TestExpositionProbeSendErrorsSeries(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
+	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -134,30 +135,93 @@ func waitPendingPMTUProbe(t testing.TB, ps *peerPathState) {
 	}
 }
 
-func TestPMTUProbeSuccessfulWriteAccountsExactPaddedBytes(t *testing.T) {
-	psk := testKey(t, 0x25)
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
-	recorder := &priorityRecordingShaper{}
-	openWithPriorityRecorder(t, m, recorder)
-	peer, peerAP := rawPeer(t)
-	m.paths[0].setRemote(peerAP)
+type validatingPriorityShaper struct {
+	pathShaper
+	debits chan int
+}
 
-	result := startPMTUProbe(m.PMTUProbe("a"), 1500)
-	waitPendingPMTUProbe(t, m.paths[0])
-	m.emitProbes()
-	raw := echoPMTUProbe(t, m, psk, peer, peerAP)
-	got := <-result
-	if got.err != nil || !got.echoed {
-		t.Fatalf("ProbePMTU = (%v, %v), want (true, nil)", got.echoed, got.err)
+func (s *validatingPriorityShaper) AccountPriority(size int) error {
+	if err := s.pathShaper.AccountPriority(size); err != nil {
+		return err
 	}
-	if len(raw) != 1500-28 {
-		t.Fatalf("padded PMTU UDP payload = %d bytes, want %d", len(raw), 1500-28)
+	s.debits <- size
+	return nil
+}
+
+func TestPMTUProbeSuccessfulWriteAccountsFamilyExactPaddedBytes(t *testing.T) {
+	tests := []struct {
+		name     string
+		network  string
+		source   netip.Addr
+		overhead int
+	}{
+		{name: "IPv4 unchanged", network: "udp4", source: netip.MustParseAddr("127.0.0.1"), overhead: IPv4UDPOverhead},
+		{name: "IPv6", network: "udp6", source: netip.MustParseAddr("::1"), overhead: IPv6UDPOverhead},
 	}
-	if got := recorder.debitSnapshot(); len(got) != 1 || got[0] != len(raw) {
-		t.Fatalf("PMTU priority debits = %v, want exact successful padded length [%d]", got, len(raw))
-	}
-	if got := m.paths[0].txBytes.Load(); got != uint64(len(raw)) {
-		t.Fatalf("PMTU txBytes = %d, want exact successful padded length %d", got, len(raw))
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			psk := testKey(t, 0x25)
+			paths := []config.Path{{Name: "a", SourceAddr: test.source}}
+			m, _, _ := newProbingMultipath(t, paths, psk, newFakeClock())
+			lmax := 1500 - test.overhead
+			cfg := config.PathShaperConfig{
+				RateBytesPerSecond:      1_000_000,
+				DataBurstBytes:          45_000,
+				ControlReserveBytes:     lmax,
+				MaxEncodedDatagramBytes: lmax,
+				ProbeRateBytesPerSecond: float64(2*lmax) / telemetry.DefaultProbeInterval.Seconds(),
+				ProbeBurstBytes:         2 * lmax,
+			}
+			var validating *validatingPriorityShaper
+			m.shaperConfigs = []config.PathShaperConfig{cfg}
+			m.newPathShaper = func(got shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
+				realShaper, err := shaper.New(got, shaper.SystemClock{}, write)
+				if err != nil {
+					return nil, err
+				}
+				validating = &validatingPriorityShaper{
+					pathShaper: realShaper,
+					debits:     make(chan int, 1),
+				}
+				return validating, nil
+			}
+			if _, _, err := m.Open(0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = m.Close() })
+
+			peer, err := net.ListenUDP(test.network, &net.UDPAddr{IP: test.source.AsSlice()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = peer.Close() })
+			peerAP := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+			m.paths[0].setRemote(peerAP)
+
+			result := startPMTUProbe(m.PMTUProbe("a"), 1500)
+			waitPendingPMTUProbe(t, m.paths[0])
+			m.emitProbes()
+			raw := echoPMTUProbe(t, m, psk, peer, peerAP)
+			got := <-result
+			if got.err != nil || !got.echoed {
+				t.Fatalf("ProbePMTU = (%v, %v), want (true, nil)", got.echoed, got.err)
+			}
+			if len(raw) != lmax {
+				t.Fatalf("padded PMTU UDP payload = %d bytes, want family-exact Lmax %d", len(raw), lmax)
+			}
+			select {
+			case debit := <-validating.debits:
+				if debit != lmax {
+					t.Fatalf("PMTU priority debit = %d bytes, want exact successful length %d", debit, lmax)
+				}
+			default:
+				t.Fatal("successful PMTU write was rejected by the real priority shaper")
+			}
+			if got := m.paths[0].txBytes.Load(); got != uint64(lmax) {
+				t.Fatalf("PMTU txBytes = %d, want exact successful padded length %d", got, lmax)
+			}
+		})
 	}
 }
 

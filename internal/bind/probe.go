@@ -29,13 +29,14 @@ func mapPMTUProbeWriteError(err error) error {
 //
 // Concurrency mirrors Send: the path/prober set is snapshotted under m.mu, then
 // released before any socket I/O, so emission neither holds the lock across a
-// syscall nor blocks the lock-free receive fast path. A concurrent Close closes
-// the sockets out from under the snapshot; the resulting write error is benign
-// (teardown) and count-and-continue (defect D96 item 4): it is tallied into the
-// path's probeSendErrors counter (wanbond_path_probe_send_errors_total) rather than
-// silently dropped. A successful direct write becomes receiver-visible before its
-// exact encoded byte length advances future shaper priority debt; a failed write
-// creates no debt. It is a no-op when the bind has no probers or is closed.
+// syscall nor blocks the lock-free receive fast path. Unexpected originating-PROBE
+// write failures increment wanbond_path_probe_send_errors_total. An ordinary
+// failure is then discarded so the cadence continues across other paths; a PMTU
+// failure is returned to discovery. Expected PMTU EMSGSIZE is excluded from the
+// counter and becomes discovery's too-large verdict. A successful direct write
+// becomes receiver-visible before its exact encoded byte length advances future
+// shaper priority debt; a failed write creates no debt. It is a no-op when the bind
+// has no probers or is closed.
 func (m *Multipath) emitProbes() {
 	m.mu.Lock()
 	if len(m.paths) == 0 || m.probers == nil {

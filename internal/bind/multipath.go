@@ -303,12 +303,11 @@ type peerPathState struct {
 	emsgsizeDrops         atomic.Uint64
 	lastEMSGSIZEWarnNanos atomic.Int64
 
-	// probeSendErrors counts PROBE-frame socket write errors emitProbes currently drops
-	// (defect D96 item 4, composes with D90's emsgsizeDrops): a path whose probe writes
-	// fail (e.g. a Close racing the probe-loop goroutine, or a transient socket error)
-	// was previously indistinguishable from a path with 100% probe loss. Incremented
-	// lock-free (no m.mu) from the probe-loop goroutine at the exact point the write
-	// error is dropped; count-and-continue, no behaviour change to probing.
+	// probeSendErrors counts unexpected socket write failures for locally-originated
+	// ordinary and PMTU PROBE attempts. Expected PMTU EMSGSIZE is excluded: discovery
+	// consumes it as a too-large verdict. An unexpected PMTU failure is counted and
+	// returned to discovery; an ordinary failure is counted then discarded so the
+	// cadence continues across other paths. Incremented lock-free (no m.mu).
 	probeSendErrors atomic.Uint64
 
 	// shapedAccepted/shapedEmitted distinguish the prefix the exact-byte shaper
@@ -822,7 +821,18 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 		m.accountGeneratedPriorityAfterWrite(ps, len(raw))
 		return nil
 	}
-	return telemetry.NewCadencedEchoAwaitProbe(ps.prober, send, ps.enqueuePMTUProbe, 0, nil)
+	outerIPUDPOverhead := IPv4UDPOverhead
+	if pathIsV6(ps.src) {
+		outerIPUDPOverhead = IPv6UDPOverhead
+	}
+	return telemetry.NewCadencedEchoAwaitProbe(
+		ps.prober,
+		send,
+		ps.enqueuePMTUProbe,
+		outerIPUDPOverhead,
+		0,
+		nil,
+	)
 }
 
 // PMTUProbe returns the PRIMARY peer's PMTU echo-await backend for the named path, or
@@ -4418,9 +4428,9 @@ type PathTraffic struct {
 	ShaperEmittedDatagrams  uint64
 	ShaperWriteErrors       uint64
 	SocketWriteErrors       uint64
-	// ProbeSendErrors is the cumulative count of PROBE-frame socket write errors
-	// emitProbes has dropped for this path (defect D96 item 4), read verbatim from
-	// peerPathState.probeSendErrors.
+	// ProbeSendErrors is the cumulative count of unexpected locally-originated
+	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
+	// EMSGSIZE verdicts are excluded. Read verbatim from peerPathState.probeSendErrors.
 	ProbeSendErrors uint64
 	// The following addressing fields surface this path's runtime networking
 	// identity for the G21 monitoring UI (value-wiring into the monitor snapshot

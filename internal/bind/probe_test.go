@@ -436,9 +436,9 @@ func TestMultipathEchoReflectionCountsTxBytes(t *testing.T) {
 	}
 }
 
-// TestMultipathEmitProbesCountsSendErrors is the D96 item 4 regression: a PROBE
-// socket write error emitProbes drops must accumulate the path's probeSendErrors
-// counter (wanbond_path_probe_send_errors_total) rather than vanish silently.
+// TestMultipathEmitProbesCountsSendErrors is the D96 item 4 regression: an
+// unexpected ordinary-PROBE socket write failure emitProbes discards after
+// counting must accumulate wanbond_path_probe_send_errors_total.
 // Two paths are probed; only path 0's socket is closed before emitProbes runs, so
 // only its write fails — asserting the counter rises for EXACTLY that path, not
 // path 1's, and that path 1's probe still egresses normally (count-and-continue,

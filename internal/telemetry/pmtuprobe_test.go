@@ -8,6 +8,8 @@ import (
 	"github.com/7mind/wanbond/internal/frame"
 )
 
+const testOuterIPUDPOverhead = 28
+
 // neverAfter is an after-func whose deadline never fires: used when a test expects the
 // echo (not the deadline) to complete the await.
 func neverAfter(time.Duration) <-chan time.Time { return make(chan time.Time) }
@@ -41,7 +43,7 @@ func TestEchoAwaitProbeMatchedEcho(t *testing.T) {
 		e.NotifyEcho(f.(frame.Probe).ProbeSeq) // release the PMTU waiter
 		return nil
 	}
-	e = NewEchoAwaitProbe(p, send, 0, neverAfter)
+	e = NewEchoAwaitProbe(p, send, testOuterIPUDPOverhead, 0, neverAfter)
 
 	echoed, err := e.ProbePMTU(1400)
 	if err != nil || !echoed {
@@ -55,7 +57,7 @@ func TestEchoAwaitProbeDeadline(t *testing.T) {
 	psk := testPSK(t, 0x5A)
 	p := newTestProber(t, psk, newFakeClock())
 	send := func([]byte) error { return nil } // sent, but nothing echoes it
-	e := NewEchoAwaitProbe(p, send, 0, immediateAfter)
+	e := NewEchoAwaitProbe(p, send, testOuterIPUDPOverhead, 0, immediateAfter)
 
 	echoed, err := e.ProbePMTU(1400)
 	if err != nil || echoed {
@@ -69,7 +71,7 @@ func TestEchoAwaitProbeEMSGSIZE(t *testing.T) {
 	psk := testPSK(t, 0x5A)
 	p := newTestProber(t, psk, newFakeClock())
 	send := func([]byte) error { return ErrProbeTooLarge }
-	e := NewEchoAwaitProbe(p, send, 0, neverAfter)
+	e := NewEchoAwaitProbe(p, send, testOuterIPUDPOverhead, 0, neverAfter)
 
 	echoed, err := e.ProbePMTU(1500)
 	if err != nil || echoed {
@@ -84,15 +86,15 @@ func TestEchoAwaitProbeTransportError(t *testing.T) {
 	p := newTestProber(t, psk, newFakeClock())
 
 	boom := errors.New("boom")
-	e := NewEchoAwaitProbe(p, func([]byte) error { return boom }, 0, neverAfter)
+	e := NewEchoAwaitProbe(p, func([]byte) error { return boom }, testOuterIPUDPOverhead, 0, neverAfter)
 	if _, err := e.ProbePMTU(1400); !errors.Is(err, boom) {
 		t.Fatalf("transport error: want boom, got %v", err)
 	}
 
-	// A candidate whose derived on-wire size (pathMTU - outerIPUDPOverhead) exceeds the
+	// A candidate whose derived on-wire size (pathMTU - testOuterIPUDPOverhead) exceeds the
 	// padded-probe bounds is rejected by SendPaddedProbe before any send.
-	e2 := NewEchoAwaitProbe(p, func([]byte) error { return nil }, 0, neverAfter)
-	if _, err := e2.ProbePMTU(frame.MaxPaddedProbeOnWire + outerIPUDPOverhead + 1); err == nil {
+	e2 := NewEchoAwaitProbe(p, func([]byte) error { return nil }, testOuterIPUDPOverhead, 0, neverAfter)
+	if _, err := e2.ProbePMTU(frame.MaxPaddedProbeOnWire + testOuterIPUDPOverhead + 1); err == nil {
 		t.Fatal("out-of-bounds path MTU: want error, got nil")
 	}
 }
@@ -141,7 +143,7 @@ func TestEchoAwaitProbeDecoupledFromAntiReplay(t *testing.T) {
 		e.NotifyEcho(pmtuSeq)
 		return nil
 	}
-	e = NewEchoAwaitProbe(p, send, 0, neverAfter)
+	e = NewEchoAwaitProbe(p, send, testOuterIPUDPOverhead, 0, neverAfter)
 
 	echoed, err := e.ProbePMTU(1400)
 	if err != nil || !echoed {
@@ -164,7 +166,7 @@ func TestEchoAwaitProbeStaleSeqDoesNotUnblock(t *testing.T) {
 		e.NotifyEcho(f.(frame.Probe).ProbeSeq + 999) // wrong seq: must be a no-op
 		return nil
 	}
-	e = NewEchoAwaitProbe(p, send, 0, immediateAfter)
+	e = NewEchoAwaitProbe(p, send, testOuterIPUDPOverhead, 0, immediateAfter)
 
 	echoed, err := e.ProbePMTU(1400)
 	if err != nil || echoed {
@@ -178,7 +180,8 @@ func TestEchoAwaitProbeStaleSeqDoesNotUnblock(t *testing.T) {
 // do NOT pollute the path's loss estimate (they are excluded).
 func TestEchoAwaitProbeSearchConvergesWithoutLossPollution(t *testing.T) {
 	// The modelled underlay's OUTER IP-level path MTU. ProbePMTU sizes the socket datagram
-	// pathMTU-outerIPUDPOverhead, so the IP datagram is len(raw)+outerIPUDPOverhead; the
+	// pathMTU-testOuterIPUDPOverhead, so the IP datagram is
+	// len(raw)+testOuterIPUDPOverhead; the
 	// path refuses (EMSGSIZE) any IP datagram larger than pathMTU, so the search converges
 	// on pathMTU itself.
 	const pathMTU = 1400
@@ -189,7 +192,7 @@ func TestEchoAwaitProbeSearchConvergesWithoutLossPollution(t *testing.T) {
 
 	var e *EchoAwaitProbe
 	send := func(raw []byte) error {
-		if len(raw)+outerIPUDPOverhead > pathMTU {
+		if len(raw)+testOuterIPUDPOverhead > pathMTU {
 			// Oversize under DF: the kernel refuses it locally (EMSGSIZE). The probe is a
 			// deliberate, expected drop — ProbePMTU must exclude its seq from loss.
 			return ErrProbeTooLarge
@@ -206,7 +209,7 @@ func TestEchoAwaitProbeSearchConvergesWithoutLossPollution(t *testing.T) {
 		e.NotifyEcho(f.(frame.Probe).ProbeSeq)
 		return nil
 	}
-	e = NewEchoAwaitProbe(p, send, 0, neverAfter)
+	e = NewEchoAwaitProbe(p, send, testOuterIPUDPOverhead, 0, neverAfter)
 
 	d := NewPMTUDiscovery("cellular", PMTUConfig{DefaultMTU: 1500}, e, clk, discardLogger(t))
 	if err := d.Tick(StateUp); err != nil {

@@ -344,9 +344,9 @@ type PathSnapshot struct {
 	// internal/device/metrics.go rides with the TUN-resize task (T209), so it is
 	// zero-valued until then.
 	PMTU int
-	// ProbeSendErrors is the cumulative count of PROBE-frame socket write errors
-	// emitProbes has dropped for this path (defect D96 item 4), read verbatim from
-	// bind.PathTraffic.ProbeSendErrors.
+	// ProbeSendErrors is the cumulative count of unexpected locally-originated
+	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
+	// EMSGSIZE verdicts are excluded. Read verbatim from bind.PathTraffic.
 	ProbeSendErrors         uint64
 	ShaperAcceptedDatagrams uint64
 	ShaperEmittedDatagrams  uint64
@@ -571,7 +571,7 @@ func NewCollector(src Source) prometheus.Collector {
 		throughput:     desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
 		up:             desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
 		pmtu:           desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
-		probeErrs:      desc(pathSubsystem, "probe_send_errors_total", "Per-path PROBE-frame socket write errors (count-and-continue; a path whose probes cannot egress is otherwise indistinguishable from 100% probe loss).", pathLabels),
+		probeErrs:      desc(pathSubsystem, "probe_send_errors_total", "Unexpected locally-originated ordinary/PMTU PROBE socket write failures. Expected PMTU EMSGSIZE too-large verdicts are excluded; PMTU failures return to discovery and ordinary failures are counted then discarded.", pathLabels),
 		shaperAccepted: desc(pathSubsystem, "shaper_accepted_datagrams_total", "Encoded DATA/PARITY datagrams accepted by the path's exact-byte shaper.", pathLabels),
 		shaperEmitted:  desc(pathSubsystem, "shaper_emitted_datagrams_total", "Shaped DATA/PARITY datagrams successfully handed to the kernel.", pathLabels),
 		shaperErrors:   desc(pathSubsystem, "shaper_write_errors_total", "Terminal exact-byte shaper write-call errors.", pathLabels),

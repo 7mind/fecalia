@@ -125,6 +125,13 @@ published as `PathSnapshot.PMTU` and the **T209 runtime resizer** folds it into
 1400-MTU 5G path) **auto-shrinks** `wanbond0` to fit, and **regrows** when the
 constraint lifts, with **no operator `mtu` knob required**.
 
+Search candidates and the reported result use outer-IP MTU units for both
+families. The UDP payload generated for a candidate subtracts the validated
+path socket's family-specific IP+UDP cost: 28 bytes for IPv4 or 48 for IPv6.
+Thus a 1500-byte candidate emits 1472 UDP bytes on IPv4 and 1452 on IPv6,
+matching the corresponding exact-byte shaper `Lmax`; the family conversion does
+not change the binary search's unit domain.
+
 - **Pinned override.** A path with an explicit `mtu` is PINNED: discovery never
   probes it and its configured value is authoritative — the static knob and
   auto-discovery compose (declare `mtu` when you know the underlay; omit it to
