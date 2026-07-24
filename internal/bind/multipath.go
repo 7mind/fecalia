@@ -172,14 +172,12 @@ var (
 	// errors.Is-match it against the engine's wrapped Errorf args to gate the startup
 	// no-healthy-path warmup coalescing without string-matching the log message.
 	ErrNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
-	// errPacerShedding is returned by Send when the scheduler shed the datagram for
-	// pacing (PickPaced) while paths are healthy — deliberate rate limiting, NOT an
-	// outage. It is DISTINCT from ErrNoHealthyPath so operator logs and the e2e
-	// log-grep harness can tell shedding from total path failure (the drop behavior is
-	// identical to the pre-existing no-path case; only the diagnostic differs). The
-	// coalesced, rate-limited "pacer shedding" record is emitted by the scheduler.
-	errPacerShedding = errors.New("bind: datagram shed by send pacer (paths healthy, rate limited)")
-	errClosed        = net.ErrClosed
+	// errPacerShedding retains the legacy direct-composition contract when a scheduler
+	// returns PickPaced. Production exact-byte composition uses PickUnpaced and does not
+	// reach this loss-policer result.
+	errPacerShedding   = errors.New("bind: datagram shed by send pacer (paths healthy, rate limited)")
+	errFECPlaneChanged = errors.New("bind: FEC send plane changed during shaped Send")
+	errClosed          = net.ErrClosed
 )
 
 // sharedPathState is the per-SOCKET state of one configured uplink, SHARED across
@@ -314,8 +312,9 @@ type peerPathState struct {
 
 	// schedIdx is this path's index in its peer's scheduler (== its position in
 	// peer.paths, the invariant attachPeerPathLocked enforces). It is the pathIdx the
-	// bind passes to sched.ProbeBudget.AccountProbe so a directly-written PROBE frame /
-	// reflected echo charges the RIGHT per-path token bucket (T145). It is maintained
+	// bind passes to the legacy sched.ProbeBudget seam for directly-written PROBE/echo
+	// accounting. Production exact-byte composition disables the scheduler buckets, so
+	// generated PROBE/echo remains uncharged until T300. The index is maintained
 	// under m.mu at every peer.paths (re)build and splice (Open, attachPeerPathLocked,
 	// detachPeerPathBoundLocked) and read lock-free (via atomic) from the receive
 	// goroutine's dispatchInbound, which must not take m.mu. A momentarily-stale value
@@ -1674,8 +1673,8 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 				_ = m.closeSocketsLocked()
 				return nil, 0, err
 			}
-			// Stamp the scheduler index (== this path's position in p.paths) BEFORE the append,
-			// so a directly-written probe/echo on this path charges the right token bucket (T145).
+			// Stamp the scheduler index (== this path's position in p.paths) BEFORE
+			// the append for the legacy ProbeBudget accounting seam.
 			pp.schedIdx.Store(int32(len(p.paths)))
 			p.paths = append(p.paths, pp)
 			// Publish this peer's view for the receive demux (T88). A single-view socket is the
@@ -2685,13 +2684,10 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 					// real egress traffic on this path, so it counts toward txBytes
 					// exactly like a DATA/PARITY write — only on a nil write error.
 					ps.txBytes.Add(uint64(len(echo)))
-					// Exempt-but-charged probe accounting (T145): a reflected echo is
-					// out-of-band egress on this path (it never traverses Send->Pick), so
-					// SYMMETRICALLY with emitProbes it is never shed/delayed but IS charged
-					// against the path's token bucket, so paced ClassData yields the headroom
-					// the reflected-echo stream consumes. ps.schedIdx addresses this path's
-					// bucket; AccountProbe locks only the scheduler's own mutex (never m.mu,
-					// which this receive goroutine must not take) and bounds-checks the index.
+					// Preserve the legacy scheduler's out-of-band probe accounting seam.
+					// Production exact-byte composition has inert scheduler buckets, so this
+					// generated echo remains direct and uncharged until T300 integrates it
+					// with the byte shaper. AccountProbe never takes m.mu.
 					if budget, ok := pr.scheduler.(sched.ProbeBudget); ok {
 						budget.AccountProbe(int(ps.schedIdx.Load()))
 					}
@@ -2798,15 +2794,13 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 // before the first inbound packet re-teaches the remote — the send fails until
 // that path's remote is learned, even if another path has a known remote.
 //
-// Critical-section discipline: path selection and framing run under m.mu (the
-// send Codec is shared and stateful — D5's single keystream requires sequential,
-// mutex-guarded Encode), but each datagram is encoded into its OWN fresh buffer
-// so it outlives the lock, and the WriteToUDPAddrPort syscalls run WITHOUT m.mu
-// held. The scheduler is internally synchronized and never calls back into the
-// Bind, so calling Pick under m.mu cannot deadlock and adds no receive-path
-// contention (the lock-free virtual-endpoint fast path is untouched). A receive
-// goroutine pinning the virtual endpoint therefore never blocks behind an
-// in-flight transmit syscall.
+// Critical-section discipline: pacing off preserves the legacy contract by selecting
+// and framing the complete batch under m.mu before direct socket writes. Exact-byte
+// shaping selects once, then frames one input at a time under m.mu and waits/emits
+// without it; peer.sendMu preserves batch order, and an FEC-plane identity check aborts
+// the suffix after teardown/re-instantiation. The send Codec is shared and stateful —
+// D5's single keystream requires every Encode to remain mutex-guarded. Each datagram
+// owns a fresh buffer, and no transmit syscall or shaper wait holds m.mu.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	ue, ok := ep.(*udpEndpoint)
 	if !ok {
@@ -2841,14 +2835,15 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return ErrNoHealthyPath
 	}
 	shaped := m.shaperConfigs != nil
+	if !shaped {
+		return m.sendDirectBatchLocked(peer, bufs, class)
+	}
 	m.mu.Unlock()
 
 	// One engine Send owns one selection/offered event and one ordered codec/FEC
 	// stream. It may block on shaper capacity without holding the bind-wide lock.
-	if shaped {
-		peer.sendMu.Lock()
-		defer peer.sendMu.Unlock()
-	}
+	peer.sendMu.Lock()
+	defer peer.sendMu.Unlock()
 
 	m.mu.Lock()
 	if len(peer.paths) == 0 {
@@ -2888,22 +2883,14 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		m.mu.Unlock()
 		return nil
 	}
-	idx := sched.PickNone
-	if shaped {
-		picker, ok := peer.scheduler.(sched.UnpacedPicker)
-		if !ok {
-			m.mu.Unlock()
-			return errors.New("bind: exact-byte shaping requires a scheduler with unpaced selection")
-		}
-		idx = picker.PickUnpaced(class, frames)
-	} else {
-		idx = peer.scheduler.Pick(class, frames)
+	picker, ok := peer.scheduler.(sched.UnpacedPicker)
+	if !ok {
+		m.mu.Unlock()
+		return errors.New("bind: exact-byte shaping requires a scheduler with unpaced selection")
 	}
+	idx := picker.PickUnpaced(class, frames)
 	if idx == sched.PickPaced {
-		// The scheduler shed this datagram for pacing while paths are healthy: drop it
-		// (same as no-path), but surface a DISTINCT error so the diagnostic is not
-		// conflated with a total outage. The rate-limited log is emitted at the source
-		// (the scheduler), so no per-drop logging happens here on the hot path.
+		// Defensive compatibility for an invalid UnpacedPicker implementation.
 		m.mu.Unlock()
 		return errPacerShedding
 	}
@@ -2916,10 +2903,14 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		m.mu.Unlock()
 		return ErrNoHealthyPath
 	}
-	// Snapshot this peer's send-FEC plane once under m.mu: a torn-down peer reads nil (sends
-	// unprotected until re-bind rebuilds it), a re-bound peer reads its freshly re-instantiated
-	// sender. The encoder is mutated (Admit) only here under m.mu, so this single Load pins a
-	// stable sender for the whole batch.
+	if ps.shaper == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("bind: selected shaped path %q has no exact-byte shaper", ps.name)
+	}
+	// Snapshot this peer's send-FEC plane under m.mu. Before each later sequence/FEC
+	// mutation, pointer identity acts as its generation check: teardown/re-instantiation
+	// replaces the pointer, so this Send aborts instead of continuing on the stale encoder.
+	// The local reference prevents pointer-address reuse for the lifetime of the batch.
 	sendFEC := peer.fecSend.Load()
 	m.mu.Unlock()
 
@@ -2931,6 +2922,10 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		if idx >= len(peer.paths) || peer.paths[idx] != ps || peer.sendCodec == nil {
 			m.mu.Unlock()
 			return errClosed
+		}
+		if peer.fecSend.Load() != sendFEC {
+			m.mu.Unlock()
+			return errFECPlaneChanged
 		}
 		wires := make([]fecWire, 0, 1)
 		seq := peer.outerSeq.Add(1)
@@ -2971,34 +2966,100 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		}
 		m.mu.Unlock()
 
-		if ps.shaper != nil {
-			datagrams := make([]shaper.Datagram, len(wires))
-			for j, wire := range wires {
-				wireClass := shaper.ClassData
-				if j == 0 {
-					wireClass = classes[i]
-				}
-				datagrams[j] = shaper.Datagram{Class: wireClass, Payload: wire.b}
+		datagrams := make([]shaper.Datagram, len(wires))
+		for j, wire := range wires {
+			wireClass := shaper.ClassData
+			if j == 0 {
+				wireClass = classes[i]
 			}
-			result, err := ps.shaper.WriteDatagrams(context.Background(), datagrams)
-			m.recordShapedResult(ps, peer, sendFEC, wires, result, err)
+			datagrams[j] = shaper.Datagram{Class: wireClass, Payload: wire.b}
+		}
+		result, err := ps.shaper.WriteDatagrams(context.Background(), datagrams)
+		m.recordShapedResult(ps, peer, sendFEC, wires, result, err)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendDirectBatchLocked preserves the pacing-off/legacy Send contract: select
+// once and frame the complete batch, including every FEC admission and immediate
+// parity shard, while m.mu is held; only then release the lock and perform socket
+// writes. A partial write error therefore never changes how much of the batch
+// advanced outerSeq or the FEC encoder. Caller holds m.mu; this method releases it.
+func (m *Multipath) sendDirectBatchLocked(peer *peerState, bufs [][]byte, class sched.FrameClass) error {
+	if len(peer.paths) == 0 {
+		m.mu.Unlock()
+		return errClosed
+	}
+	frames := len(bufs) + int(peer.parityCarry.Swap(0))
+	if frames == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	idx := peer.scheduler.Pick(class, frames)
+	if idx == sched.PickPaced {
+		m.mu.Unlock()
+		return errPacerShedding
+	}
+	if idx < 0 || idx >= len(peer.paths) {
+		m.mu.Unlock()
+		return ErrNoHealthyPath
+	}
+	ps := peer.paths[idx]
+	remote, ok := ps.getRemote()
+	if !ok {
+		m.mu.Unlock()
+		return ErrNoHealthyPath
+	}
+	sendFEC := peer.fecSend.Load()
+	wires := make([]fecWire, 0, len(bufs))
+	for _, b := range bufs {
+		seq := peer.outerSeq.Add(1)
+		if sendFEC != nil {
+			ds, parity, err := sendFEC.enc.Admit(fecShardPayload(seq, b))
 			if err != nil {
+				m.mu.Unlock()
 				return err
+			}
+			wire, err := peer.sendCodec.Encode(nil, frame.Data{
+				OuterSeq: seq,
+				PathID:   ps.id,
+				FECGroup: uint32(ds.Group),
+				FECIndex: uint8(ds.Index),
+				Payload:  b,
+			})
+			if err != nil {
+				m.mu.Unlock()
+				return err
+			}
+			wires = append(wires, fecWire{b: wire})
+			for _, par := range parity {
+				wire, err := m.encodeParityLocked(peer, par, ps.id)
+				if err != nil {
+					m.mu.Unlock()
+					return err
+				}
+				wires = append(wires, fecWire{b: wire, parity: true})
 			}
 			continue
 		}
+		wire, err := peer.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		wires = append(wires, fecWire{b: wire})
+	}
+	m.mu.Unlock()
 
-		remote, ok := ps.getRemote()
-		if !ok {
-			return ErrNoHealthyPath
+	for _, wire := range wires {
+		if _, err := ps.conn.WriteToUDPAddrPort(wire.b, remote); err != nil {
+			ps.socketWriteErrors.Add(1)
+			return m.accountSendError(ps, err)
 		}
-		for _, wire := range wires {
-			if _, err := ps.conn.WriteToUDPAddrPort(wire.b, remote); err != nil {
-				ps.socketWriteErrors.Add(1)
-				return m.accountSendError(ps, err)
-			}
-			recordWireEmission(ps, peer, sendFEC, wire)
-		}
+		recordWireEmission(ps, peer, sendFEC, wire)
 	}
 	return nil
 }
@@ -3160,12 +3221,10 @@ func (m *Multipath) fecFlushDeadline() {
 		if err != nil || len(parity) == 0 {
 			continue
 		}
-		// Route the parity like data through THIS peer's scheduler (a first-integration
-		// choice; see Send). A shed/no-path verdict drops this group's parity — a degraded
-		// path is exactly when the datapath is under pressure, and a stranded partial group's
-		// parity is best-effort — so the group simply goes unprotected rather than blocking.
-		// FEC parity is bulk redundancy, so it is paced as ClassData (defect D22): only
-		// WireGuard control frames earn the pacing exemption.
+		// Route parity like data through THIS peer's scheduler (see Send). A no-path
+		// verdict drops this group's parity. With exact-byte shaping, the selected path
+		// admits and serializes every shard as ClassData; direct composition retains the
+		// legacy socket-write behavior.
 		// SELECT a path for this peer's flush WITHOUT metering an offered frame (defect
 		// D109). A deadline flush emits NO data frame; the parity it writes below is
 		// metered through the SAME carry Send uses (w.ps.peer.parityCarry.Add — see the
@@ -3904,14 +3963,11 @@ func (m *Multipath) attachSharedPathLocked(shared *sharedPathState, def config.P
 // active selection). It does NOT touch the durable membership (m.defs / p.probers) —
 // attachSharedPathLocked's caller owns that after the whole fan-out succeeds. Caller holds
 // m.mu.
-// admissionFor pairs a path's prober (its scheduler health source) with the path's OWN
-// identity-sourced per-path pacing (defect D79). The pacing is read from the scheduler's
-// configured per-path sizing by the prober's ORIGINAL definition index (PathID), so a
-// bound/promoted path always carries its own declared token-bucket rate regardless of its
-// position in the bound-path slice — the fix for a deferred path shifting the health indices and
-// letting the sole bound path inherit the deferred path's slower pace. When the scheduler does
-// not pace per-path (weighted / pacing-off, i.e. not a PerPathPacingConfig), or the path is
-// outside the configured set, the zero Pacing is inert.
+// admissionFor pairs a path's prober (its scheduler health source) with the path's
+// identity-sourced legacy per-path pacing configuration (defect D79). Production
+// exact-byte composition disables scheduler admission, but dynamic membership still
+// preserves this compatibility seam by the prober's original definition index
+// (PathID). When no per-path legacy configuration exists, zero Pacing is inert.
 func admissionFor(scheduler sched.Scheduler, prober *telemetry.Prober) sched.PathAdmission {
 	adm := sched.PathAdmission{Health: prober}
 	if ppc, ok := scheduler.(sched.PerPathPacingConfig); ok && prober != nil {
@@ -3983,8 +4039,8 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 		}
 		return nil, fmt.Errorf("bind: scheduler/path index skew after add: sched=%d bind=%d", schedIdx, bindIdx)
 	}
-	// Stamp the scheduler index so a directly-written probe/echo on this path charges the
-	// right token bucket (T145); the skew guard above just proved schedIdx == its position.
+	// Stamp the scheduler index for the legacy ProbeBudget accounting seam; the skew
+	// guard above just proved schedIdx == its position.
 	pp.schedIdx.Store(int32(schedIdx))
 	// Publish this peer's view of the shared socket for the receive demux (T88): once >1 peer
 	// has a view, handleInbound source-demuxes the socket's datagrams to their owning peer.
@@ -4023,7 +4079,7 @@ func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) error {
 	removeErr := dyn.RemovePath(idx)
 	p.paths = append(p.paths[:idx], p.paths[idx+1:]...)
 	// The scheduler shifted every path above idx down by one; re-stamp the survivors so
-	// their schedIdx keeps addressing the right token bucket for probe accounting (T145).
+	// their schedIdx keeps addressing the right legacy ProbeBudget slot.
 	for k := idx; k < len(p.paths); k++ {
 		p.paths[k].schedIdx.Store(int32(k))
 	}

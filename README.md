@@ -178,13 +178,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   one-shot `"scheduler aggregation change"` record on every engage/disengage
   flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
   bounded exact-byte shaper instead of producing scheduler-shedding records.
-- **Pacing on/off is a real tradeoff, not just a knob**: pacing bounds
-  worst-case loaded RTT and keeps liveness stable under sustained overload, at
-  the cost of applying bounded sender backpressure; leaving it off maximizes
-  offered throughput but risks bufferbloat-driven liveness flaps
-  under sustained overload — see [docs/design.md §Send-side
-  scheduler](docs/design.md) for the
-  measured numbers, the three-tier `ClassControl`/`frame.KindProbe`/`ClassData`
+- **Pacing on/off is a real tradeoff, not just a knob**: pacing applies bounded
+  sender backpressure at the declared byte rate; leaving it off maximizes
+  offered throughput but risks bufferbloat-driven liveness flaps under
+  sustained overload. The published throughput/RTT numbers predate T299's
+  exact-byte shaper and must be rerun on real hardware — see
+  [docs/design.md §Send-side scheduler](docs/design.md) for that historical
+  evidence, the three-tier `ClassControl`/`frame.KindProbe`/`ClassData`
   priority model, why inner-tunnel traffic (e.g. inner ICMP) can never get its
   own priority lane, and the full operability runbook tying every signal
   above together.
@@ -239,23 +239,27 @@ deliberate boundaries you must plan around:
 
 - **Pacing is off by default (opt-in)** — enable it under `[scheduler]`
   (`pacing_enabled = true`) and size it from operator-declared per-link
-  `link_bandwidth`/`link_rtt` (bandwidth-delay product); it was measured to
-  eliminate bufferbloat on the bandwidth-capped netns fixture and the real-link
-  tier. wanbond fixes the pace at config load and does not auto-tune it live (Q20).
+  `link_bandwidth`/`link_rtt` (bandwidth-delay product). Pre-T299 pacing was
+  measured on the report-only real-link tier; those measurements do not validate
+  T299's replacement shaper, and the CPU/PPS-bound netns fixture cannot establish
+  absolute throughput or bufferbloat. wanbond fixes the pace at config load and
+  does not auto-tune it live (Q20).
   Pacing is **policy-independent** (defect D65): `pacing_enabled`,
   `link_bandwidth`, and `link_rtt` are meaningful — and configured with the
   SAME keys — under the **default `active-backup` policy** too, not only under
   `policy = "weighted"`; see [docs/design.md §Send-side
   scheduler](docs/design.md) for the per-path-vs-bottleneck sizing distinction.
-  Config load also derives a separate exact-byte shaper envelope (`R`, `B`,
-  `Lmax`, control reserve, and probe budget) and rejects an envelope that cannot
-  admit one legal datagram or whose maximum probe+echo rate consumes the whole
-  link. Non-finite inputs and byte budgets that cannot fit the platform's
-  integer byte-count domain are rejected before conversion. This is a staged
-  cutover: the bounded exact-byte primitive now exists under `internal/shaper`,
-  but the runtime still uses the existing frame-token `PickPaced` loss-policer
-  until scheduler integration; neither the new byte fields nor the isolated
-  primitive changes live egress yet.
+  Config load derives the live exact-byte shaper envelope (`R`, `B`, `Lmax`,
+  control reserve, and the future probe budget) and rejects an envelope that
+  cannot admit one legal datagram or whose maximum probe+echo rate consumes the
+  whole link. Non-finite inputs and byte budgets that cannot fit the platform's
+  integer byte-count domain are rejected before conversion. At runtime each
+  `(peer,path)` owns one shaper: encoded DATA and every immediate/deadline FEC
+  parity datagram consume their exact byte length, and a full bounded budget
+  backpressures the sender instead of shedding. Per-path accepted, emitted,
+  shaper-error, and socket-error counters expose every terminal prefix. Generated
+  outer PROBE/echo traffic remains on its direct, uncharged socket path until
+  T300 integrates the derived priority budget.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
   them instead; validate on your own uplinks before a production rollout.

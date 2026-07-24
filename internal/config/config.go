@@ -154,8 +154,9 @@ const (
 	// defaultPerPathCapacityFPS is the reference per-path capacity, in OFFERED WIRE
 	// FRAMES per second on that one path (inner data frames PLUS any FEC parity
 	// frames that egress on the chosen path), that the aggregation load-gate compares
-	// offered load against AND (when pacing is enabled) the per-path token-bucket
-	// refill rate. It is a synthetic proxy for path capacity: there is no measured BDP
+	// offered load against. With pacing enabled, raw frame-domain configuration is
+	// projected to the live exact-byte shaper; scheduler admission remains unpaced.
+	// It is a synthetic proxy for path capacity: there is no measured BDP
 	// (P0 §7), so this default is a bring-up placeholder. When an operator sizes the
 	// knob for real, the NORMATIVE derivation is bandwidth_bits_per_sec / (8 *
 	// avg_wire_frame_bytes) — SizePacingFromBDP below is the programmatic form of the
@@ -183,9 +184,9 @@ const (
 	// (data plus any FEC parity, folded per Pick call — tasks:T290) so the gate
 	// reacts to sustained load, not single-batch bursts.
 	defaultLoadTau = 200 * time.Millisecond
-	// defaultPacingBurstFrames is the per-path token-bucket burst (in frame slots)
-	// when pacing is enabled: the bucket admits up to this many frames instantaneously
-	// before the refill rate binds, absorbing normal jitter without inflating a queue.
+	// defaultPacingBurstFrames is the raw per-path burst input in frame slots. When
+	// pacing is enabled, config projects it at 1500 bytes/slot into the live shaper's
+	// bounded DATA budget.
 	defaultPacingBurstFrames = 64.0
 	// defaultWeightRTTFloor floors the RTT in the weight formula so a path reporting a
 	// near-zero RTT (cold estimator, no samples yet) cannot be handed unbounded weight.
@@ -216,44 +217,44 @@ type SchedulerConfig struct {
 	// (PerPathCapacities/PacingBursts), since only one path egresses at a time and a
 	// fast active primary must pace at its OWN drain rate, not the slowest link's.
 
-	// PacingEnabled turns per-path send-pacing on. When false the token buckets are
-	// bypassed (a documented no-op — P0 §7 could not empirically size the pace in the
-	// unmetered fixture). Under weighted, PerPathCapacityFPS still drives the
+	// PacingEnabled turns exact-byte per-(peer,path) send shaping on. When false the
+	// bind preserves its direct batch-framing/socket-write path (a documented no-op —
+	// P0 §7 could not empirically size the pace in the unmetered fixture). Under
+	// weighted, PerPathCapacityFPS still drives the
 	// aggregation gate even with pacing off; under active-backup it is inert with
 	// pacing off.
 	PacingEnabled bool `toml:"pacing_enabled"`
 	// PerPathCapacityFPS is the reference per-path capacity in OFFERED WIRE FRAMES per
 	// second on that one path (inner data frames PLUS any FEC parity frames egressing
 	// on it): under the weighted policy it is the denominator the aggregation
-	// load-gate compares offered load against AND (when PacingEnabled) the shared
-	// per-path pacing refill rate; under active-backup it is an explicit pacing refill
-	// rate (replicated across paths). Must be > 0 under the weighted policy, and — when
-	// pacing is enabled under active-backup WITHOUT a declared link_bandwidth — it (with
-	// pacing_burst_frames) is the required explicit pace source. Size it from the
+	// load-gate compares offered load against. When PacingEnabled without declared
+	// link_bandwidth, config also projects it at 1500 bytes/frame into each live
+	// shaper's exact-byte rate; under active-backup the scalar is replicated across
+	// paths. Must be > 0 under the weighted policy, and — when pacing is enabled under
+	// active-backup WITHOUT a declared link_bandwidth — it (with
+	// pacing_burst_frames) is the required explicit source. Size it from the
 	// path's WIRE rate, bandwidth/(8 * on-wire frame bytes) — never from goodput or
 	// from a data rate net of FEC overhead (decisions:K35 §3h).
 	PerPathCapacityFPS float64 `toml:"per_path_capacity_fps"`
-	// PacingBurstFrames is the per-path token-bucket burst in frame slots. Must be > 0
-	// when PacingEnabled under EITHER policy (unless the pace is BDP-derived from a
-	// declared link_bandwidth, which supplies the burst per path).
+	// PacingBurstFrames is the raw per-path burst in frame slots, projected at
+	// 1500 bytes/slot into the exact-byte shaper. Must be > 0 when PacingEnabled
+	// under EITHER policy (unless a declared link_bandwidth supplies the BDP budget).
 	PacingBurstFrames float64 `toml:"pacing_burst_frames"`
-	// PerPathCapacities is the DERIVED per-path token-bucket refill rate (frame slots/s),
-	// index-aligned to Config.Paths, populated ONLY under the active-backup policy when
-	// pacing is enabled (T152) — from each path's OWN link_bandwidth/link_rtt BDP, or by
-	// replicating the explicit per_path_capacity_fps scalar. It is the field T153 plumbs
-	// into device.selectScheduler's NewActiveBackup call as sched.Config.PerPathCapacities.
-	// nil under the weighted policy (which uses the shared PerPathCapacityFPS scalar) and
-	// with pacing disabled. Never read from TOML.
+	// PerPathCapacities retains the derived active-backup offered-frame sizing
+	// (frame slots/s), index-aligned to Config.Paths, for scheduler/config
+	// compatibility. Production exact-byte composition disables legacy scheduler
+	// admission and consumes PerPathShapers instead. nil under weighted and with
+	// pacing disabled. Never read from TOML.
 	PerPathCapacities []float64 `toml:"-"`
-	// PacingBursts is the DERIVED per-path token-bucket burst (frame slots), index-aligned
-	// to Config.Paths and to PerPathCapacities, populated under the same conditions and
-	// consumed by T153 as sched.Config.PacingBursts. nil under weighted / with pacing off.
-	// Never read from TOML.
+	// PacingBursts retains the derived active-backup burst in frame slots,
+	// index-aligned to Config.Paths and PerPathCapacities, for scheduler/config
+	// compatibility. It does not admit live production traffic after T299.
+	// nil under weighted / with pacing off. Never read from TOML.
 	PacingBursts []float64 `toml:"-"`
 	// PerPathShapers is the derived exact-byte shaper configuration, index-aligned to
-	// Config.Paths. It is populated whenever pacing is enabled, but is deliberately not
-	// consumed by the scheduler until the staged T299 cutover: the legacy frame-token
-	// fields above remain active in this intermediate commit. Never read from TOML.
+	// Config.Paths. It is populated whenever pacing is enabled and device.Up consumes it
+	// to create one live shaper per (peer,path), while scheduler selection uses its
+	// unpaced seam. Never read from TOML.
 	PerPathShapers []PathShaperConfig `toml:"-"`
 
 	// --- Weighted-only aggregation/weight knobs ---
@@ -298,17 +299,17 @@ type SchedulerConfig struct {
 // PerPathCapacityFPS and BurstFrames replaces PacingBurstFrames.
 type BDPSizing struct {
 	// CapacityFPS is the sustained per-path frame rate the measured bottleneck bandwidth
-	// supports (the token-bucket refill rate and aggregation-gate denominator).
+	// supports (the aggregation-gate denominator and raw byte-projection input).
 	CapacityFPS float64
 	// BurstFrames is the bandwidth-delay product expressed in frames (bandwidth x RTT,
-	// i.e. one RTT of in-flight frames): the token-bucket burst that absorbs one RTT of
-	// jitter without building a standing queue.
+	// i.e. one RTT of in-flight frames), retained as the frame-domain representation
+	// of the live shaper's byte budget.
 	BurstFrames float64
 }
 
 // PathShaperConfig owns the unit-exact byte quantities for one per-(peer,path)
-// shaper. Config derives these once from validated operator input; the scheduler
-// continues to consume the legacy frame-token fields until T299.
+// shaper. Config derives these once from validated operator input and device.Up
+// consumes them for the live T299 shaping path.
 type PathShaperConfig struct {
 	// RateBytesPerSecond is the declared sustained wire-byte rate R.
 	RateBytesPerSecond float64
@@ -1265,18 +1266,14 @@ func (c *Config) weightedCapacitySane() *bool {
 // an unrelated config is untouched. The value is OPERATOR-DECLARED and fixed at load —
 // NOT runtime auto-tuning (Q20 rejected a live control loop for the pilot).
 //
-// The two policies size the pace DIFFERENTLY (D65), because they egress differently:
+// The two policies derive frame-domain compatibility values differently (D65),
+// because they egress differently; derivePathShapers separately produces each
+// path's live exact-byte configuration:
 //
-//   - WEIGHTED stripes ALL paths simultaneously, so a single reference per-path capacity
-//     is applied to every path's token bucket and a heterogeneous link set is sized to
-//     the BOTTLENECK (the slowest declared link governs the shared scalar
-//     PerPathCapacityFPS/PacingBurstFrames): pacing any path faster than the slowest
-//     link's capacity would let that link build the very standing queue pacing exists to
-//     prevent.
-//   - ACTIVE-BACKUP egresses on exactly ONE path at a time, so each path is paced from
-//     ITS OWN BDP into the PER-PATH vectors (PerPathCapacities/PacingBursts) — NOT
-//     min-reduced to the bottleneck, which would cap a fast active primary at the slowest
-//     backup's rate (reimposing the D65 single-flow ceiling this fix removes).
+//   - WEIGHTED stripes ALL paths simultaneously, so its aggregation reference uses
+//     the slowest declared link for PerPathCapacityFPS/PacingBurstFrames.
+//   - ACTIVE-BACKUP egresses on exactly ONE path at a time, so its compatibility
+//     vectors retain each path's OWN BDP, not a bottleneck reduction.
 //
 // Both policies keep the all-paths-or-none link_bandwidth rule, the raw-knobs-vs-
 // link_bandwidth mutual exclusion, and the per-path link_rtt>0 requirement. Under
@@ -1303,11 +1300,11 @@ func (c *Config) derivePacingFromBDP() error {
 	}
 }
 
-// derivePathShapers separates the future exact-byte shaper's unit domain from
+// derivePathShapers separates the live exact-byte shaper's unit domain from
 // scheduler offered-frame metering. It runs only after normalize and validate:
 // address families, MTUs, pacing-source exclusivity, RTTs, and legacy fields are
-// therefore already effective and valid. T299 will consume these values; this
-// intermediate commit intentionally leaves the existing frame-token pacer active.
+// therefore already effective and valid. device.Up consumes these values and
+// disables the legacy scheduler policer for production shaped composition.
 func (c *Config) derivePathShapers() error {
 	s := &c.Scheduler
 	if !s.PacingEnabled {
@@ -1429,10 +1426,11 @@ func (c *Config) deriveWeightedBottleneckPacing() error {
 	return nil
 }
 
-// deriveActiveBackupPerPathPacing sizes the active-backup scheduler's PER-PATH pace
-// (T152, D65). Because only one path egresses at a time, each path's token bucket is
-// sized from ITS OWN link_bandwidth/link_rtt BDP into the PerPathCapacities/PacingBursts
-// vectors T153 plumbs into NewActiveBackup — NOT min-reduced to the bottleneck. When no
+// deriveActiveBackupPerPathPacing retains the active-backup scheduler's PER-PATH
+// frame-domain sizing (T152, D65). Because only one path egresses at a time, each
+// path's OWN link_bandwidth/link_rtt BDP populates PerPathCapacities/PacingBursts,
+// not a bottleneck reduction. Production shaped composition uses PerPathShapers and
+// disables these legacy admission buckets. When no
 // link_bandwidth is declared, the explicit per_path_capacity_fps + pacing_burst_frames
 // scalars are the required pace source, replicated across every path. Pacing enabled with
 // NEITHER source is a fail-fast LOAD ERROR (no silent synthetic default — see
@@ -1713,12 +1711,10 @@ func peerLabel(i int, name string) string {
 // fan-out is N concentrator peers × U uplinks. The uplink SOCKETS do not multiply
 // by N — every peer shares each uplink's socket (bind's attachSharedPathLocked) —
 // but the PROBERS do: each emits one PROBE per fixed livenessProbeInterval
-// (200ms) plus its reflected echo, and those frames bypass the pacer's Pick
-// (charged-but-never-shed, D22/T145), drawing directly on each uplink's token
-// bucket. The ceiling keeps the aggregate probe emission bounded (32 probers ×
-// 5 PROBE/s = 160 PROBE/s across the shared uplink sockets) so N concentrators'
-// probe/echo streams sharing one uplink bucket cannot pre-drain the ClassData
-// headroom into a spurious path-DOWN flap. It admits realistic multi-concentrator
+// (200ms) plus its reflected echo. Those generated frames bypass Send and remain
+// uncharged by the live exact-byte shaper until T300. The ceiling independently
+// keeps aggregate emission bounded (32 probers × 5 PROBE/s = 160 PROBE/s across
+// the shared uplink sockets). It admits realistic multi-concentrator
 // edges (e.g. 8 concentrators × 4 uplinks) and rejects a pathological fan-out at
 // config LOAD with a computed-vs-available message, rather than deferring the
 // overload to runtime.

@@ -384,11 +384,11 @@ Giving inner ICMP (or any inner flow) its own priority lane would require
 plaintext deep-packet inspection BEFORE encryption, which is out of
 architecture (wanbond is designed to carry the inner tunnel opaquely, not to
 terminate or inspect it). The only wanbond-addressable priority signal below
-`ClassControl` is `frame.KindProbe` (wanbond's own PROBE frames, exempt-but-
-charged above) — there is no path to prioritizing traffic the pacer cannot
+`ClassControl` is `frame.KindProbe` (wanbond's own generated PROBE frames,
+currently direct and uncharged until T300) — there is no path to prioritizing traffic the pacer cannot
 see inside the tunnel.
 
-**Motivation (defects D65/D112).** Before the exact-byte cutover, `Send` wrote
+**Motivation (defects D65/D112).** In the pre-T299 implementation, `Send` wrote
 each admitted frame synchronously to the path socket and the frame-token pacer
 **shed at the head** when its bucket emptied. Batched TUN I/O made a single
 selection cover many encoded frames, exposing the policer as transport loss:
@@ -431,49 +431,38 @@ drops datagrams.
 > identically under either policy (T152 built the config plumbing; T153 wired
 > it into `selectScheduler`'s active-backup branch).
 >
-> **Decision (D65/T152): per-path sizing under active-backup, shared-bottleneck
-> sizing under weighted.** Both policies size the pace from the same BDP
-> algorithm (`SizePacingFromBDP`) but apply it differently because they egress
-> differently. Weighted stripes every eligible path AT ONCE, so a single shared
-> reference capacity — the slowest declared link, the bottleneck — bounds every
-> path's bucket; pacing any path faster than the bottleneck would let it build
-> the very standing queue pacing exists to prevent. Active-backup egresses on
-> exactly ONE path at a time, so bottleneck-sizing would be wrong: it would
-> throttle a fast active primary (e.g. Starlink) down to a much slower backup's
-> (e.g. 5G) declared rate even though the backup is idle, reimposing on the
-> active path the artificial single-flow ceiling D65 exists to remove.
-> Active-backup therefore sizes each path's bucket from **its own** declared
-> `link_bandwidth`/`link_rtt`, index-aligned to `Config.Paths`
-> (`PerPathCapacities`/`PacingBursts`) — a fast primary paces at its own drain
-> rate independent of what any backup declares.
+> **Decision (D65/T152/T299): per-path byte shaping, with a weighted
+> bottleneck reference only for aggregation.** Both policies derive the live
+> shaper for each path from that path's own declared
+> `link_bandwidth`/`link_rtt`; a fast active primary therefore drains at its own
+> rate independent of a slower backup. Weighted still needs one shared
+> offered-frame reference for its aggregation thresholds, so its legacy
+> `PerPathCapacityFPS`/`PacingBurstFrames` frame-domain values use the slowest
+> declared link. Those values no longer admit production traffic: T299 disables
+> scheduler token policing whenever `PerPathShapers` is present.
 
 When pacing is enabled the per-path pace can be
 sized from an **operator-declared** per-link bandwidth (`link_bandwidth` +
-`link_rtt` on each `[[paths]]`): at config load `SizePacingFromBDP` derives the
-pace from the bandwidth-delay product — under weighted into the scheduler's
-shared `per_path_capacity_fps`/`pacing_burst_frames`, sized to the **slowest
-declared link** (the shared pace must not exceed the bottleneck); under
-active-backup into `Config.Scheduler`'s PER-PATH `PerPathCapacities`/
-`PacingBursts` vectors, each sized from its OWN link, index-aligned to
-`Config.Paths`. This is operator-*declared*, not runtime auto-tuning — the value
-is fixed at load. With pacing off (the default) a declared bandwidth is inert and
-the synthetic default pace is kept (weighted) / active-backup's pre-pacing
-byte-for-byte behaviour is unchanged. See "Not yet built" for why pacing stays
-off by default.
+`link_rtt` on each `[[paths]]`): at config load each path receives
+`R=bandwidth/8` and `B=ceil(R*RTT)`. The frame-domain BDP derivation remains the
+weighted aggregation reference and an active-backup compatibility vector, but
+does not admit production traffic. This is operator-*declared*, not runtime
+auto-tuning — the value is fixed at load. With pacing off (the default) a
+declared bandwidth is inert and the direct complete-batch framing/socket-write
+path remains byte-for-byte compatible.
 
 **Sizing from the bandwidth-delay product.** The BDP algorithm (`SizePacingFromBDP`,
 internal/config) sizes the pacing parameters as follows:
 
 - **`capacity_fps`** (frames/second): `bandwidth_bits_per_sec / (8 * avg_wire_frame_bytes)`.
-  The rate at which the link sustains datagrams; frames arrive at this rate or the
-  token bucket drains.
+  The offered-wire-frame capacity used by the weighted aggregation denominator;
+  for the raw configuration surface it is projected to bytes at 1500 B/frame.
 - **`burst_frames`** (frame count): `capacity_fps * rtt_seconds` ≡ `bandwidth * rtt / (8 * frame_size)`.
-  The maximum burst (number of frames) the bucket can hold — one RTT's worth of
-  in-flight data. Equivalently, the bandwidth-delay product (in bytes) divided by
-  the average wire-frame size.
+  The frame-domain representation of one RTT's bandwidth-delay product; the raw
+  configuration surface projects it to the shaper's byte budget.
 
 T298 separates those **offered-frame scheduler units** from the exact-byte
-configuration the replacement shaper will consume. With pacing enabled,
+configuration the live shaper consumes. With pacing enabled,
 `Config.Scheduler.PerPathShapers` contains one `PathShaperConfig` per path:
 
 - `R = link_bandwidth_bits_per_sec / 8` bytes/s.
@@ -631,29 +620,29 @@ ABSENT (not present-at-zero). They honour the same T94 single-peer-omits-label
 back-compat rule as the FEC/resequencer series (the `peer` label appears only on
 a multi-peer concentrator scrape).
 
-**Pacing on/off: the measured operability tradeoff (G13).** Enabling pacing
-trades throughput for bounded latency and liveness stability; the right
-default depends on the deployment. Measured under sustained offered-load
-overload on a rate-capped weighted-policy multipath link:
+**Historical pre-T299 pacing measurement (G13; not current shaper
+behavior).** The following numbers came from the retired frame-token
+loss-policer under sustained offered-load overload on a rate-capped
+weighted-policy multipath link:
 
 | | pacing OFF | pacing ON |
 |---|---|---|
-| path traffic split | ~71/29 (RTT-weighted — the lower-RTT path takes most of the load) | ~50/50 (capacity-capped — each path's token bucket admits at its own declared rate) |
+| path traffic split | ~71/29 (RTT-weighted — the lower-RTT path takes most of the load) | ~50/50 (the retired token buckets capped each path at its declaration) |
 | worst-case loaded RTT | 1083 ms | 757 ms |
 | achieved throughput | 6.93 Mbit/s | 4.98 Mbit/s |
-| offered load shed at the pacer | none (no egress shaping; the excess is absorbed downstream instead, see D65) | ~33%, deliberately (`"scheduler pacer shedding"`) |
-| liveness under sustained overload | the unshaped sender lets the downstream link queue build (bufferbloat, D65) until RTT growth can push PROBE echoes past `DownAfter` and flap liveness | probe headroom (T145, the exempt-but-charged middle tier above) keeps PROBE frames answered inside `DownAfter` even while `ClassData` is being shed, so liveness stays stable |
+| offered load shed at the pacer | none (no egress shaping; the excess is absorbed downstream instead, see D65) | ~33% by the retired loss policer (`"scheduler pacer shedding"`) |
+| liveness under sustained overload | the unshaped sender lets the downstream link queue build (bufferbloat, D65) until RTT growth can push PROBE echoes past `DownAfter` and flap liveness | the retired exempt-but-charged probe accounting kept PROBE frames answered while `ClassData` was shed |
 
-Pacing OFF wins raw throughput (6.93 vs 4.98 Mbit/s here) by trading away a
-latency/liveness ceiling; pacing ON bounds worst-case RTT and keeps liveness
-stable at the cost of the ~33% excess it sheds rather than lets queue.
-**Guidance:** enable `pacing_enabled = true` whenever the deployment values
-bounded latency and stable liveness under sustained overload more than the
-last few percent of throughput — e.g. interactive/real-time traffic over the
-tunnel, or any link where a liveness flap triggers a disruptive failover.
-Leave it off only when the workload is throughput-bound, tolerant of
-bufferbloat-scale latency spikes, and unlikely to sustain overload long
-enough to threaten liveness.
+These measurements diagnose the pre-T299 regression but do not predict current
+throughput or latency. T299 does not shed ordinary DATA/FEC overload: it admits
+exact encoded bytes into a bounded queue and backpressures until the configured
+rate emits them. Hardware measurements must therefore be rerun against T299
+before claiming a new throughput/RTT delta. **Current guidance:** enable
+`pacing_enabled = true` when the operator has a defensible per-link bandwidth
+and RTT declaration and wants bounded egress admission; leave it off for the
+legacy direct-send behavior. Generated PROBE/echo remains direct and uncharged
+until T300, so the historical probe-headroom interpretation above does not
+describe the current byte shaper.
 
 **Operability runbook: reading the pacing/aggregation signals together
 (G13).** Diagnosing a weighted-policy deployment's pacing/aggregation
@@ -683,10 +672,13 @@ behaviour composes the following signals into one picture:
   engage/disengage flip, carrying `to`/`from`, `load_fps`,
   `engage_threshold_fps`, `disengage_threshold_fps`, plus `reason` on a
   collapse.
-- the `"scheduler pacer shedding"` log record — coalesced, at most once per
-  second, whenever the pacer is actively dropping `ClassData` (`shed_frames`,
-  `load_fps`); its absence under sustained load is itself informative
-  (nothing is being shed).
+- exact-byte terminal-prefix counters:
+  `wanbond_path_shaper_accepted_datagrams_total`,
+  `wanbond_path_shaper_emitted_datagrams_total`,
+  `wanbond_path_shaper_write_errors_total`, and
+  `wanbond_path_socket_write_errors_total`. Ordinary capacity waits increment
+  no error counter; accepted minus emitted describes the accepted prefix not
+  handed to the kernel when a terminal writer error occurs.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can
   mathematically never engage at line rate on this path…" error) — fails
@@ -698,9 +690,9 @@ Read together: a peer stuck at `wanbond_aggregation_engaged = 0` with
 `wanbond_offered_load_fps` climbing toward — but never past —
 `wanbond_aggregation_engage_threshold_fps`, and no `"scheduler aggregation
 change"` record, means load genuinely never crossed the gate, not a defect.
-Recurring `"scheduler pacer shedding"` records are expected behaviour
-whenever pacing is enabled and offered load exceeds capacity (see the
-tradeoff table above). `wanbond_weighted_capacity_sane = 0` at startup is a
+Production exact-byte shaping should not produce `"scheduler pacer shedding"`
+records; they belong to the retired scheduler policer or an explicitly
+legacy-composed scheduler. `wanbond_weighted_capacity_sane = 0` at startup is a
 prompt to either declare `link_bandwidth` on every path or verify
 `per_path_capacity_fps` by hand ([install.md
 §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)) — it never blocks
@@ -742,18 +734,20 @@ not `Send` batches (defect D95, decisions:K35, G33).**
   (tasks:T288 criterion 3). **That ~40% figure is an FEC-OFF figure** — every
   one of those numbers was measured with FEC disabled; see (iii) below for
   the FEC-enabled case.
-- **(ii) An enabled pacer now binds at the declared rate.** Pacing is OFF by
-  default, so most deployments see no change. Where pacing IS enabled, the
-  token bucket previously refilled in wire frames/s but spent ONE token per
-  `Send` batch, so it admitted roughly 1.5–3× the declared link bandwidth; it
-  now charges one token per frame and binds at the declared rate. An operator
+- **(ii) An enabled shaper now binds at the declared byte rate without
+  policer loss.** Pacing is OFF by default, so most deployments see no change.
+  Historically the frame-token policer first spent one token per `Send` batch
+  (admitting roughly 1.5–3× the declaration), then spent one token per offered
+  frame and shed the whole batched call when empty. T299 replaces both stages
+  with exact encoded-byte serialization and bounded backpressure. An operator
   who compensated by inflating `per_path_capacity_fps` must remove that
-  compensation (tasks:T291).
+  compensation.
 - **(iii) FEC parity is counted as offered load.**
-  - **(iii-a) The rule:** parity frames count as offered load (and are
-    charged to the pacer), because they egress on the same chosen path and
+  - **(iii-a) The rule:** parity frames count as offered load and are admitted
+    by the exact-byte shaper, because they egress on the same chosen path and
     consume the same wire capacity; with FEC enabled at K data + M parity the
-    gate therefore sees the WIRE rate, not the demand rate.
+    gate therefore sees the WIRE frame rate and the shaper sees the encoded
+    DATA+parity byte rate, not the demand rate.
   - **(iii-b) The consequence, stated plainly:** the thrift/5G-idle margin is
     a WIRE-frame margin, so the margin available to user DEMAND is divided by
     the FEC expansion factor `f = (K+M)/K`. The gate collapses at an
@@ -788,14 +782,13 @@ not `Send` batches (defect D95, decisions:K35, G33).**
     the bound is `fCeil < 0.5 * 3400 / 1050 = 1.62`, so `data_shards=4` /
     `parity_shards=2` (`fCeil = 1.50`) is admissible while 4+3 (`fCeil =
     1.75`) is not.
-  - **(iii-d) Residual limitations:** the parity count is carried into the
+  - **(iii-d) Residual limitations:** the aggregation parity count is carried into the
     NEXT batch's observation, a lag bounded by one batch and immaterial
     against the 200 ms `load_tau`; the FEC-ON boundary above is asserted at
     unit level only (tasks:T290 step 4e2/4b(j)) and is NOT measured on
-    hardware — tasks:T288 criterion 3 is FEC-OFF by scope; and per
-    defects:D108, parity is charged to the pacer but never itself admitted or
-    shed, so an enabled pacer with FEC absorbs parity by running the bucket
-    negative rather than by admission control.
+    hardware — tasks:T288 criterion 3 is FEC-OFF by scope. Immediate and
+    deadline-produced parity now uses the selected path's exact-byte shaper;
+    T299 removes D108's bypass and negative token-debt behavior.
 
 ### Concentrator hub failover — `internal/device` (`failover.go`, T57)
 
@@ -1898,9 +1891,10 @@ These are recorded design boundaries, not defects:
 - **Pacing ships disabled by default; no live auto-tuning (Q20).** Empirical
   sizing *is* built: `SizePacingFromBDP` derives the per-path pace from an
   operator-declared per-link bandwidth (`link_bandwidth`/`link_rtt`) at config
-  load (T53), and enabled-pacing was measured to eliminate bufferbloat both on the
-  bandwidth-capped netns fixture (T56/T61) and on the real-link tier (T58). What
-  stays a **deliberate boundary**: pacing is off unless `[scheduler] pacing_enabled
+  load (T53). The published enabled-pacing measurements came from the pre-T299
+  policer and do not validate the current exact-byte shaper; absolute throughput
+  and bufferbloat require a fresh real-link run because the netns fixture is
+  CPU/PPS-bound. What stays a **deliberate boundary**: pacing is off unless `[scheduler] pacing_enabled
   = true`, and the declared bandwidth is fixed at load — wanbond never re-derives
   the pace live from runtime measurements (Q20 rejected a live control loop for the
   pilot). Absent a declared bandwidth (or with pacing off) the default per-path

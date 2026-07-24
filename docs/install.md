@@ -297,8 +297,10 @@ listen = "127.0.0.1:9090"
 `(concentrator peer, uplink)` pair, so the probe fan-out is **N concentrator
 peers × U uplinks**. The uplink **sockets** do not multiply by N (all peers share
 each uplink's socket), but the **probers** do: each emits one PROBE per fixed
-200 ms interval plus its reflected echo, and those frames bypass the pacer
-(charged-but-never-shed), drawing on each uplink's token bucket. Config load
+200 ms interval plus its reflected echo. Those generated frames currently use
+the direct strict-priority socket path and remain uncharged by the exact-byte
+shaper until T300; the fan-out ceiling independently bounds their aggregate
+emission. Config load
 rejects a config whose computed fan-out exceeds the budget of **32 probers**,
 with a message stating the computed value vs. the available budget. Worked
 example: the 2-concentrator edge above over its 2 uplinks is `2 × 2 = 4` probers,
@@ -407,11 +409,11 @@ Common rules, either policy:
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.
-  The bounded primitive under `internal/shaper` admits encoded DATA/control and
-  all FEC parity by exact byte length. A full DATA/control budget blocks the
+  The live per-(peer,path) shaper admits encoded DATA/control and all immediate
+  and deadline-produced FEC parity by exact byte length. A full DATA/control budget blocks the
   sender until capacity becomes available; it no longer produces
   `PickPaced` loss. Generated PROBE/echo frames remain direct strict-priority
-  writes pending their separate priority-debt integration.
+  writes and uncharged until T300 integrates their separate priority budget.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=2,944 B`, and `Rp=14,720 B/s`.
@@ -676,9 +678,9 @@ pacing meets your bufferbloat target.
   construction — **and that ~40% figure is FEC-OFF**; see (iii) below.
 - **(ii) An enabled shaper now binds at the declared byte rate without
   policer loss.** Pacing is OFF by default, so most deployments see no change
-  from this note. The intermediate frame-token implementation first spent one
-  token per send batch (admitting roughly 1.5–3× the declaration), then spent
-  one token per offered frame and shed an entire batched call when empty.
+  from this note. The historical pre-T299 frame-token implementations first
+  spent one token per send batch (admitting roughly 1.5–3× the declaration),
+  then spent one token per offered frame and shed an entire batched call when empty.
   T299 replaces both with exact encoded-byte serialization and bounded
   backpressure. **If you inflated `link_bandwidth` or
   `per_path_capacity_fps` to compensate for under-pacing, remove that
@@ -717,10 +719,10 @@ pacing meets your bufferbloat target.
     1.50`) is admissible while `parity_shards = 3` (`fCeil = 1.75`) is not.
   - **Residual limitations:** the parity count is applied one batch late (a
     lag immaterial against the 200 ms `load_tau`); this boundary is verified
-    at unit level only, not on real hardware; and parity is charged to the
-    pacer's bucket but never itself shed by it (defects:D108) — an enabled
-    pacer with FEC absorbs parity by running the bucket negative rather than
-    by admission control.
+    at unit level only, not on real hardware. The carry affects only the next
+    scheduler offered-load observation: every immediate and deadline-produced
+    parity datagram is admitted and serialized by the selected path's exact-byte
+    shaper. T299 therefore removes D108's parity bypass/token-debt behavior.
 
 ### 3b. Policy-routing edge topologies: source-IP pinning with `bind = "source"`
 
@@ -1019,15 +1021,16 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   >= 0.
 # load_tau = "200ms"               # DEFAULT 200ms. Weighted only. Offered-load
                                    #   rate estimator time constant. > 0.
-# pacing_enabled = false           # DEFAULT false. Turn on per-path send-pacing
-                                   #   (token buckets) under EITHER policy. Off
-                                   #   => buckets bypassed.
-# pacing_burst_frames = 64.0       # DEFAULT 64. Token-bucket burst (frames),
-                                   #   either policy. > 0 when pacing_enabled,
-                                   #   and its 1500-byte conversion must admit
-                                   #   Lmax (one legal encoded datagram). At the
-                                   #   default IPv4/1500 MTU this requires
-                                   #   >= 1472/1500 (~0.9814; use >= 1).
+# pacing_enabled = false           # DEFAULT false. Turn on exact-byte per-path
+                                   #   shaping under EITHER policy. Off preserves
+                                   #   direct batch framing and socket writes.
+# pacing_burst_frames = 64.0       # DEFAULT 64. Raw burst input (frame slots),
+                                   #   projected to bytes at 1500 B/slot. > 0
+                                   #   when pacing_enabled, and the projection
+                                   #   must admit Lmax (one legal encoded
+                                   #   datagram). At the default IPv4/1500 MTU
+                                   #   this requires >= 1472/1500 (~0.9814;
+                                   #   use >= 1).
 # weight_rtt_floor = "1ms"         # DEFAULT 1ms. RTT floor in the weight
                                    #   formula. > 0.
 # weight_loss_floor = 0.001        # DEFAULT 1e-3. Loss floor under the sqrt in
