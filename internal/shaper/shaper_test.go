@@ -198,6 +198,12 @@ func TestNewValidatesModelBounds(t *testing.T) {
 			config.RateBytesPerSecond = math.Inf(1)
 			return config
 		}(),
+		"Lmax serialization duration overflows": func() Config {
+			config := validConfig()
+			config.RateBytesPerSecond = 1e-12
+			config.PriorityRateBytesPerSecond = 0
+			return config
+		}(),
 	}
 	for name, config := range tests {
 		config := config
@@ -207,6 +213,65 @@ func TestNewValidatesModelBounds(t *testing.T) {
 				t.Fatal("constructor accepted an invalid model")
 			}
 		})
+	}
+}
+
+func TestReservationOrderSurvivesDelayedCopyPublication(t *testing.T) {
+	clock := newFakeClock()
+	writes := make(chan byte, 2)
+	shaper, err := New(validConfig(), clock, func(datagram []byte) error {
+		writes <- datagram[0]
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shaper.Close() }()
+
+	// Caller A reserves the earlier virtual deadline, then stalls before its
+	// caller-owned payload has been copied and published.
+	firstReservation, err := shaper.reserve(context.Background(), ClassData, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondResult := make(chan error, 1)
+	go func() {
+		secondResult <- shaper.WriteBatch(
+			context.Background(),
+			ClassData,
+			[][]byte{bytesOf(2, 100)},
+		)
+	}()
+	waitFor(t, func() bool {
+		shaper.mu.Lock()
+		defer shaper.mu.Unlock()
+		for _, datagram := range shaper.queue {
+			if len(datagram.payload) > 0 && datagram.payload[0] == 2 {
+				return true
+			}
+		}
+		return false
+	})
+
+	clock.Advance(100 * time.Millisecond)
+	firstDone, err := shaper.enqueue(firstReservation, bytesOf(1, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	order := []byte{
+		waitValue(t, writes, "first reserved datagram was not written"),
+		waitValue(t, writes, "second reserved datagram was not written"),
+	}
+	if err := waitResult(t, firstDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitResult(t, secondResult); err != nil {
+		t.Fatal(err)
+	}
+	if order[0] != 1 || order[1] != 2 {
+		t.Fatalf("write order = %v, want reservation order [1 2]", order)
 	}
 }
 
@@ -503,7 +568,7 @@ func TestSeparateClassBudgetsBackpressureBeforeCopyAndCancellation(t *testing.T)
 		shaper.mu.Lock()
 		defer shaper.mu.Unlock()
 		for _, datagram := range shaper.queue {
-			if datagram.payload[0] == 9 {
+			if len(datagram.payload) > 0 && datagram.payload[0] == 9 {
 				bound := time.Duration(float64(config.DataBudgetBytes+config.ControlReserveBytes+config.MaxDatagramBytes) /
 					config.RateBytesPerSecond * float64(time.Second))
 				return !datagram.deadline.After(clock.Now().Add(bound))
@@ -826,5 +891,17 @@ func waitChannel(t *testing.T, signal <-chan struct{}, message string) {
 	case <-signal:
 	case <-time.After(2 * time.Second):
 		t.Fatal(message)
+	}
+}
+
+func waitValue[T any](t *testing.T, values <-chan T, message string) T {
+	t.Helper()
+	select {
+	case value := <-values:
+		return value
+	case <-time.After(2 * time.Second):
+		t.Fatal(message)
+		var zero T
+		return zero
 	}
 }

@@ -60,15 +60,15 @@ func (t systemTimer) C() <-chan time.Time {
 
 type queuedDatagram struct {
 	class    Class
+	size     int
 	payload  []byte
 	deadline time.Time
 	done     chan error
+	ready    bool
 }
 
 type reservation struct {
-	class    Class
-	size     int
-	deadline time.Time
+	datagram *queuedDatagram
 }
 
 type Shaper struct {
@@ -77,7 +77,7 @@ type Shaper struct {
 	write  WriteFunc
 
 	mu                   sync.Mutex
-	queue                []queuedDatagram
+	queue                []*queuedDatagram
 	retainedDataBytes    int
 	retainedControlBytes int
 	inFlightBytes        int
@@ -136,6 +136,12 @@ func validateConfig(config Config) error {
 	}
 	if config.PriorityBurstBytes < 0 {
 		return errors.New("Pburst must be non-negative")
+	}
+	serializationNanoseconds := float64(config.MaxDatagramBytes) /
+		config.RateBytesPerSecond * float64(time.Second)
+	if math.IsInf(serializationNanoseconds, 0) ||
+		serializationNanoseconds >= math.Ldexp(1, 63) {
+		return errors.New("Lmax/R serialization interval exceeds time.Duration")
 	}
 	return nil
 }
@@ -216,8 +222,16 @@ func (s *Shaper) reserve(ctx context.Context, class Class, size int) (reservatio
 			}
 			s.tail = deadline.Add(s.byteDuration(size))
 			s.retain(class, size)
+			datagram := &queuedDatagram{
+				class:    class,
+				size:     size,
+				deadline: deadline,
+				done:     make(chan error, 1),
+			}
+			s.queue = append(s.queue, datagram)
+			s.notifyLocked()
 			s.mu.Unlock()
-			return reservation{class: class, size: size, deadline: deadline}, nil
+			return reservation{datagram: datagram}, nil
 		}
 
 		changed := s.changed
@@ -284,20 +298,13 @@ func (s *Shaper) enqueue(reserved reservation, payload []byte) (<-chan error, er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		s.release(reserved.class, reserved.size)
-		s.notifyLocked()
 		return nil, ErrClosed
 	}
 
-	done := make(chan error, 1)
-	s.queue = append(s.queue, queuedDatagram{
-		class:    reserved.class,
-		payload:  payload,
-		deadline: reserved.deadline,
-		done:     done,
-	})
+	reserved.datagram.payload = payload
+	reserved.datagram.ready = true
 	s.notifyLocked()
-	return done, nil
+	return reserved.datagram.done, nil
 }
 
 func (s *Shaper) AccountPriority(size int) error {
@@ -332,7 +339,7 @@ func (s *Shaper) Close() error {
 	if !s.closed {
 		s.closed = true
 		for _, datagram := range s.queue {
-			s.release(datagram.class, len(datagram.payload))
+			s.release(datagram.class, datagram.size)
 			datagram.done <- ErrClosed
 			close(datagram.done)
 		}
@@ -363,6 +370,12 @@ func (s *Shaper) run() {
 		}
 
 		datagram := s.queue[0]
+		if !datagram.ready {
+			changed := s.changed
+			s.mu.Unlock()
+			<-changed
+			continue
+		}
 		delay := datagram.deadline.Sub(s.clock.Now())
 		if delay > 0 {
 			changed := s.changed
@@ -377,8 +390,8 @@ func (s *Shaper) run() {
 		}
 
 		s.queue = s.queue[1:]
-		s.release(datagram.class, len(datagram.payload))
-		s.inFlightBytes = len(datagram.payload)
+		s.release(datagram.class, datagram.size)
+		s.inFlightBytes = datagram.size
 		s.notifyLocked()
 		s.mu.Unlock()
 

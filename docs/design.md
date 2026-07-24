@@ -519,12 +519,16 @@ reservations retain at most `C` bytes, and DATA cannot borrow unused CONTROL
 reserve. Consequently the queue and copy reservations retain at most `Q`
 bytes, plus at most one `Lmax` datagram in the serial writer. `B >= Lmax`
 allows an exact-`Lmax` DATA datagram, including when `B == Lmax`; construction
-defensively rejects `B < Lmax`, `C != Lmax`, or `R <= Rp`.
+defensively rejects `B < Lmax`, `C != Lmax`, `R <= Rp`, or an `Lmax/R`
+serialization interval that cannot fit in `time.Duration`.
 
 Admission reserves byte capacity **before** copying caller memory. If the
 relevant class budget is full, admission blocks on a cancellable context and
 wakes when the worker removes a datagram; cancellation copies and loses
-nothing. A batch whose aggregate size exceeds `B` therefore remains feasible:
+nothing. A successful reservation publishes an ordered placeholder before the
+copy starts, so concurrent callers cannot reorder FIFO transmission by
+finishing their copies in a different order. A batch whose aggregate size
+exceeds `B` therefore remains feasible:
 it streams one legal `L <= Lmax <= B` reservation at a time as earlier
 datagrams leave the queue instead of requiring the whole aggregate to fit.
 Writer errors complete the affected call but do not stop the per-path worker.
