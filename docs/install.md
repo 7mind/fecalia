@@ -409,8 +409,9 @@ Common rules, either policy:
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.
-  These byte fields are staged for T299; T298 leaves the existing frame-token
-  `PickPaced` runtime and drop behavior active.
+  The bounded exact-byte primitive that consumes this model now exists under
+  `internal/shaper`, but scheduler integration remains staged: the existing
+  frame-token `PickPaced` runtime and drop behavior remain active.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=2,944 B`, and `Rp=14,720 B/s`.

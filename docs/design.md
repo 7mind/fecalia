@@ -504,12 +504,59 @@ conversion unchanged: `R = per_path_capacity_fps * 1500` and
 `B = ceil(pacing_burst_frames * 1500)`. Thus the aggregation estimator and its
 `per_path_capacity_fps` thresholds remain offered-wire-frame quantities.
 
-This is deliberately a **staged cutover**. T298 only establishes the
-configuration ownership boundary and validation. `selectScheduler` still passes
-the legacy `PerPathCapacities`/`PacingBursts` fields to the existing
-frame-token pacer, and `PickPaced` still sheds at runtime. T299 replaces that
-primitive and consumes the exact-byte fields; T298 makes no queue, delay, or
-egress change.
+This remains a **staged cutover**. T298 established the configuration ownership
+boundary and validation. `internal/shaper` now provides the isolated exact-byte
+shaping primitive described below, but `selectScheduler` does not yet construct
+it: the running scheduler still receives the legacy
+`PerPathCapacities`/`PacingBursts` fields, and `PickPaced` still sheds at
+runtime. The later scheduler integration consumes `PerPathShapers`; neither the
+configuration task nor the primitive task changes live egress by itself.
+
+**Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
+belongs to one path and takes the validated quantities above. Define
+`C = Lmax` and `Q = B + C`. DATA reservations retain at most `B` bytes, CONTROL
+reservations retain at most `C` bytes, and DATA cannot borrow unused CONTROL
+reserve. Consequently the queue and copy reservations retain at most `Q`
+bytes, plus at most one `Lmax` datagram in the serial writer. `B >= Lmax`
+allows an exact-`Lmax` DATA datagram, including when `B == Lmax`; construction
+defensively rejects `B < Lmax`, `C != Lmax`, or `R <= Rp`.
+
+Admission reserves byte capacity **before** copying caller memory. If the
+relevant class budget is full, admission blocks on a cancellable context and
+wakes when the worker removes a datagram; cancellation copies and loses
+nothing. A batch whose aggregate size exceeds `B` therefore remains feasible:
+it streams one legal `L <= Lmax <= B` reservation at a time as earlier
+datagrams leave the queue instead of requiring the whole aggregate to fit.
+Writer errors complete the affected call but do not stop the per-path worker.
+
+The worker assigns immutable FIFO transmission deadlines. After startup or an
+idle gap, one datagram may transmit immediately; offering a datagram of `L`
+bytes then advances the virtual tail by exactly `L/R`. Thus the scheduled
+envelope permits the one-datagram startup allowance and otherwise advances by
+offered wire bytes, independently of TUN/GSO batch cardinality. At admission,
+the existing `Q` retained bytes plus the one possible in-flight datagram bound
+the local virtual-deadline offset by `Q/R + Lmax/R`.
+
+Generated strict-priority traffic does not enter this queue.
+`AccountPriority(L)` instead advances the priority-debt clock and only the
+**future** virtual tail by `L/R`; it never rewrites deadlines already assigned
+to queued DATA or CONTROL. Let a call begin with `P0` outstanding generated
+priority bytes. Under the configured model — at most one post-call burst
+`Pburst`, followed by generated priority traffic bounded by `Rp` — DATA/CONTROL
+admission occurs within
+
+`Dp = (P0 + Pburst) / (R - Rp)`.
+
+The denominator is the net debt-clearance rate, not `R`; the simpler `P0/R`
+bound fails as soon as the post-call burst or continuing `Rp` traffic exists.
+The `R > Rp` constructor invariant makes `Dp` finite.
+
+This bound covers the authenticated probe/echo workload from which `Pburst` and
+`Rp` are derived. Sustained authenticated, on-demand outer CONTROL generation
+beyond that declared model is explicitly excluded overload: callers must bound
+and account such a producer before relying on `Dp`. The primitive does not
+classify frames, select paths, generate FEC, or own tunnel lifecycle; those
+remain integration responsibilities.
 
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in

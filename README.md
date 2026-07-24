@@ -211,6 +211,7 @@ cmd/wanbond/            entry point; role selection; SIGHUP reload
 internal/bind/          the custom conn.Bind — multipath fan-out/coalesce, the amnezia boundary
 internal/frame/         outer bonding frame codec (obfuscation + optional HMAC)
 internal/sched/         send-side scheduler (active-backup, weighted, pacing)
+internal/shaper/        exact-byte, bounded-queue per-path shaping primitive (not yet scheduler-integrated)
 internal/telemetry/     per-path PROBE/liveness, RTT/loss/jitter
 internal/reseq/         receive resequencer (bounded-window reorder)
 internal/fec/           Reed-Solomon FEC encoder/decoder
@@ -249,9 +250,10 @@ deliberate boundaries you must plan around:
   admit one legal datagram or whose maximum probe+echo rate consumes the whole
   link. Non-finite inputs and byte budgets that cannot fit the platform's
   integer byte-count domain are rejected before conversion. This is a staged
-  cutover: the runtime still uses the existing
-  frame-token `PickPaced` loss-policer until T299; the new byte fields do not yet
-  change egress behavior.
+  cutover: the bounded exact-byte primitive now exists under `internal/shaper`,
+  but the runtime still uses the existing frame-token `PickPaced` loss-policer
+  until scheduler integration; neither the new byte fields nor the isolated
+  primitive changes live egress yet.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
   them instead; validate on your own uplinks before a production rollout.
