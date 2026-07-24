@@ -131,7 +131,7 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 	if promoted.prober.State() != telemetry.StateUp {
 		t.Fatalf("promoted path state = %v, want up (probes not driving its liveness)", promoted.prober.State())
 	}
-	if idx := scheduler.Pick(sched.ClassData); idx != 0 {
+	if idx := scheduler.Pick(sched.ClassData, 1); idx != 0 {
 		t.Fatalf("Pick = %d while both up, want the primary 0", idx)
 	}
 
@@ -158,7 +158,7 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 	if probers[0].State() != telemetry.StateDown {
 		t.Fatalf("blackholed primary state = %v, want down", probers[0].State())
 	}
-	if idx := scheduler.Pick(sched.ClassData); idx != 1 {
+	if idx := scheduler.Pick(sched.ClassData, 1); idx != 1 {
 		t.Fatalf("Pick = %d after primary blackhole, want failover to the promoted path 1", idx)
 	}
 	// The failover is usable end to end: a Send routes over the promoted path.

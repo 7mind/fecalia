@@ -74,13 +74,13 @@ func TestActiveBackupAccountProbeReservesClassDataHeadroom(t *testing.T) {
 		// One Pick seeds the bucket full (haveFill) and consumes one token — identical in both
 		// arms, so it cancels out of the difference. The clock is never advanced, so every later
 		// refill adds 0 and the remaining burst is the whole admission budget.
-		s.Pick(ClassData)
+		s.Pick(ClassData, 1)
 		for i := 0; i < charge; i++ {
 			s.AccountProbe(0)
 		}
 		admits := 0
 		for i := 0; i < 100; i++ {
-			if s.Pick(ClassData) >= 0 {
+			if s.Pick(ClassData, 1) >= 0 {
 				admits++
 			}
 		}

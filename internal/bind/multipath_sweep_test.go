@@ -243,7 +243,7 @@ func TestSweepDrivesEagerFailover(t *testing.T) {
 			t.Fatalf("path %d after healthy exchange = %v, want up", i, probers[i].State())
 		}
 	}
-	if got := scheduler.Pick(sched.ClassData); got != primaryIdx {
+	if got := scheduler.Pick(sched.ClassData, 1); got != primaryIdx {
 		t.Fatalf("both paths up: active=%d, want the primary %d", got, primaryIdx)
 	}
 
@@ -273,7 +273,7 @@ func TestSweepDrivesEagerFailover(t *testing.T) {
 	for j := 0; j < testProbeUpSucc; j++ {
 		pump(primaryIdx)
 	}
-	if got := scheduler.Pick(sched.ClassData); got != backupIdx {
+	if got := scheduler.Pick(sched.ClassData, 1); got != backupIdx {
 		t.Fatalf("after receive tick: active=%d, want backup %d — the tick did not eagerly fail over (D18 wedge)", got, backupIdx)
 	}
 }

@@ -64,7 +64,7 @@ func TestActiveBackupAllTrafficOnPrimary(t *testing.T) {
 	s := newSched(t, clock, time.Second, primary, backup)
 
 	for i := 0; i < 1000; i++ {
-		if got := s.Pick(ClassData); got != 0 {
+		if got := s.Pick(ClassData, 1); got != 0 {
 			t.Fatalf("Pick #%d = %d, want 0 (all traffic on the primary while both paths are up)", i, got)
 		}
 		clock.advance(time.Millisecond)
@@ -80,11 +80,11 @@ func TestActiveBackupFailoverOnPrimaryDown(t *testing.T) {
 	backup := &fakeHealth{s: telemetry.StateUp}
 	s := newSched(t, clock, time.Second, primary, backup)
 
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	primary.down()
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("Pick after primary DOWN = %d, want 1 (failover to backup)", got)
 	}
 }
@@ -116,7 +116,7 @@ func TestActiveBackupFailoverWithinDetectionWindow(t *testing.T) {
 	}
 
 	s := newSched(t, clock, time.Second, primary, backup)
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0 (primary active)", got)
 	}
 
@@ -133,7 +133,7 @@ func TestActiveBackupFailoverWithinDetectionWindow(t *testing.T) {
 	if primary.State() != telemetry.StateUp {
 		t.Fatalf("primary went down at exactly DownAfter, want still up")
 	}
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("Pick within detection window = %d, want 0 (no premature failover)", got)
 	}
 
@@ -146,7 +146,7 @@ func TestActiveBackupFailoverWithinDetectionWindow(t *testing.T) {
 	if primary.State() != telemetry.StateDown {
 		t.Fatalf("primary past DownAfter = %v, want down", primary.State())
 	}
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("Pick after detection window = %d, want 1 (failover to backup)", got)
 	}
 }
@@ -164,11 +164,11 @@ func TestActiveBackupNoThrashUnderFlapping(t *testing.T) {
 	s := newSched(t, clock, failback, primary, backup)
 
 	// Start on the primary, then fail it -> egress moves to the backup.
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	primary.down()
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("Pick after primary down = %d, want 1", got)
 	}
 
@@ -179,12 +179,12 @@ func TestActiveBackupNoThrashUnderFlapping(t *testing.T) {
 	for cycle := 0; cycle < 5; cycle++ {
 		primary.up()
 		clock.advance(step)
-		if got := s.Pick(ClassData); got != 1 {
+		if got := s.Pick(ClassData, 1); got != 1 {
 			t.Fatalf("cycle %d up-phase Pick = %d, want 1 (failback debounced, no thrash)", cycle, got)
 		}
 		primary.down()
 		clock.advance(step)
-		if got := s.Pick(ClassData); got != 1 {
+		if got := s.Pick(ClassData, 1); got != 1 {
 			t.Fatalf("cycle %d down-phase Pick = %d, want 1", cycle, got)
 		}
 	}
@@ -192,15 +192,15 @@ func TestActiveBackupNoThrashUnderFlapping(t *testing.T) {
 	// Now the primary stabilises: continuously up. Just before the dwell elapses
 	// egress is still on the backup; once the dwell passes it fails back.
 	primary.up()
-	if got := s.Pick(ClassData); got != 1 { // dwell just (re)started
+	if got := s.Pick(ClassData, 1); got != 1 { // dwell just (re)started
 		t.Fatalf("Pick at start of stable window = %d, want 1", got)
 	}
 	clock.advance(failback - time.Nanosecond)
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("Pick just before dwell elapses = %d, want 1 (still holding backup)", got)
 	}
 	clock.advance(2 * time.Nanosecond)
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("Pick after dwell elapses = %d, want 0 (failback to recovered primary)", got)
 	}
 }
@@ -212,7 +212,7 @@ func TestActiveBackupNoEligiblePath(t *testing.T) {
 	primary := &fakeHealth{s: telemetry.StateDown}
 	backup := &fakeHealth{s: telemetry.StateDown}
 	s := newSched(t, clock, time.Second, primary, backup)
-	if got := s.Pick(ClassData); got >= 0 {
+	if got := s.Pick(ClassData, 1); got >= 0 {
 		t.Fatalf("Pick with all paths down = %d, want negative (no eligible path)", got)
 	}
 }
@@ -229,18 +229,18 @@ func TestActiveBackupFailbackDeadActiveMovesImmediately(t *testing.T) {
 
 	// Fail over to the backup.
 	primary.down()
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("Pick after primary down = %d, want 1", got)
 	}
 	// Primary recovers (failback dwell begins, but it is an hour long)...
 	primary.up()
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("Pick mid-dwell = %d, want 1 (debounced)", got)
 	}
 	// ...and now the backup itself dies. The only eligible path is the primary, so
 	// egress must move there immediately despite the unelapsed dwell.
 	backup.down()
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("Pick after backup died mid-dwell = %d, want 0 (immediate move to only eligible path)", got)
 	}
 }
@@ -279,7 +279,7 @@ func TestActiveBackupPerPathPacing(t *testing.T) {
 	)
 	admitted, paced := 0, 0
 	for i := 0; i < frames; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			admitted++
 		case PickPaced:
@@ -321,14 +321,14 @@ func TestActiveBackupPerPathPacing(t *testing.T) {
 	}
 	// burst tokens, then the next ClassData Pick must be shed (bucket empty).
 	for i := 0; i < int(burst); i++ {
-		if got := s2.Pick(ClassData); got != 0 {
+		if got := s2.Pick(ClassData, 1); got != 0 {
 			t.Fatalf("drain Pick #%d = %d, want 0 (within burst)", i, got)
 		}
 	}
-	if got := s2.Pick(ClassData); got != PickPaced {
+	if got := s2.Pick(ClassData, 1); got != PickPaced {
 		t.Fatalf("Pick past the burst at a frozen instant = %d, want PickPaced (empty bucket)", got)
 	}
-	if got := s2.Pick(ClassControl); got != 0 {
+	if got := s2.Pick(ClassControl, 1); got != 0 {
 		t.Fatalf("ClassControl Pick with an empty bucket = %d, want 0 (control frames are pacing-exempt)", got)
 	}
 }
@@ -352,14 +352,14 @@ func TestActiveBackupPacingFailoverUsesOwnBucket(t *testing.T) {
 		t.Fatalf("NewActiveBackup: %v", err)
 	}
 	// Warm the primary, then fail it: the backup becomes active with a FULL bucket.
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	primary.down()
 	// At a frozen instant the backup admits exactly its burst, then sheds.
 	admitted := 0
 	for i := 0; i < int(burst)+3; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 1:
 			admitted++
 		case PickPaced:
@@ -389,7 +389,7 @@ func TestActiveBackupPacingSetPathsResizeNoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewActiveBackup: %v", err)
 	}
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	// Grow to three paths (a wholesale health replacement) — the bucket slice must
@@ -398,14 +398,14 @@ func TestActiveBackupPacingSetPathsResizeNoPanic(t *testing.T) {
 	if err := s.SetPaths([]PathAdmission{admit(p0, 1000, 8), admit(p1, 200, 8), admit(p2, 500, 8)}); err != nil {
 		t.Fatalf("SetPaths grow: %v", err)
 	}
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("Pick after SetPaths grow = %d, want 0", got)
 	}
 	// Shrink to a single path.
 	if err := s.SetPaths([]PathAdmission{admit(p2, 500, 8)}); err != nil {
 		t.Fatalf("SetPaths shrink: %v", err)
 	}
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("Pick after SetPaths shrink = %d, want 0", got)
 	}
 	// AddPath then RemovePath must keep the bucket slice aligned too.
@@ -415,7 +415,7 @@ func TestActiveBackupPacingSetPathsResizeNoPanic(t *testing.T) {
 	if err := s.RemovePath(0); err != nil {
 		t.Fatalf("RemovePath: %v", err)
 	}
-	if got := s.Pick(ClassData); got < 0 && got != PickPaced {
+	if got := s.Pick(ClassData, 1); got < 0 && got != PickPaced {
 		t.Fatalf("Pick after AddPath/RemovePath = %d, want a valid index or PickPaced", got)
 	}
 }
@@ -490,7 +490,7 @@ func TestActiveBackupPacingRemoveToEmptyThenAddPath(t *testing.T) {
 	if err := s.RemovePath(0); err != nil {
 		t.Fatalf("RemovePath to empty: %v", err)
 	}
-	if got := s.Pick(ClassData); got != PickNone {
+	if got := s.Pick(ClassData, 1); got != PickNone {
 		t.Fatalf("Pick on the empty set = %d, want PickNone", got)
 	}
 	// Re-grow. Before the D65 fix this panicked at s.pacers[len(s.pacers)-1] on an empty slice;
@@ -514,7 +514,7 @@ func TestActiveBackupPacingRemoveToEmptyThenAddPath(t *testing.T) {
 	// A fresh full bucket admits its burst at a frozen instant, then sheds.
 	admitted := 0
 	for i := 0; i < int(burst)+3; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			admitted++
 		case PickPaced:
@@ -577,7 +577,7 @@ func TestActiveBackupPacingRemoveToEmptyThenSetPaths(t *testing.T) {
 	// Active path 0 admits its full burst at a frozen instant, then sheds.
 	admitted := 0
 	for i := 0; i < int(burst)+3; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			admitted++
 		case PickPaced:
@@ -611,7 +611,7 @@ func TestActiveBackupPacingDisabledIsNoOp(t *testing.T) {
 	)
 	admitted := 0
 	for i := 0; i < frames; i++ {
-		got := s.Pick(ClassData)
+		got := s.Pick(ClassData, 1)
 		if got != 0 {
 			t.Fatalf("Pick #%d = %d, want 0 (pacing disabled: every frame admits on the active path)", i, got)
 		}
@@ -654,7 +654,7 @@ func TestActiveBackupPacingFailoverSaturatedPrimaryDoesNotStarveBackup(t *testin
 	// refill): exactly its burst admits, then every further frame sheds.
 	primaryAdmitted := 0
 	for i := 0; i < int(primaryBurst)+10; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			primaryAdmitted++
 		case PickPaced:
@@ -668,12 +668,12 @@ func TestActiveBackupPacingFailoverSaturatedPrimaryDoesNotStarveBackup(t *testin
 
 	// Fail over to the backup (still the same frozen instant).
 	primary.down()
-	if got := s.Pick(ClassData); got != 1 {
+	if got := s.Pick(ClassData, 1); got != 1 {
 		t.Fatalf("first Pick after failover = %d, want 1 (backup active)", got)
 	}
 	backupAdmitted := 1
 	for i := 0; i < int(backupBurst)+10; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 1:
 			backupAdmitted++
 		case PickPaced:
@@ -698,7 +698,7 @@ func TestActiveBackupPacingFailoverSaturatedPrimaryDoesNotStarveBackup(t *testin
 	)
 	windowAdmitted := 0
 	for i := 0; i < windowFrames; i++ {
-		if got := s.Pick(ClassData); got == 1 {
+		if got := s.Pick(ClassData, 1); got == 1 {
 			windowAdmitted++
 		}
 		clock.advance(step)
@@ -737,11 +737,11 @@ func TestActiveBackupPacingSentinelDistinctness(t *testing.T) {
 	// Drain the (healthy) active path's bucket at a frozen instant, then the next
 	// frame must be PickPaced — the path is up, just momentarily out of tokens.
 	for i := 0; i < int(burst); i++ {
-		if got := s.Pick(ClassData); got != 0 {
+		if got := s.Pick(ClassData, 1); got != 0 {
 			t.Fatalf("drain Pick #%d = %d, want 0 (within burst)", i, got)
 		}
 	}
-	got := s.Pick(ClassData)
+	got := s.Pick(ClassData, 1)
 	if got != PickPaced {
 		t.Fatalf("Pick with an empty bucket on a healthy path = %d, want PickPaced", got)
 	}
@@ -754,7 +754,7 @@ func TestActiveBackupPacingSentinelDistinctness(t *testing.T) {
 	// outage as a mere rate-limit.
 	primary.down()
 	backup.down()
-	got = s.Pick(ClassData)
+	got = s.Pick(ClassData, 1)
 	if got != PickNone {
 		t.Fatalf("Pick with all paths down = %d, want PickNone", got)
 	}
@@ -794,7 +794,7 @@ func TestActiveBackupPacingClassControlExemptionColdStartAndSustainedShedding(t 
 	// has ever run. It must admit on the active path, and — because the pacing
 	// branch for ClassControl returns before refill/consume — the bucket must be
 	// left untouched (still un-seeded).
-	if got := s.Pick(ClassControl); got != 0 {
+	if got := s.Pick(ClassControl, 1); got != 0 {
 		t.Fatalf("cold-start ClassControl Pick = %d, want 0 (active, exempt)", got)
 	}
 	if s.pacers[0].haveFill {
@@ -804,7 +804,7 @@ func TestActiveBackupPacingClassControlExemptionColdStartAndSustainedShedding(t 
 	// a freshly-seeded FULL bucket (burst admits before the first shed).
 	admitted := 0
 	for i := 0; i < int(burst)+3; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			admitted++
 		case PickPaced:
@@ -821,13 +821,13 @@ func TestActiveBackupPacingClassControlExemptionColdStartAndSustainedShedding(t 
 	// shedding, then interleave ClassControl Picks and prove they neither admit
 	// via the data path's accounting nor refill/consume any token.
 	for i := 0; i < 20; i++ {
-		if got := s.Pick(ClassData); got != PickPaced {
+		if got := s.Pick(ClassData, 1); got != PickPaced {
 			t.Fatalf("sustained-shedding Pick #%d = %d, want PickPaced (bucket drained)", i, got)
 		}
 	}
 	tokensBefore := s.pacers[0].tokens[0]
 	for i := 0; i < 5; i++ {
-		if got := s.Pick(ClassControl); got != 0 {
+		if got := s.Pick(ClassControl, 1); got != 0 {
 			t.Fatalf("ClassControl during sustained shedding, call #%d = %d, want 0 (still exempt)", i, got)
 		}
 	}
@@ -836,7 +836,7 @@ func TestActiveBackupPacingClassControlExemptionColdStartAndSustainedShedding(t 
 	}
 	// ClassData immediately after is still shed — the control Picks did not refill
 	// or otherwise grant it any token.
-	if got := s.Pick(ClassData); got != PickPaced {
+	if got := s.Pick(ClassData, 1); got != PickPaced {
 		t.Fatalf("ClassData Pick right after the ClassControl run = %d, want still PickPaced", got)
 	}
 }
@@ -867,11 +867,11 @@ func TestActiveBackupPacingBurstAbsorptionAfterIdle(t *testing.T) {
 	// Drain the bucket to empty first, so the subsequent refill is observably
 	// earned from the idle span, not left over from the initial full seed.
 	for i := 0; i < int(burst); i++ {
-		if got := s.Pick(ClassData); got != 0 {
+		if got := s.Pick(ClassData, 1); got != 0 {
 			t.Fatalf("drain Pick #%d = %d, want 0", i, got)
 		}
 	}
-	if got := s.Pick(ClassData); got != PickPaced {
+	if got := s.Pick(ClassData, 1); got != PickPaced {
 		t.Fatalf("Pick past the burst = %d, want PickPaced (bucket drained)", got)
 	}
 
@@ -883,7 +883,7 @@ func TestActiveBackupPacingBurstAbsorptionAfterIdle(t *testing.T) {
 	// instant, must ALL admit — no shedding.
 	admitted, shed := 0, 0
 	for i := 0; i < int(burst); i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			admitted++
 		case PickPaced:
@@ -900,7 +900,7 @@ func TestActiveBackupPacingBurstAbsorptionAfterIdle(t *testing.T) {
 	}
 	// The refill is capped at burst, not unbounded: the NEXT frame (beyond burst)
 	// at the same frozen instant must shed.
-	if got := s.Pick(ClassData); got != PickPaced {
+	if got := s.Pick(ClassData, 1); got != PickPaced {
 		t.Fatalf("Pick past the post-idle burst = %d, want PickPaced (refill capped at burst, no unbounded idle credit)", got)
 	}
 }
@@ -930,7 +930,7 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 	if err != nil {
 		t.Fatalf("NewActiveBackup: %v", err)
 	}
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("initial Pick = %d, want 0", got)
 	}
 	if got := len(s.pacers); got != 2 {
@@ -950,7 +950,7 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 	// bucket — rebuilt from its OWN admission — is the one exercised.
 	p0.down()
 	p1.down()
-	if got := s.Pick(ClassData); got != 2 {
+	if got := s.Pick(ClassData, 1); got != 2 {
 		t.Fatalf("Pick with only the grown-in path up = %d, want 2", got)
 	}
 	// The grown-in path paces at ITS supplied burst (p2Burst) — verify it actually paces at
@@ -958,7 +958,7 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 	// already consumed the bucket's first token.
 	admitted := 1
 	for i := 0; i < int(p2Burst)+5; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 2:
 			admitted++
 		case PickPaced:
@@ -979,12 +979,12 @@ func TestActiveBackupPacingSetPathsMembershipChangePacesNewMembership(t *testing
 	if got := len(s.pacers); got != 1 {
 		t.Fatalf("bucket slice len = %d after shrink, want 1 == len(health)", got)
 	}
-	if got := s.Pick(ClassData); got != 0 {
+	if got := s.Pick(ClassData, 1); got != 0 {
 		t.Fatalf("Pick after shrink = %d, want 0 (sole survivor)", got)
 	}
 	admitted = 1 // the Pick just above already consumed one token
 	for i := 0; i < int(p2Burst)+5; i++ {
-		switch got := s.Pick(ClassData); got {
+		switch got := s.Pick(ClassData, 1); got {
 		case 0:
 			admitted++
 		case PickPaced:

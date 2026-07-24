@@ -113,7 +113,7 @@ func TestSelectSchedulerActiveBackupPacingEnabled(t *testing.T) {
 	)
 	admitted, paced := 0, 0
 	for i := 0; i < frames; i++ {
-		switch got := ab.Pick(sched.ClassData); got {
+		switch got := ab.Pick(sched.ClassData, 1); got {
 		case 0:
 			admitted++
 		case sched.PickPaced:
@@ -168,7 +168,7 @@ func TestSelectSchedulerActiveBackupPacingDisabled(t *testing.T) {
 		step   = 200 * time.Microsecond
 	)
 	for i := 0; i < frames; i++ {
-		if got := ab.Pick(sched.ClassData); got != 0 {
+		if got := ab.Pick(sched.ClassData, 1); got != 0 {
 			t.Fatalf("Pick #%d = %d, want 0 (pacing disabled must never shed — pre-change behaviour)", i, got)
 		}
 		clock.advance(step)
@@ -180,7 +180,7 @@ func TestSelectSchedulerActiveBackupPacingDisabled(t *testing.T) {
 		t.Fatalf("NewActiveBackup (reference): %v", err)
 	}
 	for i := 0; i < 100; i++ {
-		if got := unwired.Pick(sched.ClassData); got != 0 {
+		if got := unwired.Pick(sched.ClassData, 1); got != 0 {
 			t.Fatalf("reference unwired Pick #%d = %d, want 0", i, got)
 		}
 	}

@@ -96,6 +96,16 @@ func (p *pacer) refill(now time.Time) {
 // tryConsume spends one token from path idx's bucket, reporting whether the frame
 // is admitted. With pacing disabled it always admits (the buckets are inert).
 // Caller holds the owner's lock.
+//
+// ONE TOKEN PER ADMITTED PICK — UNCHANGED BY THE D95 UNITS FIX, DELIBERATELY. Since D95
+// a Scheduler.Pick carries a `frames` count and the OFFERED-LOAD meter folds all of them
+// in, but this bucket is still charged exactly one token per admitted call, so an
+// admitted BATCH spends one token no matter how many wire frames it puts on the path.
+// Bringing the pacing charge into the same unit as the refill rate (CapacityFPS, a
+// wire-frame rate) is tasks:T291; it is a SEPARATE change with its own behaviour note
+// because it alters the egress rate binding, whereas the D95 fix alters only the gate's
+// numerator. The intermediate state is intentional, not half-wired — and it is inert on
+// every shipped default, all of which run pacing OFF.
 func (p *pacer) tryConsume(idx int) bool {
 	if !p.cfg.Pacing {
 		return true

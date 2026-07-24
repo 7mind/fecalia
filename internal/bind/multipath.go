@@ -418,6 +418,24 @@ type peerState struct {
 	fecSend atomic.Pointer[fecSender]
 	fecRecv atomic.Pointer[fecReceiver]
 
+	// parityCarry is the count of FEC PARITY frames this peer has written to a path
+	// socket but not yet reported to its scheduler as offered load (defect D95,
+	// decisions:K35 §3c). Parity shards consume the SAME per-path wire capacity that
+	// PerPathCapacity denominates, so they must be metered as offered frames — but a
+	// batch's parity count is not known until the encoder's Admit runs inside Send's
+	// per-buffer loop, which is AFTER Pick has already stamped the chosen path into
+	// every frame. The count is therefore carried to the NEXT Send for this peer, which
+	// consumes it with Swap(0) and adds it to len(bufs). It is incremented only where a
+	// parity frame actually reached the socket, so it counts each parity frame exactly
+	// once and never counts one that was dropped in framing.
+	//
+	// It is ATOMIC because both writers run WITHOUT m.mu: Send's egress loop runs after
+	// m.mu.Unlock(), and fecFlushDeadline's write loop likewise. A plain field would be
+	// a data race (the same reason ps.txBytes and peer.outerSeq are atomics). With FEC
+	// off it is never incremented, so the datapath reads a constant 0 and Send's offered
+	// count is exactly len(bufs).
+	parityCarry atomic.Uint64
+
 	// lifecycleMu serializes lazy (re)instantiation of the heavy trio (resequencer, fecRecv,
 	// fecSend) on a readLoop goroutine (ensurePeerReceiveInstantiated) against teardown's
 	// clearing of that trio (teardownPeerLocked), so a teardown interleaving mid-instantiation
@@ -2699,7 +2717,40 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		m.mu.Unlock()
 		return errClosed
 	}
-	idx := peer.scheduler.Pick(class)
+	// OFFERED WIRE FRAMES FOR THIS ONE SELECTION DECISION (defect D95, decisions:K35
+	// §3a/§3c). Pick runs ONCE per batch — it must, because the path it selects is
+	// stamped into every frame this batch produces (PathID at the Encode below, and into
+	// each parity shard) — so it is told how many wire frames that decision covers:
+	//
+	//   len(bufs)                  the batch's own DATA frames, one per buffer; before
+	//                              D95 the scheduler was told "1" here regardless, which
+	//                              made its offered-load meter count Send BATCHES/s while
+	//                              PerPathCapacity denominates WIRE FRAMES/s;
+	//   peer.parityCarry.Swap(0)   the FEC parity frames THIS peer actually wrote to a
+	//                              socket since its last Pick. Parity egresses on the
+	//                              same chosen path and consumes the same wire capacity,
+	//                              so excluding it would put a demand numerator over a
+	//                              wire denominator (at 4+2 a ~3400 fps path would meter
+	//                              only ~2267 fps, below engage 2700 — D95's failure mode
+	//                              restored for every FEC-enabled deployment).
+	//
+	// WHY THE CARRY RATHER THAN AN EXACT AT-PICK COUNT: the batch's parity count is not
+	// known until the encoder's Admit calls run INSIDE the loop below, and under adaptive
+	// FEC the per-group parity M itself varies at runtime, so an exact at-selection count
+	// would require inverting select-then-encode. The carry is exact IN AGGREGATE at O(1)
+	// per batch and lags by at most ONE batch — sub-millisecond at any rate where the gate
+	// can matter, against LoadTau = 200 ms (K35 §9.4).
+	//
+	// EMPTY BATCH: with no buffers AND no pending carry there is nothing to offer, so
+	// Send returns without calling Pick. That also removes a pre-existing spurious
+	// offered event (an empty Send used to meter one frame). A batch that is empty but
+	// has parity pending DOES pick, so no parity is silently lost.
+	frames := len(bufs) + int(peer.parityCarry.Swap(0))
+	if frames == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	idx := peer.scheduler.Pick(class, frames)
 	if idx == sched.PickPaced {
 		// The scheduler shed this datagram for pacing while paths are healthy: drop it
 		// (same as no-path), but surface a DISTINCT error so the diagnostic is not
@@ -2784,6 +2835,13 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 			if w.parity {
 				fs.parityFrames.Add(1)
 				fs.parityBytes.Add(uint64(len(w.b)))
+				// OFFERED-LOAD CARRY (defect D95, K35 §3c): this parity frame has just
+				// consumed one wire frame of the chosen path's capacity, so it is owed to
+				// the scheduler's offered-load meter. It is counted HERE — where w.parity
+				// is already discriminated and the frame has provably reached the socket —
+				// so it is counted exactly once and never for a frame that failed framing
+				// or was never written. The next Send for this peer consumes the carry.
+				peer.parityCarry.Add(1)
 			} else {
 				fs.dataFrames.Add(1)
 				// DATA-frame wire bytes: the overhead-BYTES denominator (T29). The P4
@@ -2934,7 +2992,13 @@ func (m *Multipath) fecFlushDeadline() {
 		// parity is best-effort — so the group simply goes unprotected rather than blocking.
 		// FEC parity is bulk redundancy, so it is paced as ClassData (defect D22): only
 		// WireGuard control frames earn the pacing exemption.
-		idx := peer.scheduler.Pick(sched.ClassData)
+		// ONE selection decision for this peer's flush, offering ONE frame — the
+		// deliberately unchanged pre-D95 arity at this call site (K35 §3c). The parity
+		// this flush actually writes is metered through the SAME carry Send uses (see
+		// the write loop below), so it reaches the offered-load meter on the peer's next
+		// Send rather than being counted speculatively here, before framing and the
+		// socket writes have had a chance to fail.
+		idx := peer.scheduler.Pick(sched.ClassData, 1)
 		if idx < 0 || idx >= len(peer.paths) {
 			continue
 		}
@@ -2971,6 +3035,12 @@ func (m *Multipath) fecFlushDeadline() {
 			w.ps.txBytes.Add(uint64(len(wire)))
 			w.fs.parityFrames.Add(1)
 			w.fs.parityBytes.Add(uint64(len(wire)))
+			// Deadline-closed parity consumes the path's wire capacity exactly as a
+			// size-closed group's does, so it is owed to the offered-load meter through
+			// the same one-batch-late carry Send uses (defect D95, K35 §3c/§9.4). The
+			// owning peer is reached through the path's own back-reference, so a
+			// multi-peer flush credits each peer's carry to that peer alone.
+			w.ps.peer.parityCarry.Add(1)
 		}
 	}
 }

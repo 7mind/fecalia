@@ -382,7 +382,19 @@ func indexOfHealth(hs []PathHealth, h PathHealth) int {
 // BDP-sized bucket, a failover draws from the new active path's own (idle-refilled,
 // full) bucket at that path's own rate. With pacing disabled the buckets are inert and
 // this is byte-for-byte the pre-pacing behaviour (class is ignored, nothing is shed).
-func (s *ActiveBackup) Pick(class FrameClass) int {
+//
+// frames — THE OFFERED-FRAME COUNT — IS VALIDATED AND THEN DELIBERATELY UNUSED HERE, so
+// the parameter is not silently dead: ActiveBackup runs NO offered-load meter (it has no
+// aggregation gate to feed), so the count that defect D95's frame-accurate estimator
+// exists to supply has nothing to drive in this policy. The one place it WOULD bite is
+// the D65 per-path token bucket, which still spends ONE token per admitted Pick rather
+// than `frames` — charging the bucket per frame is tasks:T291, kept deliberately
+// separate from the D95 units fix, so pacing behaviour here is unchanged by this seam.
+// The frames >= 1 caller contract is still enforced (checkPickFrames): it is the
+// interface's precondition, and a scheduler swap at the composition root must not change
+// which caller bugs are caught.
+func (s *ActiveBackup) Pick(class FrameClass, frames int) int {
+	checkPickFrames(frames)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock.Now()

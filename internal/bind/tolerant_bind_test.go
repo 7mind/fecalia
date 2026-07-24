@@ -80,7 +80,7 @@ func TestOpenToleratesUnassignableSourceAddr(t *testing.T) {
 	if probers[0].State() != telemetry.StateUp {
 		t.Fatalf("bindable path state = %v, want up", probers[0].State())
 	}
-	if idx := scheduler.Pick(sched.ClassData); idx != 0 {
+	if idx := scheduler.Pick(sched.ClassData, 1); idx != 0 {
 		t.Fatalf("Pick = %d, want 0 (the sole bound path)", idx)
 	}
 }

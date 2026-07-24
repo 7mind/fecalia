@@ -15,11 +15,13 @@ import (
 // depend on config. Every field is validated by NewWeighted (fail-fast at the
 // composition root), mirroring the config-boundary validation.
 type WeightedConfig struct {
-	// PerPathCapacity is the reference per-path capacity in frame-selection slots per
-	// second: the denominator the aggregation load-gate compares offered load against,
-	// and (when Pacing is on) the per-path token-bucket refill rate. There is no
-	// measured BDP (P0 §7), so capacity is expressed in the only unit the scheduler
-	// observes — Pick() invocations per second. Must be > 0.
+	// PerPathCapacity is the reference per-path capacity in WIRE FRAMES per second: the
+	// denominator the aggregation load-gate compares offered load against, and (when
+	// Pacing is on) the per-path token-bucket refill rate. There is no measured BDP
+	// (P0 §7), so it is sized from the path's wire frame rate — bandwidth/(8 * on-wire
+	// frame bytes), the derivation config.SizePacingFromBDP implements. Since defect
+	// D95 the offered-load meter counts the same unit (Scheduler.Pick's `frames`), so
+	// numerator and denominator agree. Must be > 0.
 	PerPathCapacity float64
 	// EngageFraction engages aggregation once smoothed offered load exceeds
 	// EngageFraction*PerPathCapacity. In (0,1].
@@ -136,7 +138,8 @@ type FECPolicy interface {
 //
 // Statefulness and the T40 nudge. Pick is STATEFUL — it advances the offered-load
 // meter, the aggregation gate, the pacing buckets, and the smooth-weighted-round-
-// robin credits, so ONE Pick == ONE frame. The eager-failover nudge (defect D18)
+// robin credits, so ONE Pick == ONE selection decision, covering the `frames` offered
+// wire frames it was handed (defect D95). The eager-failover nudge (defect D18)
 // must therefore NOT call Pick (it would steal a distribution slot and skew the
 // weights); it calls Recompute, which refreshes only the liveness-derived eligible/
 // active set and logs any active-path transition, touching NONE of that per-frame
@@ -151,8 +154,9 @@ type WeightedScheduler struct {
 
 	mu sync.Mutex
 
-	// Offered-load meter: an exponentially-weighted event-rate estimator (each Pick is
-	// one event; the estimate converges to the offered Pick rate in events/sec).
+	// Offered-load meter: an exponentially-weighted event-rate estimator (each Pick
+	// contributes the `frames` OFFERED WIRE FRAMES it covers; the estimate converges to
+	// the offered wire-frame rate in frames/sec — defect D95).
 	loadRate float64
 	haveLoad bool
 	lastLoad time.Time
@@ -247,13 +251,30 @@ func (s *WeightedScheduler) RedundantPaths(chosen int) []int {
 	return s.fec.RedundantPaths(chosen, s.eligibleLocked())
 }
 
-// Pick selects the path for the NEXT frame and advances all per-frame distribution
-// state (offered-load meter, aggregation gate, pacing buckets, round-robin credits).
-// It returns a negative value when no path is eligible OR when every eligible path
-// is paced out (the frame is dropped rather than queued — pacing bounds egress and,
-// by dropping the overflow, bounds the send backlog). It is safe for concurrent
+// Pick selects the path for the NEXT batch of frames and advances all per-frame
+// distribution state (offered-load meter, aggregation gate, pacing buckets, round-robin
+// credits). It returns a negative value when no path is eligible OR when every eligible
+// path is paced out (the frames are dropped rather than queued — pacing bounds egress
+// and, by dropping the overflow, bounds the send backlog). It is safe for concurrent
 // callers.
-func (s *WeightedScheduler) Pick(class FrameClass) int {
+//
+// frames is how many OFFERED WIRE FRAMES this ONE selection decision covers (defect
+// D95): the meter folds all of them into the load estimate in a single decay step, so
+// the estimate is in the same unit as PerPathCapacity. frames < 1 violates the caller
+// contract and panics (see Scheduler.Pick).
+//
+// The internal ORDER is unchanged — idle gap, liveness recompute, load meter, gate,
+// pacing refill, then selection — so METERING STAYS UPSTREAM OF THE SHED DECISION: a
+// batch shed as PickPaced has still registered its `frames` as offered demand.
+//
+// PACING IS NOT CHARGED PER FRAME HERE. Admission stays batch-atomic: serveLocked /
+// selectAggregatingLocked still spend ONE token per admitted call, exactly as before
+// this change. Charging the token bucket `frames` tokens is tasks:T291 — deliberately
+// SEPARATE, so this change moves the gate's numerator into wire frames without also
+// moving the (pacing-disabled-by-default) egress rate binding in the same step. The
+// intermediate state is therefore intentional, not half-wired.
+func (s *WeightedScheduler) Pick(class FrameClass, frames int) int {
+	checkPickFrames(frames)
 	now := s.clock.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -264,10 +285,10 @@ func (s *WeightedScheduler) Pick(class FrameClass) int {
 	// abrupt overload stop leaves the gate engaged across the whole idle span and the
 	// next low burst dribbles onto the metered path).
 	gap := s.loadGapLocked(now)
-	s.recomputeLocked(now)       // liveness refresh + eager-failover log
-	s.observeLoadLocked(now)     // this Pick is one offered frame (decays across the gap)
-	s.updateGateLocked(now, gap) // engage/disengage aggregation (hysteresis, idle-aware)
-	s.refill(now)                // top up pacing buckets
+	s.recomputeLocked(now)           // liveness refresh + eager-failover log
+	s.observeLoadLocked(now, frames) // this Pick offers `frames` wire frames (decays across the gap)
+	s.updateGateLocked(now, gap)     // engage/disengage aggregation (hysteresis, idle-aware)
+	s.refill(now)                    // top up pacing buckets
 
 	eligible := s.eligibleLocked()
 	if len(eligible) == 0 {
@@ -309,8 +330,8 @@ type AggregationSnapshot struct {
 	// Aggregating reports whether the gate is currently engaged (traffic striped
 	// across every eligible path) or collapsed (primary-only, data-thrift).
 	Aggregating bool
-	// OfferedLoadFPS is the current smoothed offered-load estimate (Pick calls per
-	// second, EWMA over LoadTau) driving the gate.
+	// OfferedLoadFPS is the current smoothed offered-load estimate (offered WIRE
+	// FRAMES per second, EWMA over LoadTau) driving the gate.
 	OfferedLoadFPS float64
 	// EngageThresholdFPS is EngageFraction*PerPathCapacity: the load level above
 	// which the gate engages.
@@ -532,12 +553,30 @@ func (s *WeightedScheduler) weightsLocked(eligible []int) []float64 {
 	return w
 }
 
-// observeLoadLocked folds one offered frame into the exponentially-weighted event-
-// rate estimator. Each event adds 1/tau (per-second units) after decaying the prior
-// estimate by exp(-dt/tau); the steady-state estimate converges to the offered rate
-// in events/sec. It is robust to dt==0 (many Picks at one clock instant just add
-// without decay). Caller holds s.mu.
-func (s *WeightedScheduler) observeLoadLocked(now time.Time) {
+// observeLoadLocked folds `frames` offered WIRE frames into the exponentially-weighted
+// event-rate estimator IN ONE DECAY STEP: the prior estimate decays by exp(-dt/tau) and
+// then gains frames/tau (per-second units), so the steady-state estimate converges to
+// the offered rate in FRAMES/sec — the same unit as WeightedConfig.PerPathCapacity
+// (defect D95, decisions:K35 §3b). It is robust to dt==0 (several Picks at one clock
+// instant just add without decay). Caller holds s.mu.
+//
+// WHY frames/tau IS EXACTLY N SINGLE-FRAME PICKS AT ONE INSTANT. The estimator's update
+// is r <- r*exp(-dt/tau) + 1/tau. N such updates at the SAME clock instant see dt == 0
+// between them, exp(0) == 1 contributes no decay, and the N addends simply sum: the
+// composite is r <- r*exp(-dt/tau) + N/tau, which is what this function computes. The
+// addend is therefore N/tau — NOT N/(N*tau), and not a re-scaled term: the estimate is a
+// RATE, and N frames offered at one instant genuinely raise it N times as much as one.
+// The !haveLoad SEED branch carries the same identity: the first of the N picks would
+// seed loadRate = 0 and add 1/tau, and the remaining N-1 would add 1/tau each at dt == 0,
+// giving N/tau — which is what seeding 0 and adding N/tau yields here.
+//
+// WHY NOT RE-RUN THE PICK PIPELINE PER BUFFER. Metering N frames by making N Pick calls
+// is arithmetically identical but costs N mutex acquisitions, N recomputeLocked /
+// updateGateLocked / refill passes and N round-robin credit advances. The tasks:T284
+// throwaway did exactly that: ~3x the scheduler work, which collapsed solo throughput to
+// 10-12.7 Mbit/s on the measurement venue. Folding in one step keeps Pick O(1) per batch,
+// which is the whole point of the `frames` seam (K35 §4ii).
+func (s *WeightedScheduler) observeLoadLocked(now time.Time, frames int) {
 	tau := s.cfg.LoadTau.Seconds()
 	if !s.haveLoad {
 		s.haveLoad = true
@@ -551,7 +590,7 @@ func (s *WeightedScheduler) observeLoadLocked(now time.Time) {
 		s.loadRate *= math.Exp(-dt / tau)
 		s.lastLoad = now
 	}
-	s.loadRate += 1.0 / tau
+	s.loadRate += float64(frames) / tau
 }
 
 // updateGateLocked engages or disengages aggregation from the smoothed offered load,

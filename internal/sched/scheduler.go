@@ -1,8 +1,23 @@
 package sched
 
 import (
+	"fmt"
+
 	"github.com/7mind/wanbond/internal/telemetry"
 )
+
+// checkPickFrames enforces the Scheduler.Pick caller contract's frames >= 1
+// precondition, shared by every implementation so the contract holds whichever
+// scheduler is wired at the composition root. A frames < 1 is a PROGRAMMING ERROR in
+// the caller (a Pick standing for no offered frame), not a runtime condition to
+// tolerate: silently metering zero would reintroduce, one call at a time, exactly the
+// under-count defect D95 exists to remove, so it fails fast.
+func checkPickFrames(frames int) {
+	if frames < 1 {
+		panic(fmt.Sprintf("sched: Pick called with frames=%d; the caller contract requires frames >= 1 "+
+			"(one Pick is one selection decision covering at least one offered wire frame — see Scheduler.Pick)", frames))
+	}
+}
 
 // Negative Pick sentinels. Pick returns a NON-NEGATIVE path index when a datagram
 // should egress, and one of these when it should not. They are distinct so the Send
@@ -95,13 +110,30 @@ type Scheduler interface {
 	// fully paced. BOTH the weighted scheduler and active-backup (defect D65) honour
 	// this exemption when pacing is enabled; a scheduler with pacing off ignores class.
 	//
+	// frames is how many OFFERED WIRE FRAMES this ONE selection decision covers
+	// (defect D95, decisions:K35 §3a). The multipath Bind's Send picks ONCE PER
+	// BATCH and then writes every buffer of that batch — plus any FEC parity the
+	// batch generated — onto the chosen path, so a Pick routinely stands for many
+	// wire frames. The offered-load meter that drives an aggregating scheduler's
+	// gate must count those frames, because the capacity it is compared against
+	// (WeightedConfig.PerPathCapacity) is a WIRE-frame rate: counting selection
+	// CALLS instead measured Send batches per second and left the gate structurally
+	// unable to engage on a genuinely saturated path (D95). frames therefore carries
+	// the count while the CALL still makes exactly one selection decision, at O(1)
+	// cost — re-running the whole Pick pipeline per buffer costs ~3x the scheduler
+	// work and is rejected (K35 §4ii).
+	//
+	// frames MUST be >= 1: a Pick that covers no frame is a caller-contract
+	// violation, and every implementation fails fast (panics) on it rather than
+	// silently metering nothing. A caller with nothing to send must not call Pick.
+	//
 	// Pick MAY be stateful: a weighted/aggregating scheduler advances its
 	// distribution bookkeeping (deficit/round-robin credits, pacing tokens, offered-
-	// load meter) on every call, so ONE Pick consumes ONE frame-selection slot.
-	// Callers that only want the liveness-derived active set refreshed — without
-	// perturbing distribution — MUST call Recompute, not Pick (see the T40 eager-
-	// failover nudge in the multipath Bind).
-	Pick(class FrameClass) int
+	// load meter) on every call, so ONE Pick consumes ONE frame-SELECTION slot and
+	// registers `frames` offered frames. Callers that only want the liveness-derived
+	// active set refreshed — without perturbing distribution — MUST call Recompute,
+	// not Pick (see the T40 eager-failover nudge in the multipath Bind).
+	Pick(class FrameClass, frames int) int
 
 	// Recompute refreshes the scheduler's liveness-derived selection state (which
 	// paths are eligible, which is the active primary) from the current PathHealth,
