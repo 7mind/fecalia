@@ -550,7 +550,12 @@ reserve. Consequently the queue and copy reservations retain at most `Q`
 bytes, plus at most one `Lmax` datagram in the serial writer. `B >= Lmax`
 allows an exact-`Lmax` DATA datagram, including when `B == Lmax`; construction
 defensively rejects `B < Lmax`, `C != Lmax`, `R <= Rp`, or an `Lmax/R`
-serialization interval that cannot fit in `time.Duration`.
+serialization interval that cannot fit in `time.Duration`. It also rejects
+`Q=B+C` when the sum cannot fit in `int`, and rejects a configured priority
+arrival envelope whose maximum modeled bound
+`2*Pburst/(R-Rp)` cannot fit in `time.Duration`. Under that envelope the
+pre-call debt satisfies `P0<=Pburst`; traffic beyond it constitutes the
+explicit overload case described below.
 
 Admission reserves byte capacity **before** copying caller memory. If the
 relevant class budget is full, admission blocks on a cancellable context and
@@ -565,6 +570,14 @@ The first writer error terminates that call: its already-published but
 unstarted suffix is removed without invoking the writer, while the result
 reports accepted and successfully emitted prefix lengths. The per-path worker
 continues serving future calls.
+
+Byte acceptance linearizes at successful reservation, before caller memory is
+copied: the placeholder already owns queue capacity and a virtual deadline.
+`BatchResult.Accepted` retains its narrower publication-prefix meaning for the
+bind call contract. A context cancellation counts only buffers that never
+reserved capacity; a reserved placeholder later retired by the batch's first
+writer error belongs to that writer-error byte outcome even if its payload copy
+never published.
 
 The worker assigns immutable FIFO transmission deadlines. After startup or an
 idle gap, one datagram may transmit immediately; offering a datagram of `L`
@@ -623,6 +636,37 @@ use the same write-first/exact-debit path and fit the declared `Rp`/`Pburst`
 envelope before relying on `Dp`. The primitive does not classify frames, select
 paths, generate FEC, or own tunnel lifecycle; those remain integration
 responsibilities.
+
+**Shaper observability.** `Shaper.Snapshot` takes the shaper mutex and copies one
+coherent generation-local view; `Bind.PeerSnapshots` captures the optional
+reporter while holding `m.mu` but calls it only after releasing that lock.
+Pacing-off paths carry no snapshot, so the monitor omits `path.shaper` and
+Prometheus emits no `wanbond_path_shaper_*` series. A new socket/shaper
+generation starts all cumulative values at zero.
+
+The live gauges expose reserved DATA, reserved inner-control, total reserved,
+and writer-in-flight bytes separately. They directly establish
+`queue_data_bytes<=B`, `queue_control_bytes<=C`, and `queue_bytes<=Q`; the
+single in-flight datagram remains outside `Q`. Queue gauges include pending-copy
+placeholders. `scheduled_delay_seconds`
+reports the virtual tail relative to the current clock. Configuration gauges
+export `R`, `B`, `C`, `Q`, `Lmax`, `Rp`, and `Pburst`; the priority gauges
+export current `P0` and recompute `Dp=(P0+Pburst)/(R-Rp)` at snapshot time,
+including when `Rp` approaches `R`.
+
+Cumulative accepted and emitted byte counters use the shaper as their single
+authority, with accepted bytes linearized at reservation for both DATA/PARITY
+and inner control. Outer PROBE/echo bytes remain a separate post-success
+priority counter. Admission waits count once per datagram that first encounters
+capacity or priority-debt backpressure and accumulate elapsed wait time;
+context cancellation counts only the batch's still-unreserved suffix.
+Asynchronous writer outcomes split generic and `EMSGSIZE` errors by both calls
+and affected reserved bytes. A reserved suffix retired after its batch's
+first writer failure contributes affected bytes to that failure class without
+fabricating another writer call. While a live generation has no close
+retirement in progress:
+
+`accepted_bytes = emitted_bytes + generic_error_bytes + EMSGSIZE_error_bytes + queue_bytes + in_flight_bytes`.
 
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
@@ -746,13 +790,23 @@ behaviour composes the following signals into one picture:
   engage/disengage flip, carrying `to`/`from`, `load_fps`,
   `engage_threshold_fps`, `disengage_threshold_fps`, plus `reason` on a
   collapse.
-- exact-byte terminal-prefix counters:
+- exact-byte terminal-prefix and live-state series:
   `wanbond_path_shaper_accepted_datagrams_total`,
   `wanbond_path_shaper_emitted_datagrams_total`,
   `wanbond_path_shaper_write_errors_total`, and
-  `wanbond_path_socket_write_errors_total`. Ordinary capacity waits increment
-  no error counter; accepted minus emitted describes the accepted prefix not
-  handed to the kernel when a terminal writer error occurs.
+  `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
+  inner-control socket failures only; generated outer PROBE and reflected-echo
+  failures are excluded), plus
+  `wanbond_path_shaper_{accepted,emitted}_bytes_total`,
+  `wanbond_path_shaper_{queue_data,queue_control,queue,in_flight}_bytes`,
+  `wanbond_path_shaper_{scheduled_delay,priority_delay_bound}_seconds`,
+  `wanbond_path_shaper_admission_{waits,canceled_datagrams}_total`,
+  `wanbond_path_shaper_admission_wait_seconds_total`, and the generic/
+  `EMSGSIZE` asynchronous error call+byte counters. Read `priority_debt_bytes`,
+  `priority_rate_bytes_per_second`, and `priority_burst_bytes` beside the
+  bound. Ordinary capacity waits increment no error counter; they increment
+  admission waits/duration instead. All shaper series are absent with pacing
+  off and reset with the owning socket generation.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can
   mathematically never engage at line rate on this path…" error) — fails
@@ -1099,8 +1153,10 @@ The shaped send path separately exports accepted and kernel-emitted datagram
 prefixes (`wanbond_path_shaper_accepted_datagrams_total` and
 `wanbond_path_shaper_emitted_datagrams_total`), terminal call errors
 (`wanbond_path_shaper_write_errors_total`), and the underlying UDP writer
-subset (`wanbond_path_socket_write_errors_total`). Their divergence identifies
-bounded queue acceptance versus actual kernel handoff without implying retry.
+subset (`wanbond_path_socket_write_errors_total`). That socket subset covers
+shaped and direct DATA/PARITY/inner-control writes; generated outer PROBE and
+reflected-echo failures do not contribute. Their divergence identifies bounded
+queue acceptance versus actual kernel handoff without implying retry.
 
 ### Receive resequencer — `internal/reseq`
 

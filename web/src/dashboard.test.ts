@@ -8,6 +8,7 @@ import type {
   PathSnapshot,
   PeerSessionSnapshot,
   ReseqSnapshot,
+  ShaperSnapshot,
 } from './types';
 import { mountDashboard } from './dashboard';
 import { SPARKLINE_MAX_POINTS } from './sparkline';
@@ -27,6 +28,36 @@ function path(overrides: Partial<PathSnapshot> = {}): PathSnapshot {
     boundDevice: '',
     linkBandwidthBps: 0,
     linkRttSeconds: 0,
+    ...overrides,
+  };
+}
+
+function shaper(overrides: Partial<ShaperSnapshot> = {}): ShaperSnapshot {
+  return {
+    queueDataBytes: 100,
+    queueControlBytes: 20,
+    queueBytes: 120,
+    inFlightBytes: 50,
+    scheduledDelaySeconds: 0.01,
+    rateBytesPerSecond: 1_000_000,
+    dataBudgetBytes: 1_500,
+    controlReserveBytes: 100,
+    queueBudgetBytes: 1_600,
+    maxDatagramBytes: 100,
+    acceptedBytes: 10_000,
+    emittedBytes: 9_830,
+    outerPriorityBytes: 200,
+    priorityDebtBytes: 50,
+    priorityRateBytesPerSecond: 1_000,
+    priorityBurstBytes: 100,
+    priorityDelayBoundSeconds: 0.002,
+    admissionWaits: 3,
+    admissionWaitSeconds: 0.04,
+    admissionCanceledDatagrams: 0,
+    asyncWriteErrors: 0,
+    asyncWriteErrorBytes: 0,
+    asyncWriteEmsgsizeErrors: 0,
+    asyncWriteEmsgsizeBytes: 0,
     ...overrides,
   };
 }
@@ -216,6 +247,21 @@ describe('mountDashboard', () => {
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
+  });
+
+  it('renders exact-byte shaper state only for a paced path', () => {
+    const dashboard = mountDashboard(container);
+    const paced = singlePeerSnapshot();
+    paced.paths = [path({ name: 'paced', shaper: shaper() }), path({ name: 'unpaced' })];
+    dashboard.onSnapshot(paced);
+
+    const cards = container.querySelectorAll('[data-testid="path-card"]');
+    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('100B DATA');
+    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('120B total');
+    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('1.6KB Q');
+    expect(cards[0].textContent).toContain('3 waits');
+    expect(cards[0].textContent).toContain('0 EMSGSIZE');
+    expect(cards[1].querySelector('[data-testid="path-shaper-queue"]')).toBeNull();
   });
 
   it('renders one per-peer section per peer with all named stat groups, for a multi-peer stream', () => {

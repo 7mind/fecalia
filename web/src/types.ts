@@ -11,6 +11,34 @@ export interface AddressingSnapshot {
   remote: string;
 }
 
+/** Mirrors monitor.ShaperSnapshot. Absent when exact-byte shaping is disabled. */
+export interface ShaperSnapshot {
+  queueDataBytes: number;
+  queueControlBytes: number;
+  queueBytes: number;
+  inFlightBytes: number;
+  scheduledDelaySeconds: number;
+  rateBytesPerSecond: number;
+  dataBudgetBytes: number;
+  controlReserveBytes: number;
+  queueBudgetBytes: number;
+  maxDatagramBytes: number;
+  acceptedBytes: number;
+  emittedBytes: number;
+  outerPriorityBytes: number;
+  priorityDebtBytes: number;
+  priorityRateBytesPerSecond: number;
+  priorityBurstBytes: number;
+  priorityDelayBoundSeconds: number;
+  admissionWaits: number;
+  admissionWaitSeconds: number;
+  admissionCanceledDatagrams: number;
+  asyncWriteErrors: number;
+  asyncWriteErrorBytes: number;
+  asyncWriteEmsgsizeErrors: number;
+  asyncWriteEmsgsizeBytes: number;
+}
+
 /** Mirrors monitor.PathSnapshot: one per-(peer,path) traffic/quality entry. */
 export interface PathSnapshot {
   name: string;
@@ -32,6 +60,8 @@ export interface PathSnapshot {
    * the field, `omitempty`) otherwise — see MonitorSnapshot.addressingHidden.
    */
   addressing?: AddressingSnapshot;
+  /** Present only while this path has an active exact-byte shaper generation. */
+  shaper?: ShaperSnapshot;
 }
 
 /** Mirrors monitor.FECSnapshot: one per-peer connection-scoped FEC counter set. */

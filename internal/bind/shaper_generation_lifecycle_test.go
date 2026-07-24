@@ -1525,6 +1525,17 @@ func TestCloseRetiresQueuedWireAndReopenUsesFreshShaperGeneration(t *testing.T) 
 	if replacementConn == oldConn {
 		t.Fatal("Close/Open reused the old UDP socket generation")
 	}
+	reopened := m.PeerSnapshots()[0].Paths[0].Shaper
+	if reopened == nil {
+		t.Fatal("reopened paced path omitted its shaper snapshot")
+	}
+	if reopened.AcceptedBytes != 0 ||
+		reopened.EmittedBytes != 0 ||
+		reopened.AdmissionWaits != 0 ||
+		reopened.AsyncWriteErrors != 0 ||
+		reopened.AsyncWriteEMSGSIZEErrors != 0 {
+		t.Fatalf("replacement shaper inherited old generation counters: %+v", reopened)
+	}
 
 	replacementSend := make(chan error, 1)
 	go func() {

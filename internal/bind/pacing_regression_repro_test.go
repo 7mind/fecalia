@@ -221,6 +221,20 @@ func TestPacingLossPolicerRepro(t *testing.T) {
 		if path.ShaperAcceptedDatagrams != want || path.ShaperEmittedDatagrams != want {
 			t.Fatalf("GREEN D108 size-close: shaper accepted/emitted=%d/%d, want all DATA+parity=%d", path.ShaperAcceptedDatagrams, path.ShaperEmittedDatagrams, want)
 		}
+		if path.Shaper == nil {
+			t.Fatal("GREEN D108 size-close: paced path omitted byte snapshot")
+		}
+		if path.Shaper.AcceptedBytes != uint64(wireBytes) ||
+			path.Shaper.EmittedBytes != uint64(wireBytes) ||
+			fs.parityBytes.Load() > path.Shaper.EmittedBytes {
+			t.Fatalf(
+				"GREEN D108 size-close: accepted/emitted/parity bytes=%d/%d/%d, wire=%d",
+				path.Shaper.AcceptedBytes,
+				path.Shaper.EmittedBytes,
+				fs.parityBytes.Load(),
+				wireBytes,
+			)
+		}
 	})
 
 	t.Run("D108-deadline-parity-charges-at-egress", func(t *testing.T) {

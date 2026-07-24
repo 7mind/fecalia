@@ -144,6 +144,7 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				ShaperEmittedDatagrams:  t.ShaperEmittedDatagrams,
 				ShaperWriteErrors:       t.ShaperWriteErrors,
 				SocketWriteErrors:       t.SocketWriteErrors,
+				Shaper:                  t.Shaper,
 			})
 		}
 	}

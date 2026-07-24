@@ -25,6 +25,35 @@ type AddressingSnapshot struct {
 	Remote string `json:"remote"`
 }
 
+// ShaperSnapshot is the JSON encoding of a live per-path exact-byte shaper.
+// It is omitted from a path when shaping is disabled.
+type ShaperSnapshot struct {
+	QueueDataBytes             int     `json:"queueDataBytes"`
+	QueueControlBytes          int     `json:"queueControlBytes"`
+	QueueBytes                 int     `json:"queueBytes"`
+	InFlightBytes              int     `json:"inFlightBytes"`
+	ScheduledDelaySeconds      float64 `json:"scheduledDelaySeconds"`
+	RateBytesPerSecond         float64 `json:"rateBytesPerSecond"`
+	DataBudgetBytes            int     `json:"dataBudgetBytes"`
+	ControlReserveBytes        int     `json:"controlReserveBytes"`
+	QueueBudgetBytes           int     `json:"queueBudgetBytes"`
+	MaxDatagramBytes           int     `json:"maxDatagramBytes"`
+	AcceptedBytes              uint64  `json:"acceptedBytes"`
+	EmittedBytes               uint64  `json:"emittedBytes"`
+	OuterPriorityBytes         uint64  `json:"outerPriorityBytes"`
+	PriorityDebtBytes          float64 `json:"priorityDebtBytes"`
+	PriorityRateBytesPerSecond float64 `json:"priorityRateBytesPerSecond"`
+	PriorityBurstBytes         int     `json:"priorityBurstBytes"`
+	PriorityDelayBoundSeconds  float64 `json:"priorityDelayBoundSeconds"`
+	AdmissionWaits             uint64  `json:"admissionWaits"`
+	AdmissionWaitSeconds       float64 `json:"admissionWaitSeconds"`
+	AdmissionCanceledDatagrams uint64  `json:"admissionCanceledDatagrams"`
+	AsyncWriteErrors           uint64  `json:"asyncWriteErrors"`
+	AsyncWriteErrorBytes       uint64  `json:"asyncWriteErrorBytes"`
+	AsyncWriteEMSGSIZEErrors   uint64  `json:"asyncWriteEmsgsizeErrors"`
+	AsyncWriteEMSGSIZEBytes    uint64  `json:"asyncWriteEmsgsizeBytes"`
+}
+
 // PathSnapshot is the JSON encoding of one per-(peer,path) entry
 // (metrics.PathSnapshot): traffic counters fused with the telemetry plane's
 // quality estimate and liveness verdict. Durations are rendered as float
@@ -56,6 +85,7 @@ type PathSnapshot struct {
 	// only when addressing is revealed (loopback binding); nil (omitted) on a
 	// non-loopback binding. See AddressingSnapshot.
 	Addressing *AddressingSnapshot `json:"addressing,omitempty"`
+	Shaper     *ShaperSnapshot     `json:"shaper,omitempty"`
 }
 
 // FECSnapshot is the JSON encoding of one per-peer connection-scoped FEC
@@ -387,6 +417,35 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 			ps.Addressing = &AddressingSnapshot{
 				Source: addrString(p.Source),
 				Remote: addrPortString(p.Remote),
+			}
+		}
+		if p.Shaper != nil {
+			s := p.Shaper
+			ps.Shaper = &ShaperSnapshot{
+				QueueDataBytes:             s.QueueDataBytes,
+				QueueControlBytes:          s.QueueControlBytes,
+				QueueBytes:                 s.QueueBytes,
+				InFlightBytes:              s.InFlightBytes,
+				ScheduledDelaySeconds:      s.ScheduledDelay.Seconds(),
+				RateBytesPerSecond:         s.RateBytesPerSecond,
+				DataBudgetBytes:            s.DataBudgetBytes,
+				ControlReserveBytes:        s.ControlReserveBytes,
+				QueueBudgetBytes:           s.QueueBudgetBytes,
+				MaxDatagramBytes:           s.MaxDatagramBytes,
+				AcceptedBytes:              s.AcceptedBytes,
+				EmittedBytes:               s.EmittedBytes,
+				OuterPriorityBytes:         s.OuterPriorityBytes,
+				PriorityDebtBytes:          s.PriorityDebtBytes,
+				PriorityRateBytesPerSecond: s.PriorityRateBytesPerSecond,
+				PriorityBurstBytes:         s.PriorityBurstBytes,
+				PriorityDelayBoundSeconds:  s.PriorityDelayBound.Seconds(),
+				AdmissionWaits:             s.AdmissionWaits,
+				AdmissionWaitSeconds:       s.AdmissionWaitDuration.Seconds(),
+				AdmissionCanceledDatagrams: s.AdmissionCanceledDatagrams,
+				AsyncWriteErrors:           s.AsyncWriteErrors,
+				AsyncWriteErrorBytes:       s.AsyncWriteErrorBytes,
+				AsyncWriteEMSGSIZEErrors:   s.AsyncWriteEMSGSIZEErrors,
+				AsyncWriteEMSGSIZEBytes:    s.AsyncWriteEMSGSIZEBytes,
 			}
 		}
 		out.Paths[i] = ps

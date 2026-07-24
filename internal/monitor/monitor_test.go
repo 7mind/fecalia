@@ -9,6 +9,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -32,6 +33,92 @@ func (f fakeSource) Aggregation() []metrics.AggregationSnapshot  { return f.aggr
 func (f fakeSource) Session() metrics.SessionSnapshot            { return f.session }
 func (f fakeSource) PeerSessions() []metrics.PeerSessionSnapshot { return f.peerSessions }
 func (f fakeSource) PeerNames() []string                         { return f.peerNames }
+
+func TestBuildSnapshotShaperContractAndDisabledOmission(t *testing.T) {
+	shaperSnapshot := shaper.Snapshot{
+		QueueDataBytes:             1,
+		QueueControlBytes:          2,
+		QueueBytes:                 3,
+		InFlightBytes:              4,
+		ScheduledDelay:             5 * time.Second,
+		RateBytesPerSecond:         6,
+		DataBudgetBytes:            7,
+		ControlReserveBytes:        8,
+		QueueBudgetBytes:           9,
+		MaxDatagramBytes:           10,
+		AcceptedBytes:              11,
+		EmittedBytes:               12,
+		OuterPriorityBytes:         13,
+		PriorityDebtBytes:          14,
+		PriorityRateBytesPerSecond: 15,
+		PriorityBurstBytes:         16,
+		PriorityDelayBound:         17 * time.Second,
+		AdmissionWaits:             18,
+		AdmissionWaitDuration:      19 * time.Second,
+		AdmissionCanceledDatagrams: 20,
+		AsyncWriteErrors:           21,
+		AsyncWriteErrorBytes:       22,
+		AsyncWriteEMSGSIZEErrors:   23,
+		AsyncWriteEMSGSIZEBytes:    24,
+	}
+	snapshot := BuildSnapshot(fakeSource{
+		paths: []metrics.PathSnapshot{
+			{Name: "paced", Shaper: &shaperSnapshot},
+			{Name: "unpaced"},
+		},
+	}, Info{}, true, false)
+	got := snapshot.Paths[0].Shaper
+	if got == nil {
+		t.Fatal("paced path omitted shaper")
+	}
+	if *got != (ShaperSnapshot{
+		QueueDataBytes:             1,
+		QueueControlBytes:          2,
+		QueueBytes:                 3,
+		InFlightBytes:              4,
+		ScheduledDelaySeconds:      5,
+		RateBytesPerSecond:         6,
+		DataBudgetBytes:            7,
+		ControlReserveBytes:        8,
+		QueueBudgetBytes:           9,
+		MaxDatagramBytes:           10,
+		AcceptedBytes:              11,
+		EmittedBytes:               12,
+		OuterPriorityBytes:         13,
+		PriorityDebtBytes:          14,
+		PriorityRateBytesPerSecond: 15,
+		PriorityBurstBytes:         16,
+		PriorityDelayBoundSeconds:  17,
+		AdmissionWaits:             18,
+		AdmissionWaitSeconds:       19,
+		AdmissionCanceledDatagrams: 20,
+		AsyncWriteErrors:           21,
+		AsyncWriteErrorBytes:       22,
+		AsyncWriteEMSGSIZEErrors:   23,
+		AsyncWriteEMSGSIZEBytes:    24,
+	}) {
+		t.Fatalf("shaper DTO = %+v", *got)
+	}
+	if snapshot.Paths[1].Shaper != nil {
+		t.Fatalf("unpaced path shaper = %+v, want nil", snapshot.Paths[1].Shaper)
+	}
+	wire, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(wire), `"shaper":`) != 1 {
+		t.Fatalf("shaper JSON presence = %s", wire)
+	}
+	shaperSnapshot = shaper.Snapshot{}
+	reset := BuildSnapshot(fakeSource{
+		paths: []metrics.PathSnapshot{{Name: "paced", Shaper: &shaperSnapshot}},
+	}, Info{}, true, false)
+	if reset.Paths[0].Shaper == nil ||
+		reset.Paths[0].Shaper.AcceptedBytes != 0 ||
+		reset.Paths[0].Shaper.AsyncWriteErrors != 0 {
+		t.Fatalf("reset shaper DTO = %+v", reset.Paths[0].Shaper)
+	}
+}
 
 // TestBuildSnapshot_ExtendedFields exercises the G21 contract extension (T214):
 // the daemon identity, per-path bind metadata + declared link params + the

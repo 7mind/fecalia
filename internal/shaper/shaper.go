@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -51,6 +52,33 @@ type BatchResult struct {
 	FailedIndex int
 }
 
+type Snapshot struct {
+	QueueDataBytes             int
+	QueueControlBytes          int
+	QueueBytes                 int
+	InFlightBytes              int
+	ScheduledDelay             time.Duration
+	RateBytesPerSecond         float64
+	DataBudgetBytes            int
+	ControlReserveBytes        int
+	QueueBudgetBytes           int
+	MaxDatagramBytes           int
+	AcceptedBytes              uint64
+	EmittedBytes               uint64
+	OuterPriorityBytes         uint64
+	PriorityDebtBytes          float64
+	PriorityRateBytesPerSecond float64
+	PriorityBurstBytes         int
+	PriorityDelayBound         time.Duration
+	AdmissionWaits             uint64
+	AdmissionWaitDuration      time.Duration
+	AdmissionCanceledDatagrams uint64
+	AsyncWriteErrors           uint64
+	AsyncWriteErrorBytes       uint64
+	AsyncWriteEMSGSIZEErrors   uint64
+	AsyncWriteEMSGSIZEBytes    uint64
+}
+
 type SystemClock struct{}
 
 func (SystemClock) Now() time.Time {
@@ -85,6 +113,7 @@ type reservation struct {
 }
 
 type batchState struct {
+	reserved    int
 	accepted    int
 	emitted     int
 	failedIndex int
@@ -93,6 +122,8 @@ type batchState struct {
 
 type priorityWaiter struct {
 	deadline time.Time
+	started  time.Time
+	finished bool
 }
 
 type Shaper struct {
@@ -100,22 +131,32 @@ type Shaper struct {
 	clock  Clock
 	write  WriteFunc
 
-	mu                   sync.Mutex
-	queue                []*queuedDatagram
-	retainedDataBytes    int
-	retainedControlBytes int
-	inFlightBytes        int
-	tail                 time.Time
-	priorityTail         time.Time
-	priorityWaiters      map[*priorityWaiter]struct{}
-	changed              chan struct{}
-	closed               bool
-	calls                sync.WaitGroup
-	workerDone           chan struct{}
+	mu                         sync.Mutex
+	queue                      []*queuedDatagram
+	retainedDataBytes          int
+	retainedControlBytes       int
+	inFlightBytes              int
+	tail                       time.Time
+	priorityTail               time.Time
+	priorityWaiters            map[*priorityWaiter]struct{}
+	acceptedBytes              uint64
+	emittedBytes               uint64
+	outerPriorityBytes         uint64
+	admissionWaits             uint64
+	admissionWaitDuration      time.Duration
+	admissionCanceledDatagrams uint64
+	asyncWriteErrors           uint64
+	asyncWriteErrorBytes       uint64
+	asyncWriteEMSGSIZEErrors   uint64
+	asyncWriteEMSGSIZEBytes    uint64
+	changed                    chan struct{}
+	closed                     bool
+	calls                      sync.WaitGroup
+	workerDone                 chan struct{}
 }
 
 func New(config Config, clock Clock, write WriteFunc) (*Shaper, error) {
-	if err := validateConfig(config); err != nil {
+	if err := ValidateConfig(config); err != nil {
 		return nil, err
 	}
 	if clock == nil {
@@ -137,7 +178,9 @@ func New(config Config, clock Clock, write WriteFunc) (*Shaper, error) {
 	return shaper, nil
 }
 
-func validateConfig(config Config) error {
+// ValidateConfig verifies that all configured byte budgets and modeled delays
+// can be represented by the shaper's runtime types.
+func ValidateConfig(config Config) error {
 	if math.IsNaN(config.RateBytesPerSecond) ||
 		math.IsInf(config.RateBytesPerSecond, 0) ||
 		config.RateBytesPerSecond <= 0 {
@@ -160,6 +203,9 @@ func validateConfig(config Config) error {
 	if config.ControlReserveBytes != config.MaxDatagramBytes {
 		return errors.New("C must equal Lmax")
 	}
+	if config.DataBudgetBytes > math.MaxInt-config.ControlReserveBytes {
+		return errors.New("queue budget B+C must fit in int")
+	}
 	if config.PriorityBurstBytes < 0 {
 		return errors.New("Pburst must be non-negative")
 	}
@@ -169,7 +215,69 @@ func validateConfig(config Config) error {
 		serializationNanoseconds >= math.Ldexp(1, 63) {
 		return errors.New("Lmax/R serialization interval exceeds time.Duration")
 	}
+	priorityBoundNanoseconds := 2 * float64(config.PriorityBurstBytes) /
+		(config.RateBytesPerSecond - config.PriorityRateBytesPerSecond) *
+		float64(time.Second)
+	if math.IsInf(priorityBoundNanoseconds, 0) ||
+		priorityBoundNanoseconds >= math.Ldexp(1, 63) {
+		return errors.New("modeled priority delay bound exceeds time.Duration")
+	}
 	return nil
+}
+
+func (s *Shaper) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.clock.Now()
+	scheduledDelay := s.tail.Sub(now)
+	if scheduledDelay < 0 {
+		scheduledDelay = 0
+	}
+	priorityDelay := s.priorityTail.Sub(now)
+	if priorityDelay < 0 {
+		priorityDelay = 0
+	}
+	priorityDebtBytes := priorityDelay.Seconds() * s.config.RateBytesPerSecond
+	priorityDelayBound := bytesDuration(
+		priorityDebtBytes+float64(s.config.PriorityBurstBytes),
+		s.config.RateBytesPerSecond-s.config.PriorityRateBytesPerSecond,
+	)
+
+	return Snapshot{
+		QueueDataBytes:             s.retainedDataBytes,
+		QueueControlBytes:          s.retainedControlBytes,
+		QueueBytes:                 s.retainedDataBytes + s.retainedControlBytes,
+		InFlightBytes:              s.inFlightBytes,
+		ScheduledDelay:             scheduledDelay,
+		RateBytesPerSecond:         s.config.RateBytesPerSecond,
+		DataBudgetBytes:            s.config.DataBudgetBytes,
+		ControlReserveBytes:        s.config.ControlReserveBytes,
+		QueueBudgetBytes:           s.config.DataBudgetBytes + s.config.ControlReserveBytes,
+		MaxDatagramBytes:           s.config.MaxDatagramBytes,
+		AcceptedBytes:              s.acceptedBytes,
+		EmittedBytes:               s.emittedBytes,
+		OuterPriorityBytes:         s.outerPriorityBytes,
+		PriorityDebtBytes:          priorityDebtBytes,
+		PriorityRateBytesPerSecond: s.config.PriorityRateBytesPerSecond,
+		PriorityBurstBytes:         s.config.PriorityBurstBytes,
+		PriorityDelayBound:         priorityDelayBound,
+		AdmissionWaits:             s.admissionWaits,
+		AdmissionWaitDuration:      s.admissionWaitDuration,
+		AdmissionCanceledDatagrams: s.admissionCanceledDatagrams,
+		AsyncWriteErrors:           s.asyncWriteErrors,
+		AsyncWriteErrorBytes:       s.asyncWriteErrorBytes,
+		AsyncWriteEMSGSIZEErrors:   s.asyncWriteEMSGSIZEErrors,
+		AsyncWriteEMSGSIZEBytes:    s.asyncWriteEMSGSIZEBytes,
+	}
+}
+
+func bytesDuration(size float64, rate float64) time.Duration {
+	nanoseconds := size / rate * float64(time.Second)
+	if nanoseconds >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(math.Ceil(nanoseconds))
 }
 
 func (s *Shaper) WriteBatch(ctx context.Context, class Class, datagrams [][]byte) error {
@@ -233,6 +341,11 @@ func (s *Shaper) WriteDatagrams(ctx context.Context, datagrams []Datagram) (Batc
 	}
 
 	s.mu.Lock()
+	if admissionError != nil &&
+		(errors.Is(admissionError, context.Canceled) ||
+			errors.Is(admissionError, context.DeadlineExceeded)) {
+		s.admissionCanceledDatagrams += uint64(len(datagrams) - batch.reserved)
+	}
 	result := BatchResult{
 		Accepted:    batch.accepted,
 		Emitted:     batch.emitted,
@@ -279,8 +392,9 @@ func (s *Shaper) reserveDatagram(
 		now := s.clock.Now()
 		if waiter == nil &&
 			(s.priorityTail.After(now) || !s.capacityAvailable(class, size)) {
-			waiter = &priorityWaiter{}
+			waiter = &priorityWaiter{started: now}
 			s.priorityWaiters[waiter] = struct{}{}
+			s.admissionWaits++
 			if s.priorityTail.After(now) {
 				waiter.deadline = s.priorityTail
 			}
@@ -293,12 +407,19 @@ func (s *Shaper) reserveDatagram(
 			waiter.deadline.IsZero() ||
 			priorityMatured
 		if priorityEligible && s.capacityAvailable(class, size) {
+			if waiter != nil {
+				s.finishAdmissionWaitLocked(waiter, now)
+			}
 			deadline := s.tail
 			if deadline.Before(now) {
 				deadline = now
 			}
 			s.tail = deadline.Add(s.byteDuration(size))
 			s.retain(class, size)
+			if batch != nil {
+				batch.reserved++
+			}
+			s.acceptedBytes += uint64(size)
 			datagram := &queuedDatagram{
 				class:    class,
 				size:     size,
@@ -342,8 +463,18 @@ func (s *Shaper) reserveDatagram(
 
 func (s *Shaper) unregisterPriorityWaiter(waiter *priorityWaiter) {
 	s.mu.Lock()
+	if !waiter.finished {
+		s.finishAdmissionWaitLocked(waiter, s.clock.Now())
+	}
 	delete(s.priorityWaiters, waiter)
 	s.mu.Unlock()
+}
+
+func (s *Shaper) finishAdmissionWaitLocked(waiter *priorityWaiter, now time.Time) {
+	waiter.finished = true
+	if now.After(waiter.started) {
+		s.admissionWaitDuration += now.Sub(waiter.started)
+	}
 }
 
 func (s *Shaper) capacityAvailable(class Class, size int) bool {
@@ -427,6 +558,7 @@ func (s *Shaper) AccountPriority(size int) error {
 		tailBase = now
 	}
 	s.tail = tailBase.Add(s.byteDuration(size))
+	s.outerPriorityBytes += uint64(size)
 	s.notifyLocked()
 	return nil
 }
@@ -488,6 +620,7 @@ func (s *Shaper) run() {
 			s.queue = s.queue[1:]
 			s.release(datagram.class, datagram.size)
 			err := datagram.batch.err
+			s.accountAsyncWriteFailureLocked(err, datagram.size, false)
 			s.notifyLocked()
 			s.mu.Unlock()
 			datagram.done <- err
@@ -523,6 +656,11 @@ func (s *Shaper) run() {
 
 		s.mu.Lock()
 		s.inFlightBytes = 0
+		if err == nil {
+			s.emittedBytes += uint64(datagram.size)
+		} else {
+			s.accountAsyncWriteFailureLocked(err, datagram.size, true)
+		}
 		if datagram.batch != nil {
 			if err == nil {
 				datagram.batch.emitted++
@@ -536,6 +674,20 @@ func (s *Shaper) run() {
 		datagram.done <- err
 		close(datagram.done)
 	}
+}
+
+func (s *Shaper) accountAsyncWriteFailureLocked(err error, size int, countError bool) {
+	if errors.Is(err, syscall.EMSGSIZE) {
+		if countError {
+			s.asyncWriteEMSGSIZEErrors++
+		}
+		s.asyncWriteEMSGSIZEBytes += uint64(size)
+		return
+	}
+	if countError {
+		s.asyncWriteErrors++
+	}
+	s.asyncWriteErrorBytes += uint64(size)
 }
 
 func (s *Shaper) notifyLocked() {

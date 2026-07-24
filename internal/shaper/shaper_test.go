@@ -186,6 +186,18 @@ func TestNewValidatesModelBounds(t *testing.T) {
 	if err := shaper.Close(); err != nil {
 		t.Fatal(err)
 	}
+	config = validConfig()
+	config.DataBudgetBytes = math.MaxInt - config.ControlReserveBytes
+	shaper, err = New(config, clock, write)
+	if err != nil {
+		t.Fatalf("exact MaxInt Q must be accepted: %v", err)
+	}
+	if got := shaper.Snapshot().QueueBudgetBytes; got != math.MaxInt || got < 0 {
+		t.Fatalf("Q gauge = %d, want exact non-negative MaxInt=%d", got, math.MaxInt)
+	}
+	if err := shaper.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := map[string]Config{
 		"B below Lmax": func() Config {
@@ -212,6 +224,16 @@ func TestNewValidatesModelBounds(t *testing.T) {
 			config := validConfig()
 			config.RateBytesPerSecond = 1e-12
 			config.PriorityRateBytesPerSecond = 0
+			return config
+		}(),
+		"Q overflows int": func() Config {
+			config := validConfig()
+			config.DataBudgetBytes = math.MaxInt
+			return config
+		}(),
+		"priority delay bound exceeds time.Duration": func() Config {
+			config := validConfig()
+			config.PriorityRateBytesPerSecond = math.Nextafter(config.RateBytesPerSecond, 0)
 			return config
 		}(),
 	}
@@ -507,6 +529,13 @@ func TestBatchWriterErrorStopsUnstartedSuffixAndReportsPrefix(t *testing.T) {
 	if len(calls) != 2 || calls[0] != 1 || calls[1] != 2 {
 		t.Fatalf("writer calls = %v, want terminal prefix [1 2] with suffix unstarted", calls)
 	}
+	snapshot := shaper.Snapshot()
+	if snapshot.AcceptedBytes != 300 ||
+		snapshot.EmittedBytes != 100 ||
+		snapshot.AsyncWriteErrors != 1 ||
+		snapshot.AsyncWriteErrorBytes != 200 {
+		t.Fatalf("terminal batch byte reconciliation = %+v", snapshot)
+	}
 }
 
 func TestSeparateClassBudgetsBackpressureBeforeCopyAndCancellation(t *testing.T) {
@@ -787,6 +816,14 @@ func TestPriorityDebtClearanceUsesNetRateIncludingNearPriorityRate(t *testing.T)
 					t.Fatal(err)
 				}
 				debt -= chunk
+			}
+			snapshot := shaper.Snapshot()
+			if want := time.Duration(test.steps) * test.step; snapshot.PriorityDelayBound != want {
+				t.Fatalf(
+					"snapshot Dp = %v, want fake-clock admission bound %v",
+					snapshot.PriorityDelayBound,
+					want,
+				)
 			}
 
 			writeContext := observeContext(context.Background())

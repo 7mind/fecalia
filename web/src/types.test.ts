@@ -64,6 +64,32 @@ const FULL_FRAME = `{
       "boundDevice": "",
       "linkBandwidthBps": 1000000,
       "linkRttSeconds": 0.03,
+      "shaper": {
+        "queueDataBytes": 1,
+        "queueControlBytes": 2,
+        "queueBytes": 3,
+        "inFlightBytes": 4,
+        "scheduledDelaySeconds": 5,
+        "rateBytesPerSecond": 6,
+        "dataBudgetBytes": 7,
+        "controlReserveBytes": 8,
+        "queueBudgetBytes": 9,
+        "maxDatagramBytes": 10,
+        "acceptedBytes": 11,
+        "emittedBytes": 12,
+        "outerPriorityBytes": 13,
+        "priorityDebtBytes": 14,
+        "priorityRateBytesPerSecond": 15,
+        "priorityBurstBytes": 16,
+        "priorityDelayBoundSeconds": 17,
+        "admissionWaits": 18,
+        "admissionWaitSeconds": 19,
+        "admissionCanceledDatagrams": 20,
+        "asyncWriteErrors": 21,
+        "asyncWriteErrorBytes": 22,
+        "asyncWriteEmsgsizeErrors": 23,
+        "asyncWriteEmsgsizeBytes": 24
+      },
       "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" }
     }
   ],
@@ -142,6 +168,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     }
     expect(path.addressing).toBeUndefined();
     expect('addressing' in path).toBe(false);
+    expect(path.shaper).toBeUndefined();
 
     expect(snapshot.endpoints).toEqual([
       { address: '', active: true },
@@ -165,6 +192,32 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     }
     expect(path.addressing.source).toBe('192.0.2.1');
     expect(path.addressing.remote).toBe('198.51.100.7:51820');
+    expect(path.shaper).toEqual({
+      queueDataBytes: 1,
+      queueControlBytes: 2,
+      queueBytes: 3,
+      inFlightBytes: 4,
+      scheduledDelaySeconds: 5,
+      rateBytesPerSecond: 6,
+      dataBudgetBytes: 7,
+      controlReserveBytes: 8,
+      queueBudgetBytes: 9,
+      maxDatagramBytes: 10,
+      acceptedBytes: 11,
+      emittedBytes: 12,
+      outerPriorityBytes: 13,
+      priorityDebtBytes: 14,
+      priorityRateBytesPerSecond: 15,
+      priorityBurstBytes: 16,
+      priorityDelayBoundSeconds: 17,
+      admissionWaits: 18,
+      admissionWaitSeconds: 19,
+      admissionCanceledDatagrams: 20,
+      asyncWriteErrors: 21,
+      asyncWriteErrorBytes: 22,
+      asyncWriteEmsgsizeErrors: 23,
+      asyncWriteEmsgsizeBytes: 24,
+    });
 
     expect(snapshot.endpoints).toEqual([
       { address: '198.51.100.9:51820', active: true },

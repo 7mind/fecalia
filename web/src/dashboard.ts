@@ -184,6 +184,15 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     } else {
       addressingRow = '';
     }
+    const shaperRows = p.shaper
+      ? `
+          <tr data-testid="path-shaper-queue"><td>shaper queue</td><td colspan="2">${formatBytes(p.shaper.queueDataBytes)} DATA / ${formatBytes(p.shaper.queueControlBytes)} control / ${formatBytes(p.shaper.queueBytes)} total / ${formatBytes(p.shaper.queueBudgetBytes)} Q</td></tr>
+          <tr><td>shaper delay</td><td colspan="2">${formatMs(p.shaper.scheduledDelaySeconds)} scheduled / ${formatMs(p.shaper.priorityDelayBoundSeconds)} Dp</td></tr>
+          <tr><td>shaper rate</td><td colspan="2">${formatBytesPerSec(p.shaper.rateBytesPerSecond)} R / ${formatBytesPerSec(p.shaper.priorityRateBytesPerSecond)} Rp / ${formatBytes(p.shaper.priorityBurstBytes)} Pburst</td></tr>
+          <tr><td>shaper bytes</td><td colspan="2">${formatBytes(p.shaper.acceptedBytes)} accepted / ${formatBytes(p.shaper.emittedBytes)} emitted / ${formatBytes(p.shaper.outerPriorityBytes)} priority</td></tr>
+          <tr><td>admission</td><td colspan="2">${p.shaper.admissionWaits} waits (${formatMs(p.shaper.admissionWaitSeconds)}) / ${p.shaper.admissionCanceledDatagrams} canceled</td></tr>
+          <tr><td>async errors</td><td colspan="2">${p.shaper.asyncWriteErrors} generic / ${p.shaper.asyncWriteEmsgsizeErrors} EMSGSIZE</td></tr>`
+      : '';
     return `
       <div class="path-card" data-testid="path-card" data-path="${escapeHtml(p.name)}" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; min-width:16em;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -198,6 +207,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>tx / rx</td><td colspan="2">${formatBytes(p.txBytes)} / ${formatBytes(p.rxBytes)}</td></tr>
           <tr><td>bind</td><td colspan="2" data-testid="path-bind">${bindLabel}</td></tr>
           <tr><td>link</td><td colspan="2" data-testid="path-link">${formatBytesPerSec(p.linkBandwidthBps)} / ${formatMs(p.linkRttSeconds)}</td></tr>
+          ${shaperRows}
           ${addressingRow}
         </table>
       </div>`;

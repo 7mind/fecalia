@@ -17,6 +17,7 @@ import (
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/sched"
+	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -132,6 +133,26 @@ func TestMetricsSourceMapsProbeSendErrors(t *testing.T) {
 	}
 	if got[1].Name != "cellular" || got[1].ProbeSendErrors != 0 {
 		t.Errorf("path 1 = %+v, want cellular ProbeSendErrors=0", got[1])
+	}
+}
+
+func TestMetricsSourceMapsOptionalShaperSnapshot(t *testing.T) {
+	shaperSnapshot := shaper.Snapshot{AcceptedBytes: 17, PriorityDebtBytes: 23}
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{{
+		Paths: []bind.PathTraffic{
+			{Name: "paced", Shaper: &shaperSnapshot},
+			{Name: "unpaced"},
+		},
+	}})
+	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
+
+	got := src.Paths()
+	if got[0].Shaper != &shaperSnapshot {
+		t.Fatalf("paced shaper snapshot pointer = %p, want %p", got[0].Shaper, &shaperSnapshot)
+	}
+	if got[1].Shaper != nil {
+		t.Fatalf("unpaced shaper snapshot = %+v, want nil", got[1].Shaper)
 	}
 }
 

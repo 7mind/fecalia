@@ -494,6 +494,33 @@ active-backup scheduler with pacing:
       continues, the removed path emits no post-removal datagrams, and its
       replacement begins with zero `wanbond_path_shaper_*` counters (a fresh
       shaper/socket generation).
+- [ ] With pacing off, confirm
+      `curl -s http://127.0.0.1:9090/metrics | grep wanbond_path_shaper_`
+      returns no series. Enable pacing and confirm the series appear for each
+      paced path with fixed `path` (and, where applicable, `peer`) labels.
+- [ ] During a paced saturated transfer, confirm
+      `shaper_queue_data_bytes <= shaper_data_budget_bytes`,
+      `shaper_queue_control_bytes <= shaper_control_reserve_bytes`, and
+      `shaper_queue_bytes <= shaper_queue_budget_bytes`. At full B/Q,
+      `shaper_admission_waits_total` and
+      `shaper_admission_wait_seconds_total` should rise while asynchronous
+      generic/`EMSGSIZE` errors and canceled datagrams remain flat.
+- [ ] Read `shaper_priority_debt_bytes` (`P0`),
+      `shaper_rate_bytes_per_second` (`R`),
+      `shaper_priority_rate_bytes_per_second` (`Rp`), and
+      `shaper_priority_burst_bytes` (`Pburst`). Confirm the exported
+      `shaper_priority_delay_bound_seconds` equals
+      `(P0+Pburst)/(R-Rp)`, including on the configured path with the largest
+      `Rp/R` ratio.
+- [ ] After traffic quiesces, reconcile
+      `accepted_bytes = emitted_bytes + async_write_error_bytes +
+      async_write_emsgsize_bytes + queue_bytes + in_flight_bytes`. Compare
+      emitted parity bytes with `wanbond_fec_repair_bytes_total`; direct
+      generated PROBE/echo bytes remain separately visible in
+      `shaper_outer_priority_bytes_total`. Repeat during load: accepted bytes
+      linearize at queue reservation, so a pending-copy placeholder appears in
+      both `accepted_bytes` and `queue_bytes`; cancellation counts only buffers
+      that never reserved capacity.
 - [ ] Cycle the edge daemon Down/Up once with pacing enabled. Confirm no send
       remains blocked, the tunnel reconnects, and the journal contains no
       post-close socket-write errors from the prior generation. Repeat several

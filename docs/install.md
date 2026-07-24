@@ -405,7 +405,12 @@ Common rules, either policy:
   `B = ceil(pacing_burst_frames*1500)`) and enforce the same invariant, so a
   raw `pacing_burst_frames` below one encoded frame is invalid. NaN, infinity,
   a non-positive result, or a derived byte budget too large for the platform
-  byte-count domain is rejected before numeric conversion.
+  byte-count domain is rejected before numeric conversion. Config load and the
+  live primitive both reject `Q=B+C` when that exact sum cannot fit in the
+  platform `int`, and reject an `Rp` too close to `R` for the maximum modeled
+  priority bound `2*Pburst/(R-Rp)` to fit in `time.Duration`; device bring-up
+  therefore never receives such a model, and gauges never expose a wrapped
+  negative Q or a saturated configured-model bound.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
@@ -448,6 +453,22 @@ Common rules, either policy:
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=2,944 B`, and `Rp=14,720 B/s`.
+- The live configuration and envelope are visible under
+  `wanbond_path_shaper_*`: `rate_bytes_per_second`, `data_budget_bytes`,
+  `control_reserve_bytes`, `queue_budget_bytes`, `max_datagram_bytes`,
+  `priority_rate_bytes_per_second`, and `priority_burst_bytes`. Compare
+  `priority_debt_bytes` with `priority_delay_bound_seconds`; the latter uses
+  the live `Dp=(P0+Pburst)/(R-Rp)` expression. Queue gauges split DATA,
+  inner-control, total reserved, and in-flight bytes; the queue values include
+  pending-copy placeholders. Accepted bytes linearize at that reservation for
+  both DATA/PARITY and inner control, while the existing accepted-datagram call
+  result retains its publication-prefix meaning. Admission wait count/time rise
+  under bounded backpressure; cancellation counts only never-reserved buffers.
+  Generic and `EMSGSIZE` failures have separate call and affected-reserved-byte
+  counters. Accepted/emitted/outer-priority byte counters make wire accounting
+  visible. These series (and the monitor UI's `shaper` block) are absent when
+  pacing is off, and all cumulative values reset when the path receives a new
+  socket/shaper generation.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never

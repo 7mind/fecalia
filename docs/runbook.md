@@ -393,6 +393,13 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_path_mtu{path}`                        | Per-path discovered outer path MTU (bytes): the operator-configured `mtu` on a pinned path, else the largest padded probe that still echoes. |
 | `wanbond_tun_mtu`                               | Current `wanbond0` link (TUN) MTU (bytes): the min inner MTU across UP paths. Sized at boot and re-derived at runtime as path liveness/PMTU changes (a WARN log accompanies each live change). |
 | `wanbond_path_tx_bytes_total{path}` / `wanbond_path_rx_bytes_total{path}` | Per-path byte counters. |
+| `wanbond_path_shaper_queue_data_bytes{path}` / `wanbond_path_shaper_queue_control_bytes{path}` / `wanbond_path_shaper_queue_bytes{path}` / `wanbond_path_shaper_in_flight_bytes{path}` | Live reserved DATA, reserved inner-control, total reserved (including pending-copy placeholders), and writer-in-flight bytes. Verify DATA≤B, control≤C, total≤Q. |
+| `wanbond_path_shaper_scheduled_delay_seconds{path}` | Current virtual serialization delay. Sustained growth toward the local bound indicates queued shaped work. |
+| `wanbond_path_shaper_rate_bytes_per_second{path}` / `wanbond_path_shaper_data_budget_bytes{path}` / `wanbond_path_shaper_control_reserve_bytes{path}` / `wanbond_path_shaper_queue_budget_bytes{path}` / `wanbond_path_shaper_max_datagram_bytes{path}` | Configured `R`, `B`, `C`, `Q`, and `Lmax` actually owned by the live generation. |
+| `wanbond_path_shaper_priority_debt_bytes{path}` / `wanbond_path_shaper_priority_rate_bytes_per_second{path}` / `wanbond_path_shaper_priority_burst_bytes{path}` / `wanbond_path_shaper_priority_delay_bound_seconds{path}` | Current `P0`, configured `Rp`/`Pburst`, and derived `Dp=(P0+Pburst)/(R-Rp)`. |
+| `wanbond_path_shaper_accepted_bytes_total{path}` / `wanbond_path_shaper_emitted_bytes_total{path}` / `wanbond_path_shaper_outer_priority_bytes_total{path}` | Bytes reserved by the shaper across DATA/PARITY and inner control, successful shaped writer bytes, and successful direct outer-priority bytes. Compare emitted DATA/parity with the FEC byte counters below. |
+| `wanbond_path_shaper_admission_waits_total{path}` / `wanbond_path_shaper_admission_wait_seconds_total{path}` / `wanbond_path_shaper_admission_canceled_datagrams_total{path}` | Backpressure events, cumulative wait time, and only the never-reserved suffix returned by context cancellation/deadline. A full B/Q raises waits, not write errors. |
+| `wanbond_path_shaper_async_write_errors_total{path}` / `wanbond_path_shaper_async_write_error_bytes_total{path}` / `wanbond_path_shaper_async_write_emsgsize_errors_total{path}` / `wanbond_path_shaper_async_write_emsgsize_bytes_total{path}` | Asynchronous generic and `EMSGSIZE` writer outcomes, split by actual writer calls and affected reserved bytes. |
 | `wanbond_fec_recovered_packets_total`           | DATA packets reconstructed by FEC (masked loss). |
 | `wanbond_fec_unrecoverable_packets_total`       | DATA lost beyond FEC repair — **should stay near-flat**. |
 | `wanbond_fec_residual_loss_ratio`               | Post-recovery connection loss `[0,1]`; compare to your `target_residual`. |
@@ -443,6 +450,9 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 > toward 180s and drops `wanbond_session_established` to `0` is the wedged signal.
 >
 > The FEC series are emitted only when an `[fec]` block is configured.
+> Every `wanbond_path_shaper_*` series is emitted only for a path with pacing
+> enabled. The set is absent, rather than zero-valued, when pacing is off; a
+> Close/Open or remove/re-add starts a new zero-valued generation.
 
 ### Basic health check
 

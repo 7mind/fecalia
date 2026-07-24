@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -73,11 +74,35 @@ const (
 	// counted and returned to discovery. Expected PMTU EMSGSIZE verdicts and reactive
 	// reflected-echo write failures are excluded. Sourced verbatim from
 	// PathSnapshot.ProbeSendErrors.
-	MetricProbeSendErrors         = "wanbond_path_probe_send_errors_total"
-	MetricShaperAcceptedDatagrams = "wanbond_path_shaper_accepted_datagrams_total"
-	MetricShaperEmittedDatagrams  = "wanbond_path_shaper_emitted_datagrams_total"
-	MetricShaperWriteErrors       = "wanbond_path_shaper_write_errors_total"
-	MetricSocketWriteErrors       = "wanbond_path_socket_write_errors_total"
+	MetricProbeSendErrors                  = "wanbond_path_probe_send_errors_total"
+	MetricShaperAcceptedDatagrams          = "wanbond_path_shaper_accepted_datagrams_total"
+	MetricShaperEmittedDatagrams           = "wanbond_path_shaper_emitted_datagrams_total"
+	MetricShaperWriteErrors                = "wanbond_path_shaper_write_errors_total"
+	MetricSocketWriteErrors                = "wanbond_path_socket_write_errors_total"
+	MetricShaperQueueDataBytes             = "wanbond_path_shaper_queue_data_bytes"
+	MetricShaperQueueControlBytes          = "wanbond_path_shaper_queue_control_bytes"
+	MetricShaperQueueBytes                 = "wanbond_path_shaper_queue_bytes"
+	MetricShaperInFlightBytes              = "wanbond_path_shaper_in_flight_bytes"
+	MetricShaperScheduledDelay             = "wanbond_path_shaper_scheduled_delay_seconds"
+	MetricShaperRateBytesPerSecond         = "wanbond_path_shaper_rate_bytes_per_second"
+	MetricShaperDataBudgetBytes            = "wanbond_path_shaper_data_budget_bytes"
+	MetricShaperControlReserveBytes        = "wanbond_path_shaper_control_reserve_bytes"
+	MetricShaperQueueBudgetBytes           = "wanbond_path_shaper_queue_budget_bytes"
+	MetricShaperMaxDatagramBytes           = "wanbond_path_shaper_max_datagram_bytes"
+	MetricShaperAcceptedBytes              = "wanbond_path_shaper_accepted_bytes_total"
+	MetricShaperEmittedBytes               = "wanbond_path_shaper_emitted_bytes_total"
+	MetricShaperOuterPriorityBytes         = "wanbond_path_shaper_outer_priority_bytes_total"
+	MetricShaperPriorityDebtBytes          = "wanbond_path_shaper_priority_debt_bytes"
+	MetricShaperPriorityRateBytesPerSecond = "wanbond_path_shaper_priority_rate_bytes_per_second"
+	MetricShaperPriorityBurstBytes         = "wanbond_path_shaper_priority_burst_bytes"
+	MetricShaperPriorityDelayBound         = "wanbond_path_shaper_priority_delay_bound_seconds"
+	MetricShaperAdmissionWaits             = "wanbond_path_shaper_admission_waits_total"
+	MetricShaperAdmissionWaitSeconds       = "wanbond_path_shaper_admission_wait_seconds_total"
+	MetricShaperAdmissionCanceledDatagrams = "wanbond_path_shaper_admission_canceled_datagrams_total"
+	MetricShaperAsyncWriteErrors           = "wanbond_path_shaper_async_write_errors_total"
+	MetricShaperAsyncWriteErrorBytes       = "wanbond_path_shaper_async_write_error_bytes_total"
+	MetricShaperAsyncWriteEMSGSIZEErrors   = "wanbond_path_shaper_async_write_emsgsize_errors_total"
+	MetricShaperAsyncWriteEMSGSIZEBytes    = "wanbond_path_shaper_async_write_emsgsize_bytes_total"
 )
 
 // FEC metric names. These connection-scoped series (no path label — FEC
@@ -354,6 +379,8 @@ type PathSnapshot struct {
 	ShaperEmittedDatagrams  uint64
 	ShaperWriteErrors       uint64
 	SocketWriteErrors       uint64
+	// Shaper is nil when exact-byte shaping is disabled for this path.
+	Shaper *shaper.Snapshot
 	// The following addressing fields are the runtime-resolved per-path
 	// networking metadata the monitoring UI surfaces (G21). They are DEFINED here
 	// (T214) but the value-wiring from bind.PathTraffic through
@@ -509,6 +536,7 @@ type collector struct {
 	shaperEmitted  *prometheus.Desc
 	shaperErrors   *prometheus.Desc
 	socketErrors   *prometheus.Desc
+	shaperMetrics  []shaperMetric
 
 	fecData          *prometheus.Desc
 	fecRepair        *prometheus.Desc
@@ -545,6 +573,12 @@ type collector struct {
 	peerSessionEstablished *prometheus.Desc
 }
 
+type shaperMetric struct {
+	desc      *prometheus.Desc
+	valueType prometheus.ValueType
+	value     func(shaper.Snapshot) float64
+}
+
 // NewCollector builds the wanbond metrics collector over src. Register it into a
 // dedicated prometheus.Registry (see NewServer); it deliberately does not touch
 // the global default registry (no-globals discipline). It queries src.PeerNames()
@@ -562,6 +596,18 @@ func NewCollector(src Source) prometheus.Collector {
 	desc := func(subsystem, name, help string, labels []string) *prometheus.Desc {
 		return prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, name), help, labels, nil)
 	}
+	makeShaperMetric := func(
+		name string,
+		help string,
+		valueType prometheus.ValueType,
+		value func(shaper.Snapshot) float64,
+	) shaperMetric {
+		return shaperMetric{
+			desc:      desc(pathSubsystem, name, help, pathLabels),
+			valueType: valueType,
+			value:     value,
+		}
+	}
 	return &collector{
 		src:            src,
 		multiPeer:      multiPeer,
@@ -574,10 +620,36 @@ func NewCollector(src Source) prometheus.Collector {
 		up:             desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
 		pmtu:           desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
 		probeErrs:      desc(pathSubsystem, "probe_send_errors_total", "Unexpected locally-originated ordinary/PMTU PROBE socket write failures. Expected PMTU EMSGSIZE too-large verdicts are excluded; PMTU failures return to discovery and ordinary failures are counted then discarded.", pathLabels),
-		shaperAccepted: desc(pathSubsystem, "shaper_accepted_datagrams_total", "Encoded DATA/PARITY datagrams accepted by the path's exact-byte shaper.", pathLabels),
-		shaperEmitted:  desc(pathSubsystem, "shaper_emitted_datagrams_total", "Shaped DATA/PARITY datagrams successfully handed to the kernel.", pathLabels),
+		shaperAccepted: desc(pathSubsystem, "shaper_accepted_datagrams_total", "DATA/PARITY and inner-control datagrams made ready after copying caller memory into the path's exact-byte shaper.", pathLabels),
+		shaperEmitted:  desc(pathSubsystem, "shaper_emitted_datagrams_total", "Shaped DATA/PARITY and inner-control datagrams successfully handed to the UDP writer.", pathLabels),
 		shaperErrors:   desc(pathSubsystem, "shaper_write_errors_total", "Terminal exact-byte shaper write-call errors.", pathLabels),
-		socketErrors:   desc(pathSubsystem, "socket_write_errors_total", "UDP socket write errors from shaped and direct DATA/PARITY sends.", pathLabels),
+		socketErrors:   desc(pathSubsystem, "socket_write_errors_total", "UDP socket write errors from shaped and direct DATA/PARITY/inner-control datagrams; excludes generated outer PROBE and reflected-echo failures.", pathLabels),
+		shaperMetrics: []shaperMetric{
+			makeShaperMetric("shaper_queue_data_bytes", "Current DATA/PARITY bytes reserved in the exact-byte shaper queue, including pending-copy placeholders.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.QueueDataBytes) }),
+			makeShaperMetric("shaper_queue_control_bytes", "Current inner-control bytes reserved in the exact-byte shaper queue, including pending-copy placeholders.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.QueueControlBytes) }),
+			makeShaperMetric("shaper_queue_bytes", "Current bytes reserved in the exact-byte shaper queue across both shaped classes, including pending-copy placeholders.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.QueueBytes) }),
+			makeShaperMetric("shaper_in_flight_bytes", "Current bytes handed to the exact-byte shaper writer whose result remains pending.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.InFlightBytes) }),
+			makeShaperMetric("shaper_scheduled_delay_seconds", "Current virtual serialization delay scheduled by the exact-byte shaper in seconds.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.ScheduledDelay.Seconds() }),
+			makeShaperMetric("shaper_rate_bytes_per_second", "Configured exact-byte shaper wire rate R in bytes per second.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.RateBytesPerSecond }),
+			makeShaperMetric("shaper_data_budget_bytes", "Configured exact-byte shaper DATA/PARITY queue budget B in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.DataBudgetBytes) }),
+			makeShaperMetric("shaper_control_reserve_bytes", "Configured exact-byte shaper inner-control queue reserve C in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.ControlReserveBytes) }),
+			makeShaperMetric("shaper_queue_budget_bytes", "Configured exact-byte shaper total reserved-byte queue budget Q=B+C in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.QueueBudgetBytes) }),
+			makeShaperMetric("shaper_max_datagram_bytes", "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MaxDatagramBytes) }),
+			makeShaperMetric("shaper_accepted_bytes_total", "Total bytes reserved by the exact-byte shaper across DATA/PARITY and inner-control classes.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AcceptedBytes) }),
+			makeShaperMetric("shaper_emitted_bytes_total", "Total DATA/PARITY and inner-control bytes successfully handed to the UDP writer.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.EmittedBytes) }),
+			makeShaperMetric("shaper_outer_priority_bytes_total", "Total successfully written outer PROBE/echo bytes charged as shaper priority traffic.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.OuterPriorityBytes) }),
+			makeShaperMetric("shaper_priority_debt_bytes", "Current outer-priority serialization debt P0 in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityDebtBytes }),
+			makeShaperMetric("shaper_priority_rate_bytes_per_second", "Configured sustained outer-priority rate Rp in bytes per second.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityRateBytesPerSecond }),
+			makeShaperMetric("shaper_priority_burst_bytes", "Configured outer-priority burst allowance Pburst in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.PriorityBurstBytes) }),
+			makeShaperMetric("shaper_priority_delay_bound_seconds", "Current DATA admission delay bound Dp=(P0+Pburst)/(R-Rp) in seconds.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityDelayBound.Seconds() }),
+			makeShaperMetric("shaper_admission_waits_total", "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AdmissionWaits) }),
+			makeShaperMetric("shaper_admission_wait_seconds_total", "Cumulative seconds spent waiting for exact-byte shaper admission.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return s.AdmissionWaitDuration.Seconds() }),
+			makeShaperMetric("shaper_admission_canceled_datagrams_total", "Total datagrams never reserved because their admission context was canceled or expired.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AdmissionCanceledDatagrams) }),
+			makeShaperMetric("shaper_async_write_errors_total", "Asynchronous exact-byte shaper writer failures excluding EMSGSIZE.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AsyncWriteErrors) }),
+			makeShaperMetric("shaper_async_write_error_bytes_total", "Reserved bytes completed with an asynchronous writer failure excluding EMSGSIZE.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AsyncWriteErrorBytes) }),
+			makeShaperMetric("shaper_async_write_emsgsize_errors_total", "Asynchronous exact-byte shaper writer failures classified as EMSGSIZE.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AsyncWriteEMSGSIZEErrors) }),
+			makeShaperMetric("shaper_async_write_emsgsize_bytes_total", "Reserved bytes completed with an asynchronous EMSGSIZE writer failure.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AsyncWriteEMSGSIZEBytes) }),
+		},
 
 		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", peerScopedLabels),
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", peerScopedLabels),
@@ -633,6 +705,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.shaperEmitted
 	ch <- c.shaperErrors
 	ch <- c.socketErrors
+	for _, metric := range c.shaperMetrics {
+		ch <- metric.desc
+	}
 	ch <- c.fecData
 	ch <- c.fecRepair
 	ch <- c.fecRecovered
@@ -678,9 +753,14 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), labels...)
 		ch <- prometheus.MustNewConstMetric(c.pmtu, prometheus.GaugeValue, float64(p.PMTU), labels...)
 		ch <- prometheus.MustNewConstMetric(c.probeErrs, prometheus.CounterValue, float64(p.ProbeSendErrors), labels...)
-		ch <- prometheus.MustNewConstMetric(c.shaperAccepted, prometheus.CounterValue, float64(p.ShaperAcceptedDatagrams), labels...)
-		ch <- prometheus.MustNewConstMetric(c.shaperEmitted, prometheus.CounterValue, float64(p.ShaperEmittedDatagrams), labels...)
-		ch <- prometheus.MustNewConstMetric(c.shaperErrors, prometheus.CounterValue, float64(p.ShaperWriteErrors), labels...)
+		if p.Shaper != nil {
+			ch <- prometheus.MustNewConstMetric(c.shaperAccepted, prometheus.CounterValue, float64(p.ShaperAcceptedDatagrams), labels...)
+			ch <- prometheus.MustNewConstMetric(c.shaperEmitted, prometheus.CounterValue, float64(p.ShaperEmittedDatagrams), labels...)
+			ch <- prometheus.MustNewConstMetric(c.shaperErrors, prometheus.CounterValue, float64(p.ShaperWriteErrors), labels...)
+			for _, metric := range c.shaperMetrics {
+				ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(*p.Shaper), labels...)
+			}
+		}
 		ch <- prometheus.MustNewConstMetric(c.socketErrors, prometheus.CounterValue, float64(p.SocketWriteErrors), labels...)
 	}
 	for _, f := range c.src.FEC() {

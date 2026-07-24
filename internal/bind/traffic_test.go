@@ -1,12 +1,30 @@
 package bind
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/shaper"
 )
+
+type snapshotCallbackShaper struct {
+	callback func()
+	snapshot shaper.Snapshot
+}
+
+func (*snapshotCallbackShaper) WriteDatagrams(context.Context, []shaper.Datagram) (shaper.BatchResult, error) {
+	return shaper.BatchResult{FailedIndex: -1}, nil
+}
+
+func (*snapshotCallbackShaper) AccountPriority(int) error { return nil }
+func (*snapshotCallbackShaper) Close() error              { return nil }
+func (s *snapshotCallbackShaper) Snapshot() shaper.Snapshot {
+	s.callback()
+	return s.snapshot
+}
 
 // TestMultipathTxBytesCountedOnSend asserts Send accumulates, per path, exactly the
 // OUTER-wire bytes it writes to that path's socket (T23). The peer socket's read length
@@ -58,6 +76,45 @@ func TestMultipathTxBytesCountedOnSend(t *testing.T) {
 	// Send does not touch the receive counter.
 	if snaps[0].RxBytes != 0 {
 		t.Errorf("path 0 RxBytes = %d, want 0 (no inbound)", snaps[0].RxBytes)
+	}
+	if snaps[0].Shaper != nil || snaps[1].Shaper != nil {
+		t.Fatalf("unpaced path exposed a shaper snapshot: %+v", snaps)
+	}
+}
+
+func TestPeerSnapshotsReadsShaperAfterReleasingBindLock(t *testing.T) {
+	m, err := newMultipath(t, loopbackPaths(1), testKey(t, 0x73))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	reporter := &snapshotCallbackShaper{
+		callback: func() {
+			m.mu.Lock()
+			m.mu.Unlock()
+		},
+		snapshot: shaper.Snapshot{AcceptedBytes: 17},
+	}
+	m.mu.Lock()
+	m.paths[0].shaper = reporter
+	m.mu.Unlock()
+
+	done := make(chan []PeerSnapshot, 1)
+	go func() {
+		done <- m.PeerSnapshots()
+	}()
+	select {
+	case peers := <-done:
+		got := peers[0].Paths[0].Shaper
+		if got == nil || got.AcceptedBytes != 17 {
+			t.Fatalf("shaper snapshot = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PeerSnapshots called shaper Snapshot while holding m.mu")
 	}
 }
 

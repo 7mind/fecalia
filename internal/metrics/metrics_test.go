@@ -11,7 +11,9 @@ import (
 
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // fakeSource is a static Source that returns a fixed set of per-(peer,path)
@@ -45,6 +47,210 @@ func testLogger(t *testing.T) log.Logger {
 		t.Fatalf("log.New: %v", err)
 	}
 	return lg
+}
+
+func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
+	snapshot := shaper.Snapshot{
+		QueueDataBytes:             1,
+		QueueControlBytes:          2,
+		QueueBytes:                 3,
+		InFlightBytes:              4,
+		ScheduledDelay:             5 * time.Second,
+		RateBytesPerSecond:         6,
+		DataBudgetBytes:            7,
+		ControlReserveBytes:        8,
+		QueueBudgetBytes:           9,
+		MaxDatagramBytes:           10,
+		AcceptedBytes:              11,
+		EmittedBytes:               12,
+		OuterPriorityBytes:         13,
+		PriorityDebtBytes:          14,
+		PriorityRateBytesPerSecond: 15,
+		PriorityBurstBytes:         16,
+		PriorityDelayBound:         17 * time.Second,
+		AdmissionWaits:             18,
+		AdmissionWaitDuration:      19 * time.Second,
+		AdmissionCanceledDatagrams: 20,
+		AsyncWriteErrors:           21,
+		AsyncWriteErrorBytes:       22,
+		AsyncWriteEMSGSIZEErrors:   23,
+		AsyncWriteEMSGSIZEBytes:    24,
+	}
+	type metricContract struct {
+		name string
+		help string
+		typ  dto.MetricType
+		want float64
+	}
+	contracts := []metricContract{
+		{MetricShaperQueueDataBytes, "Current DATA/PARITY bytes reserved in the exact-byte shaper queue, including pending-copy placeholders.", dto.MetricType_GAUGE, 1},
+		{MetricShaperQueueControlBytes, "Current inner-control bytes reserved in the exact-byte shaper queue, including pending-copy placeholders.", dto.MetricType_GAUGE, 2},
+		{MetricShaperQueueBytes, "Current bytes reserved in the exact-byte shaper queue across both shaped classes, including pending-copy placeholders.", dto.MetricType_GAUGE, 3},
+		{MetricShaperInFlightBytes, "Current bytes handed to the exact-byte shaper writer whose result remains pending.", dto.MetricType_GAUGE, 4},
+		{MetricShaperScheduledDelay, "Current virtual serialization delay scheduled by the exact-byte shaper in seconds.", dto.MetricType_GAUGE, 5},
+		{MetricShaperRateBytesPerSecond, "Configured exact-byte shaper wire rate R in bytes per second.", dto.MetricType_GAUGE, 6},
+		{MetricShaperDataBudgetBytes, "Configured exact-byte shaper DATA/PARITY queue budget B in bytes.", dto.MetricType_GAUGE, 7},
+		{MetricShaperControlReserveBytes, "Configured exact-byte shaper inner-control queue reserve C in bytes.", dto.MetricType_GAUGE, 8},
+		{MetricShaperQueueBudgetBytes, "Configured exact-byte shaper total reserved-byte queue budget Q=B+C in bytes.", dto.MetricType_GAUGE, 9},
+		{MetricShaperMaxDatagramBytes, "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", dto.MetricType_GAUGE, 10},
+		{MetricShaperAcceptedBytes, "Total bytes reserved by the exact-byte shaper across DATA/PARITY and inner-control classes.", dto.MetricType_COUNTER, 11},
+		{MetricShaperEmittedBytes, "Total DATA/PARITY and inner-control bytes successfully handed to the UDP writer.", dto.MetricType_COUNTER, 12},
+		{MetricShaperOuterPriorityBytes, "Total successfully written outer PROBE/echo bytes charged as shaper priority traffic.", dto.MetricType_COUNTER, 13},
+		{MetricShaperPriorityDebtBytes, "Current outer-priority serialization debt P0 in bytes.", dto.MetricType_GAUGE, 14},
+		{MetricShaperPriorityRateBytesPerSecond, "Configured sustained outer-priority rate Rp in bytes per second.", dto.MetricType_GAUGE, 15},
+		{MetricShaperPriorityBurstBytes, "Configured outer-priority burst allowance Pburst in bytes.", dto.MetricType_GAUGE, 16},
+		{MetricShaperPriorityDelayBound, "Current DATA admission delay bound Dp=(P0+Pburst)/(R-Rp) in seconds.", dto.MetricType_GAUGE, 17},
+		{MetricShaperAdmissionWaits, "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", dto.MetricType_COUNTER, 18},
+		{MetricShaperAdmissionWaitSeconds, "Cumulative seconds spent waiting for exact-byte shaper admission.", dto.MetricType_COUNTER, 19},
+		{MetricShaperAdmissionCanceledDatagrams, "Total datagrams never reserved because their admission context was canceled or expired.", dto.MetricType_COUNTER, 20},
+		{MetricShaperAsyncWriteErrors, "Asynchronous exact-byte shaper writer failures excluding EMSGSIZE.", dto.MetricType_COUNTER, 21},
+		{MetricShaperAsyncWriteErrorBytes, "Reserved bytes completed with an asynchronous writer failure excluding EMSGSIZE.", dto.MetricType_COUNTER, 22},
+		{MetricShaperAsyncWriteEMSGSIZEErrors, "Asynchronous exact-byte shaper writer failures classified as EMSGSIZE.", dto.MetricType_COUNTER, 23},
+		{MetricShaperAsyncWriteEMSGSIZEBytes, "Reserved bytes completed with an asynchronous EMSGSIZE writer failure.", dto.MetricType_COUNTER, 24},
+	}
+
+	enabled := startServer(t, fakeSource{paths: []PathSnapshot{{Name: "wan0", Shaper: &snapshot}}})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exp, err := Fetch(ctx, http.DefaultClient, enabled.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range contracts {
+		family, ok := exp.Families()[contract.name]
+		if !ok {
+			t.Errorf("%s absent", contract.name)
+			continue
+		}
+		if family.GetHelp() != contract.help || family.GetType() != contract.typ {
+			t.Errorf("%s metadata = help %q type %s", contract.name, family.GetHelp(), family.GetType())
+		}
+		got, ok := exp.PathValue(contract.name, "wan0")
+		if !ok || got != contract.want {
+			t.Errorf("%s value = %v,%v, want %v,true", contract.name, got, ok, contract.want)
+		}
+		lower := strings.ToLower(contract.name + " " + contract.help)
+		if strings.Contains(lower, "shed") || strings.Contains(lower, "overflow") {
+			t.Errorf("%s mislabels backpressure: %q", contract.name, contract.help)
+		}
+	}
+	for name, wantHelp := range map[string]string{
+		MetricShaperAcceptedDatagrams: "DATA/PARITY and inner-control datagrams made ready after copying caller memory into the path's exact-byte shaper.",
+		MetricShaperEmittedDatagrams:  "Shaped DATA/PARITY and inner-control datagrams successfully handed to the UDP writer.",
+		MetricShaperWriteErrors:       "Terminal exact-byte shaper write-call errors.",
+		MetricSocketWriteErrors:       "UDP socket write errors from shaped and direct DATA/PARITY/inner-control datagrams; excludes generated outer PROBE and reflected-echo failures.",
+	} {
+		family, ok := exp.Families()[name]
+		if !ok {
+			t.Errorf("%s absent", name)
+			continue
+		}
+		if family.GetHelp() != wantHelp || family.GetType() != dto.MetricType_COUNTER {
+			t.Errorf("%s metadata = help %q type %s", name, family.GetHelp(), family.GetType())
+		}
+	}
+	secondSnapshot := shaper.Snapshot{
+		QueueDataBytes:             101,
+		QueueControlBytes:          102,
+		QueueBytes:                 103,
+		InFlightBytes:              104,
+		ScheduledDelay:             105 * time.Second,
+		RateBytesPerSecond:         106,
+		DataBudgetBytes:            107,
+		ControlReserveBytes:        108,
+		QueueBudgetBytes:           109,
+		MaxDatagramBytes:           110,
+		AcceptedBytes:              111,
+		EmittedBytes:               112,
+		OuterPriorityBytes:         113,
+		PriorityDebtBytes:          114,
+		PriorityRateBytesPerSecond: 115,
+		PriorityBurstBytes:         116,
+		PriorityDelayBound:         117 * time.Second,
+		AdmissionWaits:             118,
+		AdmissionWaitDuration:      119 * time.Second,
+		AdmissionCanceledDatagrams: 120,
+		AsyncWriteErrors:           121,
+		AsyncWriteErrorBytes:       122,
+		AsyncWriteEMSGSIZEErrors:   123,
+		AsyncWriteEMSGSIZEBytes:    124,
+	}
+	multiPeer := startServer(t, fakeSource{
+		peerNames: []string{"tokyo", "osaka"},
+		paths: []PathSnapshot{
+			{Peer: "tokyo", Name: "wan0", Shaper: &snapshot},
+			{Peer: "osaka", Name: "wan0", Shaper: &secondSnapshot},
+		},
+	})
+	multiPeerExp, err := Fetch(ctx, http.DefaultClient, multiPeer.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contract := range contracts {
+		for peer, want := range map[string]float64{
+			"tokyo": contract.want,
+			"osaka": contract.want + 100,
+		} {
+			got, ok := multiPeerExp.PeerPathValue(contract.name, peer, "wan0")
+			if !ok || got != want {
+				t.Errorf("%s{peer=%q,path=\"wan0\"} = %v,%v, want %v,true", contract.name, peer, got, ok, want)
+			}
+		}
+		for _, metric := range multiPeerExp.Families()[contract.name].GetMetric() {
+			labels := map[string]string{}
+			for _, pair := range metric.GetLabel() {
+				labels[pair.GetName()] = pair.GetValue()
+			}
+			if len(labels) != 2 || labels[labelPath] != "wan0" || labels[labelPeer] == "" {
+				t.Errorf("%s labels = %v, want exactly path+peer", contract.name, labels)
+			}
+		}
+	}
+	snapshot = shaper.Snapshot{
+		RateBytesPerSecond:         6,
+		DataBudgetBytes:            7,
+		ControlReserveBytes:        8,
+		QueueBudgetBytes:           9,
+		MaxDatagramBytes:           10,
+		PriorityRateBytesPerSecond: 15,
+		PriorityBurstBytes:         16,
+	}
+	resetExp, err := Fetch(ctx, http.DefaultClient, enabled.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		MetricShaperAcceptedBytes,
+		MetricShaperEmittedBytes,
+		MetricShaperAdmissionWaits,
+		MetricShaperAsyncWriteErrors,
+		MetricShaperAsyncWriteEMSGSIZEErrors,
+	} {
+		got, ok := resetExp.PathValue(name, "wan0")
+		if !ok || got != 0 {
+			t.Errorf("%s after generation reset = %v,%v, want 0,true", name, got, ok)
+		}
+	}
+
+	disabled := startServer(t, fakeSource{paths: []PathSnapshot{{Name: "wan0"}}})
+	disabledExp, err := Fetch(ctx, http.DefaultClient, disabled.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		MetricShaperAcceptedDatagrams,
+		MetricShaperEmittedDatagrams,
+		MetricShaperWriteErrors,
+	} {
+		if disabledExp.Has(name) {
+			t.Errorf("%s present while shaping disabled", name)
+		}
+	}
+	for _, contract := range contracts {
+		if disabledExp.Has(contract.name) {
+			t.Errorf("%s present while shaping disabled", contract.name)
+		}
+	}
 }
 
 // startServer builds a loopback metrics server over src, starts it, and registers

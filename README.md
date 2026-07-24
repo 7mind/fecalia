@@ -113,8 +113,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   and PMTU PROBE socket write failures; expected PMTU `EMSGSIZE` too-large
   verdicts are excluded; PMTU failures return to discovery, while ordinary
   failures are counted then discarded so other paths continue, D96), exact-byte shaper
-  accepted/emitted/error counters (`wanbond_path_shaper_*`) plus underlying
-  `wanbond_path_socket_write_errors_total`, WG-session establishment
+  queue/backpressure, byte, priority-debt/bound, configuration, and asynchronous
+  write-error series (`wanbond_path_shaper_*`) plus underlying
+  `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
+  inner-control socket failures; generated outer PROBE and reflected-echo
+  failures are excluded), WG-session establishment
   (`wanbond_session_established`, plus a per-peer
   `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
   including the first configured one, carries its configured `peer` label, while
@@ -254,11 +257,20 @@ deliberate boundaries you must plan around:
   control reserve, and the future probe budget) and rejects an envelope that
   cannot admit one legal datagram or whose maximum probe+echo rate consumes the
   whole link. Non-finite inputs and byte budgets that cannot fit the platform's
-  integer byte-count domain are rejected before conversion. At runtime each
+  integer byte-count domain are rejected before conversion; `Q=B+C` and the
+  maximum modeled `2*Pburst/(R-Rp)` priority bound must also fit their runtime
+  `int`/`time.Duration` representations. At runtime each
   `(peer,path)` owns one shaper: encoded DATA and every immediate/deadline FEC
   parity datagram consume their exact byte length, and a full bounded budget
   backpressures the sender instead of shedding. Per-path accepted, emitted,
-  shaper-error, and socket-error counters expose every terminal prefix.
+  shaper-error, and socket-error counters expose every terminal prefix. Live
+  queue gauges prove `DATA<=B`, `control<=C`, and `total<=Q`; admission-wait
+  counters distinguish bounded backpressure from cancellation. Accepted bytes
+  linearize when queue capacity is reserved (including a pending-copy
+  placeholder), so accepted, emitted, generic-error, `EMSGSIZE`, queue, and
+  in-flight bytes reconcile at every live snapshot; both DATA/PARITY and inner
+  control contribute. The shaper series are absent when pacing is off and
+  restart from zero with each fresh shaper/socket generation.
   Runtime remove/rollback and Close atomically stop that generation's admission,
   retire queued work, wait shaped and direct UDP writers without holding the bind
   lock, and only then close its socket. Re-add or Close/Open creates a fresh empty

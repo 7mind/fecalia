@@ -15,6 +15,7 @@ import (
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 
 	"github.com/7mind/wanbond/internal/netutil"
+	pathshaper "github.com/7mind/wanbond/internal/shaper"
 )
 
 // Role selects which end of the tunnel this process runs as. It is an explicit,
@@ -1352,7 +1353,7 @@ func (c *Config) derivePathShapers() error {
 			return fmt.Errorf("path %q: generated probe+echo rate %g bytes/s must be < shaper rate %g bytes/s (Pburst=%d bytes at minimum interval %s)",
 				p.Name, probeRateBytesPerSecond, rateBytesPerSecond, probeBurstBytes, livenessProbeInterval)
 		}
-		shapers[i] = PathShaperConfig{
+		derived := PathShaperConfig{
 			RateBytesPerSecond:      rateBytesPerSecond,
 			DataBurstBytes:          dataBurstBytes,
 			ControlReserveBytes:     lmax,
@@ -1360,6 +1361,17 @@ func (c *Config) derivePathShapers() error {
 			ProbeRateBytesPerSecond: probeRateBytesPerSecond,
 			ProbeBurstBytes:         probeBurstBytes,
 		}
+		if err := pathshaper.ValidateConfig(pathshaper.Config{
+			RateBytesPerSecond:         derived.RateBytesPerSecond,
+			PriorityRateBytesPerSecond: derived.ProbeRateBytesPerSecond,
+			DataBudgetBytes:            derived.DataBurstBytes,
+			ControlReserveBytes:        derived.ControlReserveBytes,
+			MaxDatagramBytes:           derived.MaxEncodedDatagramBytes,
+			PriorityBurstBytes:         derived.ProbeBurstBytes,
+		}); err != nil {
+			return fmt.Errorf("path %q: invalid exact-byte shaper configuration: %w", p.Name, err)
+		}
+		shapers[i] = derived
 	}
 	s.PerPathShapers = shapers
 	return nil

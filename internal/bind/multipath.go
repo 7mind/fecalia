@@ -964,6 +964,10 @@ type stagedPathShaper interface {
 	Wait() error
 }
 
+type pathShaperReporter interface {
+	Snapshot() shaper.Snapshot
+}
+
 type pathShaperFactory func(shaper.Config, shaper.WriteFunc) (pathShaper, error)
 
 // sourceBinding is one entry of the source->peer demux map (peerBySource): the peer a learned
@@ -4563,6 +4567,9 @@ type PathTraffic struct {
 	ShaperEmittedDatagrams  uint64
 	ShaperWriteErrors       uint64
 	SocketWriteErrors       uint64
+	// Shaper is present only while this path has an active exact-byte shaper
+	// generation. The snapshot is read after m.mu is released.
+	Shaper *shaper.Snapshot
 	// ProbeSendErrors is the cumulative count of unexpected locally-originated
 	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
 	// EMSGSIZE verdicts are excluded. Read verbatim from peerPathState.probeSendErrors.
@@ -4635,6 +4642,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		shaperErrors   uint64
 		socketErrors   uint64
 		prober         *telemetry.Prober
+		shaper         pathShaperReporter
 		// pp is captured under m.mu; its src/conn/bindMode/boundDevice are immutable
 		// and its remote is ps.mu-guarded (getRemote), so the addressing fields are
 		// read AFTER m.mu is released, exactly like the prober Estimate()/State() reads.
@@ -4655,6 +4663,10 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler}
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
+			var reporter pathShaperReporter
+			if candidate, ok := pp.shaper.(pathShaperReporter); ok {
+				reporter = candidate
+			}
 			r.paths[j] = pathRef{
 				name:           pp.name,
 				tx:             pp.txBytes.Load(),
@@ -4665,6 +4677,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 				shaperErrors:   pp.shapedWriteErrors.Load(),
 				socketErrors:   pp.socketWriteErrors.Load(),
 				prober:         pp.prober,
+				shaper:         reporter,
 				pp:             pp,
 			}
 		}
@@ -4690,6 +4703,10 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			if pr.prober != nil {
 				pt.Estimate = pr.prober.Estimate()
 				pt.State = pr.prober.State()
+			}
+			if pr.shaper != nil {
+				shaperSnapshot := pr.shaper.Snapshot()
+				pt.Shaper = &shaperSnapshot
 			}
 			// Addressing (G21): src/bindMode/boundDevice are immutable; LocalAddr comes
 			// from the socket; Remote is read under ps.mu via getRemote — all AFTER m.mu

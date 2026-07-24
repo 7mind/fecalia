@@ -358,3 +358,39 @@ func TestPathShaperRejectsNonRepresentableDerivedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestPathShaperLoadRejectsQueueBudgetOverflow(t *testing.T) {
+	const lmax = 1472
+	maxIntExclusive := math.Ldexp(1, strconv.IntSize-1)
+	burstBytes := float64(math.MaxInt - lmax + 1)
+	roundedBurstBytes := math.Ceil(burstBytes)
+	if roundedBurstBytes >= maxIntExclusive ||
+		int(roundedBurstBytes) <= math.MaxInt-lmax {
+		t.Fatalf("test DATA burst %g does not produce a representable overflowing B+C", roundedBurstBytes)
+	}
+
+	bandwidth := strconv.FormatFloat(burstBytes*bitsPerByte, 'g', -1, 64) + "bit"
+	_, err := loadByteShaperFixture(t, byteShaperFixture(
+		"192.0.2.10", bandwidth, "1s", 0, "pacing_enabled = true\n",
+	))
+	const want = "queue budget B+C must fit in int"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Load error = %v, want substring %q", err, want)
+	}
+}
+
+func TestPathShaperLoadRejectsUnrepresentablePriorityBound(t *testing.T) {
+	const lmax = 1472
+	probeBurstBytes := probeFramesPerBurstPair * lmax
+	probeRateBytesPerSecond := float64(probeBurstBytes) / livenessProbeInterval.Seconds()
+	rateBytesPerSecond := math.Nextafter(probeRateBytesPerSecond, math.Inf(1))
+	bandwidth := strconv.FormatFloat(rateBytesPerSecond*bitsPerByte, 'g', -1, 64) + "bit"
+
+	_, err := loadByteShaperFixture(t, byteShaperFixture(
+		"192.0.2.10", bandwidth, "100ms", 0, "pacing_enabled = true\n",
+	))
+	const want = "modeled priority delay bound exceeds time.Duration"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Load error = %v, want substring %q", err, want)
+	}
+}
