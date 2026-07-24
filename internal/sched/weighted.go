@@ -275,6 +275,17 @@ func (s *WeightedScheduler) RedundantPaths(chosen int) []int {
 // comment for the full rationale, including why this is a no-op with pacing disabled
 // (every shipped default) and a live rate-binding change with pacing enabled.
 func (s *WeightedScheduler) Pick(class FrameClass, frames int) int {
+	return s.pick(class, frames, true)
+}
+
+// PickUnpaced performs Pick's single offered-load observation, gate update, and path
+// selection while bypassing the legacy frame-token admission step. The selected path's
+// exact-byte shaper owns admission when this method is used.
+func (s *WeightedScheduler) PickUnpaced(class FrameClass, frames int) int {
+	return s.pick(class, frames, false)
+}
+
+func (s *WeightedScheduler) pick(class FrameClass, frames int, pace bool) int {
 	checkPickFrames(frames)
 	now := s.clock.Now()
 	s.mu.Lock()
@@ -289,7 +300,9 @@ func (s *WeightedScheduler) Pick(class FrameClass, frames int) int {
 	s.recomputeLocked(now)           // liveness refresh + eager-failover log
 	s.observeLoadLocked(now, frames) // this Pick offers `frames` wire frames (decays across the gap)
 	s.updateGateLocked(now, gap)     // engage/disengage aggregation (hysteresis, idle-aware)
-	s.refill(now)                    // top up pacing buckets
+	if pace {
+		s.refill(now) // top up legacy pacing buckets only when they own admission
+	}
 
 	eligible := s.eligibleLocked()
 	if len(eligible) == 0 {
@@ -299,9 +312,15 @@ func (s *WeightedScheduler) Pick(class FrameClass, frames int) int {
 		// Data-thrift: at low load only the primary (best eligible) carries traffic;
 		// the metered backup stays idle. A path-down excludes it from eligible, so
 		// eligible[0] is the surviving highest-priority path — failover is preserved.
+		if !pace {
+			return eligible[0]
+		}
 		return s.serveLocked(now, eligible[0], class, frames)
 	}
 	weights := s.weightsLocked(eligible)
+	if !pace {
+		return s.swrrPickLocked(eligible, weights)
+	}
 	return s.selectAggregatingLocked(now, eligible, weights, class, frames)
 }
 

@@ -431,6 +431,74 @@ func TestWriterErrorDoesNotStopLaterDatagrams(t *testing.T) {
 	}
 }
 
+func TestBatchWriterErrorStopsUnstartedSuffixAndReportsPrefix(t *testing.T) {
+	clock := newFakeClock()
+	sentinel := errors.New("writer failed")
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	var calls []byte
+	shaper, err := New(validConfig(), clock, func(datagram []byte) error {
+		mu.Lock()
+		calls = append(calls, datagram[0])
+		call := len(calls)
+		mu.Unlock()
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		if datagram[0] == 2 {
+			return sentinel
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shaper.Close() }()
+
+	type outcome struct {
+		result BatchResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := shaper.WriteDatagrams(
+			context.Background(),
+			[]Datagram{
+				{Class: ClassData, Payload: bytesOf(1, 100)},
+				{Class: ClassData, Payload: bytesOf(2, 100)},
+				{Class: ClassData, Payload: bytesOf(3, 100)},
+			},
+		)
+		done <- outcome{result: result, err: err}
+	}()
+
+	waitChannel(t, firstStarted, "first datagram did not reach writer")
+	waitFor(t, func() bool {
+		shaper.mu.Lock()
+		defer shaper.mu.Unlock()
+		return len(shaper.queue) == 2 &&
+			shaper.queue[0].ready &&
+			shaper.queue[1].ready
+	})
+	close(releaseFirst)
+	clock.Advance(100 * time.Millisecond)
+
+	got := waitValue(t, done, "batch did not return after terminal writer error")
+	if !errors.Is(got.err, sentinel) {
+		t.Fatalf("batch error = %v, want %v", got.err, sentinel)
+	}
+	if got.result.Accepted != 3 || got.result.Emitted != 1 || got.result.FailedIndex != 1 {
+		t.Fatalf("result = %+v, want accepted=3 emitted=1 failed-index=1", got.result)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 || calls[0] != 1 || calls[1] != 2 {
+		t.Fatalf("writer calls = %v, want terminal prefix [1 2] with suffix unstarted", calls)
+	}
+}
+
 func TestSeparateClassBudgetsBackpressureBeforeCopyAndCancellation(t *testing.T) {
 	clock := newFakeClock()
 	config := validConfig()

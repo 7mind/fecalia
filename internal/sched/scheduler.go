@@ -197,6 +197,14 @@ type Scheduler interface {
 	DataPaths() []DataPath
 }
 
+// UnpacedPicker performs the same offered-load observation and path-selection event as
+// Scheduler.Pick while deliberately bypassing the legacy frame-token admission step.
+// The bind uses it only when a replacement exact-byte shaper owns admission on the
+// selected path, so one and only one rate-control mechanism is live.
+type UnpacedPicker interface {
+	PickUnpaced(class FrameClass, frames int) int
+}
+
 // ProbeBudget is the OPTIONAL pacing-headroom seam a pacing scheduler implements so the
 // bind can CHARGE the per-path token bucket for frames that egress OUTSIDE Pick — the
 // MIDDLE tier of the three-tier pacing-priority model documented on FrameClass. wanbond's

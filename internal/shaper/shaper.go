@@ -40,6 +40,17 @@ type Clock interface {
 
 type WriteFunc func([]byte) error
 
+type Datagram struct {
+	Class   Class
+	Payload []byte
+}
+
+type BatchResult struct {
+	Accepted    int
+	Emitted     int
+	FailedIndex int
+}
+
 type SystemClock struct{}
 
 func (SystemClock) Now() time.Time {
@@ -65,10 +76,19 @@ type queuedDatagram struct {
 	deadline time.Time
 	done     chan error
 	ready    bool
+	batch    *batchState
+	index    int
 }
 
 type reservation struct {
 	datagram *queuedDatagram
+}
+
+type batchState struct {
+	accepted    int
+	emitted     int
+	failedIndex int
+	err         error
 }
 
 type Shaper struct {
@@ -147,40 +167,53 @@ func validateConfig(config Config) error {
 }
 
 func (s *Shaper) WriteBatch(ctx context.Context, class Class, datagrams [][]byte) error {
-	if ctx == nil {
-		return errors.New("context is required")
+	items := make([]Datagram, len(datagrams))
+	for i, datagram := range datagrams {
+		items[i] = Datagram{Class: class, Payload: datagram}
 	}
-	if class != ClassData && class != ClassControl {
-		return fmt.Errorf("invalid class %d", class)
+	_, err := s.WriteDatagrams(ctx, items)
+	return err
+}
+
+func (s *Shaper) WriteDatagrams(ctx context.Context, datagrams []Datagram) (BatchResult, error) {
+	if ctx == nil {
+		return BatchResult{FailedIndex: -1}, errors.New("context is required")
 	}
 	for index, datagram := range datagrams {
-		if len(datagram) == 0 || len(datagram) > s.config.MaxDatagramBytes {
-			return fmt.Errorf(
+		if datagram.Class != ClassData && datagram.Class != ClassControl {
+			return BatchResult{FailedIndex: -1}, fmt.Errorf("datagram %d has invalid class %d", index, datagram.Class)
+		}
+		if len(datagram.Payload) == 0 || len(datagram.Payload) > s.config.MaxDatagramBytes {
+			return BatchResult{FailedIndex: -1}, fmt.Errorf(
 				"datagram %d length %d outside [1,Lmax=%d]",
 				index,
-				len(datagram),
+				len(datagram.Payload),
 				s.config.MaxDatagramBytes,
 			)
 		}
 	}
 	if err := s.beginCall(); err != nil {
-		return err
+		return BatchResult{FailedIndex: -1}, err
 	}
 	defer s.calls.Done()
 
+	batch := &batchState{failedIndex: -1}
 	results := make([]<-chan error, 0, len(datagrams))
-	for _, datagram := range datagrams {
-		reserved, err := s.reserve(ctx, class, len(datagram))
+	var admissionError error
+	for index, datagram := range datagrams {
+		reserved, err := s.reserveDatagram(ctx, datagram.Class, len(datagram.Payload), batch, index)
 		if err != nil {
-			return err
+			admissionError = err
+			break
 		}
 
-		payload := append([]byte(nil), datagram...)
+		payload := append([]byte(nil), datagram.Payload...)
 		result, err := s.enqueue(reserved, payload)
-		if err != nil {
-			return err
-		}
 		results = append(results, result)
+		if err != nil {
+			admissionError = err
+			break
+		}
 	}
 
 	var firstError error
@@ -189,7 +222,18 @@ func (s *Shaper) WriteBatch(ctx context.Context, class Class, datagrams [][]byte
 			firstError = err
 		}
 	}
-	return firstError
+	if firstError == nil {
+		firstError = admissionError
+	}
+
+	s.mu.Lock()
+	result := BatchResult{
+		Accepted:    batch.accepted,
+		Emitted:     batch.emitted,
+		FailedIndex: batch.failedIndex,
+	}
+	s.mu.Unlock()
+	return result, firstError
 }
 
 func (s *Shaper) beginCall() error {
@@ -203,11 +247,26 @@ func (s *Shaper) beginCall() error {
 }
 
 func (s *Shaper) reserve(ctx context.Context, class Class, size int) (reservation, error) {
+	return s.reserveDatagram(ctx, class, size, nil, -1)
+}
+
+func (s *Shaper) reserveDatagram(
+	ctx context.Context,
+	class Class,
+	size int,
+	batch *batchState,
+	index int,
+) (reservation, error) {
 	for {
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
 			return reservation{}, ErrClosed
+		}
+		if batch != nil && batch.err != nil {
+			err := batch.err
+			s.mu.Unlock()
+			return reservation{}, err
 		}
 
 		now := s.clock.Now()
@@ -227,6 +286,8 @@ func (s *Shaper) reserve(ctx context.Context, class Class, size int) (reservatio
 				size:     size,
 				deadline: deadline,
 				done:     make(chan error, 1),
+				batch:    batch,
+				index:    index,
 			}
 			s.queue = append(s.queue, datagram)
 			s.notifyLocked()
@@ -298,11 +359,18 @@ func (s *Shaper) enqueue(reserved reservation, payload []byte) (<-chan error, er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return nil, ErrClosed
+		return reserved.datagram.done, ErrClosed
+	}
+	if reserved.datagram.batch != nil && reserved.datagram.batch.err != nil {
+		s.notifyLocked()
+		return reserved.datagram.done, reserved.datagram.batch.err
 	}
 
 	reserved.datagram.payload = payload
 	reserved.datagram.ready = true
+	if reserved.datagram.batch != nil {
+		reserved.datagram.batch.accepted++
+	}
 	s.notifyLocked()
 	return reserved.datagram.done, nil
 }
@@ -370,6 +438,18 @@ func (s *Shaper) run() {
 		}
 
 		datagram := s.queue[0]
+		if datagram.batch != nil &&
+			datagram.batch.err != nil &&
+			datagram.index > datagram.batch.failedIndex {
+			s.queue = s.queue[1:]
+			s.release(datagram.class, datagram.size)
+			err := datagram.batch.err
+			s.notifyLocked()
+			s.mu.Unlock()
+			datagram.done <- err
+			close(datagram.done)
+			continue
+		}
 		if !datagram.ready {
 			changed := s.changed
 			s.mu.Unlock()
@@ -399,6 +479,14 @@ func (s *Shaper) run() {
 
 		s.mu.Lock()
 		s.inFlightBytes = 0
+		if datagram.batch != nil {
+			if err == nil {
+				datagram.batch.emitted++
+			} else if datagram.batch.err == nil {
+				datagram.batch.err = err
+				datagram.batch.failedIndex = datagram.index
+			}
+		}
 		s.notifyLocked()
 		s.mu.Unlock()
 		datagram.done <- err

@@ -140,6 +140,10 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				Remote:                  t.Remote,
 				PMTU:                    pmtu,
 				ProbeSendErrors:         t.ProbeSendErrors,
+				ShaperAcceptedDatagrams: t.ShaperAcceptedDatagrams,
+				ShaperEmittedDatagrams:  t.ShaperEmittedDatagrams,
+				ShaperWriteErrors:       t.ShaperWriteErrors,
+				SocketWriteErrors:       t.SocketWriteErrors,
 			})
 		}
 	}

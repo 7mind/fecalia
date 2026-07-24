@@ -350,29 +350,22 @@ on an idle-gap collapse specifically it also carries `gap` (the wall-clock
 idle span since the previous offered frame, formatted via `time.Duration.String`)
 that alone reached `CollapseDwell` and forced the collapse.
 
-**Pacing** (per-path token buckets) is a scheduler feature that is **off by
-default** and, when enabled, admits egress under a **three-tier priority model**
-so overload can neither starve WireGuard rekey nor starve wanbond's own liveness
-probes:
+**Pacing** is **off by default**. When enabled, each `(peer,path)` owns an
+exact-byte, bounded shaper below the scheduler. The scheduler still performs one
+selection/offered-load event per engine `Send`, but `PickUnpaced` bypasses its
+legacy frame-token policer; the selected path's shaper exclusively owns
+admission. The currently integrated traffic classes are:
 
-- **`ClassControl`** (WireGuard handshake/cookie/keepalive) — pacing-**exempt and
-  uncharged** (defect D22): never shed for an empty bucket and never spends a
-  token, so sustained bulk overload cannot delay rekey.
+- **`ClassControl`** (WireGuard handshake/cookie/keepalive) — classified per
+  input buffer before sequence/FEC mutation and admitted from the dedicated
+  `C=Lmax` reserve, so a DATA-full queue cannot reject it.
+- **`ClassData`** (bulk WireGuard transport) and every FEC parity datagram —
+  charged by the exact encoded UDP payload length and retained under the DATA
+  budget `B`. A full budget applies backpressure; it does not drop.
 - **`frame.KindProbe`** (wanbond's own PROBE frames and their reflected echoes) —
-  pacing-**exempt but charged** (T145): these frames do **not** traverse
-  `Send`→`Pick`→token-bucket at all (`emitProbes` writes each probe, and
-  `dispatchInbound` writes each reflected echo, straight to the path socket), so
-  the pacer would otherwise budget them **zero** headroom. A pace sized at ~link
-  rate then lets paced `ClassData` plus the probe/echo stream oversubscribe the
-  link, building the standing qdisc queue that delays probe echoes past
-  `DownAfter` (1200 ms) into a **spurious path-DOWN / failover flap**. The bind
-  charges each emitted probe and each reflected echo against that path's bucket
-  via `sched.ProbeBudget.AccountProbe` — one token deducted, **never** shedding or
-  delaying the probe (strict priority; the bucket may briefly go negative and
-  pre-drain, so subsequent `ClassData` `Pick`s yield the headroom the probe stream
-  consumes).
-- **`ClassData`** (bulk WireGuard transport) — **fully paced**: subject to the
-  per-path token bucket and shed (`PickPaced`) when it is empty.
+  still uses the direct, strict-priority socket path. Charging that generated
+  traffic into the new shaper's priority-debt clock is the next integration
+  step; T299 deliberately changes only encoded DATA/control and FEC parity.
 
 **Why inner-tunnel prioritization (e.g. inner ICMP) is infeasible (Q51).** The
 three-tier model above is the full extent of frame-type-aware pacing wanbond
@@ -395,11 +388,15 @@ terminate or inspect it). The only wanbond-addressable priority signal below
 charged above) — there is no path to prioritizing traffic the pacer cannot
 see inside the tunnel.
 
-**Motivation (defect D65).** wanbond keeps **no internal send queue**: `Send`
-writes each frame synchronously to the path's UDP socket, and the pacer, when
-enabled, **sheds at the head** rather than buffering — `tryConsume` either
-admits a token-bearing frame or returns `PickPaced` (dropped) for `ClassData`,
-never enqueues it for later. Before T152/T153, the DEFAULT active-backup
+**Motivation (defects D65/D112).** Before the exact-byte cutover, `Send` wrote
+each admitted frame synchronously to the path socket and the frame-token pacer
+**shed at the head** when its bucket emptied. Batched TUN I/O made a single
+selection cover many encoded frames, exposing the policer as transport loss:
+lower pacing rates produced more drops, TCP backed off below the configured
+rate, and the admitted bursts could still fill the downstream queue. The
+replacement retains at most `B+C` bytes plus one in-flight datagram and blocks
+the caller until capacity/emission, so ordinary overload becomes bounded
+backpressure rather than loss. Before T152/T153, the DEFAULT active-backup
 policy applied **no egress shaping at all**, so an unshaped sender offered
 frames straight into whatever sits downstream at the rate the application
 produced them. On a bufferbloated last-mile (observed on Starlink, D65) that
@@ -407,22 +404,18 @@ downstream buffer absorbs the overrun instead of dropping it, building a
 standing queue (~1 s loaded RTT against a ~40 ms idle baseline) before it
 starts shedding — the buffer-overflow signature of an unshaped sender, not
 ordinary medium loss; the resulting cwnd collapse capped single-flow TCP at
-~3.67 Mbps against a WAN independently shown to carry ≥6.9 Mbps. This
-drop-at-head, no-internal-queue design is deliberate and load-bearing: relocating
-the overrun into a wanbond-side queue would just move the standing delay from
-the ISP's buffer into wanbond's own, not remove it — the fix is to SHAPE the
-offered rate to the drain rate (pacing) and SHED what exceeds it, never to
-QUEUE it internally.
+~3.67 Mbps against a WAN independently shown to carry ≥6.9 Mbps. The bounded
+byte budget prevents moving an unbounded standing queue into wanbond while
+still avoiding pacer-induced packet loss.
 
-Pacing is **policy-independent** (defect D65): it is available, and configured
-identically via `[scheduler] pacing_enabled`, under either the active-backup
-default or the weighted policy — active-backup wires it into `sched.Config`'s
-`Pacing`/`PerPathCapacities`/`PacingBursts` fields in `selectScheduler`. The two
-policies size the resulting pace **differently**, because they egress
-differently: weighted stripes every path at once, so ONE shared reference
-capacity applies to every path's bucket; active-backup egresses on exactly ONE
-path at a time, so each path's bucket is sized from that path's OWN pace — a
-fast active primary is never throttled to a slower backup's rate.
+Pacing is **policy-independent** (defect D65): it is available and configured
+identically via `[scheduler] pacing_enabled` under active-backup and weighted
+selection. Both policies expose `PickUnpaced`; production composition disables
+their legacy token admission whenever `PerPathShapers` exists. Every selected
+path then uses its own derived byte rate and BDP budget. The weighted
+aggregation gate continues to use its offered-wire-frame estimate and
+`per_path_capacity_fps`; that estimate selects paths but no longer admits or
+drops datagrams.
 
 > **Decision (D65): pace BOTH policies, not just weighted.** Alternative
 > considered and rejected: keep pacing gated behind `policy = "weighted"` and
@@ -504,13 +497,16 @@ conversion unchanged: `R = per_path_capacity_fps * 1500` and
 `B = ceil(pacing_burst_frames * 1500)`. Thus the aggregation estimator and its
 `per_path_capacity_fps` thresholds remain offered-wire-frame quantities.
 
-This remains a **staged cutover**. T298 established the configuration ownership
-boundary and validation. `internal/shaper` now provides the isolated exact-byte
-shaping primitive described below, but `selectScheduler` does not yet construct
-it: the running scheduler still receives the legacy
-`PerPathCapacities`/`PacingBursts` fields, and `PickPaced` still sheds at
-runtime. The later scheduler integration consumes `PerPathShapers`; neither the
-configuration task nor the primitive task changes live egress by itself.
+T299 completes the DATA/PARITY ownership cut. `device.Up` consumes
+`PerPathShapers`, creates one primitive per `(peer,path)`, and disables the
+legacy scheduler token policer atomically. `Multipath.Send` classifies every
+input before sequence/FEC mutation, performs one `PickUnpaced` event, and
+streams each encoded DATA datagram plus immediately produced parity into that
+path's shaper. Deadline-produced parity uses the same selected path shaper.
+Writer failure returns the terminal error, reports the accepted versus
+kernel-emitted prefix, and leaves the unstarted suffix unencoded; later calls
+may continue. Close drains/stops each shaper before closing its UDP socket.
+Generated PROBE/echo priority accounting remains a separate integration step.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
@@ -531,7 +527,10 @@ finishing their copies in a different order. A batch whose aggregate size
 exceeds `B` therefore remains feasible:
 it streams one legal `L <= Lmax <= B` reservation at a time as earlier
 datagrams leave the queue instead of requiring the whole aggregate to fit.
-Writer errors complete the affected call but do not stop the per-path worker.
+The first writer error terminates that call: its already-published but
+unstarted suffix is removed without invoking the writer, while the result
+reports accepted and successfully emitted prefix lengths. The per-path worker
+continues serving future calls.
 
 The worker assigns immutable FIFO transmission deadlines. After startup or an
 idle gap, one datagram may transmit immediately; offering a datagram of `L`
@@ -1027,6 +1026,13 @@ behaviour change to probing — threaded through `bind.PathTraffic` →
 `metrics.PathSnapshot` and exposed as the per-path counter
 `wanbond_path_probe_send_errors_total`, mirroring the D90 `accountSendError`
 EMSGSIZE-drop counter's rationale for the Send hot path.
+
+The shaped send path separately exports accepted and kernel-emitted datagram
+prefixes (`wanbond_path_shaper_accepted_datagrams_total` and
+`wanbond_path_shaper_emitted_datagrams_total`), terminal call errors
+(`wanbond_path_shaper_write_errors_total`), and the underlying UDP writer
+subset (`wanbond_path_socket_write_errors_total`). Their divergence identifies
+bounded queue acceptance versus actual kernel handoff without implying retry.
 
 ### Receive resequencer — `internal/reseq`
 

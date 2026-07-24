@@ -515,7 +515,12 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// from the primary's flat prober slice (D100). Populated as each peer's scheduler is built below.
 	perPeerProbers := make([][]*telemetry.Prober, len(ids))
 	perPeerProbers[0] = probers
-	mpBind, err := bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, clg)
+	var mpBind *bind.Multipath
+	if cfg.Scheduler.PerPathShapers != nil {
+		mpBind, err = bind.NewMultipathWithShapers(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, cfg.Scheduler.PerPathShapers, clg)
+	} else {
+		mpBind, err = bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, clg)
+	}
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
@@ -1070,7 +1075,23 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 
 	add, remove := diffPaths(t.bind.PathNames(), cfg.Paths)
 	for _, def := range add {
-		if err := t.bind.AddPath(def); err != nil {
+		var err error
+		if t.cfg.Scheduler.PerPathShapers != nil {
+			idx := -1
+			for i := range cfg.Paths {
+				if cfg.Paths[i].Name == def.Name {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 || idx >= len(cfg.Scheduler.PerPathShapers) {
+				return fmt.Errorf("device: reload add path %q: reloaded config has no derived exact-byte shaper", def.Name)
+			}
+			err = t.bind.AddPathWithShaper(def, cfg.Scheduler.PerPathShapers[idx])
+		} else {
+			err = t.bind.AddPath(def)
+		}
+		if err != nil {
 			return fmt.Errorf("device: reload add path %q: %w", def.Name, err)
 		}
 		t.log.Info("reload: path added", "path", def.Name)
@@ -1452,6 +1473,7 @@ func buildScheduler(cfg *config.Config, psk config.Key, sessionID uint64, lg log
 // so translating them here cannot fail on range — only NewWeighted's structural
 // checks (which the wiring satisfies) apply.
 func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sched.PathQuality, clock telemetry.Clock, lg log.Logger) (sched.Scheduler, error) {
+	legacyPacing := cfg.Scheduler.PacingEnabled && cfg.Scheduler.PerPathShapers == nil
 	switch cfg.Scheduler.Policy {
 	case config.PolicyWeighted:
 		sc := cfg.Scheduler
@@ -1461,7 +1483,7 @@ func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sc
 			DisengageFraction: sc.DisengageFraction,
 			CollapseDwell:     sc.CollapseDwell,
 			LoadTau:           sc.LoadTau,
-			Pacing:            sc.PacingEnabled,
+			Pacing:            legacyPacing,
 			PacingBurst:       sc.PacingBurstFrames,
 			WeightRTTFloor:    sc.WeightRTTFloor,
 			WeightLossFloor:   sc.WeightLossFloor,
@@ -1477,7 +1499,7 @@ func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sc
 			health,
 			sched.Config{
 				FailbackAfter:     defaultFailbackDwell,
-				Pacing:            sc.PacingEnabled,
+				Pacing:            legacyPacing,
 				PerPathCapacities: sc.PerPathCapacities,
 				PacingBursts:      sc.PacingBursts,
 			},

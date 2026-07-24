@@ -341,10 +341,12 @@ date, `wanbond version`, the access-network description, and each tool's verdict
 
 Defect D65 identifies bufferbloat (standing queue build-up under sustained load)
 on last-mile links (observed on Starlink, D65) that caps single-flow TCP throughput
-at ~3.67 Mbps against a link independently capable of ≥6.9 Mbps. Pacing (per-path
-token buckets, enabled via `[scheduler] pacing_enabled = true`) bounds the queue
-so loaded RTT stays near idle baseline, and single-flow TCP can saturate to the link's
-true rate. This section validates pacing's effectiveness on the real deployment
+at ~3.67 Mbps against a link independently capable of ≥6.9 Mbps. Pacing
+(bounded per-(peer,path) exact-byte shapers, enabled via
+`[scheduler] pacing_enabled = true`) applies backpressure instead of
+pacer-induced loss, bounds the queue so loaded RTT stays near idle baseline,
+and lets single-flow TCP approach the declared link rate. This section
+validates pacing's effectiveness on the real deployment
 (Pi4-edge/Starlink/o3 topology).
 
 **IMPORTANT:** The netns/e2e fixture test suite MUST NOT assert absolute

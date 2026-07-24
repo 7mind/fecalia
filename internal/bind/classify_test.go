@@ -137,8 +137,8 @@ func TestClassifyMagicHeaderActivationRule(t *testing.T) {
 	}
 }
 
-// TestClassifyBatch verifies batch classification: control iff ANY buffer is a control
-// frame; an all-data (or empty) batch is data.
+// TestClassifyBatch verifies selection-event classification: control only when EVERY
+// buffer is control; mixed, all-data, and empty batches are data.
 func TestClassifyBatch(t *testing.T) {
 	c := newWGClassifier(config.Amnezia{})
 	data := wgMsg(wgMessageTransportType, 0, 1420)
@@ -147,8 +147,8 @@ func TestClassifyBatch(t *testing.T) {
 	if got := c.classifyBatch([][]byte{data, data}); got != sched.ClassData {
 		t.Fatalf("all-data batch = %d, want ClassData", got)
 	}
-	if got := c.classifyBatch([][]byte{data, ctrl, data}); got != sched.ClassControl {
-		t.Fatalf("mixed batch with a control frame = %d, want ClassControl", got)
+	if got := c.classifyBatch([][]byte{data, ctrl, data}); got != sched.ClassData {
+		t.Fatalf("mixed batch with a control frame = %d, want ClassData", got)
 	}
 	if got := c.classifyBatch(nil); got != sched.ClassData {
 		t.Fatalf("empty batch = %d, want ClassData", got)

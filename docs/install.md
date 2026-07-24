@@ -349,9 +349,9 @@ Setting both `target_residual` and `safety_factor` is rejected at config load.
 The send scheduler defaults to **active-backup** (one active path, instant
 failover); an optional `[scheduler]` block can instead select the
 **weighted-aggregation** policy. Independently of that choice, `[scheduler]`
-also turns on, off by default, per-path send-**pacing** (token buckets that
-bound bufferbloat under sustained load) — pacing is **policy-independent**
-(D65/T152/T153): it is available, and configured the same way, under either
+also turns on, off by default, per-(peer,path) exact-byte send **shaping** that
+bounds bufferbloat under sustained load — pacing is **policy-independent**
+(D65/T152/T153/T299): it is available and configured the same way under either
 `policy = "active-backup"` (the default) or `policy = "weighted"`.
 
 ```toml
@@ -375,15 +375,13 @@ link_rtt = "45ms"          # baseline RTT — the delay term of the pacing burst
 The two policies size the resulting pace **differently**, because they egress
 differently:
 
-- **Weighted** stripes every path simultaneously, so ONE reference capacity
-  applies to every path's token bucket: a heterogeneous link set is sized to
-  the **slowest declared link** (the bottleneck) — pacing any path faster than
-  that would let it build the very standing queue pacing exists to prevent.
+- **Weighted** may stripe every eligible path simultaneously. Its aggregation
+  gate retains the shared slowest-link `per_path_capacity_fps` reference, while
+  each selected path's byte shaper uses that path's own declared bandwidth/RTT.
 - **Active-backup** egresses on exactly ONE path at a time, so each path is
-  paced from **its own** BDP into a PER-PATH capacity/burst — NOT min-reduced
+  shaped from **its own** BDP into a per-path rate/budget — NOT min-reduced
   to the bottleneck. A fast active primary paces at its own drain rate even
-  when a much slower path is configured as its backup; only the currently
-  ACTIVE path's bucket is drained.
+  when a much slower path is configured as its backup.
 
 Common rules, either policy:
 
@@ -396,7 +394,7 @@ Common rules, either policy:
 - `link_bandwidth` is **mutually exclusive** with the raw `per_path_capacity_fps` /
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
-- Config load derives a future exact-byte shaper envelope per path. For a declared
+- Config load derives the live exact-byte shaper envelope per path. For a declared
   link, `R = link_bandwidth/8`, `B = ceil(R*link_rtt)`, and `Lmax` is the
   configured-or-default outer MTU less the IP/UDP headers (28 bytes for IPv4,
   48 for IPv6). It rejects `B < Lmax`: one legal datagram must always fit.
@@ -409,9 +407,11 @@ Common rules, either policy:
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.
-  The bounded exact-byte primitive that consumes this model now exists under
-  `internal/shaper`, but scheduler integration remains staged: the existing
-  frame-token `PickPaced` runtime and drop behavior remain active.
+  The bounded primitive under `internal/shaper` admits encoded DATA/control and
+  all FEC parity by exact byte length. A full DATA/control budget blocks the
+  sender until capacity becomes available; it no longer produces
+  `PickPaced` loss. Generated PROBE/echo frames remain direct strict-priority
+  writes pending their separate priority-debt integration.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=2,944 B`, and `Rp=14,720 B/s`.
@@ -674,19 +674,20 @@ pacing meets your bufferbloat target.
   guarantee holds BY MARGIN (measured ~1042–1061 wire fps against a 1500
   disengage threshold at a 3000-fps capacity, ~40% headroom), not by
   construction — **and that ~40% figure is FEC-OFF**; see (iii) below.
-- **(ii) An enabled pacer now binds at the declared rate.** Pacing is OFF by
-  default, so most deployments see no change from this note. Where
-  `pacing_enabled = true`, the token bucket previously refilled in wire
-  frames/s but spent ONE token per send batch, admitting roughly 1.5–3× the
-  declared `link_bandwidth`; it now charges one token per frame and binds at
-  the declared rate. **If you inflated `link_bandwidth` or
+- **(ii) An enabled shaper now binds at the declared byte rate without
+  policer loss.** Pacing is OFF by default, so most deployments see no change
+  from this note. The intermediate frame-token implementation first spent one
+  token per send batch (admitting roughly 1.5–3× the declaration), then spent
+  one token per offered frame and shed an entire batched call when empty.
+  T299 replaces both with exact encoded-byte serialization and bounded
+  backpressure. **If you inflated `link_bandwidth` or
   `per_path_capacity_fps` to compensate for under-pacing, remove that
   compensation.**
 - **(iii) FEC parity is counted as offered load.** With `[fec]` enabled at
   `data_shards` (K) + `parity_shards` (M), parity frames egress on the same
-  path as the data they protect and now count toward BOTH the aggregation
-  gate and the pacer, so the gate sees the WIRE rate (data + parity), not the
-  demand rate.
+  path as the data they protect and count toward BOTH the aggregation gate
+  and the exact-byte shaper, so the gate sees the WIRE frame rate and the
+  shaper serializes the encoded DATA+parity bytes.
   - **Consequence:** the thrift/5G-idle margin is a WIRE-frame margin, so the
     margin available to your DEMAND is divided by the FEC expansion factor
     `f = (K+M)/K`. On the measured 40 Mbit example above, the margin is

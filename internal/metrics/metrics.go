@@ -71,7 +71,11 @@ const (
 	// write errors emitProbes has dropped (defect D96 item 4, composes with D90):
 	// a path whose probes cannot egress was previously indistinguishable from a
 	// path with 100% probe loss. Sourced verbatim from PathSnapshot.ProbeSendErrors.
-	MetricProbeSendErrors = "wanbond_path_probe_send_errors_total"
+	MetricProbeSendErrors         = "wanbond_path_probe_send_errors_total"
+	MetricShaperAcceptedDatagrams = "wanbond_path_shaper_accepted_datagrams_total"
+	MetricShaperEmittedDatagrams  = "wanbond_path_shaper_emitted_datagrams_total"
+	MetricShaperWriteErrors       = "wanbond_path_shaper_write_errors_total"
+	MetricSocketWriteErrors       = "wanbond_path_socket_write_errors_total"
 )
 
 // FEC metric names. These connection-scoped series (no path label — FEC
@@ -343,7 +347,11 @@ type PathSnapshot struct {
 	// ProbeSendErrors is the cumulative count of PROBE-frame socket write errors
 	// emitProbes has dropped for this path (defect D96 item 4), read verbatim from
 	// bind.PathTraffic.ProbeSendErrors.
-	ProbeSendErrors uint64
+	ProbeSendErrors         uint64
+	ShaperAcceptedDatagrams uint64
+	ShaperEmittedDatagrams  uint64
+	ShaperWriteErrors       uint64
+	SocketWriteErrors       uint64
 	// The following addressing fields are the runtime-resolved per-path
 	// networking metadata the monitoring UI surfaces (G21). They are DEFINED here
 	// (T214) but the value-wiring from bind.PathTraffic through
@@ -486,15 +494,19 @@ type collector struct {
 	src       Source
 	multiPeer bool
 
-	txBytes    *prometheus.Desc
-	rxBytes    *prometheus.Desc
-	loss       *prometheus.Desc
-	rtt        *prometheus.Desc
-	jitter     *prometheus.Desc
-	throughput *prometheus.Desc
-	up         *prometheus.Desc
-	pmtu       *prometheus.Desc
-	probeErrs  *prometheus.Desc
+	txBytes        *prometheus.Desc
+	rxBytes        *prometheus.Desc
+	loss           *prometheus.Desc
+	rtt            *prometheus.Desc
+	jitter         *prometheus.Desc
+	throughput     *prometheus.Desc
+	up             *prometheus.Desc
+	pmtu           *prometheus.Desc
+	probeErrs      *prometheus.Desc
+	shaperAccepted *prometheus.Desc
+	shaperEmitted  *prometheus.Desc
+	shaperErrors   *prometheus.Desc
+	socketErrors   *prometheus.Desc
 
 	fecData          *prometheus.Desc
 	fecRepair        *prometheus.Desc
@@ -549,17 +561,21 @@ func NewCollector(src Source) prometheus.Collector {
 		return prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, name), help, labels, nil)
 	}
 	return &collector{
-		src:        src,
-		multiPeer:  multiPeer,
-		txBytes:    desc(pathSubsystem, "tx_bytes_total", "Total bytes transmitted on the path.", pathLabels),
-		rxBytes:    desc(pathSubsystem, "rx_bytes_total", "Total bytes received on the path.", pathLabels),
-		loss:       desc(pathSubsystem, "loss_ratio", "Per-path probe loss fraction in [0,1].", pathLabels),
-		rtt:        desc(pathSubsystem, "rtt_seconds", "Smoothed per-path round-trip time in seconds.", pathLabels),
-		jitter:     desc(pathSubsystem, "jitter_seconds", "Smoothed per-path RTT deviation (jitter) in seconds.", pathLabels),
-		throughput: desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
-		up:         desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
-		pmtu:       desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
-		probeErrs:  desc(pathSubsystem, "probe_send_errors_total", "Per-path PROBE-frame socket write errors (count-and-continue; a path whose probes cannot egress is otherwise indistinguishable from 100% probe loss).", pathLabels),
+		src:            src,
+		multiPeer:      multiPeer,
+		txBytes:        desc(pathSubsystem, "tx_bytes_total", "Total bytes transmitted on the path.", pathLabels),
+		rxBytes:        desc(pathSubsystem, "rx_bytes_total", "Total bytes received on the path.", pathLabels),
+		loss:           desc(pathSubsystem, "loss_ratio", "Per-path probe loss fraction in [0,1].", pathLabels),
+		rtt:            desc(pathSubsystem, "rtt_seconds", "Smoothed per-path round-trip time in seconds.", pathLabels),
+		jitter:         desc(pathSubsystem, "jitter_seconds", "Smoothed per-path RTT deviation (jitter) in seconds.", pathLabels),
+		throughput:     desc(pathSubsystem, "throughput_bits_per_second", "Current per-path throughput in bits per second.", pathLabels),
+		up:             desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
+		pmtu:           desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
+		probeErrs:      desc(pathSubsystem, "probe_send_errors_total", "Per-path PROBE-frame socket write errors (count-and-continue; a path whose probes cannot egress is otherwise indistinguishable from 100% probe loss).", pathLabels),
+		shaperAccepted: desc(pathSubsystem, "shaper_accepted_datagrams_total", "Encoded DATA/PARITY datagrams accepted by the path's exact-byte shaper.", pathLabels),
+		shaperEmitted:  desc(pathSubsystem, "shaper_emitted_datagrams_total", "Shaped DATA/PARITY datagrams successfully handed to the kernel.", pathLabels),
+		shaperErrors:   desc(pathSubsystem, "shaper_write_errors_total", "Terminal exact-byte shaper write-call errors.", pathLabels),
+		socketErrors:   desc(pathSubsystem, "socket_write_errors_total", "UDP socket write errors from shaped and direct DATA/PARITY sends.", pathLabels),
 
 		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", peerScopedLabels),
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", peerScopedLabels),
@@ -611,6 +627,10 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.up
 	ch <- c.pmtu
 	ch <- c.probeErrs
+	ch <- c.shaperAccepted
+	ch <- c.shaperEmitted
+	ch <- c.shaperErrors
+	ch <- c.socketErrors
 	ch <- c.fecData
 	ch <- c.fecRepair
 	ch <- c.fecRecovered
@@ -656,6 +676,10 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), labels...)
 		ch <- prometheus.MustNewConstMetric(c.pmtu, prometheus.GaugeValue, float64(p.PMTU), labels...)
 		ch <- prometheus.MustNewConstMetric(c.probeErrs, prometheus.CounterValue, float64(p.ProbeSendErrors), labels...)
+		ch <- prometheus.MustNewConstMetric(c.shaperAccepted, prometheus.CounterValue, float64(p.ShaperAcceptedDatagrams), labels...)
+		ch <- prometheus.MustNewConstMetric(c.shaperEmitted, prometheus.CounterValue, float64(p.ShaperEmittedDatagrams), labels...)
+		ch <- prometheus.MustNewConstMetric(c.shaperErrors, prometheus.CounterValue, float64(p.ShaperWriteErrors), labels...)
+		ch <- prometheus.MustNewConstMetric(c.socketErrors, prometheus.CounterValue, float64(p.SocketWriteErrors), labels...)
 	}
 	for _, f := range c.src.FEC() {
 		labels := c.peerLabelValues(f.Peer)

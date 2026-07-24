@@ -71,22 +71,20 @@ policy = "active-backup"
 	return cfg
 }
 
-// TestSelectSchedulerActiveBackupPacingEnabled is the T153 reproduction/acceptance:
-// an active-backup config with pacing_enabled=true (and a heterogeneous declared
-// link set) must build an ActiveBackup whose per-path token buckets carry the
-// config-derived PER-PATH capacities/bursts — the fast starlink primary paces at
-// its OWN drain rate (strictly above the slow 5g backup's rate, never min-reduced
-// to the bottleneck) and sheds (PickPaced) under sustained overload. Before T153's
-// wiring, selectScheduler's active-backup branch never passed Pacing/
-// PerPathCapacities/PacingBursts into sched.Config, so pacing stayed off and this
-// fails (admitted frames never shed, "paced == 0").
-func TestSelectSchedulerActiveBackupPacingEnabled(t *testing.T) {
+// TestSelectSchedulerExactByteOwnershipDisablesLegacyPacing verifies T299's
+// atomic ownership cut: once config has derived per-path exact-byte shapers, the
+// scheduler retains selection/offered-load behavior but its legacy frame-token
+// policer cannot shed.
+func TestSelectSchedulerExactByteOwnershipDisablesLegacyPacing(t *testing.T) {
 	cfg := writeActiveBackupPacingConfig(t, true)
 	if !cfg.Scheduler.PacingEnabled {
 		t.Fatal("cfg.Scheduler.PacingEnabled must be true")
 	}
 	if len(cfg.Scheduler.PerPathCapacities) != 2 || len(cfg.Scheduler.PacingBursts) != 2 {
 		t.Fatalf("derived per-path vectors = %v / %v, want length 2 each", cfg.Scheduler.PerPathCapacities, cfg.Scheduler.PacingBursts)
+	}
+	if len(cfg.Scheduler.PerPathShapers) != 2 {
+		t.Fatalf("derived exact-byte shapers = %v, want length 2", cfg.Scheduler.PerPathShapers)
 	}
 	primaryCap := cfg.Scheduler.PerPathCapacities[0]
 	backupCap := cfg.Scheduler.PerPathCapacities[1]
@@ -105,37 +103,21 @@ func TestSelectSchedulerActiveBackupPacingEnabled(t *testing.T) {
 		t.Fatalf("selectScheduler returned %T, want *sched.ActiveBackup", scheduler)
 	}
 
-	// Offer ~5000 ClassData frames over a 1s advancing-clock window (0.2ms/frame),
-	// far above the primary's derived capacity: pacing must shed the overflow.
+	// Offer ~5000 ClassData frames over a 1s advancing-clock window. Neither the
+	// legacy Pick nor the production PickUnpaced seam may shed: admission belongs
+	// exclusively to the bind-owned byte shaper.
 	const (
 		frames = 5000
 		step   = 200 * time.Microsecond // frames*step = 1s
 	)
-	admitted, paced := 0, 0
 	for i := 0; i < frames; i++ {
-		switch got := ab.Pick(sched.ClassData, 1); got {
-		case 0:
-			admitted++
-		case sched.PickPaced:
-			paced++
-		default:
-			t.Fatalf("Pick #%d = %d, want 0 (primary) or PickPaced", i, got)
+		if got := ab.Pick(sched.ClassData, 1); got != 0 {
+			t.Fatalf("legacy Pick #%d = %d, want active path 0 with frame-token pacing disabled", i, got)
+		}
+		if got := ab.PickUnpaced(sched.ClassData, 1); got != 0 {
+			t.Fatalf("PickUnpaced #%d = %d, want active path 0", i, got)
 		}
 		clock.advance(step)
-	}
-	if paced == 0 {
-		t.Fatal("no frames were paced out over a ~5000-frame overload; wired pacing did not shed (D65 regression)")
-	}
-
-	window := (time.Duration(frames) * step).Seconds()
-	burst := cfg.Scheduler.PacingBursts[0]
-	upper := primaryCap*window + burst
-	if float64(admitted) > upper {
-		t.Fatalf("primary admitted %d, exceeds its OWN derived cap bound %.0f (cap*T+burst)", admitted, upper)
-	}
-	backupBound := backupCap*window + cfg.Scheduler.PacingBursts[1]
-	if float64(admitted) <= backupBound {
-		t.Fatalf("primary admitted %d, not above the backup-rate bound %.0f — the fast primary was throttled to the slow backup's rate (D65 regression)", admitted, backupBound)
 	}
 }
 

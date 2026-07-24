@@ -119,19 +119,20 @@ func (c wgClassifier) classify(pkt []byte) sched.FrameClass {
 	return sched.ClassData
 }
 
-// classifyBatch returns the pacer traffic class for a batch of WireGuard datagrams handed
-// to Send in one call. The batch is classified ClassControl when ANY buffer is a control
-// frame: the batch shares one Pick (one path selection / one pacing decision), so biasing
-// a mixed batch toward the control class keeps a co-batched handshake/keepalive out of the
-// shed set — the conservative, rekey-favouring choice. In practice WireGuard emits control
-// frames in their own Send calls, so a mixed batch is rare. An empty batch is data.
+// classifyBatch returns the scheduler class for one selection event. Exact-byte admission
+// classifies every buffer independently; this aggregate is only scheduler metadata. A mixed
+// batch is data so a trailing control frame cannot make the bulk prefix look exempt to a
+// legacy or test scheduler. An empty batch is data.
 func (c wgClassifier) classifyBatch(bufs [][]byte) sched.FrameClass {
+	if len(bufs) == 0 {
+		return sched.ClassData
+	}
 	for _, b := range bufs {
-		if c.classify(b) == sched.ClassControl {
-			return sched.ClassControl
+		if c.classify(b) == sched.ClassData {
+			return sched.ClassData
 		}
 	}
-	return sched.ClassData
+	return sched.ClassControl
 }
 
 // readType reads the little-endian uint32 message-type word at byte offset off, reporting

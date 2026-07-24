@@ -4,7 +4,6 @@ package bind
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
 	"net"
 	"sync"
@@ -17,13 +16,9 @@ import (
 	"github.com/7mind/wanbond/internal/sched"
 )
 
-// These opt-in tests are executable RED evidence for D112 and D108 on
-// main@040256256470eec5af976d5477c4deb24652d731. They intentionally assert the
-// replacement shaper's contract and therefore fail on the loss-policer tree.
-//
-// Disposition: T299 must convert or remove this file when the permanent GREEN
-// bind regressions land. It must not remain an intentionally failing artifact
-// when G35 completes.
+// These opt-in tests preserve the executable RED evidence for D112 and D108 on
+// main@040256256470eec5af976d5477c4deb24652d731, now as GREEN regressions against
+// the replacement exact-byte shaper.
 
 const (
 	reproCapacityFPS = 100.0
@@ -58,16 +53,36 @@ func newPacingReproMultipath(t testing.TB, pacing bool, burst float64, fecCfg *f
 		t.Fatalf("build logger: %v", err)
 	}
 	clk := newFakeClock()
-	schedulerCfg := sched.Config{FailbackAfter: time.Hour, Pacing: pacing}
-	if pacing {
-		schedulerCfg.PerPathCapacities = []float64{reproCapacityFPS}
-		schedulerCfg.PacingBursts = []float64{burst}
-	}
+	schedulerCfg := sched.Config{FailbackAfter: time.Hour}
 	scheduler, err := sched.NewActiveBackup([]sched.PathHealth{sched.AlwaysUp{}}, schedulerCfg, clk, lg)
 	if err != nil {
 		t.Fatalf("build active-backup scheduler: %v", err)
 	}
-	m, err := NewMultipath(loopbackPaths(1), testKey(t, 0xB2), scheduler, nil, nil, fecCfg, nil, config.Amnezia{}, lg)
+	var m *Multipath
+	if pacing {
+		const lmax = 1472
+		m, err = NewMultipathWithShapers(
+			loopbackPaths(1),
+			testKey(t, 0xB2),
+			scheduler,
+			nil,
+			nil,
+			fecCfg,
+			nil,
+			config.Amnezia{},
+			[]config.PathShaperConfig{{
+				RateBytesPerSecond:      reproCapacityFPS * lmax,
+				DataBurstBytes:          int(burst * lmax),
+				ControlReserveBytes:     lmax,
+				MaxEncodedDatagramBytes: lmax,
+				ProbeRateBytesPerSecond: 1,
+				ProbeBurstBytes:         2 * lmax,
+			}},
+			lg,
+		)
+	} else {
+		m, err = NewMultipath(loopbackPaths(1), testKey(t, 0xB2), scheduler, nil, nil, fecCfg, nil, config.Amnezia{}, lg)
+	}
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
@@ -142,14 +157,8 @@ func TestPacingLossPolicerRepro(t *testing.T) {
 
 	t.Run("class-control-control", func(t *testing.T) {
 		m, _, _, recorder := newPacingReproMultipath(t, true, 1, nil)
-		if err := m.Send(payloadStream(1), m.virt); err != nil {
-			t.Fatalf("drain one-token DATA bucket: %v", err)
-		}
-		if err := m.Send(payloadStream(1), m.virt); !errors.Is(err, errPacerShedding) {
-			t.Fatalf("fixture precondition: DATA against the empty bucket returned %v, want %v", err, errPacerShedding)
-		}
-		if err := m.Send([][]byte{wgInitiationForRepro()}, m.virt); err != nil {
-			t.Fatalf("ClassControl against empty DATA bucket: %v", err)
+		if err := m.Send([][]byte{payloadStream(1)[0], wgInitiationForRepro()}, m.virt); err != nil {
+			t.Fatalf("mixed DATA/ClassControl batch: %v", err)
 		}
 		waitForReproFrames(t, recorder, 2)
 		frames, bytes, timestamps := recorder.snapshot()
@@ -165,10 +174,14 @@ func TestPacingLossPolicerRepro(t *testing.T) {
 		waitForReproFrames(t, recorder, 3)
 
 		err := m.Send(payloadStream(1), m.virt)
+		if err != nil {
+			t.Fatalf("GREEN D112 fourth frame: %v", err)
+		}
+		waitForReproFrames(t, recorder, 4)
 		frames, wireBytes, timestamps := recorder.snapshot()
 		offeredFrames := 4
 		averageOfferedFPS := float64(offeredFrames) / reproWindow.Seconds()
-		t.Logf("RED D112 base=040256256470eec5af976d5477c4deb24652d731 fake_time=%s max_batch=3 "+
+		t.Logf("GREEN D112 red_base=040256256470eec5af976d5477c4deb24652d731 fake_time=%s max_batch=3 "+
 			"burst_frames=%.0f offered_frames=%d observation_window=%s average_offered_fps=%.1f capacity_fps=%.1f "+
 			"emitted_frames=%d emitted_wire_bytes=%d write_timestamps=%v send_error=%v",
 			clk.Now().Format(time.RFC3339Nano), burstFrames, offeredFrames, reproWindow, averageOfferedFPS,
@@ -176,12 +189,9 @@ func TestPacingLossPolicerRepro(t *testing.T) {
 		if averageOfferedFPS >= reproCapacityFPS {
 			t.Fatalf("fixture error: average offered rate %.1f fps must stay below capacity %.1f fps", averageOfferedFPS, reproCapacityFPS)
 		}
-		if !errors.Is(err, errPacerShedding) {
-			t.Fatalf("fixture did not reproduce D112: fourth frame returned %v, want %v on the unfixed tree", err, errPacerShedding)
+		if frames != offeredFrames {
+			t.Fatalf("GREEN D112: emitted=%d, want all offered=%d retained and paced", frames, offeredFrames)
 		}
-		t.Fatalf("RED D112: a one-frame backlog (<= one-RTT burst %.0f frames) was dropped with %v after a max-three-buffer batch; "+
-			"want bounded retention and later paced emission (offered=%d, emitted=%d, average %.1f < capacity %.1f fps)",
-			burstFrames, err, offeredFrames, frames, averageOfferedFPS, reproCapacityFPS)
 	})
 
 	t.Run("D108-size-parity-charges-at-egress", func(t *testing.T) {
@@ -199,17 +209,17 @@ func TestPacingLossPolicerRepro(t *testing.T) {
 		if fs.parityFrames.Load() != fecParityShards {
 			t.Fatalf("fixture error: size close wrote %d parity frames, want %d", fs.parityFrames.Load(), fecParityShards)
 		}
-		next := scheduler.Pick(sched.ClassData, 1)
+		_ = scheduler
 		frames, wireBytes, timestamps := recorder.snapshot()
-		t.Logf("RED D108-size base=040256256470eec5af976d5477c4deb24652d731 fake_time=%s "+
+		path := m.PeerSnapshots()[0].Paths[0]
+		t.Logf("GREEN D108-size red_base=040256256470eec5af976d5477c4deb24652d731 fake_time=%s "+
 			"data_frames=%d parity_frames=%d parity_bytes=%d parity_carry=%d emitted_frames=%d emitted_wire_bytes=%d "+
-			"write_timestamps=%v next_data_pick=%d",
+			"write_timestamps=%v shaper_accepted=%d shaper_emitted=%d",
 			clk.Now().Format(time.RFC3339Nano), fs.dataFrames.Load(), fs.parityFrames.Load(), fs.parityBytes.Load(),
-			m.parityCarry.Load(), frames, wireBytes, timestamps, next)
-		if next != sched.PickPaced {
-			t.Fatalf("RED D108 size-close: %d parity frames/%d bytes reached the socket, but the next DATA Pick=%d was admitted; "+
-				"want parity charged at its egress so the next Pick is PickPaced=%d (current charge is deferred in parityCarry=%d)",
-				fs.parityFrames.Load(), fs.parityBytes.Load(), next, sched.PickPaced, m.parityCarry.Load())
+			m.parityCarry.Load(), frames, wireBytes, timestamps, path.ShaperAcceptedDatagrams, path.ShaperEmittedDatagrams)
+		want := uint64(fecDataShards + fecParityShards)
+		if path.ShaperAcceptedDatagrams != want || path.ShaperEmittedDatagrams != want {
+			t.Fatalf("GREEN D108 size-close: shaper accepted/emitted=%d/%d, want all DATA+parity=%d", path.ShaperAcceptedDatagrams, path.ShaperEmittedDatagrams, want)
 		}
 	})
 
@@ -232,17 +242,17 @@ func TestPacingLossPolicerRepro(t *testing.T) {
 		if fs.parityFrames.Load() != fecParityShards {
 			t.Fatalf("fixture error: deadline close wrote %d parity frames, want %d", fs.parityFrames.Load(), fecParityShards)
 		}
-		next := scheduler.Pick(sched.ClassData, 1)
+		_ = scheduler
 		frames, wireBytes, timestamps := recorder.snapshot()
-		t.Logf("RED D108-deadline base=040256256470eec5af976d5477c4deb24652d731 fake_time=%s deadline=%s "+
+		path := m.PeerSnapshots()[0].Paths[0]
+		t.Logf("GREEN D108-deadline red_base=040256256470eec5af976d5477c4deb24652d731 fake_time=%s deadline=%s "+
 			"data_frames=%d parity_frames=%d parity_bytes=%d parity_carry=%d emitted_frames=%d emitted_wire_bytes=%d "+
-			"write_timestamps=%v next_data_pick=%d",
+			"write_timestamps=%v shaper_accepted=%d shaper_emitted=%d",
 			clk.Now().Format(time.RFC3339Nano), deadline, fs.dataFrames.Load(), fs.parityFrames.Load(), fs.parityBytes.Load(),
-			m.parityCarry.Load(), frames, wireBytes, timestamps, next)
-		if next != sched.PickPaced {
-			t.Fatalf("RED D108 deadline-close: %d parity frames/%d bytes reached the socket, but the next DATA Pick=%d was admitted; "+
-				"want parity charged at its egress so the next Pick is PickPaced=%d (current charge is deferred in parityCarry=%d)",
-				fs.parityFrames.Load(), fs.parityBytes.Load(), next, sched.PickPaced, m.parityCarry.Load())
+			m.parityCarry.Load(), frames, wireBytes, timestamps, path.ShaperAcceptedDatagrams, path.ShaperEmittedDatagrams)
+		want := uint64(partialFrames + fecParityShards)
+		if path.ShaperAcceptedDatagrams != want || path.ShaperEmittedDatagrams != want {
+			t.Fatalf("GREEN D108 deadline-close: shaper accepted/emitted=%d/%d, want all DATA+parity=%d", path.ShaperAcceptedDatagrams, path.ShaperEmittedDatagrams, want)
 		}
 	})
 }

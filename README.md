@@ -111,7 +111,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   recovery, throughput, probed RTT/liveness,
   `wanbond_path_probe_send_errors_total` (per-path PROBE socket write errors,
   count-and-continue — a path whose probes cannot egress no longer reads
-  identically to a path with 100% probe loss, D96), WG-session establishment
+  identically to a path with 100% probe loss, D96), exact-byte shaper
+  accepted/emitted/error counters (`wanbond_path_shaper_*`) plus underlying
+  `wanbond_path_socket_write_errors_total`, WG-session establishment
   (`wanbond_session_established`, plus a per-peer
   `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
   including the first configured one, carries its configured `peer` label, while
@@ -174,12 +176,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   instead (unless `reveal_addressing` is explicitly set).
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
-  flip and the coalesced `"scheduler pacer shedding"` record while a pacing-
-  enabled peer is actively shedding `ClassData` under overload.
+  flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
+  bounded exact-byte shaper instead of producing scheduler-shedding records.
 - **Pacing on/off is a real tradeoff, not just a knob**: pacing bounds
   worst-case loaded RTT and keeps liveness stable under sustained overload, at
-  the cost of shedding the excess offered load instead of queueing it; leaving
-  it off maximizes throughput but risks bufferbloat-driven liveness flaps
+  the cost of applying bounded sender backpressure; leaving it off maximizes
+  offered throughput but risks bufferbloat-driven liveness flaps
   under sustained overload — see [docs/design.md §Send-side
   scheduler](docs/design.md) for the
   measured numbers, the three-tier `ClassControl`/`frame.KindProbe`/`ClassData`

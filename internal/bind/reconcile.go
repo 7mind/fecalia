@@ -223,7 +223,7 @@ func (m *Multipath) promoteDeferredLocked(dp deferredPath, c *net.UDPConn) error
 	// that peer's scheduler. attached[k] is m.peers[k]'s view of the freshly-bound socket. A
 	// failure in any peer rolls back every peer already attached, so a partial fan-out never
 	// leaks a half-admitted path.
-	attached, err := m.attachSharedPathLocked(shared, dp.def, shared.id, probers)
+	attached, err := m.attachSharedPathLocked(shared, dp.def, shared.id, probers, nil)
 	if err != nil {
 		return err
 	}

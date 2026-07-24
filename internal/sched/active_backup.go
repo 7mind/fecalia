@@ -423,6 +423,17 @@ func (s *ActiveBackup) Pick(class FrameClass, frames int) int {
 	return p.shed(now, 0)
 }
 
+// PickUnpaced performs Pick's liveness recomputation and validates the same offered-frame
+// contract, but bypasses the legacy token bucket. It is the selection seam used when the
+// bind's exact-byte shaper owns admission for the selected path.
+func (s *ActiveBackup) PickUnpaced(_ FrameClass, frames int) int {
+	checkPickFrames(frames)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recomputeLocked(s.clock.Now())
+	return s.active
+}
+
 // SelectPath re-derives the active path from live liveness and returns it WITHOUT charging
 // the pacing bucket or ever shedding (never PickPaced) — the select-only seam the FEC
 // deadline flush uses (defects D95/D109, decisions:K35 §3c/§9.4). Active-backup runs no
