@@ -170,8 +170,9 @@ func oldTryConsume(tokens *float64) bool {
 // admitted rate to CapacityFPS, and the direct regression test for the pre-fix ~1.5-3x
 // over-admission (decisions:K35 §3e, defects:D95).
 //
-// A sustained offer of fixed-size batches at a batch rate whose WIRE-frame rate exceeds
-// CapacityFPS by battFactor (2x here, inside the 1.52-3.07 range measured pre-fix)
+// A sustained offer of fixed-size batches at a BATCH rate that exceeds CapacityFPS
+// batches/s — so the pre-fix one-token-per-batch model is BUCKET-limited, not merely
+// offer-limited
 // exercises the token bucket's steady-state admit/shed cycling: once the bucket's
 // balance goes negative on an oversized admission, it sheds every batch until refill
 // alone (capacity*dt per step) brings it back to >= 1, at which point it admits once
@@ -181,27 +182,41 @@ func oldTryConsume(tokens *float64) bool {
 // is the classic token-bucket policing property, and it is what "the unit is now
 // consistent end to end" means operationally.
 //
-// The pre-fix (`oldTryConsume`) charge of ONE token per admitted call, by contrast, never
-// drives the bucket negative fast enough to shed at all here (refill outruns a 1-token
-// charge even under 2x offered load), so it admits EVERY batch and the admitted frame
-// rate equals the full OFFERED rate — i.e. ~battFactor times CapacityFPS, reproducing the
-// over-admission this task fixes.
+// The pre-fix (`oldTryConsume`) charge of ONE token per admitted call, by contrast, binds
+// the admitted BATCH rate to CapacityFPS batches/s — one token per batch, CapacityFPS
+// tokens per second — so it admits CapacityFPS*frames WIRE frames per second. That is
+// exactly `frames` (the BATCH FACTOR) times the declared CapacityFPS, which is the
+// over-admission this task fixes and the quantity T291's acceptance names.
+//
+// WHY THE OFFER MUST EXCEED CapacityFPS BATCHES/s (reviews:R307): if the batch rate were
+// below CapacityFPS batches/s the pre-fix arm would never shed at all, and the observed
+// multiplier would be min(batchFactor, offered/capacity) — an OFFER-limited artefact that
+// merely happens to look like a factor. Offering above CapacityFPS batches/s makes the
+// pre-fix arm genuinely BUCKET-limited, so the measured pre-fix/post-fix ratio IS the
+// batch factor rather than a coincidence of the chosen offer. The fixture asserts that
+// precondition explicitly below.
 func TestPacingLongRunAdmittedRateConvergesToCapacity(t *testing.T) {
 	const (
 		capacityFPS = 2000.0 // CapacityFPS: refill rate, frames/s
 		burstFrames = 200.0  // BurstFrames: bucket size, frames
-		frames      = 20     // wire frames per offered batch
-		dt          = 5 * time.Millisecond
-		battFactor  = 2.0              // offered wire-frame rate = battFactor * capacityFPS
+		frames      = 20     // wire frames per offered batch == the BATCH FACTOR
+		dt          = 250 * time.Microsecond
+		batchFactor = float64(frames)  // wire frames per Pick — the quantity T291 removes
 		window      = 20 * time.Second // fake-clock measurement window
 		tolerance   = 0.03             // 3% relative tolerance on the converged rate
 	)
-	// Sanity: the fixture must actually offer at battFactor*capacityFPS wire fps.
+	// PRECONDITION (reviews:R307): the pre-fix arm must be BUCKET-limited, not
+	// offer-limited, or the observed multiplier is min(batchFactor, offered/capacity)
+	// rather than the batch factor itself. One token per batch means the pre-fix model
+	// admits at most CapacityFPS BATCHES/s, so the offered batch rate must exceed that.
 	batchesPerSec := 1.0 / dt.Seconds()
-	offeredFPS := float64(frames) * batchesPerSec
-	if math.Abs(offeredFPS-battFactor*capacityFPS)/(battFactor*capacityFPS) > 1e-9 {
-		t.Fatalf("fixture misconfigured: offered %v fps, want exactly %vx capacity (%v fps)", offeredFPS, battFactor, battFactor*capacityFPS)
+	if batchesPerSec <= capacityFPS {
+		t.Fatalf("fixture misconfigured: offering %.0f batches/s <= CapacityFPS %.0f batches/s, so the pre-fix arm would be OFFER-limited and its multiplier would not be the batch factor",
+			batchesPerSec, capacityFPS)
 	}
+	offeredFPS := float64(frames) * batchesPerSec
+	t.Logf("fixture: %.0f batches/s x %d frames = %.0f offered wire fps against CapacityFPS %.0f (batch factor %.0f)",
+		batchesPerSec, frames, offeredFPS, capacityFPS, batchFactor)
 
 	logger := discardLogger(t)
 	cfg := pacerConfig{Pacing: true, CapacityFPS: capacityFPS, BurstFrames: burstFrames}
@@ -242,19 +257,19 @@ func TestPacingLongRunAdmittedRateConvergesToCapacity(t *testing.T) {
 			newRateFPS, window, tolerance*100, capacityFPS, relErr)
 	}
 
-	// The pre-fix model must reproduce the documented over-admission: it should land
-	// close to the full OFFERED rate (battFactor*capacityFPS), not the declared capacity.
-	wantOldFPS := battFactor * capacityFPS
+	// The pre-fix model, being BUCKET-limited at one token per batch, admits CapacityFPS
+	// batches/s and therefore batchFactor*CapacityFPS WIRE frames/s — the over-admission
+	// this task fixes, expressed in the batch factor T291's acceptance names.
+	wantOldFPS := batchFactor * capacityFPS
 	oldRelErr := math.Abs(oldRateFPS-wantOldFPS) / wantOldFPS
 	if oldRelErr > tolerance {
-		t.Fatalf("pre-fix (one-token-per-batch) long-run admitted rate = %.1f fps, want within %.0f%% of the offered rate %.0f fps (battFactor=%v) — the reproduction of the pre-fix over-admission is not exercising the fixture as intended (relative error %.3f)",
-			oldRateFPS, tolerance*100, wantOldFPS, battFactor, oldRelErr)
+		t.Fatalf("pre-fix (one-token-per-batch) long-run admitted rate = %.1f fps, want within %.0f%% of batchFactor*CapacityFPS = %.0f fps (batchFactor=%.0f) — the pre-fix arm is not bucket-limited as the fixture intends (relative error %.3f)",
+			oldRateFPS, tolerance*100, wantOldFPS, batchFactor, oldRelErr)
 	}
-	// Non-vacuous: the fix must actually have moved the admitted rate down by
-	// approximately battFactor relative to the pre-fix model.
+	// Non-vacuous: the fix must have moved the admitted rate down by the BATCH FACTOR.
 	ratio := oldRateFPS / newRateFPS
-	if ratio < battFactor*0.9 || ratio > battFactor*1.1 {
-		t.Fatalf("pre-fix/post-fix admitted-rate ratio = %.3f, want ~%.1f (the batch factor this task removes): old=%.1f fps new=%.1f fps", ratio, battFactor, oldRateFPS, newRateFPS)
+	if ratio < batchFactor*0.9 || ratio > batchFactor*1.1 {
+		t.Fatalf("pre-fix/post-fix admitted-rate ratio = %.3f, want ~%.0f (the batch factor this task removes): old=%.1f fps new=%.1f fps", ratio, batchFactor, oldRateFPS, newRateFPS)
 	}
 }
 
