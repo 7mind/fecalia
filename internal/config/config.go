@@ -250,6 +250,11 @@ type SchedulerConfig struct {
 	// consumed by T153 as sched.Config.PacingBursts. nil under weighted / with pacing off.
 	// Never read from TOML.
 	PacingBursts []float64 `toml:"-"`
+	// PerPathShapers is the derived exact-byte shaper configuration, index-aligned to
+	// Config.Paths. It is populated whenever pacing is enabled, but is deliberately not
+	// consumed by the scheduler until the staged T299 cutover: the legacy frame-token
+	// fields above remain active in this intermediate commit. Never read from TOML.
+	PerPathShapers []PathShaperConfig `toml:"-"`
 
 	// --- Weighted-only aggregation/weight knobs ---
 	// Validated and defaulted ONLY when the weighted policy is selected; inert (and
@@ -301,6 +306,28 @@ type BDPSizing struct {
 	BurstFrames float64
 }
 
+// PathShaperConfig owns the unit-exact byte quantities for one per-(peer,path)
+// shaper. Config derives these once from validated operator input; the scheduler
+// continues to consume the legacy frame-token fields until T299.
+type PathShaperConfig struct {
+	// RateBytesPerSecond is the declared sustained wire-byte rate R.
+	RateBytesPerSecond float64
+	// DataBurstBytes is the DATA allowance B. It is always at least one maximum
+	// legal encoded datagram, so an otherwise legal write can never be permanently
+	// inadmissible solely because it exceeds the shaper's burst.
+	DataBurstBytes int
+	// ControlReserveBytes is the priority-class reserve C, exactly one Lmax.
+	ControlReserveBytes int
+	// MaxEncodedDatagramBytes is Lmax, the largest UDP payload admitted by this
+	// path's validated outer MTU and address-family framing.
+	MaxEncodedDatagramBytes int
+	// ProbeRateBytesPerSecond is the maximum generated probe+echo byte rate Rp for
+	// this per-(peer,path) shaper at the minimum probe interval.
+	ProbeRateBytesPerSecond float64
+	// ProbeBurstBytes is the coincident maximum-size probe+echo burst Pburst.
+	ProbeBurstBytes int
+}
+
 // defaultAvgWireFrameBytes is the conservative average on-wire outer-frame size used
 // when deriving the per-path pace from an operator-declared bandwidth at config load
 // (T53): a full IPv4 path MTU, since a full-MTU DATA datagram occupies about one path
@@ -310,6 +337,17 @@ type BDPSizing struct {
 // capacity with the full-MTU frame is the conservative floor: smaller average frames
 // would yield a HIGHER frame rate, so this never over-paces a path.
 const defaultAvgWireFrameBytes = 1500.0
+
+// defaultPathMTU and the outer IP/UDP overheads mirror bind.DefaultPathMTU,
+// bind.IPv4UDPOverhead, and bind.IPv6UDPOverhead. Config cannot import bind
+// because bind already imports config.
+const (
+	defaultPathMTU          = 1500
+	outerIPv4UDPOverhead    = 28
+	outerIPv6UDPOverhead    = 48
+	bitsPerByte             = 8.0
+	probeFramesPerBurstPair = 2
+)
 
 // outerPathOverheadBytes is the fixed per-datagram overhead a full-size inner
 // (TUN) packet grows by once wrapped in the outer IPv4/UDP + DATA-frame +
@@ -372,7 +410,6 @@ func SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFr
 	if avgWireFrameBytes <= 0 {
 		return BDPSizing{}, fmt.Errorf("config: BDP sizing average wire frame size must be > 0 bytes, got %g", avgWireFrameBytes)
 	}
-	const bitsPerByte = 8.0
 	capacityFPS := bandwidthBitsPerSec / (bitsPerByte * avgWireFrameBytes)
 	burstFrames := capacityFPS * rtt.Seconds()
 	return BDPSizing{CapacityFPS: capacityFPS, BurstFrames: burstFrames}, nil
@@ -1257,6 +1294,74 @@ func (c *Config) derivePacingFromBDP() error {
 		// An unrecognized policy is rejected by validate(); size nothing here.
 		return nil
 	}
+}
+
+// derivePathShapers separates the future exact-byte shaper's unit domain from
+// scheduler offered-frame metering. It runs only after normalize and validate:
+// address families, MTUs, pacing-source exclusivity, RTTs, and legacy fields are
+// therefore already effective and valid. T299 will consume these values; this
+// intermediate commit intentionally leaves the existing frame-token pacer active.
+func (c *Config) derivePathShapers() error {
+	s := &c.Scheduler
+	if !s.PacingEnabled {
+		return nil
+	}
+
+	fromLinkBandwidth := c.declaredLinkBandwidths() > 0
+	shapers := make([]PathShaperConfig, len(c.Paths))
+	for i := range c.Paths {
+		p := &c.Paths[i]
+		lmax := p.maxEncodedDatagramBytes()
+		var rateBytesPerSecond, burstBytes float64
+		if fromLinkBandwidth {
+			rateBytesPerSecond = p.LinkBandwidthBitsPerSec / bitsPerByte
+			burstBytes = rateBytesPerSecond * p.LinkRTT.Seconds()
+		} else {
+			rateBytesPerSecond = s.PerPathCapacityFPS * defaultAvgWireFrameBytes
+			burstBytes = s.PacingBurstFrames * defaultAvgWireFrameBytes
+		}
+		dataBurstBytes := int(math.Ceil(burstBytes))
+		if dataBurstBytes < lmax {
+			if fromLinkBandwidth {
+				return fmt.Errorf("path %q: link_bandwidth/link_rtt DATA burst %d bytes is below maximum encoded datagram %d bytes; increase link_rtt or link_bandwidth so every legal datagram is admissible",
+					p.Name, dataBurstBytes, lmax)
+			}
+			return fmt.Errorf("scheduler.pacing_burst_frames=%g converts to a DATA burst %d bytes below path %q maximum encoded datagram %d bytes; set pacing_burst_frames >= %g so every legal datagram is admissible",
+				s.PacingBurstFrames, dataBurstBytes, p.Name, lmax, float64(lmax)/defaultAvgWireFrameBytes)
+		}
+
+		probeBurstBytes := probeFramesPerBurstPair * lmax
+		probeRateBytesPerSecond := float64(probeBurstBytes) / livenessProbeInterval.Seconds()
+		if probeRateBytesPerSecond >= rateBytesPerSecond {
+			return fmt.Errorf("path %q: generated probe+echo rate %g bytes/s must be < shaper rate %g bytes/s (Pburst=%d bytes at minimum interval %s)",
+				p.Name, probeRateBytesPerSecond, rateBytesPerSecond, probeBurstBytes, livenessProbeInterval)
+		}
+		shapers[i] = PathShaperConfig{
+			RateBytesPerSecond:      rateBytesPerSecond,
+			DataBurstBytes:          dataBurstBytes,
+			ControlReserveBytes:     lmax,
+			MaxEncodedDatagramBytes: lmax,
+			ProbeRateBytesPerSecond: probeRateBytesPerSecond,
+			ProbeBurstBytes:         probeBurstBytes,
+		}
+	}
+	s.PerPathShapers = shapers
+	return nil
+}
+
+// maxEncodedDatagramBytes returns Lmax, the largest encoded UDP payload that
+// fits this path's validated outer IP MTU. An omitted MTU uses the same 1500-byte
+// fallback as bind; IPv6 reserves its larger outer header.
+func (p Path) maxEncodedDatagramBytes() int {
+	pathMTU := p.MTU
+	if pathMTU == 0 {
+		pathMTU = defaultPathMTU
+	}
+	outerOverhead := outerIPv4UDPOverhead
+	if p.SourceAddr.Unmap().Is6() {
+		outerOverhead = outerIPv6UDPOverhead
+	}
+	return pathMTU - outerOverhead
 }
 
 // declaredLinkBandwidths counts paths carrying an operator-declared link_bandwidth.

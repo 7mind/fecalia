@@ -48,6 +48,9 @@ func Load(path string) (*Config, error) {
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	if err := c.derivePathShapers(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
 	return &c, nil
 }
 

@@ -1,0 +1,256 @@
+package config
+
+import (
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+func byteShaperFixture(sourceAddr, bandwidth, rtt string, mtu int, scheduler string) string {
+	pathSizing := ""
+	if bandwidth != "" {
+		pathSizing += fmt.Sprintf("link_bandwidth = %q\n", bandwidth)
+	}
+	if rtt != "" {
+		pathSizing += fmt.Sprintf("link_rtt = %q\n", rtt)
+	}
+	if mtu != 0 {
+		pathSizing += fmt.Sprintf("mtu = %d\n", mtu)
+	}
+	return fill(fmt.Sprintf(`
+role = "concentrator"
+psk = "%%PSK%%"
+
+[[paths]]
+name = "wan"
+source_addr = %q
+%s
+[wireguard]
+private_key = "%%PRIV%%"
+listen_port = 51820
+
+[[wireguard.peers]]
+public_key = "%%PUB%%"
+allowed_ips = ["10.0.0.2/32"]
+
+[scheduler]
+policy = "active-backup"
+%s
+`, sourceAddr, pathSizing, scheduler))
+}
+
+func loadByteShaperFixture(t *testing.T, body string) (*Config, error) {
+	t.Helper()
+	return Load(writeConfig(t, 0o600, body))
+}
+
+func onlyPathShaper(t *testing.T, cfg *Config) PathShaperConfig {
+	t.Helper()
+	if len(cfg.Scheduler.PerPathShapers) != 1 {
+		t.Fatalf("PerPathShapers = %+v, want exactly one entry", cfg.Scheduler.PerPathShapers)
+	}
+	return cfg.Scheduler.PerPathShapers[0]
+}
+
+func TestPathShaperDerivedBytesAndLegacyFPS(t *testing.T) {
+	cfg, err := loadByteShaperFixture(t, byteShaperFixture(
+		"192.0.2.10", "8Mbit", "45ms", 0,
+		"pacing_enabled = true\n",
+	))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	shaper := onlyPathShaper(t, cfg)
+	if shaper.RateBytesPerSecond != 1_000_000 {
+		t.Errorf("RateBytesPerSecond = %g, want 1000000", shaper.RateBytesPerSecond)
+	}
+	if shaper.DataBurstBytes != 45_000 {
+		t.Errorf("DataBurstBytes = %d, want ceil(1000000*45ms) = 45000", shaper.DataBurstBytes)
+	}
+	if shaper.MaxEncodedDatagramBytes != 1472 {
+		t.Errorf("MaxEncodedDatagramBytes = %d, want 1500-IPv4/UDP(28) = 1472", shaper.MaxEncodedDatagramBytes)
+	}
+	if shaper.ControlReserveBytes != shaper.MaxEncodedDatagramBytes {
+		t.Errorf("ControlReserveBytes = %d, want Lmax = %d", shaper.ControlReserveBytes, shaper.MaxEncodedDatagramBytes)
+	}
+	if shaper.ProbeBurstBytes != 2*shaper.MaxEncodedDatagramBytes {
+		t.Errorf("ProbeBurstBytes = %d, want probe+echo = %d", shaper.ProbeBurstBytes, 2*shaper.MaxEncodedDatagramBytes)
+	}
+	wantProbeRate := float64(shaper.ProbeBurstBytes) / livenessProbeInterval.Seconds()
+	if shaper.ProbeRateBytesPerSecond != wantProbeRate {
+		t.Errorf("ProbeRateBytesPerSecond = %g, want %g", shaper.ProbeRateBytesPerSecond, wantProbeRate)
+	}
+
+	wantLegacy, err := SizePacingFromBDP(8e6, 45*time.Millisecond, defaultAvgWireFrameBytes)
+	if err != nil {
+		t.Fatalf("SizePacingFromBDP: %v", err)
+	}
+	if len(cfg.Scheduler.PerPathCapacities) != 1 || math.Abs(cfg.Scheduler.PerPathCapacities[0]-wantLegacy.CapacityFPS) > 1e-9 {
+		t.Errorf("legacy PerPathCapacities = %v, want offered-wire-frame rate %g", cfg.Scheduler.PerPathCapacities, wantLegacy.CapacityFPS)
+	}
+	if len(cfg.Scheduler.PacingBursts) != 1 || math.Abs(cfg.Scheduler.PacingBursts[0]-wantLegacy.BurstFrames) > 1e-9 {
+		t.Errorf("legacy PacingBursts = %v, want %g", cfg.Scheduler.PacingBursts, wantLegacy.BurstFrames)
+	}
+}
+
+func TestPathShaperKeepsWeightedAggregationFPS(t *testing.T) {
+	body := fill(twoPathConfig("8Mbit", "45ms", "8Mbit", "45ms")) + weightedPacing
+	cfg, err := loadByteShaperFixture(t, body)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	wantLegacy, err := SizePacingFromBDP(8e6, 45*time.Millisecond, defaultAvgWireFrameBytes)
+	if err != nil {
+		t.Fatalf("SizePacingFromBDP: %v", err)
+	}
+	if math.Abs(cfg.Scheduler.PerPathCapacityFPS-wantLegacy.CapacityFPS) > 1e-9 {
+		t.Fatalf("weighted aggregation PerPathCapacityFPS = %g, want unchanged offered-wire-frame rate %g",
+			cfg.Scheduler.PerPathCapacityFPS, wantLegacy.CapacityFPS)
+	}
+	if math.Abs(cfg.Scheduler.PacingBurstFrames-wantLegacy.BurstFrames) > 1e-9 {
+		t.Fatalf("legacy weighted PacingBurstFrames = %g, want unchanged %g",
+			cfg.Scheduler.PacingBurstFrames, wantLegacy.BurstFrames)
+	}
+	if len(cfg.Scheduler.PerPathShapers) != 2 {
+		t.Fatalf("PerPathShapers = %+v, want one independently-derived byte config per path", cfg.Scheduler.PerPathShapers)
+	}
+	for i, shaper := range cfg.Scheduler.PerPathShapers {
+		if shaper.RateBytesPerSecond != 1_000_000 || shaper.DataBurstBytes != 45_000 {
+			t.Errorf("PerPathShapers[%d] = %+v, want R=1000000 B=45000", i, shaper)
+		}
+	}
+}
+
+func TestPathShaperMaximumDatagramUsesOuterAddressFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sourceAddr string
+		mtu        int
+		wantLmax   int
+	}{
+		{name: "IPv4 default MTU", sourceAddr: "192.0.2.10", wantLmax: 1472},
+		{name: "IPv4 declared MTU", sourceAddr: "192.0.2.10", mtu: 1400, wantLmax: 1372},
+		{name: "IPv6 default MTU", sourceAddr: "2001:db8::10", wantLmax: 1452},
+		{name: "IPv6 declared MTU", sourceAddr: "2001:db8::10", mtu: 1400, wantLmax: 1352},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadByteShaperFixture(t, byteShaperFixture(
+				tc.sourceAddr, "8Mbit", "45ms", tc.mtu,
+				"pacing_enabled = true\n",
+			))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := onlyPathShaper(t, cfg).MaxEncodedDatagramBytes; got != tc.wantLmax {
+				t.Fatalf("MaxEncodedDatagramBytes = %d, want %d", got, tc.wantLmax)
+			}
+		})
+	}
+}
+
+func TestPathShaperLinkDerivedBurstBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rtt     string
+		wantB   int
+		wantErr string
+	}{
+		{name: "B equals Lmax", rtt: "1472us", wantB: 1472},
+		{name: "B below Lmax", rtt: "1471us", wantErr: "DATA burst 1471 bytes is below maximum encoded datagram 1472 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadByteShaperFixture(t, byteShaperFixture(
+				"192.0.2.10", "8Mbit", tc.rtt, 0,
+				"pacing_enabled = true\n",
+			))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := onlyPathShaper(t, cfg).DataBurstBytes; got != tc.wantB {
+				t.Fatalf("DataBurstBytes = %d, want %d", got, tc.wantB)
+			}
+		})
+	}
+}
+
+func TestPathShaperLegacyRawBurstBoundary(t *testing.T) {
+	equalBurstFrames := strconv.FormatFloat(float64(1472)/defaultAvgWireFrameBytes, 'g', -1, 64)
+	for _, tc := range []struct {
+		name        string
+		burstFrames string
+		wantB       int
+		wantErr     string
+	}{
+		{name: "converted B equals Lmax", burstFrames: equalBurstFrames, wantB: 1472},
+		{name: "converted B below Lmax", burstFrames: "0.98", wantErr: "scheduler.pacing_burst_frames=0.98 converts to a DATA burst 1470 bytes below path \"wan\" maximum encoded datagram 1472 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheduler := fmt.Sprintf("pacing_enabled = true\nper_path_capacity_fps = 10\npacing_burst_frames = %s\n", tc.burstFrames)
+			cfg, err := loadByteShaperFixture(t, byteShaperFixture("192.0.2.10", "", "", 0, scheduler))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := onlyPathShaper(t, cfg).DataBurstBytes; got != tc.wantB {
+				t.Fatalf("DataBurstBytes = %d, want %d", got, tc.wantB)
+			}
+		})
+	}
+}
+
+func TestPathShaperProbeRateBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		bandwidth string
+		rtt       string
+		wantRate  float64
+		wantErr   string
+	}{
+		{name: "Rp below R", bandwidth: "117768bit", rtt: "100ms", wantRate: 14_721},
+		{name: "Rp equals R", bandwidth: "117760bit", rtt: "100ms", wantErr: "generated probe+echo rate 14720 bytes/s must be < shaper rate 14720 bytes/s"},
+		{name: "Rp above R", bandwidth: "108000bit", rtt: "110ms", wantErr: "generated probe+echo rate 14720 bytes/s must be < shaper rate 13500 bytes/s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadByteShaperFixture(t, byteShaperFixture(
+				"192.0.2.10", tc.bandwidth, tc.rtt, 0, "pacing_enabled = true\n",
+			))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load error = %v, want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := onlyPathShaper(t, cfg).RateBytesPerSecond; got != tc.wantRate {
+				t.Fatalf("RateBytesPerSecond = %g, want %g", got, tc.wantRate)
+			}
+		})
+	}
+}
+
+func TestPathShaperPacingDisabledIsInert(t *testing.T) {
+	cfg, err := loadByteShaperFixture(t, byteShaperFixture("192.0.2.10", "8Mbit", "45ms", 0, ""))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Scheduler.PerPathShapers != nil {
+		t.Fatalf("PerPathShapers = %+v, want nil while pacing is disabled", cfg.Scheduler.PerPathShapers)
+	}
+}

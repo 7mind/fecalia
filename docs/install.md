@@ -396,6 +396,22 @@ Common rules, either policy:
 - `link_bandwidth` is **mutually exclusive** with the raw `per_path_capacity_fps` /
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
+- Config load derives a future exact-byte shaper envelope per path. For a declared
+  link, `R = link_bandwidth/8`, `B = ceil(R*link_rtt)`, and `Lmax` is the
+  configured-or-default outer MTU less the IP/UDP headers (28 bytes for IPv4,
+  48 for IPv6). It rejects `B < Lmax`: one legal datagram must always fit.
+  Raw settings use the existing 1500-byte conversion
+  (`R = per_path_capacity_fps*1500`,
+  `B = ceil(pacing_burst_frames*1500)`) and enforce the same invariant, so a
+  raw `pacing_burst_frames` below one encoded frame is invalid.
+- The same envelope reserves `C=Lmax` for control and budgets one coincident
+  maximum-size probe+echo pair per peer/path:
+  `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.
+  These byte fields are staged for T299; T298 leaves the existing frame-token
+  `PickPaced` runtime and drop behavior active.
+  For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
+  `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
+  `Pburst=2,944 B`, and `Rp=14,720 B/s`.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never
@@ -1003,7 +1019,11 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   (token buckets) under EITHER policy. Off
                                    #   => buckets bypassed.
 # pacing_burst_frames = 64.0       # DEFAULT 64. Token-bucket burst (frames),
-                                   #   either policy. > 0 when pacing_enabled.
+                                   #   either policy. > 0 when pacing_enabled,
+                                   #   and its 1500-byte conversion must admit
+                                   #   Lmax (one legal encoded datagram). At the
+                                   #   default IPv4/1500 MTU this requires
+                                   #   >= 1472/1500 (~0.9814; use >= 1).
 # weight_rtt_floor = "1ms"         # DEFAULT 1ms. RTT floor in the weight
                                    #   formula. > 0.
 # weight_loss_floor = 0.001        # DEFAULT 1e-3. Loss floor under the sqrt in

@@ -479,6 +479,36 @@ internal/config) sizes the pacing parameters as follows:
   in-flight data. Equivalently, the bandwidth-delay product (in bytes) divided by
   the average wire-frame size.
 
+T298 separates those **offered-frame scheduler units** from the exact-byte
+configuration the replacement shaper will consume. With pacing enabled,
+`Config.Scheduler.PerPathShapers` contains one `PathShaperConfig` per path:
+
+- `R = link_bandwidth_bits_per_sec / 8` bytes/s.
+- `Lmax = effective_outer_mtu - outer_IP/UDP_headers`, using the configured MTU
+  or 1500 and the normalized source address family (28 bytes for IPv4, 48 for
+  IPv6).
+- DATA budget `B = ceil(R * link_rtt_seconds)` bytes and control reserve
+  `C = Lmax`.
+- Per-(peer,path) coincident generated control burst `Pburst = 2 * Lmax`
+  (one maximum-size probe plus its echo) and maximum rate
+  `Rp = Pburst / 200ms`, where 200 ms is the minimum/fixed liveness probe
+  interval.
+
+Config load requires `B >= Lmax` and `Rp < R`. The first invariant means every
+legal single datagram is admissible; the second prevents the generated
+probe/echo stream from consuming the declared shaper rate by construction.
+For the legacy raw knobs the byte projection uses the documented 1500-byte
+conversion unchanged: `R = per_path_capacity_fps * 1500` and
+`B = ceil(pacing_burst_frames * 1500)`. Thus the aggregation estimator and its
+`per_path_capacity_fps` thresholds remain offered-wire-frame quantities.
+
+This is deliberately a **staged cutover**. T298 only establishes the
+configuration ownership boundary and validation. `selectScheduler` still passes
+the legacy `PerPathCapacities`/`PacingBursts` fields to the existing
+frame-token pacer, and `PickPaced` still sheds at runtime. T299 replaces that
+primitive and consumes the exact-byte fields; T298 makes no queue, delay, or
+egress change.
+
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
 milliseconds, e.g. `"21ms"`). The idle RTT is the baseline; pacing bounds the
