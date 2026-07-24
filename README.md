@@ -258,7 +258,13 @@ deliberate boundaries you must plan around:
   `(peer,path)` owns one shaper: encoded DATA and every immediate/deadline FEC
   parity datagram consume their exact byte length, and a full bounded budget
   backpressures the sender instead of shedding. Per-path accepted, emitted,
-  shaper-error, and socket-error counters expose every terminal prefix. Inner
+  shaper-error, and socket-error counters expose every terminal prefix.
+  Runtime remove/rollback and Close atomically stop that generation's admission,
+  retire queued work, wait shaped and direct UDP writers without holding the bind
+  lock, and only then close its socket. Re-add or Close/Open creates a fresh empty
+  shaper/socket generation; no old writer can cross into it. Per-peer
+  resequencer/FEC teardown retains the shaper while the underlying path socket
+  remains live. Inner
   WireGuard handshake/cookie/keepalive frames use the `C=Lmax` reserve one
   buffer at a time, but retain selected-path FIFO, outer sequencing, and FEC;
   they never overtake lower DATA, and DATA cannot borrow `C`. Authenticated

@@ -278,15 +278,10 @@ func TestSweepDrivesEagerFailover(t *testing.T) {
 	}
 }
 
-// TestSweepNoDeadlockAgainstClose asserts assertion (c): the sweep's TryLock (NOT
-// Lock) against m.mu is what lets Close — which holds m.mu WHILE it waits on the
-// reader WaitGroup — complete while readers are hammering the sweep. Arming the
-// interval to 1ns makes EVERY received datagram clear the throttle and reach
-// m.mu.TryLock, so the Bind-owned readers contend m.mu continuously under load.
-// With Lock instead of TryLock a reader would block on m.mu while Close holds it
-// and waits for that same reader to exit — a deadlock that hangs Close forever.
-// The bounded-timeout guard turns that hang into a failure; with TryLock, Close
-// returns promptly and the test is -race-clean.
+// TestSweepNoDeadlockAgainstClose keeps the receive-side TryLock sweep under
+// continuous bind-lock contention while Close detaches the socket generation
+// and joins its readers. The bounded timeout asserts that neither the short
+// detach critical section nor the out-of-lock reader join wedges shutdown.
 func TestSweepNoDeadlockAgainstClose(t *testing.T) {
 	psk := testKey(t, 0x33)
 	// SystemClock: this test asserts shutdown liveness, not a timing verdict, and a
@@ -304,7 +299,7 @@ func TestSweepNoDeadlockAgainstClose(t *testing.T) {
 	}
 
 	// 1ns interval: every datagram clears the receive-sweep throttle and reaches
-	// m.mu.TryLock, maximising contention with Close's m.mu hold.
+	// m.mu.TryLock, maximising contention with Close's detach critical section.
 	m.sweepIntervalNanos.Store(1)
 
 	stop := make(chan struct{})
@@ -332,19 +327,18 @@ func TestSweepNoDeadlockAgainstClose(t *testing.T) {
 		}(dst)
 	}
 
-	// Let the readers warm up so at least one is reliably inside the sweep when Close
-	// grabs m.mu.
+	// Let the readers warm up so the sweep contends with Close's detach.
 	time.Sleep(50 * time.Millisecond)
 
 	done := make(chan error, 1)
 	go func() { done <- m.Close() }()
 	select {
 	case <-done:
-		// Close returned: no reader deadlocked on m.mu.
+		// Close returned: every reader left the retired generation.
 	case <-time.After(5 * time.Second):
 		close(stop)
 		senders.Wait()
-		t.Fatal("Close hung: a reader deadlocked on m.mu — the sweep must TryLock, not Lock")
+		t.Fatal("Close hung while retiring readers under receive-sweep contention")
 	}
 	close(stop)
 	senders.Wait()

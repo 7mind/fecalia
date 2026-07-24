@@ -34,7 +34,7 @@ import (
 //
 // Concurrency. The encoder rides the Send path, already serialized under m.mu, plus
 // a single deadline-tick goroutine that TryLocks m.mu (never blocking, so it can
-// never deadlock Close's readersWG.Wait held under m.mu — the tickLivenessFromReceive
+// never block a transport lifecycle transition on the bind lock — the tickLivenessFromReceive
 // discipline). The decoder is fed from the per-path readLoop goroutines (many
 // concurrent), so it is guarded by its own mutex, disjoint from m.mu and from the
 // resequencer's — matching the resequencer's lock discipline (never held across a

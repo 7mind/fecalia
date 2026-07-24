@@ -489,6 +489,16 @@ active-backup scheduler with pacing:
       before another PMTU attempt. PMTU does not add a second local producer,
       while reactive echo replies remain immediate. Confirm the PMTU timestamp
       begins in its selected slot (cadence wait does not inflate the RTT sample).
+- [ ] During a paced transfer, remove and re-add the standby path through the
+      normal config reload. Confirm the transfer on the retained active path
+      continues, the removed path emits no post-removal datagrams, and its
+      replacement begins with zero `wanbond_path_shaper_*` counters (a fresh
+      shaper/socket generation).
+- [ ] Cycle the edge daemon Down/Up once with pacing enabled. Confirm no send
+      remains blocked, the tunnel reconnects, and the journal contains no
+      post-close socket-write errors from the prior generation. Repeat several
+      cycles when validating a lifecycle change; goroutine count should return
+      to its pre-cycle baseline.
 
 For interpreting a transient, let `P0` denote generated-priority debt at the
 start of a send call. With one coincident post-call `Pburst=2*Lmax`, sustained

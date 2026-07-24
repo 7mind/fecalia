@@ -423,6 +423,15 @@ Common rules, either policy:
   outer PROBE/echo frames remain direct strict-priority writes and, after each
   successful write, add their exact encoded bytes to future priority debt
   without changing already-admitted deadlines.
+  Each live `(peer,path)` socket generation owns one shaper. Runtime removal,
+  failed add/promotion rollback, and daemon Down/Close stop admission and wake
+  queued sends before waiting for writers; the UDP socket closes only after
+  shaped and direct writes quiesce. A subsequent add or Up/Open receives a fresh
+  empty shaper and socket, so no prior queue or serialization deadline carries
+  across the generation boundary. A queued shaped call reports
+  `shaper.ErrClosed`; generated PMTU or direct old-generation admission reports
+  the standard closed-network error. Peer session teardown alone retains the
+  shaper because it does not replace the live uplink socket.
   If a call starts with debt `P0`, allows one coincident post-call `Pburst`, and
   generated priority remains bounded by `Rp`, then
   `Dp=(P0+Pburst)/(R-Rp)` bounds admission; the obsolete `P0/R` expression omits

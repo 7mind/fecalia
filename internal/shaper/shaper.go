@@ -432,21 +432,36 @@ func (s *Shaper) AccountPriority(size int) error {
 }
 
 func (s *Shaper) Close() error {
+	s.Stop()
+	return s.Wait()
+}
+
+// Stop atomically rejects new admission, retires every queued datagram, and
+// wakes capacity and timer waiters. It does not wait for the writer currently
+// in flight; Wait supplies that separate quiescence barrier.
+func (s *Shaper) Stop() {
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
 		for _, datagram := range s.queue {
 			s.release(datagram.class, datagram.size)
+			if datagram.batch != nil && datagram.batch.err == nil {
+				datagram.batch.err = ErrClosed
+				datagram.batch.failedIndex = datagram.index
+			}
 			datagram.done <- ErrClosed
 			close(datagram.done)
 		}
 		s.queue = nil
 		s.notifyLocked()
 	}
-	workerDone := s.workerDone
 	s.mu.Unlock()
+}
 
-	<-workerDone
+// Wait blocks until the worker and every admitted call have returned. Stop
+// must run first so no new call can race the WaitGroup barrier.
+func (s *Shaper) Wait() error {
+	<-s.workerDone
 	s.calls.Wait()
 	return nil
 }

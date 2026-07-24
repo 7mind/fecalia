@@ -10,7 +10,7 @@ import (
 // same shared sockets, each peer's receive resequencer is an INDEPENDENT release plane. Two
 // interleaved outer-seq streams stay separated (each peer's Pop yields only its own stream),
 // a Close→Open cycle re-builds EVERY bound peer's resequencer + send Codec fresh (not just
-// the primary's via promotion — the symmetry with closeSocketsLocked that a concentrator peer
+// the primary's via promotion — the symmetry with generation retirement that a concentrator peer
 // relies on across a reconnect), and a Rebaseline triggered on peer A (via the edge hub-
 // failover SetPeerRemote) leaves peer B's release point untouched — the D32-class regression,
 // now proven per-peer.

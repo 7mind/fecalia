@@ -85,15 +85,26 @@ func (m *Multipath) StartReconcileLoop(interval time.Duration) (stop func()) {
 // deferred for the next tick. A path that still cannot bind — EADDRNOTAVAIL (address
 // still not assignable) OR any other transient bind error — stays deferred and is
 // retried; a bind fault never becomes fatal to the RUNNING bond (the tunnel is already
-// up on the paths that bound). It runs entirely under m.mu, so it serializes with
-// Send/Close/AddPath/RemovePath and the path slice + scheduler mutate together, and it
+// up on the paths that bound). Membership mutation runs under m.mu and transitionMu
+// serializes it with Open/Close/AddPath/RemovePath; a failed promotion's blocking
+// shaper/socket retirement runs after m.mu is released. The path slice and scheduler
+// therefore mutate together, and it
 // is a no-op on a CLOSED bind (len(m.paths)==0) — so it races a concurrent Close
 // harmlessly (Close either ran first, and this no-ops, or runs after and joins the
 // reader this step just spawned via readersWG) — or when nothing is deferred (the
 // steady state, a single length check).
 func (m *Multipath) reconcileDeferred() {
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+
+	var retirement socketGenerationRetirement
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer func() {
+		m.mu.Unlock()
+		if err := retirement.retire(); err != nil {
+			m.log.Error("bind: deferred generation retirement failed", "err", err.Error())
+		}
+	}()
 	if len(m.paths) == 0 || len(m.deferred) == 0 {
 		return // closed, or nothing to promote
 	}
@@ -137,7 +148,7 @@ func (m *Multipath) reconcileDeferred() {
 		// below) warns again. This is keyed to the LISTEN outcome, not the promote
 		// outcome, so it clears unconditionally here — round 3 / CRITICISM 2.
 		dp.warnedUnresolvable = false
-		if err := m.promoteDeferredLocked(dp, c); err != nil {
+		if err := m.promoteDeferredLocked(dp, c, &retirement); err != nil {
 			// The bind succeeded but promotion did not (a scheduler/path index skew, or a
 			// codec build error): close the fresh socket and keep the path deferred so the
 			// next tick retries cleanly, rather than leaking the socket or half-admitting.
@@ -156,7 +167,6 @@ func (m *Multipath) reconcileDeferred() {
 					"path", dp.def.Name, "err", err.Error())
 				dp.warnedPromoteFail = true
 			}
-			_ = c.Close()
 			kept = append(kept, dp)
 			continue
 		}
@@ -184,9 +194,20 @@ func (m *Multipath) reconcileDeferred() {
 // the caller need only drop dp from m.deferred on success. On any peer's failure it rolls the
 // WHOLE fan-out back (mirroring attachSharedPathLocked) and returns the error, leaving
 // m.shared, every peer's paths, and every peer's scheduler as they were found.
-func (m *Multipath) promoteDeferredLocked(dp deferredPath, c *net.UDPConn) error {
+func (m *Multipath) promoteDeferredLocked(
+	dp deferredPath,
+	c *net.UDPConn,
+	retirement *socketGenerationRetirement,
+) (retErr error) {
 	// Large SO_RCVBUF, best-effort (kernel-capped, needs no privilege) — as in Open/AddPath.
 	_ = c.SetReadBuffer(socketRecvBuffer)
+	shared := &sharedPathState{name: dp.def.Name, src: dp.def.SourceAddr, conn: c}
+	promoted := false
+	defer func() {
+		if !promoted {
+			retirement.prepareSharedLocked(shared)
+		}
+	}()
 
 	// Locate dp's index in the durable membership so each peer's ALREADY index-aligned
 	// prober (p.probers[defIdx]) can be reused instead of minting a fresh one. It MUST be
@@ -216,14 +237,14 @@ func (m *Multipath) promoteDeferredLocked(dp deferredPath, c *net.UDPConn) error
 	// Reuse the boot prober's IMMUTABLE stamp for the DATA-frame path-id, exactly as Open
 	// and AddPath do, so DATA and PROBE agree on the wire and the promoted path is never
 	// renumbered. probers[0] is the primary's — the same dp.prober the deferred record held.
-	shared := &sharedPathState{name: dp.def.Name, id: probers[0].PathID(), src: dp.def.SourceAddr, conn: c}
+	shared.id = probers[0].PathID()
 
 	// FAN-OUT (single owner, shared with AddPath): instantiate the per-(peer,path) state for
 	// EVERY currently-bound peer, reusing each peer's resolved prober and admitting it to
 	// that peer's scheduler. attached[k] is m.peers[k]'s view of the freshly-bound socket. A
 	// failure in any peer rolls back every peer already attached, so a partial fan-out never
 	// leaks a half-admitted path.
-	attached, err := m.attachSharedPathLocked(shared, dp.def, shared.id, probers, nil)
+	attached, err := m.attachSharedPathLocked(shared, dp.def, shared.id, probers, nil, retirement)
 	if err != nil {
 		return err
 	}
@@ -235,5 +256,6 @@ func (m *Multipath) promoteDeferredLocked(dp deferredPath, c *net.UDPConn) error
 	// readersWG tracks it so a subsequent Close joins it (no goroutine leak).
 	m.readersWG.Add(1)
 	go m.readLoop(attached[0], m.deliverSignal)
+	promoted = true
 	return nil
 }

@@ -312,9 +312,11 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   so the tunnel starts using it WITHOUT a `Close→Open` restart, and the scheduler
   promotes it to active by the SAME liveness path as any runtime `AddPath`. A path
   that still cannot bind stays deferred and is retried; a path REMOVED before it binds
-  (`RemovePath`) is dropped from the deferred set and never promoted. Everything runs
-  under `m.mu`, so it serializes with `Send`/`Close`/`AddPath`/`RemovePath` and is a
-  no-op on a closed bind. **Mechanism:** a bounded periodic poll, chosen over
+  (`RemovePath`) is dropped from the deferred set and never promoted. Membership
+  publication runs under `m.mu`; the transport transition mutex serializes it with
+  `Open`/`Close`/`AddPath`/`RemovePath`, and any failed promotion's shaper/socket
+  retirement waits after `m.mu` is released. It is a no-op on a closed bind.
+  **Mechanism:** a bounded periodic poll, chosen over
   event-driven netlink route/addr subscription (`vishvananda/netlink AddrSubscribe`)
   because netlink is not an existing dependency and the deferred set is normally empty
   — so the steady-state tick is a single mutex-guarded length check. The full
@@ -368,6 +370,27 @@ admission. The currently integrated traffic classes are:
   uses the direct, strict-priority socket path. A successful receiver-visible
   write then charges its exact encoded bytes to future priority debt; a failed
   write creates no debt and already-admitted deadlines remain fixed.
+
+**Shaper/socket generation ownership (T306).** A live per-`(peer,path)` view
+owns exactly one shaper for the lifetime of the shared path socket generation.
+`Open`, runtime add, and deferred promotion create fresh shapers; runtime
+remove, failed fan-out rollback, and `Close` retire them. Close/Open and
+remove/re-add never reuse the retired queue, virtual serialization tail, timers,
+or UDP socket. A dead concentrator peer's heavy resequencer/FEC teardown is not
+a socket transition, so re-binding that peer retains its live path shapers.
+
+Retirement has two phases. Under the bind lock it first removes scheduler/path
+admission, stops each shaper (new calls and queued datagrams receive
+`shaper.ErrClosed`), closes pending generated-PMTU work (`net.ErrClosed`), and
+closes direct UDP-write admission for the shared socket. It then releases the
+bind and scheduler locks before waiting for in-flight shaper writers and direct
+PROBE/echo/PMTU writes. Only after both barriers reach quiescence does it close
+the UDP socket; `Close` then joins the readers and clears per-Open planes. A
+separate transition mutex serializes Open/Close/add/remove/deferred-promotion
+across those out-of-bind-lock waits, so a replacement generation cannot appear
+until the old socket has closed. An old reference therefore either completes
+an already-admitted write on its old socket or receives the exact close error;
+it cannot write through the replacement.
 
 **Why inner-tunnel prioritization (e.g. inner ICMP) is infeasible (Q51).** The
 three-tier model above is the full extent of frame-type-aware pacing wanbond
