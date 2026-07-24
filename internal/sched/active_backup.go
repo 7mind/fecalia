@@ -27,11 +27,13 @@ type Config struct {
 	// Pacing turns per-path send-pacing on for active-backup (defect D65). With it
 	// off the scheduler is byte-for-byte its pre-pacing self: Pick returns the active
 	// index and no frame is ever shed. With it on, each Pick of a ClassData frame
-	// consumes one token from the ACTIVE path's OWN token bucket and returns PickPaced
-	// (not the active index) when that bucket is empty; ClassControl is pacing-EXEMPT
-	// (defect D22) — it egresses spending no token and is never shed. Shaping the
-	// single active uplink to its own drain rate is what stops it self-inflicting the
-	// ~1s Starlink bufferbloat this fix targets (D65 primary fix).
+	// charges `frames` tokens (tasks:T291, decisions:K35 §3e) from the ACTIVE path's
+	// OWN token bucket — the batch is still admitted or shed as a whole (the >= 1
+	// predicate is unchanged) — and returns PickPaced (not the active index) when
+	// that bucket has no token; ClassControl is pacing-EXEMPT (defect D22) — it
+	// egresses spending no token and is never shed. Shaping the single active uplink
+	// to its own drain rate is what stops it self-inflicting the ~1s Starlink
+	// bufferbloat this fix targets (D65 primary fix).
 	Pacing bool
 	// PerPathCapacities is the PER-PATH token-bucket refill rate in frame slots per
 	// second, index-aligned to the health/priority slice (index 0 = preferred
@@ -375,24 +377,27 @@ func indexOfHealth(hs []PathHealth, h PathHealth) int {
 // against live path health and the clock. It is safe for concurrent callers.
 //
 // When pacing is configured (defect D65) it also meters the ACTIVE path's OWN token
-// bucket: a ClassData frame consumes one token from that path's bucket and Pick
-// returns PickPaced (not the active index) when it is empty; ClassControl is pacing-
-// EXEMPT (defect D22) — it egresses on the active path spending no token and is never
-// shed, so bulk overload cannot starve WireGuard rekey. Because each path has its OWN
-// BDP-sized bucket, a failover draws from the new active path's own (idle-refilled,
-// full) bucket at that path's own rate. With pacing disabled the buckets are inert and
-// this is byte-for-byte the pre-pacing behaviour (class is ignored, nothing is shed).
+// bucket: a ClassData Pick charges `frames` tokens from that path's bucket (tasks:T291)
+// — still admitted or shed as one whole batch, since the admission predicate stays
+// "bucket holds >= 1 token" — and Pick returns PickPaced (not the active index) when
+// that predicate fails; ClassControl is pacing-EXEMPT (defect D22) — it egresses on the
+// active path spending no token and is never shed, so bulk overload cannot starve
+// WireGuard rekey. Because each path has its OWN BDP-sized bucket, a failover draws
+// from the new active path's own (idle-refilled, full) bucket at that path's own rate.
+// With pacing disabled the buckets are inert and this is byte-for-byte the pre-pacing
+// behaviour (class is ignored, nothing is shed).
 //
-// frames — THE OFFERED-FRAME COUNT — IS VALIDATED AND THEN DELIBERATELY UNUSED HERE, so
-// the parameter is not silently dead: ActiveBackup runs NO offered-load meter (it has no
-// aggregation gate to feed), so the count that defect D95's frame-accurate estimator
-// exists to supply has nothing to drive in this policy. The one place it WOULD bite is
-// the D65 per-path token bucket, which still spends ONE token per admitted Pick rather
-// than `frames` — charging the bucket per frame is tasks:T291, kept deliberately
-// separate from the D95 units fix, so pacing behaviour here is unchanged by this seam.
-// The frames >= 1 caller contract is still enforced (checkPickFrames): it is the
-// interface's precondition, and a scheduler swap at the composition root must not change
-// which caller bugs are caught.
+// frames — THE OFFERED-FRAME COUNT — IS VALIDATED, THEN USED ONLY TO CHARGE PACING, NOT
+// TO METER OFFERED LOAD: ActiveBackup runs NO offered-load estimator (it has no
+// aggregation gate to feed), so the count defect D95's frame-accurate estimator exists to
+// supply has nothing to drive that side of this policy. It DOES drive the D65 per-path
+// token bucket (tasks:T291, decisions:K35 §3e): a ClassData Pick charges `frames` tokens
+// to the active path's own bucket, not one, so a caller's declared PerPathCapacities (a
+// wire-frame rate) binds the actual wire-frame egress rate rather than the Send-batch
+// rate. This is a no-op with pacing disabled (the buckets stay inert) and unchanged from
+// before T291 whenever every batch offers exactly one frame. The frames >= 1 caller
+// contract is still enforced (checkPickFrames): it is the interface's precondition, and a
+// scheduler swap at the composition root must not change which caller bugs are caught.
 func (s *ActiveBackup) Pick(class FrameClass, frames int) int {
 	checkPickFrames(frames)
 	s.mu.Lock()
@@ -409,7 +414,7 @@ func (s *ActiveBackup) Pick(class FrameClass, frames int) int {
 	}
 	p := &s.pacers[s.active]
 	p.refill(now)
-	if p.tryConsume(0) {
+	if p.tryConsume(0, frames) {
 		return s.active
 	}
 	// Healthy path, but its bucket is momentarily empty: shed this frame (PickPaced),

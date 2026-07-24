@@ -93,25 +93,52 @@ func (p *pacer) refill(now time.Time) {
 	p.lastFill = now
 }
 
-// tryConsume spends one token from path idx's bucket, reporting whether the frame
-// is admitted. With pacing disabled it always admits (the buckets are inert).
-// Caller holds the owner's lock.
+// tryConsume ADMITS OR SHEDS one whole BATCH covering `frames` offered wire frames, and
+// on admission deducts `frames` tokens from path idx's bucket. With pacing disabled it
+// always admits and spends nothing (the buckets are inert). Caller holds the owner's
+// lock.
 //
-// ONE TOKEN PER ADMITTED PICK — UNCHANGED BY THE D95 UNITS FIX, DELIBERATELY. Since D95
-// a Scheduler.Pick carries a `frames` count and the OFFERED-LOAD meter folds all of them
-// in, but this bucket is still charged exactly one token per admitted call, so an
-// admitted BATCH spends one token no matter how many wire frames it puts on the path.
-// Bringing the pacing charge into the same unit as the refill rate (CapacityFPS, a
-// wire-frame rate) is tasks:T291; it is a SEPARATE change with its own behaviour note
-// because it alters the egress rate binding, whereas the D95 fix alters only the gate's
-// numerator. The intermediate state is intentional, not half-wired — and it is inert on
-// every shipped default, all of which run pacing OFF.
-func (p *pacer) tryConsume(idx int) bool {
+// THE ADMISSION PREDICATE IS UNCHANGED BY THIS (tasks:T291): it is still "the bucket
+// holds >= 1 token", exactly as before the batch carried more than one frame. Shedding
+// stays BATCH-ATOMIC because the bind has no per-buffer shed path — Multipath.Send either
+// writes the whole batch or returns errPacerShedding for all of it (multipath.go:2703-
+// 2710) — so admission cannot be split frame-by-frame within one call even though the
+// charge now is.
+//
+// THE CHARGE IS NOW `frames` TOKENS, NOT ONE (tasks:T291, decisions:K35 §3e). Before this
+// change CapacityFPS meant two different units inside the same pacerConfig: it sized the
+// refill rate as a WIRE-frame rate (config.SizePacingFromBDP, config.go:353-367) while
+// tryConsume spent exactly one token per admitted BATCH — so an enabled pacer admitted
+// roughly the BATCH FACTOR (measured 1.52-3.07, load-dependent) times the declared link
+// bandwidth, defeating the standing-queue bound pacing exists to enforce (P0 §7). Charging
+// `frames` instead of 1 makes the charge and the refill speak the same unit, exactly as
+// D95 already did for the gate's numerator (weighted.go observeLoadLocked). This is a
+// NO-OP whenever pacing is disabled — every shipped default and the e2e fixture — because
+// the buckets are inert there; it is a LIVE rate-binding change whenever pacing is
+// enabled.
+//
+// THE BUCKET MAY GO NEGATIVE, precisely the precedent accountProbe already sets below: an
+// admitted batch larger than the remaining tokens is still let through (the predicate only
+// asked for >= 1) and drains the bucket past zero, so SUBSEQUENT batches shed until refill
+// catches up. That is by design — the bucket bounds the LONG-RUN admitted rate, not the
+// admission of any one call, exactly as CapacityFPS's doc comment already promises.
+//
+// PARITY IS CHARGED HERE BUT NEVER ADMITTED (defects:D108, narrowed but NOT closed by this
+// change). `frames` is the SAME value the D95 fix meters at the call site — len(bufs) plus
+// the FEC parity carry (multipath.go) — so once a batch carrying parity is admitted, the
+// parity shards it carried are charged to this bucket one batch late, same as the data
+// frames. But parity shards egress unconditionally (multipath.go:2769-2777, written outside
+// any admission decision) — no shed decision is ever taken FOR them; they can only drive
+// this bucket negative, the same "charged but never admitted" posture accountProbe already
+// documents for out-of-band probe frames. Closing that (charging parity AT GENERATION TIME
+// rather than one batch late through the carry) is D108's open half and stays out of scope
+// here.
+func (p *pacer) tryConsume(idx int, frames int) bool {
 	if !p.cfg.Pacing {
 		return true
 	}
 	if p.tokens[idx] >= 1 {
-		p.tokens[idx]--
+		p.tokens[idx] -= float64(frames)
 		return true
 	}
 	return false
