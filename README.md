@@ -253,16 +253,21 @@ deliberate boundaries you must plan around:
   SAME keys — under the **default `active-backup` policy** too, not only under
   `policy = "weighted"`; see [docs/design.md §Send-side
   scheduler](docs/design.md) for the per-path-vs-bottleneck sizing distinction.
-  Config load derives the live exact-byte shaper envelope (`R`, `B`, `Lmax`,
-  control reserve, and the future probe budget) and rejects an envelope that
-  cannot admit one legal datagram or whose maximum probe+echo rate consumes the
-  whole link. Non-finite inputs and byte budgets that cannot fit the platform's
-  integer byte-count domain are rejected before conversion; `Q=B+C` and the
-  maximum modeled `2*Pburst/(R-Rp)` priority bound must also fit their runtime
-  `int`/`time.Duration` representations. At runtime each
-  `(peer,path)` owns one shaper: encoded DATA and every immediate/deadline FEC
-  parity datagram consume their exact byte length, and a full bounded budget
-  backpressures the sender instead of shedding. Per-path accepted, emitted,
+  Config load derives the live exact-byte shaper envelope: wire rate `R`,
+  maximum encoded datagram `Lmax`, DATA/PARITY budget `B>=Lmax`, inner-control
+  reserve `C=Lmax`, total retained budget `Q=B+C`, and generated-priority
+  rate/burst `Rp`/`Pburst`. It rejects an envelope whose maximum probe+echo rate
+  consumes the whole link. Non-finite inputs and byte budgets that cannot fit
+  the platform's integer byte-count domain are rejected before conversion; `Q`
+  and the maximum modeled `2*Pburst/(R-Rp)` priority bound must also fit their
+  runtime `int`/`time.Duration` representations. At runtime each
+  `(peer,path)` owns one shaper. One engine `Send` selects one path, then each
+  input buffer is classified, framed, and admitted in order; an aggregate batch
+  larger than `B` streams one legal datagram at a time through pre-copy
+  backpressure. Encoded DATA and every immediate/deadline FEC parity datagram
+  consume their exact byte length. The shaper retains at most `Q` bytes plus one
+  in-flight datagram of at most `Lmax`; saturation backpressures the sender
+  without discarding ordinary traffic. Per-path accepted, emitted,
   shaper-error, and socket-error counters expose every terminal prefix. Live
   queue gauges prove `DATA<=B`, `control<=C`, and `total<=Q`; admission-wait
   counters distinguish bounded backpressure from cancellation. Accepted bytes
@@ -297,14 +302,15 @@ deliberate boundaries you must plan around:
   `EMSGSIZE` remains the expected too-large verdict.
   For existing priority debt `P0`, a coincident `Pburst`, and sustained
   generated priority bounded by `Rp<R`, admission is bounded by
-  `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; local egress is bounded by
-  `Dp+(B+C)/R+Lmax/R`, and receiver delivery adds the active resequencer hold.
+  `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; after admission, local egress adds at
+  most `Q/R+Lmax/R`, so call-to-receiver delivery is bounded by
+  `Dp+Q/R+Lmax/R` plus the active resequencer hold.
   Priority arrivals in the half-open interval `[call, call+Dp)` update the
   registered waiter's deadline under the shaper lock, even if that waiter does
   not run until the former deadline; once the deadline matures, an exact-boundary
   debit changes only future admission and cannot revoke the waiting call's
   eligibility.
-  Sustained on-demand authenticated outer CONTROL beyond the declared
+  Sustained authenticated generated outer-priority traffic beyond the declared
   `Rp`/`Pburst` model constitutes overload; no live CONTROL protocol exists.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures

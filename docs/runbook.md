@@ -315,7 +315,7 @@ hole once wrapped by the tunnel.
 ## 5. Pacing (optional — ships DISABLED, opt-in)
 
 Per-path send-pacing bounds bufferbloat under sustained load by sizing each
-uplink's pace from its bandwidth-delay product. It is **off by default**;
+uplink's exact-byte shaper from its bandwidth-delay product. It is **off by default**;
 enabling it is a deliberate opt-in and requires **operator-measured** link
 figures (wanbond does not auto-tune them). Pacing is **policy-independent**
 (defect D65): it works identically, with the same keys, under the **default
@@ -354,15 +354,35 @@ In summary:
   ```toml
   [scheduler]
   # policy defaults to "active-backup"; no need to set it
-  pacing_enabled = true          # OFF by default; sizes the pace from the links above
+  pacing_enabled = true          # OFF by default; sizes exact-byte shaping from the links above
   ```
 
-  Active-backup sizes each path's pace from **its own** declared link (a fast
-  Starlink primary is not throttled to the 5G backup's rate); weighted instead
-  sizes ONE shared pace to the slowest declared link (the bottleneck), since it
-  stripes every path at once — see [design.md §Send-side
-  scheduler](design.md) for why. To opt into weighted aggregation instead, set
-  `policy = "weighted"` alongside `pacing_enabled = true`.
+  Under either policy, each path's live byte shaper uses that path's own
+  declaration: `R=link_bandwidth/8`, `B=ceil(R*link_rtt)`, and
+  `Lmax` from the path MTU/address family. Config requires `B>=Lmax`, derives
+  `C=Lmax` and `Q=B+C`, and retains at most `Q` queued/copy-reserved bytes plus
+  one in-flight datagram of at most `Lmax`. Active-backup also retains
+  per-path frame-domain compatibility values. Weighted uses the slowest
+  declared link only for its shared offered-frame aggregation reference; that
+  reference does not admit production traffic. To opt into weighted
+  aggregation, set `policy = "weighted"` alongside `pacing_enabled = true`.
+
+- One engine batch selects one path, then each input buffer is classified,
+  framed, and admitted in order. Aggregate batches larger than `B` stream
+  through cancellable pre-copy backpressure; saturation raises admission waits,
+  not ordinary drops. DATA/PARITY and inner control keep immutable assigned
+  deadlines. Successful direct authenticated PROBE/echo writes add exact bytes
+  only to future priority debt. With starting debt `P0`, configured
+  `Pburst`, and generated priority bounded by `Rp<R`, admission is bounded by
+  `Dp=(P0+Pburst)/(R-Rp)`; call-to-receiver delivery is bounded by
+  `Dp+Q/R+Lmax/R` plus the active resequencer hold. Authenticated generated
+  traffic beyond `Rp`/`Pburst` is overload, outside that bound.
+
+- A partial writer failure reports the accepted/emitted prefix, accounts the
+  reserved failed suffix as generic or `EMSGSIZE` error bytes, and does not
+  encode the engine batch's unstarted suffix. Close/remove stops admission,
+  retires queued work, waits for shaped and direct writes, and only then closes
+  the socket; a replacement socket/shaper generation starts empty.
 
 - Verify the loaded RTT stays close to the idle RTT under sustained load — §3a
   Step 5. (A declared bandwidth with `pacing_enabled = false` is inert.)
@@ -482,22 +502,28 @@ curl -s http://127.0.0.1:9090/metrics | grep '^wanbond_path_tx_bytes_total'
 The gate for proceeding to a **supervised pilot** is deliberately **non-blocking**
 on any long soak (Q19). Two measurements are **sufficient** to enter the pilot:
 
-1. **Capped-fixture aggregation + bufferbloat (netns, W2).** The bandwidth-capped
-   netns fixture builds a real standing queue and measures aggregation and
-   bufferbloat under it — `go test -tags e2e -run TestFixtureImpairment ./test/e2e`
-   (see [install.md §3a Option A](install.md#3a-tuning-per-link-bandwidth-and-pacing)).
-   It runs in the privileged netns tier.
+1. **Netns functional/counter gate (W2).** The privileged fixture exercises
+   path selection, bounded queue/counter invariants, FEC, and failover —
+   `go test -tags e2e -run TestFixtureImpairment ./test/e2e`. It is CPU/PPS-bound:
+   its throughput and RTT output is report-only and cannot establish real-link
+   pacing or bufferbloat thresholds.
 2. **Report-only real-link smoke / baseline (W4).** `just p0-baseline` brings the
    tunnel up over the real internet between the two standing hosts and records the
    aggregation ratio, loaded-vs-idle RTT, and link/hub-failover recovery gaps — see
    [manual-checklist.md §P0 automated real-link baseline](manual-checklist.md#p0--automated-real-link-baseline-realhosts-tier).
 
-Together these two are **enough to proceed to a supervised pilot.** The real-link
-numbers are **INFORMATIONAL (report-only)** — no Mbit/s or millisecond threshold is
+Together these two are **enough to proceed to a supervised pilot.** The legacy
+`just p0-baseline` numbers are **INFORMATIONAL (report-only)** — no Mbit/s or millisecond threshold is
 a hard pass/fail gate; a human reads them and makes the go/no-go call. A non-zero
 exit from `just p0-baseline` means the run itself could not complete (a host was
 unreachable or the tunnel never came up), **not** that a performance number missed a
 target.
+
+That report-only smoke is distinct from the current-shaper D112/D108 closure
+gate. The synchronized RPi4-to-o3 T304 procedure in
+[manual-checklist.md §D65](manual-checklist.md#d65--pacing-field-validation-bufferbloat-control)
+uses predeclared paired-cycle thresholds for rate, loss, goodput, RTT,
+retransmits, exact-byte reconciliation, and restoration.
 
 The **longer soak runs DURING the supervised pilot, not as a pre-gate.** The
 reference short soak (`TestRealSoakShort`, ~2.5 min across a WG rekey — see the
@@ -508,11 +534,12 @@ never a blocker for entering the pilot.
 
 ## Appendix — reference figures measured on the test hosts
 
-These numbers were **measured on this project's validation hosts** (edge
+These historical pre-T299 numbers were **measured on this project's validation hosts** (edge
 `llm-ubuntu-0`, amd64, NAT'd behind a home router ↔ public aarch64
-concentrator `o3.7mind.io`) during pilot-readiness validation. They are
-**illustrative, not guarantees** — your links will differ. Measure your own per
-§5 (pacing) and the §6 health checks above.
+concentrator `o3.7mind.io`) during pilot-readiness validation. They came from
+the retired frame-token policer and do not validate the current exact-byte
+shaper. They are **illustrative, not guarantees** — your links will differ.
+Measure your own per §5 (pacing) and the §6 health checks above.
 
 | Metric (measured on test hosts)          | Value      |
 |------------------------------------------|------------|

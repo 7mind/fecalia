@@ -148,9 +148,9 @@ func (p SchedulerPolicy) valid() bool {
 // Weighted-aggregation policy defaults (T21). They are applied when [scheduler]
 // selects the weighted policy but leaves a knob at its zero value, so a minimal
 // `policy = "weighted"` block is usable without hand-tuning every threshold. They
-// are conservative bring-up values; the empirical per-path pace is sized from a
-// measured BDP in a bandwidth-capped fixture (P0 findings §7, deferred to T35/T23),
-// so the shipped default leaves pacing DISABLED and only bounds distribution.
+// are conservative bring-up values; production byte shaping is sized from an
+// operator-declared per-link BDP, so the shipped default leaves pacing DISABLED
+// and only bounds weighted distribution.
 const (
 	// defaultPerPathCapacityFPS is the reference per-path capacity, in OFFERED WIRE
 	// FRAMES per second on that one path (inner data frames PLUS any FEC parity
@@ -212,11 +212,12 @@ type SchedulerConfig struct {
 	Policy SchedulerPolicy `toml:"policy"`
 
 	// --- Policy-independent pacing surface (D65, T152) ---
-	// These size egress send-pacing under BOTH policies. Under weighted, a declared
-	// link_bandwidth sizes the SHARED bottleneck scalar (PerPathCapacityFPS/
-	// PacingBurstFrames); under active-backup it sizes the PER-PATH vectors
-	// (PerPathCapacities/PacingBursts), since only one path egresses at a time and a
-	// fast active primary must pace at its OWN drain rate, not the slowest link's.
+	// These size exact-byte egress shaping under BOTH policies. Every live path
+	// shaper uses that path's own declared link. Under weighted, a declared
+	// link_bandwidth additionally sizes the SHARED bottleneck frame-domain
+	// compatibility scalar (PerPathCapacityFPS/PacingBurstFrames); under
+	// active-backup it sizes the PER-PATH compatibility vectors
+	// (PerPathCapacities/PacingBursts).
 
 	// PacingEnabled turns exact-byte per-(peer,path) send shaping on. When false the
 	// bind preserves its direct batch-framing/socket-write path (a documented no-op —
@@ -314,11 +315,13 @@ type BDPSizing struct {
 type PathShaperConfig struct {
 	// RateBytesPerSecond is the declared sustained wire-byte rate R.
 	RateBytesPerSecond float64
-	// DataBurstBytes is the DATA allowance B. It is always at least one maximum
-	// legal encoded datagram, so an otherwise legal write can never be permanently
-	// inadmissible solely because it exceeds the shaper's burst.
+	// DataBurstBytes is the retained DATA/PARITY budget B. It is always at least
+	// one maximum legal encoded datagram, so an otherwise legal write can never
+	// be permanently inadmissible solely because it exceeds the shaper's burst.
 	DataBurstBytes int
-	// ControlReserveBytes is the priority-class reserve C, exactly one Lmax.
+	// ControlReserveBytes is the inner-control reserve C, exactly one Lmax. The
+	// total retained budget is Q=B+C; the serial writer may additionally hold one
+	// in-flight datagram of at most Lmax.
 	ControlReserveBytes int
 	// MaxEncodedDatagramBytes is Lmax, the largest UDP payload admitted by this
 	// path's validated outer MTU and address-family framing.
@@ -652,10 +655,11 @@ type Path struct {
 	// DestAddrRaw is the TOML string form of DestAddr; parsed in normalize.
 	DestAddrRaw string `toml:"dest_addr"`
 	// LinkBandwidthBitsPerSec is the OPERATOR-DECLARED bottleneck bandwidth of this
-	// uplink in bits/s, parsed from LinkBandwidthRaw in normalize. It sizes the egress
-	// pace from the bandwidth-delay product (SizePacingFromBDP) when pacing is ENABLED
-	// under BOTH the weighted policy (shared bottleneck scalar) and the default active-
-	// backup policy (per-path capacity for the active link) — T53/T152, Q20. It is
+	// uplink in bits/s, parsed from LinkBandwidthRaw in normalize. It sizes that
+	// path's live exact-byte rate R and, with LinkRTT, DATA/PARITY budget B when
+	// pacing is ENABLED under either policy. It also supplies the frame-domain
+	// scheduler compatibility values (a shared bottleneck reference under weighted,
+	// per-path vectors under active-backup) — T53/T152/T299, Q20. It is
 	// OPERATOR-DECLARED, not runtime-measured — wanbond never auto-tunes it live. Zero
 	// means "not declared": under weighted the synthetic default pace is kept; under
 	// active-backup pacing then requires the explicit per_path_capacity_fps knobs.
@@ -665,8 +669,8 @@ type Path struct {
 	// "bps"). Parsed in normalize; a non-positive or unparseable value fails fast.
 	LinkBandwidthRaw string `toml:"link_bandwidth"`
 	// LinkRTT is the OPERATOR-DECLARED baseline RTT of this uplink, parsed from
-	// LinkRTTRaw in normalize. It is the delay term of the bandwidth-delay-product pace
-	// burst (one RTT of in-flight frames); required (> 0) when LinkBandwidth is set and
+	// LinkRTTRaw in normalize. It is the delay term of the bandwidth-delay-product
+	// DATA/PARITY budget B=ceil(R*RTT); required (> 0) when LinkBandwidth is set and
 	// pacing is enabled under EITHER the weighted or the active-backup policy, ignored
 	// otherwise.
 	LinkRTT time.Duration `toml:"-"`
@@ -1403,10 +1407,11 @@ func (c *Config) declaredLinkBandwidths() int {
 	return declared
 }
 
-// deriveWeightedBottleneckPacing sizes the weighted scheduler's SHARED per-path pace to
-// the BOTTLENECK (slowest) declared link — the pre-T152 behaviour, byte-identical: the
-// weighted scheduler applies one reference capacity to every path, so the shared pace
-// must not exceed the slowest link's capacity.
+// deriveWeightedBottleneckPacing sizes the weighted scheduler's SHARED
+// frame-domain compatibility reference to the BOTTLENECK (slowest) declared link
+// — the pre-T152 behavior, byte-identical. The aggregation gate applies one
+// reference capacity to every path, so it must not exceed the slowest link's
+// capacity. Each live exact-byte shaper is derived separately from its own path.
 func (c *Config) deriveWeightedBottleneckPacing() error {
 	s := &c.Scheduler
 	declared := c.declaredLinkBandwidths()

@@ -402,7 +402,7 @@ within transport frames a keepalive-sized one is the only case that resolves
 back to `ClassControl` — a fixed-size keepalive is otherwise indistinguishable
 from a small tunnelled payload. Everything else that traverses the tunnel,
 including an inner ICMP echo (or any other inner flow) carried inside an
-encrypted WireGuard transport payload, is opaque `ClassData` to the pacer: the
+encrypted WireGuard transport payload, is opaque `ClassData` to the shaper: the
 ciphertext carries no protocol, size, or offset signal until it is decrypted
 at the OTHER end of the WireGuard tunnel — well past wanbond's pacing point.
 Giving inner ICMP (or any inner flow) its own priority lane would require
@@ -411,7 +411,7 @@ architecture (wanbond is designed to carry the inner tunnel opaquely, not to
 terminate or inspect it). The only wanbond-addressable priority signal below
 `ClassControl` is `frame.KindProbe` (wanbond's own generated PROBE frames,
 which use the direct generated-priority path and exact post-write byte
-accounting) — there is no path to prioritizing traffic the pacer cannot see
+accounting) — there is no path to prioritizing traffic the shaper cannot see
 inside the tunnel.
 
 **Motivation (defects D65/D112).** In the pre-T299 implementation, `Send` wrote
@@ -516,12 +516,15 @@ conversion unchanged: `R = per_path_capacity_fps * 1500` and
 T299 completes the DATA/PARITY ownership cut. `device.Up` consumes
 `PerPathShapers`, creates one primitive per `(peer,path)`, and disables the
 legacy scheduler token policer atomically. `Multipath.Send` classifies every
-input before sequence/FEC mutation, performs one `PickUnpaced` event, and
-streams each encoded DATA datagram plus immediately produced parity into that
-path's shaper. Deadline-produced parity uses the same selected path shaper.
+input buffer before sequence/FEC mutation, performs one `PickUnpaced` selection
+for the engine batch, and then frames and admits one input buffer at a time.
+Each encoded DATA datagram and any parity immediately produced by that buffer
+enter the selected path's shaper before the next input is encoded.
+Deadline-produced parity uses the same selected path shaper.
 Writer failure returns the terminal error, reports the accepted versus
 kernel-emitted prefix, and leaves the unstarted suffix unencoded; later calls
-may continue. Close drains/stops each shaper before closing its UDP socket.
+may continue. Close stops admission, retires queued work, and waits for the
+in-flight writer before closing its UDP socket.
 T300 completes generated-priority integration: authenticated outer PROBE and
 reflected echo frames bypass retained DATA, write directly to the selected path
 socket, and call `AccountPriority` with the exact encoded length only after a
@@ -674,16 +677,18 @@ milliseconds, e.g. `"21ms"`). The idle RTT is the baseline; pacing bounds the
 queue so RTT under load stays near the idle value, preventing bufferbloat
 (excessive delay inflation). If heterogeneous links are bonded (different
 bandwidths), the operator declares all of them; under weighted the scheduler
-uses the bottleneck (slowest link) to size the shared per-path pace, because
-every path may carry traffic simultaneously. Under active-backup only one path
-egresses at a time, so each path's bucket is instead sized from its OWN
-declared link — a fast active primary is not held to a slower backup's rate.
+uses the bottleneck (slowest link) only for the shared frame-domain aggregation
+reference, because every path may carry traffic simultaneously; each live byte
+shaper still uses its own path's declared `R` and `B`. Under active-backup only
+one path egresses at a time, and both the compatibility vector and live shaper
+use that path's OWN declared link — a fast active primary is not held to a
+slower backup's rate.
 
 **Conservative sizing.** The wire-frame size used in the denominator is the full
 path MTU (1500 bytes), the conservative floor for frame size. This produces a
 frame rate that never over-paces a path; smaller average frames (headers,
 fragmentation) would permit higher rates, but taking the worst case (full MTU)
-ensures the pacer does not let the link overfill. Measurement on real links is
+ensures the shaper does not let the link overfill. Measurement on real links is
 essential to validate that the declared bandwidth and RTT reflect the actual
 link properties; the netns fixture is CPU-bound and cannot build the standing
 queues pacing is designed to control (see [manual-checklist.md §P0](manual-checklist.md#p0--spike--baseline)).

@@ -27,6 +27,15 @@ type AddressingSnapshot struct {
 
 // ShaperSnapshot is the JSON encoding of a live per-path exact-byte shaper.
 // It is omitted from a path when shaping is disabled.
+// Queue fields retain at most B DATA/PARITY bytes, C=Lmax inner-control bytes,
+// and Q=B+C total bytes; InFlightBytes is one <=Lmax writer datagram outside Q.
+// Scheduled deadlines remain immutable, and successful authenticated outer
+// PROBE/echo writes add only future priority debt. AcceptedBytes linearizes at
+// pre-copy reservation, while EmittedBytes counts successful shaped UDP writes.
+// PriorityDebtBytes is P0 and PriorityDelayBoundSeconds is
+// Dp=(P0+Pburst)/(R-Rp). Async error counts represent actual writer calls; their
+// byte fields also include reserved unstarted suffix bytes retired by a failed
+// batch.
 type ShaperSnapshot struct {
 	QueueDataBytes             int     `json:"queueDataBytes"`
 	QueueControlBytes          int     `json:"queueControlBytes"`

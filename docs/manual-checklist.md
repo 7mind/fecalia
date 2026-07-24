@@ -368,113 +368,57 @@ no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#
       (instructions in [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing));
       these become the basis for pacing config (`link_bandwidth` / `link_rtt`).
 
-### Test 1: Three-way iperf3 attribution (no pacing)
+### T304 synchronized RPi4-to-o3 field acceptance
 
-This test measures throughput under three distinct tunnel configurations to
-isolate wanbond's egress path (the pacing effect) from network capacity:
+Run on the RPi4 edge with Starlink active, 5G standby, active-backup policy,
+and adaptive FEC enabled. Preserve the starting state before the first cycle:
 
-#### 1a. Direct WAN, no tunnel
+- [ ] Record the edge and o3 commit IDs, binary hashes, config hashes, service
+      states, and the original pacing declarations. The last step must restore
+      and re-hash this exact state.
+- [ ] Use one 30-second edge-to-o3 TCP upload per tunnel leg, discarding the
+      first 5 seconds as warmup. During the whole leg collect loaded ping,
+      retransmits, FEC counters, and every `wanbond_path_shaper_*` series at a
+      synchronized start and end. Compute steady rate from the final 20 seconds.
+- [ ] Run three cycles with condition order rotated to reduce order bias:
 
-Baseline: throughput on each uplink without wanbond. Brings one uplink down to
-measure each independently:
+      | cycle | first | second | third |
+      |---|---|---|---|
+      | 1 | pacing off | `8Mbit` | `5Mbit` |
+      | 2 | `8Mbit` | `5Mbit` | pacing off |
+      | 3 | `5Mbit` | pacing off | `8Mbit` |
 
-**Concentrator (server, for both sub-measurements):** `iperf3 -s -p 5201`
+      Pacing-off uses the direct complete-batch path. Each paced condition sets
+      the active Starlink `link_bandwidth` to the named cap and keeps valid
+      declarations on every path; wait for both paths and the WG session to
+      return UP before the 5-second warmup.
+- [ ] Immediately before and after every `8Mbit` or `5Mbit` tunnel leg, stop
+      tunnel load and measure direct Starlink upload to o3 in the same direction.
+      Treat that bracket as a valid raw pair only when **both** raw measurements
+      are at least `1.03 * cap` and
+      `abs(raw_before-raw_after)/max(raw_before,raw_after) <= 0.15`.
+      A raw-invalid interval is inconclusive and cannot close the criterion.
+      Repeat as needed until at least **two valid raw pairs per cap** remain.
+- [ ] Capture `iperf3 --json` receiver bytes/retransmits and timestamped
+      `ping -i 0.1` samples so loaded RTT p95 and retransmits per GiB of receiver
+      payload can be calculated, rather than inferred from summary averages.
 
-**Starlink only (5G disabled or down):**
-- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20`
-      (FORWARD mode — edge SENDS — so this measures edge UPLOAD/egress, the same
-      direction wanbond paces and that legs 1b/1c measure; adjust port if the
-      concentrator listens elsewhere)
-- [ ] Record the **edge upload throughput** (edge's iperf3 summary). This is the
-      Starlink solo UPLOAD capacity — the direction the pacer shapes.
+For each cap, at least two raw-valid paired cycles must satisfy all of these
+predeclared gates:
 
-**5G only (Starlink disabled or down):**
-- [ ] Edge: `iperf3 -c <concentrator-public-ip> -p 5201 -t 20`
-- [ ] Record the **edge upload throughput**. This is the 5G solo upload capacity.
-
-Record both as `T_starlink_direct` and `T_5g_direct` (Mbit/s, UPLOAD direction — so
-they are valid baselines for the upload-shaped tunnel legs 1b/1c).
-
-#### 1b. Through tunnel, pacing OFF (default)
-
-Single-flow TCP through the tunnel with pacing disabled (the default behavior
-that exhibits D65 bufferbloat). Both uplinks up, active-backup scheduler:
-
-- [ ] Edge: `systemctl stop wanbond-edge` (stop the daemon if running from pacing-enabled
-      config, or confirm config has `pacing_enabled = false` / omitted).
-- [ ] Edge: Verify config `[scheduler]` does NOT contain `pacing_enabled = true`
-      and NO `link_bandwidth` / `link_rtt` are declared on `[[paths]]` blocks:
-      ```sh
-      grep -A 5 '\[scheduler\]' /etc/wanbond/edge.toml
-      grep 'link_bandwidth\|link_rtt' /etc/wanbond/edge.toml
-      ```
-      (should show nothing for pacing-related lines, or `pacing_enabled = false`).
-- [ ] Edge: `systemctl start wanbond-edge`; wait for tunnel up (journal shows both
-      paths `up`), then `ping -c 3 10.77.0.1` succeeds.
-- [ ] Concentrator: `iperf3 -s -B 10.77.0.1`
-- [ ] Edge: `iperf3 -c 10.77.0.1 -t 30` (30-second single-flow TCP, allows queue to
-      build to steady state)
-- [ ] Record the **mean throughput** (final summary line of iperf3 output).
-      Record as `T_tcp_pacing_off` (Mbit/s).
-- [ ] In a separate terminal on edge, while iperf3 is running:
-      `ping -i 0.1 10.77.0.1 | tee ping-pacing-off.txt`
-      Let it run for the full iperf3 duration, then note the **min/avg/max/stddev** RTT.
-      Record as `RTT_pacing_off` (ms, especially the **avg** and how much it increased
-      from idle baseline).
-- [ ] On edge, while iperf3 is still running, read retransmits:
-      ```sh
-      watch -n 1 'ss -i | grep -A 1 10.77.0.1'
-      ```
-      Note the `Recv-Q`, `Send-Q`, and retransmit count. Record the peak retransmit
-      count observed as `Retrans_pacing_off`.
-
-#### 1c. Through tunnel, pacing ON
-
-Single-flow TCP through the tunnel with pacing enabled. This test uses the
-same topology but with pacing active, demonstrating the fix. Both uplinks up,
-active-backup scheduler with pacing:
-
-- [ ] Edge: `systemctl stop wanbond-edge`
-- [ ] Edge: Update the edge config to enable pacing and declare link properties.
-      Edit `/etc/wanbond/edge.toml`, find the `[scheduler]` block and add
-      `pacing_enabled = true`, then add `link_bandwidth` and `link_rtt` to each
-      `[[paths]]` block:
-      ```toml
-      [scheduler]
-      pacing_enabled = true
-      
-      [[paths]]
-      name = "starlink"
-      source_addr = "192.168.1.10"          # adjust to your interface
-      link_bandwidth = "50Mbit"               # from §Setup measurement
-      link_rtt = "21ms"                       # from §Setup measurement
-      
-      [[paths]]
-      name = "5g"
-      source_addr = "192.168.2.10"           # adjust to your interface
-      link_bandwidth = "10Mbit"               # adjust per your measurement
-      link_rtt = "45ms"                       # adjust per your measurement
-      ```
-      (Use your actual measured values; values shown are placeholders.)
-- [ ] Edge: `systemctl start wanbond-edge`; wait for tunnel up.
-      Verify pacing loaded without errors:
-      ```sh
-      journalctl -u wanbond-edge -n 20 | grep -E 'config|pacing|Pacing'
-      ```
-      Should see `config loaded` or `config reloaded` with no errors.
-- [ ] Concentrator: `iperf3 -s -B 10.77.0.1`
-- [ ] Edge: `iperf3 -c 10.77.0.1 -t 30` (same 30-second single-flow TCP)
-- [ ] Record the **mean throughput** from the final summary. Record as
-      `T_tcp_pacing_on` (Mbit/s).
-- [ ] In a separate terminal on edge, while iperf3 is running:
-      `ping -i 0.1 10.77.0.1 | tee ping-pacing-on.txt`
-      Let it run for the full iperf3 duration, then note the **min/avg/max/stddev** RTT.
-      Record as `RTT_pacing_on` (ms, note the **avg** and bufferbloat delta from idle).
-- [ ] On edge, while iperf3 is still running:
-      ```sh
-      watch -n 1 'ss -i | grep -A 1 10.77.0.1'
-      ```
-      Note retransmits. Record the peak retransmit count as `Retrans_pacing_on`.
+- [ ] Over each paced leg's final 20 seconds, total outer egress — shaped
+      emitted bytes plus successful direct outer-priority bytes — stays within
+      **±5%** of the declared cap.
+- [ ] No ordinary queue loss occurs: no scheduler-shedding record appears, and
+      deltas for admission-canceled datagrams, terminal shaped-call errors, and
+      asynchronous generic/`EMSGSIZE` writer errors are all zero.
+- [ ] TCP receiver goodput is at least **70%** of emitted DATA bytes. Reconcile
+      DATA, FEC parity, inner control, and direct outer-priority bytes rather
+      than treating parity as application goodput.
+- [ ] Each paced loaded-RTT p95 is at most **60%** of its cycle's unpaced
+      loaded-RTT p95.
+- [ ] Across the retained valid runs, median retransmits/GiB at `5Mbit` are at
+      most **1.25×** median retransmits/GiB at `8Mbit`.
 - [ ] While the paced upload fills the DATA budget, confirm every configured
       path remains live and
       `wanbond_path_probe_send_errors_total` does not increase. Generated
@@ -499,9 +443,15 @@ active-backup scheduler with pacing:
       returns no series. Enable pacing and confirm the series appear for each
       paced path with fixed `path` (and, where applicable, `peer`) labels.
 - [ ] During a paced saturated transfer, confirm
+      `shaper_data_budget_bytes >= shaper_max_datagram_bytes` (`B>=Lmax`),
+      `shaper_control_reserve_bytes = shaper_max_datagram_bytes` (`C=Lmax`),
+      and `shaper_queue_budget_bytes =
+      shaper_data_budget_bytes + shaper_control_reserve_bytes` (`Q=B+C`).
+      Also confirm
       `shaper_queue_data_bytes <= shaper_data_budget_bytes`,
       `shaper_queue_control_bytes <= shaper_control_reserve_bytes`, and
-      `shaper_queue_bytes <= shaper_queue_budget_bytes`. At full B/Q,
+      `shaper_queue_bytes <= shaper_queue_budget_bytes`, with
+      `shaper_queue_bytes + shaper_in_flight_bytes <= Q+Lmax`. At full B/Q,
       `shaper_admission_waits_total` and
       `shaper_admission_wait_seconds_total` should rise while asynchronous
       generic/`EMSGSIZE` errors and canceled datagrams remain flat.
@@ -531,11 +481,13 @@ For interpreting a transient, let `P0` denote generated-priority debt at the
 start of a send call. With one coincident post-call `Pburst=2*Lmax`, sustained
 generated priority no greater than `Rp=Pburst/200ms`, and configured byte rate
 `R>Rp`, admission is bounded by
-`Dp=(P0+Pburst)/(R-Rp)` (not `P0/R`). With `C=Lmax` and `Q=B+C`, local egress is
-bounded by `Dp+Q/R+Lmax/R`; receiver-visible delivery additionally includes the
-active resequencer hold for a missing lower outer sequence. These bounds cover
-the built-in PROBE/echo producer, including PMTU probes that occupy ordinary
-local cadence slots. Priority arrivals in the half-open interval
+`Dp=(P0+Pburst)/(R-Rp)` (not `P0/R`). Once admitted, local egress adds at most
+`Q/R+Lmax/R`. Therefore call-to-receiver delivery is bounded by
+`Dp+Q/R+Lmax/R` plus the active resequencer hold for a missing lower outer
+sequence. Record any observed inner-control call and check it against that
+complete bound. These bounds cover the built-in PROBE/echo producer, including
+PMTU probes that occupy ordinary local cadence slots. Priority arrivals in the
+half-open interval
 `[call, call+Dp)` update the registered waiter under the shaper lock even when
 its goroutine does not observe the change until the former deadline; once it
 matures, an exact-boundary debit changes future reservations but cannot revoke
@@ -544,55 +496,36 @@ step. Do not rely on these bounds if a future authenticated outer CONTROL
 producer sustains traffic beyond the declared `Rp`/`Pburst` model; that condition
 constitutes explicit overload.
 
-### Expected observations (D65 validation)
+### T304 result record
 
-Record your measurements in the table below. These values define success: pacing
-enables single-flow TCP to saturate toward the link's true capacity (UDP goodput),
-loaded RTT stays near idle baseline (no standing queue), and retransmits drop.
+Record every cycle, including invalid raw brackets; do not silently discard an
+interval. For each leg retain the raw before/after values, raw-valid verdict,
+final-20-second outer rate, receiver goodput/emitted-DATA ratio, loaded RTT p95,
+retransmits/GiB, queue maxima, error/cancellation deltas, and DATA/parity/
+priority reconciliation. Summarize how many raw-valid pairs remain at each cap
+and the medians used for the `5Mbit` versus `8Mbit` retransmit comparison.
 
-| Metric | Pacing OFF | Pacing ON | Expected (pre-fix baseline) | Status |
-|--------|-----------|-----------|-------|--------|
-| **Single-flow TCP (Mbit/s)** | `T_tcp_pacing_off` | `T_tcp_pacing_on` | OFF: ~3.67 (bufferbloated); ON: approaches `T_starlink_direct` (~6.9 in D65 pre-fix test) | ✓ if ON ≥ 1.5× OFF |
-| **Idle RTT (ms, baseline)** | — | — | (from ping before iperf3, e.g. ~21 ms) | — |
-| **Loaded RTT (ms, during iperf3)** | `RTT_pacing_off` | `RTT_pacing_on` | OFF: inflates to ~1000+ ms (standing queue); ON: stays within 5–10 ms of idle | ✓ if ON is close to idle |
-| **Loaded RTT delta (Δ, ms)** | `RTT_pacing_off - idle` | `RTT_pacing_on - idle` | OFF: ~980 ms; ON: ~5 ms | ✓ if ON ≪ OFF |
-| **Retransmits (peak count)** | `Retrans_pacing_off` | `Retrans_pacing_on` | OFF: ~13 per 10s; ON: <1 per 10s | ✓ if ON ≪ OFF |
-
-### Interpretation
-
-- **TCP throughput:** If pacing ON (`T_tcp_pacing_on`) is significantly higher
-  than pacing OFF, and approaches the measured UDP goodput or solo-uplink capacity,
-  pacing is working — bufferbloat was indeed capping the flow.
-- **RTT inflation:** If loaded RTT stays near idle under pacing ON, the queue is
-  bounded as designed. If it still inflates to ~1s under pacing ON, the declared
-  `link_bandwidth` or `link_rtt` may be incorrect (re-measure per
-  [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)).
-- **Retransmit drop:** Fewer retransmits under pacing ON indicate a more stable path
-  (no TCP timeout storms from queue delay). Compare counts, not just raw numbers.
+The field gate passes only when at least two raw-valid pairs per cap meet every
+threshold above. A below-cap or unstable raw bracket is **inconclusive**, not a
+product failure and not a passing sample.
 
 ### Record and close-out
 
 - [ ] Date: _____________
-- [ ] `wanbond version`: _____________
-- [ ] Build (`git log --oneline -1`): _____________
+- [ ] Starting edge/o3 commits, binary hashes, config hashes, service states:
+      _____________
 - [ ] Idle RTT per uplink (from Step 1 measurement): _____________
 - [ ] Measured throughput per uplink (from Step 1 measurement): _____________
-- [ ] Test 1a (direct WAN, no tunnel):
-  - Starlink direct: _____________
-  - 5G direct: _____________
-- [ ] Test 1b (through tunnel, pacing OFF):
-  - Single-flow TCP: _____________
-  - Idle RTT: _____________
-  - Loaded RTT: _____________
-  - Retransmits: _____________
-- [ ] Test 1c (through tunnel, pacing ON):
-  - Single-flow TCP: _____________
-  - Idle RTT: _____________
-  - Loaded RTT: _____________
-  - Retransmits: _____________
+- [ ] Cycle 1 (`off -> 8 -> 5`) report/artifact path: _____________
+- [ ] Cycle 2 (`8 -> 5 -> off`) report/artifact path: _____________
+- [ ] Cycle 3 (`5 -> off -> 8`) report/artifact path: _____________
+- [ ] Valid raw pairs: `8Mbit` _____ / `5Mbit` _____ (each must be >=2).
+- [ ] Threshold table and exact-byte reconciliation: PASS / FAIL / INCONCLUSIVE
+- [ ] Restore original binaries/configs/service states on edge and o3; record
+      final hashes and confirm they equal the starting hashes: _____________
 - [ ] Go/no-go decision:
-  - Bufferbloat controlled (loaded RTT ≈ idle)? YES / NO
-  - TCP throughput improved with pacing? YES / NO
-  - Configuration valid (no load errors)? YES / NO
+  - T304 exact field gate: PASS / FAIL / INCONCLUSIVE
+  - Configuration/envelope valid (`B>=Lmax`, `C=Lmax`, `Q=B+C`,
+    `Rp<R`, exact `Pburst`/`P0`/`Dp`): YES / NO
   - Proceeding with pacing enabled for field deployment? YES / NO
   - Notes: _____________

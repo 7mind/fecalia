@@ -419,6 +419,12 @@ Common rules, either policy:
   peer-requested reactive echo remains immediate. PMTU timestamps start in the
   selected slot, so cadence waiting does not inflate RTT. Config load requires
   `Rp<R`.
+  With DATA/PARITY budget `B>=Lmax` and total retained budget `Q=B+C`, a live
+  shaper holds at most `Q` retained bytes plus one writer-in-flight datagram of
+  at most `Lmax` bytes. One engine batch selects one path, then classifies,
+  frames, and admits each input buffer in order. An aggregate larger than `B`
+  therefore streams one legal datagram at a time through cancellable pre-copy
+  backpressure instead of requiring the whole batch to fit.
   The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
   and all immediate and deadline-produced FEC parity by exact byte length. Inner
   handshake/cookie/keepalive frames use `C=Lmax` one buffer at a time but remain
@@ -445,8 +451,9 @@ Common rules, either policy:
   if its goroutine observes that update only at the former deadline; after it
   matures, an exact-boundary debit affects future reservations but cannot revoke
   this call's admission eligibility. With `Q=B+C`, local egress is bounded by
-  `Dp+Q/R+Lmax/R`; receiver delivery additionally includes the active
-  resequencer hold. Built-in PMTU discovery remains inside this model because
+  `Dp+Q/R+Lmax/R`; after admission alone, the local component is
+  `Q/R+Lmax/R`. Receiver delivery additionally includes the active resequencer
+  hold. Built-in PMTU discovery remains inside this model because
   it occupies periodic local probe slots. Sustained authenticated on-demand
   outer CONTROL beyond this `Rp`/`Pburst` model constitutes overload and
   invalidates the bound; no live outer CONTROL protocol currently exists.
@@ -1218,9 +1225,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   ends. One obfuscation engine per process.
 - **`link_bandwidth` + `link_rtt` are a pair.** Both-or-neither, and
   **all-or-nothing across every path**: declare on every `[[paths]]` block or
-  none (under weighted the shared pace is sized to the slowest declared link;
-  under active-backup each path is sized from its own — either way undefined
-  under a partial declaration). They take effect **only** with
+  none. Under weighted, only the shared frame-domain aggregation reference uses
+  the slowest declared link; every live byte shaper uses its own path's
+  `link_bandwidth`/`link_rtt`. Under active-backup both the compatibility vector
+  and live shaper use each path's own declaration. Either model is undefined
+  under a partial declaration. They take effect **only** with
   `pacing_enabled = true`, under **either** `scheduler.policy` (pacing is
   policy-independent, D65/T152/T153); otherwise a declared bandwidth is inert.
   When active they are **mutually exclusive** with the raw

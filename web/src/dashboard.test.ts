@@ -258,9 +258,20 @@ describe('mountDashboard', () => {
     const cards = container.querySelectorAll('[data-testid="path-card"]');
     expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('100B DATA');
     expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('120B total');
-    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('1.6KB Q');
+    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('50B in flight');
+    const envelope = cards[0].querySelector('[data-testid="path-shaper-envelope"]')?.textContent;
+    expect(envelope).toContain('1.5KB B');
+    expect(envelope).toContain('100B C');
+    expect(envelope).toContain('1.6KB Q');
+    expect(envelope).toContain('100B Lmax');
+    expect(cards[0].textContent).toContain('50B P0');
+    expect(cards[0].textContent).toContain('2.0ms Dp');
+    expect(cards[0].textContent).toContain('977KB/s R');
+    expect(cards[0].textContent).toContain('1000B/s Rp');
+    expect(cards[0].textContent).toContain('100B Pburst');
     expect(cards[0].textContent).toContain('3 waits');
-    expect(cards[0].textContent).toContain('0 EMSGSIZE');
+    expect(cards[0].textContent).toContain('0 generic (0B)');
+    expect(cards[0].textContent).toContain('0 EMSGSIZE (0B)');
     expect(cards[1].querySelector('[data-testid="path-shaper-queue"]')).toBeNull();
   });
 

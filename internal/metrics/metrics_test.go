@@ -83,30 +83,30 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 		want float64
 	}
 	contracts := []metricContract{
-		{MetricShaperQueueDataBytes, "Current DATA/PARITY bytes reserved in the exact-byte shaper queue, including pending-copy placeholders.", dto.MetricType_GAUGE, 1},
-		{MetricShaperQueueControlBytes, "Current inner-control bytes reserved in the exact-byte shaper queue, including pending-copy placeholders.", dto.MetricType_GAUGE, 2},
-		{MetricShaperQueueBytes, "Current bytes reserved in the exact-byte shaper queue across both shaped classes, including pending-copy placeholders.", dto.MetricType_GAUGE, 3},
-		{MetricShaperInFlightBytes, "Current bytes handed to the exact-byte shaper writer whose result remains pending.", dto.MetricType_GAUGE, 4},
-		{MetricShaperScheduledDelay, "Current virtual serialization delay scheduled by the exact-byte shaper in seconds.", dto.MetricType_GAUGE, 5},
+		{MetricShaperQueueDataBytes, "Current retained DATA/PARITY bytes, including pending-copy placeholders; bounded by B.", dto.MetricType_GAUGE, 1},
+		{MetricShaperQueueControlBytes, "Current retained inner-control bytes, including pending-copy placeholders; bounded by C=Lmax.", dto.MetricType_GAUGE, 2},
+		{MetricShaperQueueBytes, "Current retained shaped bytes across both classes, including pending-copy placeholders; bounded by Q=B+C.", dto.MetricType_GAUGE, 3},
+		{MetricShaperInFlightBytes, "Current UDP-writer bytes outside retained budget Q; either zero or one datagram no larger than Lmax.", dto.MetricType_GAUGE, 4},
+		{MetricShaperScheduledDelay, "Current virtual serialization-tail delay in seconds; already-assigned datagram deadlines are immutable.", dto.MetricType_GAUGE, 5},
 		{MetricShaperRateBytesPerSecond, "Configured exact-byte shaper wire rate R in bytes per second.", dto.MetricType_GAUGE, 6},
 		{MetricShaperDataBudgetBytes, "Configured exact-byte shaper DATA/PARITY queue budget B in bytes.", dto.MetricType_GAUGE, 7},
 		{MetricShaperControlReserveBytes, "Configured exact-byte shaper inner-control queue reserve C in bytes.", dto.MetricType_GAUGE, 8},
 		{MetricShaperQueueBudgetBytes, "Configured exact-byte shaper total reserved-byte queue budget Q=B+C in bytes.", dto.MetricType_GAUGE, 9},
 		{MetricShaperMaxDatagramBytes, "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", dto.MetricType_GAUGE, 10},
-		{MetricShaperAcceptedBytes, "Total bytes reserved by the exact-byte shaper across DATA/PARITY and inner-control classes.", dto.MetricType_COUNTER, 11},
-		{MetricShaperEmittedBytes, "Total DATA/PARITY and inner-control bytes successfully handed to the UDP writer.", dto.MetricType_COUNTER, 12},
-		{MetricShaperOuterPriorityBytes, "Total successfully written outer PROBE/echo bytes charged as shaper priority traffic.", dto.MetricType_COUNTER, 13},
+		{MetricShaperAcceptedBytes, "Total DATA/PARITY and inner-control bytes reserved before copying caller memory.", dto.MetricType_COUNTER, 11},
+		{MetricShaperEmittedBytes, "Total DATA/PARITY and inner-control bytes successfully written to the UDP socket.", dto.MetricType_COUNTER, 12},
+		{MetricShaperOuterPriorityBytes, "Total successfully written authenticated outer PROBE/echo bytes charged to future priority debt.", dto.MetricType_COUNTER, 13},
 		{MetricShaperPriorityDebtBytes, "Current outer-priority serialization debt P0 in bytes.", dto.MetricType_GAUGE, 14},
 		{MetricShaperPriorityRateBytesPerSecond, "Configured sustained outer-priority rate Rp in bytes per second.", dto.MetricType_GAUGE, 15},
 		{MetricShaperPriorityBurstBytes, "Configured outer-priority burst allowance Pburst in bytes.", dto.MetricType_GAUGE, 16},
-		{MetricShaperPriorityDelayBound, "Current DATA admission delay bound Dp=(P0+Pburst)/(R-Rp) in seconds.", dto.MetricType_GAUGE, 17},
+		{MetricShaperPriorityDelayBound, "Current DATA/inner-control admission bound Dp=(P0+Pburst)/(R-Rp) in seconds under generated priority Rp<R.", dto.MetricType_GAUGE, 17},
 		{MetricShaperAdmissionWaits, "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", dto.MetricType_COUNTER, 18},
 		{MetricShaperAdmissionWaitSeconds, "Cumulative seconds spent waiting for exact-byte shaper admission.", dto.MetricType_COUNTER, 19},
 		{MetricShaperAdmissionCanceledDatagrams, "Total datagrams never reserved because their admission context was canceled or expired.", dto.MetricType_COUNTER, 20},
-		{MetricShaperAsyncWriteErrors, "Asynchronous exact-byte shaper writer failures excluding EMSGSIZE.", dto.MetricType_COUNTER, 21},
-		{MetricShaperAsyncWriteErrorBytes, "Reserved bytes completed with an asynchronous writer failure excluding EMSGSIZE.", dto.MetricType_COUNTER, 22},
-		{MetricShaperAsyncWriteEMSGSIZEErrors, "Asynchronous exact-byte shaper writer failures classified as EMSGSIZE.", dto.MetricType_COUNTER, 23},
-		{MetricShaperAsyncWriteEMSGSIZEBytes, "Reserved bytes completed with an asynchronous EMSGSIZE writer failure.", dto.MetricType_COUNTER, 24},
+		{MetricShaperAsyncWriteErrors, "Actual UDP writer calls failing asynchronously, excluding EMSGSIZE.", dto.MetricType_COUNTER, 21},
+		{MetricShaperAsyncWriteErrorBytes, "Reserved bytes assigned to a generic writer failure, including its retired unstarted batch suffix.", dto.MetricType_COUNTER, 22},
+		{MetricShaperAsyncWriteEMSGSIZEErrors, "Actual UDP writer calls failing asynchronously with EMSGSIZE.", dto.MetricType_COUNTER, 23},
+		{MetricShaperAsyncWriteEMSGSIZEBytes, "Reserved bytes assigned to an EMSGSIZE writer failure, including its retired unstarted batch suffix.", dto.MetricType_COUNTER, 24},
 	}
 
 	enabled := startServer(t, fakeSource{paths: []PathSnapshot{{Name: "wan0", Shaper: &snapshot}}})
@@ -136,8 +136,8 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 	}
 	for name, wantHelp := range map[string]string{
 		MetricShaperAcceptedDatagrams: "DATA/PARITY and inner-control datagrams made ready after copying caller memory into the path's exact-byte shaper.",
-		MetricShaperEmittedDatagrams:  "Shaped DATA/PARITY and inner-control datagrams successfully handed to the UDP writer.",
-		MetricShaperWriteErrors:       "Terminal exact-byte shaper write-call errors.",
+		MetricShaperEmittedDatagrams:  "Shaped DATA/PARITY and inner-control datagrams successfully written to the UDP socket.",
+		MetricShaperWriteErrors:       "Shaped calls returning a terminal error after any accepted/emitted prefix.",
 		MetricSocketWriteErrors:       "UDP socket write errors from shaped and direct DATA/PARITY/inner-control datagrams; excludes generated outer PROBE and reflected-echo failures.",
 	} {
 		family, ok := exp.Families()[name]

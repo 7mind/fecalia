@@ -186,12 +186,13 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     }
     const shaperRows = p.shaper
       ? `
-          <tr data-testid="path-shaper-queue"><td>shaper queue</td><td colspan="2">${formatBytes(p.shaper.queueDataBytes)} DATA / ${formatBytes(p.shaper.queueControlBytes)} control / ${formatBytes(p.shaper.queueBytes)} total / ${formatBytes(p.shaper.queueBudgetBytes)} Q</td></tr>
-          <tr><td>shaper delay</td><td colspan="2">${formatMs(p.shaper.scheduledDelaySeconds)} scheduled / ${formatMs(p.shaper.priorityDelayBoundSeconds)} Dp</td></tr>
+          <tr data-testid="path-shaper-queue"><td>shaper queue</td><td colspan="2">${formatBytes(p.shaper.queueDataBytes)} DATA / ${formatBytes(p.shaper.queueControlBytes)} control / ${formatBytes(p.shaper.queueBytes)} total / ${formatBytes(p.shaper.inFlightBytes)} in flight</td></tr>
+          <tr data-testid="path-shaper-envelope"><td>shaper envelope</td><td colspan="2">${formatBytes(p.shaper.dataBudgetBytes)} B / ${formatBytes(p.shaper.controlReserveBytes)} C / ${formatBytes(p.shaper.queueBudgetBytes)} Q / ${formatBytes(p.shaper.maxDatagramBytes)} Lmax</td></tr>
+          <tr><td>shaper delay</td><td colspan="2">${formatMs(p.shaper.scheduledDelaySeconds)} scheduled / ${formatBytes(p.shaper.priorityDebtBytes)} P0 / ${formatMs(p.shaper.priorityDelayBoundSeconds)} Dp</td></tr>
           <tr><td>shaper rate</td><td colspan="2">${formatBytesPerSec(p.shaper.rateBytesPerSecond)} R / ${formatBytesPerSec(p.shaper.priorityRateBytesPerSecond)} Rp / ${formatBytes(p.shaper.priorityBurstBytes)} Pburst</td></tr>
           <tr><td>shaper bytes</td><td colspan="2">${formatBytes(p.shaper.acceptedBytes)} accepted / ${formatBytes(p.shaper.emittedBytes)} emitted / ${formatBytes(p.shaper.outerPriorityBytes)} priority</td></tr>
           <tr><td>admission</td><td colspan="2">${p.shaper.admissionWaits} waits (${formatMs(p.shaper.admissionWaitSeconds)}) / ${p.shaper.admissionCanceledDatagrams} canceled</td></tr>
-          <tr><td>async errors</td><td colspan="2">${p.shaper.asyncWriteErrors} generic / ${p.shaper.asyncWriteEmsgsizeErrors} EMSGSIZE</td></tr>`
+          <tr><td>async errors</td><td colspan="2">${p.shaper.asyncWriteErrors} generic (${formatBytes(p.shaper.asyncWriteErrorBytes)}) / ${p.shaper.asyncWriteEmsgsizeErrors} EMSGSIZE (${formatBytes(p.shaper.asyncWriteEmsgsizeBytes)})</td></tr>`
       : '';
     return `
       <div class="path-card" data-testid="path-card" data-path="${escapeHtml(p.name)}" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; min-width:16em;">

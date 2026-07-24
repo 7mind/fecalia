@@ -11,7 +11,13 @@ export interface AddressingSnapshot {
   remote: string;
 }
 
-/** Mirrors monitor.ShaperSnapshot. Absent when exact-byte shaping is disabled. */
+/**
+ * Mirrors monitor.ShaperSnapshot. Absent when exact-byte shaping is disabled.
+ * Queue fields retain at most B DATA/PARITY, C=Lmax inner control, and Q=B+C
+ * total; inFlightBytes is one <=Lmax writer datagram outside Q. Accepted bytes
+ * linearize at pre-copy reservation, while emitted/error fields expose terminal
+ * outcomes. Priority debt is P0 and the bound is Dp=(P0+Pburst)/(R-Rp).
+ */
 export interface ShaperSnapshot {
   queueDataBytes: number;
   queueControlBytes: number;
