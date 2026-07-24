@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -430,7 +431,7 @@ func TestMaximumMixedBatchControlLastPreservesFIFOAndUsesCurrentRemote(t *testin
 	}
 	if _, err := oldRemote.Read(buf); err == nil {
 		t.Fatal("old remote received a datagram admitted before the remote rekey")
-	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("old remote read error = %v, want timeout", err)
 	}
 }

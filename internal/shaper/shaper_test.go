@@ -248,6 +248,67 @@ func TestNewValidatesModelBounds(t *testing.T) {
 	}
 }
 
+func TestValidateConfigErrorMessages(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name: "R",
+			mutate: func(config *Config) {
+				config.RateBytesPerSecond = math.Inf(1)
+			},
+			want: "shaper rate R must be finite and positive",
+		},
+		{
+			name: "Rp",
+			mutate: func(config *Config) {
+				config.PriorityRateBytesPerSecond = -1
+			},
+			want: "priority rate Rp must be finite and non-negative",
+		},
+		{
+			name: "R greater than Rp",
+			mutate: func(config *Config) {
+				config.RateBytesPerSecond = config.PriorityRateBytesPerSecond
+			},
+			want: "shaper rate R must be greater than priority rate Rp",
+		},
+		{
+			name: "Lmax",
+			mutate: func(config *Config) {
+				config.MaxDatagramBytes = 0
+			},
+			want: "maximum datagram Lmax must be positive",
+		},
+		{
+			name: "B",
+			mutate: func(config *Config) {
+				config.DataBudgetBytes = config.MaxDatagramBytes - 1
+			},
+			want: "data budget B must be at least Lmax",
+		},
+		{
+			name: "Pburst",
+			mutate: func(config *Config) {
+				config.PriorityBurstBytes = -1
+			},
+			want: "priority burst Pburst must be non-negative",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validConfig()
+			test.mutate(&config)
+			err := ValidateConfig(config)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("ValidateConfig error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestReservationOrderSurvivesDelayedCopyPublication(t *testing.T) {
 	clock := newFakeClock()
 	writes := make(chan byte, 2)

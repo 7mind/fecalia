@@ -184,21 +184,21 @@ func ValidateConfig(config Config) error {
 	if math.IsNaN(config.RateBytesPerSecond) ||
 		math.IsInf(config.RateBytesPerSecond, 0) ||
 		config.RateBytesPerSecond <= 0 {
-		return errors.New("R must be finite and positive")
+		return errors.New("shaper rate R must be finite and positive")
 	}
 	if math.IsNaN(config.PriorityRateBytesPerSecond) ||
 		math.IsInf(config.PriorityRateBytesPerSecond, 0) ||
 		config.PriorityRateBytesPerSecond < 0 {
-		return errors.New("Rp must be finite and non-negative")
+		return errors.New("priority rate Rp must be finite and non-negative")
 	}
 	if config.RateBytesPerSecond <= config.PriorityRateBytesPerSecond {
-		return errors.New("R must be greater than Rp")
+		return errors.New("shaper rate R must be greater than priority rate Rp")
 	}
 	if config.MaxDatagramBytes <= 0 {
-		return errors.New("Lmax must be positive")
+		return errors.New("maximum datagram Lmax must be positive")
 	}
 	if config.DataBudgetBytes < config.MaxDatagramBytes {
-		return errors.New("B must be at least Lmax")
+		return errors.New("data budget B must be at least Lmax")
 	}
 	if config.ControlReserveBytes != config.MaxDatagramBytes {
 		return errors.New("C must equal Lmax")
@@ -207,7 +207,7 @@ func ValidateConfig(config Config) error {
 		return errors.New("queue budget B+C must fit in int")
 	}
 	if config.PriorityBurstBytes < 0 {
-		return errors.New("Pburst must be non-negative")
+		return errors.New("priority burst Pburst must be non-negative")
 	}
 	serializationNanoseconds := float64(config.MaxDatagramBytes) /
 		config.RateBytesPerSecond * float64(time.Second)

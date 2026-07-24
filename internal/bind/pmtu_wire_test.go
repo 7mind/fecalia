@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -306,7 +307,7 @@ func TestPMTUProbeSubstitutesForPeriodicProbeAtSharedCadence(t *testing.T) {
 		}
 		<-result
 		t.Fatal("padded PMTU probe bypassed the shared local probe cadence")
-	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("pre-cadence PMTU read error = %v, want timeout", err)
 	}
 
@@ -362,7 +363,7 @@ func TestPMTUProbeSubstitutesForPeriodicProbeAtSharedCadence(t *testing.T) {
 	}
 	if _, err := peer.Read(early); err == nil {
 		t.Fatal("periodic PROBE was added beside the cadence-selected PMTU probe")
-	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("post-cadence read error = %v, want timeout", err)
 	}
 	if got := recorder.debitSnapshot(); len(got) != 2 || got[0] != len(raw) || got[1] != len(raw) {

@@ -92,9 +92,11 @@ func TestPeerSnapshotsReadsShaperAfterReleasingBindLock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
+	lockAcquired := make(chan struct{}, 1)
 	reporter := &snapshotCallbackShaper{
 		callback: func() {
 			m.mu.Lock()
+			lockAcquired <- struct{}{}
 			m.mu.Unlock()
 		},
 		snapshot: shaper.Snapshot{AcceptedBytes: 17},
@@ -109,6 +111,11 @@ func TestPeerSnapshotsReadsShaperAfterReleasingBindLock(t *testing.T) {
 	}()
 	select {
 	case peers := <-done:
+		select {
+		case <-lockAcquired:
+		default:
+			t.Fatal("shaper Snapshot callback did not acquire m.mu")
+		}
 		got := peers[0].Paths[0].Shaper
 		if got == nil || got.AcceptedBytes != 17 {
 			t.Fatalf("shaper snapshot = %+v", got)

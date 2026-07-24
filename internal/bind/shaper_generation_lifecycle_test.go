@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -281,8 +282,8 @@ func assertBindLockReleasedDuringRetirement(t *testing.T, m *Multipath, retireme
 	acquired := make(chan struct{})
 	go func() {
 		m.mu.Lock()
-		m.mu.Unlock()
 		close(acquired)
+		m.mu.Unlock()
 	}()
 	select {
 	case <-acquired:
@@ -291,7 +292,8 @@ func assertBindLockReleasedDuringRetirement(t *testing.T, m *Multipath, retireme
 		select {
 		case <-acquired:
 		case <-time.After(time.Second):
-			t.Fatal("bind mutex remained blocked after releasing generation retirement")
+			t.Error("bind mutex acquisition was not observed after releasing generation retirement")
+			return
 		}
 		t.Error("bind mutex stayed held while path generation retirement waited")
 		return
@@ -321,13 +323,13 @@ func assertBindLockAvailable(t *testing.T, m *Multipath) {
 	acquired := make(chan struct{})
 	go func() {
 		m.mu.Lock()
-		m.mu.Unlock()
 		close(acquired)
+		m.mu.Unlock()
 	}()
 	select {
 	case <-acquired:
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("bind mutex stayed held while a direct writer drained")
+		t.Error("bind mutex acquisition was not observed while a direct writer drained")
 	}
 }
 
@@ -576,9 +578,9 @@ func TestAddPathSchedulerSkewRollsBackActualAdmission(t *testing.T) {
 		t.Fatal("test scheduler does not support dynamic membership")
 	}
 	fault := &faultDynamicScheduler{DynamicScheduler: dyn, members: 1, skewAdd: true}
-	m.peerState.scheduler = fault
+	m.scheduler = fault
 	beforeDefs := len(m.defs)
-	beforeProbers := len(m.peerState.probers)
+	beforeProbers := len(m.probers)
 	beforeShared := len(m.shared)
 	err := m.AddPathWithShaper(config.Path{
 		Name:       "skewed",
@@ -590,12 +592,12 @@ func TestAddPathSchedulerSkewRollsBackActualAdmission(t *testing.T) {
 	if got := fault.memberCount(); got != 1 {
 		t.Fatalf("scheduler members after skew rollback = %d, want baseline 1", got)
 	}
-	if len(m.defs) != beforeDefs || len(m.peerState.probers) != beforeProbers || len(m.shared) != beforeShared {
+	if len(m.defs) != beforeDefs || len(m.probers) != beforeProbers || len(m.shared) != beforeShared {
 		t.Fatalf(
 			"durable membership changed after skew rollback: defs=%d/%d probers=%d/%d shared=%d/%d",
 			len(m.defs),
 			beforeDefs,
-			len(m.peerState.probers),
+			len(m.probers),
 			beforeProbers,
 			len(m.shared),
 			beforeShared,
@@ -661,7 +663,7 @@ func TestConcurrentSendGenerationTransitionMatrix(t *testing.T) {
 			members:          2,
 			forcePick:        0,
 		}
-		m.peerState.scheduler = selector
+		m.scheduler = selector
 		var generations []*controlledShaper
 		m.newPathShaper = func(_ shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
 			s := newControlledShaper(write, len(generations) == 0)
@@ -741,7 +743,7 @@ func TestConcurrentSendGenerationTransitionMatrix(t *testing.T) {
 			members:          1,
 			forcePick:        0,
 		}
-		m.peerState.scheduler = selector
+		m.scheduler = selector
 		var generations []*controlledShaper
 		m.newPathShaper = func(_ shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
 			s := newControlledShaper(write, len(generations) == 0)
@@ -814,7 +816,7 @@ func TestConcurrentSendGenerationTransitionMatrix(t *testing.T) {
 			members:          1,
 			forcePick:        0,
 		}
-		m.peerState.scheduler = selector
+		m.scheduler = selector
 		var generations []*controlledShaper
 		m.newPathShaper = func(_ shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
 			s := newControlledShaper(write, len(generations) == 0)
@@ -960,13 +962,14 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		pskA := testKey(t, 0xF3)
 		pskB := testKey(t, 0xF4)
 		m, _, primaryBase := newProbingMultipath(t, paths, pskA, clk)
+		primaryPeer := m.peerState
 		cfg := lifecycleShaperConfig()
 		m.shaperConfigs = []config.PathShaperConfig{cfg}
 		primary := &faultDynamicScheduler{
 			DynamicScheduler: primaryBase.(sched.DynamicScheduler),
 			members:          1,
 		}
-		m.peerState.scheduler = primary
+		primaryPeer.scheduler = primary
 		betaBase, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0xF4, clk)
 		beta := &faultDynamicScheduler{
 			DynamicScheduler: betaBase.(sched.DynamicScheduler),
@@ -1001,7 +1004,7 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		}
 		beforeDefs := len(m.defs)
 		beforeShared := len(m.shared)
-		beforePrimaryProbers := len(m.peerState.probers)
+		beforePrimaryProbers := len(primaryPeer.probers)
 		beforeBetaProbers := len(m.peersByName["beta"].probers)
 		err := m.AddPathWithShaper(config.Path{
 			Name:       "rejected",
@@ -1025,9 +1028,9 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		}
 		if len(m.defs) != beforeDefs ||
 			len(m.shared) != beforeShared ||
-			len(m.peerState.probers) != beforePrimaryProbers ||
+			len(primaryPeer.probers) != beforePrimaryProbers ||
 			len(m.peersByName["beta"].probers) != beforeBetaProbers ||
-			len(m.peerState.paths) != 1 ||
+			len(primaryPeer.paths) != 1 ||
 			len(m.peersByName["beta"].paths) != 1 {
 			t.Fatal("later-peer failure changed live or durable membership")
 		}
@@ -1039,13 +1042,14 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		pskA := testKey(t, 0xF5)
 		pskB := testKey(t, 0xF6)
 		m, _, primaryBase := newProbingMultipath(t, paths, pskA, clk)
+		primaryPeer := m.peerState
 		cfg := lifecycleShaperConfig()
 		m.shaperConfigs = []config.PathShaperConfig{cfg}
 		primary := &faultDynamicScheduler{
 			DynamicScheduler: primaryBase.(sched.DynamicScheduler),
 			members:          1,
 		}
-		m.peerState.scheduler = primary
+		primaryPeer.scheduler = primary
 		betaBase, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0xF6, clk)
 		beta := &faultDynamicScheduler{
 			DynamicScheduler: betaBase.(sched.DynamicScheduler),
@@ -1105,10 +1109,10 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		}
 		if len(m.deferred) != 1 ||
 			len(m.shared) != 1 ||
-			len(m.peerState.paths) != 1 ||
+			len(primaryPeer.paths) != 1 ||
 			len(m.peersByName["beta"].paths) != 1 ||
 			len(m.defs) != 2 ||
-			len(m.peerState.probers) != 2 ||
+			len(primaryPeer.probers) != 2 ||
 			len(m.peersByName["beta"].probers) != 2 {
 			t.Fatal("failed promotion changed deferred, durable, or live membership")
 		}
@@ -1127,7 +1131,7 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 			members:          2,
 			setErr:           injected,
 		}
-		m.peerState.scheduler = fault
+		m.scheduler = fault
 		var created []*trackedStagedShaper
 		m.newPathShaper = func(shaper.Config, shaper.WriteFunc) (pathShaper, error) {
 			s := &trackedStagedShaper{}
@@ -1312,9 +1316,11 @@ func TestRemovePathDetachesGenerationBeforeWaitingForShaper(t *testing.T) {
 func TestRetirementCallbackCanAcquireBindAndSchedulerLocks(t *testing.T) {
 	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0xE9), newFakeClock())
 	m.shaperConfigs = []config.PathShaperConfig{lifecycleShaperConfig()}
+	lockAcquired := make(chan struct{})
 	m.newPathShaper = func(shaper.Config, shaper.WriteFunc) (pathShaper, error) {
 		return &callbackClosingShaper{onClose: func() {
 			m.mu.Lock()
+			close(lockAcquired)
 			m.mu.Unlock()
 			m.scheduler.Recompute()
 		}}, nil
@@ -1334,6 +1340,11 @@ func TestRetirementCallbackCanAcquireBindAndSchedulerLocks(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("retirement callback blocked acquiring bind or scheduler state")
+	}
+	select {
+	case <-lockAcquired:
+	default:
+		t.Fatal("retirement callback did not acquire m.mu")
 	}
 }
 
@@ -1501,7 +1512,7 @@ func TestCloseRetiresQueuedWireAndReopenUsesFreshShaperGeneration(t *testing.T) 
 	}
 	if _, err := remote.Read(buf); err == nil {
 		t.Fatal("retired queued parity crossed the generation boundary")
-	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("retired queue read = %v, want timeout", err)
 	}
 
