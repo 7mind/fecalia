@@ -532,7 +532,9 @@ data-thrift gate (engage/disengage hysteresis above) is surfaced on `/metrics`
 as four PER-PEER gauges, so an operator can see whether striping is engaged and
 why: `wanbond_aggregation_engaged` (1 = striping across every eligible path,
 0 = collapsed to primary-only), `wanbond_offered_load_fps` (the smoothed
-offered load, an EWMA of `Pick` calls, driving the gate), and the two STATIC
+offered load — an EWMA of offered WIRE FRAMES, inner data plus any FEC
+parity egressing on the chosen path, folded per `Pick` call — driving the
+gate; see the upgrade/behaviour note below), and the two STATIC
 thresholds `wanbond_aggregation_engage_threshold_fps`
 (`engage_fraction * per_path_capacity_fps`) and
 `wanbond_aggregation_disengage_threshold_fps`
@@ -692,9 +694,11 @@ not `Send` batches (defect D95, decisions:K35, G33).**
     leave adaptive FEC off), so that `fCeil = (data_shards + parity_shards) /
     data_shards` stays below `f_max = disengage_fraction * per_path_capacity_fps
     / D`. **`D` is your expected idle rate of DATA frames ALONE — the
-    PRE-EXPANSION demand rate — NOT the post-expansion wire rate.** Because
-    `parity_shards` is a HARD CEILING enforced at config load even in
-    adaptive mode (`internal/config/config.go:454-458` — the controller can
+    PRE-EXPANSION demand rate — NOT the post-expansion wire rate.** Obtain
+    `D` either by measuring the idle frame rate with FEC OFF, or as
+    `goodput / (8 * on-wire frame bytes)`. Because `parity_shards` is a HARD
+    CEILING enforced at config load even in adaptive mode
+    (`FEC.ParityShards`, `internal/config/config.go` — the controller can
     only drive the realised per-group parity DOWN from that ceiling), `fCeil`
     is statically verifiable from your own TOML: worked example — a 40 Mbit
     path with ~1400 B on-wire frames gives `per_path_capacity_fps ≈ 3400`

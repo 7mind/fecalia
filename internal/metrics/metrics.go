@@ -195,7 +195,9 @@ const (
 	// (traffic striped across every eligible path), 0 while collapsed (primary-only).
 	MetricAggregationEngaged = "wanbond_aggregation_engaged"
 	// MetricOfferedLoadFPS is the per-peer smoothed offered-load estimate in
-	// frames/second (Pick calls per second, EWMA) driving the gate.
+	// frames/second (EWMA of offered WIRE FRAMES — inner data plus any FEC
+	// parity egressing on the chosen path, folded per Pick call) driving the
+	// gate.
 	MetricOfferedLoadFPS = "wanbond_offered_load_fps"
 	// MetricAggregationEngageThreshold is the per-peer STATIC engage threshold in
 	// frames/second (engage_fraction * per_path_capacity_fps): the offered load above

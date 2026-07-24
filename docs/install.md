@@ -685,6 +685,8 @@ pacing meets your bufferbloat target.
     data_shards` stays below `f_max = disengage_fraction *
     per_path_capacity_fps / D`, where **`D` is your expected idle rate of
     DATA frames ALONE (pre-expansion), not the post-expansion wire rate.**
+    Obtain `D` either by measuring the idle frame rate with FEC OFF, or as
+    `goodput / (8 * on-wire frame bytes)`.
     Because `parity_shards` is a HARD CEILING even under `adaptive = true`
     (the controller can only drive per-group parity DOWN from it, never
     above), `fCeil` is a bound you can check from your own TOML without any
