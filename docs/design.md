@@ -475,7 +475,8 @@ configuration the live shaper consumes. With pacing enabled,
 - DATA budget `B = ceil(R * link_rtt_seconds)` bytes and control reserve
   `C = Lmax`.
 - Per-(peer,path) coincident generated control burst `Pburst = 2 * Lmax`
-  (one maximum-size probe plus its echo) and maximum rate
+  (one maximum-size local probe — ordinary or padded PMTU — plus one
+  maximum-size reactive echo) and maximum rate
   `Rp = Pburst / 200ms`, where 200 ms is the minimum/fixed liveness probe
   interval.
 
@@ -501,7 +502,10 @@ may continue. Close drains/stops each shaper before closing its UDP socket.
 T300 completes generated-priority integration: authenticated outer PROBE and
 reflected echo frames bypass retained DATA, write directly to the selected path
 socket, and call `AccountPriority` with the exact encoded length only after a
-successful write. A failed direct write creates no priority debt.
+successful write. A failed direct write creates no priority debt. A PMTU search
+queues at most one padded local probe per `(peer,path)` and that frame substitutes
+for the next ordinary local probe cadence slot. It therefore does not add a
+second local producer to `Rp`; a peer-requested reactive echo remains immediate.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
@@ -556,8 +560,13 @@ post-call burst `Pburst`, followed by generated priority traffic bounded by
 The denominator is the net debt-clearance rate, not `R`; the simpler `P0/R`
 bound fails as soon as the post-call burst or continuing `Rp` traffic exists.
 This covers both `P0=0` and non-zero existing debt, and the `R > Rp`
-constructor invariant makes `Dp` finite. With `Q=B+C`, local socket egress
-occurs no later than
+constructor invariant makes `Dp` finite. Operationally, arrivals in the
+half-open interval `[call, call+Dp)` may extend the reservation's captured
+priority deadline. Once that deadline has matured (`now >= deadline`), a
+priority debit linearized at the exact boundary changes the tail seen by future
+reservations but cannot revoke this reservation's admission eligibility. Thus
+the admission bound is exactly `Dp`, with no additional timer or packet step.
+With `Q=B+C`, local socket egress occurs no later than
 
 `Dp + Q/R + Lmax/R`.
 
@@ -567,13 +576,15 @@ delay or FEC recovery may retain it for the configured or dynamically bounded
 hold.
 
 This bound covers the authenticated probe/echo workload from which `Pburst` and
-`Rp` are derived. Sustained authenticated, on-demand outer CONTROL generation
-beyond that declared model constitutes explicit overload and invalidates the
-bound. No live outer CONTROL protocol currently exists; any future trusted
-local producer must use the same write-first/exact-debit path and fit the
-declared `Rp`/`Pburst` envelope before relying on `Dp`. The primitive does not
-classify frames, select paths, generate FEC, or own tunnel lifecycle; those
-remain integration responsibilities.
+`Rp` are derived, including built-in PMTU discovery: each padded PMTU request
+occupies the next local periodic slot instead of generating extra traffic.
+Sustained authenticated, on-demand outer CONTROL generation beyond that
+declared model constitutes explicit overload and invalidates the bound. No live
+outer CONTROL protocol currently exists; any future trusted local producer must
+use the same write-first/exact-debit path and fit the declared `Rp`/`Pburst`
+envelope before relying on `Dp`. The primitive does not classify frames, select
+paths, generate FEC, or own tunnel lifecycle; those remain integration
+responsibilities.
 
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
@@ -1954,8 +1965,13 @@ These are recorded design boundaries, not defects:
   binary-searches the largest echoing outer size between 1280 and
   `bind.DefaultPathMTU`; the discovered value flows through `PathSnapshot.PMTU`
   into the **T209 runtime resizer**, which auto-shrinks/regrows `wanbond0` live
-  (re-probing on DOWN→UP, roam, and a slow refresh). An explicit `mtu` PINS the
-  path (no probing — operator override authoritative). See `docs/p1-mtu.md`.
+  (re-probing on DOWN→UP, roam, and a slow refresh). Each padded request
+  substitutes for the next ordinary local 200 ms probe slot, so confirmation
+  retries remain inside the shaper's declared local-probe rate while reactive
+  echo replies remain immediate. Successful padded writes debit their exact
+  encoded length; failed writes add no debt, and `EMSGSIZE` remains the PMTU
+  search's explicit too-large result. An explicit `mtu` PINS the path (no
+  probing — operator override authoritative). See `docs/p1-mtu.md`.
 
 ## References
 

@@ -1,10 +1,16 @@
 package bind
 
 import (
+	"errors"
+	"net"
 	"net/netip"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -68,4 +74,275 @@ func TestPMTURoamCallback(t *testing.T) {
 
 	// An unknown-path registration is a no-op (must not panic).
 	m.OnPathRoam("nonexistent", func() {})
+}
+
+func echoPMTUProbe(t testing.TB, m *Multipath, psk config.Key, peer *net.UDPConn, peerAP netip.AddrPort) []byte {
+	t.Helper()
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, maxDatagram)
+	n, err := peer.Read(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = raw[:n]
+	decoded, err := frame.Decode(psk, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := decoded.(frame.Probe)
+	if !ok || !probe.Padded || probe.IsEcho {
+		t.Fatalf("PMTU wire frame = %#v, want originating padded PROBE", decoded)
+	}
+	probe.IsEcho = true
+	echo, err := frame.Encode(psk, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.handleInbound(m.paths[0], echo, peerAP)
+	return raw
+}
+
+type pmtuProbeResult struct {
+	echoed bool
+	err    error
+}
+
+func startPMTUProbe(probe telemetry.PMTUProbe, pathMTU int) <-chan pmtuProbeResult {
+	result := make(chan pmtuProbeResult, 1)
+	go func() {
+		echoed, err := probe.ProbePMTU(pathMTU)
+		result <- pmtuProbeResult{echoed: echoed, err: err}
+	}()
+	return result
+}
+
+func waitPendingPMTUProbe(t testing.TB, ps *peerPathState) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		ps.generatedProbeMu.Lock()
+		pending := ps.pendingPMTU != nil
+		ps.generatedProbeMu.Unlock()
+		if pending {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for PMTU probe to enter the shared cadence")
+		}
+	}
+}
+
+func TestPMTUProbeSuccessfulWriteAccountsExactPaddedBytes(t *testing.T) {
+	psk := testKey(t, 0x25)
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	recorder := &priorityRecordingShaper{}
+	openWithPriorityRecorder(t, m, recorder)
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+
+	result := startPMTUProbe(m.PMTUProbe("a"), 1500)
+	waitPendingPMTUProbe(t, m.paths[0])
+	m.emitProbes()
+	raw := echoPMTUProbe(t, m, psk, peer, peerAP)
+	got := <-result
+	if got.err != nil || !got.echoed {
+		t.Fatalf("ProbePMTU = (%v, %v), want (true, nil)", got.echoed, got.err)
+	}
+	if len(raw) != 1500-28 {
+		t.Fatalf("padded PMTU UDP payload = %d bytes, want %d", len(raw), 1500-28)
+	}
+	if got := recorder.debitSnapshot(); len(got) != 1 || got[0] != len(raw) {
+		t.Fatalf("PMTU priority debits = %v, want exact successful padded length [%d]", got, len(raw))
+	}
+	if got := m.paths[0].txBytes.Load(); got != uint64(len(raw)) {
+		t.Fatalf("PMTU txBytes = %d, want exact successful padded length %d", got, len(raw))
+	}
+}
+
+func TestPMTUProbeFailedWriteCreatesNoDebtOrWireBytes(t *testing.T) {
+	psk := testKey(t, 0x26)
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	recorder := &priorityRecordingShaper{}
+	openWithPriorityRecorder(t, m, recorder)
+	_, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	if err := m.paths[0].conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result := startPMTUProbe(m.PMTUProbe("a"), 1500)
+	waitPendingPMTUProbe(t, m.paths[0])
+	m.emitProbes()
+	got := <-result
+	if got.err == nil || got.echoed {
+		t.Fatalf("failed ProbePMTU = (%v, %v), want (false, write error)", got.echoed, got.err)
+	}
+	if got := recorder.debitSnapshot(); len(got) != 0 {
+		t.Fatalf("failed PMTU write created priority debt %v", got)
+	}
+	if got := m.paths[0].txBytes.Load(); got != 0 {
+		t.Fatalf("failed PMTU write added txBytes = %d, want 0", got)
+	}
+}
+
+func TestPMTUProbeSubstitutesForPeriodicProbeAtSharedCadence(t *testing.T) {
+	psk := testKey(t, 0x27)
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	recorder := &priorityRecordingShaper{}
+	openWithPriorityRecorder(t, m, recorder)
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+
+	result := startPMTUProbe(m.PMTUProbe("a"), 1500)
+	waitPendingPMTUProbe(t, m.paths[0])
+
+	if err := peer.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	early := make([]byte, maxDatagram)
+	if n, err := peer.Read(early); err == nil {
+		decoded, derr := frame.Decode(psk, early[:n])
+		if derr == nil {
+			if probe, ok := decoded.(frame.Probe); ok {
+				probe.IsEcho = true
+				if echo, eerr := frame.Encode(psk, probe); eerr == nil {
+					m.handleInbound(m.paths[0], echo, peerAP)
+				}
+			}
+		}
+		<-result
+		t.Fatal("padded PMTU probe bypassed the shared local probe cadence")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("pre-cadence PMTU read error = %v, want timeout", err)
+	}
+
+	m.emitProbes()
+	raw := echoPMTUProbe(t, m, psk, peer, peerAP)
+	if len(raw) != 1500-28 {
+		t.Fatalf("cadence-selected PMTU UDP payload = %d, want %d", len(raw), 1500-28)
+	}
+	select {
+	case got := <-result:
+		if got.err != nil || !got.echoed {
+			t.Fatalf("ProbePMTU = (%v, %v), want (true, nil)", got.echoed, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PMTU probe did not complete after its cadence slot and echo")
+	}
+
+	padLen, err := frame.PadLenForOnWire(1500 - 28)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteRequest, err := frame.Encode(psk, frame.Probe{
+		PathID:         0,
+		ProbeSeq:       77,
+		TimestampNanos: time.Now().UnixNano(),
+		SessionID:      0x27,
+		Padded:         true,
+		PadLen:         padLen,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.handleInbound(m.paths[0], remoteRequest, peerAP)
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, maxDatagram)
+	n, err := peer.Read(echo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := frame.Decode(psk, echo[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	reflected, ok := decoded.(frame.Probe)
+	if !ok || !reflected.IsEcho || n != len(raw) {
+		t.Fatalf("reactive frame = %#v (%d bytes), want immediate padded echo of %d bytes", decoded, n, len(raw))
+	}
+
+	if err := peer.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Read(early); err == nil {
+		t.Fatal("periodic PROBE was added beside the cadence-selected PMTU probe")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("post-cadence read error = %v, want timeout", err)
+	}
+	if got := recorder.debitSnapshot(); len(got) != 2 || got[0] != len(raw) || got[1] != len(raw) {
+		t.Fatalf("shared-cadence priority debits = %v, want exact coincident Pburst [%d %d]", got, len(raw), len(raw))
+	}
+	if got := m.paths[0].txBytes.Load(); got != uint64(2*len(raw)) {
+		t.Fatalf("coincident local PMTU + reactive echo txBytes = %d, want Pburst=%d", got, 2*len(raw))
+	}
+}
+
+func TestPendingPMTUProbeUnblocksOnCloseAndPathRemoval(t *testing.T) {
+	tests := []struct {
+		name     string
+		paths    []config.Path
+		teardown func(*testing.T, *Multipath)
+	}{
+		{
+			name:  "close",
+			paths: loopbackPaths(1),
+			teardown: func(t *testing.T, m *Multipath) {
+				t.Helper()
+				if err := m.Close(); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:  "runtime path removal",
+			paths: loopbackPaths(2),
+			teardown: func(t *testing.T, m *Multipath) {
+				t.Helper()
+				if err := m.RemovePath("a"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			psk := testKey(t, 0x28)
+			m, _, _ := newProbingMultipath(t, test.paths, psk, newFakeClock())
+			if _, _, err := m.Open(0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = m.Close() })
+			probe := m.PMTUProbe("a")
+			ps := m.paths[0]
+			result := startPMTUProbe(probe, 1500)
+			waitPendingPMTUProbe(t, ps)
+
+			test.teardown(t, m)
+			select {
+			case got := <-result:
+				if got.err == nil || got.echoed {
+					t.Fatalf("pending ProbePMTU after teardown = (%v, %v), want (false, error)", got.echoed, got.err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("pending PMTU probe remained blocked after path teardown")
+			}
+		})
+	}
+}
+
+func TestPMTUProbeWriteErrorMappingPreservesEMSGSIZEAndTransportErrors(t *testing.T) {
+	wrappedEMSGSIZE := errors.Join(errors.New("send padded probe"), syscall.EMSGSIZE)
+	if got := mapPMTUProbeWriteError(wrappedEMSGSIZE); !errors.Is(got, telemetry.ErrProbeTooLarge) {
+		t.Fatalf("wrapped EMSGSIZE mapped to %v, want telemetry.ErrProbeTooLarge", got)
+	}
+	transportErr := errors.New("transport unavailable")
+	if got := mapPMTUProbeWriteError(transportErr); !errors.Is(got, transportErr) {
+		t.Fatalf("transport error mapped to %v, want original %v", got, transportErr)
+	}
 }

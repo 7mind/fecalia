@@ -12,6 +12,7 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/shaper"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 type priorityDebtClock struct {
@@ -407,14 +408,19 @@ func TestFullDataBudgetObservesGeneratedPriorityNetRateBound(t *testing.T) {
 	// coincident priority arrival and preserving the configured worst case.
 	elapsed := obsoleteP0OverR
 	sustainedDebits := 0
-	for nextArrival := priorityStep; nextArrival <= dp; nextArrival += priorityStep {
+	for nextArrival := priorityStep; nextArrival < dp; nextArrival += priorityStep {
 		shaperClock.advanceWithoutFiring(nextArrival - elapsed)
 		m.emitProbes()
 		sustainedDebits++
 		liveShaper.assertDebits(t, 3+sustainedDebits, lmax)
 		now := shaperClock.Now()
-		if priorityDeadline.Before(now) {
-			priorityDeadline = now
+		if !priorityDeadline.After(now) {
+			// Packetized Rp can leave a sub-step gap after the prior debt
+			// matures. This arrival linearizes after that maturity and cannot
+			// revoke the already-waiting reservation.
+			shaperClock.fireDue()
+			elapsed = nextArrival
+			break
 		}
 		priorityDeadline = priorityDeadline.Add(serialization)
 		waitForPriorityDebtTimer(t, shaperClock, priorityDeadline)
@@ -425,26 +431,13 @@ func TestFullDataBudgetObservesGeneratedPriorityNetRateBound(t *testing.T) {
 		shaperClock.advanceWithoutFiring(dp - elapsed)
 		shaperClock.fireDue()
 	}
-	select {
-	case got := <-emissions:
-		t.Fatalf("DATA emitted before the generated-priority Dp envelope elapsed: %+v", got)
-	default:
-	}
 
-	// Discrete Rp pulses can leave at most one pulse of extra debt beyond the
-	// continuous-rate formula. The first DATA emission therefore occurs by
-	// Dp+priorityStep, and the full B-byte batch remains inside the documented
-	// local bound Dp+Q/R+Lmax/R.
-	shaperClock.advanceWithoutFiring(priorityStep)
-	shaperClock.fireDue()
-	select {
-	case err := <-sendResult:
-		t.Fatalf("full-B DATA send completed before emission with %v", err)
-	default:
-	}
+	// Priority arrivals in the bound use the half-open [call,Dp) interval.
+	// The due reservation matures at Dp; a debit linearized at that boundary
+	// cannot revoke it and applies only to later reservations/future egress.
 	first := waitPriorityEmission(t, emissions)
-	if first.at.Sub(callStart) > dp+priorityStep {
-		t.Fatalf("first DATA emission at %v, want <= Dp+step %v", first.at.Sub(callStart), dp+priorityStep)
+	if first.at.Sub(callStart) > dp {
+		t.Fatalf("first DATA emission at %v, want <= exact Dp %v", first.at.Sub(callStart), dp)
 	}
 	if first.size != lmax {
 		t.Fatalf("first DATA wire length = %d, want Lmax=%d", first.size, lmax)
@@ -552,5 +545,96 @@ func TestInnerControlBehindHeterogeneousPathGapWaitsForLowerSequenceThenDelivers
 	}
 	if elapsed := time.Since(start); elapsed < simulatedPathGap || elapsed >= 200*time.Millisecond {
 		t.Fatalf("receiver-visible control delay = %v, want path gap %v plus active resequencer hold below 200ms", elapsed, simulatedPathGap)
+	}
+}
+
+func TestFullDataBudgetReceiverVisibleBoundIncludesActiveResequencerHold(t *testing.T) {
+	receive, receiverSend := d93Harness(t)
+	receiverSend(0, 1, []byte("seed"))
+	if got := waitPriorityPayload(t, receivePriorityPayload(receive)); string(got) != "seed" {
+		t.Fatalf("seed payload = %q", got)
+	}
+
+	psk := testKey(t, 0xD9)
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	m.scheduler = &unpacedSelectionRecorder{}
+	_, peerAP := rawPeer(t)
+	sample, err := frame.Encode(psk, frame.Probe{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lmax := len(sample)
+	cfg := config.PathShaperConfig{
+		RateBytesPerSecond:      7_500,
+		DataBurstBytes:          2 * lmax,
+		ControlReserveBytes:     lmax,
+		MaxEncodedDatagramBytes: lmax,
+		ProbeRateBytesPerSecond: float64(2*lmax) / telemetry.DefaultProbeInterval.Seconds(),
+		ProbeBurstBytes:         2 * lmax,
+	}
+	emissions := make(chan time.Time, 2)
+	writeIndex := 0
+	m.shaperConfigs = []config.PathShaperConfig{cfg}
+	m.newPathShaper = func(got shaper.Config, _ shaper.WriteFunc) (pathShaper, error) {
+		return shaper.New(got, shaper.SystemClock{}, func(raw []byte) error {
+			decoded, err := frame.Decode(psk, raw)
+			if err != nil {
+				return err
+			}
+			data, ok := decoded.(frame.Data)
+			if !ok {
+				return fmt.Errorf("shaped wire frame is %T, want DATA", decoded)
+			}
+			writeIndex++
+			emissions <- time.Now()
+			if writeIndex == 2 {
+				// The lower sequence took a slower/lost path. Deliver the full-B
+				// suffix on another path id so the real receiver must add its
+				// active heterogeneous-path resequencer hold.
+				receiverSend(data.OuterSeq, 2, data.Payload)
+			}
+			return nil
+		})
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+	m.paths[0].setRemote(peerAP)
+
+	// Establish non-zero P0 through the real generated-PROBE integration.
+	m.emitProbes()
+	dataA := wgMsg(wgMessageTransportType, 0, lmax-frame.DataOverhead)
+	dataB := append([]byte(nil), dataA...)
+	dataB[len(dataB)-1] ^= 0x7f
+	delivered := receivePriorityPayload(receive)
+	start := time.Now()
+	if err := m.Send([][]byte{dataA, dataB}, m.virt); err != nil {
+		t.Fatal(err)
+	}
+	<-emissions
+	lastEmission := <-emissions
+	if got := waitPriorityPayload(t, delivered); string(got) != string(dataB) {
+		t.Fatalf("receiver payload length/content mismatch: got %d bytes, want %d", len(got), len(dataB))
+	}
+
+	rate := cfg.RateBytesPerSecond
+	rp := cfg.ProbeRateBytesPerSecond
+	p0 := lmax
+	pburst := cfg.ProbeBurstBytes
+	dp := time.Duration(float64(p0+pburst) / (rate - rp) * float64(time.Second))
+	q := cfg.DataBurstBytes + cfg.ControlReserveBytes
+	localBound := dp +
+		time.Duration(float64(q)/rate*float64(time.Second)) +
+		time.Duration(float64(lmax)/rate*float64(time.Second))
+	if elapsed := lastEmission.Sub(start); elapsed > localBound {
+		t.Fatalf("full-B local egress at %v, want <= Dp+Q/R+Lmax/R %v", elapsed, localBound)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("receiver delivered after %v, want the active heterogeneous-path resequencer hold", elapsed)
+	}
+	if receiverBound := localBound + resequencerTimeout; elapsed > receiverBound {
+		t.Fatalf("receiver-visible full-B delivery at %v, want <= local bound + active hold %v", elapsed, receiverBound)
 	}
 }

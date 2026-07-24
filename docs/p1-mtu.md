@@ -149,6 +149,16 @@ constraint lifts, with **no operator `mtu` knob required**.
   socket path that deterministically drops every 3rd *oversize* outer datagram
   (nft `ip length > T` + `numgen inc mod 3`), the N-consecutive search converges
   at/below the reliably-carried threshold `T`, never running away to the ceiling.
+- **Shared probe cadence and pacing accounting (T300).** A discovery goroutine
+  queues one padded request per `(peer,path)` and waits for the next 200 ms local
+  probe slot; that padded frame substitutes for the ordinary liveness probe
+  instead of adding a second local producer. The default three confirmations
+  therefore serialize across three cadence slots, while a peer-requested
+  reactive echo remains immediate. A successful socket write increments wire
+  bytes and debits the path shaper by the exact padded encoded length. A failed
+  write adds neither, and `EMSGSIZE` returns the search's explicit
+  `ErrProbeTooLarge` result. This keeps built-in discovery within the pacing
+  `Pburst`/`Rp` envelope rather than treating PMTU traffic as overload.
 - **Optional safety margin.** `SafetyMargin` (bytes, default **0**) is
   subtracted from the *reported* path MTU (`PathMTU` / `PathMTUOrZero` and the
   usable envelope that composes on them) as an extra cushion below the

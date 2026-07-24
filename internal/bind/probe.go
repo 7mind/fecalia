@@ -1,18 +1,30 @@
 package bind
 
 import (
+	"errors"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
+func mapPMTUProbeWriteError(err error) error {
+	if errors.Is(err, syscall.EMSGSIZE) {
+		return telemetry.ErrProbeTooLarge
+	}
+	return err
+}
+
 // emitProbes performs one probe cadence step: for every currently-open path it
-// emits one authenticated PROBE frame (IsEcho=false) to that path's learned/
-// configured remote, then Ticks that path's Prober so liveness advances against
-// the injected clock. A path without a known remote yet is still Ticked (so a
-// silent path is detected Down) but nothing is sent — there is nowhere to send.
+// emits one authenticated local PROBE frame (IsEcho=false) to that path's
+// learned/configured remote, then Ticks that path's Prober so liveness advances
+// against the injected clock. A pending PMTU probe occupies this local slot
+// instead of emitting an ordinary liveness probe; a reactive echo remains an
+// immediate write outside this cadence. A path without a known remote yet is
+// still Ticked (so a silent path is detected Down) but nothing is sent — there
+// is nowhere to send.
 //
 // Concurrency mirrors Send: the path/prober set is snapshotted under m.mu, then
 // released before any socket I/O, so emission neither holds the lock across a
@@ -92,7 +104,20 @@ func (m *Multipath) emitProbes() {
 		// One-time sticky DEAD fallback for the selected downlink destination (T246,
 		// defect D94), evaluated at probe cadence — never the per-datagram hot path.
 		t.ps.checkRemoteDead(now)
-		if remote, ok := t.ps.getRemote(); ok {
+		remote, hasRemote := t.ps.getRemote()
+		if request := t.ps.takePMTUProbe(); request != nil {
+			var writeErr error = errNoPathRemote
+			if hasRemote {
+				_, writeErr = t.ps.conn.WriteToUDPAddrPort(request.raw, remote)
+				if writeErr == nil {
+					t.ps.txBytes.Add(uint64(len(request.raw)))
+					m.accountGeneratedPriorityAfterWrite(t.ps, len(request.raw))
+				} else {
+					writeErr = mapPMTUProbeWriteError(writeErr)
+				}
+			}
+			request.done <- writeErr
+		} else if hasRemote {
 			if raw, err := t.pr.SendProbe(); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.
 				if _, werr := t.ps.conn.WriteToUDPAddrPort(raw, remote); werr == nil {

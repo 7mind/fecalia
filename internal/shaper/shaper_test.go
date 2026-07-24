@@ -832,6 +832,141 @@ func TestPriorityDebtClearanceUsesNetRateIncludingNearPriorityRate(t *testing.T)
 	}
 }
 
+func TestPriorityDebitAtMaturedDeadlineCannotRevokeAdmission(t *testing.T) {
+	clock := newFakeClock()
+	config := validConfig()
+	config.RateBytesPerSecond = 1_000
+	config.PriorityRateBytesPerSecond = 100
+	shaper, err := New(config, clock, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shaper.Close() }()
+
+	if err := shaper.AccountPriority(100); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- shaper.WriteBatch(context.Background(), ClassData, [][]byte{{1}})
+	}()
+	priorityDeadline := clock.Now().Add(100 * time.Millisecond)
+	waitFor(t, func() bool {
+		return clock.HasActiveTimerAt(priorityDeadline)
+	})
+
+	// Adversarial exact-boundary order: the new priority debit wins s.mu before
+	// the old debt timer fires. The reservation already waiting on the matured
+	// half-open [start,deadline) envelope must still publish at the deadline;
+	// this debit affects only later reservations and future serialization.
+	clock.MoveWithoutFiring(100 * time.Millisecond)
+	if err := shaper.AccountPriority(10); err != nil {
+		t.Fatal(err)
+	}
+	clock.FireDue()
+	waitFor(t, func() bool {
+		shaper.mu.Lock()
+		defer shaper.mu.Unlock()
+		return shaper.retainedDataBytes == 1 && len(shaper.queue) == 1
+	})
+
+	clock.Advance(10 * time.Millisecond)
+	if err := waitResult(t, result); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPriorityAdmissionBoundWithZeroInitialDebtAndPostCallBurst(t *testing.T) {
+	clock := newFakeClock()
+	config := validConfig()
+	config.RateBytesPerSecond = 10_000
+	config.PriorityRateBytesPerSecond = 2_000
+	config.DataBudgetBytes = config.MaxDatagramBytes
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	writes := make(chan byte, 3)
+	writeCount := 0
+	shaper, err := New(config, clock, func(payload []byte) error {
+		writeCount++
+		if writeCount == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		writes <- payload[0]
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shaper.Close() }()
+
+	fullBudget := make(chan error, 1)
+	go func() {
+		fullBudget <- shaper.WriteBatch(context.Background(), ClassData, [][]byte{
+			bytesOf(1, config.MaxDatagramBytes),
+			bytesOf(2, config.MaxDatagramBytes),
+		})
+	}()
+	waitChannel(t, firstEntered, "first full-budget datagram did not enter the writer")
+	waitFor(t, func() bool {
+		shaper.mu.Lock()
+		defer shaper.mu.Unlock()
+		return shaper.retainedDataBytes == config.DataBudgetBytes
+	})
+
+	// This call starts while P0=0 and waits only because B is full. Inject the
+	// permitted post-call Pburst before capacity frees; the obsolete P0/R bound
+	// is zero, but the call must observe the burst and remain blocked.
+	targetContext := observeContext(context.Background())
+	target := make(chan error, 1)
+	go func() {
+		target <- shaper.WriteBatch(targetContext, ClassData, [][]byte{{3}})
+	}()
+	waitChannel(t, targetContext.doneObserved, "P0=0 target did not wait on the full DATA budget")
+	if err := shaper.AccountPriority(config.PriorityBurstBytes); err != nil {
+		t.Fatal(err)
+	}
+	priorityDeadline := clock.Now().Add(10 * time.Millisecond)
+	waitFor(t, func() bool {
+		return clock.HasActiveTimerAt(priorityDeadline)
+	})
+	assertNotReady(t, target, "P0=0 target ignored the post-call Pburst")
+
+	close(releaseFirst)
+	if marker := (<-writes); marker != 1 {
+		t.Fatalf("first marker = %d, want 1", marker)
+	}
+	clock.Advance(10 * time.Millisecond)
+	if marker := (<-writes); marker != 2 {
+		t.Fatalf("second marker = %d, want 2", marker)
+	}
+	waitFor(t, func() bool {
+		shaper.mu.Lock()
+		defer shaper.mu.Unlock()
+		return shaper.retainedDataBytes == 1
+	})
+	dp := time.Duration(
+		float64(config.PriorityBurstBytes) /
+			(config.RateBytesPerSecond - config.PriorityRateBytesPerSecond) *
+			float64(time.Second),
+	)
+	if elapsed := clock.Now().Sub(time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)); elapsed > dp {
+		t.Fatalf("P0=0 admission at %v, want <= Dp=Pburst/(R-Rp)=%v", elapsed, dp)
+	}
+
+	clock.Advance(20*time.Millisecond + time.Nanosecond)
+	if marker := (<-writes); marker != 3 {
+		t.Fatalf("target marker = %d, want 3", marker)
+	}
+	if err := waitResult(t, fullBudget); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitResult(t, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPathInstancesHaveIndependentVirtualTime(t *testing.T) {
 	clock := newFakeClock()
 	config := validConfig()

@@ -408,7 +408,10 @@ Common rules, either policy:
   byte-count domain is rejected before numeric conversion.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
-  `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.
+  `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
+  periodic probe or a padded PMTU probe that substitutes for that cadence slot;
+  a peer-requested reactive echo remains immediate. Config load requires
+  `Rp<R`.
   The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
   and all immediate and deadline-produced FEC parity by exact byte length. Inner
   handshake/cookie/keepalive frames use `C=Lmax` one buffer at a time but remain
@@ -421,11 +424,15 @@ Common rules, either policy:
   If a call starts with debt `P0`, allows one coincident post-call `Pburst`, and
   generated priority remains bounded by `Rp`, then
   `Dp=(P0+Pburst)/(R-Rp)` bounds admission; the obsolete `P0/R` expression omits
-  both the post-call burst and continuing priority traffic. With `Q=B+C`, local
-  egress is bounded by `Dp+Q/R+Lmax/R`; receiver delivery additionally includes
-  the active resequencer hold. Sustained authenticated on-demand outer CONTROL
-  beyond this `Rp`/`Pburst` model constitutes overload and invalidates the
-  bound; no live outer CONTROL protocol currently exists.
+  both the post-call burst and continuing priority traffic. Priority arrivals
+  in `[call, call+Dp)` may extend the captured deadline; after it matures, an
+  exact-boundary debit affects future reservations but cannot revoke this
+  call's admission eligibility. With `Q=B+C`, local egress is bounded by
+  `Dp+Q/R+Lmax/R`; receiver delivery additionally includes the active
+  resequencer hold. Built-in PMTU discovery remains inside this model because
+  it occupies periodic local probe slots. Sustained authenticated on-demand
+  outer CONTROL beyond this `Rp`/`Pburst` model constitutes overload and
+  invalidates the bound; no live outer CONTROL protocol currently exists.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=2,944 B`, and `Rp=14,720 B/s`.

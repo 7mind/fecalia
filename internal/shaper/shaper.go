@@ -257,6 +257,7 @@ func (s *Shaper) reserveDatagram(
 	batch *batchState,
 	index int,
 ) (reservation, error) {
+	var waitedPriorityDeadline time.Time
 	for {
 		s.mu.Lock()
 		if s.closed {
@@ -274,7 +275,14 @@ func (s *Shaper) reserveDatagram(
 		if priorityDelay < 0 {
 			priorityDelay = 0
 		}
-		if priorityDelay == 0 && s.capacityAvailable(class, size) {
+		if !waitedPriorityDeadline.IsZero() &&
+			now.Before(waitedPriorityDeadline) &&
+			s.priorityTail.After(waitedPriorityDeadline) {
+			waitedPriorityDeadline = s.priorityTail
+		}
+		priorityMatured := !waitedPriorityDeadline.IsZero() &&
+			!now.Before(waitedPriorityDeadline)
+		if (priorityDelay == 0 || priorityMatured) && s.capacityAvailable(class, size) {
 			deadline := s.tail
 			if deadline.Before(now) {
 				deadline = now
@@ -297,8 +305,9 @@ func (s *Shaper) reserveDatagram(
 
 		changed := s.changed
 		var timer Timer
-		if priorityDelay > 0 {
-			timer = s.clock.NewTimerAt(s.priorityTail)
+		if priorityDelay > 0 && !priorityMatured {
+			waitedPriorityDeadline = s.priorityTail
+			timer = s.clock.NewTimerAt(waitedPriorityDeadline)
 		}
 		s.mu.Unlock()
 

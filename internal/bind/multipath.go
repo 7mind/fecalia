@@ -262,6 +262,13 @@ type peerPathState struct {
 	// creation and immutable, so the receive goroutine reaches it lock-free via the
 	// peerPathState it already holds.
 	pmtuProbe *telemetry.EchoAwaitProbe
+	// pendingPMTU is the at-most-one padded probe waiting to consume this path's
+	// next ordinary probe-cadence slot. PMTU discovery is single-goroutine per path,
+	// so a second pending request is an invariant violation, not a queue to grow.
+	// generatedProbeMu also closes the request atomically with path teardown.
+	generatedProbeMu     sync.Mutex
+	pendingPMTU          *generatedProbeRequest
+	generatedProbeClosed bool
 
 	// txBytes/rxBytes are cumulative OUTER-wire byte counters for this (peer,path), the
 	// per-path traffic accounting the /metrics exposition reports (T23). Both are
@@ -730,32 +737,65 @@ func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 // this path has learned a remote — a transient startup condition, so the search stays
 // unconverged and retries on a later tick rather than treating it as a size verdict.
 var errNoPathRemote = errors.New("bind: path has no remote for PMTU probe")
+var errPMTUProbeAlreadyPending = errors.New("bind: path already has a pending PMTU probe")
+
+type generatedProbeRequest struct {
+	raw  []byte
+	done chan error
+}
+
+func (ps *peerPathState) enqueuePMTUProbe(raw []byte) error {
+	request := &generatedProbeRequest{
+		raw:  append([]byte(nil), raw...),
+		done: make(chan error, 1),
+	}
+	ps.generatedProbeMu.Lock()
+	switch {
+	case ps.generatedProbeClosed:
+		ps.generatedProbeMu.Unlock()
+		return errClosed
+	case ps.pendingPMTU != nil:
+		ps.generatedProbeMu.Unlock()
+		return errPMTUProbeAlreadyPending
+	default:
+		ps.pendingPMTU = request
+		ps.generatedProbeMu.Unlock()
+	}
+	return <-request.done
+}
+
+func (ps *peerPathState) takePMTUProbe() *generatedProbeRequest {
+	ps.generatedProbeMu.Lock()
+	defer ps.generatedProbeMu.Unlock()
+	request := ps.pendingPMTU
+	ps.pendingPMTU = nil
+	return request
+}
+
+func (ps *peerPathState) closeGeneratedProbes() {
+	ps.generatedProbeMu.Lock()
+	ps.generatedProbeClosed = true
+	request := ps.pendingPMTU
+	ps.pendingPMTU = nil
+	ps.generatedProbeMu.Unlock()
+	if request != nil {
+		request.done <- errClosed
+	}
+}
 
 // buildPMTUProbe constructs this path's PMTU echo-await backend once its prober and
-// shared socket are set (T227, defect D88). The send func writes the padded probe on
-// this path's OUTER socket to its learned/configured remote and maps a DF EMSGSIZE
-// (the T201 over-PMTU signal) to telemetry.ErrProbeTooLarge, so the binary search reads
-// an oversize probe as "too large" (echoed=false) rather than a transport fault. It
-// returns nil when the path has no prober (the probe transport is disabled), matching
-// pmtuProbe's nil-safe contract at the NotifyEcho call site.
+// shared socket are set (T227, defect D88). The send func queues the padded probe for
+// this path's next ordinary probe-cadence slot and blocks until emitProbes completes
+// that write. A padded probe therefore substitutes for, rather than adds to, the
+// periodic local probe stream. emitProbes preserves the DF EMSGSIZE mapping and exact
+// post-write accounting before completing the request. It returns nil when the path
+// has no prober (the probe transport is disabled), matching pmtuProbe's nil-safe
+// contract at the NotifyEcho call site.
 func (ps *peerPathState) buildPMTUProbe() *telemetry.EchoAwaitProbe {
 	if ps.prober == nil {
 		return nil
 	}
-	send := func(raw []byte) error {
-		remote, ok := ps.getRemote()
-		if !ok {
-			return errNoPathRemote
-		}
-		if _, err := ps.conn.WriteToUDPAddrPort(raw, remote); err != nil {
-			if errors.Is(err, syscall.EMSGSIZE) {
-				return telemetry.ErrProbeTooLarge
-			}
-			return err
-		}
-		return nil
-	}
-	return telemetry.NewEchoAwaitProbe(ps.prober, send, 0, nil)
+	return telemetry.NewEchoAwaitProbe(ps.prober, ps.enqueuePMTUProbe, 0, nil)
 }
 
 // PMTUProbe returns the PRIMARY peer's PMTU echo-await backend for the named path, or
@@ -3698,6 +3738,7 @@ func (m *Multipath) closeSocketsLocked() error {
 	// until no writer can race the socket teardown.
 	for _, p := range m.peers {
 		for _, pp := range p.paths {
+			pp.closeGeneratedProbes()
 			if pp.shaper != nil {
 				if err := pp.shaper.Close(); err != nil && firstErr == nil {
 					firstErr = err
@@ -4091,6 +4132,7 @@ func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) error {
 	if idx < 0 {
 		return nil
 	}
+	p.paths[idx].closeGeneratedProbes()
 	if p.paths[idx].shaper != nil {
 		if err := p.paths[idx].shaper.Close(); err != nil {
 			return err
