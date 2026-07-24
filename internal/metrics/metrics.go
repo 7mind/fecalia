@@ -67,10 +67,12 @@ const (
 	// still echoes, the operator-configured mtu on a pinned path, or the conservative
 	// floor before the first search converges. Sourced verbatim from PathSnapshot.PMTU.
 	MetricPathMTU = "wanbond_path_mtu"
-	// MetricProbeSendErrors is the per-path cumulative count of PROBE-frame socket
-	// write errors emitProbes has dropped (defect D96 item 4, composes with D90):
-	// a path whose probes cannot egress was previously indistinguishable from a
-	// path with 100% probe loss. Sourced verbatim from PathSnapshot.ProbeSendErrors.
+	// MetricProbeSendErrors is the per-path cumulative count of unexpected socket
+	// write failures for locally-originated ordinary and PMTU PROBE frames. Ordinary
+	// failures are counted but not returned to a caller; unexpected PMTU failures are
+	// counted and returned to discovery. Expected PMTU EMSGSIZE verdicts and reactive
+	// reflected-echo write failures are excluded. Sourced verbatim from
+	// PathSnapshot.ProbeSendErrors.
 	MetricProbeSendErrors         = "wanbond_path_probe_send_errors_total"
 	MetricShaperAcceptedDatagrams = "wanbond_path_shaper_accepted_datagrams_total"
 	MetricShaperEmittedDatagrams  = "wanbond_path_shaper_emitted_datagrams_total"

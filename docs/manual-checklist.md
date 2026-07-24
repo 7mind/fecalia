@@ -479,14 +479,16 @@ active-backup scheduler with pacing:
       path remains live and
       `wanbond_path_probe_send_errors_total` does not increase. Generated
       authenticated PROBE/echo frames bypass retained DATA and debit their exact
-      encoded length only after a successful direct write; an unexpected failed
-      write must increment the error counter without adding debt. A padded PMTU
-      request substitutes in an eligible local probe slot; the following slot
-      must be ordinary liveness before another PMTU attempt. PMTU `EMSGSIZE` is
-      the expected too-large verdict and does not increment that unexpected-error
-      counter. PMTU does not add a second local producer, while reactive echo
-      replies remain immediate. Confirm the PMTU timestamp begins in its selected
-      slot (cadence wait does not inflate the RTT sample).
+      encoded length only after a successful direct write. The counter includes
+      unexpected socket-write failures for locally-originated ordinary and PMTU
+      PROBE frames: an ordinary failure is counted but not returned to a caller,
+      while an unexpected PMTU failure is counted and returned to discovery.
+      Expected PMTU `EMSGSIZE` too-large verdicts and reactive reflected-echo
+      write failures are excluded. A padded PMTU request substitutes in an
+      eligible local probe slot; the following slot must be ordinary liveness
+      before another PMTU attempt. PMTU does not add a second local producer,
+      while reactive echo replies remain immediate. Confirm the PMTU timestamp
+      begins in its selected slot (cadence wait does not inflate the RTT sample).
 
 For interpreting a transient, let `P0` denote generated-priority debt at the
 start of a send call. With one coincident post-call `Pburst=2*Lmax`, sustained
