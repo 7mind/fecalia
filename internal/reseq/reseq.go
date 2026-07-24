@@ -262,8 +262,8 @@ type Resequencer struct {
 
 	fecActive bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
 	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
-	// scheduler, so single-key states are pre-engage transients — suppress immediate
-	// release entirely (see SetMultiPathExpected for the o3-measured rationale).
+	// scheduler — suppress immediate release entirely (see SetMultiPathExpected for the
+	// retained-pending-measurement rationale, defect D95, tasks:T293 branch 4).
 	multiPathExpected bool
 	pathKnown         bool      // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
 	trailKey          uint32    // the most recently observed known pathKey (the current single-path candidate)
@@ -330,14 +330,17 @@ func (r *Resequencer) SetFECActive(active bool) {
 
 // SetMultiPathExpected marks this stream as one whose sender runs an AGGREGATING
 // (weighted) scheduler, suppressing single-path immediate release entirely (D93 follow-up;
-// the o3 TestP2Aggregation regression). Immediate release is a SINGLE-PATH optimization:
-// on an aggregating bond the single-key state is only ever a pre-engage/ramp transient,
-// and o3 hardware A/B showed that skipping loss gaps instantly during that transient
-// starves TCP's offered load below the weighted engage threshold — the aggregation gate
-// never opens (the pre-fix hold's delayed bursts were, inadvertently, what pushed TCP
-// past it). Suppressing costs nothing real on a weighted bond: sustained striping is
-// multi-key (already held), and the transient windows revert to the pre-D93 status quo.
-// Active-backup — the D93 field target — never sets this and keeps the full benefit.
+// the o3 TestP2Aggregation regression). Immediate release is a SINGLE-PATH optimization,
+// and this suppression is RETAINED PENDING a link-bound-venue A/B — unmeasured,
+// default-under-uncertainty (defect D95, decisions:K35, tasks:T293 branch 4), NOT the
+// earlier burstiness-coupling theory (that gate-engagement narrative is superseded by the
+// frame-accurate offered-load fix, decisions:K35 §2). Whether the resequencer's reordering
+// buffer is load-bearing for genuine two-path striping on a weighted bond was left
+// unanswered: the only available measurement venue could not be caught link-bound in both
+// arms of the suppression A/B, so no controlled comparison exists either way. Removing this
+// suppression is authorised only by a link-bound-venue A/B where BOTH arms are link-bound
+// (a beefier host, or the real two-host setup) that shows it safe to remove.
+// Active-backup — the D93 field target — never sets this and keeps the full fast path.
 func (r *Resequencer) SetMultiPathExpected(expected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -984,11 +984,15 @@ gap waits. Two regimes set the actual hold:
    resumes only once a whole window has elapsed under a single key; FEC-active
    **suppresses** immediate release (parity may yet fill the gap); an
    **aggregating (weighted) bond suppresses it entirely**
-   (`SetMultiPathExpected` — on such a bond a single-key state is only a
-   pre-engage transient, and o3 A/B measurement showed instant loss exposure
-   there starves the aggregation engage heuristic's offered load, defect D95;
-   active-backup — the D93 field case — keeps the full fast path); and a
-   rebaseline (below) resets the trailing evidence.
+   (`SetMultiPathExpected` — RETAINED PENDING a link-bound-venue A/B —
+   unmeasured, default-under-uncertainty (defect D95, decisions:K35,
+   tasks:T293 branch 4). Whether the reordering buffer is load-bearing for
+   genuine two-path striping was left unanswered: the only available venue
+   could not be caught link-bound in both arms of the A/B, so the comparison
+   was not like-for-like. A link-bound-venue A/B where BOTH arms are
+   link-bound (a beefier host, or the real two-host setup) is what would
+   revisit it; active-backup — the D93 field case — keeps the full fast
+   path); and a rebaseline (below) resets the trailing evidence.
 
 This directly disarms the D93 amplifier — a single-path head-of-line stall that
 turned ordinary loss into a 250 ms-per-gap latency multiplier — without

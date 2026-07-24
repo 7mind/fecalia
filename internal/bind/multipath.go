@@ -86,8 +86,14 @@ func reseqPathKey(localID, framePathID uint8) uint32 {
 // the peer runs an AGGREGATING (weighted) scheduler (D93 follow-up; the o3
 // TestP2Aggregation regression — see reseq.SetMultiPathExpected). Immediate release is a
 // single-path optimization aimed at active-backup (the D93 field case); on a weighted
-// bond the single-key state is only a pre-engage transient, and skipping loss gaps
-// instantly there starves TCP's offered load below the aggregation engage threshold.
+// bond it is RETAINED PENDING a link-bound-venue A/B — unmeasured, default-under-
+// uncertainty (defect D95, decisions:K35, tasks:T293 branch 4). Whether the
+// resequencer's reordering buffer is load-bearing for genuine two-path striping (as
+// opposed to the earlier burstiness-coupling theory, superseded by the frame-accurate
+// offered-load fix) was NOT settled: the only available venue could not be caught
+// link-bound in both arms of the A/B, so the comparison was not like-for-like. What
+// would revisit this: a link-bound-venue A/B where BOTH arms are link-bound (a
+// beefier host, or the real two-host setup).
 func markMultiPathExpected(rq *reseq.Resequencer, scheduler sched.Scheduler) {
 	if rq == nil {
 		return
