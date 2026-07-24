@@ -504,8 +504,16 @@ reflected echo frames bypass retained DATA, write directly to the selected path
 socket, and call `AccountPriority` with the exact encoded length only after a
 successful write. A failed direct write creates no priority debt. A PMTU search
 queues at most one padded local probe per `(peer,path)` and that frame substitutes
-for the next ordinary local probe cadence slot. It therefore does not add a
-second local producer to `Rp`; a peer-requested reactive echo remains immediate.
+in the next eligible local probe cadence slot. The immediately following slot is
+reserved for ordinary liveness before another PMTU attempt, so consecutive
+immediate search failures cannot suppress the ordinary stream. Sequence
+allocation, timestamping, and echo-waiter registration happen only when the
+selected PMTU slot executes, excluding cadence wait from RTT and the echo
+deadline. PMTU therefore does not add a second local producer to `Rp`; a
+peer-requested reactive echo remains immediate. An unexpected socket failure
+preserves its transport error, increments the path's probe-send-error counter,
+and adds neither wire bytes nor debt. `EMSGSIZE` maps to the expected PMTU
+too-large verdict and does not count as an unexpected send failure.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
@@ -560,13 +568,15 @@ post-call burst `Pburst`, followed by generated priority traffic bounded by
 The denominator is the net debt-clearance rate, not `R`; the simpler `P0/R`
 bound fails as soon as the post-call burst or continuing `Rp` traffic exists.
 This covers both `P0=0` and non-zero existing debt, and the `R > Rp`
-constructor invariant makes `Dp` finite. Operationally, arrivals in the
-half-open interval `[call, call+Dp)` may extend the reservation's captured
-priority deadline. Once that deadline has matured (`now >= deadline`), a
-priority debit linearized at the exact boundary changes the tail seen by future
-reservations but cannot revoke this reservation's admission eligibility. Thus
-the admission bound is exactly `Dp`, with no additional timer or packet step.
-With `Q=B+C`, local socket egress occurs no later than
+constructor invariant makes `Dp` finite. Operationally, each blocked reservation
+registers a waiter under the shaper mutex. `AccountPriority` directly extends its
+deadline for arrivals in the half-open interval `[call, call+Dp)`, so an arrival
+at `Dp-epsilon` still applies even when the waiter does not run until the former
+deadline. Once that deadline has matured (`now >= deadline`), a priority debit
+linearized at the exact boundary changes the tail seen by future reservations
+but cannot revoke this reservation's admission eligibility. Thus the admission
+bound is exactly `Dp`, with no additional timer or packet step. With `Q=B+C`,
+local socket egress occurs no later than
 
 `Dp + Q/R + Lmax/R`.
 
@@ -577,7 +587,8 @@ hold.
 
 This bound covers the authenticated probe/echo workload from which `Pburst` and
 `Rp` are derived, including built-in PMTU discovery: each padded PMTU request
-occupies the next local periodic slot instead of generating extra traffic.
+occupies an eligible local periodic slot instead of generating extra traffic,
+and every such slot forces the next one to ordinary liveness.
 Sustained authenticated, on-demand outer CONTROL generation beyond that
 declared model constitutes explicit overload and invalidates the bound. No live
 outer CONTROL protocol currently exists; any future trusted local producer must
@@ -1966,12 +1977,15 @@ These are recorded design boundaries, not defects:
   `bind.DefaultPathMTU`; the discovered value flows through `PathSnapshot.PMTU`
   into the **T209 runtime resizer**, which auto-shrinks/regrows `wanbond0` live
   (re-probing on DOWN→UP, roam, and a slow refresh). Each padded request
-  substitutes for the next ordinary local 200 ms probe slot, so confirmation
-  retries remain inside the shaper's declared local-probe rate while reactive
-  echo replies remain immediate. Successful padded writes debit their exact
-  encoded length; failed writes add no debt, and `EMSGSIZE` remains the PMTU
-  search's explicit too-large result. An explicit `mtu` PINS the path (no
-  probing — operator override authoritative). See `docs/p1-mtu.md`.
+  substitutes in an eligible local 200 ms probe slot and forces the next slot to
+  ordinary liveness, so confirmation retries remain inside the shaper's declared
+  local-probe rate without starving liveness; reactive echo replies remain
+  immediate. Timestamping starts in the selected slot, excluding cadence wait
+  from RTT. Successful padded writes debit their exact encoded length; unexpected
+  failures preserve their error and increment the send-error counter without
+  adding debt, while `EMSGSIZE` remains the PMTU search's expected too-large
+  result. An explicit `mtu` PINS the path (no probing — operator override
+  authoritative). See `docs/p1-mtu.md`.
 
 ## References
 

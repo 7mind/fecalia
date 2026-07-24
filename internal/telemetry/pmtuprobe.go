@@ -52,6 +52,7 @@ const DefaultPMTUProbeDeadline = 1 * time.Second
 type EchoAwaitProbe struct {
 	prober   *Prober
 	send     func([]byte) error
+	dispatch func(func() error) error
 	deadline time.Duration
 	// after returns a channel that fires after d; time.After in production, injectable
 	// so unit tests drive the deadline deterministically with no real sleep.
@@ -69,6 +70,32 @@ var _ PMTUProbe = (*EchoAwaitProbe)(nil)
 // EMSGSIZE; a non-positive deadline uses DefaultPMTUProbeDeadline; a nil after uses
 // time.After (production).
 func NewEchoAwaitProbe(prober *Prober, send func([]byte) error, deadline time.Duration, after func(time.Duration) <-chan time.Time) *EchoAwaitProbe {
+	return newEchoAwaitProbe(prober, send, func(work func() error) error {
+		return work()
+	}, deadline, after)
+}
+
+// NewCadencedEchoAwaitProbe builds a probe backend whose dispatch function chooses
+// when one complete send attempt begins. dispatch must execute work synchronously
+// before returning. This lets a transport queue a PMTU request until an existing
+// cadence slot without generating its sequence or timestamp before that wait.
+func NewCadencedEchoAwaitProbe(
+	prober *Prober,
+	send func([]byte) error,
+	dispatch func(func() error) error,
+	deadline time.Duration,
+	after func(time.Duration) <-chan time.Time,
+) *EchoAwaitProbe {
+	return newEchoAwaitProbe(prober, send, dispatch, deadline, after)
+}
+
+func newEchoAwaitProbe(
+	prober *Prober,
+	send func([]byte) error,
+	dispatch func(func() error) error,
+	deadline time.Duration,
+	after func(time.Duration) <-chan time.Time,
+) *EchoAwaitProbe {
 	if deadline <= 0 {
 		deadline = DefaultPMTUProbeDeadline
 	}
@@ -78,6 +105,7 @@ func NewEchoAwaitProbe(prober *Prober, send func([]byte) error, deadline time.Du
 	return &EchoAwaitProbe{
 		prober:   prober,
 		send:     send,
+		dispatch: dispatch,
 		deadline: deadline,
 		after:    after,
 		pending:  make(map[uint64]chan struct{}),
@@ -85,34 +113,45 @@ func NewEchoAwaitProbe(prober *Prober, send func([]byte) error, deadline time.Du
 }
 
 // ProbePMTU sends a padded probe of onWire outer bytes and reports whether a matching
-// echo returned within the deadline. It satisfies telemetry.PMTUProbe. A returned err
-// leaves the search unconverged (the caller retries on a later tick); echoed=false
-// with err=nil is the benign "this size did not traverse" the binary search narrows on.
+// echo returned within the deadline. Sequence allocation, timestamping, registration,
+// and the echo deadline begin inside dispatch, so time waiting for a transport cadence
+// slot does not contaminate RTT or consume the echo timeout. It satisfies
+// telemetry.PMTUProbe. A returned err leaves the search unconverged (the caller retries
+// on a later tick); echoed=false with err=nil is the benign "this size did not
+// traverse" the binary search narrows on.
 func (e *EchoAwaitProbe) ProbePMTU(pathMTU int) (bool, error) {
-	// pathMTU is the candidate OUTER IP-level path MTU (the units the search and
-	// bind.InnerMTU use). Size the padded probe's socket datagram (its UDP payload)
-	// outerIPUDPOverhead bytes smaller so the resulting IP datagram is EXACTLY pathMTU: a
-	// returned echo confirms a pathMTU-sized outer datagram traversed the path.
-	raw, seq, err := e.prober.SendPaddedProbe(pathMTU - outerIPUDPOverhead)
+	var seq uint64
+	var ch chan struct{}
+	err := e.dispatch(func() error {
+		// pathMTU is the candidate OUTER IP-level path MTU (the units the search and
+		// bind.InnerMTU use). Generate and register inside the selected transport slot
+		// so its timestamp excludes any dispatch/cadence wait.
+		raw, generatedSeq, err := e.prober.SendPaddedProbe(pathMTU - outerIPUDPOverhead)
+		if err != nil {
+			return err
+		}
+		seq = generatedSeq
+		ch = e.register(seq)
+		return e.send(raw)
+	})
 	if err != nil {
-		// The derived on-wire size is outside the padded-probe bounds: a caller/config
-		// error, not a path verdict. Leave the search unconverged.
-		return false, err
-	}
-	ch := e.register(seq)
-	defer e.unregister(seq)
-
-	if serr := e.send(raw); serr != nil {
-		if errors.Is(serr, ErrProbeTooLarge) {
+		if ch != nil {
+			e.unregister(seq)
+		}
+		if errors.Is(err, ErrProbeTooLarge) {
 			// The kernel refused the oversize datagram under DF: a definitive "too large"
 			// verdict (echoed=false). Exclude the seq from loss — a deliberate, expected
 			// drop the search must not read as path loss.
-			e.prober.ExcludePaddedProbeLoss(seq)
+			if ch != nil {
+				e.prober.ExcludePaddedProbeLoss(seq)
+			}
 			return false, nil
 		}
-		// An unexpected transport failure: leave the search unconverged to retry.
-		return false, serr
+		// A generation or unexpected transport failure leaves the search unconverged
+		// so a later tick retries.
+		return false, err
 	}
+	defer e.unregister(seq)
 
 	select {
 	case <-ch:

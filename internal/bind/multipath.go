@@ -263,12 +263,15 @@ type peerPathState struct {
 	// peerPathState it already holds.
 	pmtuProbe *telemetry.EchoAwaitProbe
 	// pendingPMTU is the at-most-one padded probe waiting to consume this path's
-	// next ordinary probe-cadence slot. PMTU discovery is single-goroutine per path,
-	// so a second pending request is an invariant violation, not a queue to grow.
-	// generatedProbeMu also closes the request atomically with path teardown.
+	// next eligible probe-cadence slot. The slot after a PMTU attempt is reserved
+	// for ordinary liveness, so consecutive search failures cannot suppress it.
+	// PMTU discovery is single-goroutine per path, so a second pending request is an
+	// invariant violation, not a queue to grow. generatedProbeMu also closes the
+	// request atomically with path teardown.
 	generatedProbeMu     sync.Mutex
 	pendingPMTU          *generatedProbeRequest
 	generatedProbeClosed bool
+	ordinaryProbeDue     bool
 
 	// txBytes/rxBytes are cumulative OUTER-wire byte counters for this (peer,path), the
 	// per-path traffic accounting the /metrics exposition reports (T23). Both are
@@ -740,13 +743,13 @@ var errNoPathRemote = errors.New("bind: path has no remote for PMTU probe")
 var errPMTUProbeAlreadyPending = errors.New("bind: path already has a pending PMTU probe")
 
 type generatedProbeRequest struct {
-	raw  []byte
+	work func() error
 	done chan error
 }
 
-func (ps *peerPathState) enqueuePMTUProbe(raw []byte) error {
+func (ps *peerPathState) enqueuePMTUProbe(work func() error) error {
 	request := &generatedProbeRequest{
-		raw:  append([]byte(nil), raw...),
+		work: work,
 		done: make(chan error, 1),
 	}
 	ps.generatedProbeMu.Lock()
@@ -767,8 +770,15 @@ func (ps *peerPathState) enqueuePMTUProbe(raw []byte) error {
 func (ps *peerPathState) takePMTUProbe() *generatedProbeRequest {
 	ps.generatedProbeMu.Lock()
 	defer ps.generatedProbeMu.Unlock()
+	if ps.ordinaryProbeDue {
+		ps.ordinaryProbeDue = false
+		return nil
+	}
 	request := ps.pendingPMTU
 	ps.pendingPMTU = nil
+	if request != nil {
+		ps.ordinaryProbeDue = true
+	}
 	return request
 }
 
@@ -784,18 +794,35 @@ func (ps *peerPathState) closeGeneratedProbes() {
 }
 
 // buildPMTUProbe constructs this path's PMTU echo-await backend once its prober and
-// shared socket are set (T227, defect D88). The send func queues the padded probe for
-// this path's next ordinary probe-cadence slot and blocks until emitProbes completes
-// that write. A padded probe therefore substitutes for, rather than adds to, the
-// periodic local probe stream. emitProbes preserves the DF EMSGSIZE mapping and exact
-// post-write accounting before completing the request. It returns nil when the path
-// has no prober (the probe transport is disabled), matching pmtuProbe's nil-safe
-// contract at the NotifyEcho call site.
-func (ps *peerPathState) buildPMTUProbe() *telemetry.EchoAwaitProbe {
+// shared socket are set (T227, defect D88). The dispatch func queues the complete
+// generation/send work for this path's next eligible probe-cadence slot and blocks
+// until emitProbes executes it. Sequence allocation, timestamping, and echo-waiter
+// registration therefore happen in the actual slot, not before the cadence wait. A
+// padded probe substitutes for the ordinary local probe in that slot, and the next
+// slot is reserved for ordinary liveness before another PMTU request is eligible.
+// It returns nil when the path has no prober (the probe transport is disabled),
+// matching pmtuProbe's nil-safe contract at the NotifyEcho call site.
+func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe {
 	if ps.prober == nil {
 		return nil
 	}
-	return telemetry.NewEchoAwaitProbe(ps.prober, ps.enqueuePMTUProbe, 0, nil)
+	send := func(raw []byte) error {
+		remote, ok := ps.getRemote()
+		if !ok {
+			return errNoPathRemote
+		}
+		if _, err := ps.conn.WriteToUDPAddrPort(raw, remote); err != nil {
+			mapped := mapPMTUProbeWriteError(err)
+			if !errors.Is(mapped, telemetry.ErrProbeTooLarge) {
+				ps.probeSendErrors.Add(1)
+			}
+			return mapped
+		}
+		ps.txBytes.Add(uint64(len(raw)))
+		m.accountGeneratedPriorityAfterWrite(ps, len(raw))
+		return nil
+	}
+	return telemetry.NewCadencedEchoAwaitProbe(ps.prober, send, ps.enqueuePMTUProbe, 0, nil)
 }
 
 // PMTUProbe returns the PRIMARY peer's PMTU echo-await backend for the named path, or
@@ -1680,7 +1707,7 @@ func (m *Multipath) Open(port uint16) ([]ReceiveFunc, uint16, error) {
 					return nil, 0, fmt.Errorf("bind: peer %q prober set (len %d) is shorter than the path membership at index %d — per-peer prober fan-out desync", p.name, len(p.probers), i)
 				}
 				pp.prober = p.probers[i]
-				pp.pmtuProbe = pp.buildPMTUProbe()
+				pp.pmtuProbe = m.buildPMTUProbe(pp)
 				if pi == 0 {
 					// Reconcile the SHARED DATA-frame path-id to the PRIMARY prober's IMMUTABLE
 					// stamp rather than the slice index i: after a runtime RemovePath the survivor
@@ -4060,7 +4087,7 @@ func (m *Multipath) attachPeerPathLocked(p *peerState, shared *sharedPathState, 
 		return nil, err
 	}
 	pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec, prober: prober}
-	pp.pmtuProbe = pp.buildPMTUProbe()
+	pp.pmtuProbe = m.buildPMTUProbe(pp)
 	switch {
 	case def.DestAddr.IsValid():
 		// A path-specific dest_addr (multi-address fronting of the peer's active concentrator)

@@ -150,15 +150,23 @@ constraint lifts, with **no operator `mtu` knob required**.
   (nft `ip length > T` + `numgen inc mod 3`), the N-consecutive search converges
   at/below the reliably-carried threshold `T`, never running away to the ceiling.
 - **Shared probe cadence and pacing accounting (T300).** A discovery goroutine
-  queues one padded request per `(peer,path)` and waits for the next 200 ms local
-  probe slot; that padded frame substitutes for the ordinary liveness probe
-  instead of adding a second local producer. The default three confirmations
-  therefore serialize across three cadence slots, while a peer-requested
-  reactive echo remains immediate. A successful socket write increments wire
-  bytes and debits the path shaper by the exact padded encoded length. A failed
-  write adds neither, and `EMSGSIZE` returns the search's explicit
-  `ErrProbeTooLarge` result. This keeps built-in discovery within the pacing
-  `Pburst`/`Rp` envelope rather than treating PMTU traffic as overload.
+  queues one padded request per `(peer,path)` and waits for the next eligible
+  200 ms local probe slot; that padded frame substitutes for the ordinary
+  liveness probe instead of adding a second local producer. The following slot
+  is always ordinary before another PMTU attempt, so immediate consecutive
+  search failures cannot starve liveness. The default three confirmations
+  therefore occupy three PMTU slots separated by ordinary slots (at least five
+  slots from the first attempt through the third), while a peer-requested
+  reactive echo remains immediate. Sequence allocation, timestamping, and echo
+  registration occur in the selected PMTU slot, so queueing time contributes
+  neither to measured RTT nor the echo deadline. A successful socket write
+  increments wire bytes and debits the path shaper by the exact padded encoded
+  length. An unexpected failure preserves its transport error, increments the
+  probe-send-error counter, and adds neither wire bytes nor debt; `EMSGSIZE` maps
+  internally through `ErrProbeTooLarge` to the search's benign `echoed=false`
+  verdict without counting as an unexpected send failure. This keeps built-in
+  discovery within the pacing `Pburst`/`Rp` envelope rather than treating PMTU
+  traffic as overload.
 - **Optional safety margin.** `SafetyMargin` (bytes, default **0**) is
   subtracted from the *reported* path MTU (`PathMTU` / `PathMTUOrZero` and the
   usable envelope that composes on them) as an extra cushion below the

@@ -91,6 +91,10 @@ type batchState struct {
 	err         error
 }
 
+type priorityWaiter struct {
+	deadline time.Time
+}
+
 type Shaper struct {
 	config Config
 	clock  Clock
@@ -103,6 +107,7 @@ type Shaper struct {
 	inFlightBytes        int
 	tail                 time.Time
 	priorityTail         time.Time
+	priorityWaiters      map[*priorityWaiter]struct{}
 	changed              chan struct{}
 	closed               bool
 	calls                sync.WaitGroup
@@ -121,11 +126,12 @@ func New(config Config, clock Clock, write WriteFunc) (*Shaper, error) {
 	}
 
 	shaper := &Shaper{
-		config:     config,
-		clock:      clock,
-		write:      write,
-		changed:    make(chan struct{}),
-		workerDone: make(chan struct{}),
+		config:          config,
+		clock:           clock,
+		write:           write,
+		priorityWaiters: make(map[*priorityWaiter]struct{}),
+		changed:         make(chan struct{}),
+		workerDone:      make(chan struct{}),
 	}
 	go shaper.run()
 	return shaper, nil
@@ -257,7 +263,7 @@ func (s *Shaper) reserveDatagram(
 	batch *batchState,
 	index int,
 ) (reservation, error) {
-	var waitedPriorityDeadline time.Time
+	var waiter *priorityWaiter
 	for {
 		s.mu.Lock()
 		if s.closed {
@@ -271,18 +277,22 @@ func (s *Shaper) reserveDatagram(
 		}
 
 		now := s.clock.Now()
-		priorityDelay := s.priorityTail.Sub(now)
-		if priorityDelay < 0 {
-			priorityDelay = 0
+		if waiter == nil &&
+			(s.priorityTail.After(now) || !s.capacityAvailable(class, size)) {
+			waiter = &priorityWaiter{}
+			s.priorityWaiters[waiter] = struct{}{}
+			if s.priorityTail.After(now) {
+				waiter.deadline = s.priorityTail
+			}
+			defer s.unregisterPriorityWaiter(waiter)
 		}
-		if !waitedPriorityDeadline.IsZero() &&
-			now.Before(waitedPriorityDeadline) &&
-			s.priorityTail.After(waitedPriorityDeadline) {
-			waitedPriorityDeadline = s.priorityTail
-		}
-		priorityMatured := !waitedPriorityDeadline.IsZero() &&
-			!now.Before(waitedPriorityDeadline)
-		if (priorityDelay == 0 || priorityMatured) && s.capacityAvailable(class, size) {
+		priorityMatured := waiter != nil &&
+			!waiter.deadline.IsZero() &&
+			!now.Before(waiter.deadline)
+		priorityEligible := waiter == nil ||
+			waiter.deadline.IsZero() ||
+			priorityMatured
+		if priorityEligible && s.capacityAvailable(class, size) {
 			deadline := s.tail
 			if deadline.Before(now) {
 				deadline = now
@@ -305,9 +315,8 @@ func (s *Shaper) reserveDatagram(
 
 		changed := s.changed
 		var timer Timer
-		if priorityDelay > 0 && !priorityMatured {
-			waitedPriorityDeadline = s.priorityTail
-			timer = s.clock.NewTimerAt(waitedPriorityDeadline)
+		if waiter != nil && !waiter.deadline.IsZero() && !priorityMatured {
+			timer = s.clock.NewTimerAt(waiter.deadline)
 		}
 		s.mu.Unlock()
 
@@ -329,6 +338,12 @@ func (s *Shaper) reserveDatagram(
 		case <-timer.C():
 		}
 	}
+}
+
+func (s *Shaper) unregisterPriorityWaiter(waiter *priorityWaiter) {
+	s.mu.Lock()
+	delete(s.priorityWaiters, waiter)
+	s.mu.Unlock()
 }
 
 func (s *Shaper) capacityAvailable(class Class, size int) bool {
@@ -401,6 +416,11 @@ func (s *Shaper) AccountPriority(size int) error {
 		priorityBase = now
 	}
 	s.priorityTail = priorityBase.Add(s.byteDuration(size))
+	for waiter := range s.priorityWaiters {
+		if waiter.deadline.IsZero() || now.Before(waiter.deadline) {
+			waiter.deadline = s.priorityTail
+		}
+	}
 
 	tailBase := s.tail
 	if tailBase.Before(now) {

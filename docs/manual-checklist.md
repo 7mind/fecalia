@@ -479,10 +479,14 @@ active-backup scheduler with pacing:
       path remains live and
       `wanbond_path_probe_send_errors_total` does not increase. Generated
       authenticated PROBE/echo frames bypass retained DATA and debit their exact
-      encoded length only after a successful direct write; a failed write must
-      increment the error counter without adding debt. A padded PMTU request
-      substitutes for the next ordinary local probe slot; it does not add a
-      second local producer, while reactive echo replies remain immediate.
+      encoded length only after a successful direct write; an unexpected failed
+      write must increment the error counter without adding debt. A padded PMTU
+      request substitutes in an eligible local probe slot; the following slot
+      must be ordinary liveness before another PMTU attempt. PMTU `EMSGSIZE` is
+      the expected too-large verdict and does not increment that unexpected-error
+      counter. PMTU does not add a second local producer, while reactive echo
+      replies remain immediate. Confirm the PMTU timestamp begins in its selected
+      slot (cadence wait does not inflate the RTT sample).
 
 For interpreting a transient, let `P0` denote generated-priority debt at the
 start of a send call. With one coincident post-call `Pburst=2*Lmax`, sustained
@@ -493,12 +497,13 @@ bounded by `Dp+Q/R+Lmax/R`; receiver-visible delivery additionally includes the
 active resequencer hold for a missing lower outer sequence. These bounds cover
 the built-in PROBE/echo producer, including PMTU probes that occupy ordinary
 local cadence slots. Priority arrivals in the half-open interval
-`[call, call+Dp)` may extend the captured deadline; once it matures, an
-exact-boundary debit changes future reservations but cannot revoke the current
-call's eligibility, so admission needs no extra timer or packet step. Do not
-rely on these bounds if a future authenticated outer CONTROL producer sustains
-traffic beyond the declared `Rp`/`Pburst` model; that condition constitutes
-explicit overload.
+`[call, call+Dp)` update the registered waiter under the shaper lock even when
+its goroutine does not observe the change until the former deadline; once it
+matures, an exact-boundary debit changes future reservations but cannot revoke
+the current call's eligibility, so admission needs no extra timer or packet
+step. Do not rely on these bounds if a future authenticated outer CONTROL
+producer sustains traffic beyond the declared `Rp`/`Pburst` model; that condition
+constitutes explicit overload.
 
 ### Expected observations (D65 validation)
 

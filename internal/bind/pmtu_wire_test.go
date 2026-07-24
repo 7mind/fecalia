@@ -161,6 +161,28 @@ func TestPMTUProbeSuccessfulWriteAccountsExactPaddedBytes(t *testing.T) {
 	}
 }
 
+func TestPMTUProbeCadenceWaitDoesNotInflateMeasuredRTT(t *testing.T) {
+	psk := testKey(t, 0x2A)
+	clock := newFakeClock()
+	m, probers, _ := newProbingMultipath(t, loopbackPaths(1), psk, clock)
+	openWithPriorityRecorder(t, m, &priorityRecordingShaper{})
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+
+	result := startPMTUProbe(m.PMTUProbe("a"), 1500)
+	waitPendingPMTUProbe(t, m.paths[0])
+	clock.advance(199 * time.Millisecond)
+	m.emitProbes()
+	echoPMTUProbe(t, m, psk, peer, peerAP)
+	got := <-result
+	if got.err != nil || !got.echoed {
+		t.Fatalf("ProbePMTU = (%v, %v), want (true, nil)", got.echoed, got.err)
+	}
+	if got := probers[0].Estimate().RTT; got != 0 {
+		t.Fatalf("PMTU RTT = %v, want 0: queued cadence delay must precede timestamp/registration", got)
+	}
+}
+
 func TestPMTUProbeFailedWriteCreatesNoDebtOrWireBytes(t *testing.T) {
 	psk := testKey(t, 0x26)
 	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
@@ -179,11 +201,17 @@ func TestPMTUProbeFailedWriteCreatesNoDebtOrWireBytes(t *testing.T) {
 	if got.err == nil || got.echoed {
 		t.Fatalf("failed ProbePMTU = (%v, %v), want (false, write error)", got.echoed, got.err)
 	}
+	if !errors.Is(got.err, net.ErrClosed) {
+		t.Fatalf("failed ProbePMTU error = %v, want original net.ErrClosed identity", got.err)
+	}
 	if got := recorder.debitSnapshot(); len(got) != 0 {
 		t.Fatalf("failed PMTU write created priority debt %v", got)
 	}
 	if got := m.paths[0].txBytes.Load(); got != 0 {
 		t.Fatalf("failed PMTU write added txBytes = %d, want 0", got)
+	}
+	if got := m.paths[0].probeSendErrors.Load(); got != 1 {
+		t.Fatalf("failed PMTU write error count = %d, want 1", got)
 	}
 }
 
@@ -333,6 +361,43 @@ func TestPendingPMTUProbeUnblocksOnCloseAndPathRemoval(t *testing.T) {
 				t.Fatal("pending PMTU probe remained blocked after path teardown")
 			}
 		})
+	}
+}
+
+func TestPMTUProbeFailuresCannotConsumeConsecutiveLocalCadenceSlots(t *testing.T) {
+	psk := testKey(t, 0x2B)
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	_, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	if err := m.paths[0].conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	first := startPMTUProbe(m.PMTUProbe("a"), 1500)
+	waitPendingPMTUProbe(t, m.paths[0])
+	m.emitProbes()
+	if got := <-first; got.err == nil || got.echoed {
+		t.Fatalf("first failed ProbePMTU = (%v, %v), want (false, write error)", got.echoed, got.err)
+	}
+
+	second := startPMTUProbe(m.PMTUProbe("a"), 1499)
+	waitPendingPMTUProbe(t, m.paths[0])
+	m.emitProbes()
+	select {
+	case got := <-second:
+		t.Fatalf("second PMTU failure consumed the immediately following cadence slot: (%v, %v)", got.echoed, got.err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	m.emitProbes()
+	if got := <-second; got.err == nil || got.echoed {
+		t.Fatalf("second failed ProbePMTU = (%v, %v), want (false, write error)", got.echoed, got.err)
+	}
+	if got := m.paths[0].probeSendErrors.Load(); got != 3 {
+		t.Fatalf("two PMTU failures with intervening ordinary probe attempts counted %d errors, want 3", got)
 	}
 }
 

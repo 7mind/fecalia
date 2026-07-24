@@ -21,8 +21,9 @@ func mapPMTUProbeWriteError(err error) error {
 // emits one authenticated local PROBE frame (IsEcho=false) to that path's
 // learned/configured remote, then Ticks that path's Prober so liveness advances
 // against the injected clock. A pending PMTU probe occupies this local slot
-// instead of emitting an ordinary liveness probe; a reactive echo remains an
-// immediate write outside this cadence. A path without a known remote yet is
+// instead of emitting an ordinary liveness probe, but the following slot is
+// always ordinary before another PMTU request can run; a reactive echo remains
+// an immediate write outside this cadence. A path without a known remote yet is
 // still Ticked (so a silent path is detected Down) but nothing is sent — there
 // is nowhere to send.
 //
@@ -106,17 +107,7 @@ func (m *Multipath) emitProbes() {
 		t.ps.checkRemoteDead(now)
 		remote, hasRemote := t.ps.getRemote()
 		if request := t.ps.takePMTUProbe(); request != nil {
-			var writeErr error = errNoPathRemote
-			if hasRemote {
-				_, writeErr = t.ps.conn.WriteToUDPAddrPort(request.raw, remote)
-				if writeErr == nil {
-					t.ps.txBytes.Add(uint64(len(request.raw)))
-					m.accountGeneratedPriorityAfterWrite(t.ps, len(request.raw))
-				} else {
-					writeErr = mapPMTUProbeWriteError(writeErr)
-				}
-			}
-			request.done <- writeErr
+			request.done <- request.work()
 		} else if hasRemote {
 			if raw, err := t.pr.SendProbe(); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.

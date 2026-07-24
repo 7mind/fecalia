@@ -264,17 +264,24 @@ deliberate boundaries you must plan around:
   outer PROBE/echo frames bypass retained DATA and write immediately; each
   successful write then debits its exact encoded byte length, while a failed
   write creates no debt and already-admitted deadlines remain fixed.
-  A local padded PMTU probe substitutes for the next ordinary local probe slot
-  instead of adding another producer at that cadence; a peer-requested reactive
-  echo still writes immediately. The configured `Pburst=2*Lmax` therefore
-  covers one maximum local probe (ordinary or PMTU) plus one maximum echo.
+  A local padded PMTU probe substitutes in the next eligible local probe slot
+  instead of adding another producer at that cadence; the following slot is
+  always ordinary liveness before another PMTU attempt, while a peer-requested
+  reactive echo still writes immediately. PMTU sequence allocation, timestamping,
+  and echo registration begin in the selected slot, so queueing time does not
+  inflate path RTT. The configured `Pburst=2*Lmax` therefore covers one maximum
+  local probe (ordinary or PMTU) plus one maximum echo. An unexpected PMTU socket
+  failure preserves its error, increments the probe-send-error counter, and adds
+  neither wire bytes nor debt; `EMSGSIZE` remains the expected too-large verdict.
   For existing priority debt `P0`, a coincident `Pburst`, and sustained
   generated priority bounded by `Rp<R`, admission is bounded by
   `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; local egress is bounded by
   `Dp+(B+C)/R+Lmax/R`, and receiver delivery adds the active resequencer hold.
-  Priority arrivals in the half-open interval `[call, call+Dp)` may extend the
-  wait; once the captured deadline matures, an exact-boundary debit changes
-  only future admission and cannot revoke the waiting call's eligibility.
+  Priority arrivals in the half-open interval `[call, call+Dp)` update the
+  registered waiter's deadline under the shaper lock, even if that waiter does
+  not run until the former deadline; once the deadline matures, an exact-boundary
+  debit changes only future admission and cannot revoke the waiting call's
+  eligibility.
   Sustained on-demand authenticated outer CONTROL beyond the declared
   `Rp`/`Pburst` model constitutes overload; no live CONTROL protocol exists.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**

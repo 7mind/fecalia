@@ -13,9 +13,10 @@ import (
 )
 
 type fakeClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers map[*fakeTimer]struct{}
+	mu                  sync.Mutex
+	now                 time.Time
+	advanceAfterNextNow time.Duration
+	timers              map[*fakeTimer]struct{}
 }
 
 type fakeTimer struct {
@@ -56,7 +57,10 @@ func newFakeClock() *fakeClock {
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.now
+	now := c.now
+	c.now = c.now.Add(c.advanceAfterNextNow)
+	c.advanceAfterNextNow = 0
+	return now
 }
 
 func (c *fakeClock) NewTimerAt(deadline time.Time) Timer {
@@ -83,6 +87,12 @@ func (c *fakeClock) Advance(delay time.Duration) {
 func (c *fakeClock) MoveWithoutFiring(delay time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(delay)
+	c.mu.Unlock()
+}
+
+func (c *fakeClock) AdvanceAfterNextNow(delay time.Duration) {
+	c.mu.Lock()
+	c.advanceAfterNextNow = delay
 	c.mu.Unlock()
 }
 
@@ -869,6 +879,56 @@ func TestPriorityDebitAtMaturedDeadlineCannotRevokeAdmission(t *testing.T) {
 		defer shaper.mu.Unlock()
 		return shaper.retainedDataBytes == 1 && len(shaper.queue) == 1
 	})
+
+	clock.Advance(10 * time.Millisecond)
+	if err := waitResult(t, result); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPriorityDebitBeforeDeadlineExtendsDeferredWaiter(t *testing.T) {
+	clock := newFakeClock()
+	config := validConfig()
+	config.RateBytesPerSecond = 1_000
+	config.PriorityRateBytesPerSecond = 100
+	shaper, err := New(config, clock, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shaper.Close() }()
+
+	if err := shaper.AccountPriority(100); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- shaper.WriteBatch(context.Background(), ClassData, [][]byte{{1}})
+	}()
+	firstDeadline := clock.Now().Add(100 * time.Millisecond)
+	waitFor(t, func() bool {
+		return clock.HasActiveTimerAt(firstDeadline)
+	})
+
+	// The debit linearizes one nanosecond before the captured deadline, but the
+	// waiting goroutine does not observe the notification until the old deadline:
+	// the Clock returns D-epsilon to AccountPriority and atomically moves to D
+	// immediately afterward. Every debit in [call,D) must extend the waiter even
+	// when scheduling defers its observation until D.
+	clock.MoveWithoutFiring(100*time.Millisecond - time.Nanosecond)
+	clock.AdvanceAfterNextNow(time.Nanosecond)
+	if err := shaper.AccountPriority(10); err != nil {
+		t.Fatal(err)
+	}
+	clock.FireDue()
+	waitFor(t, func() bool {
+		return clock.HasActiveTimerAt(firstDeadline.Add(10 * time.Millisecond))
+	})
+	shaper.mu.Lock()
+	retainedAtOldDeadline := shaper.retainedDataBytes
+	shaper.mu.Unlock()
+	if retainedAtOldDeadline != 0 {
+		t.Fatalf("D-epsilon debit left %d DATA bytes admitted at old deadline D", retainedAtOldDeadline)
+	}
 
 	clock.Advance(10 * time.Millisecond)
 	if err := waitResult(t, result); err != nil {

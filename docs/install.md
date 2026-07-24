@@ -409,8 +409,10 @@ Common rules, either policy:
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
-  periodic probe or a padded PMTU probe that substitutes for that cadence slot;
-  a peer-requested reactive echo remains immediate. Config load requires
+  periodic probe or a padded PMTU probe that substitutes in an eligible cadence
+  slot; every PMTU slot forces the following slot to ordinary liveness, while a
+  peer-requested reactive echo remains immediate. PMTU timestamps start in the
+  selected slot, so cadence waiting does not inflate RTT. Config load requires
   `Rp<R`.
   The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
   and all immediate and deadline-produced FEC parity by exact byte length. Inner
@@ -425,9 +427,10 @@ Common rules, either policy:
   generated priority remains bounded by `Rp`, then
   `Dp=(P0+Pburst)/(R-Rp)` bounds admission; the obsolete `P0/R` expression omits
   both the post-call burst and continuing priority traffic. Priority arrivals
-  in `[call, call+Dp)` may extend the captured deadline; after it matures, an
-  exact-boundary debit affects future reservations but cannot revoke this
-  call's admission eligibility. With `Q=B+C`, local egress is bounded by
+  in `[call, call+Dp)` update the registered waiter under the shaper lock, even
+  if its goroutine observes that update only at the former deadline; after it
+  matures, an exact-boundary debit affects future reservations but cannot revoke
+  this call's admission eligibility. With `Q=B+C`, local egress is bounded by
   `Dp+Q/R+Lmax/R`; receiver delivery additionally includes the active
   resequencer hold. Built-in PMTU discovery remains inside this model because
   it occupies periodic local probe slots. Sustained authenticated on-demand
