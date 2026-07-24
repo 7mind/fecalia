@@ -2,9 +2,28 @@
 
 Base: `040256256470eec5af976d5477c4deb24652d731`
 
-Disposition: these tests intentionally fail under the `pacing_repro` build tag.
-T299 must convert or remove the bind RED cases, and T302 must convert or remove
-the netns RED case, before G35 completes.
+Disposition: historical RED evidence only. T302 promoted the bind cases into
+default-gate exact-byte counter regressions and replaced the tagged netns RED
+with the active TCP/counter envelope regression `TestPacingTCPByteEnvelope`.
+Neither executable artifact now carries the `pacing_repro` build tag.
+
+Before conversion, T302 also tested whether the old D112 GREEN adaptation
+actually exercised capacity. The following command failed only because its
+four tiny encoded frames never filled the 4416-byte budget:
+
+```sh
+nix develop --command go test -tags pacing_repro ./internal/bind \
+  -run 'TestPacingLossPolicerRepro/D112' -count=1 -v
+```
+
+```text
+AdmissionWaits:0 ... want capacity backpressure waits > 0
+```
+
+This fail-first witness rejected that vacuous fixture. The permanent full-B/C
+and aggregate-greater-than-B checks now use byte-sized reservations in
+`internal/shaper`, while the bind regression verifies exact wire-byte
+accounting across variable DATA sizes and size/deadline FEC closure.
 
 ## Deterministic bind reproduction
 

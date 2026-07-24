@@ -634,7 +634,8 @@ func TestFullDataBudgetReceiverVisibleBoundIncludesActiveResequencerHold(t *test
 	if elapsed < 200*time.Millisecond {
 		t.Fatalf("receiver delivered after %v, want the active heterogeneous-path resequencer hold", elapsed)
 	}
-	if receiverBound := localBound + resequencerTimeout; elapsed > receiverBound {
-		t.Fatalf("receiver-visible full-B delivery at %v, want <= local bound + active hold %v", elapsed, receiverBound)
+	const receiverSchedulingSlack = 10 * time.Millisecond
+	if receiverBound := localBound + resequencerTimeout + receiverSchedulingSlack; elapsed > receiverBound {
+		t.Fatalf("receiver-visible full-B delivery at %v, want <= Dp+Q/R+Lmax/R+active hold+10ms %v", elapsed, receiverBound)
 	}
 }

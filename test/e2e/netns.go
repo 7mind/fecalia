@@ -44,6 +44,7 @@ import (
 //	9113  multi_concentrator_warm_standby_test.go (mcMonitorListen; edge in the base netns,
 //	      a [monitor] endpoint — NOT /metrics — dialed directly over 127.0.0.1 for the /ws
 //	      snapshot and POST /api/exit control, the T261 multi-exit warm-standby e2e, G28/M108)
+//	9114  pacing_regression_repro_test.go (pacingCounterMetricsListen)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge

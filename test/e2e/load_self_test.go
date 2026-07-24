@@ -21,39 +21,28 @@ import (
 // build on. Two subtests:
 //
 //	(a) sustained-load-tx-bytes-and-metrics-sampling — drives an offered load
-//	    ABOVE the scheduler's engage_fraction*per_path_capacity_fps threshold but
-//	    AT OR BELOW its pacing capacity for >= 5s, so nothing is shed, and checks
+//	    below the declared exact-byte wire rate for >= 5s, and checks
 //	    the achieved rate lands within loadSelfTestToleranceFraction of the
 //	    target BOTH from the driver's own send accounting and from the daemon's
 //	    OWN wanbond_path_tx_bytes_total counter (sampled repeatedly, not just
 //	    before/after, by a MetricsSampler) — proving the driver is genuinely
 //	    rate-calibrated, not merely fire-and-forget.
-//	(b) log-capture-under-deliberate-overload — drives an offered load far ABOVE
-//	    the pacing capacity and asserts the log capturer observes the coalesced
-//	    "scheduler pacer shedding" record WHILE that load runs, plus confirms it
-//	    already captured the "path liveness transition" record from bring-up.
+//	(b) exact-byte-backpressure-under-deliberate-overload — drives an offered
+//	    load far above the declared wire rate, confirms admission waits rather
+//	    than scheduler shedding, and confirms the log capturer already captured
+//	    the "path liveness transition" record from bring-up.
 const (
-	// loadSelfTestRateMbit is the netem egress cap on the emulated path (~5 Mbit,
-	// per the T141 acceptance) — the "rate-capped path" the daemon's own pacing
-	// capacity (loadSelfTestCapacityFPS below) is deliberately set BELOW, so the
-	// daemon's token bucket — not the netem link — is what governs whether a
-	// frame is shed in subtest (b).
+	// loadSelfTestRateMbit is both the netem cap and the declared exact-byte wire
+	// rate, so overload exercises daemon admission without a unit conversion.
 	loadSelfTestRateMbit = 5
 
-	// loadSelfTestCapacityFPS is the weighted scheduler's per_path_capacity_fps
-	// under test: both the aggregation-gate denominator and (with pacing_enabled)
-	// the per-path token-bucket refill rate (internal/sched/weighted.go). At the
-	// default EngageFraction=0.9 the engage threshold is 0.9*400=360 fps.
-	loadSelfTestCapacityFPS = 400.0
-
-	// loadSelfTestSustainedFPS is subtest (a)'s target offered load: above the
-	// 360-fps engage threshold, but at/below the 400-fps pacing capacity, so a
-	// steady sender is not shed and the sent/tx-bytes comparison is well-defined.
+	// loadSelfTestSustainedFPS is subtest (a)'s target offered load: its payload
+	// rate remains below the declared wire rate, so the sent/tx comparison is
+	// well-defined without overload backpressure.
 	loadSelfTestSustainedFPS = 380.0
 
 	// loadSelfTestOverloadFPS is subtest (b)'s deliberately-excessive target,
-	// several times loadSelfTestCapacityFPS plus the default 64-frame pacing
-	// burst, so shedding is certain within one shedLogInterval (1s).
+	// several times the byte rate, so capacity backpressure must occur.
 	loadSelfTestOverloadFPS = 3000.0
 
 	// loadSelfTestPayloadBytes is each UDP datagram's payload size — comfortably
@@ -70,8 +59,8 @@ const (
 	// loadSelfTestSustainedDuration is subtest (a)'s load duration: the >= 5s the
 	// T141 acceptance requires, plus margin.
 	loadSelfTestSustainedDuration = 6 * time.Second
-	// loadSelfTestOverloadDuration is subtest (b)'s load duration: several
-	// shedLogInterval (1s) periods, so the coalesced shed record has time to fire.
+	// loadSelfTestOverloadDuration is long enough to accumulate observable
+	// admission waits.
 	loadSelfTestOverloadDuration = 4 * time.Second
 
 	// loadSelfTestSampleInterval is the MetricsSampler's poll cadence during
@@ -83,9 +72,8 @@ const (
 	// stray from the target — the T141 acceptance's +/-20% band.
 	loadSelfTestToleranceFraction = 0.20
 
-	// loadSelfTestSettle lets the weighted scheduler's offered-load meter and
-	// pacing buckets reach steady state after tunnel bring-up before any load is
-	// offered (mirrors pacingSettle's rationale).
+	// loadSelfTestSettle lets path liveness and metrics reach steady state after
+	// tunnel bring-up before any load is offered.
 	loadSelfTestSettle = 2 * time.Second
 
 	// loadSelfTestSinkPort is the UDP load sink's port on the concentrator inner
@@ -164,7 +152,7 @@ func TestLoadDriverSelfTest(t *testing.T) {
 		}
 	})
 
-	t.Run("log-capture-under-deliberate-overload", func(t *testing.T) {
+	t.Run("exact-byte-backpressure-under-deliberate-overload", func(t *testing.T) {
 		upSeen := false
 		for _, l := range ParseLogLines(edge.log()) {
 			if l.Msg == "path liveness transition" {
@@ -176,29 +164,62 @@ func TestLoadDriverSelfTest(t *testing.T) {
 			t.Fatalf("expected >= 1 %q record captured from tunnel bring-up, found none\n%s", "path liveness transition", edge.log())
 		}
 
-		top.DriveUDPLoad(t, edgeInner, sinkAddr, UDPLoadSpec{
+		before := waitPathShaperDrained(t, loadSelfTestMetricsURL, loadSelfTestPath.name)
+		result := top.DriveUDPLoad(t, edgeInner, sinkAddr, UDPLoadSpec{
 			TargetFPS:    loadSelfTestOverloadFPS,
 			PayloadBytes: loadSelfTestPayloadBytes,
 			Duration:     loadSelfTestOverloadDuration,
 		})
-
-		line, ok := AwaitLogLine(t, edge, "scheduler pacer shedding", 5*time.Second)
-		if !ok {
-			t.Fatalf("expected a %q record within 5s of driving %.0f fps (well above the %.0f-fps pacing capacity) but none appeared\n%s",
-				"scheduler pacer shedding", loadSelfTestOverloadFPS, loadSelfTestCapacityFPS, edge.log())
+		after := waitPathShaperDrained(t, loadSelfTestMetricsURL, loadSelfTestPath.name)
+		delta := func(name string) float64 {
+			a, ok := after.PathValue(name, loadSelfTestPath.name)
+			if !ok {
+				t.Fatalf("after scrape missing %s{path=%q}", name, loadSelfTestPath.name)
+			}
+			b, ok := before.PathValue(name, loadSelfTestPath.name)
+			if !ok {
+				t.Fatalf("before scrape missing %s{path=%q}", name, loadSelfTestPath.name)
+			}
+			return a - b
 		}
-		shed, _ := line.FieldFloat("shed_frames")
-		t.Logf("log capturer observed %q (shed_frames=%.0f) under deliberate overload (%.0f fps offered vs %.0f fps pacing capacity)",
-			line.Msg, shed, loadSelfTestOverloadFPS, loadSelfTestCapacityFPS)
+		if waits := delta(metrics.MetricShaperAdmissionWaits); waits <= 0 {
+			t.Fatalf("overload admission waits delta = %.0f, want positive exact-byte backpressure", waits)
+		}
+		if accepted, emitted := delta(metrics.MetricShaperAcceptedBytes), delta(metrics.MetricShaperEmittedBytes); accepted <= 0 || emitted <= 0 {
+			t.Fatalf("overload accepted/emitted byte deltas = %.0f/%.0f, want both positive", accepted, emitted)
+		} else if accepted != emitted {
+			t.Fatalf("drained overload accepted/emitted byte deltas = %.0f/%.0f, want exact reconciliation", accepted, emitted)
+		}
+		if accepted, emitted := delta(metrics.MetricShaperAcceptedDatagrams), delta(metrics.MetricShaperEmittedDatagrams); accepted <= 0 || accepted != emitted {
+			t.Fatalf("drained overload accepted/emitted datagram deltas = %.0f/%.0f, want equal positive counters", accepted, emitted)
+		}
+		for _, name := range []string{
+			metrics.MetricProbeSendErrors,
+			metrics.MetricShaperWriteErrors,
+			metrics.MetricSocketWriteErrors,
+			metrics.MetricShaperAdmissionCanceledDatagrams,
+			metrics.MetricShaperAsyncWriteErrors,
+			metrics.MetricShaperAsyncWriteErrorBytes,
+			metrics.MetricShaperAsyncWriteEMSGSIZEErrors,
+			metrics.MetricShaperAsyncWriteEMSGSIZEBytes,
+		} {
+			if got := delta(name); got != 0 {
+				t.Fatalf("%s delta = %.0f, want zero under capacity backpressure", name, got)
+			}
+		}
+		for _, line := range ParseLogLines(edge.log()) {
+			if line.Msg == "scheduler pacer shedding" {
+				t.Fatalf("exact-byte overload emitted legacy shedding record: %+v", line)
+			}
+		}
+		t.Logf("exact-byte overload: sent=%d achieved=%.0f fps, waits=%.0f, no cancellation/write failure or legacy shedding",
+			result.SentFrames, result.AchievedFPS, delta(metrics.MetricShaperAdmissionWaits))
 	})
 }
 
 // setupLoadSelfTestTunnel brings up the edge+concentrator tunnel over
-// loadSelfTestPath with the weighted scheduler (per_path_capacity_fps set
-// directly, pacing_enabled), /metrics, and info-level structured logging enabled
-// on both ends — info level (unlike most e2e tests' "error") is what makes the
-// "path liveness transition" and "scheduler pacer shedding" records observable to
-// the log capturer.
+// loadSelfTestPath with weighted selection and BDP-derived exact-byte shaping,
+// /metrics, and info-level structured logging enabled on both ends.
 func setupLoadSelfTestTunnel(t *testing.T, top *Topology, bin string) (edge, conc *proc) {
 	t.Helper()
 
@@ -207,7 +228,8 @@ func setupLoadSelfTestTunnel(t *testing.T, top *Topology, bin string) (edge, con
 	psk := randKey(t)
 	p := loadSelfTestPath
 
-	schedBlock := fmt.Sprintf("[scheduler]\npolicy = \"weighted\"\nper_path_capacity_fps = %.1f\npacing_enabled = true\n\n", loadSelfTestCapacityFPS)
+	linkBlock := fmt.Sprintf("link_bandwidth = %q\nlink_rtt = %q\n", fmt.Sprintf("%dMbit", loadSelfTestRateMbit), "10ms")
+	schedBlock := "[scheduler]\npolicy = \"weighted\"\npacing_enabled = true\n\n"
 	metricsBlock := fmt.Sprintf("[metrics]\nlisten = %q\n\n", loadSelfTestMetricsListen)
 
 	dir := t.TempDir()
@@ -218,7 +240,7 @@ psk = "%s"
 name = %q
 source_addr = "%s"
 dest_addr = "%s:%d"
-
+%s
 %s%s[wireguard]
 private_key = "%s"
 
@@ -229,7 +251,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, psk, p.name, p.edgeIP, p.concIP, listenPort, schedBlock, metricsBlock, edgePriv, concPub, p.concIP, listenPort, concInner))
+`, psk, p.name, p.edgeIP, p.concIP, listenPort, linkBlock, schedBlock, metricsBlock, edgePriv, concPub, p.concIP, listenPort, concInner))
 
 	concCfg := writeConfig(t, filepath.Join(dir, "conc.toml"), fmt.Sprintf(`role = "concentrator"
 psk = "%s"
@@ -237,7 +259,7 @@ psk = "%s"
 [[paths]]
 name = %q
 source_addr = "%s"
-
+%s
 %s%s[wireguard]
 private_key = "%s"
 listen_port = %d
@@ -248,7 +270,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, psk, p.name, p.concIP, schedBlock, metricsBlock, concPriv, listenPort, edgePub, edgeInner))
+`, psk, p.name, p.concIP, linkBlock, schedBlock, metricsBlock, concPriv, listenPort, edgePub, edgeInner))
 
 	conc = top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", concCfg)
 	edge = top.startProc(t, "edge", bin, "--config", edgeCfg)
