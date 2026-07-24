@@ -117,8 +117,9 @@ func TestFECActiveKeepsFullHoldAndRecoveryFills(t *testing.T) {
 // TestMultiPathExpectedSuppressesImmediateRelease pins the weighted-bond suppression
 // (D93 follow-up; the o3 TestP2Aggregation regression): with SetMultiPathExpected(true) a
 // single-pathKey gap is NOT fast-released — it waits the full hold like the pre-D93
-// behaviour — because on an aggregating bond the single-key state is only a pre-engage
-// transient and instant loss exposure starves the engage heuristic's offered load.
+// behaviour — because the suppression is RETAINED PENDING a link-bound-venue A/B,
+// default-under-uncertainty (defect D95, decisions:K35, tasks:T287/T293 branch 4), not the
+// earlier burstiness-coupling theory (superseded by the frame-accurate offered-load fix).
 func TestMultiPathExpectedSuppressesImmediateRelease(t *testing.T) {
 	clk := newFakeClock()
 	r := reseq.New(64, 250*time.Millisecond, clk)

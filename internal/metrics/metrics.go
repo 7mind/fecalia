@@ -587,7 +587,7 @@ func NewCollector(src Source) prometheus.Collector {
 		reseqImmediateReleases: desc(resequencerSubsystem, "immediate_releases_total", "Head-of-line gaps released via the D93 single-delivering-path fast path (counted distinctly from timeout skips; rising = the D93 amplifier is disarmed).", peerScopedLabels),
 
 		aggregationEngaged:    desc(aggregationSubsystem, "engaged", "Weighted-scheduler aggregation gate (1 = striping across every eligible path, 0 = collapsed to primary-only).", peerScopedLabels),
-		offeredLoad:           desc("", "offered_load_fps", "Smoothed offered load in frames/second (EWMA of Pick calls) driving the aggregation gate.", peerScopedLabels),
+		offeredLoad:           desc("", "offered_load_fps", "Smoothed offered load in wire frames/second (inner data plus any FEC parity egressing on the chosen path, EWMA) driving the aggregation gate.", peerScopedLabels),
 		aggregationEngageTh:   desc(aggregationSubsystem, "engage_threshold_fps", "Static engage threshold in frames/second (engage_fraction * per_path_capacity_fps): offered load above which the gate engages.", peerScopedLabels),
 		aggregationDisengageT: desc(aggregationSubsystem, "disengage_threshold_fps", "Static disengage threshold in frames/second (disengage_fraction * per_path_capacity_fps): offered load below which, sustained, the gate collapses.", peerScopedLabels),
 
