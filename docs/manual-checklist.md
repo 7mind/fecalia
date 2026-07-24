@@ -228,8 +228,9 @@ with the weighted-aggregation scheduler so bonding engages under load:
 ```toml
 [scheduler]
 policy = "weighted"
-# per_path_capacity_fps sizes the aggregation gate to ~one uplink's frame rate;
-# tune it to the slower uplink's sustained frame rate (bytes/s ÷ inner MTU).
+# per_path_capacity_fps sizes the aggregation gate to ~one uplink's WIRE frame
+# rate (data + any FEC parity); tune it to the slower uplink's sustained wire
+# frame rate (bytes/s ÷ on-wire frame bytes, install.md §3a).
 ```
 
 Inner addresses assume concentrator `10.77.0.1`, edge `10.77.0.2`. `THRU()` below is

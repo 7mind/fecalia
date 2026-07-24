@@ -626,6 +626,91 @@ self-contradictory and must be corrected before the daemon will run at all
 (see install.md §3a for how to size `per_path_capacity_fps`/BDP; not
 restated here).
 
+**Upgrade/behaviour note: the offered-load estimator now counts WIRE FRAMES,
+not `Send` batches (defect D95, decisions:K35, G33).**
+
+- **(0) The defect and the fix.** `Multipath.Send` calls `Pick` exactly ONCE
+  per `Send` batch, so `wanbond_offered_load_fps` used to count BATCHES/s, not
+  wire FRAMES/s, despite its name and help text — a batch factor measured at
+  1.52× at a data-thrift load and up to 3.07× at saturation. One `Pick` now
+  observes `N` offered wire frames (`Scheduler.Pick(class, frames)`) and folds
+  them into the load estimate in one decay step. No new saturation/dwell knob
+  was added: with a frame-accurate estimator the EXISTING engage/disengage
+  gate is sufficient with margin on both sides (K35 §3d); see §4(i) for the
+  rejected saturation-dwell alternative.
+- **(i) The gate logic is unchanged; the trigger point moves.**
+  `updateGateLocked` is textually untouched, so the hysteresis band,
+  `CollapseDwell`, `belowSince` backdating and the idle-gap fast-collapse
+  behave exactly as before — but their INPUT is now frame-accurate, so for an
+  UNCHANGED `per_path_capacity_fps` both thresholds fire at a REAL offered
+  load lower by the batch factor. At the shipped default 10000, collapse
+  moves from roughly 7500–15000 real wire fps to 5000, and engage from
+  roughly 13700–27600 to 9000. The metered (5G) path therefore stays engaged
+  down to a LOWER real load than before — the direction that costs a metered
+  user money. An operator who empirically tuned `per_path_capacity_fps`
+  against the OLD batch-denominated meter must RE-DERIVE it from
+  `bandwidth/(8 * wire frame bytes)`; an operator who already sized it the
+  documented way gets the behaviour their sizing always intended. The
+  5G-idle thrift guarantee is preserved BY MARGIN, not by construction:
+  measured ~1042–1061 wire fps at the 12 Mbit thrift load against a 1500
+  disengage threshold at the fixture's 3000-fps capacity (~40% headroom,
+  tasks:T284), asserted at unit level (tasks:T290 step 4e1) and on hardware
+  (tasks:T288 criterion 3). **That ~40% figure is an FEC-OFF figure** — every
+  one of those numbers was measured with FEC disabled; see (iii) below for
+  the FEC-enabled case.
+- **(ii) An enabled pacer now binds at the declared rate.** Pacing is OFF by
+  default, so most deployments see no change. Where pacing IS enabled, the
+  token bucket previously refilled in wire frames/s but spent ONE token per
+  `Send` batch, so it admitted roughly 1.5–3× the declared link bandwidth; it
+  now charges one token per frame and binds at the declared rate. An operator
+  who compensated by inflating `per_path_capacity_fps` must remove that
+  compensation (tasks:T291).
+- **(iii) FEC parity is counted as offered load.**
+  - **(iii-a) The rule:** parity frames count as offered load (and are
+    charged to the pacer), because they egress on the same chosen path and
+    consume the same wire capacity; with FEC enabled at K data + M parity the
+    gate therefore sees the WIRE rate, not the demand rate.
+  - **(iii-b) The consequence, stated plainly:** the thrift/5G-idle margin is
+    a WIRE-frame margin, so the margin available to user DEMAND is divided by
+    the FEC expansion factor `f = (K+M)/K`. The gate collapses at an
+    idle-ish load only while `f * (idle wire-frame rate of the DATA alone)`
+    stays below `disengage = 0.5 * per_path_capacity_fps`. On the measured 40
+    Mbit path with a 12 Mbit trickle (~1042–1061 data fps) that is `f` below
+    ~1.41 against the fixture's declared capacity 3000, and below ~1.60
+    against the path's honest wire capacity (~3400–3570 fps). So a static
+    4+2 group (`f = 1.50`) still collapses under correctly-sized capacity but
+    NOT under an under-declared one, and 4+3 (1.75), 4+4 (2.0) or adaptive
+    FEC driven above ~1.6 do NOT collapse at all: the metered path keeps
+    carrying data at an idle-ish load. Above that factor the gate is not
+    misbehaving — the path genuinely occupies more than `disengage_fraction`
+    of its wire capacity.
+  - **(iii-c) The operator remedy, in imperative form:** size
+    `per_path_capacity_fps` from the WIRE rate INCLUDING parity
+    (`bandwidth/(8 * on-wire frame bytes)`) — never from goodput — or the
+    metered path will not collapse; and on a metered bond ALSO bound the
+    expansion factor, i.e. cap `parity_shards` relative to `data_shards` (or
+    leave adaptive FEC off), so that `fCeil = (data_shards + parity_shards) /
+    data_shards` stays below `f_max = disengage_fraction * per_path_capacity_fps
+    / D`. **`D` is your expected idle rate of DATA frames ALONE — the
+    PRE-EXPANSION demand rate — NOT the post-expansion wire rate.** Because
+    `parity_shards` is a HARD CEILING enforced at config load even in
+    adaptive mode (`internal/config/config.go:454-458` — the controller can
+    only drive the realised per-group parity DOWN from that ceiling), `fCeil`
+    is statically verifiable from your own TOML: worked example — a 40 Mbit
+    path with ~1400 B on-wire frames gives `per_path_capacity_fps ≈ 3400`
+    wire fps; a 12 Mbit idle trickle is `D ≈ 1050` DATA fps (pre-expansion);
+    the bound is `fCeil < 0.5 * 3400 / 1050 = 1.62`, so `data_shards=4` /
+    `parity_shards=2` (`fCeil = 1.50`) is admissible while 4+3 (`fCeil =
+    1.75`) is not.
+  - **(iii-d) Residual limitations:** the parity count is carried into the
+    NEXT batch's observation, a lag bounded by one batch and immaterial
+    against the 200 ms `load_tau`; the FEC-ON boundary above is asserted at
+    unit level only (tasks:T290 step 4e2/4b(j)) and is NOT measured on
+    hardware — tasks:T288 criterion 3 is FEC-OFF by scope; and per
+    defects:D108, parity is charged to the pacer but never itself admitted or
+    shed, so an enabled pacer with FEC absorbs parity by running the bucket
+    negative rather than by admission control.
+
 ### Concentrator hub failover — `internal/device` (`failover.go`, T57)
 
 Two *different* failovers exist and must not be conflated:

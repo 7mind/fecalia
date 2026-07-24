@@ -358,6 +358,14 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   Active-backup: explicit per-path pacing
                                    #   refill rate (replicated across paths) when
                                    #   no link_bandwidth is declared. > 0 when set.
+                                   #   UNIT: offered WIRE FRAMES per second on one
+                                   #   path — inner data frames PLUS any FEC parity
+                                   #   frames that egress on that path. Size it from
+                                   #   the path's WIRE rate, bandwidth/(8 * on-wire
+                                   #   frame bytes) — NEVER from goodput or from a
+                                   #   data rate net of FEC overhead — or the gate's
+                                   #   thrift-side margin is spent (see install.md
+                                   #   §3a for the sizing recipe and the FEC remedy).
 # engage_fraction    = 0.9         # DEFAULT 0.9. Weighted only. Engage
                                    #   aggregation above engage_fraction *
                                    #   capacity. In (0, 1].

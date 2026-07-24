@@ -151,11 +151,19 @@ func (p SchedulerPolicy) valid() bool {
 // measured BDP in a bandwidth-capped fixture (P0 findings §7, deferred to T35/T23),
 // so the shipped default leaves pacing DISABLED and only bounds distribution.
 const (
-	// defaultPerPathCapacityFPS is the reference per-path capacity, in frame-selection
-	// slots per second, that the aggregation load-gate compares offered load against
-	// AND (when pacing is enabled) the per-path token-bucket refill rate. It is a
-	// synthetic proxy for path capacity: there is no measured BDP (P0 §7), so capacity
-	// is expressed in the only unit the scheduler sees — Pick() invocations per second.
+	// defaultPerPathCapacityFPS is the reference per-path capacity, in OFFERED WIRE
+	// FRAMES per second on that one path (inner data frames PLUS any FEC parity
+	// frames that egress on the chosen path), that the aggregation load-gate compares
+	// offered load against AND (when pacing is enabled) the per-path token-bucket
+	// refill rate. It is a synthetic proxy for path capacity: there is no measured BDP
+	// (P0 §7), so this default is a bring-up placeholder. When an operator sizes the
+	// knob for real, the NORMATIVE derivation is bandwidth_bits_per_sec / (8 *
+	// avg_wire_frame_bytes) — SizePacingFromBDP below is the programmatic form of the
+	// same derivation — computed from the path's WIRE rate, NEVER from expected
+	// goodput or from a data rate net of FEC overhead (decisions:K35 §3h): parity
+	// egresses on the same wire and consumes the same capacity, so a capacity sized
+	// net of FEC under-declares the path and spends the disengage-direction margin
+	// (defects:D95, tasks:T292).
 	defaultPerPathCapacityFPS = 10000.0
 	// defaultEngageFraction engages aggregation once offered load exceeds this
 	// fraction of one path's capacity — i.e. a single path is nearly saturated.
@@ -171,8 +179,9 @@ const (
 	// lull does not repeatedly park then re-engage the metered path.
 	defaultCollapseDwell = 2 * time.Second
 	// defaultLoadTau is the time constant of the exponentially-weighted offered-load
-	// rate estimator. It smooths the instantaneous Pick() arrival rate so the gate
-	// reacts to sustained load, not single-frame bursts.
+	// rate estimator. It smooths the instantaneous offered wire-frame arrival rate
+	// (data plus any FEC parity, folded per Pick call — tasks:T290) so the gate
+	// reacts to sustained load, not single-batch bursts.
 	defaultLoadTau = 200 * time.Millisecond
 	// defaultPacingBurstFrames is the per-path token-bucket burst (in frame slots)
 	// when pacing is enabled: the bucket admits up to this many frames instantaneously
@@ -213,13 +222,16 @@ type SchedulerConfig struct {
 	// aggregation gate even with pacing off; under active-backup it is inert with
 	// pacing off.
 	PacingEnabled bool `toml:"pacing_enabled"`
-	// PerPathCapacityFPS is the reference per-path capacity in frame-selection slots
-	// per second: under the weighted policy it is the denominator the aggregation
+	// PerPathCapacityFPS is the reference per-path capacity in OFFERED WIRE FRAMES per
+	// second on that one path (inner data frames PLUS any FEC parity frames egressing
+	// on it): under the weighted policy it is the denominator the aggregation
 	// load-gate compares offered load against AND (when PacingEnabled) the shared
 	// per-path pacing refill rate; under active-backup it is an explicit pacing refill
 	// rate (replicated across paths). Must be > 0 under the weighted policy, and — when
 	// pacing is enabled under active-backup WITHOUT a declared link_bandwidth — it (with
-	// pacing_burst_frames) is the required explicit pace source.
+	// pacing_burst_frames) is the required explicit pace source. Size it from the
+	// path's WIRE rate, bandwidth/(8 * on-wire frame bytes) — never from goodput or
+	// from a data rate net of FEC overhead (decisions:K35 §3h).
 	PerPathCapacityFPS float64 `toml:"per_path_capacity_fps"`
 	// PacingBurstFrames is the per-path token-bucket burst in frame slots. Must be > 0
 	// when PacingEnabled under EITHER policy (unless the pace is BDP-derived from a

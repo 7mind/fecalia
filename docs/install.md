@@ -632,6 +632,74 @@ standing queues needed to validate pacing against real links. Real-link
 verification (this step) is essential: measure on your actual uplinks to confirm
 pacing meets your bufferbloat target.
 
+#### Upgrade/behaviour note: `per_path_capacity_fps` now means WIRE FRAMES (defect D95, decisions:K35)
+
+- **(0) The defect and the fix.** `Multipath.Send` calls the scheduler's `Pick`
+  exactly ONCE per send batch, so `wanbond_offered_load_fps` used to count
+  BATCHES/s, not wire FRAMES/s — a batch factor measured at 1.52× at a
+  data-thrift load and up to 3.07× at saturation. One `Pick` now observes every
+  offered wire frame in that batch. No new saturation/dwell knob was added:
+  with a frame-accurate estimator the existing engage/disengage gate already
+  has margin on both sides.
+- **(i) The gate logic is unchanged; the trigger point moves.** The
+  engage/disengage/`collapse_dwell` mechanism itself is untouched, but its
+  input is now frame-accurate, so for an UNCHANGED `per_path_capacity_fps`
+  both thresholds now fire at a REAL offered load lower by the batch factor.
+  At the shipped default 10000, collapse moves from roughly 7500–15000 real
+  wire fps to 5000, and engage from roughly 13700–27600 to 9000 — the metered
+  path now stays engaged down to a LOWER real load than before, the direction
+  that costs a metered (5G) user money. **If you tuned `per_path_capacity_fps`
+  empirically against the old meter, re-derive it** from
+  `bandwidth/(8 * wire frame bytes)` (Step 2/3 above); if you sized it the
+  way this section already documents, no action is needed. The 5G-idle thrift
+  guarantee holds BY MARGIN (measured ~1042–1061 wire fps against a 1500
+  disengage threshold at a 3000-fps capacity, ~40% headroom), not by
+  construction — **and that ~40% figure is FEC-OFF**; see (iii) below.
+- **(ii) An enabled pacer now binds at the declared rate.** Pacing is OFF by
+  default, so most deployments see no change from this note. Where
+  `pacing_enabled = true`, the token bucket previously refilled in wire
+  frames/s but spent ONE token per send batch, admitting roughly 1.5–3× the
+  declared `link_bandwidth`; it now charges one token per frame and binds at
+  the declared rate. **If you inflated `link_bandwidth` or
+  `per_path_capacity_fps` to compensate for under-pacing, remove that
+  compensation.**
+- **(iii) FEC parity is counted as offered load.** With `[fec]` enabled at
+  `data_shards` (K) + `parity_shards` (M), parity frames egress on the same
+  path as the data they protect and now count toward BOTH the aggregation
+  gate and the pacer, so the gate sees the WIRE rate (data + parity), not the
+  demand rate.
+  - **Consequence:** the thrift/5G-idle margin is a WIRE-frame margin, so the
+    margin available to your DEMAND is divided by the FEC expansion factor
+    `f = (K+M)/K`. On the measured 40 Mbit example above, the margin is
+    exhausted at `f` ≈ 1.41 against a 3000-fps declared capacity (a static
+    4+2 group, `f = 1.50`, already keeps the metered path engaged at an
+    idle-ish load) and at `f` ≈ 1.60 against the path's honest wire capacity
+    (~3400 fps). Above that factor the gate is not misbehaving: the path
+    genuinely occupies more than `disengage_fraction` of its wire capacity.
+  - **Remedy (imperative):** size `per_path_capacity_fps` from the WIRE rate
+    INCLUDING parity — `bandwidth/(8 * on-wire frame bytes)`, never from
+    goodput — or a metered path with FEC enabled will not collapse at an
+    idle load; and on a metered bond ALSO bound the expansion factor by
+    capping `parity_shards` relative to `data_shards` (or leaving
+    `adaptive = false`), so that `fCeil = (data_shards + parity_shards) /
+    data_shards` stays below `f_max = disengage_fraction *
+    per_path_capacity_fps / D`, where **`D` is your expected idle rate of
+    DATA frames ALONE (pre-expansion), not the post-expansion wire rate.**
+    Because `parity_shards` is a HARD CEILING even under `adaptive = true`
+    (the controller can only drive per-group parity DOWN from it, never
+    above), `fCeil` is a bound you can check from your own TOML without any
+    runtime observation. Worked example: a 40 Mbit path with ~1400 B
+    on-wire frames gives `per_path_capacity_fps ≈ 3400` wire fps; a 12 Mbit
+    idle trickle is `D ≈ 1050` DATA fps; the bound is `fCeil < 0.5 * 3400 /
+    1050 = 1.62`, so `data_shards = 4` / `parity_shards = 2` (`fCeil =
+    1.50`) is admissible while `parity_shards = 3` (`fCeil = 1.75`) is not.
+  - **Residual limitations:** the parity count is applied one batch late (a
+    lag immaterial against the 200 ms `load_tau`); this boundary is verified
+    at unit level only, not on real hardware; and parity is charged to the
+    pacer's bucket but never itself shed by it (defects:D108) — an enabled
+    pacer with FEC absorbs parity by running the bucket negative rather than
+    by admission control.
+
 ### 3b. Policy-routing edge topologies: source-IP pinning with `bind = "source"`
 
 **Symptom:** On a VLAN-per-WAN edge with `ip rule from <source_addr>` policy routing,
@@ -909,6 +977,15 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   pacing refill rate (replicated across
                                    #   paths) when no link_bandwidth is
                                    #   declared. > 0 when set.
+                                   #   UNIT: offered WIRE FRAMES per second on
+                                   #   one path — inner data frames PLUS any FEC
+                                   #   parity frames egressing on that path.
+                                   #   Size from the WIRE rate,
+                                   #   bandwidth/(8 * on-wire frame bytes) —
+                                   #   NEVER from goodput or from a data rate
+                                   #   net of FEC overhead — or the gate's
+                                   #   thrift-side margin is spent (§3a below;
+                                   #   FEC remedy at §3h of decisions:K35).
 # engage_fraction    = 0.9         # DEFAULT 0.9. Weighted only. Engage
                                    #   aggregation above engage_fraction *
                                    #   capacity. In (0, 1].

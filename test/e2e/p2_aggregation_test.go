@@ -75,6 +75,21 @@ const (
 	// while a sub-capacity thrift flow stays below the disengage threshold and collapses.
 	// 3000 fps => engage at 2700 (< ~3400 one-path fps: engages under bond) and disengage
 	// at 1500 (a <15 Mbit/s thrift flow, ~1300 fps, stays collapsed). Retune with the cap.
+	//
+	// THIS DERIVATION IS CORRECT AS WRITTEN (decisions:K35 §2/§3f): it was always a WIRE-frame
+	// rate. tasks:T290 fixed the offered-load ESTIMATOR to count wire frames (data plus any
+	// FEC parity) rather than Send batches, so the estimator now matches this constant's own
+	// units — do NOT "fix" this derivation back to a batch rate; it was never wrong.
+	//
+	// 3000 is a CONSERVATIVE ROUNDING of the path's honest ~3400-3570 wire fps (40 Mbit/8 at
+	// ~1400-1450 B on-wire). Under-declaring capacity is safe in the ENGAGE direction (only
+	// makes the gate more eager) but SPENDS the disengage-direction thrift margin under FEC
+	// (decisions:K35 §3h): at this declared 3000, a static 4+2 FEC group already exhausts the
+	// margin (f_max ~= 1.41-1.44), versus ~1.60-1.71 against the honest wire rate. Raising it
+	// to ~3400 would restore that margin but would also cut the engage margin on the one venue
+	// that has ever measured it (tasks:T284) from ~20% to ~5-13%, so the constant is
+	// deliberately NOT retuned inside goals:G33 (tasks:T292); any retune is a separate,
+	// separately-measured change.
 	p2PerPathCapacityFPS = 3000.0
 
 	// p2LoadSecs is the saturating flow duration; p2WindowSettle/p2WindowSecs carve the
