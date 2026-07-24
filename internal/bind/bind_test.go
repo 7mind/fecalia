@@ -388,6 +388,7 @@ func TestMultipathSendNoHealthyPath(t *testing.T) {
 type stubScheduler struct{ pick int }
 
 func (s stubScheduler) Pick(_ sched.FrameClass, _ int) int { return s.pick }
+func (s stubScheduler) SelectPath() int                    { return s.pick }
 func (s stubScheduler) Recompute()                         {}
 func (s stubScheduler) DataPaths() []sched.DataPath        { return nil }
 

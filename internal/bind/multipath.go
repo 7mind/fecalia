@@ -2998,13 +2998,19 @@ func (m *Multipath) fecFlushDeadline() {
 		// parity is best-effort — so the group simply goes unprotected rather than blocking.
 		// FEC parity is bulk redundancy, so it is paced as ClassData (defect D22): only
 		// WireGuard control frames earn the pacing exemption.
-		// ONE selection decision for this peer's flush, offering ONE frame — the
-		// deliberately unchanged pre-D95 arity at this call site (K35 §3c). The parity
-		// this flush actually writes is metered through the SAME carry Send uses (see
-		// the write loop below), so it reaches the offered-load meter on the peer's next
-		// Send rather than being counted speculatively here, before framing and the
-		// socket writes have had a chance to fail.
-		idx := peer.scheduler.Pick(sched.ClassData, 1)
+		// SELECT a path for this peer's flush WITHOUT metering an offered frame (defect
+		// D109). A deadline flush emits NO data frame; the parity it writes below is
+		// metered through the SAME carry Send uses (w.ps.peer.parityCarry.Add — see the
+		// write loop), reaching the offered-load meter on the peer's next Send. Routing
+		// the selection through a one-frame Pick (the ClassData, 1 form) would meter a
+		// PHANTOM offered wire frame on top of that carry — a selection standing for no
+		// data frame, and after defect D95 the only Pick whose `frames` denoted no frame —
+		// biasing the estimator UP in the disengage direction, precisely at the low/idle
+		// load where deadline closes dominate (K35 §3c/§9.4). SelectPath is the non-
+		// metering seam: it picks the same path Pick would (liveness + gate + weight) but
+		// advances no load meter and touches no gate state, and it never sheds (no
+		// PickPaced), so the straggler parity is counted exactly once, through the carry.
+		idx := peer.scheduler.SelectPath()
 		if idx < 0 || idx >= len(peer.paths) {
 			continue
 		}

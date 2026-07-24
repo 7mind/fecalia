@@ -305,6 +305,35 @@ func (s *WeightedScheduler) Pick(class FrameClass, frames int) int {
 	return s.selectAggregatingLocked(now, eligible, weights, class, frames)
 }
 
+// SelectPath chooses the path for a single frame WITHOUT metering it as offered load or
+// touching the aggregation gate — the select-only seam the FEC deadline flush uses so a
+// group's straggler parity is NOT double-counted (once as a phantom offered frame here, and
+// again through the parity carry on the peer's next Send: defects D95/D109, decisions:K35
+// §3c/§9.4). It refreshes liveness and selects EXACTLY as Pick's tail does — the primary
+// (best eligible) while collapsed, the smooth-weighted-round-robin winner while aggregating,
+// advancing that path's round-robin credit because the frame really does egress on it — but
+// it calls neither loadGapLocked/observeLoadLocked (no load sample) nor updateGateLocked (no
+// engage/disengage decision) and no pacing (never PickPaced), so a periodic housekeeping
+// flush cannot bias the offered-load estimate that drives the gate. It returns PickNone when
+// no path is eligible. It is safe for concurrent callers.
+func (s *WeightedScheduler) SelectPath() int {
+	now := s.clock.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recomputeLocked(now) // liveness refresh + eager-failover log, exactly as Pick
+	eligible := s.eligibleLocked()
+	if len(eligible) == 0 {
+		return PickNone
+	}
+	if !s.aggregating {
+		// Data-thrift: only the primary (best eligible) carries traffic, matching Pick's
+		// non-aggregating branch (serveLocked over eligible[0]) minus the pacing charge.
+		return eligible[0]
+	}
+	weights := s.weightsLocked(eligible)
+	return s.swrrPickLocked(eligible, weights)
+}
+
 // AccountProbe implements ProbeBudget (T145): it deducts one pacing token from path
 // pathIdx's bucket for a PROBE frame (or reflected echo) the bind has written to that
 // path's socket OUTSIDE Pick, so the token bucket reserves headroom for wanbond's own

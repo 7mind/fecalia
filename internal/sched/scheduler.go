@@ -135,6 +135,33 @@ type Scheduler interface {
 	// not Pick (see the T40 eager-failover nudge in the multipath Bind).
 	Pick(class FrameClass, frames int) int
 
+	// SelectPath chooses the path the next frame must egress on WITHOUT registering
+	// it as offered load: it is the SELECTION half of Pick with NO observeLoadLocked
+	// event and no aggregation-gate update. It returns the same non-negative path
+	// index / negative Pick* sentinel space as Pick (PickNone when no path is
+	// eligible), but it NEVER returns PickPaced — a select-only caller is not subject
+	// to the token bucket, so it is never shed.
+	//
+	// It exists for a caller whose frame is metered through a DIFFERENT channel than
+	// this call — specifically the FEC DEADLINE FLUSH (Multipath.fecFlushDeadline),
+	// whose straggler parity is metered one batch late through the peer's parity
+	// carry on the peer's NEXT Send (defects D95/D109, decisions:K35 §3c/§9.4).
+	// Routing that flush through Pick(class, 1) would meter a PHANTOM offered wire
+	// frame — a selection decision standing for no data frame, double-counting the
+	// parity the carry already accounts (D109) — and, after defect D95 made every
+	// Pick's `frames` argument denote real wire frames, it would be the sole caller
+	// whose argument denotes none. SelectPath removes that phantom: the deadline flush
+	// picks a path with no meter event, and the parity is counted exactly once,
+	// through the carry.
+	//
+	// It MAY refresh liveness and, on a weighted/aggregating scheduler, advance the
+	// round-robin credit for the path it hands back — the frame genuinely egresses on
+	// that path, so counting it in the distribution is correct — but it advances NO
+	// offered-load meter and touches NO gate state, so a periodic housekeeping flush
+	// cannot bias the load estimate that drives aggregation. It is safe for concurrent
+	// callers.
+	SelectPath() int
+
 	// Recompute refreshes the scheduler's liveness-derived selection state (which
 	// paths are eligible, which is the active primary) from the current PathHealth,
 	// and logs any active-path transition, WITHOUT selecting or consuming a frame

@@ -423,6 +423,21 @@ func (s *ActiveBackup) Pick(class FrameClass, frames int) int {
 	return p.shed(now, 0)
 }
 
+// SelectPath re-derives the active path from live liveness and returns it WITHOUT charging
+// the pacing bucket or ever shedding (never PickPaced) — the select-only seam the FEC
+// deadline flush uses (defects D95/D109, decisions:K35 §3c/§9.4). Active-backup runs no
+// offered-load estimator, so SelectPath differs from Pick only in that it does not spend a
+// pacing token: with pacing off it is byte-identical to Pick, and with pacing on it selects
+// the same active path but leaves that path's bucket untouched (the flush's straggler parity
+// is metered elsewhere — through the peer's parity carry — not here). It returns the active
+// index, or PickNone when no path is eligible. It is safe for concurrent callers.
+func (s *ActiveBackup) SelectPath() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recomputeLocked(s.clock.Now())
+	return s.active
+}
+
 // Recompute re-derives the active path from current liveness and the failback
 // dwell, exactly as Pick does, but discards the result. Active-backup's selection
 // is a single cached index recomputed purely from liveness and the clock, so Pick
