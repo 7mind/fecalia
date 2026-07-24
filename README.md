@@ -247,7 +247,9 @@ deliberate boundaries you must plan around:
   Config load also derives a separate exact-byte shaper envelope (`R`, `B`,
   `Lmax`, control reserve, and probe budget) and rejects an envelope that cannot
   admit one legal datagram or whose maximum probe+echo rate consumes the whole
-  link. This is a staged cutover: the runtime still uses the existing
+  link. Non-finite inputs and byte budgets that cannot fit the platform's
+  integer byte-count domain are rejected before conversion. This is a staged
+  cutover: the runtime still uses the existing
   frame-token `PickPaced` loss-policer until T299; the new byte fields do not yet
   change egress behavior.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**

@@ -349,6 +349,10 @@ const (
 	probeFramesPerBurstPair = 2
 )
 
+func finitePositive(v float64) bool {
+	return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
 // outerPathOverheadBytes is the fixed per-datagram overhead a full-size inner
 // (TUN) packet grows by once wrapped in the outer IPv4/UDP + DATA-frame +
 // WireGuard-transport layers (T200, D85): bind.IPv4UDPOverhead (28) +
@@ -1145,6 +1149,9 @@ func (c *Config) normalize() error {
 			if err != nil {
 				return fmt.Errorf("path %q: invalid link_bandwidth %q: %w", p.Name, p.LinkBandwidthRaw, err)
 			}
+			if math.IsNaN(bw) || math.IsInf(bw, 0) {
+				return fmt.Errorf("path %q: link_bandwidth must be finite and > 0, got %q", p.Name, p.LinkBandwidthRaw)
+			}
 			if bw <= 0 {
 				return fmt.Errorf("path %q: link_bandwidth must be > 0, got %q", p.Name, p.LinkBandwidthRaw)
 			}
@@ -1320,7 +1327,19 @@ func (c *Config) derivePathShapers() error {
 			rateBytesPerSecond = s.PerPathCapacityFPS * defaultAvgWireFrameBytes
 			burstBytes = s.PacingBurstFrames * defaultAvgWireFrameBytes
 		}
-		dataBurstBytes := int(math.Ceil(burstBytes))
+		if !finitePositive(rateBytesPerSecond) {
+			return fmt.Errorf("path %q: derived shaper rate must be finite and > 0 bytes/s, got %g", p.Name, rateBytesPerSecond)
+		}
+		if !finitePositive(burstBytes) {
+			return fmt.Errorf("path %q: derived DATA burst must be finite and > 0 bytes, got %g", p.Name, burstBytes)
+		}
+		roundedBurstBytes := math.Ceil(burstBytes)
+		maxIntExclusive := math.Ldexp(1, strconv.IntSize-1)
+		if roundedBurstBytes >= maxIntExclusive {
+			return fmt.Errorf("path %q: derived DATA burst exceeds maximum supported byte count for int%d, got %g",
+				p.Name, strconv.IntSize, roundedBurstBytes)
+		}
+		dataBurstBytes := int(roundedBurstBytes)
 		if dataBurstBytes < lmax {
 			if fromLinkBandwidth {
 				return fmt.Errorf("path %q: link_bandwidth/link_rtt DATA burst %d bytes is below maximum encoded datagram %d bytes; increase link_rtt or link_bandwidth so every legal datagram is admissible",
@@ -1566,6 +1585,9 @@ func (s SchedulerConfig) validate() error {
 		}
 		return nil
 	}
+	if math.IsNaN(s.PerPathCapacityFPS) || math.IsInf(s.PerPathCapacityFPS, 0) {
+		return fmt.Errorf("scheduler.per_path_capacity_fps must be finite and > 0 under the weighted policy, got %g", s.PerPathCapacityFPS)
+	}
 	if s.PerPathCapacityFPS <= 0 {
 		return fmt.Errorf("scheduler.per_path_capacity_fps must be > 0 under the weighted policy, got %g", s.PerPathCapacityFPS)
 	}
@@ -1581,8 +1603,13 @@ func (s SchedulerConfig) validate() error {
 	if s.LoadTau <= 0 {
 		return fmt.Errorf("scheduler.load_tau must be > 0, got %s", s.LoadTau)
 	}
-	if s.PacingEnabled && s.PacingBurstFrames <= 0 {
-		return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled, got %g", s.PacingBurstFrames)
+	if s.PacingEnabled {
+		if math.IsNaN(s.PacingBurstFrames) || math.IsInf(s.PacingBurstFrames, 0) {
+			return fmt.Errorf("scheduler.pacing_burst_frames must be finite and > 0 when pacing is enabled, got %g", s.PacingBurstFrames)
+		}
+		if s.PacingBurstFrames <= 0 {
+			return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled, got %g", s.PacingBurstFrames)
+		}
 	}
 	if s.WeightRTTFloor <= 0 {
 		return fmt.Errorf("scheduler.weight_rtt_floor must be > 0 under the weighted policy, got %s", s.WeightRTTFloor)
@@ -1609,11 +1636,17 @@ func (s SchedulerConfig) validateActiveBackupPacing() error {
 		return fmt.Errorf("scheduler: per-path pacing vectors must be the same length, got %d capacities and %d bursts", len(s.PerPathCapacities), len(s.PacingBursts))
 	}
 	for i, capFPS := range s.PerPathCapacities {
+		if math.IsNaN(capFPS) || math.IsInf(capFPS, 0) {
+			return fmt.Errorf("scheduler.per_path_capacity_fps must be finite and > 0 when pacing is enabled under active-backup, got %g (path %d)", capFPS, i)
+		}
 		if capFPS <= 0 {
 			return fmt.Errorf("scheduler.per_path_capacity_fps must be > 0 when pacing is enabled under active-backup, got %g (path %d)", capFPS, i)
 		}
 	}
 	for i, burst := range s.PacingBursts {
+		if math.IsNaN(burst) || math.IsInf(burst, 0) {
+			return fmt.Errorf("scheduler.pacing_burst_frames must be finite and > 0 when pacing is enabled under active-backup, got %g (path %d)", burst, i)
+		}
 		if burst <= 0 {
 			return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled under active-backup, got %g (path %d)", burst, i)
 		}

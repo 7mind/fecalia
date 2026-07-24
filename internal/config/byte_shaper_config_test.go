@@ -254,3 +254,107 @@ func TestPathShaperPacingDisabledIsInert(t *testing.T) {
 		t.Fatalf("PerPathShapers = %+v, want nil while pacing is disabled", cfg.Scheduler.PerPathShapers)
 	}
 }
+
+func TestPathShaperRejectsNonFiniteInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		bandwidth string
+		scheduler string
+		want      string
+	}{
+		{
+			name:      "link bandwidth NaN",
+			bandwidth: "NaNMbit",
+			scheduler: "pacing_enabled = true\n",
+			want:      "link_bandwidth must be finite and > 0",
+		},
+		{
+			name:      "link bandwidth Inf",
+			bandwidth: "+InfMbit",
+			scheduler: "pacing_enabled = true\n",
+			want:      "link_bandwidth must be finite and > 0",
+		},
+		{
+			name:      "link bandwidth unit multiplication overflows",
+			bandwidth: "1e308Gbit",
+			scheduler: "pacing_enabled = true\n",
+			want:      "link_bandwidth must be finite and > 0",
+		},
+		{
+			name:      "legacy capacity NaN",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = nan\npacing_burst_frames = 1\n",
+			want:      "scheduler.per_path_capacity_fps must be finite and > 0",
+		},
+		{
+			name:      "legacy capacity Inf",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = inf\npacing_burst_frames = 1\n",
+			want:      "scheduler.per_path_capacity_fps must be finite and > 0",
+		},
+		{
+			name:      "legacy burst NaN",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = 10\npacing_burst_frames = nan\n",
+			want:      "scheduler.pacing_burst_frames must be finite and > 0",
+		},
+		{
+			name:      "legacy burst Inf",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = 10\npacing_burst_frames = inf\n",
+			want:      "scheduler.pacing_burst_frames must be finite and > 0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgBody := byteShaperFixture("192.0.2.10", tc.bandwidth, "45ms", 0, tc.scheduler)
+			_, err := loadByteShaperFixture(t, cfgBody)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPathShaperRejectsNonRepresentableDerivedValues(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		bandwidth string
+		rtt       string
+		scheduler string
+		want      string
+	}{
+		{
+			name:      "link burst becomes non-finite",
+			bandwidth: "1e308bit",
+			rtt:       "1h",
+			scheduler: "pacing_enabled = true\n",
+			want:      "derived DATA burst must be finite and > 0",
+		},
+		{
+			name:      "link burst exceeds int",
+			bandwidth: "1e20bit",
+			rtt:       "1s",
+			scheduler: "pacing_enabled = true\n",
+			want:      "derived DATA burst exceeds maximum supported byte count",
+		},
+		{
+			name:      "legacy rate multiplication becomes non-finite",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = 1e308\npacing_burst_frames = 1\n",
+			want:      "derived shaper rate must be finite and > 0",
+		},
+		{
+			name:      "legacy burst multiplication becomes non-finite",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = 10\npacing_burst_frames = 1e308\n",
+			want:      "derived DATA burst must be finite and > 0",
+		},
+		{
+			name:      "legacy burst exceeds int",
+			scheduler: "pacing_enabled = true\nper_path_capacity_fps = 10\npacing_burst_frames = 1e100\n",
+			want:      "derived DATA burst exceeds maximum supported byte count",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgBody := byteShaperFixture("192.0.2.10", tc.bandwidth, tc.rtt, 0, tc.scheduler)
+			_, err := loadByteShaperFixture(t, cfgBody)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}

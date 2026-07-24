@@ -403,7 +403,9 @@ Common rules, either policy:
   Raw settings use the existing 1500-byte conversion
   (`R = per_path_capacity_fps*1500`,
   `B = ceil(pacing_burst_frames*1500)`) and enforce the same invariant, so a
-  raw `pacing_burst_frames` below one encoded frame is invalid.
+  raw `pacing_burst_frames` below one encoded frame is invalid. NaN, infinity,
+  a non-positive result, or a derived byte budget too large for the platform
+  byte-count domain is rejected before numeric conversion.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. Config load requires `Rp<R`.

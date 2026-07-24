@@ -497,6 +497,8 @@ configuration the replacement shaper will consume. With pacing enabled,
 Config load requires `B >= Lmax` and `Rp < R`. The first invariant means every
 legal single datagram is admissible; the second prevents the generated
 probe/echo stream from consuming the declared shaper rate by construction.
+Every source rate/burst and derived `R`/`B` must be finite and positive, and
+`ceil(B)` must fit the platform `int` byte-count domain before conversion.
 For the legacy raw knobs the byte projection uses the documented 1500-byte
 conversion unchanged: `R = per_path_capacity_fps * 1500` and
 `B = ceil(pacing_burst_frames * 1500)`. Thus the aggregation estimator and its
