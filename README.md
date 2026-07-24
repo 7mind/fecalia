@@ -213,7 +213,7 @@ cmd/wanbond/            entry point; role selection; SIGHUP reload
 internal/bind/          the custom conn.Bind — multipath fan-out/coalesce, the amnezia boundary
 internal/frame/         outer bonding frame codec (obfuscation + optional HMAC)
 internal/sched/         send-side scheduler (active-backup, weighted, pacing)
-internal/shaper/        exact-byte, bounded-queue per-path shaping primitive (not yet scheduler-integrated)
+internal/shaper/        live per-(peer,path) exact-byte DATA/parity shaping; generated PROBE/CONTROL priority is T300
 internal/telemetry/     per-path PROBE/liveness, RTT/loss/jitter
 internal/reseq/         receive resequencer (bounded-window reorder)
 internal/fec/           Reed-Solomon FEC encoder/decoder
