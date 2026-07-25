@@ -49,8 +49,8 @@ function shaper(overrides: Partial<ShaperSnapshot> = {}): ShaperSnapshot {
     outerPriorityBytes: 200,
     priorityDebtBytes: 50,
     priorityRateBytesPerSecond: 1_000,
-    priorityBurstBytes: 100,
-    priorityDelayBoundSeconds: 0.002,
+    priorityBurstBytes: 200,
+    priorityDelayBoundSeconds: 250 / 999_000,
     admissionWaits: 3,
     admissionWaitSeconds: 0.04,
     admissionCanceledDatagrams: 0,
@@ -252,7 +252,12 @@ describe('mountDashboard', () => {
   it('renders exact-byte shaper state only for a paced path', () => {
     const dashboard = mountDashboard(container);
     const paced = singlePeerSnapshot();
-    paced.paths = [path({ name: 'paced', shaper: shaper() }), path({ name: 'unpaced' })];
+    const shaperState = shaper();
+    expect(shaperState.priorityDelayBoundSeconds).toBeCloseTo(
+      (shaperState.priorityDebtBytes + shaperState.priorityBurstBytes)
+        / (shaperState.rateBytesPerSecond - shaperState.priorityRateBytesPerSecond),
+    );
+    paced.paths = [path({ name: 'paced', shaper: shaperState }), path({ name: 'unpaced' })];
     dashboard.onSnapshot(paced);
 
     const cards = container.querySelectorAll('[data-testid="path-card"]');
@@ -265,10 +270,10 @@ describe('mountDashboard', () => {
     expect(envelope).toContain('1.6KB Q');
     expect(envelope).toContain('100B Lmax');
     expect(cards[0].textContent).toContain('50B P0');
-    expect(cards[0].textContent).toContain('2.0ms Dp');
+    expect(cards[0].textContent).toContain('0.3ms Dp');
     expect(cards[0].textContent).toContain('977KB/s R');
     expect(cards[0].textContent).toContain('1000B/s Rp');
-    expect(cards[0].textContent).toContain('100B Pburst');
+    expect(cards[0].textContent).toContain('200B Pburst');
     expect(cards[0].textContent).toContain('3 waits');
     expect(cards[0].textContent).toContain('0 generic (0B)');
     expect(cards[0].textContent).toContain('0 EMSGSIZE (0B)');

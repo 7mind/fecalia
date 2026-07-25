@@ -130,7 +130,7 @@ func TestActiveBackupPacingRejects(t *testing.T) {
 		{
 			name: "partial link_bandwidth (all-or-nothing)",
 			body: fill(twoPathConfig("50Mbit", "45ms", "", "")) + abPacing("pacing_enabled = true\n"),
-			want: "must be declared on ALL paths or none",
+			want: "each path's exact-byte R/B envelope",
 		},
 		{
 			name: "raw knobs and link_bandwidth are mutually exclusive",

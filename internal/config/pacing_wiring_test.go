@@ -47,9 +47,9 @@ func withSched(sched string) string {
 }
 
 // TestPacingDerivedFromDeclaredBandwidth (acceptance a): a declared per-link
-// bandwidth under the weighted policy with pacing ENABLED sizes PerPathCapacityFPS +
-// PacingBurstFrames from SizePacingFromBDP (correct-by-construction), to the SLOWEST
-// declared link (the shared per-path pace must not exceed the bottleneck), and well
+// bandwidth under the weighted policy with pacing ENABLED sizes the shared
+// PerPathCapacityFPS + PacingBurstFrames aggregation compatibility reference from
+// SizePacingFromBDP (correct-by-construction) to the SLOWEST declared link, well
 // below the synthetic default.
 func TestPacingDerivedFromDeclaredBandwidth(t *testing.T) {
 	path := writeConfig(t, 0o600, withSched("\n[scheduler]\npolicy = \"weighted\"\npacing_enabled = true\n"))
@@ -161,7 +161,7 @@ func TestPacingDeclaredBandwidthRejects(t *testing.T) {
 		{
 			name: "mixed declaration (all-or-nothing)",
 			body: fill(twoPathConfig("50Mbit", "45ms", "", "") + weightedPacing),
-			want: "must be declared on ALL paths or none",
+			want: "weighted aggregation frame-domain compatibility reference",
 		},
 		{
 			name: "missing rtt under pacing",

@@ -35,31 +35,60 @@ func (f fakeSource) PeerSessions() []metrics.PeerSessionSnapshot { return f.peer
 func (f fakeSource) PeerNames() []string                         { return f.peerNames }
 
 func TestBuildSnapshotShaperContractAndDisabledOmission(t *testing.T) {
+	const (
+		queueDataBytes          = 1200
+		queueControlBytes       = 300
+		queueBytes              = queueDataBytes + queueControlBytes
+		inFlightBytes           = 800
+		rateBytesPerSecond      = 1_510_000.0
+		dataBudgetBytes         = 4000
+		maxDatagramBytes        = 1000
+		controlReserveBytes     = maxDatagramBytes
+		queueBudgetBytes        = dataBudgetBytes + controlReserveBytes
+		emittedBytes            = 100_000
+		asyncWriteErrorBytes    = 4000
+		asyncWriteEMSGSIZEBytes = 2000
+		acceptedBytes           = emittedBytes + asyncWriteErrorBytes +
+			asyncWriteEMSGSIZEBytes + queueBytes + inFlightBytes
+		outerPriorityBytes         = 5000
+		priorityDebtBytes          = 1000.0
+		priorityRateBytesPerSecond = 10_000.0
+		priorityBurstBytes         = 2 * maxDatagramBytes
+		admissionWaits             = 7
+		admissionCanceledDatagrams = 4
+		asyncWriteErrors           = 2
+		asyncWriteEMSGSIZEErrors   = 1
+	)
+	priorityDelayBound := time.Duration(
+		(priorityDebtBytes + priorityBurstBytes) /
+			(rateBytesPerSecond - priorityRateBytesPerSecond) *
+			float64(time.Second),
+	)
 	shaperSnapshot := shaper.Snapshot{
-		QueueDataBytes:             1,
-		QueueControlBytes:          2,
-		QueueBytes:                 3,
-		InFlightBytes:              4,
-		ScheduledDelay:             5 * time.Second,
-		RateBytesPerSecond:         6,
-		DataBudgetBytes:            7,
-		ControlReserveBytes:        8,
-		QueueBudgetBytes:           9,
-		MaxDatagramBytes:           10,
-		AcceptedBytes:              11,
-		EmittedBytes:               12,
-		OuterPriorityBytes:         13,
-		PriorityDebtBytes:          14,
-		PriorityRateBytesPerSecond: 15,
-		PriorityBurstBytes:         16,
-		PriorityDelayBound:         17 * time.Second,
-		AdmissionWaits:             18,
-		AdmissionWaitDuration:      19 * time.Second,
-		AdmissionCanceledDatagrams: 20,
-		AsyncWriteErrors:           21,
-		AsyncWriteErrorBytes:       22,
-		AsyncWriteEMSGSIZEErrors:   23,
-		AsyncWriteEMSGSIZEBytes:    24,
+		QueueDataBytes:             queueDataBytes,
+		QueueControlBytes:          queueControlBytes,
+		QueueBytes:                 queueBytes,
+		InFlightBytes:              inFlightBytes,
+		ScheduledDelay:             2300 * time.Microsecond,
+		RateBytesPerSecond:         rateBytesPerSecond,
+		DataBudgetBytes:            dataBudgetBytes,
+		ControlReserveBytes:        controlReserveBytes,
+		QueueBudgetBytes:           queueBudgetBytes,
+		MaxDatagramBytes:           maxDatagramBytes,
+		AcceptedBytes:              acceptedBytes,
+		EmittedBytes:               emittedBytes,
+		OuterPriorityBytes:         outerPriorityBytes,
+		PriorityDebtBytes:          priorityDebtBytes,
+		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
+		PriorityBurstBytes:         priorityBurstBytes,
+		PriorityDelayBound:         priorityDelayBound,
+		AdmissionWaits:             admissionWaits,
+		AdmissionWaitDuration:      3 * time.Second,
+		AdmissionCanceledDatagrams: admissionCanceledDatagrams,
+		AsyncWriteErrors:           asyncWriteErrors,
+		AsyncWriteErrorBytes:       asyncWriteErrorBytes,
+		AsyncWriteEMSGSIZEErrors:   asyncWriteEMSGSIZEErrors,
+		AsyncWriteEMSGSIZEBytes:    asyncWriteEMSGSIZEBytes,
 	}
 	snapshot := BuildSnapshot(fakeSource{
 		paths: []metrics.PathSnapshot{
@@ -72,30 +101,30 @@ func TestBuildSnapshotShaperContractAndDisabledOmission(t *testing.T) {
 		t.Fatal("paced path omitted shaper")
 	}
 	if *got != (ShaperSnapshot{
-		QueueDataBytes:             1,
-		QueueControlBytes:          2,
-		QueueBytes:                 3,
-		InFlightBytes:              4,
-		ScheduledDelaySeconds:      5,
-		RateBytesPerSecond:         6,
-		DataBudgetBytes:            7,
-		ControlReserveBytes:        8,
-		QueueBudgetBytes:           9,
-		MaxDatagramBytes:           10,
-		AcceptedBytes:              11,
-		EmittedBytes:               12,
-		OuterPriorityBytes:         13,
-		PriorityDebtBytes:          14,
-		PriorityRateBytesPerSecond: 15,
-		PriorityBurstBytes:         16,
-		PriorityDelayBoundSeconds:  17,
-		AdmissionWaits:             18,
-		AdmissionWaitSeconds:       19,
-		AdmissionCanceledDatagrams: 20,
-		AsyncWriteErrors:           21,
-		AsyncWriteErrorBytes:       22,
-		AsyncWriteEMSGSIZEErrors:   23,
-		AsyncWriteEMSGSIZEBytes:    24,
+		QueueDataBytes:             queueDataBytes,
+		QueueControlBytes:          queueControlBytes,
+		QueueBytes:                 queueBytes,
+		InFlightBytes:              inFlightBytes,
+		ScheduledDelaySeconds:      shaperSnapshot.ScheduledDelay.Seconds(),
+		RateBytesPerSecond:         rateBytesPerSecond,
+		DataBudgetBytes:            dataBudgetBytes,
+		ControlReserveBytes:        controlReserveBytes,
+		QueueBudgetBytes:           queueBudgetBytes,
+		MaxDatagramBytes:           maxDatagramBytes,
+		AcceptedBytes:              acceptedBytes,
+		EmittedBytes:               emittedBytes,
+		OuterPriorityBytes:         outerPriorityBytes,
+		PriorityDebtBytes:          priorityDebtBytes,
+		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
+		PriorityBurstBytes:         priorityBurstBytes,
+		PriorityDelayBoundSeconds:  priorityDelayBound.Seconds(),
+		AdmissionWaits:             admissionWaits,
+		AdmissionWaitSeconds:       shaperSnapshot.AdmissionWaitDuration.Seconds(),
+		AdmissionCanceledDatagrams: admissionCanceledDatagrams,
+		AsyncWriteErrors:           asyncWriteErrors,
+		AsyncWriteErrorBytes:       asyncWriteErrorBytes,
+		AsyncWriteEMSGSIZEErrors:   asyncWriteEMSGSIZEErrors,
+		AsyncWriteEMSGSIZEBytes:    asyncWriteEMSGSIZEBytes,
 	}) {
 		t.Fatalf("shaper DTO = %+v", *got)
 	}
@@ -109,7 +138,18 @@ func TestBuildSnapshotShaperContractAndDisabledOmission(t *testing.T) {
 	if strings.Count(string(wire), `"shaper":`) != 1 {
 		t.Fatalf("shaper JSON presence = %s", wire)
 	}
-	shaperSnapshot = shaper.Snapshot{}
+	resetPriorityDelayBound := time.Duration(priorityBurstBytes) * time.Second /
+		time.Duration(rateBytesPerSecond-priorityRateBytesPerSecond)
+	shaperSnapshot = shaper.Snapshot{
+		RateBytesPerSecond:         rateBytesPerSecond,
+		DataBudgetBytes:            dataBudgetBytes,
+		ControlReserveBytes:        controlReserveBytes,
+		QueueBudgetBytes:           queueBudgetBytes,
+		MaxDatagramBytes:           maxDatagramBytes,
+		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
+		PriorityBurstBytes:         priorityBurstBytes,
+		PriorityDelayBound:         resetPriorityDelayBound,
+	}
 	reset := BuildSnapshot(fakeSource{
 		paths: []metrics.PathSnapshot{{Name: "paced", Shaper: &shaperSnapshot}},
 	}, Info{}, true, false)

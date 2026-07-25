@@ -50,31 +50,60 @@ func testLogger(t *testing.T) log.Logger {
 }
 
 func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
+	const (
+		queueDataBytes          = 1200
+		queueControlBytes       = 300
+		queueBytes              = queueDataBytes + queueControlBytes
+		inFlightBytes           = 800
+		rateBytesPerSecond      = 1_510_000.0
+		dataBudgetBytes         = 4000
+		maxDatagramBytes        = 1000
+		controlReserveBytes     = maxDatagramBytes
+		queueBudgetBytes        = dataBudgetBytes + controlReserveBytes
+		emittedBytes            = 100_000
+		asyncWriteErrorBytes    = 4000
+		asyncWriteEMSGSIZEBytes = 2000
+		acceptedBytes           = emittedBytes + asyncWriteErrorBytes +
+			asyncWriteEMSGSIZEBytes + queueBytes + inFlightBytes
+		outerPriorityBytes         = 5000
+		priorityDebtBytes          = 1000.0
+		priorityRateBytesPerSecond = 10_000.0
+		priorityBurstBytes         = 2 * maxDatagramBytes
+		admissionWaits             = 7
+		admissionCanceledDatagrams = 4
+		asyncWriteErrors           = 2
+		asyncWriteEMSGSIZEErrors   = 1
+	)
+	priorityDelayBound := time.Duration(
+		(priorityDebtBytes + priorityBurstBytes) /
+			(rateBytesPerSecond - priorityRateBytesPerSecond) *
+			float64(time.Second),
+	)
 	snapshot := shaper.Snapshot{
-		QueueDataBytes:             1,
-		QueueControlBytes:          2,
-		QueueBytes:                 3,
-		InFlightBytes:              4,
-		ScheduledDelay:             5 * time.Second,
-		RateBytesPerSecond:         6,
-		DataBudgetBytes:            7,
-		ControlReserveBytes:        8,
-		QueueBudgetBytes:           9,
-		MaxDatagramBytes:           10,
-		AcceptedBytes:              11,
-		EmittedBytes:               12,
-		OuterPriorityBytes:         13,
-		PriorityDebtBytes:          14,
-		PriorityRateBytesPerSecond: 15,
-		PriorityBurstBytes:         16,
-		PriorityDelayBound:         17 * time.Second,
-		AdmissionWaits:             18,
-		AdmissionWaitDuration:      19 * time.Second,
-		AdmissionCanceledDatagrams: 20,
-		AsyncWriteErrors:           21,
-		AsyncWriteErrorBytes:       22,
-		AsyncWriteEMSGSIZEErrors:   23,
-		AsyncWriteEMSGSIZEBytes:    24,
+		QueueDataBytes:             queueDataBytes,
+		QueueControlBytes:          queueControlBytes,
+		QueueBytes:                 queueBytes,
+		InFlightBytes:              inFlightBytes,
+		ScheduledDelay:             2300 * time.Microsecond,
+		RateBytesPerSecond:         rateBytesPerSecond,
+		DataBudgetBytes:            dataBudgetBytes,
+		ControlReserveBytes:        controlReserveBytes,
+		QueueBudgetBytes:           queueBudgetBytes,
+		MaxDatagramBytes:           maxDatagramBytes,
+		AcceptedBytes:              acceptedBytes,
+		EmittedBytes:               emittedBytes,
+		OuterPriorityBytes:         outerPriorityBytes,
+		PriorityDebtBytes:          priorityDebtBytes,
+		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
+		PriorityBurstBytes:         priorityBurstBytes,
+		PriorityDelayBound:         priorityDelayBound,
+		AdmissionWaits:             admissionWaits,
+		AdmissionWaitDuration:      3 * time.Second,
+		AdmissionCanceledDatagrams: admissionCanceledDatagrams,
+		AsyncWriteErrors:           asyncWriteErrors,
+		AsyncWriteErrorBytes:       asyncWriteErrorBytes,
+		AsyncWriteEMSGSIZEErrors:   asyncWriteEMSGSIZEErrors,
+		AsyncWriteEMSGSIZEBytes:    asyncWriteEMSGSIZEBytes,
 	}
 	type metricContract struct {
 		name string
@@ -83,30 +112,30 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 		want float64
 	}
 	contracts := []metricContract{
-		{MetricShaperQueueDataBytes, "Current retained DATA/PARITY bytes, including pending-copy placeholders; bounded by B.", dto.MetricType_GAUGE, 1},
-		{MetricShaperQueueControlBytes, "Current retained inner-control bytes, including pending-copy placeholders; bounded by C=Lmax.", dto.MetricType_GAUGE, 2},
-		{MetricShaperQueueBytes, "Current retained shaped bytes across both classes, including pending-copy placeholders; bounded by Q=B+C.", dto.MetricType_GAUGE, 3},
-		{MetricShaperInFlightBytes, "Current UDP-writer bytes outside retained budget Q; either zero or one datagram no larger than Lmax.", dto.MetricType_GAUGE, 4},
-		{MetricShaperScheduledDelay, "Current virtual serialization-tail delay in seconds; already-assigned datagram deadlines are immutable.", dto.MetricType_GAUGE, 5},
-		{MetricShaperRateBytesPerSecond, "Configured exact-byte shaper wire rate R in bytes per second.", dto.MetricType_GAUGE, 6},
-		{MetricShaperDataBudgetBytes, "Configured exact-byte shaper DATA/PARITY queue budget B in bytes.", dto.MetricType_GAUGE, 7},
-		{MetricShaperControlReserveBytes, "Configured exact-byte shaper inner-control queue reserve C in bytes.", dto.MetricType_GAUGE, 8},
-		{MetricShaperQueueBudgetBytes, "Configured exact-byte shaper total reserved-byte queue budget Q=B+C in bytes.", dto.MetricType_GAUGE, 9},
-		{MetricShaperMaxDatagramBytes, "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", dto.MetricType_GAUGE, 10},
-		{MetricShaperAcceptedBytes, "Total DATA/PARITY and inner-control bytes reserved before copying caller memory.", dto.MetricType_COUNTER, 11},
-		{MetricShaperEmittedBytes, "Total DATA/PARITY and inner-control bytes successfully written to the UDP socket.", dto.MetricType_COUNTER, 12},
-		{MetricShaperOuterPriorityBytes, "Total successfully written authenticated outer PROBE/echo bytes charged to future priority debt.", dto.MetricType_COUNTER, 13},
-		{MetricShaperPriorityDebtBytes, "Current outer-priority serialization debt P0 in bytes.", dto.MetricType_GAUGE, 14},
-		{MetricShaperPriorityRateBytesPerSecond, "Configured sustained outer-priority rate Rp in bytes per second.", dto.MetricType_GAUGE, 15},
-		{MetricShaperPriorityBurstBytes, "Configured outer-priority burst allowance Pburst in bytes.", dto.MetricType_GAUGE, 16},
-		{MetricShaperPriorityDelayBound, "Current DATA/inner-control admission bound Dp=(P0+Pburst)/(R-Rp) in seconds under generated priority Rp<R.", dto.MetricType_GAUGE, 17},
-		{MetricShaperAdmissionWaits, "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", dto.MetricType_COUNTER, 18},
-		{MetricShaperAdmissionWaitSeconds, "Cumulative seconds spent waiting for exact-byte shaper admission.", dto.MetricType_COUNTER, 19},
-		{MetricShaperAdmissionCanceledDatagrams, "Total datagrams never reserved because their admission context was canceled or expired.", dto.MetricType_COUNTER, 20},
-		{MetricShaperAsyncWriteErrors, "Actual UDP writer calls failing asynchronously, excluding EMSGSIZE.", dto.MetricType_COUNTER, 21},
-		{MetricShaperAsyncWriteErrorBytes, "Reserved bytes assigned to a generic writer failure, including its retired unstarted batch suffix.", dto.MetricType_COUNTER, 22},
-		{MetricShaperAsyncWriteEMSGSIZEErrors, "Actual UDP writer calls failing asynchronously with EMSGSIZE.", dto.MetricType_COUNTER, 23},
-		{MetricShaperAsyncWriteEMSGSIZEBytes, "Reserved bytes assigned to an EMSGSIZE writer failure, including its retired unstarted batch suffix.", dto.MetricType_COUNTER, 24},
+		{MetricShaperQueueDataBytes, "Current retained DATA/PARITY bytes, including pending-copy placeholders; bounded by B.", dto.MetricType_GAUGE, queueDataBytes},
+		{MetricShaperQueueControlBytes, "Current retained inner-control bytes, including pending-copy placeholders; bounded by C=Lmax.", dto.MetricType_GAUGE, queueControlBytes},
+		{MetricShaperQueueBytes, "Current retained shaped bytes across both classes, including pending-copy placeholders; bounded by Q=B+C.", dto.MetricType_GAUGE, queueBytes},
+		{MetricShaperInFlightBytes, "Current UDP-writer bytes outside retained budget Q; either zero or one datagram no larger than Lmax.", dto.MetricType_GAUGE, inFlightBytes},
+		{MetricShaperScheduledDelay, "Current virtual serialization-tail delay in seconds; already-assigned datagram deadlines are immutable.", dto.MetricType_GAUGE, snapshot.ScheduledDelay.Seconds()},
+		{MetricShaperRateBytesPerSecond, "Configured exact-byte shaper wire rate R in bytes per second.", dto.MetricType_GAUGE, rateBytesPerSecond},
+		{MetricShaperDataBudgetBytes, "Configured exact-byte shaper DATA/PARITY queue budget B in bytes.", dto.MetricType_GAUGE, dataBudgetBytes},
+		{MetricShaperControlReserveBytes, "Configured exact-byte shaper inner-control queue reserve C in bytes.", dto.MetricType_GAUGE, controlReserveBytes},
+		{MetricShaperQueueBudgetBytes, "Configured exact-byte shaper total reserved-byte queue budget Q=B+C in bytes.", dto.MetricType_GAUGE, queueBudgetBytes},
+		{MetricShaperMaxDatagramBytes, "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", dto.MetricType_GAUGE, maxDatagramBytes},
+		{MetricShaperAcceptedBytes, "Total DATA/PARITY and inner-control bytes reserved before copying caller memory.", dto.MetricType_COUNTER, acceptedBytes},
+		{MetricShaperEmittedBytes, "Total DATA/PARITY and inner-control bytes successfully written to the UDP socket.", dto.MetricType_COUNTER, emittedBytes},
+		{MetricShaperOuterPriorityBytes, "Total successfully written authenticated outer PROBE/echo bytes charged to future priority debt.", dto.MetricType_COUNTER, outerPriorityBytes},
+		{MetricShaperPriorityDebtBytes, "Current outer-priority serialization debt P0 in bytes.", dto.MetricType_GAUGE, priorityDebtBytes},
+		{MetricShaperPriorityRateBytesPerSecond, "Configured sustained outer-priority rate Rp in bytes per second.", dto.MetricType_GAUGE, priorityRateBytesPerSecond},
+		{MetricShaperPriorityBurstBytes, "Configured outer-priority burst allowance Pburst in bytes.", dto.MetricType_GAUGE, priorityBurstBytes},
+		{MetricShaperPriorityDelayBound, "Current DATA/inner-control admission bound Dp=(P0+Pburst)/(R-Rp) in seconds under generated priority Rp<R.", dto.MetricType_GAUGE, priorityDelayBound.Seconds()},
+		{MetricShaperAdmissionWaits, "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", dto.MetricType_COUNTER, admissionWaits},
+		{MetricShaperAdmissionWaitSeconds, "Cumulative seconds spent waiting for exact-byte shaper admission.", dto.MetricType_COUNTER, snapshot.AdmissionWaitDuration.Seconds()},
+		{MetricShaperAdmissionCanceledDatagrams, "Total datagrams never reserved because their admission context was canceled or expired.", dto.MetricType_COUNTER, admissionCanceledDatagrams},
+		{MetricShaperAsyncWriteErrors, "Actual UDP writer calls failing asynchronously, excluding EMSGSIZE.", dto.MetricType_COUNTER, asyncWriteErrors},
+		{MetricShaperAsyncWriteErrorBytes, "Reserved bytes assigned to a generic writer failure, including its retired unstarted batch suffix.", dto.MetricType_COUNTER, asyncWriteErrorBytes},
+		{MetricShaperAsyncWriteEMSGSIZEErrors, "Actual UDP writer calls failing asynchronously with EMSGSIZE.", dto.MetricType_COUNTER, asyncWriteEMSGSIZEErrors},
+		{MetricShaperAsyncWriteEMSGSIZEBytes, "Reserved bytes assigned to an EMSGSIZE writer failure, including its retired unstarted batch suffix.", dto.MetricType_COUNTER, asyncWriteEMSGSIZEBytes},
 	}
 
 	enabled := startServer(t, fakeSource{paths: []PathSnapshot{{Name: "wan0", Shaper: &snapshot}}})
@@ -149,32 +178,10 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 			t.Errorf("%s metadata = help %q type %s", name, family.GetHelp(), family.GetType())
 		}
 	}
-	secondSnapshot := shaper.Snapshot{
-		QueueDataBytes:             101,
-		QueueControlBytes:          102,
-		QueueBytes:                 103,
-		InFlightBytes:              104,
-		ScheduledDelay:             105 * time.Second,
-		RateBytesPerSecond:         106,
-		DataBudgetBytes:            107,
-		ControlReserveBytes:        108,
-		QueueBudgetBytes:           109,
-		MaxDatagramBytes:           110,
-		AcceptedBytes:              111,
-		EmittedBytes:               112,
-		OuterPriorityBytes:         113,
-		PriorityDebtBytes:          114,
-		PriorityRateBytesPerSecond: 115,
-		PriorityBurstBytes:         116,
-		PriorityDelayBound:         117 * time.Second,
-		AdmissionWaits:             118,
-		AdmissionWaitDuration:      119 * time.Second,
-		AdmissionCanceledDatagrams: 120,
-		AsyncWriteErrors:           121,
-		AsyncWriteErrorBytes:       122,
-		AsyncWriteEMSGSIZEErrors:   123,
-		AsyncWriteEMSGSIZEBytes:    124,
-	}
+	secondSnapshot := snapshot
+	secondSnapshot.AcceptedBytes += 100
+	secondSnapshot.EmittedBytes += 100
+	secondSnapshot.OuterPriorityBytes += 100
 	multiPeer := startServer(t, fakeSource{
 		peerNames: []string{"tokyo", "osaka"},
 		paths: []PathSnapshot{
@@ -187,10 +194,14 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, contract := range contracts {
-		for peer, want := range map[string]float64{
-			"tokyo": contract.want,
-			"osaka": contract.want + 100,
-		} {
+		for _, peer := range []string{"tokyo", "osaka"} {
+			want := contract.want
+			if peer == "osaka" &&
+				(contract.name == MetricShaperAcceptedBytes ||
+					contract.name == MetricShaperEmittedBytes ||
+					contract.name == MetricShaperOuterPriorityBytes) {
+				want += 100
+			}
 			got, ok := multiPeerExp.PeerPathValue(contract.name, peer, "wan0")
 			if !ok || got != want {
 				t.Errorf("%s{peer=%q,path=\"wan0\"} = %v,%v, want %v,true", contract.name, peer, got, ok, want)
@@ -206,14 +217,17 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 			}
 		}
 	}
+	resetPriorityDelayBound := time.Duration(priorityBurstBytes) * time.Second /
+		time.Duration(rateBytesPerSecond-priorityRateBytesPerSecond)
 	snapshot = shaper.Snapshot{
-		RateBytesPerSecond:         6,
-		DataBudgetBytes:            7,
-		ControlReserveBytes:        8,
-		QueueBudgetBytes:           9,
-		MaxDatagramBytes:           10,
-		PriorityRateBytesPerSecond: 15,
-		PriorityBurstBytes:         16,
+		RateBytesPerSecond:         rateBytesPerSecond,
+		DataBudgetBytes:            dataBudgetBytes,
+		ControlReserveBytes:        controlReserveBytes,
+		QueueBudgetBytes:           queueBudgetBytes,
+		MaxDatagramBytes:           maxDatagramBytes,
+		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
+		PriorityBurstBytes:         priorityBurstBytes,
+		PriorityDelayBound:         resetPriorityDelayBound,
 	}
 	resetExp, err := Fetch(ctx, http.DefaultClient, enabled.URL())
 	if err != nil {

@@ -377,9 +377,13 @@ and adaptive FEC enabled. Preserve the starting state before the first cycle:
       states, and the original pacing declarations. The last step must restore
       and re-hash this exact state.
 - [ ] Use one 30-second edge-to-o3 TCP upload per tunnel leg, discarding the
-      first 5 seconds as warmup. During the whole leg collect loaded ping,
-      retransmits, FEC counters, and every `wanbond_path_shaper_*` series at a
-      synchronized start and end. Compute steady rate from the final 20 seconds.
+      first 5 seconds as warmup. During the whole leg collect timestamped loaded
+      ping, one-second `iperf3` intervals/retransmits, FEC counters, and every
+      `wanbond_path_shaper_*` series. Take synchronized counter scrapes at
+      `t=0`, the final-window boundary `t=10s`, and the leg end `t=30s` (or
+      continuously sample with timestamps at least this precisely). Compute the
+      final-20-second outer rate and counter deltas strictly from `t=10s` through
+      `t=30s`; retain the `t=0` scrape for whole-leg error/cancellation checks.
 - [ ] Run three cycles with condition order rotated to reduce order bias:
 
       | cycle | first | second | third |

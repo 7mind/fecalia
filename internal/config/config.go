@@ -1419,16 +1419,16 @@ func (c *Config) deriveWeightedBottleneckPacing() error {
 		return nil // no declared bandwidth: the synthetic default pace is preserved.
 	}
 	if declared != len(c.Paths) {
-		return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — the shared per-path pace is sized to the slowest declared link, which is undefined with a partial declaration", declared, len(c.Paths))
+		return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — the weighted aggregation frame-domain compatibility reference is sized to the slowest declared link, which is undefined with a partial declaration", declared, len(c.Paths))
 	}
 	if s.PerPathCapacityFPS != 0 || s.PacingBurstFrames != 0 {
-		return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived pace) OR set the raw frame-slot knobs, not both")
+		return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived exact-byte envelope) OR set the raw frame-slot knobs, not both")
 	}
 	var bottleneck BDPSizing
 	for i := range c.Paths {
 		p := &c.Paths[i]
 		if p.LinkRTT <= 0 {
-			return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under weighted pacing — it is the delay term of the bandwidth-delay-product burst", p.Name)
+			return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under weighted pacing — it is the delay term of DATA/PARITY budget B=ceil(R*RTT)", p.Name)
 		}
 		sz, err := SizePacingFromBDP(p.LinkBandwidthBitsPerSec, p.LinkRTT, defaultAvgWireFrameBytes)
 		if err != nil {
@@ -1457,20 +1457,20 @@ func (c *Config) deriveActiveBackupPerPathPacing() error {
 	declared := c.declaredLinkBandwidths()
 	hasRawKnobs := s.PerPathCapacityFPS != 0 || s.PacingBurstFrames != 0
 	if declared > 0 {
-		// BDP-sized per-path pace. The raw frame-slot knobs are mutually exclusive with
-		// a declared bandwidth, exactly as under weighted.
+		// BDP-sized per-path exact-byte envelope. The raw frame-slot knobs are
+		// mutually exclusive with a declared bandwidth, exactly as under weighted.
 		if hasRawKnobs {
-			return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived pace) OR set the raw frame-slot knobs, not both")
+			return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived exact-byte envelope) OR set the raw frame-slot knobs, not both")
 		}
 		if declared != len(c.Paths) {
-			return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — each path's pace is sized from its own declared link, which is undefined with a partial declaration", declared, len(c.Paths))
+			return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — each path's exact-byte R/B envelope is sized from its own declared link, which is undefined with a partial declaration", declared, len(c.Paths))
 		}
 		caps := make([]float64, len(c.Paths))
 		bursts := make([]float64, len(c.Paths))
 		for i := range c.Paths {
 			p := &c.Paths[i]
 			if p.LinkRTT <= 0 {
-				return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under active-backup pacing — it is the delay term of the bandwidth-delay-product burst", p.Name)
+				return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under active-backup pacing — it is the delay term of DATA/PARITY budget B=ceil(R*RTT)", p.Name)
 			}
 			sz, err := SizePacingFromBDP(p.LinkBandwidthBitsPerSec, p.LinkRTT, defaultAvgWireFrameBytes)
 			if err != nil {
@@ -1483,10 +1483,11 @@ func (c *Config) deriveActiveBackupPerPathPacing() error {
 		s.PacingBursts = bursts
 		return nil
 	}
-	// No declared bandwidth: the explicit raw knobs are the ONLY pace source. Fail fast
-	// when they are absent — the weighted synthetic default must NOT bind here (D65).
+	// No declared bandwidth: the explicit raw knobs are the ONLY exact-byte shaping
+	// source. Fail fast when they are absent — the weighted synthetic default must
+	// NOT bind here (D65).
 	if !hasRawKnobs {
-		return errors.New("scheduler.pacing_enabled under the active-backup policy requires a bound pace source: declare link_bandwidth + link_rtt on ALL paths (per-path BDP-derived pace) OR set explicit per_path_capacity_fps + pacing_burst_frames; with neither, the pace would not bind (reintroducing the D65 bufferbloat it claims to shape)")
+		return errors.New("scheduler.pacing_enabled under the active-backup policy requires an exact-byte shaping source: declare link_bandwidth + link_rtt on ALL paths (per-path BDP-derived R/B envelope) OR set explicit per_path_capacity_fps + pacing_burst_frames; with neither, no byte-rate bound exists (reintroducing the D65 bufferbloat it claims to prevent)")
 	}
 	// Explicit scalar knobs: replicate across every path into the vectors T153 consumes.
 	// A missing/negative knob is left in the vector and rejected by validate (>0), so the
@@ -1645,10 +1646,10 @@ func (s SchedulerConfig) validate() error {
 // paths), mirroring the weighted per_path_capacity_fps/pacing_burst_frames checks.
 func (s SchedulerConfig) validateActiveBackupPacing() error {
 	if len(s.PerPathCapacities) == 0 || len(s.PacingBursts) == 0 {
-		return errors.New("scheduler.pacing_enabled under the active-backup policy requires a bound pace source: declare link_bandwidth + link_rtt on ALL paths OR set explicit per_path_capacity_fps + pacing_burst_frames (the weighted synthetic default must not silently apply)")
+		return errors.New("scheduler.pacing_enabled under the active-backup policy requires an exact-byte shaping source: declare link_bandwidth + link_rtt on ALL paths OR set explicit per_path_capacity_fps + pacing_burst_frames (the weighted synthetic default must not silently apply)")
 	}
 	if len(s.PerPathCapacities) != len(s.PacingBursts) {
-		return fmt.Errorf("scheduler: per-path pacing vectors must be the same length, got %d capacities and %d bursts", len(s.PerPathCapacities), len(s.PacingBursts))
+		return fmt.Errorf("scheduler: per-path frame-domain compatibility vectors must be the same length, got %d capacities and %d bursts", len(s.PerPathCapacities), len(s.PacingBursts))
 	}
 	for i, capFPS := range s.PerPathCapacities {
 		if math.IsNaN(capFPS) || math.IsInf(capFPS, 0) {
