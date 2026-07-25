@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/log"
@@ -79,6 +80,11 @@ func (w *failFirstWriter) snapshot() (calls, writes int, callSizes []int, openAt
 
 func newFailFirstSender(t testing.TB, cfg fec.Config, clk *fakeClock, writer pathShaper) *Multipath {
 	t.Helper()
+	return newFailFirstSenderWithAdaptive(t, cfg, nil, clk, writer)
+}
+
+func newFailFirstSenderWithAdaptive(t testing.TB, cfg fec.Config, adaptiveCfg *adaptivefec.Config, clk *fakeClock, writer pathShaper) *Multipath {
+	t.Helper()
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +96,7 @@ func newFailFirstSender(t testing.TB, cfg fec.Config, clk *fakeClock, writer pat
 		nil,
 		nil,
 		&cfg,
-		nil,
+		adaptiveCfg,
 		config.Amnezia{},
 		[]config.PathShaperConfig{{
 			RateBytesPerSecond:      10_000_000,
@@ -108,6 +114,7 @@ func newFailFirstSender(t testing.TB, cfg fec.Config, clk *fakeClock, writer pat
 	m.newPathShaper = func(shaper.Config, shaper.WriteFunc) (pathShaper, error) {
 		return writer, nil
 	}
+	m.clock = clk
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -119,20 +126,23 @@ func newFailFirstSender(t testing.TB, cfg fec.Config, clk *fakeClock, writer pat
 		t.Fatal(err)
 	}
 	m.mu.Lock()
-	m.fecSend.Load().enc = enc
+	fs := m.fecSend.Load()
+	if fs.ctrl != nil {
+		enc.SetParity(fs.ctrl.Parity())
+	}
+	fs.enc = enc
 	m.mu.Unlock()
 	return m
 }
 
 func TestFailFirstFECDataStagedUntilParityDecision(t *testing.T) {
 	cfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: 80 * time.Millisecond}
-	for _, parity := range []int{1, 0} {
+	for _, parity := range []int{1} {
 		t.Run("parity-"+string(rune('0'+parity)), func(t *testing.T) {
 			clk := newFakeClock()
 			writer := &failFirstWriter{}
 			m := newFailFirstSender(t, cfg, clk, writer)
 			writer.encoder = m.fecSend.Load().enc
-			writer.encoder.SetParity(parity)
 
 			if err := m.Send([][]byte{[]byte("partial-group-data")}, m.virt); err != nil {
 				t.Fatalf("Send: %v", err)
@@ -141,8 +151,8 @@ func TestFailFirstFECDataStagedUntilParityDecision(t *testing.T) {
 			writer.mu.Lock()
 			writes, openAtWrite := writer.writes, writer.groupOpenAtWrite
 			writer.mu.Unlock()
-			t.Logf("events: group-open=%v due=%s writer-visible=%d decision-ready=%v parity=%d",
-				open, due.Sub(clk.Now()), writes, !openAtWrite, parity)
+			t.Logf("events: 01 t=%s group-open=%v due=%s; 02 t=%s first-writer-visible=%d decision-ready=%v parity=%d",
+				clk.Now(), open, due, clk.Now(), writes, !openAtWrite, parity)
 			if writes == 0 || !open {
 				t.Fatalf("fixture did not observe an open partial group and DATA write: writes=%d open=%v", writes, open)
 			}
@@ -182,8 +192,9 @@ func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 		m.fecFlushDeadline()
 		_, stillOpen := enc.NextDeadline()
 		decisionAt := clk.Now()
-		t.Logf("events: group-open=true deadline-fire=2 decision-ready=%v opened-to-decision=%s bound=%s",
-			!stillOpen, decisionAt.Sub(due.Add(-cfg.Deadline)), cfg.Deadline+failFirstDispatchSLO)
+		t.Logf("events: 01 t=%s group-open=true; 02 t=%s deadline-fire=1 decision-ready=false; 03 t=%s deadline-fire=2 decision-ready=%v opened-to-decision=%s bound=%s",
+			due.Add(-cfg.Deadline), due.Add(-time.Millisecond), decisionAt, !stillOpen,
+			decisionAt.Sub(due.Add(-cfg.Deadline)), cfg.Deadline+failFirstDispatchSLO)
 		if stillOpen {
 			t.Fatal("fixture did not close the group at the second periodic tick")
 		}
@@ -215,8 +226,8 @@ func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 		clk.advance(failFirstDispatchSLO)
 
 		_, stillOpen := enc.NextDeadline()
-		t.Logf("events: group-open=true deadline-fire=1 contention=true retry=false decision-ready=%v now-minus-due=%s",
-			!stillOpen, clk.Now().Sub(due))
+		t.Logf("events: 01 t=%s group-open=true; 02 t=%s deadline-fire=1 contention=true; 03 t=%s retry=false decision-ready=%v now-minus-due=%s",
+			due.Add(-cfg.Deadline), due, clk.Now(), !stillOpen, clk.Now().Sub(due))
 		if stillOpen {
 			t.Fatalf("contended deadline fire was skipped without retry; group remained open at openedAt+D+G (%s late)", clk.Now().Sub(due))
 		}
@@ -288,7 +299,8 @@ func TestFailFirstFECClosureAndLifecycleMatrix(t *testing.T) {
 
 		m.mu.Lock()
 		clk.advance(cfg.Deadline)
-		t.Logf("event: t=%s deadline-fire contention=true executing-Send=true", clk.Now())
+		t.Logf("events: 01 t=%s group-open=true; 02 t=%s first-writer-visible=true; 03 t=%s deadline-fire=true; 04 t=%s contention=true executing-Send=true",
+			clk.Now().Add(-cfg.Deadline), clk.Now().Add(-cfg.Deadline), clk.Now(), clk.Now())
 		m.fecFlushDeadline()
 		secondDone := make(chan error, 1)
 		go func() { secondDone <- m.Send([][]byte{[]byte("queued")}, m.virt) }()
@@ -370,6 +382,63 @@ func TestFailFirstFECClosureAndLifecycleMatrix(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestFailFirstAdaptiveM0SnapshotIsImmutable(t *testing.T) {
+	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	adaptiveCfg := adaptivefec.DefaultConfig()
+	adaptiveCfg.DataShards = cfg.DataShards
+	adaptiveCfg.MaxParity = cfg.ParityShards
+	clk := newFakeClock()
+	writer := &failFirstWriter{}
+	m := newFailFirstSenderWithAdaptive(t, cfg, &adaptiveCfg, clk, writer)
+	fs := m.fecSend.Load()
+	writer.encoder = fs.enc
+	if fs.ctrl == nil || fs.ctrl.Parity() != 0 {
+		t.Fatalf("adaptive controller initial parity = %v, want M=0", fs.ctrl)
+	}
+
+	if err := m.Send([][]byte{[]byte("adaptive-zero")}, m.virt); err != nil {
+		t.Fatal(err)
+	}
+	due, open := fs.enc.NextDeadline()
+	if !open {
+		t.Fatal("adaptive M=0 group did not open")
+	}
+	callsBeforeClose, _, _, openAtFirst := writer.snapshot()
+
+	m.mu.Lock()
+	target := fs.ctrl.Observe(1)
+	fs.enc.SetParity(target)
+	m.mu.Unlock()
+	if target != 1 {
+		t.Fatalf("adaptive controller target after loss = %d, want 1", target)
+	}
+
+	clk.advance(cfg.Deadline)
+	t.Logf("events: 01 t=%s group-open=true adaptive-snapshot=M0; 02 t=%s first-writer-visible=true; 03 t=%s adaptive-target=M1; 04 t=%s deadline-fire",
+		due.Add(-cfg.Deadline), due.Add(-cfg.Deadline), due.Add(-cfg.Deadline), clk.Now())
+	m.fecFlushDeadline()
+	callsAfterZeroClose, _, _, _ := writer.snapshot()
+	if _, stillOpen := fs.enc.NextDeadline(); stillOpen {
+		t.Fatal("adaptive M=0 group remained open at deadline")
+	}
+	if callsAfterZeroClose != callsBeforeClose {
+		t.Fatalf("opened M=0 group emitted parity after target changed: writer calls %d -> %d", callsBeforeClose, callsAfterZeroClose)
+	}
+
+	if err := m.Send([][]byte{[]byte("next-a"), []byte("next-b")}, m.virt); err != nil {
+		t.Fatal(err)
+	}
+	calls, writes, sizes, _ := writer.snapshot()
+	t.Logf("events: 05 t=%s decision-ready=M0/no-parity; 06 t=%s next-group-snapshot=M1 size-close parity-writer-visible; calls=%d writes=%d sizes=%v",
+		clk.Now(), clk.Now(), calls, writes, sizes)
+	if calls != callsAfterZeroClose+2 || writes != 4 || sizes[len(sizes)-1] != 2 {
+		t.Fatalf("next adaptive M=1 group calls/writes/sizes = %d/%d/%v, want two more calls/4/last-size-2", calls, writes, sizes)
+	}
+	if openAtFirst {
+		t.Errorf("adaptive M=0 DATA reached the writer before its immutable zero-parity decision")
+	}
 }
 
 func TestFailFirstFECBlockedWaitersRetireWithoutLeak(t *testing.T) {
