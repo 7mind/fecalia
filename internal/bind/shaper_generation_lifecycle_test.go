@@ -334,7 +334,7 @@ func assertBindLockAvailable(t *testing.T, m *Multipath) {
 	}
 }
 
-func TestDirectWriteGenerationGateDrainsBeforeSocketClose(t *testing.T) {
+func TestDirectWriteGenerationGateClosesSocketBeforeWriterJoin(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		run  func(*testing.T)
@@ -357,11 +357,11 @@ func TestDirectWriteGenerationGateDrainsBeforeSocketClose(t *testing.T) {
 				pp.setRemote(remoteAddr)
 				oldConn := pp.conn
 				writerEntered := make(chan struct{})
-				releaseWriter := make(chan struct{})
-				pp.writeUDP = func(payload []byte, remote netip.AddrPort) (int, error) {
+				pp.writeUDP = func([]byte, netip.AddrPort) (int, error) {
 					close(writerEntered)
-					<-releaseWriter
-					return oldConn.WriteToUDPAddrPort(payload, remote)
+					buffer := make([]byte, 1)
+					_, _, err := oldConn.ReadFromUDPAddrPort(buffer)
+					return 0, err
 				}
 
 				sendDone := make(chan error, 1)
@@ -381,21 +381,19 @@ func TestDirectWriteGenerationGateDrainsBeforeSocketClose(t *testing.T) {
 				if _, err := pp.writeToUDPAddrPort([]byte{1}, remoteAddr); !errors.Is(err, net.ErrClosed) {
 					t.Fatalf("post-detach gated write = %v, want net.ErrClosed", err)
 				}
-				if _, err := oldConn.WriteToUDPAddrPort([]byte{2}, remoteAddr); err != nil {
-					t.Fatalf("socket closed before admitted writer drained: %v", err)
+				if _, err := oldConn.WriteToUDPAddrPort([]byte{2}, remoteAddr); !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("socket remained open while Close joined the blocked writer: %v", err)
 				}
 				select {
 				case err := <-closeDone:
-					t.Fatalf("Close returned before admitted writer release: %v", err)
-				default:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("Close did not join the socket-interrupted writer")
 				}
-
-				close(releaseWriter)
-				if err := <-sendDone; err != nil {
-					t.Fatalf("admitted pacing-off Send = %v, want nil", err)
-				}
-				if err := <-closeDone; err != nil {
-					t.Fatal(err)
+				if err := <-sendDone; !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("interrupted pacing-off Send = %v, want net.ErrClosed", err)
 				}
 				if _, err := oldConn.WriteToUDPAddrPort([]byte{3}, remoteAddr); !errors.Is(err, net.ErrClosed) {
 					t.Fatalf("retired socket write = %v, want net.ErrClosed", err)
@@ -420,11 +418,11 @@ func TestDirectWriteGenerationGateDrainsBeforeSocketClose(t *testing.T) {
 				pp := m.paths[0]
 				oldConn := pp.conn
 				writerEntered := make(chan struct{})
-				releaseWriter := make(chan struct{})
-				pp.writeUDP = func(payload []byte, remote netip.AddrPort) (int, error) {
+				pp.writeUDP = func([]byte, netip.AddrPort) (int, error) {
 					close(writerEntered)
-					<-releaseWriter
-					return oldConn.WriteToUDPAddrPort(payload, remote)
+					buffer := make([]byte, 1)
+					_, _, err := oldConn.ReadFromUDPAddrPort(buffer)
+					return 0, err
 				}
 
 				probesDone := make(chan struct{})
@@ -445,23 +443,21 @@ func TestDirectWriteGenerationGateDrainsBeforeSocketClose(t *testing.T) {
 				if _, err := pp.writeToUDPAddrPort([]byte{1}, remoteAddr); !errors.Is(err, net.ErrClosed) {
 					t.Fatalf("post-detach generated-path write = %v, want net.ErrClosed", err)
 				}
-				if _, err := oldConn.WriteToUDPAddrPort([]byte{2}, remoteAddr); err != nil {
-					t.Fatalf("removed socket closed before generated writer drained: %v", err)
+				if _, err := oldConn.WriteToUDPAddrPort([]byte{2}, remoteAddr); !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("removed socket remained open while joining generated writer: %v", err)
 				}
 				select {
 				case err := <-removeDone:
-					t.Fatalf("RemovePath returned before generated writer release: %v", err)
-				default:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("RemovePath did not join the socket-interrupted generated writer")
 				}
-
-				close(releaseWriter)
 				select {
 				case <-probesDone:
 				case <-time.After(time.Second):
 					t.Fatal("generated PROBE did not finish")
-				}
-				if err := <-removeDone; err != nil {
-					t.Fatal(err)
 				}
 				if _, err := oldConn.WriteToUDPAddrPort([]byte{3}, remoteAddr); !errors.Is(err, net.ErrClosed) {
 					t.Fatalf("removed socket write = %v, want net.ErrClosed", err)
@@ -1162,14 +1158,13 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		}
 	})
 
-	t.Run("Open construction failure drains writer before socket close", func(t *testing.T) {
+	t.Run("Open construction failure closes socket before writer join", func(t *testing.T) {
 		m, _, _ := newProbingMultipath(t, loopbackPaths(2), testKey(t, 0xF8), newFakeClock())
 		cfg := lifecycleShaperConfig()
 		m.shaperConfigs = []config.PathShaperConfig{cfg, cfg}
 		_, remoteAddr := rawPeer(t)
 		injected := errors.New("injected second shaper construction")
 		writerEntered := make(chan struct{})
-		releaseWriter := make(chan struct{})
 		writerDone := make(chan error, 1)
 		var firstShared *sharedPathState
 		var firstConn *net.UDPConn
@@ -1180,10 +1175,11 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 			if factoryCalls == 2 {
 				firstShared = m.shared[0]
 				firstConn = firstShared.conn
-				firstShared.writeUDP = func(payload []byte, remote netip.AddrPort) (int, error) {
+				firstShared.writeUDP = func([]byte, netip.AddrPort) (int, error) {
 					close(writerEntered)
-					<-releaseWriter
-					return firstConn.WriteToUDPAddrPort(payload, remote)
+					buffer := make([]byte, 1)
+					_, _, err := firstConn.ReadFromUDPAddrPort(buffer)
+					return 0, err
 				}
 				go func() {
 					_, err := firstShared.writeToUDPAddrPort([]byte{1}, remoteAddr)
@@ -1212,20 +1208,19 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		if _, err := firstShared.writeToUDPAddrPort([]byte{2}, remoteAddr); !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("Open-unwind post-detach write = %v, want net.ErrClosed", err)
 		}
-		if _, err := firstConn.WriteToUDPAddrPort([]byte{3}, remoteAddr); err != nil {
-			t.Fatalf("Open-unwind socket closed before writer drain: %v", err)
+		if _, err := firstConn.WriteToUDPAddrPort([]byte{3}, remoteAddr); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Open-unwind socket remained open while joining writer: %v", err)
 		}
 		select {
 		case err := <-openDone:
-			t.Fatalf("Open returned before admitted writer release: %v", err)
-		default:
+			if !errors.Is(err, injected) {
+				t.Fatalf("Open error = %v, want construction error identity", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Open unwind did not join socket-interrupted writer")
 		}
-		close(releaseWriter)
-		if err := <-writerDone; err != nil {
-			t.Fatalf("Open-unwind admitted writer = %v, want nil", err)
-		}
-		if err := <-openDone; !errors.Is(err, injected) {
-			t.Fatalf("Open error = %v, want construction error identity", err)
+		if err := <-writerDone; !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Open-unwind interrupted writer = %v, want net.ErrClosed", err)
 		}
 		if len(created) != 1 {
 			t.Fatalf("constructed shapers = %d, want 1 before failure", len(created))
@@ -1507,17 +1502,11 @@ func TestCloseRetiresQueuedWireAndReopenUsesFreshShaperGeneration(t *testing.T) 
 	}
 
 	buf := make([]byte, maxDatagram)
-	if err := remote.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := remote.Read(buf); err != nil {
-		t.Fatalf("in-flight old-generation wire did not finish before socket close: %v", err)
-	}
 	if err := remote.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := remote.Read(buf); err == nil {
-		t.Fatal("retired queued parity crossed the generation boundary")
+		t.Fatal("socket-interrupted old-generation wire crossed the generation boundary")
 	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("retired queue read = %v, want timeout", err)
 	}

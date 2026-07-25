@@ -359,7 +359,9 @@ const defaultAvgWireFrameBytes = 1500.0
 const (
 	recoveryWriteSlack = 10 * time.Millisecond
 	// Mirrors frame.DataOverhead without importing frame (frame imports config).
-	outerDataFrameOverhead  = 40
+	outerDataFrameOverhead = 40
+	// Mirrors bind.FECParityMTUPenalty without importing bind (bind imports config).
+	fecParityMTUPenalty     = 5
 	fecShardLengthPrefix    = 4
 	resequencerServiceLimit = 250 * time.Millisecond
 )
@@ -397,7 +399,14 @@ func deriveFECGroupOwnership(kdata, mmax, lmax int) (fecGroupOwnership, error) {
 	if err != nil {
 		return fecGroupOwnership{}, err
 	}
-	lc, err := checkedIntSum("FEC coded-input length Lc", 8, lmax-outerDataFrameOverhead)
+	maxInnerDatagram, err := checkedIntSum(
+		"maximum FEC inner datagram",
+		lmax-outerDataFrameOverhead-fecParityMTUPenalty,
+	)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	lc, err := checkedIntSum("FEC coded-input length Lc", 8, maxInnerDatagram)
 	if err != nil {
 		return fecGroupOwnership{}, err
 	}
@@ -413,7 +422,23 @@ func deriveFECGroupOwnership(kdata, mmax, lmax int) (fecGroupOwnership, error) {
 	if err != nil {
 		return fecGroupOwnership{}, err
 	}
-	encodedWire, err := checkedIntProduct("encoded-wire ownership (K+M)*Lmax", shards, lmax)
+	dataWireLength, err := checkedIntSum(
+		"maximum FEC DATA wire length",
+		outerDataFrameOverhead,
+		maxInnerDatagram,
+	)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	dataWire, err := checkedIntProduct("encoded DATA-wire ownership K*Ldata", kdata, dataWireLength)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	parityWire, err := checkedIntProduct("encoded PARITY-wire ownership M*Lmax", mmax, lmax)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	encodedWire, err := checkedIntSum("encoded-wire ownership", dataWire, parityWire)
 	if err != nil {
 		return fecGroupOwnership{}, err
 	}

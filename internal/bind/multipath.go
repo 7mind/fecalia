@@ -211,6 +211,8 @@ type sharedPathState struct {
 	// stale repeated failure from launching another retirement.
 	recoveryFailed     atomic.Bool
 	recoveryRetireOnce sync.Once
+	closeOnce          sync.Once
+	closeErr           error
 	// bindMode is the path's configured/effective bind mode; boundDevice is the
 	// resolved SO_BINDTODEVICE interface it actually device-bound to ("" when
 	// source-IP-pinned). Both are set once at socket creation and IMMUTABLE for the
@@ -270,9 +272,16 @@ func (sp *sharedPathState) installWriteDeadline(deadline time.Time) error {
 func (sp *sharedPathState) abortWriteGeneration() {
 	sp.recoveryFailed.Store(true)
 	sp.stopWrites()
-	if sp.conn != nil {
-		_ = sp.conn.Close()
-	}
+	_ = sp.closeSocket()
+}
+
+func (sp *sharedPathState) closeSocket() error {
+	sp.closeOnce.Do(func() {
+		if sp.conn != nil {
+			sp.closeErr = sp.conn.Close()
+		}
+	})
+	return sp.closeErr
 }
 
 // addViewLocked publishes pp as a per-peer view of this shared socket for the lock-free
@@ -1057,6 +1066,11 @@ type recoveryPathShaper interface {
 type stagedPathShaper interface {
 	Stop()
 	Wait() error
+}
+
+type causedStagedPathShaper interface {
+	stagedPathShaper
+	StopWithError(error)
 }
 
 func (pp *peerPathState) recoveryContract() shaper.RecoveryContract {
@@ -4004,7 +4018,9 @@ func (m *Multipath) abortRecoveryGeneration(pp *peerPathState, cause error) {
 	sp := pp.sharedPathState
 	sp.recoveryRetireOnce.Do(func() {
 		sp.abortWriteGeneration()
-		if staged, ok := pp.shaper.(stagedPathShaper); ok {
+		if staged, ok := pp.shaper.(causedStagedPathShaper); ok {
+			staged.StopWithError(cause)
+		} else if staged, ok := pp.shaper.(stagedPathShaper); ok {
 			staged.Stop()
 		}
 		go m.retireRecoveryGeneration(pp, cause)
@@ -4098,6 +4114,14 @@ func (r *socketGenerationRetirement) prepareSharedLocked(sp *sharedPathState) {
 // without m.mu or a scheduler lock.
 func (r socketGenerationRetirement) retire() error {
 	var firstErr error
+	// Interrupt readers and any writer blocked in the kernel before joining
+	// shapers/direct writes. Admission was stopped while the generation was
+	// detached, so no new writer can enter after this close.
+	for _, sp := range r.shared {
+		if err := sp.closeSocket(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	for _, pp := range r.peerPaths {
 		if pp.shaper == nil {
 			continue
@@ -4114,11 +4138,6 @@ func (r socketGenerationRetirement) retire() error {
 	}
 	for _, sp := range r.shared {
 		sp.waitWrites()
-		if sp.conn != nil {
-			if err := sp.conn.Close(); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
 	}
 	return firstErr
 }

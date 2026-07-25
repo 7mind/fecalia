@@ -552,9 +552,13 @@ belongs to one path and takes the validated quantities above. Define
 `C = Lmax`, `P = Pburst`, and `Q = B + C`. DATA reservations retain at most
 `B` bytes, CONTROL reservations retain at most `C` bytes, generated
 authenticated priority retains at most `P`, and DATA cannot borrow either
-reserve. One complete FEC group owns the conservative
-`Fgroup=Kdata*Lc+(Kdata+Mmax)*Ls+(Kdata+Mmax)*Lmax`, where
-`Lc=8+maximum-inner-datagram` and `Ls=4+Lc`. With one writer-in-flight
+reserve. One maximum-size FEC group owns
+`Fgroup=Kdata*Lc+(Kdata+Mmax)*Ls+Kdata*Ldata+Mmax*Lparity`, where
+`Lc=8+maximum-FEC-inner-datagram`, `Ls=4+Lc`,
+`Ldata=Lmax-FECParityMTUPenalty`, and `Lparity=Lmax`. The production MTU
+derivation reserves the five-byte parity penalty, so the coded input,
+Reed-Solomon workspace, and encoded DATA/PARITY wires share the same maximum
+inner-datagram unit. With one writer-in-flight
 `Lio=Lmax`, the complete bound is `Mtotal=B+C+P+Fgroup+Lio`. `B >= Lmax`
 allows an exact-`Lmax` DATA datagram, including when `B == Lmax`; construction
 defensively rejects `B < Lmax`, `C != Lmax`, `R <= Rp`, or an `Lmax/R`
@@ -654,9 +658,12 @@ deadline `D=cutStart+I`, `I=10ms`, before publishing the cut. It applies to an
 already-blocked predecessor and every tranche syscall, and clears only after
 terminal completion. Deadline-install, clear, writer-timeout, or exhaustion
 failure aborts without retry. The abort synchronously stops shaper and direct
-admission, then a generation-identity-checked retirement removes that exact
+admission and propagates the originating cause to every already-accepted
+retired datagram. Those bytes enter the corresponding generic or `EMSGSIZE`
+terminal bucket exactly once. A generation-identity-checked retirement removes that exact
 peer path, scheduler view, selected remote, and shared socket without holding
-the shaper lock across the blocking quiescence barrier. A stale callback cannot
+the shaper lock across the blocking quiescence barrier; socket close precedes
+the writer joins so a blocked kernel write cannot deadlock Close. A stale callback cannot
 retire a replacement socket. Mixed-path groups and shared multi-peer sockets
 advertise the contract disabled and retain the conservative 250 ms receiver
 fallback.

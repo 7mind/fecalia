@@ -464,38 +464,59 @@ func TestRecoveryDeadlineInterruptsRunningProductionWriter(t *testing.T) {
 	m := openRecoveryReviewBind(t, 1, testKey(t, 0xD9))
 	path := m.paths[0]
 	installed := make(chan time.Time, 1)
+	var deadlineMu sync.Mutex
+	var installedDeadline time.Time
 	path.setWriteDeadline = func(deadline time.Time) error {
 		if !deadline.IsZero() {
+			deadlineMu.Lock()
+			installedDeadline = deadline
+			deadlineMu.Unlock()
 			installed <- deadline
 		}
 		return nil
 	}
 	writeStarted := make(chan struct{})
-	expire := make(chan struct{})
+	var writeOnce sync.Once
 	path.writeUDP = func([]byte, netip.AddrPort) (int, error) {
-		close(writeStarted)
-		<-expire
+		writeOnce.Do(func() { close(writeStarted) })
+		<-installed
 		return 0, os.ErrDeadlineExceeded
 	}
-	retired := make(chan struct{}, 1)
-	m.afterRecoveryRetire = func(*sharedPathState) { retired <- struct{}{} }
-	result := make(chan error, 1)
+	predecessor := make(chan error, 1)
 	go func() {
-		result <- recoveryReviewOwner(m).emit(5, recoveryReviewWrites(path, []byte{1}))
+		_, err := path.shaper.WriteDatagrams(context.Background(), []shaper.Datagram{{
+			Class:   shaper.ClassData,
+			Payload: []byte{0xA1},
+		}})
+		predecessor <- err
 	}()
-	select {
-	case <-installed:
-	case <-time.After(time.Second):
-		t.Fatal("recovery deadline was not installed before writer")
-	}
 	select {
 	case <-writeStarted:
 	case <-time.After(time.Second):
-		t.Fatal("production UDP writer did not start")
+		t.Fatal("ordinary predecessor did not enter the production Lio writer")
 	}
-	close(expire)
+
+	retired := make(chan struct{}, 1)
+	m.afterRecoveryRetire = func(*sharedPathState) { retired <- struct{}{} }
+	result := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		result <- recoveryReviewOwner(m).emit(5, recoveryReviewWrites(path, []byte{1}))
+	}()
+	if err := <-predecessor; !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("predecessor error = %v, want deadline installed by recovery cut", err)
+	}
 	if err := <-result; !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("interrupted writer error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("deadline-bounded predecessor/recovery completion took %s", elapsed)
+	}
+	deadlineMu.Lock()
+	gotDeadline := installedDeadline
+	deadlineMu.Unlock()
+	if gotDeadline.IsZero() {
+		t.Fatal("recovery cut did not install an absolute socket deadline")
 	}
 	select {
 	case <-retired:

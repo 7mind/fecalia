@@ -458,7 +458,8 @@ func TestFECGroupAndMtotalExactArithmeticBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lc := 8 + lmax - outerDataFrameOverhead
+	maxInnerDatagram := lmax - outerDataFrameOverhead - fecParityMTUPenalty
+	lc := 8 + maxInnerDatagram
 	ls := fecShardLengthPrefix + lc
 	if ownership.codedInputBytes != kdata*lc {
 		t.Fatalf("coded input = %d, want %d", ownership.codedInputBytes, kdata*lc)
@@ -466,10 +467,11 @@ func TestFECGroupAndMtotalExactArithmeticBoundaries(t *testing.T) {
 	if ownership.workspaceBytes != (kdata+mmax)*ls {
 		t.Fatalf("workspace = %d, want %d", ownership.workspaceBytes, (kdata+mmax)*ls)
 	}
-	if ownership.encodedWireBytes != (kdata+mmax)*lmax {
-		t.Fatalf("encoded wire = %d, want %d", ownership.encodedWireBytes, (kdata+mmax)*lmax)
+	wantEncodedWire := kdata*(outerDataFrameOverhead+maxInnerDatagram) + mmax*lmax
+	if ownership.encodedWireBytes != wantEncodedWire {
+		t.Fatalf("encoded wire = %d, want %d", ownership.encodedWireBytes, wantEncodedWire)
 	}
-	wantFgroup := kdata*lc + (kdata+mmax)*ls + (kdata+mmax)*lmax
+	wantFgroup := kdata*lc + (kdata+mmax)*ls + wantEncodedWire
 	if ownership.totalBytes != wantFgroup {
 		t.Fatalf("Fgroup = %d, want exact term sum %d", ownership.totalBytes, wantFgroup)
 	}

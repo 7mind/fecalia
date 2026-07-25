@@ -1013,6 +1013,16 @@ func (s *Shaper) Close() error {
 // wakes capacity and timer waiters. It does not wait for the writer currently
 // in flight; Wait supplies that separate quiescence barrier.
 func (s *Shaper) Stop() {
+	s.StopWithError(ErrClosed)
+}
+
+// StopWithError is Stop with an originating terminal cause. Every accepted
+// queued datagram completes with cause and enters exactly one terminal byte
+// bucket; the writer currently in flight accounts its own result on return.
+func (s *Shaper) StopWithError(cause error) {
+	if cause == nil {
+		panic("shaper: StopWithError requires a cause")
+	}
 	var abort func()
 	s.mu.Lock()
 	if !s.closed {
@@ -1020,14 +1030,15 @@ func (s *Shaper) Stop() {
 		for _, datagram := range s.queue {
 			s.releaseQueued(datagram)
 			if datagram.batch != nil && datagram.batch.err == nil {
-				datagram.batch.err = ErrClosed
+				datagram.batch.err = cause
 				datagram.batch.failedIndex = datagram.index
 			}
-			datagram.done <- ErrClosed
+			s.accountAsyncWriteFailureLocked(cause, datagram.size, false)
+			datagram.done <- cause
 			close(datagram.done)
 		}
 		s.queue = nil
-		abort = s.terminateRecoveryLocked(ErrClosed)
+		abort = s.terminateRecoveryLocked(cause)
 		s.notifyLocked()
 	}
 	s.mu.Unlock()

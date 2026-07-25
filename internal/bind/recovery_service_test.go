@@ -33,11 +33,12 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 	}
 	var data []fec.DataShard
 	var parity []fec.ParityShard
-	lc := 8 + lmax - frame.DataOverhead
+	maxFECInnerDatagram := lmax - frame.DataOverhead - FECParityMTUPenalty
+	lc := 8 + maxFECInnerDatagram
 	ls := 4 + lc
 	codedInputOwnership := kdata * lc
 	workspaceOwnership := (kdata + mmax) * ls
-	encodedWireOwnership := (kdata + mmax) * lmax
+	encodedWireOwnership := kdata*(frame.DataOverhead+maxFECInnerDatagram) + mmax*lmax
 	fgroup := codedInputOwnership + workspaceOwnership + encodedWireOwnership
 	original := make([][]byte, kdata)
 	for i := range original {
@@ -139,8 +140,11 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 	for _, shard := range data {
 		shard := shard
 		groupDatagrams = append(groupDatagrams, shaper.Datagram{
-			Class:   shaper.ClassData,
-			Payload: bytes.Repeat([]byte{byte(0x10 + shard.Index)}, lmax),
+			Class: shaper.ClassData,
+			Payload: bytes.Repeat(
+				[]byte{byte(0x10 + shard.Index)},
+				frame.DataOverhead+maxFECInnerDatagram,
+			),
 			Write: func([]byte) error {
 				emittedMu.Lock()
 				emitted = append(emitted, shard)
@@ -169,7 +173,7 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 		measuredEncodedWire += len(datagram.Payload)
 	}
 	if measuredEncodedWire != encodedWireOwnership {
-		t.Fatalf("encoded-wire ownership = %d, want (K+M)*Lmax=%d",
+		t.Fatalf("encoded-wire ownership = %d, want K*Ldata+M*Lparity=%d",
 			measuredEncodedWire, encodedWireOwnership)
 	}
 	deadlineInstalled := make(chan time.Time, 1)

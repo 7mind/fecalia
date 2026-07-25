@@ -457,10 +457,12 @@ Common rules, either policy:
   Each live `(peer,path)` socket generation owns one shaper. Recovery deadline
   install/clear or writer failure immediately closes admission and retires that
   exact peer path, scheduler view, selected remote, and shared socket; pointer
-  identity prevents a stale failure from retiring a replacement. Runtime removal,
+  identity prevents a stale failure from retiring a replacement. Already-accepted
+  work completes with the originating recovery failure and its bytes enter the
+  matching generic or `EMSGSIZE` terminal counter. Runtime removal,
   failed add/promotion rollback, and daemon Down/Close stop admission and wake
-  queued sends before waiting for writers; the UDP socket closes only after
-  shaped and direct writes quiesce. A subsequent add or Up/Open receives a fresh
+  queued sends, close the UDP socket to interrupt blocked kernel I/O, and then
+  join shaped and direct writers. A subsequent add or Up/Open receives a fresh
   empty shaper and socket, so no prior queue or serialization deadline carries
   across the generation boundary. A queued shaped call reports
   `shaper.ErrClosed`; generated PMTU or direct old-generation admission reports

@@ -282,7 +282,8 @@ deliberate boundaries you must plan around:
   DATA+parity tranche, before later priority/groups. One absolute
   `cutStart+10ms` socket deadline covers an already-blocked predecessor and
   every tranche syscall. Install, clear, or writer failure terminates without
-  retry, disables admission immediately, and retires that exact socket
+  retry, propagates its originating cause to every already-accepted retired
+  byte, disables admission immediately, and retires that exact socket
   generation from its peer path, scheduler view, and remote; a stale failure
   cannot match a replacement generation. The shaper retains
   at most `Mtotal`; saturation backpressures the sender
@@ -297,8 +298,8 @@ deliberate boundaries you must plan around:
   control contribute. The shaper series are absent when pacing is off and
   restart from zero with each fresh shaper/socket generation.
   Runtime remove/rollback and Close atomically stop that generation's admission,
-  retire queued work, wait shaped and direct UDP writers without holding the bind
-  lock, and only then close its socket. Re-add or Close/Open creates a fresh empty
+  retire queued work, close its socket to interrupt blocked kernel I/O, then join
+  shaped and direct UDP writers without holding the bind lock. Re-add or Close/Open creates a fresh empty
   shaper/socket generation; no old writer can cross into it. Per-peer
   resequencer/FEC teardown cancels and joins the old FEC owner but retains the
   shaper while the underlying path socket remains live. Inner

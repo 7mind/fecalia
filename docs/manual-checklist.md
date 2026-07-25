@@ -506,6 +506,9 @@ predeclared gates:
 - [ ] Force recovery deadline-install, clear, and running-writer failures.
       Confirm each exact socket generation immediately rejects admission,
       disappears from its peer/scheduler/remote view, and quiesces on Close;
+      every already-accepted completion must preserve the originating cause,
+      and accepted bytes must reconcile exactly into emitted plus generic or
+      `EMSGSIZE` terminal bytes with no retained remainder;
       then reopen and confirm a delayed stale failure cannot retire the new
       generation.
 - [ ] During probe saturation, distinguish bounded priority outcomes:
