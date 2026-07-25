@@ -516,6 +516,24 @@ predeclared gates:
       at the 250 ms legacy fallback. OuterSeq and FEC GroupID must remain
       monotonic. Replay the old OFFER and an inconsistent same-identity OFFER;
       neither may produce an ACK or re-enable fast recovery.
+- [ ] Drop the first OFFER, the first renewal, and a later renewal at the 200 ms
+      probe cadence. Confirm DATA resumes conservatively at 250 ms without
+      retiring the live OFFER, a later exact ACK succeeds only while at least
+      250 ms of its own validity remains, and a lost renewal disables fast
+      recovery before the prior lease becomes unsafe. Hold an old OFFER's socket
+      write across a ContractID rotation and confirm its completion cannot
+      authorize the new identity.
+- [ ] Change same-name pacing/FEC service inputs (`R/Rp/B/C/P/Lmax/Kdata/Mmax/I`)
+      and reload. Confirm the daemon warns that the change remains unapplied
+      until restart and the running service retains its old ContractID. After a
+      daemon restart, confirm the peer adopts a new authenticated SessionID.
+      Separately force an engine Bind Close→Open within one process and confirm
+      ContractID rotates while SessionID, OuterSeq, and FEC GroupID remain
+      monotonic.
+- [ ] Delay a FEC deadline decision beyond the dispatch grace. Confirm the
+      current group completes, the next DATA group blocks immediately, and a
+      fresh OFFER appears only after the asynchronous drain plus 250 ms quiet
+      interval; Close during that interval must cancel the waiter.
 - [ ] Force recovery deadline-install, clear, and running-writer failures.
       Confirm each exact socket generation immediately rejects admission,
       disappears from its peer/scheduler/remote view, and quiesces on Close;

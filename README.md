@@ -109,7 +109,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   path-service changes use an authenticated peer recovery contract: DATA and
   inner control wait behind a 250 ms bounded transition while PROBEs remain
   live, then fast recovery resumes only after an exact ACK; legacy peers fall
-  back conservatively without resetting OuterSeq or FEC GroupID.
+  back conservatively without resetting OuterSeq or FEC GroupID. Same-name
+  pacing/FEC scalar changes remain restart-required: reload warns and leaves the
+  running service unchanged. A daemon restart establishes a new authenticated
+  SessionID; any engine-driven Close/Open within one process advertises a new
+  ContractID while preserving that process's sequence spaces.
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness,

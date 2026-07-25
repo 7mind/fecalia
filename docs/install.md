@@ -505,14 +505,25 @@ Common rules, either policy:
   `Pburst=P=2,944 B`, and `Rp=14,720 B/s`; `Fgroup`, `A`, and `Ecompletion`
   additionally depend on the configured FEC geometry.
   At runtime `A` becomes usable only after peer negotiation. A service change
-  freezes DATA/inner-control, drains the staged group, waits `T=250ms` from the
-  last successful old-service write, and offers a fresh same-session
+  (including deferred-path promotion or a missed FEC deadline) freezes new
+  DATA/inner-control, lets the current staged group finish, waits `T=250ms` from
+  the last successful old-service write, and offers a fresh same-session
   `ContractID`; liveness probes continue. A matching fresh authenticated ACK
   enables fast recovery while at least `T` remains in the fixed `F=1200ms`
-  validity. A legacy peer merely echoes the OFFER and therefore falls back after
-  `T` with fast recovery disabled. Shared-socket/mixed-path service advertises a
+  validity. The DATA fallback at `T` leaves a still-valid OFFER live, so an exact
+  later ACK may still enable fast recovery. Acknowledged service renews under a
+  new ContractID before the old lease becomes unsafe; a lost renewal disables
+  fast recovery before the old lease has less than `T` left. A legacy peer merely
+  echoes the OFFER and therefore stays conservative. Shared-socket/mixed-path service advertises a
   disabled contract. Writer/deadline failure and Close invalidate the old
   contract before operation can continue.
+  Same-name changes to the derived service inputs
+  `R/Rp/B/C/P/Lmax/Kdata/Mmax/I` are not live-reloadable: reload emits an
+  ignored-until-restart warning and preserves the running contract. Restart the
+  daemon to install them; the new process negotiates under a new authenticated
+  SessionID. An engine-driven Close/Open that occurs without ending the process
+  separately rotates ContractID while preserving that process's SessionID,
+  OuterSeq, and FEC GroupID continuity.
 - The live configuration and envelope are visible under
   `wanbond_path_shaper_*`: `rate_bytes_per_second`, `data_budget_bytes`,
   `control_reserve_bytes`, `queue_budget_bytes`, `max_datagram_bytes`,

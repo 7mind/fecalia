@@ -561,7 +561,9 @@ recognized malformed v1 records receive no ACK.
 
 `SessionID` remains the process boot epoch. Within that epoch the sender mints a
 monotonically increasing `ContractID` whenever the selectable writer service
-changes. The receiver keys identity by `(SessionID, ContractID)`, installs a new
+changes and snapshots that exact identity into the generated PROBE; a delayed
+write completion can authorize only the OFFER it actually emitted, never a
+newer contract. The receiver keys identity by `(SessionID, ContractID)`, installs a new
 authenticated OFFER before making its ACK socket-visible, discards only
 incomplete FEC groups while preserving completed groups and the trusted GroupID
 high-water, and performs any authenticated restart resequencer rebaseline before
@@ -569,18 +571,29 @@ the ACK. Repeating the identical OFFER does not refresh its original acceptance
 time. Reusing an identity with different fields permanently invalidates that
 identity; an expired or lower ContractID remains stale and receives no ACK.
 
-Before runtime path add/remove or recovery-generation retirement, the peer's
+Before runtime path add/remove, deferred-path promotion, or
+recovery-generation retirement, the peer's
 service barrier blocks new DATA/inner-control, lets the currently staged FEC
 group and its writer completion finish, and waits `T=250ms` from the last
 successful old-service write. Outer sequence and FEC GroupID spaces remain
-monotonic. PROBEs stay live during the barrier. The new service then advertises
+monotonic across same-process Close/Open as well; only a process restart resets
+them. PROBEs stay live during the barrier. A missed FEC dispatch deadline
+revokes fast recovery and blocks the next group immediately, then performs the
+same drain/quiet/rotation asynchronously so the current Send can leave the
+service read side without a lock inversion. The new service then advertises
 the maximum local `A` across every selectable path, but only when all paths have
 exclusive valid recovery writers; mixed-path or shared-socket service advertises
 disabled. Fast recovery becomes eligible only after a fresh authenticated ACK
 for the latest successfully emitted offer whose request carried the peer's live
 challenge, and only while at least `T` of the original `F` remains. A legacy
-peer reflects the OFFER bytes as an OFFER, never satisfying that rule; after
-`T` the sender resumes conservative monotonic operation without fast recovery.
+peer reflects the OFFER bytes as an OFFER, never satisfying that rule. The
+`T` DATA fallback does not discard the still-live OFFER: a later exact ACK may
+enable fast recovery while at least `T` of `F` remains. Acknowledged leases
+publish a fresh same-service ContractID before the old lease enters its unsafe
+window; loss of that renewal returns service to conservative mode before the
+old lease has less than `T` validity. OFFER loss likewise rotates again before
+expiry. Thus fallback controls DATA admission while OFFER/lease validity remains
+a separate state machine.
 Deadline/writer failure and Close invalidate the acknowledged contract and wake
 barrier waiters. Pacing-off or FEC-off operation carries no contract and retains
 its prior data path.
@@ -716,6 +729,13 @@ each finite nonnegative nanosecond quotient and the `+I` addition before
 conversion to `time.Duration`, and requires representable `A<250ms` and
 `Ecompletion`. The primitive does not classify frames, select paths, generate
 FEC, or own tunnel lifecycle; those remain integration responsibilities.
+These quantities derive at config load. Membership-only reload does not replace
+an existing path's `R/Rp/B/C/P/Lmax/Kdata/Mmax/I` service: it warns and retains
+the running values. Applying such a same-name scalar change requires a daemon
+restart, whose new process establishes a fresh authenticated SessionID before
+DATA uses the replacement service. Independently, any engine-driven Bind
+Close/Open inside one process rotates ContractID and preserves that process's
+OuterSeq and GroupID spaces.
 
 **Shaper observability.** `Shaper.Snapshot` takes the shaper mutex and copies one
 coherent generation-local view; `Bind.PeerSnapshots` captures the optional

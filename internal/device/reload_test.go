@@ -184,6 +184,86 @@ func TestReloadWarnings(t *testing.T) {
 	}
 }
 
+func TestReloadWarnsEveryRecoveryServiceInputUntilRestart(t *testing.T) {
+	base := &config.Config{
+		Role:  config.RoleEdge,
+		Paths: []config.Path{path("a")},
+		Scheduler: config.SchedulerConfig{
+			Policy:        config.PolicyActiveBackup,
+			PacingEnabled: true,
+			PerPathShapers: []config.PathShaperConfig{{
+				RateBytesPerSecond:      1_000_000,
+				DataBurstBytes:          45_000,
+				ControlReserveBytes:     1472,
+				MaxEncodedDatagramBytes: 1472,
+				ProbeRateBytesPerSecond: 14_720,
+				ProbeBurstBytes:         2944,
+				PriorityReserveBytes:    2944,
+				FECGroupReserveBytes:    20_000,
+				RecoveryWriteSlack:      10 * time.Millisecond,
+				RecoveryBound:           125 * time.Millisecond,
+			}},
+		},
+		FEC: config.FEC{Enabled: true, DataShards: 3, ParityShards: 1},
+	}
+
+	schedulerMutations := []struct {
+		name   string
+		mutate func(*config.PathShaperConfig)
+	}{
+		{"R", func(c *config.PathShaperConfig) { c.RateBytesPerSecond++ }},
+		{"Rp", func(c *config.PathShaperConfig) { c.ProbeRateBytesPerSecond++ }},
+		{"B", func(c *config.PathShaperConfig) { c.DataBurstBytes++ }},
+		{"C", func(c *config.PathShaperConfig) { c.ControlReserveBytes++ }},
+		{"Pburst", func(c *config.PathShaperConfig) { c.ProbeBurstBytes++ }},
+		{"P", func(c *config.PathShaperConfig) { c.PriorityReserveBytes++ }},
+		{"Lmax", func(c *config.PathShaperConfig) { c.MaxEncodedDatagramBytes++ }},
+		{"Fgroup", func(c *config.PathShaperConfig) { c.FECGroupReserveBytes++ }},
+		{"I", func(c *config.PathShaperConfig) { c.RecoveryWriteSlack++ }},
+		{"A", func(c *config.PathShaperConfig) { c.RecoveryBound++ }},
+	}
+	for _, test := range schedulerMutations {
+		t.Run(test.name, func(t *testing.T) {
+			desired := *base
+			desired.Scheduler = base.Scheduler
+			desired.Scheduler.PerPathShapers = append([]config.PathShaperConfig(nil), base.Scheduler.PerPathShapers...)
+			test.mutate(&desired.Scheduler.PerPathShapers[0])
+			warnings := reloadWarnings(base, &desired)
+			if !containsSubstr(warnings, "scheduler section changed") ||
+				!containsSubstr(warnings, "until restart") {
+				t.Fatalf("recovery-service mutation %s warnings = %v", test.name, warnings)
+			}
+			running := runningConfig(base, nil, nil)
+			if !reflect.DeepEqual(running.Scheduler, base.Scheduler) {
+				t.Fatalf("membership-only reload applied recovery-service mutation %s", test.name)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*config.FEC)
+	}{
+		{"Kdata", func(f *config.FEC) { f.DataShards++ }},
+		{"Mmax", func(f *config.FEC) { f.ParityShards++ }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			desired := *base
+			desired.FEC = base.FEC
+			test.mutate(&desired.FEC)
+			warnings := reloadWarnings(base, &desired)
+			if !containsSubstr(warnings, "fec section changed") ||
+				!containsSubstr(warnings, "until restart") {
+				t.Fatalf("recovery-service mutation %s warnings = %v", test.name, warnings)
+			}
+			running := runningConfig(base, nil, nil)
+			if !reflect.DeepEqual(running.FEC, base.FEC) {
+				t.Fatalf("membership-only reload applied recovery-service mutation %s", test.name)
+			}
+		})
+	}
+}
+
 // TestReloadWarningsBind pins the Bind mode reload contract (D52): Bind lives at BOTH
 // the top-level Config.Bind default AND the per-path Path.Bind (falling back to that
 // default in normalize). A change to either must produce EXACTLY ONE actionable

@@ -517,6 +517,10 @@ type peerState struct {
 	// Both nil when FEC is off.
 	fecSend atomic.Pointer[fecSender]
 	fecRecv atomic.Pointer[fecReceiver]
+	// fecNextGroup persists the next process-local FEC group identifier across
+	// transport Close/Open. A process restart constructs a new peerState and
+	// intentionally restarts the sequence at zero.
+	fecNextGroup atomic.Uint32
 
 	// parityCarry is the count of FEC PARITY frames this peer has written to a path
 	// socket but not yet reported to its scheduler as offered load (defect D95,
@@ -542,6 +546,10 @@ type peerState struct {
 	serviceGate sync.RWMutex
 	contracts   *recoveryContractCoordinator
 	lastWrite   atomic.Int64
+	// serviceTransitionPending coalesces asynchronous recovery-service
+	// transitions requested from inside a DATA Send's serviceGate read side.
+	serviceTransitionPending   atomic.Bool
+	serviceTransitionRequested atomic.Uint64
 
 	// sendMu preserves one scheduler selection/offered event per engine Send while
 	// allowing that Send to block on the exact-byte shaper without holding m.mu.
@@ -2092,9 +2100,10 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 
 // openPeerDatapathLocked (re)builds ONE peer's per-Open datapath planes: its send Codec
 // (derived from THIS peer's psk), its receive resequencer, and — when FEC is configured —
-// its FEC send/receive planes. Each is fresh per Open so a Close→Open cycle (or reconnect)
-// re-pins the peer's release point and re-anchors its FEC grouping to this bring-up rather
-// than a stale prior span. It writes ONLY the given peer's fields (from the peer's own psk
+// its FEC send/receive planes. Each object is fresh per Open so a Close→Open cycle
+// re-pins the receive release point and discards stale decoder groups; the new
+// encoder resumes the peer's process-lifetime GroupID sequence. It writes ONLY
+// the given peer's fields (from the peer's own psk
 // and the bind-wide fecCfg/adaptiveCfg), so one peer's (re)creation never touches another
 // peer's resequencer or FEC group state — the per-peer lifecycle boundary that keeps a
 // reconnect on one peer from disturbing another's. Caller holds m.mu; on error the caller
@@ -2116,7 +2125,9 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
 	// group state and the decoder's per-group buffers re-pin with the sockets, so a
 	// Close→Open cycle never reconstructs against a stale group. Both are torn down (per
-	// peer) during generation retirement. A build error here is a programmer error (the ratio was
+	// peer) during generation retirement. The encoder object is fresh, but it starts
+	// at the peer's process-lifetime next GroupID so Close/Open cannot reuse a wire
+	// identity. A build error here is a programmer error (the ratio was
 	// validated in NewMultipath), so it fails the Open.
 	if m.fecCfg != nil {
 		fs, err := m.newFECSender(ps)
@@ -2144,9 +2155,10 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 // WITHOUT m.mu — which the lock-free re-instantiation on re-bind (ensurePeerReceiveInstantiated)
 // relies on to rebuild a torn-down concentrator peer's send plane symmetric to the receive
 // plane. Open calls it too, so a lazily-rebuilt fecSend is byte-identical to an eagerly-opened
-// one: a fresh encoder re-pinned to this bring-up, and in adaptive mode a fresh controller
-// starting the control law from M=0 (no standing redundancy until loss is observed). A build
-// error is a programmer error (the ratio/controller cfg were validated in NewMultipath).
+// one: a fresh encoder restored to the peer's next process-local GroupID, and in
+// adaptive mode a fresh controller starting the control law from M=0 (no standing
+// redundancy until loss is observed). A build error is a programmer error (the
+// ratio/controller cfg were validated in NewMultipath).
 func (m *Multipath) newFECSender(peer *peerState) (*fecSender, error) {
 	if m.fecCfg == nil {
 		return nil, nil
@@ -2155,7 +2167,10 @@ func (m *Multipath) newFECSender(peer *peerState) (*fecSender, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bind: build FEC encoder: %w", err)
 	}
-	fs := &fecSender{enc: enc}
+	if err := enc.SetNextGroup(fec.GroupID(peer.fecNextGroup.Load())); err != nil {
+		return nil, fmt.Errorf("bind: restore FEC group sequence: %w", err)
+	}
+	fs := &fecSender{enc: enc, nextGroup: &peer.fecNextGroup}
 	if m.adaptiveCfg != nil {
 		// m.clock satisfies adaptivefec.Clock through their identical
 		// Now() time.Time shape — so the controller's own slew/dwell timing rides the SAME
@@ -3182,11 +3197,10 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	if sendFEC != nil {
 		m.mu.Unlock()
 		if shaped && peer.contracts != nil {
-			peer.serviceGate.RLock()
-			defer peer.serviceGate.RUnlock()
-			if err := peer.contracts.awaitDecision(); err != nil {
+			if err := m.enterPeerRecoveryService(peer); err != nil {
 				return err
 			}
+			defer peer.serviceGate.RUnlock()
 		}
 		return m.sendFECBatch(peer, sendFEC, bufs, classes, class, shaped)
 	}
@@ -4082,7 +4096,7 @@ func (m *Multipath) abortRecoveryGeneration(pp *peerPathState, cause error) {
 		if views := sp.views.Load(); views != nil {
 			for _, view := range *views {
 				if view.peer != nil && view.peer.contracts != nil {
-					view.peer.contracts.disable()
+					view.peer.contracts.invalidateForTransition()
 				}
 			}
 		}

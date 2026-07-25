@@ -208,7 +208,8 @@ func TestRecoveryContractACKRequiresLatestSuccessfulLiveOffer(t *testing.T) {
 	if err := coordinator.begin(true, 125*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	offer, recognized, err := telemetry.DecodeRecoveryContract(coordinator.payload())
+	offered := coordinator.offerSnapshot()
+	offer, recognized, err := telemetry.DecodeRecoveryContract(offered.payload)
 	if err != nil || !recognized {
 		t.Fatalf("decode local offer = recognized %v err %v", recognized, err)
 	}
@@ -222,11 +223,11 @@ func TestRecoveryContractACKRequiresLatestSuccessfulLiveOffer(t *testing.T) {
 	if coordinator.acceptACK(0, 0x6001, 7, ackPayload) {
 		t.Fatal("ACK accepted before its offer completed a successful write")
 	}
-	coordinator.recordOffer(0, telemetryProbeHeader{sessionID: 0x6001, probeSeq: 7})
+	coordinator.recordOffer(0, telemetryProbeHeader{sessionID: 0x6001, probeSeq: 7}, offered)
 	if coordinator.acceptACK(0, 0x6001, 7, ackPayload) {
 		t.Fatal("ACK accepted for a bootstrap offer without a live peer challenge")
 	}
-	coordinator.recordOffer(0, telemetryProbeHeader{sessionID: 0x6001, probeSeq: 8, challenge: 9})
+	coordinator.recordOffer(0, telemetryProbeHeader{sessionID: 0x6001, probeSeq: 8, challenge: 9}, offered)
 	if coordinator.acceptACK(0, 0x6001, 7, ackPayload) {
 		t.Fatal("stale echo accepted after a newer offer became outstanding")
 	}
@@ -244,7 +245,8 @@ func TestRecoveryContractACKDoesNotRefreshOriginalOfferValidity(t *testing.T) {
 	if err := coordinator.begin(true, 125*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	offer, _, err := telemetry.DecodeRecoveryContract(coordinator.payload())
+	offered := coordinator.offerSnapshot()
+	offer, _, err := telemetry.DecodeRecoveryContract(offered.payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +256,7 @@ func TestRecoveryContractACKDoesNotRefreshOriginalOfferValidity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator.recordOffer(0, telemetryProbeHeader{sessionID: 0x6101, probeSeq: 9, challenge: 10})
+	coordinator.recordOffer(0, telemetryProbeHeader{sessionID: 0x6101, probeSeq: 9, challenge: 10}, offered)
 	clock.advance(telemetry.RecoveryContractLifetime - conservativeRecoveryService + time.Millisecond)
 	if coordinator.acceptACK(0, 0x6101, 9, ackPayload) {
 		t.Fatal("late ACK refreshed validity beyond the original OFFER interval")

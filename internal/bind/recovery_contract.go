@@ -7,13 +7,27 @@ import (
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-const conservativeRecoveryService = 250 * time.Millisecond
+const (
+	conservativeRecoveryService = 250 * time.Millisecond
+	recoveryRenewBefore         = 2 * conservativeRecoveryService
+)
 
 type sentRecoveryOffer struct {
-	sessionID  uint64
-	contractID uint64
-	probeSeq   uint64
-	challenge  uint64
+	sessionID uint64
+	message   telemetry.RecoveryContractMessage
+	probeSeq  uint64
+	challenge uint64
+}
+
+type recoveryOfferSnapshot struct {
+	message telemetry.RecoveryContractMessage
+	payload []byte
+}
+
+type localRecoveryOffer struct {
+	recoveryOfferSnapshot
+	startedAt   time.Time
+	outstanding map[uint8]sentRecoveryOffer
 }
 
 type receivedRecoveryContract struct {
@@ -32,13 +46,15 @@ type recoveryContractCoordinator struct {
 	nextID  uint64
 	changed chan struct{}
 
-	local       telemetry.RecoveryContractMessage
-	localBytes  []byte
-	localAt     time.Time
-	pending     bool
-	fallbackDue time.Time
-	ackedUntil  time.Time
-	outstanding map[uint8]sentRecoveryOffer
+	offer *localRecoveryOffer
+
+	barrierPending bool
+	barrierDue     time.Time
+
+	haveLease   bool
+	lease       telemetry.RecoveryContractMessage
+	leaseUntil  time.Time
+	invalidated bool
 
 	haveReceived    bool
 	receivedSession uint64
@@ -47,10 +63,9 @@ type recoveryContractCoordinator struct {
 
 func newRecoveryContractCoordinator(session uint64, clock fecOwnerClock) *recoveryContractCoordinator {
 	return &recoveryContractCoordinator{
-		clock:       clock,
-		session:     session,
-		changed:     make(chan struct{}),
-		outstanding: make(map[uint8]sentRecoveryOffer),
+		clock:   clock,
+		session: session,
+		changed: make(chan struct{}),
 	}
 }
 
@@ -68,61 +83,129 @@ func (c *recoveryContractCoordinator) notifyLocked() {
 func (c *recoveryContractCoordinator) begin(enabled bool, serviceBound time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.nextID++
-	if c.nextID == 0 {
-		c.nextID++
-	}
 	message := telemetry.RecoveryContractMessage{
-		Type:       telemetry.RecoveryContractOffer,
-		Enabled:    enabled,
-		Lifetime:   telemetry.RecoveryContractLifetime,
-		ContractID: c.nextID,
+		Type:     telemetry.RecoveryContractOffer,
+		Enabled:  enabled,
+		Lifetime: telemetry.RecoveryContractLifetime,
 	}
 	if enabled {
 		message.ServiceBound = serviceBound
 	}
+	c.haveLease = false
+	c.leaseUntil = time.Time{}
+	c.invalidated = false
+	return c.startOfferLocked(message, true)
+}
+
+func (c *recoveryContractCoordinator) startOfferLocked(message telemetry.RecoveryContractMessage, barrier bool) error {
+	c.nextID++
+	if c.nextID == 0 {
+		c.nextID++
+	}
+	message.Type = telemetry.RecoveryContractOffer
+	message.ContractID = c.nextID
 	payload, err := telemetry.EncodeRecoveryContract(message)
 	if err != nil {
 		return err
 	}
-	c.local = message
-	c.localBytes = payload
-	c.localAt = c.clock.Now()
-	c.pending = true
-	c.ackedUntil = time.Time{}
-	c.outstanding = make(map[uint8]sentRecoveryOffer)
-	c.fallbackDue = c.clock.Now().Add(conservativeRecoveryService)
+	now := c.clock.Now()
+	c.offer = &localRecoveryOffer{
+		recoveryOfferSnapshot: recoveryOfferSnapshot{
+			message: message,
+			payload: payload,
+		},
+		startedAt:   now,
+		outstanding: make(map[uint8]sentRecoveryOffer),
+	}
+	if barrier {
+		c.barrierPending = true
+		c.barrierDue = now.Add(conservativeRecoveryService)
+	}
 	c.notifyLocked()
 	return nil
 }
 
 func (c *recoveryContractCoordinator) disable() {
 	c.mu.Lock()
-	c.pending = false
-	c.ackedUntil = time.Time{}
-	c.localBytes = nil
-	c.outstanding = make(map[uint8]sentRecoveryOffer)
+	c.barrierPending = false
+	c.barrierDue = time.Time{}
+	c.haveLease = false
+	c.leaseUntil = time.Time{}
+	c.invalidated = false
+	c.offer = nil
 	c.notifyLocked()
 	c.mu.Unlock()
 }
 
-func (c *recoveryContractCoordinator) payload() []byte {
+// invalidateForTransition immediately revokes fast recovery and blocks new DATA
+// while an asynchronous service-transition worker drains and rotates the offer.
+// A zero barrierDue deliberately has no autonomous fallback: begin installs the
+// new service snapshot and starts the explicit T fallback.
+func (c *recoveryContractCoordinator) invalidateForTransition() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]byte(nil), c.localBytes...)
+	c.haveLease = false
+	c.leaseUntil = time.Time{}
+	c.invalidated = true
+	c.barrierPending = true
+	c.barrierDue = time.Time{}
+	c.notifyLocked()
+	c.mu.Unlock()
 }
 
-func (c *recoveryContractCoordinator) recordOffer(pathID uint8, probe telemetryProbeHeader) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.pending || probe.sessionID != c.session {
+func (c *recoveryContractCoordinator) refreshLocked(now time.Time) {
+	if c.invalidated || c.offer == nil {
 		return
 	}
-	c.outstanding[pathID] = sentRecoveryOffer{
-		sessionID:  probe.sessionID,
-		contractID: c.local.ContractID,
-		probeSeq:   probe.probeSeq,
-		challenge:  probe.challenge,
+	if c.haveLease && !now.Before(c.leaseUntil) {
+		c.haveLease = false
+		c.leaseUntil = time.Time{}
+	}
+	if c.haveLease && c.offer.message.ContractID == c.lease.ContractID &&
+		c.leaseUntil.Sub(now) <= recoveryRenewBefore {
+		message := c.lease
+		if err := c.startOfferLocked(message, false); err != nil {
+			panic(err)
+		}
+		return
+	}
+	if !c.haveLease && !c.barrierPending &&
+		c.offer.startedAt.Add(c.offer.message.Lifetime).Sub(now) <= recoveryRenewBefore {
+		message := c.offer.message
+		if err := c.startOfferLocked(message, false); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func (c *recoveryContractCoordinator) offerSnapshot() recoveryOfferSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refreshLocked(c.clock.Now())
+	if c.offer == nil {
+		return recoveryOfferSnapshot{}
+	}
+	return recoveryOfferSnapshot{
+		message: c.offer.message,
+		payload: append([]byte(nil), c.offer.payload...),
+	}
+}
+
+func (c *recoveryContractCoordinator) payload() []byte {
+	return c.offerSnapshot().payload
+}
+
+func (c *recoveryContractCoordinator) recordOffer(pathID uint8, probe telemetryProbeHeader, offered recoveryOfferSnapshot) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.offer == nil || probe.sessionID != c.session ||
+		offered.message != c.offer.message {
+		return
+	}
+	c.offer.outstanding[pathID] = sentRecoveryOffer{
+		sessionID: probe.sessionID,
+		message:   offered.message,
+		probeSeq:  probe.probeSeq,
+		challenge: probe.challenge,
 	}
 }
 
@@ -139,57 +222,84 @@ func (c *recoveryContractCoordinator) acceptACK(pathID uint8, probeSession, prob
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	sent, ok := c.outstanding[pathID]
-	if !ok || sent.sessionID != probeSession || sent.probeSeq != probeSeq ||
-		sent.contractID != message.ContractID || sent.challenge == 0 ||
-		probeSession != c.session || !c.pending {
+	c.refreshLocked(c.clock.Now())
+	if c.invalidated || c.offer == nil {
 		return false
 	}
-	want := c.local
+	sent, ok := c.offer.outstanding[pathID]
+	if !ok || sent.sessionID != probeSession || sent.probeSeq != probeSeq ||
+		sent.message != messageWithType(message, telemetry.RecoveryContractOffer) ||
+		sent.message != c.offer.message || sent.challenge == 0 ||
+		probeSession != c.session {
+		return false
+	}
+	want := c.offer.message
 	want.Type = telemetry.RecoveryContractACK
 	if message != want {
 		return false
 	}
-	until := c.localAt.Add(message.Lifetime)
+	until := c.offer.startedAt.Add(message.Lifetime)
 	if until.Sub(c.clock.Now()) < conservativeRecoveryService {
 		return false
 	}
-	c.pending = false
-	c.ackedUntil = until
+	c.haveLease = true
+	c.lease = c.offer.message
+	c.leaseUntil = until
+	c.barrierPending = false
+	c.barrierDue = time.Time{}
 	c.notifyLocked()
 	return true
+}
+
+func messageWithType(message telemetry.RecoveryContractMessage, messageType telemetry.RecoveryContractMessageType) telemetry.RecoveryContractMessage {
+	message.Type = messageType
+	return message
 }
 
 func (c *recoveryContractCoordinator) fastEligible() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.pending || !c.local.Enabled || c.ackedUntil.IsZero() {
+	now := c.clock.Now()
+	c.refreshLocked(now)
+	if c.invalidated || c.barrierPending || !c.haveLease || !c.lease.Enabled {
 		return false
 	}
-	return c.ackedUntil.Sub(c.clock.Now()) >= conservativeRecoveryService
+	return c.leaseUntil.Sub(now) >= conservativeRecoveryService
+}
+
+func (c *recoveryContractCoordinator) barrierActive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refreshLocked(c.clock.Now())
+	return c.barrierPending
 }
 
 func (c *recoveryContractCoordinator) awaitDecision() error {
 	for {
 		c.mu.Lock()
-		if !c.pending {
+		c.refreshLocked(c.clock.Now())
+		if !c.barrierPending {
 			c.mu.Unlock()
 			return nil
 		}
-		due := c.fallbackDue
+		due := c.barrierDue
 		changed := c.changed
 		clock := c.clock
 		c.mu.Unlock()
 
+		if due.IsZero() {
+			<-changed
+			continue
+		}
 		timer := clock.NewTimerAt(due)
 		select {
 		case <-changed:
 			timer.Stop()
 		case <-timer.C():
 			c.mu.Lock()
-			if c.pending && !c.clock.Now().Before(c.fallbackDue) {
-				c.pending = false
-				c.ackedUntil = time.Time{}
+			if c.barrierPending && !c.barrierDue.IsZero() && !c.clock.Now().Before(c.barrierDue) {
+				c.barrierPending = false
+				c.barrierDue = time.Time{}
 				c.notifyLocked()
 			}
 			c.mu.Unlock()
@@ -248,7 +358,7 @@ func (m *Multipath) beginPeerRecoveryContractLocked(peer *peerState) error {
 		return nil
 	}
 	peer.contracts.setClock(m.clock)
-	if m.fecCfg == nil || m.shaperConfigs == nil {
+	if len(m.paths) == 0 || m.fecCfg == nil || m.shaperConfigs == nil {
 		peer.contracts.disable()
 		return nil
 	}
@@ -318,4 +428,109 @@ func (m *Multipath) finishPeerServiceTransition(peers []*peerState, rotate bool)
 		peers[index].serviceGate.Unlock()
 	}
 	return firstErr
+}
+
+func (m *Multipath) enterPeerRecoveryService(peer *peerState) error {
+	for {
+		if err := peer.contracts.awaitDecision(); err != nil {
+			return err
+		}
+		peer.serviceGate.RLock()
+		if !peer.contracts.barrierActive() {
+			return nil
+		}
+		peer.serviceGate.RUnlock()
+	}
+}
+
+func (m *Multipath) waitPeerRecoveryDrain(nanos int64, cancelled <-chan struct{}) bool {
+	if nanos == 0 {
+		return true
+	}
+	due := time.Unix(0, nanos).Add(conservativeRecoveryService)
+	if !m.clock.Now().Before(due) {
+		return true
+	}
+	timer := m.clock.NewTimerAt(due)
+	select {
+	case <-timer.C():
+		return true
+	case <-cancelled:
+		timer.Stop()
+		return false
+	}
+}
+
+func (m *Multipath) invalidateAndRotatePeerRecoveryContract(peer *peerState) {
+	if peer == nil || peer.contracts == nil {
+		return
+	}
+	peer.contracts.invalidateForTransition()
+	peer.serviceTransitionRequested.Add(1)
+	if !peer.serviceTransitionPending.CompareAndSwap(false, true) {
+		return
+	}
+	m.mu.Lock()
+	cancelled := m.recvClosed
+	m.mu.Unlock()
+	go m.rotateInvalidatedPeerRecoveryContract(peer, cancelled)
+}
+
+func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, cancelled <-chan struct{}) {
+	for {
+		requested := peer.serviceTransitionRequested.Load()
+		peer.serviceGate.Lock()
+		lastWrite := peer.lastWrite.Load()
+		peer.serviceGate.Unlock()
+		if !m.waitPeerRecoveryDrain(lastWrite, cancelled) {
+			peer.serviceTransitionPending.Store(false)
+			if peer.serviceTransitionRequested.Load() != requested &&
+				peer.serviceTransitionPending.CompareAndSwap(false, true) {
+				m.mu.Lock()
+				nextCancelled := m.recvClosed
+				active := len(m.paths) > 0
+				m.mu.Unlock()
+				if active {
+					go m.rotateInvalidatedPeerRecoveryContract(peer, nextCancelled)
+				} else {
+					peer.serviceTransitionPending.Store(false)
+				}
+			}
+			return
+		}
+		m.transitionMu.Lock()
+		peer.serviceGate.Lock()
+		m.mu.Lock()
+		active := len(m.paths) > 0
+		if active {
+			found := false
+			for _, candidate := range m.peers {
+				if candidate == peer {
+					found = true
+					break
+				}
+			}
+			active = found
+		}
+		var err error
+		if active {
+			err = m.beginPeerRecoveryContractLocked(peer)
+		} else {
+			peer.contracts.disable()
+		}
+		m.mu.Unlock()
+		peer.serviceGate.Unlock()
+		m.transitionMu.Unlock()
+		if err != nil {
+			m.log.Error("bind: recovery contract rotation failed", "error", err)
+		}
+		if peer.serviceTransitionRequested.Load() != requested {
+			continue
+		}
+		peer.serviceTransitionPending.Store(false)
+		if peer.serviceTransitionRequested.Load() == requested ||
+			!peer.serviceTransitionPending.CompareAndSwap(false, true) {
+			return
+		}
+	}
 }

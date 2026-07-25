@@ -623,7 +623,8 @@ func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 	if err := contracts.begin(true, 125*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	offer, _, err := telemetry.DecodeRecoveryContract(contracts.payload())
+	offered := contracts.offerSnapshot()
+	offer, _, err := telemetry.DecodeRecoveryContract(offered.payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +634,7 @@ func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	contracts.recordOffer(0, telemetryProbeHeader{sessionID: 0xD15, probeSeq: 1, challenge: 2})
+	contracts.recordOffer(0, telemetryProbeHeader{sessionID: 0xD15, probeSeq: 1, challenge: 2}, offered)
 	if !contracts.acceptACK(0, 0xD15, 1, ackPayload) {
 		t.Fatal("precondition: recovery contract ACK rejected")
 	}
@@ -667,6 +668,42 @@ func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 	}
 	if contracts.fastEligible() {
 		t.Fatal("deadline SLO miss retained acknowledged fast-recovery eligibility")
+	}
+	if payload := contracts.payload(); len(payload) == 0 {
+		t.Fatal("deadline SLO miss disabled negotiation instead of publishing a rotated recovery OFFER")
+	}
+	next := f.submit([]byte("blocked-a"), []byte("blocked-b"), []byte("blocked-c"), []byte("blocked-d"))
+	select {
+	case err := <-next.done:
+		t.Fatalf("subsequent DATA completed before the invalidated service rotated: %v", err)
+	default:
+	}
+	outerAfterMiss := f.m.outerSeq.Load()
+	f.clock.advance(conservativeRecoveryService)
+	var rotated telemetry.RecoveryContractMessage
+	for i := 0; i < failFirstSpinLimit; i++ {
+		payload := contracts.payload()
+		candidate, recognized, decodeErr := telemetry.DecodeRecoveryContract(payload)
+		if decodeErr == nil && recognized && candidate.ContractID > offer.ContractID {
+			rotated = candidate
+			break
+		}
+		runtime.Gosched()
+	}
+	if rotated.ContractID <= offer.ContractID {
+		t.Fatal("deadline SLO miss did not rotate a fresh recovery OFFER after the drain interval")
+	}
+	if f.m.outerSeq.Load() != outerAfterMiss {
+		t.Fatal("blocked DATA opened a new FEC group before recovery-service rotation")
+	}
+	select {
+	case err := <-next.done:
+		t.Fatalf("subsequent DATA completed before the new recovery contract fallback: %v", err)
+	default:
+	}
+	f.clock.advance(conservativeRecoveryService)
+	if err := f.await(next); err != nil {
+		t.Fatal(err)
 	}
 	f.flush()
 	select {

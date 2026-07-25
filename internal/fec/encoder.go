@@ -87,6 +87,23 @@ func NewEncoder(cfg Config, clock Clock) (*Encoder, error) {
 	}, nil
 }
 
+// SetNextGroup sets the identifier that the next admitted shard will open.
+// It may only be called before a group is open. The sender lifecycle uses it
+// to carry the process-local group sequence across transport Close/Open.
+func (e *Encoder) SetNextGroup(group GroupID) error {
+	if e.hasOpen {
+		return fmt.Errorf("fec: cannot set next group while group %d is open", e.group)
+	}
+	e.nextGroup = group
+	return nil
+}
+
+// NextGroup returns the identifier that the next opened group will consume.
+// Like all Encoder methods it must be called by the Encoder's single owner.
+func (e *Encoder) NextGroup() GroupID {
+	return e.nextGroup
+}
+
 // SetParity retargets the parity count applied to groups opened AFTER this call.
 // The value is clamped to [0, cfg.ParityShards]: cfg.ParityShards is the fixed
 // ceiling both ends agree on (the receiver's decoder is built at it), and 0 means

@@ -363,6 +363,9 @@ func (o *fecSendOwner) handleBatch(batch *fecOwnerBatch) {
 		seq := o.peer.outerSeq.Add(1)
 		owned := fecShardPayload(seq, inner)
 		ds, decision, err := o.fs.enc.AdmitOwned(owned)
+		if o.fs.nextGroup != nil {
+			o.fs.nextGroup.Store(uint32(o.fs.enc.NextGroup()))
+		}
 		batch.pending++
 		o.staged = append(o.staged, fecStagedData{
 			class:  batch.classes[i],
@@ -444,9 +447,7 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 		}
 		o.fs.recordDeadlineDecision(overshoot)
 		if overshoot > fecDeadlineDispatchGrace {
-			if o.peer.contracts != nil {
-				o.peer.contracts.disable()
-			}
+			o.m.invalidateAndRotatePeerRecoveryContract(o.peer)
 			if o.m.fecDeadlineInvalidator != nil {
 				o.m.fecDeadlineInvalidator(fecDeadlineMiss{
 					Peer:      o.peer.name,

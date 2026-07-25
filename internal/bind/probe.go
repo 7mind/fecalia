@@ -112,10 +112,11 @@ func (m *Multipath) emitProbes() {
 		if request := t.ps.takePMTUProbe(); request != nil {
 			request.done <- request.work()
 		} else if hasRemote {
-			var contractPayload []byte
+			var offered recoveryOfferSnapshot
 			if t.contract != nil {
-				contractPayload = t.contract.payload()
+				offered = t.contract.offerSnapshot()
 			}
+			contractPayload := offered.payload
 			probeSize := frame.UnpaddedProbeOnWire + len(contractPayload)
 			if shaped, ok := t.ps.shaper.(recoveryPathShaper); ok {
 				var sent frame.Probe
@@ -142,7 +143,7 @@ func (m *Multipath) emitProbes() {
 				case !admitted:
 					t.ps.probePriorityCoalesced.Add(1)
 				default:
-					go func(ps *peerPathState, contract *recoveryContractCoordinator, probe frame.Probe, size int, completion <-chan error) {
+					go func(ps *peerPathState, contract *recoveryContractCoordinator, offered recoveryOfferSnapshot, probe frame.Probe, size int, completion <-chan error) {
 						if err := <-completion; err != nil {
 							ps.probeSendErrors.Add(1)
 							return
@@ -153,9 +154,9 @@ func (m *Multipath) emitProbes() {
 								sessionID: probe.SessionID,
 								probeSeq:  probe.ProbeSeq,
 								challenge: probe.Challenge,
-							})
+							}, offered)
 						}
-					}(t.ps, t.contract, sent, probeSize, done)
+					}(t.ps, t.contract, offered, sent, probeSize, done)
 				}
 				t.pr.Tick()
 				continue
@@ -173,7 +174,7 @@ func (m *Multipath) emitProbes() {
 							sessionID: probe.SessionID,
 							probeSeq:  probe.ProbeSeq,
 							challenge: probe.Challenge,
-						})
+						}, offered)
 					}
 				} else {
 					// The write failed (e.g. a concurrent Close raced the probe-loop

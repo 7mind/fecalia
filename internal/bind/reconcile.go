@@ -97,6 +97,28 @@ func (m *Multipath) reconcileDeferred() {
 	m.transitionMu.Lock()
 	defer m.transitionMu.Unlock()
 
+	m.mu.Lock()
+	canPromote := len(m.paths) > 0 && len(m.deferred) > 0
+	if canPromote {
+		_, canPromote = m.scheduler.(sched.DynamicScheduler)
+	}
+	m.mu.Unlock()
+	if !canPromote {
+		return
+	}
+
+	var frozenPeers []*peerState
+	servicesFrozen := false
+	rotateContract := false
+	defer func() {
+		if !servicesFrozen {
+			return
+		}
+		if err := m.finishPeerServiceTransition(frozenPeers, rotateContract); err != nil {
+			m.log.Error("bind: recovery contract rotation failed", "error", err)
+		}
+	}()
+
 	var retirement socketGenerationRetirement
 	m.mu.Lock()
 	defer func() {
@@ -148,6 +170,16 @@ func (m *Multipath) reconcileDeferred() {
 		// below) warns again. This is keyed to the LISTEN outcome, not the promote
 		// outcome, so it clears unconditionally here — round 3 / CRITICISM 2.
 		dp.warnedUnresolvable = false
+		if !servicesFrozen {
+			// Do not stop DATA for the normal still-unassignable retry. Once a socket
+			// has materialized, take the service write side before the first possible
+			// scheduler/path mutation. transitionMu keeps the deferred set stable
+			// while m.mu is temporarily released for the blocking drain.
+			m.mu.Unlock()
+			frozenPeers = m.freezePeerServices()
+			m.mu.Lock()
+			servicesFrozen = true
+		}
 		if err := m.promoteDeferredLocked(dp, c, &retirement); err != nil {
 			// The bind succeeded but promotion did not (a scheduler/path index skew, or a
 			// codec build error): close the fresh socket and keep the path deferred so the
@@ -176,6 +208,7 @@ func (m *Multipath) reconcileDeferred() {
 		// finally backed by a real, live, installed socket — log them only now.
 		m.warnForcedDeviceUnresolvable(dp.def.Name, dp.def.Bind, dp.def.SourceAddr, dev)
 		m.warnDeviceBindFallback(dp.def.Name, dp.def.Bind, dev, deviceErr)
+		rotateContract = true
 	}
 	m.deferred = kept
 }
