@@ -206,6 +206,11 @@ type sharedPathState struct {
 	// setWriteDeadline is the test seam for the socket-wide deadline used by a
 	// finite recovery cut. Nil delegates to conn.SetWriteDeadline.
 	setWriteDeadline func(time.Time) error
+	// recoveryFailed disables the exact socket generation before asynchronous
+	// structural retirement acquires transitionMu. recoveryRetireOnce prevents a
+	// stale repeated failure from launching another retirement.
+	recoveryFailed     atomic.Bool
+	recoveryRetireOnce sync.Once
 	// bindMode is the path's configured/effective bind mode; boundDevice is the
 	// resolved SO_BINDTODEVICE interface it actually device-bound to ("" when
 	// source-IP-pinned). Both are set once at socket creation and IMMUTABLE for the
@@ -263,6 +268,7 @@ func (sp *sharedPathState) installWriteDeadline(deadline time.Time) error {
 }
 
 func (sp *sharedPathState) abortWriteGeneration() {
+	sp.recoveryFailed.Store(true)
 	sp.stopWrites()
 	if sp.conn != nil {
 		_ = sp.conn.Close()
@@ -792,6 +798,14 @@ func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 	return ps.selectedAddrLocked()
 }
 
+func (ps *peerPathState) clearRemote() {
+	ps.mu.Lock()
+	ps.remotes = nil
+	ps.selKey = 0
+	ps.selValid = false
+	ps.mu.Unlock()
+}
+
 // errNoPathRemote is returned by the PMTU send seam when a probe is attempted before
 // this path has learned a remote — a transient startup condition, so the search stays
 // unconverged and retries on a later tick rather than treating it as a size verdict.
@@ -888,10 +902,12 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 			if !remoteOK {
 				return errNoPathRemote
 			}
+			generated := false
 			err := shaped.WritePriorityGenerated(
 				context.Background(),
 				size,
 				func() ([]byte, shaper.WriteFunc, error) {
+					generated = true
 					raw, generateErr := generate()
 					if generateErr != nil {
 						return nil, nil, generateErr
@@ -907,7 +923,8 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 			)
 			if err != nil {
 				mapped := mapPMTUProbeWriteError(err)
-				if errors.Is(mapped, context.Canceled) || errors.Is(mapped, shaper.ErrClosed) {
+				if !generated &&
+					(errors.Is(mapped, context.Canceled) || errors.Is(mapped, shaper.ErrClosed)) {
 					ps.pmtuAdmissionCanceled.Add(1)
 				}
 				if !errors.Is(mapped, telemetry.ErrProbeTooLarge) {
@@ -1042,6 +1059,18 @@ type stagedPathShaper interface {
 	Wait() error
 }
 
+func (pp *peerPathState) recoveryContract() shaper.RecoveryContract {
+	shaped, ok := pp.shaper.(recoveryPathShaper)
+	if !ok || pp.recoveryFailed.Load() {
+		return shaper.RecoveryContract{}
+	}
+	views := pp.views.Load()
+	if views == nil || len(*views) != 1 || (*views)[0] != pp {
+		return shaper.RecoveryContract{}
+	}
+	return shaped.RecoveryContract()
+}
+
 type pathShaperReporter interface {
 	Snapshot() shaper.Snapshot
 }
@@ -1154,6 +1183,7 @@ type Multipath struct {
 	// instantiation or Close.
 	beforeLazyFECPublish func(*peerState, *fecSender)
 	afterCloseFECDetach  func()
+	afterRecoveryRetire  func(*sharedPathState)
 
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then
@@ -1506,7 +1536,7 @@ func exactByteShaperConfig(cfg config.PathShaperConfig) shaper.Config {
 		ControlReserveBytes:        cfg.ControlReserveBytes,
 		MaxDatagramBytes:           cfg.MaxEncodedDatagramBytes,
 		PriorityBurstBytes:         cfg.ProbeBurstBytes,
-		PriorityReserveBytes:       cfg.ProbeBurstBytes,
+		PriorityReserveBytes:       cfg.PriorityReserveBytes,
 		FECGroupReserveBytes:       cfg.FECGroupReserveBytes,
 		RecoveryWriteSlack:         cfg.RecoveryWriteSlack,
 	}
@@ -1872,7 +1902,6 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 					return nil, 0, fmt.Errorf("bind: peer %q prober set (len %d) is shorter than the path membership at index %d — per-peer prober fan-out desync", p.name, len(p.probers), i)
 				}
 				pp.prober = p.probers[i]
-				pp.pmtuProbe = m.buildPMTUProbe(pp)
 				if pi == 0 {
 					// Reconcile the SHARED DATA-frame path-id to the PRIMARY prober's IMMUTABLE
 					// stamp rather than the slice index i: after a runtime RemovePath the survivor
@@ -1908,6 +1937,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 			if err := m.installPathShaperLocked(pp, shaperCfg); err != nil {
 				return nil, 0, err
 			}
+			pp.pmtuProbe = m.buildPMTUProbe(pp)
 			// Stamp the scheduler index (== this path's position in p.paths) BEFORE
 			// the append for the legacy ProbeBudget accounting seam.
 			pp.schedIdx.Store(int32(len(p.paths)))
@@ -3154,6 +3184,10 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		return ErrNoHealthyPath
 	}
 	ps := peer.paths[idx]
+	if ps.recoveryFailed.Load() {
+		m.mu.Unlock()
+		return errClosed
+	}
 	if _, ok := ps.getRemote(); !ok {
 		m.mu.Unlock()
 		return ErrNoHealthyPath
@@ -3174,7 +3208,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 		// Runtime removal may have retired the selected path while a preceding
 		// datagram waited in the shaper. Stop the suffix instead of silently
 		// rerouting it through a second scheduler selection.
-		if idx >= len(peer.paths) || peer.paths[idx] != ps || peer.sendCodec == nil {
+		if idx >= len(peer.paths) || peer.paths[idx] != ps || ps.recoveryFailed.Load() || peer.sendCodec == nil {
 			m.mu.Unlock()
 			return errClosed
 		}
@@ -3291,6 +3325,11 @@ func (m *Multipath) sendFECBatch(
 		return ErrNoHealthyPath
 	}
 	path := peer.paths[idx]
+	if path.recoveryFailed.Load() {
+		m.mu.Unlock()
+		peer.sendMu.Unlock()
+		return errClosed
+	}
 	remote, ok := path.getRemote()
 	if !ok {
 		m.mu.Unlock()
@@ -3961,6 +4000,81 @@ type socketGenerationRetirement struct {
 	shared    []*sharedPathState
 }
 
+func (m *Multipath) abortRecoveryGeneration(pp *peerPathState, cause error) {
+	sp := pp.sharedPathState
+	sp.recoveryRetireOnce.Do(func() {
+		sp.abortWriteGeneration()
+		if staged, ok := pp.shaper.(stagedPathShaper); ok {
+			staged.Stop()
+		}
+		go m.retireRecoveryGeneration(pp, cause)
+	})
+}
+
+func (m *Multipath) retireRecoveryGeneration(failed *peerPathState, cause error) {
+	defer func() {
+		if m.afterRecoveryRetire != nil {
+			m.afterRecoveryRetire(failed.sharedPathState)
+		}
+	}()
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+
+	sp := failed.sharedPathState
+	var retirement socketGenerationRetirement
+	m.mu.Lock()
+	sharedIndex := -1
+	for index, candidate := range m.shared {
+		if candidate == sp {
+			sharedIndex = index
+			break
+		}
+	}
+	if sharedIndex < 0 {
+		m.mu.Unlock()
+		return
+	}
+	for _, peer := range m.peers {
+		pathIndex := -1
+		for index, candidate := range peer.paths {
+			if candidate.sharedPathState == sp {
+				pathIndex = index
+				break
+			}
+		}
+		if pathIndex < 0 {
+			continue
+		}
+		detached := peer.paths[pathIndex]
+		if dynamic, ok := peer.scheduler.(sched.DynamicScheduler); ok {
+			if err := dynamic.RemovePath(pathIndex); err != nil {
+				m.log.Error("bind: recovery generation scheduler retirement failed",
+					"path", detached.name,
+					"peer", peer.name,
+					"error", err,
+				)
+			}
+		}
+		peer.paths = append(peer.paths[:pathIndex], peer.paths[pathIndex+1:]...)
+		for index := pathIndex; index < len(peer.paths); index++ {
+			peer.paths[index].schedIdx.Store(int32(index))
+		}
+		detached.clearRemote()
+		retirement.preparePeerPathLocked(detached)
+	}
+	m.shared = append(m.shared[:sharedIndex], m.shared[sharedIndex+1:]...)
+	retirement.prepareSharedLocked(sp)
+	m.mu.Unlock()
+
+	if err := retirement.retire(); err != nil {
+		m.log.Error("bind: recovery generation retirement failed",
+			"path", failed.name,
+			"error", err,
+			"cause", cause,
+		)
+	}
+}
+
 // preparePeerPathLocked stops new shaper admission and generated PMTU work
 // without waiting. Caller holds m.mu, so detachment and admission closure form
 // one atomic transport-generation transition as observed by Send.
@@ -4343,7 +4457,6 @@ func (m *Multipath) attachPeerPathLocked(
 		return nil, err
 	}
 	pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec, prober: prober}
-	pp.pmtuProbe = m.buildPMTUProbe(pp)
 	switch {
 	case def.DestAddr.IsValid():
 		// A path-specific dest_addr (multi-address fronting of the peer's active concentrator)
@@ -4366,6 +4479,7 @@ func (m *Multipath) attachPeerPathLocked(
 	if err := m.installPathShaperLocked(pp, shaperCfg); err != nil {
 		return nil, err
 	}
+	pp.pmtuProbe = m.buildPMTUProbe(pp)
 	// Append to the peer's path slice, then admit the prober to that peer's scheduler as the
 	// new tail; both are index-aligned, so the scheduler's returned index must equal the new
 	// path's slice index. A mismatch would mis-route datagrams, so fail loudly and roll back.
@@ -4832,6 +4946,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			}
 			if pr.shaper != nil {
 				shaperSnapshot := pr.shaper.Snapshot()
+				shaperSnapshot.RecoveryContractEnabled = pr.pp.recoveryContract().Enabled
 				pt.Shaper = &shaperSnapshot
 			}
 			// Addressing (G21): src/bindMode/boundDevice are immutable; LocalAddr comes

@@ -652,23 +652,31 @@ Every tranche datagram becomes writer-runnable at
 time once. Under the writer lock the shaper installs one socket-wide absolute
 deadline `D=cutStart+I`, `I=10ms`, before publishing the cut. It applies to an
 already-blocked predecessor and every tranche syscall, and clears only after
-terminal completion. Deadline-install failure, timeout, or exhaustion aborts
-without retry and closes the socket generation. Mixed-path groups and shared
-multi-peer sockets advertise the contract disabled and retain the conservative
-250 ms receiver fallback.
+terminal completion. Deadline-install, clear, writer-timeout, or exhaustion
+failure aborts without retry. The abort synchronously stops shaper and direct
+admission, then a generation-identity-checked retirement removes that exact
+peer path, scheduler view, selected remote, and shared socket without holding
+the shaper lock across the blocking quiescence barrier. A stale callback cannot
+retire a replacement socket. Mixed-path groups and shared multi-peer sockets
+advertise the contract disabled and retain the conservative 250 ms receiver
+fallback.
 
 Define
 `A=Sdevice=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+I` and
-`Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I`. Config requires `Rp<R` and a
-representable `A<250ms`. The primitive does not classify frames, select paths,
-generate FEC, or own tunnel lifecycle; those remain integration responsibilities.
+`Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I`. Config requires `Rp<R`, checks
+each finite nonnegative nanosecond quotient and the `+I` addition before
+conversion to `time.Duration`, and requires representable `A<250ms` and
+`Ecompletion`. The primitive does not classify frames, select paths, generate
+FEC, or own tunnel lifecycle; those remain integration responsibilities.
 
 **Shaper observability.** `Shaper.Snapshot` takes the shaper mutex and copies one
 coherent generation-local view; `Bind.PeerSnapshots` captures the optional
 reporter while holding `m.mu` but calls it only after releasing that lock.
 Pacing-off paths carry no snapshot, so the monitor omits `path.shaper` and
 Prometheus emits no `wanbond_path_shaper_*` series. A new socket/shaper
-generation starts all cumulative values at zero.
+generation starts all cumulative values at zero. The reported recovery-contract
+bit additionally reflects bind eligibility: it is false for a shared or failed
+generation even when the underlying shaper was configured with `Fgroup`.
 
 The live gauges expose reserved DATA, reserved inner-control, retained priority,
 owned FEC group, `Mtotal`, current total retained, and writer-in-flight bytes.

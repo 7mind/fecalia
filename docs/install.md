@@ -454,7 +454,10 @@ Common rules, either policy:
   outer PROBE/echo frames reserve `P` and enter the same serialized writer.
   Ordinary probe overflow coalesces a cadence, PMTU waits cancellably, and
   reactive echo overflow drops/counts without blocking receive.
-  Each live `(peer,path)` socket generation owns one shaper. Runtime removal,
+  Each live `(peer,path)` socket generation owns one shaper. Recovery deadline
+  install/clear or writer failure immediately closes admission and retires that
+  exact peer path, scheduler view, selected remote, and shared socket; pointer
+  identity prevents a stale failure from retiring a replacement. Runtime removal,
   failed add/promotion rollback, and daemon Down/Close stop admission and wake
   queued sends before waiting for writers; the UDP socket closes only after
   shaped and direct writes quiesce. A subsequent add or Up/Open receives a fresh
@@ -479,7 +482,9 @@ Common rules, either policy:
   invalidates the bound; no live outer CONTROL protocol currently exists.
   For an exclusive single-path FEC group, config also derives
   `A=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+10ms` and
-  `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+10ms`. It requires `A<250ms`.
+  `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+10ms`. Finite nonnegative
+  nanosecond quotients and the slack addition must fit `time.Duration` before
+  conversion; it requires `A<250ms`.
   At recovery admission the socket receives one absolute
   `cutStart+10ms` deadline before the cut becomes visible; that same deadline
   covers any blocked predecessor and every tranche syscall. Install failure or
@@ -504,7 +509,10 @@ Common rules, either policy:
   counters. Accepted/emitted/outer-priority byte counters make wire accounting
   visible. The per-path `probe_priority_coalesced_total`,
   `pmtu_admission_canceled_total`, and `echo_priority_overflow_total` distinguish
-  the three generated-priority overflow policies. These series (and the monitor UI's `shaper` block) are absent when
+  the three generated-priority overflow policies. PMTU cancellation counts only
+  a generation close/cancel while waiting for `P`, before sequence/timestamp
+  generation; an `ErrClosed` returned after reservation or by the writer remains
+  a send failure, not an admission cancellation. These series (and the monitor UI's `shaper` block) are absent when
   pacing is off, and all cumulative values reset when the path receives a new
   socket/shaper generation.
 - Under active-backup, pacing enabled with **neither** a declared

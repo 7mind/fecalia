@@ -394,3 +394,94 @@ func TestPathShaperLoadRejectsUnrepresentablePriorityBound(t *testing.T) {
 		t.Fatalf("Load error = %v, want substring %q", err, want)
 	}
 }
+
+func TestRecoveryBoundOverflowRejectedBeforeDurationConversion(t *testing.T) {
+	const lmax = 1472
+	probeBurstBytes := probeFramesPerBurstPair * lmax
+	probeRateBytesPerSecond := float64(probeBurstBytes) / livenessProbeInterval.Seconds()
+	rateBytesPerSecond := probeRateBytesPerSecond + 0.001
+	bandwidth := strconv.FormatFloat(rateBytesPerSecond*bitsPerByte, 'g', -1, 64) + "bit"
+	body := byteShaperFixture(
+		"192.0.2.10",
+		bandwidth,
+		"100000h",
+		0,
+		"pacing_enabled = true\n",
+	) + "\n[fec]\nenabled = true\ndata_shards = 3\nparity_shards = 1\n"
+
+	_, err := loadByteShaperFixture(t, body)
+	const want = "recovery bound A cannot be represented as time.Duration"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Load error = %v, want substring %q", err, want)
+	}
+}
+
+func TestRecoveryServiceDurationRepresentationBoundaries(t *testing.T) {
+	valid, err := deriveServiceDuration(
+		"recovery bound A",
+		1,
+		float64(time.Second),
+		recoveryWriteSlack,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid != recoveryWriteSlack+time.Nanosecond {
+		t.Fatalf("valid service duration = %s, want %s", valid, recoveryWriteSlack+time.Nanosecond)
+	}
+
+	for _, label := range []string{"recovery bound A", "completion overrun Ecompletion"} {
+		_, err := deriveServiceDuration(label, math.MaxInt, math.SmallestNonzeroFloat64, 0)
+		if err == nil || !strings.Contains(err.Error(), label+" cannot be represented as time.Duration") {
+			t.Fatalf("%s overflow error = %v", label, err)
+		}
+	}
+
+	_, err = deriveServiceDuration(
+		"completion overrun Ecompletion",
+		math.MaxInt,
+		float64(math.MaxInt)*float64(time.Second)/float64(math.MaxInt64-time.Nanosecond),
+		time.Nanosecond,
+	)
+	if err == nil {
+		t.Fatal("Ecompletion mutation crossing MaxInt64 with slack was accepted")
+	}
+}
+
+func TestFECGroupAndMtotalExactArithmeticBoundaries(t *testing.T) {
+	const (
+		kdata = 3
+		mmax  = 1
+		lmax  = 1472
+	)
+	ownership, err := deriveFECGroupOwnership(kdata, mmax, lmax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lc := 8 + lmax - outerDataFrameOverhead
+	ls := fecShardLengthPrefix + lc
+	if ownership.codedInputBytes != kdata*lc {
+		t.Fatalf("coded input = %d, want %d", ownership.codedInputBytes, kdata*lc)
+	}
+	if ownership.workspaceBytes != (kdata+mmax)*ls {
+		t.Fatalf("workspace = %d, want %d", ownership.workspaceBytes, (kdata+mmax)*ls)
+	}
+	if ownership.encodedWireBytes != (kdata+mmax)*lmax {
+		t.Fatalf("encoded wire = %d, want %d", ownership.encodedWireBytes, (kdata+mmax)*lmax)
+	}
+	wantFgroup := kdata*lc + (kdata+mmax)*ls + (kdata+mmax)*lmax
+	if ownership.totalBytes != wantFgroup {
+		t.Fatalf("Fgroup = %d, want exact term sum %d", ownership.totalBytes, wantFgroup)
+	}
+
+	memory, err := checkedIntSum("memory bound Mtotal", 100, 20, 30, wantFgroup, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 100 + 20 + 30 + wantFgroup + 40; memory != want {
+		t.Fatalf("Mtotal = %d, want %d", memory, want)
+	}
+	if _, err := checkedIntSum("memory bound Mtotal", math.MaxInt, 1); err == nil {
+		t.Fatal("Mtotal overflow was accepted")
+	}
+}

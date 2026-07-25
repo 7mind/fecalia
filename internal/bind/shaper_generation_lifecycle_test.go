@@ -268,6 +268,7 @@ func lifecycleShaperConfig() config.PathShaperConfig {
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 1,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}
 }
 

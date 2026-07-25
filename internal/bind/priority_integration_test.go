@@ -151,6 +151,7 @@ func priorityTestShaperConfig() config.PathShaperConfig {
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 14_720,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}
 }
 
@@ -334,6 +335,7 @@ func TestFullDataBudgetObservesGeneratedPriorityNetRateBound(t *testing.T) {
 		MaxEncodedDatagramBytes: lmax,
 		ProbeRateBytesPerSecond: rp,
 		ProbeBurstBytes:         2 * lmax,
+		PriorityReserveBytes:    2 * lmax,
 	}
 	shaperClock := newPriorityDebtClock()
 	emissions := make(chan priorityEmission, 2)
@@ -573,6 +575,7 @@ func TestFullDataBudgetReceiverVisibleBoundIncludesActiveResequencerHold(t *test
 		MaxEncodedDatagramBytes: lmax,
 		ProbeRateBytesPerSecond: float64(2*lmax) / telemetry.DefaultProbeInterval.Seconds(),
 		ProbeBurstBytes:         2 * lmax,
+		PriorityReserveBytes:    2 * lmax,
 	}
 	emissions := make(chan time.Time, 2)
 	writeIndex := 0

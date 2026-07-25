@@ -255,6 +255,7 @@ func newFailFirstFixture(t testing.TB, cfg fec.Config, adaptiveCfg *adaptivefec.
 			MaxEncodedDatagramBytes: 1472,
 			ProbeRateBytesPerSecond: 1,
 			ProbeBurstBytes:         2944,
+			PriorityReserveBytes:    2944,
 		}},
 		lg,
 	)

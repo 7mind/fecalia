@@ -364,6 +364,88 @@ const (
 	resequencerServiceLimit = 250 * time.Millisecond
 )
 
+type fecGroupOwnership struct {
+	codedInputBytes  int
+	workspaceBytes   int
+	encodedWireBytes int
+	totalBytes       int
+}
+
+func checkedIntProduct(label string, left, right int) (int, error) {
+	if left < 0 || right < 0 {
+		return 0, fmt.Errorf("%s must be nonnegative", label)
+	}
+	if left != 0 && right > math.MaxInt/left {
+		return 0, fmt.Errorf("%s must fit in int", label)
+	}
+	return left * right, nil
+}
+
+func checkedIntSum(label string, values ...int) (int, error) {
+	total := 0
+	for _, value := range values {
+		if value < 0 || value > math.MaxInt-total {
+			return 0, fmt.Errorf("%s must fit in int", label)
+		}
+		total += value
+	}
+	return total, nil
+}
+
+func deriveFECGroupOwnership(kdata, mmax, lmax int) (fecGroupOwnership, error) {
+	shards, err := checkedIntSum("FEC shard count K+M", kdata, mmax)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	lc, err := checkedIntSum("FEC coded-input length Lc", 8, lmax-outerDataFrameOverhead)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	ls, err := checkedIntSum("FEC workspace shard length Ls", fecShardLengthPrefix, lc)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	codedInput, err := checkedIntProduct("FEC coded-input ownership K*Lc", kdata, lc)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	workspace, err := checkedIntProduct("Reed-Solomon workspace ownership (K+M)*Ls", shards, ls)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	encodedWire, err := checkedIntProduct("encoded-wire ownership (K+M)*Lmax", shards, lmax)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	total, err := checkedIntSum("Fgroup", codedInput, workspace, encodedWire)
+	if err != nil {
+		return fecGroupOwnership{}, err
+	}
+	return fecGroupOwnership{
+		codedInputBytes:  codedInput,
+		workspaceBytes:   workspace,
+		encodedWireBytes: encodedWire,
+		totalBytes:       total,
+	}, nil
+}
+
+func deriveServiceDuration(label string, byteCount int, netRate float64, slack time.Duration) (time.Duration, error) {
+	if byteCount < 0 || !finitePositive(netRate) || slack < 0 {
+		return 0, fmt.Errorf("%s inputs must be finite and nonnegative", label)
+	}
+	nanoseconds := math.Ceil(float64(byteCount) / netRate * float64(time.Second))
+	maxInt64Exclusive := math.Ldexp(1, 63)
+	if math.IsNaN(nanoseconds) || math.IsInf(nanoseconds, 0) ||
+		nanoseconds < 0 || nanoseconds >= maxInt64Exclusive {
+		return 0, fmt.Errorf("%s cannot be represented as time.Duration", label)
+	}
+	service := time.Duration(nanoseconds)
+	if service > time.Duration(math.MaxInt64)-slack {
+		return 0, fmt.Errorf("%s plus recovery write slack cannot be represented as time.Duration", label)
+	}
+	return service + slack, nil
+}
+
 // defaultPathMTU and the outer IP/UDP overheads mirror bind.DefaultPathMTU,
 // bind.IPv4UDPOverhead, and bind.IPv6UDPOverhead. Config cannot import bind
 // because bind already imports config.
@@ -1394,25 +1476,75 @@ func (c *Config) derivePathShapers() error {
 		if c.FEC.Enabled {
 			kdata := c.FEC.DataShards
 			mmax := c.FEC.ParityShards
-			lc := 8 + lmax - outerDataFrameOverhead
-			ls := fecShardLengthPrefix + lc
-			fecGroupReserveBytes =
-				kdata*lc +
-					(kdata+mmax)*ls +
-					(kdata+mmax)*lmax
+			ownership, err := deriveFECGroupOwnership(kdata, mmax, lmax)
+			if err != nil {
+				return fmt.Errorf("path %q: derive Fgroup: %w", p.Name, err)
+			}
+			fecGroupReserveBytes = ownership.totalBytes
 			recoverySlack = recoveryWriteSlack
 			netRate := rateBytesPerSecond - probeRateBytesPerSecond
-			recoveryBytes := dataBurstBytes +
-				lmax +
-				probeBurstBytes +
-				(kdata+mmax+1)*lmax
-			recoveryBound = time.Duration(math.Ceil(
-				float64(recoveryBytes)/netRate*float64(time.Second),
-			)) + recoverySlack
-			completionBytes := probeBurstBytes + mmax*lmax + lmax
-			completionOverrunBound = time.Duration(math.Ceil(
-				float64(completionBytes)/netRate*float64(time.Second),
-			)) + recoverySlack
+			recoveryShardCount, err := checkedIntSum(
+				"recovery shard count K+M+1",
+				kdata,
+				mmax,
+				1,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: derive recovery bound A: %w", p.Name, err)
+			}
+			recoveryWireBytes, err := checkedIntProduct(
+				"recovery wire term (K+M+1)*Lmax",
+				recoveryShardCount,
+				lmax,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: derive recovery bound A: %w", p.Name, err)
+			}
+			recoveryBytes, err := checkedIntSum(
+				"recovery bound A byte numerator",
+				dataBurstBytes,
+				lmax,
+				probeBurstBytes,
+				recoveryWireBytes,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: %w", p.Name, err)
+			}
+			recoveryBound, err = deriveServiceDuration(
+				"recovery bound A",
+				recoveryBytes,
+				netRate,
+				recoverySlack,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: %w", p.Name, err)
+			}
+			completionParityBytes, err := checkedIntProduct(
+				"completion parity term M*Lmax",
+				mmax,
+				lmax,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: derive completion overrun Ecompletion: %w", p.Name, err)
+			}
+			completionBytes, err := checkedIntSum(
+				"completion overrun Ecompletion byte numerator",
+				probeBurstBytes,
+				completionParityBytes,
+				lmax,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: %w", p.Name, err)
+			}
+			completionOverrunBound, err = deriveServiceDuration(
+				"completion overrun Ecompletion",
+				completionBytes,
+				netRate,
+				recoverySlack,
+			)
+			if err != nil {
+				return fmt.Errorf("path %q: %w", p.Name, err)
+			}
 			if recoveryBound >= resequencerServiceLimit {
 				return fmt.Errorf(
 					"path %q: finite recovery bound A=%s must stay below receiver fallback T=%s",
@@ -1421,6 +1553,20 @@ func (c *Config) derivePathShapers() error {
 					resequencerServiceLimit,
 				)
 			}
+		}
+		if _, err := checkedIntSum("queue budget B+C", dataBurstBytes, lmax); err != nil {
+			return fmt.Errorf("path %q: %w", p.Name, err)
+		}
+		memoryBoundBytes, err := checkedIntSum(
+			"memory bound Mtotal",
+			dataBurstBytes,
+			lmax,
+			probeBurstBytes,
+			fecGroupReserveBytes,
+			lmax,
+		)
+		if err != nil {
+			return fmt.Errorf("path %q: %w", p.Name, err)
 		}
 		derived := PathShaperConfig{
 			RateBytesPerSecond:      rateBytesPerSecond,
@@ -1434,8 +1580,7 @@ func (c *Config) derivePathShapers() error {
 			RecoveryWriteSlack:      recoverySlack,
 			RecoveryBound:           recoveryBound,
 			CompletionOverrunBound:  completionOverrunBound,
-			MemoryBoundBytes: dataBurstBytes + lmax + probeBurstBytes +
-				fecGroupReserveBytes + lmax,
+			MemoryBoundBytes:        memoryBoundBytes,
 		}
 		if err := pathshaper.ValidateConfig(pathshaper.Config{
 			RateBytesPerSecond:         derived.RateBytesPerSecond,

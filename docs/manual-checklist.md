@@ -503,10 +503,16 @@ predeclared gates:
       Confirm later probe/echo arrivals do not enter the tranche and a second
       group backpressures. Mixed-path/shared-socket groups must report the
       finite contract disabled and retain the conservative fallback.
+- [ ] Force recovery deadline-install, clear, and running-writer failures.
+      Confirm each exact socket generation immediately rejects admission,
+      disappears from its peer/scheduler/remote view, and quiesces on Close;
+      then reopen and confirm a delayed stale failure cannot retire the new
+      generation.
 - [ ] During probe saturation, distinguish bounded priority outcomes:
       `wanbond_path_probe_priority_coalesced_total` may rise for skipped
-      ordinary cadences, `wanbond_path_pmtu_admission_canceled_total` only for
-      canceled PMTU admission, and
+      ordinary cadences, `wanbond_path_pmtu_admission_canceled_total` only when
+      generation close cancels a wait for `P` before probe generation (not an
+      `ErrClosed` from generation or writer after reservation), and
       `wanbond_path_echo_priority_overflow_total` only for non-blocking reactive
       echo drops. None should coincide with receive-loop blocking.
 - [ ] Cycle the edge daemon Down/Up once with pacing enabled. Confirm no send

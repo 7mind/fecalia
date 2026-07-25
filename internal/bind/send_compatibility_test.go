@@ -101,6 +101,7 @@ func TestPeerRebindWaitsForOldFECOwnerExit(t *testing.T) {
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 1,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}
 	m, err := NewMultipathWithShapers(
 		loopbackPaths(1),
@@ -195,6 +196,7 @@ func TestShapedSendAbortsWhenFECPlaneReinstantiates(t *testing.T) {
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 1,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}
 	primaryScheduler := &unpacedSelectionRecorder{}
 	m, err := NewMultipathWithShapers(

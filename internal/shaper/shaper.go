@@ -722,10 +722,17 @@ var errPriorityFull = errors.New("priority reserve full")
 
 func (s *Shaper) reservePriority(ctx context.Context, size int, wait bool) (*queuedDatagram, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
 			return nil, ErrClosed
+		}
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return nil, err
 		}
 		now := s.clock.Now()
 		capacityReady := size <= s.config.PriorityReserveBytes-s.retainedPriorityBytes
@@ -805,10 +812,17 @@ func (s *Shaper) reserveDatagram(
 ) (reservation, error) {
 	var waiter *priorityWaiter
 	for {
+		if err := ctx.Err(); err != nil {
+			return reservation{}, err
+		}
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
 			return reservation{}, ErrClosed
+		}
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return reservation{}, err
 		}
 		if batch != nil && batch.err != nil {
 			err := batch.err
@@ -999,6 +1013,7 @@ func (s *Shaper) Close() error {
 // wakes capacity and timer waiters. It does not wait for the writer currently
 // in flight; Wait supplies that separate quiescence barrier.
 func (s *Shaper) Stop() {
+	var abort func()
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
@@ -1012,10 +1027,13 @@ func (s *Shaper) Stop() {
 			close(datagram.done)
 		}
 		s.queue = nil
-		s.terminateRecoveryLocked(ErrClosed)
+		abort = s.terminateRecoveryLocked(ErrClosed)
 		s.notifyLocked()
 	}
 	s.mu.Unlock()
+	if abort != nil {
+		abort()
+	}
 }
 
 // Wait blocks until the worker and every admitted call have returned. Stop
@@ -1049,9 +1067,12 @@ func (s *Shaper) run() {
 			s.releaseQueued(datagram)
 			err := datagram.batch.err
 			s.accountAsyncWriteFailureLocked(err, datagram.size, false)
-			err = s.finishRecoveryDatagramLocked(datagram, err)
+			abort, err := s.finishRecoveryDatagramLocked(datagram, err)
 			s.notifyLocked()
 			s.mu.Unlock()
+			if abort != nil {
+				abort()
+			}
 			datagram.done <- err
 			close(datagram.done)
 			continue
@@ -1102,16 +1123,24 @@ func (s *Shaper) run() {
 				datagram.batch.failedIndex = datagram.index
 			}
 		}
+		var abort func()
 		if err != nil && s.recovery != nil && datagram.recovery == nil {
 			if s.recovery.batch.err == nil {
 				s.recovery.batch.err = err
 				s.recovery.batch.failedIndex = -1
 			}
-			s.abortRecoveryLocked(s.recovery, err)
+			abort = s.abortRecoveryLocked(s.recovery, err)
 		}
-		err = s.finishRecoveryDatagramLocked(datagram, err)
+		var finishAbort func()
+		finishAbort, err = s.finishRecoveryDatagramLocked(datagram, err)
+		if abort == nil {
+			abort = finishAbort
+		}
 		s.notifyLocked()
 		s.mu.Unlock()
+		if abort != nil {
+			abort()
+		}
 		datagram.done <- err
 		close(datagram.done)
 	}
@@ -1130,14 +1159,14 @@ func (s *Shaper) releaseQueued(datagram *queuedDatagram) {
 	}
 }
 
-func (s *Shaper) finishRecoveryDatagramLocked(datagram *queuedDatagram, err error) error {
+func (s *Shaper) finishRecoveryDatagramLocked(datagram *queuedDatagram, err error) (func(), error) {
 	recovery := datagram.recovery
 	if recovery == nil || recovery.terminal {
-		return err
+		return nil, err
 	}
 	recovery.remaining--
 	if recovery.remaining != 0 {
-		return err
+		return nil, err
 	}
 	recovery.terminal = true
 	clearErr := recovery.control.ClearDeadline()
@@ -1148,19 +1177,20 @@ func (s *Shaper) finishRecoveryDatagramLocked(datagram *queuedDatagram, err erro
 		recovery.batch.err = err
 		recovery.batch.failedIndex = datagram.index
 	}
+	var abort func()
 	if err != nil {
-		s.abortRecoveryLocked(recovery, err)
+		abort = s.abortRecoveryLocked(recovery, err)
 	}
 	s.fecGroupOwnedBytes = 0
 	if s.recovery == recovery {
 		s.recovery = nil
 	}
-	return err
+	return abort, err
 }
 
-func (s *Shaper) terminateRecoveryLocked(err error) {
+func (s *Shaper) terminateRecoveryLocked(err error) func() {
 	if s.recovery == nil || s.recovery.terminal {
-		return
+		return nil
 	}
 	recovery := s.recovery
 	recovery.terminal = true
@@ -1169,17 +1199,20 @@ func (s *Shaper) terminateRecoveryLocked(err error) {
 		recovery.batch.failedIndex = 0
 	}
 	_ = recovery.control.ClearDeadline()
-	s.abortRecoveryLocked(recovery, err)
+	abort := s.abortRecoveryLocked(recovery, err)
 	s.fecGroupOwnedBytes = 0
 	s.recovery = nil
+	return abort
 }
 
-func (s *Shaper) abortRecoveryLocked(recovery *recoveryState, err error) {
+func (s *Shaper) abortRecoveryLocked(recovery *recoveryState, err error) func() {
 	if recovery.aborted {
-		return
+		return nil
 	}
 	recovery.aborted = true
-	recovery.control.Abort(err)
+	return func() {
+		recovery.control.Abort(err)
+	}
 }
 
 func (s *Shaper) accountAsyncWriteFailureLocked(err error, size int, countError bool) {

@@ -479,10 +479,8 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 		}
 		if singlePath {
 			if shaped, ok := path.shaper.(recoveryPathShaper); ok {
-				views := path.views.Load()
-				exclusive := views != nil && len(*views) == 1
-				contract := shaped.RecoveryContract()
-				if exclusive && contract.Enabled {
+				contract := path.recoveryContract()
+				if contract.Enabled {
 					datagrams := make([]shaper.Datagram, len(writes))
 					wires := make([]fecWire, len(writes))
 					for i, write := range writes {
@@ -508,7 +506,7 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 							return path.installWriteDeadline(time.Time{})
 						},
 						Abort: func(err error) {
-							path.abortWriteGeneration()
+							o.m.abortRecoveryGeneration(path, err)
 							if o.m.fecDeadlineInvalidator != nil {
 								now := o.clock.Now()
 								o.m.fecDeadlineInvalidator(fecDeadlineMiss{

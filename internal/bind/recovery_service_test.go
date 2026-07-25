@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/fec"
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/shaper"
 )
 
@@ -32,9 +33,15 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 	}
 	var data []fec.DataShard
 	var parity []fec.ParityShard
+	lc := 8 + lmax - frame.DataOverhead
+	ls := 4 + lc
+	codedInputOwnership := kdata * lc
+	workspaceOwnership := (kdata + mmax) * ls
+	encodedWireOwnership := (kdata + mmax) * lmax
+	fgroup := codedInputOwnership + workspaceOwnership + encodedWireOwnership
 	original := make([][]byte, kdata)
 	for i := range original {
-		original[i] = bytes.Repeat([]byte{byte(i + 1)}, 24+i)
+		original[i] = bytes.Repeat([]byte{byte(i + 1)}, lc)
 		shard, produced, err := encoder.Admit(original[i])
 		if err != nil {
 			t.Fatal(err)
@@ -47,6 +54,20 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 	if len(parity) != mmax {
 		t.Fatalf("encoder parity = %d, want %d", len(parity), mmax)
 	}
+	measuredCodedInput := 0
+	for _, shard := range data {
+		measuredCodedInput += len(shard.Payload)
+	}
+	if measuredCodedInput != codedInputOwnership {
+		t.Fatalf("coded-input ownership = %d, want K*Lc=%d", measuredCodedInput, codedInputOwnership)
+	}
+	if len(parity[0].Payload) != ls {
+		t.Fatalf("Reed-Solomon shard length = %d, want Ls=%d", len(parity[0].Payload), ls)
+	}
+	measuredWorkspace := (len(data) + len(parity)) * len(parity[0].Payload)
+	if measuredWorkspace != workspaceOwnership {
+		t.Fatalf("Reed-Solomon workspace = %d, want (K+M)*Ls=%d", measuredWorkspace, workspaceOwnership)
+	}
 
 	config := shaper.Config{
 		RateBytesPerSecond:         rate,
@@ -56,7 +77,7 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 		MaxDatagramBytes:           lmax,
 		PriorityBurstBytes:         lmax,
 		PriorityReserveBytes:       lmax,
-		FECGroupReserveBytes:       10 * lmax,
+		FECGroupReserveBytes:       fgroup,
 		RecoveryWriteSlack:         10 * time.Millisecond,
 	}
 	firstStarted := make(chan struct{})
@@ -105,6 +126,11 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 	if err != nil || !admitted {
 		t.Fatalf("priority admission = %v, %v", admitted, err)
 	}
+	waitForRecoveryCondition(t, func() bool {
+		return writer.Snapshot().AcceptedBytes == uint64(
+			4*lmax+lmax+lmax,
+		)
+	})
 
 	var emittedMu sync.Mutex
 	var emitted []fec.Shard
@@ -137,6 +163,14 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 				return nil
 			},
 		})
+	}
+	measuredEncodedWire := 0
+	for _, datagram := range groupDatagrams {
+		measuredEncodedWire += len(datagram.Payload)
+	}
+	if measuredEncodedWire != encodedWireOwnership {
+		t.Fatalf("encoded-wire ownership = %d, want (K+M)*Lmax=%d",
+			measuredEncodedWire, encodedWireOwnership)
 	}
 	deadlineInstalled := make(chan time.Time, 1)
 	groupDone := make(chan struct {

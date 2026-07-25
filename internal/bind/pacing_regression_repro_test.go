@@ -75,6 +75,7 @@ func newPacingReproMultipath(t testing.TB, pacing bool, burst float64, fecCfg *f
 				MaxEncodedDatagramBytes: lmax,
 				ProbeRateBytesPerSecond: 1,
 				ProbeBurstBytes:         2 * lmax,
+				PriorityReserveBytes:    2 * lmax,
 			}},
 			lg,
 		)

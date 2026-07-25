@@ -173,6 +173,7 @@ func TestPMTUProbeSuccessfulWriteAccountsFamilyExactPaddedBytes(t *testing.T) {
 				MaxEncodedDatagramBytes: lmax,
 				ProbeRateBytesPerSecond: float64(2*lmax) / telemetry.DefaultProbeInterval.Seconds(),
 				ProbeBurstBytes:         2 * lmax,
+				PriorityReserveBytes:    2 * lmax,
 			}
 			var validating *validatingPriorityShaper
 			m.shaperConfigs = []config.PathShaperConfig{cfg}

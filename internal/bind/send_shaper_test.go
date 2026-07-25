@@ -92,6 +92,7 @@ func TestShapedSendStopsSuffixAndReportsAcceptedVersusEmitted(t *testing.T) {
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 1,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}}
 	m, err := NewMultipathWithShapers(
 		paths,
@@ -174,6 +175,7 @@ func TestShapedMixedBatchPreservesPerBufferClass(t *testing.T) {
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 1,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}
 	m, err := NewMultipathWithShapers(paths, testKey(t, 0xD3), recorder, nil, nil, nil, nil, config.Amnezia{}, []config.PathShaperConfig{cfg}, lg)
 	if err != nil {
@@ -245,6 +247,7 @@ func TestShapedMixedBatchSelectsAndObservesOnceWithoutLegacyAdmission(t *testing
 		MaxEncodedDatagramBytes: 1472,
 		ProbeRateBytesPerSecond: 14_720,
 		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
 	}}
 	m, err := NewMultipathWithShapers(
 		paths,
@@ -316,6 +319,7 @@ func TestMaximumMixedBatchControlLastPreservesFIFOAndUsesCurrentRemote(t *testin
 		MaxEncodedDatagramBytes: lmax,
 		ProbeRateBytesPerSecond: 14_720,
 		ProbeBurstBytes:         2 * lmax,
+		PriorityReserveBytes:    2 * lmax,
 	}
 	m, err := NewMultipathWithShapers(
 		paths,

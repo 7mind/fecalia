@@ -263,7 +263,9 @@ deliberate boundaries you must plan around:
   consumes the whole link. Non-finite inputs and byte budgets that cannot fit
   the platform's integer byte-count domain are rejected before conversion; `Q`
   and `Mtotal`, `A`, and `Ecompletion` must fit their runtime
-  `int`/`time.Duration` representations; FEC-active `A` must remain below the
+  `int`/`time.Duration` representations. The finite nonnegative A/E nanosecond
+  quotients and slack addition are checked before float-to-duration conversion;
+  FEC-active `A` must remain below the
   conservative 250 ms receiver fallback. At runtime each
   `(peer,path)` owns one shaper. One engine `Send` selects one path. With FEC
   off, each input is classified, framed, and admitted in order. With FEC on, a
@@ -279,7 +281,10 @@ deliberate boundaries you must plan around:
   lower-OuterSeq prefix and already-admitted priority, then the complete group
   DATA+parity tranche, before later priority/groups. One absolute
   `cutStart+10ms` socket deadline covers an already-blocked predecessor and
-  every tranche syscall; timeout terminates without retry. The shaper retains
+  every tranche syscall. Install, clear, or writer failure terminates without
+  retry, disables admission immediately, and retires that exact socket
+  generation from its peer path, scheduler view, and remote; a stale failure
+  cannot match a replacement generation. The shaper retains
   at most `Mtotal`; saturation backpressures the sender
   without discarding ordinary traffic. Per-path accepted, emitted,
   shaper-error, and socket-error counters expose every terminal prefix. Live
