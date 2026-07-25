@@ -402,6 +402,150 @@ func TestStaleAsynchronousInvalidationCannotRotateReplacementOpen(t *testing.T) 
 	}
 }
 
+func TestRecoveryTransitionCoalescerDoesNotLoseRequestAcrossRapidReopens(t *testing.T) {
+	psk := testKey(t, 0x90)
+	clock := newFakeClock()
+	m, _ := newProbingMultipathFEC(t, loopbackPaths(1), psk, &fec.Config{
+		DataShards:   3,
+		ParityShards: 1,
+		Deadline:     20 * time.Millisecond,
+	}, clock)
+	m.clock = clock
+	cfg := recoveryReviewShaperConfig()
+	cfg.RecoveryBound = 125 * time.Millisecond
+	m.shaperConfigs = []config.PathShaperConfig{cfg}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	peer, peerAP := rawPeer(t)
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = peer.Close()
+	})
+	_ = acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 1)
+
+	// Keep the first worker behind the durable service gate while two complete
+	// Close/Open generations pass. The generation-2 request then becomes the
+	// stale handoff that fails token capture while still owning the pending
+	// latch.
+	m.serviceGate.RLock()
+	firstGeneration := m.openGeneration.Load()
+	m.invalidateAndRotatePeerRecoveryContract(m.peerState, firstGeneration)
+	if !m.serviceTransitionPending.Load() || m.serviceTransitionRequested.Load() != 1 {
+		m.serviceGate.RUnlock()
+		t.Fatal("first generation did not publish one owned transition request")
+	}
+	if err := m.Close(); err != nil {
+		m.serviceGate.RUnlock()
+		t.Fatal(err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		m.serviceGate.RUnlock()
+		t.Fatal(err)
+	}
+	secondGeneration := m.openGeneration.Load()
+	_ = acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 2)
+	m.invalidateAndRotatePeerRecoveryContract(m.peerState, secondGeneration)
+	if !m.serviceTransitionPending.Load() || m.serviceTransitionRequested.Load() != 2 {
+		m.serviceGate.RUnlock()
+		t.Fatal("second generation request did not coalesce behind the first worker")
+	}
+	if err := m.Close(); err != nil {
+		m.serviceGate.RUnlock()
+		t.Fatal(err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		m.serviceGate.RUnlock()
+		t.Fatal(err)
+	}
+	thirdGeneration := m.openGeneration.Load()
+	replacement := acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 3)
+	bringProberUpClean(t, m.probers[0], psk, clock, testProbeUpSucc)
+	m.paths[0].setRemote(peerAP)
+
+	captureMiss := make(chan struct{}, 1)
+	releaseCaptureMiss := make(chan struct{})
+	m.afterRecoveryTransitionCaptureMiss = func(gotPeer *peerState, generation, requested uint64) {
+		if gotPeer != m.peerState || generation != secondGeneration || requested != 2 {
+			return
+		}
+		captureMiss <- struct{}{}
+		<-releaseCaptureMiss
+	}
+	m.serviceGate.RUnlock()
+	select {
+	case <-captureMiss:
+	case <-time.After(time.Second):
+		t.Fatal("stale handoff did not reach the inactive-generation capture seam")
+	}
+	if !m.serviceTransitionPending.Load() {
+		t.Fatal("stale handoff released ownership before the capture-miss seam")
+	}
+
+	m.invalidateAndRotatePeerRecoveryContract(m.peerState, thirdGeneration)
+	if got := m.serviceTransitionRequested.Load(); got != 3 {
+		t.Fatalf("replacement invalidation request = %d, want 3", got)
+	}
+	if got := m.contracts.offerSnapshot().message.ContractID; got != replacement.ContractID {
+		t.Fatalf("stale worker changed replacement contract before handoff: %d -> %d", replacement.ContractID, got)
+	}
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- m.Send([][]byte{[]byte("a"), []byte("b"), []byte("c")}, m.virt)
+	}()
+	select {
+	case err := <-sendDone:
+		t.Fatalf("replacement Send escaped the invalidated contract before rotation: %v", err)
+	default:
+	}
+
+	close(releaseCaptureMiss)
+	clock.advance(conservativeRecoveryService)
+	var rotated telemetry.RecoveryContractMessage
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		rotated = m.contracts.offerSnapshot().message
+		if rotated.ContractID > replacement.ContractID {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if rotated.ContractID <= replacement.ContractID {
+		t.Fatalf("coalesced replacement request was lost: ContractID remained %d, requested=%d handled=%d pending=%v",
+			rotated.ContractID,
+			m.serviceTransitionRequested.Load(),
+			m.serviceTransitionHandled.Load(),
+			m.serviceTransitionPending.Load(),
+		)
+	}
+	_ = acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 4)
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement Send did not reach the exact-ACK decision")
+	}
+	deadline = time.Now().Add(time.Second)
+	for m.serviceTransitionPending.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if requested, handled := m.serviceTransitionRequested.Load(), m.serviceTransitionHandled.Load(); requested != handled {
+		t.Fatalf("transition coalescer did not converge: requested=%d handled=%d", requested, handled)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- m.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not join the converged transition worker")
+	}
+}
+
 func TestStaleSharedRecoveryFailureCannotInvalidateReplacementContract(t *testing.T) {
 	psk := testKey(t, 0x8F)
 	m := openNegotiatingPeer(t, psk)

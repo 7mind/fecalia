@@ -538,7 +538,10 @@ predeclared gates:
       fresh OFFER appears only after the asynchronous drain plus 250 ms quiet
       interval; Close during that interval must cancel the waiter. Reopen before
       releasing an old-generation deadline worker and confirm it neither
-      invalidates nor rotates the replacement contract.
+      invalidates nor rotates the replacement contract. Repeat through two rapid
+      Close/Open generations, queue a current-generation miss while the stale
+      worker releases ownership, and confirm the current request still reaches
+      an exact ACK or the 250 ms fallback rather than leaving DATA blocked.
 - [ ] Force recovery deadline-install, clear, and running-writer failures.
       Confirm each exact socket generation immediately rejects admission,
       disappears from its peer/scheduler/remote view, and quiesces on Close;

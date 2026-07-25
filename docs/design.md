@@ -606,8 +606,13 @@ Bind Open-generation token that admitted it; the token is checked before
 invalidation, after the quiet wait, and under transition serialization before
 retirement or rotation. A delayed failure from a closed generation therefore
 cannot freeze service, invalidate a lease, retire a socket, or rotate the
-replacement Open's contract. Pacing-off or FEC-off operation carries no
-contract and retains its prior data path.
+replacement Open's contract. Concurrent deadline invalidations use a lossless
+single-consumer coalescer: its owner publishes the handled request counter
+before releasing ownership, then rechecks and reacquires unless a producer
+already did. An inactive-generation request terminates after that publication,
+while a concurrently queued live-generation request always owns or acquires a
+worker; it cannot leave DATA behind an indefinite contract barrier. Pacing-off
+or FEC-off operation carries no contract and retains its prior data path.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define

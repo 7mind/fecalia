@@ -551,8 +551,11 @@ type peerState struct {
 	lastWrite   atomic.Int64
 	// serviceTransitionPending coalesces asynchronous recovery-service
 	// transitions requested from inside a DATA Send's serviceGate read side.
+	// The single owner publishes Handled before releasing Pending, then rechecks
+	// Requested so a producer that observed Pending cannot lose its request.
 	serviceTransitionPending    atomic.Bool
 	serviceTransitionRequested  atomic.Uint64
+	serviceTransitionHandled    atomic.Uint64
 	serviceTransitionGeneration atomic.Uint64
 
 	// sendMu preserves one scheduler selection/offered event per engine Send while
@@ -1234,9 +1237,10 @@ type Multipath struct {
 
 	// Test-only lifecycle seams. Tests install them before starting lazy peer
 	// instantiation or Close.
-	beforeLazyFECPublish func(*peerState, *fecSender)
-	afterCloseFECDetach  func()
-	afterRecoveryRetire  func(*sharedPathState)
+	beforeLazyFECPublish               func(*peerState, *fecSender)
+	afterCloseFECDetach                func()
+	afterRecoveryRetire                func(*sharedPathState)
+	afterRecoveryTransitionCaptureMiss func(*peerState, uint64, uint64)
 
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then

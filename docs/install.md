@@ -520,7 +520,9 @@ Common rules, either policy:
   Shared-socket/mixed-path service advertises a disabled contract.
   Writer/deadline failure and Close invalidate the old contract before operation
   can continue, but delayed failures carry an exact Bind Open-generation token
-  and cannot invalidate or rotate a replacement Open.
+  and cannot invalidate or rotate a replacement Open. Multiple invalidations
+  coalesce without dropping the newest live-generation request, including
+  across rapid engine-driven Close/Open cycles.
   Same-name changes to the derived service inputs
   `R/Rp/B/C/P/Lmax/Kdata/Mmax/I` are not live-reloadable: reload emits an
   ignored-until-restart warning and preserves the running contract. Restart the

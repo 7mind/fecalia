@@ -540,35 +540,45 @@ func (m *Multipath) invalidateAndRotatePeerRecoveryContract(peer *peerState, gen
 		return
 	}
 	peer.serviceTransitionGeneration.Store(generation)
-	peer.serviceTransitionRequested.Add(1)
+	requested := peer.serviceTransitionRequested.Add(1)
 	if !peer.serviceTransitionPending.CompareAndSwap(false, true) {
 		return
 	}
-	go m.rotateInvalidatedPeerRecoveryContract(peer, generation, cancelled)
+	go m.rotateInvalidatedPeerRecoveryContract(peer, generation, requested, cancelled)
 }
 
-func (m *Multipath) finishInvalidatedPeerRecoveryWorker(peer *peerState, generation, requested uint64) {
-	peer.serviceTransitionPending.Store(false)
-	latestRequested := peer.serviceTransitionRequested.Load()
-	latestGeneration := peer.serviceTransitionGeneration.Load()
-	if latestRequested == requested && latestGeneration == generation {
-		return
-	}
-	if !peer.serviceTransitionPending.CompareAndSwap(false, true) {
-		return
-	}
-	cancelled, current := m.captureOpenGeneration(latestGeneration)
-	if !current {
+func (m *Multipath) finishInvalidatedPeerRecoveryWorker(peer *peerState, handled uint64) {
+	// Publish-release-recheck is the lossless single-consumer handoff: a producer
+	// either claims the released latch itself or leaves a counter delta that this
+	// owner observes and reacquires. A closed-generation request is handled by
+	// dropping it once; only a newer request can drive another capture attempt.
+	peer.serviceTransitionHandled.Store(handled)
+	for {
 		peer.serviceTransitionPending.Store(false)
-		return
+		if peer.serviceTransitionRequested.Load() == handled {
+			return
+		}
+		if !peer.serviceTransitionPending.CompareAndSwap(false, true) {
+			return
+		}
+		requested := peer.serviceTransitionRequested.Load()
+		generation := peer.serviceTransitionGeneration.Load()
+		cancelled, current := m.captureOpenGeneration(generation)
+		if current {
+			go m.rotateInvalidatedPeerRecoveryContract(peer, generation, requested, cancelled)
+			return
+		}
+		peer.serviceTransitionHandled.Store(requested)
+		if m.afterRecoveryTransitionCaptureMiss != nil {
+			m.afterRecoveryTransitionCaptureMiss(peer, generation, requested)
+		}
+		handled = requested
 	}
-	go m.rotateInvalidatedPeerRecoveryContract(peer, latestGeneration, cancelled)
 }
 
-func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, generation uint64, cancelled <-chan struct{}) {
-	requested := peer.serviceTransitionRequested.Load()
+func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, generation, requested uint64, cancelled <-chan struct{}) {
 	if peer.serviceTransitionGeneration.Load() != generation {
-		m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+		m.finishInvalidatedPeerRecoveryWorker(peer, requested)
 		return
 	}
 	peer.serviceGate.Lock()
@@ -576,14 +586,14 @@ func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, gener
 	peer.serviceGate.Unlock()
 	if !m.waitPeerRecoveryDrain(lastWrite, cancelled) ||
 		!m.openGenerationCurrent(generation, cancelled) {
-		m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+		m.finishInvalidatedPeerRecoveryWorker(peer, requested)
 		return
 	}
 
 	m.transitionMu.Lock()
 	if !m.openGenerationCurrent(generation, cancelled) {
 		m.transitionMu.Unlock()
-		m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+		m.finishInvalidatedPeerRecoveryWorker(peer, requested)
 		return
 	}
 	peer.serviceGate.Lock()
@@ -609,5 +619,5 @@ func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, gener
 	if err != nil {
 		m.log.Error("bind: recovery contract rotation failed", "error", err)
 	}
-	m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+	m.finishInvalidatedPeerRecoveryWorker(peer, requested)
 }
