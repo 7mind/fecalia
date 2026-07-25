@@ -1072,6 +1072,11 @@ type Multipath struct {
 	// Admit. Nil is the production default and leaves operation live.
 	fecDeadlineInvalidator fecDeadlineInvalidator
 
+	// Test-only lifecycle seams. Tests install them before starting lazy peer
+	// instantiation or Close.
+	beforeLazyFECPublish func(*peerState, *fecSender)
+	afterCloseFECDetach  func()
+
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then
 	// m.mu; Send never takes transitionMu.
@@ -2081,6 +2086,9 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 		ps.fecRecv.Store(fr)
 	}
 	if fs != nil {
+		if m.beforeLazyFECPublish != nil {
+			m.beforeLazyFECPublish(ps, fs)
+		}
 		ps.fecSend.Store(fs)
 	}
 	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
@@ -3776,12 +3784,22 @@ func (m *Multipath) Close() error {
 		close(m.recvClosed)
 	}
 	fecSenders := m.detachFECSendersLocked(m.fecGenerationCloseError())
+	if m.afterCloseFECDetach != nil {
+		m.afterCloseFECDetach()
+	}
 	retirement := m.detachSocketGenerationsLocked()
 	m.mu.Unlock()
 
 	err := retirement.retire()
 	waitFECSenders(fecSenders)
 	m.readersWG.Wait()
+	// A readLoop can already be inside lazy peer instantiation when the first
+	// detach runs. Once every reader has joined, detach and join any sender it
+	// published in that closing window before clearing/reopening the generation.
+	m.mu.Lock()
+	lateFECSenders := m.detachFECSendersLocked(m.fecGenerationCloseError())
+	m.mu.Unlock()
+	waitFECSenders(lateFECSenders)
 	m.clearPerOpenStateAfterReaders()
 	return err
 }

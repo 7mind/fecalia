@@ -970,23 +970,29 @@ func TestFailFirstFECSendPublishesOneOwnerCommandForLargeBatch(t *testing.T) {
 	f := newFailFirstFixture(t, cfg, nil, nil)
 	var publications atomic.Int64
 	publicationShape := make(chan [2]int, 1)
+	finalAdmitted := make(chan struct{})
+	var finalOnce sync.Once
 	owner := f.m.fecSend.Load().owner
 	owner.afterPublish = func(bufs, completionCapacity int) {
 		publications.Add(1)
 		publicationShape <- [2]int{bufs, completionCapacity}
 	}
-	t.Cleanup(func() { owner.afterPublish = nil })
+	owner.afterAdmit = func(_ fecOwnerAdmission, _ *fecOwnerBatch, index int) {
+		if index == buffers-1 {
+			finalOnce.Do(func() { close(finalAdmitted) })
+		}
+	}
 
 	payloads := payloadStream(buffers)
 	send := f.submit(payloads...)
-	for i := 0; i < failFirstSpinLimit && f.m.outerSeq.Load() < uint64(buffers); i++ {
-		runtime.Gosched()
-	}
+	<-finalAdmitted
 	f.clock.advance(cfg.Deadline)
 	f.flush()
 	if err := f.await(send); err != nil {
 		t.Fatal(err)
 	}
+	owner.afterPublish = nil
+	owner.afterAdmit = nil
 	if got := publications.Load(); got != 1 {
 		t.Fatalf("owner command publications = %d, want one per original Send", got)
 	}
@@ -1086,6 +1092,84 @@ func TestFailFirstFECPublishedSendWaitsForStopAcknowledgement(t *testing.T) {
 	runtime.Gosched()
 	if got := copies.Load(); got != 0 {
 		t.Fatalf("owner copied %d caller buffers after Stop; want published batch rejected before its first read", got)
+	}
+}
+
+func TestFailFirstFECWholeCloseRejectsLateLazyOwnerPublication(t *testing.T) {
+	fecCfg := &fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	m, _, target, _ := lazyConcentratorFEC(t, testKey(t, 0x71), testKey(t, 0x72), fecCfg)
+	if target.fecSend.Load() != nil {
+		t.Fatal("lazy target unexpectedly has a sender before publication")
+	}
+
+	lazyReady := make(chan struct{})
+	releaseLazy := make(chan struct{})
+	lazyDone := make(chan struct{})
+	detached := make(chan struct{})
+	continueClose := make(chan struct{})
+	var captured *fecSendOwner
+	m.beforeLazyFECPublish = func(peer *peerState, fs *fecSender) {
+		if peer != target {
+			return
+		}
+		captured = fs.owner
+		close(lazyReady)
+		<-releaseLazy
+	}
+	m.afterCloseFECDetach = func() {
+		close(detached)
+		<-continueClose
+	}
+
+	go func() {
+		m.ensurePeerReceiveInstantiated(target)
+		close(lazyDone)
+	}()
+	<-lazyReady
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- m.Close() }()
+	<-detached
+	close(releaseLazy)
+	<-lazyDone
+	if target.fecSend.Load() == nil {
+		close(continueClose)
+		t.Fatal("fixture did not publish the lazy sender after Close detachment")
+	}
+	close(continueClose)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	m.beforeLazyFECPublish = nil
+	m.afterCloseFECDetach = nil
+
+	late := target.fecSend.Load()
+	exited := false
+	select {
+	case <-captured.done:
+		exited = true
+	default:
+	}
+	if late != nil || !exited {
+		if late != nil {
+			late.owner.Stop(errClosed)
+			late.owner.Wait()
+			target.fecSend.CompareAndSwap(late, nil)
+		} else if !exited {
+			captured.Stop(errClosed)
+			captured.Wait()
+		}
+		t.Fatalf("Close left late lazy sender=%p, owner exited=%v; want nil/true", late, exited)
+	}
+
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("reopen after late-publication Close: %v", err)
+	}
+	reopened := target.fecSend.Load()
+	if reopened == nil {
+		t.Fatal("reopen did not publish a fresh sender for the configured peer")
+	}
+	if reopened.owner == captured {
+		t.Fatalf("reopen reused exited owner %p", captured)
 	}
 }
 
