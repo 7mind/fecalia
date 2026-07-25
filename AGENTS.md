@@ -52,6 +52,15 @@ test -z "$(gofmt -l cmd internal test third_party/amneziawg-go/device)" && go te
 `-tags e2e` / `-tags realhosts` need root / real hosts and are **not** part of the
 default gate; validate them separately (see Testing discipline).
 
+**The Nix flake must build at every handover.** Before handing work off (merge,
+PR, or returning a completed task), `nix build` must succeed — it builds
+`packages.default` (the `wanbond` binary). `buildGoModule` uses a fixed-output
+derivation for the vendored modules, so **any change to `go.mod`/`go.sum`
+invalidates `vendorHash`** in `flake.nix`. When that happens `nix build` fails
+with the expected/actual hash; copy the `got: sha256-…` value into `vendorHash`
+in the same change. A handover where `nix build` fails on a stale FOD hash is
+**incomplete**.
+
 ## Load-bearing invariants — do not break
 
 Full detail in [docs/design.md §Load-bearing invariants](docs/design.md). In
