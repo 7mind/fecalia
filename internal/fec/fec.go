@@ -80,9 +80,7 @@ type Shard interface {
 
 // DataShard is one opaque DATA payload admitted into a group, tagged with its
 // coding coordinates so the decoder can place it. It carries no group cardinality
-// (M), because a data frame is emitted immediately on admission — before the
-// group's final size is known — to keep datapath latency low; the decoder learns
-// M from any ParityShard of the group.
+// (M); the decoder learns M from any ParityShard of the group.
 type DataShard struct {
 	Group   GroupID
 	Index   int    // position within the group, 0..M-1

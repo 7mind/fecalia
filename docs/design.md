@@ -216,9 +216,9 @@ The heart of wanbond: the `conn.Bind` implementation the engine drives. It:
   plumbs the primary's configured name into the bind
   (`bind.Multipath.SetPrimaryPeerName`) whenever a second peer is configured, so
   `peer=""` appears only on a true single-peer edge/hub/concentrator (D58).
-- owns the **per-path UDP sockets**, byte counters, the send-path FEC `Admit`, the
-  adaptive-FEC tick loop, and the wiring that hands frames to the scheduler and
-  the resequencer.
+- owns the **per-path UDP sockets**, byte counters, each peer's FEC sender owner
+  (admission, exact deadline, and adaptive retargeting), and the wiring that hands
+  frames to the scheduler and the resequencer.
 - selects each view's **downlink destination** from a per-sender-path
   return-address table (D94/T246), not a last-prober-wins scalar: the
   authenticated probe plane owns address **freshness** (requests keyed by the
@@ -921,8 +921,8 @@ not `Send` batches (defect D95, decisions:K35, G33).**
     NEXT batch's observation, a lag bounded by one batch and immaterial
     against the 200 ms `load_tau`; the FEC-ON boundary above is asserted at
     unit level only (tasks:T290 step 4e2/4b(j)) and is NOT measured on
-    hardware — tasks:T288 criterion 3 is FEC-OFF by scope. Immediate and
-    deadline-produced parity now uses the selected path's exact-byte shaper;
+    hardware — tasks:T288 criterion 3 is FEC-OFF by scope. Size-closed and
+    deadline-closed parity uses the selected path's exact-byte shaper;
     T299 removes D108's bypass and negative token-debt behavior.
 
 ### Concentrator hub failover — `internal/device` (`failover.go`, T57)
@@ -1343,6 +1343,45 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
   exclusive). Both off by default; enable with `[fec] enabled = true`
   (+ `adaptive = true`).
 
+**Send ownership, group staging, and deadlines (T309).** Each live peer owns
+one FEC sender goroutine. `Send` performs one scheduler selection for the
+original engine batch, assigns outer sequence numbers in order, and transfers
+each `outer-seq || inner` buffer through a bounded 128-command mailbox. The
+encoder retains that buffer without a second payload copy and returns every
+owned DATA shard in an explicit closed-group decision; success, adaptive
+*M*=0, deadline closure, and coding error all clear the encoder's open-group
+references. The compatibility `Encoder.Admit` API keeps its caller-copy
+contract.
+
+No DATA or PARITY frame from an open group reaches the writer. The owner stages
+one group until either *K* DATA admissions fill it or the exact
+`Encoder.NextDeadline` timer fires. The immutable decision fixes the group
+cardinality and the parity *M* captured when the group opened; only then does
+the owner frame and emit that group's DATA followed by PARITY. Both the shaped
+and pacing-off routes use this owner. Shaped output is submitted one wire
+datagram at a time, so an offload batch larger than the mailbox or shaper budget
+streams group-by-group with bounded backpressure instead of requiring a
+batch-sized retained wire allocation. A terminal decision/write error resolves
+every contributing and already-queued waiter without retrying the decided
+group.
+
+The timer runs in the same injected time domain as adaptive FEC. Before every
+admission—including a mailbox command already ready when the timer fires—the
+owner rechecks `NextDeadline`; an expired group therefore becomes immutable
+before that command can enter the next group. The intentional low-load staging
+cost is at most the configured FEC deadline plus dispatch overshoot. The
+bind-local dispatch SLO is `G=10ms`: `FECStats` records deadline decisions,
+misses over *G*, and maximum overshoot per sender generation. A default-nil
+invalidation callback receives a missed group once, after its decision and
+before the next admission; this is the pre-T313 enforcement seam and does not
+make the default runtime fail closed.
+
+Open/Close and per-peer teardown atomically unpublish and cancel the owner while
+holding the bind lock, then join it after releasing that lock. Partial Open
+unwind follows the same rule. This prevents an old generation from emitting
+late DATA/PARITY or retaining admission waiters across rebind; per-peer session
+teardown still retains the live per-path shaper/socket generation.
+
   **Quantization-aware raise gate in residual-SLA mode (D96, fix b).** The
   loop only *raises* *M* once smoothed loss crosses a raise gate (below it, the
   hysteresis deadband holds and *M* stays put). In legacy `safety_factor` mode
@@ -1376,8 +1415,8 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
 > `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing.
 
 **Adaptive-FEC signal selection: drive from the data-carrying paths (T272,
-D96).** The controller input — the loss `driveAdaptiveControllerLocked` folds
-into `Observe` each probe interval — is the loss on the path(s) that
+D96).** The controller input — the loss sampled under the bind lock and folded
+into `Observe` by the peer owner each probe interval — is the loss on the path(s) that
 **actually carry DATA**, read through the scheduler's `DataPaths()` seam (T271),
 NOT a role-agnostic MAX over every `StateUp` prober. Parity must mask the loss
 the data experiences, so the signal follows the send policy: under
@@ -1409,7 +1448,7 @@ input is deliberately the **RAW** per-path probe loss, never the post-FEC
 that under-provisions precisely because it is succeeding.
 
 **Adaptive-FEC controller observability (T263, D96).** The controller's most
-recent drive decision (`driveAdaptiveControllerLocked`) is published into the
+recent owner-published drive decision is published into the
 lock-free FEC snapshot alongside the fixed-ratio counters above, and surfaced
 on `/metrics` as four PER-PEER gauges, present ONLY while the peer runs the
 adaptive controller (`FECSnapshot.Adaptive != nil`; absent entirely for a
@@ -1427,7 +1466,7 @@ back-compat rule as the fixed-ratio FEC series.
 
 **D96 permanent netns regressions.** Two real (kernel-forwarded, netem-lossy)
 `//go:build e2e` fixtures under `internal/device/` read these four gauges
-end-to-end from `/metrics` against the production `driveAdaptiveControllerLocked`
+end-to-end from `/metrics` against the production owner-controlled adaptive
 path, so a future regression in the signal-selection/raise-gate/observability
 wiring above is caught automatically rather than requiring another field
 incident: `TestAdaptiveFECUnderRealLoss`

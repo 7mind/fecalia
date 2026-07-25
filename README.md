@@ -261,10 +261,13 @@ deliberate boundaries you must plan around:
   the platform's integer byte-count domain are rejected before conversion; `Q`
   and the maximum modeled `2*Pburst/(R-Rp)` priority bound must also fit their
   runtime `int`/`time.Duration` representations. At runtime each
-  `(peer,path)` owns one shaper. One engine `Send` selects one path, then each
-  input buffer is classified, framed, and admitted in order; an aggregate batch
-  larger than `B` streams one legal datagram at a time through pre-copy
-  backpressure. Encoded DATA and every immediate/deadline FEC parity datagram
+  `(peer,path)` owns one shaper. One engine `Send` selects one path. With FEC
+  off, each input is classified, framed, and admitted in order. With FEC on, a
+  per-peer owner stages one group until its size or exact deadline decision,
+  then frames and admits its DATA/PARITY one wire datagram at a time; no
+  open-group DATA is writer-visible. An aggregate batch larger than `B` or the
+  128-command owner mailbox streams group-by-group through pre-copy
+  backpressure. Encoded DATA and every decided FEC parity datagram
   consume their exact byte length. The shaper retains at most `Q` bytes plus one
   in-flight datagram of at most `Lmax`; saturation backpressures the sender
   without discarding ordinary traffic. Per-path accepted, emitted,
@@ -280,8 +283,8 @@ deliberate boundaries you must plan around:
   retire queued work, wait shaped and direct UDP writers without holding the bind
   lock, and only then close its socket. Re-add or Close/Open creates a fresh empty
   shaper/socket generation; no old writer can cross into it. Per-peer
-  resequencer/FEC teardown retains the shaper while the underlying path socket
-  remains live. Inner
+  resequencer/FEC teardown cancels and joins the old FEC owner but retains the
+  shaper while the underlying path socket remains live. Inner
   WireGuard handshake/cookie/keepalive frames use the `C=Lmax` reserve one
   buffer at a time, but retain selected-path FIFO, outer sequencing, and FEC;
   they never overtake lower DATA, and DATA cannot borrow `C`. Authenticated

@@ -30,9 +30,8 @@ func newAlwaysUpScheduler(t testing.TB) sched.Scheduler {
 	return scheduler
 }
 
-// recvParity reads exactly one datagram from conn (a raw peer socket standing in for a bound
-// peer's remote), decodes it under codec, and asserts it is a frame.Parity with the given
-// DataCount. It returns the decoded frame plus the raw bytes, so a caller can additionally
+// recvParity reads until the staged group exposes its parity frame. It returns
+// the decoded frame plus the raw bytes, so a caller can additionally
 // attempt (and expect to fail) decoding the same raw bytes under a DIFFERENT peer's codec —
 // the cross-psk isolation check.
 func recvParity(t testing.TB, conn *net.UDPConn, codec *frame.Codec, wantDataCount int) (frame.Parity, []byte) {
@@ -41,28 +40,29 @@ func recvParity(t testing.TB, conn *net.UDPConn, codec *frame.Codec, wantDataCou
 		t.Fatalf("set read deadline: %v", err)
 	}
 	buf := make([]byte, maxDatagram)
-	n, err := conn.Read(buf)
-	if err != nil {
-		t.Fatalf("read parity: %v", err)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatalf("read parity: %v", err)
+		}
+		raw := append([]byte(nil), buf[:n]...)
+		fr, err := codec.Decode(raw)
+		if err != nil {
+			t.Fatalf("decode parity: %v", err)
+		}
+		par, ok := fr.(frame.Parity)
+		if !ok {
+			continue
+		}
+		if int(par.DataCount) != wantDataCount {
+			t.Fatalf("parity DataCount = %d, want %d", par.DataCount, wantDataCount)
+		}
+		return par, raw
 	}
-	raw := append([]byte(nil), buf[:n]...)
-	fr, err := codec.Decode(raw)
-	if err != nil {
-		t.Fatalf("decode parity: %v", err)
-	}
-	par, ok := fr.(frame.Parity)
-	if !ok {
-		t.Fatalf("frame type = %T, want frame.Parity", fr)
-	}
-	if int(par.DataCount) != wantDataCount {
-		t.Fatalf("parity DataCount = %d, want %d", par.DataCount, wantDataCount)
-	}
-	return par, raw
 }
 
-// TestFECFlushDeadlineFansOutAcrossPeers is the D44 regression: fecFlushDeadline must close and
-// flush EVERY bound peer's OWN partial FEC group on the deadline tick, not just the embedded
-// primary's (which is all it reached, via the primary-only promotion, before the fix). Two
+// TestFECFlushDeadlineFansOutAcrossPeers is the D44 regression: each peer owner must close and
+// flush its OWN partial FEC group on the exact deadline, not just the embedded primary. Two
 // concentrator peers (A, the primary, and B) each admit a PARTIAL group (fewer than
 // DataShards); one fecFlushDeadline() call must emit parity for BOTH — each decodable ONLY
 // under its own peer's psk-derived codec — while a THIRD, torn-down peer (C, also primed with a
@@ -106,33 +106,8 @@ func TestFECFlushDeadlineFansOutAcrossPeers(t *testing.T) {
 	peerPathByName(peerB, "a").setRemote(rawBAddr)
 	peerPathByName(peerC, "a").setRemote(rawCAddr)
 
-	// Admit a PARTIAL group (< dataShards) into each peer's own encoder, directly under m.mu —
-	// the encoder's single-writer discipline — exactly as Send does, but short of a full batch
-	// so the group stays open for the deadline tick to flush.
-	admitPartial := func(peer *peerState, n int, tag byte) {
-		t.Helper()
-		fs := peer.fecSend.Load()
-		if fs == nil {
-			t.Fatalf("peer %q has no FEC send plane", peer.name)
-		}
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		for i := 0; i < n; i++ {
-			_, par, err := fs.enc.Admit([]byte{tag, byte(i)})
-			if err != nil {
-				t.Fatalf("admit peer %q shard %d: %v", peer.name, i, err)
-			}
-			if par != nil {
-				t.Fatalf("peer %q group closed early (admitted %d < %d dataShards)", peer.name, n, dataShards)
-			}
-		}
-	}
-	admitPartial(peerA, dataShards-1, 0xA0)
-	admitPartial(peerB, dataShards-1, 0xB0)
-	admitPartial(peerC, dataShards-1, 0xC0)
-
-	// Tear peer C down BEFORE the tick: teardownPeerLocked nils its fecSend (it is never "live"
-	// in this fixture — no per-path prober attached), so the tick must skip it cleanly.
+	// Tear peer C down before A/B open their groups. A dormant peer's absent owner
+	// must not disturb either live owner's independent deadline.
 	if !m.TearDownPeer("peer-c") {
 		t.Fatal("TearDownPeer refused to tear down peer C")
 	}
@@ -140,10 +115,29 @@ func TestFECFlushDeadlineFansOutAcrossPeers(t *testing.T) {
 		t.Fatal("peer C's FEC send plane survived teardown")
 	}
 
-	// The encoder's grouping deadline runs off fec.SystemClock{} (real wall time, not the
-	// bind's fake test clocks elsewhere), so a real sleep past it is required before the flush.
-	time.Sleep(testFECDeadline + 20*time.Millisecond)
-	m.fecFlushDeadline()
+	send := func(peer *peerState, tag byte) <-chan error {
+		done := make(chan error, 1)
+		payloads := make([][]byte, dataShards-1)
+		for i := range payloads {
+			payloads[i] = []byte{tag, byte(i)}
+		}
+		go func() {
+			done <- m.Send(payloads, peer.virt)
+		}()
+		return done
+	}
+	sendA := send(peerA, 0xA0)
+	sendB := send(peerB, 0xB0)
+	for name, done := range map[string]<-chan error{"A": sendA, "B": sendB} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("send peer %s: %v", name, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("send peer %s did not close on its deadline", name)
+		}
+	}
 
 	codecA, err := frame.NewCodec(pskA)
 	if err != nil {

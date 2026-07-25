@@ -18,8 +18,9 @@ import (
 // never inspects the wrapped datagram. It is NOT safe for concurrent use; the
 // datapath drives one Encoder from a single goroutine.
 type Encoder struct {
-	cfg   Config
-	clock Clock
+	cfg          Config
+	clock        Clock
+	encodeShards func(reedsolomon.Encoder, [][]byte) error
 
 	// codecs caches one Reed-Solomon codec per (data-shard-count, parity-count)
 	// pair. The data count varies with the group fill (full N, or a deadline-flushed
@@ -46,7 +47,16 @@ type Encoder struct {
 	// reconstructs it against a ceiling-parity codec that is prefix-consistent with the
 	// smaller per-group parity the encoder used). 0 means the open group emits no parity.
 	groupParity int
-	pending     [][]byte // admitted payloads (owned copies), one per data shard
+	pending     [][]byte // admitted owned payloads, one per data shard
+}
+
+// GroupDecision transfers a closed group's owned DATA payloads and generated
+// parity back to the caller. Data payloads are the exact slices transferred to
+// AdmitOwned; the Encoder retains none of them after this result is returned.
+type GroupDecision struct {
+	Group  GroupID
+	Data   []DataShard
+	Parity []ParityShard
 }
 
 // codecKey identifies a cached Reed-Solomon codec by its (data, parity) shard
@@ -71,6 +81,9 @@ func NewEncoder(cfg Config, clock Clock) (*Encoder, error) {
 		clock:        clock,
 		codecs:       make(map[codecKey]reedsolomon.Encoder),
 		targetParity: cfg.ParityShards,
+		encodeShards: func(codec reedsolomon.Encoder, shards [][]byte) error {
+			return codec.Encode(shards)
+		},
 	}, nil
 }
 
@@ -82,7 +95,7 @@ func NewEncoder(cfg Config, clock Clock) (*Encoder, error) {
 // group always decodes against the metadata it was coded with. The adaptive
 // controller (internal/adaptivefec, T29) drives this; fixed-ratio callers never
 // touch it. Like the rest of the Encoder it is NOT safe for concurrent use: the
-// datapath serializes SetParity with Admit/Tick/Flush under its own send lock.
+// datapath serializes SetParity with Admit/Tick/Flush in one sender owner.
 func (e *Encoder) SetParity(parity int) {
 	if parity < 0 {
 		parity = 0
@@ -93,28 +106,47 @@ func (e *Encoder) SetParity(parity int) {
 	e.targetParity = parity
 }
 
-// Admit takes one opaque DATA payload into the current group and returns the
-// DataShard the caller must transmit immediately. When this admission fills the
-// group to N shards, the group is closed and its K ParityShards are returned;
-// otherwise the parity slice is nil and the caller polls Tick to enforce the
-// deadline. Admit copies payload, so the caller may reuse its buffer.
+// TargetParity returns the parity count the next opened group will snapshot.
+// Like all Encoder methods it must be called by the Encoder's single owner.
+func (e *Encoder) TargetParity() int {
+	return e.targetParity
+}
+
+// Admit takes one opaque DATA payload into the current group and returns its
+// coding coordinates. When this admission fills the group to N shards, the group
+// is closed and its K ParityShards are returned; otherwise the parity slice is nil
+// and the caller polls Tick to enforce the deadline. Admit copies payload, so the
+// caller may reuse its buffer. The returned DataShard owns a separate copy,
+// preserving the original API's ownership contract.
 func (e *Encoder) Admit(payload []byte) (DataShard, []ParityShard, error) {
+	owned := append([]byte(nil), payload...)
+	ds, decision, err := e.AdmitOwned(owned)
+	if err != nil {
+		return DataShard{}, nil, err
+	}
+	ds.Payload = append([]byte(nil), payload...)
+	if decision == nil {
+		return ds, nil, nil
+	}
+	return ds, decision.Parity, nil
+}
+
+// AdmitOwned is Admit's ownership-transferring variant. Its immediate DataShard
+// result carries coordinates only: Payload remains nil while the Encoder owns the
+// transferred slice. A non-nil GroupDecision closes the group and returns every
+// transferred payload exactly once, including when coding fails.
+func (e *Encoder) AdmitOwned(payload []byte) (DataShard, *GroupDecision, error) {
 	if !e.hasOpen {
 		e.openGroup()
 	}
 	idx := len(e.pending)
-	buf := make([]byte, len(payload))
-	copy(buf, payload)
-	e.pending = append(e.pending, buf)
+	e.pending = append(e.pending, payload)
 
-	ds := DataShard{Group: e.group, Index: idx, Payload: append([]byte(nil), buf...)}
+	ds := DataShard{Group: e.group, Index: idx}
 
 	if len(e.pending) >= e.cfg.DataShards {
-		parity, err := e.close()
-		if err != nil {
-			return DataShard{}, nil, err
-		}
-		return ds, parity, nil
+		decision, err := e.close()
+		return ds, decision, err
 	}
 	return ds, nil, nil
 }
@@ -126,6 +158,16 @@ func (e *Encoder) Admit(payload []byte) (DataShard, []ParityShard, error) {
 // group still gets its parity within the deadline. Poll it at least as often as
 // Deadline; NextDeadline reports when the next Tick is due.
 func (e *Encoder) Tick() ([]ParityShard, error) {
+	decision, err := e.TickOwned()
+	if decision == nil {
+		return nil, err
+	}
+	return decision.Parity, err
+}
+
+// TickOwned is Tick's ownership-transferring counterpart. A non-nil decision
+// returns all payloads admitted through AdmitOwned.
+func (e *Encoder) TickOwned() (*GroupDecision, error) {
 	if !e.hasOpen {
 		return nil, nil
 	}
@@ -139,6 +181,15 @@ func (e *Encoder) Tick() ([]ParityShard, error) {
 // returning its K ParityShards, or nil if no group is open. It ignores the
 // deadline.
 func (e *Encoder) Flush() ([]ParityShard, error) {
+	decision, err := e.FlushOwned()
+	if decision == nil {
+		return nil, err
+	}
+	return decision.Parity, err
+}
+
+// FlushOwned is Flush's ownership-transferring counterpart.
+func (e *Encoder) FlushOwned() (*GroupDecision, error) {
 	if !e.hasOpen {
 		return nil, nil
 	}
@@ -165,8 +216,9 @@ func (e *Encoder) openGroup() {
 }
 
 // close codes the open group's M pending data shards into K parity shards and
-// resets open-group state. It never returns nil parity for a non-empty group.
-func (e *Encoder) close() ([]ParityShard, error) {
+// resets open-group state before coding. A zero-parity group returns its DATA
+// ownership without parity.
+func (e *Encoder) close() (*GroupDecision, error) {
 	m := len(e.pending)
 	if m == 0 {
 		// Unreachable: a group only opens on Admit, so it always holds >= 1 shard.
@@ -174,19 +226,33 @@ func (e *Encoder) close() ([]ParityShard, error) {
 		return nil, nil
 	}
 
-	// A group opened with a zero parity target carries no redundancy: its data frames
-	// were already emitted on admission, so close it without coding any parity. The
+	group := e.group
+	k := e.groupParity
+	pending := e.pending
+	e.hasOpen = false
+	e.opened = time.Time{}
+	e.groupParity = 0
+	e.pending = nil
+
+	decision := &GroupDecision{
+		Group: group,
+		Data:  make([]DataShard, m),
+	}
+	for i, payload := range pending {
+		decision.Data[i] = DataShard{Group: group, Index: i, Payload: payload}
+	}
+
+	// A group opened with a zero parity target carries no redundancy: return its
+	// staged data without coding parity. The
 	// receiver never learns this group's cardinality (no parity frame) and simply
 	// delivers whatever data survives — which is the intended "no FEC this group"
 	// semantics the adaptive controller selects when loss is low (T29).
-	k := e.groupParity
 	if k == 0 {
-		e.hasOpen = false
-		return nil, nil
+		return decision, nil
 	}
 
 	shardLen := lenPrefixLen
-	for _, p := range e.pending {
+	for _, p := range pending {
 		if l := lenPrefixLen + len(p); l > shardLen {
 			shardLen = l
 		}
@@ -194,21 +260,20 @@ func (e *Encoder) close() ([]ParityShard, error) {
 
 	codec, err := e.codec(m, k)
 	if err != nil {
-		return nil, err
+		return decision, err
 	}
 
 	shards := make([][]byte, m+k)
-	for i, p := range e.pending {
+	for i, p := range pending {
 		shards[i] = encodeDataShard(p, shardLen)
 	}
 	for j := 0; j < k; j++ {
 		shards[m+j] = make([]byte, shardLen)
 	}
-	if err := codec.Encode(shards); err != nil {
-		return nil, fmt.Errorf("fec: reed-solomon encode (m=%d k=%d len=%d): %w", m, k, shardLen, err)
+	if err := e.encodeShards(codec, shards); err != nil {
+		return decision, fmt.Errorf("fec: reed-solomon encode (m=%d k=%d len=%d): %w", m, k, shardLen, err)
 	}
 
-	group := e.group
 	parity := make([]ParityShard, k)
 	for j := 0; j < k; j++ {
 		parity[j] = ParityShard{
@@ -219,8 +284,8 @@ func (e *Encoder) close() ([]ParityShard, error) {
 		}
 	}
 
-	e.hasOpen = false
-	return parity, nil
+	decision.Parity = parity
+	return decision, nil
 }
 
 // codec returns the cached Reed-Solomon codec for m data shards and k parity

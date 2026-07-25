@@ -51,8 +51,8 @@ func TestPacingOffPartialWriteKeepsBatchFramingAndFECAtomic(t *testing.T) {
 	if err := m.Send(payloadStream(1), m.virt); err != nil {
 		t.Errorf("next pacing-off Send = %v, want prior full FEC group already closed before the partial write", err)
 	}
-	if got := m.fecSend.Load().parityFrames.Load(); got != 0 {
-		t.Errorf("next pacing-off Send emitted %d parity frames, want 0 from a fresh partial group", got)
+	if got := m.fecSend.Load().parityFrames.Load(); got != 1 {
+		t.Errorf("next pacing-off Send emitted %d parity frames, want 1 from its fresh deadline-closed partial group", got)
 	}
 }
 
@@ -62,11 +62,19 @@ type generationBlockingShaper struct {
 	release chan struct{}
 }
 
-func (s *generationBlockingShaper) WriteDatagrams(_ context.Context, datagrams []shaper.Datagram) (shaper.BatchResult, error) {
+func (s *generationBlockingShaper) WriteDatagrams(ctx context.Context, datagrams []shaper.Datagram) (shaper.BatchResult, error) {
+	var err error
 	s.once.Do(func() {
 		close(s.entered)
-		<-s.release
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
 	})
+	if err != nil {
+		return shaper.BatchResult{FailedIndex: 0}, err
+	}
 	return shaper.BatchResult{Accepted: len(datagrams), Emitted: len(datagrams), FailedIndex: -1}, nil
 }
 

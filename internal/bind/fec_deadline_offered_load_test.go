@@ -27,9 +27,8 @@ import (
 // groups by size). The phantom lives on that path alone.
 
 // TestFECDeadlineFlushMetersNoPhantomOfferedFrame is T294 step 1. It drives a low-rate
-// FEC-on flow whose groups NEVER fill (fewer than K buffers per Send), spaced far enough
-// apart that the bind's own deadline-tick goroutine (fecTickLoop → fecFlushDeadline, the
-// real production flusher) closes each partial group before the next Send opens a new one.
+// FEC-on flow whose groups NEVER fill (fewer than K buffers per Send). Each peer owner's
+// exact NextDeadline timer closes the partial group before that Send resolves.
 // It then asserts the offered-vs-written frame-count invariant.
 //
 // RED before the T294 fix: fecFlushDeadline calls Pick(sched.ClassData, 1), so the counting
@@ -42,14 +41,9 @@ func TestFECDeadlineFlushMetersNoPhantomOfferedFrame(t *testing.T) {
 		// DEADLINE close through fecFlushDeadline, exactly the regime D109 lives in.
 		partialBatch = 2
 		rounds       = 6
-		// The FEC encoder runs on a REAL (SystemClock) clock — NOT the scheduler's injected
-		// fake clock — and the bind's fecTickLoop ticks at flushDeadline in real time, so a
-		// real span past the grouping deadline is what closes each open group. sendSpacing is
-		// a generous multiple of flushDeadline, so each partial group is provably deadline-
-		// flushed by the tick loop before the next Send opens a new one (time.Sleep never
-		// undersleeps); the assertion is a frame COUNT invariant, independent of exact timing.
+		// The bind uses one real exact timer per open peer group. The assertion is a
+		// frame-count invariant independent of exact wall-clock scheduling.
 		flushDeadline = 10 * time.Millisecond
-		sendSpacing   = 50 * time.Millisecond
 	)
 	if partialBatch >= fecDataShards {
 		t.Fatalf("fixture error: partialBatch %d must be < fecDataShards %d so groups close by deadline, not fill", partialBatch, fecDataShards)
@@ -60,23 +54,16 @@ func TestFECDeadlineFlushMetersNoPhantomOfferedFrame(t *testing.T) {
 	clk := newFakeClock()
 	fecCfg := &fec.Config{DataShards: fecDataShards, ParityShards: fecParityShards, Deadline: flushDeadline}
 	m, counter := newCountingMultipath(t, loopbackPaths(1), psk, fecCfg, cfg, clk)
-	openWeightedToPeer(t, m) // starts the bind's fecTickLoop deadline-flush goroutine
+	openWeightedToPeer(t, m)
 
 	for i := 0; i < rounds; i++ {
-		// Offer a PARTIAL group: partialBatch data frames out, the group left OPEN (it does
-		// not reach K), so it can only ever be closed by the deadline tick loop.
+		// Offer a partial group. Send resolves only after the owner closes and emits it.
 		if err := m.Send(payloadStream(partialBatch), m.virt); err != nil {
 			t.Fatalf("Send #%d: %v", i, err)
 		}
-		// Let the deadline tick loop close and flush the open partial group before the next
-		// Send. sendSpacing >> flushDeadline, so the group is flushed (and its parity credited
-		// to the carry) with margin to spare.
-		time.Sleep(sendSpacing)
 	}
-	// Settle: no more Sends, so once the final partial group has been deadline-flushed the
-	// tick loop finds no open group and writes nothing further — the counters below are then
-	// stable and read without a concurrent writer.
-	time.Sleep(sendSpacing)
+	// Send resolves after each decided group has finished its writes, so the
+	// counters below are stable without an additional settle interval.
 
 	fs := m.fecSend.Load()
 	if fs == nil {

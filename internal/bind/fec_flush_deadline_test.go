@@ -2,13 +2,9 @@ package bind
 
 import "testing"
 
-// TestFecFlushDeadlineDrivesAdaptiveController closes the D96 test gap: it invokes
-// m.fecFlushDeadline() itself — the exact TryLock-guarded entry point fecTickLoop drives —
-// instead of calling driveAdaptiveControllerLocked directly (as
-// TestAdaptiveControllerDrivesEncoderParity does). The call is made with m.mu UNheld, from
-// the test goroutine, so fecFlushDeadline's own TryLock succeeds and the drive runs through
-// production code: peer iteration, the adaptive drive, and encoder.Tick(), all under the
-// lock it acquires and releases itself.
+// TestFecFlushDeadlineDrivesAdaptiveController retains the adaptive snapshot
+// coverage after deadline closure moved to the sender owner. The explicit sample
+// seam takes the same scheduler/prober sample and submits it to that owner.
 func TestFecFlushDeadlineDrivesAdaptiveController(t *testing.T) {
 	psk := testKey(t, 0x54)
 	clk := newFakeClock()
@@ -18,19 +14,20 @@ func TestFecFlushDeadlineDrivesAdaptiveController(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	fc, ac := adaptiveFECConfigs()
+	_, ac := adaptiveFECConfigs()
 
 	// Before any drive the encoder emits zero parity (T29 baseline).
-	if got := admitFullGroupParity(t, m, fc.DataShards); got != 0 {
+	if got := ownerEncoderTargetParity(t, m); got != 0 {
 		t.Fatalf("initial adaptive parity = %d, want 0 (controller starts at M=0)", got)
 	}
 
-	// Bring the path Up with measured loss, then drive through the PRODUCTION path: call
-	// fecFlushDeadline() itself (m.mu unheld here), not driveAdaptiveControllerLocked.
+	// Bring the path Up with measured loss, then submit the sample to the owner.
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
 	loss := probers[0].Estimate().Loss
 
-	m.fecFlushDeadline()
+	m.mu.Lock()
+	m.driveAdaptiveControllerLocked(m.peerState)
+	m.mu.Unlock()
 
 	// The T263 snapshot proves the drive ran: adaptive Parity > 0, smoothed loss > 0, and
 	// the eligible signal reflects the single up path's measured loss.
@@ -57,15 +54,13 @@ func TestFecFlushDeadlineDrivesAdaptiveController(t *testing.T) {
 
 	// The encoder is actually retargeted: a group closed after the flush emits exactly the
 	// driven parity, not the pre-drive zero.
-	if got := admitFullGroupParity(t, m, fc.DataShards); got != adaptive.Parity {
+	if got := ownerEncoderTargetParity(t, m); got != adaptive.Parity {
 		t.Fatalf("encoder emitted %d parity after fecFlushDeadline, want the driven target %d", got, adaptive.Parity)
 	}
 }
 
-// TestFecFlushDeadlineSkipsDriveWhenLocked proves fecFlushDeadline's TryLock guard: with
-// m.mu held BY THE TEST (simulating a concurrent Send/Close/AddPath), fecFlushDeadline must
-// return immediately without driving the controller — never blocking (which would deadlock
-// the test) and never touching the published snapshot.
+// TestFecFlushDeadlineSkipsDriveWhenLocked proves the owner wake seam never
+// waits on m.mu or mutates the adaptive decision itself.
 func TestFecFlushDeadlineSkipsDriveWhenLocked(t *testing.T) {
 	psk := testKey(t, 0x55)
 	clk := newFakeClock()
@@ -79,7 +74,9 @@ func TestFecFlushDeadlineSkipsDriveWhenLocked(t *testing.T) {
 	// the "unchanged" assertion below is non-vacuous (distinguishes "held" from
 	// "zero-initialized and never touched").
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
-	m.fecFlushDeadline()
+	m.mu.Lock()
+	m.driveAdaptiveControllerLocked(m.peerState)
+	m.mu.Unlock()
 
 	seeded := m.PeerSnapshots()
 	if len(seeded) == 0 {
@@ -90,8 +87,7 @@ func TestFecFlushDeadlineSkipsDriveWhenLocked(t *testing.T) {
 		t.Fatalf("seed drive published %+v, want non-nil with Parity > 0 and SmoothedLoss > 0", seededAdaptive)
 	}
 
-	// Hold m.mu as a concurrent caller would, then invoke fecFlushDeadline: its TryLock
-	// must fail and it must return without driving — not deadlock.
+	// Hold m.mu as a concurrent caller would. The wake remains lock-free.
 	m.mu.Lock()
 	m.fecFlushDeadline()
 	m.mu.Unlock()

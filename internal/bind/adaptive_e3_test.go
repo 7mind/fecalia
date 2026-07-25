@@ -79,11 +79,9 @@ func sendProbesWithLeadingDrops(t testing.TB, pr *telemetry.Prober, psk config.K
 //     under active-backup — is driven lossy. Mechanism 2's data-path-only signal selection
 //     (T272) must NOT let it re-raise M.
 //
-// Each phase's probe shaping AND its drive iterations run under a single m.mu critical
-// section (the discipline TestAdaptiveControllerHoldsWithNoEligiblePath documents): this
-// EXCLUDES the concurrent real-wall-clock fecTickLoop goroutine (its TryLock skips) for the
-// whole phase, so the scripted trajectory is fully deterministic despite the background
-// ticker.
+// Each phase's probe shaping and sampling runs under one m.mu critical section;
+// each immutable sample is applied synchronously by the owner, so the scripted
+// trajectory stays deterministic.
 func TestAdaptiveControllerAntiPhaseTrajectory(t *testing.T) {
 	psk := testKey(t, 0x58)
 	clk := newFakeClock()

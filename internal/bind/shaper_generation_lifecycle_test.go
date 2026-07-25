@@ -1122,9 +1122,11 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 	})
 
 	t.Run("Open SetPaths failure", func(t *testing.T) {
+		defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 		m, _, base := newProbingMultipath(t, loopbackPaths(2), testKey(t, 0xF7), newFakeClock())
 		cfg := lifecycleShaperConfig()
 		m.shaperConfigs = []config.PathShaperConfig{cfg, cfg}
+		m.fecCfg = &fec.Config{DataShards: 4, ParityShards: 1, Deadline: testFECDeadline}
 		injected := errors.New("injected Open SetPaths")
 		fault := &faultDynamicScheduler{
 			DynamicScheduler: base.(sched.DynamicScheduler),
@@ -1147,6 +1149,9 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		assertTrackedShapersRetired(t, created)
 		if len(m.paths) != 0 || len(m.shared) != 0 || m.deliverSignal != nil || m.recvClosed != nil {
 			t.Fatal("failed Open retained per-generation bind state")
+		}
+		if m.fecSend.Load() != nil {
+			t.Fatal("failed Open retained the FEC sender owner")
 		}
 		if fault.memberCount() != 2 {
 			t.Fatalf("scheduler members after refused SetPaths = %d, want original 2", fault.memberCount())
