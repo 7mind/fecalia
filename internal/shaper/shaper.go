@@ -27,6 +27,9 @@ type Config struct {
 	ControlReserveBytes        int
 	MaxDatagramBytes           int
 	PriorityBurstBytes         int
+	PriorityReserveBytes       int
+	FECGroupReserveBytes       int
+	RecoveryWriteSlack         time.Duration
 }
 
 type Timer interface {
@@ -41,9 +44,12 @@ type Clock interface {
 
 type WriteFunc func([]byte) error
 
+type PriorityGenerator func() ([]byte, WriteFunc, error)
+
 type Datagram struct {
 	Class   Class
 	Payload []byte
+	Write   WriteFunc
 }
 
 type BatchResult struct {
@@ -70,6 +76,12 @@ type Snapshot struct {
 	PriorityRateBytesPerSecond float64
 	PriorityBurstBytes         int
 	PriorityDelayBound         time.Duration
+	PriorityRetainedBytes      int
+	FECGroupOwnedBytes         int
+	RecoveryRetainedBytes      int
+	MemoryBoundBytes           int
+	MemoryRetainedBytes        int
+	RecoveryContractEnabled    bool
 	AdmissionWaits             uint64
 	AdmissionWaitDuration      time.Duration
 	AdmissionCanceledDatagrams uint64
@@ -98,14 +110,17 @@ func (t systemTimer) C() <-chan time.Time {
 }
 
 type queuedDatagram struct {
-	class    Class
-	size     int
-	payload  []byte
-	deadline time.Time
-	done     chan error
-	ready    bool
-	batch    *batchState
-	index    int
+	class     Class
+	size      int
+	payload   []byte
+	deadline  time.Time
+	done      chan error
+	ready     bool
+	batch     *batchState
+	index     int
+	write     WriteFunc
+	recovery  *recoveryState
+	retention queueRetention
 }
 
 type reservation struct {
@@ -118,12 +133,45 @@ type batchState struct {
 	emitted     int
 	failedIndex int
 	err         error
+	datagrams   []*queuedDatagram
 }
+
+type queueRetention uint8
+
+const (
+	retainClass queueRetention = iota
+	retainPriority
+	retainRecovery
+)
 
 type priorityWaiter struct {
 	deadline time.Time
 	started  time.Time
 	finished bool
+}
+
+// RecoveryControl binds one complete FEC group to one exclusive socket writer
+// generation. InstallDeadline must update the socket-wide absolute write
+// deadline, including any write already blocked in the kernel.
+type RecoveryControl struct {
+	Enabled         bool
+	InstallDeadline func(time.Time) error
+	ClearDeadline   func() error
+	Abort           func(error)
+}
+
+type RecoveryContract struct {
+	Enabled           bool
+	WriteSlack        time.Duration
+	GroupReserveBytes int
+}
+
+type recoveryState struct {
+	batch     *batchState
+	control   RecoveryControl
+	remaining int
+	terminal  bool
+	aborted   bool
 }
 
 type Shaper struct {
@@ -135,6 +183,9 @@ type Shaper struct {
 	queue                      []*queuedDatagram
 	retainedDataBytes          int
 	retainedControlBytes       int
+	retainedPriorityBytes      int
+	fecGroupOwnedBytes         int
+	retainedRecoveryWireBytes  int
 	inFlightBytes              int
 	tail                       time.Time
 	priorityTail               time.Time
@@ -153,6 +204,7 @@ type Shaper struct {
 	closed                     bool
 	calls                      sync.WaitGroup
 	workerDone                 chan struct{}
+	recovery                   *recoveryState
 }
 
 func New(config Config, clock Clock, write WriteFunc) (*Shaper, error) {
@@ -209,6 +261,30 @@ func ValidateConfig(config Config) error {
 	if config.PriorityBurstBytes < 0 {
 		return errors.New("priority burst Pburst must be non-negative")
 	}
+	if config.PriorityReserveBytes < config.PriorityBurstBytes {
+		return errors.New("priority reserve P must be at least Pburst")
+	}
+	if config.FECGroupReserveBytes < 0 {
+		return errors.New("FEC group reserve Fgroup must be non-negative")
+	}
+	if config.FECGroupReserveBytes == 0 && config.RecoveryWriteSlack != 0 {
+		return errors.New("recovery slack I requires a positive Fgroup")
+	}
+	if config.FECGroupReserveBytes > 0 && config.RecoveryWriteSlack <= 0 {
+		return errors.New("positive Fgroup requires recovery slack I")
+	}
+	memoryBound := config.DataBudgetBytes
+	for _, term := range []int{
+		config.ControlReserveBytes,
+		config.PriorityReserveBytes,
+		config.FECGroupReserveBytes,
+		config.MaxDatagramBytes,
+	} {
+		if term > math.MaxInt-memoryBound {
+			return errors.New("memory bound Mtotal must fit in int")
+		}
+		memoryBound += term
+	}
 	serializationNanoseconds := float64(config.MaxDatagramBytes) /
 		config.RateBytesPerSecond * float64(time.Second)
 	if math.IsInf(serializationNanoseconds, 0) ||
@@ -262,6 +338,13 @@ func (s *Shaper) Snapshot() Snapshot {
 		PriorityRateBytesPerSecond: s.config.PriorityRateBytesPerSecond,
 		PriorityBurstBytes:         s.config.PriorityBurstBytes,
 		PriorityDelayBound:         priorityDelayBound,
+		PriorityRetainedBytes:      s.retainedPriorityBytes,
+		FECGroupOwnedBytes:         s.fecGroupOwnedBytes,
+		RecoveryRetainedBytes:      s.retainedRecoveryWireBytes,
+		MemoryBoundBytes:           s.memoryBound(),
+		MemoryRetainedBytes: s.retainedDataBytes + s.retainedControlBytes +
+			s.retainedPriorityBytes + s.fecGroupOwnedBytes + s.inFlightBytes,
+		RecoveryContractEnabled:    s.config.FECGroupReserveBytes > 0,
 		AdmissionWaits:             s.admissionWaits,
 		AdmissionWaitDuration:      s.admissionWaitDuration,
 		AdmissionCanceledDatagrams: s.admissionCanceledDatagrams,
@@ -269,6 +352,22 @@ func (s *Shaper) Snapshot() Snapshot {
 		AsyncWriteErrorBytes:       s.asyncWriteErrorBytes,
 		AsyncWriteEMSGSIZEErrors:   s.asyncWriteEMSGSIZEErrors,
 		AsyncWriteEMSGSIZEBytes:    s.asyncWriteEMSGSIZEBytes,
+	}
+}
+
+func (s *Shaper) memoryBound() int {
+	return s.config.DataBudgetBytes +
+		s.config.ControlReserveBytes +
+		s.config.PriorityReserveBytes +
+		s.config.FECGroupReserveBytes +
+		s.config.MaxDatagramBytes
+}
+
+func (s *Shaper) RecoveryContract() RecoveryContract {
+	return RecoveryContract{
+		Enabled:           s.config.FECGroupReserveBytes > 0,
+		WriteSlack:        s.config.RecoveryWriteSlack,
+		GroupReserveBytes: s.config.FECGroupReserveBytes,
 	}
 }
 
@@ -353,6 +452,334 @@ func (s *Shaper) WriteDatagrams(ctx context.Context, datagrams []Datagram) (Batc
 	}
 	s.mu.Unlock()
 	return result, firstError
+}
+
+// WritePriority waits cancellably for retained generated-priority capacity,
+// copies only after reserving it, and emits through the same serialized writer
+// as DATA. A non-nil per-datagram writer captures an explicit destination (for
+// reactive echoes); nil uses the path writer.
+func (s *Shaper) WritePriority(ctx context.Context, payload []byte, write WriteFunc) error {
+	return s.WritePriorityGenerated(ctx, len(payload), func() ([]byte, WriteFunc, error) {
+		return payload, write, nil
+	})
+}
+
+// WritePriorityGenerated reserves the declared exact wire length before calling
+// generate. PMTU uses this ordering so waiting admission consumes neither probe
+// sequence space nor an RTT timestamp.
+func (s *Shaper) WritePriorityGenerated(ctx context.Context, size int, generate PriorityGenerator) error {
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+	if size == 0 || size > s.config.MaxDatagramBytes {
+		return fmt.Errorf("priority length %d outside [1,Lmax=%d]", size, s.config.MaxDatagramBytes)
+	}
+	if generate == nil {
+		return errors.New("priority generator is required")
+	}
+	if err := s.beginCall(); err != nil {
+		return err
+	}
+	defer s.calls.Done()
+
+	datagram, err := s.reservePriority(ctx, size, true)
+	if err != nil {
+		return err
+	}
+	payload, write, err := generate()
+	if err != nil {
+		s.cancelPriority(datagram, err)
+		return err
+	}
+	if len(payload) != size {
+		err := fmt.Errorf("generated priority length %d does not match reserved length %d", len(payload), size)
+		s.cancelPriority(datagram, err)
+		return err
+	}
+	s.mu.Lock()
+	datagram.payload = append([]byte(nil), payload...)
+	datagram.write = write
+	datagram.ready = true
+	s.notifyLocked()
+	s.mu.Unlock()
+	return <-datagram.done
+}
+
+// TryWritePriority admits generated priority without waiting. Ordinary probes
+// and reactive echoes use it so receive/cadence goroutines never block behind P.
+// The returned completion channel belongs to the admitted write.
+func (s *Shaper) TryWritePriority(payload []byte, write WriteFunc) (bool, <-chan error, error) {
+	return s.TryWritePriorityGenerated(len(payload), func() ([]byte, WriteFunc, error) {
+		return payload, write, nil
+	})
+}
+
+// TryWritePriorityGenerated reserves before generating and returns without
+// calling generate when P has no capacity.
+func (s *Shaper) TryWritePriorityGenerated(size int, generate PriorityGenerator) (bool, <-chan error, error) {
+	if size == 0 || size > s.config.MaxDatagramBytes {
+		return false, nil, fmt.Errorf("priority length %d outside [1,Lmax=%d]", size, s.config.MaxDatagramBytes)
+	}
+	if generate == nil {
+		return false, nil, errors.New("priority generator is required")
+	}
+	if err := s.beginCall(); err != nil {
+		return false, nil, err
+	}
+	datagram, err := s.reservePriority(context.Background(), size, false)
+	if err != nil {
+		s.calls.Done()
+		if errors.Is(err, errPriorityFull) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+	payload, write, err := generate()
+	if err != nil {
+		s.cancelPriority(datagram, err)
+		s.calls.Done()
+		return true, nil, err
+	}
+	if len(payload) != size {
+		err := fmt.Errorf("generated priority length %d does not match reserved length %d", len(payload), size)
+		s.cancelPriority(datagram, err)
+		s.calls.Done()
+		return true, nil, err
+	}
+	s.mu.Lock()
+	datagram.payload = append([]byte(nil), payload...)
+	datagram.write = write
+	datagram.ready = true
+	s.notifyLocked()
+	s.mu.Unlock()
+	completion := make(chan error, 1)
+	go func() {
+		completion <- <-datagram.done
+		s.calls.Done()
+	}()
+	return true, completion, nil
+}
+
+func (s *Shaper) cancelPriority(datagram *queuedDatagram, err error) {
+	s.mu.Lock()
+	for index, queued := range s.queue {
+		if queued != datagram {
+			continue
+		}
+		s.queue = append(s.queue[:index], s.queue[index+1:]...)
+		s.releaseQueued(datagram)
+		s.accountAsyncWriteFailureLocked(err, datagram.size, false)
+		s.notifyLocked()
+		s.mu.Unlock()
+		datagram.done <- err
+		close(datagram.done)
+		return
+	}
+	s.mu.Unlock()
+	panic("priority reservation missing from queue")
+}
+
+// WriteRecovery takes ownership of a complete immutable single-path FEC group.
+// The group consumes the sole Fgroup reservation, installs one absolute
+// cutStart+I socket deadline before publishing the cut, and charges virtual
+// time once while making every tranche write runnable at cutStart.
+func (s *Shaper) WriteRecovery(
+	ctx context.Context,
+	datagrams []Datagram,
+	control RecoveryControl,
+) (BatchResult, error) {
+	if ctx == nil {
+		return BatchResult{FailedIndex: -1}, errors.New("context is required")
+	}
+	if !control.Enabled {
+		return s.WriteDatagrams(ctx, datagrams)
+	}
+	if s.config.FECGroupReserveBytes == 0 {
+		return BatchResult{FailedIndex: -1}, errors.New("recovery contract is disabled")
+	}
+	if control.InstallDeadline == nil || control.ClearDeadline == nil || control.Abort == nil {
+		return BatchResult{FailedIndex: -1}, errors.New("complete recovery control is required")
+	}
+	total := 0
+	for index, datagram := range datagrams {
+		if datagram.Class != ClassData && datagram.Class != ClassControl {
+			return BatchResult{FailedIndex: -1}, fmt.Errorf("datagram %d has invalid class %d", index, datagram.Class)
+		}
+		if len(datagram.Payload) == 0 || len(datagram.Payload) > s.config.MaxDatagramBytes {
+			return BatchResult{FailedIndex: -1}, fmt.Errorf(
+				"datagram %d length %d outside [1,Lmax=%d]",
+				index,
+				len(datagram.Payload),
+				s.config.MaxDatagramBytes,
+			)
+		}
+		if len(datagram.Payload) > math.MaxInt-total {
+			return BatchResult{FailedIndex: -1}, errors.New("recovery tranche byte count overflows int")
+		}
+		total += len(datagram.Payload)
+	}
+	if len(datagrams) == 0 {
+		return BatchResult{FailedIndex: -1}, nil
+	}
+	if total > s.config.FECGroupReserveBytes {
+		return BatchResult{FailedIndex: -1}, fmt.Errorf(
+			"recovery tranche %d bytes exceeds Fgroup=%d",
+			total,
+			s.config.FECGroupReserveBytes,
+		)
+	}
+	if err := s.beginCall(); err != nil {
+		return BatchResult{FailedIndex: -1}, err
+	}
+	defer s.calls.Done()
+
+	batch := &batchState{failedIndex: -1}
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return BatchResult{FailedIndex: -1}, ErrClosed
+		}
+		if s.recovery == nil {
+			now := s.clock.Now()
+			cutStart := s.tail
+			if cutStart.Before(now) {
+				cutStart = now
+			}
+			deadline := cutStart.Add(s.config.RecoveryWriteSlack)
+			if err := control.InstallDeadline(deadline); err != nil {
+				s.mu.Unlock()
+				control.Abort(err)
+				return BatchResult{FailedIndex: -1}, err
+			}
+			recovery := &recoveryState{
+				batch:     batch,
+				control:   control,
+				remaining: len(datagrams),
+			}
+			s.recovery = recovery
+			s.fecGroupOwnedBytes = s.config.FECGroupReserveBytes
+			s.retainedRecoveryWireBytes += total
+			s.tail = cutStart.Add(s.byteDuration(total))
+			for index, item := range datagrams {
+				datagram := &queuedDatagram{
+					class:     item.Class,
+					size:      len(item.Payload),
+					payload:   item.Payload,
+					deadline:  cutStart,
+					done:      make(chan error, 1),
+					ready:     true,
+					batch:     batch,
+					index:     index,
+					write:     item.Write,
+					recovery:  recovery,
+					retention: retainRecovery,
+				}
+				s.queue = append(s.queue, datagram)
+				batch.datagrams = append(batch.datagrams, datagram)
+				batch.reserved++
+				batch.accepted++
+				s.acceptedBytes += uint64(datagram.size)
+			}
+			s.notifyLocked()
+			s.mu.Unlock()
+			break
+		}
+		changed := s.changed
+		s.admissionWaits++
+		started := s.clock.Now()
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			s.mu.Lock()
+			s.admissionWaitDuration += s.clock.Now().Sub(started)
+			s.mu.Unlock()
+			return BatchResult{FailedIndex: -1}, ctx.Err()
+		case <-changed:
+			s.mu.Lock()
+			s.admissionWaitDuration += s.clock.Now().Sub(started)
+			s.mu.Unlock()
+		}
+	}
+
+	var firstError error
+	for _, datagram := range batch.datagrams {
+		if err := <-datagram.done; err != nil && firstError == nil {
+			firstError = err
+		}
+	}
+	s.mu.Lock()
+	result := BatchResult{
+		Accepted:    batch.accepted,
+		Emitted:     batch.emitted,
+		FailedIndex: batch.failedIndex,
+	}
+	s.mu.Unlock()
+	return result, firstError
+}
+
+var errPriorityFull = errors.New("priority reserve full")
+
+func (s *Shaper) reservePriority(ctx context.Context, size int, wait bool) (*queuedDatagram, error) {
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return nil, ErrClosed
+		}
+		now := s.clock.Now()
+		capacityReady := size <= s.config.PriorityReserveBytes-s.retainedPriorityBytes
+		if capacityReady {
+			deadline := s.tail
+			if deadline.Before(now) {
+				deadline = now
+			}
+			s.tail = deadline.Add(s.byteDuration(size))
+			priorityBase := s.priorityTail
+			if priorityBase.Before(now) {
+				priorityBase = now
+			}
+			s.priorityTail = priorityBase.Add(s.byteDuration(size))
+			for waiter := range s.priorityWaiters {
+				if waiter.deadline.IsZero() || now.Before(waiter.deadline) {
+					waiter.deadline = s.priorityTail
+				}
+			}
+			s.retainedPriorityBytes += size
+			s.acceptedBytes += uint64(size)
+			s.outerPriorityBytes += uint64(size)
+			datagram := &queuedDatagram{
+				size:      size,
+				deadline:  deadline,
+				done:      make(chan error, 1),
+				retention: retainPriority,
+			}
+			s.queue = append(s.queue, datagram)
+			s.notifyLocked()
+			s.mu.Unlock()
+			return datagram, nil
+		}
+		if !wait {
+			s.mu.Unlock()
+			return nil, errPriorityFull
+		}
+		s.admissionWaits++
+		started := now
+		changed := s.changed
+		s.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			s.mu.Lock()
+			s.admissionWaitDuration += s.clock.Now().Sub(started)
+			s.mu.Unlock()
+			return nil, ctx.Err()
+		case <-changed:
+		}
+		s.mu.Lock()
+		s.admissionWaitDuration += s.clock.Now().Sub(started)
+		s.mu.Unlock()
+	}
 }
 
 func (s *Shaper) beginCall() error {
@@ -576,7 +1003,7 @@ func (s *Shaper) Stop() {
 	if !s.closed {
 		s.closed = true
 		for _, datagram := range s.queue {
-			s.release(datagram.class, datagram.size)
+			s.releaseQueued(datagram)
 			if datagram.batch != nil && datagram.batch.err == nil {
 				datagram.batch.err = ErrClosed
 				datagram.batch.failedIndex = datagram.index
@@ -585,6 +1012,7 @@ func (s *Shaper) Stop() {
 			close(datagram.done)
 		}
 		s.queue = nil
+		s.terminateRecoveryLocked(ErrClosed)
 		s.notifyLocked()
 	}
 	s.mu.Unlock()
@@ -618,9 +1046,10 @@ func (s *Shaper) run() {
 			datagram.batch.err != nil &&
 			datagram.index > datagram.batch.failedIndex {
 			s.queue = s.queue[1:]
-			s.release(datagram.class, datagram.size)
+			s.releaseQueued(datagram)
 			err := datagram.batch.err
 			s.accountAsyncWriteFailureLocked(err, datagram.size, false)
+			err = s.finishRecoveryDatagramLocked(datagram, err)
 			s.notifyLocked()
 			s.mu.Unlock()
 			datagram.done <- err
@@ -647,12 +1076,16 @@ func (s *Shaper) run() {
 		}
 
 		s.queue = s.queue[1:]
-		s.release(datagram.class, datagram.size)
+		s.releaseQueued(datagram)
 		s.inFlightBytes = datagram.size
 		s.notifyLocked()
 		s.mu.Unlock()
 
-		err := s.write(datagram.payload)
+		write := datagram.write
+		if write == nil {
+			write = s.write
+		}
+		err := write(datagram.payload)
 
 		s.mu.Lock()
 		s.inFlightBytes = 0
@@ -669,11 +1102,84 @@ func (s *Shaper) run() {
 				datagram.batch.failedIndex = datagram.index
 			}
 		}
+		if err != nil && s.recovery != nil && datagram.recovery == nil {
+			if s.recovery.batch.err == nil {
+				s.recovery.batch.err = err
+				s.recovery.batch.failedIndex = -1
+			}
+			s.abortRecoveryLocked(s.recovery, err)
+		}
+		err = s.finishRecoveryDatagramLocked(datagram, err)
 		s.notifyLocked()
 		s.mu.Unlock()
 		datagram.done <- err
 		close(datagram.done)
 	}
+}
+
+func (s *Shaper) releaseQueued(datagram *queuedDatagram) {
+	switch datagram.retention {
+	case retainClass:
+		s.release(datagram.class, datagram.size)
+	case retainPriority:
+		s.retainedPriorityBytes -= datagram.size
+	case retainRecovery:
+		s.retainedRecoveryWireBytes -= datagram.size
+	default:
+		panic("invalid queue retention")
+	}
+}
+
+func (s *Shaper) finishRecoveryDatagramLocked(datagram *queuedDatagram, err error) error {
+	recovery := datagram.recovery
+	if recovery == nil || recovery.terminal {
+		return err
+	}
+	recovery.remaining--
+	if recovery.remaining != 0 {
+		return err
+	}
+	recovery.terminal = true
+	clearErr := recovery.control.ClearDeadline()
+	if err == nil {
+		err = clearErr
+	}
+	if err != nil && recovery.batch.err == nil {
+		recovery.batch.err = err
+		recovery.batch.failedIndex = datagram.index
+	}
+	if err != nil {
+		s.abortRecoveryLocked(recovery, err)
+	}
+	s.fecGroupOwnedBytes = 0
+	if s.recovery == recovery {
+		s.recovery = nil
+	}
+	return err
+}
+
+func (s *Shaper) terminateRecoveryLocked(err error) {
+	if s.recovery == nil || s.recovery.terminal {
+		return
+	}
+	recovery := s.recovery
+	recovery.terminal = true
+	if recovery.batch.err == nil {
+		recovery.batch.err = err
+		recovery.batch.failedIndex = 0
+	}
+	_ = recovery.control.ClearDeadline()
+	s.abortRecoveryLocked(recovery, err)
+	s.fecGroupOwnedBytes = 0
+	s.recovery = nil
+}
+
+func (s *Shaper) abortRecoveryLocked(recovery *recoveryState, err error) {
+	if recovery.aborted {
+		return
+	}
+	recovery.aborted = true
+	recovery.control.Abort(err)
 }
 
 func (s *Shaper) accountAsyncWriteFailureLocked(err error, size int, countError bool) {

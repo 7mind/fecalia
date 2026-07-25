@@ -164,12 +164,12 @@ not change the binary search's unit domain.
   search failures cannot starve liveness. The default three confirmations
   therefore occupy three PMTU slots separated by ordinary slots (at least five
   slots from the first attempt through the third), while a peer-requested
-  reactive echo remains immediate. Sequence allocation, timestamping, and echo
-  registration occur in the selected PMTU slot, so queueing time contributes
-  neither to measured RTT nor the echo deadline. A successful socket write
-  increments wire bytes and debits the path shaper by the exact padded encoded
-  length. An unexpected failure preserves its transport error, increments the
-  probe-send-error counter, and adds neither wire bytes nor debt; `EMSGSIZE` maps
+  reactive echo attempts non-blocking priority admission immediately. PMTU
+  reserves the exact padded length before sequence allocation, timestamping, and
+  echo registration in the selected slot, so admission and cadence waits
+  contribute neither to measured RTT nor the echo deadline. A successful writer
+  completion increments wire bytes. An unexpected failure preserves its
+  transport error and increments the probe-send-error counter; `EMSGSIZE` maps
   internally through `ErrProbeTooLarge` to the search's benign `echoed=false`
   verdict without counting as an unexpected send failure. This keeps built-in
   discovery within the pacing `Pburst`/`Rp` envelope rather than treating PMTU

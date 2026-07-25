@@ -331,6 +331,19 @@ type PathShaperConfig struct {
 	ProbeRateBytesPerSecond float64
 	// ProbeBurstBytes is the coincident maximum-size probe+echo burst Pburst.
 	ProbeBurstBytes int
+	// PriorityReserveBytes is retained generated-priority storage P=Pburst.
+	PriorityReserveBytes int
+	// FECGroupReserveBytes is the one-group ownership bound Fgroup. Zero
+	// disables the finite recovery contract when FEC is disabled.
+	FECGroupReserveBytes int
+	// RecoveryWriteSlack is the cumulative kernel-call budget I.
+	RecoveryWriteSlack time.Duration
+	// RecoveryBound is A=Sdevice, the complete native recovery service bound.
+	RecoveryBound time.Duration
+	// CompletionOverrunBound is Ecompletion for already-admitted DATA/control.
+	CompletionOverrunBound time.Duration
+	// MemoryBoundBytes is Mtotal=B+C+P+Fgroup+Lio.
+	MemoryBoundBytes int
 }
 
 // defaultAvgWireFrameBytes is the conservative average on-wire outer-frame size used
@@ -342,6 +355,14 @@ type PathShaperConfig struct {
 // capacity with the full-MTU frame is the conservative floor: smaller average frames
 // would yield a HIGHER frame rate, so this never over-paces a path.
 const defaultAvgWireFrameBytes = 1500.0
+
+const (
+	recoveryWriteSlack = 10 * time.Millisecond
+	// Mirrors frame.DataOverhead without importing frame (frame imports config).
+	outerDataFrameOverhead  = 40
+	fecShardLengthPrefix    = 4
+	resequencerServiceLimit = 250 * time.Millisecond
+)
 
 // defaultPathMTU and the outer IP/UDP overheads mirror bind.DefaultPathMTU,
 // bind.IPv4UDPOverhead, and bind.IPv6UDPOverhead. Config cannot import bind
@@ -1366,6 +1387,41 @@ func (c *Config) derivePathShapers() error {
 			return fmt.Errorf("path %q: generated probe+echo rate %g bytes/s must be < shaper rate %g bytes/s (Pburst=%d bytes at minimum interval %s)",
 				p.Name, probeRateBytesPerSecond, rateBytesPerSecond, probeBurstBytes, livenessProbeInterval)
 		}
+		fecGroupReserveBytes := 0
+		recoverySlack := time.Duration(0)
+		recoveryBound := time.Duration(0)
+		completionOverrunBound := time.Duration(0)
+		if c.FEC.Enabled {
+			kdata := c.FEC.DataShards
+			mmax := c.FEC.ParityShards
+			lc := 8 + lmax - outerDataFrameOverhead
+			ls := fecShardLengthPrefix + lc
+			fecGroupReserveBytes =
+				kdata*lc +
+					(kdata+mmax)*ls +
+					(kdata+mmax)*lmax
+			recoverySlack = recoveryWriteSlack
+			netRate := rateBytesPerSecond - probeRateBytesPerSecond
+			recoveryBytes := dataBurstBytes +
+				lmax +
+				probeBurstBytes +
+				(kdata+mmax+1)*lmax
+			recoveryBound = time.Duration(math.Ceil(
+				float64(recoveryBytes)/netRate*float64(time.Second),
+			)) + recoverySlack
+			completionBytes := probeBurstBytes + mmax*lmax + lmax
+			completionOverrunBound = time.Duration(math.Ceil(
+				float64(completionBytes)/netRate*float64(time.Second),
+			)) + recoverySlack
+			if recoveryBound >= resequencerServiceLimit {
+				return fmt.Errorf(
+					"path %q: finite recovery bound A=%s must stay below receiver fallback T=%s",
+					p.Name,
+					recoveryBound,
+					resequencerServiceLimit,
+				)
+			}
+		}
 		derived := PathShaperConfig{
 			RateBytesPerSecond:      rateBytesPerSecond,
 			DataBurstBytes:          dataBurstBytes,
@@ -1373,6 +1429,13 @@ func (c *Config) derivePathShapers() error {
 			MaxEncodedDatagramBytes: lmax,
 			ProbeRateBytesPerSecond: probeRateBytesPerSecond,
 			ProbeBurstBytes:         probeBurstBytes,
+			PriorityReserveBytes:    probeBurstBytes,
+			FECGroupReserveBytes:    fecGroupReserveBytes,
+			RecoveryWriteSlack:      recoverySlack,
+			RecoveryBound:           recoveryBound,
+			CompletionOverrunBound:  completionOverrunBound,
+			MemoryBoundBytes: dataBurstBytes + lmax + probeBurstBytes +
+				fecGroupReserveBytes + lmax,
 		}
 		if err := pathshaper.ValidateConfig(pathshaper.Config{
 			RateBytesPerSecond:         derived.RateBytesPerSecond,
@@ -1381,6 +1444,9 @@ func (c *Config) derivePathShapers() error {
 			ControlReserveBytes:        derived.ControlReserveBytes,
 			MaxDatagramBytes:           derived.MaxEncodedDatagramBytes,
 			PriorityBurstBytes:         derived.ProbeBurstBytes,
+			PriorityReserveBytes:       derived.PriorityReserveBytes,
+			FECGroupReserveBytes:       derived.FECGroupReserveBytes,
+			RecoveryWriteSlack:         derived.RecoveryWriteSlack,
 		}); err != nil {
 			return fmt.Errorf("path %q: invalid exact-byte shaper configuration: %w", p.Name, err)
 		}

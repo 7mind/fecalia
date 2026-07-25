@@ -445,8 +445,8 @@ predeclared gates:
 - [ ] While the paced upload fills the DATA budget, confirm every configured
       path remains live and
       `wanbond_path_probe_send_errors_total` does not increase. Generated
-      authenticated PROBE/echo frames bypass retained DATA and debit their exact
-      encoded length only after a successful direct write. The counter includes
+      authenticated PROBE/echo frames reserve retained priority capacity and
+      use the same serialized path writer as DATA/control/recovery. The counter includes
       unexpected socket-write failures for locally-originated ordinary and PMTU
       PROBE frames: an ordinary failure is counted but not returned to a caller,
       while an unexpected PMTU failure is counted and returned to discovery.
@@ -474,7 +474,10 @@ predeclared gates:
       `shaper_queue_data_bytes <= shaper_data_budget_bytes`,
       `shaper_queue_control_bytes <= shaper_control_reserve_bytes`, and
       `shaper_queue_bytes <= shaper_queue_budget_bytes`, with
-      `shaper_queue_bytes + shaper_in_flight_bytes <= Q+Lmax`. At full B/Q,
+      `shaper_priority_retained_bytes <= shaper_priority_burst_bytes`,
+      `shaper_fec_group_owned_bytes` equal to either zero or the configured
+      `Fgroup`, and `shaper_memory_retained_bytes <=
+      shaper_memory_bound_bytes` (`Mtotal=B+C+P+Fgroup+Lio`). At full B/Q,
       `shaper_admission_waits_total` and
       `shaper_admission_wait_seconds_total` should rise while asynchronous
       generic/`EMSGSIZE` errors and canceled datagrams remain flat.
@@ -494,6 +497,18 @@ predeclared gates:
       linearize at queue reservation, so a pending-copy placeholder appears in
       both `accepted_bytes` and `queue_bytes`; cancellation counts only buffers
       that never reserved capacity.
+- [ ] With FEC active on a naturally single-path group, saturate B/C/P and
+      confirm the complete native DATA+parity tranche finishes before the
+      derived `A` and before 250 ms for first-, middle-, and last-DATA loss.
+      Confirm later probe/echo arrivals do not enter the tranche and a second
+      group backpressures. Mixed-path/shared-socket groups must report the
+      finite contract disabled and retain the conservative fallback.
+- [ ] During probe saturation, distinguish bounded priority outcomes:
+      `wanbond_path_probe_priority_coalesced_total` may rise for skipped
+      ordinary cadences, `wanbond_path_pmtu_admission_canceled_total` only for
+      canceled PMTU admission, and
+      `wanbond_path_echo_priority_overflow_total` only for non-blocking reactive
+      echo drops. None should coincide with receive-loop blocking.
 - [ ] Cycle the edge daemon Down/Up once with pacing enabled. Confirm no send
       remains blocked, the tunnel reconnects, and the journal contains no
       post-close socket-write errors from the prior generation. Repeat several
@@ -505,7 +520,9 @@ start of a send call. With one coincident post-call `Pburst=2*Lmax`, sustained
 generated priority no greater than `Rp=Pburst/200ms`, and configured byte rate
 `R>Rp`, admission is bounded by
 `Dp=(P0+Pburst)/(R-Rp)` (not `P0/R`). Once admitted, local egress adds at most
-`Q/R+Lmax/R`. Therefore call-to-receiver delivery is bounded by
+`Q/R+Lmax/R`. For an exclusive single-path FEC recovery cut, additionally use
+`A=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+10ms`; the configured result must
+remain below 250 ms. Therefore call-to-receiver delivery is bounded by
 `Dp+Q/R+Lmax/R` plus the active resequencer hold for a missing lower outer
 sequence. Record any observed inner-control call and check it against that
 complete bound. These bounds cover the built-in PROBE/echo producer, including

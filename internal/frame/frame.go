@@ -220,6 +220,9 @@ const (
 // flags(1) || sessionID(8) || challenge(8).
 const probeFixedBody = 1 + 1 + 8 + 8 + 1 + 8 + 8 // 35
 
+// UnpaddedProbeOnWire is the exact encoded length of an ordinary liveness probe.
+const UnpaddedProbeOnWire = nonceLen + probeFixedBody + tagLen // 24 + 35 + 16 = 75
+
 // ProbeBaseOnWire is the on-wire datagram size of a PADDED probe carrying zero pad
 // bytes: the clear nonce, the fixed probe body, the 2-byte PadLen field, and the
 // authentication tag. A padded probe cannot be smaller than this, so it is the

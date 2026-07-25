@@ -456,7 +456,7 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 
 	writes, err := o.m.prepareFECDecision(o.peer, o.fs, o.staged, decision, !due.IsZero())
 	if err == nil {
-		err = o.emit(writes)
+		err = o.emit(group, writes)
 	}
 	if o.ctx.Err() != nil {
 		err = o.terminalError()
@@ -466,7 +466,67 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 	return err
 }
 
-func (o *fecSendOwner) emit(writes []fecPreparedWrite) error {
+func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error {
+	if len(writes) > 0 && writes[0].shaped {
+		path := writes[0].path
+		remote := writes[0].remote
+		singlePath := true
+		for _, write := range writes[1:] {
+			if !write.shaped || write.path != path || write.remote != remote {
+				singlePath = false
+				break
+			}
+		}
+		if singlePath {
+			if shaped, ok := path.shaper.(recoveryPathShaper); ok {
+				views := path.views.Load()
+				exclusive := views != nil && len(*views) == 1
+				contract := shaped.RecoveryContract()
+				if exclusive && contract.Enabled {
+					datagrams := make([]shaper.Datagram, len(writes))
+					wires := make([]fecWire, len(writes))
+					for i, write := range writes {
+						selectedPath := write.path
+						selectedRemote := write.remote
+						datagrams[i] = shaper.Datagram{
+							Class:   write.class,
+							Payload: write.wire.b,
+							Write: func(payload []byte) error {
+								if _, err := selectedPath.writeToUDPAddrPort(payload, selectedRemote); err != nil {
+									selectedPath.socketWriteErrors.Add(1)
+									return o.m.accountSendError(selectedPath, err)
+								}
+								return nil
+							},
+						}
+						wires[i] = write.wire
+					}
+					control := shaper.RecoveryControl{
+						Enabled:         true,
+						InstallDeadline: path.installWriteDeadline,
+						ClearDeadline: func() error {
+							return path.installWriteDeadline(time.Time{})
+						},
+						Abort: func(err error) {
+							path.abortWriteGeneration()
+							if o.m.fecDeadlineInvalidator != nil {
+								now := o.clock.Now()
+								o.m.fecDeadlineInvalidator(fecDeadlineMiss{
+									Peer:      o.peer.name,
+									Group:     group,
+									Due:       now,
+									DecidedAt: now,
+								})
+							}
+						},
+					}
+					result, err := shaped.WriteRecovery(o.ctx, datagrams, control)
+					o.m.recordShapedResult(path, o.peer, o.fs, wires, result, err)
+					return err
+				}
+			}
+		}
+	}
 	for i := 0; i < len(writes); {
 		write := writes[i]
 		if write.shaped {

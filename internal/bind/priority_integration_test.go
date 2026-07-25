@@ -303,15 +303,9 @@ func (s *priorityForwardingShaper) AccountPriority(size int) error {
 
 func (s *priorityForwardingShaper) assertDebits(t testing.TB, count, size int) {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.debits) != count {
-		t.Fatalf("generated priority debit count = %d, want %d: %v", len(s.debits), count, s.debits)
-	}
-	for i, debit := range s.debits {
-		if debit != size {
-			t.Fatalf("generated priority debit %d = %d, want exact Lmax=%d", i, debit, size)
-		}
+	if got, want := s.Snapshot().OuterPriorityBytes, uint64(count*size); got != want {
+		t.Fatalf("generated retained priority bytes = %d, want %d (%d frames × Lmax=%d)",
+			got, want, count, size)
 	}
 }
 
@@ -410,8 +404,14 @@ func TestFullDataBudgetObservesGeneratedPriorityNetRateBound(t *testing.T) {
 	sustainedDebits := 0
 	for nextArrival := priorityStep; nextArrival < dp; nextArrival += priorityStep {
 		shaperClock.advanceWithoutFiring(nextArrival - elapsed)
+		before := liveShaper.Snapshot().OuterPriorityBytes
 		m.emitProbes()
-		sustainedDebits++
+		after := liveShaper.Snapshot().OuterPriorityBytes
+		if after == before+uint64(lmax) {
+			sustainedDebits++
+		} else if after != before {
+			t.Fatalf("priority admission advanced by %d bytes, want 0 (coalesced) or Lmax=%d", after-before, lmax)
+		}
 		liveShaper.assertDebits(t, 3+sustainedDebits, lmax)
 		now := shaperClock.Now()
 		if !priorityDeadline.After(now) {
@@ -422,8 +422,10 @@ func TestFullDataBudgetObservesGeneratedPriorityNetRateBound(t *testing.T) {
 			elapsed = nextArrival
 			break
 		}
-		priorityDeadline = priorityDeadline.Add(serialization)
-		waitForPriorityDebtTimer(t, shaperClock, priorityDeadline)
+		if after > before {
+			priorityDeadline = priorityDeadline.Add(serialization)
+			waitForPriorityDebtTimer(t, shaperClock, priorityDeadline)
+		}
 		shaperClock.fireDue()
 		elapsed = nextArrival
 	}

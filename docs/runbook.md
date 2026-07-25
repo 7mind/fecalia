@@ -360,8 +360,8 @@ In summary:
   Under either policy, each path's live byte shaper uses that path's own
   declaration: `R=link_bandwidth/8`, `B=ceil(R*link_rtt)`, and
   `Lmax` from the path MTU/address family. Config requires `B>=Lmax`, derives
-  `C=Lmax` and `Q=B+C`, and retains at most `Q` queued/copy-reserved bytes plus
-  one in-flight datagram of at most `Lmax`. Active-backup also retains
+  `C=Lmax`, retained priority `P`, one owned recovery group `Fgroup`, and the
+  memory bound `Mtotal=B+C+P+Fgroup+Lmax`. Active-backup also retains
   per-path frame-domain compatibility values. Weighted uses the slowest
   declared link only for its shared offered-frame aggregation reference; that
   reference does not admit production traffic. To opt into weighted
@@ -370,18 +370,15 @@ In summary:
 - One engine batch selects one path, then each input buffer is classified,
   framed, and admitted in order. Aggregate batches larger than `B` stream
   through cancellable pre-copy backpressure; saturation raises admission waits,
-  not ordinary drops. DATA/PARITY and inner control keep immutable assigned
-  deadlines. Successful direct authenticated PROBE/echo writes add exact bytes
-  only to future priority debt. With starting debt `P0`, configured
-  `Pburst`, and generated priority bounded by `Rp<R`, admission is bounded by
-  `Dp=(P0+Pburst)/(R-Rp)`; call-to-receiver delivery is bounded by
-  `Dp+Q/R+Lmax/R` plus the active resequencer hold. Authenticated generated
-  traffic beyond `Rp`/`Pburst` is overload, outside that bound.
+  not ordinary drops. DATA/PARITY, inner control, recovery tranches, and
+  authenticated PROBE/echo use one serialized writer. Generated priority
+  reserves `P` before generation; ordinary probes coalesce, PMTU waits
+  cancellably, and echo overflow fails without blocking receive.
 
 - A partial writer failure reports the accepted/emitted prefix, accounts the
   reserved failed suffix as generic or `EMSGSIZE` error bytes, and does not
   encode the engine batch's unstarted suffix. Close/remove stops admission,
-  retires queued work, waits for shaped and direct writes, and only then closes
+  retires queued work, waits for the serialized writer, and only then closes
   the socket; a replacement socket/shaper generation starts empty.
 
 - Verify the loaded RTT stays close to the idle RTT under sustained load — §3a

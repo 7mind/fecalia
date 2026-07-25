@@ -39,7 +39,7 @@ const DefaultPMTUProbeDeadline = 1 * time.Second
 // NotifyEcho or Send.
 type EchoAwaitProbe struct {
 	prober   *Prober
-	send     func([]byte) error
+	admit    func(int, func() ([]byte, error)) error
 	dispatch func(func() error) error
 	// outerIPUDPOverhead is selected from the validated path socket's address
 	// family by bind. ProbePMTU candidates remain outer IP MTU units; subtracting
@@ -69,7 +69,7 @@ func NewEchoAwaitProbe(
 	deadline time.Duration,
 	after func(time.Duration) <-chan time.Time,
 ) *EchoAwaitProbe {
-	return newEchoAwaitProbe(prober, send, func(work func() error) error {
+	return newEchoAwaitProbe(prober, directProbeAdmission(send), func(work func() error) error {
 		return work()
 	}, outerIPUDPOverhead, deadline, after)
 }
@@ -86,12 +86,25 @@ func NewCadencedEchoAwaitProbe(
 	deadline time.Duration,
 	after func(time.Duration) <-chan time.Time,
 ) *EchoAwaitProbe {
-	return newEchoAwaitProbe(prober, send, dispatch, outerIPUDPOverhead, deadline, after)
+	return newEchoAwaitProbe(prober, directProbeAdmission(send), dispatch, outerIPUDPOverhead, deadline, after)
+}
+
+// NewCadencedAdmittedEchoAwaitProbe additionally lets the transport reserve
+// retained priority capacity before sequence and timestamp generation.
+func NewCadencedAdmittedEchoAwaitProbe(
+	prober *Prober,
+	admit func(int, func() ([]byte, error)) error,
+	dispatch func(func() error) error,
+	outerIPUDPOverhead int,
+	deadline time.Duration,
+	after func(time.Duration) <-chan time.Time,
+) *EchoAwaitProbe {
+	return newEchoAwaitProbe(prober, admit, dispatch, outerIPUDPOverhead, deadline, after)
 }
 
 func newEchoAwaitProbe(
 	prober *Prober,
-	send func([]byte) error,
+	admit func(int, func() ([]byte, error)) error,
 	dispatch func(func() error) error,
 	outerIPUDPOverhead int,
 	deadline time.Duration,
@@ -108,12 +121,22 @@ func newEchoAwaitProbe(
 	}
 	return &EchoAwaitProbe{
 		prober:             prober,
-		send:               send,
+		admit:              admit,
 		dispatch:           dispatch,
 		outerIPUDPOverhead: outerIPUDPOverhead,
 		deadline:           deadline,
 		after:              after,
 		pending:            make(map[uint64]chan struct{}),
+	}
+}
+
+func directProbeAdmission(send func([]byte) error) func(int, func() ([]byte, error)) error {
+	return func(_ int, generate func() ([]byte, error)) error {
+		raw, err := generate()
+		if err != nil {
+			return err
+		}
+		return send(raw)
 	}
 }
 
@@ -128,16 +151,18 @@ func (e *EchoAwaitProbe) ProbePMTU(pathMTU int) (bool, error) {
 	var seq uint64
 	var ch chan struct{}
 	err := e.dispatch(func() error {
-		// pathMTU is the candidate OUTER IP-level path MTU (the units the search and
-		// bind.InnerMTU use). Generate and register inside the selected transport slot
-		// so its timestamp excludes any dispatch/cadence wait.
-		raw, generatedSeq, err := e.prober.SendPaddedProbe(pathMTU - e.outerIPUDPOverhead)
-		if err != nil {
-			return err
-		}
-		seq = generatedSeq
-		ch = e.register(seq)
-		return e.send(raw)
+		wireSize := pathMTU - e.outerIPUDPOverhead
+		return e.admit(wireSize, func() ([]byte, error) {
+			// Generate and register only after transport admission in the selected
+			// cadence slot, so neither wait contaminates its timestamp.
+			raw, generatedSeq, err := e.prober.SendPaddedProbe(wireSize)
+			if err != nil {
+				return nil, err
+			}
+			seq = generatedSeq
+			ch = e.register(seq)
+			return raw, nil
+		})
 	})
 	if err != nil {
 		if ch != nil {

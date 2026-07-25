@@ -6,7 +6,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -33,10 +35,9 @@ func mapPMTUProbeWriteError(err error) error {
 // write failures increment wanbond_path_probe_send_errors_total. An ordinary
 // failure is then discarded so the cadence continues across other paths; a PMTU
 // failure is returned to discovery. Expected PMTU EMSGSIZE is excluded from the
-// counter and becomes discovery's too-large verdict. A successful direct write
-// becomes receiver-visible before its exact encoded byte length advances future
-// shaper priority debt; a failed write creates no debt. It is a no-op when the bind
-// has no probers or is closed.
+// counter and becomes discovery's too-large verdict. Shaped priority reserves its
+// exact encoded length before sequence/timestamp generation and uses the serialized
+// path writer. It is a no-op when the bind has no probers or is closed.
 func (m *Multipath) emitProbes() {
 	m.mu.Lock()
 	if len(m.paths) == 0 || m.probers == nil {
@@ -110,6 +111,40 @@ func (m *Multipath) emitProbes() {
 		if request := t.ps.takePMTUProbe(); request != nil {
 			request.done <- request.work()
 		} else if hasRemote {
+			if shaped, ok := t.ps.shaper.(recoveryPathShaper); ok {
+				admitted, done, writeErr := shaped.TryWritePriorityGenerated(
+					frame.UnpaddedProbeOnWire,
+					func() ([]byte, shaper.WriteFunc, error) {
+						raw, generateErr := t.pr.SendProbe()
+						if generateErr != nil {
+							return nil, nil, generateErr
+						}
+						return raw, func(payload []byte) error {
+							if _, err := t.ps.writeToUDPAddrPort(payload, remote); err != nil {
+								t.ps.socketWriteErrors.Add(1)
+								return m.accountSendError(t.ps, err)
+							}
+							return nil
+						}, nil
+					},
+				)
+				switch {
+				case writeErr != nil:
+					t.ps.probeSendErrors.Add(1)
+				case !admitted:
+					t.ps.probePriorityCoalesced.Add(1)
+				default:
+					go func(ps *peerPathState, completion <-chan error) {
+						if err := <-completion; err != nil {
+							ps.probeSendErrors.Add(1)
+							return
+						}
+						ps.txBytes.Add(frame.UnpaddedProbeOnWire)
+					}(t.ps, done)
+				}
+				t.pr.Tick()
+				continue
+			}
 			if raw, err := t.pr.SendProbe(); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.
 				if _, werr := t.ps.writeToUDPAddrPort(raw, remote); werr == nil {

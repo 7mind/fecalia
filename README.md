@@ -217,7 +217,7 @@ cmd/wanbond/            entry point; role selection; SIGHUP reload
 internal/bind/          the custom conn.Bind — multipath fan-out/coalesce, the amnezia boundary
 internal/frame/         outer bonding frame codec (obfuscation + optional HMAC)
 internal/sched/         send-side scheduler (active-backup, weighted, pacing)
-internal/shaper/        per-(peer,path) DATA/inner-control shaping and generated outer-priority debt
+internal/shaper/        serialized per-(peer,path) exact-byte shaping and recovery cuts
 internal/telemetry/     per-path PROBE/liveness, RTT/loss/jitter
 internal/reseq/         receive resequencer (bounded-window reorder)
 internal/fec/           Reed-Solomon FEC encoder/decoder
@@ -255,26 +255,36 @@ deliberate boundaries you must plan around:
   scheduler](docs/design.md) for the per-path-vs-bottleneck sizing distinction.
   Config load derives the live exact-byte shaper envelope: wire rate `R`,
   maximum encoded datagram `Lmax`, DATA/PARITY budget `B>=Lmax`, inner-control
-  reserve `C=Lmax`, total retained budget `Q=B+C`, and generated-priority
-  rate/burst `Rp`/`Pburst`. It rejects an envelope whose maximum probe+echo rate
+  reserve `C=Lmax`, retained generated-priority reserve `P=Pburst`, one owned
+  FEC-group bound `Fgroup`, one writer-in-flight `Lio=Lmax`, and
+  `Mtotal=B+C+P+Fgroup+Lio`. It also derives generated-priority rate `Rp`, finite
+  recovery-service bound `A`, and completion overrun `Ecompletion`. It rejects
+  an envelope whose maximum probe+echo rate
   consumes the whole link. Non-finite inputs and byte budgets that cannot fit
   the platform's integer byte-count domain are rejected before conversion; `Q`
-  and the maximum modeled `2*Pburst/(R-Rp)` priority bound must also fit their
-  runtime `int`/`time.Duration` representations. At runtime each
+  and `Mtotal`, `A`, and `Ecompletion` must fit their runtime
+  `int`/`time.Duration` representations; FEC-active `A` must remain below the
+  conservative 250 ms receiver fallback. At runtime each
   `(peer,path)` owns one shaper. One engine `Send` selects one path. With FEC
   off, each input is classified, framed, and admitted in order. With FEC on, a
   per-peer owner stages one group until its size or exact deadline decision,
   then frames its DATA/PARITY; no open-group DATA is writer-visible. Each
   original `Send` publishes one owner command and one completion through the
   bounded mailbox, irrespective of its offload-frame count. Compatible shaped frames from one
-  decided group enter the selected path shaper in one immutable batch, whose
-  per-datagram pre-copy backpressure remains bounded by `B`. Encoded DATA and
+  decided group that naturally uses one exclusive path transfers ownership to
+  that path shaper as one recovery tranche. Mixed-path/shared-socket groups keep
+  the conservative receiver fallback. Encoded DATA and
   every decided FEC parity datagram
-  consume their exact byte length. The shaper retains at most `Q` bytes plus one
-  in-flight datagram of at most `Lmax`; saturation backpressures the sender
+  consume their exact byte length. A recovery cut orders the retained
+  lower-OuterSeq prefix and already-admitted priority, then the complete group
+  DATA+parity tranche, before later priority/groups. One absolute
+  `cutStart+10ms` socket deadline covers an already-blocked predecessor and
+  every tranche syscall; timeout terminates without retry. The shaper retains
+  at most `Mtotal`; saturation backpressures the sender
   without discarding ordinary traffic. Per-path accepted, emitted,
   shaper-error, and socket-error counters expose every terminal prefix. Live
-  queue gauges prove `DATA<=B`, `control<=C`, and `total<=Q`; admission-wait
+  queue gauges prove `DATA<=B`, `control<=C`, `priority<=P`, one
+  `Fgroup`, and total retained `<=Mtotal`; admission-wait
   counters distinguish bounded backpressure from cancellation. Accepted bytes
   linearize when queue capacity is reserved (including a pending-copy
   placeholder), so accepted, emitted, generic-error, `EMSGSIZE`, queue, and
@@ -290,21 +300,25 @@ deliberate boundaries you must plan around:
   WireGuard handshake/cookie/keepalive frames use the `C=Lmax` reserve one
   buffer at a time, but retain selected-path FIFO, outer sequencing, and FEC;
   they never overtake lower DATA, and DATA cannot borrow `C`. Authenticated
-  outer PROBE/echo frames bypass retained DATA and write immediately; each
-  successful write then debits its exact encoded byte length, while a failed
-  write creates no debt and already-admitted deadlines remain fixed.
+  outer PROBE/echo frames reserve `P` and use the same serialized writer.
+  Ordinary probes coalesce one cadence when `P` is full, PMTU admission waits
+  cancellably, and reactive echoes fail non-blockingly with a distinct overflow
+  counter, so none can bypass a recovery cut or block inbound dispatch.
   A local padded PMTU probe substitutes in the next eligible local probe slot
   instead of adding another producer at that cadence; the following slot is
   always ordinary liveness before another PMTU attempt, while a peer-requested
-  reactive echo still writes immediately. PMTU sequence allocation, timestamping,
-  and echo registration begin in the selected slot, so queueing time does not
-  inflate path RTT. Each search candidate remains an outer-IP MTU; the generated
+  reactive echo attempts non-blocking `P` admission immediately. PMTU reserves
+  `P` before sequence allocation, timestamping, and echo registration in the
+  selected slot, so admission and cadence waits do not inflate path RTT. Each
+  search candidate remains an outer-IP MTU; the generated
   UDP payload subtracts the validated path family's header cost (28 bytes for IPv4,
   48 for IPv6), matching that path's `Lmax` and exact debit. The configured
   `Pburst=2*Lmax` therefore covers one maximum local probe (ordinary or PMTU) plus
-  one maximum echo. An unexpected PMTU socket failure preserves its error,
-  increments the probe-send-error counter, and adds neither wire bytes nor debt;
-  `EMSGSIZE` remains the expected too-large verdict.
+  one maximum echo. An unexpected PMTU writer failure preserves its error and
+  increments the probe-send-error counter; `EMSGSIZE` remains the expected
+  too-large verdict. Distinct
+  `probe_priority_coalesced`, `pmtu_admission_canceled`, and
+  `echo_priority_overflow` counters expose bounded-admission outcomes.
   For existing priority debt `P0`, a coincident `Pburst`, and sustained
   generated priority bounded by `Rp<R`, admission is bounded by
   `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; after admission, local egress adds at

@@ -69,6 +69,13 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 		priorityDebtBytes          = 1000.0
 		priorityRateBytesPerSecond = 10_000.0
 		priorityBurstBytes         = 2 * maxDatagramBytes
+		priorityRetainedBytes      = 600
+		fecGroupOwnedBytes         = 5000
+		recoveryRetainedBytes      = 700
+		memoryBoundBytes           = dataBudgetBytes + controlReserveBytes +
+			priorityBurstBytes + fecGroupOwnedBytes + maxDatagramBytes
+		memoryRetainedBytes = queueBytes + inFlightBytes +
+			priorityRetainedBytes + fecGroupOwnedBytes
 		admissionWaits             = 7
 		admissionCanceledDatagrams = 4
 		asyncWriteErrors           = 2
@@ -97,6 +104,11 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
 		PriorityBurstBytes:         priorityBurstBytes,
 		PriorityDelayBound:         priorityDelayBound,
+		PriorityRetainedBytes:      priorityRetainedBytes,
+		FECGroupOwnedBytes:         fecGroupOwnedBytes,
+		RecoveryRetainedBytes:      recoveryRetainedBytes,
+		MemoryBoundBytes:           memoryBoundBytes,
+		MemoryRetainedBytes:        memoryRetainedBytes,
 		AdmissionWaits:             admissionWaits,
 		AdmissionWaitDuration:      3 * time.Second,
 		AdmissionCanceledDatagrams: admissionCanceledDatagrams,
@@ -124,11 +136,16 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 		{MetricShaperMaxDatagramBytes, "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", dto.MetricType_GAUGE, maxDatagramBytes},
 		{MetricShaperAcceptedBytes, "Total DATA/PARITY and inner-control bytes reserved before copying caller memory.", dto.MetricType_COUNTER, acceptedBytes},
 		{MetricShaperEmittedBytes, "Total DATA/PARITY and inner-control bytes successfully written to the UDP socket.", dto.MetricType_COUNTER, emittedBytes},
-		{MetricShaperOuterPriorityBytes, "Total successfully written authenticated outer PROBE/echo bytes charged to future priority debt.", dto.MetricType_COUNTER, outerPriorityBytes},
+		{MetricShaperOuterPriorityBytes, "Total authenticated outer PROBE/echo bytes admitted to retained priority storage and charged to virtual time.", dto.MetricType_COUNTER, outerPriorityBytes},
 		{MetricShaperPriorityDebtBytes, "Current outer-priority serialization debt P0 in bytes.", dto.MetricType_GAUGE, priorityDebtBytes},
 		{MetricShaperPriorityRateBytesPerSecond, "Configured sustained outer-priority rate Rp in bytes per second.", dto.MetricType_GAUGE, priorityRateBytesPerSecond},
 		{MetricShaperPriorityBurstBytes, "Configured outer-priority burst allowance Pburst in bytes.", dto.MetricType_GAUGE, priorityBurstBytes},
 		{MetricShaperPriorityDelayBound, "Current DATA/inner-control admission bound Dp=(P0+Pburst)/(R-Rp) in seconds under generated priority Rp<R.", dto.MetricType_GAUGE, priorityDelayBound.Seconds()},
+		{MetricShaperPriorityRetainedBytes, "Current retained generated-priority bytes; bounded by P=Pburst.", dto.MetricType_GAUGE, priorityRetainedBytes},
+		{MetricShaperFECGroupOwnedBytes, "Current conservative one-group FEC ownership reservation Fgroup.", dto.MetricType_GAUGE, fecGroupOwnedBytes},
+		{MetricShaperRecoveryRetainedBytes, "Current exact DATA+parity wire bytes retained inside the owned recovery group.", dto.MetricType_GAUGE, recoveryRetainedBytes},
+		{MetricShaperMemoryBoundBytes, "Configured exact retained-memory bound Mtotal=B+C+P+Fgroup+Lio.", dto.MetricType_GAUGE, memoryBoundBytes},
+		{MetricShaperMemoryRetainedBytes, "Current retained and in-flight bytes across B+C+P+Fgroup+Lio.", dto.MetricType_GAUGE, memoryRetainedBytes},
 		{MetricShaperAdmissionWaits, "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", dto.MetricType_COUNTER, admissionWaits},
 		{MetricShaperAdmissionWaitSeconds, "Cumulative seconds spent waiting for exact-byte shaper admission.", dto.MetricType_COUNTER, snapshot.AdmissionWaitDuration.Seconds()},
 		{MetricShaperAdmissionCanceledDatagrams, "Total datagrams never reserved because their admission context was canceled or expired.", dto.MetricType_COUNTER, admissionCanceledDatagrams},
@@ -430,7 +447,14 @@ func TestExpositionPathMTUSeries(t *testing.T) {
 // unaffected path's series at zero.
 func TestExpositionProbeSendErrorsSeries(t *testing.T) {
 	src := fakeSource{paths: []PathSnapshot{
-		{Name: "starlink", State: telemetry.StateUp, ProbeSendErrors: 3},
+		{
+			Name:                   "starlink",
+			State:                  telemetry.StateUp,
+			ProbeSendErrors:        3,
+			ProbePriorityCoalesced: 4,
+			PMTUAdmissionCanceled:  5,
+			EchoPriorityOverflow:   6,
+		},
 		{Name: "cellular", State: telemetry.StateUp, ProbeSendErrors: 0},
 	}}
 	srv := startServer(t, src)
@@ -458,6 +482,19 @@ func TestExpositionProbeSendErrorsSeries(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%s{path=%q} = %v, want %v", MetricProbeSendErrors, c.path, got, c.want)
+		}
+	}
+	for _, metric := range []struct {
+		name string
+		want float64
+	}{
+		{MetricProbePriorityCoalesced, 4},
+		{MetricPMTUAdmissionCanceled, 5},
+		{MetricEchoPriorityOverflow, 6},
+	} {
+		got, ok := exp.PathValue(metric.name, "starlink")
+		if !ok || got != metric.want {
+			t.Errorf("%s{path=\"starlink\"} = %v, %v; want %v", metric.name, got, ok, metric.want)
 		}
 	}
 }

@@ -297,9 +297,10 @@ listen = "127.0.0.1:9090"
 `(concentrator peer, uplink)` pair, so the probe fan-out is **N concentrator
 peers × U uplinks**. The uplink **sockets** do not multiply by N (all peers share
 each uplink's socket), but the **probers** do: each emits one PROBE per fixed
-200 ms interval plus its reflected echo. Those generated frames currently use
-the direct strict-priority socket path and debit the exact-byte shaper by their
-encoded length after each successful write; failed writes create no debt. The
+200 ms interval plus its reflected echo. Those generated frames reserve retained
+priority capacity in the exact-byte shaper and use its serialized writer.
+Ordinary probes coalesce when that capacity is full, PMTU admission waits
+cancellably, and reflected echo admission fails without blocking receive. The
 fan-out ceiling independently bounds their aggregate emission. Config load
 rejects a config whose computed fan-out exceeds the budget of **32 probers**,
 with a message stating the computed value vs. the available budget. Worked
@@ -420,8 +421,8 @@ Common rules, either policy:
   raw `pacing_burst_frames` below one encoded frame is invalid. NaN, infinity,
   a non-positive result, or a derived byte budget too large for the platform
   byte-count domain is rejected before numeric conversion. Config load and the
-  live primitive both reject `Q=B+C` when that exact sum cannot fit in the
-  platform `int`, and reject an `Rp` too close to `R` for the maximum modeled
+  live primitive reject `Mtotal=B+C+P+Fgroup+Lio` when that exact sum cannot fit
+  in the platform `int`, and reject an `Rp` too close to `R` for the modeled
   priority bound `2*Pburst/(R-Rp)` to fit in `time.Duration`; device bring-up
   therefore never receives such a model, and gauges never expose a wrapped
   negative Q or a saturated configured-model bound.
@@ -430,26 +431,29 @@ Common rules, either policy:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
   periodic probe or a padded PMTU probe that substitutes in an eligible cadence
   slot; every PMTU slot forces the following slot to ordinary liveness, while a
-  peer-requested reactive echo remains immediate. PMTU timestamps start in the
-  selected slot, so cadence waiting does not inflate RTT. Config load requires
+  peer-requested reactive echo attempts non-blocking admission immediately. PMTU
+  reserves `P` before sequence/timestamp generation in the selected slot, so
+  admission and cadence waits do not inflate RTT. Config load requires
   `Rp<R`.
-  With DATA/PARITY budget `B>=Lmax` and total retained budget `Q=B+C`, a live
-  shaper holds at most `Q` retained bytes plus one writer-in-flight datagram of
-  at most `Lmax` bytes. One engine batch selects one path. FEC-off input is
+  With DATA/PARITY budget `B>=Lmax`, generated-priority reserve
+  `P=Pburst`, one conservative owned group `Fgroup`, and `Lio=Lmax`, a live
+  shaper holds at most `Mtotal=B+C+P+Fgroup+Lio`. One engine batch selects one path. FEC-off input is
   classified, framed, and admitted in order; FEC-on input is staged by the
   peer owner until an immutable group decision and then emitted one wire
-  group at a time. Compatible shaped group frames use one `WriteDatagrams`
-  handoff, which streams through cancellable per-datagram pre-copy backpressure
-  instead of requiring the whole batch to fit.
+  group at a time. A naturally single-path group on an exclusive writer
+  generation transfers ownership as one recovery tranche. The bounded prefix,
+  pre-cut priority, and current `Lio` precede the complete DATA+parity tranche;
+  later priority/groups follow it. Mixed-path/shared-socket groups keep the
+  conservative 250 ms fallback.
   The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
   and all size-closed and deadline-closed FEC parity by exact byte length. Inner
   handshake/cookie/keepalive frames use `C=Lmax` one buffer at a time but remain
   behind lower DATA in selected-path FIFO/outer sequence/FEC order; DATA cannot
   borrow `C`. A full DATA/control budget blocks the sender until capacity
   becomes available; it no longer produces `PickPaced` loss. Authenticated
-  outer PROBE/echo frames remain direct strict-priority writes and, after each
-  successful write, add their exact encoded bytes to future priority debt
-  without changing already-admitted deadlines.
+  outer PROBE/echo frames reserve `P` and enter the same serialized writer.
+  Ordinary probe overflow coalesces a cadence, PMTU waits cancellably, and
+  reactive echo overflow drops/counts without blocking receive.
   Each live `(peer,path)` socket generation owns one shaper. Runtime removal,
   failed add/promotion rollback, and daemon Down/Close stop admission and wake
   queued sends before waiting for writers; the UDP socket closes only after
@@ -473,23 +477,34 @@ Common rules, either policy:
   it occupies periodic local probe slots. Sustained authenticated on-demand
   outer CONTROL beyond this `Rp`/`Pburst` model constitutes overload and
   invalidates the bound; no live outer CONTROL protocol currently exists.
+  For an exclusive single-path FEC group, config also derives
+  `A=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+10ms` and
+  `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+10ms`. It requires `A<250ms`.
+  At recovery admission the socket receives one absolute
+  `cutStart+10ms` deadline before the cut becomes visible; that same deadline
+  covers any blocked predecessor and every tranche syscall. Install failure or
+  timeout terminates the group without retry and closes the writer generation.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
-  `Pburst=2,944 B`, and `Rp=14,720 B/s`.
+  `Pburst=P=2,944 B`, and `Rp=14,720 B/s`; `Fgroup`, `A`, and `Ecompletion`
+  additionally depend on the configured FEC geometry.
 - The live configuration and envelope are visible under
   `wanbond_path_shaper_*`: `rate_bytes_per_second`, `data_budget_bytes`,
   `control_reserve_bytes`, `queue_budget_bytes`, `max_datagram_bytes`,
   `priority_rate_bytes_per_second`, and `priority_burst_bytes`. Compare
   `priority_debt_bytes` with `priority_delay_bound_seconds`; the latter uses
   the live `Dp=(P0+Pburst)/(R-Rp)` expression. Queue gauges split DATA,
-  inner-control, total reserved, and in-flight bytes; the queue values include
-  pending-copy placeholders. Accepted bytes linearize at that reservation for
+  inner-control, retained priority, exact recovery wires, owned `Fgroup`,
+  `Mtotal`, and in-flight bytes; queue values include pending-copy placeholders.
+  Accepted bytes linearize at that reservation for
   both DATA/PARITY and inner control, while the existing accepted-datagram call
   result retains its publication-prefix meaning. Admission wait count/time rise
   under bounded backpressure; cancellation counts only never-reserved buffers.
   Generic and `EMSGSIZE` failures have separate call and affected-reserved-byte
   counters. Accepted/emitted/outer-priority byte counters make wire accounting
-  visible. These series (and the monitor UI's `shaper` block) are absent when
+  visible. The per-path `probe_priority_coalesced_total`,
+  `pmtu_admission_canceled_total`, and `echo_priority_overflow_total` distinguish
+  the three generated-priority overflow policies. These series (and the monitor UI's `shaper` block) are absent when
   pacing is off, and all cumulative values reset when the path receives a new
   socket/shaper generation.
 - Under active-backup, pacing enabled with **neither** a declared

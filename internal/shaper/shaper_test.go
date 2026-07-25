@@ -147,6 +147,7 @@ func validConfig() Config {
 		ControlReserveBytes:        100,
 		MaxDatagramBytes:           100,
 		PriorityBurstBytes:         100,
+		PriorityReserveBytes:       100,
 	}
 }
 
@@ -187,13 +188,17 @@ func TestNewValidatesModelBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	config = validConfig()
-	config.DataBudgetBytes = math.MaxInt - config.ControlReserveBytes
+	config.DataBudgetBytes = math.MaxInt -
+		config.ControlReserveBytes -
+		config.PriorityReserveBytes -
+		config.FECGroupReserveBytes -
+		config.MaxDatagramBytes
 	shaper, err = New(config, clock, write)
 	if err != nil {
-		t.Fatalf("exact MaxInt Q must be accepted: %v", err)
+		t.Fatalf("exact MaxInt Mtotal must be accepted: %v", err)
 	}
-	if got := shaper.Snapshot().QueueBudgetBytes; got != math.MaxInt || got < 0 {
-		t.Fatalf("Q gauge = %d, want exact non-negative MaxInt=%d", got, math.MaxInt)
+	if got := shaper.Snapshot().MemoryBoundBytes; got != math.MaxInt || got < 0 {
+		t.Fatalf("Mtotal gauge = %d, want exact non-negative MaxInt=%d", got, math.MaxInt)
 	}
 	if err := shaper.Close(); err != nil {
 		t.Fatal(err)
@@ -226,7 +231,7 @@ func TestNewValidatesModelBounds(t *testing.T) {
 			config.PriorityRateBytesPerSecond = 0
 			return config
 		}(),
-		"Q overflows int": func() Config {
+		"Mtotal overflows int": func() Config {
 			config := validConfig()
 			config.DataBudgetBytes = math.MaxInt
 			return config

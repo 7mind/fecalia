@@ -75,6 +75,9 @@ const (
 	// reflected-echo write failures are excluded. Sourced verbatim from
 	// PathSnapshot.ProbeSendErrors.
 	MetricProbeSendErrors                  = "wanbond_path_probe_send_errors_total"
+	MetricProbePriorityCoalesced           = "wanbond_path_probe_priority_coalesced_total"
+	MetricPMTUAdmissionCanceled            = "wanbond_path_pmtu_admission_canceled_total"
+	MetricEchoPriorityOverflow             = "wanbond_path_echo_priority_overflow_total"
 	MetricShaperAcceptedDatagrams          = "wanbond_path_shaper_accepted_datagrams_total"
 	MetricShaperEmittedDatagrams           = "wanbond_path_shaper_emitted_datagrams_total"
 	MetricShaperWriteErrors                = "wanbond_path_shaper_write_errors_total"
@@ -96,6 +99,11 @@ const (
 	MetricShaperPriorityRateBytesPerSecond = "wanbond_path_shaper_priority_rate_bytes_per_second"
 	MetricShaperPriorityBurstBytes         = "wanbond_path_shaper_priority_burst_bytes"
 	MetricShaperPriorityDelayBound         = "wanbond_path_shaper_priority_delay_bound_seconds"
+	MetricShaperPriorityRetainedBytes      = "wanbond_path_shaper_priority_retained_bytes"
+	MetricShaperFECGroupOwnedBytes         = "wanbond_path_shaper_fec_group_owned_bytes"
+	MetricShaperRecoveryRetainedBytes      = "wanbond_path_shaper_recovery_retained_bytes"
+	MetricShaperMemoryBoundBytes           = "wanbond_path_shaper_memory_bound_bytes"
+	MetricShaperMemoryRetainedBytes        = "wanbond_path_shaper_memory_retained_bytes"
 	MetricShaperAdmissionWaits             = "wanbond_path_shaper_admission_waits_total"
 	MetricShaperAdmissionWaitSeconds       = "wanbond_path_shaper_admission_wait_seconds_total"
 	MetricShaperAdmissionCanceledDatagrams = "wanbond_path_shaper_admission_canceled_datagrams_total"
@@ -375,6 +383,9 @@ type PathSnapshot struct {
 	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
 	// EMSGSIZE verdicts are excluded. Read verbatim from bind.PathTraffic.
 	ProbeSendErrors         uint64
+	ProbePriorityCoalesced  uint64
+	PMTUAdmissionCanceled   uint64
+	EchoPriorityOverflow    uint64
 	ShaperAcceptedDatagrams uint64
 	ShaperEmittedDatagrams  uint64
 	ShaperWriteErrors       uint64
@@ -532,6 +543,9 @@ type collector struct {
 	up             *prometheus.Desc
 	pmtu           *prometheus.Desc
 	probeErrs      *prometheus.Desc
+	probeCoalesced *prometheus.Desc
+	pmtuCanceled   *prometheus.Desc
+	echoOverflow   *prometheus.Desc
 	shaperAccepted *prometheus.Desc
 	shaperEmitted  *prometheus.Desc
 	shaperErrors   *prometheus.Desc
@@ -620,6 +634,9 @@ func NewCollector(src Source) prometheus.Collector {
 		up:             desc(pathSubsystem, "up", "Per-path liveness (1 = up, 0 = down).", pathLabels),
 		pmtu:           desc(pathSubsystem, "mtu", "Per-path discovered outer path MTU in bytes (configured value on a pinned path, else the largest padded-probe on-wire size that echoes).", pathLabels),
 		probeErrs:      desc(pathSubsystem, "probe_send_errors_total", "Unexpected locally-originated ordinary/PMTU PROBE socket write failures. Expected PMTU EMSGSIZE too-large verdicts are excluded; PMTU failures return to discovery and ordinary failures are counted then discarded.", pathLabels),
+		probeCoalesced: desc(pathSubsystem, "probe_priority_coalesced_total", "Ordinary probe cadences coalesced because retained generated-priority reserve P was full.", pathLabels),
+		pmtuCanceled:   desc(pathSubsystem, "pmtu_admission_canceled_total", "PMTU probes canceled while waiting for retained generated-priority admission.", pathLabels),
+		echoOverflow:   desc(pathSubsystem, "echo_priority_overflow_total", "Reactive echoes dropped without blocking receive because retained generated-priority reserve P was full.", pathLabels),
 		shaperAccepted: desc(pathSubsystem, "shaper_accepted_datagrams_total", "DATA/PARITY and inner-control datagrams made ready after copying caller memory into the path's exact-byte shaper.", pathLabels),
 		shaperEmitted:  desc(pathSubsystem, "shaper_emitted_datagrams_total", "Shaped DATA/PARITY and inner-control datagrams successfully written to the UDP socket.", pathLabels),
 		shaperErrors:   desc(pathSubsystem, "shaper_write_errors_total", "Shaped calls returning a terminal error after any accepted/emitted prefix.", pathLabels),
@@ -637,11 +654,16 @@ func NewCollector(src Source) prometheus.Collector {
 			makeShaperMetric("shaper_max_datagram_bytes", "Configured exact-byte shaper maximum encoded datagram size Lmax in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MaxDatagramBytes) }),
 			makeShaperMetric("shaper_accepted_bytes_total", "Total DATA/PARITY and inner-control bytes reserved before copying caller memory.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AcceptedBytes) }),
 			makeShaperMetric("shaper_emitted_bytes_total", "Total DATA/PARITY and inner-control bytes successfully written to the UDP socket.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.EmittedBytes) }),
-			makeShaperMetric("shaper_outer_priority_bytes_total", "Total successfully written authenticated outer PROBE/echo bytes charged to future priority debt.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.OuterPriorityBytes) }),
+			makeShaperMetric("shaper_outer_priority_bytes_total", "Total authenticated outer PROBE/echo bytes admitted to retained priority storage and charged to virtual time.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.OuterPriorityBytes) }),
 			makeShaperMetric("shaper_priority_debt_bytes", "Current outer-priority serialization debt P0 in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityDebtBytes }),
 			makeShaperMetric("shaper_priority_rate_bytes_per_second", "Configured sustained outer-priority rate Rp in bytes per second.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityRateBytesPerSecond }),
 			makeShaperMetric("shaper_priority_burst_bytes", "Configured outer-priority burst allowance Pburst in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.PriorityBurstBytes) }),
 			makeShaperMetric("shaper_priority_delay_bound_seconds", "Current DATA/inner-control admission bound Dp=(P0+Pburst)/(R-Rp) in seconds under generated priority Rp<R.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityDelayBound.Seconds() }),
+			makeShaperMetric("shaper_priority_retained_bytes", "Current retained generated-priority bytes; bounded by P=Pburst.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.PriorityRetainedBytes) }),
+			makeShaperMetric("shaper_fec_group_owned_bytes", "Current conservative one-group FEC ownership reservation Fgroup.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.FECGroupOwnedBytes) }),
+			makeShaperMetric("shaper_recovery_retained_bytes", "Current exact DATA+parity wire bytes retained inside the owned recovery group.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.RecoveryRetainedBytes) }),
+			makeShaperMetric("shaper_memory_bound_bytes", "Configured exact retained-memory bound Mtotal=B+C+P+Fgroup+Lio.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MemoryBoundBytes) }),
+			makeShaperMetric("shaper_memory_retained_bytes", "Current retained and in-flight bytes across B+C+P+Fgroup+Lio.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MemoryRetainedBytes) }),
 			makeShaperMetric("shaper_admission_waits_total", "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AdmissionWaits) }),
 			makeShaperMetric("shaper_admission_wait_seconds_total", "Cumulative seconds spent waiting for exact-byte shaper admission.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return s.AdmissionWaitDuration.Seconds() }),
 			makeShaperMetric("shaper_admission_canceled_datagrams_total", "Total datagrams never reserved because their admission context was canceled or expired.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AdmissionCanceledDatagrams) }),
@@ -701,6 +723,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.up
 	ch <- c.pmtu
 	ch <- c.probeErrs
+	ch <- c.probeCoalesced
+	ch <- c.pmtuCanceled
+	ch <- c.echoOverflow
 	ch <- c.shaperAccepted
 	ch <- c.shaperEmitted
 	ch <- c.shaperErrors
@@ -753,6 +778,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, upValue(p.State), labels...)
 		ch <- prometheus.MustNewConstMetric(c.pmtu, prometheus.GaugeValue, float64(p.PMTU), labels...)
 		ch <- prometheus.MustNewConstMetric(c.probeErrs, prometheus.CounterValue, float64(p.ProbeSendErrors), labels...)
+		ch <- prometheus.MustNewConstMetric(c.probeCoalesced, prometheus.CounterValue, float64(p.ProbePriorityCoalesced), labels...)
+		ch <- prometheus.MustNewConstMetric(c.pmtuCanceled, prometheus.CounterValue, float64(p.PMTUAdmissionCanceled), labels...)
+		ch <- prometheus.MustNewConstMetric(c.echoOverflow, prometheus.CounterValue, float64(p.EchoPriorityOverflow), labels...)
 		if p.Shaper != nil {
 			ch <- prometheus.MustNewConstMetric(c.shaperAccepted, prometheus.CounterValue, float64(p.ShaperAcceptedDatagrams), labels...)
 			ch <- prometheus.MustNewConstMetric(c.shaperEmitted, prometheus.CounterValue, float64(p.ShaperEmittedDatagrams), labels...)

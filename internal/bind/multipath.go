@@ -203,6 +203,9 @@ type sharedPathState struct {
 	// writeUDP is a test seam installed before a generation becomes active. Nil
 	// uses conn.WriteToUDPAddrPort.
 	writeUDP func([]byte, netip.AddrPort) (int, error)
+	// setWriteDeadline is the test seam for the socket-wide deadline used by a
+	// finite recovery cut. Nil delegates to conn.SetWriteDeadline.
+	setWriteDeadline func(time.Time) error
 	// bindMode is the path's configured/effective bind mode; boundDevice is the
 	// resolved SO_BINDTODEVICE interface it actually device-bound to ("" when
 	// source-IP-pinned). Both are set once at socket creation and IMMUTABLE for the
@@ -247,6 +250,23 @@ func (sp *sharedPathState) stopWrites() {
 
 func (sp *sharedPathState) waitWrites() {
 	sp.writes.Wait()
+}
+
+func (sp *sharedPathState) installWriteDeadline(deadline time.Time) error {
+	if sp.setWriteDeadline != nil {
+		return sp.setWriteDeadline(deadline)
+	}
+	if sp.conn == nil {
+		return errors.New("bind: path socket has no deadline-capable writer")
+	}
+	return sp.conn.SetWriteDeadline(deadline)
+}
+
+func (sp *sharedPathState) abortWriteGeneration() {
+	sp.stopWrites()
+	if sp.conn != nil {
+		_ = sp.conn.Close()
+	}
 }
 
 // addViewLocked publishes pp as a per-peer view of this shared socket for the lock-free
@@ -342,7 +362,10 @@ type peerPathState struct {
 	// consumes it as a too-large verdict. An unexpected PMTU failure is counted and
 	// returned to discovery; an ordinary failure is counted then discarded so the
 	// cadence continues across other paths. Incremented lock-free (no m.mu).
-	probeSendErrors atomic.Uint64
+	probeSendErrors        atomic.Uint64
+	probePriorityCoalesced atomic.Uint64
+	pmtuAdmissionCanceled  atomic.Uint64
+	echoPriorityOverflow   atomic.Uint64
 
 	// shapedAccepted/shapedEmitted distinguish the prefix the exact-byte shaper
 	// accepted from the prefix its writer handed to the kernel. shapedWriteErrors
@@ -859,6 +882,51 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 	if pathIsV6(ps.src) {
 		outerIPUDPOverhead = IPv6UDPOverhead
 	}
+	if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
+		admit := func(size int, generate func() ([]byte, error)) error {
+			remote, remoteOK := ps.getRemote()
+			if !remoteOK {
+				return errNoPathRemote
+			}
+			err := shaped.WritePriorityGenerated(
+				context.Background(),
+				size,
+				func() ([]byte, shaper.WriteFunc, error) {
+					raw, generateErr := generate()
+					if generateErr != nil {
+						return nil, nil, generateErr
+					}
+					return raw, func(payload []byte) error {
+						if _, writeErr := ps.writeToUDPAddrPort(payload, remote); writeErr != nil {
+							ps.socketWriteErrors.Add(1)
+							return m.accountSendError(ps, writeErr)
+						}
+						return nil
+					}, nil
+				},
+			)
+			if err != nil {
+				mapped := mapPMTUProbeWriteError(err)
+				if errors.Is(mapped, context.Canceled) || errors.Is(mapped, shaper.ErrClosed) {
+					ps.pmtuAdmissionCanceled.Add(1)
+				}
+				if !errors.Is(mapped, telemetry.ErrProbeTooLarge) {
+					ps.probeSendErrors.Add(1)
+				}
+				return mapped
+			}
+			ps.txBytes.Add(uint64(size))
+			return nil
+		}
+		return telemetry.NewCadencedAdmittedEchoAwaitProbe(
+			ps.prober,
+			admit,
+			ps.enqueuePMTUProbe,
+			outerIPUDPOverhead,
+			0,
+			nil,
+		)
+	}
 	return telemetry.NewCadencedEchoAwaitProbe(
 		ps.prober,
 		send,
@@ -957,6 +1025,16 @@ type pathShaper interface {
 	WriteDatagrams(context.Context, []shaper.Datagram) (shaper.BatchResult, error)
 	AccountPriority(int) error
 	Close() error
+}
+
+type recoveryPathShaper interface {
+	pathShaper
+	WritePriority(context.Context, []byte, shaper.WriteFunc) error
+	TryWritePriority([]byte, shaper.WriteFunc) (bool, <-chan error, error)
+	WritePriorityGenerated(context.Context, int, shaper.PriorityGenerator) error
+	TryWritePriorityGenerated(int, shaper.PriorityGenerator) (bool, <-chan error, error)
+	WriteRecovery(context.Context, []shaper.Datagram, shaper.RecoveryControl) (shaper.BatchResult, error)
+	RecoveryContract() shaper.RecoveryContract
 }
 
 type stagedPathShaper interface {
@@ -1428,6 +1506,9 @@ func exactByteShaperConfig(cfg config.PathShaperConfig) shaper.Config {
 		ControlReserveBytes:        cfg.ControlReserveBytes,
 		MaxDatagramBytes:           cfg.MaxEncodedDatagramBytes,
 		PriorityBurstBytes:         cfg.ProbeBurstBytes,
+		PriorityReserveBytes:       cfg.ProbeBurstBytes,
+		FECGroupReserveBytes:       cfg.FECGroupReserveBytes,
+		RecoveryWriteSlack:         cfg.RecoveryWriteSlack,
 	}
 }
 
@@ -2830,14 +2911,36 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		}
 		if pr.reflector != nil {
 			if echo, epochChanged, rerr := pr.reflector.Reflect(raw); rerr == nil {
-				// UDP writes are goroutine-safe, so this receive-goroutine reflection
-				// races no in-flight Send on the same socket.
-				if _, werr := ps.writeToUDPAddrPort(echo, srcAP); werr == nil {
-					// True-wire-volume accounting (D48): the echo we just sent back is
-					// real egress traffic on this path, so it counts toward txBytes
-					// exactly like a DATA/PARITY write — only on a nil write error.
-					ps.txBytes.Add(uint64(len(echo)))
-					m.accountGeneratedPriorityAfterWrite(ps, len(echo))
+				if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
+					admitted, done, writeErr := shaped.TryWritePriority(echo, func(payload []byte) error {
+						if _, err := ps.writeToUDPAddrPort(payload, srcAP); err != nil {
+							ps.socketWriteErrors.Add(1)
+							return m.accountSendError(ps, err)
+						}
+						return nil
+					})
+					switch {
+					case writeErr != nil:
+						ps.probeSendErrors.Add(1)
+					case !admitted:
+						ps.echoPriorityOverflow.Add(1)
+					default:
+						go func(size int, completion <-chan error) {
+							if err := <-completion; err == nil {
+								ps.txBytes.Add(uint64(size))
+							}
+						}(len(echo), done)
+					}
+				} else {
+					// UDP writes are goroutine-safe, so this receive-goroutine reflection
+					// races no in-flight Send on the same socket.
+					if _, werr := ps.writeToUDPAddrPort(echo, srcAP); werr == nil {
+						// True-wire-volume accounting (D48): the echo we just sent back is
+						// real egress traffic on this path, so it counts toward txBytes
+						// exactly like a DATA/PARITY write — only on a nil write error.
+						ps.txBytes.Add(uint64(len(echo)))
+						m.accountGeneratedPriorityAfterWrite(ps, len(echo))
+					}
 				}
 				if epochChanged {
 					// Authenticated PEER RESTART (T116/T119): the reflector reports THIS
@@ -4582,6 +4685,12 @@ type PathTraffic struct {
 	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
 	// EMSGSIZE verdicts are excluded. Read verbatim from peerPathState.probeSendErrors.
 	ProbeSendErrors uint64
+	// Generated-priority bounded-admission outcomes are distinct: ordinary
+	// cadence coalescence, cancellable PMTU admission, and reactive-echo
+	// overflow have different operational meaning.
+	ProbePriorityCoalesced uint64
+	PMTUAdmissionCanceled  uint64
+	EchoPriorityOverflow   uint64
 	// The following addressing fields surface this path's runtime networking
 	// identity for the G21 monitoring UI (value-wiring into the monitor snapshot
 	// is T220; the /metrics prometheus exposition ignores them). Source is the
@@ -4645,6 +4754,9 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		name           string
 		tx, rx         uint64
 		probeErrs      uint64
+		probeCoalesced uint64
+		pmtuCanceled   uint64
+		echoOverflow   uint64
 		shaperAccepted uint64
 		shaperEmitted  uint64
 		shaperErrors   uint64
@@ -4680,6 +4792,9 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 				tx:             pp.txBytes.Load(),
 				rx:             pp.rxBytes.Load(),
 				probeErrs:      pp.probeSendErrors.Load(),
+				probeCoalesced: pp.probePriorityCoalesced.Load(),
+				pmtuCanceled:   pp.pmtuAdmissionCanceled.Load(),
+				echoOverflow:   pp.echoPriorityOverflow.Load(),
 				shaperAccepted: pp.shapedAccepted.Load(),
 				shaperEmitted:  pp.shapedEmitted.Load(),
 				shaperErrors:   pp.shapedWriteErrors.Load(),
@@ -4703,6 +4818,9 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 				TxBytes:                 pr.tx,
 				RxBytes:                 pr.rx,
 				ProbeSendErrors:         pr.probeErrs,
+				ProbePriorityCoalesced:  pr.probeCoalesced,
+				PMTUAdmissionCanceled:   pr.pmtuCanceled,
+				EchoPriorityOverflow:    pr.echoOverflow,
 				ShaperAcceptedDatagrams: pr.shaperAccepted,
 				ShaperEmittedDatagrams:  pr.shaperEmitted,
 				ShaperWriteErrors:       pr.shaperErrors,

@@ -367,9 +367,9 @@ admission. The currently integrated traffic classes are:
   charged by the exact encoded UDP payload length and retained under the DATA
   budget `B`. A full budget applies backpressure; it does not drop.
 - **`frame.KindProbe`** (wanbond's own PROBE frames and their reflected echoes) —
-  uses the direct, strict-priority socket path. A successful receiver-visible
-  write then charges its exact encoded bytes to future priority debt; a failed
-  write creates no debt and already-admitted deadlines remain fixed.
+  reserves retained priority capacity `P` and uses the same serialized writer.
+  Ordinary cadence coalesces when `P` is full, PMTU admission waits
+  cancellably, and reflected echo admission fails without blocking receive.
 
 **Shaper/socket generation ownership (T306).** A live per-`(peer,path)` view
 owns exactly one shaper for the lifetime of the shared path socket generation.
@@ -410,8 +410,8 @@ plaintext deep-packet inspection BEFORE encryption, which is out of
 architecture (wanbond is designed to carry the inner tunnel opaquely, not to
 terminate or inspect it). The only wanbond-addressable priority signal below
 `ClassControl` is `frame.KindProbe` (wanbond's own generated PROBE frames,
-which use the direct generated-priority path and exact post-write byte
-accounting) — there is no path to prioritizing traffic the shaper cannot see
+which reserve retained priority capacity and use the serialized shaper writer)
+— there is no path to prioritizing traffic the shaper cannot see
 inside the tunnel.
 
 **Motivation (defects D65/D112).** In the pre-T299 implementation, `Send` wrote
@@ -525,21 +525,23 @@ Writer failure returns the terminal error, reports the accepted versus
 kernel-emitted prefix, and leaves the unstarted suffix unencoded; later calls
 may continue. Close stops admission, retires queued work, and waits for the
 in-flight writer before closing its UDP socket.
-T300 completes generated-priority integration: authenticated outer PROBE and
-reflected echo frames bypass retained DATA, write directly to the selected path
-socket, and call `AccountPriority` with the exact encoded length only after a
-successful write. A failed direct write creates no priority debt. A PMTU search
+T300 introduced generated-priority integration; T312 makes that integration
+retained and serialized. Authenticated outer PROBE and reflected echo frames
+reserve the `P` priority budget and use the same path writer as retained
+DATA/control/recovery. A PMTU search
 queues at most one padded local probe per `(peer,path)` and that frame substitutes
 in the next eligible local probe cadence slot. The immediately following slot is
 reserved for ordinary liveness before another PMTU attempt, so consecutive
-immediate search failures cannot suppress the ordinary stream. Sequence
-allocation, timestamping, and echo-waiter registration happen only when the
-selected PMTU slot executes, excluding cadence wait from RTT and the echo
-deadline. Search candidates remain outer-IP MTU units; generation subtracts the
+immediate search failures cannot suppress the ordinary stream. PMTU admission
+reserves `P` before sequence allocation, timestamping, and echo-waiter
+registration when the selected slot executes, excluding both admission and
+cadence waits from RTT and the echo deadline. Search candidates remain outer-IP
+MTU units; generation subtracts the
 validated socket family's IP+UDP overhead (28 bytes for IPv4, 48 for IPv6), so
 the encoded UDP length equals that path's `Lmax` at the ceiling and remains
 admissible to its exact-byte shaper. PMTU therefore does not add a second local
-producer to `Rp`; a peer-requested reactive echo remains immediate. An
+producer to `Rp`; a peer-requested reactive echo attempts non-blocking
+admission immediately. An
 unexpected socket failure preserves its transport error, increments the path's
 probe-send-error counter, and adds neither wire bytes nor debt. `EMSGSIZE` maps
 to the expected PMTU too-large verdict and does not count as an unexpected send
@@ -547,14 +549,17 @@ failure.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
-`C = Lmax` and `Q = B + C`. DATA reservations retain at most `B` bytes, CONTROL
-reservations retain at most `C` bytes, and DATA cannot borrow unused CONTROL
-reserve. Consequently the queue and copy reservations retain at most `Q`
-bytes, plus at most one `Lmax` datagram in the serial writer. `B >= Lmax`
+`C = Lmax`, `P = Pburst`, and `Q = B + C`. DATA reservations retain at most
+`B` bytes, CONTROL reservations retain at most `C` bytes, generated
+authenticated priority retains at most `P`, and DATA cannot borrow either
+reserve. One complete FEC group owns the conservative
+`Fgroup=Kdata*Lc+(Kdata+Mmax)*Ls+(Kdata+Mmax)*Lmax`, where
+`Lc=8+maximum-inner-datagram` and `Ls=4+Lc`. With one writer-in-flight
+`Lio=Lmax`, the complete bound is `Mtotal=B+C+P+Fgroup+Lio`. `B >= Lmax`
 allows an exact-`Lmax` DATA datagram, including when `B == Lmax`; construction
 defensively rejects `B < Lmax`, `C != Lmax`, `R <= Rp`, or an `Lmax/R`
 serialization interval that cannot fit in `time.Duration`. It also rejects
-`Q=B+C` when the sum cannot fit in `int`, and rejects a configured priority
+`Mtotal` when the sum cannot fit in `int`, and rejects a configured priority
 arrival envelope whose maximum modeled bound
 `2*Pburst/(R-Rp)` cannot fit in `time.Duration`. Under that envelope the
 pre-call debt satisfies `P0<=Pburst`; traffic beyond it constitutes the
@@ -596,12 +601,12 @@ selected path, FIFO, outer sequence, and FEC pipeline as DATA. Consequently
 inner control never overtakes lower-sequence retained DATA; DATA cannot borrow
 unused `C`. This class differs from authenticated **outer** PROBE/echo priority.
 
-Generated authenticated outer PROBE/echo traffic does not enter the retained
-queue. It writes immediately, bypassing retained DATA, and only after a
-successful receiver-visible socket write calls `AccountPriority(L)` with the
-exact encoded length. `AccountPriority` advances the priority-debt clock and
-only the **future** virtual tail by `L/R`; it never rewrites deadlines already
-assigned to queued DATA or inner CONTROL. Let a call begin with `P0` outstanding
+Generated authenticated outer PROBE/echo traffic reserves `P` before copying
+and enters the same serialized writer. Ordinary cadence uses non-blocking
+admission and coalesces when full; PMTU waits cancellably; reactive echo uses
+non-blocking admission and drops/counts overflow without blocking inbound
+dispatch. Admission charges the exact encoded length to the priority-debt clock
+and future virtual tail. Let a call begin with `P0` outstanding
 generated-priority bytes. Under the configured model — at most one coincident
 post-call burst `Pburst`, followed by generated priority traffic bounded by
 `Rp` — DATA/inner-CONTROL admission occurs no later than
@@ -612,7 +617,7 @@ The denominator is the net debt-clearance rate, not `R`; the simpler `P0/R`
 bound fails as soon as the post-call burst or continuing `Rp` traffic exists.
 This covers both `P0=0` and non-zero existing debt, and the `R > Rp`
 constructor invariant makes `Dp` finite. Operationally, each blocked reservation
-registers a waiter under the shaper mutex. `AccountPriority` directly extends its
+registers a waiter under the shaper mutex. Priority admission directly extends its
 deadline for arrivals in the half-open interval `[call, call+Dp)`, so an arrival
 at `Dp-epsilon` still applies even when the waiter does not run until the former
 deadline. Once that deadline has matured (`now >= deadline`), a priority debit
@@ -635,10 +640,28 @@ and every such slot forces the next one to ordinary liveness.
 Sustained authenticated, on-demand outer CONTROL generation beyond that
 declared model constitutes explicit overload and invalidates the bound. No live
 outer CONTROL protocol currently exists; any future trusted local producer must
-use the same write-first/exact-debit path and fit the declared `Rp`/`Pburst`
-envelope before relying on `Dp`. The primitive does not classify frames, select
-paths, generate FEC, or own tunnel lifecycle; those remain integration
-responsibilities.
+use the same retained-priority path and fit the declared `Rp`/`Pburst`
+envelope before relying on `Dp`.
+
+For a naturally single-path decided FEC group on an exclusive writer
+generation, group admission snapshots a recovery cut. The already-retained
+lower-OuterSeq `B+C` prefix, pre-cut `P`, and current `Lio` run before the
+complete DATA+parity tranche; later priority and later groups run after it.
+Every tranche datagram becomes writer-runnable at
+`cutStart=max(now,prefixVirtualTail)` while the whole tranche charges virtual
+time once. Under the writer lock the shaper installs one socket-wide absolute
+deadline `D=cutStart+I`, `I=10ms`, before publishing the cut. It applies to an
+already-blocked predecessor and every tranche syscall, and clears only after
+terminal completion. Deadline-install failure, timeout, or exhaustion aborts
+without retry and closes the socket generation. Mixed-path groups and shared
+multi-peer sockets advertise the contract disabled and retain the conservative
+250 ms receiver fallback.
+
+Define
+`A=Sdevice=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+I` and
+`Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I`. Config requires `Rp<R` and a
+representable `A<250ms`. The primitive does not classify frames, select paths,
+generate FEC, or own tunnel lifecycle; those remain integration responsibilities.
 
 **Shaper observability.** `Shaper.Snapshot` takes the shaper mutex and copies one
 coherent generation-local view; `Bind.PeerSnapshots` captures the optional
@@ -647,20 +670,22 @@ Pacing-off paths carry no snapshot, so the monitor omits `path.shaper` and
 Prometheus emits no `wanbond_path_shaper_*` series. A new socket/shaper
 generation starts all cumulative values at zero.
 
-The live gauges expose reserved DATA, reserved inner-control, total reserved,
-and writer-in-flight bytes separately. They directly establish
+The live gauges expose reserved DATA, reserved inner-control, retained priority,
+owned FEC group, `Mtotal`, current total retained, and writer-in-flight bytes.
+They directly establish
 `queue_data_bytes<=B`, `queue_control_bytes<=C`, and `queue_bytes<=Q`; the
 single in-flight datagram remains outside `Q`. Queue gauges include pending-copy
 placeholders. `scheduled_delay_seconds`
 reports the virtual tail relative to the current clock. Configuration gauges
-export `R`, `B`, `C`, `Q`, `Lmax`, `Rp`, and `Pburst`; the priority gauges
+export `R`, `B`, `C`, `Q`, `P`, `Fgroup`, `Mtotal`, `Lmax`, `Rp`, and
+`Pburst`; the priority gauges
 export current `P0` and recompute `Dp=(P0+Pburst)/(R-Rp)` at snapshot time,
 including when `Rp` approaches `R`.
 
 Cumulative accepted and emitted byte counters use the shaper as their single
-authority, with accepted bytes linearized at reservation for both DATA/PARITY
-and inner control. Outer PROBE/echo bytes remain a separate post-success
-priority counter. Admission waits count once per datagram that first encounters
+authority, with accepted bytes linearized at reservation for DATA/PARITY,
+inner control, recovery tranches, and generated priority. Outer PROBE/echo
+bytes retain a separate admission counter. Admission waits count once per datagram that first encounters
 capacity or priority-debt backpressure and accumulate elapsed wait time;
 context cancellation counts only the batch's still-unreserved suffix.
 Asynchronous writer outcomes split generic and `EMSGSIZE` errors by both calls
@@ -669,7 +694,7 @@ first writer failure contributes affected bytes to that failure class without
 fabricating another writer call. While a live generation has no close
 retirement in progress:
 
-`accepted_bytes = emitted_bytes + generic_error_bytes + EMSGSIZE_error_bytes + queue_bytes + in_flight_bytes`.
+`accepted_bytes = emitted_bytes + generic_error_bytes + EMSGSIZE_error_bytes + queue_bytes + priority_retained_bytes + recovery_retained_bytes + in_flight_bytes`.
 
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
@@ -765,9 +790,9 @@ rate emits them. Hardware measurements must therefore be rerun against T299
 before claiming a new throughput/RTT delta. **Current guidance:** enable
 `pacing_enabled = true` when the operator has a defensible per-link bandwidth
 and RTT declaration and wants bounded egress admission; leave it off for the
-legacy direct-send behavior. Generated PROBE/echo remains direct but now incurs
-an exact post-write priority debit, so the historical probe-headroom
-interpretation above does not describe the current byte shaper.
+legacy direct-send behavior. Generated PROBE/echo reserves retained priority
+capacity and uses the same serialized writer, so the historical
+probe-headroom interpretation above does not describe the current byte shaper.
 
 **Operability runbook: reading the pacing/aggregation signals together
 (G13).** Diagnosing a weighted-policy deployment's pacing/aggregation
