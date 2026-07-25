@@ -213,6 +213,12 @@ func (r *fecReceiver) stats() fec.DecoderStats {
 	return r.dec.Stats()
 }
 
+func (r *fecReceiver) discardIncompletePreserveHighWater() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dec.DiscardIncompletePreserveHighWater()
+}
+
 // FECStats is a consistent snapshot of the Bind's FEC counters (T24), the shape the
 // metrics.Source adapter maps onto the connection-scoped /metrics FEC series.
 // DataFrames is the send-side DATA-frame count (the fixed-ratio overhead's

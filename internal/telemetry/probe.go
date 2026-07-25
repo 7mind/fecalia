@@ -153,9 +153,20 @@ func NewProber(
 // with the current clock time so the echo yields a round-trip sample. The
 // returned bytes are ready for the wire.
 func (p *Prober) SendProbe() ([]byte, error) {
+	raw, _, err := p.SendProbePayload(nil)
+	return raw, err
+}
+
+// SendProbePayload emits an ordinary unpadded probe with a MAC-covered payload
+// and returns the exact header stamped into it. Callers use the header to bind a
+// recovery-contract ACK to an actually emitted offer.
+func (p *Prober) SendProbePayload(payload []byte) ([]byte, frame.Probe, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return frame.Encode(p.psk, p.buildProbeLocked())
+	probe := p.buildProbeLocked()
+	probe.Payload = append([]byte(nil), payload...)
+	raw, err := frame.Encode(p.psk, probe)
+	return raw, probe, err
 }
 
 // SendPaddedProbe builds and encodes the next authenticated probe padded so its
@@ -229,16 +240,23 @@ func (p *Prober) buildProbeLocked() frame.Probe {
 // duplicate is idempotent, a reorder fills its gap), but only a FRESH echo yields
 // a new RTT sample and a liveness heartbeat.
 func (p *Prober) HandleEcho(raw []byte) error {
+	_, err := p.HandleEchoProbe(raw)
+	return err
+}
+
+// HandleEchoProbe applies the ordinary liveness/freshness checks and returns the
+// authenticated fresh echo for peer-scoped recovery-contract processing.
+func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 	f, err := frame.Decode(p.psk, raw)
 	if err != nil {
-		return err
+		return frame.Probe{}, err
 	}
 	probe, ok := f.(frame.Probe)
 	if !ok {
-		return fmt.Errorf("telemetry: expected probe echo, got frame kind %d", f.Kind())
+		return frame.Probe{}, fmt.Errorf("telemetry: expected probe echo, got frame kind %d", f.Kind())
 	}
 	if probe.PathID != p.pathID {
-		return ErrPathMismatch
+		return frame.Probe{}, ErrPathMismatch
 	}
 	// The SessionID is immutable after construction, so it is read without the lock.
 	// A genuine echo of one of THIS boot's probes always carries our own SessionID
@@ -246,7 +264,7 @@ func (p *Prober) HandleEcho(raw []byte) error {
 	// cross-boot echo or a replay of one — reject it before it can advance this
 	// boot's high-water or liveness.
 	if probe.SessionID != p.sessionID {
-		return ErrSessionMismatch
+		return frame.Probe{}, ErrSessionMismatch
 	}
 
 	p.mu.Lock()
@@ -257,7 +275,7 @@ func (p *Prober) HandleEcho(raw []byte) error {
 	p.est.ObserveProbeEcho(probe.ProbeSeq)
 
 	if !p.guard.Accept(probe.ProbeSeq) {
-		return ErrReplay
+		return frame.Probe{}, ErrReplay
 	}
 	// Record the responder's live issued challenge from this FRESH echo so our
 	// subsequent probes prove liveness and (after a restart) get us re-adopted. Only
@@ -272,7 +290,7 @@ func (p *Prober) HandleEcho(raw []byte) error {
 	}
 	p.est.ObserveRTT(rtt)
 	p.live.RecordEcho()
-	return nil
+	return probe, nil
 }
 
 // Tick advances the liveness state machine against the clock; call it at least
@@ -303,6 +321,9 @@ func (p *Prober) State() PathState {
 // on; the bind reconciles a path's DATA-frame id (pathState.id) to it across a
 // Close->Open cycle so DATA and PROBE agree and a survivor is never renumbered.
 func (p *Prober) PathID() uint8 { return p.pathID }
+
+// SessionID returns this prober's immutable process/boot epoch.
+func (p *Prober) SessionID() uint64 { return p.sessionID }
 
 // reflectorPath is the Reflector's bounded per-path state: exactly one entry per
 // PathID, so memory is O(paths) with NO retired-session set. It holds the
@@ -373,6 +394,23 @@ type Reflector struct {
 	haveRestartSession bool
 }
 
+type ProbeAcceptance uint8
+
+const (
+	ProbeBootstrap ProbeAcceptance = iota
+	ProbeCurrent
+	ProbeAdopted
+)
+
+// AcceptedProbe is an authenticated non-echo probe after anti-replay/session
+// admission. Probe already contains the issued challenge and echo bit needed
+// for response encoding.
+type AcceptedProbe struct {
+	Probe        frame.Probe
+	Acceptance   ProbeAcceptance
+	EpochChanged bool
+}
+
 // NewReflector builds a Reflector authenticating under psk and drawing its per-path
 // issued challenges from rand (crypto/rand.Reader in production; a deterministic
 // reader in tests). rand is injected rather than referenced as a package global so
@@ -401,35 +439,47 @@ func NewReflector(psk config.Key, rand io.Reader) *Reflector {
 // the live challenge. The bind consumes the flag OUTSIDE r.mu (T119); the
 // Reflector itself stays resequencer-unaware — it only reports the boolean.
 func (r *Reflector) Reflect(raw []byte) (echo []byte, epochChanged bool, err error) {
-	f, err := frame.Decode(r.psk, raw)
+	accepted, err := r.AcceptProbe(raw)
 	if err != nil {
 		return nil, false, err
+	}
+	out, err := r.EncodeAcceptedProbe(accepted, accepted.Probe.Payload)
+	return out, accepted.EpochChanged, err
+}
+
+// AcceptProbe authenticates and classifies a probe without publishing its echo.
+// This lets a receiver install contract/FEC/resequencer state before encoding
+// and admitting the corresponding ACK.
+func (r *Reflector) AcceptProbe(raw []byte) (AcceptedProbe, error) {
+	f, err := frame.Decode(r.psk, raw)
+	if err != nil {
+		return AcceptedProbe{}, err
 	}
 	probe, ok := f.(frame.Probe)
 	if !ok {
-		return nil, false, fmt.Errorf("telemetry: expected probe, got frame kind %d", f.Kind())
+		return AcceptedProbe{}, fmt.Errorf("telemetry: expected probe, got frame kind %d", f.Kind())
 	}
 
 	r.mu.Lock()
-	issued, reflect, restarted, err := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq, probe.Challenge)
+	issued, reflect, acceptance, restarted, err := r.acceptLocked(probe.PathID, probe.SessionID, probe.ProbeSeq, probe.Challenge)
 	r.mu.Unlock()
 	if err != nil {
-		return nil, false, err
+		return AcceptedProbe{}, err
 	}
 	if !reflect {
-		return nil, false, ErrReplay
+		return AcceptedProbe{}, ErrReplay
 	}
-	// Mark the reflection as an echo so the originator's transport routes it into its
-	// Prober (HandleEcho) rather than reflecting it again, and stamp the path's live
-	// issued challenge so the peer can prove liveness on its next probe. ProbeSeq /
-	// TimestampNanos / SessionID are preserved verbatim.
 	probe.IsEcho = true
 	probe.Challenge = issued
-	out, err := frame.Encode(r.psk, probe)
-	if err != nil {
-		return nil, false, err
-	}
-	return out, restarted, nil
+	return AcceptedProbe{Probe: probe, Acceptance: acceptance, EpochChanged: restarted}, nil
+}
+
+// EncodeAcceptedProbe encodes one previously accepted response with the payload
+// selected by the receiver (verbatim legacy bytes or a typed ACK).
+func (r *Reflector) EncodeAcceptedProbe(accepted AcceptedProbe, payload []byte) ([]byte, error) {
+	probe := accepted.Probe
+	probe.Payload = append([]byte(nil), payload...)
+	return frame.Encode(r.psk, probe)
 }
 
 // acceptLocked applies the responder-contributed-challenge decision for one probe.
@@ -437,12 +487,12 @@ func (r *Reflector) Reflect(raw []byte) (echo []byte, epochChanged bool, err err
 // (reflect=false => a within-session duplicate, surfaced as ErrReplay), whether this
 // probe was a deduped peer-restart epoch change (epochChanged; see Reflect), and any
 // CSPRNG error. The caller holds r.mu. See Reflector for the full rule set.
-func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChallenge uint64) (issued uint64, reflect bool, epochChanged bool, err error) {
+func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChallenge uint64) (issued uint64, reflect bool, acceptance ProbeAcceptance, epochChanged bool, err error) {
 	st, ok := r.paths[pathID]
 	if !ok {
 		ch, derr := r.drawChallenge()
 		if derr != nil {
-			return 0, false, false, derr
+			return 0, false, ProbeBootstrap, false, derr
 		}
 		st = &reflectorPath{challenge: ch}
 		r.paths[pathID] = st
@@ -452,9 +502,9 @@ func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChalle
 	case st.adopted && sessionID == st.session:
 		// Current live session: strict-monotonic within-session replay rejection (D4).
 		if !st.guard.Accept(probeSeq) {
-			return 0, false, false, nil // known duplicate/stale: reject, do not reflect
+			return 0, false, ProbeCurrent, false, nil // known duplicate/stale: reject, do not reflect
 		}
-		return st.challenge, true, false, nil
+		return st.challenge, true, ProbeCurrent, false, nil
 	case echoedChallenge == st.challenge:
 		// Cross-session probe echoing our LIVE challenge: a genuine peer that received
 		// our echo. Adopt the new epoch, reset the high-water for its seq-from-0 stream,
@@ -471,7 +521,7 @@ func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChalle
 		st.guard.Accept(probeSeq)
 		ch, derr := r.drawChallenge()
 		if derr != nil {
-			return 0, false, false, derr
+			return 0, false, ProbeAdopted, false, derr
 		}
 		st.challenge = ch
 		// Surface the restart ONCE per new epoch: every path of the restarted boot
@@ -481,13 +531,13 @@ func (r *Reflector) acceptLocked(pathID uint8, sessionID, probeSeq, echoedChalle
 			r.haveRestartSession = true
 			epochChanged = true
 		}
-		return st.challenge, true, epochChanged, nil
+		return st.challenge, true, ProbeAdopted, epochChanged, nil
 	default:
 		// Cross-session probe WITHOUT our live challenge: a replay attacker (which can
 		// never carry the current challenge) or a not-yet-bootstrapped restarted peer.
 		// Never adopt/reset; still reflect the live challenge so a genuine peer learns
 		// it and is adopted on its next probe.
-		return st.challenge, true, false, nil
+		return st.challenge, true, ProbeBootstrap, false, nil
 	}
 }
 

@@ -443,14 +443,19 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 			overshoot = 0
 		}
 		o.fs.recordDeadlineDecision(overshoot)
-		if overshoot > fecDeadlineDispatchGrace && o.m.fecDeadlineInvalidator != nil {
-			o.m.fecDeadlineInvalidator(fecDeadlineMiss{
-				Peer:      o.peer.name,
-				Group:     group,
-				Due:       due,
-				DecidedAt: decidedAt,
-				Overshoot: overshoot,
-			})
+		if overshoot > fecDeadlineDispatchGrace {
+			if o.peer.contracts != nil {
+				o.peer.contracts.disable()
+			}
+			if o.m.fecDeadlineInvalidator != nil {
+				o.m.fecDeadlineInvalidator(fecDeadlineMiss{
+					Peer:      o.peer.name,
+					Group:     group,
+					Due:       due,
+					DecidedAt: decidedAt,
+					Overshoot: overshoot,
+				})
+			}
 		}
 	}
 
@@ -550,7 +555,7 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 			write.path.socketWriteErrors.Add(1)
 			return o.m.accountSendError(write.path, err)
 		}
-		recordWireEmission(write.path, o.peer, o.fs, write.wire)
+		o.m.recordWireEmission(write.path, o.peer, o.fs, write.wire)
 		i++
 	}
 	return nil

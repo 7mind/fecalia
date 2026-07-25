@@ -45,8 +45,9 @@ func (m *Multipath) emitProbes() {
 		return
 	}
 	type target struct {
-		ps *peerPathState
-		pr *telemetry.Prober
+		ps       *peerPathState
+		pr       *telemetry.Prober
+		contract *recoveryContractCoordinator
 	}
 	// Probe EVERY bound peer's paths (T93): a concentrator initiates its own probe stream to
 	// each edge over that edge-peer's per-(peer,path) prober, so every peer's liveness/RTT is
@@ -67,7 +68,7 @@ func (m *Multipath) emitProbes() {
 			if ps.prober == nil {
 				continue
 			}
-			targets = append(targets, target{ps: ps, pr: ps.prober})
+			targets = append(targets, target{ps: ps, pr: ps.prober, contract: p.contracts})
 		}
 		if rq := p.resequencer.Load(); rq != nil {
 			prs := make([]*telemetry.Prober, 0, len(p.paths))
@@ -111,14 +112,21 @@ func (m *Multipath) emitProbes() {
 		if request := t.ps.takePMTUProbe(); request != nil {
 			request.done <- request.work()
 		} else if hasRemote {
+			var contractPayload []byte
+			if t.contract != nil {
+				contractPayload = t.contract.payload()
+			}
+			probeSize := frame.UnpaddedProbeOnWire + len(contractPayload)
 			if shaped, ok := t.ps.shaper.(recoveryPathShaper); ok {
+				var sent frame.Probe
 				admitted, done, writeErr := shaped.TryWritePriorityGenerated(
-					frame.UnpaddedProbeOnWire,
+					probeSize,
 					func() ([]byte, shaper.WriteFunc, error) {
-						raw, generateErr := t.pr.SendProbe()
+						raw, probe, generateErr := t.pr.SendProbePayload(contractPayload)
 						if generateErr != nil {
 							return nil, nil, generateErr
 						}
+						sent = probe
 						return raw, func(payload []byte) error {
 							if _, err := t.ps.writeToUDPAddrPort(payload, remote); err != nil {
 								t.ps.socketWriteErrors.Add(1)
@@ -134,18 +142,25 @@ func (m *Multipath) emitProbes() {
 				case !admitted:
 					t.ps.probePriorityCoalesced.Add(1)
 				default:
-					go func(ps *peerPathState, completion <-chan error) {
+					go func(ps *peerPathState, contract *recoveryContractCoordinator, probe frame.Probe, size int, completion <-chan error) {
 						if err := <-completion; err != nil {
 							ps.probeSendErrors.Add(1)
 							return
 						}
-						ps.txBytes.Add(frame.UnpaddedProbeOnWire)
-					}(t.ps, done)
+						ps.txBytes.Add(uint64(size))
+						if contract != nil {
+							contract.recordOffer(ps.id, telemetryProbeHeader{
+								sessionID: probe.SessionID,
+								probeSeq:  probe.ProbeSeq,
+								challenge: probe.Challenge,
+							})
+						}
+					}(t.ps, t.contract, sent, probeSize, done)
 				}
 				t.pr.Tick()
 				continue
 			}
-			if raw, err := t.pr.SendProbe(); err == nil {
+			if raw, probe, err := t.pr.SendProbePayload(contractPayload); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.
 				if _, werr := t.ps.writeToUDPAddrPort(raw, remote); werr == nil {
 					// True-wire-volume accounting (D48): a PROBE frame is real egress
@@ -153,6 +168,13 @@ func (m *Multipath) emitProbes() {
 					// write — only on a nil write error, matching the Send hot path.
 					t.ps.txBytes.Add(uint64(len(raw)))
 					m.accountGeneratedPriorityAfterWrite(t.ps, len(raw))
+					if t.contract != nil {
+						t.contract.recordOffer(t.ps.id, telemetryProbeHeader{
+							sessionID: probe.SessionID,
+							probeSeq:  probe.ProbeSeq,
+							challenge: probe.Challenge,
+						})
+					}
 				} else {
 					// The write failed (e.g. a concurrent Close raced the probe-loop
 					// goroutine, or a transient socket error): count it so a path whose

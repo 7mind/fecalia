@@ -503,6 +503,19 @@ predeclared gates:
       Confirm later probe/echo arrivals do not enter the tranche and a second
       group backpressures. Mixed-path/shared-socket groups must report the
       finite contract disabled and retain the conservative fallback.
+- [ ] Capture ordinary unpadded PROBEs during FEC+pacing operation. Confirm each
+      contract-bearing OFFER/ACK is 102 outer bytes (75-byte base plus the
+      canonical 27-byte payload), remains within `P=2*Lmax`, and increments
+      `shaper_outer_priority_bytes_total` by its exact wire size. Repeat with
+      either FEC or pacing off and confirm ordinary probes remain the legacy
+      75-byte form; padded PMTU probes must carry no contract.
+- [ ] During a saturated transfer, remove/re-add the standby path. Confirm
+      DATA/inner-control pauses while PROBEs continue, the old staged FEC group
+      completes, no old-service write appears during the 250 ms quiet interval,
+      and the retained path resumes either after the fresh authenticated ACK or
+      at the 250 ms legacy fallback. OuterSeq and FEC GroupID must remain
+      monotonic. Replay the old OFFER and an inconsistent same-identity OFFER;
+      neither may produce an ACK or re-enable fast recovery.
 - [ ] Force recovery deadline-install, clear, and running-writer failures.
       Confirm each exact socket generation immediately rejects admission,
       disappears from its peer/scheduler/remote view, and quiesces on Close;

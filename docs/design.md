@@ -108,8 +108,10 @@ tag. Frame kinds:
   `PadLen` count of trailing zero bytes): the reflector echoes the same size, so a
   fresh echo confirms *a datagram of N outer bytes traverses this path* (path-MTU
   probing). Padding reuses the same authenticated probe/echo channel and anti-replay
-  — it is not a parallel plane — and an **unpadded** PROBE is byte-for-byte identical
-  on the wire to the pre-extension encoding.
+  — it is not a parallel plane. When pacing and FEC are both enabled, an
+  **unpadded** PROBE may also carry the 27-byte recovery-contract record described
+  below; padded PMTU probes never carry it. With either feature off, the ordinary
+  unpadded encoding remains byte-for-byte identical to the pre-contract encoding.
 - **CONTROL** — reserved out-of-band control. **PSK-HMAC authenticated**, carries
   a MAC-covered monotonic `Seq`. *(See "Not yet built" — currently unwired.)*
 
@@ -547,6 +549,41 @@ unexpected socket failure preserves its transport error, increments the path's
 probe-send-error counter, and adds neither wire bytes nor debt. `EMSGSIZE` maps
 to the expected PMTU too-large verdict and does not count as an unexpected send
 failure.
+
+**Authenticated recovery contract v1 (T313).** Fast single-path FEC recovery
+uses a peer-scoped, immutable service contract carried only in the MAC-covered
+payload of ordinary unpadded PROBEs. Its canonical 27-byte big-endian record is
+`"WBRC"` magic, version `1`, message type (`OFFER=1`, `ACK=2`), enabled flag,
+`Sdevice=A` in nanoseconds, fixed validity `F=1200ms`, and non-zero
+`ContractID`. An enabled record requires `0<A<250ms`; a disabled record carries
+`A=0`. Unknown magic/version remains a legacy/forward-compatible opaque payload;
+recognized malformed v1 records receive no ACK.
+
+`SessionID` remains the process boot epoch. Within that epoch the sender mints a
+monotonically increasing `ContractID` whenever the selectable writer service
+changes. The receiver keys identity by `(SessionID, ContractID)`, installs a new
+authenticated OFFER before making its ACK socket-visible, discards only
+incomplete FEC groups while preserving completed groups and the trusted GroupID
+high-water, and performs any authenticated restart resequencer rebaseline before
+the ACK. Repeating the identical OFFER does not refresh its original acceptance
+time. Reusing an identity with different fields permanently invalidates that
+identity; an expired or lower ContractID remains stale and receives no ACK.
+
+Before runtime path add/remove or recovery-generation retirement, the peer's
+service barrier blocks new DATA/inner-control, lets the currently staged FEC
+group and its writer completion finish, and waits `T=250ms` from the last
+successful old-service write. Outer sequence and FEC GroupID spaces remain
+monotonic. PROBEs stay live during the barrier. The new service then advertises
+the maximum local `A` across every selectable path, but only when all paths have
+exclusive valid recovery writers; mixed-path or shared-socket service advertises
+disabled. Fast recovery becomes eligible only after a fresh authenticated ACK
+for the latest successfully emitted offer whose request carried the peer's live
+challenge, and only while at least `T` of the original `F` remains. A legacy
+peer reflects the OFFER bytes as an OFFER, never satisfying that rule; after
+`T` the sender resumes conservative monotonic operation without fast recovery.
+Deadline/writer failure and Close invalidate the acknowledged contract and wake
+barrier waiters. Pacing-off or FEC-off operation carries no contract and retains
+its prior data path.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define

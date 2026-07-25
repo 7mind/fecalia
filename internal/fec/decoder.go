@@ -194,6 +194,23 @@ func (d *Decoder) SetRecoveryDeadline(deadline time.Duration) {
 	d.recoveryDeadline = deadline
 }
 
+// DiscardIncompletePreserveHighWater removes only in-progress groups during an
+// authenticated recovery-contract rotation. Completed groups and the trusted
+// GroupID frontier remain intact, so ordinary service changes neither reset
+// monotonic group identity nor invoke unauthenticated discontinuity recovery.
+func (d *Decoder) DiscardIncompletePreserveHighWater() int {
+	cleared := 0
+	for id, group := range d.groups {
+		if group.done {
+			continue
+		}
+		delete(d.groups, id)
+		cleared++
+	}
+	d.groupResyncReset()
+	return cleared
+}
+
 func (d *Decoder) state(g GroupID) *groupState {
 	gs, ok := d.groups[g]
 	if !ok {

@@ -22,6 +22,7 @@ import (
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/shaper"
+	"github.com/7mind/wanbond/internal/telemetry"
 	"go.uber.org/goleak"
 )
 
@@ -618,6 +619,25 @@ func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 	cfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: 80 * time.Millisecond}
 	f := newFailFirstFixture(t, cfg, nil, nil)
+	contracts := newRecoveryContractCoordinator(0xD15, f.clock)
+	if err := contracts.begin(true, 125*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	offer, _, err := telemetry.DecodeRecoveryContract(contracts.payload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack := offer
+	ack.Type = telemetry.RecoveryContractACK
+	ackPayload, err := telemetry.EncodeRecoveryContract(ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contracts.recordOffer(0, telemetryProbeHeader{sessionID: 0xD15, probeSeq: 1, challenge: 2})
+	if !contracts.acceptACK(0, 0xD15, 1, ackPayload) {
+		t.Fatal("precondition: recovery contract ACK rejected")
+	}
+	f.m.peerState.contracts = contracts
 	misses := make(chan fecDeadlineMiss, 2)
 	f.m.fecDeadlineInvalidator = func(miss fecDeadlineMiss) {
 		misses <- miss
@@ -644,6 +664,9 @@ func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 		}
 	default:
 		t.Fatal("deadline SLO miss did not invoke invalidation seam")
+	}
+	if contracts.fastEligible() {
+		t.Fatal("deadline SLO miss retained acknowledged fast-recovery eligibility")
 	}
 	f.flush()
 	select {

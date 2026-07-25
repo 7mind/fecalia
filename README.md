@@ -105,7 +105,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 ## Operating it
 
 - **Live reload**: `systemctl reload wanbond-…` (SIGHUP) re-reads the config and
-  adds/removes paths without tearing the tunnel down.
+  adds/removes paths without tearing the tunnel down. With pacing+FEC enabled,
+  path-service changes use an authenticated peer recovery contract: DATA and
+  inner control wait behind a 250 ms bounded transition while PROBEs remain
+  live, then fast recovery resumes only after an exact ACK; legacy peers fall
+  back conservatively without resetting OuterSeq or FEC GroupID.
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness,

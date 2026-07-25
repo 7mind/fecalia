@@ -25,6 +25,9 @@ func recoveryReviewShaperConfig() config.PathShaperConfig {
 func openRecoveryReviewBind(t testing.TB, pathCount int, psk config.Key) *Multipath {
 	t.Helper()
 	m, _, _ := newProbingMultipath(t, loopbackPaths(pathCount), psk, newFakeClock())
+	// These T312 tests isolate the local writer-generation contract. T313's
+	// authenticated peer negotiation has its own production fixtures.
+	m.contracts = nil
 	cfg := recoveryReviewShaperConfig()
 	m.shaperConfigs = make([]config.PathShaperConfig, pathCount)
 	for index := range m.shaperConfigs {

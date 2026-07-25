@@ -454,6 +454,13 @@ Common rules, either policy:
   outer PROBE/echo frames reserve `P` and enter the same serialized writer.
   Ordinary probe overflow coalesces a cadence, PMTU waits cancellably, and
   reactive echo overflow drops/counts without blocking receive.
+  With FEC and pacing both enabled, ordinary unpadded probes additionally carry
+  the authenticated 27-byte recovery-contract OFFER/ACK; their generated
+  priority reservation and `outer_priority_bytes` accounting use the exact
+  resulting 102-byte datagram, not the legacy 75-byte base size. `P=2*Lmax`
+  already covers that datagram and the maximum-size reactive echo. Padded PMTU
+  probes carry no contract. Pacing-off and FEC-off ordinary probes remain 75
+  bytes and preserve the prior wire behavior.
   Each live `(peer,path)` socket generation owns one shaper. Recovery deadline
   install/clear or writer failure immediately closes admission and retires that
   exact peer path, scheduler view, selected remote, and shared socket; pointer
@@ -497,6 +504,15 @@ Common rules, either policy:
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
   `Pburst=P=2,944 B`, and `Rp=14,720 B/s`; `Fgroup`, `A`, and `Ecompletion`
   additionally depend on the configured FEC geometry.
+  At runtime `A` becomes usable only after peer negotiation. A service change
+  freezes DATA/inner-control, drains the staged group, waits `T=250ms` from the
+  last successful old-service write, and offers a fresh same-session
+  `ContractID`; liveness probes continue. A matching fresh authenticated ACK
+  enables fast recovery while at least `T` remains in the fixed `F=1200ms`
+  validity. A legacy peer merely echoes the OFFER and therefore falls back after
+  `T` with fast recovery disabled. Shared-socket/mixed-path service advertises a
+  disabled contract. Writer/deadline failure and Close invalidate the old
+  contract before operation can continue.
 - The live configuration and envelope are visible under
   `wanbond_path_shaper_*`: `rate_bytes_per_second`, `data_budget_bytes`,
   `control_reserve_bytes`, `queue_budget_bytes`, `max_datagram_bytes`,
