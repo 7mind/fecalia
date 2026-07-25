@@ -50,7 +50,7 @@ function shaper(overrides: Partial<ShaperSnapshot> = {}): ShaperSnapshot {
     priorityDebtBytes: 50,
     priorityRateBytesPerSecond: 1_000,
     priorityBurstBytes: 200,
-    priorityDelayBoundSeconds: 250 / 999_000,
+    priorityDelayBoundSeconds: 250_251 / 1_000_000_000,
     admissionWaits: 3,
     admissionWaitSeconds: 0.04,
     admissionCanceledDatagrams: 0,
@@ -253,10 +253,13 @@ describe('mountDashboard', () => {
     const dashboard = mountDashboard(container);
     const paced = singlePeerSnapshot();
     const shaperState = shaper();
-    expect(shaperState.priorityDelayBoundSeconds).toBeCloseTo(
+    const priorityDelayNanos = Math.ceil(
       (shaperState.priorityDebtBytes + shaperState.priorityBurstBytes)
+        * 1_000_000_000
         / (shaperState.rateBytesPerSecond - shaperState.priorityRateBytesPerSecond),
     );
+    expect(shaperState.priorityDelayBoundSeconds).toBe(priorityDelayNanos / 1_000_000_000);
+    expect(shaperState.priorityDelayBoundSeconds).toBe(0.000250251);
     expect(shaperState.scheduledDelaySeconds).toBeLessThanOrEqual(
       shaperState.priorityDelayBoundSeconds
         + shaperState.queueBudgetBytes / shaperState.rateBytesPerSecond
