@@ -768,6 +768,10 @@ func TestSeparateClassBudgetsBackpressureBeforeCopyAndCancellation(t *testing.T)
 		t.Fatalf("cancelled CONTROL was written: marker %d", extra[0])
 	default:
 	}
+	snapshot := shaper.Snapshot()
+	if snapshot.AdmissionWaits < 2 {
+		t.Fatalf("full B/C backpressure admission waits = %d, want at least DATA and CONTROL waits", snapshot.AdmissionWaits)
+	}
 }
 
 func TestAggregateLargerThanDataBudgetStreamsByIndividualReservations(t *testing.T) {
@@ -777,6 +781,10 @@ func TestAggregateLargerThanDataBudgetStreamsByIndividualReservations(t *testing
 	config.ControlReserveBytes = 60
 	config.MaxDatagramBytes = 60
 	config.PriorityBurstBytes = 60
+	const aggregateBytes = 3 * 60
+	if aggregateBytes <= config.DataBudgetBytes || config.MaxDatagramBytes > config.DataBudgetBytes {
+		t.Fatalf("fixture requires aggregate=%d > B=%d and every L<=B", aggregateBytes, config.DataBudgetBytes)
+	}
 
 	writes := make(chan []byte, 3)
 	shaper, err := New(config, clock, func(datagram []byte) error {
@@ -813,6 +821,14 @@ func TestAggregateLargerThanDataBudgetStreamsByIndividualReservations(t *testing
 	}
 	if err := waitResult(t, result); err != nil {
 		t.Fatal(err)
+	}
+	snapshot := shaper.Snapshot()
+	if snapshot.AdmissionWaits == 0 ||
+		snapshot.AcceptedBytes != aggregateBytes ||
+		snapshot.EmittedBytes != aggregateBytes ||
+		snapshot.QueueBytes != 0 ||
+		snapshot.InFlightBytes != 0 {
+		t.Fatalf("aggregate >B stream snapshot = %+v, want wait plus exact drained bytes=%d", snapshot, aggregateBytes)
 	}
 }
 
