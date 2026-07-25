@@ -940,10 +940,11 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
                                    #   bandwidth. SI bit/s: k/M/G = 1e3/1e6/1e9
                                    #   ("bit" may be written "bps"). Must be > 0.
                                    #   Used ONLY with scheduler.pacing_enabled
-                                   #   (either policy — sized to the shared
-                                   #   bottleneck under weighted, per-path under
-                                   #   active-backup); inert otherwise. No
-                                   #   default (undeclared).
+                                   #   (either policy): sizes this path's live
+                                   #   exact-byte R/B envelope. Weighted also
+                                   #   retains the slowest link only as its
+                                   #   shared frame-domain aggregation reference.
+                                   #   Inert otherwise. No default (undeclared).
 # link_rtt = "45ms"                # OPTIONAL. Operator-declared baseline RTT
                                    #   (Go duration). REQUIRED (> 0) when
                                    #   link_bandwidth is set with pacing enabled
@@ -1055,11 +1056,12 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   apply ONLY to "weighted" and stay
                                    #   inert/unset under active-backup.
 # per_path_capacity_fps = 10000.0  # DEFAULT 10000. Weighted: aggregation-gate
-                                   #   denominator and shared pacing refill
-                                   #   rate. Active-backup: explicit per-path
-                                   #   pacing refill rate (replicated across
-                                   #   paths) when no link_bandwidth is
-                                   #   declared. > 0 when set.
+                                   #   denominator and, when pacing is enabled,
+                                   #   raw exact-byte rate input (projected at
+                                   #   1500 B/frame). Active-backup: the same raw
+                                   #   rate input, replicated across paths when
+                                   #   no link_bandwidth is declared. > 0 when
+                                   #   set.
                                    #   UNIT: offered WIRE FRAMES per second on
                                    #   one path — inner data frames PLUS any FEC
                                    #   parity frames egressing on that path.
@@ -1082,14 +1084,35 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   rate estimator time constant. > 0.
 # pacing_enabled = false           # DEFAULT false. Turn on exact-byte per-path
                                    #   shaping under EITHER policy. Off preserves
-                                   #   direct batch framing and socket writes.
-# pacing_burst_frames = 64.0       # DEFAULT 64. Raw burst input (frame slots),
-                                   #   projected to bytes at 1500 B/slot. > 0
-                                   #   when pacing_enabled, and the projection
-                                   #   must admit Lmax (one legal encoded
-                                   #   datagram). At the default IPv4/1500 MTU
-                                   #   this requires >= 1472/1500 (~0.9814;
-                                   #   use >= 1).
+                                   #   direct complete-batch framing/socket
+                                   #   writes.
+# pacing_burst_frames = 64.0       # DEFAULT 64. Raw DATA-budget input (frame
+                                   #   slots), projected to B at 1500 B/slot.
+                                   #   > 0 when pacing_enabled and B must be >=
+                                   #   Lmax. Runtime derives C=Lmax and Q=B+C,
+                                   #   retaining at most Q plus one <=Lmax
+                                   #   writer-in-flight datagram. Aggregate
+                                   #   batches stream per buffer under pre-copy
+                                   #   backpressure without requiring all bytes
+                                   #   to fit in B simultaneously.
+                                   # Runtime exact-byte contract: every live path
+                                   #   uses its own configured wire rate R and
+                                   #   BDP-derived B. Generated authenticated
+                                   #   PROBE/echo writes bypass Q and add their
+                                   #   encoded bytes only to future debt P0;
+                                   #   assigned shaped deadlines stay immutable.
+                                   #   With Pburst=2*Lmax and Rp=Pburst/200ms,
+                                   #   config requires R>Rp and exposes
+                                   #   Dp=(P0+Pburst)/(R-Rp). Accepted shaped
+                                   #   bytes linearize at pre-copy reservation;
+                                   #   emitted bytes count successful socket
+                                   #   writes. Cancellation, writer failure, or
+                                   #   Close may terminate a batched call after
+                                   #   an accepted/emitted prefix. FEC parity
+                                   #   consumes B and R like DATA. Path removal
+                                   #   and Close retire the old shaper/socket
+                                   #   generation; a replacement starts with
+                                   #   fresh counters.
 # weight_rtt_floor = "1ms"         # DEFAULT 1ms. RTT floor in the weight
                                    #   formula. > 0.
 # weight_loss_floor = 0.001        # DEFAULT 1e-3. Loss floor under the sqrt in

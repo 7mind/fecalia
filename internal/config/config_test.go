@@ -1858,6 +1858,38 @@ func extractFencedTOMLAfter(t *testing.T, content, headingMarker string) string 
 	return rest[:end]
 }
 
+// TestInstallMDFullConfigShaperContract keeps the shipped full-reference
+// scheduler commentary on the exact-byte shaper model rather than the retired
+// frame-token pacing model.
+func TestInstallMDFullConfigShaperContract(t *testing.T) {
+	block := extractFencedTOMLAfter(t, readInstallMD(t),
+		"### 3z. Full configuration reference (all keys)")
+
+	for _, want := range []string{
+		"this path's live",
+		"exact-byte R/B envelope",
+		"raw exact-byte rate input",
+		"B must be >=",
+		"Runtime derives C=Lmax and Q=B+C",
+		"batches stream per buffer under pre-copy",
+		"future debt P0",
+		"assigned shaped deadlines stay immutable",
+		"Dp=(P0+Pburst)/(R-Rp)",
+		"accepted/emitted prefix",
+		"FEC parity",
+		"old shaper/socket",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("full configuration reference missing exact-byte shaper contract %q", want)
+		}
+	}
+	for _, stale := range []string{"shared pacing refill", "per-path pacing refill", "Raw burst input"} {
+		if strings.Contains(block, stale) {
+			t.Errorf("full configuration reference retains retired pacing contract %q", stale)
+		}
+	}
+}
+
 // TestInstallMDMultiConcentratorEdgeExampleLoads verifies that docs/install.md's
 // "Multi-concentrator edge (G28)" worked example — read from the ACTUAL shipped
 // doc, not a hand-copied literal — loads and validates. This is the fixture the
