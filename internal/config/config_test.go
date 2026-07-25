@@ -1868,13 +1868,23 @@ func TestInstallMDFullConfigShaperContract(t *testing.T) {
 	for _, want := range []string{
 		"this path's live",
 		"exact-byte R/B envelope",
+		"WEIGHTED synthetic DEFAULT 10000",
+		"Active-backup: NO default",
+		"WEIGHTED synthetic DEFAULT 64",
 		"raw exact-byte rate input",
 		"B must be >=",
 		"Runtime derives C=Lmax and Q=B+C",
+		"links use R=link_bandwidth/8",
+		"B=ceil(R*link_rtt)",
+		"raw knobs use",
+		"B=ceil(pacing_burst_frames*1500)",
 		"batches stream per buffer under pre-copy",
 		"future debt P0",
 		"assigned shaped deadlines stay immutable",
 		"Dp=(P0+Pburst)/(R-Rp)",
+		"bounded by Dp+Q/R+Lmax/R",
+		"T302 tests add 10ms",
+		"normative bound",
 		"accepted/emitted prefix",
 		"FEC parity",
 		"old shaper/socket",
@@ -1883,9 +1893,46 @@ func TestInstallMDFullConfigShaperContract(t *testing.T) {
 			t.Errorf("full configuration reference missing exact-byte shaper contract %q", want)
 		}
 	}
-	for _, stale := range []string{"shared pacing refill", "per-path pacing refill", "Raw burst input"} {
+	for _, stale := range []string{
+		"shared pacing refill",
+		"per-path pacing refill",
+		"Raw burst input",
+		"DEFAULT 10000. Weighted",
+		"DEFAULT 64. Raw",
+		"BDP-derived B",
+	} {
 		if strings.Contains(block, stale) {
 			t.Errorf("full configuration reference retains retired pacing contract %q", stale)
+		}
+	}
+}
+
+// TestExamplePacingCommentaryContract applies the same policy/default,
+// raw-versus-declared, and delivery-bound contract to the canonical example.
+func TestExamplePacingCommentaryContract(t *testing.T) {
+	content := readExampleFile(t)
+	for _, want := range []string{
+		"WEIGHTED synthetic DEFAULT 10000",
+		"Active-backup: NO default",
+		"WEIGHTED synthetic DEFAULT 64",
+		"links use R=link_bandwidth/8",
+		"B=ceil(R*link_rtt)",
+		"B=ceil(pacing_burst_frames*1500)",
+		"bounded by Dp+Q/R+Lmax/R",
+		"T302 tests add 10ms",
+		"normative bound",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("canonical example missing exact-byte commentary %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"DEFAULT 10000. Weighted",
+		"DEFAULT 64. Raw",
+		"BDP-derived B",
+	} {
+		if strings.Contains(content, stale) {
+			t.Errorf("canonical example retains stale exact-byte commentary %q", stale)
 		}
 	}
 }
@@ -1917,6 +1964,42 @@ func TestInstallMDPacingMeasurementAndSizingContract(t *testing.T) {
 		if strings.Contains(content, stale) {
 			t.Errorf("install guide retains stale pacing measurement/sizing claim %q", stale)
 		}
+	}
+}
+
+// TestDesignAndManualPacingNarrativeContract keeps the aggregation denominator
+// and netns fixture within their frame-domain and functional-only scopes.
+func TestDesignAndManualPacingNarrativeContract(t *testing.T) {
+	read := func(name string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("..", "..", "docs", name))
+		if err != nil {
+			t.Fatalf("read docs/%s: %v", name, err)
+		}
+		return string(raw)
+	}
+	design := read("design.md")
+	for _, want := range []string{
+		"1500-byte denominator translates",
+		"does not police or protect",
+		"R=link_bandwidth/8",
+	} {
+		if !strings.Contains(design, want) {
+			t.Errorf("design guide missing aggregation/shaper distinction %q", want)
+		}
+	}
+	if strings.Contains(design, "ensures the shaper does not let the link overfill") {
+		t.Error("design guide attributes exact-byte shaper protection to the aggregation denominator")
+	}
+
+	manual := read("manual-checklist.md")
+	for _, want := range []string{"functional", "impairment/counter check", "no\n      throughput or loaded-RTT claim"} {
+		if !strings.Contains(manual, want) {
+			t.Errorf("manual checklist missing functional-only netns contract %q", want)
+		}
+	}
+	if strings.Contains(manual, "capped-fixture aggregation/bufferbloat") {
+		t.Error("manual checklist retains a netns aggregation/bufferbloat measurement claim")
 	}
 }
 

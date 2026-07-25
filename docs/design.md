@@ -684,14 +684,16 @@ one path egresses at a time, and both the compatibility vector and live shaper
 use that path's OWN declared link — a fast active primary is not held to a
 slower backup's rate.
 
-**Conservative sizing.** The wire-frame size used in the denominator is the full
-path MTU (1500 bytes), the conservative floor for frame size. This produces a
-frame rate that never over-paces a path; smaller average frames (headers,
-fragmentation) would permit higher rates, but taking the worst case (full MTU)
-ensures the shaper does not let the link overfill. Measurement on real links is
+**Frame-domain compatibility sizing.** The 1500-byte denominator translates the
+declared wire bit rate into a full-frame-equivalent rate for the weighted
+aggregation gate and its hysteresis thresholds. It does not police or protect
+the live exact-byte shaper from overfill. Each live shaper instead uses
+`R=link_bandwidth/8`, charges every encoded datagram's exact bytes, and derives
+`B=ceil(R*link_rtt)` independently for that path. Measurement on real links is
 essential to validate that the declared bandwidth and RTT reflect the actual
-link properties; the netns fixture is CPU-bound and cannot build the standing
-queues pacing is designed to control (see [manual-checklist.md §P0](manual-checklist.md#p0--spike--baseline)).
+link properties; the netns fixture is CPU/PPS-bound and cannot build the
+standing queues shaping is designed to control (see
+[manual-checklist.md §P0](manual-checklist.md#p0--spike--baseline)).
 
 **Capacity-sanity guard and WARN (T142/T144).** A path that declares
 `link_bandwidth` under the weighted policy must be able to sustain the

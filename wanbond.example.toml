@@ -353,13 +353,15 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   pacing); engage_fraction..weight_loss_floor
                                    #   apply ONLY to "weighted" and stay
                                    #   inert/unset under active-backup.
-# per_path_capacity_fps = 10000.0  # DEFAULT 10000. Weighted: aggregation-gate
+# per_path_capacity_fps = 10000.0  # WEIGHTED synthetic DEFAULT 10000:
+                                   #   aggregation-gate
                                    #   denominator and, when pacing is enabled,
                                    #   raw exact-byte rate input (projected at
                                    #   1500 B/frame).
-                                   #   Active-backup: explicit raw exact-byte rate
-                                   #   input (replicated across paths) when
-                                   #   no link_bandwidth is declared. > 0 when set.
+                                   #   Active-backup: NO default; set this AND
+                                   #   pacing_burst_frames explicitly when no
+                                   #   link_bandwidth is declared. The raw rate
+                                   #   is replicated across paths. > 0 when set.
                                    #   UNIT: offered WIRE FRAMES per second on one
                                    #   path — inner data frames PLUS any FEC parity
                                    #   frames that egress on that path. Size it from
@@ -382,8 +384,11 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 # pacing_enabled = false           # DEFAULT false. Turn on exact-byte per-path
                                    #   shaping under EITHER policy. Off preserves
                                    #   direct complete-batch framing/socket writes.
-# pacing_burst_frames = 64.0       # DEFAULT 64. Raw DATA-budget input (frame
-                                   #   slots), projected to B at 1500 B/slot.
+# pacing_burst_frames = 64.0       # WEIGHTED synthetic DEFAULT 64. Active-backup
+                                   #   has NO default; set both raw knobs
+                                   #   explicitly when no link declarations
+                                   #   exist. This DATA-budget input is projected
+                                   #   to B at 1500 B/slot.
                                    #   > 0 when pacing_enabled and B must be >=
                                    #   Lmax. Runtime derives C=Lmax and Q=B+C,
                                    #   retaining at most Q plus one <=Lmax
@@ -392,14 +397,22 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
                                    #   backpressure without requiring all bytes
                                    #   to fit in B simultaneously.
                                    # Runtime exact-byte contract: every live path
-                                   #   uses its own configured wire rate R and
-                                   #   BDP-derived B. Generated authenticated
+                                   #   uses its own configured R and B: declared
+                                   #   links use R=link_bandwidth/8 and
+                                   #   B=ceil(R*link_rtt); raw knobs use
+                                   #   R=per_path_capacity_fps*1500 and
+                                   #   B=ceil(pacing_burst_frames*1500).
+                                   #   Generated authenticated
                                    #   PROBE/echo writes bypass Q and add their
                                    #   encoded bytes only to future debt P0;
                                    #   assigned shaped deadlines stay immutable.
                                    #   With Pburst=2*Lmax and Rp=Pburst/200ms,
                                    #   config requires R>Rp and exposes
-                                   #   Dp=(P0+Pburst)/(R-Rp). Accepted shaped
+                                   #   Dp=(P0+Pburst)/(R-Rp). Call-to-receiver is
+                                   #   bounded by Dp+Q/R+Lmax/R plus the active
+                                   #   resequencer hold; T302 tests add 10ms of
+                                   #   harness scheduling slack outside that
+                                   #   normative bound. Accepted shaped
                                    #   bytes linearize at pre-copy reservation;
                                    #   emitted bytes count successful socket
                                    #   writes. Cancellation, writer failure, or

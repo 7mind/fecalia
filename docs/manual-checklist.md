@@ -114,11 +114,11 @@ decision, which stays a human judgement call, not an automated gate.
 - [ ] **The pilot-gate decision itself** is a NON-BLOCKING human call. The baseline
       informs it; it does not automate or gate it. Record the report path, date,
       and the go/no-go decision alongside the numbers.
-- [ ] **Exit criterion (Q19):** the capped-fixture aggregation/bufferbloat
-      measurement (netns, `TestFixtureImpairment`, W2) PLUS this report-only
-      real-link baseline (`just p0-baseline`, W4) are SUFFICIENT to proceed to a
-      SUPERVISED pilot. The longer soak runs DURING the pilot, NOT as a pre-gate.
-      Full statement:
+- [ ] **Exit criterion (Q19):** the capped-fixture functional
+      impairment/counter check (netns, `TestFixtureImpairment`, W2; no
+      throughput or loaded-RTT claim) PLUS this report-only real-link baseline
+      (`just p0-baseline`, W4) are SUFFICIENT to proceed to a SUPERVISED pilot.
+      The longer soak runs DURING the pilot, NOT as a pre-gate. Full statement:
       [runbook.md §7 Pilot exit criterion](runbook.md#7-pilot-exit-criterion-non-blocking).
 
 ## P1 — scripted real-setup run (Starlink + 5G edge, VPS concentrator)
