@@ -45,9 +45,10 @@ type failFirstWriter struct {
 	codec   *frame.Codec
 	events  []failFirstEvent
 
-	accepted int
-	emitted  int
-	errors   int
+	accepted   int
+	emitted    int
+	errors     int
+	failedCall []frame.Frame
 
 	failDecided  bool
 	failed       bool
@@ -69,12 +70,17 @@ func (w *failFirstWriter) record(name, detail string) {
 func (w *failFirstWriter) WriteDatagrams(_ context.Context, datagrams []shaper.Datagram) (shaper.BatchResult, error) {
 	w.mu.Lock()
 	open := w.groupOpen()
+	if !open {
+		w.events = append(w.events, failFirstEvent{at: w.clock.Now(), name: "decision-ready-observed"})
+	}
+	decodedFrames := make([]frame.Frame, 0, len(datagrams))
 	for _, datagram := range datagrams {
 		decoded, err := w.codec.Decode(datagram.Payload)
 		if err != nil {
 			w.mu.Unlock()
 			return shaper.BatchResult{FailedIndex: -1}, fmt.Errorf("failfirst decode writer datagram: %w", err)
 		}
+		decodedFrames = append(decodedFrames, decoded)
 		name := fmt.Sprintf("writer-%T", decoded)
 		switch decoded.(type) {
 		case frame.Data:
@@ -96,12 +102,13 @@ func (w *failFirstWriter) WriteDatagrams(_ context.Context, datagrams []shaper.D
 	shouldFail := w.failDecided && !open && !w.failed
 	if shouldFail {
 		w.failed = true
-		w.accepted++
-		w.errors++
+		w.failedCall = append([]frame.Frame(nil), decodedFrames...)
+		w.accepted += len(datagrams)
+		w.errors += len(datagrams)
 		w.events = append(w.events, failFirstEvent{
 			at:     w.clock.Now(),
 			name:   "writer-error",
-			detail: errFailFirstWriter.Error(),
+			detail: fmt.Sprintf("%s failed-tranche=%d", errFailFirstWriter, len(datagrams)),
 		})
 	}
 	if !shouldFail {
@@ -115,7 +122,7 @@ func (w *failFirstWriter) WriteDatagrams(_ context.Context, datagrams []shaper.D
 		<-w.release
 	}
 	if shouldFail {
-		return shaper.BatchResult{Accepted: 1, Emitted: 0, FailedIndex: 0}, errFailFirstWriter
+		return shaper.BatchResult{Accepted: len(datagrams), Emitted: 0, FailedIndex: 0}, errFailFirstWriter
 	}
 	return shaper.BatchResult{Accepted: len(datagrams), Emitted: len(datagrams), FailedIndex: -1}, nil
 }
@@ -133,6 +140,12 @@ func (w *failFirstWriter) snapshot() (events []failFirstEvent, accepted, emitted
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]failFirstEvent(nil), w.events...), w.accepted, w.emitted, w.errors
+}
+
+func (w *failFirstWriter) failedTranche() []frame.Frame {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]frame.Frame(nil), w.failedCall...)
 }
 
 func (w *failFirstWriter) trace() string {
@@ -335,30 +348,49 @@ func frameCounts(events []failFirstEvent) (data, parity int) {
 
 func assertGroupFrames(t testing.TB, events []failFirstEvent, group uint32, wantData, wantParity int) {
 	t.Helper()
-	var data, parity int
-	firstParity := -1
-	lastData := -1
-	for i, event := range events {
+	dataIndices := make(map[uint8]struct{}, wantData)
+	parityIndices := make(map[uint16]struct{}, wantParity)
+	outerSeqs := make(map[uint64]struct{}, wantData)
+	for _, event := range events {
 		switch decoded := event.frame.(type) {
 		case frame.Data:
 			if decoded.FECGroup == group {
-				data++
-				lastData = i
+				if decoded.OuterSeq == 0 {
+					t.Fatalf("group %d DATA index %d has zero OuterSeq", group, decoded.FECIndex)
+				}
+				if _, duplicate := dataIndices[decoded.FECIndex]; duplicate {
+					t.Fatalf("group %d duplicated DATA index %d", group, decoded.FECIndex)
+				}
+				if _, duplicate := outerSeqs[decoded.OuterSeq]; duplicate {
+					t.Fatalf("group %d duplicated DATA OuterSeq %d", group, decoded.OuterSeq)
+				}
+				dataIndices[decoded.FECIndex] = struct{}{}
+				outerSeqs[decoded.OuterSeq] = struct{}{}
 			}
 		case frame.Parity:
 			if decoded.FECGroup == group {
-				parity++
-				if firstParity < 0 {
-					firstParity = i
+				if _, duplicate := parityIndices[decoded.ParityIndex]; duplicate {
+					t.Fatalf("group %d duplicated PARITY index %d", group, decoded.ParityIndex)
 				}
+				if int(decoded.DataCount) != wantData {
+					t.Fatalf("group %d PARITY DataCount = %d, want %d", group, decoded.DataCount, wantData)
+				}
+				parityIndices[decoded.ParityIndex] = struct{}{}
 			}
 		}
 	}
-	if data != wantData || parity != wantParity {
-		t.Fatalf("group %d DATA/PARITY = %d/%d, want %d/%d", group, data, parity, wantData, wantParity)
+	if len(dataIndices) != wantData || len(parityIndices) != wantParity {
+		t.Fatalf("group %d DATA/PARITY = %d/%d, want %d/%d", group, len(dataIndices), len(parityIndices), wantData, wantParity)
 	}
-	if wantParity > 0 && firstParity < lastData {
-		t.Fatalf("group %d PARITY became writer-visible before all DATA: parity index %d, last data index %d", group, firstParity, lastData)
+	for i := 0; i < wantData; i++ {
+		if _, ok := dataIndices[uint8(i)]; !ok {
+			t.Fatalf("group %d missing DATA index %d", group, i)
+		}
+	}
+	for i := 0; i < wantParity; i++ {
+		if _, ok := parityIndices[uint16(i)]; !ok {
+			t.Fatalf("group %d missing PARITY index %d", group, i)
+		}
 	}
 }
 
@@ -427,91 +459,206 @@ func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 
 	t.Run("owner-boundary-contention-prioritizes-decision-over-two-queued-admissions", func(t *testing.T) {
 		f := newFailFirstFixture(t, cfg, nil, nil)
-		owner := failFirstOwnerAdapter{fixture: f, queuedRelease: make(chan struct{})}
-		release := owner.beginExecutingAdmission([]byte("owner-boundary"))
+		owner := newFailFirstOwnerAdapter(f)
+		defer owner.close()
+		executing := owner.submitAdmission([]byte("owner-boundary"), true)
+		owner.waitExecutingBoundary()
 		f.clock.advance(cfg.Deadline)
 		f.writer.record("deadline-fire", "contention=true executingAdmission=1")
 		f.m.fecFlushDeadline()
 
-		first := owner.queue([]byte("queued-1"))
-		second := owner.queue([]byte("queued-2"))
+		first := owner.submitAdmission([]byte("queued-1"), false)
+		second := owner.submitAdmission([]byte("queued-2"), false)
 		f.writer.record("queued-admissions", "queuedAdmissions=2")
-		release()
-		if !f.decisionReadyWithinSpins() {
-			t.Errorf("due decision was not ready at the owner-command boundary before two queued admissions")
-			f.flush()
-			f.waitDecision()
+		owner.releaseExecutingBoundary()
+		if err := f.await(executing); err != nil {
+			t.Fatal(err)
 		}
-		owner.releaseQueued()
-		f.waitGroupOpen()
-		f.assertNoWriterWhileOpen()
-		f.clock.advance(cfg.Deadline)
-		f.flush()
-		f.waitDecision()
 		if err := f.await(first); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.await(second); err != nil {
 			t.Fatal(err)
 		}
+		if !f.decisionReadyWithinSpins() {
+			t.Errorf("due decision was not ready at the owner-command boundary before two queued admissions")
+		}
+		if err := f.await(owner.submitDecisionAndEmit()); err != nil {
+			t.Fatal(err)
+		}
 
 		events, _, _, _ := f.writer.snapshot()
 		decisionIndex := -1
-		firstQueuedWriter := -1
+		firstGroupWriter := -1
+		payloadCounts := map[string]int{}
 		for i, event := range events {
-			if event.name == "decision-ready" && decisionIndex < 0 {
+			if strings.HasPrefix(event.name, "decision-ready") && decisionIndex < 0 {
 				decisionIndex = i
 			}
-			if decoded, ok := event.frame.(frame.Data); ok &&
-				(string(decoded.Payload) == "queued-1" || string(decoded.Payload) == "queued-2") &&
-				firstQueuedWriter < 0 {
-				firstQueuedWriter = i
+			if decoded, ok := event.frame.(frame.Data); ok {
+				payload := string(decoded.Payload)
+				if payload == "owner-boundary" || payload == "queued-1" || payload == "queued-2" {
+					payloadCounts[payload]++
+					if firstGroupWriter < 0 {
+						firstGroupWriter = i
+					}
+				}
 			}
 		}
 		t.Logf("contention trace: %s", f.writer.trace())
-		if decisionIndex < 0 || firstQueuedWriter < 0 || decisionIndex > firstQueuedWriter {
-			t.Errorf("due decision did not precede both queued admissions becoming writer-visible: decision=%d firstQueuedWriter=%d", decisionIndex, firstQueuedWriter)
+		if decisionIndex < 0 || firstGroupWriter < 0 || decisionIndex > firstGroupWriter {
+			t.Errorf("due decision did not precede executing+queued admissions becoming writer-visible: decision=%d firstGroupWriter=%d", decisionIndex, firstGroupWriter)
 		}
+		for _, payload := range []string{"owner-boundary", "queued-1", "queued-2"} {
+			if payloadCounts[payload] != 1 {
+				t.Errorf("payload %q became writer-visible %d times, want exactly once", payload, payloadCounts[payload])
+			}
+		}
+		assertGroupFrames(t, events, 0, 3, 1)
 		f.assertNoWriterWhileOpen()
 	})
 }
 
-// failFirstOwnerAdapter pins the owner-command scheduling invariant without claiming
-// to pause inside Encoder.Admit: it pauses at the post-Admit owner-command boundary.
-// T309 can retarget this adapter to its owner mailbox while preserving the assertions.
+type failFirstOwnerCommand struct {
+	payload  []byte
+	pause    bool
+	decision bool
+	done     chan error
+}
+
+type failFirstStagedData struct {
+	shard   fec.DataShard
+	outer   uint64
+	payload []byte
+}
+
+// failFirstOwnerAdapter is a real buffered owner-command mailbox. Its current loop
+// mirrors the production defect by choosing already-queued admission commands after
+// a post-Admit boundary instead of re-checking the expired Encoder.NextDeadline.
+// T309 retargets this one adapter to the production owner without changing assertions.
 type failFirstOwnerAdapter struct {
-	fixture       *failFirstFixture
-	queuedRelease chan struct{}
-	releaseOnce   sync.Once
+	fixture      *failFirstFixture
+	mailbox      chan failFirstOwnerCommand
+	boundary     chan struct{}
+	release      chan struct{}
+	closed       chan struct{}
+	boundaryOnce sync.Once
+	releaseOnce  sync.Once
+	staged       []failFirstStagedData
 }
 
-func (a failFirstOwnerAdapter) beginExecutingAdmission(payload []byte) func() {
-	a.fixture.m.mu.Lock()
-	if _, parity, err := a.fixture.writer.encoder.Admit(payload); err != nil || parity != nil {
-		a.fixture.m.mu.Unlock()
-		a.fixture.t.Fatalf("owner-boundary Admit: parity=%v err=%v", parity, err)
+func newFailFirstOwnerAdapter(fixture *failFirstFixture) *failFirstOwnerAdapter {
+	adapter := &failFirstOwnerAdapter{
+		fixture:  fixture,
+		mailbox:  make(chan failFirstOwnerCommand, 8),
+		boundary: make(chan struct{}),
+		release:  make(chan struct{}),
+		closed:   make(chan struct{}),
 	}
-	a.fixture.writer.record("owner-command-paused", "executingAdmission=1 boundary=post-Admit-not-inside-Encoder.Admit")
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			a.fixture.writer.record("owner-command-release", "")
-			a.fixture.m.mu.Unlock()
-		})
-	}
+	go adapter.run()
+	return adapter
 }
 
-func (a *failFirstOwnerAdapter) queue(payload []byte) *failFirstSubmission {
+func (a *failFirstOwnerAdapter) submitAdmission(payload []byte, pause bool) *failFirstSubmission {
 	submission := &failFirstSubmission{done: make(chan error, 1)}
-	go func() {
-		<-a.queuedRelease
-		submission.done <- a.fixture.m.Send([][]byte{payload}, a.fixture.m.virt)
-	}()
+	a.mailbox <- failFirstOwnerCommand{payload: append([]byte(nil), payload...), pause: pause, done: submission.done}
 	return submission
 }
 
-func (a *failFirstOwnerAdapter) releaseQueued() {
-	a.releaseOnce.Do(func() { close(a.queuedRelease) })
+func (a *failFirstOwnerAdapter) submitDecisionAndEmit() *failFirstSubmission {
+	submission := &failFirstSubmission{done: make(chan error, 1)}
+	a.mailbox <- failFirstOwnerCommand{decision: true, done: submission.done}
+	return submission
+}
+
+func (a *failFirstOwnerAdapter) waitExecutingBoundary() {
+	for i := 0; i < failFirstSpinLimit; i++ {
+		select {
+		case <-a.boundary:
+			return
+		default:
+			runtime.Gosched()
+		}
+	}
+	a.fixture.t.Fatal("owner command did not reach the post-Admit boundary")
+}
+
+func (a *failFirstOwnerAdapter) releaseExecutingBoundary() {
+	a.releaseOnce.Do(func() { close(a.release) })
+}
+
+func (a *failFirstOwnerAdapter) close() {
+	close(a.mailbox)
+	<-a.closed
+}
+
+func (a *failFirstOwnerAdapter) run() {
+	defer close(a.closed)
+	for command := range a.mailbox {
+		if command.decision {
+			command.done <- a.decideAndEmit()
+			continue
+		}
+		a.fixture.m.mu.Lock()
+		if !command.pause {
+			if due, open := a.fixture.writer.encoder.NextDeadline(); open && !a.fixture.clock.Now().Before(due) {
+				a.fixture.writer.record("owner-choice", "mailbox-admission-before-expired-deadline")
+			}
+		}
+		outer := a.fixture.m.peerState.outerSeq.Add(1)
+		shard, parity, err := a.fixture.writer.encoder.Admit(fecShardPayload(outer, command.payload))
+		if err == nil && parity != nil {
+			err = errors.New("owner mailbox admission unexpectedly size-closed the test group")
+		}
+		if err == nil {
+			a.staged = append(a.staged, failFirstStagedData{
+				shard:   shard,
+				outer:   outer,
+				payload: append([]byte(nil), command.payload...),
+			})
+		}
+		if command.pause {
+			a.fixture.writer.record("owner-command-paused", "executingAdmission=1 boundary=post-Admit-not-inside-Encoder.Admit")
+			a.boundaryOnce.Do(func() { close(a.boundary) })
+			<-a.release
+			a.fixture.writer.record("owner-command-release", "")
+		}
+		a.fixture.m.mu.Unlock()
+		command.done <- err
+	}
+}
+
+func (a *failFirstOwnerAdapter) decideAndEmit() error {
+	a.fixture.flush()
+	a.fixture.waitDecision()
+
+	a.fixture.m.mu.Lock()
+	path := a.fixture.m.peerState.paths[0]
+	datagrams := make([]shaper.Datagram, 0, len(a.staged))
+	for _, staged := range a.staged {
+		wire, err := a.fixture.m.peerState.sendCodec.Encode(nil, frame.Data{
+			OuterSeq: staged.outer,
+			PathID:   path.id,
+			FECGroup: uint32(staged.shard.Group),
+			FECIndex: uint8(staged.shard.Index),
+			Payload:  staged.payload,
+		})
+		if err != nil {
+			a.fixture.m.mu.Unlock()
+			return err
+		}
+		datagrams = append(datagrams, shaper.Datagram{Class: shaper.ClassData, Payload: wire})
+	}
+	a.fixture.m.mu.Unlock()
+	result, err := a.fixture.writer.WriteDatagrams(context.Background(), datagrams)
+	if err != nil {
+		return err
+	}
+	if result.Accepted != len(datagrams) || result.Emitted != len(datagrams) {
+		return fmt.Errorf("owner staged DATA result accepted/emitted=%d/%d, want %d/%d",
+			result.Accepted, result.Emitted, len(datagrams), len(datagrams))
+	}
+	return nil
 }
 
 func TestFailFirstAdaptiveM0SnapshotIsImmutable(t *testing.T) {
@@ -566,19 +713,75 @@ func TestFailFirstFECDecidedGroupWriterErrorIsTerminal(t *testing.T) {
 	if !errors.Is(err, errFailFirstWriter) {
 		t.Fatalf("size-close Send error = %v, want sentinel %v", err, errFailFirstWriter)
 	}
+	f.writer.record("send-resolved", errFailFirstWriter.Error())
 	eventsBefore, accepted, emitted, writeErrors := f.writer.snapshot()
-	if accepted != emitted+writeErrors || writeErrors != 1 {
-		t.Fatalf("writer accounting accepted/emitted/errors = %d/%d/%d, want accepted=emitted+errors and one error",
-			accepted, emitted, writeErrors)
+	failedTranche := f.writer.failedTranche()
+	if len(failedTranche) < 2 {
+		t.Fatalf("decided failing writer tranche has %d frames, want multiple group frames", len(failedTranche))
+	}
+	if accepted != emitted+writeErrors || writeErrors != len(failedTranche) {
+		t.Fatalf("writer accounting accepted/emitted/errors = %d/%d/%d, failed tranche=%d; want accepted=emitted+terminal-errors for every tranche member",
+			accepted, emitted, writeErrors, len(failedTranche))
+	}
+	var failedGroup uint32
+	for i, failed := range failedTranche {
+		var group uint32
+		switch decoded := failed.(type) {
+		case frame.Data:
+			group = decoded.FECGroup
+		case frame.Parity:
+			group = decoded.FECGroup
+		default:
+			t.Fatalf("failed decided tranche frame %d has type %T, want DATA/PARITY", i, failed)
+		}
+		if i == 0 {
+			failedGroup = group
+		} else if group != failedGroup {
+			t.Fatalf("failed decided tranche spans groups %d and %d", failedGroup, group)
+		}
+	}
+	errorIndex := -1
+	for i, event := range eventsBefore {
+		if event.name == "writer-error" {
+			errorIndex = i
+			break
+		}
+	}
+	if errorIndex < 0 {
+		t.Fatal("terminal writer error event missing")
+	}
+	for _, event := range eventsBefore[errorIndex+1:] {
+		switch decoded := event.frame.(type) {
+		case frame.Data:
+			if decoded.FECGroup == failedGroup {
+				t.Fatalf("same-group DATA retry became writer-visible before Send resolved")
+			}
+		case frame.Parity:
+			if decoded.FECGroup == failedGroup {
+				t.Fatalf("same-group PARITY retry became writer-visible before Send resolved")
+			}
+		}
 	}
 	if open := f.writer.groupOpen(); open {
 		t.Fatal("writer error reopened decided group")
 	}
 	f.flush()
 	eventsAfter, acceptedAfter, emittedAfter, errorsAfter := f.writer.snapshot()
-	if len(eventsAfter) != len(eventsBefore)+1 || acceptedAfter != accepted || emittedAfter != emitted || errorsAfter != writeErrors {
-		t.Fatalf("decided-group writer retried after terminal error: before events/accounting=%d/%d/%d/%d after=%d/%d/%d/%d",
-			len(eventsBefore), accepted, emitted, writeErrors, len(eventsAfter), acceptedAfter, emittedAfter, errorsAfter)
+	if acceptedAfter != accepted || emittedAfter != emitted || errorsAfter != writeErrors {
+		t.Fatalf("decided-group writer accounting changed after terminal error: before=%d/%d/%d after=%d/%d/%d",
+			accepted, emitted, writeErrors, acceptedAfter, emittedAfter, errorsAfter)
+	}
+	for _, event := range eventsAfter[len(eventsBefore):] {
+		switch decoded := event.frame.(type) {
+		case frame.Data:
+			if decoded.FECGroup == failedGroup {
+				t.Fatalf("same-group DATA retry became writer-visible after extra deadline fire")
+			}
+		case frame.Parity:
+			if decoded.FECGroup == failedGroup {
+				t.Fatalf("same-group PARITY retry became writer-visible after extra deadline fire")
+			}
+		}
 	}
 	f.assertNoWriterWhileOpen()
 	t.Logf("writer-error trace: %s", f.writer.trace())
