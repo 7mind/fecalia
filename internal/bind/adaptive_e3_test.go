@@ -61,7 +61,7 @@ func sendProbesWithLeadingDrops(t testing.TB, pr *telemetry.Prober, psk config.K
 // TestAdaptiveControllerAntiPhaseTrajectory is the D96 / E3 oracle: it drives ONE peer's
 // adaptive controller through a SCRIPTED, deterministic two-path (active-backup) loss trace
 // exercising all three D96 mechanisms end-to-end through the REAL Multipath wiring
-// (driveAdaptiveControllerLocked -> dataPathLossLocked -> the controller -> the encoder),
+// (driveAdaptiveController -> dataPathLossLocked -> the controller -> the encoder),
 // asserting EXCLUSIVELY via the G29 AdaptiveFECStats snapshot surface (T263) so the
 // observability contract is pinned alongside the control behavior:
 //
@@ -99,9 +99,7 @@ func TestAdaptiveControllerAntiPhaseTrajectory(t *testing.T) {
 	bringProberUpClean(t, standby, psk, clk, 40)
 
 	// runPhase shapes probe traffic (shape, or nil to leave the probers untouched) and then
-	// drives the controller driveCount times, ALL under one m.mu critical section, and
-	// returns the resulting G29 snapshot read afterward (PeerSnapshots takes no m.mu, so it
-	// is called only once unlocked).
+	// shapes under m.mu, then drives the controller driveCount times after releasing it.
 	runPhase := func(shape func(), driveCount int) AdaptiveFECStats {
 		t.Helper()
 		m.mu.Lock()
@@ -109,11 +107,11 @@ func TestAdaptiveControllerAntiPhaseTrajectory(t *testing.T) {
 			shape()
 		}
 		m.scheduler.Recompute()
+		m.mu.Unlock()
 		for i := 0; i < driveCount; i++ {
 			clk.advance(adaptiveControlInterval)
-			m.driveAdaptiveControllerLocked(m.peerState)
+			m.driveAdaptiveController(m.peerState)
 		}
-		m.mu.Unlock()
 
 		snaps := m.PeerSnapshots()
 		if len(snaps) == 0 {

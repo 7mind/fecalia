@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -57,15 +58,20 @@ func TestPacingOffPartialWriteKeepsBatchFramingAndFECAtomic(t *testing.T) {
 }
 
 type generationBlockingShaper struct {
-	once    sync.Once
-	entered chan struct{}
-	release chan struct{}
+	once         sync.Once
+	entered      chan struct{}
+	release      chan struct{}
+	ignoreCancel bool
 }
 
 func (s *generationBlockingShaper) WriteDatagrams(ctx context.Context, datagrams []shaper.Datagram) (shaper.BatchResult, error) {
 	var err error
 	s.once.Do(func() {
 		close(s.entered)
+		if s.ignoreCancel {
+			<-s.release
+			return
+		}
 		select {
 		case <-s.release:
 		case <-ctx.Done():
@@ -81,6 +87,99 @@ func (s *generationBlockingShaper) WriteDatagrams(ctx context.Context, datagrams
 func (*generationBlockingShaper) Close() error { return nil }
 func (*generationBlockingShaper) AccountPriority(int) error {
 	return nil
+}
+
+func TestPeerRebindWaitsForOldFECOwnerExit(t *testing.T) {
+	lg, err := log.New("error", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.PathShaperConfig{
+		RateBytesPerSecond:      10_000_000,
+		DataBurstBytes:          1472,
+		ControlReserveBytes:     1472,
+		MaxEncodedDatagramBytes: 1472,
+		ProbeRateBytesPerSecond: 1,
+		ProbeBurstBytes:         2944,
+	}
+	m, err := NewMultipathWithShapers(
+		loopbackPaths(1),
+		testKey(t, 0xD7),
+		&unpacedSelectionRecorder{},
+		nil,
+		nil,
+		&fec.Config{DataShards: 2, ParityShards: 1, Deadline: testFECDeadline},
+		nil,
+		config.Amnezia{},
+		[]config.PathShaperConfig{cfg},
+		lg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AddConcentratorPeer("beta", testKey(t, 0xD8), &unpacedSelectionRecorder{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	blocking := &generationBlockingShaper{
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+		ignoreCancel: true,
+	}
+	factoryCalls := 0
+	m.newPathShaper = func(shaper.Config, shaper.WriteFunc) (pathShaper, error) {
+		factoryCalls++
+		if factoryCalls == 2 {
+			return blocking, nil
+		}
+		return &classRecordingShaper{}, nil
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+
+	secondary := m.peersByName["beta"]
+	secondary.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
+	oldOwner := secondary.fecSend.Load().owner
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- m.Send([][]byte{[]byte("old-a"), []byte("old-b")}, secondary.virt)
+	}()
+	<-blocking.entered
+
+	teardownDone := make(chan bool, 1)
+	go func() { teardownDone <- m.TearDownPeer("beta") }()
+	for i := 0; i < 100_000 && secondary.fecSend.Load() != nil; i++ {
+		runtime.Gosched()
+	}
+	if secondary.fecSend.Load() != nil {
+		close(blocking.release)
+		t.Fatal("teardown did not unpublish the old owner")
+	}
+
+	rebindDone := make(chan struct{})
+	go func() {
+		m.ensurePeerReceiveInstantiated(secondary)
+		close(rebindDone)
+	}()
+	var overlapped bool
+	for i := 0; i < 100_000; i++ {
+		fs := secondary.fecSend.Load()
+		if fs != nil {
+			overlapped = fs.owner != oldOwner
+			break
+		}
+		runtime.Gosched()
+	}
+	close(blocking.release)
+	if !<-teardownDone {
+		t.Fatal("secondary teardown was refused")
+	}
+	<-rebindDone
+	<-sendDone
+	if overlapped {
+		t.Fatal("rebind published a new FEC owner before the old owner Wait completed")
+	}
 }
 
 func TestShapedSendAbortsWhenFECPlaneReinstantiates(t *testing.T) {

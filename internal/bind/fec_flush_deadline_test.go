@@ -25,9 +25,7 @@ func TestFecFlushDeadlineDrivesAdaptiveController(t *testing.T) {
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
 	loss := probers[0].Estimate().Loss
 
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 
 	// The T263 snapshot proves the drive ran: adaptive Parity > 0, smoothed loss > 0, and
 	// the eligible signal reflects the single up path's measured loss.
@@ -74,9 +72,7 @@ func TestFecFlushDeadlineSkipsDriveWhenLocked(t *testing.T) {
 	// the "unchanged" assertion below is non-vacuous (distinguishes "held" from
 	// "zero-initialized and never touched").
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 
 	seeded := m.PeerSnapshots()
 	if len(seeded) == 0 {

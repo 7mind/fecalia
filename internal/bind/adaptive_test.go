@@ -69,7 +69,7 @@ func newAdaptiveProbingMultipathCfg(t testing.TB, n int, psk config.Key, clk tel
 		t.Fatalf("NewMultipath(adaptive): %v", err)
 	}
 	// Wire the SAME fake clock the probers/scheduler read into the bind's adaptive-drive
-	// throttle seam (pre-Open), so driveAdaptiveControllerLocked's self-throttle advances in
+	// throttle seam (pre-Open), so driveAdaptiveController's self-throttle advances in
 	// lockstep with liveness transitions instead of on the wall clock (D97).
 	ownerClock, ok := clk.(fecOwnerClock)
 	if !ok {
@@ -184,9 +184,7 @@ func TestAdaptiveControllerDrivesFromActivePathNotStandby(t *testing.T) {
 	// primary as the sole data carrier (both up -> best eligible == index 0).
 	m.scheduler.Recompute()
 
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 
 	snaps := m.PeerSnapshots()
 	if len(snaps) == 0 {
@@ -244,9 +242,7 @@ func TestAdaptiveControllerFloorsSmallSampleSpike(t *testing.T) {
 
 	m.scheduler.Recompute()
 	before := ownerEncoderTargetParity(t, m)
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 
 	snaps := m.PeerSnapshots()
 	if len(snaps) == 0 {
@@ -289,9 +285,7 @@ func TestAdaptiveControllerSinglePathEarlyRegimeHoldThenObserve(t *testing.T) {
 		t.Fatalf("phase-1 estimate = %+v, want positive loss and LossSamples < %d", early, minAdaptiveLossSamples)
 	}
 	m.scheduler.Recompute()
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 	held := m.PeerSnapshots()[0].FEC.Adaptive.Parity
 	if held != 0 {
 		t.Fatalf("phase-1 M = %d, want 0 (early-regime HOLD, below the min-sample floor)", held)
@@ -309,9 +303,7 @@ func TestAdaptiveControllerSinglePathEarlyRegimeHoldThenObserve(t *testing.T) {
 		t.Fatalf("phase-2 LossSamples = %d, want >= floor %d", full.LossSamples, minAdaptiveLossSamples)
 	}
 	m.scheduler.Recompute()
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 	adaptive := m.PeerSnapshots()[0].FEC.Adaptive
 	if adaptive.EligiblePaths != 1 {
 		t.Fatalf("phase-2 EligiblePaths = %d, want 1 (the sole data path now Observes)", adaptive.EligiblePaths)
@@ -414,9 +406,7 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
 	loss := probers[0].Estimate().Loss
 
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 
 	// The lock-free FEC snapshot now reports the driven decision (T263): an adaptive-mode
 	// peer fabricates the Adaptive series and the eligible signal reflects the
@@ -470,9 +460,7 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 	// Seed: bring the path Up with measured loss and drive once, publishing a non-zero
 	// decision (TestAdaptiveControllerDrivesEncoderParity proves this drive in detail).
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 	driven := m.PeerSnapshots()[0].FEC.Adaptive
 	if driven == nil {
 		t.Fatal("adaptive snapshot is nil after seed drive")
@@ -506,9 +494,9 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 	}
 	fs := m.fecSend.Load()
 	before := int(fs.adaptiveParity.Load())
-	m.driveAdaptiveControllerLocked(m.peerState)
-	after := int(fs.adaptiveParity.Load())
 	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
+	after := int(fs.adaptiveParity.Load())
 	if before != after {
 		t.Fatalf("controller moved (%d -> %d) with no eligible path; want held", before, after)
 	}

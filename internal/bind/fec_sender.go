@@ -78,17 +78,6 @@ type fecDeadlineMiss struct {
 
 type fecDeadlineInvalidator func(fecDeadlineMiss)
 
-type fecOwnerRequest struct {
-	seq     uint64
-	inner   []byte
-	class   shaper.Class
-	path    *peerPathState
-	remote  netip.AddrPort
-	shaped  bool
-	admit   chan fecOwnerAdmission
-	decided chan error
-}
-
 type fecOwnerAdmission struct {
 	group fec.GroupID
 	index int
@@ -96,14 +85,28 @@ type fecOwnerAdmission struct {
 	err   error
 }
 
-type fecStagedData struct {
-	class   shaper.Class
+type fecOwnerBatch struct {
+	bufs    [][]byte
+	classes []shaper.Class
 	path    *peerPathState
 	remote  netip.AddrPort
 	shaped  bool
-	group   fec.GroupID
-	index   int
-	decided chan error
+	done    chan error
+
+	pending   int
+	exhausted bool
+	completed bool
+	err       error
+}
+
+type fecStagedData struct {
+	class  shaper.Class
+	path   *peerPathState
+	remote netip.AddrPort
+	shaped bool
+	group  fec.GroupID
+	index  int
+	batch  *fecOwnerBatch
 }
 
 type fecPreparedWrite struct {
@@ -134,18 +137,25 @@ type fecSendOwner struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	admit   chan *fecOwnerRequest
+	admit   chan *fecOwnerBatch
+	space   chan struct{}
 	wake    chan struct{}
 	control chan fecOwnerControl
 	stop    chan struct{}
 	done    chan struct{}
 
+	submitMu sync.Mutex
+	stopping bool
 	stopOnce sync.Once
 	stopErr  error
 	staged   []fecStagedData
 
-	// Test-only scheduling seam. Tests install it before the first request.
-	afterAdmit func(fecOwnerAdmission, *fecOwnerRequest)
+	// Test-only scheduling seams. Tests install them before the first batch.
+	afterPublish       func(int, int)
+	beforeBatch        func(*fecOwnerBatch)
+	beforeCopy         func(*fecOwnerBatch, int)
+	afterAdmit         func(fecOwnerAdmission, *fecOwnerBatch, int)
+	beforeAdaptiveLock func()
 }
 
 func newFECSendOwner(m *Multipath, peer *peerState, fs *fecSender) *fecSendOwner {
@@ -157,7 +167,8 @@ func newFECSendOwner(m *Multipath, peer *peerState, fs *fecSender) *fecSendOwner
 		clock:   m.clock,
 		ctx:     ctx,
 		cancel:  cancel,
-		admit:   make(chan *fecOwnerRequest, 128),
+		admit:   make(chan *fecOwnerBatch, 128),
+		space:   make(chan struct{}, 1),
 		wake:    make(chan struct{}, 1),
 		control: make(chan fecOwnerControl, 1),
 		stop:    make(chan struct{}),
@@ -167,18 +178,40 @@ func newFECSendOwner(m *Multipath, peer *peerState, fs *fecSender) *fecSendOwner
 	return o
 }
 
-func (o *fecSendOwner) submit(req *fecOwnerRequest) (fecOwnerAdmission, error) {
-	select {
-	case o.admit <- req:
-	case <-o.stop:
-		return fecOwnerAdmission{}, o.terminalError()
+func (o *fecSendOwner) publish(batch *fecOwnerBatch) error {
+	bufferCount := len(batch.bufs)
+	completionCapacity := cap(batch.done)
+	for {
+		// The nonblocking send and stopping transition share submitMu. A full
+		// mailbox never holds the mutex: publishers wait on space/stop and retry.
+		// Once the send succeeds, only the owner completes batch.done.
+		o.submitMu.Lock()
+		if o.stopping {
+			err := o.terminalError()
+			o.submitMu.Unlock()
+			return err
+		}
+		select {
+		case o.admit <- batch:
+			o.submitMu.Unlock()
+			if o.afterPublish != nil {
+				o.afterPublish(bufferCount, completionCapacity)
+			}
+			return nil
+		default:
+			o.submitMu.Unlock()
+		}
+
+		select {
+		case <-o.space:
+		case <-o.stop:
+			return o.terminalError()
+		}
 	}
-	select {
-	case admission := <-req.admit:
-		return admission, admission.err
-	case <-o.stop:
-		return fecOwnerAdmission{}, o.terminalError()
-	}
+}
+
+func (o *fecSendOwner) wait(batch *fecOwnerBatch) error {
+	return <-batch.done
 }
 
 func (o *fecSendOwner) signalDeadline() {
@@ -225,11 +258,14 @@ func (o *fecSendOwner) Stop(err error) {
 	if err == nil {
 		err = errClosed
 	}
+	o.submitMu.Lock()
 	o.stopOnce.Do(func() {
 		o.stopErr = err
+		o.stopping = true
 		o.cancel()
 		close(o.stop)
 	})
+	o.submitMu.Unlock()
 }
 
 func (o *fecSendOwner) Wait() {
@@ -271,9 +307,7 @@ func (o *fecSendOwner) run() {
 
 		select {
 		case <-o.stop:
-			o.fs.openDeadlineNanos.Store(0)
-			o.resolveStaged(o.terminalError())
-			o.rejectQueued(o.terminalError())
+			o.shutdown()
 			return
 		case <-timerC:
 			continue
@@ -281,16 +315,17 @@ func (o *fecSendOwner) run() {
 			continue
 		case control := <-o.control:
 			o.handleControl(control)
-		case req := <-o.admit:
-			// A ready timer and a ready mailbox are selected nondeterministically.
-			// Re-checking the encoder's exact due time after dequeue and before Admit
-			// gives the deadline priority without dropping the already-dequeued request.
-			if _, err := o.closeDueGroup(); err != nil {
-				req.admit <- fecOwnerAdmission{err: err}
-				req.decided <- err
-				continue
+		case batch := <-o.admit:
+			o.signalSpace()
+			if o.beforeBatch != nil {
+				o.beforeBatch(batch)
 			}
-			o.handleAdmission(req)
+			if o.isStopping() {
+				o.finishBatch(batch, o.terminalError())
+				o.shutdown()
+				return
+			}
+			o.handleBatch(batch)
 		}
 	}
 }
@@ -310,42 +345,57 @@ func (o *fecSendOwner) handleControl(control fecOwnerControl) {
 	control.done <- err
 }
 
-func (o *fecSendOwner) handleAdmission(req *fecOwnerRequest) {
-	owned := fecShardPayload(req.seq, req.inner)
-	ds, decision, err := o.fs.enc.AdmitOwned(owned)
-
-	staged := fecStagedData{
-		class:   req.class,
-		path:    req.path,
-		remote:  req.remote,
-		shaped:  req.shaped,
-		group:   ds.Group,
-		index:   ds.Index,
-		decided: req.decided,
+func (o *fecSendOwner) handleBatch(batch *fecOwnerBatch) {
+	for i, inner := range batch.bufs {
+		if o.isStopping() {
+			o.finishBatch(batch, o.terminalError())
+			return
+		}
+		// A timer can become due while this published batch is executing.
+		// Rechecking before every copy gives the expired group priority.
+		if _, err := o.closeDueGroup(); err != nil {
+			o.finishBatch(batch, err)
+			return
+		}
+		if o.beforeCopy != nil {
+			o.beforeCopy(batch, i)
+		}
+		seq := o.peer.outerSeq.Add(1)
+		owned := fecShardPayload(seq, inner)
+		ds, decision, err := o.fs.enc.AdmitOwned(owned)
+		batch.pending++
+		o.staged = append(o.staged, fecStagedData{
+			class:  batch.classes[i],
+			path:   batch.path,
+			remote: batch.remote,
+			shaped: batch.shaped,
+			group:  ds.Group,
+			index:  ds.Index,
+			batch:  batch,
+		})
+		due, open := o.fs.enc.NextDeadline()
+		o.publishDeadline(due, open)
+		admission := fecOwnerAdmission{group: ds.Group, index: ds.Index, due: due, err: err}
+		if o.afterAdmit != nil {
+			o.afterAdmit(admission, batch, i)
+		}
+		if err != nil {
+			o.resolveStaged(err)
+			o.finishBatch(batch, err)
+			return
+		}
+		switch {
+		case !open:
+			err = o.decideGroup(decision, time.Time{})
+		case !o.clock.Now().Before(due):
+			_, err = o.closeDueGroup()
+		}
+		if err != nil {
+			o.finishBatch(batch, err)
+			return
+		}
 	}
-	o.staged = append(o.staged, staged)
-	due, open := o.fs.enc.NextDeadline()
-	o.publishDeadline(due, open)
-	admission := fecOwnerAdmission{group: ds.Group, index: ds.Index, due: due}
-	if o.afterAdmit != nil {
-		o.afterAdmit(admission, req)
-	}
-	if err != nil {
-		o.resolveStaged(err)
-		o.rejectQueued(err)
-		admission.err = err
-		req.admit <- admission
-		return
-	}
-
-	switch {
-	case !open:
-		err = o.decideGroup(decision, time.Time{})
-	case !o.clock.Now().Before(due):
-		_, err = o.closeDueGroup()
-	}
-	admission.err = err
-	req.admit <- admission
+	o.finishBatch(batch, nil)
 }
 
 func (o *fecSendOwner) closeDueGroup() (bool, error) {
@@ -357,7 +407,6 @@ func (o *fecSendOwner) closeDueGroup() (bool, error) {
 	o.fs.openDeadlineNanos.Store(0)
 	if err != nil {
 		o.resolveStaged(err)
-		o.rejectQueued(err)
 		return true, err
 	}
 	err = o.decideGroup(decision, due)
@@ -377,11 +426,15 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 		return errors.New("bind: FEC encoder decided an empty group")
 	}
 	if decision == nil {
-		return errors.New("bind: FEC encoder closed without a group decision")
+		err := errors.New("bind: FEC encoder closed without a group decision")
+		o.resolveStaged(err)
+		return err
 	}
 	group := o.staged[0].group
 	if decision.Group != group {
-		return fmt.Errorf("bind: FEC group decision %d does not match staged group %d", decision.Group, group)
+		err := fmt.Errorf("bind: FEC group decision %d does not match staged group %d", decision.Group, group)
+		o.resolveStaged(err)
+		return err
 	}
 	if !due.IsZero() {
 		decidedAt := o.clock.Now()
@@ -409,22 +462,30 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 		err = o.terminalError()
 	}
 	o.resolveStaged(err)
-	if err != nil {
-		o.rejectQueued(err)
-	}
 	o.driveAdaptive()
 	return err
 }
 
 func (o *fecSendOwner) emit(writes []fecPreparedWrite) error {
-	for _, write := range writes {
+	for i := 0; i < len(writes); {
+		write := writes[i]
 		if write.shaped {
-			datagrams := []shaper.Datagram{{Class: write.class, Payload: write.wire.b}}
+			end := i + 1
+			for end < len(writes) && writes[end].shaped && writes[end].path == write.path {
+				end++
+			}
+			datagrams := make([]shaper.Datagram, end-i)
+			wires := make([]fecWire, end-i)
+			for j, shapedWrite := range writes[i:end] {
+				datagrams[j] = shaper.Datagram{Class: shapedWrite.class, Payload: shapedWrite.wire.b}
+				wires[j] = shapedWrite.wire
+			}
 			result, err := write.path.shaper.WriteDatagrams(o.ctx, datagrams)
-			o.m.recordShapedResult(write.path, o.peer, o.fs, []fecWire{write.wire}, result, err)
+			o.m.recordShapedResult(write.path, o.peer, o.fs, wires, result, err)
 			if err != nil {
 				return err
 			}
+			i = end
 			continue
 		}
 		if _, err := write.path.writeToUDPAddrPort(write.wire.b, write.remote); err != nil {
@@ -432,6 +493,7 @@ func (o *fecSendOwner) emit(writes []fecPreparedWrite) error {
 			return o.m.accountSendError(write.path, err)
 		}
 		recordWireEmission(write.path, o.peer, o.fs, write.wire)
+		i++
 	}
 	return nil
 }
@@ -440,19 +502,64 @@ func (o *fecSendOwner) resolveStaged(err error) {
 	staged := o.staged
 	o.staged = nil
 	for _, item := range staged {
-		item.decided <- err
+		item.batch.pending--
+		if err != nil && item.batch.err == nil {
+			item.batch.err = err
+		}
+		o.maybeCompleteBatch(item.batch)
 	}
 }
 
 func (o *fecSendOwner) rejectQueued(err error) {
 	for {
 		select {
-		case req := <-o.admit:
-			req.admit <- fecOwnerAdmission{err: err}
-			req.decided <- err
+		case batch := <-o.admit:
+			o.signalSpace()
+			o.finishBatch(batch, err)
 		default:
 			return
 		}
+	}
+}
+
+func (o *fecSendOwner) finishBatch(batch *fecOwnerBatch, err error) {
+	batch.exhausted = true
+	if err != nil && batch.err == nil {
+		batch.err = err
+	}
+	o.maybeCompleteBatch(batch)
+}
+
+func (o *fecSendOwner) maybeCompleteBatch(batch *fecOwnerBatch) {
+	if batch.completed || !batch.exhausted || batch.pending != 0 {
+		return
+	}
+	batch.completed = true
+	batch.bufs = nil
+	batch.classes = nil
+	batch.done <- batch.err
+}
+
+func (o *fecSendOwner) shutdown() {
+	err := o.terminalError()
+	o.fs.openDeadlineNanos.Store(0)
+	o.resolveStaged(err)
+	o.rejectQueued(err)
+}
+
+func (o *fecSendOwner) signalSpace() {
+	select {
+	case o.space <- struct{}{}:
+	default:
+	}
+}
+
+func (o *fecSendOwner) isStopping() bool {
+	select {
+	case <-o.stop:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -460,17 +567,17 @@ func (o *fecSendOwner) driveAdaptive() {
 	if o.fs.ctrl == nil {
 		return
 	}
-	now := o.clock.Now()
 
+	if o.beforeAdaptiveLock != nil {
+		o.beforeAdaptiveLock()
+	}
 	o.m.mu.Lock()
-	if o.peer.fecSend.Load() != o.fs {
-		o.m.mu.Unlock()
+	owner, sample, ok := o.m.adaptiveSampleLocked(o.peer)
+	o.m.mu.Unlock()
+	if !ok || owner != o {
 		return
 	}
-	o.peer.scheduler.Recompute()
-	loss, count := dataPathLossLocked(o.peer)
-	o.m.mu.Unlock()
-	o.applyAdaptiveSample(fecAdaptiveSample{now: now, loss: loss, count: count})
+	o.applyAdaptiveSample(sample)
 }
 
 func (o *fecSendOwner) applyAdaptiveSample(sample fecAdaptiveSample) {

@@ -1345,30 +1345,33 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
 
 **Send ownership, group staging, and deadlines (T309).** Each live peer owns
 one FEC sender goroutine. `Send` performs one scheduler selection for the
-original engine batch, assigns outer sequence numbers in order, and transfers
-each `outer-seq || inner` buffer through a bounded 128-command mailbox. The
-encoder retains that buffer without a second payload copy and returns every
-owned DATA shard in an explicit closed-group decision; success, adaptive
-*M*=0, deadline closure, and coding error all clear the encoder's open-group
-references. The compatibility `Encoder.Admit` API keeps its caller-copy
-contract.
+original engine batch and publishes exactly one batch command plus one
+completion through the bounded 128-batch mailbox. The owner walks its input in
+order and assigns each outer sequence immediately before copying/admitting that
+frame. It stops at the first terminal group error, so neither suffix payloads
+nor suffix sequence numbers are consumed. The encoder retains each admitted
+`outer-seq || inner` buffer without a second payload copy and returns every
+owned DATA shard in an explicit closed-group decision; success, adaptive *M*=0,
+deadline closure, and coding error all clear the encoder's open-group
+references. The compatibility `Encoder.Admit` API keeps its caller-copy contract.
 
 No DATA or PARITY frame from an open group reaches the writer. The owner stages
 one group until either *K* DATA admissions fill it or the exact
 `Encoder.NextDeadline` timer fires. The immutable decision fixes the group
 cardinality and the parity *M* captured when the group opened; only then does
 the owner frame and emit that group's DATA followed by PARITY. Both the shaped
-and pacing-off routes use this owner. Shaped output is submitted one wire
-datagram at a time, so an offload batch larger than the mailbox or shaper budget
-streams group-by-group with bounded backpressure instead of requiring a
-batch-sized retained wire allocation. A terminal decision/write error resolves
-every contributing and already-queued waiter without retrying the decided
-group.
+and pacing-off routes use this owner. Compatible shaped frames for a decided
+group are handed to one path shaper as one immutable batch; that shaper retains
+and emits its datagrams through its existing per-datagram bounded backpressure.
+A group spanning different selected paths is split only at the path boundary,
+and direct UDP output remains per datagram. A terminal decision/write error
+resolves every contributing batch without retrying the decided group, but the
+owner remains available for a later `Send`.
 
 The timer runs in the same injected time domain as adaptive FEC. Before every
-admission—including a mailbox command already ready when the timer fires—the
-owner rechecks `NextDeadline`; an expired group therefore becomes immutable
-before that command can enter the next group. The intentional low-load staging
+admission—including the next frame in an already-published batch—the owner
+rechecks `NextDeadline`; an expired group therefore becomes immutable before
+that frame can enter the next group. The intentional low-load staging
 cost is at most the configured FEC deadline plus dispatch overshoot. The
 bind-local dispatch SLO is `G=10ms`: `FECStats` records deadline decisions,
 misses over *G*, and maximum overshoot per sender generation. A default-nil
@@ -1379,8 +1382,12 @@ make the default runtime fail closed.
 Open/Close and per-peer teardown atomically unpublish and cancel the owner while
 holding the bind lock, then join it after releasing that lock. Partial Open
 unwind follows the same rule. This prevents an old generation from emitting
-late DATA/PARITY or retaining admission waiters across rebind; per-peer session
-teardown still retains the live per-path shaper/socket generation.
+late DATA/PARITY or retaining admission waiters across rebind. Per-peer teardown
+keeps that peer's lifecycle barrier through the old-owner join, so rebind cannot
+publish a replacement concurrently; it still retains the live per-path
+shaper/socket generation. Publication and Stop are linearized: once a batch
+publishes, `Send` waits for the owner's completion/rejection acknowledgement,
+and owner exit acknowledges every published batch before its join completes.
 
   **Quantization-aware raise gate in residual-SLA mode (D96, fix b).** The
   loop only *raises* *M* once smoothed loss crosses a raise gate (below it, the

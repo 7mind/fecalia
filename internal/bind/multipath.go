@@ -2679,10 +2679,10 @@ func (m *Multipath) TearDownPeer(name string) bool {
 		fs, tornDown = m.teardownPeerLocked(p)
 	}
 	m.mu.Unlock()
-	p.lifecycleMu.Unlock()
 	if fs != nil && fs.owner != nil {
 		fs.owner.Wait()
 	}
+	p.lifecycleMu.Unlock()
 	if tornDown {
 		m.unbindPeerSources(p)
 	}
@@ -2934,11 +2934,12 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 // that path's remote is learned, even if another path has a known remote.
 //
 // Critical-section discipline: FEC-off pacing preserves the legacy direct/shaped
-// paths. With FEC on, Send selects once and streams admissions to the peer owner;
-// the owner stages at most one group and takes m.mu only to frame its immutable
-// decision. peer.sendMu preserves batch admission order without being held while a
-// partial final group waits for its deadline. The send Codec remains mutex-guarded,
-// and no transmit syscall or shaper wait holds m.mu.
+// paths. With FEC on, Send selects once and publishes one batch to the peer owner;
+// the owner assigns outer sequences while streaming that batch across one staged
+// group at a time and takes m.mu only to frame an immutable decision. peer.sendMu
+// preserves publication order without being held while a partial final group waits
+// for its deadline. The send Codec remains mutex-guarded, and no transmit syscall
+// or shaper wait holds m.mu.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	ue, ok := ep.(*udpEndpoint)
 	if !ok {
@@ -3134,6 +3135,9 @@ func (m *Multipath) sendFECBatch(
 	class sched.FrameClass,
 	shaped bool,
 ) error {
+	// Serialize the one Pick plus one owner publication for this original Send.
+	// Completion is deliberately awaited after releasing sendMu, so another Send
+	// can fill a partial group owned by this batch.
 	peer.sendMu.Lock()
 
 	m.mu.Lock()
@@ -3189,33 +3193,20 @@ func (m *Multipath) sendFECBatch(
 	}
 	m.mu.Unlock()
 
-	requests := make([]*fecOwnerRequest, len(bufs))
-	for i, inner := range bufs {
-		requests[i] = &fecOwnerRequest{
-			seq:     peer.outerSeq.Add(1),
-			inner:   inner,
-			class:   classes[i],
-			path:    path,
-			remote:  remote,
-			shaped:  shaped,
-			admit:   make(chan fecOwnerAdmission, 1),
-			decided: make(chan error, 1),
-		}
+	batch := &fecOwnerBatch{
+		bufs:    bufs,
+		classes: classes,
+		path:    path,
+		remote:  remote,
+		shaped:  shaped,
+		done:    make(chan error, 1),
 	}
-	for _, request := range requests {
-		if _, err := fs.owner.submit(request); err != nil {
-			peer.sendMu.Unlock()
-			return err
-		}
+	if err := fs.owner.publish(batch); err != nil {
+		peer.sendMu.Unlock()
+		return err
 	}
 	peer.sendMu.Unlock()
-
-	for _, request := range requests {
-		if err := <-request.decided; err != nil {
-			return err
-		}
-	}
-	return nil
+	return fs.owner.wait(batch)
 }
 
 // sendDirectBatchLocked preserves the pacing-off/legacy Send contract: select
@@ -3431,8 +3422,8 @@ func (m *Multipath) fecFlushDeadline() {
 	}
 }
 
-// driveAdaptiveControllerLocked samples peer's adaptive FEC loss signal while
-// the caller holds m.mu, then submits that immutable sample to the peer owner.
+// driveAdaptiveController snapshots peer's adaptive FEC loss signal under m.mu,
+// releases it, then synchronously submits the immutable sample to the peer owner.
 // Only the owner mutates the controller and encoder. It is a no-op in fixed-ratio
 // mode and self-throttles to
 // adaptiveControlInterval so the controller's EWMA sees ~one sample per probe interval
@@ -3456,10 +3447,21 @@ func (m *Multipath) fecFlushDeadline() {
 // per-path loss, NOT the post-recovery ConnLoss: feeding the masked residual back would form a
 // control loop that under-provisions precisely because it is succeeding. A down/probeless path
 // carries no data and is never in DataPaths, so it is excluded by construction.
-func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
+func (m *Multipath) driveAdaptiveController(peer *peerState) {
+	m.mu.Lock()
+	owner, sample, ok := m.adaptiveSampleLocked(peer)
+	m.mu.Unlock()
+	if ok {
+		_ = owner.submitAdaptiveSample(sample)
+	}
+}
+
+// adaptiveSampleLocked forms a controller sample without waiting for the owner.
+// Caller holds m.mu; submission must happen only after releasing it.
+func (m *Multipath) adaptiveSampleLocked(peer *peerState) (*fecSendOwner, fecAdaptiveSample, bool) {
 	fs := peer.fecSend.Load()
 	if fs == nil || fs.ctrl == nil || fs.owner == nil {
-		return // FEC off for this peer, or fixed-ratio mode
+		return nil, fecAdaptiveSample{}, false // FEC off for this peer, or fixed-ratio mode
 	}
 	now := m.clock.Now()
 
@@ -3473,7 +3475,7 @@ func (m *Multipath) driveAdaptiveControllerLocked(peer *peerState) {
 	peer.scheduler.Recompute()
 
 	loss, count := dataPathLossLocked(peer)
-	_ = fs.owner.submitAdaptiveSample(fecAdaptiveSample{now: now, loss: loss, count: count})
+	return fs.owner, fecAdaptiveSample{now: now, loss: loss, count: count}, true
 }
 
 // dataPathLossLocked computes the adaptive controller's loss input from the path(s) that

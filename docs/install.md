@@ -329,9 +329,13 @@ group reaches the socket until the group fills or its exact `deadline` expires.
 The deadline therefore adds intentional latency to an underfilled low-rate
 group; a batched/offloaded send that fills `data_shards` closes immediately.
 Choose `deadline` as a latency bound, not only a coding-efficiency knob. The
-owner streams decided wire frames group-by-group through a bounded mailbox and
-the per-path shaper, and Close/rebind cancels and joins the old owner so no late
-group crosses transport generations.
+owner accepts one batch command/completion per original `Send`, assigns outer
+sequences only as it copies each input, and streams decided groups through the
+per-path shaper. A complete compatible group enters that shaper as one immutable
+batch; the shaper still applies bounded per-datagram pre-copy backpressure.
+Close/rebind rejects or completes every published batch and joins the old owner
+before a replacement can publish, so no late group crosses transport
+generations.
 
 With `adaptive = true` the send side runs the loss-tracking controller: the
 per-group parity floats in `[0, parity_shards]` to match measured path loss, so
@@ -434,8 +438,9 @@ Common rules, either policy:
   at most `Lmax` bytes. One engine batch selects one path. FEC-off input is
   classified, framed, and admitted in order; FEC-on input is staged by the
   peer owner until an immutable group decision and then emitted one wire
-  datagram at a time. An aggregate larger than `B` therefore streams through
-  cancellable pre-copy backpressure instead of requiring the whole batch to fit.
+  group at a time. Compatible shaped group frames use one `WriteDatagrams`
+  handoff, which streams through cancellable per-datagram pre-copy backpressure
+  instead of requiring the whole batch to fit.
   The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
   and all size-closed and deadline-closed FEC parity by exact byte length. Inner
   handshake/cookie/keepalive frames use `C=Lmax` one buffer at a time but remain

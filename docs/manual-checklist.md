@@ -380,7 +380,10 @@ Before the real-link cycles, validate the T309 FEC sender-owner invariants:
       and the same command with `-race`; both pass. These deterministic checks
       assert that open-group DATA/PARITY stays hidden, exact deadline dispatch
       stays within the bind-local 10ms grace, an expired group wins over queued
-      admissions, and Close resolves blocked/queued waiters.
+      admissions, a 257-frame `Send` publishes one batch/completion and preserves
+      exact payload/sequence order, writer-prefix failure consumes no suffix
+      sequence numbers, and Close acknowledges blocked/queued batches before
+      their caller buffers can be reused.
 - [ ] Run
       `go test ./internal/bind -run 'TestFECSendStreamsBeyondOwnerMailboxCapacity|TestMultipathFECDeadlineEmitsPartialGroupParity' -count=1`;
       the 257-buffer offload batch and the underfilled deadline group both pass.

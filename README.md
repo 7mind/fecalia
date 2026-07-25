@@ -264,10 +264,12 @@ deliberate boundaries you must plan around:
   `(peer,path)` owns one shaper. One engine `Send` selects one path. With FEC
   off, each input is classified, framed, and admitted in order. With FEC on, a
   per-peer owner stages one group until its size or exact deadline decision,
-  then frames and admits its DATA/PARITY one wire datagram at a time; no
-  open-group DATA is writer-visible. An aggregate batch larger than `B` or the
-  128-command owner mailbox streams group-by-group through pre-copy
-  backpressure. Encoded DATA and every decided FEC parity datagram
+  then frames its DATA/PARITY; no open-group DATA is writer-visible. Each
+  original `Send` publishes one owner command and one completion through the
+  bounded mailbox, irrespective of its offload-frame count. Compatible shaped frames from one
+  decided group enter the selected path shaper in one immutable batch, whose
+  per-datagram pre-copy backpressure remains bounded by `B`. Encoded DATA and
+  every decided FEC parity datagram
   consume their exact byte length. The shaper retains at most `Q` bytes plus one
   in-flight datagram of at most `Lmax`; saturation backpressures the sender
   without discarding ordinary traffic. Per-path accepted, emitted,
