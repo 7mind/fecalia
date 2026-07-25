@@ -447,7 +447,7 @@ func (o *fecSendOwner) decideGroup(decision *fec.GroupDecision, due time.Time) e
 		}
 		o.fs.recordDeadlineDecision(overshoot)
 		if overshoot > fecDeadlineDispatchGrace {
-			o.m.invalidateAndRotatePeerRecoveryContract(o.peer)
+			o.m.invalidateAndRotatePeerRecoveryContract(o.peer, o.fs.openGeneration)
 			if o.m.fecDeadlineInvalidator != nil {
 				o.m.fecDeadlineInvalidator(fecDeadlineMiss{
 					Peer:      o.peer.name,

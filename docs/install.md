@@ -512,11 +512,15 @@ Common rules, either policy:
   enables fast recovery while at least `T` remains in the fixed `F=1200ms`
   validity. The DATA fallback at `T` leaves a still-valid OFFER live, so an exact
   later ACK may still enable fast recovery. Acknowledged service renews under a
-  new ContractID before the old lease becomes unsafe; a lost renewal disables
-  fast recovery before the old lease has less than `T` left. A legacy peer merely
-  echoes the OFFER and therefore stays conservative. Shared-socket/mixed-path service advertises a
-  disabled contract. Writer/deadline failure and Close invalidate the old
-  contract before operation can continue.
+  new ContractID before the old lease becomes unsafe. A same-session renewal
+  whose immutable service value is unchanged preserves incomplete receiver FEC
+  groups; a changed service value or new SessionID clears them before ACK. A
+  lost renewal disables fast recovery before the old lease has less than `T`
+  left. A legacy peer merely echoes the OFFER and therefore stays conservative.
+  Shared-socket/mixed-path service advertises a disabled contract.
+  Writer/deadline failure and Close invalidate the old contract before operation
+  can continue, but delayed failures carry an exact Bind Open-generation token
+  and cannot invalidate or rotate a replacement Open.
   Same-name changes to the derived service inputs
   `R/Rp/B/C/P/Lmax/Kdata/Mmax/I` are not live-reloadable: reload emits an
   ignored-until-restart warning and preserves the running contract. Restart the

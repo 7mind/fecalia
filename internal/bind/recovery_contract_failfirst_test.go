@@ -336,6 +336,7 @@ func TestRecoveryContractStateIsPeerScoped(t *testing.T) {
 	clock := newFakeClock()
 	first := newRecoveryContractCoordinator(0x9001, clock)
 	second := newRecoveryContractCoordinator(0x9001, clock)
+	firstInstalls := 0
 	offer := telemetry.RecoveryContractMessage{
 		Type:         telemetry.RecoveryContractOffer,
 		Enabled:      true,
@@ -343,7 +344,7 @@ func TestRecoveryContractStateIsPeerScoped(t *testing.T) {
 		Lifetime:     telemetry.RecoveryContractLifetime,
 		ContractID:   1,
 	}
-	if _, ok := first.acceptOffer(0x9002, offer, func() {}); !ok {
+	if _, ok := first.acceptOffer(0x9002, offer, func() { firstInstalls++ }); !ok {
 		t.Fatal("first peer rejected OFFER")
 	}
 	if _, ok := second.acceptOffer(0x9002, offer, func() {}); !ok {
@@ -351,8 +352,14 @@ func TestRecoveryContractStateIsPeerScoped(t *testing.T) {
 	}
 	inconsistent := offer
 	inconsistent.ServiceBound = 140 * time.Millisecond
-	if _, ok := first.acceptOffer(0x9002, inconsistent, func() {}); ok {
+	if _, ok := first.acceptOffer(0x9002, inconsistent, func() { firstInstalls++ }); ok {
 		t.Fatal("first peer accepted inconsistent immutable identity")
+	}
+	if firstInstalls != 2 {
+		t.Fatalf("inconsistent immutable identity installs = %d, want initial install plus fail-closed clear", firstInstalls)
+	}
+	if _, ok := first.acceptOffer(0x9002, inconsistent, func() { firstInstalls++ }); ok || firstInstalls != 2 {
+		t.Fatalf("repeated invalid identity = accepted %v installs %d, want rejected without another clear", ok, firstInstalls)
 	}
 	if _, ok := second.acceptOffer(0x9002, offer, func() {}); !ok {
 		t.Fatal("first peer's inconsistency invalidated the second peer")
@@ -467,7 +474,7 @@ func TestSharedConcentratorSocketAdvertisesDisabledPerPeerContracts(t *testing.T
 		if peerIndex == 0 {
 			other = pskB
 		}
-		if _, err := frame.Decode(other, raw); err == nil {
+		if decoded, err := frame.Decode(other, raw); err == nil && decoded.Kind() == frame.KindProbe {
 			t.Fatalf("peer %d contract probe authenticated under another peer's PSK", peerIndex)
 		}
 	}

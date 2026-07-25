@@ -277,7 +277,7 @@ func TestCloseCancelsPendingAsynchronousContractRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.lastWrite.Store(clock.Now().UnixNano())
-	m.invalidateAndRotatePeerRecoveryContract(m.peerState)
+	m.invalidateAndRotatePeerRecoveryContract(m.peerState, m.openGeneration.Load())
 	if !m.serviceTransitionPending.Load() {
 		t.Fatal("asynchronous contract rotation was not scheduled")
 	}
@@ -306,6 +306,132 @@ func TestCloseCancelsPendingAsynchronousContractRotation(t *testing.T) {
 	}
 	if payload := m.contracts.payload(); len(payload) != 0 {
 		t.Fatal("late post-Close transition resurrected a recovery OFFER")
+	}
+}
+
+func TestStaleAsynchronousInvalidationCannotRotateReplacementOpen(t *testing.T) {
+	psk := testKey(t, 0x8E)
+	clock := newFakeClock()
+	m, _ := newProbingMultipathFEC(t, loopbackPaths(1), psk, &fec.Config{
+		DataShards:   3,
+		ParityShards: 1,
+		Deadline:     20 * time.Millisecond,
+	}, clock)
+	m.clock = clock
+	cfg := recoveryReviewShaperConfig()
+	cfg.RecoveryBound = 125 * time.Millisecond
+	m.shaperConfigs = []config.PathShaperConfig{cfg}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	peer, peerAP := rawPeer(t)
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = peer.Close()
+	})
+	_ = acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 1)
+	bringProberUpClean(t, m.probers[0], psk, clock, testProbeUpSucc)
+	m.paths[0].setRemote(peerAP)
+
+	// Hold the durable service read side so the old generation's asynchronous
+	// worker cannot pass its drain point until after Close/Open replaces every
+	// per-Open plane.
+	m.serviceGate.RLock()
+	admitted := make(chan time.Time, 1)
+	releaseAdmission := make(chan struct{})
+	m.fecSend.Load().owner.afterAdmit = func(admission fecOwnerAdmission, _ *fecOwnerBatch, _ int) {
+		admitted <- admission.due
+		<-releaseAdmission
+	}
+	oldSend := make(chan error, 1)
+	go func() { oldSend <- m.Send([][]byte{[]byte("deadline-miss")}, m.virt) }()
+	var due time.Time
+	select {
+	case due = <-admitted:
+	case <-time.After(time.Second):
+		m.serviceGate.RUnlock()
+		t.Fatal("old generation did not admit its deadline-flushed FEC group")
+	}
+	clock.advance(due.Sub(clock.Now()) + fecDeadlineDispatchGrace + time.Millisecond)
+	close(releaseAdmission)
+	select {
+	case err := <-oldSend:
+		if err != nil {
+			m.serviceGate.RUnlock()
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		m.serviceGate.RUnlock()
+		t.Fatal("old deadline-miss Send did not complete")
+	}
+	if misses := m.fecSend.Load().deadlineMisses.Load(); misses != 1 || m.contracts.fastEligible() {
+		m.serviceGate.RUnlock()
+		t.Fatalf("old generation deadline invalidation = misses %d fastEligible %v, want 1/false",
+			misses, m.contracts.fastEligible())
+	}
+	if err := m.Close(); err != nil {
+		m.serviceGate.RUnlock()
+		t.Fatal(err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		m.serviceGate.RUnlock()
+		t.Fatal(err)
+	}
+	bringProberUpClean(t, m.probers[0], psk, clock, testProbeUpSucc)
+	m.paths[0].setRemote(peerAP)
+	replacement := acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 2)
+	clock.advance(conservativeRecoveryService)
+	m.serviceGate.RUnlock()
+
+	deadline := time.Now().Add(time.Second)
+	for m.serviceTransitionPending.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("stale asynchronous worker did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	current := m.contracts.offerSnapshot().message
+	if current.ContractID != replacement.ContractID || !m.contracts.fastEligible() {
+		t.Fatalf("stale asynchronous worker changed replacement contract: replacement=%+v current=%+v", replacement, current)
+	}
+	if err := m.Send([][]byte{[]byte("a"), []byte("b"), []byte("c")}, m.virt); err != nil {
+		t.Fatalf("replacement Send after stale invalidation: %v", err)
+	}
+	if len(m.paths) != 1 {
+		t.Fatalf("stale asynchronous worker changed replacement path set: %d", len(m.paths))
+	}
+}
+
+func TestStaleSharedRecoveryFailureCannotInvalidateReplacementContract(t *testing.T) {
+	psk := testKey(t, 0x8F)
+	m := openNegotiatingPeer(t, psk)
+	old := m.paths[0]
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	replacementPath := m.paths[0]
+	replacement := acknowledgeCurrentContract(t, m.contracts, replacementPath.id, 2)
+	retired := make(chan struct{}, 1)
+	m.afterRecoveryRetire = func(got *sharedPathState) {
+		if got == old.sharedPathState {
+			retired <- struct{}{}
+		}
+	}
+	m.abortRecoveryGeneration(old, syscall.EIO)
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("stale shared-path retirement did not finish")
+	}
+	current := m.contracts.offerSnapshot().message
+	if current.ContractID != replacement.ContractID || !m.contracts.fastEligible() {
+		t.Fatalf("stale shared recovery failure changed replacement contract: replacement=%+v current=%+v", replacement, current)
+	}
+	if len(m.paths) != 1 || m.paths[0] != replacementPath {
+		t.Fatal("stale shared recovery failure changed replacement path set")
 	}
 }
 
@@ -849,7 +975,7 @@ func TestAuthenticatedOfferInstallsReceiverStateBeforeBlockedACK(t *testing.T) {
 
 	secondOffer := firstOffer
 	secondOffer.ContractID = 2
-	secondBlocked, _ := offerRecoveryContractBlocked(
+	secondBlocked, secondEcho := offerRecoveryContractBlocked(
 		t, m, view, base, psk, peerAP, firstSession, 2, firstEcho.Challenge, secondOffer,
 	)
 	if got := m.resequencer.Load().Stats().Rebaselines; got != 0 {
@@ -858,11 +984,11 @@ func TestAuthenticatedOfferInstallsReceiverStateBeforeBlockedACK(t *testing.T) {
 	if got := receiver.stats().Recovered; got != recoveredBefore {
 		t.Fatalf("completed decoder counters changed before ACK write: %d -> %d", recoveredBefore, got)
 	}
-	if got, err := receiver.offer(incomplete.Data[1]); err != nil || len(got) != 0 {
-		t.Fatalf("incomplete old-contract state survived before ACK write: recovered=%d err=%v", len(got), err)
+	if got, err := receiver.offer(incomplete.Data[1]); err != nil || len(got) != 1 {
+		t.Fatalf("same-service renewal discarded recoverable group before ACK write: recovered=%d err=%v", len(got), err)
 	}
-	if got, err := receiver.offer(incomplete.Parity[0]); err != nil || len(got) != 0 {
-		t.Fatalf("cleared group reconstructed without its discarded shard: recovered=%d err=%v", len(got), err)
+	if secondEcho.Challenge == 0 {
+		t.Fatal("same-service renewal echo omitted its live challenge")
 	}
 	old := makeFECDecision(t, fecCfg, 0, []byte("o0"), []byte("o1"), []byte("o2"))
 	if got, err := receiver.offer(old.Data[1]); err != nil || len(got) != 0 {
@@ -877,7 +1003,64 @@ func TestAuthenticatedOfferInstallsReceiverStateBeforeBlockedACK(t *testing.T) {
 	close(secondBlocked.release)
 	_ = readProbe(t, peer, codec)
 
-	restartIncomplete := makeFECDecision(t, fecCfg, 12, []byte("r0"), []byte("r1"), []byte("r2"))
+	changedIncomplete := makeFECDecision(t, fecCfg, 12, []byte("v0"), []byte("v1"), []byte("v2"))
+	if _, err := receiver.offer(changedIncomplete.Data[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := receiver.offer(changedIncomplete.Parity[0]); err != nil {
+		t.Fatal(err)
+	}
+	changedOffer := secondOffer
+	changedOffer.ContractID = 3
+	changedOffer.ServiceBound = 130 * time.Millisecond
+	changedBlocked, changedEcho := offerRecoveryContractBlocked(
+		t, m, view, base, psk, peerAP, firstSession, 3, secondEcho.Challenge, changedOffer,
+	)
+	if got, err := receiver.offer(changedIncomplete.Data[1]); err != nil || len(got) != 0 {
+		t.Fatalf("changed service retained incomplete decoder state before ACK write: recovered=%d err=%v", len(got), err)
+	}
+	close(changedBlocked.release)
+	_ = readProbe(t, peer, codec)
+
+	enabledIncomplete := makeFECDecision(t, fecCfg, 13, []byte("e0"), []byte("e1"), []byte("e2"))
+	if _, err := receiver.offer(enabledIncomplete.Data[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := receiver.offer(enabledIncomplete.Parity[0]); err != nil {
+		t.Fatal(err)
+	}
+	disabledOffer := changedOffer
+	disabledOffer.Enabled = false
+	disabledOffer.ServiceBound = 0
+	disabledOffer.ContractID = 4
+	disabledBlocked, disabledEcho := offerRecoveryContractBlocked(
+		t, m, view, base, psk, peerAP, firstSession, 4, changedEcho.Challenge, disabledOffer,
+	)
+	if got, err := receiver.offer(enabledIncomplete.Data[1]); err != nil || len(got) != 0 {
+		t.Fatalf("enabled-state change retained incomplete decoder state before ACK write: recovered=%d err=%v", len(got), err)
+	}
+	close(disabledBlocked.release)
+	_ = readProbe(t, peer, codec)
+
+	disabledIncomplete := makeFECDecision(t, fecCfg, 14, []byte("d0"), []byte("d1"), []byte("d2"))
+	if _, err := receiver.offer(disabledIncomplete.Data[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := receiver.offer(disabledIncomplete.Parity[0]); err != nil {
+		t.Fatal(err)
+	}
+	disabledRenewal := disabledOffer
+	disabledRenewal.ContractID = 5
+	disabledRenewalBlocked, _ := offerRecoveryContractBlocked(
+		t, m, view, base, psk, peerAP, firstSession, 5, disabledEcho.Challenge, disabledRenewal,
+	)
+	if got, err := receiver.offer(disabledIncomplete.Data[1]); err != nil || len(got) != 1 {
+		t.Fatalf("identical disabled renewal discarded recoverable group before ACK write: recovered=%d err=%v", len(got), err)
+	}
+	close(disabledRenewalBlocked.release)
+	_ = readProbe(t, peer, codec)
+
+	restartIncomplete := makeFECDecision(t, fecCfg, 15, []byte("r0"), []byte("r1"), []byte("r2"))
 	if _, err := receiver.offer(restartIncomplete.Data[0]); err != nil {
 		t.Fatal(err)
 	}

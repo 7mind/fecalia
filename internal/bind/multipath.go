@@ -194,6 +194,9 @@ type sharedPathState struct {
 	id   uint8
 	src  netip.Addr
 	conn *net.UDPConn
+	// openGeneration identifies the exact Bind Open that owns this socket.
+	// Runtime-added/promoted sockets inherit the currently active generation.
+	openGeneration uint64
 
 	// writeMu makes direct and shaped UDP admission generation-scoped. Retirement
 	// closes admission before waiting writes, so WaitGroup Add cannot race Wait.
@@ -548,8 +551,9 @@ type peerState struct {
 	lastWrite   atomic.Int64
 	// serviceTransitionPending coalesces asynchronous recovery-service
 	// transitions requested from inside a DATA Send's serviceGate read side.
-	serviceTransitionPending   atomic.Bool
-	serviceTransitionRequested atomic.Uint64
+	serviceTransitionPending    atomic.Bool
+	serviceTransitionRequested  atomic.Uint64
+	serviceTransitionGeneration atomic.Uint64
 
 	// sendMu preserves one scheduler selection/offered event per engine Send while
 	// allowing that Send to block on the exact-byte shaper without holding m.mu.
@@ -1239,6 +1243,10 @@ type Multipath struct {
 	// m.mu; Send never takes transitionMu.
 	transitionMu sync.Mutex
 	mu           sync.Mutex
+	// openGeneration monotonically identifies each successful-or-attempted Open
+	// construction. Per-Open senders and sockets snapshot it so delayed failures
+	// cannot act on a replacement generation.
+	openGeneration atomic.Uint64
 
 	// The PRIMARY peer, embedded so the single-peer datapath (Send, the receive drainer,
 	// the probe loop) and the existing single-peer tests reach its fields — virt,
@@ -1825,6 +1833,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		m.mu.Unlock()
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
+	m.openGeneration.Add(1)
 	cleanupOnError := true
 	defer func() {
 		if !cleanupOnError {
@@ -1923,7 +1932,15 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		// treat it as non-fatal rather than refusing to bind in a restricted env.
 		_ = c.SetReadBuffer(socketRecvBuffer)
 
-		shared := &sharedPathState{name: def.Name, id: uint8(i), src: def.SourceAddr, conn: c, bindMode: def.Bind, boundDevice: bindDevs[i]}
+		shared := &sharedPathState{
+			name:           def.Name,
+			id:             uint8(i),
+			src:            def.SourceAddr,
+			conn:           c,
+			openGeneration: m.openGeneration.Load(),
+			bindMode:       def.Bind,
+			boundDevice:    bindDevs[i],
+		}
 		// Own the socket before constructing any peer view so every later error
 		// unwinds it through the same generation-retirement barrier.
 		m.shared = append(m.shared, shared)
@@ -2170,7 +2187,11 @@ func (m *Multipath) newFECSender(peer *peerState) (*fecSender, error) {
 	if err := enc.SetNextGroup(fec.GroupID(peer.fecNextGroup.Load())); err != nil {
 		return nil, fmt.Errorf("bind: restore FEC group sequence: %w", err)
 	}
-	fs := &fecSender{enc: enc, nextGroup: &peer.fecNextGroup}
+	fs := &fecSender{
+		enc:            enc,
+		openGeneration: m.openGeneration.Load(),
+		nextGroup:      &peer.fecNextGroup,
+	}
 	if m.adaptiveCfg != nil {
 		// m.clock satisfies adaptivefec.Clock through their identical
 		// Now() time.Time shape — so the controller's own slew/dwell timing rides the SAME
@@ -4093,10 +4114,25 @@ type socketGenerationRetirement struct {
 func (m *Multipath) abortRecoveryGeneration(pp *peerPathState, cause error) {
 	sp := pp.sharedPathState
 	sp.recoveryRetireOnce.Do(func() {
-		if views := sp.views.Load(); views != nil {
-			for _, view := range *views {
-				if view.peer != nil && view.peer.contracts != nil {
-					view.peer.contracts.invalidateForTransition()
+		m.mu.Lock()
+		current := m.openGeneration.Load() == sp.openGeneration
+		if current {
+			current = false
+			for _, candidate := range m.shared {
+				if candidate == sp {
+					current = true
+					break
+				}
+			}
+		}
+		m.mu.Unlock()
+		if current {
+			views := sp.views.Load()
+			if views != nil {
+				for _, view := range *views {
+					if view.peer != nil && view.peer.contracts != nil {
+						view.peer.contracts.invalidateGeneration(sp.openGeneration)
+					}
 				}
 			}
 		}
@@ -4118,21 +4154,40 @@ func (m *Multipath) retireRecoveryGeneration(failed *peerPathState, cause error)
 	}()
 	m.transitionMu.Lock()
 	defer m.transitionMu.Unlock()
+
+	sp := failed.sharedPathState
+	m.mu.Lock()
+	sharedIndex := -1
+	if m.openGeneration.Load() == sp.openGeneration {
+		for index, candidate := range m.shared {
+			if candidate == sp {
+				sharedIndex = index
+				break
+			}
+		}
+	}
+	m.mu.Unlock()
+	if sharedIndex < 0 {
+		return
+	}
+
 	frozenPeers := m.freezePeerServices()
+	rotateContract := false
 	defer func() {
-		if err := m.finishPeerServiceTransition(frozenPeers, true); err != nil {
+		if err := m.finishPeerServiceTransition(frozenPeers, rotateContract); err != nil {
 			m.log.Error("bind: recovery contract rotation failed", "error", err)
 		}
 	}()
 
-	sp := failed.sharedPathState
 	var retirement socketGenerationRetirement
 	m.mu.Lock()
-	sharedIndex := -1
-	for index, candidate := range m.shared {
-		if candidate == sp {
-			sharedIndex = index
-			break
+	sharedIndex = -1
+	if m.openGeneration.Load() == sp.openGeneration {
+		for index, candidate := range m.shared {
+			if candidate == sp {
+				sharedIndex = index
+				break
+			}
 		}
 	}
 	if sharedIndex < 0 {
@@ -4169,6 +4224,7 @@ func (m *Multipath) retireRecoveryGeneration(failed *peerPathState, cause error)
 	}
 	m.shared = append(m.shared[:sharedIndex], m.shared[sharedIndex+1:]...)
 	retirement.prepareSharedLocked(sp)
+	rotateContract = true
 	m.mu.Unlock()
 
 	if err := retirement.retire(); err != nil {
@@ -4405,7 +4461,15 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 	// never added — so warning here, before the fan-out is known to succeed, would log an
 	// outcome-false "falling back to source-IP pinning" claim for a path that never came up.
 	_ = c.SetReadBuffer(socketRecvBuffer)
-	shared := &sharedPathState{name: def.Name, id: id, src: def.SourceAddr, conn: c, bindMode: def.Bind, boundDevice: dev}
+	shared := &sharedPathState{
+		name:           def.Name,
+		id:             id,
+		src:            def.SourceAddr,
+		conn:           c,
+		openGeneration: m.openGeneration.Load(),
+		bindMode:       def.Bind,
+		boundDevice:    dev,
+	}
 
 	// FAN-OUT (single owner): instantiate the per-(peer,path) state for EVERY currently-
 	// bound peer, minting each peer's own Codec + prober and admitting it to that peer's

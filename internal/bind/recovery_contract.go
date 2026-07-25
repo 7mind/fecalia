@@ -40,11 +40,12 @@ type receivedRecoveryContract struct {
 // recovery-contract negotiation. It deliberately does not live on Prober:
 // every path of one peer advertises and acknowledges one immutable generation.
 type recoveryContractCoordinator struct {
-	mu      sync.Mutex
-	clock   fecOwnerClock
-	session uint64
-	nextID  uint64
-	changed chan struct{}
+	mu         sync.Mutex
+	clock      fecOwnerClock
+	session    uint64
+	nextID     uint64
+	changed    chan struct{}
+	generation uint64
 
 	offer *localRecoveryOffer
 
@@ -82,6 +83,13 @@ func (c *recoveryContractCoordinator) notifyLocked() {
 
 func (c *recoveryContractCoordinator) begin(enabled bool, serviceBound time.Duration) error {
 	c.mu.Lock()
+	generation := c.generation
+	c.mu.Unlock()
+	return c.beginGeneration(enabled, serviceBound, generation)
+}
+
+func (c *recoveryContractCoordinator) beginGeneration(enabled bool, serviceBound time.Duration, generation uint64) error {
+	c.mu.Lock()
 	defer c.mu.Unlock()
 	message := telemetry.RecoveryContractMessage{
 		Type:     telemetry.RecoveryContractOffer,
@@ -94,6 +102,7 @@ func (c *recoveryContractCoordinator) begin(enabled bool, serviceBound time.Dura
 	c.haveLease = false
 	c.leaseUntil = time.Time{}
 	c.invalidated = false
+	c.generation = generation
 	return c.startOfferLocked(message, true)
 }
 
@@ -143,13 +152,24 @@ func (c *recoveryContractCoordinator) disable() {
 // new service snapshot and starts the explicit T fallback.
 func (c *recoveryContractCoordinator) invalidateForTransition() {
 	c.mu.Lock()
+	generation := c.generation
+	c.mu.Unlock()
+	c.invalidateGeneration(generation)
+}
+
+func (c *recoveryContractCoordinator) invalidateGeneration(generation uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation {
+		return false
+	}
 	c.haveLease = false
 	c.leaseUntil = time.Time{}
 	c.invalidated = true
 	c.barrierPending = true
 	c.barrierDue = time.Time{}
 	c.notifyLocked()
-	c.mu.Unlock()
+	return true
 }
 
 func (c *recoveryContractCoordinator) refreshLocked(now time.Time) {
@@ -324,7 +344,11 @@ func (c *recoveryContractCoordinator) acceptOffer(
 			return telemetry.RecoveryContractMessage{}, false
 		}
 		if message.ContractID == existing.message.ContractID {
-			if existing.invalid || existing.message != message {
+			if existing.invalid {
+				return telemetry.RecoveryContractMessage{}, false
+			}
+			if existing.message != message {
+				install()
 				existing.invalid = true
 				c.received = existing
 				return telemetry.RecoveryContractMessage{}, false
@@ -332,6 +356,12 @@ func (c *recoveryContractCoordinator) acceptOffer(
 			if existing.acceptedAt.Add(existing.message.Lifetime).Sub(now) < conservativeRecoveryService {
 				return telemetry.RecoveryContractMessage{}, false
 			}
+			ack := message
+			ack.Type = telemetry.RecoveryContractACK
+			return ack, true
+		}
+		if sameRecoveryService(existing.message, message) {
+			c.received = receivedRecoveryContract{message: message, acceptedAt: now}
 			ack := message
 			ack.Type = telemetry.RecoveryContractACK
 			return ack, true
@@ -348,6 +378,14 @@ func (c *recoveryContractCoordinator) acceptOffer(
 	ack := message
 	ack.Type = telemetry.RecoveryContractACK
 	return ack, true
+}
+
+func sameRecoveryService(left, right telemetry.RecoveryContractMessage) bool {
+	left.Type = telemetry.RecoveryContractOffer
+	right.Type = telemetry.RecoveryContractOffer
+	left.ContractID = 0
+	right.ContractID = 0
+	return left == right
 }
 
 // beginPeerRecoveryContractLocked snapshots the complete selectable writer
@@ -378,7 +416,7 @@ func (m *Multipath) beginPeerRecoveryContractLocked(peer *peerState) error {
 			}
 		}
 	}
-	return peer.contracts.begin(enabled, bound)
+	return peer.contracts.beginGeneration(enabled, bound, m.openGeneration.Load())
 }
 
 func (m *Multipath) freezePeerServices() []*peerState {
@@ -461,76 +499,115 @@ func (m *Multipath) waitPeerRecoveryDrain(nanos int64, cancelled <-chan struct{}
 	}
 }
 
-func (m *Multipath) invalidateAndRotatePeerRecoveryContract(peer *peerState) {
+func (m *Multipath) captureOpenGeneration(generation uint64) (chan struct{}, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.openGeneration.Load() != generation || len(m.paths) == 0 || m.recvClosed == nil {
+		return nil, false
+	}
+	select {
+	case <-m.recvClosed:
+		return nil, false
+	default:
+		return m.recvClosed, true
+	}
+}
+
+func (m *Multipath) openGenerationCurrent(generation uint64, token <-chan struct{}) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.openGenerationCurrentLocked(generation, token)
+}
+
+func (m *Multipath) openGenerationCurrentLocked(generation uint64, token <-chan struct{}) bool {
+	if m.openGeneration.Load() != generation || len(m.paths) == 0 || m.recvClosed != token {
+		return false
+	}
+	select {
+	case <-token:
+		return false
+	default:
+		return true
+	}
+}
+
+func (m *Multipath) invalidateAndRotatePeerRecoveryContract(peer *peerState, generation uint64) {
 	if peer == nil || peer.contracts == nil {
 		return
 	}
-	peer.contracts.invalidateForTransition()
+	cancelled, current := m.captureOpenGeneration(generation)
+	if !current || !peer.contracts.invalidateGeneration(generation) {
+		return
+	}
+	peer.serviceTransitionGeneration.Store(generation)
 	peer.serviceTransitionRequested.Add(1)
 	if !peer.serviceTransitionPending.CompareAndSwap(false, true) {
 		return
 	}
-	m.mu.Lock()
-	cancelled := m.recvClosed
-	m.mu.Unlock()
-	go m.rotateInvalidatedPeerRecoveryContract(peer, cancelled)
+	go m.rotateInvalidatedPeerRecoveryContract(peer, generation, cancelled)
 }
 
-func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, cancelled <-chan struct{}) {
-	for {
-		requested := peer.serviceTransitionRequested.Load()
-		peer.serviceGate.Lock()
-		lastWrite := peer.lastWrite.Load()
-		peer.serviceGate.Unlock()
-		if !m.waitPeerRecoveryDrain(lastWrite, cancelled) {
-			peer.serviceTransitionPending.Store(false)
-			if peer.serviceTransitionRequested.Load() != requested &&
-				peer.serviceTransitionPending.CompareAndSwap(false, true) {
-				m.mu.Lock()
-				nextCancelled := m.recvClosed
-				active := len(m.paths) > 0
-				m.mu.Unlock()
-				if active {
-					go m.rotateInvalidatedPeerRecoveryContract(peer, nextCancelled)
-				} else {
-					peer.serviceTransitionPending.Store(false)
-				}
-			}
-			return
-		}
-		m.transitionMu.Lock()
-		peer.serviceGate.Lock()
-		m.mu.Lock()
-		active := len(m.paths) > 0
-		if active {
-			found := false
-			for _, candidate := range m.peers {
-				if candidate == peer {
-					found = true
-					break
-				}
-			}
-			active = found
-		}
-		var err error
-		if active {
-			err = m.beginPeerRecoveryContractLocked(peer)
-		} else {
-			peer.contracts.disable()
-		}
-		m.mu.Unlock()
-		peer.serviceGate.Unlock()
-		m.transitionMu.Unlock()
-		if err != nil {
-			m.log.Error("bind: recovery contract rotation failed", "error", err)
-		}
-		if peer.serviceTransitionRequested.Load() != requested {
-			continue
-		}
-		peer.serviceTransitionPending.Store(false)
-		if peer.serviceTransitionRequested.Load() == requested ||
-			!peer.serviceTransitionPending.CompareAndSwap(false, true) {
-			return
-		}
+func (m *Multipath) finishInvalidatedPeerRecoveryWorker(peer *peerState, generation, requested uint64) {
+	peer.serviceTransitionPending.Store(false)
+	latestRequested := peer.serviceTransitionRequested.Load()
+	latestGeneration := peer.serviceTransitionGeneration.Load()
+	if latestRequested == requested && latestGeneration == generation {
+		return
 	}
+	if !peer.serviceTransitionPending.CompareAndSwap(false, true) {
+		return
+	}
+	cancelled, current := m.captureOpenGeneration(latestGeneration)
+	if !current {
+		peer.serviceTransitionPending.Store(false)
+		return
+	}
+	go m.rotateInvalidatedPeerRecoveryContract(peer, latestGeneration, cancelled)
+}
+
+func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, generation uint64, cancelled <-chan struct{}) {
+	requested := peer.serviceTransitionRequested.Load()
+	if peer.serviceTransitionGeneration.Load() != generation {
+		m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+		return
+	}
+	peer.serviceGate.Lock()
+	lastWrite := peer.lastWrite.Load()
+	peer.serviceGate.Unlock()
+	if !m.waitPeerRecoveryDrain(lastWrite, cancelled) ||
+		!m.openGenerationCurrent(generation, cancelled) {
+		m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+		return
+	}
+
+	m.transitionMu.Lock()
+	if !m.openGenerationCurrent(generation, cancelled) {
+		m.transitionMu.Unlock()
+		m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
+		return
+	}
+	peer.serviceGate.Lock()
+	m.mu.Lock()
+	active := m.openGenerationCurrentLocked(generation, cancelled)
+	if active {
+		found := false
+		for _, candidate := range m.peers {
+			if candidate == peer {
+				found = true
+				break
+			}
+		}
+		active = found
+	}
+	var err error
+	if active {
+		err = m.beginPeerRecoveryContractLocked(peer)
+	}
+	m.mu.Unlock()
+	peer.serviceGate.Unlock()
+	m.transitionMu.Unlock()
+	if err != nil {
+		m.log.Error("bind: recovery contract rotation failed", "error", err)
+	}
+	m.finishInvalidatedPeerRecoveryWorker(peer, generation, requested)
 }

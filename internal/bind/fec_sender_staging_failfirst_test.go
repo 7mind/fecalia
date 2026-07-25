@@ -620,7 +620,7 @@ func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 	cfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: 80 * time.Millisecond}
 	f := newFailFirstFixture(t, cfg, nil, nil)
 	contracts := newRecoveryContractCoordinator(0xD15, f.clock)
-	if err := contracts.begin(true, 125*time.Millisecond); err != nil {
+	if err := contracts.beginGeneration(true, 125*time.Millisecond, f.m.openGeneration.Load()); err != nil {
 		t.Fatal(err)
 	}
 	offered := contracts.offerSnapshot()

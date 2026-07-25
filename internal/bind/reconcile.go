@@ -234,7 +234,12 @@ func (m *Multipath) promoteDeferredLocked(
 ) (retErr error) {
 	// Large SO_RCVBUF, best-effort (kernel-capped, needs no privilege) — as in Open/AddPath.
 	_ = c.SetReadBuffer(socketRecvBuffer)
-	shared := &sharedPathState{name: dp.def.Name, src: dp.def.SourceAddr, conn: c}
+	shared := &sharedPathState{
+		name:           dp.def.Name,
+		src:            dp.def.SourceAddr,
+		conn:           c,
+		openGeneration: m.openGeneration.Load(),
+	}
 	promoted := false
 	defer func() {
 		if !promoted {

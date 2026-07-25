@@ -102,6 +102,8 @@ const minAdaptiveLossSamples = 32
 // snapshot time, mirroring the T23 per-path byte counters.
 type fecSender struct {
 	enc *fec.Encoder
+	// openGeneration is the exact Bind Open that constructed this sender.
+	openGeneration uint64
 	// nextGroup points at the owning peer's process-lifetime high-water mark.
 	// The owner publishes it immediately when an admission opens a group, so
 	// Close cannot cause a later Open to reuse even a partially staged group.

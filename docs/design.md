@@ -564,12 +564,18 @@ monotonically increasing `ContractID` whenever the selectable writer service
 changes and snapshots that exact identity into the generated PROBE; a delayed
 write completion can authorize only the OFFER it actually emitted, never a
 newer contract. The receiver keys identity by `(SessionID, ContractID)`, installs a new
-authenticated OFFER before making its ACK socket-visible, discards only
-incomplete FEC groups while preserving completed groups and the trusted GroupID
-high-water, and performs any authenticated restart resequencer rebaseline before
-the ACK. Repeating the identical OFFER does not refresh its original acceptance
-time. Reusing an identity with different fields permanently invalidates that
-identity; an expired or lower ContractID remains stale and receives no ACK.
+authenticated service change before making its ACK socket-visible, discards
+only incomplete FEC groups while preserving completed groups and the trusted
+GroupID high-water, and performs any authenticated restart resequencer
+rebaseline before the ACK. A higher ContractID in the same SessionID with the
+same immutable service value (`enabled`, `Sdevice`, and validity) is a lease
+renewal: it advances the accepted identity and acceptance time but preserves
+incomplete receiver groups. Repeating the identical identity does not refresh
+its original acceptance time. A new SessionID or changed service value installs
+a new receiver generation and clears incomplete groups. Reusing an identity
+with different fields first clears that untrustworthy receiver generation, then
+permanently invalidates the identity; an expired or lower ContractID remains
+stale and receives no ACK.
 
 Before runtime path add/remove, deferred-path promotion, or
 recovery-generation retirement, the peer's
@@ -595,8 +601,13 @@ old lease has less than `T` validity. OFFER loss likewise rotates again before
 expiry. Thus fallback controls DATA admission while OFFER/lease validity remains
 a separate state machine.
 Deadline/writer failure and Close invalidate the acknowledged contract and wake
-barrier waiters. Pacing-off or FEC-off operation carries no contract and retains
-its prior data path.
+barrier waiters. Each asynchronous deadline or socket failure carries the exact
+Bind Open-generation token that admitted it; the token is checked before
+invalidation, after the quiet wait, and under transition serialization before
+retirement or rotation. A delayed failure from a closed generation therefore
+cannot freeze service, invalidate a lease, retire a socket, or rotate the
+replacement Open's contract. Pacing-off or FEC-off operation carries no
+contract and retains its prior data path.
 
 **Exact-byte shaper contract — `internal/shaper`.** Each primitive instance
 belongs to one path and takes the validated quantities above. Define
