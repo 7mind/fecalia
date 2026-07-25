@@ -324,6 +324,19 @@ parity_shards = 6        # in adaptive mode this is the parity CEILING
 # safety_factor = 4.0    # legacy headroom multiplier (mutually exclusive with target_residual)
 ```
 
+The sender stages one FEC group per peer: neither DATA nor PARITY from that
+group reaches the socket until the group fills or its exact `deadline` expires.
+The deadline therefore adds intentional latency to an underfilled low-rate
+group; a batched/offloaded send that fills `data_shards` closes immediately.
+Choose `deadline` as a latency bound, not only a coding-efficiency knob. The
+owner accepts one batch command/completion per original `Send`, assigns outer
+sequences only as it copies each input, and streams decided groups through the
+per-path shaper. A complete compatible group enters that shaper as one immutable
+batch; the shaper still applies bounded per-datagram pre-copy backpressure.
+Close/rebind rejects or completes every published batch and joins the old owner
+before a replacement can publish, so no late group crosses transport
+generations.
+
 With `adaptive = true` the send side runs the loss-tracking controller: the
 per-group parity floats in `[0, parity_shards]` to match measured path loss, so
 a clean path spends near-zero overhead. Two mutually-exclusive ways size that
@@ -422,12 +435,14 @@ Common rules, either policy:
   `Rp<R`.
   With DATA/PARITY budget `B>=Lmax` and total retained budget `Q=B+C`, a live
   shaper holds at most `Q` retained bytes plus one writer-in-flight datagram of
-  at most `Lmax` bytes. One engine batch selects one path, then classifies,
-  frames, and admits each input buffer in order. An aggregate larger than `B`
-  therefore streams one legal datagram at a time through cancellable pre-copy
-  backpressure instead of requiring the whole batch to fit.
+  at most `Lmax` bytes. One engine batch selects one path. FEC-off input is
+  classified, framed, and admitted in order; FEC-on input is staged by the
+  peer owner until an immutable group decision and then emitted one wire
+  group at a time. Compatible shaped group frames use one `WriteDatagrams`
+  handoff, which streams through cancellable per-datagram pre-copy backpressure
+  instead of requiring the whole batch to fit.
   The live per-(peer,path) shaper admits encoded DATA/inner-WireGuard control
-  and all immediate and deadline-produced FEC parity by exact byte length. Inner
+  and all size-closed and deadline-closed FEC parity by exact byte length. Inner
   handshake/cookie/keepalive frames use `C=Lmax` one buffer at a time but remain
   behind lower DATA in selected-path FIFO/outer sequence/FEC order; DATA cannot
   borrow `C`. A full DATA/control budget blocks the sender until capacity
@@ -787,7 +802,7 @@ pacing meets your bufferbloat target.
   - **Residual limitations:** the parity count is applied one batch late (a
     lag immaterial against the 200 ms `load_tau`); this boundary is verified
     at unit level only, not on real hardware. The carry affects only the next
-    scheduler offered-load observation: every immediate and deadline-produced
+    scheduler offered-load observation: every size-closed and deadline-closed
     parity datagram is admitted and serialized by the selected path's exact-byte
     shaper. T299 therefore removes D108's parity bypass/token-debt behavior.
 

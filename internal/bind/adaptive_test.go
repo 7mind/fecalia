@@ -69,9 +69,13 @@ func newAdaptiveProbingMultipathCfg(t testing.TB, n int, psk config.Key, clk tel
 		t.Fatalf("NewMultipath(adaptive): %v", err)
 	}
 	// Wire the SAME fake clock the probers/scheduler read into the bind's adaptive-drive
-	// throttle seam (pre-Open), so driveAdaptiveControllerLocked's self-throttle advances in
+	// throttle seam (pre-Open), so driveAdaptiveController's self-throttle advances in
 	// lockstep with liveness transitions instead of on the wall clock (D97).
-	m.clock = clk
+	ownerClock, ok := clk.(fecOwnerClock)
+	if !ok {
+		t.Fatalf("adaptive test clock %T does not implement fecOwnerClock", clk)
+	}
+	m.clock = ownerClock
 	return m, probers
 }
 
@@ -180,10 +184,7 @@ func TestAdaptiveControllerDrivesFromActivePathNotStandby(t *testing.T) {
 	// primary as the sole data carrier (both up -> best eligible == index 0).
 	m.scheduler.Recompute()
 
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	parityAfter := m.fecSend.Load().ctrl.Parity()
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 
 	snaps := m.PeerSnapshots()
 	if len(snaps) == 0 {
@@ -193,6 +194,7 @@ func TestAdaptiveControllerDrivesFromActivePathNotStandby(t *testing.T) {
 	if adaptive == nil {
 		t.Fatalf("adaptive-mode snapshot FEC.Adaptive == nil")
 	}
+	parityAfter := adaptive.Parity
 	// The controller input is the ACTIVE data path's loss (0), not the standby's ~0.11.
 	if adaptive.EligibleLoss != activeLoss {
 		t.Fatalf("EligibleLoss = %v, want the active data path's loss %v (not the standby's %v)",
@@ -239,14 +241,8 @@ func TestAdaptiveControllerFloorsSmallSampleSpike(t *testing.T) {
 	}
 
 	m.scheduler.Recompute()
-	m.mu.Lock()
-	before := m.fecSend.Load().ctrl.Parity()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	after := m.fecSend.Load().ctrl.Parity()
-	m.mu.Unlock()
-	if before != 0 || after != 0 {
-		t.Fatalf("controller M moved %d -> %d off a small-sample spike; want held at 0 (floor must suppress it)", before, after)
-	}
+	before := ownerEncoderTargetParity(t, m)
+	m.driveAdaptiveController(m.peerState)
 
 	snaps := m.PeerSnapshots()
 	if len(snaps) == 0 {
@@ -255,6 +251,9 @@ func TestAdaptiveControllerFloorsSmallSampleSpike(t *testing.T) {
 	adaptive := snaps[0].FEC.Adaptive
 	if adaptive == nil {
 		t.Fatalf("adaptive-mode snapshot FEC.Adaptive == nil")
+	}
+	if before != 0 || adaptive.Parity != 0 {
+		t.Fatalf("controller M moved %d -> %d off a small-sample spike; want held at 0 (floor must suppress it)", before, adaptive.Parity)
 	}
 	// The floor left no sample-eligible data path, so the drive took the count==0 HOLD branch.
 	if adaptive.EligiblePaths != 0 {
@@ -286,10 +285,8 @@ func TestAdaptiveControllerSinglePathEarlyRegimeHoldThenObserve(t *testing.T) {
 		t.Fatalf("phase-1 estimate = %+v, want positive loss and LossSamples < %d", early, minAdaptiveLossSamples)
 	}
 	m.scheduler.Recompute()
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	held := m.fecSend.Load().ctrl.Parity()
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
+	held := m.PeerSnapshots()[0].FEC.Adaptive.Parity
 	if held != 0 {
 		t.Fatalf("phase-1 M = %d, want 0 (early-regime HOLD, below the min-sample floor)", held)
 	}
@@ -306,9 +303,7 @@ func TestAdaptiveControllerSinglePathEarlyRegimeHoldThenObserve(t *testing.T) {
 		t.Fatalf("phase-2 LossSamples = %d, want >= floor %d", full.LossSamples, minAdaptiveLossSamples)
 	}
 	m.scheduler.Recompute()
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
 	adaptive := m.PeerSnapshots()[0].FEC.Adaptive
 	if adaptive.EligiblePaths != 1 {
 		t.Fatalf("phase-2 EligiblePaths = %d, want 1 (the sole data path now Observes)", adaptive.EligiblePaths)
@@ -385,10 +380,10 @@ func TestWeightedDataPathLossMix(t *testing.T) {
 }
 
 // TestAdaptiveControllerDrivesEncoderParity is the T29 wiring proof: with the FEC plane
-// in adaptive mode, the FEC tick loop's controller drive reads the up path's measured
-// loss and RETARGETS the encoder's per-group parity. Before any drive the encoder emits
+// in adaptive mode, the sender owner's controller drive reads the up path's measured
+// loss and RETARGETS the encoder's per-group parity. Before any drive the encoder targets
 // zero parity (the controller's starting point — no standing redundancy until loss is
-// observed); after driving against a lossy-but-up path it emits the controller's sized
+// observed); after driving against a lossy-but-up path it targets the controller's sized
 // parity, which is positive and at/below the ceiling.
 func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	psk := testKey(t, 0x51)
@@ -399,11 +394,11 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	fc, ac := adaptiveFECConfigs()
+	_, ac := adaptiveFECConfigs()
 
 	// Initial parity target: 0 (adopted from the controller at Open), so a group closed
 	// now emits no parity.
-	if got := admitFullGroupParity(t, m, fc.DataShards); got != 0 {
+	if got := ownerEncoderTargetParity(t, m); got != 0 {
 		t.Fatalf("initial adaptive parity = %d, want 0 (controller starts at M=0)", got)
 	}
 
@@ -411,20 +406,11 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
 	loss := probers[0].Estimate().Loss
 
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	ctrl := m.fecSend.Load().ctrl
-	target := ctrl.Parity()
-	smoothed := ctrl.SmoothedLoss()
-	m.mu.Unlock()
-
-	if target <= 0 || target > ac.MaxParity {
-		t.Fatalf("controller target after loss=%.3f is %d, want in (0,%d]", loss, target, ac.MaxParity)
-	}
+	m.driveAdaptiveController(m.peerState)
 
 	// The lock-free FEC snapshot now reports the driven decision (T263): an adaptive-mode
-	// peer fabricates the Adaptive series, the driven parity/smoothed loss match the
-	// controller, and the eligible signal reflects the single up path's measured loss.
+	// peer fabricates the Adaptive series and the eligible signal reflects the
+	// single up path's measured loss.
 	snaps := m.PeerSnapshots()
 	if len(snaps) == 0 {
 		t.Fatalf("PeerSnapshots returned no peer")
@@ -433,11 +419,12 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	if adaptive == nil {
 		t.Fatalf("adaptive-mode snapshot FEC.Adaptive == nil, want the driven decision")
 	}
-	if adaptive.Parity != target {
-		t.Fatalf("snapshot Adaptive.Parity = %d, want ctrl.Parity() %d", adaptive.Parity, target)
+	target := adaptive.Parity
+	if target <= 0 || target > ac.MaxParity {
+		t.Fatalf("controller target after loss=%.3f is %d, want in (0,%d]", loss, target, ac.MaxParity)
 	}
-	if adaptive.SmoothedLoss != smoothed {
-		t.Fatalf("snapshot Adaptive.SmoothedLoss = %v, want ctrl.SmoothedLoss() %v", adaptive.SmoothedLoss, smoothed)
+	if adaptive.SmoothedLoss <= 0 {
+		t.Fatalf("snapshot Adaptive.SmoothedLoss = %v, want > 0", adaptive.SmoothedLoss)
 	}
 	if adaptive.EligibleLoss != loss {
 		t.Fatalf("snapshot Adaptive.EligibleLoss = %v, want the up path's measured loss %v", adaptive.EligibleLoss, loss)
@@ -447,7 +434,7 @@ func TestAdaptiveControllerDrivesEncoderParity(t *testing.T) {
 	}
 
 	// The encoder now emits exactly the controller's target parity per group.
-	if got := admitFullGroupParity(t, m, fc.DataShards); got != target {
+	if got := ownerEncoderTargetParity(t, m); got != target {
 		t.Fatalf("encoder emitted %d parity after drive, want the controller target %d", got, target)
 	}
 }
@@ -473,12 +460,13 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 	// Seed: bring the path Up with measured loss and drive once, publishing a non-zero
 	// decision (TestAdaptiveControllerDrivesEncoderParity proves this drive in detail).
 	bringProberUpWithLoss(t, probers[0], psk, clk, 40, 6)
-	m.mu.Lock()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	ctrl := m.fecSend.Load().ctrl
-	drivenParity := ctrl.Parity()
-	drivenSmoothed := ctrl.SmoothedLoss()
-	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
+	driven := m.PeerSnapshots()[0].FEC.Adaptive
+	if driven == nil {
+		t.Fatal("adaptive snapshot is nil after seed drive")
+	}
+	drivenParity := driven.Parity
+	drivenSmoothed := driven.SmoothedLoss
 	if drivenParity <= 0 || drivenSmoothed <= 0 {
 		t.Fatalf("seed drive published parity=%d smoothed=%v, want both > 0", drivenParity, drivenSmoothed)
 	}
@@ -491,12 +479,9 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 		t.Fatalf("seeded snapshot Adaptive = %+v, want EligiblePaths >= 1", adaptive)
 	}
 
-	// Force the path Down and re-drive with no eligible path — the whole sequence under m.mu.
-	// Holding the lock across clk.advance + probers[0].Tick() + driveAdaptiveControllerLocked
-	// EXCLUDES the concurrent fecTickLoop tick (its TryLock skips): otherwise, in the window
-	// after the advance while the prober still reports StateUp, a background tick could Observe
-	// at the advanced fake time and stamp the throttle, spuriously throttling this explicit
-	// drive. The prober is a documented leaf lock (State/Tick take only their own mutex, never
+	// Force the path Down and re-drive with no eligible path under m.mu. The owner
+	// receives the resulting immutable sample and publishes before the seam returns.
+	// The prober is a documented leaf lock (State/Tick take only their own mutex, never
 	// call back into the Bind), so acquiring it under m.mu is legal. After the stamp reorder
 	// (D97) the hold branch never stamps, so this re-drive needs no haveControlTick reset to be
 	// admitted — the throttle sees the 400ms fake-clock advance (> adaptiveControlInterval).
@@ -508,10 +493,10 @@ func TestAdaptiveControllerHoldsWithNoEligiblePath(t *testing.T) {
 		t.Fatalf("prober after silence = %v, want down", st)
 	}
 	fs := m.fecSend.Load()
-	before := fs.ctrl.Parity()
-	m.driveAdaptiveControllerLocked(m.peerState)
-	after := fs.ctrl.Parity()
+	before := int(fs.adaptiveParity.Load())
 	m.mu.Unlock()
+	m.driveAdaptiveController(m.peerState)
+	after := int(fs.adaptiveParity.Load())
 	if before != after {
 		t.Fatalf("controller moved (%d -> %d) with no eligible path; want held", before, after)
 	}
@@ -566,22 +551,16 @@ func TestFixedRatioPeerHasNilAdaptiveSnapshot(t *testing.T) {
 	}
 }
 
-// admitFullGroupParity admits k opaque frames into the send encoder (closing a full
-// group) and returns how many parity shards it emitted. It drives the encoder directly to
-// observe the per-group parity the current target produces.
-func admitFullGroupParity(t testing.TB, m *Multipath, k int) int {
+// ownerEncoderTargetParity reads the encoder's next-group target through its owner.
+func ownerEncoderTargetParity(t testing.TB, m *Multipath) int {
 	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var parity int
-	for i := 0; i < k; i++ {
-		_, par, err := m.fecSend.Load().enc.Admit([]byte{byte(i), 0xAA})
-		if err != nil {
-			t.Fatalf("admit %d: %v", i, err)
-		}
-		if par != nil {
-			parity = len(par)
-		}
+	fs := m.fecSend.Load()
+	if fs == nil || fs.owner == nil {
+		t.Fatal("FEC sender owner is unavailable")
+	}
+	parity, err := fs.owner.targetParityForTest()
+	if err != nil {
+		t.Fatalf("read owner encoder target: %v", err)
 	}
 	return parity
 }

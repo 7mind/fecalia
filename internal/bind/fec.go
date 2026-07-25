@@ -32,14 +32,13 @@ import (
 // lost) while adding only one wire byte per DATA frame (the shard index in the DATA
 // header) and the group cardinality M per PARITY frame. See internal/frame.
 //
-// Concurrency. The encoder rides the Send path, already serialized under m.mu, plus
-// a single deadline-tick goroutine that TryLocks m.mu (never blocking, so it can
-// never block a transport lifecycle transition on the bind lock — the tickLivenessFromReceive
-// discipline). The decoder is fed from the per-path readLoop goroutines (many
-// concurrent), so it is guarded by its own mutex, disjoint from m.mu and from the
-// resequencer's — matching the resequencer's lock discipline (never held across a
-// syscall). Recovered frames are handed to the resequencer exactly like a
-// natively-received frame, so FEC recovery slots in strictly BEFORE resequencing.
+// Concurrency. Each peer has one send owner goroutine. It alone mutates the
+// encoder and adaptive controller, arms the encoder's exact NextDeadline timer,
+// and exposes a staged group only after its size/deadline/M decision is immutable.
+// The decoder is fed from the per-path readLoop goroutines (many concurrent), so
+// it is guarded by its own mutex, disjoint from m.mu and from the resequencer's.
+// Recovered frames are handed to the resequencer exactly like a natively-received
+// frame, so FEC recovery slots in strictly BEFORE resequencing.
 
 // fecSeqPrefixLen is the width of the big-endian outer-seq prefix that heads each
 // FEC data-shard's coded bytes. It is reconstructed from the DATA frame header on
@@ -78,11 +77,11 @@ const fecRetainGroups = 512
 // genuinely-unrecovered seqs (whole-group and beyond-budget losses) are the only residual.
 const fecResidualLossWindow = 8192
 
-// adaptiveControlInterval throttles how often the FEC tick loop folds a fresh loss
-// sample into the adaptive controller (T29). It matches the probe cadence — the rate at
-// which per-path loss estimates actually refresh — so the controller's EWMA sees ~one
-// sample per probe interval as its tuning (internal/adaptivefec) assumes, regardless of
-// the (possibly much smaller) FEC group-close deadline the tick loop runs at.
+// adaptiveControlInterval throttles how often a peer's sender owner folds a fresh
+// loss sample into the adaptive controller (T29). It matches the probe cadence —
+// the rate at which per-path loss estimates actually refresh — so the controller's
+// EWMA sees ~one sample per probe interval as its tuning (internal/adaptivefec)
+// assumes, regardless of the possibly smaller FEC group-close deadline.
 const adaptiveControlInterval = telemetry.DefaultProbeInterval
 
 // minAdaptiveLossSamples is the early-regime min-sample floor the adaptive controller drive
@@ -97,18 +96,19 @@ const adaptiveControlInterval = telemetry.DefaultProbeInterval
 // path's life and then holds for the path's lifetime.
 const minAdaptiveLossSamples = 32
 
-// fecSender is the send-side FEC state: the group-forming encoder (accessed only
-// under the Bind's m.mu, on the Send path and the deadline-tick goroutine) plus the
-// parity-overhead counters the /metrics exposition reports. The counters are
-// atomics read lock-free at snapshot time, mirroring the T23 per-path byte counters.
+// fecSender is the send-side FEC state. Its owner goroutine is the sole mutator
+// of the group-forming encoder and adaptive controller; Send submits admissions
+// and waits for the immutable group decision. Counters remain lock-free at
+// snapshot time, mirroring the T23 per-path byte counters.
 type fecSender struct {
 	enc *fec.Encoder
+	// owner starts with this sender and stops before the sender is unpublished.
+	owner *fecSendOwner
 
 	// ctrl is the adaptive-FEC controller (T29), nil in fixed-ratio mode. It is driven
-	// (Observe) and read (Parity) ONLY from under the Bind's m.mu — the FEC tick loop's
-	// throttled drive and, transitively, the Send path — so it needs no lock of its own,
+	// (Observe) and read (Parity) ONLY by owner, so it needs no lock of its own,
 	// matching the encoder's single-writer discipline. lastControlTick/haveControlTick
-	// throttle the drive to adaptiveControlInterval and are likewise m.mu-guarded. They are
+	// throttle the drive to adaptiveControlInterval and are likewise owner-confined. They are
 	// stamped ONLY on the Observe branch (an eligible sample was folded in), never on the
 	// no-eligible-path hold — a hold does not consume the interval (D97), so the drive stays
 	// admitted each tick until an eligible path returns. The interval is measured against the
@@ -119,8 +119,7 @@ type fecSender struct {
 
 	// adaptive{Parity,SmoothedLoss,EligibleLoss,EligiblePaths} publish the controller's
 	// most recent drive decision for the lock-free FEC snapshot (T263). They are written
-	// ONLY at the single serialized drive locus (driveAdaptiveControllerLocked, under
-	// m.mu) and read lock-free at scrape time — the same discipline as
+	// ONLY by the sender owner and read lock-free at scrape time — the same discipline as
 	// fecReceiver.deliveredRecovered. The two float64 signals are stored as their IEEE-754
 	// bit patterns (math.Float64bits) so an atomic.Uint64 carries them. They are meaningful
 	// only in adaptive mode (ctrl != nil); a fixed-ratio peer never drives the controller
@@ -134,12 +133,20 @@ type fecSender struct {
 	dataBytes    atomic.Uint64
 	parityFrames atomic.Uint64
 	parityBytes  atomic.Uint64
+
+	// Exact-deadline dispatch observability is sender-local and lock-free. A
+	// decision misses the SLO only when its overshoot exceeds
+	// fecDeadlineDispatchGrace; the optional invalidation seam consumes that same
+	// per-group verdict while default production operation remains live.
+	deadlineDecisions    atomic.Uint64
+	deadlineMisses       atomic.Uint64
+	deadlineMaxOvershoot atomic.Int64
+	openDeadlineNanos    atomic.Int64
 }
 
 // publishAdaptiveDrive records a completed controller drive into the lock-free snapshot
 // fields: the retargeted parity M and EWMA smoothed loss alongside the eligible-path
-// signal that drove them. Called under m.mu from driveAdaptiveControllerLocked after
-// Observe/SetParity.
+// signal that drove them. Called by the sender owner after Observe/SetParity.
 func (fs *fecSender) publishAdaptiveDrive(parity int, smoothedLoss, eligibleLoss float64, eligiblePaths int) {
 	fs.adaptiveParity.Store(int64(parity))
 	fs.adaptiveSmoothedLoss.Store(math.Float64bits(smoothedLoss))
@@ -223,6 +230,13 @@ type FECStats struct {
 	ParityBytes   uint64
 	Recovered     uint64
 	Unrecoverable uint64
+	// DeadlineDecisions is the number of groups closed by their exact
+	// NextDeadline timer. DeadlineMisses counts decisions whose dispatch
+	// overshoot exceeded fecDeadlineDispatchGrace; DeadlineMaxOvershoot is the
+	// largest observed overshoot for this sender generation.
+	DeadlineDecisions    uint64
+	DeadlineMisses       uint64
+	DeadlineMaxOvershoot time.Duration
 	// ResidualLoss is the current post-FEC-recovery connection loss fraction in [0,1]
 	// (T29): the share of outer-seqs neither natively received nor reconstructed from
 	// parity. It is the P4 acceptance signal — the loss FEC did not mask. Zero when FEC is
@@ -235,8 +249,8 @@ type FECStats struct {
 	Adaptive *AdaptiveFECStats
 }
 
-// AdaptiveFECStats is the adaptive-FEC controller's per-drive decision, published at the
-// single serialized drive locus and scraped lock-free through the FEC snapshot chain
+// AdaptiveFECStats is the adaptive-FEC controller's per-drive decision, published by the
+// peer sender owner and scraped lock-free through the FEC snapshot chain
 // (T263). Parity is the target parity count M the encoder was retargeted to
 // (ctrl.Parity()); SmoothedLoss the controller's EWMA loss estimate (ctrl.SmoothedLoss());
 // EligibleLoss the RAW per-path loss the drive Observed — the loss on the path(s) actually

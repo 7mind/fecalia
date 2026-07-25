@@ -373,6 +373,25 @@ no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#
 Run on the RPi4 edge with Starlink active, 5G standby, active-backup policy,
 and adaptive FEC enabled. Preserve the starting state before the first cycle:
 
+Before the real-link cycles, validate the T309 FEC sender-owner invariants:
+
+- [ ] Run
+      `go test -tags failfirst ./internal/bind -run '^TestFailFirstFEC' -count=1`
+      and the same command with `-race`; both pass. These deterministic checks
+      assert that open-group DATA/PARITY stays hidden, exact deadline dispatch
+      stays within the bind-local 10ms grace, an expired group wins over queued
+      admissions, a 257-frame `Send` publishes one batch/completion and preserves
+      exact payload/sequence order, writer-prefix failure consumes no suffix
+      sequence numbers, and Close acknowledges blocked/queued batches before
+      their caller buffers can be reused.
+- [ ] Run
+      `go test ./internal/bind -run 'TestFECSendStreamsBeyondOwnerMailboxCapacity|TestMultipathFECDeadlineEmitsPartialGroupParity' -count=1`;
+      the 257-buffer offload batch and the underfilled deadline group both pass.
+- [ ] During one Down/Up cycle with a deliberately underfilled FEC group,
+      capture the outer UDP stream. Confirm no DATA/PARITY from the old group
+      appears after the old transport generation closes; the first post-Up
+      group starts from a fresh FEC sender generation.
+
 - [ ] Record the edge and o3 commit IDs, binary hashes, config hashes, service
       states, and the original pacing declarations. The last step must restore
       and re-hash this exact state.

@@ -538,10 +538,8 @@ func TestMultipathFECDeadlineEmitsPartialGroupParity(t *testing.T) {
 	defer peer.Close()
 	sender.paths[0].setRemote(peer.LocalAddr().(*net.UDPAddr).AddrPort())
 
-	for i, p := range payloadStream(partial) {
-		if err := sender.Send([][]byte{p}, sender.virt); err != nil {
-			t.Fatalf("send %d: %v", i, err)
-		}
+	if err := sender.Send(payloadStream(partial), sender.virt); err != nil {
+		t.Fatalf("send partial batch: %v", err)
 	}
 
 	// Read every datagram the sender emits within a bounded window: the `partial` DATA
@@ -582,8 +580,8 @@ func TestMultipathFECDeadlineEmitsPartialGroupParity(t *testing.T) {
 		t.Fatalf("saw %d PARITY frames from the deadline tick, want %d (partial group was stranded)", paritySeen, parityShards)
 	}
 	// fs.parityFrames is incremented AFTER the socket write (production semantics kept as-is,
-	// D69), so the moment this goroutine has read both parity wires off the socket, the async
-	// fecTickLoop goroutine may not yet have run its post-write increment. Poll with a short
+	// D69), so the moment this goroutine has read both parity wires off the socket, the owner
+	// may not yet have run its post-write increment. Poll with a short
 	// bounded retry instead of a single immediate read to close that race (~2% flake under
 	// -race).
 	snapDeadline := time.Now().Add(200 * time.Millisecond)
@@ -597,6 +595,36 @@ func TestMultipathFECDeadlineEmitsPartialGroupParity(t *testing.T) {
 	}
 	if snap.ParityFrames != parityShards {
 		t.Fatalf("PeerSnapshots FEC.ParityFrames = %d, want %d after deadline flush", snap.ParityFrames, parityShards)
+	}
+}
+
+// Regression: a TUN-offload Send can contain more buffers than the owner's
+// mailbox capacity. The batch must stream by FEC group instead of deadlocking
+// after 128 admissions or retaining the whole encoded wire batch.
+func TestFECSendStreamsBeyondOwnerMailboxCapacity(t *testing.T) {
+	const (
+		dataShards = 4
+		buffers    = 257
+	)
+	fecCfg := &fec.Config{DataShards: dataShards, ParityShards: 1, Deadline: 20 * time.Millisecond}
+	m := newMultipathFEC(t, loopbackPaths(1), testKey(t, 0x29), fecCfg)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
+
+	if err := m.Send(payloadStream(buffers), m.virt); err != nil {
+		t.Fatalf("Send %d-buffer offload batch: %v", buffers, err)
+	}
+	stats := m.PeerSnapshots()[0].FEC
+	wantGroups := (buffers + dataShards - 1) / dataShards
+	if stats.DataFrames != buffers || stats.ParityFrames != uint64(wantGroups) {
+		t.Fatalf("streamed DATA/PARITY = %d/%d, want %d/%d",
+			stats.DataFrames, stats.ParityFrames, buffers, wantGroups)
+	}
+	if got := m.outerSeq.Load(); got != buffers {
+		t.Fatalf("outer sequence = %d, want %d", got, buffers)
 	}
 }
 

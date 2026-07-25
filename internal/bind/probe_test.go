@@ -20,17 +20,78 @@ import (
 // fakeClock is a hand-advanced telemetry.Clock. The probe-transport tests drive
 // emitProbes / handleInbound synchronously on a single goroutine, so those tests
 // need no internal synchronization. The adaptive tests, however, wire this SAME
-// clock into the bind's clock seam (Multipath.clock), where the background
-// fecTickLoop goroutine reads Now() concurrently with the test goroutine's
-// advance() — so the clock IS mutex-guarded (a plain now field would be a
+// clock into the bind's clock seam (Multipath.clock), where sender-owner
+// deadline timers read Now() concurrently with the test goroutine's advance()
+// — so the clock IS mutex-guarded (a plain now field would be a
 // -race-flagged data race). In-repo precedent: internal/device/metrics_test.go's
 // fakeClock. Liveness transitions remain deterministic under -race.
 type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu     sync.Mutex
+	now    time.Time
+	timers map[*fakeDeadlineTimer]struct{}
 }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: time.Unix(1_700_000_000, 0)} }
+type fakeDeadlineTimer struct {
+	clock *fakeClock
+	ch    chan time.Time
+	due   time.Time
+	armed bool
+}
+
+type testFECClockAdapter struct {
+	clock telemetry.Clock
+}
+
+func (c testFECClockAdapter) Now() time.Time {
+	return c.clock.Now()
+}
+
+func (c testFECClockAdapter) NewTimerAt(due time.Time) fecDeadlineTimer {
+	delay := due.Sub(c.clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	return &testFECClockTimer{clock: c.clock, timer: time.NewTimer(delay)}
+}
+
+type testFECClockTimer struct {
+	clock telemetry.Clock
+	timer *time.Timer
+}
+
+func (t *testFECClockTimer) C() <-chan time.Time {
+	return t.timer.C
+}
+
+func (t *testFECClockTimer) ResetAt(due time.Time) {
+	if !t.timer.Stop() {
+		select {
+		case <-t.timer.C:
+		default:
+		}
+	}
+	delay := due.Sub(t.clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	t.timer.Reset(delay)
+}
+
+func (t *testFECClockTimer) Stop() {
+	if !t.timer.Stop() {
+		select {
+		case <-t.timer.C:
+		default:
+		}
+	}
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{
+		now:    time.Unix(1_700_000_000, 0),
+		timers: make(map[*fakeDeadlineTimer]struct{}),
+	}
+}
 
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
@@ -42,6 +103,62 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+	for timer := range c.timers {
+		if !timer.armed || c.now.Before(timer.due) {
+			continue
+		}
+		timer.armed = false
+		select {
+		case timer.ch <- c.now:
+		default:
+		}
+	}
+}
+
+func (c *fakeClock) NewTimerAt(due time.Time) fecDeadlineTimer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &fakeDeadlineTimer{
+		clock: c,
+		ch:    make(chan time.Time, 1),
+		due:   due,
+		armed: true,
+	}
+	c.timers[timer] = struct{}{}
+	if !c.now.Before(due) {
+		timer.armed = false
+		timer.ch <- c.now
+	}
+	return timer
+}
+
+func (t *fakeDeadlineTimer) C() <-chan time.Time {
+	return t.ch
+}
+
+func (t *fakeDeadlineTimer) ResetAt(due time.Time) {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	select {
+	case <-t.ch:
+	default:
+	}
+	t.due = due
+	t.armed = true
+	if !t.clock.now.Before(due) {
+		t.armed = false
+		t.ch <- t.clock.now
+	}
+}
+
+func (t *fakeDeadlineTimer) Stop() {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	t.armed = false
+	select {
+	case <-t.ch:
+	default:
+	}
 }
 
 // probeLiveness are the detection thresholds these tests use: short enough to
@@ -88,6 +205,11 @@ func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk 
 	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, nil, nil, config.Amnezia{}, lg)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
+	}
+	if ownerClock, ok := clk.(fecOwnerClock); ok {
+		m.clock = ownerClock
+	} else {
+		m.clock = testFECClockAdapter{clock: clk}
 	}
 	return m, probers, scheduler
 }

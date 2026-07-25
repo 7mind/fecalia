@@ -3,6 +3,7 @@
 package bind
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,11 +41,10 @@ type failFirstEvent struct {
 }
 
 type failFirstWriter struct {
-	mu      sync.Mutex
-	clock   *fakeClock
-	encoder *fec.Encoder
-	codec   *frame.Codec
-	events  []failFirstEvent
+	mu     sync.Mutex
+	clock  *fakeClock
+	codec  *frame.Codec
+	events []failFirstEvent
 
 	accepted             int
 	emitted              int
@@ -52,8 +53,10 @@ type failFirstWriter struct {
 	failedCall           []frame.Frame
 	failedTrancheEmitted int
 	failedTrancheErrors  int
+	callSizes            []int
 
 	failDecided  bool
+	failEmitted  int
 	failed       bool
 	blockDecided bool
 	blocked      bool
@@ -72,6 +75,7 @@ func (w *failFirstWriter) record(name, detail string) {
 
 func (w *failFirstWriter) WriteDatagrams(_ context.Context, datagrams []shaper.Datagram) (shaper.BatchResult, error) {
 	w.mu.Lock()
+	w.callSizes = append(w.callSizes, len(datagrams))
 	open := w.groupOpen()
 	decodedFrames := make([]frame.Frame, 0, len(datagrams))
 	for _, datagram := range datagrams {
@@ -124,11 +128,14 @@ func (w *failFirstWriter) WriteDatagrams(_ context.Context, datagrams []shaper.D
 	}
 	shouldFail := w.failDecided && !open && !w.failed && len(w.decidedTranche) >= 2
 	if shouldFail {
+		emittedPrefix := min(w.failEmitted, len(datagrams))
 		w.failed = true
 		w.failedCall = append([]frame.Frame(nil), w.decidedTranche...)
 		w.accepted += len(datagrams)
-		w.errors += len(datagrams)
-		w.failedTrancheErrors += len(datagrams)
+		w.emitted += emittedPrefix
+		w.errors += len(datagrams) - emittedPrefix
+		w.failedTrancheEmitted += emittedPrefix
+		w.failedTrancheErrors += len(datagrams) - emittedPrefix
 		w.events = append(w.events, failFirstEvent{
 			at:     w.clock.Now(),
 			name:   "writer-error",
@@ -149,7 +156,11 @@ func (w *failFirstWriter) WriteDatagrams(_ context.Context, datagrams []shaper.D
 		<-w.release
 	}
 	if shouldFail {
-		return shaper.BatchResult{Accepted: len(datagrams), Emitted: 0, FailedIndex: 0}, errFailFirstWriter
+		return shaper.BatchResult{
+			Accepted:    len(datagrams),
+			Emitted:     min(w.failEmitted, len(datagrams)),
+			FailedIndex: min(w.failEmitted, len(datagrams)),
+		}, errFailFirstWriter
 	}
 	return shaper.BatchResult{Accepted: len(datagrams), Emitted: len(datagrams), FailedIndex: -1}, nil
 }
@@ -173,6 +184,12 @@ func (w *failFirstWriter) failedTranche() ([]frame.Frame, int, int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]frame.Frame(nil), w.failedCall...), w.failedTrancheEmitted, w.failedTrancheErrors
+}
+
+func (w *failFirstWriter) calls() []int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]int(nil), w.callSizes...)
 }
 
 func (w *failFirstWriter) trace() string {
@@ -222,15 +239,13 @@ func newFailFirstFixture(t testing.TB, cfg fec.Config, adaptiveCfg *adaptivefec.
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindCfg := cfg
-	bindCfg.Deadline = maxFECDeadline
 	m, err := NewMultipathWithShapers(
 		loopbackPaths(1),
 		psk,
 		&unpacedSelectionRecorder{},
 		nil,
 		nil,
-		&bindCfg,
+		&cfg,
 		adaptiveCfg,
 		config.Amnezia{},
 		[]config.PathShaperConfig{{
@@ -256,23 +271,9 @@ func newFailFirstFixture(t testing.TB, cfg fec.Config, adaptiveCfg *adaptivefec.
 	t.Cleanup(func() { _ = m.Close() })
 	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
 
-	enc, err := fec.NewEncoder(cfg, clk)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.mu.Lock()
 	fs := m.fecSend.Load()
-	if fs.ctrl != nil {
-		enc.SetParity(fs.ctrl.Parity())
-	}
-	fs.enc = enc
-	m.mu.Unlock()
-	writer.encoder = enc
 	writer.groupOpen = func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		_, open := enc.NextDeadline()
-		return open
+		return fs.openDeadlineNanos.Load() != 0
 	}
 	return &failFirstFixture{t: t, m: m, cfg: cfg, clock: clk, writer: writer}
 }
@@ -300,10 +301,8 @@ func (f *failFirstFixture) await(submission *failFirstSubmission) error {
 
 func (f *failFirstFixture) waitGroupOpen() time.Time {
 	for i := 0; i < failFirstSpinLimit; i++ {
-		f.m.mu.Lock()
-		due, open := f.writer.encoder.NextDeadline()
-		f.m.mu.Unlock()
-		if open {
+		if nanos := f.m.fecSend.Load().openDeadlineNanos.Load(); nanos != 0 {
+			due := time.Unix(0, nanos)
 			f.writer.record("group-open", fmt.Sprintf("due=%s", due.Format(time.RFC3339Nano)))
 			return due
 		}
@@ -321,10 +320,7 @@ func (f *failFirstFixture) waitDecision() {
 
 func (f *failFirstFixture) decisionReadyWithinSpins() bool {
 	for i := 0; i < failFirstSpinLimit; i++ {
-		f.m.mu.Lock()
-		_, open := f.writer.encoder.NextDeadline()
-		f.m.mu.Unlock()
-		if !open {
+		if f.m.fecSend.Load().openDeadlineNanos.Load() == 0 {
 			f.writer.record("decision-ready", "")
 			return true
 		}
@@ -500,19 +496,15 @@ func TestFailFirstFECSizeAndDeadlineDecisionOrdering(t *testing.T) {
 func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 	cfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: 80 * time.Millisecond}
 
-	t.Run("periodic-phase-can-close-near-2D", func(t *testing.T) {
+	t.Run("exact-owner-timer-closes-at-next-deadline", func(t *testing.T) {
 		f := newFailFirstFixture(t, cfg, nil, nil)
 		f.clock.advance(time.Millisecond)
 		send := f.submit([]byte("phase-offset"))
 		due := f.waitGroupOpen()
 
-		f.clock.advance(cfg.Deadline - time.Millisecond)
-		f.flush()
-		if open := f.writer.groupOpen(); !open {
-			t.Fatal("phase fixture closed at the first periodic tick before Encoder.NextDeadline")
+		if delta := due.Sub(f.clock.Now()); delta > 0 {
+			f.clock.advance(delta)
 		}
-		f.clock.advance(cfg.Deadline)
-		f.flush()
 		f.waitDecision()
 		if err := f.await(send); err != nil {
 			t.Fatal(err)
@@ -523,6 +515,11 @@ func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 		if decisionAt.After(due.Add(failFirstDispatchSLO)) {
 			t.Errorf("periodic dispatch decided at openedAt+%s, after D+G=%s",
 				decisionAt.Sub(due.Add(-cfg.Deadline)), cfg.Deadline+failFirstDispatchSLO)
+		}
+		snap := f.m.PeerSnapshots()[0].FEC
+		if snap.DeadlineDecisions != 1 || snap.DeadlineMisses != 0 || snap.DeadlineMaxOvershoot != 0 {
+			t.Errorf("exact deadline stats decisions/misses/max = %d/%d/%s, want 1/0/0",
+				snap.DeadlineDecisions, snap.DeadlineMisses, snap.DeadlineMaxOvershoot)
 		}
 	})
 
@@ -617,13 +614,42 @@ func TestFailFirstFECDeadlineDispatchBound(t *testing.T) {
 	})
 }
 
-type failFirstOwnerCommand struct {
-	payload       []byte
-	pause         bool
-	decision      bool
-	decisionGroup uint32
-	admitted      chan failFirstOwnerAdmission
-	done          chan error
+func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
+	cfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	f := newFailFirstFixture(t, cfg, nil, nil)
+	misses := make(chan fecDeadlineMiss, 2)
+	f.m.fecDeadlineInvalidator = func(miss fecDeadlineMiss) {
+		misses <- miss
+	}
+
+	send := f.submit([]byte("overshoot"))
+	due := f.waitGroupOpen()
+	overshoot := fecDeadlineDispatchGrace + time.Millisecond
+	f.clock.advance(due.Sub(f.clock.Now()) + overshoot)
+	f.waitDecision()
+	if err := f.await(send); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := f.m.PeerSnapshots()[0].FEC
+	if snap.DeadlineDecisions != 1 || snap.DeadlineMisses != 1 || snap.DeadlineMaxOvershoot != overshoot {
+		t.Fatalf("deadline stats decisions/misses/max = %d/%d/%s, want 1/1/%s",
+			snap.DeadlineDecisions, snap.DeadlineMisses, snap.DeadlineMaxOvershoot, overshoot)
+	}
+	select {
+	case miss := <-misses:
+		if miss.Group != 0 || miss.Due != due || miss.Overshoot != overshoot {
+			t.Fatalf("deadline invalidation = %+v, want group=0 due=%s overshoot=%s", miss, due, overshoot)
+		}
+	default:
+		t.Fatal("deadline SLO miss did not invoke invalidation seam")
+	}
+	f.flush()
+	select {
+	case duplicate := <-misses:
+		t.Fatalf("deadline invalidation repeated after group decision: %+v", duplicate)
+	default:
+	}
 }
 
 type failFirstOwnerAdmission struct {
@@ -638,57 +664,89 @@ type failFirstOwnerSubmission struct {
 	done     *failFirstSubmission
 }
 
-type failFirstStagedData struct {
-	shard   fec.DataShard
-	outer   uint64
-	payload []byte
-	done    chan error
-}
-
-// failFirstOwnerAdapter is a real buffered owner-command mailbox. Its current loop
-// mirrors the production defect by choosing already-queued admission commands after
-// a post-Admit boundary instead of re-checking the expired Encoder.NextDeadline.
-// T309 retargets this one adapter to the production owner without changing assertions.
 type failFirstOwnerAdapter struct {
-	fixture      *failFirstFixture
-	mailbox      chan failFirstOwnerCommand
-	boundary     chan struct{}
-	release      chan struct{}
-	closed       chan struct{}
-	boundaryOnce sync.Once
-	releaseOnce  sync.Once
-	staged       []failFirstStagedData
+	fixture     *failFirstFixture
+	owner       *fecSendOwner
+	boundary    chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+	admissions  sync.Map
 }
 
 func newFailFirstOwnerAdapter(fixture *failFirstFixture) *failFirstOwnerAdapter {
 	adapter := &failFirstOwnerAdapter{
 		fixture:  fixture,
-		mailbox:  make(chan failFirstOwnerCommand, 8),
+		owner:    fixture.m.fecSend.Load().owner,
 		boundary: make(chan struct{}),
 		release:  make(chan struct{}),
-		closed:   make(chan struct{}),
 	}
-	go adapter.run()
+	adapter.owner.afterAdmit = func(admission fecOwnerAdmission, batch *fecOwnerBatch, index int) {
+		payload := string(batch.bufs[index])
+		fixture.writer.record("command-admitted", fmt.Sprintf(
+			"payload=%s group=%d index=%d", payload, admission.group, admission.index))
+		admitted, ok := adapter.admissions.Load(batch)
+		if !ok {
+			fixture.t.Fatalf("owner adapter lost admission channel for payload %q", payload)
+		}
+		admitted.(chan failFirstOwnerAdmission) <- failFirstOwnerAdmission{
+			group:   uint32(admission.group),
+			index:   admission.index,
+			due:     admission.due,
+			payload: payload,
+		}
+		adapter.admissions.Delete(batch)
+		if payload != "owner-boundary" {
+			return
+		}
+		fixture.writer.record("owner-command-paused", "executingAdmission=1 boundary=post-Admit-not-inside-Encoder.Admit")
+		close(adapter.boundary)
+		<-adapter.release
+		fixture.writer.record("owner-command-release", "")
+	}
 	return adapter
 }
 
-func (a *failFirstOwnerAdapter) submitAdmission(payload []byte, pause bool) *failFirstOwnerSubmission {
+func (a *failFirstOwnerAdapter) submitAdmission(payload []byte, _ bool) *failFirstOwnerSubmission {
+	path := a.fixture.m.peerState.paths[0]
+	remote, ok := path.getRemote()
+	if !ok {
+		a.fixture.t.Fatal("owner adapter path has no remote")
+	}
+	batch := &fecOwnerBatch{
+		bufs:    [][]byte{append([]byte(nil), payload...)},
+		classes: []shaper.Class{shaper.ClassData},
+		path:    path,
+		remote:  remote,
+		shaped:  true,
+		done:    make(chan error, 1),
+	}
+	admitted := make(chan failFirstOwnerAdmission, 1)
+	a.admissions.Store(batch, admitted)
 	submission := &failFirstOwnerSubmission{
-		admitted: make(chan failFirstOwnerAdmission, 1),
-		done:     &failFirstSubmission{done: make(chan error, 1)},
+		admitted: admitted,
+		done:     &failFirstSubmission{done: batch.done},
 	}
-	a.mailbox <- failFirstOwnerCommand{
-		payload:  append([]byte(nil), payload...),
-		pause:    pause,
-		admitted: submission.admitted,
-		done:     submission.done.done,
-	}
+	go func() {
+		if err := a.owner.publish(batch); err != nil {
+			batch.done <- err
+		}
+	}()
 	return submission
 }
 
 func (a *failFirstOwnerAdapter) submitDecisionAndEmit(group uint32) *failFirstSubmission {
 	submission := &failFirstSubmission{done: make(chan error, 1)}
-	a.mailbox <- failFirstOwnerCommand{decision: true, decisionGroup: group, done: submission.done}
+	go func() {
+		a.owner.signalDeadline()
+		for i := 0; i < failFirstSpinLimit; i++ {
+			if a.owner.fs.openDeadlineNanos.Load() == 0 {
+				submission.done <- nil
+				return
+			}
+			runtime.Gosched()
+		}
+		submission.done <- fmt.Errorf("owner decision for group %d did not complete", group)
+	}()
 	return submission
 }
 
@@ -722,115 +780,7 @@ func (a *failFirstOwnerAdapter) releaseExecutingBoundary() {
 }
 
 func (a *failFirstOwnerAdapter) close() {
-	close(a.mailbox)
-	<-a.closed
-}
-
-func (a *failFirstOwnerAdapter) run() {
-	defer close(a.closed)
-	for command := range a.mailbox {
-		if command.decision {
-			command.done <- a.decideAndEmit(command.decisionGroup)
-			continue
-		}
-		a.fixture.m.mu.Lock()
-		if !command.pause {
-			if due, open := a.fixture.writer.encoder.NextDeadline(); open && !a.fixture.clock.Now().Before(due) {
-				a.fixture.writer.record("owner-choice", "mailbox-admission-before-expired-deadline")
-			}
-		}
-		outer := a.fixture.m.peerState.outerSeq.Add(1)
-		shard, parity, err := a.fixture.writer.encoder.Admit(fecShardPayload(outer, command.payload))
-		if err == nil && parity != nil {
-			err = errors.New("owner mailbox admission unexpectedly size-closed the test group")
-		}
-		if err == nil {
-			due, open := a.fixture.writer.encoder.NextDeadline()
-			if !open {
-				err = errors.New("owner mailbox admission left no open group")
-			}
-			if err != nil {
-				a.fixture.m.mu.Unlock()
-				command.done <- err
-				continue
-			}
-			a.staged = append(a.staged, failFirstStagedData{
-				shard:   shard,
-				outer:   outer,
-				payload: append([]byte(nil), command.payload...),
-				done:    command.done,
-			})
-			admitted := failFirstOwnerAdmission{
-				group:   uint32(shard.Group),
-				index:   shard.Index,
-				due:     due,
-				payload: string(command.payload),
-			}
-			a.fixture.writer.record("command-admitted", fmt.Sprintf(
-				"payload=%s group=%d index=%d", admitted.payload, admitted.group, admitted.index))
-			command.admitted <- admitted
-		}
-		if command.pause {
-			a.fixture.writer.record("owner-command-paused", "executingAdmission=1 boundary=post-Admit-not-inside-Encoder.Admit")
-			a.boundaryOnce.Do(func() { close(a.boundary) })
-			<-a.release
-			a.fixture.writer.record("owner-command-release", "")
-		}
-		a.fixture.m.mu.Unlock()
-		if err != nil {
-			command.done <- err
-		}
-	}
-}
-
-func (a *failFirstOwnerAdapter) decideAndEmit(group uint32) error {
-	a.fixture.flush()
-	a.fixture.waitDecision()
-
-	a.fixture.m.mu.Lock()
-	path := a.fixture.m.peerState.paths[0]
-	datagrams := make([]shaper.Datagram, 0, len(a.staged))
-	var decided []failFirstStagedData
-	remaining := a.staged[:0]
-	for _, staged := range a.staged {
-		if uint32(staged.shard.Group) != group {
-			remaining = append(remaining, staged)
-			continue
-		}
-		decided = append(decided, staged)
-		wire, err := a.fixture.m.peerState.sendCodec.Encode(nil, frame.Data{
-			OuterSeq: staged.outer,
-			PathID:   path.id,
-			FECGroup: uint32(staged.shard.Group),
-			FECIndex: uint8(staged.shard.Index),
-			Payload:  staged.payload,
-		})
-		if err != nil {
-			a.fixture.m.mu.Unlock()
-			return err
-		}
-		datagrams = append(datagrams, shaper.Datagram{Class: shaper.ClassData, Payload: wire})
-	}
-	a.staged = remaining
-	a.fixture.m.mu.Unlock()
-	if len(decided) == 0 {
-		return fmt.Errorf("owner decision for group %d has no staged DATA", group)
-	}
-	result, err := a.fixture.writer.WriteDatagrams(context.Background(), datagrams)
-	if err != nil {
-		for _, staged := range decided {
-			staged.done <- err
-		}
-		return err
-	}
-	if result.Accepted != len(datagrams) || result.Emitted != len(datagrams) {
-		return fmt.Errorf("owner staged DATA result accepted/emitted=%d/%d, want %d/%d",
-			result.Accepted, result.Emitted, len(datagrams), len(datagrams))
-	}
-	for _, staged := range decided {
-		staged.done <- nil
-	}
-	return nil
+	a.owner.afterAdmit = nil
 }
 
 func TestFailFirstAdaptiveM0SnapshotIsImmutable(t *testing.T) {
@@ -840,17 +790,17 @@ func TestFailFirstAdaptiveM0SnapshotIsImmutable(t *testing.T) {
 	adaptiveCfg.MaxParity = cfg.ParityShards
 	f := newFailFirstFixture(t, cfg, &adaptiveCfg, nil)
 	fs := f.m.fecSend.Load()
-	if fs.ctrl == nil || fs.ctrl.Parity() != 0 {
+	if fs.ctrl == nil || fs.adaptiveParity.Load() != 0 {
 		t.Fatalf("adaptive controller did not initialize M=0")
 	}
 
 	first := f.submit([]byte("adaptive-zero"))
 	f.waitGroupOpen()
 	f.assertNoWriterWhileOpen()
-	f.m.mu.Lock()
-	target := fs.ctrl.Observe(1)
-	fs.enc.SetParity(target)
-	f.m.mu.Unlock()
+	if err := fs.owner.submitAdaptiveSample(fecAdaptiveSample{now: f.clock.Now(), loss: 1, count: 1}); err != nil {
+		t.Fatal(err)
+	}
+	target := int(fs.adaptiveParity.Load())
 	if target != 1 {
 		t.Fatalf("adaptive controller target after loss = %d, want 1", target)
 	}
@@ -961,6 +911,302 @@ func TestFailFirstFECDecidedGroupWriterErrorIsTerminal(t *testing.T) {
 	}
 	f.assertNoWriterWhileOpen()
 	t.Logf("writer-error trace: %s", f.writer.trace())
+}
+
+func TestFailFirstFECBatchStopsSequenceAllocationAfterFailedGroup(t *testing.T) {
+	const buffers = 257
+	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	f := newFailFirstFixture(t, cfg, nil, func(writer *failFirstWriter) {
+		writer.failDecided = true
+	})
+
+	err := f.await(f.submit(payloadStream(buffers)...))
+	if !errors.Is(err, errFailFirstWriter) {
+		t.Fatalf("257-buffer Send error = %v, want %v", err, errFailFirstWriter)
+	}
+	if got := f.m.outerSeq.Load(); got != uint64(cfg.DataShards) {
+		t.Fatalf("outer sequence after first-group failure = %d, want consumed prefix %d", got, cfg.DataShards)
+	}
+
+	if err := f.await(f.submit([]byte("next-a"), []byte("next-b"))); err != nil {
+		t.Fatalf("next Send after terminal group error: %v", err)
+	}
+	if got := f.m.outerSeq.Load(); got != uint64(2*cfg.DataShards) {
+		t.Fatalf("outer sequence after recovery Send = %d, want %d (no failed-batch suffix gap)", got, 2*cfg.DataShards)
+	}
+}
+
+func TestFailFirstFECWriterPrefixFailureKeepsOwnerForNextSend(t *testing.T) {
+	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	f := newFailFirstFixture(t, cfg, nil, func(writer *failFirstWriter) {
+		writer.failDecided = true
+		writer.failEmitted = 1
+	})
+
+	err := f.await(f.submit([]byte("failed-a"), []byte("failed-b")))
+	if !errors.Is(err, errFailFirstWriter) {
+		t.Fatalf("first Send error = %v, want %v", err, errFailFirstWriter)
+	}
+	afterFailure := f.m.PeerSnapshots()[0].FEC
+	if afterFailure.DataFrames != 1 || afterFailure.ParityFrames != 0 {
+		t.Fatalf("emitted prefix DATA/PARITY = %d/%d, want 1/0", afterFailure.DataFrames, afterFailure.ParityFrames)
+	}
+
+	if err := f.await(f.submit([]byte("next-a"), []byte("next-b"))); err != nil {
+		t.Fatalf("next Send after writer error: %v", err)
+	}
+	afterRecovery := f.m.PeerSnapshots()[0].FEC
+	if afterRecovery.DataFrames != 3 || afterRecovery.ParityFrames != 1 {
+		t.Fatalf("post-recovery DATA/PARITY = %d/%d, want 3/1", afterRecovery.DataFrames, afterRecovery.ParityFrames)
+	}
+	if got := f.m.outerSeq.Load(); got != 4 {
+		t.Fatalf("outer sequence after failed+successful groups = %d, want 4", got)
+	}
+}
+
+func TestFailFirstFECSendPublishesOneOwnerCommandForLargeBatch(t *testing.T) {
+	const buffers = 257
+	cfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	f := newFailFirstFixture(t, cfg, nil, nil)
+	var publications atomic.Int64
+	publicationShape := make(chan [2]int, 1)
+	finalAdmitted := make(chan struct{})
+	var finalOnce sync.Once
+	owner := f.m.fecSend.Load().owner
+	owner.afterPublish = func(bufs, completionCapacity int) {
+		publications.Add(1)
+		publicationShape <- [2]int{bufs, completionCapacity}
+	}
+	owner.afterAdmit = func(_ fecOwnerAdmission, _ *fecOwnerBatch, index int) {
+		if index == buffers-1 {
+			finalOnce.Do(func() { close(finalAdmitted) })
+		}
+	}
+
+	payloads := payloadStream(buffers)
+	send := f.submit(payloads...)
+	<-finalAdmitted
+	f.clock.advance(cfg.Deadline)
+	f.flush()
+	if err := f.await(send); err != nil {
+		t.Fatal(err)
+	}
+	owner.afterPublish = nil
+	owner.afterAdmit = nil
+	if got := publications.Load(); got != 1 {
+		t.Fatalf("owner command publications = %d, want one per original Send", got)
+	}
+	if got := <-publicationShape; got != [2]int{buffers, 1} {
+		t.Fatalf("published batch shape = %v, want [%d buffers, 1 completion]", got, buffers)
+	}
+	events, _, _, _ := f.writer.snapshot()
+	var (
+		dataCount   int
+		parityCount int
+	)
+	for _, event := range events {
+		switch decoded := event.frame.(type) {
+		case frame.Data:
+			dataCount++
+			if decoded.OuterSeq != uint64(dataCount) {
+				t.Fatalf("DATA order at position %d has outer sequence %d", dataCount, decoded.OuterSeq)
+			}
+			if !bytes.Equal(decoded.Payload, payloads[dataCount-1]) {
+				t.Fatalf("DATA payload at position %d = %q, want %q", dataCount, decoded.Payload, payloads[dataCount-1])
+			}
+		case frame.Parity:
+			parityCount++
+		}
+	}
+	wantParity := (buffers + cfg.DataShards - 1) / cfg.DataShards
+	if dataCount != buffers || parityCount != wantParity {
+		t.Fatalf("wire DATA/PARITY count = %d/%d, want %d/%d", dataCount, parityCount, buffers, wantParity)
+	}
+}
+
+func TestFailFirstFECCompleteGroupUsesOneShaperHandoff(t *testing.T) {
+	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	f := newFailFirstFixture(t, cfg, nil, nil)
+	if err := f.await(f.submit([]byte("group-a"), []byte("group-b"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.writer.calls(); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("WriteDatagrams call sizes = %v, want one immutable complete-group handoff [3]", got)
+	}
+}
+
+func TestFailFirstFECPublishedSendWaitsForStopAcknowledgement(t *testing.T) {
+	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	f := newFailFirstFixture(t, cfg, nil, nil)
+	owner := f.m.fecSend.Load().owner
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce sync.Once
+	var copies atomic.Int64
+	owner.beforeBatch = func(*fecOwnerBatch) {
+		enterOnce.Do(func() { close(entered) })
+		<-release
+	}
+	owner.beforeCopy = func(*fecOwnerBatch, int) {
+		copies.Add(1)
+	}
+	t.Cleanup(func() {
+		owner.beforeBatch = nil
+		owner.beforeCopy = nil
+	})
+
+	payload := []byte("caller-owned")
+	send := f.submit(payload)
+	<-entered
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- f.m.Close() }()
+
+	var (
+		returnedEarly bool
+		sendErr       error
+	)
+	for i := 0; i < failFirstSpinLimit; i++ {
+		select {
+		case sendErr = <-send.done:
+			returnedEarly = true
+		default:
+			runtime.Gosched()
+			continue
+		}
+		break
+	}
+	if returnedEarly {
+		copy(payload, "mutated-after")
+	}
+	close(release)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !returnedEarly {
+		sendErr = <-send.done
+	}
+	if returnedEarly {
+		t.Fatalf("published Send returned before owner Stop acknowledgement (error=%v)", sendErr)
+	}
+	copy(payload, "after-return")
+	runtime.Gosched()
+	if got := copies.Load(); got != 0 {
+		t.Fatalf("owner copied %d caller buffers after Stop; want published batch rejected before its first read", got)
+	}
+}
+
+func TestFailFirstFECWholeCloseRejectsLateLazyOwnerPublication(t *testing.T) {
+	fecCfg := &fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	m, _, target, _ := lazyConcentratorFEC(t, testKey(t, 0x71), testKey(t, 0x72), fecCfg)
+	if target.fecSend.Load() != nil {
+		t.Fatal("lazy target unexpectedly has a sender before publication")
+	}
+
+	lazyReady := make(chan struct{})
+	releaseLazy := make(chan struct{})
+	lazyDone := make(chan struct{})
+	detached := make(chan struct{})
+	continueClose := make(chan struct{})
+	var captured *fecSendOwner
+	m.beforeLazyFECPublish = func(peer *peerState, fs *fecSender) {
+		if peer != target {
+			return
+		}
+		captured = fs.owner
+		close(lazyReady)
+		<-releaseLazy
+	}
+	m.afterCloseFECDetach = func() {
+		close(detached)
+		<-continueClose
+	}
+
+	go func() {
+		m.ensurePeerReceiveInstantiated(target)
+		close(lazyDone)
+	}()
+	<-lazyReady
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- m.Close() }()
+	<-detached
+	close(releaseLazy)
+	<-lazyDone
+	if target.fecSend.Load() == nil {
+		close(continueClose)
+		t.Fatal("fixture did not publish the lazy sender after Close detachment")
+	}
+	close(continueClose)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	m.beforeLazyFECPublish = nil
+	m.afterCloseFECDetach = nil
+
+	late := target.fecSend.Load()
+	exited := false
+	select {
+	case <-captured.done:
+		exited = true
+	default:
+	}
+	if late != nil || !exited {
+		if late != nil {
+			late.owner.Stop(errClosed)
+			late.owner.Wait()
+			target.fecSend.CompareAndSwap(late, nil)
+		} else if !exited {
+			captured.Stop(errClosed)
+			captured.Wait()
+		}
+		t.Fatalf("Close left late lazy sender=%p, owner exited=%v; want nil/true", late, exited)
+	}
+
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("reopen after late-publication Close: %v", err)
+	}
+	reopened := target.fecSend.Load()
+	if reopened == nil {
+		t.Fatal("reopen did not publish a fresh sender for the configured peer")
+	}
+	if reopened.owner == captured {
+		t.Fatalf("reopen reused exited owner %p", captured)
+	}
+}
+
+func TestFailFirstAdaptiveSampleSubmissionDoesNotInvertBindLock(t *testing.T) {
+	cfg := fec.Config{DataShards: 1, ParityShards: 1, Deadline: 80 * time.Millisecond}
+	adaptiveCfg := adaptivefec.DefaultConfig()
+	adaptiveCfg.DataShards = cfg.DataShards
+	adaptiveCfg.MaxParity = cfg.ParityShards
+	f := newFailFirstFixture(t, cfg, &adaptiveCfg, func(writer *failFirstWriter) {
+		writer.blockDecided = true
+		writer.entered = make(chan struct{})
+		writer.release = make(chan struct{})
+	})
+	owner := f.m.fecSend.Load().owner
+	adaptiveLock := make(chan struct{})
+	var adaptiveOnce sync.Once
+	owner.beforeAdaptiveLock = func() {
+		adaptiveOnce.Do(func() { close(adaptiveLock) })
+	}
+	t.Cleanup(func() { owner.beforeAdaptiveLock = nil })
+
+	send := f.submit([]byte("adaptive-lock-order"))
+	f.waitWriterBlocked()
+	f.m.mu.Lock()
+	f.writer.releaseOnce.Do(func() { close(f.writer.release) })
+	<-adaptiveLock
+
+	sampleOwner, sample, ok := f.m.adaptiveSampleLocked(f.m.peerState)
+	if !ok || sampleOwner != owner {
+		f.m.mu.Unlock()
+		t.Fatal("adaptive sample did not resolve the current owner")
+	}
+	f.m.mu.Unlock()
+	if err := sampleOwner.submitAdaptiveSample(sample); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.await(send)
 }
 
 func TestFailFirstFECCloseBeforeAndAfterDueHasNoLateParity(t *testing.T) {
