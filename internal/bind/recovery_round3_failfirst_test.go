@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net"
 	"net/netip"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -97,8 +97,15 @@ func TestCloseInterruptsSocketBlockedShaperAndStaleRetirementCannotAffectReopen(
 	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
 		t.Fatalf("Close took %s, want bounded socket-interrupt teardown", elapsed)
 	}
-	if err := <-writeDone; !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("blocked writer completion = %v, want socket close", err)
+	if err := <-writeDone; !errors.Is(err, shaper.ErrClosed) {
+		t.Fatalf("blocked writer completion = %v, want published shaper close cause", err)
+	}
+	snapshot := old.shaper.(pathShaperReporter).Snapshot()
+	if snapshot.AsyncWriteErrors != 1 ||
+		snapshot.AsyncWriteErrorBytes != 1 ||
+		snapshot.AsyncWriteEMSGSIZEErrors != 0 ||
+		snapshot.AsyncWriteEMSGSIZEBytes != 0 {
+		t.Fatalf("actual socket-close accounting was not preserved separately: %+v", snapshot)
 	}
 
 	if _, _, err := m.Open(0); err != nil {
@@ -374,4 +381,63 @@ func TestProductionPriorityOverflowTelemetrySeparatesProbeEchoAndPMTU(t *testing
 			t.Fatalf("PMTU cancellation = %d after reactive echo, want 0", got)
 		}
 	})
+}
+
+func TestRecoveryInstallFailurePublishesCauseBeforeInterruptingInflightSocketWrite(t *testing.T) {
+	m := openRecoveryReviewBind(t, 1, testKey(t, 0xB6))
+	path := m.paths[0]
+	writerEntered := make(chan struct{})
+	socketInterrupted := make(chan struct{})
+	releaseWriterResult := make(chan struct{})
+	path.writeUDP = func([]byte, netip.AddrPort) (int, error) {
+		close(writerEntered)
+		buffer := make([]byte, 1)
+		_, _, actualErr := path.conn.ReadFromUDPAddrPort(buffer)
+		close(socketInterrupted)
+		<-releaseWriterResult
+		return 0, actualErr
+	}
+	predecessor := make(chan error, 1)
+	go func() {
+		_, err := path.shaper.WriteDatagrams(context.Background(), []shaper.Datagram{{
+			Class:   shaper.ClassData,
+			Payload: []byte{1},
+		}})
+		predecessor <- err
+	}()
+	select {
+	case <-writerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("predecessor did not enter the actual socket syscall")
+	}
+
+	path.setWriteDeadline = func(deadline time.Time) error {
+		if deadline.IsZero() {
+			return nil
+		}
+		return syscall.EMSGSIZE
+	}
+	emitErr := recoveryReviewOwner(m).emit(13, recoveryReviewWrites(path, []byte{2}))
+	if !errors.Is(emitErr, syscall.EMSGSIZE) {
+		t.Fatalf("recovery install error = %v, want EMSGSIZE", emitErr)
+	}
+	select {
+	case <-socketInterrupted:
+	case <-time.After(time.Second):
+		t.Fatal("generation close did not interrupt the in-flight socket syscall")
+	}
+	close(releaseWriterResult)
+	if err := <-predecessor; !errors.Is(err, syscall.EMSGSIZE) {
+		t.Fatalf("causally interrupted predecessor = %v, want published recovery cause EMSGSIZE", err)
+	}
+
+	snapshot := path.shaper.(pathShaperReporter).Snapshot()
+	if snapshot.AcceptedBytes != 1 ||
+		snapshot.EmittedBytes != 0 ||
+		snapshot.AsyncWriteErrors != 1 ||
+		snapshot.AsyncWriteErrorBytes != 1 ||
+		snapshot.AsyncWriteEMSGSIZEErrors != 0 ||
+		snapshot.AsyncWriteEMSGSIZEBytes != 0 {
+		t.Fatalf("actual socket failure accounting was not preserved separately: %+v", snapshot)
+	}
 }

@@ -202,6 +202,7 @@ type Shaper struct {
 	asyncWriteEMSGSIZEBytes    uint64
 	changed                    chan struct{}
 	closed                     bool
+	terminalCause              error
 	calls                      sync.WaitGroup
 	workerDone                 chan struct{}
 	recovery                   *recoveryState
@@ -487,21 +488,12 @@ func (s *Shaper) WritePriorityGenerated(ctx context.Context, size int, generate 
 		return err
 	}
 	payload, write, err := generate()
-	if err != nil {
-		s.cancelPriority(datagram, err)
-		return err
+	if err == nil && len(payload) != size {
+		err = fmt.Errorf("generated priority length %d does not match reserved length %d", len(payload), size)
 	}
-	if len(payload) != size {
-		err := fmt.Errorf("generated priority length %d does not match reserved length %d", len(payload), size)
-		s.cancelPriority(datagram, err)
-		return err
+	if _, finishErr := s.finishPriorityGeneration(datagram, payload, write, err); finishErr != nil {
+		return finishErr
 	}
-	s.mu.Lock()
-	datagram.payload = append([]byte(nil), payload...)
-	datagram.write = write
-	datagram.ready = true
-	s.notifyLocked()
-	s.mu.Unlock()
 	return <-datagram.done
 }
 
@@ -535,23 +527,13 @@ func (s *Shaper) TryWritePriorityGenerated(size int, generate PriorityGenerator)
 		return false, nil, err
 	}
 	payload, write, err := generate()
-	if err != nil {
-		s.cancelPriority(datagram, err)
-		s.calls.Done()
-		return true, nil, err
+	if err == nil && len(payload) != size {
+		err = fmt.Errorf("generated priority length %d does not match reserved length %d", len(payload), size)
 	}
-	if len(payload) != size {
-		err := fmt.Errorf("generated priority length %d does not match reserved length %d", len(payload), size)
-		s.cancelPriority(datagram, err)
+	if _, finishErr := s.finishPriorityGeneration(datagram, payload, write, err); finishErr != nil {
 		s.calls.Done()
-		return true, nil, err
+		return true, nil, finishErr
 	}
-	s.mu.Lock()
-	datagram.payload = append([]byte(nil), payload...)
-	datagram.write = write
-	datagram.ready = true
-	s.notifyLocked()
-	s.mu.Unlock()
 	completion := make(chan error, 1)
 	go func() {
 		completion <- <-datagram.done
@@ -560,23 +542,44 @@ func (s *Shaper) TryWritePriorityGenerated(size int, generate PriorityGenerator)
 	return true, completion, nil
 }
 
-func (s *Shaper) cancelPriority(datagram *queuedDatagram, err error) {
+// finishPriorityGeneration publishes a successfully generated payload only
+// while its accepted reservation remains queued. Stop may retire that
+// placeholder while generate runs outside the mutex; in that case the already
+// published terminal completion wins over any later generator-local outcome.
+func (s *Shaper) finishPriorityGeneration(
+	datagram *queuedDatagram,
+	payload []byte,
+	write WriteFunc,
+	generationErr error,
+) (retired bool, err error) {
 	s.mu.Lock()
-	for index, queued := range s.queue {
-		if queued != datagram {
-			continue
+	index := -1
+	for candidateIndex, queued := range s.queue {
+		if queued == datagram {
+			index = candidateIndex
+			break
 		}
+	}
+	if index < 0 {
+		s.mu.Unlock()
+		return true, nil
+	}
+	if generationErr != nil {
 		s.queue = append(s.queue[:index], s.queue[index+1:]...)
 		s.releaseQueued(datagram)
-		s.accountAsyncWriteFailureLocked(err, datagram.size, false)
+		s.accountAsyncWriteFailureLocked(generationErr, datagram.size, false)
 		s.notifyLocked()
 		s.mu.Unlock()
-		datagram.done <- err
+		datagram.done <- generationErr
 		close(datagram.done)
-		return
+		return false, generationErr
 	}
+	datagram.payload = append([]byte(nil), payload...)
+	datagram.write = write
+	datagram.ready = true
+	s.notifyLocked()
 	s.mu.Unlock()
-	panic("priority reservation missing from queue")
+	return false, nil
 }
 
 // WriteRecovery takes ownership of a complete immutable single-path FEC group.
@@ -1018,7 +1021,8 @@ func (s *Shaper) Stop() {
 
 // StopWithError is Stop with an originating terminal cause. Every accepted
 // queued datagram completes with cause and enters exactly one terminal byte
-// bucket; the writer currently in flight accounts its own result on return.
+// bucket. An in-flight writer still accounts its actual syscall result, but if
+// that result is an error after cause was published, its caller receives cause.
 func (s *Shaper) StopWithError(cause error) {
 	if cause == nil {
 		panic("shaper: StopWithError requires a cause")
@@ -1027,6 +1031,7 @@ func (s *Shaper) StopWithError(cause error) {
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
+		s.terminalCause = cause
 		for _, datagram := range s.queue {
 			s.releaseQueued(datagram)
 			if datagram.batch != nil && datagram.batch.err == nil {
@@ -1117,14 +1122,18 @@ func (s *Shaper) run() {
 		if write == nil {
 			write = s.write
 		}
-		err := write(datagram.payload)
+		actualErr := write(datagram.payload)
 
 		s.mu.Lock()
 		s.inFlightBytes = 0
-		if err == nil {
+		err := actualErr
+		if actualErr == nil {
 			s.emittedBytes += uint64(datagram.size)
 		} else {
-			s.accountAsyncWriteFailureLocked(err, datagram.size, true)
+			s.accountAsyncWriteFailureLocked(actualErr, datagram.size, true)
+			if s.closed && s.terminalCause != nil {
+				err = s.terminalCause
+			}
 		}
 		if datagram.batch != nil {
 			if err == nil {

@@ -458,8 +458,10 @@ Common rules, either policy:
   install/clear or writer failure immediately closes admission and retires that
   exact peer path, scheduler view, selected remote, and shared socket; pointer
   identity prevents a stale failure from retiring a replacement. Already-accepted
-  work completes with the originating recovery failure and its bytes enter the
-  matching generic or `EMSGSIZE` terminal counter. Runtime removal,
+  work completes with the originating recovery failure. Queued/unstarted bytes
+  enter that cause's generic or `EMSGSIZE` terminal counter; a causally
+  interrupted in-flight syscall reports the published cause while metrics
+  retain its actual socket-error class. Runtime removal,
   failed add/promotion rollback, and daemon Down/Close stop admission and wake
   queued sends, close the UDP socket to interrupt blocked kernel I/O, and then
   join shaped and direct writers. A subsequent add or Up/Open receives a fresh

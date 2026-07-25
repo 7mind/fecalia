@@ -4017,12 +4017,12 @@ type socketGenerationRetirement struct {
 func (m *Multipath) abortRecoveryGeneration(pp *peerPathState, cause error) {
 	sp := pp.sharedPathState
 	sp.recoveryRetireOnce.Do(func() {
-		sp.abortWriteGeneration()
 		if staged, ok := pp.shaper.(causedStagedPathShaper); ok {
 			staged.StopWithError(cause)
 		} else if staged, ok := pp.shaper.(stagedPathShaper); ok {
 			staged.Stop()
 		}
+		sp.abortWriteGeneration()
 		go m.retireRecoveryGeneration(pp, cause)
 	})
 }
@@ -4102,9 +4102,9 @@ func (r *socketGenerationRetirement) preparePeerPathLocked(pp *peerPathState) {
 	r.peerPaths = append(r.peerPaths, pp)
 }
 
-// prepareSharedLocked closes direct UDP-write admission after every shaper on
-// the shared socket has stopped. Existing writes retain their reference and
-// drain before the socket itself closes.
+// prepareSharedLocked stops direct UDP-write admission after every shaper on
+// the shared socket has stopped. Retirement then closes the socket to interrupt
+// in-flight I/O before joining the exact writer/read/shaper generation.
 func (r *socketGenerationRetirement) prepareSharedLocked(sp *sharedPathState) {
 	sp.stopWrites()
 	r.shared = append(r.shared, sp)

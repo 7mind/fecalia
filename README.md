@@ -285,7 +285,9 @@ deliberate boundaries you must plan around:
   retry, propagates its originating cause to every already-accepted retired
   byte, disables admission immediately, and retires that exact socket
   generation from its peer path, scheduler view, and remote; a stale failure
-  cannot match a replacement generation. The shaper retains
+  cannot match a replacement generation. A causally interrupted in-flight
+  shaped syscall reports that published cause to its caller while socket/error
+  counters retain the actual syscall failure class. The shaper retains
   at most `Mtotal`; saturation backpressures the sender
   without discarding ordinary traffic. Per-path accepted, emitted,
   shaper-error, and socket-error counters expose every terminal prefix. Live

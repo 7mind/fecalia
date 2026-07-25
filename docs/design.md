@@ -382,11 +382,12 @@ a socket transition, so re-binding that peer retains its live path shapers.
 Retirement has two phases. Under the bind lock it first removes scheduler/path
 admission, stops each shaper (new calls and queued datagrams receive
 `shaper.ErrClosed`), closes pending generated-PMTU work (`net.ErrClosed`), and
-closes direct UDP-write admission for the shared socket. It then releases the
-bind and scheduler locks before waiting for in-flight shaper writers and direct
-PROBE/echo/PMTU writes. Only after both barriers reach quiescence does it close
-the UDP socket; `Close` then joins the readers and clears per-Open planes. A
-separate transition mutex serializes Open/Close/add/remove/deferred-promotion
+closes direct UDP-write admission for the shared socket. After releasing the
+bind and scheduler locks it closes that socket to interrupt in-flight kernel
+I/O, then joins the exact shaper/direct-writer/read generation and clears the
+per-Open planes. Structural detachment remains identity-scoped to that exact
+generation. A separate transition mutex serializes
+Open/Close/add/remove/deferred-promotion
 across those out-of-bind-lock waits, so a replacement generation cannot appear
 until the old socket has closed. An old reference therefore either completes
 an already-admitted write on its old socket or receives the exact close error;
@@ -659,8 +660,11 @@ already-blocked predecessor and every tranche syscall, and clears only after
 terminal completion. Deadline-install, clear, writer-timeout, or exhaustion
 failure aborts without retry. The abort synchronously stops shaper and direct
 admission and propagates the originating cause to every already-accepted
-retired datagram. Those bytes enter the corresponding generic or `EMSGSIZE`
-terminal bucket exactly once. A generation-identity-checked retirement removes that exact
+retired datagram. Queued/unstarted bytes enter the corresponding generic or
+`EMSGSIZE` terminal bucket exactly once. If socket close causally interrupts
+the current shaped syscall, its completion also reports the published cause
+while async-write and socket metrics classify the actual syscall error. A
+generation-identity-checked retirement removes that exact
 peer path, scheduler view, selected remote, and shared socket without holding
 the shaper lock across the blocking quiescence barrier; socket close precedes
 the writer joins so a blocked kernel write cannot deadlock Close. A stale callback cannot
@@ -706,7 +710,10 @@ context cancellation counts only the batch's still-unreserved suffix.
 Asynchronous writer outcomes split generic and `EMSGSIZE` errors by both calls
 and affected reserved bytes. A reserved suffix retired after its batch's
 first writer failure contributes affected bytes to that failure class without
-fabricating another writer call. While a live generation has no close
+fabricating another writer call. A cause-aware retirement similarly assigns
+unstarted accepted bytes to its published cause; an interrupted in-flight call
+returns that cause but its call/byte metrics retain the actual writer error.
+While a live generation has no close
 retirement in progress:
 
 `accepted_bytes = emitted_bytes + generic_error_bytes + EMSGSIZE_error_bytes + queue_bytes + priority_retained_bytes + recovery_retained_bytes + in_flight_bytes`.
