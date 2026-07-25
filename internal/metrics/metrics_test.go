@@ -217,8 +217,15 @@ func TestShaperMetricContractAndDisabledAbsence(t *testing.T) {
 			}
 		}
 	}
-	resetPriorityDelayBound := time.Duration(priorityBurstBytes) * time.Second /
-		time.Duration(rateBytesPerSecond-priorityRateBytesPerSecond)
+	resetPriorityDelayNumerator := int64(priorityBurstBytes) * int64(time.Second)
+	resetPriorityDelayDenominator := int64(rateBytesPerSecond - priorityRateBytesPerSecond)
+	resetPriorityDelayBound := time.Duration(
+		(resetPriorityDelayNumerator + resetPriorityDelayDenominator - 1) /
+			resetPriorityDelayDenominator,
+	)
+	if resetPriorityDelayBound != 1_333_334*time.Nanosecond {
+		t.Fatalf("reset Dp = %s, want ceil(Pburst/(R-Rp)) = 1.333334ms", resetPriorityDelayBound)
+	}
 	snapshot = shaper.Snapshot{
 		RateBytesPerSecond:         rateBytesPerSecond,
 		DataBudgetBytes:            dataBudgetBytes,

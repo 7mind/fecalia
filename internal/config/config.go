@@ -395,20 +395,25 @@ const maxPathMTU = 9000
 // below a sane floor without validate() catching it.
 const minInnerMTU = 576
 
-// SizePacingFromBDP derives the weighted scheduler's per-path pacing parameters from a
-// measured path instead of the synthetic frame-count default (defect D22). The shipped
-// defaultPerPathCapacityFPS (10000, ~115 Mbit/s at full MTU) sits far above a realistic
-// slow uplink, so the aggregation gate may never engage and — with pacing enabled — the
-// pace never binds; deriving capacity from the measured bottleneck bandwidth fixes both.
+// SizePacingFromBDP derives frame-domain compatibility values from an
+// operator-declared path instead of the synthetic frame-count default (defect
+// D22). Under weighted, the slowest-link result supplies only the shared
+// aggregation reference; every live exact-byte shaper is built separately from
+// its path's own declaration. The shipped defaultPerPathCapacityFPS (10000,
+// ~115 Mbit/s at full MTU) can sit far above a realistic slow uplink, so the
+// aggregation gate may never engage unless the operator supplies a defensible
+// path declaration.
 //
 // capacity_fps = bandwidth / (8 * avg wire frame bytes) — frames/s the link sustains.
 // burst_frames = capacity_fps * RTT — one RTT of in-flight frames (equivalently
 // BDP_bytes / avg wire frame bytes, since the bandwidth-delay product BDP = bandwidth * RTT).
 //
-// bandwidthBitsPerSec is the measured bottleneck bandwidth (bits/s), rtt the measured
-// path RTT, and avgWireFrameBytes the average on-wire outer-frame size (a full-MTU
-// datagram plus frame.DataOverhead is the conservative choice). It fails fast on a
-// non-positive input rather than emitting a nonsensical (zero/negative/Inf) sizing.
+// bandwidthBitsPerSec is the operator-declared real-link bottleneck bandwidth
+// (bits/s), rtt the operator-declared baseline path RTT, and avgWireFrameBytes
+// the average on-wire outer-frame size (a full-MTU datagram plus
+// frame.DataOverhead is the conservative choice). It fails fast on a
+// non-positive input rather than emitting a nonsensical (zero/negative/Inf)
+// sizing.
 func SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFrameBytes float64) (BDPSizing, error) {
 	if bandwidthBitsPerSec <= 0 {
 		return BDPSizing{}, fmt.Errorf("config: BDP sizing bandwidth must be > 0 bit/s, got %g", bandwidthBitsPerSec)
@@ -661,8 +666,9 @@ type Path struct {
 	// scheduler compatibility values (a shared bottleneck reference under weighted,
 	// per-path vectors under active-backup) — T53/T152/T299, Q20. It is
 	// OPERATOR-DECLARED, not runtime-measured — wanbond never auto-tunes it live. Zero
-	// means "not declared": under weighted the synthetic default pace is kept; under
-	// active-backup pacing then requires the explicit per_path_capacity_fps knobs.
+	// means "not declared": weighted retains the synthetic frame-domain
+	// aggregation reference; active-backup shaping then requires the explicit
+	// per_path_capacity_fps knobs.
 	LinkBandwidthBitsPerSec float64 `toml:"-"`
 	// LinkBandwidthRaw is the TOML string form of the declared bandwidth, e.g.
 	// "50Mbit" / "1Gbit" / "500kbit" (SI bit/s units; the "bit" suffix may be written
@@ -1187,13 +1193,16 @@ func (c *Config) normalize() error {
 		}
 	}
 	c.Amnezia.applyDefaults()
-	// Derive the pace from any operator-declared per-link bandwidth BEFORE applyDefaults,
-	// so it can (a) see the raw zero PerPathCapacityFPS to distinguish an explicit knob
-	// from the default and (b) set the derived capacity/burst that applyDefaults then
-	// leaves intact (it only fills a knob left at zero). It runs under BOTH policies when
-	// pacing is enabled (T152): weighted sizes the shared bottleneck scalar, active-backup
-	// the per-path vectors. With pacing disabled it is a no-op, so the synthetic default is
-	// kept.
+	// Derive frame-domain compatibility values from any operator-declared per-link
+	// bandwidth BEFORE applyDefaults, so it can (a) see the raw zero
+	// PerPathCapacityFPS to distinguish an explicit knob from the default and (b)
+	// set the derived capacity/burst that applyDefaults then leaves intact (it only
+	// fills a knob left at zero). It runs under BOTH policies when shaping is
+	// enabled (T152): weighted stores the shared slowest-link aggregation
+	// reference, while active-backup stores per-path compatibility vectors. The
+	// live exact-byte R/B shapers are built separately from each path's own
+	// declaration. With shaping disabled this is a no-op, so only the weighted
+	// synthetic aggregation reference remains.
 	if err := c.derivePacingFromBDP(); err != nil {
 		return err
 	}
@@ -1416,7 +1425,7 @@ func (c *Config) deriveWeightedBottleneckPacing() error {
 	s := &c.Scheduler
 	declared := c.declaredLinkBandwidths()
 	if declared == 0 {
-		return nil // no declared bandwidth: the synthetic default pace is preserved.
+		return nil // no declaration: the synthetic aggregation reference remains.
 	}
 	if declared != len(c.Paths) {
 		return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — the weighted aggregation frame-domain compatibility reference is sized to the slowest declared link, which is undefined with a partial declaration", declared, len(c.Paths))
@@ -1539,17 +1548,19 @@ func (s *SchedulerConfig) parseDurations() error {
 }
 
 // applyDefaults selects active-backup when no policy is given and, only under the
-// weighted policy, fills any weighted-family knob (including the shared pacing scalar)
-// left at its zero value with its default. It is a no-op for the active-backup policy:
-// the weighted aggregation/weight knobs are inert there, so leaving them zero keeps the
-// config surface for a P1 deployment empty.
+// weighted policy, fills any weighted-family knob (including the shared
+// frame-domain aggregation capacity reference) left at its zero value with its
+// default. It is a no-op for the active-backup policy: the weighted
+// aggregation/weight knobs are inert there, so leaving them zero keeps the config
+// surface for a P1 deployment empty.
 //
-// The pacing knobs under active-backup are DELIBERATELY not synthetically defaulted here
-// (T152, D65): derivePacingFromBDP has already sized the per-path vectors from
-// link_bandwidth or the explicit knobs, or failed fast. Applying the weighted synthetic
-// default (~10000 fps) to per_path_capacity_fps under active-backup would let a
-// nominally-enabled pace silently fail to bind, reproducing the very D65 bufferbloat it
-// claims to shape — so it must stay a load error, not a silent default.
+// The shaping inputs under active-backup are DELIBERATELY not synthetically
+// defaulted here (T152, D65): derivePacingFromBDP has already sized the per-path
+// compatibility vectors from link_bandwidth or the explicit knobs, or failed
+// fast. The weighted synthetic aggregation reference (~10000 fps) does not
+// constitute an active-backup byte-rate source; using it implicitly would leave
+// a nominally-enabled shaper without an operator-declared link bound, reproducing
+// D65 bufferbloat. That condition remains a load error, not a silent default.
 func (s *SchedulerConfig) applyDefaults() {
 	if s.Policy == "" {
 		s.Policy = PolicyActiveBackup

@@ -371,11 +371,11 @@ bandwidth-delay product at config load, instead of the synthetic default:
 name = "starlink"
 source_addr = "192.168.1.10"
 link_bandwidth = "50Mbit"  # SI bit/s: k/M/G = 1e3/1e6/1e9 (e.g. "10Mbit", "1Gbit")
-link_rtt = "45ms"          # baseline RTT — the delay term of the pacing burst
+link_rtt = "45ms"          # baseline RTT — the delay term of B=ceil(R*RTT)
 ```
 
-The two policies size the resulting pace **differently**, because they egress
-differently:
+The two policies store different frame-domain compatibility values, while every
+live byte shaper retains its own path's exact `R`/`B` envelope:
 
 - **Weighted** may stripe every eligible path simultaneously. Its aggregation
   gate retains the shared slowest-link `per_path_capacity_fps` reference, while
@@ -392,7 +392,8 @@ Common rules, either policy:
 - It is **all-or-nothing**: declare `link_bandwidth` (and `link_rtt`) on *every*
   path or none — a partial declaration is rejected.
 - A declared bandwidth with `pacing_enabled = false` (the default) is **inert** —
-  the synthetic default pace is kept and the tunnel behaves as before.
+  weighted retains its synthetic frame-domain aggregation reference and the
+  tunnel behaves as before; no live byte shaper exists.
 - `link_bandwidth` is **mutually exclusive** with the raw `per_path_capacity_fps` /
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
@@ -479,9 +480,11 @@ Common rules, either policy:
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never
-  falls back to the weighted synthetic default pace, since a nominally-on but
-  unbound pace would silently reproduce the D65 bufferbloat this feature
-  fixes. (Weighted keeps its pre-existing synthetic-default fallback.)
+  treats the weighted synthetic aggregation reference as an exact-byte shaping
+  source, since a nominally-on shaper without a byte-rate bound would reproduce
+  the D65 bufferbloat this feature fixes. (Weighted keeps its pre-existing
+  synthetic aggregation fallback, which projects to its configured raw
+  exact-byte defaults only when shaping is enabled.)
 
 ### Optional `[dns]` resolver block
 
@@ -554,12 +557,13 @@ own value separately.
 
 #### Step 2: Measure usable bandwidth per uplink
 
-You have two options:
+The netns fixture can provide report-only diagnostics, but only a real-link
+measurement may supply `link_bandwidth`:
 
-##### Option A: Measurement via the capped-fixture test (T52, netns)
+##### Diagnostic only: capped-fixture test (T52, netns)
 
 If you have access to a lab setup (or are developing/testing wanbond), the test
-suite includes a deterministic bandwidth-measurement sub-test. From the repo root:
+suite includes a CPU/PPS-bound capped-path diagnostic. From the repo root:
 
 ```sh
 # This runs the entire fixture-impairment suite, including the BDP sub-test:
@@ -576,13 +580,15 @@ path capped BDP: idle RTT=<e.g. ~5>ms loaded RTT=...ms (bufferbloat Δ=...ms) |
   SizePacingFromBDP -> capacityFPS=... burstFrames=...
 ```
 
-The **achieved throughput** (whatever your run reports) is a measured point;
-the fixture builds a sustained queue by running iperf3 under a controlled bandwidth
-cap, so it measures the true link-limited throughput (not CPU-bound). The per-frame
-size (`≈1540B`) is the full path MTU (1500) plus the outer-frame DATA overhead
-(40) that `SizePacingFromBDP` uses to convert bandwidth to a frame rate.
+The logged throughput, RTT, and BDP values are strictly **report-only**. This
+fixture can validate functional impairment/counter behavior, but its CPU/PPS
+ceiling means it cannot establish real-link throughput, build a representative
+standing queue, or prove a loaded-RTT improvement. Do not copy its achieved
+throughput into `link_bandwidth`. The per-frame size (`≈1540B`) is the full path
+MTU (1500) plus the outer-frame DATA overhead (40) used for the frame-domain
+conversion.
 
-##### Option B: Measurement on the real deployment (manual)
+##### Required: measurement on the real deployment (manual)
 
 Measure each uplink independently with iperf3, one at a time:
 
@@ -640,13 +646,15 @@ link_rtt = "45ms"            # higher baseline latency
 
 **Rules:**
 - **Declare on every path or none.** If you declare `link_bandwidth` on one path,
-  you must declare it on all (under the weighted policy wanbond sizes the shared
-  pace to the slowest link, the bottleneck; under active-backup, the default,
-  each path is sized from its own declared link instead). Partial declarations
-  are rejected at load.
+  you must declare it on all. Under weighted, the slowest link sizes only the
+  shared frame-domain aggregation compatibility reference; every live byte
+  shaper still uses its own path's declared `R` and `B`. Under active-backup,
+  the compatibility vectors and live `R`/`B` shapers are likewise per path.
+  Partial declarations are rejected at load.
 - **Round conservatively.** Round down if unsure (e.g., measure 49.8 Mbit/s →
-  declare `49Mbit` rather than `50Mbit`). Under-sized pacing is safe; over-sized
-  pacing may not bind and bufferbloat may occur.
+  declare `49Mbit` rather than `50Mbit`). An under-declared exact-byte shaping
+  rate is conservative; an over-declared rate may exceed the real bottleneck
+  and allow downstream bufferbloat.
 - **Use the `link_rtt` from Step 1**, not the loaded RTT from Step 2. The idle RTT
   is the baseline delay the BDP calculation assumes; the loaded RTT tells you how
   much bufferbloat exists.

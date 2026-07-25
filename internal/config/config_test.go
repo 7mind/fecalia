@@ -1890,6 +1890,36 @@ func TestInstallMDFullConfigShaperContract(t *testing.T) {
 	}
 }
 
+// TestInstallMDPacingMeasurementAndSizingContract prevents the CPU/PPS-bound
+// fixture and weighted aggregation compatibility scalar from being documented
+// as production bandwidth/shaping measurements.
+func TestInstallMDPacingMeasurementAndSizingContract(t *testing.T) {
+	content := readInstallMD(t)
+	for _, want := range []string{
+		"only a real-link",
+		"measurement may supply `link_bandwidth`",
+		"CPU/PPS-bound capped-path diagnostic",
+		"strictly **report-only**",
+		"Do not copy its achieved",
+		"shared frame-domain aggregation compatibility reference",
+		"every live byte",
+		"shaper still uses its own path's declared `R` and `B`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("install guide missing pacing measurement/sizing contract %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"deterministic bandwidth-measurement sub-test",
+		"true link-limited throughput (not CPU-bound)",
+		"sizes the shared\n  pace to the slowest link",
+	} {
+		if strings.Contains(content, stale) {
+			t.Errorf("install guide retains stale pacing measurement/sizing claim %q", stale)
+		}
+	}
+}
+
 // TestInstallMDMultiConcentratorEdgeExampleLoads verifies that docs/install.md's
 // "Multi-concentrator edge (G28)" worked example — read from the ACTUAL shipped
 // doc, not a hand-copied literal — loads and validates. This is the fixture the

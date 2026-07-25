@@ -38,7 +38,7 @@ function shaper(overrides: Partial<ShaperSnapshot> = {}): ShaperSnapshot {
     queueControlBytes: 20,
     queueBytes: 120,
     inFlightBytes: 50,
-    scheduledDelaySeconds: 0.01,
+    scheduledDelaySeconds: 1_500 / 1_000_000,
     rateBytesPerSecond: 1_000_000,
     dataBudgetBytes: 1_500,
     controlReserveBytes: 100,
@@ -257,6 +257,11 @@ describe('mountDashboard', () => {
       (shaperState.priorityDebtBytes + shaperState.priorityBurstBytes)
         / (shaperState.rateBytesPerSecond - shaperState.priorityRateBytesPerSecond),
     );
+    expect(shaperState.scheduledDelaySeconds).toBeLessThanOrEqual(
+      shaperState.priorityDelayBoundSeconds
+        + shaperState.queueBudgetBytes / shaperState.rateBytesPerSecond
+        + shaperState.maxDatagramBytes / shaperState.rateBytesPerSecond,
+    );
     paced.paths = [path({ name: 'paced', shaper: shaperState }), path({ name: 'unpaced' })];
     dashboard.onSnapshot(paced);
 
@@ -269,6 +274,7 @@ describe('mountDashboard', () => {
     expect(envelope).toContain('100B C');
     expect(envelope).toContain('1.6KB Q');
     expect(envelope).toContain('100B Lmax');
+    expect(cards[0].textContent).toContain('1.5ms scheduled');
     expect(cards[0].textContent).toContain('50B P0');
     expect(cards[0].textContent).toContain('0.3ms Dp');
     expect(cards[0].textContent).toContain('977KB/s R');
