@@ -514,7 +514,18 @@ predeclared gates:
       canonical 27-byte payload), remains within `P=2*Lmax`, and increments
       `shaper_outer_priority_bytes_total` by its exact wire size. Repeat with
       either FEC or pacing off and confirm ordinary probes remain the legacy
-      75-byte form; padded PMTU probes must carry no contract.
+      75-byte form; padded PMTU probes must carry no contract. While a
+      conservative FEC gap is armed with no acknowledged receiver venue, send
+      legacy probes faster than 250 ms and confirm they neither advance the
+      receiver generation nor move the original deadline. After acknowledging
+      a venue, confirm the first legacy probe revokes it and later legacy
+      probes remain idempotent. Repeat while the ACK echo write is blocked
+      after admission: the first legacy probe must invalidate that admission,
+      and the stale write completion must not restore a venue. Fail an ACK
+      write terminally and confirm the next legacy probe moves neither
+      generation nor deadline. With two concurrent admissions, fail one and
+      confirm the survivor remains revocable; fail both and confirm no
+      revocable evidence remains.
 - [ ] During a saturated transfer, remove/re-add the standby path. Confirm
       DATA/inner-control pauses while PROBEs continue, the old staged FEC group
       completes, no old-service write appears during the 250 ms quiet interval,

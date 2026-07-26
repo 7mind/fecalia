@@ -88,6 +88,8 @@ type recoveryContractCoordinator struct {
 	receivedGeneration          uint64
 	receivedEvidenceRevision    uint64
 	receivedPublicationRevision uint64
+	nextReceivedACKID           uint64
+	pendingReceivedACKs         map[uint64]receivedACKAdmission
 	receivedAuthority           *reseq.RecoveryAuthority
 	observedSources             map[uint32]netip.AddrPort
 	haveAdoptedSession          bool
@@ -273,11 +275,25 @@ func (c *recoveryContractCoordinator) invalidateReceivedEvidence() uint64 {
 	return generation
 }
 
+// invalidateReceivedFastEvidence revokes an acknowledged receiver venue once.
+// Ordinary legacy probes carry no new topology information after that venue has
+// already been cleared, so repeating them must not mint generations indefinitely.
+func (c *recoveryContractCoordinator) invalidateReceivedFastEvidence() (uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.pendingReceivedACKs) == 0 && len(c.received.venues) == 0 {
+		return c.receivedGeneration, false
+	}
+	c.advanceReceivedGenerationLocked()
+	return c.receivedGeneration, true
+}
+
 func (c *recoveryContractCoordinator) advanceReceivedGenerationLocked() {
 	c.bumpReceivedGenerationLocked()
 	c.bumpReceivedEvidenceLocked()
 	c.received.venues = nil
 	c.observedSources = nil
+	c.pendingReceivedACKs = nil
 	c.receiverDecision = recoveryReceiverDecision{
 		transitionFrozen: true,
 		fallbackReason:   "transition",
@@ -384,6 +400,7 @@ func (c *recoveryContractCoordinator) recoveryAuthority() *reseq.RecoveryAuthori
 }
 
 type receivedACKAdmission struct {
+	id         uint64
 	generation uint64
 	session    uint64
 	message    telemetry.RecoveryContractMessage
@@ -405,12 +422,22 @@ func (c *recoveryContractCoordinator) admitReceivedACK(
 		c.observedSources[pathKey] != source || !source.IsValid() {
 		return receivedACKAdmission{}, false
 	}
-	return receivedACKAdmission{
+	c.nextReceivedACKID++
+	if c.nextReceivedACKID == 0 {
+		c.nextReceivedACKID++
+	}
+	admission := receivedACKAdmission{
+		id:         c.nextReceivedACKID,
 		generation: c.receivedGeneration,
 		session:    session,
 		message:    message,
 		venue:      recoveryVenueKey{pathKey: pathKey, source: source},
-	}, true
+	}
+	if c.pendingReceivedACKs == nil {
+		c.pendingReceivedACKs = make(map[uint64]receivedACKAdmission)
+	}
+	c.pendingReceivedACKs[admission.id] = admission
+	return admission, true
 }
 
 // completeReceivedACK publishes an exact venue only when contract, generation,
@@ -418,7 +445,8 @@ func (c *recoveryContractCoordinator) admitReceivedACK(
 func (c *recoveryContractCoordinator) completeReceivedACK(admission receivedACKAdmission) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.haveReceived || c.received.invalid ||
+	if !c.retireReceivedACKAdmissionLocked(admission) ||
+		!c.haveReceived || c.received.invalid ||
 		c.receivedGeneration != admission.generation ||
 		c.receivedSession != admission.session ||
 		c.received.message != admission.message ||
@@ -434,6 +462,26 @@ func (c *recoveryContractCoordinator) completeReceivedACK(admission receivedACKA
 		c.bumpReceivedEvidenceLocked()
 	}
 	c.ackWrites++
+	return true
+}
+
+func (c *recoveryContractCoordinator) cancelReceivedACK(admission receivedACKAdmission) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.retireReceivedACKAdmissionLocked(admission)
+}
+
+func (c *recoveryContractCoordinator) retireReceivedACKAdmissionLocked(
+	admission receivedACKAdmission,
+) bool {
+	if admission.id == 0 || admission.generation != c.receivedGeneration {
+		return false
+	}
+	pending, exists := c.pendingReceivedACKs[admission.id]
+	if !exists || pending != admission {
+		return false
+	}
+	delete(c.pendingReceivedACKs, admission.id)
 	return true
 }
 
@@ -1085,6 +1133,16 @@ func (m *Multipath) invalidatePeerRecoveryEvidence(peer *peerState) uint64 {
 	generation := peer.contracts.invalidateReceivedEvidence()
 	m.publishPeerRecoveryGeneration(peer, generation)
 	return generation
+}
+
+func (m *Multipath) invalidatePeerRecoveryFastEvidence(peer *peerState) {
+	if peer == nil || peer.contracts == nil {
+		return
+	}
+	generation, changed := peer.contracts.invalidateReceivedFastEvidence()
+	if changed {
+		m.publishPeerRecoveryGeneration(peer, generation)
+	}
 }
 
 // beginPeerRecoveryContractLocked snapshots the complete selectable writer

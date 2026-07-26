@@ -601,6 +601,18 @@ old lease has less than `T` validity. OFFER loss likewise rotates again before
 expiry. Thus fallback controls DATA admission while OFFER/lease validity remains
 a separate state machine.
 
+An ordinary or bootstrap probe without a recovery ACK revokes any admitted or
+acknowledged receiver evidence once. This includes an ACK admitted before its
+asynchronous echo write completes, so that older completion cannot restore a
+venue. Each pending ACK carries a unique generation-bound admission identity
+that every success and failure path retires exactly; a generation advance
+invalidates all remaining identities together. If no such evidence remains,
+the same observation carries no new topology information: it leaves the
+receiver generation and any armed conservative deadline unchanged. This
+idempotence keeps legacy/no-offer probe cadence from repeatedly restarting
+`T`; a later exact OFFER/ACK can still restore the retained identity under the
+same session, ContractID, source, and freshness checks.
+
 The receiver uses that acknowledged service to bound FEC head-of-line recovery,
 not merely sender admission. It records evidence only after the exact ACK write
 completes successfully, bound to the adopted peer `SessionID`, exact

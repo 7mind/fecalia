@@ -3175,7 +3175,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				if pr.contracts != nil {
 					if accepted.Acceptance == telemetry.ProbeBootstrap ||
 						(!accepted.Probe.Padded && !haveRecoveryACK) {
-						m.invalidatePeerRecoveryEvidence(pr)
+						m.invalidatePeerRecoveryFastEvidence(pr)
 					}
 					m.refreshPeerRecoveryWindow(pr)
 				}
@@ -3195,6 +3195,9 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				}
 				echo, encodeErr := pr.reflector.EncodeAcceptedProbe(accepted, echoPayload)
 				if encodeErr != nil {
+					if haveRecoveryAdmission {
+						pr.contracts.cancelReceivedACK(recoveryAdmission)
+					}
 					return
 				}
 				if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
@@ -3207,8 +3210,14 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 					})
 					switch {
 					case writeErr != nil:
+						if haveRecoveryAdmission {
+							pr.contracts.cancelReceivedACK(recoveryAdmission)
+						}
 						ps.probeSendErrors.Add(1)
 					case !admitted:
+						if haveRecoveryAdmission {
+							pr.contracts.cancelReceivedACK(recoveryAdmission)
+						}
 						ps.echoPriorityOverflow.Add(1)
 					default:
 						go func(
@@ -3223,6 +3232,8 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 								if recordACK && contract.completeReceivedACK(admission) {
 									m.refreshPeerRecoveryWindow(pr)
 								}
+							} else if recordACK {
+								contract.cancelReceivedACK(admission)
 							}
 						}(
 							len(echo),
@@ -3244,6 +3255,8 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 						if haveRecoveryAdmission && pr.contracts.completeReceivedACK(recoveryAdmission) {
 							m.refreshPeerRecoveryWindow(pr)
 						}
+					} else if haveRecoveryAdmission {
+						pr.contracts.cancelReceivedACK(recoveryAdmission)
 					}
 				}
 			}

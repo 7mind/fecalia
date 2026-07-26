@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,6 +331,336 @@ func TestRecoveryContractLegacyFallbackReleasesAtT(t *testing.T) {
 	}
 	if coordinator.fastEligible() {
 		t.Fatal("legacy fallback enabled fast recovery without an ACK")
+	}
+}
+
+func TestNoOfferProbeCadenceCannotPostponeConservativeGapDeadline(t *testing.T) {
+	m, _, clock := openRecoveryWindowPeer(t, 1)
+	peer, source := rawPeer(t)
+	const session = uint64(0x8002)
+
+	echo := dispatchLegacyProbe(t, m, peer, source, session, 0, 0)
+	echo = dispatchLegacyProbe(t, m, peer, source, session, 1, echo.Challenge)
+	beforeGeneration := m.contracts.receivedSnapshot().generation
+
+	deliverDATA(t, m, m.paths[0], m.psk, 0, []byte("before-gap"), source)
+	if item, ok := m.resequencer.Load().Pop(); !ok || string(item.Payload) != "before-gap" {
+		t.Fatalf("pre-gap release = payload %q ok=%v", item.Payload, ok)
+	}
+	deliverDATA(t, m, m.paths[0], m.psk, 2, []byte("after-gap"), source)
+	rq := m.resequencer.Load()
+	originalDeadline, armed := rq.ArmedDeadline()
+	if !armed || originalDeadline != clock.Now().Add(conservativeRecoveryService) {
+		t.Fatalf("initial fallback gap = %v,%v, want now+T,true", originalDeadline, armed)
+	}
+
+	for sequence := uint64(2); sequence < 5; sequence++ {
+		clock.advance(100 * time.Millisecond)
+		echo = dispatchLegacyProbe(t, m, peer, source, session, sequence, echo.Challenge)
+	}
+	if clock.Now().Before(originalDeadline) {
+		t.Fatalf("probe cadence stopped before original deadline: now=%v deadline=%v", clock.Now(), originalDeadline)
+	}
+	item, ok := rq.Pop()
+	if !ok || string(item.Payload) != "after-gap" {
+		t.Fatalf("no-offer probes postponed fallback release: payload %q ok=%v stats=%+v",
+			item.Payload, ok, rq.Stats())
+	}
+	if got := m.contracts.receivedSnapshot().generation; got != beforeGeneration {
+		t.Fatalf("no-offer probes advanced recovery generation from %d to %d", beforeGeneration, got)
+	}
+}
+
+func TestLegacyProbeRevokesAcknowledgedRecoveryEvidenceOnce(t *testing.T) {
+	m, _, _ := openRecoveryWindowPeer(t, 1)
+	peer, source := rawPeer(t)
+	const session = uint64(0x8003)
+
+	echo := dispatchLegacyProbe(t, m, peer, source, session, 0, 0)
+	echo = dispatchLegacyProbe(t, m, peer, source, session, 1, echo.Challenge)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(session, message, func() {}); !ok {
+		t.Fatal("recovery offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, m.paths[0].id)
+	if !completeReceiverACK(m.contracts, session, message, pathKey, source) {
+		t.Fatal("recovery ACK completion rejected")
+	}
+	before := m.contracts.receivedSnapshot()
+	if len(before.venues) != 1 {
+		t.Fatalf("acknowledged venues = %d, want 1", len(before.venues))
+	}
+
+	echo = dispatchLegacyProbe(t, m, peer, source, session, 2, echo.Challenge)
+	afterFirst := m.contracts.receivedSnapshot()
+	if afterFirst.generation != before.generation+1 || len(afterFirst.venues) != 0 {
+		t.Fatalf("first legacy probe revocation = generation %d venues %d, want %d/0",
+			afterFirst.generation, len(afterFirst.venues), before.generation+1)
+	}
+	dispatchLegacyProbe(t, m, peer, source, session, 3, echo.Challenge)
+	afterSecond := m.contracts.receivedSnapshot()
+	if afterSecond.generation != afterFirst.generation {
+		t.Fatalf("already-revoked evidence advanced generation from %d to %d",
+			afterFirst.generation, afterSecond.generation)
+	}
+}
+
+func TestNoACKProbeInvalidatesBlockedACKAdmissionOnce(t *testing.T) {
+	m, _, clock := openRecoveryWindowPeer(t, 1)
+	peer, source := rawPeer(t)
+	view := m.paths[0]
+	const session = uint64(0x8004)
+
+	echo := dispatchLegacyProbe(t, m, peer, source, session, 0, 0)
+	echo = dispatchLegacyProbe(t, m, peer, source, session, 1, echo.Challenge)
+	deliverDATA(t, m, view, m.psk, 0, []byte("before-gap"), source)
+	if item, ok := m.resequencer.Load().Pop(); !ok || string(item.Payload) != "before-gap" {
+		t.Fatalf("pre-gap release = payload %q ok=%v", item.Payload, ok)
+	}
+	deliverDATA(t, m, view, m.psk, 2, []byte("after-gap"), source)
+
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	payload, err := telemetry.EncodeRecoveryContract(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := frame.Encode(m.psk, frame.Probe{
+		PathID:         view.id,
+		ProbeSeq:       2,
+		TimestampNanos: clock.Now().UnixNano(),
+		SessionID:      session,
+		Challenge:      echo.Challenge,
+		Payload:        payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalWrite := view.writeUDP
+	blockedWire := make(chan []byte, 1)
+	releaseWrite := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseWrite:
+		default:
+			close(releaseWrite)
+		}
+	})
+	var writes atomic.Uint32
+	view.writeUDP = func(payload []byte, destination netip.AddrPort) (int, error) {
+		if writes.Add(1) == 1 {
+			blockedWire <- append([]byte(nil), payload...)
+			<-releaseWrite
+		}
+		if originalWrite == nil {
+			return view.conn.WriteToUDPAddrPort(payload, destination)
+		}
+		return originalWrite(payload, destination)
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		m.handleInbound(view, raw, source)
+		close(firstDone)
+	}()
+
+	var blockedEcho frame.Probe
+	select {
+	case wire := <-blockedWire:
+		decoded, decodeErr := frame.Decode(m.psk, wire)
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		var ok bool
+		blockedEcho, ok = decoded.(frame.Probe)
+		if !ok {
+			t.Fatalf("blocked recovery echo = %T, want PROBE", decoded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery ACK write did not block")
+	}
+	if snapshot := m.contracts.receivedSnapshot(); len(snapshot.venues) != 0 {
+		t.Fatalf("blocked ACK published %d venues before write completion", len(snapshot.venues))
+	}
+
+	clock.advance(100 * time.Millisecond)
+	legacyEcho := dispatchLegacyProbe(t, m, peer, source, session, 3, blockedEcho.Challenge)
+	afterFirst := m.contracts.receivedSnapshot()
+	firstDeadline, armed := m.resequencer.Load().ArmedDeadline()
+	if !armed || firstDeadline != clock.Now().Add(conservativeRecoveryService) {
+		t.Fatalf("pending-ACK invalidation deadline = %v,%v, want now+T,true", firstDeadline, armed)
+	}
+
+	close(releaseWrite)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("blocked recovery ACK write did not finish")
+	}
+	staleEcho := readProbe(t, peer, mustFrameCodec(t, m.psk))
+	if len(staleEcho.Payload) == 0 {
+		t.Fatal("blocked recovery ACK lost its encoded contract payload")
+	}
+	if snapshot := m.contracts.receivedSnapshot(); len(snapshot.venues) != 0 {
+		t.Fatalf("stale blocked ACK restored %d venues", len(snapshot.venues))
+	}
+
+	clock.advance(100 * time.Millisecond)
+	dispatchLegacyProbe(t, m, peer, source, session, 4, legacyEcho.Challenge)
+	afterSecond := m.contracts.receivedSnapshot()
+	if afterSecond.generation != afterFirst.generation {
+		t.Fatalf("post-invalidation legacy probe advanced generation from %d to %d",
+			afterFirst.generation, afterSecond.generation)
+	}
+	if deadline, armed := m.resequencer.Load().ArmedDeadline(); !armed || deadline != firstDeadline {
+		t.Fatalf("post-invalidation legacy probe moved deadline from %v to %v,%v",
+			firstDeadline, deadline, armed)
+	}
+
+	clock.advance(firstDeadline.Sub(clock.Now()))
+	item, ok := m.resequencer.Load().Pop()
+	if !ok || string(item.Payload) != "after-gap" {
+		t.Fatalf("pending-ACK fallback release = payload %q ok=%v stats=%+v",
+			item.Payload, ok, m.resequencer.Load().Stats())
+	}
+}
+
+func TestFailedACKWriteLeavesNoEvidenceForLegacyProbeToInvalidate(t *testing.T) {
+	m, _, clock := openRecoveryWindowPeer(t, 1)
+	peer, source := rawPeer(t)
+	view := m.paths[0]
+	const session = uint64(0x8005)
+
+	echo := dispatchLegacyProbe(t, m, peer, source, session, 0, 0)
+	echo = dispatchLegacyProbe(t, m, peer, source, session, 1, echo.Challenge)
+	deliverDATA(t, m, view, m.psk, 0, []byte("before-gap"), source)
+	if item, ok := m.resequencer.Load().Pop(); !ok || string(item.Payload) != "before-gap" {
+		t.Fatalf("pre-gap release = payload %q ok=%v", item.Payload, ok)
+	}
+	deliverDATA(t, m, view, m.psk, 2, []byte("after-gap"), source)
+
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	payload, err := telemetry.EncodeRecoveryContract(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := frame.Encode(m.psk, frame.Probe{
+		PathID:         view.id,
+		ProbeSeq:       2,
+		TimestampNanos: clock.Now().UnixNano(),
+		SessionID:      session,
+		Challenge:      echo.Challenge,
+		Payload:        payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalWrite := view.writeUDP
+	var failedWire []byte
+	view.writeUDP = func(payload []byte, _ netip.AddrPort) (int, error) {
+		failedWire = append([]byte(nil), payload...)
+		return 0, errors.New("injected ACK write failure")
+	}
+	m.handleInbound(view, raw, source)
+	view.writeUDP = originalWrite
+	decoded, err := frame.Decode(m.psk, failedWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedEcho, ok := decoded.(frame.Probe)
+	if !ok {
+		t.Fatalf("failed recovery echo = %T, want PROBE", decoded)
+	}
+
+	before := m.contracts.receivedSnapshot()
+	if len(before.venues) != 0 {
+		t.Fatalf("failed ACK write published %d venues", len(before.venues))
+	}
+	originalDeadline, armed := m.resequencer.Load().ArmedDeadline()
+	if !armed {
+		t.Fatal("failed ACK write left no conservative gap armed")
+	}
+
+	clock.advance(100 * time.Millisecond)
+	dispatchLegacyProbe(t, m, peer, source, session, 3, failedEcho.Challenge)
+	after := m.contracts.receivedSnapshot()
+	if after.generation != before.generation {
+		t.Fatalf("legacy probe invalidated failed ACK generation %d -> %d",
+			before.generation, after.generation)
+	}
+	if deadline, armed := m.resequencer.Load().ArmedDeadline(); !armed || deadline != originalDeadline {
+		t.Fatalf("legacy probe moved failed-ACK deadline from %v to %v,%v",
+			originalDeadline, deadline, armed)
+	}
+
+	clock.advance(originalDeadline.Sub(clock.Now()))
+	item, ok := m.resequencer.Load().Pop()
+	if !ok || string(item.Payload) != "after-gap" {
+		t.Fatalf("failed-ACK fallback release = payload %q ok=%v stats=%+v",
+			item.Payload, ok, m.resequencer.Load().Stats())
+	}
+}
+
+func TestReceivedACKCancellationPreservesOtherPendingAdmissions(t *testing.T) {
+	coordinator := newRecoveryContractCoordinator(0x8006, newFakeClock())
+	const remoteSession = uint64(0x8007)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := coordinator.acceptOffer(remoteSession, message, func() {}); !ok {
+		t.Fatal("recovery offer rejected")
+	}
+	firstKey, secondKey := uint32(1), uint32(2)
+	coordinator.observeReceivedSource(firstKey, receiverContractSource)
+	coordinator.observeReceivedSource(secondKey, receiverStandbySource)
+	first, ok := coordinator.admitReceivedACK(
+		remoteSession, message, firstKey, receiverContractSource,
+	)
+	if !ok {
+		t.Fatal("first ACK admission rejected")
+	}
+	second, ok := coordinator.admitReceivedACK(
+		remoteSession, message, secondKey, receiverStandbySource,
+	)
+	if !ok {
+		t.Fatal("second ACK admission rejected")
+	}
+	if !coordinator.cancelReceivedACK(first) {
+		t.Fatal("first ACK cancellation rejected")
+	}
+	before := coordinator.receivedSnapshot().generation
+	generation, changed := coordinator.invalidateReceivedFastEvidence()
+	if !changed || generation != before+1 {
+		t.Fatalf("surviving ACK invalidation = generation %d changed %v, want %d/true",
+			generation, changed, before+1)
+	}
+	if coordinator.completeReceivedACK(second) {
+		t.Fatal("invalidated surviving ACK admission completed")
+	}
+
+	next := receiverContractMessage(2, 80*time.Millisecond)
+	if _, ok := coordinator.acceptOffer(remoteSession, next, func() {}); !ok {
+		t.Fatal("replacement recovery offer rejected")
+	}
+	coordinator.observeReceivedSource(firstKey, receiverContractSource)
+	coordinator.observeReceivedSource(secondKey, receiverStandbySource)
+	first, ok = coordinator.admitReceivedACK(
+		remoteSession, next, firstKey, receiverContractSource,
+	)
+	if !ok {
+		t.Fatal("replacement first ACK admission rejected")
+	}
+	second, ok = coordinator.admitReceivedACK(
+		remoteSession, next, secondKey, receiverStandbySource,
+	)
+	if !ok {
+		t.Fatal("replacement second ACK admission rejected")
+	}
+	if !coordinator.cancelReceivedACK(first) || !coordinator.cancelReceivedACK(second) {
+		t.Fatal("replacement ACK cancellation rejected")
+	}
+	before = coordinator.receivedSnapshot().generation
+	if generation, changed = coordinator.invalidateReceivedFastEvidence(); changed || generation != before {
+		t.Fatalf("fully cancelled ACK invalidation = generation %d changed %v, want %d/false",
+			generation, changed, before)
 	}
 }
 
@@ -901,8 +1232,8 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 			stats.Receiver.FallbackReason != "no_offer" {
 			t.Fatalf("old→new production observability = %+v", stats)
 		}
-		if afterNegotiation.receivedGeneration != baseline.receivedGeneration+3 {
-			t.Fatalf("legacy bootstrap/adoption generation = %d, want baseline %d + 3",
+		if afterNegotiation.receivedGeneration != baseline.receivedGeneration+1 {
+			t.Fatalf("legacy adoption generation = %d, want baseline %d + 1",
 				afterNegotiation.receivedGeneration, baseline.receivedGeneration)
 		}
 		assertCompatibilityContinuity(
@@ -1063,8 +1394,8 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 		})
 		bootstrap := readProbe(t, peer, mustFrameCodec(t, m.psk))
 		afterBootstrap := compatibilitySnapshot(m)
-		if afterBootstrap.receivedGeneration != baseline.receivedGeneration+1 {
-			t.Fatalf("bootstrap generation = %d, want baseline %d + 1",
+		if afterBootstrap.receivedGeneration != baseline.receivedGeneration {
+			t.Fatalf("no-evidence bootstrap generation = %d, want unchanged baseline %d",
 				afterBootstrap.receivedGeneration, baseline.receivedGeneration)
 		}
 		assertCompatibilityContinuity(
@@ -1080,8 +1411,8 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 			Payload:        payload,
 		})
 		beforeInitialACK := compatibilitySnapshot(m)
-		if beforeInitialACK.receivedGeneration != baseline.receivedGeneration+3 {
-			t.Fatalf("initial adoption/offer generation = %d, want baseline %d + 3",
+		if beforeInitialACK.receivedGeneration != baseline.receivedGeneration+2 {
+			t.Fatalf("initial adoption/offer generation = %d, want baseline %d + 2",
 				beforeInitialACK.receivedGeneration, baseline.receivedGeneration)
 		}
 		assertCompatibilityContinuity(
@@ -1173,8 +1504,8 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 			return snapshot.acked && snapshot.message.ContractID == rotated.ContractID
 		})
 		afterRotation := compatibilitySnapshot(m)
-		if afterRotation.receivedGeneration != baseline.receivedGeneration+4 {
-			t.Fatalf("same-session rotation generation = %d, want baseline %d + 4",
+		if afterRotation.receivedGeneration != baseline.receivedGeneration+3 {
+			t.Fatalf("same-session rotation generation = %d, want baseline %d + 3",
 				afterRotation.receivedGeneration, baseline.receivedGeneration)
 		}
 		assertCompatibilityContinuity(

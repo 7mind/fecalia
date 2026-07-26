@@ -128,6 +128,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   drainer through a coalescing notification. A conservative gap therefore
   remains bounded by `transitionAt+250ms`, including when the later explicit
   publication stalls; observation after that bound expires it immediately.
+  An ordinary/bootstrap probe without a recovery ACK revokes any admitted or
+  acknowledged recovery evidence once. When no such evidence exists, repeating
+  those probes is idempotent and cannot move an already armed 250 ms deadline.
   Within one unchanged
   topology, ACK-venue and authenticated RTT/liveness changes receive ordered
   publication revisions only after their exact inputs are revalidated; an older

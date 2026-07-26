@@ -524,7 +524,11 @@ Common rules, either policy:
   the generation and exact transition time coherently and sends a coalescing
   wake to the receive drainer. A conservative gap remains bounded by
   `transitionAt+250ms`; observation after that bound expires it immediately
-  instead of starting another 250 ms interval. Within one topology,
+  instead of starting another 250 ms interval. Within one topology, an
+  ordinary/bootstrap probe without a recovery ACK revokes admitted or
+  acknowledged receiver evidence once, including an ACK whose echo write has
+  not completed; when no such evidence remains, subsequent probes do not
+  advance the generation or move an armed conservative deadline.
   ACK-venue and authenticated RTT/liveness changes use ordered evidence
   publication revisions after exact membership, sample revision, and current
   freshness revalidation. Older same-generation refreshes therefore cannot
