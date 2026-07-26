@@ -206,7 +206,7 @@ func (c *recoveryContractCoordinator) bumpReceivedGenerationLocked() {
 	if c.receivedGeneration == 0 {
 		c.receivedGeneration++
 	}
-	c.receivedAuthority.AdvanceTo(c.receivedGeneration)
+	c.receivedAuthority.AdvanceTo(c.receivedGeneration, c.clock.Now())
 }
 
 func (c *recoveryContractCoordinator) bumpReceivedEvidenceLocked() {

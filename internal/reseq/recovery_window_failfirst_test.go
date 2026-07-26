@@ -362,7 +362,7 @@ func TestRecoveryPublicationOrdersSameTopologyAndKeepsLiveGapImmutable(t *testin
 	clk := newFakeClock()
 	r := reseq.New(16, 250*time.Millisecond, clk)
 	authority := &reseq.RecoveryAuthority{}
-	authority.AdvanceTo(1)
+	authority.AdvanceTo(1, clk.Now())
 	r.SetRecoveryAuthority(authority)
 	r.SetFECActive(true)
 	first := reseq.RecoveryWindow{
@@ -414,7 +414,7 @@ func TestRecoveryAuthorityPreemptsOldFastExpiryBeforePublication(t *testing.T) {
 	clk := newFakeClock()
 	r := reseq.New(16, 250*time.Millisecond, clk)
 	authority := &reseq.RecoveryAuthority{}
-	authority.AdvanceTo(1)
+	authority.AdvanceTo(1, clk.Now())
 	r.SetRecoveryAuthority(authority)
 	r.SetFECActive(true)
 	window := reseq.RecoveryWindow{
@@ -432,7 +432,7 @@ func TestRecoveryAuthorityPreemptsOldFastExpiryBeforePublication(t *testing.T) {
 	drainHold(r)
 	r.ObserveFromPath(2, []byte("two"), testSrc, 7)
 	clk.advance(window.Hold)
-	authority.AdvanceTo(2)
+	authority.AdvanceTo(2, clk.Now())
 
 	if got := drainHold(r); len(got) != 0 {
 		t.Fatalf("old fast expiry released across topology authority advance: %v", got)
@@ -454,14 +454,14 @@ func TestRecoveryAuthorityLeavesFECOffGapUnchanged(t *testing.T) {
 	clk := newFakeClock()
 	r := reseq.New(16, 250*time.Millisecond, clk)
 	authority := &reseq.RecoveryAuthority{}
-	authority.AdvanceTo(1)
+	authority.AdvanceTo(1, clk.Now())
 	r.SetRecoveryAuthority(authority)
 	r.SetHoldBound(40 * time.Millisecond)
 	r.Observe(0, []byte("zero"), testSrc)
 	drainHold(r)
 	r.Observe(2, []byte("two"), testSrc)
 	want := clk.Now().Add(40 * time.Millisecond)
-	authority.AdvanceTo(2)
+	authority.AdvanceTo(2, clk.Now())
 	if deadline, armed := r.ArmedDeadline(); !armed || deadline != want {
 		t.Fatalf("FEC-off authority update changed gap: %v,%v want %v,true", deadline, armed, want)
 	}
@@ -471,11 +471,11 @@ func TestClosedResequencerRejectsAuthoritativePublication(t *testing.T) {
 	clk := newFakeClock()
 	r := reseq.New(16, 250*time.Millisecond, clk)
 	authority := &reseq.RecoveryAuthority{}
-	authority.AdvanceTo(1)
+	authority.AdvanceTo(1, clk.Now())
 	r.SetRecoveryAuthority(authority)
 	r.SetFECActive(true)
 	r.Close()
-	authority.AdvanceTo(2)
+	authority.AdvanceTo(2, clk.Now())
 	if r.SetRecoveryPublication(2, 1, []reseq.RecoveryWindow{{
 		Enabled:    true,
 		Revision:   2,
@@ -485,5 +485,46 @@ func TestClosedResequencerRejectsAuthoritativePublication(t *testing.T) {
 		ValidUntil: clk.Now().Add(time.Second),
 	}}) {
 		t.Fatal("closed resequencer accepted authoritative publication")
+	}
+}
+
+func TestRecoveryAuthorityCoalescesAndKeepsGenerationTimeCoherent(t *testing.T) {
+	clk := newFakeClock()
+	authority := &reseq.RecoveryAuthority{}
+	changed := make(chan struct{}, 1)
+	authority.SetChangeSignal(changed)
+
+	firstAt := clk.Now()
+	authority.AdvanceTo(1, firstAt)
+	clk.advance(time.Millisecond)
+	secondAt := clk.Now()
+	authority.AdvanceTo(2, secondAt)
+	clk.advance(time.Millisecond)
+	thirdAt := clk.Now()
+	authority.AdvanceTo(3, thirdAt)
+	if len(changed) != 1 {
+		t.Fatalf("coalesced authority notifications = %d, want 1", len(changed))
+	}
+	if state := authority.State(); state.Generation != 3 || state.TransitionAt != thirdAt {
+		t.Fatalf("latest authority state = %+v, want generation 3 at %v", state, thirdAt)
+	}
+
+	<-changed
+	authority.AdvanceTo(2, clk.Now().Add(time.Second))
+	select {
+	case <-changed:
+		t.Fatal("older generation emitted a notification")
+	default:
+	}
+	if state := authority.State(); state.Generation != 3 || state.TransitionAt != thirdAt {
+		t.Fatalf("older generation changed authority state to %+v", state)
+	}
+
+	authority.SetChangeSignal(nil)
+	authority.AdvanceTo(4, clk.Now())
+	select {
+	case <-changed:
+		t.Fatal("detached authority emitted a notification")
+	default:
 	}
 }

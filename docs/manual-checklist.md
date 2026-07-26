@@ -554,8 +554,14 @@ predeclared gates:
       service change, SessionID adoption, membership add/remove, same-key roam,
       rebaseline, resequencer replacement, and teardown. At the old `W`
       boundary, concurrent receive/`Pop` must not release; it must observe the
-      authoritative generation and arm a fresh 250 ms fallback. Repeat with FEC
-      off and confirm its existing non-FEC gap deadline remains unchanged.
+      authoritative generation and set the fallback deadline to the topology
+      transition instant plus 250 ms, not the observation instant plus 250 ms.
+      Pause receive until after that bound and confirm immediate release. Burst
+      several advances while receive remains parked and confirm their wake
+      coalesces to the latest coherent generation/time without allocating
+      another timer or spinning; Close must still prevent post-close delivery.
+      Repeat with FEC off and confirm its existing non-FEC gap deadline remains
+      unchanged.
 - [ ] Change same-name pacing/FEC service inputs (`R/Rp/B/C/P/Lmax/Kdata/Mmax/I`)
       and reload. Confirm the daemon warns that the change remains unapplied
       until restart and the running service retains its old ContractID. After a

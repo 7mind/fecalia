@@ -1378,11 +1378,12 @@ type Multipath struct {
 	// surviving path is never renumbered and a freed id is never reused for the
 	// process lifetime, and thus can never collide with the peer's per-path reflector
 	// state.
-	deliverSignal chan struct{}
-	recvClosed    chan struct{}
-	readersWG     sync.WaitGroup
-	openPort      uint16
-	nextPathID    uint16
+	deliverSignal           chan struct{}
+	recoveryAuthoritySignal chan struct{}
+	recvClosed              chan struct{}
+	readersWG               sync.WaitGroup
+	openPort                uint16
+	nextPathID              uint16
 
 	// Receive-path liveness sweep (T39, defect D15). Liveness DOWN-detection normally
 	// rides StartProbeLoop's single wall-clock ticker goroutine (emitProbes → Tick).
@@ -1841,6 +1842,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 	m.openGeneration.Add(1)
+	m.recoveryAuthoritySignal = make(chan struct{}, 1)
 	cleanupOnError := true
 	defer func() {
 		if !cleanupOnError {
@@ -2150,7 +2152,9 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// goroutines read it WITHOUT m.mu.
 	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
 	if ps.contracts != nil {
-		rq.SetRecoveryAuthority(ps.contracts.recoveryAuthority())
+		authority := ps.contracts.recoveryAuthority()
+		authority.SetChangeSignal(m.recoveryAuthoritySignal)
+		rq.SetRecoveryAuthority(authority)
 		generation := ps.contracts.invalidateReceivedEvidence()
 		rq.SetRecoveryPublication(generation, 0, nil)
 	}
@@ -2305,7 +2309,9 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 	}
 	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
 	if ps.contracts != nil {
-		rq.SetRecoveryAuthority(ps.contracts.recoveryAuthority())
+		authority := ps.contracts.recoveryAuthority()
+		authority.SetChangeSignal(m.recoveryAuthoritySignal)
+		rq.SetRecoveryAuthority(authority)
 		generation := ps.contracts.invalidateReceivedEvidence()
 		rq.SetRecoveryPublication(generation, 0, nil)
 	}
@@ -2507,12 +2513,19 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 	// fallback when no gap is armed.
 	timer := m.clock.NewTimerAt(m.clock.Now())
 	timer.Stop()
+	authorityChanged := m.recoveryAuthoritySignal
 	// rr is the round-robin cursor, advanced past a peer each time it yields a frame so
 	// the next receive starts at the following peer. It is touched only by this single
 	// engine goroutine, so it needs no synchronisation.
 	var rr int
 	return func(packets [][]byte, sizes []int, eps []Endpoint) (int, error) {
 		for {
+			select {
+			case <-closed:
+				timer.Stop()
+				return 0, errClosed
+			default:
+			}
 			// Scan every bound peer round-robin for an in-order resequenced DATA frame.
 			// The item carries the outer source of the frame that produced it, so the
 			// peer's virtual endpoint pins correctly even when the frame was buffered and
@@ -2552,6 +2565,11 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 			}
 			select {
 			case <-deliver:
+				timer.Stop()
+			case <-authorityChanged:
+				// Coalesced topology transitions carry no state in the signal:
+				// the next scan reads each authority's latest coherent generation
+				// and transition time under its resequencer lock.
 				timer.Stop()
 			case <-timer.C():
 				// Poll fired; its channel is already drained by this receive.
@@ -4249,7 +4267,13 @@ func (m *Multipath) clearPerOpenStateAfterReaders() {
 	// a fresh (already-empty) peer once path detachment makes the bind closed.
 	m.mu.Lock()
 	peers := append([]*peerState(nil), m.peers...)
+	for _, peer := range peers {
+		if peer.contracts != nil {
+			peer.contracts.recoveryAuthority().SetChangeSignal(nil)
+		}
+	}
 	m.deliverSignal = nil
+	m.recoveryAuthoritySignal = nil
 	m.recvClosed = nil
 	m.mu.Unlock()
 	for _, p := range peers {

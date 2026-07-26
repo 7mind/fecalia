@@ -628,8 +628,11 @@ generation cannot restore fast evidence. The coordinator publishes that
 topology generation through a shared lock-free authority before the explicit
 resequencer update; ingest, recovery, deadline, and `Pop` decisions synchronize
 it under the resequencer lock, so the interval between those two operations
-cannot arm or expire under the old `W`. A fast-armed gap re-arms from the first
-such decision for a fresh `T`.
+cannot arm or expire under the old `W`. The authority publishes the generation
+and exact transition time coherently and sends one coalescing wake to the
+receive drainer. A fast-armed gap re-arms to `transitionAt+T`, rather than
+`observationAt+T`; if the drainer first observes the transition after that
+bound, it expires the gap immediately.
 
 Changes that leave topology unchanged use a separate monotonic evidence
 revision. ACK-venue additions advance the coordinator evidence revision, and

@@ -1144,7 +1144,8 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 			t.Fatalf("Open shapers = %d, want 2", len(created))
 		}
 		assertTrackedShapersRetired(t, created)
-		if len(m.paths) != 0 || len(m.shared) != 0 || m.deliverSignal != nil || m.recvClosed != nil {
+		if len(m.paths) != 0 || len(m.shared) != 0 || m.deliverSignal != nil ||
+			m.recoveryAuthoritySignal != nil || m.recvClosed != nil {
 			t.Fatal("failed Open retained per-generation bind state")
 		}
 		if m.fecSend.Load() != nil {
@@ -1229,7 +1230,8 @@ func TestShaperGenerationRollbackStages(t *testing.T) {
 		if _, err := firstConn.WriteToUDPAddrPort([]byte{4}, remoteAddr); !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("Open-unwind retired socket write = %v, want net.ErrClosed", err)
 		}
-		if len(m.paths) != 0 || len(m.shared) != 0 || m.deliverSignal != nil || m.recvClosed != nil {
+		if len(m.paths) != 0 || len(m.shared) != 0 || m.deliverSignal != nil ||
+			m.recoveryAuthoritySignal != nil || m.recvClosed != nil {
 			t.Fatal("construction-failed Open retained per-generation state")
 		}
 		if err := m.Close(); err != nil {

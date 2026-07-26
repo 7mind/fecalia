@@ -21,34 +21,76 @@ type SystemClock struct{}
 // Now returns the current monotonic time.
 func (SystemClock) Now() time.Time { return time.Now() }
 
+// RecoveryAuthorityState is one coherent peer topology transition. TransitionAt
+// is the exact injected-clock instant Generation became authoritative.
+type RecoveryAuthorityState struct {
+	Generation   uint64
+	TransitionAt time.Time
+}
+
+type recoveryAuthoritySignal struct {
+	signal chan<- struct{}
+}
+
 // RecoveryAuthority is the lock-free peer topology epoch shared by the Bind's
 // recovery-contract coordinator and its receive resequencer. The coordinator
 // advances it before clearing evidence, so receive decisions cannot continue
 // using an older fast window while an explicit publication is still in flight.
+// Its optional signal is non-blocking and coalescing; consumers always read the
+// latest coherent State after waking.
 type RecoveryAuthority struct {
-	topology atomic.Uint64
+	state  atomic.Pointer[RecoveryAuthorityState]
+	signal atomic.Pointer[recoveryAuthoritySignal]
 }
 
 // AdvanceTo publishes a newer topology generation. Older or equal values are
 // idempotent, allowing lifecycle paths to converge without lock coupling.
-func (a *RecoveryAuthority) AdvanceTo(generation uint64) {
+func (a *RecoveryAuthority) AdvanceTo(generation uint64, transitionAt time.Time) {
 	for {
-		current := a.topology.Load()
-		if generation <= current {
+		current := a.state.Load()
+		if current != nil && generation <= current.Generation {
 			return
 		}
-		if a.topology.CompareAndSwap(current, generation) {
+		next := &RecoveryAuthorityState{
+			Generation:   generation,
+			TransitionAt: transitionAt,
+		}
+		if a.state.CompareAndSwap(current, next) {
+			if notification := a.signal.Load(); notification != nil {
+				select {
+				case notification.signal <- struct{}{}:
+				default:
+				}
+			}
 			return
 		}
 	}
 }
 
+// State returns the latest coherent authority state.
+func (a *RecoveryAuthority) State() RecoveryAuthorityState {
+	if a == nil {
+		return RecoveryAuthorityState{}
+	}
+	if state := a.state.Load(); state != nil {
+		return *state
+	}
+	return RecoveryAuthorityState{}
+}
+
 // TopologyGeneration returns the current authoritative topology generation.
 func (a *RecoveryAuthority) TopologyGeneration() uint64 {
-	if a == nil {
-		return 0
+	return a.State().Generation
+}
+
+// SetChangeSignal installs the Bind Open generation's coalescing wake channel.
+// Nil detaches a retired Open; channels are never closed by the authority.
+func (a *RecoveryAuthority) SetChangeSignal(signal chan<- struct{}) {
+	if signal == nil {
+		a.signal.Store(nil)
+		return
 	}
-	return a.topology.Load()
+	a.signal.Store(&recoveryAuthoritySignal{signal: signal})
 }
 
 // Discontinuity/resync guard tuning. A DATA frame is UNAUTHENTICATED by design
@@ -575,20 +617,57 @@ func (r *Resequencer) syncRecoveryAuthorityLocked(now time.Time) bool {
 	if r.closed || r.recoveryAuthority == nil {
 		return false
 	}
-	generation := r.recoveryAuthority.TopologyGeneration()
-	if generation <= r.recoveryGeneration {
+	authority := r.recoveryAuthority.State()
+	if authority.Generation <= r.recoveryGeneration {
 		return false
 	}
-	r.recoveryGeneration = generation
+	r.recoveryGeneration = authority.Generation
 	r.recoveryPublicationRevision = 0
 	r.recoveries = nil
 	if r.waiting && r.fecActive {
-		r.endHoldLocked(now)
-		r.arm(now)
+		transitionAt := authority.TransitionAt
+		if transitionAt.IsZero() || transitionAt.After(now) {
+			transitionAt = now
+		}
+		r.endHoldLocked(transitionAt)
+		deadline, expired := recoveryTransitionDeadline(transitionAt, now, r.timeout)
+		r.armConservativeDeadlineLocked(transitionAt, deadline)
+		if expired {
+			r.expire(now)
+		}
 	} else {
 		r.notifyLocked()
 	}
 	return true
+}
+
+func recoveryTransitionDeadline(
+	transitionAt time.Time,
+	now time.Time,
+	timeout time.Duration,
+) (time.Time, bool) {
+	elapsed := now.Sub(transitionAt)
+	if elapsed >= timeout {
+		return now, true
+	}
+	if elapsed <= 0 {
+		return transitionAt.Add(timeout), false
+	}
+	return now.Add(timeout - elapsed), false
+}
+
+func (r *Resequencer) armConservativeDeadlineLocked(armedAt, deadline time.Time) {
+	cell := &r.ring[r.next%r.window]
+	headPresent := cell.occupied && cell.seq == r.next
+	if !headPresent && r.buf > 0 {
+		r.waiting = true
+		r.deadline = deadline
+		r.armedAt = armedAt
+		r.recoveryArmed = false
+		r.recoveryRevision = 0
+		r.holds++
+		r.notifyLocked()
+	}
 }
 
 // SetNotifier installs the non-blocking change notification used by the Bind's
@@ -1286,7 +1365,7 @@ func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, 
 			generation++
 		}
 		if r.recoveryAuthority != nil {
-			r.recoveryAuthority.AdvanceTo(generation)
+			r.recoveryAuthority.AdvanceTo(generation, now)
 		}
 	} else if generation < r.recoveryGeneration {
 		return
@@ -1378,7 +1457,7 @@ func (r *Resequencer) rebaselineToLow(generation uint64, advance bool) {
 			generation++
 		}
 		if r.recoveryAuthority != nil {
-			r.recoveryAuthority.AdvanceTo(generation)
+			r.recoveryAuthority.AdvanceTo(generation, now)
 		}
 	} else if generation < r.recoveryGeneration {
 		return

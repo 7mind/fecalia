@@ -507,7 +507,11 @@ Common rules, either policy:
   and teardown advance a receiver/topology generation before clearing venues;
   delayed ACK completions and window refreshes from older generations are
   rejected, and a lock-free authority makes the resequencer observe that
-  transition before the later explicit publication. Within one topology,
+  transition before the later explicit publication. The authority publishes
+  the generation and exact transition time coherently and sends a coalescing
+  wake to the receive drainer. A conservative gap remains bounded by
+  `transitionAt+250ms`; observation after that bound expires it immediately
+  instead of starting another 250 ms interval. Within one topology,
   ACK-venue and authenticated RTT/liveness changes use ordered evidence
   publication revisions after exact membership, sample revision, and current
   freshness revalidation. Older same-generation refreshes therefore cannot

@@ -1112,6 +1112,7 @@ func TestTopologyAdvanceBeforePublicationPreventsOldFastExpiry(t *testing.T) {
 	clock.advance(oldDeadline.Sub(clock.Now()) - time.Nanosecond)
 
 	renewal := receiverContractMessage(2, message.ServiceBound)
+	transitionAt := clock.Now()
 	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
 		t.Fatal("renewal rejected")
 	}
@@ -1119,7 +1120,7 @@ func TestTopologyAdvanceBeforePublicationPreventsOldFastExpiry(t *testing.T) {
 	if item, ok := m.resequencer.Load().Pop(); ok {
 		t.Fatalf("old fast expiry released during unpublished topology transition: %q", item.Payload)
 	}
-	want := clock.Now().Add(conservativeRecoveryService)
+	want := transitionAt.Add(conservativeRecoveryService)
 	if deadline, armed := m.resequencer.Load().ArmedDeadline(); !armed || !deadline.Equal(want) {
 		t.Fatalf("transition interval deadline=%v,%v want=%v,true", deadline, armed, want)
 	}
@@ -1514,5 +1515,244 @@ func TestReceiveFuncWakesAtExactArmedRecoveryDeadline(t *testing.T) {
 	got := <-resultCh
 	if got.err != nil || got.n != 1 || got.size != len("two") {
 		t.Fatalf("receive at W = %+v, want one successor", got)
+	}
+}
+
+const recoveryReceiveService = 80 * time.Millisecond
+
+type recoveryReceiveResult struct {
+	n    int
+	size int
+	err  error
+}
+
+func openArmedRecoveryReceiveGap(t *testing.T) (*Multipath, *fakeClock, time.Time) {
+	t.Helper()
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, recoveryReceiveService)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	return m, clock, armRecoveryWindowGap(m, receiverContractSource, pathKey)
+}
+
+func drainRecoveryReceiveSignals(m *Multipath) {
+	for {
+		select {
+		case <-m.deliverSignal:
+		case <-m.recoveryAuthoritySignal:
+		default:
+			return
+		}
+	}
+}
+
+func startRecoveryReceive(m *Multipath) <-chan recoveryReceiveResult {
+	resultCh := make(chan recoveryReceiveResult, 1)
+	receive := m.newReceiveFunc(m.deliverSignal, m.recvClosed)
+	go func() {
+		packets := [][]byte{make([]byte, 64)}
+		sizes := make([]int, 1)
+		endpoints := make([]Endpoint, 1)
+		n, err := receive(packets, sizes, endpoints)
+		resultCh <- recoveryReceiveResult{n: n, size: sizes[0], err: err}
+	}()
+	return resultCh
+}
+
+func TestReceiveFuncReleasesByAuthorityTransitionDeadlineWhenPublicationStalls(t *testing.T) {
+	m, clock, oldDeadline := openArmedRecoveryReceiveGap(t)
+	drainRecoveryReceiveSignals(m)
+	parked := make(chan time.Time, 4)
+	m.beforeReceivePark = func(deadline time.Time) {
+		parked <- deadline
+	}
+	resultCh := startRecoveryReceive(m)
+	if firstPark := <-parked; !firstPark.Equal(oldDeadline) {
+		t.Fatalf("initial receive park = %v, want old W %v", firstPark, oldDeadline)
+	}
+
+	clock.advance(time.Nanosecond)
+	transitionAt := clock.Now()
+	renewal := receiverContractMessage(2, recoveryReceiveService)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
+		t.Fatal("renewal rejected")
+	}
+	// Deliberately do not call publishPeerRecoveryGeneration: this holds the
+	// production interval between coordinator advance and explicit publication.
+	clock.advance(oldDeadline.Sub(clock.Now()))
+	rearmedDeadline := <-parked
+	transitionDeadline := transitionAt.Add(conservativeRecoveryService)
+	clock.advance(transitionDeadline.Sub(clock.Now()))
+
+	select {
+	case got := <-resultCh:
+		if got.err != nil || got.n != 1 || got.size != len("two") {
+			t.Fatalf("receive at transitionAt+T = %+v, want one successor", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		if rearmedDeadline.After(clock.Now()) {
+			clock.advance(rearmedDeadline.Sub(clock.Now()))
+		}
+		got := <-resultCh
+		t.Fatalf(
+			"receive exceeded transitionAt+T: transition=%v bound=%v lateDeadline=%v result=%+v",
+			transitionAt,
+			transitionDeadline,
+			rearmedDeadline,
+			got,
+		)
+	}
+}
+
+func TestReceiveFuncExpiresImmediatelyWhenAuthorityObservedPastTransitionDeadline(t *testing.T) {
+	m, clock, _ := openArmedRecoveryReceiveGap(t)
+	drainRecoveryReceiveSignals(m)
+	clock.advance(time.Nanosecond)
+	transitionAt := clock.Now()
+	renewal := receiverContractMessage(2, recoveryReceiveService)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
+		t.Fatal("renewal rejected")
+	}
+	clock.advance(conservativeRecoveryService + time.Nanosecond)
+
+	parked := make(chan time.Time, 4)
+	m.beforeReceivePark = func(deadline time.Time) {
+		parked <- deadline
+	}
+	resultCh := startRecoveryReceive(m)
+
+	select {
+	case got := <-resultCh:
+		if got.err != nil || got.n != 1 || got.size != len("two") {
+			t.Fatalf("late authority observation result = %+v, want one successor", got)
+		}
+	case lateDeadline := <-parked:
+		clock.advance(lateDeadline.Sub(clock.Now()))
+		got := <-resultCh
+		t.Fatalf(
+			"authority observed after transitionAt+T rearmed late: transition=%v observed=%v deadline=%v result=%+v",
+			transitionAt,
+			clock.Now(),
+			lateDeadline,
+			got,
+		)
+	case <-time.After(time.Second):
+		t.Fatal("late authority observation neither released nor parked")
+	}
+}
+
+func TestReceiveFuncCoalescesTopologyAdvancesAtLatestTransitionDeadline(t *testing.T) {
+	m, clock, _ := openArmedRecoveryReceiveGap(t)
+	drainRecoveryReceiveSignals(m)
+	clock.mu.Lock()
+	timersBefore := len(clock.timers)
+	clock.mu.Unlock()
+	firstPark := make(chan struct{}, 1)
+	releaseFirstPark := make(chan struct{})
+	laterParks := make(chan time.Time, 4)
+	var hookMu sync.Mutex
+	first := true
+	m.beforeReceivePark = func(deadline time.Time) {
+		hookMu.Lock()
+		block := first
+		first = false
+		hookMu.Unlock()
+		if block {
+			firstPark <- struct{}{}
+			<-releaseFirstPark
+			return
+		}
+		laterParks <- deadline
+	}
+	resultCh := startRecoveryReceive(m)
+	clock.mu.Lock()
+	timersAfterCreate := len(clock.timers)
+	clock.mu.Unlock()
+	if timersAfterCreate != timersBefore+1 {
+		t.Fatalf("receive timers after construction = %d, want %d", timersAfterCreate, timersBefore+1)
+	}
+	<-firstPark
+
+	clock.advance(time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(
+		receiverContractSession,
+		receiverContractMessage(2, recoveryReceiveService),
+		func() {},
+	); !ok {
+		t.Fatal("renewal rejected")
+	}
+	clock.advance(time.Millisecond)
+	if _, changed := m.contracts.adoptReceivedSession(receiverContractSession + 1); !changed {
+		t.Fatal("session adoption did not advance topology")
+	}
+	clock.advance(time.Millisecond)
+	latestTransitionAt := clock.Now()
+	m.contracts.invalidateReceivedEvidence()
+	if len(m.recoveryAuthoritySignal) != 1 {
+		t.Fatalf("coalesced bind authority notifications = %d, want 1", len(m.recoveryAuthoritySignal))
+	}
+	close(releaseFirstPark)
+
+	wantDeadline := latestTransitionAt.Add(conservativeRecoveryService)
+	if deadline := <-laterParks; !deadline.Equal(wantDeadline) {
+		t.Fatalf("coalesced transition deadline = %v, want latest transition %v", deadline, wantDeadline)
+	}
+	select {
+	case deadline := <-laterParks:
+		if !deadline.Equal(wantDeadline) {
+			t.Fatalf("notification rescan changed transition deadline to %v", deadline)
+		}
+	case <-time.After(5 * time.Millisecond):
+	}
+	select {
+	case deadline := <-laterParks:
+		t.Fatalf("authority wake spun after its one coalesced resequencer notification; extra park %v", deadline)
+	case <-time.After(5 * time.Millisecond):
+	}
+	clock.mu.Lock()
+	timersAfterWake := len(clock.timers)
+	clock.mu.Unlock()
+	if timersAfterWake != timersAfterCreate {
+		t.Fatalf("authority wake leaked timers: before=%d after=%d", timersAfterCreate, timersAfterWake)
+	}
+
+	clock.advance(wantDeadline.Sub(clock.Now()) - time.Nanosecond)
+	select {
+	case got := <-resultCh:
+		t.Fatalf("coalesced transition released before transitionAt+T: %+v", got)
+	default:
+	}
+	clock.advance(time.Nanosecond)
+	got := <-resultCh
+	if got.err != nil || got.n != 1 || got.size != len("two") {
+		t.Fatalf("coalesced transition release = %+v, want one successor", got)
+	}
+}
+
+func TestReceiveFuncAuthorityWakeCannotDeliverAfterClose(t *testing.T) {
+	m, _, _ := openArmedRecoveryReceiveGap(t)
+	drainRecoveryReceiveSignals(m)
+	parked := make(chan struct{}, 1)
+	m.beforeReceivePark = func(time.Time) {
+		select {
+		case parked <- struct{}{}:
+		default:
+		}
+	}
+	resultCh := startRecoveryReceive(m)
+	<-parked
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := <-resultCh
+	if got.n != 0 || !errors.Is(got.err, errClosed) {
+		t.Fatalf("receive after Close = %+v, want 0/errClosed", got)
 	}
 }
