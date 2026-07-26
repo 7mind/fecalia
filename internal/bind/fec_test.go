@@ -632,7 +632,6 @@ func TestProductionBatch128WaitsForDecisionAndReconcilesWireTrace(t *testing.T) 
 	const (
 		dataShards   = 4
 		parityShards = 1
-		buffers      = 128
 	)
 	psk := testKey(t, 0x2A)
 	m := newMultipathFEC(
@@ -649,6 +648,13 @@ func TestProductionBatch128WaitsForDecisionAndReconcilesWireTrace(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
+	buffers := m.BatchSize()
+	if buffers != 128 {
+		t.Fatalf("production BatchSize = %d, want 128", buffers)
+	}
+	if buffers < 2 {
+		t.Fatalf("production BatchSize = %d, want at least two DATA frames", buffers)
+	}
 	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
 
 	codec := mustFrameCodec(t, psk)
@@ -714,9 +720,9 @@ func TestProductionBatch128WaitsForDecisionAndReconcilesWireTrace(t *testing.T) 
 		}
 	}
 	stats := m.PeerSnapshots()[0].FEC
-	if stats.DataFrames != buffers ||
+	if stats.DataFrames != uint64(buffers) ||
 		stats.ParityFrames != uint64(groups*parityShards) ||
-		m.outerSeq.Load() != buffers {
+		m.outerSeq.Load() != uint64(buffers) {
 		t.Fatalf("trace reconciliation DATA/PARITY/OuterSeq = %d/%d/%d, want %d/%d/%d",
 			stats.DataFrames, stats.ParityFrames, m.outerSeq.Load(),
 			buffers, groups*parityShards, buffers)

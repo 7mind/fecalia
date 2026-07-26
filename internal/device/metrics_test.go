@@ -302,6 +302,94 @@ func TestMetricsSourceMapsFEC(t *testing.T) {
 	}
 }
 
+func TestMetricsSourceMapsRecoveryDirectionsExactly(t *testing.T) {
+	freshSender := time.Unix(100, 101)
+	freshReceiver := time.Unix(200, 202)
+	prov := &fakeProvider{}
+	prov.set([]bind.PeerSnapshot{{
+		FEC: bind.FECStats{Recovery: bind.RecoveryStats{
+			Sender: bind.RecoverySenderStats{
+				OfferPresent:     true,
+				FastEligible:     true,
+				TransitionFrozen: true,
+				WriterExclusive:  true,
+				FreshUntil:       freshSender,
+				OfferWrites:      1,
+				ACKAccepts:       2,
+				Rotations:        3,
+				StaleRejections:  4,
+				WrongRejections:  5,
+				ReplayRejections: 6,
+				FallbackReason:   "sender-fallback",
+				ServiceBound:     7 * time.Nanosecond,
+			},
+			Receiver: bind.RecoveryReceiverStats{
+				OfferPresent:     true,
+				FastEligible:     true,
+				TransitionFrozen: true,
+				WriterExclusive:  true,
+				FreshUntil:       freshReceiver,
+				ACKWrites:        8,
+				OfferAccepts:     9,
+				SessionRestarts:  10,
+				StaleRejections:  11,
+				WrongRejections:  12,
+				ReplayRejections: 13,
+				FallbackReason:   "receiver-fallback",
+				ServiceBound:     14 * time.Nanosecond,
+				RTTAge:           15 * time.Nanosecond,
+				Headroom:         16 * time.Nanosecond,
+				Window:           17 * time.Nanosecond,
+			},
+		}},
+	}})
+
+	got := newMetricsSource(
+		prov,
+		fakeSession{},
+		fakePeerSessions{},
+		&fakeClock{now: time.Unix(1000, 0)},
+	).FEC()[0].Recovery
+	want := metrics.RecoveryStats{
+		Sender: metrics.RecoveryDirectionStats{
+			OfferPresent:     true,
+			FastEligible:     true,
+			TransitionFrozen: true,
+			WriterExclusive:  true,
+			FreshUntil:       freshSender,
+			OfferWrites:      1,
+			ACKAccepts:       2,
+			Rotations:        3,
+			StaleRejections:  4,
+			WrongRejections:  5,
+			ReplayRejections: 6,
+			FallbackReason:   "sender-fallback",
+			ServiceBound:     7 * time.Nanosecond,
+		},
+		Receiver: metrics.RecoveryDirectionStats{
+			OfferPresent:     true,
+			FastEligible:     true,
+			TransitionFrozen: true,
+			WriterExclusive:  true,
+			FreshUntil:       freshReceiver,
+			ACKWrites:        8,
+			OfferAccepts:     9,
+			SessionRestarts:  10,
+			StaleRejections:  11,
+			WrongRejections:  12,
+			ReplayRejections: 13,
+			FallbackReason:   "receiver-fallback",
+			ServiceBound:     14 * time.Nanosecond,
+			RTTAge:           15 * time.Nanosecond,
+			Headroom:         16 * time.Nanosecond,
+			Window:           17 * time.Nanosecond,
+		},
+	}
+	if got != want {
+		t.Fatalf("recovery mapping = %+v, want %+v", got, want)
+	}
+}
+
 // TestMetricsSourceMapsFECAdaptive asserts the adapter mirrors the Bind's adaptive-FEC
 // controller decision (T263, D96) into metrics.FECSnapshot.Adaptive verbatim when the
 // peer's FECStats carries one.

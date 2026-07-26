@@ -53,7 +53,6 @@ func TestRecoveryObservabilityReconcilesSourceAndScrape(t *testing.T) {
 			}
 		}
 	}
-
 	server := startServer(t, fakeSource{
 		paths: []PathSnapshot{{Name: "wan0", Shaper: &shaper.Snapshot{
 			OuterPriorityEmittedBytes:    101,
@@ -72,19 +71,33 @@ func TestRecoveryObservabilityReconcilesSourceAndScrape(t *testing.T) {
 			DeadlineMisses:       6,
 			DeadlineMaxOvershoot: 7 * time.Millisecond,
 			Recovery: RecoveryStats{
-				OfferPresent:    true,
-				FastEligible:    true,
-				WriterExclusive: true,
-				OfferWrites:     8,
-				ACKWrites:       9,
-				OfferAccepts:    10,
-				ACKAccepts:      11,
-				Rotations:       12,
-				SessionRestarts: 13,
-				ServiceBound:    14 * time.Millisecond,
-				RTTAge:          15 * time.Millisecond,
-				Headroom:        16 * time.Millisecond,
-				Window:          17 * time.Millisecond,
+				Sender: RecoveryDirectionStats{
+					OfferPresent:     true,
+					WriterExclusive:  true,
+					OfferWrites:      8,
+					ACKAccepts:       11,
+					Rotations:        12,
+					StaleRejections:  31,
+					WrongRejections:  32,
+					ReplayRejections: 33,
+					FallbackReason:   "unacked",
+					ServiceBound:     14 * time.Millisecond,
+				},
+				Receiver: RecoveryDirectionStats{
+					OfferPresent:     true,
+					FastEligible:     true,
+					WriterExclusive:  true,
+					ACKWrites:        9,
+					OfferAccepts:     10,
+					SessionRestarts:  13,
+					StaleRejections:  41,
+					WrongRejections:  42,
+					ReplayRejections: 43,
+					ServiceBound:     24 * time.Millisecond,
+					RTTAge:           15 * time.Millisecond,
+					Headroom:         16 * time.Millisecond,
+					Window:           17 * time.Millisecond,
+				},
 			},
 		}},
 		reseq: []ReseqSnapshot{{Stats: reseq.Stats{
@@ -147,35 +160,64 @@ func TestRecoveryObservabilityReconcilesSourceAndScrape(t *testing.T) {
 			t.Errorf("production scrape omitted %s", name)
 		}
 	}
+	for _, contract := range []struct {
+		name      string
+		direction string
+		reason    string
+		want      float64
+	}{
+		{"wanbond_recovery_contract_rejections_total", "sender", "wrong", 32},
+		{"wanbond_recovery_contract_rejections_total", "receiver", "wrong", 42},
+		{"wanbond_recovery_contract_fallback", "sender", "unacked", 1},
+		{"wanbond_recovery_contract_fallback", "receiver", "unacked", 0},
+	} {
+		if got, ok := recoveryReasonMetricValue(exp, contract.name, contract.direction, contract.reason); !ok || got != contract.want {
+			t.Errorf("%s{%q,%q} = %v, %v, want %v, true",
+				contract.name, contract.direction, contract.reason, got, ok, contract.want)
+		}
+	}
 	for name, want := range map[string]float64{
-		"wanbond_fec_staged_groups":                        2,
-		"wanbond_fec_staged_data_frames":                   3,
-		"wanbond_fec_group_decisions_total":                4,
-		"wanbond_fec_deadline_decisions_total":             5,
-		"wanbond_fec_deadline_misses_total":                6,
-		"wanbond_fec_deadline_max_overshoot_seconds":       0.007,
-		"wanbond_recovery_contract_offer_present":          1,
-		"wanbond_recovery_contract_fast_eligible":          1,
-		"wanbond_recovery_contract_writer_exclusive":       1,
-		"wanbond_recovery_contract_offer_writes_total":     8,
-		"wanbond_recovery_contract_ack_writes_total":       9,
-		"wanbond_recovery_contract_offer_accepts_total":    10,
-		"wanbond_recovery_contract_ack_accepts_total":      11,
-		"wanbond_recovery_contract_rotations_total":        12,
-		"wanbond_recovery_contract_session_restarts_total": 13,
-		"wanbond_recovery_contract_service_bound_seconds":  0.014,
-		"wanbond_recovery_rtt_age_seconds":                 0.015,
-		"wanbond_recovery_headroom_seconds":                0.016,
-		"wanbond_recovery_window_seconds":                  0.017,
-		"wanbond_resequencer_recovery_armed":               1,
-		"wanbond_resequencer_armed_window_seconds":         0.018,
-		"wanbond_resequencer_deadline_wakeups_total":       19,
-		"wanbond_resequencer_gap_fills_total":              20,
-		"wanbond_resequencer_fast_window_arms_total":       21,
-		"wanbond_resequencer_fallback_window_arms_total":   22,
+		"wanbond_fec_staged_groups":                      2,
+		"wanbond_fec_staged_data_frames":                 3,
+		"wanbond_fec_group_decisions_total":              4,
+		"wanbond_fec_deadline_decisions_total":           5,
+		"wanbond_fec_deadline_misses_total":              6,
+		"wanbond_fec_deadline_max_overshoot_seconds":     0.007,
+		"wanbond_resequencer_recovery_armed":             1,
+		"wanbond_resequencer_armed_window_seconds":       0.018,
+		"wanbond_resequencer_deadline_wakeups_total":     19,
+		"wanbond_resequencer_gap_fills_total":            20,
+		"wanbond_resequencer_fast_window_arms_total":     21,
+		"wanbond_resequencer_fallback_window_arms_total": 22,
 	} {
 		if got, ok := exp.Value(name); !ok || got != want {
 			t.Errorf("%s = %v, %v, want %v, true", name, got, ok, want)
+		}
+	}
+	for _, contract := range []struct {
+		name      string
+		direction string
+		want      float64
+	}{
+		{"wanbond_recovery_contract_offer_present", "sender", 1},
+		{"wanbond_recovery_contract_fast_eligible", "sender", 0},
+		{"wanbond_recovery_contract_offer_present", "receiver", 1},
+		{"wanbond_recovery_contract_fast_eligible", "receiver", 1},
+		{"wanbond_recovery_contract_writer_exclusive", "sender", 1},
+		{"wanbond_recovery_contract_offer_writes_total", "sender", 8},
+		{"wanbond_recovery_contract_ack_writes_total", "receiver", 9},
+		{"wanbond_recovery_contract_offer_accepts_total", "receiver", 10},
+		{"wanbond_recovery_contract_ack_accepts_total", "sender", 11},
+		{"wanbond_recovery_contract_rotations_total", "sender", 12},
+		{"wanbond_recovery_contract_session_restarts_total", "receiver", 13},
+		{"wanbond_recovery_contract_service_bound_seconds", "sender", 0.014},
+		{"wanbond_recovery_contract_service_bound_seconds", "receiver", 0.024},
+		{"wanbond_recovery_rtt_age_seconds", "receiver", 0.015},
+		{"wanbond_recovery_headroom_seconds", "receiver", 0.016},
+		{"wanbond_recovery_window_seconds", "receiver", 0.017},
+	} {
+		if got, ok := recoveryDirectionMetricValue(exp, contract.name, contract.direction); !ok || got != contract.want {
+			t.Errorf("%s{%q} = %v, %v, want %v, true", contract.name, contract.direction, got, ok, contract.want)
 		}
 	}
 	for name, want := range map[string]float64{
@@ -191,4 +233,41 @@ func TestRecoveryObservabilityReconcilesSourceAndScrape(t *testing.T) {
 			t.Errorf("%s = %v, %v, want %v, true", name, got, ok, want)
 		}
 	}
+}
+
+func recoveryDirectionMetricValue(exp Exposition, name, direction string) (float64, bool) {
+	family, ok := exp.Families()[name]
+	if !ok {
+		return 0, false
+	}
+	for _, metric := range family.GetMetric() {
+		for _, label := range metric.GetLabel() {
+			if label.GetName() == "direction" && label.GetValue() == direction {
+				return metricValue(metric), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func recoveryReasonMetricValue(exp Exposition, name, direction, reason string) (float64, bool) {
+	family, ok := exp.Families()[name]
+	if !ok {
+		return 0, false
+	}
+	for _, metric := range family.GetMetric() {
+		var gotDirection, gotReason string
+		for _, label := range metric.GetLabel() {
+			switch label.GetName() {
+			case "direction":
+				gotDirection = label.GetValue()
+			case "reason":
+				gotReason = label.GetValue()
+			}
+		}
+		if gotDirection == direction && gotReason == reason {
+			return metricValue(metric), true
+		}
+	}
+	return 0, false
 }

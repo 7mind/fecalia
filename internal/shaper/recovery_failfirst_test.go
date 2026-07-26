@@ -255,6 +255,99 @@ func TestRecoveryCutDeadlineTerminatesBlockedPredecessorAndGroup(t *testing.T) {
 	}
 }
 
+func TestRecoveryBlockedWriterHighWaterIncludesFgroupAndLio(t *testing.T) {
+	clock := newFakeClock()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	shaper, err := New(recoveryConfig(), clock, func([]byte) error {
+		close(started)
+		<-release
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := shaper.WriteRecovery(context.Background(), []Datagram{{
+			Class:   ClassData,
+			Payload: bytesOf(1, recoveryConfig().MaxDatagramBytes),
+		}}, newRecoveryDeadlineRecorder().control())
+		done <- err
+	}()
+	<-started
+
+	snapshot := shaper.Snapshot()
+	want := recoveryConfig().FECGroupReserveBytes + recoveryConfig().MaxDatagramBytes
+	if snapshot.MemoryRetainedBytes != want {
+		t.Fatalf("blocked recovery retained bytes = %d, want Fgroup+Lio=%d", snapshot.MemoryRetainedBytes, want)
+	}
+	if snapshot.MemoryRetainedHighWaterBytes != want {
+		t.Fatalf("blocked recovery high-water = %d, want exact Fgroup+Lio=%d", snapshot.MemoryRetainedHighWaterBytes, want)
+	}
+	if snapshot.MemoryRetainedHighWaterBytes > snapshot.MemoryBoundBytes {
+		t.Fatalf("blocked recovery high-water %d exceeds Mtotal %d", snapshot.MemoryRetainedHighWaterBytes, snapshot.MemoryBoundBytes)
+	}
+	close(release)
+	if err := waitResult(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if err := shaper.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPriorityTerminalCauseReconcilesQueuedRetirements(t *testing.T) {
+	clock := newFakeClock()
+	sentinel := errors.New("priority generation retired")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	shaper, err := New(validConfig(), clock, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	admitted, firstDone, err := shaper.TryWritePriority(bytesOf(1, 100), func([]byte) error {
+		close(started)
+		<-release
+		return sentinel
+	})
+	if err != nil || !admitted {
+		t.Fatalf("first priority admission = %v, %v", admitted, err)
+	}
+	<-started
+	admitted, secondDone, err := shaper.TryWritePriority(bytesOf(2, 100), nil)
+	if err != nil || !admitted {
+		t.Fatalf("queued priority admission = %v, %v", admitted, err)
+	}
+
+	shaper.StopWithError(sentinel)
+	close(release)
+	if err := waitResult(t, firstDone); !errors.Is(err, sentinel) {
+		t.Fatalf("in-flight priority error = %v, want %v", err, sentinel)
+	}
+	if err := waitResult(t, secondDone); !errors.Is(err, sentinel) {
+		t.Fatalf("queued priority error = %v, want %v", err, sentinel)
+	}
+	if err := shaper.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := shaper.Snapshot()
+	if snapshot.OuterPriorityBytes !=
+		snapshot.OuterPriorityEmittedBytes+snapshot.OuterPriorityErrorBytes+uint64(snapshot.PriorityRetainedBytes) {
+		t.Fatalf("priority reconciliation accepted=%d emitted=%d error=%d retained=%d",
+			snapshot.OuterPriorityBytes,
+			snapshot.OuterPriorityEmittedBytes,
+			snapshot.OuterPriorityErrorBytes,
+			snapshot.PriorityRetainedBytes,
+		)
+	}
+	if snapshot.OuterPriorityErrorBytes != 200 {
+		t.Fatalf("priority terminal error bytes = %d, want in-flight+queued 200", snapshot.OuterPriorityErrorBytes)
+	}
+}
+
 func TestRecoveryMemoryPeakEqualsMtotalAndDrains(t *testing.T) {
 	clock := newFakeClock()
 	firstStarted := make(chan struct{})

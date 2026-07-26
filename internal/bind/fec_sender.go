@@ -376,8 +376,7 @@ func (o *fecSendOwner) handleBatch(batch *fecOwnerBatch) {
 			index:  ds.Index,
 			batch:  batch,
 		})
-		o.fs.stagedGroups.Store(1)
-		o.fs.stagedDataFrames.Store(uint64(len(o.staged)))
+		o.fs.publishStaging(len(o.staged))
 		due, open := o.fs.enc.NextDeadline()
 		o.publishDeadline(due, open)
 		admission := fecOwnerAdmission{group: ds.Group, index: ds.Index, due: due, err: err}
@@ -568,8 +567,7 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 func (o *fecSendOwner) resolveStaged(err error) {
 	staged := o.staged
 	o.staged = nil
-	o.fs.stagedGroups.Store(0)
-	o.fs.stagedDataFrames.Store(0)
+	o.fs.publishStaging(0)
 	for _, item := range staged {
 		item.batch.pending--
 		if err != nil && item.batch.err == nil {

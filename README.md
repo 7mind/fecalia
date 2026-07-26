@@ -228,17 +228,22 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 The recovery path uses one notation across config, metrics, and the monitor:
 `D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`, memory terms
 `B/C/P/Fgroup/Lio/Mtotal`, rate terms `R/Rp/I`, sender service `Sdevice`,
-receiver headroom `H=clamp(4*max(SRTT),10ms,D)`, hold `W=min(D,A+H)`, and
+receiver headroom `H=clamp(4*max(SRTT),10ms,D)` over qualified fresh `Up`
+paths only, hold `W=min(D,A+H)`, and
 completion bound `Ecompletion`. `SessionID` identifies a process epoch,
 `ContractID` rotates a service offer within that epoch, and `OuterSeq` remains
 continuous across same-process rotation. An exact authenticated `ACK` enables
-the shorter hold; absence, staleness, a transition, or incompatible peers
-selects the conservative fallback. FEC geometry comes from authenticated
-contract/config state—there is no zero-parity inference.
+the shorter hold only when `A+H<D`; absence, staleness, saturation, a
+transition, or incompatible peers reports `W=D` with a bounded conservative
+fallback reason. FEC geometry comes from authenticated contract/config
+state—there is no zero-parity inference.
 
 Prometheus and the monitor expose staging, decisions/deadlines, bounded
-contract event/status/reason signals, recovery-window inputs, recovery cuts,
+contract event/status/reason signals independently for outbound sender and
+inbound receiver directions, recovery-window inputs, recovery cuts,
 retained-memory high-water marks, and resequencer arm/wake/fill counters.
+Prometheus uses the bounded `direction={sender,receiver}` label; monitor JSON
+nests the same values under `recovery.sender` and `recovery.receiver`.
 
 Three tiers (see [docs/design.md §Testing](docs/design.md) and
 [docs/manual-checklist.md](docs/manual-checklist.md)):
@@ -317,7 +322,10 @@ deliberate boundaries you must plan around:
   per-peer owner stages one group until its size or exact deadline decision,
   then frames its DATA/PARITY; no open-group DATA is writer-visible. Each
   original `Send` publishes one owner command and one completion through the
-  bounded mailbox, irrespective of its offload-frame count. Compatible shaped frames from one
+  bounded mailbox, irrespective of its offload-frame count. The Bind advertises
+  and accepts the vendored engine's 128-buffer ideal batch, so a TUN-offloaded
+  send reaches this path without an artificial single-buffer interface limit.
+  Compatible shaped frames from one
   decided group that naturally uses one exclusive path transfers ownership to
   that path shaper as one recovery tranche. Mixed-path/shared-socket groups keep
   the conservative receiver fallback. An exact successfully written ACK for

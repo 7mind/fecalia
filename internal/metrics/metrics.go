@@ -342,9 +342,14 @@ type FECSnapshot struct {
 	Adaptive *AdaptiveFECStats
 }
 
-// RecoveryStats mirrors the peer recovery coordinator without exposing raw
-// session/contract identities as floating-point metric values or labels.
+// RecoveryStats mirrors both directions of the peer recovery coordinator
+// without exposing raw session/contract identities as metric values or labels.
 type RecoveryStats struct {
+	Sender   RecoveryDirectionStats
+	Receiver RecoveryDirectionStats
+}
+
+type RecoveryDirectionStats struct {
 	OfferPresent     bool
 	FastEligible     bool
 	TransitionFrozen bool
@@ -597,6 +602,7 @@ type collector struct {
 	fecEligiblePathLoss *prometheus.Desc
 	fecEligiblePaths    *prometheus.Desc
 	fecMetrics          []fecMetric
+	recoveryMetrics     []recoveryMetric
 	recoveryRejections  *prometheus.Desc
 	recoveryFallback    *prometheus.Desc
 
@@ -633,6 +639,13 @@ type fecMetric struct {
 	desc      *prometheus.Desc
 	valueType prometheus.ValueType
 	value     func(FECSnapshot) float64
+}
+
+type recoveryMetric struct {
+	desc       *prometheus.Desc
+	valueType  prometheus.ValueType
+	value      func(RecoveryDirectionStats) float64
+	directions []string
 }
 
 type reseqMetric struct {
@@ -679,6 +692,22 @@ func NewCollector(src Source) prometheus.Collector {
 	) fecMetric {
 		return fecMetric{desc: desc(subsystem, name, help, peerScopedLabels), valueType: valueType, value: value}
 	}
+	directionLabels := append(append([]string(nil), peerScopedLabels...), "direction")
+	makeRecoveryMetric := func(
+		subsystem string,
+		name string,
+		help string,
+		valueType prometheus.ValueType,
+		value func(RecoveryDirectionStats) float64,
+		directions ...string,
+	) recoveryMetric {
+		return recoveryMetric{
+			desc:       desc(subsystem, name, help, directionLabels),
+			valueType:  valueType,
+			value:      value,
+			directions: directions,
+		}
+	}
 	makeReseqMetric := func(
 		name string,
 		help string,
@@ -687,7 +716,7 @@ func NewCollector(src Source) prometheus.Collector {
 	) reseqMetric {
 		return reseqMetric{desc: desc(resequencerSubsystem, name, help, peerScopedLabels), valueType: valueType, value: value}
 	}
-	reasonLabels := append(append([]string(nil), peerScopedLabels...), "reason")
+	reasonLabels := append(append([]string(nil), directionLabels...), "reason")
 	return &collector{
 		src:            src,
 		multiPeer:      multiPeer,
@@ -767,24 +796,26 @@ func NewCollector(src Source) prometheus.Collector {
 			makeFECMetric(fecSubsystem, "deadline_misses_total", "Cumulative FEC deadline decisions whose dispatch overshoot exceeded G=10ms.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.DeadlineMisses) }),
 			makeFECMetric(fecSubsystem, "deadline_max_overshoot_seconds", "Maximum FEC decision dispatch overshoot in seconds for the current sender generation.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.DeadlineMaxOvershoot.Seconds() }),
 			makeFECMetric(fecSubsystem, "open_group_deadline_timestamp_seconds", "Absolute Unix timestamp in seconds of the currently open FEC group deadline; 0 when none is open.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return timestampSeconds(f.OpenGroupDeadline) }),
-			makeFECMetric("recovery_contract", "offer_present", "Whether this peer currently owns a local recovery-contract OFFER (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.OfferPresent) }),
-			makeFECMetric("recovery_contract", "fast_eligible", "Whether the exact ACKed contract currently permits fast recovery (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.FastEligible) }),
-			makeFECMetric("recovery_contract", "transition_frozen", "Whether a service transition currently freezes DATA pending ACK or conservative fallback (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.TransitionFrozen) }),
-			makeFECMetric("recovery_contract", "writer_exclusive", "Whether the offered recovery service requires one exclusive socket writer (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.WriterExclusive) }),
-			makeFECMetric("recovery_contract", "fresh_until_timestamp_seconds", "Absolute Unix timestamp in seconds through which the current OFFER/ACK lease remains fresh; 0 when absent.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return timestampSeconds(f.Recovery.FreshUntil) }),
-			makeFECMetric("recovery_contract", "offer_writes_total", "Cumulative authenticated recovery OFFER writes recorded against exact probe challenges.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.OfferWrites) }),
-			makeFECMetric("recovery_contract", "ack_writes_total", "Cumulative exact recovery ACK writes completed on still-current authenticated venues.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.ACKWrites) }),
-			makeFECMetric("recovery_contract", "offer_accepts_total", "Cumulative recovery OFFERs accepted after session, identity, freshness, and replay validation.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.OfferAccepts) }),
-			makeFECMetric("recovery_contract", "ack_accepts_total", "Cumulative exact recovery ACKs accepted into a local fast-recovery lease.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.ACKAccepts) }),
-			makeFECMetric("recovery_contract", "rotations_total", "Cumulative local ContractID rotations, excluding the initial OFFER.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.Rotations) }),
-			makeFECMetric("recovery_contract", "session_restarts_total", "Cumulative authenticated peer process-session changes that invalidated old recovery evidence.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.SessionRestarts) }),
-			makeFECMetric("recovery_contract", "service_bound_seconds", "Advertised sender completion service bound Sdevice=A in seconds; 0 for disabled/no OFFER.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.ServiceBound.Seconds() }),
-			makeFECMetric("recovery", "rtt_age_seconds", "Maximum age in seconds of authenticated RTT evidence considered by the latest receiver recovery decision.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.RTTAge.Seconds() }),
-			makeFECMetric("recovery", "headroom_seconds", "Derived receiver RTT headroom H in seconds for the latest accepted fast window.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.Headroom.Seconds() }),
-			makeFECMetric("recovery", "window_seconds", "Derived receiver recovery hold W=min(D,A+H) in seconds; 0 while falling back.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.Window.Seconds() }),
 		},
-		recoveryRejections: desc("recovery_contract", "rejections_total", "Cumulative rejected recovery messages partitioned by bounded reason: stale, wrong, or replay.", reasonLabels),
-		recoveryFallback:   desc("recovery_contract", "fallback", "Current conservative fallback reason as a bounded one-hot gauge; all zero while fast recovery is eligible.", reasonLabels),
+		recoveryMetrics: []recoveryMetric{
+			makeRecoveryMetric("recovery_contract", "offer_present", "Whether the direction currently owns an offered recovery contract (1=yes).", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return boolValue(r.OfferPresent) }, "sender", "receiver"),
+			makeRecoveryMetric("recovery_contract", "fast_eligible", "Whether the direction's exact ACKed contract currently permits fast recovery (1=yes).", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return boolValue(r.FastEligible) }, "sender", "receiver"),
+			makeRecoveryMetric("recovery_contract", "transition_frozen", "Whether the direction currently reports a service-transition freeze (1=yes).", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return boolValue(r.TransitionFrozen) }, "sender", "receiver"),
+			makeRecoveryMetric("recovery_contract", "writer_exclusive", "Whether the direction's offered service requires one exclusive socket writer (1=yes).", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return boolValue(r.WriterExclusive) }, "sender", "receiver"),
+			makeRecoveryMetric("recovery_contract", "fresh_until_timestamp_seconds", "Absolute Unix timestamp through which the direction's installed contract decision remains fresh; 0 when absent.", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return timestampSeconds(r.FreshUntil) }, "sender", "receiver"),
+			makeRecoveryMetric("recovery_contract", "offer_writes_total", "Cumulative authenticated outbound recovery OFFER writes.", prometheus.CounterValue, func(r RecoveryDirectionStats) float64 { return float64(r.OfferWrites) }, "sender"),
+			makeRecoveryMetric("recovery_contract", "ack_writes_total", "Cumulative inbound-contract ACK writes completed on current authenticated venues.", prometheus.CounterValue, func(r RecoveryDirectionStats) float64 { return float64(r.ACKWrites) }, "receiver"),
+			makeRecoveryMetric("recovery_contract", "offer_accepts_total", "Cumulative inbound recovery OFFERs accepted after validation.", prometheus.CounterValue, func(r RecoveryDirectionStats) float64 { return float64(r.OfferAccepts) }, "receiver"),
+			makeRecoveryMetric("recovery_contract", "ack_accepts_total", "Cumulative outbound-contract ACKs accepted into a local lease.", prometheus.CounterValue, func(r RecoveryDirectionStats) float64 { return float64(r.ACKAccepts) }, "sender"),
+			makeRecoveryMetric("recovery_contract", "rotations_total", "Cumulative outbound ContractID rotations, excluding the initial OFFER.", prometheus.CounterValue, func(r RecoveryDirectionStats) float64 { return float64(r.Rotations) }, "sender"),
+			makeRecoveryMetric("recovery_contract", "session_restarts_total", "Cumulative inbound authenticated process-session changes that invalidated old evidence.", prometheus.CounterValue, func(r RecoveryDirectionStats) float64 { return float64(r.SessionRestarts) }, "receiver"),
+			makeRecoveryMetric("recovery_contract", "service_bound_seconds", "Advertised completion service bound for the direction; 0 when absent.", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return r.ServiceBound.Seconds() }, "sender", "receiver"),
+			makeRecoveryMetric("recovery", "rtt_age_seconds", "Maximum age of qualified UP/fresh RTT evidence in the installed receiver decision.", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return r.RTTAge.Seconds() }, "receiver"),
+			makeRecoveryMetric("recovery", "headroom_seconds", "Derived receiver RTT headroom H in the installed decision.", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return r.Headroom.Seconds() }, "receiver"),
+			makeRecoveryMetric("recovery", "window_seconds", "Installed receiver hold W; conservative T while fast recovery is unavailable.", prometheus.GaugeValue, func(r RecoveryDirectionStats) float64 { return r.Window.Seconds() }, "receiver"),
+		},
+		recoveryRejections: desc("recovery_contract", "rejections_total", "Cumulative rejected recovery messages partitioned by direction and bounded reason.", reasonLabels),
+		recoveryFallback:   desc("recovery_contract", "fallback", "Current direction-specific fallback reason as a bounded one-hot gauge; all zero while fast recovery is eligible.", reasonLabels),
 
 		reseqReleased:       desc(resequencerSubsystem, "released_frames_total", "Frames released for delivery by the resequencer.", peerScopedLabels),
 		reseqDroppedDup:     desc(resequencerSubsystem, "dropped_duplicate_frames_total", "Frames dropped by the resequencer as duplicates.", peerScopedLabels),
@@ -854,6 +885,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fecEligiblePathLoss
 	ch <- c.fecEligiblePaths
 	for _, metric := range c.fecMetrics {
+		ch <- metric.desc
+	}
+	for _, metric := range c.recoveryMetrics {
 		ch <- metric.desc
 	}
 	ch <- c.recoveryRejections
@@ -926,24 +960,34 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		for _, metric := range c.fecMetrics {
 			ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(f), labels...)
 		}
-		for _, reason := range []struct {
-			name  string
-			value uint64
-		}{
-			{name: "stale", value: f.Recovery.StaleRejections},
-			{name: "wrong", value: f.Recovery.WrongRejections},
-			{name: "replay", value: f.Recovery.ReplayRejections},
-		} {
-			reasonLabels := append(append([]string(nil), labels...), reason.name)
-			ch <- prometheus.MustNewConstMetric(c.recoveryRejections, prometheus.CounterValue, float64(reason.value), reasonLabels...)
-		}
-		for _, reason := range []string{"no_offer", "unacked", "stale", "wrong", "replay", "shared", "transition", "restart"} {
-			value := float64(0)
-			if f.Recovery.FallbackReason == reason {
-				value = 1
+		for _, metric := range c.recoveryMetrics {
+			for _, direction := range metric.directions {
+				directionStats := recoveryDirection(f.Recovery, direction)
+				directionLabels := append(append([]string(nil), labels...), direction)
+				ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(directionStats), directionLabels...)
 			}
-			reasonLabels := append(append([]string(nil), labels...), reason)
-			ch <- prometheus.MustNewConstMetric(c.recoveryFallback, prometheus.GaugeValue, value, reasonLabels...)
+		}
+		for _, direction := range []string{"sender", "receiver"} {
+			directionStats := recoveryDirection(f.Recovery, direction)
+			for _, reason := range []struct {
+				name  string
+				value uint64
+			}{
+				{name: "stale", value: directionStats.StaleRejections},
+				{name: "wrong", value: directionStats.WrongRejections},
+				{name: "replay", value: directionStats.ReplayRejections},
+			} {
+				reasonLabels := append(append(append([]string(nil), labels...), direction), reason.name)
+				ch <- prometheus.MustNewConstMetric(c.recoveryRejections, prometheus.CounterValue, float64(reason.value), reasonLabels...)
+			}
+			for _, reason := range []string{"no_offer", "unacked", "stale", "wrong", "replay", "shared", "transition", "restart", "saturated"} {
+				value := float64(0)
+				if directionStats.FallbackReason == reason {
+					value = 1
+				}
+				reasonLabels := append(append(append([]string(nil), labels...), direction), reason)
+				ch <- prometheus.MustNewConstMetric(c.recoveryFallback, prometheus.GaugeValue, value, reasonLabels...)
+			}
 		}
 	}
 	for _, r := range c.src.Reseq() {
@@ -978,6 +1022,17 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	for _, ps := range c.src.PeerSessions() {
 		labels := c.peerLabelValues(ps.Peer)
 		ch <- prometheus.MustNewConstMetric(c.peerSessionEstablished, prometheus.GaugeValue, establishedValue(ps.Established), labels...)
+	}
+}
+
+func recoveryDirection(stats RecoveryStats, direction string) RecoveryDirectionStats {
+	switch direction {
+	case "sender":
+		return stats.Sender
+	case "receiver":
+		return stats.Receiver
+	default:
+		panic("metrics: invalid recovery direction")
 	}
 }
 

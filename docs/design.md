@@ -1529,7 +1529,10 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
 **Send ownership, group staging, and deadlines (T309).** Each live peer owns
 one FEC sender goroutine. `Send` performs one scheduler selection for the
 original engine batch and publishes exactly one batch command plus one
-completion through the bounded 128-batch mailbox. The owner walks its input in
+completion through the bounded 128-batch mailbox. The Bind reports
+`conn.IdealBatchSize=128`, matching the vendored engine/TUN pool contract, and
+accepts every buffer in that vector; receive calls remain free to return a
+shorter vector. The owner walks its input in
 order and assigns each outer sequence immediately before copying/admitting that
 frame. It stops at the first terminal group error, so neither suffix payloads
 nor suffix sequence numbers are consumed. The encoder retains each admitted
@@ -1678,8 +1681,10 @@ terms `R/Rp/I`. The sender advertises the worst live-path bound
 `Sdevice=A=max_path(ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+I)`;
 the post-cut completion check uses
 `Ecompletion=max_path(ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I)`. The receiver derives
-`H=clamp(4*max(SRTT among qualified paths),10ms,D)` and
-`W=min(D,A+H)`. `SessionID` identifies the authenticated process epoch,
+`H=clamp(4*max(SRTT among qualified fresh Up paths),10ms,D)` and
+`W=min(D,A+H)`. Stale or `Down` evidence contributes neither RTT age nor `H`.
+Fast recovery requires `A+H<D`; saturation publishes the installed
+conservative `W=D` with fallback reason `saturated`. `SessionID` identifies the authenticated process epoch,
 `ContractID` rotates the immutable service within one epoch, and `OuterSeq`
 does not reset for same-process rotations. Only an exact authenticated `ACK`
 admits fast recovery; otherwise the bounded reason reports a conservative
@@ -1687,9 +1692,14 @@ fallback. The receiver never reconstructs service from data-plane shape:
 there is no zero-parity inference.
 
 The production source chain has one owner for each value: the FEC sender owns
-staged-group/data counts and decision/deadline state; the peer coordinator owns
-offer/ACK accepts and writes, rotations, session restarts, rejection reasons,
-freshness and the latest RTT/H/W decision; each path shaper owns outer-priority
+one atomically packed staged-group/data snapshot and decision/deadline state;
+the peer coordinator owns independent outbound sender and inbound receiver
+contract snapshots. Receiver RTT/H/W/freshness becomes observable only after
+the exact `(generation, publication revision)` succeeds in the resequencer;
+failed or superseded publications cannot appear as installed decisions.
+Prometheus partitions this bounded surface with
+`direction={sender,receiver}`, while monitor JSON nests the same two records.
+Each path shaper owns outer-priority
 outcomes, the current recovery cut and retained-memory high-water marks; the
 resequencer owns armed deadline/window and wake/fill/fast/fallback counters.
 `internal/device` copies those snapshots into `internal/metrics`, and

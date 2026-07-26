@@ -624,14 +624,17 @@ constitutes explicit overload.
 
 Canonical record notation: `D=250ms`; `G=10ms`; `F=1200ms`;
 `B/C/P/Fgroup/Lio/Mtotal`; `R/Rp/I`; `Sdevice`;
-`H=clamp(4*max(SRTT),10ms,D)`; `W=min(D,A+H)`; `Ecompletion`. Record
+`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh `Up` paths only;
+`W=min(D,A+H)`; `Ecompletion`. Record
 `SessionID` restart versus same-process `ContractID` rotation separately and
 verify `OuterSeq` continuity across rotation. Require the exact authenticated
-`ACK` for fast recovery; otherwise record the labelled fallback. Validate
+`ACK` and `A+H<D` for fast recovery; otherwise require installed `W=D` and
+record the labelled fallback, including `saturated`. Validate
 geometry from config/contract state—there is no zero-parity inference.
 
 - [ ] During the run, capture FEC staged/decision/deadline series, recovery
-      contract status/events/reasons/freshness, RTT age/H/W, shaper
+      contract status/events/reasons/freshness for both bounded
+      `sender`/`receiver` directions, receiver RTT age/H/W, shaper
       outer-priority outcomes/cut/high-water series, and resequencer
       arm/deadline/wake/fill series. Confirm the monitor reports the same
       current values.

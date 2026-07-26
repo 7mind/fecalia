@@ -508,6 +508,44 @@ func TestLegacyReflectorEchoCannotAcknowledgeRecoveryContract(t *testing.T) {
 	}
 }
 
+func TestProductionEmptyProbeEchoDoesNotCountACKRejection(t *testing.T) {
+	psk := testKey(t, 0x7B)
+	m := openNegotiatingPeer(t, psk)
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	buffer := make([]byte, maxDatagram)
+
+	m.emitProbes()
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := peer.Read(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := frame.Decode(psk, buffer[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := decoded.(frame.Probe)
+	if !ok {
+		t.Fatalf("outbound frame = %T, want PROBE", decoded)
+	}
+	probe.IsEcho = true
+	probe.Payload = nil
+	emptyEcho, err := frame.Encode(psk, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := m.contracts.stats().Sender
+	m.handleInbound(m.paths[0], emptyEcho, peerAP)
+	after := m.contracts.stats().Sender
+	if after.WrongRejections != before.WrongRejections ||
+		after.FallbackReason != before.FallbackReason {
+		t.Fatalf("empty legacy echo changed sender rejection telemetry: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -541,11 +579,11 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 				if sender.fastEligible() {
 					t.Fatal("new sender enabled fast recovery against old receiver")
 				}
-				if stats := sender.stats(); stats.OfferWrites != 1 ||
-					stats.ACKAccepts != 0 ||
-					stats.WrongRejections != 1 ||
-					!stats.TransitionFrozen ||
-					stats.FallbackReason != "transition" {
+				if stats := sender.stats(); stats.Sender.OfferWrites != 1 ||
+					stats.Sender.ACKAccepts != 0 ||
+					stats.Sender.WrongRejections != 1 ||
+					!stats.Sender.TransitionFrozen ||
+					stats.Sender.FallbackReason != "transition" {
 					t.Fatalf("new-to-old observability = %+v", stats)
 				}
 			},
@@ -560,9 +598,9 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 				if receiver.receivedSnapshot().present {
 					t.Fatal("new receiver fabricated a contract for an old sender")
 				}
-				if stats := receiver.stats(); stats.OfferPresent ||
-					stats.FastEligible ||
-					stats.FallbackReason != "no_offer" {
+				if stats := receiver.stats(); stats.Receiver.OfferPresent ||
+					stats.Receiver.FastEligible ||
+					stats.Receiver.FallbackReason != "no_offer" {
 					t.Fatalf("old-to-new observability = %+v", stats)
 				}
 			},
@@ -578,12 +616,12 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 				if !sender.fastEligible() {
 					t.Fatal("exact current-process ACK did not enable fast recovery")
 				}
-				if stats := sender.stats(); !stats.OfferPresent ||
-					!stats.FastEligible ||
-					!stats.WriterExclusive ||
-					stats.OfferWrites != 1 ||
-					stats.ACKAccepts != 1 ||
-					stats.FallbackReason != "" {
+				if stats := sender.stats(); !stats.Sender.OfferPresent ||
+					!stats.Sender.FastEligible ||
+					!stats.Sender.WriterExclusive ||
+					stats.Sender.OfferWrites != 1 ||
+					stats.Sender.ACKAccepts != 1 ||
+					stats.Sender.FallbackReason != "" {
 					t.Fatalf("new-to-new observability = %+v", stats)
 				}
 			},
@@ -604,8 +642,8 @@ func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
 				}
 				coordinator.adoptReceivedSession(0xCAFE)
 				coordinator.adoptReceivedSession(0xBABE)
-				if stats := coordinator.stats(); stats.Rotations != 1 ||
-					stats.SessionRestarts != 1 {
+				if stats := coordinator.stats(); stats.Sender.Rotations != 1 ||
+					stats.Receiver.SessionRestarts != 1 {
 					t.Fatalf("rotation/restart observability = %+v", stats)
 				}
 			},

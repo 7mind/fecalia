@@ -211,10 +211,15 @@ func TestSnapshotReportsPriorityDebtAndNetRateDelayBound(t *testing.T) {
 	}
 	snapshot := shaper.Snapshot()
 	if snapshot.OuterPriorityBytes != 100 ||
+		snapshot.OuterPriorityEmittedBytes != 100 ||
 		snapshot.PriorityDebtBytes != 100 ||
 		snapshot.PriorityRateBytesPerSecond != 900 ||
 		snapshot.PriorityBurstBytes != 100 {
 		t.Fatalf("priority snapshot = %+v", snapshot)
+	}
+	if snapshot.OuterPriorityBytes !=
+		snapshot.OuterPriorityEmittedBytes+snapshot.OuterPriorityErrorBytes+uint64(snapshot.PriorityRetainedBytes) {
+		t.Fatalf("priority reconciliation = %+v", snapshot)
 	}
 	want := 2 * time.Second
 	if snapshot.PriorityDelayBound != want {

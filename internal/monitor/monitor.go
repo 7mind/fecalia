@@ -134,6 +134,11 @@ type FECSnapshot struct {
 }
 
 type RecoveryStats struct {
+	Sender   RecoveryDirectionStats `json:"sender"`
+	Receiver RecoveryDirectionStats `json:"receiver"`
+}
+
+type RecoveryDirectionStats struct {
 	OfferPresent       bool   `json:"offerPresent"`
 	FastEligible       bool   `json:"fastEligible"`
 	TransitionFrozen   bool   `json:"transitionFrozen"`
@@ -549,25 +554,8 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 			DeadlineMaxOvershootSeconds: f.DeadlineMaxOvershoot.Seconds(),
 			OpenGroupDeadlineUnixNano:   unixNanoOrZero(f.OpenGroupDeadline),
 			Recovery: RecoveryStats{
-				OfferPresent:       f.Recovery.OfferPresent,
-				FastEligible:       f.Recovery.FastEligible,
-				TransitionFrozen:   f.Recovery.TransitionFrozen,
-				WriterExclusive:    f.Recovery.WriterExclusive,
-				FreshUntilUnixNano: unixNanoOrZero(f.Recovery.FreshUntil),
-				OfferWrites:        f.Recovery.OfferWrites,
-				ACKWrites:          f.Recovery.ACKWrites,
-				OfferAccepts:       f.Recovery.OfferAccepts,
-				ACKAccepts:         f.Recovery.ACKAccepts,
-				Rotations:          f.Recovery.Rotations,
-				SessionRestarts:    f.Recovery.SessionRestarts,
-				StaleRejections:    f.Recovery.StaleRejections,
-				WrongRejections:    f.Recovery.WrongRejections,
-				ReplayRejections:   f.Recovery.ReplayRejections,
-				FallbackReason:     f.Recovery.FallbackReason,
-				ServiceBoundNanos:  f.Recovery.ServiceBound.Nanoseconds(),
-				RTTAgeNanos:        f.Recovery.RTTAge.Nanoseconds(),
-				HeadroomNanos:      f.Recovery.Headroom.Nanoseconds(),
-				WindowNanos:        f.Recovery.Window.Nanoseconds(),
+				Sender:   monitorRecoveryDirection(f.Recovery.Sender),
+				Receiver: monitorRecoveryDirection(f.Recovery.Receiver),
 			},
 		}
 		if f.Adaptive != nil {
@@ -624,6 +612,30 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 	}
 
 	return out
+}
+
+func monitorRecoveryDirection(stats metrics.RecoveryDirectionStats) RecoveryDirectionStats {
+	return RecoveryDirectionStats{
+		OfferPresent:       stats.OfferPresent,
+		FastEligible:       stats.FastEligible,
+		TransitionFrozen:   stats.TransitionFrozen,
+		WriterExclusive:    stats.WriterExclusive,
+		FreshUntilUnixNano: unixNanoOrZero(stats.FreshUntil),
+		OfferWrites:        stats.OfferWrites,
+		ACKWrites:          stats.ACKWrites,
+		OfferAccepts:       stats.OfferAccepts,
+		ACKAccepts:         stats.ACKAccepts,
+		Rotations:          stats.Rotations,
+		SessionRestarts:    stats.SessionRestarts,
+		StaleRejections:    stats.StaleRejections,
+		WrongRejections:    stats.WrongRejections,
+		ReplayRejections:   stats.ReplayRejections,
+		FallbackReason:     stats.FallbackReason,
+		ServiceBoundNanos:  stats.ServiceBound.Nanoseconds(),
+		RTTAgeNanos:        stats.RTTAge.Nanoseconds(),
+		HeadroomNanos:      stats.Headroom.Nanoseconds(),
+		WindowNanos:        stats.Window.Nanoseconds(),
+	}
 }
 
 func unixNanoOrZero(value time.Time) int64 {

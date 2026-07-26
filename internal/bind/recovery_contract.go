@@ -93,16 +93,32 @@ type recoveryContractCoordinator struct {
 	haveAdoptedSession          bool
 	adoptedSession              uint64
 
-	offerWrites      uint64
-	ackWrites        uint64
-	offerAccepts     uint64
-	ackAccepts       uint64
-	rotations        uint64
-	sessionRestarts  uint64
-	staleRejections  uint64
-	wrongRejections  uint64
-	replayRejections uint64
-	lastFallback     string
+	offerWrites                uint64
+	ackAccepts                 uint64
+	rotations                  uint64
+	senderStale                uint64
+	senderWrong                uint64
+	senderReplay               uint64
+	senderFallback             string
+	ackWrites                  uint64
+	offerAccepts               uint64
+	sessionRestarts            uint64
+	receiverStale              uint64
+	receiverWrong              uint64
+	receiverReplay             uint64
+	receiverDecision           recoveryReceiverDecision
+	receiverDecisionGeneration uint64
+	receiverDecisionRevision   uint64
+}
+
+type recoveryReceiverDecision struct {
+	offerPresent     bool
+	fastEligible     bool
+	transitionFrozen bool
+	writerExclusive  bool
+	freshUntil       time.Time
+	fallbackReason   string
+	serviceBound     time.Duration
 	rttAge           time.Duration
 	headroom         time.Duration
 	window           time.Duration
@@ -114,6 +130,10 @@ func newRecoveryContractCoordinator(session uint64, clock fecOwnerClock) *recove
 		session:           session,
 		changed:           make(chan struct{}),
 		receivedAuthority: &reseq.RecoveryAuthority{},
+		receiverDecision: recoveryReceiverDecision{
+			fallbackReason: "no_offer",
+			window:         conservativeRecoveryService,
+		},
 	}
 }
 
@@ -154,7 +174,7 @@ func (c *recoveryContractCoordinator) beginGeneration(enabled bool, serviceBound
 }
 
 func (c *recoveryContractCoordinator) startOfferLocked(message telemetry.RecoveryContractMessage, barrier bool) error {
-	if c.offer != nil {
+	if c.nextID != 0 {
 		c.rotations++
 	}
 	c.nextID++
@@ -199,6 +219,12 @@ func (c *recoveryContractCoordinator) disable() {
 	c.observedSources = nil
 	c.haveAdoptedSession = false
 	c.adoptedSession = 0
+	c.receiverDecision = recoveryReceiverDecision{
+		fallbackReason: "no_offer",
+		window:         conservativeRecoveryService,
+	}
+	c.receiverDecisionGeneration = c.receivedGeneration
+	c.receiverDecisionRevision = 0
 	c.notifyLocked()
 	c.mu.Unlock()
 }
@@ -214,7 +240,6 @@ func (c *recoveryContractCoordinator) adoptReceivedSession(session uint64) (uint
 	}
 	if c.haveAdoptedSession {
 		c.sessionRestarts++
-		c.lastFallback = "restart"
 	}
 	c.advanceReceivedGenerationLocked()
 	c.haveAdoptedSession = true
@@ -253,6 +278,13 @@ func (c *recoveryContractCoordinator) advanceReceivedGenerationLocked() {
 	c.bumpReceivedEvidenceLocked()
 	c.received.venues = nil
 	c.observedSources = nil
+	c.receiverDecision = recoveryReceiverDecision{
+		transitionFrozen: true,
+		fallbackReason:   "transition",
+		window:           conservativeRecoveryService,
+	}
+	c.receiverDecisionGeneration = c.receivedGeneration
+	c.receiverDecisionRevision = 0
 }
 
 // observeReceivedSource records the authenticated source for one exact
@@ -497,10 +529,13 @@ type telemetryProbeHeader struct {
 
 func (c *recoveryContractCoordinator) acceptACK(pathID uint8, probeSession, probeSeq uint64, payload []byte) bool {
 	message, recognized, err := telemetry.DecodeRecoveryContract(payload)
-	if err != nil || !recognized || message.Type != telemetry.RecoveryContractACK {
+	if !recognized {
+		return false
+	}
+	if err != nil || message.Type != telemetry.RecoveryContractACK {
 		c.mu.Lock()
-		c.wrongRejections++
-		c.lastFallback = "wrong"
+		c.senderWrong++
+		c.senderFallback = "wrong"
 		c.mu.Unlock()
 		return false
 	}
@@ -508,38 +543,38 @@ func (c *recoveryContractCoordinator) acceptACK(pathID uint8, probeSession, prob
 	defer c.mu.Unlock()
 	c.refreshLocked(c.clock.Now())
 	if c.invalidated || c.offer == nil {
-		c.staleRejections++
-		c.lastFallback = "transition"
+		c.senderStale++
+		c.senderFallback = "transition"
 		return false
 	}
 	sent, ok := c.offer.outstanding[pathID]
 	if !ok || sent.sessionID != probeSession || sent.probeSeq != probeSeq ||
 		sent.message != c.offer.message || probeSession != c.session {
-		c.staleRejections++
-		c.lastFallback = "stale"
+		c.senderStale++
+		c.senderFallback = "stale"
 		return false
 	}
 	if sent.challenge == 0 {
-		c.replayRejections++
-		c.lastFallback = "replay"
+		c.senderReplay++
+		c.senderFallback = "replay"
 		return false
 	}
 	if sent.message != messageWithType(message, telemetry.RecoveryContractOffer) {
-		c.wrongRejections++
-		c.lastFallback = "wrong"
+		c.senderWrong++
+		c.senderFallback = "wrong"
 		return false
 	}
 	want := c.offer.message
 	want.Type = telemetry.RecoveryContractACK
 	if message != want {
-		c.wrongRejections++
-		c.lastFallback = "wrong"
+		c.senderWrong++
+		c.senderFallback = "wrong"
 		return false
 	}
 	until := c.offer.startedAt.Add(message.Lifetime)
 	if until.Sub(c.clock.Now()) < conservativeRecoveryService {
-		c.staleRejections++
-		c.lastFallback = "stale"
+		c.senderStale++
+		c.senderFallback = "stale"
 		return false
 	}
 	c.haveLease = true
@@ -548,7 +583,7 @@ func (c *recoveryContractCoordinator) acceptACK(pathID uint8, probeSession, prob
 	c.barrierPending = false
 	c.barrierDue = time.Time{}
 	c.ackAccepts++
-	c.lastFallback = ""
+	c.senderFallback = ""
 	c.notifyLocked()
 	return true
 }
@@ -616,8 +651,7 @@ func (c *recoveryContractCoordinator) acceptOffer(
 ) (telemetry.RecoveryContractMessage, bool) {
 	if message.Type != telemetry.RecoveryContractOffer {
 		c.mu.Lock()
-		c.wrongRejections++
-		c.lastFallback = "wrong"
+		c.receiverWrong++
 		c.mu.Unlock()
 		return telemetry.RecoveryContractMessage{}, false
 	}
@@ -625,21 +659,18 @@ func (c *recoveryContractCoordinator) acceptOffer(
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.haveAdoptedSession && c.adoptedSession != session {
-		c.staleRejections++
-		c.lastFallback = "restart"
+		c.receiverStale++
 		return telemetry.RecoveryContractMessage{}, false
 	}
 	if c.haveReceived && c.receivedSession == session {
 		existing := c.received
 		if message.ContractID < existing.message.ContractID {
-			c.replayRejections++
-			c.lastFallback = "replay"
+			c.receiverReplay++
 			return telemetry.RecoveryContractMessage{}, false
 		}
 		if message.ContractID == existing.message.ContractID {
 			if existing.invalid {
-				c.staleRejections++
-				c.lastFallback = "stale"
+				c.receiverStale++
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			if existing.message != message {
@@ -648,19 +679,16 @@ func (c *recoveryContractCoordinator) acceptOffer(
 				existing.invalid = true
 				existing.venues = nil
 				c.received = existing
-				c.wrongRejections++
-				c.lastFallback = "wrong"
+				c.receiverWrong++
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			if existing.acceptedAt.Add(existing.message.Lifetime).Sub(now) < conservativeRecoveryService {
-				c.staleRejections++
-				c.lastFallback = "stale"
+				c.receiverStale++
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			ack := message
 			ack.Type = telemetry.RecoveryContractACK
 			c.offerAccepts++
-			c.lastFallback = ""
 			return ack, true
 		}
 		if sameRecoveryService(existing.message, message) {
@@ -669,14 +697,12 @@ func (c *recoveryContractCoordinator) acceptOffer(
 			ack := message
 			ack.Type = telemetry.RecoveryContractACK
 			c.offerAccepts++
-			c.lastFallback = ""
 			return ack, true
 		}
 	}
 
 	if message.Lifetime < conservativeRecoveryService {
-		c.staleRejections++
-		c.lastFallback = "stale"
+		c.receiverStale++
 		return telemetry.RecoveryContractMessage{}, false
 	}
 	c.advanceReceivedGenerationLocked()
@@ -687,21 +713,7 @@ func (c *recoveryContractCoordinator) acceptOffer(
 	ack := message
 	ack.Type = telemetry.RecoveryContractACK
 	c.offerAccepts++
-	c.lastFallback = ""
 	return ack, true
-}
-
-func (c *recoveryContractCoordinator) recordRecoveryWindow(rttAge, headroom, window time.Duration, fallback string) {
-	c.mu.Lock()
-	c.rttAge = rttAge
-	c.headroom = headroom
-	c.window = window
-	if fallback != "" {
-		c.lastFallback = fallback
-	} else if window > 0 {
-		c.lastFallback = ""
-	}
-	c.mu.Unlock()
 }
 
 func (c *recoveryContractCoordinator) stats() RecoveryStats {
@@ -710,43 +722,57 @@ func (c *recoveryContractCoordinator) stats() RecoveryStats {
 	now := c.clock.Now()
 	c.refreshLocked(now)
 	stats := RecoveryStats{
-		OfferPresent:     c.offer != nil,
-		TransitionFrozen: c.barrierPending || c.invalidated,
-		OfferWrites:      c.offerWrites,
-		ACKWrites:        c.ackWrites,
-		OfferAccepts:     c.offerAccepts,
-		ACKAccepts:       c.ackAccepts,
-		Rotations:        c.rotations,
-		SessionRestarts:  c.sessionRestarts,
-		StaleRejections:  c.staleRejections,
-		WrongRejections:  c.wrongRejections,
-		ReplayRejections: c.replayRejections,
-		FallbackReason:   c.lastFallback,
-		RTTAge:           c.rttAge,
-		Headroom:         c.headroom,
-		Window:           c.window,
+		Sender: RecoverySenderStats{
+			OfferPresent:     c.offer != nil,
+			TransitionFrozen: c.barrierPending || c.invalidated,
+			OfferWrites:      c.offerWrites,
+			ACKAccepts:       c.ackAccepts,
+			Rotations:        c.rotations,
+			StaleRejections:  c.senderStale,
+			WrongRejections:  c.senderWrong,
+			ReplayRejections: c.senderReplay,
+			FallbackReason:   c.senderFallback,
+		},
+		Receiver: RecoveryReceiverStats{
+			OfferPresent:     c.receiverDecision.offerPresent,
+			FastEligible:     c.receiverDecision.fastEligible,
+			TransitionFrozen: c.receiverDecision.transitionFrozen,
+			WriterExclusive:  c.receiverDecision.writerExclusive,
+			FreshUntil:       c.receiverDecision.freshUntil,
+			ACKWrites:        c.ackWrites,
+			OfferAccepts:     c.offerAccepts,
+			SessionRestarts:  c.sessionRestarts,
+			StaleRejections:  c.receiverStale,
+			WrongRejections:  c.receiverWrong,
+			ReplayRejections: c.receiverReplay,
+			FallbackReason:   c.receiverDecision.fallbackReason,
+			ServiceBound:     c.receiverDecision.serviceBound,
+			RTTAge:           c.receiverDecision.rttAge,
+			Headroom:         c.receiverDecision.headroom,
+			Window:           c.receiverDecision.window,
+		},
 	}
 	if c.offer == nil {
-		stats.FallbackReason = "no_offer"
+		stats.Sender.FallbackReason = "no_offer"
 		return stats
 	}
-	stats.WriterExclusive = c.offer.message.Enabled
-	stats.ServiceBound = c.offer.message.ServiceBound
-	stats.FreshUntil = c.offer.startedAt.Add(c.offer.message.Lifetime)
+	stats.Sender.WriterExclusive = c.offer.message.Enabled
+	stats.Sender.ServiceBound = c.offer.message.ServiceBound
+	stats.Sender.FreshUntil = c.offer.startedAt.Add(c.offer.message.Lifetime)
 	if c.haveLease {
-		stats.FreshUntil = c.leaseUntil
-		stats.FastEligible = !c.invalidated && !c.barrierPending && c.lease.Enabled &&
+		stats.Sender.FreshUntil = c.leaseUntil
+		stats.Sender.FastEligible = !c.invalidated && !c.barrierPending && c.lease.Enabled &&
 			c.leaseUntil.Sub(now) >= conservativeRecoveryService
 	}
 	switch {
 	case c.invalidated || c.barrierPending:
-		stats.FallbackReason = "transition"
+		stats.Sender.FallbackReason = "transition"
 	case !c.offer.message.Enabled:
-		stats.FallbackReason = "shared"
-	case !c.haveLease && stats.FallbackReason == "":
-		stats.FallbackReason = "unacked"
-	case stats.FastEligible:
-		stats.FallbackReason = ""
+		stats.Sender.FallbackReason = "shared"
+	case !c.haveLease && stats.Sender.FallbackReason == "":
+		stats.Sender.FallbackReason = "unacked"
+	case stats.Sender.FastEligible:
+		stats.Sender.FallbackReason = ""
 	}
 	return stats
 }
@@ -774,6 +800,26 @@ func recoveryWindow(service, headroom time.Duration) time.Duration {
 		return conservativeRecoveryService
 	}
 	return service + headroom
+}
+
+func (c *recoveryContractCoordinator) commitReceiverDecision(
+	generation uint64,
+	publicationRevision uint64,
+	decision recoveryReceiverDecision,
+) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation < c.receiverDecisionGeneration ||
+		(generation == c.receiverDecisionGeneration && publicationRevision < c.receiverDecisionRevision) {
+		return false
+	}
+	if generation == c.receiverDecisionGeneration && publicationRevision == c.receiverDecisionRevision {
+		return c.receiverDecision == decision
+	}
+	c.receiverDecision = decision
+	c.receiverDecisionGeneration = generation
+	c.receiverDecisionRevision = publicationRevision
+	return true
 }
 
 type recoveryRefreshPath struct {
@@ -833,53 +879,49 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		contract:    peer.contracts.receivedSnapshot(),
 	}
 	now := m.clock.Now()
-	windows := deriveRecoveryWindows(snapshot, now)
-	rttAge := time.Duration(0)
-	for _, path := range snapshot.paths {
-		if path.evidence.Present && now.After(path.evidence.SampledAt) {
-			age := now.Sub(path.evidence.SampledAt)
-			if age > rttAge {
-				rttAge = age
-			}
-		}
-	}
-	fallback := "stale"
-	headroom := time.Duration(0)
-	window := time.Duration(0)
-	if len(windows) > 0 {
-		fallback = ""
-		window = windows[0].Hold
-		headroom = window - snapshot.contract.message.ServiceBound
-	} else if !snapshot.contract.present {
-		fallback = "no_offer"
-	} else if !snapshot.contract.acked {
-		fallback = "unacked"
-	} else if snapshot.contract.invalid {
-		fallback = "stale"
-	} else if !snapshot.contract.message.Enabled {
-		fallback = "shared"
-	} else if _, weighted := snapshot.scheduler.(*sched.WeightedScheduler); weighted {
-		fallback = "shared"
-	}
-	peer.contracts.recordRecoveryWindow(rttAge, headroom, window, fallback)
+	windows, decision := deriveRecoveryDecision(snapshot, now)
 	if m.beforeRecoveryPublish != nil {
 		m.beforeRecoveryPublish(peer, rq, snapshot.contract.generation)
 	}
-	m.commitPeerRecoveryPublication(peer, snapshot, windows)
+	m.commitPeerRecoveryPublication(peer, snapshot, windows, decision)
 }
 
-func deriveRecoveryWindows(snapshot recoveryRefreshSnapshot, now time.Time) []reseq.RecoveryWindow {
+func deriveRecoveryDecision(
+	snapshot recoveryRefreshSnapshot,
+	now time.Time,
+) ([]reseq.RecoveryWindow, recoveryReceiverDecision) {
 	contract := snapshot.contract
-	if !contract.acked || contract.invalid ||
-		!contract.message.Enabled ||
-		contract.message.Lifetime != telemetry.RecoveryContractLifetime ||
+	decision := recoveryReceiverDecision{
+		offerPresent:     contract.present,
+		transitionFrozen: contract.invalid,
+		writerExclusive:  contract.present && contract.message.Enabled,
+		freshUntil:       contract.validUntil,
+		fallbackReason:   "stale",
+		serviceBound:     contract.message.ServiceBound,
+		window:           conservativeRecoveryService,
+	}
+	switch {
+	case !contract.present:
+		decision.fallbackReason = "no_offer"
+		return nil, decision
+	case !contract.acked:
+		decision.fallbackReason = "unacked"
+		return nil, decision
+	case contract.invalid:
+		decision.fallbackReason = "transition"
+		return nil, decision
+	case !contract.message.Enabled:
+		decision.fallbackReason = "shared"
+		return nil, decision
+	case contract.message.Lifetime != telemetry.RecoveryContractLifetime ||
 		contract.message.ServiceBound <= 0 ||
 		contract.message.ServiceBound >= conservativeRecoveryService ||
-		contract.validUntil.Sub(now) < conservativeRecoveryService {
-		return nil
+		contract.validUntil.Sub(now) < conservativeRecoveryService:
+		return nil, decision
 	}
 	if _, weighted := snapshot.scheduler.(*sched.WeightedScheduler); weighted {
-		return nil
+		decision.fallbackReason = "shared"
+		return nil, decision
 	}
 
 	haveQualified := false
@@ -888,7 +930,7 @@ func deriveRecoveryWindows(snapshot recoveryRefreshSnapshot, now time.Time) []re
 	validUntil := contract.validUntil
 	for _, path := range snapshot.paths {
 		if path.prober == nil {
-			return nil
+			return nil, decision
 		}
 		evidence := path.evidence
 		if evidence.State != telemetry.StateUp {
@@ -896,10 +938,16 @@ func deriveRecoveryWindows(snapshot recoveryRefreshSnapshot, now time.Time) []re
 		}
 		if !evidence.Present ||
 			evidence.FreshUntil.Sub(now) < conservativeRecoveryService {
-			return nil
+			return nil, decision
 		}
 		haveQualified = true
 		qualifiedPathIDs[path.id] = struct{}{}
+		if now.After(evidence.SampledAt) {
+			age := now.Sub(evidence.SampledAt)
+			if age > decision.rttAge {
+				decision.rttAge = age
+			}
+		}
 		if evidence.RTT > maxRTT {
 			maxRTT = evidence.RTT
 		}
@@ -908,12 +956,15 @@ func deriveRecoveryWindows(snapshot recoveryRefreshSnapshot, now time.Time) []re
 		}
 	}
 	if !haveQualified {
-		return nil
+		return nil, decision
 	}
 
-	hold := recoveryWindow(contract.message.ServiceBound, recoveryRTTHeadroom(maxRTT))
+	decision.freshUntil = validUntil
+	decision.headroom = recoveryRTTHeadroom(maxRTT)
+	hold := recoveryWindow(contract.message.ServiceBound, decision.headroom)
 	if hold >= conservativeRecoveryService {
-		return nil
+		decision.fallbackReason = "saturated"
+		return nil, decision
 	}
 	windows := make([]reseq.RecoveryWindow, 0, len(contract.venues))
 	for _, venue := range contract.venues {
@@ -932,13 +983,21 @@ func deriveRecoveryWindows(snapshot recoveryRefreshSnapshot, now time.Time) []re
 			ValidUntil: validUntil,
 		})
 	}
-	return windows
+	if len(windows) == 0 {
+		decision.fallbackReason = "unacked"
+		return nil, decision
+	}
+	decision.fastEligible = true
+	decision.fallbackReason = ""
+	decision.window = hold
+	return windows, decision
 }
 
 func (m *Multipath) commitPeerRecoveryPublication(
 	peer *peerState,
 	snapshot recoveryRefreshSnapshot,
 	windows []reseq.RecoveryWindow,
+	decision recoveryReceiverDecision,
 ) {
 	m.mu.Lock()
 	found := false
@@ -964,6 +1023,7 @@ func (m *Multipath) commitPeerRecoveryPublication(
 	}
 
 	publishWindows := windows
+	publishDecision := decision
 	generation, publicationRevision, ok := peer.contracts.reserveReceivedPublication(
 		snapshot.contract,
 		func() bool {
@@ -972,9 +1032,7 @@ func (m *Multipath) commitPeerRecoveryPublication(
 					return false
 				}
 			}
-			if len(publishWindows) > 0 {
-				publishWindows = deriveRecoveryWindows(snapshot, m.clock.Now())
-			}
+			publishWindows, publishDecision = deriveRecoveryDecision(snapshot, m.clock.Now())
 			return true
 		},
 	)
@@ -990,11 +1048,13 @@ func (m *Multipath) commitPeerRecoveryPublication(
 			publicationRevision,
 		)
 	}
-	snapshot.resequencer.SetRecoveryPublication(
+	if snapshot.resequencer.SetRecoveryPublication(
 		generation,
 		publicationRevision,
 		publishWindows,
-	)
+	) {
+		peer.contracts.commitReceiverDecision(generation, publicationRevision, publishDecision)
+	}
 }
 
 func (m *Multipath) publishPeerRecoveryGeneration(peer *peerState, generation uint64) {
@@ -1002,7 +1062,13 @@ func (m *Multipath) publishPeerRecoveryGeneration(peer *peerState, generation ui
 		return
 	}
 	if rq := peer.resequencer.Load(); rq != nil {
-		rq.SetRecoveryPublication(generation, 0, nil)
+		if rq.SetRecoveryPublication(generation, 0, nil) && peer.contracts != nil {
+			peer.contracts.commitReceiverDecision(generation, 0, recoveryReceiverDecision{
+				transitionFrozen: true,
+				fallbackReason:   "transition",
+				window:           conservativeRecoveryService,
+			})
+		}
 	}
 }
 

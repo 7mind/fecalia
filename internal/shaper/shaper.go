@@ -594,6 +594,7 @@ func (s *Shaper) finishPriorityGeneration(
 		s.queue = append(s.queue[:index], s.queue[index+1:]...)
 		s.releaseQueued(datagram)
 		s.accountAsyncWriteFailureLocked(generationErr, datagram.size, false)
+		s.accountPriorityTerminalLocked(datagram)
 		s.notifyLocked()
 		s.mu.Unlock()
 		datagram.done <- generationErr
@@ -1034,6 +1035,7 @@ func (s *Shaper) AccountPriority(size int) error {
 	}
 	s.tail = tailBase.Add(s.byteDuration(size))
 	s.outerPriorityBytes += uint64(size)
+	s.outerPriorityEmittedBytes += uint64(size)
 	s.notifyLocked()
 	return nil
 }
@@ -1070,6 +1072,7 @@ func (s *Shaper) StopWithError(cause error) {
 				datagram.batch.failedIndex = datagram.index
 			}
 			s.accountAsyncWriteFailureLocked(cause, datagram.size, false)
+			s.accountPriorityTerminalLocked(datagram)
 			datagram.done <- cause
 			close(datagram.done)
 		}
@@ -1146,6 +1149,7 @@ func (s *Shaper) run() {
 		s.queue = s.queue[1:]
 		s.releaseQueued(datagram)
 		s.inFlightBytes = datagram.size
+		s.updateHighWaterLocked()
 		s.notifyLocked()
 		s.mu.Unlock()
 
@@ -1291,6 +1295,12 @@ func (s *Shaper) accountAsyncWriteFailureLocked(err error, size int, countError 
 		s.asyncWriteErrors++
 	}
 	s.asyncWriteErrorBytes += uint64(size)
+}
+
+func (s *Shaper) accountPriorityTerminalLocked(datagram *queuedDatagram) {
+	if datagram.retention == retainPriority {
+		s.outerPriorityErrorBytes += uint64(datagram.size)
+	}
 }
 
 func (s *Shaper) notifyLocked() {

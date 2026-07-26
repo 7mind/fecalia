@@ -996,7 +996,11 @@ func TestOlderSameGenerationRefreshCannotRestoreLowerRTTHeadroom(t *testing.T) {
 	release := make(chan struct{})
 	var hookMu sync.Mutex
 	first := true
-	m.beforeRecoveryPublish = func(_ *peerState, _ *reseq.Resequencer, _ uint64) {
+	m.afterRecoveryPublicationReserve = func(
+		_ *peerState,
+		_ *reseq.Resequencer,
+		_, _ uint64,
+	) {
 		hookMu.Lock()
 		pause := first
 		first = false
@@ -1027,6 +1031,10 @@ func TestOlderSameGenerationRefreshCannotRestoreLowerRTTHeadroom(t *testing.T) {
 	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(newRTT)))
 	if !deadline.Equal(want) {
 		t.Fatalf("older publication restored lower RTT headroom: deadline=%v want=%v", deadline, want)
+	}
+	stats := m.contracts.stats().Receiver
+	if wantHeadroom := recoveryRTTHeadroom(newRTT); stats.Headroom != wantHeadroom {
+		t.Fatalf("older rejected publication restored observed H=%v, want newer H=%v", stats.Headroom, wantHeadroom)
 	}
 }
 
@@ -1308,6 +1316,7 @@ func TestDispatchRecoveryControlEvidenceMatrix(t *testing.T) {
 		peer, source := rawPeer(t)
 		t.Cleanup(func() { _ = peer.Close() })
 		const session = uint64(0xA31411)
+		before := m.contracts.stats()
 		challenge := reflectProbeIssuedChallenge(t, m, m.paths[0], m.psk, peer, source, session, 0, 0)
 		dispatchTestProbe(t, m, m.paths[0], source, frame.Probe{
 			PathID:         m.paths[0].id,
@@ -1321,6 +1330,11 @@ func TestDispatchRecoveryControlEvidenceMatrix(t *testing.T) {
 		_ = readProbe(t, peer, mustFrameCodec(t, m.psk))
 		if m.contracts.receivedSnapshot().acked {
 			t.Fatal("padded probe created usable receiver evidence")
+		}
+		after := m.contracts.stats()
+		if after.Sender.WrongRejections != before.Sender.WrongRejections ||
+			after.Sender.FallbackReason != before.Sender.FallbackReason {
+			t.Fatalf("padded non-contract echo changed telemetry: before=%+v after=%+v", before, after)
 		}
 	})
 

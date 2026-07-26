@@ -332,7 +332,9 @@ group; a batched/offloaded send that fills `data_shards` closes immediately.
 Choose `deadline` as a latency bound, not only a coding-efficiency knob. The
 owner accepts one batch command/completion per original `Send`, assigns outer
 sequences only as it copies each input, and streams decided groups through the
-per-path shaper. A complete compatible group enters that shaper as one immutable
+per-path shaper. The Bind advertises the vendored engine's 128-buffer ideal
+batch and accepts every buffer in that vector; receive functions may still
+return fewer datagrams per read. A complete compatible group enters that shaper as one immutable
 batch; the shaper still applies bounded per-datagram pre-copy backpressure.
 Close/rebind rejects or completes every published batch and joins the old owner
 before a replacement can publish, so no late group crosses transport
@@ -590,22 +592,26 @@ Common rules, either policy:
 Use the following notation when comparing config, `/metrics`, and monitor JSON:
 `D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`,
 `B/C/P/Fgroup/Lio/Mtotal`, `R/Rp/I`, sender service `Sdevice`,
-`H=clamp(4*max(SRTT),10ms,D)`, `W=min(D,A+H)`, and `Ecompletion`.
+`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh `Up` paths only,
+`W=min(D,A+H)`, and `Ecompletion`.
 `SessionID` identifies a process epoch; `ContractID` rotates within the epoch;
 `OuterSeq` remains continuous for that rotation. An exact authenticated `ACK`
-selects fast recovery, while no offer, unacknowledged/stale/wrong/replayed
-evidence, shared writers, and transitions select a reason-labelled fallback.
+selects fast recovery only when `A+H<D`; no offer,
+unacknowledged/stale/wrong/replayed evidence, shared writers, saturation, and
+transitions report `W=D` with a reason-labelled fallback.
 Contract/config geometry remains authoritative—there is no zero-parity
 inference.
 
 The FEC families expose staged groups/data, total group and deadline decisions,
 deadline misses/max overshoot, and the current open deadline. Recovery-contract
 families expose bounded status, freshness, writes/accepts, rotations/restarts,
-rejections and fallback reason; recovery families expose RTT age, `H`, and
-`W`. Shaper families expose outer-priority emitted/error bytes, active cut
+rejections and fallback reason partitioned by the bounded
+`direction={sender,receiver}` label; recovery families expose receiver RTT age,
+`H`, and installed `W`. Monitor JSON mirrors those directions under
+`recovery.sender` and `recovery.receiver`. Shaper families expose outer-priority emitted/error bytes, active cut
 deadline/membership/socket calls, and `Fgroup`/`Mtotal` high-water bytes.
 Resequencer families expose armed deadline/window plus wake/fill and
-fast/fallback arm counters. The monitor mirrors the same fields.
+fast/fallback arm counters.
 
 Raw `SessionID`/`ContractID` are not exported: Prometheus float64 precision,
 identity disclosure, and label cardinality make raw identities unsuitable.

@@ -33,11 +33,10 @@ import (
 // the effective size may be smaller on an untuned host — best-effort by design.
 const socketRecvBuffer = 7 << 20
 
-// multipathBatchSize is the number of datagrams a ReceiveFunc / Send handles per
-// call. T12 keeps it at 1 (one syscall per datagram, per path); GSO/GRO batching
-// is best-effort future work (P0 findings §2) tracked separately and does not
-// change the wire format.
-const multipathBatchSize = 1
+// multipathBatchSize is the buffer-vector capacity accepted by Send and exposed
+// to the engine's receive workers. The vendored engine selects the maximum of
+// this value and the TUN batch size, so the Bind must honor its full batch.
+const multipathBatchSize = conn.IdealBatchSize
 
 // maxDatagram bounds a single received outer datagram. It comfortably exceeds a
 // full-MTU inner packet plus every outer/WG/amnezia-junk overhead.
@@ -5356,8 +5355,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			snap.FEC.DeadlineDecisions = r.fs.deadlineDecisions.Load()
 			snap.FEC.DeadlineMisses = r.fs.deadlineMisses.Load()
 			snap.FEC.DeadlineMaxOvershoot = time.Duration(r.fs.deadlineMaxOvershoot.Load())
-			snap.FEC.StagedGroups = r.fs.stagedGroups.Load()
-			snap.FEC.StagedDataFrames = r.fs.stagedDataFrames.Load()
+			snap.FEC.StagedGroups, snap.FEC.StagedDataFrames = r.fs.stagingSnapshot()
 			snap.FEC.GroupDecisions = r.fs.groupDecisions.Load()
 			if nanos := r.fs.openDeadlineNanos.Load(); nanos != 0 {
 				snap.FEC.OpenGroupDeadline = time.Unix(0, nanos)

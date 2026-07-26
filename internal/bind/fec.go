@@ -148,9 +148,24 @@ type fecSender struct {
 	deadlineMisses       atomic.Uint64
 	deadlineMaxOvershoot atomic.Int64
 	openDeadlineNanos    atomic.Int64
-	stagedGroups         atomic.Uint64
-	stagedDataFrames     atomic.Uint64
+	stagingState         atomic.Uint64
 	groupDecisions       atomic.Uint64
+}
+
+func (fs *fecSender) publishStaging(dataFrames int) {
+	if dataFrames < 0 || uint64(dataFrames) > uint64(^uint32(0)) {
+		panic("bind: staged FEC frame count outside uint32")
+	}
+	groups := uint64(0)
+	if dataFrames > 0 {
+		groups = 1
+	}
+	fs.stagingState.Store(groups<<32 | uint64(uint32(dataFrames)))
+}
+
+func (fs *fecSender) stagingSnapshot() (uint64, uint64) {
+	packed := fs.stagingState.Load()
+	return packed >> 32, packed & uint64(^uint32(0))
 }
 
 // publishAdaptiveDrive records a completed controller drive into the lock-free snapshot
@@ -269,19 +284,38 @@ type FECStats struct {
 	Adaptive *AdaptiveFECStats
 }
 
-// RecoveryStats is the bounded-cardinality recovery-contract and derived-window
-// snapshot. Raw session and contract identifiers deliberately stay internal.
+// RecoveryStats keeps the locally offered sender contract independent from the
+// remotely offered receiver contract and its installed recovery decision. Raw
+// session and contract identifiers deliberately stay internal.
 type RecoveryStats struct {
+	Sender   RecoverySenderStats
+	Receiver RecoveryReceiverStats
+}
+
+type RecoverySenderStats struct {
 	OfferPresent     bool
 	FastEligible     bool
 	TransitionFrozen bool
 	WriterExclusive  bool
 	FreshUntil       time.Time
 	OfferWrites      uint64
-	ACKWrites        uint64
-	OfferAccepts     uint64
 	ACKAccepts       uint64
 	Rotations        uint64
+	StaleRejections  uint64
+	WrongRejections  uint64
+	ReplayRejections uint64
+	FallbackReason   string
+	ServiceBound     time.Duration
+}
+
+type RecoveryReceiverStats struct {
+	OfferPresent     bool
+	FastEligible     bool
+	TransitionFrozen bool
+	WriterExclusive  bool
+	FreshUntil       time.Time
+	ACKWrites        uint64
+	OfferAccepts     uint64
 	SessionRestarts  uint64
 	StaleRejections  uint64
 	WrongRejections  uint64
