@@ -536,9 +536,11 @@ Common rules, either policy:
   freshness revalidation. Older same-generation refreshes therefore cannot
   erase a newer venue or reduce maximum RTT headroom. A live gap retains its
   arm-time evidence and deadline; same-generation updates apply to later gaps.
-  A bounded-window advance gives each newly exposed gap a fresh hold rather than
-  inheriting its predecessor's elapsed deadline. Weighted scheduling always
-  keeps the conservative fallback.
+  Each buffered gap's deadline starts when its first successor becomes
+  receiver-observable, even while an earlier gap blocks the head. Successors
+  observed later retain their remaining recovery time; evidence/topology
+  transitions floor buffered observations at the transition instant. Weighted
+  scheduling always keeps the conservative fallback.
   At recovery admission the socket receives one absolute
   `cutStart+10ms` deadline before the cut becomes visible; that same deadline
   covers any blocked predecessor and every tranche syscall. Install failure or

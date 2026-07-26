@@ -302,13 +302,10 @@ func TestPropertyReorderDupLoss(t *testing.T) {
 			}
 			step++
 		}
-		// Flush the tail. Each remaining head-of-line gap now gets its OWN full
-		// timeout (the per-gap-deadline fix — criticism 2), so a single frozen-clock
-		// advance no longer collapses every gap at once (that only worked when a
-		// buggy expire reused one already-elapsed deadline for all subsequent gaps).
-		// Advance the clock once per gap — modelling real wall-clock progress — until
-		// the buffer is fully drained. expire always advances past at least one gap
-		// when the deadline has elapsed, so this terminates in <= window iterations.
+		// Flush the tail. Gaps retain recovery time from their first buffered
+		// successor observation, so one advance may release several already-due
+		// gaps while a successor observed later may retain time. The loop terminates
+		// in at most window iterations because each expiry advances past a gap.
 		for r.Buffered() > 0 {
 			clk.advance(timeout + time.Second)
 			for {
@@ -387,8 +384,9 @@ func TestWildSeqNoHangNoBlackhole(t *testing.T) {
 }
 
 // TestPerGapTimeoutNotInherited reproduces criticism 2: after a head-of-line
-// timeout fires, a SECOND distinct gap must get its OWN full timeout, not inherit
-// the first gap's already-elapsed deadline. With the defect, expire() left
+// timeout fires, a SECOND gap whose first successor arrives afterward must get
+// its own full timeout, not inherit the first gap's already-elapsed deadline.
+// With the defect, expire() left
 // r.waiting true and re-armed with the stale deadline, so the second gap was
 // skipped with ~zero hold — dropping in-window reordered frames that arrived after
 // the earlier gap timed out.

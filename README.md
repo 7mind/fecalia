@@ -342,8 +342,9 @@ deliberate boundaries you must plan around:
   that service can shorten a stable active-backup receiver gap to `A` plus
   four times the maximum fresh Up-path SRTT (10 ms floor, 250 ms cap); evidence
   uncertainty, path/source change, rebaseline, or weighted scheduling uses the
-  full 250 ms. A bounded-window advance ends the preceding gap's hold before a
-  newly exposed gap arms its own fresh hold. Encoded DATA and
+  full 250 ms. A buffered gap's deadline starts when its first successor becomes
+  receiver-observable, even if an earlier gap still blocks it; a successor first
+  observed later retains its own remaining recovery time. Encoded DATA and
   every decided FEC parity datagram
   consume their exact byte length. A recovery cut orders the retained
   lower-OuterSeq prefix and already-admitted priority, then the complete group

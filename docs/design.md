@@ -1423,10 +1423,13 @@ loosening the guarantee that a genuine cross-path straggler is still awaited up
 to the cap. The preserved contract is unchanged in every other respect: releases
 are **strictly ascending** and **exactly once**, memory stays **bounded** by the
 window, and the timeout guarantees forward progress (a gap is now bounded by the
-per-gap hold rather than the fixed cap). When admitting a frame beyond the
-bounded window advances the release point, the old head gap's hold ends before
-the newly exposed gap arms; that new gap receives a fresh `W` or `T` and never
-inherits elapsed time from its predecessor. The `Rebaseline`/`RebaselineToLow`
+per-gap hold rather than the fixed cap). A gap's deadline starts when any
+buffered successor first makes it receiver-observable, not when earlier gaps
+finally expose it at the head. Several already-due gaps can therefore release
+in one bounded expiry pass, while a successor observed later retains the
+remaining part of its own `W` or `T`. Evidence or topology re-arm floors every
+buffered observation at the transition instant, so no gap inherits
+pre-transition recovery time. The `Rebaseline`/`RebaselineToLow`
 re-anchor semantics (D32/D34/D36/D64, below) and the inner WireGuard anti-replay
 behaviour are untouched.
 

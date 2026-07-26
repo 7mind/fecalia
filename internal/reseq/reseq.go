@@ -179,10 +179,11 @@ type RecoveryWindow struct {
 // already-drained seq that shares the index modulo window) is never mistaken for
 // a live one.
 type slot struct {
-	seq      uint64
-	src      netip.AddrPort
-	payload  []byte
-	occupied bool
+	seq        uint64
+	src        netip.AddrPort
+	payload    []byte
+	observedAt time.Time
+	occupied   bool
 }
 
 // Resequencer is a bounded-window, timeout-based receive resequencing buffer. It
@@ -203,10 +204,11 @@ type slot struct {
 //   - Bounded memory: at most `window` frames are buffered. A frame at or beyond
 //     next+window forces the window to advance (releasing/skipping the tail),
 //     so an adversarial reorder/loss trace cannot grow the buffer without bound.
-//   - Timeout progress: when the head-of-line seq is missing, buffered frames
-//     ahead of the gap are held at most `timeout`; then the gap is skipped
-//     (treated as lost) and the run released, rather than stalling forever. Each
-//     distinct head-of-line gap gets its OWN full timeout.
+//   - Timeout progress: when a seq is missing, buffered successors are held at
+//     most `timeout` from their first observation; then the gap is skipped
+//     (treated as lost) and the run released, rather than stalling forever.
+//     Independently observed later gaps retain their remaining recovery time,
+//     but do not start a fresh timeout merely because an earlier gap hid them.
 //   - Bounded compute: every Observe runs in O(window). No frame — however wild
 //     its (unauthenticated, possibly forged) seq — can make the release point
 //     advance one seq at a time across a gap of up to 2^64 under the mutex.
@@ -665,6 +667,7 @@ func (r *Resequencer) armConservativeDeadlineLocked(armedAt, deadline time.Time)
 	cell := &r.ring[r.next%r.window]
 	headPresent := cell.occupied && cell.seq == r.next
 	if !headPresent && r.buf > 0 {
+		r.floorBufferedObservations(armedAt)
 		r.waiting = true
 		r.deadline = deadline
 		r.armedAt = armedAt
@@ -818,6 +821,7 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 	cell.seq = seq
 	cell.src = src
 	cell.payload = payload
+	cell.observedAt = now
 	cell.occupied = true
 	r.buf++
 	if r.buf > r.highWater {
@@ -901,6 +905,7 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 	cell.seq = seq
 	cell.src = src
 	cell.payload = payload
+	cell.observedAt = now
 	cell.occupied = true
 	r.buf++
 	if r.buf > r.highWater {
@@ -1079,6 +1084,7 @@ func (r *Resequencer) release(cell *slot) {
 	r.ready = append(r.ready, Item{Payload: cell.payload, Src: cell.src})
 	cell.occupied = false
 	cell.payload = nil
+	cell.observedAt = time.Time{}
 	r.buf--
 	r.releasedN++
 }
@@ -1127,6 +1133,7 @@ func (r *Resequencer) rearmConservativeLocked(now time.Time) {
 	if !r.waiting {
 		return
 	}
+	r.floorBufferedObservations(now)
 	r.deadline = now.Add(r.timeout)
 	r.armedWindow = r.timeout
 	if r.recoveryArmed {
@@ -1142,52 +1149,48 @@ func (r *Resequencer) rearmConservativeLocked(now time.Time) {
 // to the smallest buffered seq (treating the intervening seqs as lost) and releasing
 // the now-contiguous run. Caller holds r.mu.
 func (r *Resequencer) expire(now time.Time) {
-	if !r.waiting {
-		return
-	}
-	// A gap proceeds either because its hold elapsed (a timeout skip) OR — while the
-	// deadline is still in the future — because the single-delivering-path fast path
-	// permits an immediate release (D93). A deadline that has already elapsed is a
-	// timeout skip even if the fast path would also apply, so immediate is set ONLY on
-	// the pre-deadline fast-path branch.
-	immediate := false
-	if now.Before(r.deadline) {
-		if !r.singleSourceImmediate(now) {
+	for r.waiting {
+		// A gap proceeds either because its hold elapsed (a timeout skip) OR — while the
+		// deadline is still in the future — because the single-delivering-path fast path
+		// permits an immediate release (D93). A deadline that has already elapsed is a
+		// timeout skip even if the fast path would also apply, so immediate is set ONLY on
+		// the pre-deadline fast-path branch.
+		immediate := false
+		if now.Before(r.deadline) {
+			if !r.singleSourceImmediate(now) {
+				return
+			}
+			immediate = true
+		} else {
+			r.deadlineWakeups++
+		}
+		minSeq, ok := r.smallestBuffered()
+		if !ok {
+			r.endHoldLocked(now)
 			return
 		}
-		immediate = true
-	} else {
-		r.deadlineWakeups++
-	}
-	minSeq, ok := r.smallestBuffered()
-	if !ok {
+		// Skip the lost gap [next, minSeq), then release from minSeq onward.
+		for r.next < minSeq {
+			r.skipped++
+			r.next++
+		}
+		r.drain()
+		if immediate {
+			// D93 fast-path release EVENT (distinct from a timeout skip; NOT folded into
+			// skipped — see the counter comments). skipped above still counted the lost
+			// gap's seqs, keeping that counter's meaning unchanged.
+			r.immediateReleases++
+		}
 		r.endHoldLocked(now)
-		return
+		r.arm(now)
 	}
-	// Skip the lost gap [next, minSeq), then release from minSeq onward.
-	for r.next < minSeq {
-		r.skipped++
-		r.next++
-	}
-	r.drain()
-	if immediate {
-		// D93 fast-path release EVENT (distinct from a timeout skip; NOT folded into
-		// skipped — see the counter comments). skipped above still counted the lost
-		// gap's seqs, keeping that counter's meaning unchanged.
-		r.immediateReleases++
-	}
-	// Accrue the hold's elapsed time and clear the armed state BEFORE re-arming, so a
-	// distinct SECOND gap exposed by this release gets its own fresh hold (its own
-	// holds++/armedAt/full deadline) rather than inheriting this gap's already-elapsed
-	// deadline (which would skip it with ~zero hold).
-	r.endHoldLocked(now)
-	r.arm(now)
 }
 
 // arm (re)evaluates the head-of-line timeout after a change. When next is a gap
-// but buffered frames sit ahead of it, it starts the hold clock (only if not
-// already running, so the deadline measures from when the gap first formed).
-// Otherwise it disarms. Caller holds r.mu.
+// but buffered frames sit ahead of it, it starts the hold clock at the oldest
+// still-buffered successor observation. A gap exposed behind an earlier gap
+// therefore retains its remaining recovery time instead of receiving a fresh
+// full hold. Otherwise arm disarms. Caller holds r.mu.
 func (r *Resequencer) arm(now time.Time) {
 	cell := &r.ring[r.next%r.window]
 	headPresent := cell.occupied && cell.seq == r.next
@@ -1195,7 +1198,11 @@ func (r *Resequencer) arm(now time.Time) {
 		if !r.waiting {
 			r.waiting = true
 			hold, recoveryArmed := r.effectiveHoldLocked(now)
-			r.deadline = now.Add(hold)
+			observedAt, ok := r.oldestBufferedObservation()
+			if !ok {
+				panic("reseq: buffered count has no occupied slot")
+			}
+			r.deadline = observedAt.Add(hold)
 			r.armedAt = now
 			r.armedWindow = hold
 			r.recoveryArmed = recoveryArmed
@@ -1541,6 +1548,33 @@ func (r *Resequencer) smallestBuffered() (uint64, bool) {
 		}
 	}
 	return best, found
+}
+
+// oldestBufferedObservation returns when the receiver first had evidence of any
+// gap at or after next. All occupied cells lie in the bounded live window.
+func (r *Resequencer) oldestBufferedObservation() (time.Time, bool) {
+	var oldest time.Time
+	found := false
+	for i := range r.ring {
+		cell := &r.ring[i]
+		if cell.occupied && cell.seq >= r.next &&
+			(!found || cell.observedAt.Before(oldest)) {
+			oldest = cell.observedAt
+			found = true
+		}
+	}
+	return oldest, found
+}
+
+// floorBufferedObservations prevents frames already buffered across an evidence
+// or topology transition from inheriting pre-transition recovery time.
+func (r *Resequencer) floorBufferedObservations(floor time.Time) {
+	for i := range r.ring {
+		cell := &r.ring[i]
+		if cell.occupied && cell.observedAt.Before(floor) {
+			cell.observedAt = floor
+		}
+	}
 }
 
 // Buffered reports the number of frames currently held (not yet released). It is

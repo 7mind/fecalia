@@ -656,6 +656,10 @@ geometry from config/contract state—there is no zero-parity inference.
       concentrator, confirm both directions publish and ACK `A=10ms`, report
       `fast_eligible=1` when `A+H<D`, and install `W<250ms`. A shared
       multi-peer concentrator socket must continue to publish disabled.
+- [ ] Under deterministic or recorded sparse loss, confirm several gaps whose
+      successors arrived within one `W` release at their observation-based
+      deadlines rather than accumulating one fresh `W` per gap. A successor
+      first observed later must retain its remaining recovery interval.
 
 - [ ] During the run, capture FEC staged/decision/deadline series, recovery
       contract status/events/reasons/freshness for both bounded
