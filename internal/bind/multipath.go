@@ -3055,12 +3055,9 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			carrier.topologyGeneration = pr.contracts.receivedSnapshot().generation
 		}
 		if pr.dataLoss != nil {
-			pr.dataLoss.observeData(
-				carrier.pathID,
-				carrier.pathKey,
-				carrier.source,
-				carrier.topologyGeneration,
-			)
+			// Select the carrier before ObserveFromPath can finalize an older gap, but
+			// do not count this sequence until the resequencer admits it below.
+			pr.dataLoss.observeCarrier(carrier)
 		}
 		if fr := pr.fecRecv.Load(); fr != nil {
 			// FEC on (T24): offer the data shard to the decoder BEFORE resequencing so a
@@ -3070,16 +3067,20 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			// OuterSeq || Payload — the same bytes the sender coded parity over.
 			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
 			recovered, _ := fr.offer(shard)
-			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
 			// Residual-loss accounting (T29): this outer-seq was natively delivered, so mark
 			// it present in the post-recovery loss estimator. A seq never marked here nor via
 			// a reconstruction below is loss that FEC did not mask.
 			if fr.connLoss != nil {
 				fr.connLoss.Observe(f.OuterSeq)
 			}
+			if rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey) && pr.dataLoss != nil {
+				pr.dataLoss.recordNative(f.OuterSeq, carrier)
+			}
 			m.observeRecovered(fr, rq, recovered, srcAP, pr.dataLoss, carrier)
 		} else {
-			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
+			if rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey) && pr.dataLoss != nil {
+				pr.dataLoss.recordNative(f.OuterSeq, carrier)
+			}
 		}
 	case frame.Parity:
 		// PARITY feeds the FEC decoder (T24); a group that has now accumulated enough
@@ -3384,9 +3385,6 @@ func (m *Multipath) observeRecovered(
 		if err != nil {
 			continue
 		}
-		if dataLoss != nil {
-			dataLoss.recordRecovered(seq, carrier)
-		}
 		// Residual-loss accounting (T29): FEC reconstructed this outer-seq, so it is NOT
 		// residual loss — mark it present in the post-recovery estimator even if the
 		// resequencer later drops it as late (that is a latency outcome, not a masking
@@ -3395,6 +3393,9 @@ func (m *Multipath) observeRecovered(
 			fr.connLoss.Observe(seq)
 		}
 		if rq.ObserveRecovered(seq, inner, srcAP) {
+			if dataLoss != nil {
+				dataLoss.recordRecovered(seq, carrier)
+			}
 			fr.deliveredRecovered.Add(1)
 		}
 	}

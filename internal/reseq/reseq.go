@@ -412,7 +412,7 @@ func New(window uint64, timeout time.Duration, clock Clock) *Resequencer {
 // nothing else. src is the outer source address the frame arrived from. Any
 // frames that become deliverable are appended to the ready FIFO for Pop.
 func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
-	r.ingest(seq, payload, src, false, 0)
+	_ = r.ingest(seq, payload, src, false, 0)
 }
 
 // ObserveFromPath ingests one DATA frame carrying an OPAQUE delivering-path
@@ -422,9 +422,11 @@ func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
 // a single delivering path a head-of-line gap is genuine loss and its successors
 // release with ~0 hold; a second distinct key re-arms the full hold. Semantics are
 // otherwise identical to Observe. A real path may compose to key 0, so key 0 is a
-// perfectly valid KNOWN path — distinct from Observe's unknown identity.
-func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.AddrPort, pathKey uint32) {
-	r.ingest(seq, payload, src, true, pathKey)
+// perfectly valid KNOWN path — distinct from Observe's unknown identity. It returns
+// true only when this outer sequence was admitted as a new native outcome; duplicates,
+// stale frames, and suspect discontinuities return false.
+func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.AddrPort, pathKey uint32) bool {
+	return r.ingest(seq, payload, src, true, pathKey)
 }
 
 // SetFECActive toggles whether an FEC decoder is repairing this stream. While FEC
@@ -773,7 +775,7 @@ func (r *Resequencer) effectiveHoldLocked(now time.Time) (time.Duration, bool) {
 // ObserveFromPath (known == true, carrying pathKey). It records the trailing
 // delivering-path evidence before classifying the frame so the head-of-line
 // timeout logic sees the up-to-date single-vs-multi-path state.
-func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, known bool, pathKey uint32) {
+func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, known bool, pathKey uint32) bool {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -802,7 +804,7 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 			r.pendingSrcDrops++
 			if r.pendingSrcDrops <= r.window {
 				r.dropSuspect++
-				return
+				return false
 			}
 		}
 		r.started = true
@@ -819,13 +821,13 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 	// admit adjusts next (window-advance or resync) when warranted and reports
 	// whether the frame now lands inside [next, next+window) and should be placed.
 	if !r.admit(seq, now) {
-		return
+		return false
 	}
 
 	cell := &r.ring[seq%r.window]
 	if cell.occupied && cell.seq == seq {
 		r.dropDup++
-		return
+		return false
 	}
 	fillsGap := r.waiting && seq == r.next
 	cell.seq = seq
@@ -843,6 +845,7 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 
 	r.drain()
 	r.arm(now)
+	return true
 }
 
 // ObserveRecovered ingests a payload the FEC decoder reconstructed from parity (T24).

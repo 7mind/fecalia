@@ -34,8 +34,6 @@ type dataLossFeedbackCoordinator struct {
 	nextReportID      uint64
 	received          uint64
 	lost              uint64
-	haveFinalized     bool
-	finalizedThrough  uint64
 
 	haveAccepted    bool
 	everAccepted    bool
@@ -48,20 +46,18 @@ type dataLossFeedbackCoordinator struct {
 	samplePathID    uint8
 }
 
-func (c *dataLossFeedbackCoordinator) observeData(
-	pathID uint8,
-	pathKey uint32,
-	source netip.AddrPort,
-	topologyGeneration uint64,
-) {
+func (c *dataLossFeedbackCoordinator) observeCarrier(carrier dataLossCarrier) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.selectCarrierLocked(dataLossCarrier{
-		pathID:             pathID,
-		pathKey:            pathKey,
-		source:             source,
-		topologyGeneration: topologyGeneration,
-	})
+	c.selectCarrierLocked(carrier)
+}
+
+// recordNative records an outer sequence only after ObserveFromPath admitted it.
+// The resequencer owns the per-sequence uniqueness decision.
+func (c *dataLossFeedbackCoordinator) recordNative(_ uint64, carrier dataLossCarrier) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.selectCarrierLocked(carrier)
 	c.received++
 }
 
@@ -78,19 +74,11 @@ func (c *dataLossFeedbackCoordinator) selectCarrierLocked(next dataLossCarrier) 
 	}
 }
 
-func (c *dataLossFeedbackCoordinator) recordLost(first, count uint64) {
+func (c *dataLossFeedbackCoordinator) recordLost(_ uint64, count uint64) {
 	c.mu.Lock()
 	if count == 0 {
 		c.mu.Unlock()
 		return
-	}
-	last := first + count - 1
-	if last < first {
-		last = ^uint64(0)
-	}
-	if !c.haveFinalized || last > c.finalizedThrough {
-		c.haveFinalized = true
-		c.finalizedThrough = last
 	}
 	if c.haveCarrier {
 		c.lost += count
@@ -98,12 +86,11 @@ func (c *dataLossFeedbackCoordinator) recordLost(first, count uint64) {
 	c.mu.Unlock()
 }
 
-func (c *dataLossFeedbackCoordinator) recordRecovered(seq uint64, carrier dataLossCarrier) {
+// recordRecovered records an outer sequence only after ObserveRecovered admitted
+// it. A recovered DATA outcome counts as native loss even though FEC repaired it.
+func (c *dataLossFeedbackCoordinator) recordRecovered(_ uint64, carrier dataLossCarrier) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.haveFinalized && seq <= c.finalizedThrough {
-		return
-	}
 	c.selectCarrierLocked(carrier)
 	c.lost++
 }

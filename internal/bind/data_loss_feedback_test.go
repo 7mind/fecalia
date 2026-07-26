@@ -96,15 +96,9 @@ func TestDataLossFeedbackConservesNativeRecoveredAndFinalOutcomes(t *testing.T) 
 		source:             netip.MustParseAddrPort("192.0.2.1:51820"),
 		topologyGeneration: 7,
 	}
-	feedback.observeData(
-		carrier.pathID,
-		carrier.pathKey,
-		carrier.source,
-		carrier.topologyGeneration,
-	)
+	feedback.recordNative(1, carrier)
 	feedback.recordRecovered(2, carrier)
 	feedback.recordLost(3, 1)
-	feedback.recordRecovered(3, carrier)
 
 	report := feedback.buildReport(receivedRecoverySnapshot{
 		present:    true,
@@ -158,8 +152,13 @@ func TestDataLossFeedbackCountsOnlyUniqueAcceptedNativeOutcomes(t *testing.T) {
 	deliver(1) // stale: sequence 1 already released
 
 	m.dataLoss.mu.Lock()
+	carrier := m.dataLoss.carrier
 	topologyGeneration := m.dataLoss.carrier.topologyGeneration
 	m.dataLoss.mu.Unlock()
+	if m.resequencer.Load().ObserveRecovered(2, []byte{2}, source) {
+		m.dataLoss.recordRecovered(2, carrier)
+		t.Fatal("recovered DATA was admitted after the same sequence finalized as lost")
+	}
 	report := m.dataLoss.buildReport(receivedRecoverySnapshot{
 		present:    true,
 		session:    11,
