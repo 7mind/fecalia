@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -122,5 +123,60 @@ func TestDataLossFeedbackConservesNativeRecoveredAndFinalOutcomes(t *testing.T) 
 	}
 	if got, want := report.Loss(), 2.0/3; got != want {
 		t.Fatalf("DATA loss = %v, want %v", got, want)
+	}
+}
+
+// Regression: T324 review round 2 — native duplicates, stale DATA, and late
+// arrivals must not enter the receiver outcome interval as new observations.
+func TestDataLossFeedbackCountsOnlyUniqueAcceptedNativeOutcomes(t *testing.T) {
+	clock := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x5B), clock)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatalf("open multipath: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	m.resequencer.Load().SetMultiPathExpected(true)
+
+	source := netip.MustParseAddrPort("192.0.2.1:51820")
+	deliver := func(seq uint64) {
+		m.dispatchInbound(m.paths[0], frame.Data{
+			OuterSeq: seq,
+			PathID:   m.paths[0].id,
+			Payload:  []byte{byte(seq)},
+		}, nil, source)
+	}
+	deliver(1)
+	deliver(1)
+	deliver(3)
+	clock.advance(resequencerTimeout)
+	for {
+		if _, ok := m.resequencer.Load().Pop(); !ok {
+			break
+		}
+	}
+	deliver(2) // late: sequence 2 already finalized as lost
+	deliver(1) // stale: sequence 1 already released
+
+	m.dataLoss.mu.Lock()
+	topologyGeneration := m.dataLoss.carrier.topologyGeneration
+	m.dataLoss.mu.Unlock()
+	report := m.dataLoss.buildReport(receivedRecoverySnapshot{
+		present:    true,
+		session:    11,
+		validUntil: clock.Now().Add(time.Second),
+		generation: topologyGeneration,
+		message: telemetry.RecoveryContractMessage{
+			ContractID: 12,
+		},
+	}, clock.Now())
+	if report == nil {
+		t.Fatal("DATA outcome interval produced no report")
+	}
+	if report.Received != 2 || report.Lost != 1 {
+		t.Fatalf(
+			"DATA outcome conservation = received %d lost %d, want unique native/final 2/1",
+			report.Received,
+			report.Lost,
+		)
 	}
 }
