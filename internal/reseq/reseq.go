@@ -87,6 +87,20 @@ type Item struct {
 	Src     netip.AddrPort
 }
 
+// RecoveryWindow is the authenticated, receiver-local evidence that may shorten
+// one FEC-active gap. Revision identifies the exact adopted contract/delivery
+// generation; PathKey and Source bind it to the delivery venue that was ACKed.
+// ValidUntil must retain at least the resequencer's conservative timeout when a
+// gap arms.
+type RecoveryWindow struct {
+	Enabled    bool
+	Revision   uint64
+	PathKey    uint32
+	Source     netip.AddrPort
+	Hold       time.Duration
+	ValidUntil time.Time
+}
+
 // slot is one ring cell. A live cell (occupied) holds exactly one buffered DATA
 // frame whose OuterSeq maps to this index; seq is retained so a stale cell (an
 // already-drained seq that shares the index modulo window) is never mistaken for
@@ -162,6 +176,12 @@ type Resequencer struct {
 	waiting  bool
 	deadline time.Time
 	armedAt  time.Time
+	// recoveryArmed records that the current deadline was shortened from the
+	// conservative timeout by one exact authenticated RecoveryWindow snapshot.
+	// A topology/evidence change can only lengthen that live gap back to a fresh
+	// conservative timeout; later evidence never shortens a gap retrospectively.
+	recoveryArmed    bool
+	recoveryRevision uint64
 
 	// Discontinuity/resync guard: the current run of out-of-band (suspect) frames.
 	// resyncSeqs holds the DISTINCT suspect seqs seen in the run (a repeated
@@ -254,20 +274,25 @@ type Resequencer struct {
 	// the measured path RTT (k*SRTT) and installs it via SetHoldBound, already
 	// clamped to [holdBoundFloor, timeout]. Zero means "unset" — arm() then uses
 	// the full construction timeout, so behaviour is byte-identical until the
-	// bind wires a bound in. While fecActive the bound is IGNORED and the full
-	// timeout applies: a parity reconstruction may still fill the gap, and an
-	// RTT-shortened skip would advance the release point past the recovery
-	// (dropping the recovered frame as late), neutralizing FEC.
+	// bind wires a bound in. While fecActive this unauthenticated bound is
+	// IGNORED: a parity reconstruction may still fill the gap. FEC uses the full
+	// timeout unless exact authenticated RecoveryWindow evidence supplies a
+	// shorter service-plus-RTT bound.
 	holdBound time.Duration
 
-	fecActive bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
+	fecActive  bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
+	recoveries []RecoveryWindow
+	notify     func()
+	closed     bool
 	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
 	// scheduler — suppress immediate release entirely (see SetMultiPathExpected for the
 	// retained-pending-measurement rationale, defect D95, tasks:T293 branch 4).
 	multiPathExpected bool
-	pathKnown         bool      // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
-	trailKey          uint32    // the most recently observed known pathKey (the current single-path candidate)
-	trailKeyValid     bool      // trailKey holds a value (at least one known observation since the last reset)
+	pathKnown         bool   // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
+	trailKey          uint32 // the most recently observed known pathKey (the current single-path candidate)
+	trailKeyValid     bool   // trailKey holds a value (at least one known observation since the last reset)
+	trailSrc          netip.AddrPort
+	trailSrcValid     bool
 	multiKeyUntil     time.Time // immediate release stays suppressed until this instant (a second distinct key, or a rebaseline, was seen within the trailing window)
 	multiKeyValid     bool      // multiKeyUntil holds a live suppression deadline
 }
@@ -320,12 +345,23 @@ func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.Addr
 
 // SetFECActive toggles whether an FEC decoder is repairing this stream. While FEC
 // is active a head-of-line gap may still be filled by a parity-reconstructed
-// frame (ObserveRecovered), so immediate release is suppressed entirely and the
-// full hold gives recovery time to land. The bind calls this at FEC setup/teardown.
+// frame (ObserveRecovered), so immediate release is suppressed entirely. The
+// full hold gives recovery time to land unless exact authenticated recovery
+// evidence supplies a shorter window. The bind calls this at FEC setup/teardown.
 func (r *Resequencer) SetFECActive(active bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.fecActive == active {
+		return
+	}
 	r.fecActive = active
+	now := r.clock.Now()
+	if !active {
+		r.expire(now)
+	} else if _, eligible := r.recoveryEligibleLocked(now); r.waiting && !eligible {
+		r.rearmConservativeLocked(now)
+	}
+	r.notifyLocked()
 }
 
 // SetMultiPathExpected marks this stream as one whose sender runs an AGGREGATING
@@ -344,7 +380,14 @@ func (r *Resequencer) SetFECActive(active bool) {
 func (r *Resequencer) SetMultiPathExpected(expected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.multiPathExpected == expected {
+		return
+	}
 	r.multiPathExpected = expected
+	if expected && r.waiting && r.recoveryArmed {
+		r.rearmConservativeLocked(r.clock.Now())
+	}
+	r.notifyLocked()
 }
 
 // SetHoldBound installs the dynamic per-gap hold (T241, D93): the bind derives it
@@ -352,8 +395,9 @@ func (r *Resequencer) SetMultiPathExpected(expected bool) {
 // small multiple of its real reorder horizon per genuine multi-path gap instead
 // of the fixed construction timeout. The bound is clamped to
 // [holdBoundFloor, timeout] — the construction timeout stays the worst-case cap —
-// and is IGNORED while FEC is active (see holdBound). Safe to call at any cadence
-// from the bind's telemetry loop.
+// and is IGNORED while FEC is active (see holdBound); FEC recovery windows use
+// separate authenticated evidence. Safe to call at any cadence from the bind's
+// telemetry loop.
 func (r *Resequencer) SetHoldBound(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -366,14 +410,113 @@ func (r *Resequencer) SetHoldBound(d time.Duration) {
 	r.holdBound = d
 }
 
-// effectiveHoldLocked returns the per-gap hold arm() applies: the full
-// construction timeout when FEC is active or no dynamic bound is installed,
-// otherwise the clamped RTT-derived bound. Caller holds r.mu.
-func (r *Resequencer) effectiveHoldLocked() time.Duration {
-	if r.fecActive || r.holdBound == 0 {
-		return r.timeout
+// SetRecoveryWindow publishes the current authenticated recovery evidence.
+// Evidence that arrives after a conservative gap armed never shortens that gap.
+// Invalidating or changing the evidence of a fast-armed gap re-arms it from now
+// for the full conservative timeout.
+func (r *Resequencer) SetRecoveryWindow(window RecoveryWindow) {
+	r.SetRecoveryWindows([]RecoveryWindow{window})
+}
+
+// SetRecoveryWindows publishes the current per-venue authenticated recovery
+// evidence. Multiple paths may successfully carry the same peer-scoped ACK;
+// each remains independently usable without the most recent ACK displacing the
+// others.
+func (r *Resequencer) SetRecoveryWindows(windows []RecoveryWindow) {
+	now := r.clock.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := len(r.recoveries) != len(windows)
+	if !changed {
+		for i := range windows {
+			if r.recoveries[i] != windows[i] {
+				changed = true
+				break
+			}
+		}
 	}
-	return r.holdBound
+	r.recoveries = append(r.recoveries[:0], windows...)
+	if r.waiting && r.recoveryArmed {
+		recovery, eligible := r.recoveryEligibleLocked(now)
+		if !eligible || recovery.Revision != r.recoveryRevision {
+			r.rearmConservativeLocked(now)
+		}
+	}
+	if changed {
+		r.notifyLocked()
+	}
+}
+
+// SetNotifier installs the non-blocking change notification used by the Bind's
+// single receive drainer. The callback must not call back into this Resequencer.
+func (r *Resequencer) SetNotifier(notify func()) {
+	r.mu.Lock()
+	r.notify = notify
+	r.mu.Unlock()
+}
+
+// ArmedDeadline returns the exact deadline of the current head-of-line gap.
+func (r *Resequencer) ArmedDeadline() (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.waiting {
+		return time.Time{}, false
+	}
+	return r.deadline, r.waiting
+}
+
+// Close publishes teardown to any receiver parked on this resequencer.
+func (r *Resequencer) Close() {
+	r.mu.Lock()
+	if !r.closed {
+		r.closed = true
+		r.endHoldLocked(r.clock.Now())
+		r.notifyLocked()
+	}
+	r.mu.Unlock()
+}
+
+// notifyLocked publishes an edge after every deadline-affecting transition.
+// Production supplies a non-blocking coalescing channel send.
+func (r *Resequencer) notifyLocked() {
+	if r.notify != nil {
+		r.notify()
+	}
+}
+
+func (r *Resequencer) recoveryEligibleLocked(now time.Time) (RecoveryWindow, bool) {
+	if !r.fecActive || r.multiPathExpected || !r.pathKnown ||
+		!r.trailKeyValid || !r.trailSrcValid {
+		return RecoveryWindow{}, false
+	}
+	if r.multiKeyValid && now.Before(r.multiKeyUntil) {
+		return RecoveryWindow{}, false
+	}
+	for _, window := range r.recoveries {
+		if !window.Enabled || window.Revision == 0 ||
+			window.Hold < 0 || window.Hold >= r.timeout ||
+			r.trailKey != window.PathKey || r.trailSrc != window.Source ||
+			window.ValidUntil.Before(now.Add(r.timeout)) {
+			continue
+		}
+		return window, true
+	}
+	return RecoveryWindow{}, false
+}
+
+// effectiveHoldLocked returns the per-gap hold arm() applies and whether the
+// exact authenticated recovery window supplied it. Caller holds r.mu.
+func (r *Resequencer) effectiveHoldLocked(now time.Time) (time.Duration, bool) {
+	if r.fecActive {
+		if recovery, eligible := r.recoveryEligibleLocked(now); eligible {
+			return recovery.Hold, true
+		}
+		return r.timeout, false
+	}
+	if r.holdBound == 0 {
+		return r.timeout, false
+	}
+	return r.holdBound, false
 }
 
 // ingest is the shared body of Observe (known == false, unknown identity) and
@@ -388,9 +531,13 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 	// Record the delivering-path identity FIRST, so a second distinct key arriving
 	// with this frame re-arms the full hold before expire() decides the gap below.
 	if known {
-		r.trackPathKey(pathKey, now)
+		r.trackPathKey(pathKey, src, now)
 	} else {
 		r.pathKnown = false
+		r.trailSrcValid = false
+		if r.waiting && r.recoveryArmed {
+			r.rearmConservativeLocked(now)
+		}
 	}
 
 	if !r.started {
@@ -721,6 +868,19 @@ func (r *Resequencer) endHoldLocked(now time.Time) {
 		r.holdNanos += uint64(d.Nanoseconds())
 	}
 	r.waiting = false
+	r.recoveryArmed = false
+	r.recoveryRevision = 0
+	r.notifyLocked()
+}
+
+func (r *Resequencer) rearmConservativeLocked(now time.Time) {
+	if !r.waiting {
+		return
+	}
+	r.deadline = now.Add(r.timeout)
+	r.recoveryArmed = false
+	r.recoveryRevision = 0
+	r.notifyLocked()
 }
 
 // expire skips a head-of-line gap whose hold time has elapsed — or, over a single
@@ -778,9 +938,16 @@ func (r *Resequencer) arm(now time.Time) {
 	if !headPresent && r.buf > 0 {
 		if !r.waiting {
 			r.waiting = true
-			r.deadline = now.Add(r.effectiveHoldLocked())
+			hold, recoveryArmed := r.effectiveHoldLocked(now)
+			r.deadline = now.Add(hold)
 			r.armedAt = now
+			r.recoveryArmed = recoveryArmed
+			if recoveryArmed {
+				recovery, _ := r.recoveryEligibleLocked(now)
+				r.recoveryRevision = recovery.Revision
+			}
 			r.holds++
+			r.notifyLocked()
 		}
 	} else {
 		// The head is now present (the gap was FILLED) or the buffer emptied: accrue
@@ -798,17 +965,28 @@ func (r *Resequencer) arm(now time.Time) {
 // pushing the deadline forward, so immediate release never flaps on. A garbled or
 // spoofed sender PathID can only ADD distinct keys, which only ever FORCES the
 // conservative full hold — DoS-neutral, never unsafe. Caller holds r.mu.
-func (r *Resequencer) trackPathKey(key uint32, now time.Time) {
+func (r *Resequencer) trackPathKey(key uint32, src netip.AddrPort, now time.Time) {
 	r.pathKnown = true
 	if !r.trailKeyValid {
 		r.trailKey = key
 		r.trailKeyValid = true
+		r.trailSrc = src
+		r.trailSrcValid = true
 		return
 	}
 	if key != r.trailKey {
 		r.multiKeyUntil = now.Add(singleSourceTrailingWindow)
 		r.multiKeyValid = true
 		r.trailKey = key
+	}
+	if !r.trailSrcValid || src != r.trailSrc {
+		r.trailSrc = src
+		r.trailSrcValid = true
+	}
+	if r.waiting && r.recoveryArmed {
+		if _, eligible := r.recoveryEligibleLocked(now); !eligible {
+			r.rearmConservativeLocked(now)
+		}
 	}
 }
 
@@ -822,6 +1000,8 @@ func (r *Resequencer) resetPathTracking(now time.Time) {
 	r.pathKnown = false
 	r.trailKeyValid = false
 	r.trailKey = 0
+	r.trailSrc = netip.AddrPort{}
+	r.trailSrcValid = false
 	r.multiKeyUntil = now.Add(singleSourceTrailingWindow)
 	r.multiKeyValid = true
 }
@@ -935,6 +1115,7 @@ func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
+	r.recoveries = nil
 	for i := range r.ring {
 		r.ring[i] = slot{}
 	}
@@ -959,6 +1140,7 @@ func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
 	r.pendingSrcDrops = 0
 	r.resyncReset()
 	r.rebaselines++
+	r.notifyLocked()
 }
 
 // RebaselineToLow re-baselines the release point for a PEER RESTART (T119) using a
@@ -1001,6 +1183,7 @@ func (r *Resequencer) RebaselineToLow() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
+	r.recoveries = nil
 	for i := range r.ring {
 		r.ring[i] = slot{}
 	}
@@ -1033,6 +1216,7 @@ func (r *Resequencer) RebaselineToLow() {
 		// a no-op (started is already false).
 		r.started = false
 	}
+	r.notifyLocked()
 }
 
 // smallestBuffered scans the ring for the lowest occupied seq at or above next.

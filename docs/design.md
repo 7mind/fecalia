@@ -600,6 +600,31 @@ window; loss of that renewal returns service to conservative mode before the
 old lease has less than `T` validity. OFFER loss likewise rotates again before
 expiry. Thus fallback controls DATA admission while OFFER/lease validity remains
 a separate state machine.
+
+The receiver uses that acknowledged service to bound FEC head-of-line recovery,
+not merely sender admission. It records evidence only after the exact ACK write
+completes successfully, bound to the adopted peer `SessionID`, exact
+`ContractID`, composite delivery `pathKey`, and source address. For stable
+active-backup delivery with `0<A<T`, fixed `F=1200ms`, and at least `T`
+remaining in both the contract and every currently-Up path's authenticated RTT
+sample, it computes
+
+`H = clamp(4 * max(SRTT of currently-Up paths), 10ms, T)`
+
+and arms a newly observed matching gap for `W=min(T,A+H)`. The ACK delivery path
+must belong to that qualified Up set. Successful ACK venues are retained
+independently for the current peer-scoped contract, so an ACK on a standby path
+does not displace valid primary-path evidence. Missing or stale RTT, a failed/unwritten
+ACK, a different composite key/source, weighted aggregation, `A>=T`, or a
+saturated `A+H` retains `T`. Bootstrap, padded, replayed, malformed, or
+inconsistent control traffic cannot create new fast evidence. Evidence arriving
+after a conservative gap armed never shortens
+that live gap. A membership, roam, contract, adopted-session, or rebaseline
+transition clears the fast evidence; a fast-armed gap re-arms from the
+transition time for a fresh `T`. FEC repair remains unchanged:
+`ObserveRecovered` may fill the missing sequence only in the half-open interval
+before expiry (`W-1ns` succeeds; at `W` the gap has expired).
+
 Deadline/writer failure and Close invalidate the acknowledged contract and wake
 barrier waiters. Each asynchronous deadline or socket failure carries the exact
 Bind Open-generation token that admitted it; the token is checked before
@@ -1293,14 +1318,14 @@ WireGuard anti-replay window sees the traffic — critical, because WG would
 otherwise drop legitimately-reordered datagrams. It runs its **own outer sequence
 space** and never touches the inner WireGuard counter (a core invariant).
 
-**Head-of-line hold model (D93).** When a gap opens at the release point the
+**Head-of-line hold model (D93/T314).** When a gap opens at the release point the
 resequencer holds the frames behind it just long enough for a straggler on a
 slower path to arrive, then skips the gap (counts those seqs lost) and releases.
 The hold duration is **not** a fixed 250 ms — that value is now the worst-case
 **cap**, `resequencerTimeout` (`internal/bind/multipath.go`), not the amount every
 gap waits. Two regimes set the actual hold:
 
-1. **RTT-adaptive per-gap hold (multi-path).** While two or more paths are
+1. **RTT-adaptive per-gap hold (non-FEC multi-path).** While two or more paths are
    delivering, the bind derives the hold from measured RTT and installs it via
    `Resequencer.SetHoldBound`: `holdBoundRTTMultiple` (4) × the **max** smoothed
    RTT across the peer's probed paths (that max bounds how far a genuine
@@ -1308,9 +1333,7 @@ gap waits. Two regimes set the actual hold:
    `[holdBoundFloor` (10 ms)`, resequencerTimeout` (250 ms)`]`. So a low-RTT bond
    pays a proportionally small reorder hold per gap while the 250 ms cap is
    preserved for a slow path; a path with no RTT sample yet leaves the bound
-   unset and the resequencer keeps the full cap (conservative). While FEC is
-   active the full cap is kept regardless, so a parity-recovered frame
-   (`ObserveRecovered`) still has time to fill a held gap before it is skipped.
+   unset and the resequencer keeps the full cap (conservative).
 2. **Single-delivering-path immediate release.** When exactly ONE delivering
    path has been observed over the trailing `singleSourceTrailingWindow`
    (500 ms — sized at 2× the 250 ms straggler cap, and it doubles as the re-arm
@@ -1333,6 +1356,15 @@ gap waits. Two regimes set the actual hold:
    link-bound (a beefier host, or the real two-host setup) is what would
    revisit it; active-backup — the D93 field case — keeps the full fast
    path); and a rebaseline (below) resets the trailing evidence.
+3. **Authenticated FEC recovery window.** FEC still suppresses the zero-hold
+   path because parity may repair the missing frame. On a stable one-key
+   active-backup path, however, the exact acknowledged recovery contract and
+   fresh authenticated RTT evidence described above arm `W=min(T,A+H)` instead
+   of always waiting `T`. The window matches the exact composite path key and
+   source. A second key, source change, evidence invalidation, or rebaseline can
+   only lengthen an already-fast gap by re-arming a fresh `T`; later evidence
+   never shortens a conservative live gap. Weighted FEC and every uncertain
+   input retain `T`.
 
 This directly disarms the D93 amplifier — a single-path head-of-line stall that
 turned ordinary loss into a 250 ms-per-gap latency multiplier — without
@@ -1353,8 +1385,10 @@ the denominator and numerator of the mean hold, and
 releases **distinctly** from timeout skips. `wanbond_resequencer_skipped_seqs_total`
 keeps its meaning — total seqs treated as lost, by any mechanism — so rising
 `immediate_releases` alongside `skipped` reads as *the D93 amplifier disarmed on a
-single path*, while `skipped` rising with `immediate_releases` flat is a genuine
-timeout head-of-line stall.
+non-FEC single path*. With FEC active, `hol_hold_seconds_total /
+hol_holds_total` includes authenticated `W` holds as well as conservative `T`
+holds; `immediate_releases_total` remains flat because FEC never uses the
+zero-hold path.
 
 **Two trusted re-anchor triggers, plus an unauthenticated corroboration fallback.**
 A DATA frame is unauthenticated, so the release point is normally moved only by

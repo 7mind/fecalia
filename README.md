@@ -114,6 +114,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   running service unchanged. A daemon restart establishes a new authenticated
   SessionID; any engine-driven Close/Open within one process advertises a new
   ContractID while preserving that process's sequence spaces.
+  On a stable active-backup FEC receive path, that exact ACK also authorizes a
+  shorter head-of-line recovery window
+  `W=min(250ms, A+clamp(4*max(SRTT),10ms,250ms))`. The receiver uses it only
+  while the ACK's composite path/source and every currently-Up path's
+  authenticated RTT sample remain fresh for at least 250 ms; missing, stale,
+  changed, weighted, or otherwise uncertain evidence keeps the 250 ms fallback.
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness,
@@ -283,7 +289,11 @@ deliberate boundaries you must plan around:
   bounded mailbox, irrespective of its offload-frame count. Compatible shaped frames from one
   decided group that naturally uses one exclusive path transfers ownership to
   that path shaper as one recovery tranche. Mixed-path/shared-socket groups keep
-  the conservative receiver fallback. Encoded DATA and
+  the conservative receiver fallback. An exact successfully written ACK for
+  that service can shorten a stable active-backup receiver gap to `A` plus
+  four times the maximum fresh Up-path SRTT (10 ms floor, 250 ms cap); evidence
+  uncertainty, path/source change, rebaseline, or weighted scheduling uses the
+  full 250 ms. Encoded DATA and
   every decided FEC parity datagram
   consume their exact byte length. A recovery cut orders the retained
   lower-OuterSeq prefix and already-admitted priority, then the complete group

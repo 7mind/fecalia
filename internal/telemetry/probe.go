@@ -120,6 +120,8 @@ type Prober struct {
 	learnedChallenge uint64
 	est              *Estimator
 	live             *Liveness
+	lastRTTSample    time.Time
+	haveRTTSample    bool
 }
 
 // NewProber builds a Prober for one path. sessionID is this node's per-boot
@@ -282,13 +284,16 @@ func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 	// fresh echoes update it, so a replayed old echo can never roll the learned
 	// challenge backward and stall re-adoption.
 	p.learnedChallenge = probe.Challenge
-	rtt := p.clock.Now().Sub(time.Unix(0, probe.TimestampNanos))
+	now := p.clock.Now()
+	rtt := now.Sub(time.Unix(0, probe.TimestampNanos))
 	if rtt < 0 {
 		// A negative sample can only come from clock skew between send and receive;
 		// clamp rather than poison the EWMA with a negative RTT.
 		rtt = 0
 	}
 	p.est.ObserveRTT(rtt)
+	p.lastRTTSample = now
+	p.haveRTTSample = true
 	p.live.RecordEcho()
 	return probe, nil
 }
@@ -313,6 +318,35 @@ func (p *Prober) State() PathState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.live.State()
+}
+
+// RecoveryRTTSnapshot is the authenticated RTT evidence available to the
+// receiver recovery-window decision. FreshUntil uses the liveness DownAfter
+// horizon, not RideThrough: a sample too old to keep the base path heartbeat
+// current cannot shorten a receive gap.
+type RecoveryRTTSnapshot struct {
+	RTT        time.Duration
+	SampledAt  time.Time
+	FreshUntil time.Time
+	State      PathState
+	Present    bool
+}
+
+// RecoveryRTT returns one coherent snapshot under the Prober lock. Only a
+// successful fresh echo updates SampledAt.
+func (p *Prober) RecoveryRTT() RecoveryRTTSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	snapshot := RecoveryRTTSnapshot{
+		RTT:     p.est.Estimate().RTT,
+		State:   p.live.State(),
+		Present: p.haveRTTSample,
+	}
+	if p.haveRTTSample {
+		snapshot.SampledAt = p.lastRTTSample
+		snapshot.FreshUntil = p.lastRTTSample.Add(p.live.cfg.DownAfter)
+	}
+	return snapshot
 }
 
 // PathID returns this path's stable on-wire probe stamp, set at construction and

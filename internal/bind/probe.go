@@ -58,8 +58,9 @@ func (m *Multipath) emitProbes() {
 	// this probe cadence — the natural per-path telemetry consult point, never the
 	// per-datagram hot path.
 	type holdUpdate struct {
-		rq  *reseq.Resequencer
-		prs []*telemetry.Prober
+		peer *peerState
+		rq   *reseq.Resequencer
+		prs  []*telemetry.Prober
 	}
 	targets := make([]target, 0, len(m.paths))
 	holds := make([]holdUpdate, 0, len(m.peers))
@@ -78,7 +79,7 @@ func (m *Multipath) emitProbes() {
 				}
 			}
 			if len(prs) > 0 {
-				holds = append(holds, holdUpdate{rq: rq, prs: prs})
+				holds = append(holds, holdUpdate{peer: p, rq: rq, prs: prs})
 			}
 		}
 	}
@@ -186,6 +187,11 @@ func (m *Multipath) emitProbes() {
 			}
 		}
 		t.pr.Tick()
+	}
+	if m.fecCfg != nil {
+		for _, h := range holds {
+			m.refreshPeerRecoveryWindow(h.peer)
+		}
 	}
 	// Eager failover nudge (defect D18): recompute the scheduler's active egress path
 	// each probe cadence so a liveness DOWN switches egress even when no application

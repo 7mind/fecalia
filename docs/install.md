@@ -496,6 +496,14 @@ Common rules, either policy:
   `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+10ms`. Finite nonnegative
   nanosecond quotients and the slack addition must fit `time.Duration` before
   conversion; it requires `A<250ms`.
+  After the peer successfully writes the exact authenticated ACK, a stable
+  active-backup FEC receiver may use
+  `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))` for a matching
+  head-of-line gap. The contract and each currently-Up path's authenticated RTT
+  sample must retain at least 250 ms of validity, and the ACK's composite
+  path/source must still match delivery. Until then—and after a path/source,
+  membership, contract, session, or rebaseline transition—the receiver keeps
+  the conservative 250 ms hold. Weighted scheduling always keeps that fallback.
   At recovery admission the socket receives one absolute
   `cutStart+10ms` deadline before the cut becomes visible; that same deadline
   covers any blocked predecessor and every tranche syscall. Install failure or

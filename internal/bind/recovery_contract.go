@@ -1,15 +1,21 @@
 package bind
 
 import (
+	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/7mind/wanbond/internal/reseq"
+	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 const (
 	conservativeRecoveryService = 250 * time.Millisecond
 	recoveryRenewBefore         = 2 * conservativeRecoveryService
+	recoveryRTTFloor            = 10 * time.Millisecond
+	recoveryRTTMultiple         = 4
 )
 
 type sentRecoveryOffer struct {
@@ -34,6 +40,35 @@ type receivedRecoveryContract struct {
 	message    telemetry.RecoveryContractMessage
 	acceptedAt time.Time
 	invalid    bool
+	venues     map[recoveryVenueKey]uint64
+}
+
+type recoveryVenueKey struct {
+	pathKey uint32
+	source  netip.AddrPort
+}
+
+type receivedRecoveryVenue struct {
+	recoveryVenueKey
+	revision uint64
+}
+
+type receivedRecoverySnapshot struct {
+	session    uint64
+	message    telemetry.RecoveryContractMessage
+	validUntil time.Time
+	venues     []receivedRecoveryVenue
+	acked      bool
+	invalid    bool
+}
+
+func (s receivedRecoverySnapshot) hasRoamedVenue(pathKey uint32, source netip.AddrPort) bool {
+	for _, venue := range s.venues {
+		if venue.pathKey == pathKey && venue.source != source {
+			return true
+		}
+	}
+	return false
 }
 
 // recoveryContractCoordinator is the peer-scoped owner of both directions of
@@ -57,9 +92,12 @@ type recoveryContractCoordinator struct {
 	leaseUntil  time.Time
 	invalidated bool
 
-	haveReceived    bool
-	receivedSession uint64
-	received        receivedRecoveryContract
+	haveReceived       bool
+	receivedSession    uint64
+	received           receivedRecoveryContract
+	receivedRevision   uint64
+	haveAdoptedSession bool
+	adoptedSession     uint64
 }
 
 func newRecoveryContractCoordinator(session uint64, clock fecOwnerClock) *recoveryContractCoordinator {
@@ -142,8 +180,107 @@ func (c *recoveryContractCoordinator) disable() {
 	c.leaseUntil = time.Time{}
 	c.invalidated = false
 	c.offer = nil
+	c.haveReceived = false
+	c.receivedSession = 0
+	c.received = receivedRecoveryContract{}
+	c.haveAdoptedSession = false
+	c.adoptedSession = 0
+	c.bumpReceivedRevisionLocked()
 	c.notifyLocked()
 	c.mu.Unlock()
+}
+
+// adoptReceivedSession pins the peer-wide process epoch after the reflector's
+// live-challenge adoption. A path that still accepts an old per-path session
+// cannot subsequently restore old receiver evidence.
+func (c *recoveryContractCoordinator) adoptReceivedSession(session uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.haveAdoptedSession && c.adoptedSession == session {
+		return
+	}
+	c.invalidateReceivedEvidenceLocked()
+	c.haveAdoptedSession = true
+	c.adoptedSession = session
+	c.bumpReceivedRevisionLocked()
+}
+
+func (c *recoveryContractCoordinator) bumpReceivedRevisionLocked() {
+	c.receivedRevision++
+	if c.receivedRevision == 0 {
+		c.receivedRevision++
+	}
+}
+
+// invalidateReceivedEvidence revokes only the fast receiver evidence. The
+// accepted ContractID high-water remains intact, so an ordinary exact re-ACK
+// restores evidence without permitting a lower or inconsistent identity.
+func (c *recoveryContractCoordinator) invalidateReceivedEvidence() {
+	c.mu.Lock()
+	c.invalidateReceivedEvidenceLocked()
+	c.mu.Unlock()
+}
+
+func (c *recoveryContractCoordinator) invalidateReceivedEvidenceLocked() {
+	if !c.haveReceived || len(c.received.venues) == 0 {
+		return
+	}
+	c.received.venues = nil
+	c.bumpReceivedRevisionLocked()
+}
+
+func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.haveReceived {
+		return receivedRecoverySnapshot{}
+	}
+	snapshot := receivedRecoverySnapshot{
+		session:    c.receivedSession,
+		message:    c.received.message,
+		validUntil: c.received.acceptedAt.Add(c.received.message.Lifetime),
+		acked:      len(c.received.venues) > 0,
+		invalid:    c.received.invalid,
+	}
+	for venue, revision := range c.received.venues {
+		snapshot.venues = append(snapshot.venues, receivedRecoveryVenue{
+			recoveryVenueKey: venue,
+			revision:         revision,
+		})
+	}
+	sort.Slice(snapshot.venues, func(i, j int) bool {
+		if snapshot.venues[i].pathKey != snapshot.venues[j].pathKey {
+			return snapshot.venues[i].pathKey < snapshot.venues[j].pathKey
+		}
+		return snapshot.venues[i].source.String() < snapshot.venues[j].source.String()
+	})
+	return snapshot
+}
+
+// recordReceivedACK makes receiver evidence usable only after the exact typed
+// ACK has completed successfully on the exact composite delivery venue.
+func (c *recoveryContractCoordinator) recordReceivedACK(
+	session uint64,
+	message telemetry.RecoveryContractMessage,
+	pathKey uint32,
+	source netip.AddrPort,
+) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.haveReceived || c.received.invalid ||
+		c.receivedSession != session || c.received.message != message ||
+		!source.IsValid() {
+		return false
+	}
+	venue := recoveryVenueKey{pathKey: pathKey, source: source}
+	if _, exists := c.received.venues[venue]; !exists {
+		if c.received.venues == nil {
+			c.received.venues = make(map[recoveryVenueKey]uint64)
+		}
+		c.bumpReceivedRevisionLocked()
+		c.received.venues[venue] = c.receivedRevision
+	}
+	return true
 }
 
 // invalidateForTransition immediately revokes fast recovery and blocks new DATA
@@ -338,6 +475,9 @@ func (c *recoveryContractCoordinator) acceptOffer(
 	now := c.clock.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.haveAdoptedSession && c.adoptedSession != session {
+		return telemetry.RecoveryContractMessage{}, false
+	}
 	if c.haveReceived && c.receivedSession == session {
 		existing := c.received
 		if message.ContractID < existing.message.ContractID {
@@ -348,9 +488,12 @@ func (c *recoveryContractCoordinator) acceptOffer(
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			if existing.message != message {
+				c.invalidateReceivedEvidenceLocked()
 				install()
 				existing.invalid = true
+				existing.venues = nil
 				c.received = existing
+				c.bumpReceivedRevisionLocked()
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			if existing.acceptedAt.Add(existing.message.Lifetime).Sub(now) < conservativeRecoveryService {
@@ -362,6 +505,7 @@ func (c *recoveryContractCoordinator) acceptOffer(
 		}
 		if sameRecoveryService(existing.message, message) {
 			c.received = receivedRecoveryContract{message: message, acceptedAt: now}
+			c.bumpReceivedRevisionLocked()
 			ack := message
 			ack.Type = telemetry.RecoveryContractACK
 			return ack, true
@@ -371,10 +515,12 @@ func (c *recoveryContractCoordinator) acceptOffer(
 	if message.Lifetime < conservativeRecoveryService {
 		return telemetry.RecoveryContractMessage{}, false
 	}
+	c.invalidateReceivedEvidenceLocked()
 	install()
 	c.haveReceived = true
 	c.receivedSession = session
 	c.received = receivedRecoveryContract{message: message, acceptedAt: now}
+	c.bumpReceivedRevisionLocked()
 	ack := message
 	ack.Type = telemetry.RecoveryContractACK
 	return ack, true
@@ -386,6 +532,119 @@ func sameRecoveryService(left, right telemetry.RecoveryContractMessage) bool {
 	left.ContractID = 0
 	right.ContractID = 0
 	return left == right
+}
+
+func recoveryRTTHeadroom(maxRTT time.Duration) time.Duration {
+	if maxRTT <= recoveryRTTFloor/recoveryRTTMultiple {
+		return recoveryRTTFloor
+	}
+	if maxRTT >= conservativeRecoveryService/recoveryRTTMultiple {
+		return conservativeRecoveryService
+	}
+	return recoveryRTTMultiple * maxRTT
+}
+
+func recoveryWindow(service, headroom time.Duration) time.Duration {
+	if service >= conservativeRecoveryService-headroom {
+		return conservativeRecoveryService
+	}
+	return service + headroom
+}
+
+// refreshPeerRecoveryWindow derives the receiver hold from one coherent set of
+// authenticated contract, delivery-venue, liveness, and RTT snapshots. It takes
+// no bind lock while entering the resequencer.
+func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
+	if m.fecCfg == nil || peer == nil || peer.contracts == nil {
+		return
+	}
+	m.mu.Lock()
+	found := false
+	for _, candidate := range m.peers {
+		if candidate == peer {
+			found = true
+			break
+		}
+	}
+	rq := peer.resequencer.Load()
+	paths := append([]*peerPathState(nil), peer.paths...)
+	scheduler := peer.scheduler
+	m.mu.Unlock()
+	if !found || rq == nil {
+		return
+	}
+
+	contract := peer.contracts.receivedSnapshot()
+	now := m.clock.Now()
+	if !contract.acked || contract.invalid ||
+		!contract.message.Enabled ||
+		contract.message.Lifetime != telemetry.RecoveryContractLifetime ||
+		contract.message.ServiceBound <= 0 ||
+		contract.message.ServiceBound >= conservativeRecoveryService ||
+		contract.validUntil.Sub(now) < conservativeRecoveryService {
+		rq.SetRecoveryWindows(nil)
+		return
+	}
+	if _, weighted := scheduler.(*sched.WeightedScheduler); weighted {
+		rq.SetRecoveryWindows(nil)
+		return
+	}
+
+	haveQualified := false
+	qualifiedPathIDs := make(map[uint8]struct{}, len(paths))
+	maxRTT := time.Duration(0)
+	validUntil := contract.validUntil
+	for _, path := range paths {
+		if path.prober == nil {
+			rq.SetRecoveryWindows(nil)
+			return
+		}
+		evidence := path.prober.RecoveryRTT()
+		if evidence.State != telemetry.StateUp {
+			continue
+		}
+		if !evidence.Present ||
+			evidence.FreshUntil.Sub(now) < conservativeRecoveryService {
+			rq.SetRecoveryWindows(nil)
+			return
+		}
+		haveQualified = true
+		qualifiedPathIDs[path.id] = struct{}{}
+		if evidence.RTT > maxRTT {
+			maxRTT = evidence.RTT
+		}
+		if evidence.FreshUntil.Before(validUntil) {
+			validUntil = evidence.FreshUntil
+		}
+	}
+	if !haveQualified {
+		rq.SetRecoveryWindows(nil)
+		return
+	}
+
+	hold := recoveryWindow(contract.message.ServiceBound, recoveryRTTHeadroom(maxRTT))
+	if hold >= conservativeRecoveryService {
+		rq.SetRecoveryWindows(nil)
+		return
+	}
+	windows := make([]reseq.RecoveryWindow, 0, len(contract.venues))
+	for _, venue := range contract.venues {
+		if !venue.source.IsValid() {
+			continue
+		}
+		if _, qualified := qualifiedPathIDs[uint8(venue.pathKey>>8)]; !qualified {
+			continue
+		}
+		windows = append(windows, reseq.RecoveryWindow{
+			Enabled:    true,
+			Revision:   venue.revision,
+			PathKey:    venue.pathKey,
+			Source:     venue.source,
+			Hold:       hold,
+			ValidUntil: validUntil,
+		})
+	}
+	rq.SetRecoveryWindows(windows)
 }
 
 // beginPeerRecoveryContractLocked snapshots the complete selectable writer
@@ -461,9 +720,17 @@ func (m *Multipath) finishPeerServiceTransition(peers []*peerState, rotate bool)
 			}
 		}
 		m.mu.Unlock()
+		for _, peer := range peers {
+			peer.contracts.invalidateReceivedEvidence()
+		}
 	}
 	for index := len(peers) - 1; index >= 0; index-- {
 		peers[index].serviceGate.Unlock()
+	}
+	if rotate {
+		for _, peer := range peers {
+			m.refreshPeerRecoveryWindow(peer)
+		}
 	}
 	return firstErr
 }
@@ -618,6 +885,10 @@ func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, gener
 	m.transitionMu.Unlock()
 	if err != nil {
 		m.log.Error("bind: recovery contract rotation failed", "error", err)
+	}
+	if active {
+		peer.contracts.invalidateReceivedEvidence()
+		m.refreshPeerRecoveryWindow(peer)
 	}
 	m.finishInvalidatedPeerRecoveryWorker(peer, requested)
 }

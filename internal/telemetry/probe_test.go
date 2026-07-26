@@ -96,6 +96,18 @@ func TestProbeEchoRTT(t *testing.T) {
 	if got := p.Estimate().RTT; got != rtt {
 		t.Fatalf("measured RTT = %v, want %v", got, rtt)
 	}
+	snapshot := p.RecoveryRTT()
+	if !snapshot.Present || snapshot.SampledAt != clk.Now() ||
+		snapshot.FreshUntil != clk.Now().Add(proberCfg().Liveness.DownAfter) {
+		t.Fatalf("recovery RTT snapshot = %+v, want injected-clock sample/freshness", snapshot)
+	}
+	clk.advance(time.Second)
+	if err := p.HandleEcho(echo); !errors.Is(err, ErrReplay) {
+		t.Fatalf("replayed echo = %v, want ErrReplay", err)
+	}
+	if got := p.RecoveryRTT().SampledAt; got != snapshot.SampledAt {
+		t.Fatalf("replay refreshed RTT timestamp from %v to %v", snapshot.SampledAt, got)
+	}
 }
 
 // TestForgedProbeRejected asserts a tampered echo fails the PSK HMAC (frame.ErrAuth)

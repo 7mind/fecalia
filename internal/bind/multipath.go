@@ -1241,6 +1241,7 @@ type Multipath struct {
 	afterCloseFECDetach                func()
 	afterRecoveryRetire                func(*sharedPathState)
 	afterRecoveryTransitionCaptureMiss func(*peerState, uint64, uint64)
+	beforeReceivePark                  func(time.Time)
 
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then
@@ -2111,6 +2112,11 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 	// per Open so a Close→Open cycle starts clean.
 	m.deliverSignal = make(chan struct{}, 1)
 	m.recvClosed = make(chan struct{})
+	for _, peer := range m.peers {
+		if rq := peer.resequencer.Load(); rq != nil {
+			rq.SetNotifier(resequencerNotifier(m.deliverSignal))
+		}
+	}
 	for _, ps := range m.paths {
 		m.readersWG.Add(1)
 		go m.readLoop(ps, m.deliverSignal)
@@ -2140,7 +2146,7 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// receives after this bring-up, so a Close→Open cycle (or reconnect) never wedges on a
 	// stale high-water outer-seq. Published atomically so the peer's per-path readLoop
 	// goroutines read it WITHOUT m.mu.
-	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, m.clock))
 	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
 
 	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
@@ -2289,13 +2295,23 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 		}
 		ps.fecSend.Store(fs)
 	}
-	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, m.clock))
+	ps.resequencer.Load().SetNotifier(resequencerNotifier(m.deliverSignal))
 	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
 	if fr != nil {
 		// D93/T241: FEC is repairing this stream (fecRecv stored above), so the fresh
 		// resequencer must keep its full hold — no single-path immediate release and
 		// no RTT-shortened bound — while FEC is on.
 		ps.resequencer.Load().SetFECActive(true)
+	}
+}
+
+func resequencerNotifier(deliver chan<- struct{}) func() {
+	return func() {
+		select {
+		case deliver <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -2380,7 +2396,9 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	// the probe-loop ticker is starved. On the single-peer edge/hub m.peers holds only the
 	// primary, so this is byte-identical to the pre-split single-peer sweep.
 	probers := make([]*telemetry.Prober, 0, len(m.paths))
+	peers := make([]*peerState, 0, len(m.peers))
 	for _, p := range m.peers {
+		peers = append(peers, p)
 		for _, ps := range p.paths {
 			if ps.prober != nil {
 				probers = append(probers, ps.prober)
@@ -2390,6 +2408,11 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	m.mu.Unlock()
 	for _, pr := range probers {
 		pr.Tick()
+	}
+	if m.fecCfg != nil {
+		for _, peer := range peers {
+			m.refreshPeerRecoveryWindow(peer)
+		}
 	}
 	// Eager failover nudge (defect D18, the repeated-flap wedge). The active-backup
 	// selection is otherwise recomputed ONLY inside the scheduler's Pick, which the
@@ -2465,21 +2488,11 @@ func (m *Multipath) nudgeSchedulerActive() {
 // silent right after buffering it. A single drainer delivers with ZERO added reorder
 // (only it calls Pop), which is stricter than T12's per-path receivers.
 func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct{}) ReceiveFunc {
-	// One reusable poll timer per drainer, NOT a fresh time.After timer per park: the
-	// drainer parks on every empty receive, and a per-park 250 ms timer — retained by
-	// the runtime timer heap until it fires even after the park is over — added
-	// avoidable allocation and GC pressure on the receive hot path (opus low defect).
-	// The ReceiveFunc is driven by a single engine goroutine, so the timer has no
-	// concurrent user; Stop+drain then Reset per park reuses the one allocation.
-	timer := time.NewTimer(resequencerTimeout)
-	stopTimer := func() {
-		timer.Stop()
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-	stopTimer() // start inert; armed only while parked
+	// One reusable injected-clock timer per drainer. Every empty scan resets it to
+	// the earliest exact armed gap deadline, with T as the conservative poll
+	// fallback when no gap is armed.
+	timer := m.clock.NewTimerAt(m.clock.Now())
+	timer.Stop()
 	// rr is the round-robin cursor, advanced past a peer each time it yields a frame so
 	// the next receive starts at the following peer. It is touched only by this single
 	// engine goroutine, so it needs no synchronisation.
@@ -2518,18 +2531,36 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 			if progressed {
 				continue // dropped an oversize frame; re-scan before parking
 			}
-			timer.Reset(resequencerTimeout)
+			wakeAt := earliestResequencerDeadline(peers, m.clock.Now().Add(resequencerTimeout))
+			timer.ResetAt(wakeAt)
+			if m.beforeReceivePark != nil {
+				m.beforeReceivePark(wakeAt)
+			}
 			select {
 			case <-deliver:
-				stopTimer()
-			case <-timer.C:
+				timer.Stop()
+			case <-timer.C():
 				// Poll fired; its channel is already drained by this receive.
 			case <-closed:
-				stopTimer()
+				timer.Stop()
 				return 0, errClosed
 			}
 		}
 	}
+}
+
+func earliestResequencerDeadline(peers []*peerState, fallback time.Time) time.Time {
+	earliest := fallback
+	for _, peer := range peers {
+		rq := peer.resequencer.Load()
+		if rq == nil {
+			continue
+		}
+		if deadline, armed := rq.ArmedDeadline(); armed && deadline.Before(earliest) {
+			earliest = deadline
+		}
+	}
+	return earliest
 }
 
 // handleInbound decodes one received outer datagram UNDER THIS VIEW'S CODEC and dispatches
@@ -2844,20 +2875,20 @@ func (m *Multipath) peerIsLiveLocked(p *peerState) bool {
 // likewise skips a peer whose resequencer Loads nil. Caller holds m.mu and the
 // peer's lifecycleMu; acquiring lifecycleMu happens before m.mu so no wait on
 // the peer lifecycle barrier occurs while the bind lock is held.
-func (m *Multipath) teardownPeerLocked(p *peerState) (*fecSender, bool) {
+func (m *Multipath) teardownPeerLocked(p *peerState) (*fecSender, *reseq.Resequencer, bool) {
 	if p == m.peerState {
-		return nil, false // the primary (edge/hub) is torn down only by Close, never by session loss
+		return nil, nil, false // the primary (edge/hub) is torn down only by Close, never by session loss
 	}
 	if m.peerIsLiveLocked(p) {
-		return nil, false // a live (Up) peer is never torn down, whatever other peers' churn
+		return nil, nil, false // a live (Up) peer is never torn down, whatever other peers' churn
 	}
-	p.resequencer.Store(nil)
+	rq := p.resequencer.Swap(nil)
 	p.fecRecv.Store(nil)
 	fs := p.fecSend.Swap(nil)
 	if fs != nil && fs.owner != nil {
 		fs.owner.Stop(errFECPlaneChanged)
 	}
-	return fs, true
+	return fs, rq, true
 }
 
 // TearDownPeer frees the heavy per-peer state of the named configured peer once its WireGuard
@@ -2880,11 +2911,15 @@ func (m *Multipath) TearDownPeer(name string) bool {
 	m.mu.Lock()
 	current, stillBound := m.peersByName[name]
 	var fs *fecSender
+	var rq *reseq.Resequencer
 	tornDown := false
 	if stillBound && current == p {
-		fs, tornDown = m.teardownPeerLocked(p)
+		fs, rq, tornDown = m.teardownPeerLocked(p)
 	}
 	m.mu.Unlock()
+	if rq != nil {
+		rq.Close()
+	}
 	if fs != nil && fs.owner != nil {
 		fs.owner.Wait()
 	}
@@ -2994,6 +3029,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				fresh, echoErr := ps.prober.HandleEchoProbe(raw)
 				if echoErr == nil && pr.contracts != nil {
 					pr.contracts.acceptACK(fresh.PathID, fresh.SessionID, fresh.ProbeSeq, fresh.Payload)
+					m.refreshPeerRecoveryWindow(pr)
 				}
 				// Release any PMTU search probe awaiting THIS echo (T227, defect D88),
 				// matched by ProbeSeq and DECOUPLED from HandleEcho's anti-replay verdict
@@ -3033,32 +3069,65 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			if accepted, rerr := pr.reflector.AcceptProbe(raw); rerr == nil {
 				echoPayload := accepted.Probe.Payload
 				rebaselined := false
+				transitionCleared := false
+				var recoveryACK telemetry.RecoveryContractMessage
+				haveRecoveryACK := false
+				recoveryPathKey := reseqPathKey(ps.id, accepted.Probe.PathID)
+				if pr.contracts != nil && accepted.Acceptance == telemetry.ProbeAdopted {
+					pr.contracts.adoptReceivedSession(accepted.Probe.SessionID)
+				}
+				if accepted.EpochChanged {
+					if pr.contracts != nil {
+						pr.contracts.invalidateReceivedEvidence()
+					}
+					if fr := pr.fecRecv.Load(); fr != nil {
+						fr.discardIncompletePreserveHighWater()
+					}
+					if rq := pr.resequencer.Load(); rq != nil {
+						rq.RebaselineToLow()
+						rebaselined = true
+					}
+					transitionCleared = true
+				}
 				if !accepted.Probe.Padded && accepted.Acceptance != telemetry.ProbeBootstrap && pr.contracts != nil {
 					message, recognized, contractErr := telemetry.DecodeRecoveryContract(accepted.Probe.Payload)
 					if contractErr == nil && recognized && message.Type == telemetry.RecoveryContractOffer {
 						ack, ok := pr.contracts.acceptOffer(accepted.Probe.SessionID, message, func() {
-							if fr := pr.fecRecv.Load(); fr != nil {
-								fr.discardIncompletePreserveHighWater()
-							}
-							if accepted.EpochChanged {
-								if rq := pr.resequencer.Load(); rq != nil {
-									rq.RebaselineToLow()
-									rebaselined = true
+							if !transitionCleared {
+								if fr := pr.fecRecv.Load(); fr != nil {
+									fr.discardIncompletePreserveHighWater()
 								}
 							}
 						})
 						if ok {
 							if payload, encodeErr := telemetry.EncodeRecoveryContract(ack); encodeErr == nil {
 								echoPayload = payload
+								recoveryACK = message
+								haveRecoveryACK = true
 							}
 						}
 					}
+				}
+				if pr.contracts != nil {
+					currentRecovery := pr.contracts.receivedSnapshot()
+					if currentRecovery.acked &&
+						currentRecovery.hasRoamedVenue(recoveryPathKey, srcAP) {
+						pr.contracts.invalidateReceivedEvidence()
+					}
+					if accepted.Acceptance == telemetry.ProbeBootstrap ||
+						(!accepted.Probe.Padded && !haveRecoveryACK) {
+						pr.contracts.invalidateReceivedEvidence()
+					}
+					m.refreshPeerRecoveryWindow(pr)
 				}
 				// Preserve the existing restart recovery for legacy/unknown payloads,
 				// but complete it before the echo can become socket-visible.
 				if accepted.EpochChanged && !rebaselined {
 					if rq := pr.resequencer.Load(); rq != nil {
 						rq.RebaselineToLow()
+					}
+					if pr.contracts != nil {
+						m.refreshPeerRecoveryWindow(pr)
 					}
 				}
 				echo, encodeErr := pr.reflector.EncodeAcceptedProbe(accepted, echoPayload)
@@ -3079,11 +3148,23 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 					case !admitted:
 						ps.echoPriorityOverflow.Add(1)
 					default:
-						go func(size int, completion <-chan error) {
+						go func(
+							size int,
+							completion <-chan error,
+							contract *recoveryContractCoordinator,
+							session uint64,
+							message telemetry.RecoveryContractMessage,
+							pathKey uint32,
+							source netip.AddrPort,
+							recordACK bool,
+						) {
 							if err := <-completion; err == nil {
 								ps.txBytes.Add(uint64(size))
+								if recordACK && contract.recordReceivedACK(session, message, pathKey, source) {
+									m.refreshPeerRecoveryWindow(pr)
+								}
 							}
-						}(len(echo), done)
+						}(len(echo), done, pr.contracts, accepted.Probe.SessionID, recoveryACK, recoveryPathKey, srcAP, haveRecoveryACK)
 					}
 				} else {
 					// UDP writes are goroutine-safe, so this receive-goroutine reflection
@@ -3094,6 +3175,14 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 						// exactly like a DATA/PARITY write — only on a nil write error.
 						ps.txBytes.Add(uint64(len(echo)))
 						m.accountGeneratedPriorityAfterWrite(ps, len(echo))
+						if haveRecoveryACK && pr.contracts.recordReceivedACK(
+							accepted.Probe.SessionID,
+							recoveryACK,
+							recoveryPathKey,
+							srcAP,
+						) {
+							m.refreshPeerRecoveryWindow(pr)
+						}
 					}
 				}
 			}
@@ -3906,7 +3995,11 @@ func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	// never nest it under m.mu). Nil on a closed bind (a resequencer is Stored per Open) —
 	// the next Open seeds a fresh one whose release point re-pins to its first frame anyway.
 	if rq != nil {
+		if m.contracts != nil {
+			m.contracts.invalidateReceivedEvidence()
+		}
 		rq.Rebaseline(ap)
+		m.refreshPeerRecoveryWindow(m.peerState)
 	}
 }
 
@@ -3965,7 +4058,11 @@ func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
 	// mirroring SetPeerRemote — the standby hub's outer-seq restarts low and must re-anchor the
 	// release point instead of being SUSPECT-dropped (D32).
 	if rq != nil {
+		if p.contracts != nil {
+			p.contracts.invalidateReceivedEvidence()
+		}
 		rq.Rebaseline(ap)
+		m.refreshPeerRecoveryWindow(p)
 	}
 	return nil
 }
@@ -4103,10 +4200,13 @@ func (m *Multipath) clearPerOpenStateAfterReaders() {
 	m.mu.Unlock()
 	for _, p := range peers {
 		p.lifecycleMu.Lock()
-		p.resequencer.Store(nil)
+		rq := p.resequencer.Swap(nil)
 		p.fecRecv.Store(nil)
 		p.parityCarry.Store(0)
 		p.lifecycleMu.Unlock()
+		if rq != nil {
+			rq.Close()
+		}
 	}
 }
 

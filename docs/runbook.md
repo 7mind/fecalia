@@ -431,17 +431,21 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 | `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
 | `wanbond_peer_session_established{peer}`         | **Per-peer** WG session liveness (T256): the SAME `established` verdict as `wanbond_session_established`, but attributed to ONE specific bound peer rather than "some session is live" — the proof of session health a warm-standby promotion decision needs for a SPECIFIC candidate concentrator. |
 
-> **Resequencer head-of-line reading (D93).** The hold behind a gap is no longer a
-> fixed 250 ms — it is an RTT-adaptive per-gap hold (clamped to `[10 ms, 250 ms]`,
-> the 250 ms now the worst-case cap) that collapses to a near-zero **immediate
-> release** whenever only one path is delivering (single-path loss cannot hide a
-> straggler). Read the two skip-adjacent counters together: rising
+> **Resequencer head-of-line reading (D93/T314).** The hold behind a gap is no
+> longer uniformly 250 ms. Non-FEC operation uses an RTT-adaptive per-gap hold
+> (clamped to `[10 ms, 250 ms]`) and collapses to a near-zero **immediate
+> release** whenever only one path is delivering. FEC suppresses that zero-hold
+> path; with an exact acknowledged recovery contract and fresh matching
+> active-backup RTT/path evidence it instead uses
+> `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))`. Every uncertain or weighted
+> case retains 250 ms. Read the two skip-adjacent counters together: rising
 > `immediate_releases_total` alongside `skipped_seqs_total` means the D93
-> head-of-line amplifier is **disarmed** (a single delivering path — expected,
-> low-latency loss handling), whereas `skipped_seqs_total` climbing while
+> head-of-line amplifier is **disarmed** (a non-FEC single delivering path),
+> whereas `skipped_seqs_total` climbing while
 > `immediate_releases_total` stays flat is a **genuine timeout head-of-line stall**
-> (a slow/lossy second path holding gaps to the cap). `hol_hold_seconds_total /
-> hol_holds_total` is the mean time gaps are held.
+> or an FEC recovery window. `hol_hold_seconds_total / hol_holds_total` is the
+> mean time gaps are held; under FEC it combines fast `W` and conservative
+> 250 ms holds, while `immediate_releases_total` remains flat.
 >
 > **Multi-peer labels (G4/G28).** Any node bound to 2+ peers — a concentrator
 > serving multiple edges or a multi-exit edge with warm-standby concentrators —
