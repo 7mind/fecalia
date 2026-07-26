@@ -26,7 +26,7 @@ func legacyBaseAcceptProbe(
 	source netip.AddrPort,
 ) ([]byte, bool) {
 	t.Helper()
-	accepted, err := base.peerState.reflector.AcceptProbe(raw)
+	accepted, err := base.reflector.AcceptProbe(raw)
 	if err != nil {
 		return nil, false
 	}
@@ -77,7 +77,7 @@ func legacyBaseAcceptProbe(
 	}
 	base.refreshPeerRecoveryWindow(base.peerState)
 
-	echo, err := base.peerState.reflector.EncodeAcceptedProbe(accepted, echoPayload)
+	echo, err := base.reflector.EncodeAcceptedProbe(accepted, echoPayload)
 	if err != nil {
 		if haveAdmission {
 			base.contracts.cancelReceivedACK(admission)
