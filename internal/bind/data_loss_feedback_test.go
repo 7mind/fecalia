@@ -179,3 +179,91 @@ func TestDataLossFeedbackCountsOnlyUniqueAcceptedNativeOutcomes(t *testing.T) {
 		)
 	}
 }
+
+func seedFeedbackOnlyProbe(t *testing.T, m *Multipath, seq uint64) {
+	t.Helper()
+	contract := m.contracts.receivedSnapshot()
+	if !contract.present || contract.invalid || !contract.acked {
+		t.Fatal("precondition: peer has no fresh received recovery contract")
+	}
+	source, ok := m.paths[0].getRemote()
+	if !ok {
+		t.Fatal("precondition: peer path has no remote")
+	}
+	m.dataLoss.recordNative(seq, dataLossCarrier{
+		pathID:             m.paths[0].id,
+		pathKey:            reseqPathKey(m.paths[0].id, m.paths[0].id),
+		source:             source,
+		topologyGeneration: contract.generation,
+	})
+}
+
+func waitForAcceptedFeedback(t *testing.T, m *Multipath) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		m.dataLoss.mu.Lock()
+		accepted := m.dataLoss.everAccepted
+		m.dataLoss.mu.Unlock()
+		if accepted {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for feedback-only probe acceptance")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestFeedbackOnlyProbePreservesReceivedRecoveryEvidence(t *testing.T) {
+	psk := testKey(t, 0x5D)
+	sender := openNegotiatingPeer(t, psk)
+	receiver := openNegotiatingPeer(t, psk)
+	joinNegotiatingPeers(t, sender, receiver)
+
+	before := receiver.contracts.receivedSnapshot()
+	if !before.acked {
+		t.Fatal("precondition: receiver has no acknowledged recovery venue")
+	}
+	seedFeedbackOnlyProbe(t, sender, 1)
+	sender.emitProbes()
+	waitForAcceptedFeedback(t, receiver)
+
+	after := receiver.contracts.receivedSnapshot()
+	if !after.acked || after.generation != before.generation ||
+		after.evidenceRevision != before.evidenceRevision ||
+		len(after.venues) != len(before.venues) {
+		t.Fatalf(
+			"feedback-only non-echo changed received recovery evidence: before=%+v after=%+v",
+			before,
+			after,
+		)
+	}
+}
+
+func TestFeedbackOnlyEchoPreservesLocalRecoveryEvidence(t *testing.T) {
+	psk := testKey(t, 0x5E)
+	sender := openNegotiatingPeer(t, psk)
+	receiver := openNegotiatingPeer(t, psk)
+	joinNegotiatingPeers(t, sender, receiver)
+
+	if !sender.paths[0].recoveryContract().Enabled {
+		t.Fatal("precondition: sender has no fresh local recovery ACK")
+	}
+	beforeSamples := sender.paths[0].prober.Estimate().LossSamples
+	seedFeedbackOnlyProbe(t, sender, 1)
+	sender.emitProbes()
+	waitForAcceptedFeedback(t, receiver)
+
+	deadline := time.Now().Add(time.Second)
+	for sender.paths[0].prober.Estimate().LossSamples < beforeSamples+2 &&
+		time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := sender.paths[0].prober.Estimate().LossSamples; got < beforeSamples+2 {
+		t.Fatalf("feedback-only echo was not observed: loss samples %d, want at least %d", got, beforeSamples+2)
+	}
+	if !sender.paths[0].recoveryContract().Enabled {
+		t.Fatal("feedback-only echo revoked fresh local recovery ACK evidence")
+	}
+}

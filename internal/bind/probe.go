@@ -2,6 +2,7 @@ package bind
 
 import (
 	"errors"
+	"net/netip"
 	"sync"
 	"syscall"
 	"time"
@@ -19,9 +20,94 @@ func mapPMTUProbeWriteError(err error) error {
 	return err
 }
 
+type probeOfferRecord struct {
+	contract *recoveryContractCoordinator
+	offered  recoveryOfferSnapshot
+}
+
+func (m *Multipath) emitProbePayload(
+	ps *peerPathState,
+	prober *telemetry.Prober,
+	remote netip.AddrPort,
+	payload []byte,
+	offer probeOfferRecord,
+) {
+	probeSize := frame.UnpaddedProbeOnWire + len(payload)
+	if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
+		var sent frame.Probe
+		admitted, done, writeErr := shaped.TryWritePriorityGenerated(
+			probeSize,
+			func() ([]byte, shaper.WriteFunc, error) {
+				raw, probe, generateErr := prober.SendProbePayload(payload)
+				if generateErr != nil {
+					return nil, nil, generateErr
+				}
+				sent = probe
+				return raw, func(encoded []byte) error {
+					if _, err := ps.writeToUDPAddrPort(encoded, remote); err != nil {
+						ps.socketWriteErrors.Add(1)
+						return m.accountSendError(ps, err)
+					}
+					return nil
+				}, nil
+			},
+		)
+		switch {
+		case writeErr != nil:
+			ps.probeSendErrors.Add(1)
+		case !admitted:
+			ps.probePriorityCoalesced.Add(1)
+		default:
+			go func(completion <-chan error) {
+				if err := <-completion; err != nil {
+					ps.probeSendErrors.Add(1)
+					return
+				}
+				ps.txBytes.Add(uint64(probeSize))
+				if offer.contract != nil {
+					offer.contract.recordOffer(ps.id, telemetryProbeHeader{
+						sessionID: sent.SessionID,
+						probeSeq:  sent.ProbeSeq,
+						challenge: sent.Challenge,
+					}, offer.offered)
+				}
+			}(done)
+		}
+		return
+	}
+
+	raw, probe, err := prober.SendProbePayload(payload)
+	if err != nil {
+		ps.probeSendErrors.Add(1)
+		return
+	}
+	// UDP writes are goroutine-safe; this races no in-flight Send.
+	if _, err := ps.writeToUDPAddrPort(raw, remote); err != nil {
+		// The write failed (e.g. a concurrent Close raced the probe-loop
+		// goroutine, or a transient socket error): count it so a path whose
+		// probes cannot egress is observable at /metrics instead of reading
+		// identically to a path with 100% probe loss (defect D96 item 4).
+		ps.probeSendErrors.Add(1)
+		return
+	}
+	// True-wire-volume accounting (D48): a PROBE frame is real egress
+	// traffic, so it counts toward txBytes exactly like a DATA/PARITY
+	// write — only on a nil write error, matching the Send hot path.
+	ps.txBytes.Add(uint64(len(raw)))
+	m.accountGeneratedPriorityAfterWrite(ps, len(raw))
+	if offer.contract != nil {
+		offer.contract.recordOffer(ps.id, telemetryProbeHeader{
+			sessionID: probe.SessionID,
+			probeSeq:  probe.ProbeSeq,
+			challenge: probe.Challenge,
+		}, offer.offered)
+	}
+}
+
 // emitProbes performs one probe cadence step: for every currently-open path it
-// emits one authenticated local PROBE frame (IsEcho=false) to that path's
-// learned/configured remote, then Ticks that path's Prober so liveness advances
+// emits an authenticated local PROBE frame (IsEcho=false) to that path's
+// learned/configured remote, plus a separate feedback-only probe when a receiver
+// DATA-loss report is ready, then Ticks that path's Prober so liveness advances
 // against the injected clock. A pending PMTU probe occupies this local slot
 // instead of emitting an ordinary liveness probe, but the following slot is
 // always ordinary before another PMTU request can run; a reactive echo remains
@@ -130,76 +216,16 @@ func (m *Multipath) emitProbes() {
 				offered = t.contract.offerSnapshot()
 			}
 			contractPayload := offered.payload
-			probePayload, payloadErr := telemetry.EncodeProbePayload(contractPayload, feedbacks[t.peer])
-			if payloadErr != nil {
-				panic(payloadErr)
-			}
-			probeSize := frame.UnpaddedProbeOnWire + len(probePayload)
-			if shaped, ok := t.ps.shaper.(recoveryPathShaper); ok {
-				var sent frame.Probe
-				admitted, done, writeErr := shaped.TryWritePriorityGenerated(
-					probeSize,
-					func() ([]byte, shaper.WriteFunc, error) {
-						raw, probe, generateErr := t.pr.SendProbePayload(probePayload)
-						if generateErr != nil {
-							return nil, nil, generateErr
-						}
-						sent = probe
-						return raw, func(payload []byte) error {
-							if _, err := t.ps.writeToUDPAddrPort(payload, remote); err != nil {
-								t.ps.socketWriteErrors.Add(1)
-								return m.accountSendError(t.ps, err)
-							}
-							return nil
-						}, nil
-					},
-				)
-				switch {
-				case writeErr != nil:
-					t.ps.probeSendErrors.Add(1)
-				case !admitted:
-					t.ps.probePriorityCoalesced.Add(1)
-				default:
-					go func(ps *peerPathState, contract *recoveryContractCoordinator, offered recoveryOfferSnapshot, probe frame.Probe, size int, completion <-chan error) {
-						if err := <-completion; err != nil {
-							ps.probeSendErrors.Add(1)
-							return
-						}
-						ps.txBytes.Add(uint64(size))
-						if contract != nil {
-							contract.recordOffer(ps.id, telemetryProbeHeader{
-								sessionID: probe.SessionID,
-								probeSeq:  probe.ProbeSeq,
-								challenge: probe.Challenge,
-							}, offered)
-						}
-					}(t.ps, t.contract, offered, sent, probeSize, done)
+			m.emitProbePayload(t.ps, t.pr, remote, contractPayload, probeOfferRecord{
+				contract: t.contract,
+				offered:  offered,
+			})
+			if feedback := feedbacks[t.peer]; feedback != nil {
+				feedbackPayload, payloadErr := telemetry.EncodeProbePayload(nil, feedback)
+				if payloadErr != nil {
+					panic(payloadErr)
 				}
-				t.pr.Tick()
-				continue
-			}
-			if raw, probe, err := t.pr.SendProbePayload(probePayload); err == nil {
-				// UDP writes are goroutine-safe; this races no in-flight Send.
-				if _, werr := t.ps.writeToUDPAddrPort(raw, remote); werr == nil {
-					// True-wire-volume accounting (D48): a PROBE frame is real egress
-					// traffic, so it counts toward txBytes exactly like a DATA/PARITY
-					// write — only on a nil write error, matching the Send hot path.
-					t.ps.txBytes.Add(uint64(len(raw)))
-					m.accountGeneratedPriorityAfterWrite(t.ps, len(raw))
-					if t.contract != nil {
-						t.contract.recordOffer(t.ps.id, telemetryProbeHeader{
-							sessionID: probe.SessionID,
-							probeSeq:  probe.ProbeSeq,
-							challenge: probe.Challenge,
-						}, offered)
-					}
-				} else {
-					// The write failed (e.g. a concurrent Close raced the probe-loop
-					// goroutine, or a transient socket error): count it so a path whose
-					// probes cannot egress is observable at /metrics instead of reading
-					// identically to a path with 100% probe loss (defect D96 item 4).
-					t.ps.probeSendErrors.Add(1)
-				}
+				m.emitProbePayload(t.ps, t.pr, remote, feedbackPayload, probeOfferRecord{})
 			}
 		}
 		t.pr.Tick()

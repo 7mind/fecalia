@@ -356,13 +356,15 @@ parity — **set exactly one**:
 Under the default active-backup policy, one stable active DATA carrier also
 uses authenticated receiver feedback. It counts natively received,
 parity-reconstructed, and final missing DATA exactly once and reports the
-interval through the peer's authenticated PROBEs. The controller uses the
-higher of this pre-recovery DATA loss and the carrier's probe loss. Once a peer
-has supplied DATA feedback, stale or path/session/contract-mismatched evidence
-holds the existing parity decision; clean priority PROBEs cannot make parity
-fall while DATA evidence is unavailable. A legacy peer that never supplies the
-feedback retains probe-loss adaptation. Weighted multi-carrier aggregation
-continues to use its weight-weighted probe-loss mix.
+interval through a separate feedback-only authenticated PROBE; recovery OFFERs
+and ACKs remain top-level `WBRC` payloads for peers that parse the recovery
+record directly. The controller uses the higher of this pre-recovery DATA loss
+and the carrier's probe loss. Once a peer has supplied DATA feedback, stale or
+path/session/contract-mismatched evidence holds the existing parity decision;
+clean priority PROBEs cannot make parity fall while DATA evidence is
+unavailable. A legacy peer that never supplies the feedback retains probe-loss
+adaptation. Weighted multi-carrier aggregation continues to use its
+weight-weighted probe-loss mix.
 
 - **`target_residual`** (recommended, the primary surface): the target
   **post-recovery residual-loss** fraction in `(0,1)`. The controller derives the
@@ -2132,9 +2134,10 @@ one stable DATA carrier. Weighted aggregation can use several simultaneous
 carriers, and the current one-record PROBE payload cannot represent their
 distribution shares; weighted mode therefore retains its existing weighted
 probe-loss signal. No configuration key enables or disables the feedback. A
-recovery-only peer keeps the legacy recovery-contract payload unchanged, and a
-peer that never advertises DATA feedback remains interoperable through the
-probe-loss controller path.
+feedback-capable peer sends it as a separate authenticated probe and keeps
+recovery OFFER/ACK payloads in the legacy top-level `WBRC` encoding. A peer that
+never advertises DATA feedback remains interoperable through recovery
+negotiation and the probe-loss controller path.
 
 ### UDP-blocking networks defeat wanbond (no TCP/TLS fallback — by design)
 

@@ -300,13 +300,15 @@ The P0–P5 build is functionally complete, reviewed, and hardened. Known,
 deliberate boundaries you must plan around:
 
 - **Receiver DATA-loss feedback covers exactly one stable active-backup
-  carrier.** It rides the existing authenticated PROBE channel, is bound to the
-  peer session, recovery ContractID, carrier path/generation, and monotonic
-  report ID, and expires after two probe intervals. Stale, replayed,
-  wrong-peer, or path-transition evidence cannot drive parity; after capability
-  adoption, missing current evidence holds the existing controller state.
-  Recovery-only peers keep the legacy 27-byte contract payload byte-for-byte,
-  and peers that never send DATA feedback retain probe-loss adaptation.
+  carrier.** It rides a separate feedback-only authenticated PROBE, is bound to
+  the peer session, recovery ContractID, carrier path/generation, and monotonic
+  report ID, and expires after two probe intervals. Recovery OFFERs and ACKs
+  remain top-level legacy `WBRC` payloads, so a peer that parses `WBRC` directly
+  can still negotiate recovery in either direction with a feedback-capable
+  peer. Stale, replayed, wrong-peer, or path-transition evidence cannot drive
+  parity; after capability adoption, missing current evidence holds the
+  existing controller state. Peers that never send DATA feedback retain
+  probe-loss adaptation.
   Weighted multi-carrier scheduling deliberately retains its existing weighted
   probe-loss signal because one carrier record cannot represent simultaneous
   distribution shares.

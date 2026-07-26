@@ -280,6 +280,151 @@ func TestFailedGeneratedProbeWriteCreatesNoPriorityDebt(t *testing.T) {
 	}
 }
 
+func seedPriorityTestFeedback(t testing.TB, m *Multipath) {
+	t.Helper()
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("seed recovery offer was rejected")
+	}
+	snapshot := m.contracts.receivedSnapshot()
+	remote, ok := m.paths[0].getRemote()
+	if !ok {
+		t.Fatal("precondition: path has no remote")
+	}
+	m.dataLoss.recordNative(1, dataLossCarrier{
+		pathID:             m.paths[0].id,
+		pathKey:            reseqPathKey(m.paths[0].id, m.paths[0].id),
+		source:             remote,
+		topologyGeneration: snapshot.generation,
+	})
+}
+
+func TestFeedbackOnlyProbeUsesExactGeneratedPriorityAccounting(t *testing.T) {
+	psk := testKey(t, 0xE7)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	peer, peerAP := rawPeer(t)
+	codec, err := frame.NewCodec(psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var feedbackProbes int
+	recorder := &priorityRecordingShaper{}
+	recorder.onAccount = func(size int) {
+		if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		raw := make([]byte, maxDatagram)
+		n, err := peer.Read(raw)
+		if err != nil {
+			t.Fatalf("priority debit ran before generated PROBE became receiver-visible: %v", err)
+		}
+		if n != size {
+			t.Fatalf("generated PROBE priority debit = %d bytes, encoded wire datagram = %d bytes", size, n)
+		}
+		decoded, err := codec.Decode(raw[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe, ok := decoded.(frame.Probe)
+		if !ok || probe.IsEcho {
+			t.Fatalf("priority datagram = %#v, want originating authenticated PROBE", decoded)
+		}
+		recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(probe.Payload)
+		if recognized {
+			if payloadErr != nil || feedback == nil || len(recovery) != 0 {
+				t.Fatalf("feedback probe = recovery %x feedback %+v err %v", recovery, feedback, payloadErr)
+			}
+			feedbackProbes++
+		}
+	}
+	openWithPriorityRecorder(t, m, recorder)
+	m.paths[0].setRemote(peerAP)
+	seedPriorityTestFeedback(t, m)
+
+	m.emitProbes()
+
+	if got := recorder.debitSnapshot(); len(got) != 2 {
+		t.Fatalf("ordinary + feedback exact-byte priority debits = %v, want two post-write debits", got)
+	}
+	if feedbackProbes != 1 {
+		t.Fatalf("feedback-only probes = %d, want 1", feedbackProbes)
+	}
+}
+
+func TestFeedbackOnlyProbeUsesExactShapedPriorityReservation(t *testing.T) {
+	psk := testKey(t, 0xE9)
+	m := openNegotiatingPeer(t, psk)
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	seedPriorityTestFeedback(t, m)
+	beforeWire := m.paths[0].txBytes.Load()
+	beforePriority := m.paths[0].shaper.(pathShaperReporter).Snapshot().OuterPriorityBytes
+
+	m.emitProbes()
+	codec, err := frame.NewCodec(psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wireBytes uint64
+	var recoveryProbes, feedbackProbes int
+	for range 2 {
+		probe := readProbe(t, peer, codec)
+		wireBytes += uint64(frame.UnpaddedProbeOnWire + len(probe.Payload))
+		recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(probe.Payload)
+		if recognized {
+			if payloadErr != nil || feedback == nil || len(recovery) != 0 {
+				t.Fatalf("feedback probe = recovery %x feedback %+v err %v", recovery, feedback, payloadErr)
+			}
+			feedbackProbes++
+			continue
+		}
+		if _, contractRecognized, contractErr := telemetry.DecodeRecoveryContract(probe.Payload); contractErr != nil || !contractRecognized {
+			t.Fatalf("ordinary recovery probe = recognized %v err %v", contractRecognized, contractErr)
+		}
+		recoveryProbes++
+	}
+	if recoveryProbes != 1 || feedbackProbes != 1 {
+		t.Fatalf("probe payload classes = recovery %d feedback %d, want 1/1", recoveryProbes, feedbackProbes)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for m.paths[0].txBytes.Load()-beforeWire < wireBytes && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := m.paths[0].txBytes.Load() - beforeWire; got != wireBytes {
+		t.Fatalf("ordinary + feedback wire accounting = %d, want exact %d", got, wireBytes)
+	}
+	afterPriority := m.paths[0].shaper.(pathShaperReporter).Snapshot().OuterPriorityBytes
+	if got := afterPriority - beforePriority; got != wireBytes {
+		t.Fatalf("ordinary + feedback priority reservation = %d, want exact %d", got, wireBytes)
+	}
+}
+
+func TestFeedbackOnlyProbeSendFailureIsCounted(t *testing.T) {
+	psk := testKey(t, 0xE8)
+	clk := newFakeClock()
+	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	recorder := &priorityRecordingShaper{}
+	openWithPriorityRecorder(t, m, recorder)
+
+	_, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	seedPriorityTestFeedback(t, m)
+	if err := m.paths[0].conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.emitProbes()
+
+	if got := recorder.debitSnapshot(); len(got) != 0 {
+		t.Fatalf("failed generated PROBE writes created priority debt %v", got)
+	}
+	if got := m.paths[0].probeSendErrors.Load(); got != 2 {
+		t.Fatalf("ordinary + feedback probe send errors = %d, want 2", got)
+	}
+}
+
 type priorityEmission struct {
 	at   time.Time
 	size int

@@ -50,28 +50,24 @@ func (f DataLossFeedback) Loss() float64 {
 }
 
 // EncodeProbePayload preserves the legacy recovery-only payload byte-for-byte.
-// A versioned envelope appears only when DATA-loss feedback is present.
+// DATA-loss feedback uses a separate feedback-only envelope so recovery OFFERs
+// and ACKs remain directly parseable by peers that predate the envelope.
 func EncodeProbePayload(recovery []byte, feedback *DataLossFeedback) ([]byte, error) {
 	if feedback == nil {
 		return append([]byte(nil), recovery...), nil
 	}
+	if len(recovery) != 0 {
+		return nil, fmt.Errorf("%w: recovery and DATA-loss feedback require separate probes", ErrProbePayloadMalformed)
+	}
 	if err := feedback.Valid(); err != nil {
 		return nil, err
 	}
-	if len(recovery) > 255 {
-		return nil, fmt.Errorf("%w: recovery payload length %d exceeds 255", ErrProbePayloadMalformed, len(recovery))
-	}
 	flags := byte(probePayloadDataLossBit)
-	if len(recovery) > 0 {
-		flags |= probePayloadRecoveryBit
-	}
-	payload := make([]byte, probePayloadHeaderSize+len(recovery)+dataLossFeedbackSize)
+	payload := make([]byte, probePayloadHeaderSize+dataLossFeedbackSize)
 	copy(payload[:4], probePayloadMagic)
 	payload[4] = probePayloadVersion
 	payload[5] = flags
-	payload[6] = byte(len(recovery))
-	copy(payload[probePayloadHeaderSize:], recovery)
-	off := probePayloadHeaderSize + len(recovery)
+	off := probePayloadHeaderSize
 	binary.BigEndian.PutUint64(payload[off:off+8], feedback.ObservedSessionID)
 	binary.BigEndian.PutUint64(payload[off+8:off+16], feedback.ContractID)
 	payload[off+16] = feedback.CarrierPathID

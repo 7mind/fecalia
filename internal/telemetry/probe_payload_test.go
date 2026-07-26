@@ -29,8 +29,7 @@ func TestProbePayloadPreservesLegacyRecoveryOnlyEncoding(t *testing.T) {
 	}
 }
 
-func TestProbePayloadRoundTripsRecoveryAndDataLoss(t *testing.T) {
-	recovery := []byte("recovery-record")
+func TestProbePayloadRoundTripsFeedbackOnly(t *testing.T) {
 	want := &DataLossFeedback{
 		ObservedSessionID: 0x101,
 		ContractID:        0x202,
@@ -40,7 +39,7 @@ func TestProbePayloadRoundTripsRecoveryAndDataLoss(t *testing.T) {
 		Received:          31,
 		Lost:              1,
 	}
-	payload, err := EncodeProbePayload(recovery, want)
+	payload, err := EncodeProbePayload(nil, want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,11 +47,24 @@ func TestProbePayloadRoundTripsRecoveryAndDataLoss(t *testing.T) {
 	if err != nil || !recognized {
 		t.Fatalf("decode = recognized %v err %v", recognized, err)
 	}
-	if !bytes.Equal(gotRecovery, recovery) || got == nil || *got != *want {
-		t.Fatalf("round trip = recovery %x feedback %+v, want %x %+v", gotRecovery, got, recovery, want)
+	if len(gotRecovery) != 0 || got == nil || *got != *want {
+		t.Fatalf("round trip = recovery %x feedback %+v, want feedback-only %+v", gotRecovery, got, want)
 	}
 	if got.Loss() != 1.0/32 {
 		t.Fatalf("loss = %v, want %v", got.Loss(), 1.0/32)
+	}
+}
+
+func TestProbePayloadRejectsCombinedRecoveryAndDataLoss(t *testing.T) {
+	_, err := EncodeProbePayload([]byte("recovery-record"), &DataLossFeedback{
+		ObservedSessionID: 1,
+		ContractID:        2,
+		CarrierGeneration: 3,
+		ReportID:          4,
+		Received:          1,
+	})
+	if err == nil {
+		t.Fatal("combined recovery and DATA-loss payload encoded successfully")
 	}
 }
 
@@ -136,7 +148,11 @@ func TestProbePayloadMixedVersionRecoveryNegotiatesBothDirections(t *testing.T) 
 		Received:          31,
 		Lost:              1,
 	}
-	resultOfferPayload, err := EncodeProbePayload(offerPayload, feedback)
+	resultOfferPayload, err := EncodeProbePayload(offerPayload, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultFeedbackPayload, err := EncodeProbePayload(nil, feedback)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,13 +221,10 @@ func TestProbePayloadMixedVersionRecoveryNegotiatesBothDirections(t *testing.T) 
 		return fresh.Payload
 	}
 
+	_ = exchange(resultProber, resultFeedbackPayload, baseReflectRecovery)
 	resultEchoPayload := exchange(resultProber, resultOfferPayload, baseReflectRecovery)
 	baseEchoPayload := exchange(baseProber, offerPayload, resultReflectRecovery)
-	resultRecovery, _, recognized, err := DecodeProbePayload(resultEchoPayload)
-	if err != nil || !recognized {
-		t.Fatalf("result echo envelope = recognized %v err %v", recognized, err)
-	}
-	resultACK, _, err := DecodeRecoveryContract(resultRecovery)
+	resultACK, _, err := DecodeRecoveryContract(resultEchoPayload)
 	if err != nil {
 		t.Fatalf("result decode base ACK: %v", err)
 	}

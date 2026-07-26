@@ -559,17 +559,23 @@ payload of ordinary unpadded PROBEs. Its canonical 27-byte big-endian record is
 `A=0`. Unknown magic/version remains a legacy/forward-compatible opaque payload;
 recognized malformed v1 records receive no ACK.
 
-**Versioned PROBE payload envelope and DATA-loss feedback (T324).** A PROBE that
-has no DATA-loss report preserves the recovery payload byte-for-byte, including
-the canonical 27-byte `WBRC` record above. When feedback is present, the payload
-uses a `"WBPP"` version-1 envelope: flags, one-byte recovery-record length, the
-optional recovery record, and one fixed 49-byte big-endian DATA outcome record.
-That record carries the observed sender `SessionID`, exact recovery
+**Versioned DATA-loss feedback payload (T324).** Recovery OFFER and ACK PROBEs
+always preserve the canonical top-level 27-byte `WBRC` record above. A DATA-loss
+report travels in a separate feedback-only PROBE whose payload uses a `"WBPP"`
+version-1 envelope: flags, a zero recovery-record length, and one fixed 49-byte
+big-endian DATA outcome record. Combining `WBRC` and feedback in one envelope is
+rejected by the encoder. Keeping `WBRC` top-level lets a peer that predates
+`WBPP` continue negotiating recovery in either direction; it treats the
+separate feedback probe as an opaque liveness payload and reflects it.
+
+The DATA outcome record carries the observed sender `SessionID`, exact recovery
 `ContractID`, carrier `PathID`, receiver-local carrier generation, monotonic
 report ID, natively received DATA count, and inferred lost DATA count. The
-existing PROBE codec authenticates the entire envelope with the peer PSK.
-Unknown versions remain opaque for forward compatibility; recognized malformed
-records create neither recovery evidence nor DATA-loss evidence.
+existing PROBE codec authenticates the entire envelope with the peer PSK. A
+valid feedback-only request does not revoke received recovery evidence merely
+because it contains no OFFER, and its echo does not enter the recovery-ACK
+parser. Unknown versions remain opaque for forward compatibility; recognized
+malformed records create neither recovery evidence nor DATA-loss evidence.
 
 `SessionID` remains the process boot epoch. Within that epoch the sender mints a
 monotonically increasing `ContractID` whenever the selectable writer service
@@ -1679,11 +1685,12 @@ into `Observe` by the peer owner each probe interval — follows the scheduler's
 prober. Under **active-backup**, exactly one stable carrier can use authenticated
 receiver DATA-outcome feedback. Native DATA increments `received`; every
 parity-reconstructed missing sequence and every final resequencer skip
-increments `lost` exactly once. A finalized sequence high-water suppresses a
-late reconstruction after the same sequence already counted as skipped. The
-result therefore measures pre-recovery carrier loss rather than post-FEC
-`ConnLoss`, avoiding the feedback loop that would lower redundancy precisely
-when FEC succeeds.
+increments `lost` exactly once. Native and reconstructed outcomes enter the
+interval only after the resequencer admits that `OuterSeq`; duplicates, stale
+native frames, and reconstructions that arrive after finalization therefore
+cannot overlap an already accepted or finalized outcome. The result measures
+pre-recovery carrier loss rather than post-FEC `ConnLoss`, avoiding the feedback
+loop that would lower redundancy precisely when FEC succeeds.
 
 Each report binds to the observed sender session and current recovery
 ContractID, plus the receiver's carrier path, composite path/source/topology

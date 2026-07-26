@@ -3123,15 +3123,19 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				fresh, echoErr := ps.prober.HandleEchoProbe(raw)
 				if echoErr == nil && pr.contracts != nil {
 					recoveryPayload := fresh.Payload
-					if recovery, _, recognized, payloadErr := telemetry.DecodeProbePayload(fresh.Payload); recognized {
+					feedbackOnly := false
+					if recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(fresh.Payload); recognized {
 						if payloadErr != nil {
 							recoveryPayload = nil
 						} else {
 							recoveryPayload = recovery
+							feedbackOnly = feedback != nil && len(recovery) == 0
 						}
 					}
-					pr.contracts.acceptACK(fresh.PathID, fresh.SessionID, fresh.ProbeSeq, recoveryPayload)
-					m.refreshPeerRecoveryWindow(pr)
+					if !feedbackOnly {
+						pr.contracts.acceptACK(fresh.PathID, fresh.SessionID, fresh.ProbeSeq, recoveryPayload)
+						m.refreshPeerRecoveryWindow(pr)
+					}
 				}
 				// Release any PMTU search probe awaiting THIS echo (T227, defect D88),
 				// matched by ProbeSeq and DECOUPLED from HandleEcho's anti-replay verdict
@@ -3172,12 +3176,14 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				echoPayload := accepted.Probe.Payload
 				recoveryPayload := accepted.Probe.Payload
 				var dataLossFeedback *telemetry.DataLossFeedback
+				feedbackOnly := false
 				if recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(accepted.Probe.Payload); recognized {
 					if payloadErr != nil {
 						recoveryPayload = nil
 					} else {
 						recoveryPayload = recovery
 						dataLossFeedback = feedback
+						feedbackOnly = feedback != nil && len(recovery) == 0
 					}
 				}
 				rebaselined := false
@@ -3252,24 +3258,21 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 								pr.contracts.observeReceivedSource(recoveryPathKey, srcAP)
 							}
 							if payload, encodeErr := telemetry.EncodeRecoveryContract(ack); encodeErr == nil {
-								encodedPayload, envelopeErr := telemetry.EncodeProbePayload(payload, dataLossFeedback)
-								if envelopeErr == nil {
-									echoPayload = encodedPayload
-									haveRecoveryACK = true
-									recoveryAdmission, haveRecoveryAdmission = pr.contracts.admitReceivedACK(
-										accepted.Probe.SessionID,
-										message,
-										recoveryPathKey,
-										srcAP,
-									)
-								}
+								echoPayload = payload
+								haveRecoveryACK = true
+								recoveryAdmission, haveRecoveryAdmission = pr.contracts.admitReceivedACK(
+									accepted.Probe.SessionID,
+									message,
+									recoveryPathKey,
+									srcAP,
+								)
 							}
 						}
 					}
 				}
 				if pr.contracts != nil {
 					if accepted.Acceptance == telemetry.ProbeBootstrap ||
-						(!accepted.Probe.Padded && !haveRecoveryACK) {
+						(!accepted.Probe.Padded && !haveRecoveryACK && !feedbackOnly) {
 						m.invalidatePeerRecoveryFastEvidence(pr)
 					}
 					m.refreshPeerRecoveryWindow(pr)
