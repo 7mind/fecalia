@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/adaptivefec"
+	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -177,6 +179,137 @@ func TestDataLossFeedbackCountsOnlyUniqueAcceptedNativeOutcomes(t *testing.T) {
 			report.Received,
 			report.Lost,
 		)
+	}
+}
+
+// Regression: T324 field round 4 — outcomes from the previous carrier epoch
+// must not enter the first feedback interval for a newly accepted carrier.
+func TestDataLossFeedbackCarrierTransitionDoesNotAttributePriorEpochOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		resolveGap func(*testing.T, *Multipath, netip.AddrPort, dataLossCarrier)
+	}{
+		{
+			name: "final gap",
+			resolveGap: func(_ *testing.T, m *Multipath, source netip.AddrPort, _ dataLossCarrier) {
+				m.clock.(*fakeClock).advance(resequencerTimeout)
+				m.dispatchInbound(m.paths[0], frame.Data{
+					OuterSeq: 4,
+					PathID:   1,
+					Payload:  []byte{4},
+				}, nil, source)
+			},
+		},
+		{
+			name: "recovered gap",
+			resolveGap: func(t *testing.T, m *Multipath, source netip.AddrPort, carrier dataLossCarrier) {
+				receiver := &fecReceiver{}
+				m.observeRecovered(
+					receiver,
+					m.resequencer.Load(),
+					[]fec.Recovered{{Payload: fecShardPayload(2, []byte{2})}},
+					source,
+					m.dataLoss,
+					carrier,
+				)
+				if got := receiver.deliveredRecovered.Load(); got != 1 {
+					t.Fatalf("transition recovery delivered = %d, want 1", got)
+				}
+				m.dispatchInbound(m.paths[0], frame.Data{
+					OuterSeq: 4,
+					PathID:   1,
+					Payload:  []byte{4},
+				}, nil, source)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newFakeClock()
+			m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x60), clock)
+			if _, _, err := m.Open(0); err != nil {
+				t.Fatalf("open multipath: %v", err)
+			}
+			t.Cleanup(func() { _ = m.Close() })
+			m.resequencer.Load().SetMultiPathExpected(true)
+
+			sourceA := netip.MustParseAddrPort("192.0.2.1:51820")
+			sourceB := netip.MustParseAddrPort("198.51.100.1:51820")
+			deliver := func(seq uint64, pathID uint8, source netip.AddrPort) {
+				t.Helper()
+				m.dispatchInbound(m.paths[0], frame.Data{
+					OuterSeq: seq,
+					PathID:   pathID,
+					Payload:  []byte{byte(seq)},
+				}, nil, source)
+			}
+			deliver(1, 0, sourceA)
+			deliver(3, 0, sourceA)
+
+			generation := m.contracts.receivedSnapshot().generation
+			carrierB := dataLossCarrier{
+				pathID:             1,
+				pathKey:            reseqPathKey(m.paths[0].id, 1),
+				source:             sourceB,
+				topologyGeneration: generation,
+			}
+			test.resolveGap(t, m, sourceB, carrierB)
+
+			contract := receivedRecoverySnapshot{
+				present:    true,
+				session:    11,
+				validUntil: clock.Now().Add(time.Second),
+				generation: generation,
+				message: telemetry.RecoveryContractMessage{
+					ContractID: 12,
+				},
+			}
+			transitionReport := m.dataLoss.buildReport(contract, clock.Now())
+			if transitionReport == nil {
+				t.Fatal("first B-native outcome produced no DATA feedback report")
+			}
+			if transitionReport.CarrierPathID != 1 ||
+				transitionReport.Received != 1 ||
+				transitionReport.Lost != 0 {
+				t.Errorf(
+					"first B interval = path %d received %d lost %d, want clean B-only 1/0",
+					transitionReport.CarrierPathID,
+					transitionReport.Received,
+					transitionReport.Lost,
+				)
+			}
+
+			_, adaptiveConfig := residualAdaptiveFECConfigs()
+			controller, err := adaptivefec.NewController(adaptiveConfig, clock)
+			if err != nil {
+				t.Fatalf("build adaptive controller: %v", err)
+			}
+			if got := controller.Observe(transitionReport.Loss()); got != 0 {
+				t.Errorf("parity after transition-only outcomes = %d, want 0", got)
+			}
+
+			deliver(6, 1, sourceB)
+			clock.advance(resequencerTimeout)
+			for {
+				if _, ok := m.resequencer.Load().Pop(); !ok {
+					break
+				}
+			}
+			stableReport := m.dataLoss.buildReport(contract, clock.Now())
+			if stableReport == nil {
+				t.Fatal("stable B-native loss produced no DATA feedback report")
+			}
+			if stableReport.Received != 1 || stableReport.Lost != 1 {
+				t.Fatalf(
+					"stable B interval = received %d lost %d, want 1/1",
+					stableReport.Received,
+					stableReport.Lost,
+				)
+			}
+			clock.advance(adaptiveControlInterval)
+			if got := controller.Observe(stableReport.Loss()); got <= 0 {
+				t.Fatalf("parity after stable B-native loss = %d, want > 0", got)
+			}
+		})
 	}
 }
 
