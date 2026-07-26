@@ -321,10 +321,15 @@ deliberate boundaries you must plan around:
   off, each input is classified, framed, and admitted in order. With FEC on, a
   per-peer owner stages one group until its size or exact deadline decision,
   then frames its DATA/PARITY; no open-group DATA is writer-visible. Each
-  original `Send` publishes one owner command and one completion through the
-  bounded mailbox, irrespective of its offload-frame count. The Bind advertises
-  and accepts the vendored engine's 128-buffer ideal batch, so a TUN-offloaded
-  send reaches this path without an artificial single-buffer interface limit.
+  original `Send` publishes one owner command through the bounded mailbox,
+  irrespective of its offload-frame count. With pacing enabled, `Send` returns
+  once the owner has copied/admitted every caller buffer, so successive serial
+  sub-*K* engine calls can fill one group without waiting for its later decision
+  or wire service; the owner retains a separate terminal completion for
+  lifecycle and accounting. Pacing-off/direct sends retain synchronous terminal
+  completion. The Bind advertises and accepts the vendored engine's 128-buffer
+  ideal batch, so a TUN-offloaded send reaches this path without an artificial
+  single-buffer interface limit.
   Compatible shaped frames from one
   decided group that naturally uses one exclusive path transfers ownership to
   that path shaper as one recovery tranche. Mixed-path/shared-socket groups keep
@@ -340,12 +345,14 @@ deliberate boundaries you must plan around:
   DATA+parity tranche, before later priority/groups. One absolute
   `cutStart+10ms` socket deadline covers an already-blocked predecessor and
   every tranche syscall. Install, clear, or writer failure terminates without
-  retry, propagates its originating cause to every already-accepted retired
-  byte, disables admission immediately, and retires that exact socket
+  retry, assigns its originating cause to every already-accepted retired byte,
+  disables admission immediately, and retires that exact socket
   generation from its peer path, scheduler view, and remote; a stale failure
   cannot match a replacement generation. A causally interrupted in-flight
-  shaped syscall reports that published cause to its caller while socket/error
-  counters retain the actual syscall failure class. The shaper retains
+  shaped syscall reports that published cause to the owner's terminal
+  completion while socket/error counters retain the actual syscall failure
+  class; a shaped caller already acknowledged at owned admission is not
+  retroactively failed. The shaper retains
   at most `Mtotal`; saturation backpressures the sender
   without discarding ordinary traffic. Per-path accepted, emitted,
   shaper-error, and socket-error counters expose every terminal prefix. Live
@@ -357,6 +364,9 @@ deliberate boundaries you must plan around:
   in-flight bytes reconcile at every live snapshot; both DATA/PARITY and inner
   control contribute. The shaper series are absent when pacing is off and
   restart from zero with each fresh shaper/socket generation.
+  `wanbond_path_tx_bytes_total`, FEC DATA/PARITY emitted counters, and the
+  peer's last-write timestamp advance only after the eventual socket write
+  succeeds, never at the earlier caller-ownership acknowledgement.
   Runtime remove/rollback and Close atomically stop that generation's admission,
   retire queued work, close its socket to interrupt blocked kernel I/O, then join
   shaped and direct UDP writers without holding the bind lock. Re-add or Close/Open creates a fresh empty

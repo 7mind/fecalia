@@ -213,15 +213,19 @@ func (w *failFirstWriter) trace() string {
 }
 
 type failFirstFixture struct {
-	t      testing.TB
-	m      *Multipath
-	cfg    fec.Config
-	clock  *fakeClock
-	writer *failFirstWriter
+	t         testing.TB
+	m         *Multipath
+	cfg       fec.Config
+	clock     *fakeClock
+	writer    *failFirstWriter
+	published chan *fecOwnerBatch
+	submitMu  sync.Mutex
 }
 
 type failFirstSubmission struct {
-	done chan error
+	done     chan error
+	terminal <-chan error
+	batch    *fecOwnerBatch
 }
 
 func newFailFirstFixture(t testing.TB, cfg fec.Config, adaptiveCfg *adaptivefec.Config, configureWriter func(*failFirstWriter)) *failFirstFixture {
@@ -274,13 +278,40 @@ func newFailFirstFixture(t testing.TB, cfg fec.Config, adaptiveCfg *adaptivefec.
 	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
 
 	fs := m.fecSend.Load()
+	published := make(chan *fecOwnerBatch, 128)
+	fs.owner.afterBatchPublish = func(batch *fecOwnerBatch) {
+		published <- batch
+	}
 	writer.groupOpen = func() bool {
 		return fs.openDeadlineNanos.Load() != 0
 	}
-	return &failFirstFixture{t: t, m: m, cfg: cfg, clock: clk, writer: writer}
+	return &failFirstFixture{t: t, m: m, cfg: cfg, clock: clk, writer: writer, published: published}
 }
 
 func (f *failFirstFixture) submit(payloads ...[]byte) *failFirstSubmission {
+	f.submitMu.Lock()
+	defer f.submitMu.Unlock()
+	submission := &failFirstSubmission{done: make(chan error, 1)}
+	go func() {
+		submission.done <- f.m.Send(payloads, f.m.virt)
+	}()
+	select {
+	case submission.batch = <-f.published:
+		submission.terminal = submission.batch.done
+	case err := <-submission.done:
+		// Publication happens before Send can return, so a ready batch here is
+		// the exact submission; otherwise Send failed before owner publication.
+		select {
+		case submission.batch = <-f.published:
+			submission.terminal = submission.batch.done
+		default:
+		}
+		submission.done <- err
+	}
+	return submission
+}
+
+func (f *failFirstFixture) submitAdmissionOnly(payloads ...[]byte) *failFirstSubmission {
 	submission := &failFirstSubmission{done: make(chan error, 1)}
 	go func() {
 		submission.done <- f.m.Send(payloads, f.m.virt)
@@ -289,9 +320,13 @@ func (f *failFirstFixture) submit(payloads ...[]byte) *failFirstSubmission {
 }
 
 func (f *failFirstFixture) await(submission *failFirstSubmission) error {
+	completion := (<-chan error)(submission.done)
+	if submission.terminal != nil {
+		completion = submission.terminal
+	}
 	for i := 0; i < failFirstSpinLimit; i++ {
 		select {
-		case err := <-submission.done:
+		case err := <-completion:
 			return err
 		default:
 			runtime.Gosched()
@@ -672,7 +707,7 @@ func TestFailFirstFECDeadlineDispatchStatsAndInvalidation(t *testing.T) {
 	if payload := contracts.payload(); len(payload) == 0 {
 		t.Fatal("deadline SLO miss disabled negotiation instead of publishing a rotated recovery OFFER")
 	}
-	next := f.submit([]byte("blocked-a"), []byte("blocked-b"), []byte("blocked-c"), []byte("blocked-d"))
+	next := f.submitAdmissionOnly([]byte("blocked-a"), []byte("blocked-b"), []byte("blocked-c"), []byte("blocked-d"))
 	select {
 	case err := <-next.done:
 		t.Fatalf("subsequent DATA completed before the invalidated service rotated: %v", err)
@@ -774,12 +809,13 @@ func (a *failFirstOwnerAdapter) submitAdmission(payload []byte, _ bool) *failFir
 		a.fixture.t.Fatal("owner adapter path has no remote")
 	}
 	batch := &fecOwnerBatch{
-		bufs:    [][]byte{append([]byte(nil), payload...)},
-		classes: []shaper.Class{shaper.ClassData},
-		path:    path,
-		remote:  remote,
-		shaped:  true,
-		done:    make(chan error, 1),
+		bufs:     [][]byte{append([]byte(nil), payload...)},
+		classes:  []shaper.Class{shaper.ClassData},
+		path:     path,
+		remote:   remote,
+		shaped:   true,
+		admitted: make(chan error, 1),
+		done:     make(chan error, 1),
 	}
 	admitted := make(chan failFirstOwnerAdmission, 1)
 	a.admissions.Store(batch, admitted)
@@ -974,7 +1010,7 @@ func TestFailFirstFECDecidedGroupWriterErrorIsTerminal(t *testing.T) {
 	t.Logf("writer-error trace: %s", f.writer.trace())
 }
 
-func TestFailFirstFECBatchStopsSequenceAllocationAfterFailedGroup(t *testing.T) {
+func TestFailFirstFECBatchFailureRetiresGenerationBeforeNextSequenceAllocation(t *testing.T) {
 	const buffers = 257
 	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
 	f := newFailFirstFixture(t, cfg, nil, func(writer *failFirstWriter) {
@@ -988,16 +1024,28 @@ func TestFailFirstFECBatchStopsSequenceAllocationAfterFailedGroup(t *testing.T) 
 	if got := f.m.outerSeq.Load(); got != uint64(cfg.DataShards) {
 		t.Fatalf("outer sequence after first-group failure = %d, want consumed prefix %d", got, cfg.DataShards)
 	}
+	beforeRejected := f.m.PeerSnapshots()[0].FEC
 
-	if err := f.await(f.submit([]byte("next-a"), []byte("next-b"))); err != nil {
-		t.Fatalf("next Send after terminal group error: %v", err)
+	next := f.submit([]byte("next-a"), []byte("next-b"))
+	if next.batch != nil {
+		t.Fatal("next Send published to the owner after its writer generation retired")
 	}
-	if got := f.m.outerSeq.Load(); got != uint64(2*cfg.DataShards) {
-		t.Fatalf("outer sequence after recovery Send = %d, want %d (no failed-batch suffix gap)", got, 2*cfg.DataShards)
+	if err := f.await(next); !errors.Is(err, errClosed) {
+		t.Fatalf("next Send after terminal group error = %v, want %v", err, errClosed)
+	}
+	if got := f.m.outerSeq.Load(); got != uint64(cfg.DataShards) {
+		t.Fatalf("outer sequence after rejected Send = %d, want consumed prefix %d", got, cfg.DataShards)
+	}
+	afterRejected := f.m.PeerSnapshots()[0].FEC
+	if afterRejected.DataFrames != beforeRejected.DataFrames ||
+		afterRejected.ParityFrames != beforeRejected.ParityFrames {
+		t.Fatalf("rejected Send changed DATA/PARITY = %d/%d -> %d/%d",
+			beforeRejected.DataFrames, beforeRejected.ParityFrames,
+			afterRejected.DataFrames, afterRejected.ParityFrames)
 	}
 }
 
-func TestFailFirstFECWriterPrefixFailureKeepsOwnerForNextSend(t *testing.T) {
+func TestFailFirstFECWriterPrefixFailureRetiresGenerationBeforeNextSend(t *testing.T) {
 	cfg := fec.Config{DataShards: 2, ParityShards: 1, Deadline: 80 * time.Millisecond}
 	f := newFailFirstFixture(t, cfg, nil, func(writer *failFirstWriter) {
 		writer.failDecided = true
@@ -1013,15 +1061,19 @@ func TestFailFirstFECWriterPrefixFailureKeepsOwnerForNextSend(t *testing.T) {
 		t.Fatalf("emitted prefix DATA/PARITY = %d/%d, want 1/0", afterFailure.DataFrames, afterFailure.ParityFrames)
 	}
 
-	if err := f.await(f.submit([]byte("next-a"), []byte("next-b"))); err != nil {
-		t.Fatalf("next Send after writer error: %v", err)
+	next := f.submit([]byte("next-a"), []byte("next-b"))
+	if next.batch != nil {
+		t.Fatal("next Send published to the owner after its writer generation retired")
 	}
-	afterRecovery := f.m.PeerSnapshots()[0].FEC
-	if afterRecovery.DataFrames != 3 || afterRecovery.ParityFrames != 1 {
-		t.Fatalf("post-recovery DATA/PARITY = %d/%d, want 3/1", afterRecovery.DataFrames, afterRecovery.ParityFrames)
+	if err := f.await(next); !errors.Is(err, errClosed) {
+		t.Fatalf("next Send after writer error = %v, want %v", err, errClosed)
 	}
-	if got := f.m.outerSeq.Load(); got != 4 {
-		t.Fatalf("outer sequence after failed+successful groups = %d, want 4", got)
+	afterRejected := f.m.PeerSnapshots()[0].FEC
+	if afterRejected.DataFrames != 1 || afterRejected.ParityFrames != 0 {
+		t.Fatalf("post-rejection DATA/PARITY = %d/%d, want 1/0", afterRejected.DataFrames, afterRejected.ParityFrames)
+	}
+	if got := f.m.outerSeq.Load(); got != uint64(cfg.DataShards) {
+		t.Fatalf("outer sequence after failed+rejected groups = %d, want %d", got, cfg.DataShards)
 	}
 }
 

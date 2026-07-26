@@ -1526,16 +1526,24 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
   exclusive). Both off by default; enable with `[fec] enabled = true`
   (+ `adaptive = true`).
 
-**Send ownership, group staging, and deadlines (T309).** Each live peer owns
+**Send ownership, group staging, and deadlines (T309/T318).** Each live peer owns
 one FEC sender goroutine. `Send` performs one scheduler selection for the
-original engine batch and publishes exactly one batch command plus one
-completion through the bounded 128-batch mailbox. The Bind reports
+original engine batch and publishes exactly one batch command through the
+bounded 128-batch mailbox. The Bind reports
 `conn.IdealBatchSize=128`, matching the vendored engine/TUN pool contract, and
 accepts every buffer in that vector; receive calls remain free to return a
 shorter vector. The owner walks its input in
 order and assigns each outer sequence immediately before copying/admitting that
-frame. It stops at the first terminal group error, so neither suffix payloads
-nor suffix sequence numbers are consumed. The encoder retains each admitted
+frame. A shaped command carries two distinct completion points: caller-buffer
+admission acknowledges only after the owner has copied/admitted its entire
+input, while an owner-private terminal completion remains pending until every
+contributing group resolves. Consequently, successive serial sub-*K* shaped
+`Send` calls can fill one group without the first call waiting for its eventual
+decision or wire emission, and caller buffers may be reused immediately after
+the admission acknowledgement. Pacing-off/direct commands retain the historical
+synchronous terminal completion. Before admission acknowledgement the owner
+stops at the first terminal group error, so neither unowned suffix payloads nor
+suffix sequence numbers are consumed. The encoder retains each admitted
 `outer-seq || inner` buffer without a second payload copy and returns every
 owned DATA shard in an explicit closed-group decision; success, adaptive *M*=0,
 deadline closure, and coding error all clear the encoder's open-group
@@ -1551,8 +1559,13 @@ group are handed to one path shaper as one immutable batch; that shaper retains
 and emits its datagrams through its existing per-datagram bounded backpressure.
 A group spanning different selected paths is split only at the path boundary,
 and direct UDP output remains per datagram. A terminal decision/write error
-resolves every contributing batch without retrying the decided group, but the
-owner remains available for a later `Send`.
+resolves every contributing owner-side completion without retrying the decided
+group, but the owner remains available for a later `Send`. An error before
+shaped admission acknowledgement is returned synchronously. An error after
+acknowledgement retires only the exact failing path generation and appears in
+terminal/shaper/socket accounting; it cannot retroactively fail the caller.
+Ordinary Close/Stop cancellation resolves the owner generation without
+launching failure retirement.
 
 The timer runs in the same injected time domain as adaptive FEC. Before every
 admission—including the next frame in an already-published batch—the owner
@@ -1572,8 +1585,16 @@ late DATA/PARITY or retaining admission waiters across rebind. Per-peer teardown
 keeps that peer's lifecycle barrier through the old-owner join, so rebind cannot
 publish a replacement concurrently; it still retains the live per-path
 shaper/socket generation. Publication and Stop are linearized: once a batch
-publishes, `Send` waits for the owner's completion/rejection acknowledgement,
-and owner exit acknowledges every published batch before its join completes.
+publishes, shaped `Send` waits for the owner's ownership/rejection
+acknowledgement and direct `Send` waits for terminal completion. Owner exit
+resolves every private terminal completion before its join completes.
+
+The ownership acknowledgement does not count wire service. Per-path
+`txBytes`, FEC DATA/PARITY emitted counters, and `lastWrite` advance only after
+the eventual socket write succeeds. Shaper accepted bytes still linearize at
+its capacity reservation; emitted/error bytes reconcile later. The FEC exact
+timer continues to own underfilled-group closure independently of caller return,
+and staged-group/data plus group/deadline-decision metrics expose that interval.
 
   **Quantization-aware raise gate in residual-SLA mode (D96, fix b).** The
   loop only *raises* *M* once smoothed loss crosses a raise gate (below it, the

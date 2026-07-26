@@ -330,15 +330,21 @@ group reaches the socket until the group fills or its exact `deadline` expires.
 The deadline therefore adds intentional latency to an underfilled low-rate
 group; a batched/offloaded send that fills `data_shards` closes immediately.
 Choose `deadline` as a latency bound, not only a coding-efficiency knob. The
-owner accepts one batch command/completion per original `Send`, assigns outer
-sequences only as it copies each input, and streams decided groups through the
-per-path shaper. The Bind advertises the vendored engine's 128-buffer ideal
-batch and accepts every buffer in that vector; receive functions may still
-return fewer datagrams per read. A complete compatible group enters that shaper as one immutable
-batch; the shaper still applies bounded per-datagram pre-copy backpressure.
-Close/rebind rejects or completes every published batch and joins the old owner
-before a replacement can publish, so no late group crosses transport
-generations.
+owner accepts one batch command per original `Send`, assigns outer sequences
+only as it copies each input, and streams decided groups through the per-path
+shaper. With pacing enabled, the caller receives its acknowledgement once the
+owner has copied/admitted every buffer in that command; the group may remain
+staged or may still be waiting for shaper/socket service. This lets successive
+serial sub-`data_shards` engine calls fill one group. The owner keeps a separate
+terminal completion for lifecycle and error accounting. Pacing-off/direct sends
+continue to wait synchronously through the decision and write. The Bind
+advertises the vendored engine's 128-buffer ideal batch and accepts every buffer
+in that vector; receive functions may still return fewer datagrams per read. A
+complete compatible group enters that shaper as one immutable batch; the shaper
+still applies bounded per-datagram pre-copy backpressure. Close/rebind rejects
+any command not yet acknowledged, resolves acknowledged staged work internally,
+and joins the old owner before a replacement can publish, so no late group
+crosses transport generations.
 
 With `adaptive = true` the send side runs the loss-tracking controller: the
 per-group parity floats in `[0, parity_shards]` to match measured path loss, so
@@ -442,7 +448,10 @@ Common rules, either policy:
   shaper holds at most `Mtotal=B+C+P+Fgroup+Lio`. One engine batch selects one path. FEC-off input is
   classified, framed, and admitted in order; FEC-on input is staged by the
   peer owner until an immutable group decision and then emitted one wire
-  group at a time. A naturally single-path group on an exclusive writer
+  group at a time. Shaped caller-buffer ownership is acknowledged after the
+  whole command has been copied/admitted, independently of that eventual
+  decision/emission; pacing-off remains terminally synchronous. A naturally
+  single-path group on an exclusive writer
   generation transfers ownership as one recovery tranche. The bounded prefix,
   pre-cut priority, and current `Lio` precede the complete DATA+parity tranche;
   later priority/groups follow it. Mixed-path/shared-socket groups keep the
@@ -467,7 +476,9 @@ Common rules, either policy:
   install/clear or writer failure immediately closes admission and retires that
   exact peer path, scheduler view, selected remote, and shared socket; pointer
   identity prevents a stale failure from retiring a replacement. Already-accepted
-  work completes with the originating recovery failure. Queued/unstarted bytes
+  work resolves its owner-side terminal completion with the originating
+  recovery failure; a shaped caller already acknowledged at ownership is not
+  failed retroactively. Queued/unstarted bytes
   enter that cause's generic or `EMSGSIZE` terminal counter; a causally
   interrupted in-flight syscall reports the published cause while metrics
   retain its actual socket-error class. Runtime removal,
@@ -545,8 +556,10 @@ Common rules, either policy:
   left. A legacy peer merely echoes the OFFER and therefore stays conservative.
   Shared-socket/mixed-path service advertises a disabled contract.
   Writer/deadline failure and Close invalidate the old contract before operation
-  can continue, but delayed failures carry an exact Bind Open-generation token
-  and cannot invalidate or rotate a replacement Open. Multiple invalidations
+  can continue, but ordinary lifecycle cancellation does not classify itself as
+  a recovery failure or launch recovery retirement. Delayed failures carry an
+  exact Bind Open-generation token and cannot invalidate or rotate a replacement
+  Open. Multiple invalidations
   coalesce without dropping the newest live-generation request, including
   across rapid engine-driven Close/Open cycles.
   Same-name changes to the derived service inputs
@@ -575,7 +588,10 @@ Common rules, either policy:
   the three generated-priority overflow policies. PMTU cancellation counts only
   a generation close/cancel while waiting for `P`, before sequence/timestamp
   generation; an `ErrClosed` returned after reservation or by the writer remains
-  a send failure, not an admission cancellation. These series (and the monitor UI's `shaper` block) are absent when
+  a send failure, not an admission cancellation. `wanbond_path_tx_bytes_total`,
+  FEC emitted DATA/PARITY, and the peer last-write timestamp advance only when
+  the eventual socket write succeeds; they do not advance at shaped
+  caller-ownership acknowledgement. These series (and the monitor UI's `shaper` block) are absent when
   pacing is off, and all cumulative values reset when the path receives a new
   socket/shaper generation.
 - Under active-backup, pacing enabled with **neither** a declared

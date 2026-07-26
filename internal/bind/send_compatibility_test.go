@@ -183,7 +183,7 @@ func TestPeerRebindWaitsForOldFECOwnerExit(t *testing.T) {
 	}
 }
 
-func TestShapedSendAbortsWhenFECPlaneReinstantiates(t *testing.T) {
+func TestShapedSendAdmissionSurvivesFECPlaneReinstantiation(t *testing.T) {
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +252,14 @@ func TestShapedSendAbortsWhenFECPlaneReinstantiates(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("shaped Send did not reach the blocking shaper")
 	}
+	select {
+	case err := <-sendErr:
+		if err != nil {
+			t.Fatalf("shaped admission acknowledgement = %v, want nil before terminal write completion", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shaped Send did not acknowledge owned admission before terminal write completion")
+	}
 
 	if !m.TearDownPeer("beta") {
 		t.Fatal("secondary peer teardown was refused")
@@ -264,11 +272,8 @@ func TestShapedSendAbortsWhenFECPlaneReinstantiates(t *testing.T) {
 	close(blocking.release)
 
 	select {
-	case err := <-sendErr:
-		if !errors.Is(err, errFECPlaneChanged) {
-			t.Fatalf("shaped Send error = %v, want FEC-plane generation change", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("shaped Send did not abort after FEC-plane re-instantiation")
+	case <-oldFEC.owner.done:
+	default:
+		t.Fatal("peer teardown returned before the acknowledged old FEC owner exited")
 	}
 }

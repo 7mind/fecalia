@@ -380,13 +380,19 @@ Before the real-link cycles, validate the T309 FEC sender-owner invariants:
       and the same command with `-race`; both pass. These deterministic checks
       assert that open-group DATA/PARITY stays hidden, exact deadline dispatch
       stays within the bind-local 10ms grace, an expired group wins over queued
-      admissions, a 257-frame `Send` publishes one batch/completion and preserves
+      admissions, a 257-frame `Send` publishes one owner batch and preserves
       exact payload/sequence order, writer-prefix failure consumes no suffix
-      sequence numbers, and Close acknowledges blocked/queued batches before
-      their caller buffers can be reused.
+      sequence numbers, shaped serial sub-*K* sends acknowledge owned caller
+      buffers before terminal group service, post-ack failures retire only the
+      exact generation, and Close rejects unowned suffixes while joining every
+      acknowledged owner-side completion.
 - [ ] Run
-      `go test ./internal/bind -run 'TestFECSendStreamsBeyondOwnerMailboxCapacity|TestMultipathFECDeadlineEmitsPartialGroupParity' -count=1`;
-      the 257-buffer offload batch and the underfilled deadline group both pass.
+      `go test ./internal/bind -run 'TestProductionBatch128CappedShapedSerialAdmissionFillsGroups|TestFECSendStreamsBeyondOwnerMailboxCapacity|TestMultipathFECDeadlineEmitsPartialGroupParity' -count=1`;
+      the capped production batch-128 fixture, 257-buffer offload batch, and
+      underfilled deadline group all pass. The production fixture must report
+      exact size-closed *K*+*M* fill, zero deadline decisions/misses and terminal
+      errors, accepted=emitted conservation, and nonzero configured-vs-observed
+      byte-rate/count evidence.
 - [ ] During one Down/Up cycle with a deliberately underfilled FEC group,
       capture the outer UDP stream. Confirm no DATA/PARITY from the old group
       appears after the old transport generation closes; the first post-Up
@@ -581,7 +587,9 @@ predeclared gates:
 - [ ] Force recovery deadline-install, clear, and running-writer failures.
       Confirm each exact socket generation immediately rejects admission,
       disappears from its peer/scheduler/remote view, and quiesces on Close;
-      every already-accepted completion must preserve the originating cause,
+      every already-accepted owner-side terminal completion must preserve the
+      originating cause (a shaped caller already acknowledged at ownership is
+      not retroactively failed),
       and accepted bytes must reconcile exactly into emitted plus generic or
       `EMSGSIZE` terminal bytes with no retained remainder. For an interrupted
       in-flight syscall, confirm completion reports the published cause while

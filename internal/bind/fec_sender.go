@@ -86,17 +86,19 @@ type fecOwnerAdmission struct {
 }
 
 type fecOwnerBatch struct {
-	bufs    [][]byte
-	classes []shaper.Class
-	path    *peerPathState
-	remote  netip.AddrPort
-	shaped  bool
-	done    chan error
+	bufs     [][]byte
+	classes  []shaper.Class
+	path     *peerPathState
+	remote   netip.AddrPort
+	shaped   bool
+	admitted chan error
+	done     chan error
 
-	pending   int
-	exhausted bool
-	completed bool
-	err       error
+	pending            int
+	exhausted          bool
+	admissionCompleted bool
+	completed          bool
+	err                error
 }
 
 type fecStagedData struct {
@@ -151,11 +153,13 @@ type fecSendOwner struct {
 	staged   []fecStagedData
 
 	// Test-only scheduling seams. Tests install them before the first batch.
-	afterPublish       func(int, int)
-	beforeBatch        func(*fecOwnerBatch)
-	beforeCopy         func(*fecOwnerBatch, int)
-	afterAdmit         func(fecOwnerAdmission, *fecOwnerBatch, int)
-	beforeAdaptiveLock func()
+	afterPublish        func(int, int)
+	afterBatchPublish   func(*fecOwnerBatch)
+	beforeBatch         func(*fecOwnerBatch)
+	beforeCopy          func(*fecOwnerBatch, int)
+	afterAdmit          func(fecOwnerAdmission, *fecOwnerBatch, int)
+	beforeAdaptiveLock  func()
+	beforeRecoveryAbort func()
 }
 
 func newFECSendOwner(m *Multipath, peer *peerState, fs *fecSender) *fecSendOwner {
@@ -197,6 +201,9 @@ func (o *fecSendOwner) publish(batch *fecOwnerBatch) error {
 			if o.afterPublish != nil {
 				o.afterPublish(bufferCount, completionCapacity)
 			}
+			if o.afterBatchPublish != nil {
+				o.afterBatchPublish(batch)
+			}
 			return nil
 		default:
 			o.submitMu.Unlock()
@@ -212,6 +219,10 @@ func (o *fecSendOwner) publish(batch *fecOwnerBatch) error {
 
 func (o *fecSendOwner) wait(batch *fecOwnerBatch) error {
 	return <-batch.done
+}
+
+func (o *fecSendOwner) waitAdmission(batch *fecOwnerBatch) error {
+	return <-batch.admitted
 }
 
 func (o *fecSendOwner) signalDeadline() {
@@ -321,7 +332,7 @@ func (o *fecSendOwner) run() {
 				o.beforeBatch(batch)
 			}
 			if o.isStopping() {
-				o.finishBatch(batch, o.terminalError())
+				o.rejectBatch(batch, o.terminalError())
 				o.shutdown()
 				return
 			}
@@ -346,15 +357,16 @@ func (o *fecSendOwner) handleControl(control fecOwnerControl) {
 }
 
 func (o *fecSendOwner) handleBatch(batch *fecOwnerBatch) {
+	var finalDecision *fec.GroupDecision
 	for i, inner := range batch.bufs {
 		if o.isStopping() {
-			o.finishBatch(batch, o.terminalError())
+			o.rejectBatch(batch, o.terminalError())
 			return
 		}
 		// A timer can become due while this published batch is executing.
 		// Rechecking before every copy gives the expired group priority.
 		if _, err := o.closeDueGroup(); err != nil {
-			o.finishBatch(batch, err)
+			o.rejectBatch(batch, err)
 			return
 		}
 		if o.beforeCopy != nil {
@@ -385,21 +397,29 @@ func (o *fecSendOwner) handleBatch(batch *fecOwnerBatch) {
 		}
 		if err != nil {
 			o.resolveStaged(err)
-			o.finishBatch(batch, err)
+			o.rejectBatch(batch, err)
 			return
 		}
 		switch {
 		case !open:
-			err = o.decideGroup(decision, time.Time{})
+			if batch.shaped && i == len(batch.bufs)-1 {
+				finalDecision = decision
+			} else {
+				err = o.decideGroup(decision, time.Time{})
+			}
 		case !o.clock.Now().Before(due):
 			_, err = o.closeDueGroup()
 		}
 		if err != nil {
-			o.finishBatch(batch, err)
+			o.rejectBatch(batch, err)
 			return
 		}
 	}
+	o.finishAdmission(batch, nil)
 	o.finishBatch(batch, nil)
+	if finalDecision != nil {
+		_ = o.decideGroup(finalDecision, time.Time{})
+	}
 }
 
 func (o *fecSendOwner) closeDueGroup() (bool, error) {
@@ -514,8 +534,7 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 							return path.installWriteDeadline(time.Time{})
 						},
 						Abort: func(err error) {
-							o.m.abortRecoveryGeneration(path, err)
-							if o.m.fecDeadlineInvalidator != nil {
+							if o.abortRecoveryIfLive(path, err) && o.m.fecDeadlineInvalidator != nil {
 								now := o.clock.Now()
 								o.m.fecDeadlineInvalidator(fecDeadlineMiss{
 									Peer:      o.peer.name,
@@ -549,6 +568,7 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 			result, err := write.path.shaper.WriteDatagrams(o.ctx, datagrams)
 			o.m.recordShapedResult(write.path, o.peer, o.fs, wires, result, err)
 			if err != nil {
+				o.abortRecoveryIfLive(write.path, err)
 				return err
 			}
 			i = end
@@ -562,6 +582,20 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 		i++
 	}
 	return nil
+}
+
+func (o *fecSendOwner) abortRecoveryIfLive(path *peerPathState, err error) bool {
+	o.submitMu.Lock()
+	live := !o.stopping && o.ctx.Err() == nil
+	o.submitMu.Unlock()
+	if !live {
+		return false
+	}
+	if o.beforeRecoveryAbort != nil {
+		o.beforeRecoveryAbort()
+	}
+	o.m.abortRecoveryGeneration(path, err)
+	return true
 }
 
 func (o *fecSendOwner) resolveStaged(err error) {
@@ -582,11 +616,26 @@ func (o *fecSendOwner) rejectQueued(err error) {
 		select {
 		case batch := <-o.admit:
 			o.signalSpace()
-			o.finishBatch(batch, err)
+			o.rejectBatch(batch, err)
 		default:
 			return
 		}
 	}
+}
+
+func (o *fecSendOwner) rejectBatch(batch *fecOwnerBatch, err error) {
+	o.finishAdmission(batch, err)
+	o.finishBatch(batch, err)
+}
+
+func (o *fecSendOwner) finishAdmission(batch *fecOwnerBatch, err error) {
+	if !batch.shaped || batch.admissionCompleted {
+		return
+	}
+	batch.admissionCompleted = true
+	batch.bufs = nil
+	batch.classes = nil
+	batch.admitted <- err
 }
 
 func (o *fecSendOwner) finishBatch(batch *fecOwnerBatch, err error) {

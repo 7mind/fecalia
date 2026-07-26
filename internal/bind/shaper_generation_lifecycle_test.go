@@ -1460,6 +1460,14 @@ func TestCloseRetiresQueuedWireAndReopenUsesFreshShaperGeneration(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("first generation writer did not enter")
 	}
+	select {
+	case err := <-sendResult:
+		if err != nil {
+			t.Fatalf("old-generation shaped admission acknowledgement = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old-generation shaped Send did not acknowledge owned admission")
+	}
 
 	closeResult := make(chan error, 1)
 	go func() {
@@ -1483,14 +1491,6 @@ func TestCloseRetiresQueuedWireAndReopenUsesFreshShaperGeneration(t *testing.T) 
 	}
 	close(releaseFirstWriter)
 
-	select {
-	case err := <-sendResult:
-		if !errors.Is(err, shaper.ErrClosed) {
-			t.Fatalf("queued shaped Send error = %v, want shaper.ErrClosed", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("queued shaped Send did not unblock")
-	}
 	select {
 	case err := <-closeResult:
 		if err != nil {
@@ -1556,16 +1556,16 @@ func TestCloseRetiresQueuedWireAndReopenUsesFreshShaperGeneration(t *testing.T) 
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("replacement shaper inherited old virtual time or queue state")
 	}
-	if err := m.Close(); err != nil {
-		t.Fatal(err)
-	}
 	select {
 	case err := <-replacementSend:
-		if !errors.Is(err, shaper.ErrClosed) {
-			t.Fatalf("replacement queued Send error = %v, want shaper.ErrClosed", err)
+		if err != nil {
+			t.Fatalf("replacement shaped admission acknowledgement = %v, want nil", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("replacement queued Send did not retire")
+		t.Fatal("replacement shaped Send did not acknowledge owned admission")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if got := firstWrites.Load(); got != 1 {
 		t.Fatalf("old generation writer calls = %d, want only the in-flight DATA wire", got)

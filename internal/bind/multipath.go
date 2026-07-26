@@ -3331,9 +3331,11 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 // paths. With FEC on, Send selects once and publishes one batch to the peer owner;
 // the owner assigns outer sequences while streaming that batch across one staged
 // group at a time and takes m.mu only to frame an immutable decision. peer.sendMu
-// preserves publication order without being held while a partial final group waits
-// for its deadline. The send Codec remains mutex-guarded, and no transmit syscall
-// or shaper wait holds m.mu.
+// preserves publication order. An exact-byte-shaped Send returns after the owner has
+// copied and admitted its complete caller-buffer batch; eventual group decision and
+// emission stay owner-confined. Direct/pacing-off Send retains synchronous completion.
+// The send Codec remains mutex-guarded, and no transmit syscall or shaper wait holds
+// m.mu.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	ue, ok := ep.(*udpEndpoint)
 	if !ok {
@@ -3540,8 +3542,9 @@ func (m *Multipath) sendFECBatch(
 	shaped bool,
 ) error {
 	// Serialize the one Pick plus one owner publication for this original Send.
-	// Completion is deliberately awaited after releasing sendMu, so another Send
-	// can fill a partial group owned by this batch.
+	// Exact-byte shaping waits only until the owner has copied and admitted every
+	// caller buffer, allowing the engine's sole sequential sender to fill a partial
+	// group. Direct/pacing-off composition keeps its synchronous emission result.
 	peer.sendMu.Lock()
 
 	m.mu.Lock()
@@ -3610,11 +3613,17 @@ func (m *Multipath) sendFECBatch(
 		shaped:  shaped,
 		done:    make(chan error, 1),
 	}
+	if shaped {
+		batch.admitted = make(chan error, 1)
+	}
 	if err := fs.owner.publish(batch); err != nil {
 		peer.sendMu.Unlock()
 		return err
 	}
 	peer.sendMu.Unlock()
+	if shaped {
+		return fs.owner.waitAdmission(batch)
+	}
 	return fs.owner.wait(batch)
 }
 
