@@ -8,6 +8,7 @@ import (
 	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/fec"
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -176,5 +177,88 @@ func TestAdaptiveControllerAntiPhaseTrajectory(t *testing.T) {
 	}
 	if phase4.EligiblePaths != 1 || phase4.EligibleLoss != 0 {
 		t.Fatalf("phase4 snapshot = %+v, want EligiblePaths=1 EligibleLoss=0 (the still-clean active path, not the noisy standby)", phase4)
+	}
+}
+
+// TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss is the H139
+// regression witness: priority PROBEs remain lossless while one ordinary outer
+// DATA frame disappears after the adaptive sender selected M=0. The receiver's
+// FEC recovery window expires that gap, and its next authenticated peer probe
+// must feed the active-carrier loss back into the sender's adaptive controller.
+func TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss(t *testing.T) {
+	psk := testKey(t, 0x59)
+	clk := newFakeClock()
+	fc, ac := residualAdaptiveFECConfigs()
+	sender, senderProbers := newAdaptiveProbingMultipathCfg(t, 1, psk, clk, 0, fc, ac)
+	receiver, receiverProbers := newAdaptiveProbingMultipathCfg(t, 1, psk, clk, 0, fc, ac)
+	if _, _, err := sender.Open(0); err != nil {
+		t.Fatalf("open sender: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	if _, _, err := receiver.Open(0); err != nil {
+		t.Fatalf("open receiver: %v", err)
+	}
+	t.Cleanup(func() { _ = receiver.Close() })
+
+	bringProberUpClean(t, senderProbers[0], psk, clk, 40)
+	bringProberUpClean(t, receiverProbers[0], psk, clk, 40)
+	joinNegotiatingPeers(t, sender, receiver)
+	if got := senderProbers[0].Estimate().Loss; got != 0 {
+		t.Fatalf("sender priority-PROBE loss = %v, want 0", got)
+	}
+	if got := sender.PeerSnapshots()[0].FEC.Adaptive.Parity; got != 0 {
+		t.Fatalf("initial adaptive parity = %d, want M=0 with lossless priority PROBEs", got)
+	}
+
+	codec, err := frame.NewCodec(psk)
+	if err != nil {
+		t.Fatalf("build frame codec: %v", err)
+	}
+	payloads := payloadStream(fc.DataShards)
+	data := make([][]byte, fc.DataShards)
+	for i, payload := range payloads {
+		data[i], err = codec.Encode(nil, frame.Data{
+			OuterSeq: uint64(i + 1),
+			PathID:   sender.paths[0].id,
+			FECGroup: 1,
+			FECIndex: uint8(i),
+			Payload:  payload,
+		})
+		if err != nil {
+			t.Fatalf("encode DATA %d: %v", i, err)
+		}
+	}
+
+	source := leftAddrPort(t, sender.paths[0].conn)
+	for i, raw := range data {
+		if i == 1 {
+			continue
+		}
+		receiver.handleInbound(receiver.paths[0], raw, source)
+	}
+	clk.advance(resequencerTimeout)
+	for {
+		if _, ok := receiver.resequencer.Load().Pop(); !ok {
+			break
+		}
+	}
+	recovery := receiver.resequencer.Load().Stats()
+	if recovery.Skipped != 1 || recovery.DeadlineWakeups == 0 {
+		t.Fatalf("receiver recovery outcome = %+v, want one expired DATA gap", recovery)
+	}
+
+	sender.paths[0].setRemote(leftAddrPort(t, receiver.paths[0].conn))
+	receiver.paths[0].setRemote(leftAddrPort(t, sender.paths[0].conn))
+	receiver.emitProbes()
+	time.Sleep(20 * time.Millisecond)
+	clk.advance(adaptiveControlInterval)
+	sender.driveAdaptiveController(sender.peerState)
+
+	if got := senderProbers[0].Estimate().Loss; got != 0 {
+		t.Fatalf("sender priority-PROBE loss after DATA expiry = %v, want 0", got)
+	}
+	adaptive := sender.PeerSnapshots()[0].FEC.Adaptive
+	if adaptive.Parity <= 0 {
+		t.Fatalf("adaptive parity after authenticated active-carrier DATA-loss feedback = %d, want > 0", adaptive.Parity)
 	}
 }
