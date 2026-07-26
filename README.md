@@ -305,10 +305,12 @@ deliberate boundaries you must plan around:
   report ID, and expires after two probe intervals. Recovery OFFERs and ACKs
   remain top-level legacy `WBRC` payloads, so a peer that parses `WBRC` directly
   can still negotiate recovery in either direction with a feedback-capable
-  peer. Stale, replayed, wrong-peer, or path-transition evidence cannot drive
-  parity; after capability adoption, missing current evidence holds the
-  existing controller state. Peers that never send DATA feedback retain
-  probe-loss adaptation.
+  peer. When both probes share a cadence, feedback carries the lower probe
+  sequence and `WBRC` the higher one, preserving the legacy peer's recovery
+  evidence under ordered or reordered delivery. Stale, replayed, wrong-peer, or
+  path-transition evidence cannot drive parity; after capability adoption,
+  missing current evidence holds the existing controller state. Peers that
+  never send DATA feedback retain probe-loss adaptation.
   Weighted multi-carrier scheduling deliberately retains its existing weighted
   probe-loss signal because one carrier record cannot represent simultaneous
   distribution shares.

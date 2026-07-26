@@ -567,6 +567,11 @@ big-endian DATA outcome record. Combining `WBRC` and feedback in one envelope is
 rejected by the encoder. Keeping `WBRC` top-level lets a peer that predates
 `WBPP` continue negotiating recovery in either direction; it treats the
 separate feedback probe as an opaque liveness payload and reflects it.
+When a cadence carries both records, the sender assigns the feedback probe the
+lower `ProbeSeq` and emits the `WBRC` probe last. Ordered delivery therefore
+leaves recovery evidence as the legacy receiver's final state. If the pair
+reorders, accepting the higher-sequence `WBRC` first makes the legacy probe
+anti-replay guard reject the older opaque feedback probe.
 
 The DATA outcome record carries the observed sender `SessionID`, exact recovery
 `ContractID`, carrier `PathID`, receiver-local carrier generation, monotonic

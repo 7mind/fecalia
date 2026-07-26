@@ -48,12 +48,13 @@ gate.
 
 ## P4 — adaptive FEC
 - [ ] Run
-      `go test ./internal/bind ./internal/reseq ./internal/telemetry -run 'TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss|TestAdaptiveControllerIgnoresSingleCarrierFeedbackWhileWeighted|TestDataLossFeedback|TestFeedbackOnly|TestLossObserverReportsExactFinalizedSequenceRange|TestProbePayload' -count=1`
+      `go test ./internal/bind ./internal/reseq ./internal/telemetry -run 'TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss|TestAdaptiveControllerIgnoresSingleCarrierFeedbackWhileWeighted|TestDataLossFeedback|TestFeedbackOnly|TestMixedVersionFeedbackCadencePreservesBaseRecoveryWindow|TestLossObserverReportsExactFinalizedSequenceRange|TestProbePayload' -count=1`
       and repeat with `-race`. This pins final-gap raising, inferred
       parity-recovered loss, exact outcome conservation, clean dwell/shedding,
       stale/replay/identity rejection, per-peer isolation, bidirectional legacy
-      recovery negotiation, feedback-only evidence preservation and exact
-      priority accounting, and the weighted multi-carrier boundary.
+      recovery negotiation under ordered and reordered delivery, feedback-only
+      evidence preservation and exact priority accounting, and the weighted
+      multi-carrier boundary.
 - [ ] Run `sudo -E go test -tags e2e -run '^TestP4AdaptiveFEC$' -v ./test/e2e`
       on the slowest supported worker (including a 1-vCPU aarch64 host); each
       60-second phase must collect at least 2,000 DATA frames.

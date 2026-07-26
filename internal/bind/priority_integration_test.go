@@ -310,6 +310,8 @@ func TestFeedbackOnlyProbeUsesExactGeneratedPriorityAccounting(t *testing.T) {
 	}
 
 	var feedbackProbes int
+	var feedbackSeq, ordinarySeq uint64
+	var haveFeedbackSeq, haveOrdinarySeq bool
 	recorder := &priorityRecordingShaper{}
 	recorder.onAccount = func(size int) {
 		if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -337,6 +339,11 @@ func TestFeedbackOnlyProbeUsesExactGeneratedPriorityAccounting(t *testing.T) {
 				t.Fatalf("feedback probe = recovery %x feedback %+v err %v", recovery, feedback, payloadErr)
 			}
 			feedbackProbes++
+			feedbackSeq = probe.ProbeSeq
+			haveFeedbackSeq = true
+		} else {
+			ordinarySeq = probe.ProbeSeq
+			haveOrdinarySeq = true
 		}
 	}
 	openWithPriorityRecorder(t, m, recorder)
@@ -350,6 +357,10 @@ func TestFeedbackOnlyProbeUsesExactGeneratedPriorityAccounting(t *testing.T) {
 	}
 	if feedbackProbes != 1 {
 		t.Fatalf("feedback-only probes = %d, want 1", feedbackProbes)
+	}
+	if !haveFeedbackSeq || !haveOrdinarySeq || feedbackSeq >= ordinarySeq {
+		t.Fatalf("probe sequence order = feedback %d (present %v), ordinary %d (present %v), want feedback lower",
+			feedbackSeq, haveFeedbackSeq, ordinarySeq, haveOrdinarySeq)
 	}
 }
 
@@ -369,6 +380,7 @@ func TestFeedbackOnlyProbeUsesExactShapedPriorityReservation(t *testing.T) {
 	}
 	var wireBytes uint64
 	var recoveryProbes, feedbackProbes int
+	var feedbackSeq, recoverySeq uint64
 	for range 2 {
 		probe := readProbe(t, peer, codec)
 		wireBytes += uint64(frame.UnpaddedProbeOnWire + len(probe.Payload))
@@ -378,15 +390,20 @@ func TestFeedbackOnlyProbeUsesExactShapedPriorityReservation(t *testing.T) {
 				t.Fatalf("feedback probe = recovery %x feedback %+v err %v", recovery, feedback, payloadErr)
 			}
 			feedbackProbes++
+			feedbackSeq = probe.ProbeSeq
 			continue
 		}
 		if _, contractRecognized, contractErr := telemetry.DecodeRecoveryContract(probe.Payload); contractErr != nil || !contractRecognized {
 			t.Fatalf("ordinary recovery probe = recognized %v err %v", contractRecognized, contractErr)
 		}
 		recoveryProbes++
+		recoverySeq = probe.ProbeSeq
 	}
 	if recoveryProbes != 1 || feedbackProbes != 1 {
 		t.Fatalf("probe payload classes = recovery %d feedback %d, want 1/1", recoveryProbes, feedbackProbes)
+	}
+	if feedbackSeq >= recoverySeq {
+		t.Fatalf("probe sequence order = feedback %d recovery %d, want feedback lower", feedbackSeq, recoverySeq)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -399,6 +416,41 @@ func TestFeedbackOnlyProbeUsesExactShapedPriorityReservation(t *testing.T) {
 	afterPriority := m.paths[0].shaper.(pathShaperReporter).Snapshot().OuterPriorityBytes
 	if got := afterPriority - beforePriority; got != wireBytes {
 		t.Fatalf("ordinary + feedback priority reservation = %d, want exact %d", got, wireBytes)
+	}
+}
+
+func TestFeedbackOnlyShapedProbeSendFailuresAreCounted(t *testing.T) {
+	m := openNegotiatingPeer(t, testKey(t, 0xEA))
+	_, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	seedPriorityTestFeedback(t, m)
+	report := testDataLossFeedback(1, 1)
+	feedbackPayload, err := telemetry.EncodeProbePayload(nil, &report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeWire := m.paths[0].txBytes.Load()
+	beforePriority := m.paths[0].shaper.(pathShaperReporter).Snapshot().OuterPriorityBytes
+	if err := m.paths[0].conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.emitProbes()
+	deadline := time.Now().Add(2 * time.Second)
+	for m.paths[0].probeSendErrors.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := m.paths[0].probeSendErrors.Load(); got != 2 {
+		t.Fatalf("shaped feedback + recovery send errors = %d, want 2", got)
+	}
+	if got := m.paths[0].txBytes.Load() - beforeWire; got != 0 {
+		t.Fatalf("failed shaped cadence wire bytes = %d, want 0", got)
+	}
+	wantPriority := uint64(2*frame.UnpaddedProbeOnWire +
+		len(feedbackPayload) + len(m.contracts.offerSnapshot().payload))
+	afterPriority := m.paths[0].shaper.(pathShaperReporter).Snapshot().OuterPriorityBytes
+	if got := afterPriority - beforePriority; got != wantPriority {
+		t.Fatalf("failed shaped cadence priority reservation = %d, want exact %d", got, wantPriority)
 	}
 }
 

@@ -215,11 +215,6 @@ func (m *Multipath) emitProbes() {
 			if t.contract != nil {
 				offered = t.contract.offerSnapshot()
 			}
-			contractPayload := offered.payload
-			m.emitProbePayload(t.ps, t.pr, remote, contractPayload, probeOfferRecord{
-				contract: t.contract,
-				offered:  offered,
-			})
 			if feedback := feedbacks[t.peer]; feedback != nil {
 				feedbackPayload, payloadErr := telemetry.EncodeProbePayload(nil, feedback)
 				if payloadErr != nil {
@@ -227,6 +222,11 @@ func (m *Multipath) emitProbes() {
 				}
 				m.emitProbePayload(t.ps, t.pr, remote, feedbackPayload, probeOfferRecord{})
 			}
+			contractPayload := offered.payload
+			m.emitProbePayload(t.ps, t.pr, remote, contractPayload, probeOfferRecord{
+				contract: t.contract,
+				offered:  offered,
+			})
 		}
 		t.pr.Tick()
 	}

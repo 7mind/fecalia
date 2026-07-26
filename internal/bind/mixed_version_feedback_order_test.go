@@ -128,9 +128,10 @@ func TestMixedVersionFeedbackCadencePreservesBaseRecoveryWindow(t *testing.T) {
 		{name: "reordered", reverse: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			psk := testKey(t, 0x5F)
+			base, baseProbers, baseClock := openShapedRecoveryWindowPeer(t, 1)
+			psk := base.psk
 			result := openNegotiatingPeer(t, psk)
-			base := openNegotiatingPeer(t, psk)
+			bringProberUpClean(t, baseProbers[0], psk, baseClock, testProbeUpSucc)
 			peer, peerAddr := rawPeer(t)
 			resultSource := leftAddrPort(t, result.paths[0].conn)
 
