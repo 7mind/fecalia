@@ -546,110 +546,308 @@ func TestProductionEmptyProbeEchoDoesNotCountACKRejection(t *testing.T) {
 	}
 }
 
+func readRecoveryProbeWire(t testing.TB, peer *net.UDPConn, psk config.Key) ([]byte, frame.Probe) {
+	t.Helper()
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, maxDatagram)
+	n, err := peer.Read(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = raw[:n]
+	decoded, err := frame.Decode(psk, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := decoded.(frame.Probe)
+	if !ok {
+		t.Fatalf("wire frame = %T, want PROBE", decoded)
+	}
+	return raw, probe
+}
+
+func dispatchLegacyProbe(
+	t testing.TB,
+	m *Multipath,
+	peer *net.UDPConn,
+	source netip.AddrPort,
+	session, sequence, challenge uint64,
+) frame.Probe {
+	t.Helper()
+	dispatchTestProbe(t, m, m.paths[0], source, frame.Probe{
+		PathID:         m.paths[0].id,
+		ProbeSeq:       sequence,
+		TimestampNanos: m.clock.Now().UnixNano(),
+		SessionID:      session,
+		Challenge:      challenge,
+	})
+	echo := readProbe(t, peer, mustFrameCodec(t, m.psk))
+	if !echo.IsEcho || len(echo.Payload) != 0 {
+		t.Fatalf("legacy echo = %+v, want authenticated extension-free echo", echo)
+	}
+	return echo
+}
+
+func assertProductionGapRelease(
+	t testing.TB,
+	m *Multipath,
+	clock *fakeClock,
+	source netip.AddrPort,
+	hold time.Duration,
+) {
+	t.Helper()
+	rq := m.resequencer.Load()
+	before := rq.Stats()
+	outerBefore := m.outerSeq.Load()
+
+	deliverDATA(t, m, m.paths[0], m.psk, 0, []byte("zero"), source)
+	item, ok := rq.Pop()
+	if !ok || string(item.Payload) != "zero" {
+		t.Fatalf("initial production DATA release = payload %q ok=%v", item.Payload, ok)
+	}
+	deliverDATA(t, m, m.paths[0], m.psk, 2, []byte("two"), source)
+	if item, ok := rq.Pop(); ok {
+		t.Fatalf("gap released early at arm: payload %q", item.Payload)
+	}
+	stats := rq.Stats()
+	if stats.ArmedWindow != hold {
+		t.Fatalf("armed production gap = %+v, want window %v", stats, hold)
+	}
+
+	clock.advance(hold - time.Nanosecond)
+	if item, ok := rq.Pop(); ok {
+		t.Fatalf("gap released at W-1ns: payload %q", item.Payload)
+	}
+	clock.advance(time.Nanosecond)
+	item, ok = rq.Pop()
+	if !ok || string(item.Payload) != "two" {
+		t.Fatalf("production gap release at W = payload %q ok=%v", item.Payload, ok)
+	}
+
+	after := rq.Stats()
+	if after.Rebaselines != before.Rebaselines || after.Resyncs != before.Resyncs {
+		t.Fatalf("ordinary compatibility traffic reset continuity: before=%+v after=%+v", before, after)
+	}
+	if got := m.outerSeq.Load(); got != outerBefore {
+		t.Fatalf("ordinary compatibility traffic changed OuterSeq from %d to %d", outerBefore, got)
+	}
+}
+
 func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		run  func(*testing.T)
-	}{
-		{
-			name: "old sender to old receiver remains extension-free",
-			run: func(t *testing.T) {
-				if _, recognized, err := telemetry.DecodeRecoveryContract(nil); err != nil || recognized {
-					t.Fatalf("legacy empty payload = recognized %v err %v", recognized, err)
+	t.Run("old sender to old receiver remains extension-free", func(t *testing.T) {
+		psk := testKey(t, 0x7C)
+		clock := newFakeClock()
+		m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clock)
+		if _, _, err := m.Open(0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = m.Close() })
+		peer, source := rawPeer(t)
+		m.paths[0].setRemote(source)
+		legacy := telemetry.NewReflector(psk, rand.Reader)
+		rq := m.resequencer.Load()
+		before := rq.Stats()
+		outerBefore := m.outerSeq.Load()
+
+		for range 2 {
+			m.emitProbes()
+			raw, probe := readRecoveryProbeWire(t, peer, psk)
+			if len(probe.Payload) != 0 {
+				t.Fatalf("legacy outbound PROBE carried %d extension bytes", len(probe.Payload))
+			}
+			echo, _, err := legacy.Reflect(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.handleInbound(m.paths[0], echo, source)
+		}
+		stats := m.contracts.stats()
+		if stats.Sender.OfferPresent || stats.Receiver.OfferPresent ||
+			stats.Sender.FastEligible || stats.Receiver.FastEligible {
+			t.Fatalf("old↔old ordinary probes created recovery state: %+v", stats)
+		}
+		after := rq.Stats()
+		if after.Rebaselines != before.Rebaselines || after.Resyncs != before.Resyncs {
+			t.Fatalf("old↔old ordinary probes reset continuity: before=%+v after=%+v", before, after)
+		}
+		if got := m.outerSeq.Load(); got != outerBefore {
+			t.Fatalf("old↔old ordinary probes changed OuterSeq from %d to %d", outerBefore, got)
+		}
+	})
+
+	t.Run("old sender to new receiver retains T fallback", func(t *testing.T) {
+		m, _, clock := openShapedRecoveryWindowPeer(t, 1)
+		peer, source := rawPeer(t)
+		const session = uint64(0xB002)
+		first := dispatchLegacyProbe(t, m, peer, source, session, 0, 0)
+		dispatchLegacyProbe(t, m, peer, source, session, 1, first.Challenge)
+
+		stats := m.contracts.stats()
+		if stats.Receiver.OfferPresent || stats.Receiver.FastEligible ||
+			stats.Receiver.Window != conservativeRecoveryService ||
+			stats.Receiver.FallbackReason != "no_offer" {
+			t.Fatalf("old→new production observability = %+v", stats)
+		}
+		assertProductionGapRelease(t, m, clock, source, conservativeRecoveryService)
+	})
+
+	t.Run("new sender to old receiver retains T fallback", func(t *testing.T) {
+		m, _, clock := openShapedRecoveryWindowPeer(t, 1)
+		psk := m.psk
+		peer, source := rawPeer(t)
+		m.paths[0].setRemote(source)
+		legacy := telemetry.NewReflector(psk, rand.Reader)
+
+		for range 2 {
+			m.emitProbes()
+			raw, probe := readRecoveryProbeWire(t, peer, psk)
+			message, recognized, err := telemetry.DecodeRecoveryContract(probe.Payload)
+			if err != nil || !recognized || message.Type != telemetry.RecoveryContractOffer {
+				t.Fatalf("new sender wire OFFER = recognized %v err %v message %+v", recognized, err, message)
+			}
+			echo, _, err := legacy.Reflect(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.handleInbound(m.paths[0], echo, source)
+		}
+		if m.contracts.fastEligible() {
+			t.Fatal("legacy verbatim OFFER reflection enabled fast recovery")
+		}
+		waitForRecoveryCondition(t, func() bool {
+			return m.contracts.stats().Sender.OfferWrites >= 2
+		})
+		remaining := m.contracts.barrierDue.Sub(clock.Now())
+		if remaining <= 0 {
+			t.Fatalf("sender transition had no positive conservative remainder: %v", remaining)
+		}
+		resolved := make(chan error, 1)
+		go func() { resolved <- m.contracts.awaitDecision() }()
+		clock.advance(remaining - time.Nanosecond)
+		select {
+		case err := <-resolved:
+			t.Fatalf("sender transition resolved before T: %v", err)
+		default:
+		}
+		clock.advance(time.Nanosecond)
+		select {
+		case err := <-resolved:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("sender transition did not resolve conservatively at T")
+		}
+		sender := m.contracts.stats().Sender
+		if sender.FastEligible || sender.TransitionFrozen ||
+			sender.ACKAccepts != 0 || sender.FallbackReason != "wrong" {
+			t.Fatalf("new→old production observability after T = %+v", sender)
+		}
+		assertProductionGapRelease(t, m, clock, source, conservativeRecoveryService)
+	})
+
+	t.Run("new sender to new receiver becomes fast eligible", func(t *testing.T) {
+		m, probers, clock := openShapedRecoveryWindowPeer(t, 1)
+		bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+		peer, source := rawPeer(t)
+		m.paths[0].setRemote(source)
+		const session = uint64(0xB003)
+		message := receiverContractMessage(1, 80*time.Millisecond)
+		payload, err := telemetry.EncodeRecoveryContract(message)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		dispatchTestProbe(t, m, m.paths[0], source, frame.Probe{
+			PathID:         m.paths[0].id,
+			ProbeSeq:       0,
+			TimestampNanos: clock.Now().UnixNano(),
+			SessionID:      session,
+			Payload:        payload,
+		})
+		bootstrap := readProbe(t, peer, mustFrameCodec(t, m.psk))
+		dispatchTestProbe(t, m, m.paths[0], source, frame.Probe{
+			PathID:         m.paths[0].id,
+			ProbeSeq:       1,
+			TimestampNanos: clock.Now().UnixNano(),
+			SessionID:      session,
+			Challenge:      bootstrap.Challenge,
+			Payload:        payload,
+		})
+		ackEcho := readProbe(t, peer, mustFrameCodec(t, m.psk))
+		ack, recognized, err := telemetry.DecodeRecoveryContract(ackEcho.Payload)
+		if err != nil || !recognized || ack.Type != telemetry.RecoveryContractACK ||
+			ack.ContractID != message.ContractID {
+			t.Fatalf("new receiver wire ACK = recognized %v err %v message %+v", recognized, err, ack)
+		}
+		waitForRecoveryCondition(t, func() bool {
+			return m.contracts.receivedSnapshot().acked
+		})
+
+		remote := telemetry.NewReflector(m.psk, rand.Reader)
+		for index := 0; index < 2; index++ {
+			beforeWrites := m.contracts.stats().Sender.OfferWrites
+			m.emitProbes()
+			raw, offeredProbe := readRecoveryProbeWire(t, peer, m.psk)
+			waitForRecoveryCondition(t, func() bool {
+				return m.contracts.stats().Sender.OfferWrites > beforeWrites
+			})
+			accepted, err := remote.AcceptProbe(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			echoPayload := offeredProbe.Payload
+			if accepted.Acceptance != telemetry.ProbeBootstrap {
+				offered, recognized, err := telemetry.DecodeRecoveryContract(offeredProbe.Payload)
+				if err != nil || !recognized || offered.Type != telemetry.RecoveryContractOffer {
+					t.Fatalf("new sender wire OFFER = recognized %v err %v message %+v", recognized, err, offered)
 				}
-			},
-		},
-		{
-			name: "new sender to old receiver retains T fallback",
-			run: func(t *testing.T) {
-				clock := newFakeClock()
-				sender := newRecoveryContractCoordinator(0xB001, clock)
-				if err := sender.begin(true, 80*time.Millisecond); err != nil {
+				offered.Type = telemetry.RecoveryContractACK
+				echoPayload, err = telemetry.EncodeRecoveryContract(offered)
+				if err != nil {
 					t.Fatal(err)
 				}
-				offered := sender.offerSnapshot()
-				sender.recordOffer(0, telemetryProbeHeader{
-					sessionID: 0xB001,
-					probeSeq:  1,
-					challenge: 2,
-				}, offered)
-				if sender.acceptACK(0, 0xB001, 1, offered.payload) {
-					t.Fatal("legacy verbatim OFFER echo satisfied exact ACK")
-				}
-				if sender.fastEligible() {
-					t.Fatal("new sender enabled fast recovery against old receiver")
-				}
-				if stats := sender.stats(); stats.Sender.OfferWrites != 1 ||
-					stats.Sender.ACKAccepts != 0 ||
-					stats.Sender.WrongRejections != 1 ||
-					!stats.Sender.TransitionFrozen ||
-					stats.Sender.FallbackReason != "transition" {
-					t.Fatalf("new-to-old observability = %+v", stats)
-				}
-			},
-		},
-		{
-			name: "old sender to new receiver retains T fallback",
-			run: func(t *testing.T) {
-				receiver := newRecoveryContractCoordinator(0xB002, newFakeClock())
-				if _, recognized, err := telemetry.DecodeRecoveryContract(nil); err != nil || recognized {
-					t.Fatalf("legacy payload = recognized %v err %v", recognized, err)
-				}
-				if receiver.receivedSnapshot().present {
-					t.Fatal("new receiver fabricated a contract for an old sender")
-				}
-				if stats := receiver.stats(); stats.Receiver.OfferPresent ||
-					stats.Receiver.FastEligible ||
-					stats.Receiver.FallbackReason != "no_offer" {
-					t.Fatalf("old-to-new observability = %+v", stats)
-				}
-			},
-		},
-		{
-			name: "new sender to new receiver becomes fast eligible",
-			run: func(t *testing.T) {
-				sender := newRecoveryContractCoordinator(0xB003, newFakeClock())
-				if err := sender.begin(true, 80*time.Millisecond); err != nil {
-					t.Fatal(err)
-				}
-				acknowledgeCurrentContract(t, sender, 0, 1)
-				if !sender.fastEligible() {
-					t.Fatal("exact current-process ACK did not enable fast recovery")
-				}
-				if stats := sender.stats(); !stats.Sender.OfferPresent ||
-					!stats.Sender.FastEligible ||
-					!stats.Sender.WriterExclusive ||
-					stats.Sender.OfferWrites != 1 ||
-					stats.Sender.ACKAccepts != 1 ||
-					stats.Sender.FallbackReason != "" {
-					t.Fatalf("new-to-new observability = %+v", stats)
-				}
-			},
-		},
-		{
-			name: "same-process rotation and session restart stay distinct",
-			run: func(t *testing.T) {
-				coordinator := newRecoveryContractCoordinator(0xB004, newFakeClock())
-				if err := coordinator.begin(true, 80*time.Millisecond); err != nil {
-					t.Fatal(err)
-				}
-				first := coordinator.offerSnapshot().message.ContractID
-				if err := coordinator.beginGeneration(true, 90*time.Millisecond, 1); err != nil {
-					t.Fatal(err)
-				}
-				if second := coordinator.offerSnapshot().message.ContractID; second <= first {
-					t.Fatalf("same-process ContractID = %d, want > %d", second, first)
-				}
-				coordinator.adoptReceivedSession(0xCAFE)
-				coordinator.adoptReceivedSession(0xBABE)
-				if stats := coordinator.stats(); stats.Sender.Rotations != 1 ||
-					stats.Receiver.SessionRestarts != 1 {
-					t.Fatalf("rotation/restart observability = %+v", stats)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, test.run)
+			}
+			echo, err := remote.EncodeAcceptedProbe(accepted, echoPayload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clock.advance(testProbeRTT)
+			m.handleInbound(m.paths[0], echo, source)
+		}
+
+		stats := m.contracts.stats()
+		if !stats.Sender.FastEligible || stats.Sender.ACKAccepts != 1 ||
+			stats.Sender.FallbackReason != "" {
+			t.Fatalf("new↔new sender observability = %+v", stats)
+		}
+		if !stats.Receiver.FastEligible || stats.Receiver.Window >= conservativeRecoveryService ||
+			stats.Receiver.FallbackReason != "" {
+			t.Fatalf("new↔new receiver observability = %+v", stats)
+		}
+		assertProductionGapRelease(t, m, clock, source, stats.Receiver.Window)
+	})
+}
+
+func TestRecoveryContractRotationAndSessionRestartStayDistinct(t *testing.T) {
+	coordinator := newRecoveryContractCoordinator(0xB004, newFakeClock())
+	if err := coordinator.begin(true, 80*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	first := coordinator.offerSnapshot().message.ContractID
+	if err := coordinator.beginGeneration(true, 90*time.Millisecond, 1); err != nil {
+		t.Fatal(err)
+	}
+	if second := coordinator.offerSnapshot().message.ContractID; second <= first {
+		t.Fatalf("same-process ContractID = %d, want > %d", second, first)
+	}
+	coordinator.adoptReceivedSession(0xCAFE)
+	coordinator.adoptReceivedSession(0xBABE)
+	if stats := coordinator.stats(); stats.Sender.Rotations != 1 ||
+		stats.Receiver.SessionRestarts != 1 {
+		t.Fatalf("rotation/restart observability = %+v", stats)
 	}
 }
 

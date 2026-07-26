@@ -752,6 +752,12 @@ func (c *recoveryContractCoordinator) stats() RecoveryStats {
 			Window:           c.receiverDecision.window,
 		},
 	}
+	if stats.Receiver.FastEligible &&
+		stats.Receiver.FreshUntil.Sub(now) < conservativeRecoveryService {
+		stats.Receiver.FastEligible = false
+		stats.Receiver.FallbackReason = "stale"
+		stats.Receiver.Window = conservativeRecoveryService
+	}
 	if c.offer == nil {
 		stats.Sender.FallbackReason = "no_offer"
 		return stats

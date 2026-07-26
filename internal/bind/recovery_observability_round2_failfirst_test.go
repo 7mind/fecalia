@@ -35,7 +35,8 @@ func recoveryObservationField(t *testing.T, stats RecoveryStats, direction, name
 
 func TestRecoveryStatsDirectionsAreIndependent(t *testing.T) {
 	t.Run("inbound fast outbound unacked", func(t *testing.T) {
-		coordinator := newRecoveryContractCoordinator(0xD201, newFakeClock())
+		clock := newFakeClock()
+		coordinator := newRecoveryContractCoordinator(0xD201, clock)
 		if err := coordinator.begin(true, 80*time.Millisecond); err != nil {
 			t.Fatal(err)
 		}
@@ -58,6 +59,7 @@ func TestRecoveryStatsDirectionsAreIndependent(t *testing.T) {
 			recoveryReceiverDecision{
 				offerPresent:   true,
 				fastEligible:   true,
+				freshUntil:     clock.Now().Add(telemetry.RecoveryContractLifetime),
 				fallbackReason: "",
 				rttAge:         5 * time.Millisecond,
 				headroom:       20 * time.Millisecond,
