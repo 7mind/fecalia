@@ -336,9 +336,11 @@ type PathShaperConfig struct {
 	// FECGroupReserveBytes is the one-group ownership bound Fgroup. Zero
 	// disables the finite recovery contract when FEC is disabled.
 	FECGroupReserveBytes int
-	// RecoveryWriteSlack is the cumulative kernel-call budget I.
+	// RecoveryWriteSlack is the cumulative kernel-call budget I for one
+	// receiver-observable exclusive recovery cut.
 	RecoveryWriteSlack time.Duration
-	// RecoveryBound is A=Sdevice, the complete native recovery service bound.
+	// RecoveryBound is A=Sdevice from the first receiver-observable recovery-cut
+	// write through the cut's terminal socket outcome.
 	RecoveryBound time.Duration
 	// CompletionOverrunBound is Ecompletion for already-admitted DATA/control.
 	CompletionOverrunBound time.Duration
@@ -357,7 +359,7 @@ type PathShaperConfig struct {
 const defaultAvgWireFrameBytes = 1500.0
 
 const (
-	recoveryWriteSlack = 10 * time.Millisecond
+	RecoveryWriteSlack = 10 * time.Millisecond
 	// Mirrors frame.DataOverhead without importing frame (frame imports config).
 	outerDataFrameOverhead = 40
 	// Mirrors bind.FECParityMTUPenalty without importing bind (bind imports config).
@@ -1506,44 +1508,9 @@ func (c *Config) derivePathShapers() error {
 				return fmt.Errorf("path %q: derive Fgroup: %w", p.Name, err)
 			}
 			fecGroupReserveBytes = ownership.totalBytes
-			recoverySlack = recoveryWriteSlack
+			recoverySlack = RecoveryWriteSlack
+			recoveryBound = recoverySlack
 			netRate := rateBytesPerSecond - probeRateBytesPerSecond
-			recoveryShardCount, err := checkedIntSum(
-				"recovery shard count K+M+1",
-				kdata,
-				mmax,
-				1,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: derive recovery bound A: %w", p.Name, err)
-			}
-			recoveryWireBytes, err := checkedIntProduct(
-				"recovery wire term (K+M+1)*Lmax",
-				recoveryShardCount,
-				lmax,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: derive recovery bound A: %w", p.Name, err)
-			}
-			recoveryBytes, err := checkedIntSum(
-				"recovery bound A byte numerator",
-				dataBurstBytes,
-				lmax,
-				probeBurstBytes,
-				recoveryWireBytes,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: %w", p.Name, err)
-			}
-			recoveryBound, err = deriveServiceDuration(
-				"recovery bound A",
-				recoveryBytes,
-				netRate,
-				recoverySlack,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: %w", p.Name, err)
-			}
 			completionParityBytes, err := checkedIntProduct(
 				"completion parity term M*Lmax",
 				mmax,

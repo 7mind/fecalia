@@ -1554,7 +1554,7 @@ func TestRecoveryContractRotationAndSessionRestartStayDistinct(t *testing.T) {
 	}
 }
 
-func TestRecoveryContractWireExtensionIsAbsentWhenPacingOrFECOff(t *testing.T) {
+func TestRecoveryContractWireExtensionIsAbsentWhenFECOff(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		open func(*testing.T, config.Key, *fakeClock) *Multipath
@@ -1564,20 +1564,6 @@ func TestRecoveryContractWireExtensionIsAbsentWhenPacingOrFECOff(t *testing.T) {
 			open: func(t *testing.T, psk config.Key, clock *fakeClock) *Multipath {
 				m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clock)
 				m.shaperConfigs = []config.PathShaperConfig{priorityTestShaperConfig()}
-				if _, _, err := m.Open(0); err != nil {
-					t.Fatal(err)
-				}
-				return m
-			},
-		},
-		{
-			name: "pacing off",
-			open: func(t *testing.T, psk config.Key, clock *fakeClock) *Multipath {
-				m, _ := newProbingMultipathFEC(t, loopbackPaths(1), psk, &fec.Config{
-					DataShards:   3,
-					ParityShards: 1,
-					Deadline:     20 * time.Millisecond,
-				}, clock)
 				if _, _, err := m.Open(0); err != nil {
 					t.Fatal(err)
 				}

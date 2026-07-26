@@ -63,7 +63,7 @@ func TestRecoveryDocumentationFormulaAndDecisionMapping(t *testing.T) {
 
 	design := compactRecoveryDoc(read("docs/design.md"))
 	for _, formula := range []string{
-		"sdevice=a=max_path(ceil((b+c+p+(kdata+mmax+1)*lmax)/(r-rp))+i)",
+		"a=sdevice=i",
 		"ecompletion=max_path(ceil((p+mmax*lmax+lio)/(r-rp))+i)",
 		"h=clamp(4*max(srtt",
 		"w=min(d,a+h)",
@@ -71,6 +71,9 @@ func TestRecoveryDocumentationFormulaAndDecisionMapping(t *testing.T) {
 		if !strings.Contains(design, formula) {
 			t.Errorf("docs/design.md omitted canonical formula %q", formula)
 		}
+	}
+	if old := "a=max_path(ceil((b+c+p+(kdata+mmax+1)*lmax)/(r-rp))+i)"; strings.Contains(design, old) {
+		t.Errorf("docs/design.md retained receiver-invisible recovery formula %q", old)
 	}
 
 	mapping := strings.ToLower(read("docs/design.md"))

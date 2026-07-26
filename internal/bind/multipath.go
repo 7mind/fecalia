@@ -202,6 +202,10 @@ type sharedPathState struct {
 	writeMu      sync.Mutex
 	writes       sync.WaitGroup
 	writesClosed bool
+	// socketWriteMu lets an unshaped single-owner FEC tranche take an exclusive
+	// socket-wide deadline cut. Ordinary writes hold the read side, so none can
+	// inherit or interleave with that cut's absolute write deadline.
+	socketWriteMu sync.RWMutex
 	// writeUDP is a test seam installed before a generation becomes active. Nil
 	// uses conn.WriteToUDPAddrPort.
 	writeUDP func([]byte, netip.AddrPort) (int, error)
@@ -237,6 +241,13 @@ type sharedPathState struct {
 }
 
 func (sp *sharedPathState) writeToUDPAddrPort(payload []byte, remote netip.AddrPort) (int, error) {
+	sp.socketWriteMu.RLock()
+	defer sp.socketWriteMu.RUnlock()
+	return sp.writeToUDPAddrPortInCut(payload, remote)
+}
+
+// writeToUDPAddrPortInCut writes while the caller owns socketWriteMu exclusively.
+func (sp *sharedPathState) writeToUDPAddrPortInCut(payload []byte, remote netip.AddrPort) (int, error) {
 	sp.writeMu.Lock()
 	if sp.writesClosed {
 		sp.writeMu.Unlock()
@@ -315,10 +326,11 @@ func (sp *sharedPathState) addViewLocked(pp *peerPathState) {
 // exactly that peer's resequencer/reflector/FEC decoder.
 type peerPathState struct {
 	*sharedPathState
-	peer          *peerState
-	codec         *frame.Codec
-	shaper        pathShaper
-	recoveryBound time.Duration
+	peer           *peerState
+	codec          *frame.Codec
+	shaper         pathShaper
+	directRecovery bool
+	recoveryBound  time.Duration
 	// prober is this (peer,path)'s own probe initiator (nil when the bind runs without the
 	// probe transport). It is set at path creation and immutable for the path's life,
 	// so the Bind-owned receive goroutine reaches it via the peerPathState it already
@@ -1105,6 +1117,9 @@ func (pp *peerPathState) recoveryContract() shaper.RecoveryContract {
 		return shaper.RecoveryContract{}
 	}
 	if pp.peer == nil || pp.peer.contracts == nil {
+		if pp.directRecovery {
+			return shaper.RecoveryContract{}
+		}
 		return contract
 	}
 	if !pp.peer.contracts.fastEligible() {
@@ -1114,15 +1129,25 @@ func (pp *peerPathState) recoveryContract() shaper.RecoveryContract {
 }
 
 func (pp *peerPathState) localRecoveryContract() shaper.RecoveryContract {
-	shaped, ok := pp.shaper.(recoveryPathShaper)
-	if !ok || pp.recoveryFailed.Load() {
+	if pp.recoveryFailed.Load() {
+		return shaper.RecoveryContract{}
+	}
+	var contract shaper.RecoveryContract
+	if shaped, ok := pp.shaper.(recoveryPathShaper); ok {
+		contract = shaped.RecoveryContract()
+	} else if pp.directRecovery {
+		contract = shaper.RecoveryContract{
+			Enabled:    true,
+			WriteSlack: config.RecoveryWriteSlack,
+		}
+	} else {
 		return shaper.RecoveryContract{}
 	}
 	views := pp.views.Load()
 	if views == nil || len(*views) != 1 || (*views)[0] != pp {
 		return shaper.RecoveryContract{}
 	}
-	return shaped.RecoveryContract()
+	return contract
 }
 
 type pathShaperReporter interface {
@@ -1608,6 +1633,10 @@ func exactByteShaperConfig(cfg config.PathShaperConfig) shaper.Config {
 
 func (m *Multipath) installPathShaperLocked(pp *peerPathState, cfg *config.PathShaperConfig) error {
 	if m.shaperConfigs == nil {
+		if m.fecCfg != nil {
+			pp.directRecovery = true
+			pp.recoveryBound = config.RecoveryWriteSlack
+		}
 		return nil
 	}
 	if cfg == nil {

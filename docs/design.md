@@ -802,12 +802,25 @@ advertise the contract disabled and retain the conservative 250 ms receiver
 fallback.
 
 Define
-`A=Sdevice=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+I` and
+`A=Sdevice=I` and
 `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I`. Config requires `Rp<R`, checks
-each finite nonnegative nanosecond quotient and the `+I` addition before
-conversion to `time.Duration`, and requires representable `A<250ms` and
-`Ecompletion`. The primitive does not classify frames, select paths, generate
-FEC, or own tunnel lifecycle; those remain integration responsibilities.
+the finite nonnegative `Ecompletion` quotient and the `+I` addition before
+conversion to `time.Duration`, and requires `A<250ms` and representable
+`Ecompletion`. `A` starts at the receiver-observable cut: no receiver gap can
+arm before a successor DATA socket write, and every remaining recovery write
+shares the already-installed absolute `cutStart+I` deadline. The earlier
+`B+C+P` prefix therefore does not belong in `A`; it delays the complete group
+before that observation point. The primitive does not classify frames, select
+paths, generate FEC, or own tunnel lifecycle; those remain integration
+responsibilities.
+
+When pacing is disabled, an exclusive single-owner socket applies the same
+invariant without rate shaping. Ordinary direct writes hold the read side of a
+socket gate; a negotiated FEC recovery cut takes the write side, installs one
+absolute `now+I` deadline, emits the complete DATA/parity tranche in order, and
+clears the deadline before releasing the gate. Install, write, or clear failure
+retires that exact socket/recovery generation. A shared multi-peer socket cannot
+take a peer-exclusive cut and continues to advertise disabled.
 These quantities derive at config load. Membership-only reload does not replace
 an existing path's `R/Rp/B/C/P/Lmax/Kdata/Mmax/I` service: it warns and retains
 the running values. Applying such a same-name scalar change requires a daemon
@@ -1711,7 +1724,7 @@ role-agnostic MAX-over-`StateUp`-probers drive would have seen it — does NOT
 Canonical recovery notation is `D=250ms`, dispatch grace `G=10ms`, lease
 lifetime `F=1200ms`, retained-memory terms `B/C/P/Fgroup/Lio/Mtotal`, and rate
 terms `R/Rp/I`. The sender advertises the worst live-path bound
-`Sdevice=A=max_path(ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+I)`;
+`Sdevice=A=max_path(I)` (currently `10ms` for every exclusive writer);
 the post-cut completion check uses
 `Ecompletion=max_path(ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I)`. The receiver derives
 `H=clamp(4*max(SRTT among qualified fresh Up paths),10ms,D)` and

@@ -1153,7 +1153,7 @@ func (m *Multipath) beginPeerRecoveryContractLocked(peer *peerState) error {
 		return nil
 	}
 	peer.contracts.setClock(m.clock)
-	if len(m.paths) == 0 || m.fecCfg == nil || m.shaperConfigs == nil {
+	if len(m.paths) == 0 || m.fecCfg == nil {
 		peer.contracts.disable()
 		return nil
 	}

@@ -505,10 +505,12 @@ Common rules, either policy:
   outer CONTROL beyond this `Rp`/`Pburst` model constitutes overload and
   invalidates the bound; no live outer CONTROL protocol currently exists.
   For an exclusive single-path FEC group, config also derives
-  `A=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+10ms` and
+  `A=I=10ms` and
   `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+10ms`. Finite nonnegative
-  nanosecond quotients and the slack addition must fit `time.Duration` before
-  conversion; it requires `A<250ms`.
+  `Ecompletion` nanoseconds and the slack addition must fit `time.Duration`
+  before conversion; `A` remains below 250 ms. `B+C+P` and any earlier virtual
+  tail drain before the cut's first DATA socket write, so they delay the whole
+  group uniformly but cannot lengthen a receiver gap that has already armed.
   After the peer successfully writes the exact authenticated ACK, a stable
   active-backup FEC receiver may use
   `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))` for a matching
@@ -541,10 +543,15 @@ Common rules, either policy:
   `cutStart+10ms` deadline before the cut becomes visible; that same deadline
   covers any blocked predecessor and every tranche syscall. Install failure or
   timeout terminates the group without retry and closes the writer generation.
+  With pacing disabled, a single-owner FEC socket takes the same exclusive
+  deadline cut directly: ordinary writes hold a shared socket gate and cannot
+  interleave with or inherit the cut deadline. This lets a standard one-peer
+  concentrator advertise finite recovery without enabling rate shaping.
+  Multi-peer shared sockets still advertise disabled.
   For example, an IPv4 path at `8Mbit`/`45ms` with the default 1500 MTU derives
   `R=1,000,000 B/s`, `B=45,000 B`, `Lmax=C=1,472 B`,
-  `Pburst=P=2,944 B`, and `Rp=14,720 B/s`; `Fgroup`, `A`, and `Ecompletion`
-  additionally depend on the configured FEC geometry.
+  `Pburst=P=2,944 B`, `Rp=14,720 B/s`, and `A=10ms`; `Fgroup` and
+  `Ecompletion` additionally depend on the configured FEC geometry.
   At runtime `A` becomes usable only after peer negotiation. A service change
   (including deferred-path promotion or a missed FEC deadline) freezes new
   DATA/inner-control, lets the current staged group finish, waits `T=250ms` from

@@ -395,7 +395,7 @@ func TestPathShaperLoadRejectsUnrepresentablePriorityBound(t *testing.T) {
 	}
 }
 
-func TestRecoveryBoundOverflowRejectedBeforeDurationConversion(t *testing.T) {
+func TestReceiverInvisibleQueueDoesNotInflateRecoveryBound(t *testing.T) {
 	const lmax = 1472
 	probeBurstBytes := probeFramesPerBurstPair * lmax
 	probeRateBytesPerSecond := float64(probeBurstBytes) / livenessProbeInterval.Seconds()
@@ -409,10 +409,13 @@ func TestRecoveryBoundOverflowRejectedBeforeDurationConversion(t *testing.T) {
 		"pacing_enabled = true\n",
 	) + "\n[fec]\nenabled = true\ndata_shards = 3\nparity_shards = 1\n"
 
-	_, err := loadByteShaperFixture(t, body)
-	const want = "recovery bound A cannot be represented as time.Duration"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("Load error = %v, want substring %q", err, want)
+	cfg, err := loadByteShaperFixture(t, body)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	shaper := onlyPathShaper(t, cfg)
+	if shaper.RecoveryBound != RecoveryWriteSlack {
+		t.Fatalf("A = %s, want receiver-observable cut I = %s", shaper.RecoveryBound, RecoveryWriteSlack)
 	}
 }
 
@@ -421,13 +424,13 @@ func TestRecoveryServiceDurationRepresentationBoundaries(t *testing.T) {
 		"recovery bound A",
 		1,
 		float64(time.Second),
-		recoveryWriteSlack,
+		RecoveryWriteSlack,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if valid != recoveryWriteSlack+time.Nanosecond {
-		t.Fatalf("valid service duration = %s, want %s", valid, recoveryWriteSlack+time.Nanosecond)
+	if valid != RecoveryWriteSlack+time.Nanosecond {
+		t.Fatalf("valid service duration = %s, want %s", valid, RecoveryWriteSlack+time.Nanosecond)
 	}
 
 	for _, label := range []string{"recovery bound A", "completion overrun Ecompletion"} {

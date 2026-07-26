@@ -626,8 +626,9 @@ generated priority no greater than `Rp=Pburst/200ms`, and configured byte rate
 `R>Rp`, admission is bounded by
 `Dp=(P0+Pburst)/(R-Rp)` (not `P0/R`). Once admitted, local egress adds at most
 `Q/R+Lmax/R`. For an exclusive single-path FEC recovery cut, additionally use
-`A=ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+10ms`; the configured result must
-remain below 250 ms. Therefore call-to-receiver delivery is bounded by
+`A=I=10ms`; it must remain below 250 ms. The prefix `B+C+P` runs before any
+successor DATA can arm a receiver gap and therefore does not enter `A`.
+Therefore call-to-receiver delivery is bounded by
 `Dp+Q/R+Lmax/R` plus the active resequencer hold for a missing lower outer
 sequence. Record any observed inner-control call and check it against that
 complete bound. These bounds cover the built-in PROBE/echo producer, including
@@ -650,6 +651,11 @@ verify `OuterSeq` continuity across rotation. Require the exact authenticated
 `ACK` and `A+H<D` for fast recovery; otherwise require installed `W=D` and
 record the labelled fallback, including `saturated`. Validate
 geometry from config/contract state—there is no zero-parity inference.
+
+- [ ] With pacing enabled on the edge and disabled on a single-peer
+      concentrator, confirm both directions publish and ACK `A=10ms`, report
+      `fast_eligible=1` when `A+H<D`, and install `W<250ms`. A shared
+      multi-peer concentrator socket must continue to publish disabled.
 
 - [ ] During the run, capture FEC staged/decision/deadline series, recovery
       contract status/events/reasons/freshness for both bounded

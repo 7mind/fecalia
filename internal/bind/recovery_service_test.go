@@ -3,7 +3,6 @@ package bind
 import (
 	"bytes"
 	"context"
-	"math"
 	"sync"
 	"testing"
 	"time"
@@ -135,6 +134,7 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 
 	var emittedMu sync.Mutex
 	var emitted []fec.Shard
+	var firstRecoveryWrite time.Time
 	var trancheComplete time.Time
 	groupDatagrams := make([]shaper.Datagram, 0, kdata+mmax)
 	for _, shard := range data {
@@ -147,6 +147,9 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 			),
 			Write: func([]byte) error {
 				emittedMu.Lock()
+				if firstRecoveryWrite.IsZero() {
+					firstRecoveryWrite = clock.Now()
+				}
 				emitted = append(emitted, shard)
 				trancheComplete = clock.Now()
 				emittedMu.Unlock()
@@ -161,6 +164,9 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 			Payload: bytes.Repeat([]byte{byte(0x20 + shard.Index)}, lmax),
 			Write: func([]byte) error {
 				emittedMu.Lock()
+				if firstRecoveryWrite.IsZero() {
+					firstRecoveryWrite = clock.Now()
+				}
 				emitted = append(emitted, shard)
 				trancheComplete = clock.Now()
 				emittedMu.Unlock()
@@ -234,22 +240,17 @@ func TestRecoveryServiceFirstMiddleLastLossCompletesBeforeA(t *testing.T) {
 		}
 	}
 
-	recoveryBytes := config.DataBudgetBytes +
-		config.ControlReserveBytes +
-		config.PriorityReserveBytes +
-		(kdata+mmax+1)*config.MaxDatagramBytes
-	boundA := time.Duration(math.Ceil(
-		float64(recoveryBytes)/(rate-rp)*float64(time.Second),
-	)) + config.RecoveryWriteSlack
 	emittedMu.Lock()
-	service := trancheComplete.Sub(start)
+	firstWrite := firstRecoveryWrite
+	complete := trancheComplete
 	captured := append([]fec.Shard(nil), emitted...)
 	emittedMu.Unlock()
-	if service > boundA {
-		t.Fatalf("tranche service = %s, want <= A=%s", service, boundA)
+	if firstWrite.Before(cutStart) {
+		t.Fatalf("first receiver-observable recovery write = %s, want >= cut start %s", firstWrite, cutStart)
 	}
-	if service >= 250*time.Millisecond {
-		t.Fatalf("tranche service = %s reached the conservative 250ms receiver fallback", service)
+	if service := complete.Sub(firstWrite); service > config.RecoveryWriteSlack {
+		t.Fatalf("receiver-observable tranche service = %s, want <= A=I=%s",
+			service, config.RecoveryWriteSlack)
 	}
 
 	for _, lost := range []int{0, 1, 2} {

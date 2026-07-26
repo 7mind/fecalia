@@ -239,7 +239,9 @@ continuous across same-process rotation. An exact authenticated `ACK` enables
 the shorter hold only when `A+H<D`; absence, staleness, saturation, a
 transition, or incompatible peers reports `W=D` with a bounded conservative
 fallback reason. FEC geometry comes from authenticated contract/config
-state—there is no zero-parity inference.
+state—there is no zero-parity inference. A pacing-off single-owner FEC socket
+enforces the same absolute `A=I=10ms` recovery cut directly and can therefore
+offer finite service; shared multi-peer sockets remain disabled.
 
 Prometheus and the monitor expose staging, decisions/deadlines, bounded
 contract event/status/reason signals independently for outbound sender and
@@ -311,15 +313,15 @@ deliberate boundaries you must plan around:
   reserve `C=Lmax`, retained generated-priority reserve `P=Pburst`, one owned
   FEC-group bound `Fgroup`, one writer-in-flight `Lio=Lmax`, and
   `Mtotal=B+C+P+Fgroup+Lio`. It also derives generated-priority rate `Rp`, finite
-  recovery-service bound `A`, and completion overrun `Ecompletion`. It rejects
+  receiver-observable recovery-cut bound `A=I`, and completion overrun
+  `Ecompletion`. It rejects
   an envelope whose maximum probe+echo rate
   consumes the whole link. Non-finite inputs and byte budgets that cannot fit
   the platform's integer byte-count domain are rejected before conversion; `Q`
-  and `Mtotal`, `A`, and `Ecompletion` must fit their runtime
-  `int`/`time.Duration` representations. The finite nonnegative A/E nanosecond
-  quotients and slack addition are checked before float-to-duration conversion;
-  FEC-active `A` must remain below the
-  conservative 250 ms receiver fallback. At runtime each
+  and `Mtotal` must fit `int`, and `Ecompletion` must fit `time.Duration`.
+  `A=I=10ms` must remain below the conservative 250 ms receiver fallback. A
+  sender-side queue prefix is excluded from `A`: it drains before the cut's
+  first DATA can make a receiver gap observable. At runtime each
   `(peer,path)` owns one shaper. One engine `Send` selects one path. With FEC
   off, each input is classified, framed, and admitted in order. With FEC on, a
   per-peer owner stages one group until its size or exact deadline decision,

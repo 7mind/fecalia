@@ -552,6 +552,9 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 			}
 		}
 	}
+	if handled, err := o.emitDirectRecovery(group, writes); handled {
+		return err
+	}
 	for i := 0; i < len(writes); {
 		write := writes[i]
 		if write.shaped {
@@ -582,6 +585,56 @@ func (o *fecSendOwner) emit(group fec.GroupID, writes []fecPreparedWrite) error 
 		i++
 	}
 	return nil
+}
+
+func (o *fecSendOwner) emitDirectRecovery(group fec.GroupID, writes []fecPreparedWrite) (bool, error) {
+	if len(writes) == 0 || writes[0].shaped {
+		return false, nil
+	}
+	path := writes[0].path
+	remote := writes[0].remote
+	for _, write := range writes[1:] {
+		if write.shaped || write.path != path || write.remote != remote {
+			return false, nil
+		}
+	}
+	contract := path.recoveryContract()
+	if !contract.Enabled {
+		return false, nil
+	}
+	if contract.WriteSlack <= 0 {
+		return true, errors.New("bind: direct recovery contract has no write slack")
+	}
+
+	path.socketWriteMu.Lock()
+	err := path.installWriteDeadline(o.clock.Now().Add(contract.WriteSlack))
+	if err == nil {
+		for _, write := range writes {
+			if _, err = path.writeToUDPAddrPortInCut(write.wire.b, write.remote); err != nil {
+				path.socketWriteErrors.Add(1)
+				err = o.m.accountSendError(path, err)
+				break
+			}
+			o.m.recordWireEmission(path, o.peer, o.fs, write.wire)
+		}
+		clearErr := path.installWriteDeadline(time.Time{})
+		if err == nil {
+			err = clearErr
+		}
+	}
+	path.socketWriteMu.Unlock()
+	if err != nil {
+		if o.abortRecoveryIfLive(path, err) && o.m.fecDeadlineInvalidator != nil {
+			now := o.clock.Now()
+			o.m.fecDeadlineInvalidator(fecDeadlineMiss{
+				Peer:      o.peer.name,
+				Group:     group,
+				Due:       now,
+				DecidedAt: now,
+			})
+		}
+	}
+	return true, err
 }
 
 func (o *fecSendOwner) abortRecoveryIfLive(path *peerPathState, err error) bool {
