@@ -544,7 +544,8 @@ predeclared gates:
       before ACK. Hold an old OFFER's socket write across a ContractID rotation
       and confirm its completion cannot authorize the new identity.
 - [ ] With active-backup FEC and an exact successfully emitted ACK, record `A`
-      and the maximum authenticated SRTT among currently-Up paths. Lose one
+      and the authenticated SRTT of the current DATA carrier. An idle Up backup
+      must neither inflate `H` nor gate freshness. Lose one
       DATA frame on the ACKed composite path/source and confirm the receiver
       releases at
       `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))`: repair at `W-1ns`
@@ -644,7 +645,7 @@ constitutes explicit overload.
 
 Canonical record notation: `D=250ms`; `G=10ms`; `F=1200ms`;
 `B/C/P/Fgroup/Lio/Mtotal`; `R/Rp/I`; `Sdevice`;
-`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh `Up` paths only;
+`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh DATA carriers only;
 `W=min(D,A+H)`; `Ecompletion`. Record
 `SessionID` restart versus same-process `ContractID` rotation separately and
 verify `OuterSeq` continuity across rotation. Require the exact authenticated

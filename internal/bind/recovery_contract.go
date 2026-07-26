@@ -886,6 +886,7 @@ type recoveryRefreshPath struct {
 type recoveryRefreshSnapshot struct {
 	resequencer *reseq.Resequencer
 	scheduler   sched.Scheduler
+	dataPaths   []sched.DataPath
 	paths       []recoveryRefreshPath
 	contract    receivedRecoverySnapshot
 }
@@ -921,6 +922,11 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		return
 	}
 
+	var dataPaths []sched.DataPath
+	if _, weighted := scheduler.(*sched.WeightedScheduler); !weighted {
+		scheduler.Recompute()
+		dataPaths = scheduler.DataPaths()
+	}
 	for i := range paths {
 		if paths[i].prober != nil {
 			paths[i].evidence = paths[i].prober.RecoveryRTT()
@@ -929,6 +935,7 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 	snapshot := recoveryRefreshSnapshot{
 		resequencer: rq,
 		scheduler:   scheduler,
+		dataPaths:   dataPaths,
 		paths:       paths,
 		contract:    peer.contracts.receivedSnapshot(),
 	}
@@ -977,44 +984,31 @@ func deriveRecoveryDecision(
 		decision.fallbackReason = "shared"
 		return nil, decision
 	}
-
-	haveQualified := false
-	qualifiedPathIDs := make(map[uint8]struct{}, len(snapshot.paths))
-	maxRTT := time.Duration(0)
-	validUntil := contract.validUntil
-	for _, path := range snapshot.paths {
-		if path.prober == nil {
-			return nil, decision
-		}
-		evidence := path.evidence
-		if evidence.State != telemetry.StateUp {
-			continue
-		}
-		if !evidence.Present ||
-			evidence.FreshUntil.Sub(now) < conservativeRecoveryService {
-			return nil, decision
-		}
-		haveQualified = true
-		qualifiedPathIDs[path.id] = struct{}{}
-		if now.After(evidence.SampledAt) {
-			age := now.Sub(evidence.SampledAt)
-			if age > decision.rttAge {
-				decision.rttAge = age
-			}
-		}
-		if evidence.RTT > maxRTT {
-			maxRTT = evidence.RTT
-		}
-		if evidence.FreshUntil.Before(validUntil) {
-			validUntil = evidence.FreshUntil
-		}
-	}
-	if !haveQualified {
+	if len(snapshot.dataPaths) != 1 ||
+		snapshot.dataPaths[0].Index < 0 ||
+		snapshot.dataPaths[0].Index >= len(snapshot.paths) ||
+		!(snapshot.dataPaths[0].Weight > 0) {
 		return nil, decision
 	}
 
+	carrier := snapshot.paths[snapshot.dataPaths[0].Index]
+	if carrier.prober == nil ||
+		carrier.evidence.State != telemetry.StateUp ||
+		!carrier.evidence.Present ||
+		carrier.evidence.FreshUntil.Sub(now) < conservativeRecoveryService {
+		return nil, decision
+	}
+	qualifiedPathIDs := map[uint8]struct{}{carrier.id: {}}
+	validUntil := contract.validUntil
+	if now.After(carrier.evidence.SampledAt) {
+		decision.rttAge = now.Sub(carrier.evidence.SampledAt)
+	}
+	if carrier.evidence.FreshUntil.Before(validUntil) {
+		validUntil = carrier.evidence.FreshUntil
+	}
+
 	decision.freshUntil = validUntil
-	decision.headroom = recoveryRTTHeadroom(maxRTT)
+	decision.headroom = recoveryRTTHeadroom(carrier.evidence.RTT)
 	hold := recoveryWindow(contract.message.ServiceBound, decision.headroom)
 	if hold >= conservativeRecoveryService {
 		decision.fallbackReason = "saturated"
@@ -1081,6 +1075,11 @@ func (m *Multipath) commitPeerRecoveryPublication(
 	generation, publicationRevision, ok := peer.contracts.reserveReceivedPublication(
 		snapshot.contract,
 		func() bool {
+			if _, weighted := snapshot.scheduler.(*sched.WeightedScheduler); !weighted {
+				if !sameRecoveryDataPaths(snapshot.dataPaths, snapshot.scheduler.DataPaths()) {
+					return false
+				}
+			}
 			for _, path := range snapshot.paths {
 				if path.prober != nil && path.prober.RecoveryRTT() != path.evidence {
 					return false
@@ -1109,6 +1108,18 @@ func (m *Multipath) commitPeerRecoveryPublication(
 	) {
 		peer.contracts.commitReceiverDecision(generation, publicationRevision, publishDecision)
 	}
+}
+
+func sameRecoveryDataPaths(first, second []sched.DataPath) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Multipath) publishPeerRecoveryGeneration(peer *peerState, generation uint64) {

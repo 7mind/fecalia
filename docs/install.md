@@ -514,7 +514,7 @@ Common rules, either policy:
   After the peer successfully writes the exact authenticated ACK, a stable
   active-backup FEC receiver may use
   `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))` for a matching
-  head-of-line gap. The contract and each currently-Up path's authenticated RTT
+  head-of-line gap. The contract and current DATA carrier's authenticated RTT
   sample must retain at least 250 ms of validity, and the ACK's composite
   path/source must still match delivery. Until then—and after a path/source,
   membership, contract, session, or rebaseline transition—the receiver keeps
@@ -621,7 +621,7 @@ Common rules, either policy:
 Use the following notation when comparing config, `/metrics`, and monitor JSON:
 `D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`,
 `B/C/P/Fgroup/Lio/Mtotal`, `R/Rp/I`, sender service `Sdevice`,
-`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh `Up` paths only,
+`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh DATA carriers only,
 `W=min(D,A+H)`, and `Ecompletion`.
 `SessionID` identifies a process epoch; `ContractID` rotates within the epoch;
 `OuterSeq` remains continuous for that rotation. An exact authenticated `ACK`

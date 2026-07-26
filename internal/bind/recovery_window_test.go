@@ -195,7 +195,7 @@ func TestReceiverRecoveryWindowUsesExactACKAndFreshMaxRTT(t *testing.T) {
 	}
 }
 
-func TestReceiverRecoveryWindowUsesMaximumUnequalUpRTT(t *testing.T) {
+func TestReceiverRecoveryWindowUsesActiveCarrierRTT(t *testing.T) {
 	m, probers, clock := openRecoveryWindowPeer(t, 2)
 	const (
 		fastRTT = 5 * time.Millisecond
@@ -216,9 +216,132 @@ func TestReceiverRecoveryWindowUsesMaximumUnequalUpRTT(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
-	want := armedAt.Add(message.ServiceBound + 4*slowRTT)
+	want := armedAt.Add(message.ServiceBound + 4*fastRTT)
 	if deadline != want {
-		t.Fatalf("unequal-RTT deadline = %v, want max-RTT deadline %v", deadline, want)
+		t.Fatalf("active-backup deadline = %v, want active carrier RTT deadline %v; idle backup RTT inflated H", deadline, want)
+	}
+}
+
+func TestReceiverRecoveryWindowExcludesIdleBackupVenue(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 2)
+	for _, prober := range probers {
+		bringProberUpClean(t, prober, m.psk, clock, testProbeUpSucc)
+	}
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	primaryPathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, primaryPathKey, receiverContractSource) {
+		t.Fatal("primary ACK completion rejected")
+	}
+	standbyPathKey := reseqPathKey(m.paths[1].id, 10)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, standbyPathKey, receiverStandbySource) {
+		t.Fatal("standby ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverStandbySource, standbyPathKey)
+	if want := armedAt.Add(conservativeRecoveryService); deadline != want {
+		t.Fatalf("idle-backup venue deadline = %v, want conservative %v", deadline, want)
+	}
+}
+
+func TestReceiverPublicationRejectsStaleActiveCarrier(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 2)
+	for _, prober := range probers {
+		bringProberUpClean(t, prober, m.psk, clock, testProbeUpSucc)
+	}
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	primaryPathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, primaryPathKey, receiverContractSource) {
+		t.Fatal("primary ACK completion rejected")
+	}
+	backupPathKey := reseqPathKey(m.paths[1].id, 10)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, backupPathKey, receiverStandbySource) {
+		t.Fatal("backup ACK completion rejected")
+	}
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	m.beforeRecoveryPublish = func(_ *peerState, _ *reseq.Resequencer, _ uint64) {
+		paused <- struct{}{}
+		<-release
+	}
+	done := make(chan struct{})
+	go func() {
+		m.refreshPeerRecoveryWindow(m.peerState)
+		close(done)
+	}()
+	<-paused
+
+	clock.advance(testProbeDownAfter - time.Millisecond)
+	recordRecoveryRTTSample(t, probers[1], m.psk, clock, testProbeRTT)
+	probers[0].Tick()
+	probers[1].Tick()
+	m.scheduler.Recompute()
+	dataPaths := m.scheduler.DataPaths()
+	if len(dataPaths) != 1 || dataPaths[0].Index != 1 {
+		t.Fatalf("active carrier after primary loss = %+v, want backup index 1", dataPaths)
+	}
+	close(release)
+	<-done
+
+	if stats := m.contracts.stats().Receiver; stats.FastEligible {
+		t.Fatalf("stale primary publication committed after active transition: %+v", stats)
+	}
+	m.beforeRecoveryPublish = nil
+	m.refreshPeerRecoveryWindow(m.peerState)
+	stats := m.contracts.stats().Receiver
+	if !stats.FastEligible || stats.Headroom != recoveryRTTHeadroom(probers[1].RecoveryRTT().RTT) {
+		t.Fatalf("backup carrier publication = %+v, want fresh fast backup evidence", stats)
+	}
+}
+
+func TestReceiverRecoveryWindowRejectsInvalidCarrierSnapshots(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+	base := recoveryRefreshSnapshot{
+		resequencer: m.resequencer.Load(),
+		scheduler:   m.scheduler,
+		paths: []recoveryRefreshPath{{
+			path:     m.paths[0],
+			id:       m.paths[0].id,
+			prober:   probers[0],
+			evidence: probers[0].RecoveryRTT(),
+		}},
+		contract: m.contracts.receivedSnapshot(),
+	}
+	for _, testCase := range []struct {
+		name      string
+		dataPaths []sched.DataPath
+	}{
+		{name: "empty"},
+		{name: "out of range", dataPaths: []sched.DataPath{{Index: 1, Weight: 1}}},
+		{name: "zero weight", dataPaths: []sched.DataPath{{Index: 0}}},
+		{name: "duplicate", dataPaths: []sched.DataPath{{Index: 0, Weight: 0.5}, {Index: 0, Weight: 0.5}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			snapshot := base
+			snapshot.dataPaths = testCase.dataPaths
+			windows, decision := deriveRecoveryDecision(snapshot, clock.Now())
+			if len(windows) != 0 || decision.fastEligible ||
+				decision.window != conservativeRecoveryService {
+				t.Fatalf("invalid carrier snapshot windows=%+v decision=%+v, want conservative", windows, decision)
+			}
+		})
 	}
 }
 
@@ -909,16 +1032,16 @@ func TestOlderSameGenerationRefreshCannotEraseNewACKVenue(t *testing.T) {
 	}()
 	<-paused
 
-	standbyKey := reseqPathKey(m.paths[1].id, 10)
-	if !completeReceiverACK(m.contracts, receiverContractSession, message, standbyKey, receiverStandbySource) {
-		t.Fatal("standby ACK completion rejected")
+	newKey := reseqPathKey(m.paths[0].id, 10)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, newKey, receiverStandbySource) {
+		t.Fatal("new active-path ACK completion rejected")
 	}
 	m.refreshPeerRecoveryWindow(m.peerState)
 	close(release)
 	<-oldDone
 
 	armedAt := clock.Now()
-	deadline := armRecoveryWindowGap(m, receiverStandbySource, standbyKey)
+	deadline := armRecoveryWindowGap(m, receiverStandbySource, newKey)
 	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
 	if !deadline.Equal(want) {
 		t.Fatalf("older publication erased the new ACK venue: deadline=%v want=%v", deadline, want)
@@ -964,16 +1087,16 @@ func TestReservedOlderPublicationCannotEraseNewACKVenue(t *testing.T) {
 	}()
 	<-paused
 
-	standbyKey := reseqPathKey(m.paths[1].id, 10)
-	if !completeReceiverACK(m.contracts, receiverContractSession, message, standbyKey, receiverStandbySource) {
-		t.Fatal("standby ACK completion rejected")
+	newKey := reseqPathKey(m.paths[0].id, 10)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, newKey, receiverStandbySource) {
+		t.Fatal("new active-path ACK completion rejected")
 	}
 	m.refreshPeerRecoveryWindow(m.peerState)
 	close(release)
 	<-oldDone
 
 	armedAt := clock.Now()
-	deadline := armRecoveryWindowGap(m, receiverStandbySource, standbyKey)
+	deadline := armRecoveryWindowGap(m, receiverStandbySource, newKey)
 	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
 	if !deadline.Equal(want) {
 		t.Fatalf("older reserved publication erased new ACK venue: deadline=%v want=%v", deadline, want)

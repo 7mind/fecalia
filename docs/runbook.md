@@ -437,7 +437,9 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 > release** whenever only one path is delivering. FEC suppresses that zero-hold
 > path; with an exact acknowledged recovery contract and fresh matching
 > active-backup RTT/path evidence it instead uses
-> `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))`. Every uncertain or weighted
+> `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))`, where active-backup contributes
+> only its current DATA carrier; an idle Up backup does not inflate `H`. Every
+> uncertain or weighted
 > case retains 250 ms. Read the two skip-adjacent counters together: rising
 > `immediate_releases_total` alongside `skipped_seqs_total` means the D93
 > head-of-line amplifier is **disarmed** (a non-FEC single delivering path),

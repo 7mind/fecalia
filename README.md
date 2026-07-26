@@ -117,7 +117,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   On a stable active-backup FEC receive path, that exact ACK also authorizes a
   shorter head-of-line recovery window
   `W=min(250ms, A+clamp(4*max(SRTT),10ms,250ms))`. The receiver uses it only
-  while the ACK's composite path/source and every currently-Up path's
+  while the ACK's composite path/source and the current DATA carrier's
   authenticated RTT sample remain fresh for at least 250 ms; missing, stale,
   changed, weighted, or otherwise uncertain evidence keeps the 250 ms fallback.
   Contract, session, membership, source-roam, rebaseline, resequencer-replacement,
@@ -231,8 +231,8 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 The recovery path uses one notation across config, metrics, and the monitor:
 `D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`, memory terms
 `B/C/P/Fgroup/Lio/Mtotal`, rate terms `R/Rp/I`, sender service `Sdevice`,
-receiver headroom `H=clamp(4*max(SRTT),10ms,D)` over qualified fresh `Up`
-paths only, hold `W=min(D,A+H)`, and
+receiver headroom `H=clamp(4*max(SRTT),10ms,D)` over qualified fresh DATA
+carriers only, hold `W=min(D,A+H)`, and
 completion bound `Ecompletion`. `SessionID` identifies a process epoch,
 `ContractID` rotates a service offer within that epoch, and `OuterSeq` remains
 continuous across same-process rotation. An exact authenticated `ACK` enables
@@ -340,7 +340,7 @@ deliberate boundaries you must plan around:
   that path shaper as one recovery tranche. Mixed-path/shared-socket groups keep
   the conservative receiver fallback. An exact successfully written ACK for
   that service can shorten a stable active-backup receiver gap to `A` plus
-  four times the maximum fresh Up-path SRTT (10 ms floor, 250 ms cap); evidence
+  four times the fresh active DATA-carrier SRTT (10 ms floor, 250 ms cap); evidence
   uncertainty, path/source change, rebaseline, or weighted scheduling uses the
   full 250 ms. A buffered gap's deadline starts when its first successor becomes
   receiver-observable, even if an earlier gap still blocks it; a successor first

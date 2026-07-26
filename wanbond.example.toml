@@ -502,7 +502,8 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 
 # Recovery observability uses one fixed notation across `/metrics` and monitor:
 # D=250ms; G=10ms; F=1200ms; B/C/P/Fgroup/Lio/Mtotal; R/Rp/I; Sdevice;
-# H=clamp(4*max(SRTT),10ms,D); W=min(D,A+H); Ecompletion. SessionID marks a
+# H=clamp(4*max(SRTT of current DATA carriers),10ms,D); W=min(D,A+H);
+# Ecompletion. SessionID marks a
 # process epoch, ContractID rotates an exact service offer, and OuterSeq stays
 # continuous across same-process rotation. Only an exact authenticated ACK
 # enables the fast window; missing/stale/incompatible evidence reports fallback.

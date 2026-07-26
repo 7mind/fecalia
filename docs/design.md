@@ -618,15 +618,17 @@ not merely sender admission. It records evidence only after the exact ACK write
 completes successfully, bound to the adopted peer `SessionID`, exact
 `ContractID`, composite delivery `pathKey`, and source address. For stable
 active-backup delivery with `0<A<T`, fixed `F=1200ms`, and at least `T`
-remaining in both the contract and every currently-Up path's authenticated RTT
-sample, it computes
+remaining in both the contract and each current DATA carrier's authenticated
+RTT sample, it computes
 
-`H = clamp(4 * max(SRTT of currently-Up paths), 10ms, T)`
+`H = clamp(4 * max(SRTT of current DATA-carrying paths), 10ms, T)`
 
-and arms a newly observed matching gap for `W=min(T,A+H)`. The ACK delivery path
-must belong to that qualified Up set. Successful ACK venues are retained
-independently for the current peer-scoped contract, so an ACK on a standby path
-does not displace valid primary-path evidence. Missing or stale RTT, a failed/unwritten
+and arms a newly observed matching gap for `W=min(T,A+H)`. Active-backup has
+exactly one DATA carrier; an idle Up backup neither inflates `H` nor gates the
+active venue's freshness. The ACK delivery path must belong to that qualified
+carrier set. Successful ACK venues remain retained independently for the
+current peer-scoped contract, so a standby ACK becomes usable after failover
+without displacing primary evidence. Missing or stale RTT, a failed/unwritten
 ACK, a different composite key/source, weighted aggregation, `A>=T`, or a
 saturated `A+H` retains `T`. Bootstrap, padded, replayed, malformed, or
 inconsistent control traffic cannot create new fast evidence. Evidence arriving
@@ -1730,7 +1732,7 @@ terms `R/Rp/I`. The sender advertises the worst live-path bound
 `Sdevice=A=max_path(I)` (currently `10ms` for every exclusive writer);
 the post-cut completion check uses
 `Ecompletion=max_path(ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I)`. The receiver derives
-`H=clamp(4*max(SRTT among qualified fresh Up paths),10ms,D)` and
+`H=clamp(4*max(SRTT among qualified fresh DATA carriers),10ms,D)` and
 `W=min(D,A+H)`. Stale or `Down` evidence contributes neither RTT age nor `H`.
 Fast recovery requires `A+H<D`; saturation publishes the installed
 conservative `W=D` with fallback reason `saturated`. `SessionID` identifies the authenticated process epoch,
