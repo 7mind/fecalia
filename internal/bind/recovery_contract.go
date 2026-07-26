@@ -40,7 +40,7 @@ type receivedRecoveryContract struct {
 	message    telemetry.RecoveryContractMessage
 	acceptedAt time.Time
 	invalid    bool
-	venues     map[recoveryVenueKey]uint64
+	venues     map[recoveryVenueKey]struct{}
 }
 
 type recoveryVenueKey struct {
@@ -48,32 +48,20 @@ type recoveryVenueKey struct {
 	source  netip.AddrPort
 }
 
-type receivedRecoveryVenue struct {
-	recoveryVenueKey
-	revision uint64
-}
-
 type receivedRecoverySnapshot struct {
 	session    uint64
 	message    telemetry.RecoveryContractMessage
 	validUntil time.Time
-	venues     []receivedRecoveryVenue
+	generation uint64
+	venues     []recoveryVenueKey
 	acked      bool
 	invalid    bool
 }
 
-func (s receivedRecoverySnapshot) hasRoamedVenue(pathKey uint32, source netip.AddrPort) bool {
-	for _, venue := range s.venues {
-		if venue.pathKey == pathKey && venue.source != source {
-			return true
-		}
-	}
-	return false
-}
-
 // recoveryContractCoordinator is the peer-scoped owner of both directions of
 // recovery-contract negotiation. It deliberately does not live on Prober:
-// every path of one peer advertises and acknowledges one immutable generation.
+// every path of one peer advertises and acknowledges one contract while the
+// receiver/topology generation invalidates stale evidence across transitions.
 type recoveryContractCoordinator struct {
 	mu         sync.Mutex
 	clock      fecOwnerClock
@@ -95,7 +83,8 @@ type recoveryContractCoordinator struct {
 	haveReceived       bool
 	receivedSession    uint64
 	received           receivedRecoveryContract
-	receivedRevision   uint64
+	receivedGeneration uint64
+	observedSources    map[uint32]netip.AddrPort
 	haveAdoptedSession bool
 	adoptedSession     uint64
 }
@@ -174,6 +163,7 @@ func (c *recoveryContractCoordinator) startOfferLocked(message telemetry.Recover
 
 func (c *recoveryContractCoordinator) disable() {
 	c.mu.Lock()
+	c.bumpReceivedGenerationLocked()
 	c.barrierPending = false
 	c.barrierDue = time.Time{}
 	c.haveLease = false
@@ -183,9 +173,9 @@ func (c *recoveryContractCoordinator) disable() {
 	c.haveReceived = false
 	c.receivedSession = 0
 	c.received = receivedRecoveryContract{}
+	c.observedSources = nil
 	c.haveAdoptedSession = false
 	c.adoptedSession = 0
-	c.bumpReceivedRevisionLocked()
 	c.notifyLocked()
 	c.mu.Unlock()
 }
@@ -193,60 +183,82 @@ func (c *recoveryContractCoordinator) disable() {
 // adoptReceivedSession pins the peer-wide process epoch after the reflector's
 // live-challenge adoption. A path that still accepts an old per-path session
 // cannot subsequently restore old receiver evidence.
-func (c *recoveryContractCoordinator) adoptReceivedSession(session uint64) {
+func (c *recoveryContractCoordinator) adoptReceivedSession(session uint64) (uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.haveAdoptedSession && c.adoptedSession == session {
-		return
+		return c.receivedGeneration, false
 	}
-	c.invalidateReceivedEvidenceLocked()
+	c.advanceReceivedGenerationLocked()
 	c.haveAdoptedSession = true
 	c.adoptedSession = session
-	c.bumpReceivedRevisionLocked()
+	return c.receivedGeneration, true
 }
 
-func (c *recoveryContractCoordinator) bumpReceivedRevisionLocked() {
-	c.receivedRevision++
-	if c.receivedRevision == 0 {
-		c.receivedRevision++
+func (c *recoveryContractCoordinator) bumpReceivedGenerationLocked() {
+	c.receivedGeneration++
+	if c.receivedGeneration == 0 {
+		c.receivedGeneration++
 	}
 }
 
 // invalidateReceivedEvidence revokes only the fast receiver evidence. The
 // accepted ContractID high-water remains intact, so an ordinary exact re-ACK
 // restores evidence without permitting a lower or inconsistent identity.
-func (c *recoveryContractCoordinator) invalidateReceivedEvidence() {
+func (c *recoveryContractCoordinator) invalidateReceivedEvidence() uint64 {
 	c.mu.Lock()
-	c.invalidateReceivedEvidenceLocked()
+	c.advanceReceivedGenerationLocked()
+	generation := c.receivedGeneration
 	c.mu.Unlock()
+	return generation
 }
 
-func (c *recoveryContractCoordinator) invalidateReceivedEvidenceLocked() {
-	if !c.haveReceived || len(c.received.venues) == 0 {
-		return
-	}
+func (c *recoveryContractCoordinator) advanceReceivedGenerationLocked() {
+	c.bumpReceivedGenerationLocked()
 	c.received.venues = nil
-	c.bumpReceivedRevisionLocked()
+	c.observedSources = nil
+}
+
+// observeReceivedSource records the authenticated source for one exact
+// composite path. A same-key source change advances the peer generation before
+// clearing every old ACK venue.
+func (c *recoveryContractCoordinator) observeReceivedSource(pathKey uint32, source netip.AddrPort) (uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !source.IsValid() {
+		return c.receivedGeneration, false
+	}
+	if previous, exists := c.observedSources[pathKey]; exists && previous != source {
+		c.advanceReceivedGenerationLocked()
+		if c.observedSources == nil {
+			c.observedSources = make(map[uint32]netip.AddrPort)
+		}
+		c.observedSources[pathKey] = source
+		return c.receivedGeneration, true
+	}
+	if c.observedSources == nil {
+		c.observedSources = make(map[uint32]netip.AddrPort)
+	}
+	c.observedSources[pathKey] = source
+	return c.receivedGeneration, false
 }
 
 func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.haveReceived {
-		return receivedRecoverySnapshot{}
+		return receivedRecoverySnapshot{generation: c.receivedGeneration}
 	}
 	snapshot := receivedRecoverySnapshot{
 		session:    c.receivedSession,
 		message:    c.received.message,
 		validUntil: c.received.acceptedAt.Add(c.received.message.Lifetime),
+		generation: c.receivedGeneration,
 		acked:      len(c.received.venues) > 0,
 		invalid:    c.received.invalid,
 	}
-	for venue, revision := range c.received.venues {
-		snapshot.venues = append(snapshot.venues, receivedRecoveryVenue{
-			recoveryVenueKey: venue,
-			revision:         revision,
-		})
+	for venue := range c.received.venues {
+		snapshot.venues = append(snapshot.venues, venue)
 	}
 	sort.Slice(snapshot.venues, func(i, j int) bool {
 		if snapshot.venues[i].pathKey != snapshot.venues[j].pathKey {
@@ -257,28 +269,54 @@ func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapsho
 	return snapshot
 }
 
-// recordReceivedACK makes receiver evidence usable only after the exact typed
-// ACK has completed successfully on the exact composite delivery venue.
-func (c *recoveryContractCoordinator) recordReceivedACK(
+type receivedACKAdmission struct {
+	generation uint64
+	session    uint64
+	message    telemetry.RecoveryContractMessage
+	venue      recoveryVenueKey
+}
+
+// admitReceivedACK snapshots the exact receiver generation and source
+// observation at ACK admission. Completion may publish only this token.
+func (c *recoveryContractCoordinator) admitReceivedACK(
 	session uint64,
 	message telemetry.RecoveryContractMessage,
 	pathKey uint32,
 	source netip.AddrPort,
-) bool {
+) (receivedACKAdmission, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.haveReceived || c.received.invalid ||
 		c.receivedSession != session || c.received.message != message ||
-		!source.IsValid() {
+		c.observedSources[pathKey] != source || !source.IsValid() {
+		return receivedACKAdmission{}, false
+	}
+	return receivedACKAdmission{
+		generation: c.receivedGeneration,
+		session:    session,
+		message:    message,
+		venue:      recoveryVenueKey{pathKey: pathKey, source: source},
+	}, true
+}
+
+// completeReceivedACK publishes an exact venue only when contract, generation,
+// and current authenticated source observation still match the admission.
+func (c *recoveryContractCoordinator) completeReceivedACK(admission receivedACKAdmission) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.haveReceived || c.received.invalid ||
+		c.receivedGeneration != admission.generation ||
+		c.receivedSession != admission.session ||
+		c.received.message != admission.message ||
+		c.observedSources[admission.venue.pathKey] != admission.venue.source {
 		return false
 	}
-	venue := recoveryVenueKey{pathKey: pathKey, source: source}
+	venue := admission.venue
 	if _, exists := c.received.venues[venue]; !exists {
 		if c.received.venues == nil {
-			c.received.venues = make(map[recoveryVenueKey]uint64)
+			c.received.venues = make(map[recoveryVenueKey]struct{})
 		}
-		c.bumpReceivedRevisionLocked()
-		c.received.venues[venue] = c.receivedRevision
+		c.received.venues[venue] = struct{}{}
 	}
 	return true
 }
@@ -488,12 +526,11 @@ func (c *recoveryContractCoordinator) acceptOffer(
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			if existing.message != message {
-				c.invalidateReceivedEvidenceLocked()
+				c.advanceReceivedGenerationLocked()
 				install()
 				existing.invalid = true
 				existing.venues = nil
 				c.received = existing
-				c.bumpReceivedRevisionLocked()
 				return telemetry.RecoveryContractMessage{}, false
 			}
 			if existing.acceptedAt.Add(existing.message.Lifetime).Sub(now) < conservativeRecoveryService {
@@ -504,8 +541,8 @@ func (c *recoveryContractCoordinator) acceptOffer(
 			return ack, true
 		}
 		if sameRecoveryService(existing.message, message) {
+			c.advanceReceivedGenerationLocked()
 			c.received = receivedRecoveryContract{message: message, acceptedAt: now}
-			c.bumpReceivedRevisionLocked()
 			ack := message
 			ack.Type = telemetry.RecoveryContractACK
 			return ack, true
@@ -515,12 +552,11 @@ func (c *recoveryContractCoordinator) acceptOffer(
 	if message.Lifetime < conservativeRecoveryService {
 		return telemetry.RecoveryContractMessage{}, false
 	}
-	c.invalidateReceivedEvidenceLocked()
+	c.advanceReceivedGenerationLocked()
 	install()
 	c.haveReceived = true
 	c.receivedSession = session
 	c.received = receivedRecoveryContract{message: message, acceptedAt: now}
-	c.bumpReceivedRevisionLocked()
 	ack := message
 	ack.Type = telemetry.RecoveryContractACK
 	return ack, true
@@ -575,6 +611,15 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 	}
 
 	contract := peer.contracts.receivedSnapshot()
+	publish := func(windows []reseq.RecoveryWindow) {
+		if m.beforeRecoveryPublish != nil {
+			m.beforeRecoveryPublish(peer, rq, contract.generation)
+		}
+		if peer.resequencer.Load() != rq {
+			return
+		}
+		rq.SetRecoveryGeneration(contract.generation, windows)
+	}
 	now := m.clock.Now()
 	if !contract.acked || contract.invalid ||
 		!contract.message.Enabled ||
@@ -582,11 +627,11 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		contract.message.ServiceBound <= 0 ||
 		contract.message.ServiceBound >= conservativeRecoveryService ||
 		contract.validUntil.Sub(now) < conservativeRecoveryService {
-		rq.SetRecoveryWindows(nil)
+		publish(nil)
 		return
 	}
 	if _, weighted := scheduler.(*sched.WeightedScheduler); weighted {
-		rq.SetRecoveryWindows(nil)
+		publish(nil)
 		return
 	}
 
@@ -596,7 +641,7 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 	validUntil := contract.validUntil
 	for _, path := range paths {
 		if path.prober == nil {
-			rq.SetRecoveryWindows(nil)
+			publish(nil)
 			return
 		}
 		evidence := path.prober.RecoveryRTT()
@@ -605,7 +650,7 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		}
 		if !evidence.Present ||
 			evidence.FreshUntil.Sub(now) < conservativeRecoveryService {
-			rq.SetRecoveryWindows(nil)
+			publish(nil)
 			return
 		}
 		haveQualified = true
@@ -618,13 +663,13 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		}
 	}
 	if !haveQualified {
-		rq.SetRecoveryWindows(nil)
+		publish(nil)
 		return
 	}
 
 	hold := recoveryWindow(contract.message.ServiceBound, recoveryRTTHeadroom(maxRTT))
 	if hold >= conservativeRecoveryService {
-		rq.SetRecoveryWindows(nil)
+		publish(nil)
 		return
 	}
 	windows := make([]reseq.RecoveryWindow, 0, len(contract.venues))
@@ -637,14 +682,32 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		}
 		windows = append(windows, reseq.RecoveryWindow{
 			Enabled:    true,
-			Revision:   venue.revision,
+			Revision:   contract.generation,
 			PathKey:    venue.pathKey,
 			Source:     venue.source,
 			Hold:       hold,
 			ValidUntil: validUntil,
 		})
 	}
-	rq.SetRecoveryWindows(windows)
+	publish(windows)
+}
+
+func (m *Multipath) publishPeerRecoveryGeneration(peer *peerState, generation uint64) {
+	if peer == nil {
+		return
+	}
+	if rq := peer.resequencer.Load(); rq != nil {
+		rq.SetRecoveryGeneration(generation, nil)
+	}
+}
+
+func (m *Multipath) invalidatePeerRecoveryEvidence(peer *peerState) uint64 {
+	if peer == nil || peer.contracts == nil {
+		return 0
+	}
+	generation := peer.contracts.invalidateReceivedEvidence()
+	m.publishPeerRecoveryGeneration(peer, generation)
+	return generation
 }
 
 // beginPeerRecoveryContractLocked snapshots the complete selectable writer
@@ -721,7 +784,7 @@ func (m *Multipath) finishPeerServiceTransition(peers []*peerState, rotate bool)
 		}
 		m.mu.Unlock()
 		for _, peer := range peers {
-			peer.contracts.invalidateReceivedEvidence()
+			m.invalidatePeerRecoveryEvidence(peer)
 		}
 	}
 	for index := len(peers) - 1; index >= 0; index-- {
@@ -887,7 +950,7 @@ func (m *Multipath) rotateInvalidatedPeerRecoveryContract(peer *peerState, gener
 		m.log.Error("bind: recovery contract rotation failed", "error", err)
 	}
 	if active {
-		peer.contracts.invalidateReceivedEvidence()
+		m.invalidatePeerRecoveryEvidence(peer)
 		m.refreshPeerRecoveryWindow(peer)
 	}
 	m.finishInvalidatedPeerRecoveryWorker(peer, requested)

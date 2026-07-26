@@ -280,10 +280,11 @@ type Resequencer struct {
 	// shorter service-plus-RTT bound.
 	holdBound time.Duration
 
-	fecActive  bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
-	recoveries []RecoveryWindow
-	notify     func()
-	closed     bool
+	fecActive          bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
+	recoveryGeneration uint64
+	recoveries         []RecoveryWindow
+	notify             func()
+	closed             bool
 	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
 	// scheduler — suppress immediate release entirely (see SetMultiPathExpected for the
 	// retained-pending-measurement rationale, defect D95, tasks:T293 branch 4).
@@ -415,7 +416,7 @@ func (r *Resequencer) SetHoldBound(d time.Duration) {
 // Invalidating or changing the evidence of a fast-armed gap re-arms it from now
 // for the full conservative timeout.
 func (r *Resequencer) SetRecoveryWindow(window RecoveryWindow) {
-	r.SetRecoveryWindows([]RecoveryWindow{window})
+	r.SetRecoveryGeneration(window.Revision, []RecoveryWindow{window})
 }
 
 // SetRecoveryWindows publishes the current per-venue authenticated recovery
@@ -423,10 +424,37 @@ func (r *Resequencer) SetRecoveryWindow(window RecoveryWindow) {
 // each remains independently usable without the most recent ACK displacing the
 // others.
 func (r *Resequencer) SetRecoveryWindows(windows []RecoveryWindow) {
+	var generation uint64
+	for _, window := range windows {
+		if window.Revision > generation {
+			generation = window.Revision
+		}
+	}
+	if len(windows) == 0 {
+		r.mu.Lock()
+		generation = r.recoveryGeneration
+		r.mu.Unlock()
+	}
+	r.SetRecoveryGeneration(generation, windows)
+}
+
+// SetRecoveryGeneration conditionally publishes one peer receiver/topology
+// generation and its exact ACK venues. A paused older publisher cannot restore
+// evidence after a transition advances the generation.
+func (r *Resequencer) SetRecoveryGeneration(generation uint64, windows []RecoveryWindow) bool {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	changed := len(r.recoveries) != len(windows)
+	if r.closed || generation < r.recoveryGeneration {
+		return false
+	}
+	for _, window := range windows {
+		if window.Revision != generation {
+			return false
+		}
+	}
+	generationChanged := generation > r.recoveryGeneration
+	changed := generationChanged || len(r.recoveries) != len(windows)
 	if !changed {
 		for i := range windows {
 			if r.recoveries[i] != windows[i] {
@@ -435,16 +463,18 @@ func (r *Resequencer) SetRecoveryWindows(windows []RecoveryWindow) {
 			}
 		}
 	}
+	r.recoveryGeneration = generation
 	r.recoveries = append(r.recoveries[:0], windows...)
 	if r.waiting && r.recoveryArmed {
 		recovery, eligible := r.recoveryEligibleLocked(now)
-		if !eligible || recovery.Revision != r.recoveryRevision {
+		if generationChanged || !eligible || recovery.Revision != r.recoveryRevision {
 			r.rearmConservativeLocked(now)
 		}
 	}
 	if changed {
 		r.notifyLocked()
 	}
+	return true
 }
 
 // SetNotifier installs the non-blocking change notification used by the Bind's
@@ -469,6 +499,11 @@ func (r *Resequencer) ArmedDeadline() (time.Time, bool) {
 func (r *Resequencer) Close() {
 	r.mu.Lock()
 	if !r.closed {
+		r.recoveryGeneration++
+		if r.recoveryGeneration == 0 {
+			r.recoveryGeneration++
+		}
+		r.recoveries = nil
 		r.closed = true
 		r.endHoldLocked(r.clock.Now())
 		r.notifyLocked()
@@ -753,6 +788,7 @@ func (r *Resequencer) admit(seq uint64, now time.Time) bool {
 		// Beyond the window: advance the release point so the frame fits at the top
 		// of the window, releasing buffered frames below the new base in order and
 		// skipping the (assumed lost) gaps. This is what bounds memory.
+		r.endHoldLocked(now)
 		r.advanceTo(seq - r.window + 1)
 	}
 	return true
@@ -1111,9 +1147,28 @@ func (r *Resequencer) resyncReset() {
 // legitimate deliveries is untouched. Idempotent and safe before the first Observe
 // (started stays false). Takes r.mu; the caller must NOT hold it.
 func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
+	r.rebaseline(expectedSrc, 0, true)
+}
+
+// RebaselineGeneration applies a trusted rebaseline in an externally owned
+// peer receiver/topology generation. Older generations are ignored.
+func (r *Resequencer) RebaselineGeneration(expectedSrc netip.AddrPort, generation uint64) {
+	r.rebaseline(expectedSrc, generation, false)
+}
+
+func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, advance bool) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if advance {
+		generation = r.recoveryGeneration + 1
+		if generation == 0 {
+			generation++
+		}
+	} else if generation < r.recoveryGeneration {
+		return
+	}
+	r.recoveryGeneration = generation
 	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
 	r.recoveries = nil
 	for i := range r.ring {
@@ -1179,9 +1234,28 @@ func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
 // predicate; admit therefore counts consecutive pending-low suspect-drops and, after
 // O(window) of them, falls back to a plain unpin that self-heals via resync corroboration.
 func (r *Resequencer) RebaselineToLow() {
+	r.rebaselineToLow(0, true)
+}
+
+// RebaselineToLowGeneration applies the peer-restart low-anchor transition in
+// an externally owned peer receiver/topology generation.
+func (r *Resequencer) RebaselineToLowGeneration(generation uint64) {
+	r.rebaselineToLow(generation, false)
+}
+
+func (r *Resequencer) rebaselineToLow(generation uint64, advance bool) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if advance {
+		generation = r.recoveryGeneration + 1
+		if generation == 0 {
+			generation++
+		}
+	} else if generation < r.recoveryGeneration {
+		return
+	}
+	r.recoveryGeneration = generation
 	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
 	r.recoveries = nil
 	for i := range r.ring {

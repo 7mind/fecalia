@@ -120,6 +120,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   while the ACK's composite path/source and every currently-Up path's
   authenticated RTT sample remain fresh for at least 250 ms; missing, stale,
   changed, weighted, or otherwise uncertain evidence keeps the 250 ms fallback.
+  Contract, session, membership, source-roam, rebaseline, resequencer-replacement,
+  and teardown transitions advance one receiver/topology generation before
+  clearing evidence, so a delayed ACK completion or recovery-window publication
+  from an older generation cannot restore the shorter hold.
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness,
@@ -293,7 +297,8 @@ deliberate boundaries you must plan around:
   that service can shorten a stable active-backup receiver gap to `A` plus
   four times the maximum fresh Up-path SRTT (10 ms floor, 250 ms cap); evidence
   uncertainty, path/source change, rebaseline, or weighted scheduling uses the
-  full 250 ms. Encoded DATA and
+  full 250 ms. A bounded-window advance ends the preceding gap's hold before a
+  newly exposed gap arms its own fresh hold. Encoded DATA and
   every decided FEC parity datagram
   consume their exact byte length. A recovery cut orders the retained
   lower-OuterSeq prefix and already-admitted priority, then the complete group

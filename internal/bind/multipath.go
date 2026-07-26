@@ -1242,6 +1242,7 @@ type Multipath struct {
 	afterRecoveryRetire                func(*sharedPathState)
 	afterRecoveryTransitionCaptureMiss func(*peerState, uint64, uint64)
 	beforeReceivePark                  func(time.Time)
+	beforeRecoveryPublish              func(*peerState, *reseq.Resequencer, uint64)
 
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then
@@ -2146,7 +2147,12 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// receives after this bring-up, so a Close→Open cycle (or reconnect) never wedges on a
 	// stale high-water outer-seq. Published atomically so the peer's per-path readLoop
 	// goroutines read it WITHOUT m.mu.
-	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, m.clock))
+	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
+	if ps.contracts != nil {
+		generation := ps.contracts.invalidateReceivedEvidence()
+		rq.SetRecoveryGeneration(generation, nil)
+	}
+	ps.resequencer.Store(rq)
 	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
 
 	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
@@ -2295,8 +2301,13 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 		}
 		ps.fecSend.Store(fs)
 	}
-	ps.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, m.clock))
-	ps.resequencer.Load().SetNotifier(resequencerNotifier(m.deliverSignal))
+	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
+	if ps.contracts != nil {
+		generation := ps.contracts.invalidateReceivedEvidence()
+		rq.SetRecoveryGeneration(generation, nil)
+	}
+	rq.SetNotifier(resequencerNotifier(m.deliverSignal))
+	ps.resequencer.Store(rq)
 	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
 	if fr != nil {
 		// D93/T241: FEC is repairing this stream (fecRecv stored above), so the fresh
@@ -2882,6 +2893,9 @@ func (m *Multipath) teardownPeerLocked(p *peerState) (*fecSender, *reseq.Reseque
 	if m.peerIsLiveLocked(p) {
 		return nil, nil, false // a live (Up) peer is never torn down, whatever other peers' churn
 	}
+	if p.contracts != nil {
+		m.invalidatePeerRecoveryEvidence(p)
+	}
 	rq := p.resequencer.Swap(nil)
 	p.fecRecv.Store(nil)
 	fs := p.fecSend.Swap(nil)
@@ -3070,28 +3084,46 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				echoPayload := accepted.Probe.Payload
 				rebaselined := false
 				transitionCleared := false
-				var recoveryACK telemetry.RecoveryContractMessage
 				haveRecoveryACK := false
+				var recoveryAdmission receivedACKAdmission
+				haveRecoveryAdmission := false
 				recoveryPathKey := reseqPathKey(ps.id, accepted.Probe.PathID)
+				sessionChanged := false
+				var transitionGeneration uint64
 				if pr.contracts != nil && accepted.Acceptance == telemetry.ProbeAdopted {
-					pr.contracts.adoptReceivedSession(accepted.Probe.SessionID)
+					generation, changed := pr.contracts.adoptReceivedSession(accepted.Probe.SessionID)
+					if changed {
+						m.publishPeerRecoveryGeneration(pr, generation)
+						sessionChanged = true
+						transitionGeneration = generation
+					}
 				}
 				if accepted.EpochChanged {
-					if pr.contracts != nil {
-						pr.contracts.invalidateReceivedEvidence()
+					if pr.contracts != nil && !sessionChanged {
+						transitionGeneration = m.invalidatePeerRecoveryEvidence(pr)
 					}
 					if fr := pr.fecRecv.Load(); fr != nil {
 						fr.discardIncompletePreserveHighWater()
 					}
 					if rq := pr.resequencer.Load(); rq != nil {
-						rq.RebaselineToLow()
+						if transitionGeneration != 0 {
+							rq.RebaselineToLowGeneration(transitionGeneration)
+						} else {
+							rq.RebaselineToLow()
+						}
 						rebaselined = true
 					}
 					transitionCleared = true
 				}
+				if pr.contracts != nil {
+					if generation, roamed := pr.contracts.observeReceivedSource(recoveryPathKey, srcAP); roamed {
+						m.publishPeerRecoveryGeneration(pr, generation)
+					}
+				}
 				if !accepted.Probe.Padded && accepted.Acceptance != telemetry.ProbeBootstrap && pr.contracts != nil {
 					message, recognized, contractErr := telemetry.DecodeRecoveryContract(accepted.Probe.Payload)
 					if contractErr == nil && recognized && message.Type == telemetry.RecoveryContractOffer {
+						beforeGeneration := pr.contracts.receivedSnapshot().generation
 						ack, ok := pr.contracts.acceptOffer(accepted.Probe.SessionID, message, func() {
 							if !transitionCleared {
 								if fr := pr.fecRecv.Load(); fr != nil {
@@ -3099,24 +3131,31 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 								}
 							}
 						})
+						currentGeneration := pr.contracts.receivedSnapshot().generation
+						if currentGeneration != beforeGeneration {
+							m.publishPeerRecoveryGeneration(pr, currentGeneration)
+						}
 						if ok {
+							if currentGeneration != beforeGeneration {
+								pr.contracts.observeReceivedSource(recoveryPathKey, srcAP)
+							}
 							if payload, encodeErr := telemetry.EncodeRecoveryContract(ack); encodeErr == nil {
 								echoPayload = payload
-								recoveryACK = message
 								haveRecoveryACK = true
+								recoveryAdmission, haveRecoveryAdmission = pr.contracts.admitReceivedACK(
+									accepted.Probe.SessionID,
+									message,
+									recoveryPathKey,
+									srcAP,
+								)
 							}
 						}
 					}
 				}
 				if pr.contracts != nil {
-					currentRecovery := pr.contracts.receivedSnapshot()
-					if currentRecovery.acked &&
-						currentRecovery.hasRoamedVenue(recoveryPathKey, srcAP) {
-						pr.contracts.invalidateReceivedEvidence()
-					}
 					if accepted.Acceptance == telemetry.ProbeBootstrap ||
 						(!accepted.Probe.Padded && !haveRecoveryACK) {
-						pr.contracts.invalidateReceivedEvidence()
+						m.invalidatePeerRecoveryEvidence(pr)
 					}
 					m.refreshPeerRecoveryWindow(pr)
 				}
@@ -3124,7 +3163,11 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				// but complete it before the echo can become socket-visible.
 				if accepted.EpochChanged && !rebaselined {
 					if rq := pr.resequencer.Load(); rq != nil {
-						rq.RebaselineToLow()
+						if transitionGeneration != 0 {
+							rq.RebaselineToLowGeneration(transitionGeneration)
+						} else {
+							rq.RebaselineToLow()
+						}
 					}
 					if pr.contracts != nil {
 						m.refreshPeerRecoveryWindow(pr)
@@ -3152,19 +3195,22 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 							size int,
 							completion <-chan error,
 							contract *recoveryContractCoordinator,
-							session uint64,
-							message telemetry.RecoveryContractMessage,
-							pathKey uint32,
-							source netip.AddrPort,
+							admission receivedACKAdmission,
 							recordACK bool,
 						) {
 							if err := <-completion; err == nil {
 								ps.txBytes.Add(uint64(size))
-								if recordACK && contract.recordReceivedACK(session, message, pathKey, source) {
+								if recordACK && contract.completeReceivedACK(admission) {
 									m.refreshPeerRecoveryWindow(pr)
 								}
 							}
-						}(len(echo), done, pr.contracts, accepted.Probe.SessionID, recoveryACK, recoveryPathKey, srcAP, haveRecoveryACK)
+						}(
+							len(echo),
+							done,
+							pr.contracts,
+							recoveryAdmission,
+							haveRecoveryAdmission,
+						)
 					}
 				} else {
 					// UDP writes are goroutine-safe, so this receive-goroutine reflection
@@ -3175,12 +3221,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 						// exactly like a DATA/PARITY write — only on a nil write error.
 						ps.txBytes.Add(uint64(len(echo)))
 						m.accountGeneratedPriorityAfterWrite(ps, len(echo))
-						if haveRecoveryACK && pr.contracts.recordReceivedACK(
-							accepted.Probe.SessionID,
-							recoveryACK,
-							recoveryPathKey,
-							srcAP,
-						) {
+						if haveRecoveryAdmission && pr.contracts.completeReceivedACK(recoveryAdmission) {
 							m.refreshPeerRecoveryWindow(pr)
 						}
 					}
@@ -3995,10 +4036,15 @@ func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	// never nest it under m.mu). Nil on a closed bind (a resequencer is Stored per Open) —
 	// the next Open seeds a fresh one whose release point re-pins to its first frame anyway.
 	if rq != nil {
+		var generation uint64
 		if m.contracts != nil {
-			m.contracts.invalidateReceivedEvidence()
+			generation = m.invalidatePeerRecoveryEvidence(m.peerState)
 		}
-		rq.Rebaseline(ap)
+		if generation != 0 {
+			rq.RebaselineGeneration(ap, generation)
+		} else {
+			rq.Rebaseline(ap)
+		}
 		m.refreshPeerRecoveryWindow(m.peerState)
 	}
 }
@@ -4058,10 +4104,15 @@ func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
 	// mirroring SetPeerRemote — the standby hub's outer-seq restarts low and must re-anchor the
 	// release point instead of being SUSPECT-dropped (D32).
 	if rq != nil {
+		var generation uint64
 		if p.contracts != nil {
-			p.contracts.invalidateReceivedEvidence()
+			generation = m.invalidatePeerRecoveryEvidence(p)
 		}
-		rq.Rebaseline(ap)
+		if generation != 0 {
+			rq.RebaselineGeneration(ap, generation)
+		} else {
+			rq.Rebaseline(ap)
+		}
 		m.refreshPeerRecoveryWindow(p)
 	}
 	return nil

@@ -503,7 +503,12 @@ Common rules, either policy:
   sample must retain at least 250 ms of validity, and the ACK's composite
   path/source must still match delivery. Until then—and after a path/source,
   membership, contract, session, or rebaseline transition—the receiver keeps
-  the conservative 250 ms hold. Weighted scheduling always keeps that fallback.
+  the conservative 250 ms hold. Those transitions, resequencer replacement,
+  and teardown advance a receiver/topology generation before clearing venues;
+  delayed ACK completions and window refreshes from older generations are
+  rejected. A bounded-window advance gives each newly exposed gap a fresh hold
+  rather than inheriting its predecessor's elapsed deadline. Weighted
+  scheduling always keeps the conservative fallback.
   At recovery admission the socket receives one absolute
   `cutStart+10ms` deadline before the cut becomes visible; that same deadline
   covers any blocked predecessor and every tranche syscall. Install failure or

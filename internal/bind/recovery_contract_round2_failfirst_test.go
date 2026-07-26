@@ -796,9 +796,15 @@ func TestRemoveAndReaddRotateServiceWithoutChangingSession(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	session := m.probers[0].SessionID()
 	first := acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 1)
+	receiverGeneration := m.contracts.receivedSnapshot().generation
 
 	if err := m.RemovePath("b"); err != nil {
 		t.Fatal(err)
+	}
+	if got := m.contracts.receivedSnapshot().generation; got <= receiverGeneration {
+		t.Fatalf("path removal receiver generation = %d, want > %d", got, receiverGeneration)
+	} else {
+		receiverGeneration = got
 	}
 	removed := m.contracts.offerSnapshot().message
 	if removed.ContractID <= first.ContractID || removed.ServiceBound != firstCfg.RecoveryBound {
@@ -816,6 +822,9 @@ func TestRemoveAndReaddRotateServiceWithoutChangingSession(t *testing.T) {
 		SourceAddr: netip.MustParseAddr("127.0.0.1"),
 	}, readdedCfg); err != nil {
 		t.Fatal(err)
+	}
+	if got := m.contracts.receivedSnapshot().generation; got <= receiverGeneration {
+		t.Fatalf("path re-add receiver generation = %d, want > %d", got, receiverGeneration)
 	}
 	readded := m.contracts.offerSnapshot().message
 	if readded.ContractID <= removed.ContractID || readded.ServiceBound != readdedCfg.RecoveryBound {

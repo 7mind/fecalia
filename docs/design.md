@@ -619,8 +619,12 @@ ACK, a different composite key/source, weighted aggregation, `A>=T`, or a
 saturated `A+H` retains `T`. Bootstrap, padded, replayed, malformed, or
 inconsistent control traffic cannot create new fast evidence. Evidence arriving
 after a conservative gap armed never shortens
-that live gap. A membership, roam, contract, adopted-session, or rebaseline
-transition clears the fast evidence; a fast-armed gap re-arms from the
+that live gap. Contract, adopted-session, membership, roam, rebaseline,
+resequencer-replacement, and teardown transitions first advance a monotonic
+peer receiver/topology generation and then clear its exact venues. ACK
+admission captures that generation and venue; both ACK completion and
+recovery-window publication recheck it atomically, so paused work from an older
+generation cannot restore fast evidence. A fast-armed gap re-arms from the
 transition time for a fresh `T`. FEC repair remains unchanged:
 `ObserveRecovered` may fill the missing sequence only in the half-open interval
 before expiry (`W-1ns` succeeds; at `W` the gap has expired).
@@ -1372,7 +1376,10 @@ loosening the guarantee that a genuine cross-path straggler is still awaited up
 to the cap. The preserved contract is unchanged in every other respect: releases
 are **strictly ascending** and **exactly once**, memory stays **bounded** by the
 window, and the timeout guarantees forward progress (a gap is now bounded by the
-per-gap hold rather than the fixed cap). The `Rebaseline`/`RebaselineToLow`
+per-gap hold rather than the fixed cap). When admitting a frame beyond the
+bounded window advances the release point, the old head gap's hold ends before
+the newly exposed gap arms; that new gap receives a fresh `W` or `T` and never
+inherits elapsed time from its predecessor. The `Rebaseline`/`RebaselineToLow`
 re-anchor semantics (D32/D34/D36/D64, below) and the inner WireGuard anti-replay
 behaviour are untouched.
 

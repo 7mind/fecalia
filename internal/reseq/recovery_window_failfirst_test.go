@@ -260,3 +260,100 @@ func TestFECRecoveryWindowFillExpireAndCloseNotify(t *testing.T) {
 		}
 	})
 }
+
+func TestFECRecoveryWindowBoundedAdvanceStartsFreshGap(t *testing.T) {
+	const (
+		window = uint64(64)
+		hold   = 60 * time.Millisecond
+	)
+	clk := newFakeClock()
+	r := reseq.New(window, 250*time.Millisecond, clk)
+	r.SetFECActive(true)
+	r.SetRecoveryWindow(reseq.RecoveryWindow{
+		Enabled:    true,
+		Revision:   1,
+		PathKey:    7,
+		Source:     testSrc,
+		Hold:       hold,
+		ValidUntil: clk.Now().Add(time.Second),
+	})
+	r.ObserveFromPath(0, []byte("zero"), testSrc, 7)
+	drainHold(r)
+	r.ObserveFromPath(2, []byte("two"), testSrc, 7)
+	clk.advance(hold - time.Nanosecond)
+
+	// seq65 sits exactly one window ahead of the current gap at seq1. Admitting
+	// it advances the bounded window, releases seq2, and exposes a distinct gap
+	// [3,65) at the current injected time.
+	r.ObserveFromPath(65, []byte("sixty-five"), testSrc, 7)
+	if got := drainHold(r); len(got) != 1 || got[0] != "two" {
+		t.Fatalf("bounded-advance delivery = %v, want [two]", got)
+	}
+	wantFresh := clk.Now().Add(hold)
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != wantFresh {
+		t.Fatalf("new gap deadline = %v,%v, want fresh %v,true", deadline, armed, wantFresh)
+	}
+
+	clk.advance(time.Nanosecond)
+	if got := drainHold(r); len(got) != 0 {
+		t.Fatalf("new gap inherited prior W and released early: %v", got)
+	}
+	clk.advance(hold - time.Nanosecond)
+	if got := drainHold(r); len(got) != 1 || got[0] != "sixty-five" {
+		t.Fatalf("fresh-gap expiry delivery = %v, want [sixty-five]", got)
+	}
+	if stats := r.Stats(); stats.Skipped != 63 || stats.Released != 3 {
+		t.Fatalf("bounded advance stats = skipped %d released %d, want 63/3", stats.Skipped, stats.Released)
+	}
+	if got := drainHold(r); len(got) != 0 {
+		t.Fatalf("bounded advance delivered a frame twice: %v", got)
+	}
+}
+
+func TestClosedResequencerCannotRetainOrRepublishFastEvidence(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(16, 250*time.Millisecond, clk)
+	r.SetFECActive(true)
+	window := reseq.RecoveryWindow{
+		Enabled:    true,
+		Revision:   1,
+		PathKey:    7,
+		Source:     testSrc,
+		Hold:       60 * time.Millisecond,
+		ValidUntil: clk.Now().Add(time.Second),
+	}
+	r.SetRecoveryWindow(window)
+	r.Close()
+	window.Revision = 2
+	if r.SetRecoveryGeneration(2, []reseq.RecoveryWindow{window}) {
+		t.Fatal("post-Close recovery publication was accepted")
+	}
+	r.ObserveFromPath(0, []byte("zero"), testSrc, 7)
+	drainHold(r)
+	r.ObserveFromPath(2, []byte("two"), testSrc, 7)
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != clk.Now().Add(250*time.Millisecond) {
+		t.Fatalf("Close retained fast recovery evidence: %v,%v", deadline, armed)
+	}
+}
+
+func TestRecoveryPublicationRequiresExactWindowGeneration(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(16, 250*time.Millisecond, clk)
+	r.SetFECActive(true)
+	if r.SetRecoveryGeneration(2, []reseq.RecoveryWindow{{
+		Enabled:    true,
+		Revision:   1,
+		PathKey:    7,
+		Source:     testSrc,
+		Hold:       60 * time.Millisecond,
+		ValidUntil: clk.Now().Add(time.Second),
+	}}) {
+		t.Fatal("publication accepted a venue from a different generation")
+	}
+	r.ObserveFromPath(0, []byte("zero"), testSrc, 7)
+	drainHold(r)
+	r.ObserveFromPath(2, []byte("two"), testSrc, 7)
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != clk.Now().Add(250*time.Millisecond) {
+		t.Fatalf("mismatched generation armed fast: %v,%v", deadline, armed)
+	}
+}

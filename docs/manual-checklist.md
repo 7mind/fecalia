@@ -535,7 +535,12 @@ predeclared gates:
       releases the successor. Repeat with no ACK, wrong path/source, a second
       delivering key, absent/stale RTT, less than 250 ms contract/RTT validity,
       `A>=250ms`, weighted policy, rebaseline, and membership/session/contract
-      transitions; every case must use or re-arm a fresh 250 ms fallback.
+      transitions; every case must use or re-arm a fresh 250 ms fallback. Hold
+      an old ACK completion and an old window refresh across each transition,
+      source roam, resequencer replacement, and teardown; neither may restore
+      fast evidence. Force a bounded-window advance that exposes a second gap
+      near the first gap's expiry and confirm the second gap receives a fresh
+      full hold with strictly ascending, exactly-once delivery.
 - [ ] Change same-name pacing/FEC service inputs (`R/Rp/B/C/P/Lmax/Kdata/Mmax/I`)
       and reload. Confirm the daemon warns that the change remains unapplied
       until restart and the running service retains its old ContractID. After a
