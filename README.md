@@ -327,12 +327,13 @@ deliberate boundaries you must plan around:
   per-peer owner stages one group until its size or exact deadline decision,
   then frames its DATA/PARITY; no open-group DATA is writer-visible. Each
   original `Send` publishes one owner command through the bounded mailbox,
-  irrespective of its offload-frame count. With pacing enabled, `Send` returns
-  once the owner has copied/admitted every caller buffer, so successive serial
-  sub-*K* engine calls can fill one group without waiting for its later decision
-  or wire service; the owner retains a separate terminal completion for
-  lifecycle and accounting. Pacing-off/direct sends retain synchronous terminal
-  completion. The Bind advertises and accepts the vendored engine's 128-buffer
+  irrespective of its offload-frame count. With pacing enabled, or on an
+  unshaped socket protected by an active exclusive direct-recovery contract,
+  `Send` returns once the owner has copied/admitted every caller buffer. Thus
+  successive serial sub-*K* engine calls can fill one group without waiting for
+  its later decision or wire service; the owner retains a separate terminal
+  completion for lifecycle and accounting. Uncontracted direct sends retain
+  synchronous terminal completion. The Bind advertises and accepts the vendored engine's 128-buffer
   ideal batch, so a TUN-offloaded send reaches this path without an artificial
   single-buffer interface limit.
   Compatible shaped frames from one

@@ -332,12 +332,14 @@ group; a batched/offloaded send that fills `data_shards` closes immediately.
 Choose `deadline` as a latency bound, not only a coding-efficiency knob. The
 owner accepts one batch command per original `Send`, assigns outer sequences
 only as it copies each input, and streams decided groups through the per-path
-shaper. With pacing enabled, the caller receives its acknowledgement once the
-owner has copied/admitted every buffer in that command; the group may remain
-staged or may still be waiting for shaper/socket service. This lets successive
-serial sub-`data_shards` engine calls fill one group. The owner keeps a separate
-terminal completion for lifecycle and error accounting. Pacing-off/direct sends
-continue to wait synchronously through the decision and write. The Bind
+writer. With pacing enabled, or on an unshaped socket protected by an active
+exclusive direct-recovery contract, the caller receives its acknowledgement
+once the owner has copied/admitted every buffer in that command; the group may
+remain staged or may still be waiting for shaper/socket service. This lets
+successive serial sub-`data_shards` engine calls fill one group. The owner keeps
+a separate terminal completion for lifecycle and error accounting.
+Uncontracted direct sends continue to wait synchronously through the decision
+and write. The Bind
 advertises the vendored engine's 128-buffer ideal batch and accepts every buffer
 in that vector; receive functions may still return fewer datagrams per read. A
 complete compatible group enters that shaper as one immutable batch; the shaper
@@ -448,9 +450,10 @@ Common rules, either policy:
   shaper holds at most `Mtotal=B+C+P+Fgroup+Lio`. One engine batch selects one path. FEC-off input is
   classified, framed, and admitted in order; FEC-on input is staged by the
   peer owner until an immutable group decision and then emitted one wire
-  group at a time. Shaped caller-buffer ownership is acknowledged after the
-  whole command has been copied/admitted, independently of that eventual
-  decision/emission; pacing-off remains terminally synchronous. A naturally
+  group at a time. Shaped caller-buffer ownership, and ownership on an active
+  exclusive unshaped direct-recovery contract, is acknowledged after the whole
+  command has been copied/admitted, independently of that eventual
+  decision/emission; uncontracted direct output remains terminally synchronous. A naturally
   single-path group on an exclusive writer
   generation transfers ownership as one recovery tranche. The bounded prefix,
   pre-cut priority, and current `Lio` precede the complete DATA+parity tranche;

@@ -38,7 +38,7 @@ func awaitSerialSubKAdmission(t testing.TB, admitted <-chan serialSubKAdmission)
 			runtime.Gosched()
 		}
 	}
-	t.Fatal("serial shaped Send did not reach owned FEC admission")
+	t.Fatal("serial FEC Send did not reach owned admission")
 	return serialSubKAdmission{}
 }
 
@@ -48,14 +48,14 @@ func awaitSerialSubKReturn(t testing.TB, returned <-chan int, want int) {
 		select {
 		case got := <-returned:
 			if got != want {
-				t.Fatalf("serial shaped Send return order = %d, want %d", got, want)
+				t.Fatalf("serial FEC Send return order = %d, want %d", got, want)
 			}
 			return
 		default:
 			runtime.Gosched()
 		}
 	}
-	t.Fatalf("serial shaped Send #%d did not acknowledge after owned admission; batch still waits for pending group decision/emission, so Send #%d cannot enter before the FEC deadline", want, want+1)
+	t.Fatalf("serial FEC Send #%d did not acknowledge after owned admission; batch still waits for pending group decision/emission, so Send #%d cannot enter before the FEC deadline", want, want+1)
 }
 
 func TestFailFirstShapedFECSerialSubKAcknowledgesOwnedAdmission(t *testing.T) {
@@ -170,6 +170,196 @@ func TestFailFirstShapedFECSerialSubKAcknowledgesOwnedAdmission(t *testing.T) {
 	if snapshot.GroupDecisions != 1 || snapshot.DeadlineDecisions != 0 ||
 		snapshot.StagedGroups != 0 || snapshot.StagedDataFrames != 0 {
 		t.Fatalf("size-closed serial sub-K FEC snapshot = %+v, want one size decision, no deadline decision, and no staged ownership", snapshot)
+	}
+}
+
+func newUnshapedRecoveryAdmissionAckBind(
+	t testing.TB,
+	cfg fec.Config,
+) (*Multipath, *fakeClock) {
+	t.Helper()
+	clock := newFakeClock()
+	m, probers := newProbingMultipathFEC(
+		t,
+		loopbackPaths(1),
+		testKey(t, 0xEA),
+		&cfg,
+		clock,
+	)
+	m.clock = clock
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	m.scheduler.Recompute()
+	acknowledgeCurrentContract(t, m.contracts, m.paths[0].id, 1)
+	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
+	if !m.paths[0].recoveryContract().Enabled || m.paths[0].shaper != nil {
+		t.Fatalf("unshaped recovery fixture contract=%+v shaper=%T, want enabled direct recovery without shaper",
+			m.paths[0].recoveryContract(), m.paths[0].shaper)
+	}
+	return m, clock
+}
+
+func TestFailFirstUnshapedRecoveryFECSerialSubKAcknowledgesOwnedAdmission(t *testing.T) {
+	cfg := fec.Config{DataShards: 3, ParityShards: 1, Deadline: 5 * time.Millisecond}
+	m, _ := newUnshapedRecoveryAdmissionAckBind(t, cfg)
+	owner := m.fecSend.Load().owner
+	admitted := make(chan serialSubKAdmission, cfg.DataShards)
+	owner.afterAdmit = func(got fecOwnerAdmission, _ *fecOwnerBatch, _ int) {
+		admitted <- serialSubKAdmission{group: got.group, index: got.index, due: got.due}
+	}
+	t.Cleanup(func() {
+		owner.afterAdmit = nil
+	})
+
+	var wireMu sync.Mutex
+	var wire []frame.Frame
+	wireComplete := make(chan struct{})
+	var wireOnce sync.Once
+	m.paths[0].setWriteDeadline = func(time.Time) error { return nil }
+	m.paths[0].writeUDP = func(payload []byte, _ netip.AddrPort) (int, error) {
+		decoded, err := frame.Decode(m.psk, payload)
+		if err != nil {
+			return 0, err
+		}
+		wireMu.Lock()
+		wire = append(wire, decoded)
+		if len(wire) == cfg.DataShards+cfg.ParityShards {
+			wireOnce.Do(func() { close(wireComplete) })
+		}
+		wireMu.Unlock()
+		return len(payload), nil
+	}
+
+	original := [][]byte{
+		[]byte("unshaped-serial-1"),
+		[]byte("unshaped-serial-2"),
+		[]byte("unshaped-serial-3"),
+	}
+	wantPayloads := make([][]byte, len(original))
+	for index := range original {
+		wantPayloads[index] = append([]byte(nil), original[index]...)
+	}
+	returned := make(chan int, cfg.DataShards)
+	continueSerial := make(chan struct{})
+	serialDone := make(chan error, 1)
+	go func() {
+		for index := range original {
+			if err := m.Send([][]byte{original[index]}, m.virt); err != nil {
+				serialDone <- fmt.Errorf("serial unshaped recovery Send #%d: %w", index+1, err)
+				return
+			}
+			for offset := range original[index] {
+				original[index][offset] = byte('A' + index)
+			}
+			returned <- index + 1
+			if index < len(original)-1 {
+				<-continueSerial
+			}
+		}
+		serialDone <- nil
+	}()
+
+	first := awaitSerialSubKAdmission(t, admitted)
+	if first.group != 0 || first.index != 0 || first.due.IsZero() {
+		t.Fatalf("first unshaped owned admission = %+v, want group=0 index=0 and an armed deadline", first)
+	}
+	awaitSerialSubKReturn(t, returned, 1)
+	continueSerial <- struct{}{}
+
+	second := awaitSerialSubKAdmission(t, admitted)
+	if second.group != first.group || second.index != 1 || second.due != first.due {
+		t.Fatalf("second unshaped owned admission = %+v, want group=%d index=1 due=%s", second, first.group, first.due)
+	}
+	awaitSerialSubKReturn(t, returned, 2)
+	continueSerial <- struct{}{}
+
+	third := awaitSerialSubKAdmission(t, admitted)
+	if third.group != first.group || third.index != 2 || !third.due.IsZero() {
+		t.Fatalf("third unshaped owned admission = %+v, want size-close group=%d index=2 with no deadline", third, first.group)
+	}
+	awaitSerialSubKReturn(t, returned, 3)
+	if err := <-serialDone; err != nil {
+		t.Fatal(err)
+	}
+
+	for range failFirstSpinLimit {
+		select {
+		case <-wireComplete:
+			goto emitted
+		default:
+			runtime.Gosched()
+		}
+	}
+	t.Fatal("unshaped size-closed group did not finish emission after ownership acknowledgement")
+
+emitted:
+	wireMu.Lock()
+	defer wireMu.Unlock()
+	if len(wire) != cfg.DataShards+cfg.ParityShards {
+		t.Fatalf("unshaped size-closed wire frames = %d, want %d", len(wire), cfg.DataShards+cfg.ParityShards)
+	}
+	for index := range cfg.DataShards {
+		data, ok := wire[index].(frame.Data)
+		if !ok {
+			t.Fatalf("unshaped wire frame #%d = %T, want DATA", index+1, wire[index])
+		}
+		if data.OuterSeq != uint64(index+1) || data.FECGroup != uint32(first.group) ||
+			data.FECIndex != uint8(index) || !bytes.Equal(data.Payload, wantPayloads[index]) {
+			t.Fatalf("unshaped wire DATA #%d = seq:%d group:%d index:%d payload:%q, want seq:%d group:%d index:%d payload:%q",
+				index+1, data.OuterSeq, data.FECGroup, data.FECIndex, data.Payload,
+				index+1, first.group, index, wantPayloads[index])
+		}
+	}
+	snapshot := m.PeerSnapshots()[0].FEC
+	if snapshot.GroupDecisions != 1 || snapshot.DeadlineDecisions != 0 ||
+		snapshot.StagedGroups != 0 || snapshot.StagedDataFrames != 0 {
+		t.Fatalf("unshaped size-closed serial sub-K FEC snapshot = %+v, want one size decision, no deadline decision, and no staged ownership", snapshot)
+	}
+}
+
+func TestFailFirstUnshapedRecoveryFECPostAcknowledgementFailureRetiresGeneration(t *testing.T) {
+	cfg := fec.Config{DataShards: 3, ParityShards: 1, Deadline: 5 * time.Millisecond}
+	m, _ := newUnshapedRecoveryAdmissionAckBind(t, cfg)
+	path := m.paths[0]
+	sentinel := errors.New("unshaped post-ack write failure")
+	path.setWriteDeadline = func(time.Time) error { return nil }
+	path.writeUDP = func([]byte, netip.AddrPort) (int, error) {
+		return 0, sentinel
+	}
+	retired := make(chan struct{}, 1)
+	var retirements atomic.Int64
+	m.afterRecoveryRetire = func(got *sharedPathState) {
+		if got == path.sharedPathState {
+			retirements.Add(1)
+			retired <- struct{}{}
+		}
+	}
+
+	for index := range cfg.DataShards {
+		if err := m.Send([][]byte{[]byte(fmt.Sprintf("unshaped-post-ack-%d", index))}, m.virt); err != nil {
+			t.Fatalf("unshaped recovery Send #%d returned post-ack failure synchronously: %v", index+1, err)
+		}
+	}
+	select {
+	case <-retired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unshaped post-ack failure did not retire its socket generation")
+	}
+	m.abortRecoveryGeneration(path, sentinel)
+	for range failFirstSpinLimit {
+		runtime.Gosched()
+	}
+	if got := retirements.Load(); got != 1 {
+		t.Fatalf("unshaped matching generation retirements = %d, want exactly one", got)
+	}
+	if !path.recoveryFailed.Load() {
+		t.Fatal("unshaped post-ack failure left failed generation admission enabled")
+	}
+	if got := path.socketWriteErrors.Load(); got != 1 {
+		t.Fatalf("unshaped post-ack socket write errors = %d, want 1", got)
 	}
 }
 

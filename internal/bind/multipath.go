@@ -3373,9 +3373,10 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 // paths. With FEC on, Send selects once and publishes one batch to the peer owner;
 // the owner assigns outer sequences while streaming that batch across one staged
 // group at a time and takes m.mu only to frame an immutable decision. peer.sendMu
-// preserves publication order. An exact-byte-shaped Send returns after the owner has
-// copied and admitted its complete caller-buffer batch; eventual group decision and
-// emission stay owner-confined. Direct/pacing-off Send retains synchronous completion.
+// preserves publication order. An exact-byte-shaped Send, or an unshaped Send protected
+// by an active exclusive direct-recovery contract, returns after the owner has copied
+// and admitted its complete caller-buffer batch; eventual group decision and emission
+// stay owner-confined. Uncontracted direct/pacing-off Send retains synchronous completion.
 // The send Codec remains mutex-guarded, and no transmit syscall or shaper wait holds
 // m.mu.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
@@ -3415,7 +3416,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 	sendFEC := peer.fecSend.Load()
 	if sendFEC != nil {
 		m.mu.Unlock()
-		if shaped && peer.contracts != nil {
+		if peer.contracts != nil {
 			if err := m.enterPeerRecoveryService(peer); err != nil {
 				return err
 			}
@@ -3584,9 +3585,10 @@ func (m *Multipath) sendFECBatch(
 	shaped bool,
 ) error {
 	// Serialize the one Pick plus one owner publication for this original Send.
-	// Exact-byte shaping waits only until the owner has copied and admitted every
-	// caller buffer, allowing the engine's sole sequential sender to fill a partial
-	// group. Direct/pacing-off composition keeps its synchronous emission result.
+	// Exact-byte shaping and an active exclusive direct-recovery contract wait only
+	// until the owner has copied and admitted every caller buffer, allowing the
+	// engine's sole sequential sender to fill a partial group. Uncontracted
+	// direct/pacing-off composition keeps its synchronous emission result.
 	peer.sendMu.Lock()
 
 	m.mu.Lock()
@@ -3645,17 +3647,20 @@ func (m *Multipath) sendFECBatch(
 		peer.sendMu.Unlock()
 		return fmt.Errorf("bind: selected shaped path %q has no exact-byte shaper", path.name)
 	}
+	ackOwned := shaped ||
+		(!shaped && path.directRecovery && path.recoveryContract().Enabled)
 	m.mu.Unlock()
 
 	batch := &fecOwnerBatch{
-		bufs:    bufs,
-		classes: classes,
-		path:    path,
-		remote:  remote,
-		shaped:  shaped,
-		done:    make(chan error, 1),
+		bufs:     bufs,
+		classes:  classes,
+		path:     path,
+		remote:   remote,
+		shaped:   shaped,
+		ackOwned: ackOwned,
+		done:     make(chan error, 1),
 	}
-	if shaped {
+	if ackOwned {
 		batch.admitted = make(chan error, 1)
 	}
 	if err := fs.owner.publish(batch); err != nil {
@@ -3663,7 +3668,7 @@ func (m *Multipath) sendFECBatch(
 		return err
 	}
 	peer.sendMu.Unlock()
-	if shaped {
+	if ackOwned {
 		return fs.owner.waitAdmission(batch)
 	}
 	return fs.owner.wait(batch)

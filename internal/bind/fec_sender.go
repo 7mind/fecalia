@@ -91,6 +91,7 @@ type fecOwnerBatch struct {
 	path     *peerPathState
 	remote   netip.AddrPort
 	shaped   bool
+	ackOwned bool
 	admitted chan error
 	done     chan error
 
@@ -402,7 +403,7 @@ func (o *fecSendOwner) handleBatch(batch *fecOwnerBatch) {
 		}
 		switch {
 		case !open:
-			if batch.shaped && i == len(batch.bufs)-1 {
+			if batch.ackOwned && i == len(batch.bufs)-1 {
 				finalDecision = decision
 			} else {
 				err = o.decideGroup(decision, time.Time{})
@@ -682,7 +683,7 @@ func (o *fecSendOwner) rejectBatch(batch *fecOwnerBatch, err error) {
 }
 
 func (o *fecSendOwner) finishAdmission(batch *fecOwnerBatch, err error) {
-	if !batch.shaped || batch.admissionCompleted {
+	if !batch.ackOwned || batch.admissionCompleted {
 		return
 	}
 	batch.admissionCompleted = true

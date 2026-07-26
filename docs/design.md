@@ -1556,7 +1556,7 @@ the edge-restart direction (T121, `test/e2e/restart_onesided_test.go`).
   exclusive). Both off by default; enable with `[fec] enabled = true`
   (+ `adaptive = true`).
 
-**Send ownership, group staging, and deadlines (T309/T318).** Each live peer owns
+**Send ownership, group staging, and deadlines (T309/T318/T323).** Each live peer owns
 one FEC sender goroutine. `Send` performs one scheduler selection for the
 original engine batch and publishes exactly one batch command through the
 bounded 128-batch mailbox. The Bind reports
@@ -1564,14 +1564,15 @@ bounded 128-batch mailbox. The Bind reports
 accepts every buffer in that vector; receive calls remain free to return a
 shorter vector. The owner walks its input in
 order and assigns each outer sequence immediately before copying/admitting that
-frame. A shaped command carries two distinct completion points: caller-buffer
+frame. A shaped command, or an unshaped command protected by an active exclusive
+direct-recovery contract, carries two distinct completion points: caller-buffer
 admission acknowledges only after the owner has copied/admitted its entire
 input, while an owner-private terminal completion remains pending until every
-contributing group resolves. Consequently, successive serial sub-*K* shaped
-`Send` calls can fill one group without the first call waiting for its eventual
+contributing group resolves. Consequently, successive serial sub-*K* `Send`
+calls can fill one group without the first call waiting for its eventual
 decision or wire emission, and caller buffers may be reused immediately after
-the admission acknowledgement. Pacing-off/direct commands retain the historical
-synchronous terminal completion. Before admission acknowledgement the owner
+the admission acknowledgement. Uncontracted direct commands retain the
+historical synchronous terminal completion. Before admission acknowledgement the owner
 stops at the first terminal group error, so neither unowned suffix payloads nor
 suffix sequence numbers are consumed. The encoder retains each admitted
 `outer-seq || inner` buffer without a second payload copy and returns every
@@ -1591,9 +1592,9 @@ A group spanning different selected paths is split only at the path boundary,
 and direct UDP output remains per datagram. A terminal decision/write error
 resolves every contributing owner-side completion without retrying the decided
 group, but the owner remains available for a later `Send`. An error before
-shaped admission acknowledgement is returned synchronously. An error after
+ownership acknowledgement is returned synchronously. An error after
 acknowledgement retires only the exact failing path generation and appears in
-terminal/shaper/socket accounting; it cannot retroactively fail the caller.
+terminal/writer/socket accounting; it cannot retroactively fail the caller.
 Ordinary Close/Stop cancellation resolves the owner generation without
 launching failure retirement.
 
@@ -1615,8 +1616,9 @@ late DATA/PARITY or retaining admission waiters across rebind. Per-peer teardown
 keeps that peer's lifecycle barrier through the old-owner join, so rebind cannot
 publish a replacement concurrently; it still retains the live per-path
 shaper/socket generation. Publication and Stop are linearized: once a batch
-publishes, shaped `Send` waits for the owner's ownership/rejection
-acknowledgement and direct `Send` waits for terminal completion. Owner exit
+publishes, shaped or direct-recovery-contract `Send` waits for the owner's
+ownership/rejection acknowledgement, while uncontracted direct `Send` waits for
+terminal completion. Owner exit
 resolves every private terminal completion before its join completes.
 
 The ownership acknowledgement does not count wire service. Per-path

@@ -373,7 +373,7 @@ no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#
 Run on the RPi4 edge with Starlink active, 5G standby, active-backup policy,
 and adaptive FEC enabled. Preserve the starting state before the first cycle:
 
-Before the real-link cycles, validate the T309 FEC sender-owner invariants:
+Before the real-link cycles, validate the T309/T318/T323 FEC sender-owner invariants:
 
 - [ ] Run
       `go test -tags failfirst ./internal/bind -run '^TestFailFirstFEC' -count=1`
@@ -382,10 +382,11 @@ Before the real-link cycles, validate the T309 FEC sender-owner invariants:
       stays within the bind-local 10ms grace, an expired group wins over queued
       admissions, a 257-frame `Send` publishes one owner batch and preserves
       exact payload/sequence order, writer-prefix failure consumes no suffix
-      sequence numbers, shaped serial sub-*K* sends acknowledge owned caller
-      buffers before terminal group service, post-ack failures retire only the
-      exact generation, and Close rejects unowned suffixes while joining every
-      acknowledged owner-side completion.
+      sequence numbers, shaped and exclusive unshaped-recovery serial sub-*K*
+      sends acknowledge owned caller buffers before terminal group service,
+      uncontracted direct sends stay synchronous, post-ack failures retire only
+      the exact generation, and Close rejects unowned suffixes while joining
+      every acknowledged owner-side completion.
 - [ ] Run
       `go test ./internal/bind -run 'TestProductionBatch128CappedShapedSerialAdmissionFillsGroups|TestFECSendStreamsBeyondOwnerMailboxCapacity|TestMultipathFECDeadlineEmitsPartialGroupParity' -count=1`;
       the capped production batch-128 fixture, 257-buffer offload batch, and
