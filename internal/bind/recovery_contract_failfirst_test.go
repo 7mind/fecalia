@@ -508,6 +508,113 @@ func TestLegacyReflectorEchoCannotAcknowledgeRecoveryContract(t *testing.T) {
 	}
 }
 
+func TestRecoveryContractCompatibilityMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{
+			name: "old sender to old receiver remains extension-free",
+			run: func(t *testing.T) {
+				if _, recognized, err := telemetry.DecodeRecoveryContract(nil); err != nil || recognized {
+					t.Fatalf("legacy empty payload = recognized %v err %v", recognized, err)
+				}
+			},
+		},
+		{
+			name: "new sender to old receiver retains T fallback",
+			run: func(t *testing.T) {
+				clock := newFakeClock()
+				sender := newRecoveryContractCoordinator(0xB001, clock)
+				if err := sender.begin(true, 80*time.Millisecond); err != nil {
+					t.Fatal(err)
+				}
+				offered := sender.offerSnapshot()
+				sender.recordOffer(0, telemetryProbeHeader{
+					sessionID: 0xB001,
+					probeSeq:  1,
+					challenge: 2,
+				}, offered)
+				if sender.acceptACK(0, 0xB001, 1, offered.payload) {
+					t.Fatal("legacy verbatim OFFER echo satisfied exact ACK")
+				}
+				if sender.fastEligible() {
+					t.Fatal("new sender enabled fast recovery against old receiver")
+				}
+				if stats := sender.stats(); stats.OfferWrites != 1 ||
+					stats.ACKAccepts != 0 ||
+					stats.WrongRejections != 1 ||
+					!stats.TransitionFrozen ||
+					stats.FallbackReason != "transition" {
+					t.Fatalf("new-to-old observability = %+v", stats)
+				}
+			},
+		},
+		{
+			name: "old sender to new receiver retains T fallback",
+			run: func(t *testing.T) {
+				receiver := newRecoveryContractCoordinator(0xB002, newFakeClock())
+				if _, recognized, err := telemetry.DecodeRecoveryContract(nil); err != nil || recognized {
+					t.Fatalf("legacy payload = recognized %v err %v", recognized, err)
+				}
+				if receiver.receivedSnapshot().present {
+					t.Fatal("new receiver fabricated a contract for an old sender")
+				}
+				if stats := receiver.stats(); stats.OfferPresent ||
+					stats.FastEligible ||
+					stats.FallbackReason != "no_offer" {
+					t.Fatalf("old-to-new observability = %+v", stats)
+				}
+			},
+		},
+		{
+			name: "new sender to new receiver becomes fast eligible",
+			run: func(t *testing.T) {
+				sender := newRecoveryContractCoordinator(0xB003, newFakeClock())
+				if err := sender.begin(true, 80*time.Millisecond); err != nil {
+					t.Fatal(err)
+				}
+				acknowledgeCurrentContract(t, sender, 0, 1)
+				if !sender.fastEligible() {
+					t.Fatal("exact current-process ACK did not enable fast recovery")
+				}
+				if stats := sender.stats(); !stats.OfferPresent ||
+					!stats.FastEligible ||
+					!stats.WriterExclusive ||
+					stats.OfferWrites != 1 ||
+					stats.ACKAccepts != 1 ||
+					stats.FallbackReason != "" {
+					t.Fatalf("new-to-new observability = %+v", stats)
+				}
+			},
+		},
+		{
+			name: "same-process rotation and session restart stay distinct",
+			run: func(t *testing.T) {
+				coordinator := newRecoveryContractCoordinator(0xB004, newFakeClock())
+				if err := coordinator.begin(true, 80*time.Millisecond); err != nil {
+					t.Fatal(err)
+				}
+				first := coordinator.offerSnapshot().message.ContractID
+				if err := coordinator.beginGeneration(true, 90*time.Millisecond, 1); err != nil {
+					t.Fatal(err)
+				}
+				if second := coordinator.offerSnapshot().message.ContractID; second <= first {
+					t.Fatalf("same-process ContractID = %d, want > %d", second, first)
+				}
+				coordinator.adoptReceivedSession(0xCAFE)
+				coordinator.adoptReceivedSession(0xBABE)
+				if stats := coordinator.stats(); stats.Rotations != 1 ||
+					stats.SessionRestarts != 1 {
+					t.Fatalf("rotation/restart observability = %+v", stats)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, test.run)
+	}
+}
+
 func TestRecoveryContractWireExtensionIsAbsentWhenPacingOrFECOff(t *testing.T) {
 	for _, test := range []struct {
 		name string

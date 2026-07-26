@@ -89,6 +89,15 @@ type Snapshot struct {
 	AsyncWriteErrorBytes       uint64
 	AsyncWriteEMSGSIZEErrors   uint64
 	AsyncWriteEMSGSIZEBytes    uint64
+
+	OuterPriorityEmittedBytes    uint64
+	OuterPriorityErrorBytes      uint64
+	RecoveryCutActive            bool
+	RecoveryCutDeadline          time.Time
+	RecoveryCutDatagrams         int
+	RecoveryCutSocketCalls       uint64
+	FECGroupOwnedHighWaterBytes  int
+	MemoryRetainedHighWaterBytes int
 }
 
 type SystemClock struct{}
@@ -206,6 +215,14 @@ type Shaper struct {
 	calls                      sync.WaitGroup
 	workerDone                 chan struct{}
 	recovery                   *recoveryState
+
+	outerPriorityEmittedBytes    uint64
+	outerPriorityErrorBytes      uint64
+	recoveryCutDeadline          time.Time
+	recoveryCutDatagrams         int
+	recoveryCutSocketCalls       uint64
+	fecGroupOwnedHighWaterBytes  int
+	memoryRetainedHighWaterBytes int
 }
 
 func New(config Config, clock Clock, write WriteFunc) (*Shaper, error) {
@@ -353,6 +370,15 @@ func (s *Shaper) Snapshot() Snapshot {
 		AsyncWriteErrorBytes:       s.asyncWriteErrorBytes,
 		AsyncWriteEMSGSIZEErrors:   s.asyncWriteEMSGSIZEErrors,
 		AsyncWriteEMSGSIZEBytes:    s.asyncWriteEMSGSIZEBytes,
+
+		OuterPriorityEmittedBytes:    s.outerPriorityEmittedBytes,
+		OuterPriorityErrorBytes:      s.outerPriorityErrorBytes,
+		RecoveryCutActive:            s.recovery != nil,
+		RecoveryCutDeadline:          s.recoveryCutDeadline,
+		RecoveryCutDatagrams:         s.recoveryCutDatagrams,
+		RecoveryCutSocketCalls:       s.recoveryCutSocketCalls,
+		FECGroupOwnedHighWaterBytes:  s.fecGroupOwnedHighWaterBytes,
+		MemoryRetainedHighWaterBytes: s.memoryRetainedHighWaterBytes,
 	}
 }
 
@@ -663,6 +689,9 @@ func (s *Shaper) WriteRecovery(
 			s.recovery = recovery
 			s.fecGroupOwnedBytes = s.config.FECGroupReserveBytes
 			s.retainedRecoveryWireBytes += total
+			s.recoveryCutDeadline = deadline
+			s.recoveryCutDatagrams = len(datagrams)
+			s.updateHighWaterLocked()
 			s.tail = cutStart.Add(s.byteDuration(total))
 			for index, item := range datagrams {
 				datagram := &queuedDatagram{
@@ -756,6 +785,7 @@ func (s *Shaper) reservePriority(ctx context.Context, size int, wait bool) (*que
 				}
 			}
 			s.retainedPriorityBytes += size
+			s.updateHighWaterLocked()
 			s.acceptedBytes += uint64(size)
 			s.outerPriorityBytes += uint64(size)
 			datagram := &queuedDatagram{
@@ -860,6 +890,7 @@ func (s *Shaper) reserveDatagram(
 			}
 			s.tail = deadline.Add(s.byteDuration(size))
 			s.retain(class, size)
+			s.updateHighWaterLocked()
 			if batch != nil {
 				batch.reserved++
 			}
@@ -1126,11 +1157,20 @@ func (s *Shaper) run() {
 
 		s.mu.Lock()
 		s.inFlightBytes = 0
+		if datagram.recovery != nil {
+			s.recoveryCutSocketCalls++
+		}
 		err := actualErr
 		if actualErr == nil {
 			s.emittedBytes += uint64(datagram.size)
+			if datagram.retention == retainPriority {
+				s.outerPriorityEmittedBytes += uint64(datagram.size)
+			}
 		} else {
 			s.accountAsyncWriteFailureLocked(actualErr, datagram.size, true)
+			if datagram.retention == retainPriority {
+				s.outerPriorityErrorBytes += uint64(datagram.size)
+			}
 			if s.closed && s.terminalCause != nil {
 				err = s.terminalCause
 			}
@@ -1202,6 +1242,8 @@ func (s *Shaper) finishRecoveryDatagramLocked(datagram *queuedDatagram, err erro
 		abort = s.abortRecoveryLocked(recovery, err)
 	}
 	s.fecGroupOwnedBytes = 0
+	s.recoveryCutDeadline = time.Time{}
+	s.recoveryCutDatagrams = 0
 	if s.recovery == recovery {
 		s.recovery = nil
 	}
@@ -1221,6 +1263,8 @@ func (s *Shaper) terminateRecoveryLocked(err error) func() {
 	_ = recovery.control.ClearDeadline()
 	abort := s.abortRecoveryLocked(recovery, err)
 	s.fecGroupOwnedBytes = 0
+	s.recoveryCutDeadline = time.Time{}
+	s.recoveryCutDatagrams = 0
 	s.recovery = nil
 	return abort
 }
@@ -1252,6 +1296,17 @@ func (s *Shaper) accountAsyncWriteFailureLocked(err error, size int, countError 
 func (s *Shaper) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
+}
+
+func (s *Shaper) updateHighWaterLocked() {
+	if s.fecGroupOwnedBytes > s.fecGroupOwnedHighWaterBytes {
+		s.fecGroupOwnedHighWaterBytes = s.fecGroupOwnedBytes
+	}
+	retained := s.retainedDataBytes + s.retainedControlBytes +
+		s.retainedPriorityBytes + s.fecGroupOwnedBytes + s.inFlightBytes
+	if retained > s.memoryRetainedHighWaterBytes {
+		s.memoryRetainedHighWaterBytes = retained
+	}
 }
 
 func (s *Shaper) byteDuration(size int) time.Duration {

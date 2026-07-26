@@ -7,6 +7,7 @@ package monitor
 
 import (
 	"net/netip"
+	"time"
 
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -61,6 +62,15 @@ type ShaperSnapshot struct {
 	AsyncWriteErrorBytes       uint64  `json:"asyncWriteErrorBytes"`
 	AsyncWriteEMSGSIZEErrors   uint64  `json:"asyncWriteEmsgsizeErrors"`
 	AsyncWriteEMSGSIZEBytes    uint64  `json:"asyncWriteEmsgsizeBytes"`
+
+	OuterPriorityEmittedBytes    uint64 `json:"outerPriorityEmittedBytes"`
+	OuterPriorityErrorBytes      uint64 `json:"outerPriorityErrorBytes"`
+	RecoveryCutActive            bool   `json:"recoveryCutActive"`
+	RecoveryCutDeadlineUnixNano  int64  `json:"recoveryCutDeadlineUnixNano"`
+	RecoveryCutDatagrams         int    `json:"recoveryCutDatagrams"`
+	RecoveryCutSocketCalls       uint64 `json:"recoveryCutSocketCalls"`
+	FECGroupOwnedHighWaterBytes  int    `json:"fecGroupOwnedHighWaterBytes"`
+	MemoryRetainedHighWaterBytes int    `json:"memoryRetainedHighWaterBytes"`
 }
 
 // PathSnapshot is the JSON encoding of one per-(peer,path) entry
@@ -112,6 +122,37 @@ type FECSnapshot struct {
 	// published decision (metrics.FECSnapshot.Adaptive, T263, D96), omitted (nil) for a
 	// fixed-ratio or FEC-off peer so fixed-ratio-only output stays byte-identical.
 	Adaptive *AdaptiveFECStats `json:"adaptive,omitempty"`
+
+	StagedGroups                uint64        `json:"stagedGroups"`
+	StagedDataFrames            uint64        `json:"stagedDataFrames"`
+	GroupDecisions              uint64        `json:"groupDecisions"`
+	DeadlineDecisions           uint64        `json:"deadlineDecisions"`
+	DeadlineMisses              uint64        `json:"deadlineMisses"`
+	DeadlineMaxOvershootSeconds float64       `json:"deadlineMaxOvershootSeconds"`
+	OpenGroupDeadlineUnixNano   int64         `json:"openGroupDeadlineUnixNano"`
+	Recovery                    RecoveryStats `json:"recovery"`
+}
+
+type RecoveryStats struct {
+	OfferPresent       bool   `json:"offerPresent"`
+	FastEligible       bool   `json:"fastEligible"`
+	TransitionFrozen   bool   `json:"transitionFrozen"`
+	WriterExclusive    bool   `json:"writerExclusive"`
+	FreshUntilUnixNano int64  `json:"freshUntilUnixNano"`
+	OfferWrites        uint64 `json:"offerWrites"`
+	ACKWrites          uint64 `json:"ackWrites"`
+	OfferAccepts       uint64 `json:"offerAccepts"`
+	ACKAccepts         uint64 `json:"ackAccepts"`
+	Rotations          uint64 `json:"rotations"`
+	SessionRestarts    uint64 `json:"sessionRestarts"`
+	StaleRejections    uint64 `json:"staleRejections"`
+	WrongRejections    uint64 `json:"wrongRejections"`
+	ReplayRejections   uint64 `json:"replayRejections"`
+	FallbackReason     string `json:"fallbackReason"`
+	ServiceBoundNanos  int64  `json:"serviceBoundNanos"`
+	RTTAgeNanos        int64  `json:"rttAgeNanos"`
+	HeadroomNanos      int64  `json:"headroomNanos"`
+	WindowNanos        int64  `json:"windowNanos"`
 }
 
 // AdaptiveFECStats is the JSON encoding of the adaptive-FEC controller's per-drive
@@ -136,9 +177,16 @@ type ReseqSnapshot struct {
 	Rebaselines    uint64 `json:"rebaselines"`
 	// HoL-stall / hold accounting (T242, D93 observability leg), mirrored verbatim
 	// from reseq.Stats.
-	Holds             uint64 `json:"holds"`
-	HoldNanos         uint64 `json:"holdNanos"`
-	ImmediateReleases uint64 `json:"immediateReleases"`
+	Holds                 uint64 `json:"holds"`
+	HoldNanos             uint64 `json:"holdNanos"`
+	ImmediateReleases     uint64 `json:"immediateReleases"`
+	RecoveryArmed         bool   `json:"recoveryArmed"`
+	ArmedDeadlineUnixNano int64  `json:"armedDeadlineUnixNano"`
+	ArmedWindowNanos      int64  `json:"armedWindowNanos"`
+	DeadlineWakeups       uint64 `json:"deadlineWakeups"`
+	GapFills              uint64 `json:"gapFills"`
+	FastWindowArms        uint64 `json:"fastWindowArms"`
+	FallbackWindowArms    uint64 `json:"fallbackWindowArms"`
 }
 
 // AggregationSnapshot is the JSON encoding of one per-peer weighted-scheduler
@@ -455,6 +503,15 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 				AsyncWriteErrorBytes:       s.AsyncWriteErrorBytes,
 				AsyncWriteEMSGSIZEErrors:   s.AsyncWriteEMSGSIZEErrors,
 				AsyncWriteEMSGSIZEBytes:    s.AsyncWriteEMSGSIZEBytes,
+
+				OuterPriorityEmittedBytes:    s.OuterPriorityEmittedBytes,
+				OuterPriorityErrorBytes:      s.OuterPriorityErrorBytes,
+				RecoveryCutActive:            s.RecoveryCutActive,
+				RecoveryCutDeadlineUnixNano:  unixNanoOrZero(s.RecoveryCutDeadline),
+				RecoveryCutDatagrams:         s.RecoveryCutDatagrams,
+				RecoveryCutSocketCalls:       s.RecoveryCutSocketCalls,
+				FECGroupOwnedHighWaterBytes:  s.FECGroupOwnedHighWaterBytes,
+				MemoryRetainedHighWaterBytes: s.MemoryRetainedHighWaterBytes,
 			}
 		}
 		out.Paths[i] = ps
@@ -483,6 +540,35 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 			DataBytes:            f.DataBytes,
 			RepairBytes:          f.RepairBytes,
 			ResidualLossRatio:    f.ResidualLossRatio,
+
+			StagedGroups:                f.StagedGroups,
+			StagedDataFrames:            f.StagedDataFrames,
+			GroupDecisions:              f.GroupDecisions,
+			DeadlineDecisions:           f.DeadlineDecisions,
+			DeadlineMisses:              f.DeadlineMisses,
+			DeadlineMaxOvershootSeconds: f.DeadlineMaxOvershoot.Seconds(),
+			OpenGroupDeadlineUnixNano:   unixNanoOrZero(f.OpenGroupDeadline),
+			Recovery: RecoveryStats{
+				OfferPresent:       f.Recovery.OfferPresent,
+				FastEligible:       f.Recovery.FastEligible,
+				TransitionFrozen:   f.Recovery.TransitionFrozen,
+				WriterExclusive:    f.Recovery.WriterExclusive,
+				FreshUntilUnixNano: unixNanoOrZero(f.Recovery.FreshUntil),
+				OfferWrites:        f.Recovery.OfferWrites,
+				ACKWrites:          f.Recovery.ACKWrites,
+				OfferAccepts:       f.Recovery.OfferAccepts,
+				ACKAccepts:         f.Recovery.ACKAccepts,
+				Rotations:          f.Recovery.Rotations,
+				SessionRestarts:    f.Recovery.SessionRestarts,
+				StaleRejections:    f.Recovery.StaleRejections,
+				WrongRejections:    f.Recovery.WrongRejections,
+				ReplayRejections:   f.Recovery.ReplayRejections,
+				FallbackReason:     f.Recovery.FallbackReason,
+				ServiceBoundNanos:  f.Recovery.ServiceBound.Nanoseconds(),
+				RTTAgeNanos:        f.Recovery.RTTAge.Nanoseconds(),
+				HeadroomNanos:      f.Recovery.Headroom.Nanoseconds(),
+				WindowNanos:        f.Recovery.Window.Nanoseconds(),
+			},
 		}
 		if f.Adaptive != nil {
 			fs.Adaptive = &AdaptiveFECStats{
@@ -508,6 +594,14 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 			Holds:             r.Holds,
 			HoldNanos:         r.HoldNanos,
 			ImmediateReleases: r.ImmediateReleases,
+
+			RecoveryArmed:         r.RecoveryArmed,
+			ArmedDeadlineUnixNano: unixNanoOrZero(r.ArmedDeadline),
+			ArmedWindowNanos:      r.ArmedWindow.Nanoseconds(),
+			DeadlineWakeups:       r.DeadlineWakeups,
+			GapFills:              r.GapFills,
+			FastWindowArms:        r.FastWindowArms,
+			FallbackWindowArms:    r.FallbackWindowArms,
 		}
 	}
 
@@ -530,4 +624,11 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 	}
 
 	return out
+}
+
+func unixNanoOrZero(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.UnixNano()
 }

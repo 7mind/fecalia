@@ -5263,18 +5263,19 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		pp *peerPathState
 	}
 	type peerRef struct {
-		name  string
-		paths []pathRef
-		fs    *fecSender
-		fr    *fecReceiver
-		rq    *reseq.Resequencer
-		sched sched.Scheduler
+		name      string
+		paths     []pathRef
+		fs        *fecSender
+		fr        *fecReceiver
+		rq        *reseq.Resequencer
+		sched     sched.Scheduler
+		contracts *recoveryContractCoordinator
 	}
 
 	m.mu.Lock()
 	refs := make([]peerRef, len(m.peers))
 	for i, p := range m.peers {
-		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler}
+		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler, contracts: p.contracts}
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
 			var reporter pathShaperReporter
@@ -5355,6 +5356,12 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			snap.FEC.DeadlineDecisions = r.fs.deadlineDecisions.Load()
 			snap.FEC.DeadlineMisses = r.fs.deadlineMisses.Load()
 			snap.FEC.DeadlineMaxOvershoot = time.Duration(r.fs.deadlineMaxOvershoot.Load())
+			snap.FEC.StagedGroups = r.fs.stagedGroups.Load()
+			snap.FEC.StagedDataFrames = r.fs.stagedDataFrames.Load()
+			snap.FEC.GroupDecisions = r.fs.groupDecisions.Load()
+			if nanos := r.fs.openDeadlineNanos.Load(); nanos != 0 {
+				snap.FEC.OpenGroupDeadline = time.Unix(0, nanos)
+			}
 			// The adaptive controller's decision is present only in adaptive mode (ctrl is
 			// set once at construction and never mutated, so this nil-check is race-free
 			// after the fecSend atomic Load). A fixed-ratio peer leaves Adaptive nil so no
@@ -5379,6 +5386,9 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		}
 		if r.rq != nil {
 			snap.Reseq = r.rq.Stats()
+		}
+		if r.contracts != nil {
+			snap.FEC.Recovery = r.contracts.stats()
 		}
 		// Poll the aggregation gate only for a scheduler that reports one (weighted policy);
 		// active-backup does not satisfy aggregationReporter, so its peers leave Aggregation

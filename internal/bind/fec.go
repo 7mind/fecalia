@@ -148,6 +148,9 @@ type fecSender struct {
 	deadlineMisses       atomic.Uint64
 	deadlineMaxOvershoot atomic.Int64
 	openDeadlineNanos    atomic.Int64
+	stagedGroups         atomic.Uint64
+	stagedDataFrames     atomic.Uint64
+	groupDecisions       atomic.Uint64
 }
 
 // publishAdaptiveDrive records a completed controller drive into the lock-free snapshot
@@ -249,6 +252,11 @@ type FECStats struct {
 	DeadlineDecisions    uint64
 	DeadlineMisses       uint64
 	DeadlineMaxOvershoot time.Duration
+	StagedGroups         uint64
+	StagedDataFrames     uint64
+	GroupDecisions       uint64
+	OpenGroupDeadline    time.Time
+	Recovery             RecoveryStats
 	// ResidualLoss is the current post-FEC-recovery connection loss fraction in [0,1]
 	// (T29): the share of outer-seqs neither natively received nor reconstructed from
 	// parity. It is the P4 acceptance signal — the loss FEC did not mask. Zero when FEC is
@@ -259,6 +267,30 @@ type FECStats struct {
 	// is nil for a fixed-ratio or FEC-off peer, so no adaptive series is fabricated where
 	// none exists — the PeerSnapshot.Aggregation nil-precedent (T146).
 	Adaptive *AdaptiveFECStats
+}
+
+// RecoveryStats is the bounded-cardinality recovery-contract and derived-window
+// snapshot. Raw session and contract identifiers deliberately stay internal.
+type RecoveryStats struct {
+	OfferPresent     bool
+	FastEligible     bool
+	TransitionFrozen bool
+	WriterExclusive  bool
+	FreshUntil       time.Time
+	OfferWrites      uint64
+	ACKWrites        uint64
+	OfferAccepts     uint64
+	ACKAccepts       uint64
+	Rotations        uint64
+	SessionRestarts  uint64
+	StaleRejections  uint64
+	WrongRejections  uint64
+	ReplayRejections uint64
+	FallbackReason   string
+	ServiceBound     time.Duration
+	RTTAge           time.Duration
+	Headroom         time.Duration
+	Window           time.Duration
 }
 
 // AdaptiveFECStats is the adaptive-FEC controller's per-drive decision, published by the

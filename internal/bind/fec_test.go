@@ -628,6 +628,113 @@ func TestFECSendStreamsBeyondOwnerMailboxCapacity(t *testing.T) {
 	}
 }
 
+func TestProductionBatch128WaitsForDecisionAndReconcilesWireTrace(t *testing.T) {
+	const (
+		dataShards   = 4
+		parityShards = 1
+		buffers      = 128
+	)
+	psk := testKey(t, 0x2A)
+	m := newMultipathFEC(
+		t,
+		loopbackPaths(1),
+		psk,
+		&fec.Config{
+			DataShards:   dataShards,
+			ParityShards: parityShards,
+			Deadline:     20 * time.Millisecond,
+		},
+	)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
+
+	codec := mustFrameCodec(t, psk)
+	wire := make([]frame.Frame, 0, buffers+(buffers/dataShards)*parityShards)
+	m.paths[0].writeUDP = func(payload []byte, _ netip.AddrPort) (int, error) {
+		decoded, err := codec.Decode(payload)
+		if err != nil {
+			return 0, err
+		}
+		wire = append(wire, decoded)
+		return len(payload), nil
+	}
+	m.fecSend.Load().owner.afterAdmit = func(
+		_ fecOwnerAdmission,
+		_ *fecOwnerBatch,
+		index int,
+	) {
+		completedGroups := index / dataShards
+		want := completedGroups * (dataShards + parityShards)
+		if len(wire) != want {
+			t.Fatalf(
+				"wire frames after admission %d = %d, want %d: group DATA escaped before decision-ready",
+				index,
+				len(wire),
+				want,
+			)
+		}
+	}
+
+	if err := m.Send(payloadStream(buffers), m.virt); err != nil {
+		t.Fatalf("production Send batch-128: %v", err)
+	}
+	groups := buffers / dataShards
+	if len(wire) != groups*(dataShards+parityShards) {
+		t.Fatalf("wire frames = %d, want %d", len(wire), groups*(dataShards+parityShards))
+	}
+	if buffers < 2 {
+		t.Fatal("fixture did not offer at least two wire DATA frames in one Bind batch")
+	}
+	for group := 0; group < groups; group++ {
+		base := group * (dataShards + parityShards)
+		for index := 0; index < dataShards; index++ {
+			data, ok := wire[base+index].(frame.Data)
+			if !ok {
+				t.Fatalf("wire[%d] = %T, want DATA", base+index, wire[base+index])
+			}
+			wantSeq := uint64(group*dataShards + index + 1)
+			if data.FECGroup != uint32(group) ||
+				data.FECIndex != uint8(index) ||
+				data.OuterSeq != wantSeq {
+				t.Fatalf("wire[%d] DATA = %+v, want group/index/seq %d/%d/%d",
+					base+index, data, group, index, wantSeq)
+			}
+		}
+		parity, ok := wire[base+dataShards].(frame.Parity)
+		if !ok {
+			t.Fatalf("wire[%d] = %T, want PARITY", base+dataShards, wire[base+dataShards])
+		}
+		if parity.FECGroup != uint32(group) ||
+			parity.DataCount != dataShards ||
+			parity.ParityIndex != 0 {
+			t.Fatalf("wire[%d] PARITY = %+v", base+dataShards, parity)
+		}
+	}
+	stats := m.PeerSnapshots()[0].FEC
+	if stats.DataFrames != buffers ||
+		stats.ParityFrames != uint64(groups*parityShards) ||
+		m.outerSeq.Load() != buffers {
+		t.Fatalf("trace reconciliation DATA/PARITY/OuterSeq = %d/%d/%d, want %d/%d/%d",
+			stats.DataFrames, stats.ParityFrames, m.outerSeq.Load(),
+			buffers, groups*parityShards, buffers)
+	}
+	if stats.StagedGroups != 0 ||
+		stats.StagedDataFrames != 0 ||
+		stats.GroupDecisions != uint64(groups) ||
+		!stats.OpenGroupDeadline.IsZero() {
+		t.Fatalf("sender decision snapshot = staged %d/%d decisions %d deadline %v, want 0/0/%d/zero",
+			stats.StagedGroups,
+			stats.StagedDataFrames,
+			stats.GroupDecisions,
+			stats.OpenGroupDeadline,
+			groups,
+		)
+	}
+}
+
 // TestMultipathFECLateRecoveryNotCountedDelivered is the fix witness for the honest-
 // recovery-counter defect (T24 #4): a group reconstructed AFTER the resequencer already
 // skipped its gap is reconstructed but never delivered (its seqs fell below the release

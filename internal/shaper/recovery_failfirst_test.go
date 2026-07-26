@@ -142,6 +142,14 @@ func TestRecoveryCutOrdersPrefixPriorityAndCompleteGroups(t *testing.T) {
 	if want := clock.Now().Add(310*time.Millisecond + recoveryConfig().RecoveryWriteSlack); !firstDeadline.Equal(want) {
 		t.Fatalf("first cut deadline = %s, want prefixVirtualTail+I = %s", firstDeadline, want)
 	}
+	active := shaper.Snapshot()
+	if !active.RecoveryCutActive ||
+		!active.RecoveryCutDeadline.Equal(firstDeadline) ||
+		active.RecoveryCutDatagrams != 2 ||
+		active.FECGroupOwnedHighWaterBytes != recoveryConfig().FECGroupReserveBytes ||
+		active.MemoryRetainedHighWaterBytes > active.MemoryBoundBytes {
+		t.Fatalf("active recovery observability = %+v", active)
+	}
 	clock.Advance(400 * time.Millisecond)
 	if err := waitResult(t, prefix); err != nil {
 		t.Fatal(err)
@@ -172,6 +180,16 @@ func TestRecoveryCutOrdersPrefixPriorityAndCompleteGroups(t *testing.T) {
 	}
 	if err := waitResult(t, secondGroup); err != nil {
 		t.Fatal(err)
+	}
+
+	snapshot := shaper.Snapshot()
+	if snapshot.RecoveryCutActive ||
+		!snapshot.RecoveryCutDeadline.IsZero() ||
+		snapshot.RecoveryCutDatagrams != 0 ||
+		snapshot.RecoveryCutSocketCalls != 3 ||
+		snapshot.OuterPriorityEmittedBytes != 20 ||
+		snapshot.OuterPriorityErrorBytes != 0 {
+		t.Fatalf("terminal recovery observability = %+v", snapshot)
 	}
 
 	mu.Lock()

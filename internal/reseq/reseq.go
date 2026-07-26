@@ -246,9 +246,10 @@ type Resequencer struct {
 	// waiting is armed with a deadline measured from when the gap first formed.
 	// armedAt records that same arm instant so the hold's elapsed time can be
 	// accrued into holdNanos when the hold ends (T242, D93).
-	waiting  bool
-	deadline time.Time
-	armedAt  time.Time
+	waiting     bool
+	deadline    time.Time
+	armedAt     time.Time
+	armedWindow time.Duration
 	// recoveryArmed records that the current deadline was shortened from the
 	// conservative timeout by one exact authenticated RecoveryWindow snapshot.
 	// A topology/evidence change can only lengthen that live gap back to a fresh
@@ -328,9 +329,13 @@ type Resequencer struct {
 	// immediateReleases with skipped means the D93 amplifier is disarmed (single
 	// path), whereas skipped rising while immediateReleases stays flat is a genuine
 	// timeout HoL stall (the amplifier armed).
-	holds             uint64
-	holdNanos         uint64
-	immediateReleases uint64
+	holds              uint64
+	holdNanos          uint64
+	immediateReleases  uint64
+	deadlineWakeups    uint64
+	gapFills           uint64
+	fastWindowArms     uint64
+	fallbackWindowArms uint64
 
 	// Single-delivering-path immediate release (D93). A head-of-line gap normally
 	// waits the full timeout in case a straggler reordered across paths fills it.
@@ -663,9 +668,11 @@ func (r *Resequencer) armConservativeDeadlineLocked(armedAt, deadline time.Time)
 		r.waiting = true
 		r.deadline = deadline
 		r.armedAt = armedAt
+		r.armedWindow = deadline.Sub(armedAt)
 		r.recoveryArmed = false
 		r.recoveryRevision = 0
 		r.holds++
+		r.fallbackWindowArms++
 		r.notifyLocked()
 	}
 }
@@ -807,6 +814,7 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 		r.dropDup++
 		return
 	}
+	fillsGap := r.waiting && seq == r.next
 	cell.seq = seq
 	cell.src = src
 	cell.payload = payload
@@ -814,6 +822,9 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 	r.buf++
 	if r.buf > r.highWater {
 		r.highWater = r.buf
+	}
+	if fillsGap {
+		r.gapFills++
 	}
 
 	r.drain()
@@ -886,6 +897,7 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 		r.dropDup++
 		return false // already buffered (a received frame or a prior recovery)
 	}
+	fillsGap := r.waiting && seq == r.next
 	cell.seq = seq
 	cell.src = src
 	cell.payload = payload
@@ -893,6 +905,9 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 	r.buf++
 	if r.buf > r.highWater {
 		r.highWater = r.buf
+	}
+	if fillsGap {
+		r.gapFills++
 	}
 
 	r.drain()
@@ -1102,6 +1117,7 @@ func (r *Resequencer) endHoldLocked(now time.Time) {
 		r.holdNanos += uint64(d.Nanoseconds())
 	}
 	r.waiting = false
+	r.armedWindow = 0
 	r.recoveryArmed = false
 	r.recoveryRevision = 0
 	r.notifyLocked()
@@ -1112,6 +1128,10 @@ func (r *Resequencer) rearmConservativeLocked(now time.Time) {
 		return
 	}
 	r.deadline = now.Add(r.timeout)
+	r.armedWindow = r.timeout
+	if r.recoveryArmed {
+		r.fallbackWindowArms++
+	}
 	r.recoveryArmed = false
 	r.recoveryRevision = 0
 	r.notifyLocked()
@@ -1136,6 +1156,8 @@ func (r *Resequencer) expire(now time.Time) {
 			return
 		}
 		immediate = true
+	} else {
+		r.deadlineWakeups++
 	}
 	minSeq, ok := r.smallestBuffered()
 	if !ok {
@@ -1175,10 +1197,14 @@ func (r *Resequencer) arm(now time.Time) {
 			hold, recoveryArmed := r.effectiveHoldLocked(now)
 			r.deadline = now.Add(hold)
 			r.armedAt = now
+			r.armedWindow = hold
 			r.recoveryArmed = recoveryArmed
 			if recoveryArmed {
 				recovery, _ := r.recoveryEligibleLocked(now)
 				r.recoveryRevision = recovery.Revision
+				r.fastWindowArms++
+			} else {
+				r.fallbackWindowArms++
 			}
 			r.holds++
 			r.notifyLocked()
@@ -1550,16 +1576,23 @@ type Stats struct {
 	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
 
 	// HoL-stall / hold accounting (T242, D93 observability leg).
-	Holds             uint64 // head-of-line gaps that armed a hold
-	HoldNanos         uint64 // cumulative nanoseconds gaps spent held before a timeout skip, a single-path immediate release, a fill, or a discontinuity re-pin
-	ImmediateReleases uint64 // gaps released via the D93 single-delivering-path fast path — NOT folded into Skipped (see Skipped): a rising ImmediateReleases means the amplifier is disarmed
+	Holds              uint64 // head-of-line gaps that armed a hold
+	HoldNanos          uint64 // cumulative nanoseconds gaps spent held before a timeout skip, a single-path immediate release, a fill, or a discontinuity re-pin
+	ImmediateReleases  uint64 // gaps released via the D93 single-delivering-path fast path — NOT folded into Skipped (see Skipped): a rising ImmediateReleases means the amplifier is disarmed
+	RecoveryArmed      bool
+	ArmedDeadline      time.Time
+	ArmedWindow        time.Duration
+	DeadlineWakeups    uint64
+	GapFills           uint64
+	FastWindowArms     uint64
+	FallbackWindowArms uint64
 }
 
 // Stats returns a snapshot of the cumulative counters.
 func (r *Resequencer) Stats() Stats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return Stats{
+	stats := Stats{
 		Released:       r.releasedN,
 		DroppedDup:     r.dropDup,
 		DroppedOld:     r.dropLate,
@@ -1568,8 +1601,18 @@ func (r *Resequencer) Stats() Stats {
 		Resyncs:        r.resyncs,
 		Rebaselines:    r.rebaselines,
 
-		Holds:             r.holds,
-		HoldNanos:         r.holdNanos,
-		ImmediateReleases: r.immediateReleases,
+		Holds:              r.holds,
+		HoldNanos:          r.holdNanos,
+		ImmediateReleases:  r.immediateReleases,
+		RecoveryArmed:      r.recoveryArmed,
+		DeadlineWakeups:    r.deadlineWakeups,
+		GapFills:           r.gapFills,
+		FastWindowArms:     r.fastWindowArms,
+		FallbackWindowArms: r.fallbackWindowArms,
 	}
+	if r.waiting {
+		stats.ArmedDeadline = r.deadline
+		stats.ArmedWindow = r.armedWindow
+	}
+	return stats
 }

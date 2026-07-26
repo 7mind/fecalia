@@ -67,6 +67,12 @@ func TestFECRecoveryWindowBoundaryAndRepair(t *testing.T) {
 		if r.ObserveRecovered(1, []byte("duplicate"), testSrc) {
 			t.Fatal("duplicate repair was accepted")
 		}
+		if stats := r.Stats(); stats.RecoveryArmed ||
+			stats.FastWindowArms != 1 ||
+			stats.GapFills != 1 ||
+			stats.DeadlineWakeups != 0 {
+			t.Fatalf("repair-fill observability = %+v", stats)
+		}
 	})
 
 	t.Run("W is expired and repair is rejected", func(t *testing.T) {
@@ -78,6 +84,12 @@ func TestFECRecoveryWindowBoundaryAndRepair(t *testing.T) {
 		}
 		if got := drainHold(r); len(got) != 1 || got[0] != "two" {
 			t.Fatalf("delivery at W = %v, want [two]", got)
+		}
+		if stats := r.Stats(); stats.RecoveryArmed ||
+			stats.FastWindowArms != 1 ||
+			stats.GapFills != 0 ||
+			stats.DeadlineWakeups != 1 {
+			t.Fatalf("deadline-wake observability = %+v", stats)
 		}
 	})
 }
@@ -130,6 +142,13 @@ func TestFECRecoveryWindowDeadlineNotificationAndRearm(t *testing.T) {
 	}
 	if deadline, armed := r.ArmedDeadline(); !armed || deadline != rearmedAt.Add(250*time.Millisecond) {
 		t.Fatalf("second-key rearm = %v,%v, want %v,true", deadline, armed, rearmedAt.Add(250*time.Millisecond))
+	}
+	if stats := r.Stats(); stats.RecoveryArmed ||
+		stats.ArmedDeadline != rearmedAt.Add(250*time.Millisecond) ||
+		stats.ArmedWindow != 250*time.Millisecond ||
+		stats.FastWindowArms != 1 ||
+		stats.FallbackWindowArms != 1 {
+		t.Fatalf("fallback-rearm observability = %+v", stats)
 	}
 	clk.advance(250 * time.Millisecond)
 	if got := drainHold(r); len(got) != 1 || got[0] != "two" {

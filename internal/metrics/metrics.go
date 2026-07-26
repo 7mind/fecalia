@@ -326,12 +326,44 @@ type FECSnapshot struct {
 	RepairBytes uint64
 	// ResidualLossRatio is the current post-FEC-recovery connection loss fraction in [0,1]
 	// (T29) — the loss FEC did not mask (the P4 acceptance signal). Zero when FEC is off.
-	ResidualLossRatio float64
+	ResidualLossRatio    float64
+	StagedGroups         uint64
+	StagedDataFrames     uint64
+	GroupDecisions       uint64
+	DeadlineDecisions    uint64
+	DeadlineMisses       uint64
+	DeadlineMaxOvershoot time.Duration
+	OpenGroupDeadline    time.Time
+	Recovery             RecoveryStats
 	// Adaptive is the adaptive-FEC controller's most recent published decision (T263,
 	// D96), mirrored verbatim from bind.FECStats.Adaptive. It is nil for a fixed-ratio or
 	// FEC-off peer, so the collector fabricates no adaptive series where none exists — the
 	// AggregationSnapshot absent-series precedent (T146).
 	Adaptive *AdaptiveFECStats
+}
+
+// RecoveryStats mirrors the peer recovery coordinator without exposing raw
+// session/contract identities as floating-point metric values or labels.
+type RecoveryStats struct {
+	OfferPresent     bool
+	FastEligible     bool
+	TransitionFrozen bool
+	WriterExclusive  bool
+	FreshUntil       time.Time
+	OfferWrites      uint64
+	ACKWrites        uint64
+	OfferAccepts     uint64
+	ACKAccepts       uint64
+	Rotations        uint64
+	SessionRestarts  uint64
+	StaleRejections  uint64
+	WrongRejections  uint64
+	ReplayRejections uint64
+	FallbackReason   string
+	ServiceBound     time.Duration
+	RTTAge           time.Duration
+	Headroom         time.Duration
+	Window           time.Duration
 }
 
 // AdaptiveFECStats is the adaptive-FEC controller's per-drive decision (T263, D96),
@@ -564,6 +596,9 @@ type collector struct {
 	fecSmoothedLoss     *prometheus.Desc
 	fecEligiblePathLoss *prometheus.Desc
 	fecEligiblePaths    *prometheus.Desc
+	fecMetrics          []fecMetric
+	recoveryRejections  *prometheus.Desc
+	recoveryFallback    *prometheus.Desc
 
 	reseqReleased          *prometheus.Desc
 	reseqDroppedDup        *prometheus.Desc
@@ -575,6 +610,7 @@ type collector struct {
 	reseqHolds             *prometheus.Desc
 	reseqHoldSeconds       *prometheus.Desc
 	reseqImmediateReleases *prometheus.Desc
+	reseqMetrics           []reseqMetric
 
 	aggregationEngaged    *prometheus.Desc
 	offeredLoad           *prometheus.Desc
@@ -591,6 +627,18 @@ type shaperMetric struct {
 	desc      *prometheus.Desc
 	valueType prometheus.ValueType
 	value     func(shaper.Snapshot) float64
+}
+
+type fecMetric struct {
+	desc      *prometheus.Desc
+	valueType prometheus.ValueType
+	value     func(FECSnapshot) float64
+}
+
+type reseqMetric struct {
+	desc      *prometheus.Desc
+	valueType prometheus.ValueType
+	value     func(ReseqSnapshot) float64
 }
 
 // NewCollector builds the wanbond metrics collector over src. Register it into a
@@ -622,6 +670,24 @@ func NewCollector(src Source) prometheus.Collector {
 			value:     value,
 		}
 	}
+	makeFECMetric := func(
+		subsystem string,
+		name string,
+		help string,
+		valueType prometheus.ValueType,
+		value func(FECSnapshot) float64,
+	) fecMetric {
+		return fecMetric{desc: desc(subsystem, name, help, peerScopedLabels), valueType: valueType, value: value}
+	}
+	makeReseqMetric := func(
+		name string,
+		help string,
+		valueType prometheus.ValueType,
+		value func(ReseqSnapshot) float64,
+	) reseqMetric {
+		return reseqMetric{desc: desc(resequencerSubsystem, name, help, peerScopedLabels), valueType: valueType, value: value}
+	}
+	reasonLabels := append(append([]string(nil), peerScopedLabels...), "reason")
 	return &collector{
 		src:            src,
 		multiPeer:      multiPeer,
@@ -655,6 +721,8 @@ func NewCollector(src Source) prometheus.Collector {
 			makeShaperMetric("shaper_accepted_bytes_total", "Total DATA/PARITY and inner-control bytes reserved before copying caller memory.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AcceptedBytes) }),
 			makeShaperMetric("shaper_emitted_bytes_total", "Total DATA/PARITY and inner-control bytes successfully written to the UDP socket.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.EmittedBytes) }),
 			makeShaperMetric("shaper_outer_priority_bytes_total", "Total authenticated outer PROBE/echo bytes admitted to retained priority storage and charged to virtual time.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.OuterPriorityBytes) }),
+			makeShaperMetric("shaper_outer_priority_emitted_bytes_total", "Authenticated outer PROBE/echo wire bytes successfully emitted by the socket writer.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.OuterPriorityEmittedBytes) }),
+			makeShaperMetric("shaper_outer_priority_error_bytes_total", "Authenticated outer PROBE/echo bytes assigned to a terminal socket-writer error.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.OuterPriorityErrorBytes) }),
 			makeShaperMetric("shaper_priority_debt_bytes", "Current outer-priority serialization debt P0 in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityDebtBytes }),
 			makeShaperMetric("shaper_priority_rate_bytes_per_second", "Configured sustained outer-priority rate Rp in bytes per second.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return s.PriorityRateBytesPerSecond }),
 			makeShaperMetric("shaper_priority_burst_bytes", "Configured outer-priority burst allowance Pburst in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.PriorityBurstBytes) }),
@@ -664,6 +732,12 @@ func NewCollector(src Source) prometheus.Collector {
 			makeShaperMetric("shaper_recovery_retained_bytes", "Current exact DATA+parity wire bytes retained inside the owned recovery group.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.RecoveryRetainedBytes) }),
 			makeShaperMetric("shaper_memory_bound_bytes", "Configured exact retained-memory bound Mtotal=B+C+P+Fgroup+Lio.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MemoryBoundBytes) }),
 			makeShaperMetric("shaper_memory_retained_bytes", "Current retained and in-flight bytes across B+C+P+Fgroup+Lio.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MemoryRetainedBytes) }),
+			makeShaperMetric("shaper_recovery_cut_active", "Whether one exclusive recovery cut currently owns the path socket deadline (1=yes).", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return boolValue(s.RecoveryCutActive) }),
+			makeShaperMetric("shaper_recovery_cut_deadline_timestamp_seconds", "Absolute Unix timestamp in seconds of the active recovery cut socket deadline; 0 while inactive.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return timestampSeconds(s.RecoveryCutDeadline) }),
+			makeShaperMetric("shaper_recovery_cut_datagrams", "Number of DATA/parity/control datagrams in the active exclusive recovery cut; 0 while inactive.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.RecoveryCutDatagrams) }),
+			makeShaperMetric("shaper_recovery_cut_socket_calls_total", "Cumulative UDP socket writer calls made as members of exclusive recovery cuts.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.RecoveryCutSocketCalls) }),
+			makeShaperMetric("shaper_fec_group_owned_high_water_bytes", "High-water conservative FEC group ownership reservation Fgroup in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.FECGroupOwnedHighWaterBytes) }),
+			makeShaperMetric("shaper_memory_retained_high_water_bytes", "High-water retained and in-flight memory across B+C+P+Fgroup+Lio in bytes.", prometheus.GaugeValue, func(s shaper.Snapshot) float64 { return float64(s.MemoryRetainedHighWaterBytes) }),
 			makeShaperMetric("shaper_admission_waits_total", "Total datagram admissions that encountered queue-capacity or priority-debt backpressure.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AdmissionWaits) }),
 			makeShaperMetric("shaper_admission_wait_seconds_total", "Cumulative seconds spent waiting for exact-byte shaper admission.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return s.AdmissionWaitDuration.Seconds() }),
 			makeShaperMetric("shaper_admission_canceled_datagrams_total", "Total datagrams never reserved because their admission context was canceled or expired.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AdmissionCanceledDatagrams) }),
@@ -685,6 +759,32 @@ func NewCollector(src Source) prometheus.Collector {
 		fecSmoothedLoss:     desc(fecSubsystem, "smoothed_loss", "Adaptive-FEC controller's EWMA smoothed loss estimate in [0,1] (present only while the controller is engaged).", peerScopedLabels),
 		fecEligiblePathLoss: desc(fecSubsystem, "eligible_path_loss", "Raw probe-measured loss the adaptive-FEC drive Observed over the sample-eligible data-carrying paths: the active path's loss under active-backup, the weight-weighted mix under weighted striping (present only while the controller is engaged).", peerScopedLabels),
 		fecEligiblePaths:    desc(fecSubsystem, "eligible_paths", "Count of sample-eligible data-carrying paths the adaptive-FEC drive considered; 0 on the hold branch (present only while the controller is engaged).", peerScopedLabels),
+		fecMetrics: []fecMetric{
+			makeFECMetric(fecSubsystem, "staged_groups", "Current sender-owned FEC groups staged but not yet resolved; bounded by one.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return float64(f.StagedGroups) }),
+			makeFECMetric(fecSubsystem, "staged_data_frames", "Current DATA frames staged in the sender-owned undecided FEC group.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return float64(f.StagedDataFrames) }),
+			makeFECMetric(fecSubsystem, "group_decisions_total", "Cumulative immutable FEC group decisions published before DATA/parity emission.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.GroupDecisions) }),
+			makeFECMetric(fecSubsystem, "deadline_decisions_total", "Cumulative FEC groups decided by the exact NextDeadline timer.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.DeadlineDecisions) }),
+			makeFECMetric(fecSubsystem, "deadline_misses_total", "Cumulative FEC deadline decisions whose dispatch overshoot exceeded G=10ms.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.DeadlineMisses) }),
+			makeFECMetric(fecSubsystem, "deadline_max_overshoot_seconds", "Maximum FEC decision dispatch overshoot in seconds for the current sender generation.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.DeadlineMaxOvershoot.Seconds() }),
+			makeFECMetric(fecSubsystem, "open_group_deadline_timestamp_seconds", "Absolute Unix timestamp in seconds of the currently open FEC group deadline; 0 when none is open.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return timestampSeconds(f.OpenGroupDeadline) }),
+			makeFECMetric("recovery_contract", "offer_present", "Whether this peer currently owns a local recovery-contract OFFER (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.OfferPresent) }),
+			makeFECMetric("recovery_contract", "fast_eligible", "Whether the exact ACKed contract currently permits fast recovery (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.FastEligible) }),
+			makeFECMetric("recovery_contract", "transition_frozen", "Whether a service transition currently freezes DATA pending ACK or conservative fallback (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.TransitionFrozen) }),
+			makeFECMetric("recovery_contract", "writer_exclusive", "Whether the offered recovery service requires one exclusive socket writer (1=yes).", prometheus.GaugeValue, func(f FECSnapshot) float64 { return boolValue(f.Recovery.WriterExclusive) }),
+			makeFECMetric("recovery_contract", "fresh_until_timestamp_seconds", "Absolute Unix timestamp in seconds through which the current OFFER/ACK lease remains fresh; 0 when absent.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return timestampSeconds(f.Recovery.FreshUntil) }),
+			makeFECMetric("recovery_contract", "offer_writes_total", "Cumulative authenticated recovery OFFER writes recorded against exact probe challenges.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.OfferWrites) }),
+			makeFECMetric("recovery_contract", "ack_writes_total", "Cumulative exact recovery ACK writes completed on still-current authenticated venues.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.ACKWrites) }),
+			makeFECMetric("recovery_contract", "offer_accepts_total", "Cumulative recovery OFFERs accepted after session, identity, freshness, and replay validation.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.OfferAccepts) }),
+			makeFECMetric("recovery_contract", "ack_accepts_total", "Cumulative exact recovery ACKs accepted into a local fast-recovery lease.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.ACKAccepts) }),
+			makeFECMetric("recovery_contract", "rotations_total", "Cumulative local ContractID rotations, excluding the initial OFFER.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.Rotations) }),
+			makeFECMetric("recovery_contract", "session_restarts_total", "Cumulative authenticated peer process-session changes that invalidated old recovery evidence.", prometheus.CounterValue, func(f FECSnapshot) float64 { return float64(f.Recovery.SessionRestarts) }),
+			makeFECMetric("recovery_contract", "service_bound_seconds", "Advertised sender completion service bound Sdevice=A in seconds; 0 for disabled/no OFFER.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.ServiceBound.Seconds() }),
+			makeFECMetric("recovery", "rtt_age_seconds", "Maximum age in seconds of authenticated RTT evidence considered by the latest receiver recovery decision.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.RTTAge.Seconds() }),
+			makeFECMetric("recovery", "headroom_seconds", "Derived receiver RTT headroom H in seconds for the latest accepted fast window.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.Headroom.Seconds() }),
+			makeFECMetric("recovery", "window_seconds", "Derived receiver recovery hold W=min(D,A+H) in seconds; 0 while falling back.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return f.Recovery.Window.Seconds() }),
+		},
+		recoveryRejections: desc("recovery_contract", "rejections_total", "Cumulative rejected recovery messages partitioned by bounded reason: stale, wrong, or replay.", reasonLabels),
+		recoveryFallback:   desc("recovery_contract", "fallback", "Current conservative fallback reason as a bounded one-hot gauge; all zero while fast recovery is eligible.", reasonLabels),
 
 		reseqReleased:       desc(resequencerSubsystem, "released_frames_total", "Frames released for delivery by the resequencer.", peerScopedLabels),
 		reseqDroppedDup:     desc(resequencerSubsystem, "dropped_duplicate_frames_total", "Frames dropped by the resequencer as duplicates.", peerScopedLabels),
@@ -697,6 +797,15 @@ func NewCollector(src Source) prometheus.Collector {
 		reseqHolds:             desc(resequencerSubsystem, "hol_holds_total", "Head-of-line gaps that armed a hold (denominator of the mean hold; pair with hol_hold_seconds_total).", peerScopedLabels),
 		reseqHoldSeconds:       desc(resequencerSubsystem, "hol_hold_seconds_total", "Cumulative seconds head-of-line gaps spent held before a timeout skip, a single-path immediate release, or a fill (numerator of the mean hold).", peerScopedLabels),
 		reseqImmediateReleases: desc(resequencerSubsystem, "immediate_releases_total", "Head-of-line gaps released via the D93 single-delivering-path fast path (counted distinctly from timeout skips; rising = the D93 amplifier is disarmed).", peerScopedLabels),
+		reseqMetrics: []reseqMetric{
+			makeReseqMetric("recovery_armed", "Whether the live head-of-line gap uses an authenticated fast recovery window (1=yes).", prometheus.GaugeValue, func(r ReseqSnapshot) float64 { return boolValue(r.RecoveryArmed) }),
+			makeReseqMetric("armed_deadline_timestamp_seconds", "Absolute Unix timestamp in seconds of the live head-of-line deadline; 0 while disarmed.", prometheus.GaugeValue, func(r ReseqSnapshot) float64 { return timestampSeconds(r.ArmedDeadline) }),
+			makeReseqMetric("armed_window_seconds", "Duration in seconds from the live gap arm instant to its deadline; 0 while disarmed.", prometheus.GaugeValue, func(r ReseqSnapshot) float64 { return r.ArmedWindow.Seconds() }),
+			makeReseqMetric("deadline_wakeups_total", "Cumulative head-of-line releases evaluated at or after their armed deadline.", prometheus.CounterValue, func(r ReseqSnapshot) float64 { return float64(r.DeadlineWakeups) }),
+			makeReseqMetric("gap_fills_total", "Cumulative armed head-of-line gaps filled before release.", prometheus.CounterValue, func(r ReseqSnapshot) float64 { return float64(r.GapFills) }),
+			makeReseqMetric("fast_window_arms_total", "Cumulative gaps initially armed from exact authenticated recovery evidence.", prometheus.CounterValue, func(r ReseqSnapshot) float64 { return float64(r.FastWindowArms) }),
+			makeReseqMetric("fallback_window_arms_total", "Cumulative gaps armed or re-armed with the conservative timeout.", prometheus.CounterValue, func(r ReseqSnapshot) float64 { return float64(r.FallbackWindowArms) }),
+		},
 
 		aggregationEngaged:    desc(aggregationSubsystem, "engaged", "Weighted-scheduler aggregation gate (1 = striping across every eligible path, 0 = collapsed to primary-only).", peerScopedLabels),
 		offeredLoad:           desc("", "offered_load_fps", "Smoothed offered load in wire frames/second (inner data plus any FEC parity egressing on the chosen path, EWMA) driving the aggregation gate.", peerScopedLabels),
@@ -744,6 +853,11 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fecSmoothedLoss
 	ch <- c.fecEligiblePathLoss
 	ch <- c.fecEligiblePaths
+	for _, metric := range c.fecMetrics {
+		ch <- metric.desc
+	}
+	ch <- c.recoveryRejections
+	ch <- c.recoveryFallback
 	ch <- c.reseqReleased
 	ch <- c.reseqDroppedDup
 	ch <- c.reseqDroppedOld
@@ -754,6 +868,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.reseqHolds
 	ch <- c.reseqHoldSeconds
 	ch <- c.reseqImmediateReleases
+	for _, metric := range c.reseqMetrics {
+		ch <- metric.desc
+	}
 	ch <- c.aggregationEngaged
 	ch <- c.offeredLoad
 	ch <- c.aggregationEngageTh
@@ -806,6 +923,28 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.fecEligiblePathLoss, prometheus.GaugeValue, f.Adaptive.EligibleLoss, labels...)
 			ch <- prometheus.MustNewConstMetric(c.fecEligiblePaths, prometheus.GaugeValue, float64(f.Adaptive.EligiblePaths), labels...)
 		}
+		for _, metric := range c.fecMetrics {
+			ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(f), labels...)
+		}
+		for _, reason := range []struct {
+			name  string
+			value uint64
+		}{
+			{name: "stale", value: f.Recovery.StaleRejections},
+			{name: "wrong", value: f.Recovery.WrongRejections},
+			{name: "replay", value: f.Recovery.ReplayRejections},
+		} {
+			reasonLabels := append(append([]string(nil), labels...), reason.name)
+			ch <- prometheus.MustNewConstMetric(c.recoveryRejections, prometheus.CounterValue, float64(reason.value), reasonLabels...)
+		}
+		for _, reason := range []string{"no_offer", "unacked", "stale", "wrong", "replay", "shared", "transition", "restart"} {
+			value := float64(0)
+			if f.Recovery.FallbackReason == reason {
+				value = 1
+			}
+			reasonLabels := append(append([]string(nil), labels...), reason)
+			ch <- prometheus.MustNewConstMetric(c.recoveryFallback, prometheus.GaugeValue, value, reasonLabels...)
+		}
 	}
 	for _, r := range c.src.Reseq() {
 		labels := c.peerLabelValues(r.Peer)
@@ -819,6 +958,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.reseqHolds, prometheus.CounterValue, float64(r.Holds), labels...)
 		ch <- prometheus.MustNewConstMetric(c.reseqHoldSeconds, prometheus.CounterValue, float64(r.HoldNanos)/1e9, labels...)
 		ch <- prometheus.MustNewConstMetric(c.reseqImmediateReleases, prometheus.CounterValue, float64(r.ImmediateReleases), labels...)
+		for _, metric := range c.reseqMetrics {
+			ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(r), labels...)
+		}
 	}
 
 	for _, a := range c.src.Aggregation() {
@@ -873,6 +1015,20 @@ func aggregatingValue(aggregating bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+func boolValue(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func timestampSeconds(value time.Time) float64 {
+	if value.IsZero() {
+		return 0
+	}
+	return float64(value.UnixNano()) / 1e9
 }
 
 // upValue maps a liveness verdict to the wanbond_path_up gauge value.
