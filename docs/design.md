@@ -559,6 +559,18 @@ payload of ordinary unpadded PROBEs. Its canonical 27-byte big-endian record is
 `A=0`. Unknown magic/version remains a legacy/forward-compatible opaque payload;
 recognized malformed v1 records receive no ACK.
 
+**Versioned PROBE payload envelope and DATA-loss feedback (T324).** A PROBE that
+has no DATA-loss report preserves the recovery payload byte-for-byte, including
+the canonical 27-byte `WBRC` record above. When feedback is present, the payload
+uses a `"WBPP"` version-1 envelope: flags, one-byte recovery-record length, the
+optional recovery record, and one fixed 49-byte big-endian DATA outcome record.
+That record carries the observed sender `SessionID`, exact recovery
+`ContractID`, carrier `PathID`, receiver-local carrier generation, monotonic
+report ID, natively received DATA count, and inferred lost DATA count. The
+existing PROBE codec authenticates the entire envelope with the peer PSK.
+Unknown versions remain opaque for forward compatibility; recognized malformed
+records create neither recovery evidence nor DATA-loss evidence.
+
 `SessionID` remains the process boot epoch. Within that epoch the sender mints a
 monotonically increasing `ContractID` whenever the selectable writer service
 changes and snapshots that exact identity into the generated PROBE; a delayed
@@ -1661,37 +1673,46 @@ and staged-group/data plus group/deadline-decision metrics expose that interval.
 > `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing.
 
 **Adaptive-FEC signal selection: drive from the data-carrying paths (T272,
-D96).** The controller input — the loss sampled under the bind lock and folded
-into `Observe` by the peer owner each probe interval — is the loss on the path(s) that
-**actually carry DATA**, read through the scheduler's `DataPaths()` seam (T271),
-NOT a role-agnostic MAX over every `StateUp` prober. Parity must mask the loss
-the data experiences, so the signal follows the send policy: under
-**active-backup** only the active path carries data, so the input is that one
-path's raw probe loss; under the **weighted** scheduler data is striped across
-the aggregating set, so the input is the **weight-weighted mix** of those
-paths' losses (each path's share ∝ its distribution weight). The prior MAX let
-a lossy but data-idle **standby** drive *M* up even though it carried no data
-to protect — the D96 defect this replaces (mechanism 2). A **min-sample floor**
-(`minAdaptiveLossSamples`, 32) additionally excludes any data path still in its
-early loss-window regime, where a single dropped probe reads as a large
-*fraction* against a tiny denominator (`Estimate().LossSamples`, T270) — a
-small-denominator spike that must not cross the raise gate (mechanism 3). When
-the floor excludes a strict subset of a weighted bond's data paths the mix is
-**renormalized** over the sample-eligible survivors; when *no* data path is
-sample-eligible (all down/collapsed, or all still below the floor) the drive
-takes the **HOLD** branch — the controller does not `Observe`, `M`/smoothed-loss
-hold their last driven value, and (because the throttle stamp lives only on the
-`Observe` branch, G31/T276) an early-regime HOLD stays admitted every tick,
-running selection work each tick during the early regime (accepted
-consciously). The single-path **steady-state** signal is byte-identical to the
-prior MAX (max over one path == that path's loss); the early-regime HOLD is an
-intended, documented change for single-path too — parity engages a few probe
-intervals later, uniformly suppressing the small-denominator spike class. When
-a weighted bond stops aggregating mid-stream, `DataPaths()` steps from the mix
-to the primary-only signal — a discontinuity the controller's EWMA smooths. The
-input is deliberately the **RAW** per-path probe loss, never the post-FEC
-`ConnLoss` residual: feeding the masked residual back would form a control loop
-that under-provisions precisely because it is succeeding.
+D96, T324).** The controller input — sampled under the bind lock and folded
+into `Observe` by the peer owner each probe interval — follows the scheduler's
+`DataPaths()` seam (T271), not a role-agnostic maximum over every `StateUp`
+prober. Under **active-backup**, exactly one stable carrier can use authenticated
+receiver DATA-outcome feedback. Native DATA increments `received`; every
+parity-reconstructed missing sequence and every final resequencer skip
+increments `lost` exactly once. A finalized sequence high-water suppresses a
+late reconstruction after the same sequence already counted as skipped. The
+result therefore measures pre-recovery carrier loss rather than post-FEC
+`ConnLoss`, avoiding the feedback loop that would lower redundancy precisely
+when FEC succeeds.
+
+Each report binds to the observed sender session and current recovery
+ContractID, plus the receiver's carrier path, composite path/source/topology
+epoch, carrier generation, and monotonic report ID. The sender accepts it only
+from a fresh authenticated non-bootstrap PROBE in the peer's current adopted
+reporter session. A report remains fresh for two probe intervals. For one
+matching stable carrier, the controller observes the conservative maximum of
+DATA loss and that carrier's probe loss. Once the peer has demonstrated this
+capability, stale or path/session/contract-mismatched evidence produces the
+count-zero **HOLD** branch; clean priority PROBEs cannot lower *M* while current
+DATA evidence is unavailable. A peer that has never sent feedback retains the
+legacy probe-loss behavior.
+
+Under the **weighted** scheduler, DATA can be striped simultaneously across
+multiple carriers. One carrier record cannot represent those distribution
+shares, so receiver DATA feedback is deliberately ineligible there and the
+input remains the weight-weighted mix of the carriers' probe losses. When a
+weighted bond stops aggregating and exposes one stable primary, the single-
+carrier rule can apply once matching fresh evidence arrives. A lossy but
+data-idle standby remains excluded under both policies — the D96 defect this
+selection replaces.
+
+The **min-sample floor** (`minAdaptiveLossSamples`, 32) still excludes a
+probe-loss path in its early window, where one dropped probe creates a large
+fraction against a tiny denominator (`Estimate().LossSamples`, T270). When the
+floor excludes a strict subset of a weighted bond, the mix is renormalized over
+eligible survivors; when none qualifies, the controller holds. The throttle
+stamp advances only after an actual `Observe`, so a HOLD remains immediately
+eligible for reevaluation.
 
 **Adaptive-FEC controller observability (T263, D96).** The controller's most
 recent owner-published drive decision is published into the
@@ -1701,13 +1722,12 @@ adaptive controller (`FECSnapshot.Adaptive != nil`; absent entirely for a
 fixed-ratio or FEC-off peer — the `AggregationSnapshot` absent-series
 precedent, T146): `wanbond_fec_adaptive_parity` (the target parity count M the
 encoder was retargeted to, `ctrl.Parity()`), `wanbond_fec_smoothed_loss` (the
-controller's EWMA loss estimate), `wanbond_fec_eligible_path_loss` (the raw
-per-path loss the drive Observed — the active path's loss under active-backup,
-the weight-weighted mix under weighted striping, over the sample-eligible data
-paths, T272), and `wanbond_fec_eligible_paths` (the count of those
-sample-eligible DATA paths; 0 on the HOLD branch — no data path carrying, or
-every data path still below the min-sample floor — while parity/smoothed-loss
-hold their last driven value). They honour the same T94 single-peer-omits-label
+controller's EWMA loss estimate), `wanbond_fec_eligible_path_loss` (the loss
+actually observed — the maximum of fresh pre-recovery DATA/probe loss for one
+stable active-backup carrier, or the weighted probe mix under striping), and
+`wanbond_fec_eligible_paths` (the count of eligible DATA paths; 0 on the HOLD
+branch, including stale learned DATA feedback, while parity/smoothed-loss retain
+their last driven values). They honour the same T94 single-peer-omits-label
 back-compat rule as the fixed-ratio FEC series.
 
 **D96 permanent netns regressions.** Two real (kernel-forwarded, netem-lossy)

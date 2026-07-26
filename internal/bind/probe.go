@@ -47,6 +47,7 @@ func (m *Multipath) emitProbes() {
 	type target struct {
 		ps       *peerPathState
 		pr       *telemetry.Prober
+		peer     *peerState
 		contract *recoveryContractCoordinator
 	}
 	// Probe EVERY bound peer's paths (T93): a concentrator initiates its own probe stream to
@@ -69,7 +70,7 @@ func (m *Multipath) emitProbes() {
 			if ps.prober == nil {
 				continue
 			}
-			targets = append(targets, target{ps: ps, pr: ps.prober, contract: p.contracts})
+			targets = append(targets, target{ps: ps, pr: ps.prober, peer: p, contract: p.contracts})
 		}
 		if rq := p.resequencer.Load(); rq != nil {
 			prs := make([]*telemetry.Prober, 0, len(p.paths))
@@ -104,6 +105,17 @@ func (m *Multipath) emitProbes() {
 		}
 	}
 
+	feedbacks := make(map[*peerState]*telemetry.DataLossFeedback, len(holds))
+	for _, h := range holds {
+		if h.peer.dataLoss == nil || h.peer.contracts == nil {
+			continue
+		}
+		feedbacks[h.peer] = h.peer.dataLoss.buildReport(
+			h.peer.contracts.receivedSnapshot(),
+			m.clock.Now(),
+		)
+	}
+
 	now := time.Now()
 	for _, t := range targets {
 		// One-time sticky DEAD fallback for the selected downlink destination (T246,
@@ -118,13 +130,17 @@ func (m *Multipath) emitProbes() {
 				offered = t.contract.offerSnapshot()
 			}
 			contractPayload := offered.payload
-			probeSize := frame.UnpaddedProbeOnWire + len(contractPayload)
+			probePayload, payloadErr := telemetry.EncodeProbePayload(contractPayload, feedbacks[t.peer])
+			if payloadErr != nil {
+				panic(payloadErr)
+			}
+			probeSize := frame.UnpaddedProbeOnWire + len(probePayload)
 			if shaped, ok := t.ps.shaper.(recoveryPathShaper); ok {
 				var sent frame.Probe
 				admitted, done, writeErr := shaped.TryWritePriorityGenerated(
 					probeSize,
 					func() ([]byte, shaper.WriteFunc, error) {
-						raw, probe, generateErr := t.pr.SendProbePayload(contractPayload)
+						raw, probe, generateErr := t.pr.SendProbePayload(probePayload)
 						if generateErr != nil {
 							return nil, nil, generateErr
 						}
@@ -162,7 +178,7 @@ func (m *Multipath) emitProbes() {
 				t.pr.Tick()
 				continue
 			}
-			if raw, probe, err := t.pr.SendProbePayload(contractPayload); err == nil {
+			if raw, probe, err := t.pr.SendProbePayload(probePayload); err == nil {
 				// UDP writes are goroutine-safe; this races no in-flight Send.
 				if _, werr := t.ps.writeToUDPAddrPort(raw, remote); werr == nil {
 					// True-wire-volume accounting (D48): a PROBE frame is real egress

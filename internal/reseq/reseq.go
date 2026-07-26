@@ -366,6 +366,7 @@ type Resequencer struct {
 	recoveryPublicationRevision uint64
 	recoveries                  []RecoveryWindow
 	notify                      func()
+	lossObserver                func(uint64, uint64)
 	closed                      bool
 	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
 	// scheduler — suppress immediate release entirely (see SetMultiPathExpected for the
@@ -685,6 +686,15 @@ func (r *Resequencer) armConservativeDeadlineLocked(armedAt, deadline time.Time)
 func (r *Resequencer) SetNotifier(notify func()) {
 	r.mu.Lock()
 	r.notify = notify
+	r.mu.Unlock()
+}
+
+// SetLossObserver installs the lock-leaf callback for final gap expiries. The
+// callback receives the first sequence and count of each finalized range, runs
+// under the resequencer lock, and must not call back into it.
+func (r *Resequencer) SetLossObserver(observe func(uint64, uint64)) {
+	r.mu.Lock()
+	r.lossObserver = observe
 	r.mu.Unlock()
 }
 
@@ -1066,15 +1076,22 @@ func (r *Resequencer) advanceTo(target uint64) {
 		if cell.occupied && cell.seq == r.next {
 			r.release(cell)
 		} else {
-			r.skipped++
+			r.skipLocked(r.next, 1)
 		}
 		r.next++
 	}
 	if r.next < target {
 		// The remaining gap [next, target) is entirely empty — no occupied cell can
 		// live a full window ahead of the old release point. Close it by arithmetic.
-		r.skipped += target - r.next
+		r.skipLocked(r.next, target-r.next)
 		r.next = target
+	}
+}
+
+func (r *Resequencer) skipLocked(first, count uint64) {
+	r.skipped += count
+	if r.lossObserver != nil {
+		r.lossObserver(first, count)
 	}
 }
 
@@ -1170,9 +1187,9 @@ func (r *Resequencer) expire(now time.Time) {
 			return
 		}
 		// Skip the lost gap [next, minSeq), then release from minSeq onward.
-		for r.next < minSeq {
-			r.skipped++
-			r.next++
+		if r.next < minSeq {
+			r.skipLocked(r.next, minSeq-r.next)
+			r.next = minSeq
 		}
 		r.drain()
 		if immediate {

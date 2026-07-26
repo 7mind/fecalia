@@ -361,6 +361,15 @@ func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapsho
 	return snapshot
 }
 
+func (c *recoveryContractCoordinator) localOfferIdentity() (session uint64, contractID uint64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.offer == nil || c.offer.message.ContractID == 0 {
+		return 0, 0, false
+	}
+	return c.session, c.offer.message.ContractID, true
+}
+
 func (c *recoveryContractCoordinator) reserveReceivedPublication(
 	snapshot receivedRecoverySnapshot,
 	validate func() bool,

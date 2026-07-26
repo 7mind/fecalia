@@ -375,9 +375,10 @@ type RecoveryDirectionStats struct {
 // mirrored verbatim from bind.AdaptiveFECStats: Parity is the target parity count M the
 // encoder was retargeted to (ctrl.Parity()); SmoothedLoss the controller's EWMA loss
 // estimate; EligibleLoss the raw probe-measured loss the drive Observed over the
-// sample-eligible data-carrying paths (T272 — the active path's loss under
-// active-backup, the weight-weighted mix under weighted striping); EligiblePaths the
-// count of those paths (0 on the hold branch).
+// sample-eligible data-carrying paths (T272/T324 — fresh pre-recovery DATA loss
+// conservatively combined with probe loss for one stable active-backup carrier, the
+// weight-weighted probe mix under weighted striping); EligiblePaths the count of those
+// paths (0 on the hold branch).
 type AdaptiveFECStats struct {
 	Parity        int
 	SmoothedLoss  float64
@@ -786,7 +787,7 @@ func NewCollector(src Source) prometheus.Collector {
 
 		fecAdaptiveParity:   desc(fecSubsystem, "adaptive_parity", "Adaptive-FEC controller's current target parity count M (present only while the controller is engaged).", peerScopedLabels),
 		fecSmoothedLoss:     desc(fecSubsystem, "smoothed_loss", "Adaptive-FEC controller's EWMA smoothed loss estimate in [0,1] (present only while the controller is engaged).", peerScopedLabels),
-		fecEligiblePathLoss: desc(fecSubsystem, "eligible_path_loss", "Raw probe-measured loss the adaptive-FEC drive Observed over the sample-eligible data-carrying paths: the active path's loss under active-backup, the weight-weighted mix under weighted striping (present only while the controller is engaged).", peerScopedLabels),
+		fecEligiblePathLoss: desc(fecSubsystem, "eligible_path_loss", "Loss the adaptive-FEC drive observed: the maximum of fresh authenticated pre-recovery DATA loss and probe loss for one stable active-backup carrier, or the weight-weighted probe mix under weighted striping (present only while the controller is engaged).", peerScopedLabels),
 		fecEligiblePaths:    desc(fecSubsystem, "eligible_paths", "Count of sample-eligible data-carrying paths the adaptive-FEC drive considered; 0 on the hold branch (present only while the controller is engaged).", peerScopedLabels),
 		fecMetrics: []fecMetric{
 			makeFECMetric(fecSubsystem, "staged_groups", "Current sender-owned FEC groups staged but not yet resolved; bounded by one.", prometheus.GaugeValue, func(f FECSnapshot) float64 { return float64(f.StagedGroups) }),

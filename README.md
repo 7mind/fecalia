@@ -26,14 +26,16 @@ In priority order (earlier properties never regress for later ones):
 3. **On-demand aggregation** — under load, traffic stripes across both links.
 4. **FEC loss-masking** — Reed-Solomon parity reconstructs lost frames instead
    of retransmitting.
-5. **Adaptive FEC** — redundancy tracks the measured loss on the path(s) that
-   **actually carry data** (the active path under active-backup, the
-   weight-weighted mix under weighted striping — a lossy but data-idle standby
-   never inflates parity), targeting a residual loss SLA rather than a fixed
-   overhead: parity engages as soon as the measured loss would miss the SLA —
-   for a tight `target_residual` that is well under 1% loss, not a fixed 5%
-   threshold — while a single estimator-quantum blip, or an early loss spike
-   measured over too few probe samples to trust, stays at zero overhead.
+5. **Adaptive FEC** — redundancy tracks measured loss on the path(s) that
+   **actually carry data**. For one stable active-backup carrier, authenticated
+   receiver feedback counts native, parity-reconstructed, and final missing
+   DATA exactly once, so clean priority probes cannot mask ordinary DATA loss;
+   the controller conservatively combines that pre-recovery signal with the
+   carrier's probe loss. Weighted striping retains its weight-weighted probe
+   mix, and a lossy but data-idle standby never inflates parity. The controller
+   targets a residual loss SLA rather than fixed overhead: parity engages as
+   soon as measured loss would miss the SLA, while one estimator-quantum blip
+   or an early probe spike measured over too few samples stays at zero overhead.
 6. **DPI resistance** — the outer wire is unidentifiable high-entropy UDP: no
    WireGuard fingerprint, no magic bytes (nDPI/Suricata do not classify it as
    VPN/WireGuard).
@@ -170,11 +172,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   true, adaptive = true`, four per-peer gauges expose the adaptive controller's
   live decision — `wanbond_fec_adaptive_parity` (current target parity M),
   `wanbond_fec_smoothed_loss` (its EWMA loss estimate),
-  `wanbond_fec_eligible_path_loss` (the raw per-path loss on the paths that
-  actually carry DATA — the active path under active-backup, the weight-weighted
-  mix under weighted striping, with an early-regime min-sample floor applied),
-  and `wanbond_fec_eligible_paths` (the count of those data paths) — absent
-  entirely for a fixed-ratio or FEC-off peer.
+  `wanbond_fec_eligible_path_loss` (the selected controller input — the maximum
+  of fresh authenticated pre-recovery DATA loss and probe loss for one stable
+  active-backup carrier, or the weight-weighted probe mix under striping), and
+  `wanbond_fec_eligible_paths` (the count of those data paths; 0 while learned
+  DATA feedback is stale or identity-mismatched and the controller holds) —
+  absent entirely for a fixed-ratio or FEC-off peer.
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
   a `/ws` WebSocket every 1s) — read-only except the loopback-only `POST
@@ -296,6 +299,17 @@ docs/                   design, install, findings, manual checklist
 The P0–P5 build is functionally complete, reviewed, and hardened. Known,
 deliberate boundaries you must plan around:
 
+- **Receiver DATA-loss feedback covers exactly one stable active-backup
+  carrier.** It rides the existing authenticated PROBE channel, is bound to the
+  peer session, recovery ContractID, carrier path/generation, and monotonic
+  report ID, and expires after two probe intervals. Stale, replayed,
+  wrong-peer, or path-transition evidence cannot drive parity; after capability
+  adoption, missing current evidence holds the existing controller state.
+  Recovery-only peers keep the legacy 27-byte contract payload byte-for-byte,
+  and peers that never send DATA feedback retain probe-loss adaptation.
+  Weighted multi-carrier scheduling deliberately retains its existing weighted
+  probe-loss signal because one carrier record cannot represent simultaneous
+  distribution shares.
 - **Pacing is off by default (opt-in)** — enable it under `[scheduler]`
   (`pacing_enabled = true`) and size it from operator-declared per-link
   `link_bandwidth`/`link_rtt` (bandwidth-delay product). Pre-T299 pacing was

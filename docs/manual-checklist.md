@@ -47,12 +47,27 @@ gate.
 - [ ] FEC overhead ≤ `P3MaxOverheadFactor` × parity ratio (`/metrics`).
 
 ## P4 — adaptive FEC
+- [ ] Run
+      `go test ./internal/bind ./internal/reseq ./internal/telemetry -run 'TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss|TestAdaptiveControllerIgnoresSingleCarrierFeedbackWhileWeighted|TestDataLossFeedback|TestLossObserverReportsExactFinalizedSequenceRange|TestProbePayload' -count=1`
+      and repeat with `-race`. This pins final-gap raising, inferred
+      parity-recovered loss, exact outcome conservation, clean dwell/shedding,
+      stale/replay/identity rejection, per-peer isolation, legacy payload
+      compatibility, and the weighted multi-carrier boundary.
 - [ ] Run `sudo -E go test -tags e2e -run '^TestP4AdaptiveFEC$' -v ./test/e2e`
       on the slowest supported worker (including a 1-vCPU aarch64 host); each
       60-second phase must collect at least 2,000 DATA frames.
 - [ ] Under steady `P4SteadyLossRate` path loss, adaptive total overhead ≤ the
       fixed-FEC baseline for equal masking.
 - [ ] Post-recovery residual loss ≤ `P4ResidualLossMax` (`/metrics`).
+- [ ] On an active-backup real link, perform two independent loaded 30-second
+      cycles from a clean `M=0` baseline. For each cycle record
+      `wanbond_path_loss_ratio`, `wanbond_fec_eligible_path_loss`,
+      `wanbond_fec_adaptive_parity`, `wanbond_fec_recovered_packets_total`, and
+      `wanbond_fec_residual_loss_ratio`: bounded active-carrier DATA loss must
+      make eligible loss and M non-zero; a subsequently missing DATA frame must
+      increment recovery without TCP-equivalent residual loss; after clearing
+      the impairment, M must return to zero only after the configured controller
+      dwell. Preserve both metric captures with the commit/config hashes.
 
 ## P5 — DPI resistance
 - [ ] From a hostile-ish network (e.g. a hotel/guest Wi-Fi), the tunnel connects.

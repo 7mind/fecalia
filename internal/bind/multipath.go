@@ -559,6 +559,7 @@ type peerState struct {
 	// finished its staged group and writer completion.
 	serviceGate sync.RWMutex
 	contracts   *recoveryContractCoordinator
+	dataLoss    *dataLossFeedbackCoordinator
 	lastWrite   atomic.Int64
 	// serviceTransitionPending coalesces asynchronous recovery-service
 	// transitions requested from inside a DATA Send's serviceGate read side.
@@ -609,6 +610,7 @@ func newPeerState(name string, psk config.Key, scheduler sched.Scheduler, newPro
 	}
 	if len(probers) > 0 {
 		peer.contracts = newRecoveryContractCoordinator(probers[0].SessionID(), systemFECClock{})
+		peer.dataLoss = &dataLossFeedbackCoordinator{}
 	}
 	return peer
 }
@@ -2179,6 +2181,9 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// stale high-water outer-seq. Published atomically so the peer's per-path readLoop
 	// goroutines read it WITHOUT m.mu.
 	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
+	if ps.dataLoss != nil {
+		rq.SetLossObserver(ps.dataLoss.recordLost)
+	}
 	if ps.contracts != nil {
 		authority := ps.contracts.recoveryAuthority()
 		authority.SetChangeSignal(m.recoveryAuthoritySignal)
@@ -3040,6 +3045,23 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			// a fresh authenticated PROBE re-instantiates the ring before the next DATA lands.
 			return
 		}
+		pathKey := reseqPathKey(ps.id, f.PathID)
+		carrier := dataLossCarrier{
+			pathID:  f.PathID,
+			pathKey: pathKey,
+			source:  srcAP,
+		}
+		if pr.contracts != nil {
+			carrier.topologyGeneration = pr.contracts.receivedSnapshot().generation
+		}
+		if pr.dataLoss != nil {
+			pr.dataLoss.observeData(
+				carrier.pathID,
+				carrier.pathKey,
+				carrier.source,
+				carrier.topologyGeneration,
+			)
+		}
 		if fr := pr.fecRecv.Load(); fr != nil {
 			// FEC on (T24): offer the data shard to the decoder BEFORE resequencing so a
 			// later parity frame can reconstruct any group-mate lost in transit, then
@@ -3048,16 +3070,16 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			// OuterSeq || Payload — the same bytes the sender coded parity over.
 			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
 			recovered, _ := fr.offer(shard)
-			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, reseqPathKey(ps.id, f.PathID))
+			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
 			// Residual-loss accounting (T29): this outer-seq was natively delivered, so mark
 			// it present in the post-recovery loss estimator. A seq never marked here nor via
 			// a reconstruction below is loss that FEC did not mask.
 			if fr.connLoss != nil {
 				fr.connLoss.Observe(f.OuterSeq)
 			}
-			m.observeRecovered(fr, rq, recovered, srcAP)
+			m.observeRecovered(fr, rq, recovered, srcAP, pr.dataLoss, carrier)
 		} else {
-			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, reseqPathKey(ps.id, f.PathID))
+			rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
 		}
 	case frame.Parity:
 		// PARITY feeds the FEC decoder (T24); a group that has now accumulated enough
@@ -3072,7 +3094,15 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			}
 			shard := fec.ParityShard{Group: fec.GroupID(f.FECGroup), Index: int(f.ParityIndex), DataCount: int(f.DataCount), Payload: f.Payload}
 			recovered, _ := fr.offer(shard)
-			m.observeRecovered(fr, rq, recovered, srcAP)
+			carrier := dataLossCarrier{
+				pathID:  f.PathID,
+				pathKey: reseqPathKey(ps.id, f.PathID),
+				source:  srcAP,
+			}
+			if pr.contracts != nil {
+				carrier.topologyGeneration = pr.contracts.receivedSnapshot().generation
+			}
+			m.observeRecovered(fr, rq, recovered, srcAP, pr.dataLoss, carrier)
 		}
 	case frame.Probe:
 		// Authenticated (the PROBE MAC verified in Decode): fold the frame into the
@@ -3091,7 +3121,15 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				// dynamically-mutated slice — so runtime add/remove cannot race this.
 				fresh, echoErr := ps.prober.HandleEchoProbe(raw)
 				if echoErr == nil && pr.contracts != nil {
-					pr.contracts.acceptACK(fresh.PathID, fresh.SessionID, fresh.ProbeSeq, fresh.Payload)
+					recoveryPayload := fresh.Payload
+					if recovery, _, recognized, payloadErr := telemetry.DecodeProbePayload(fresh.Payload); recognized {
+						if payloadErr != nil {
+							recoveryPayload = nil
+						} else {
+							recoveryPayload = recovery
+						}
+					}
+					pr.contracts.acceptACK(fresh.PathID, fresh.SessionID, fresh.ProbeSeq, recoveryPayload)
 					m.refreshPeerRecoveryWindow(pr)
 				}
 				// Release any PMTU search probe awaiting THIS echo (T227, defect D88),
@@ -3131,6 +3169,16 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		if pr.reflector != nil {
 			if accepted, rerr := pr.reflector.AcceptProbe(raw); rerr == nil {
 				echoPayload := accepted.Probe.Payload
+				recoveryPayload := accepted.Probe.Payload
+				var dataLossFeedback *telemetry.DataLossFeedback
+				if recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(accepted.Probe.Payload); recognized {
+					if payloadErr != nil {
+						recoveryPayload = nil
+					} else {
+						recoveryPayload = recovery
+						dataLossFeedback = feedback
+					}
+				}
 				rebaselined := false
 				transitionCleared := false
 				haveRecoveryACK := false
@@ -3169,8 +3217,22 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 						m.publishPeerRecoveryGeneration(pr, generation)
 					}
 				}
+				if dataLossFeedback != nil && pr.dataLoss != nil && pr.contracts != nil &&
+					accepted.Acceptance != telemetry.ProbeBootstrap {
+					session, contractID, ok := pr.contracts.localOfferIdentity()
+					if ok &&
+						dataLossFeedback.ObservedSessionID == session &&
+						dataLossFeedback.ContractID == contractID {
+						pr.dataLoss.accept(
+							*dataLossFeedback,
+							accepted.Probe.SessionID,
+							accepted.Acceptance == telemetry.ProbeAdopted,
+							m.clock.Now(),
+						)
+					}
+				}
 				if !accepted.Probe.Padded && accepted.Acceptance != telemetry.ProbeBootstrap && pr.contracts != nil {
-					message, recognized, contractErr := telemetry.DecodeRecoveryContract(accepted.Probe.Payload)
+					message, recognized, contractErr := telemetry.DecodeRecoveryContract(recoveryPayload)
 					if contractErr == nil && recognized && message.Type == telemetry.RecoveryContractOffer {
 						beforeGeneration := pr.contracts.receivedSnapshot().generation
 						ack, ok := pr.contracts.acceptOffer(accepted.Probe.SessionID, message, func() {
@@ -3189,14 +3251,17 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 								pr.contracts.observeReceivedSource(recoveryPathKey, srcAP)
 							}
 							if payload, encodeErr := telemetry.EncodeRecoveryContract(ack); encodeErr == nil {
-								echoPayload = payload
-								haveRecoveryACK = true
-								recoveryAdmission, haveRecoveryAdmission = pr.contracts.admitReceivedACK(
-									accepted.Probe.SessionID,
-									message,
-									recoveryPathKey,
-									srcAP,
-								)
+								encodedPayload, envelopeErr := telemetry.EncodeProbePayload(payload, dataLossFeedback)
+								if envelopeErr == nil {
+									echoPayload = encodedPayload
+									haveRecoveryACK = true
+									recoveryAdmission, haveRecoveryAdmission = pr.contracts.admitReceivedACK(
+										accepted.Probe.SessionID,
+										message,
+										recoveryPathKey,
+										srcAP,
+									)
+								}
 							}
 						}
 					}
@@ -3306,11 +3371,21 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 // counted, so /metrics reflects delivered recovery, not mere reconstruction. A
 // malformed recovered shard (too short to hold the outer-seq prefix) is dropped: it
 // signals an encoder/decoder mismatch, not a deliverable frame.
-func (m *Multipath) observeRecovered(fr *fecReceiver, rq *reseq.Resequencer, recovered []fec.Recovered, srcAP netip.AddrPort) {
+func (m *Multipath) observeRecovered(
+	fr *fecReceiver,
+	rq *reseq.Resequencer,
+	recovered []fec.Recovered,
+	srcAP netip.AddrPort,
+	dataLoss *dataLossFeedbackCoordinator,
+	carrier dataLossCarrier,
+) {
 	for _, rec := range recovered {
 		seq, inner, err := splitFECShardPayload(rec.Payload)
 		if err != nil {
 			continue
+		}
+		if dataLoss != nil {
+			dataLoss.recordRecovered(seq, carrier)
 		}
 		// Residual-loss accounting (T29): FEC reconstructed this outer-seq, so it is NOT
 		// residual loss — mark it present in the post-recovery estimator even if the
@@ -3897,22 +3972,26 @@ func (m *Multipath) fecFlushDeadline() {
 // concentrator peer) — the drive is entirely peer-scoped so one peer's control loop never
 // reads or perturbs another peer's controller/encoder/paths.
 //
-// WHICH LOSS drives the controller (design decision 1, revised D96 mechanisms 2+3): the loss
-// on the path(s) that ACTUALLY CARRY DATA, consulted through the scheduler's DataPaths seam
-// (T271) rather than a role-agnostic MAX over every StateUp prober. Parity must mask the loss
-// the DATA actually experiences: under active-backup only the active path carries data (so the
-// signal is that one path's raw probe loss), and under the weighted scheduler data is striped
-// across the aggregating set (so the signal is the WEIGHT-WEIGHTED MIX of those paths' losses,
-// per each path's distribution share). A role-agnostic MAX let a lossy but data-idle STANDBY
-// drive M up even though it carried no data to protect — the D96 defect this replaces. A
+// WHICH LOSS drives the controller (design decision 1, revised D96 mechanisms 2+3 and T324):
+// the loss on the path(s) that ACTUALLY CARRY DATA, consulted through the scheduler's DataPaths
+// seam (T271) rather than a role-agnostic MAX over every StateUp prober. Under active-backup,
+// authenticated receiver feedback reports exact native/inferred DATA outcomes for the one
+// stable carrier; a fresh identity-matched report is combined with that carrier's probe loss
+// by taking the conservative maximum. Once this capability has produced a report, stale or
+// path/session/contract-mismatched feedback holds the controller rather than letting clean
+// priority PROBEs lower M. Under the weighted scheduler, DATA is striped across an aggregating
+// set and the deliberately single-carrier feedback record cannot represent its shares, so the
+// signal remains the WEIGHT-WEIGHTED MIX of those paths' probe losses. A role-agnostic MAX let
+// a lossy but data-idle STANDBY drive M up even though it carried no data to protect — the D96
+// defect this replaces. A
 // MIN-SAMPLE FLOOR (minAdaptiveLossSamples) additionally excludes any data path still in its
 // early loss-window regime, where a single dropped probe reads as a large fraction against a
 // tiny denominator (D96 mechanism 3); when the weighted mix's eligible subset is a strict
 // subset of the data paths the mix is RENORMALIZED over that subset, and when NO data path is
-// sample-eligible the drive takes the count==0 HOLD branch (below). It is deliberately the RAW
-// per-path loss, NOT the post-recovery ConnLoss: feeding the masked residual back would form a
-// control loop that under-provisions precisely because it is succeeding. A down/probeless path
-// carries no data and is never in DataPaths, so it is excluded by construction.
+// sample-eligible the drive takes the count==0 HOLD branch (below). The DATA report counts both
+// parity-reconstructed and final unrecoverable gaps exactly once, so it measures pre-recovery
+// carrier loss rather than the masked post-recovery ConnLoss. A down/probeless path carries no
+// data and is never in DataPaths, so it is excluded by construction.
 func (m *Multipath) driveAdaptiveController(peer *peerState) {
 	m.mu.Lock()
 	owner, sample, ok := m.adaptiveSampleLocked(peer)
@@ -3940,16 +4019,17 @@ func (m *Multipath) adaptiveSampleLocked(peer *peerState) (*fecSendOwner, fecAda
 	// DataPaths read below (which the T271 seam documents as NOT itself refreshing liveness).
 	peer.scheduler.Recompute()
 
-	loss, count := dataPathLossLocked(peer)
+	loss, count := m.dataPathLossLocked(peer, now)
 	return fs.owner, fecAdaptiveSample{now: now, loss: loss, count: count}, true
 }
 
 // dataPathLossLocked computes the adaptive controller's loss input from the path(s) that
 // ACTUALLY CARRY DATA (D96 mechanisms 2+3), consulting the scheduler's DataPaths seam (T271)
-// instead of a role-agnostic MAX over every StateUp prober. It returns the weight-weighted mix
-// of the data paths' raw probe-measured loss and the COUNT of sample-eligible data paths (0 —
-// the caller's HOLD condition — when the scheduler reports no data path, or every reported data
-// path is still below the min-sample floor). Caller holds m.mu.
+// instead of a role-agnostic MAX over every StateUp prober. Exactly one stable data path may use
+// fresh authenticated DATA-outcome feedback; multiple weighted data paths retain the weighted
+// raw probe-loss mix because one carrier record cannot represent their distribution shares. It
+// returns count 0 for the caller's HOLD condition when the selected evidence is unavailable or
+// stale. Caller holds m.mu.
 //
 // It calls peer.scheduler.DataPaths() (which takes the scheduler's own lock and returns a
 // caller-owned copy, never calling back into the Bind — the documented m.mu->scheduler order)
@@ -3957,9 +4037,9 @@ func (m *Multipath) adaptiveSampleLocked(peer *peerState) (*fecSendOwner, fecAda
 // never calls back into the Bind, so the whole read respects the m.mu->scheduler->prober order
 // the rest of the Bind takes. DataPath.Index is the priority-ordered path index, which by the
 // schedIdx invariant (attachPeerPathLocked) equals the position in peer.paths.
-func dataPathLossLocked(peer *peerState) (float64, int) {
+func (m *Multipath) dataPathLossLocked(peer *peerState, now time.Time) (float64, int) {
 	dps := peer.scheduler.DataPaths()
-	return weightedDataPathLoss(dps, func(idx int) (telemetry.Estimate, bool) {
+	probeLoss, probeCount := weightedDataPathLoss(dps, func(idx int) (telemetry.Estimate, bool) {
 		if idx < 0 || idx >= len(peer.paths) {
 			return telemetry.Estimate{}, false // stale index during a concurrent membership change
 		}
@@ -3969,6 +4049,28 @@ func dataPathLossLocked(peer *peerState) (float64, int) {
 		}
 		return pr.Estimate(), true
 	})
+	if len(dps) != 1 || peer.dataLoss == nil || peer.contracts == nil {
+		return probeLoss, probeCount
+	}
+	pathIndex := dps[0].Index
+	if pathIndex < 0 || pathIndex >= len(peer.paths) {
+		return 0, 0
+	}
+	session, contractID, haveOffer := peer.contracts.localOfferIdentity()
+	if !haveOffer {
+		return probeLoss, probeCount
+	}
+	dataLoss, fresh, ever := peer.dataLoss.sample(peer.paths[pathIndex].id, session, contractID, now)
+	if fresh {
+		if dataLoss > probeLoss {
+			return dataLoss, 1
+		}
+		return probeLoss, 1
+	}
+	if ever {
+		return 0, 0
+	}
+	return probeLoss, probeCount
 }
 
 // weightedDataPathLoss folds the per-data-path loss estimates into one controller input: the
