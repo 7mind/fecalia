@@ -506,9 +506,16 @@ Common rules, either policy:
   the conservative 250 ms hold. Those transitions, resequencer replacement,
   and teardown advance a receiver/topology generation before clearing venues;
   delayed ACK completions and window refreshes from older generations are
-  rejected. A bounded-window advance gives each newly exposed gap a fresh hold
-  rather than inheriting its predecessor's elapsed deadline. Weighted
-  scheduling always keeps the conservative fallback.
+  rejected, and a lock-free authority makes the resequencer observe that
+  transition before the later explicit publication. Within one topology,
+  ACK-venue and authenticated RTT/liveness changes use ordered evidence
+  publication revisions after exact membership, sample revision, and current
+  freshness revalidation. Older same-generation refreshes therefore cannot
+  erase a newer venue or reduce maximum RTT headroom. A live gap retains its
+  arm-time evidence and deadline; same-generation updates apply to later gaps.
+  A bounded-window advance gives each newly exposed gap a fresh hold rather than
+  inheriting its predecessor's elapsed deadline. Weighted scheduling always
+  keeps the conservative fallback.
   At recovery admission the socket receives one absolute
   `cutStart+10ms` deadline before the cut becomes visible; that same deadline
   covers any blocked predecessor and every tranche syscall. Install failure or

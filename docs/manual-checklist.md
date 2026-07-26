@@ -541,6 +541,21 @@ predeclared gates:
       fast evidence. Force a bounded-window advance that exposes a second gap
       near the first gap's expiry and confirm the second gap receives a fresh
       full hold with strictly ascending, exactly-once delivery.
+- [ ] Pause one recovery-window refresh after it snapshots a primary-only ACK
+      venue and lower RTT. Complete a standby ACK and record a newer higher
+      authenticated RTT sample, publish the newer refresh, then release the old
+      refresh. Confirm the standby venue remains usable and `H` retains the new
+      maximum RTT. Repeat with the old refresh paused after publication-revision
+      reservation to cover reversed resequencer commit order. If a gap was
+      already armed before the same-topology update, confirm its exact deadline
+      does not change and the new venue/RTT applies only to the next gap.
+- [ ] Pause each topology transition after the coordinator generation advances
+      but before the explicit resequencer publication: ContractID renewal and
+      service change, SessionID adoption, membership add/remove, same-key roam,
+      rebaseline, resequencer replacement, and teardown. At the old `W`
+      boundary, concurrent receive/`Pop` must not release; it must observe the
+      authoritative generation and arm a fresh 250 ms fallback. Repeat with FEC
+      off and confirm its existing non-FEC gap deadline remains unchanged.
 - [ ] Change same-name pacing/FEC service inputs (`R/Rp/B/C/P/Lmax/Kdata/Mmax/I`)
       and reload. Confirm the daemon warns that the change remains unapplied
       until restart and the running service retains its old ContractID. After a

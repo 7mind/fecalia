@@ -624,8 +624,27 @@ resequencer-replacement, and teardown transitions first advance a monotonic
 peer receiver/topology generation and then clear its exact venues. ACK
 admission captures that generation and venue; both ACK completion and
 recovery-window publication recheck it atomically, so paused work from an older
-generation cannot restore fast evidence. A fast-armed gap re-arms from the
-transition time for a fresh `T`. FEC repair remains unchanged:
+generation cannot restore fast evidence. The coordinator publishes that
+topology generation through a shared lock-free authority before the explicit
+resequencer update; ingest, recovery, deadline, and `Pop` decisions synchronize
+it under the resequencer lock, so the interval between those two operations
+cannot arm or expire under the old `W`. A fast-armed gap re-arms from the first
+such decision for a fresh `T`.
+
+Changes that leave topology unchanged use a separate monotonic evidence
+revision. ACK-venue additions advance the coordinator evidence revision, and
+each successful authenticated RTT sample or liveness transition advances its
+Prober sample revision. A refresh captures the exact contract/evidence state,
+resequencer identity, scheduler, ordered membership, and Prober revisions. At
+commit it revalidates all of them plus current freshness under the fixed lock
+order, reserves a publication revision under the coordinator lock, then
+publishes `(topology generation, publication revision, windows)`. The
+resequencer compares that pair lexicographically: an older publication cannot
+erase a newer venue or restore lower RTT headroom, including when socket
+completion order reverses. A same-topology evidence update changes only windows
+available to **future** gap arms; a live gap's deadline and arm-time evidence
+snapshot remain immutable. This remains safe because evidence must retain at
+least `T` validity when the gap arms. FEC repair remains unchanged:
 `ObserveRecovered` may fill the missing sequence only in the half-open interval
 before expiry (`W-1ns` succeeds; at `W` the gap has expired).
 

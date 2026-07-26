@@ -3,6 +3,7 @@ package reseq
 import (
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,36 @@ type SystemClock struct{}
 
 // Now returns the current monotonic time.
 func (SystemClock) Now() time.Time { return time.Now() }
+
+// RecoveryAuthority is the lock-free peer topology epoch shared by the Bind's
+// recovery-contract coordinator and its receive resequencer. The coordinator
+// advances it before clearing evidence, so receive decisions cannot continue
+// using an older fast window while an explicit publication is still in flight.
+type RecoveryAuthority struct {
+	topology atomic.Uint64
+}
+
+// AdvanceTo publishes a newer topology generation. Older or equal values are
+// idempotent, allowing lifecycle paths to converge without lock coupling.
+func (a *RecoveryAuthority) AdvanceTo(generation uint64) {
+	for {
+		current := a.topology.Load()
+		if generation <= current {
+			return
+		}
+		if a.topology.CompareAndSwap(current, generation) {
+			return
+		}
+	}
+}
+
+// TopologyGeneration returns the current authoritative topology generation.
+func (a *RecoveryAuthority) TopologyGeneration() uint64 {
+	if a == nil {
+		return 0
+	}
+	return a.topology.Load()
+}
 
 // Discontinuity/resync guard tuning. A DATA frame is UNAUTHENTICATED by design
 // (internal/frame/frame.go: "DATA/PARITY forgeable by design"), so a garbage
@@ -280,11 +311,13 @@ type Resequencer struct {
 	// shorter service-plus-RTT bound.
 	holdBound time.Duration
 
-	fecActive          bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
-	recoveryGeneration uint64
-	recoveries         []RecoveryWindow
-	notify             func()
-	closed             bool
+	fecActive                   bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
+	recoveryAuthority           *RecoveryAuthority
+	recoveryGeneration          uint64
+	recoveryPublicationRevision uint64
+	recoveries                  []RecoveryWindow
+	notify                      func()
+	closed                      bool
 	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
 	// scheduler — suppress immediate release entirely (see SetMultiPathExpected for the
 	// retained-pending-measurement rationale, defect D95, tasks:T293 branch 4).
@@ -352,11 +385,12 @@ func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.Addr
 func (r *Resequencer) SetFECActive(active bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.clock.Now()
+	r.syncRecoveryAuthorityLocked(now)
 	if r.fecActive == active {
 		return
 	}
 	r.fecActive = active
-	now := r.clock.Now()
 	if !active {
 		r.expire(now)
 	} else if _, eligible := r.recoveryEligibleLocked(now); r.waiting && !eligible {
@@ -381,6 +415,7 @@ func (r *Resequencer) SetFECActive(active bool) {
 func (r *Resequencer) SetMultiPathExpected(expected bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(r.clock.Now())
 	if r.multiPathExpected == expected {
 		return
 	}
@@ -438,14 +473,54 @@ func (r *Resequencer) SetRecoveryWindows(windows []RecoveryWindow) {
 	r.SetRecoveryGeneration(generation, windows)
 }
 
-// SetRecoveryGeneration conditionally publishes one peer receiver/topology
-// generation and its exact ACK venues. A paused older publisher cannot restore
-// evidence after a transition advances the generation.
+// SetRecoveryGeneration is the compatibility publication API. It allocates the
+// next local publication revision within an equal topology generation; the Bind
+// uses SetRecoveryPublication with its coordinator-owned revision.
 func (r *Resequencer) SetRecoveryGeneration(generation uint64, windows []RecoveryWindow) bool {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed || generation < r.recoveryGeneration {
+	r.syncRecoveryAuthorityLocked(now)
+	publicationRevision := uint64(0)
+	if generation == r.recoveryGeneration {
+		publicationRevision = r.recoveryPublicationRevision + 1
+		if publicationRevision == 0 {
+			publicationRevision++
+		}
+	}
+	return r.setRecoveryPublicationLocked(generation, publicationRevision, windows, now)
+}
+
+// SetRecoveryPublication conditionally installs the exact recovery venues for
+// one topology generation and one coordinator-ordered evidence publication.
+// Ordering is lexicographic: an older topology, or an older publication within
+// the same topology, cannot replace newer evidence. An equal publication is
+// accepted only when its exact window set matches (idempotent replay).
+func (r *Resequencer) SetRecoveryPublication(
+	generation uint64,
+	publicationRevision uint64,
+	windows []RecoveryWindow,
+) bool {
+	now := r.clock.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(now)
+	return r.setRecoveryPublicationLocked(generation, publicationRevision, windows, now)
+}
+
+func (r *Resequencer) setRecoveryPublicationLocked(
+	generation uint64,
+	publicationRevision uint64,
+	windows []RecoveryWindow,
+	now time.Time,
+) bool {
+	if r.closed || generation < r.recoveryGeneration ||
+		(generation == r.recoveryGeneration &&
+			publicationRevision < r.recoveryPublicationRevision) {
+		return false
+	}
+	if r.recoveryAuthority != nil &&
+		generation > r.recoveryAuthority.TopologyGeneration() {
 		return false
 	}
 	for _, window := range windows {
@@ -454,24 +529,63 @@ func (r *Resequencer) SetRecoveryGeneration(generation uint64, windows []Recover
 		}
 	}
 	generationChanged := generation > r.recoveryGeneration
-	changed := generationChanged || len(r.recoveries) != len(windows)
-	if !changed {
-		for i := range windows {
-			if r.recoveries[i] != windows[i] {
-				changed = true
-				break
-			}
-		}
+	if !generationChanged && publicationRevision == r.recoveryPublicationRevision {
+		return recoveryWindowsEqual(r.recoveries, windows)
+	}
+	changed := generationChanged ||
+		publicationRevision != r.recoveryPublicationRevision ||
+		!recoveryWindowsEqual(r.recoveries, windows)
+	if generationChanged && r.waiting && r.fecActive {
+		r.recoveries = nil
+		r.endHoldLocked(now)
+		r.arm(now)
 	}
 	r.recoveryGeneration = generation
+	r.recoveryPublicationRevision = publicationRevision
 	r.recoveries = append(r.recoveries[:0], windows...)
-	if r.waiting && r.recoveryArmed {
-		recovery, eligible := r.recoveryEligibleLocked(now)
-		if generationChanged || !eligible || recovery.Revision != r.recoveryRevision {
-			r.rearmConservativeLocked(now)
+	if changed {
+		r.notifyLocked()
+	}
+	return true
+}
+
+func recoveryWindowsEqual(left, right []RecoveryWindow) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
 		}
 	}
-	if changed {
+	return true
+}
+
+// SetRecoveryAuthority installs the peer's authoritative topology epoch. The
+// authority is read only while r.mu is held and never calls back into Bind.
+func (r *Resequencer) SetRecoveryAuthority(authority *RecoveryAuthority) {
+	now := r.clock.Now()
+	r.mu.Lock()
+	r.recoveryAuthority = authority
+	r.syncRecoveryAuthorityLocked(now)
+	r.mu.Unlock()
+}
+
+func (r *Resequencer) syncRecoveryAuthorityLocked(now time.Time) bool {
+	if r.closed || r.recoveryAuthority == nil {
+		return false
+	}
+	generation := r.recoveryAuthority.TopologyGeneration()
+	if generation <= r.recoveryGeneration {
+		return false
+	}
+	r.recoveryGeneration = generation
+	r.recoveryPublicationRevision = 0
+	r.recoveries = nil
+	if r.waiting && r.fecActive {
+		r.endHoldLocked(now)
+		r.arm(now)
+	} else {
 		r.notifyLocked()
 	}
 	return true
@@ -489,6 +603,7 @@ func (r *Resequencer) SetNotifier(notify func()) {
 func (r *Resequencer) ArmedDeadline() (time.Time, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(r.clock.Now())
 	if !r.waiting {
 		return time.Time{}, false
 	}
@@ -503,6 +618,7 @@ func (r *Resequencer) Close() {
 		if r.recoveryGeneration == 0 {
 			r.recoveryGeneration++
 		}
+		r.recoveryPublicationRevision = 0
 		r.recoveries = nil
 		r.closed = true
 		r.endHoldLocked(r.clock.Now())
@@ -562,6 +678,7 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(now)
 
 	// Record the delivering-path identity FIRST, so a second distinct key arriving
 	// with this frame re-arms the full hold before expire() decides the gap below.
@@ -638,6 +755,7 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(now)
 
 	if r.pendingLow {
 		// A low-anchor re-baseline (peer restart) is armed: a parity-RECOVERED frame is
@@ -801,6 +919,7 @@ func (r *Resequencer) Pop() (Item, bool) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(now)
 
 	r.expire(now)
 
@@ -1160,15 +1279,20 @@ func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, 
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(now)
 	if advance {
 		generation = r.recoveryGeneration + 1
 		if generation == 0 {
 			generation++
 		}
+		if r.recoveryAuthority != nil {
+			r.recoveryAuthority.AdvanceTo(generation)
+		}
 	} else if generation < r.recoveryGeneration {
 		return
 	}
 	r.recoveryGeneration = generation
+	r.recoveryPublicationRevision = 0
 	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
 	r.recoveries = nil
 	for i := range r.ring {
@@ -1247,15 +1371,20 @@ func (r *Resequencer) rebaselineToLow(generation uint64, advance bool) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncRecoveryAuthorityLocked(now)
 	if advance {
 		generation = r.recoveryGeneration + 1
 		if generation == 0 {
 			generation++
 		}
+		if r.recoveryAuthority != nil {
+			r.recoveryAuthority.AdvanceTo(generation)
+		}
 	} else if generation < r.recoveryGeneration {
 		return
 	}
 	r.recoveryGeneration = generation
+	r.recoveryPublicationRevision = 0
 	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
 	r.recoveries = nil
 	for i := range r.ring {

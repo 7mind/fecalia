@@ -73,6 +73,29 @@ func bringProberUpAtRTT(
 	}
 }
 
+func recordRecoveryRTTSample(
+	t testing.TB,
+	prober *telemetry.Prober,
+	psk config.Key,
+	clock *fakeClock,
+	rtt time.Duration,
+) {
+	t.Helper()
+	raw, err := prober.SendProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo, _, err := telemetry.NewReflector(psk, rand.Reader).Reflect(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(rtt)
+	if err := prober.HandleEcho(echo); err != nil {
+		t.Fatal(err)
+	}
+	prober.Tick()
+}
+
 func openRecoveryWindowPeer(t *testing.T, pathCount int) (*Multipath, []*telemetry.Prober, *fakeClock) {
 	t.Helper()
 	clock := newFakeClock()
@@ -576,8 +599,9 @@ func TestPausedRecoveryRefreshCannotCrossReceiverGeneration(t *testing.T) {
 			run: func(_ *testing.T, m *Multipath, _ *reseq.Resequencer, _ uint32) {
 				generation := m.contracts.invalidateReceivedEvidence()
 				replacement := reseq.New(16, conservativeRecoveryService, m.clock)
+				replacement.SetRecoveryAuthority(m.contracts.recoveryAuthority())
 				replacement.SetFECActive(true)
-				replacement.SetRecoveryGeneration(generation, nil)
+				replacement.SetRecoveryPublication(generation, 0, nil)
 				m.resequencer.Store(replacement)
 			},
 		},
@@ -685,6 +709,419 @@ func TestLiveFastGapRearmsFreshTOnContractOrSessionGeneration(t *testing.T) {
 				t.Fatalf("%s rearm = %v,%v, want fresh T", test.name, deadline, armed)
 			}
 		})
+	}
+}
+
+func TestSameTopologyEvidenceUpdateDoesNotChangeLiveGap(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	rq := m.resequencer.Load()
+	oldDeadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+	clock.advance(time.Millisecond)
+
+	recordRecoveryRTTSample(t, probers[0], m.psk, clock, 80*time.Millisecond)
+	newRTT := probers[0].RecoveryRTT().RTT
+	m.refreshPeerRecoveryWindow(m.peerState)
+	if deadline, armed := rq.ArmedDeadline(); !armed || !deadline.Equal(oldDeadline) {
+		t.Fatalf("same-topology RTT update changed live gap: %v,%v want %v,true", deadline, armed, oldDeadline)
+	}
+
+	rq.ObserveFromPath(1, []byte("one"), receiverContractSource, pathKey)
+	for range 2 {
+		if _, ok := rq.Pop(); !ok {
+			t.Fatal("gap fill did not release the old contiguous run")
+		}
+	}
+	rq.ObserveFromPath(4, []byte("four"), receiverContractSource, pathKey)
+	want := clock.Now().Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(newRTT)))
+	if deadline, armed := rq.ArmedDeadline(); !armed || !deadline.Equal(want) {
+		t.Fatalf("future gap did not use current evidence: %v,%v want %v,true", deadline, armed, want)
+	}
+}
+
+func TestTopologyAuthorityClosesEveryPrepublicationTransitionInterval(t *testing.T) {
+	type transition func(*testing.T, *Multipath, *reseq.Resequencer, uint32) *reseq.Resequencer
+	transitions := []struct {
+		name string
+		run  transition
+	}{
+		{
+			name: "ContractID renewal",
+			run: func(t *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				if _, ok := m.contracts.acceptOffer(
+					receiverContractSession,
+					receiverContractMessage(2, 80*time.Millisecond),
+					func() {},
+				); !ok {
+					t.Fatal("renewal rejected")
+				}
+				return rq
+			},
+		},
+		{
+			name: "contract service change",
+			run: func(t *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				if _, ok := m.contracts.acceptOffer(
+					receiverContractSession,
+					receiverContractMessage(2, 90*time.Millisecond),
+					func() {},
+				); !ok {
+					t.Fatal("service change rejected")
+				}
+				return rq
+			},
+		},
+		{
+			name: "SessionID adoption",
+			run: func(t *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				if _, changed := m.contracts.adoptReceivedSession(receiverContractSession + 1); !changed {
+					t.Fatal("session adoption did not advance topology")
+				}
+				return rq
+			},
+		},
+		{
+			name: "membership add",
+			run: func(_ *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				m.contracts.invalidateReceivedEvidence()
+				return rq
+			},
+		},
+		{
+			name: "membership remove",
+			run: func(_ *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				m.contracts.invalidateReceivedEvidence()
+				return rq
+			},
+		},
+		{
+			name: "same-key roam",
+			run: func(t *testing.T, m *Multipath, rq *reseq.Resequencer, pathKey uint32) *reseq.Resequencer {
+				if _, changed := m.contracts.observeReceivedSource(pathKey, receiverStandbySource); !changed {
+					t.Fatal("source roam did not advance topology")
+				}
+				return rq
+			},
+		},
+		{
+			name: "rebaseline",
+			run: func(_ *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				m.contracts.invalidateReceivedEvidence()
+				return rq
+			},
+		},
+		{
+			name: "resequencer replacement",
+			run: func(_ *testing.T, m *Multipath, _ *reseq.Resequencer, pathKey uint32) *reseq.Resequencer {
+				generation := m.contracts.invalidateReceivedEvidence()
+				replacement := reseq.New(16, conservativeRecoveryService, m.clock)
+				replacement.SetRecoveryAuthority(m.contracts.recoveryAuthority())
+				replacement.SetFECActive(true)
+				replacement.SetRecoveryPublication(generation, 0, nil)
+				m.resequencer.Store(replacement)
+				replacement.ObserveFromPath(0, []byte("zero"), receiverContractSource, pathKey)
+				replacement.Pop()
+				replacement.ObserveFromPath(2, []byte("two"), receiverContractSource, pathKey)
+				return replacement
+			},
+		},
+		{
+			name: "teardown",
+			run: func(_ *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
+				m.contracts.invalidateReceivedEvidence()
+				return rq
+			},
+		},
+	}
+
+	for _, test := range transitions {
+		t.Run(test.name, func(t *testing.T) {
+			m, probers, clock := openRecoveryWindowPeer(t, 1)
+			bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+			message := receiverContractMessage(1, 80*time.Millisecond)
+			if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+				t.Fatal("offer rejected")
+			}
+			pathKey := reseqPathKey(m.paths[0].id, 9)
+			if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+				t.Fatal("ACK completion rejected")
+			}
+			m.refreshPeerRecoveryWindow(m.peerState)
+			rq := m.resequencer.Load()
+			oldDeadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+			clock.advance(oldDeadline.Sub(clock.Now()))
+
+			current := test.run(t, m, rq, pathKey)
+			if current == rq {
+				if item, ok := current.Pop(); ok {
+					t.Fatalf("old W released during %s interval: %q", test.name, item.Payload)
+				}
+			}
+			want := clock.Now().Add(conservativeRecoveryService)
+			if deadline, armed := current.ArmedDeadline(); !armed || !deadline.Equal(want) {
+				t.Fatalf("%s interval deadline=%v,%v want=%v,true", test.name, deadline, armed, want)
+			}
+		})
+	}
+}
+
+func TestOlderSameGenerationRefreshCannotEraseNewACKVenue(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 2)
+	for _, prober := range probers {
+		bringProberUpClean(t, prober, m.psk, clock, testProbeUpSucc)
+	}
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	primaryKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, primaryKey, receiverContractSource) {
+		t.Fatal("primary ACK completion rejected")
+	}
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var hookMu sync.Mutex
+	first := true
+	m.beforeRecoveryPublish = func(_ *peerState, _ *reseq.Resequencer, _ uint64) {
+		hookMu.Lock()
+		pause := first
+		first = false
+		hookMu.Unlock()
+		if pause {
+			paused <- struct{}{}
+			<-release
+		}
+	}
+	oldDone := make(chan struct{})
+	go func() {
+		m.refreshPeerRecoveryWindow(m.peerState)
+		close(oldDone)
+	}()
+	<-paused
+
+	standbyKey := reseqPathKey(m.paths[1].id, 10)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, standbyKey, receiverStandbySource) {
+		t.Fatal("standby ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	close(release)
+	<-oldDone
+
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverStandbySource, standbyKey)
+	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
+	if !deadline.Equal(want) {
+		t.Fatalf("older publication erased the new ACK venue: deadline=%v want=%v", deadline, want)
+	}
+}
+
+func TestReservedOlderPublicationCannotEraseNewACKVenue(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 2)
+	for _, prober := range probers {
+		bringProberUpClean(t, prober, m.psk, clock, testProbeUpSucc)
+	}
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	primaryKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, primaryKey, receiverContractSource) {
+		t.Fatal("primary ACK completion rejected")
+	}
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var hookMu sync.Mutex
+	first := true
+	m.afterRecoveryPublicationReserve = func(
+		_ *peerState,
+		_ *reseq.Resequencer,
+		_, _ uint64,
+	) {
+		hookMu.Lock()
+		pause := first
+		first = false
+		hookMu.Unlock()
+		if pause {
+			paused <- struct{}{}
+			<-release
+		}
+	}
+	oldDone := make(chan struct{})
+	go func() {
+		m.refreshPeerRecoveryWindow(m.peerState)
+		close(oldDone)
+	}()
+	<-paused
+
+	standbyKey := reseqPathKey(m.paths[1].id, 10)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, standbyKey, receiverStandbySource) {
+		t.Fatal("standby ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	close(release)
+	<-oldDone
+
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverStandbySource, standbyKey)
+	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
+	if !deadline.Equal(want) {
+		t.Fatalf("older reserved publication erased new ACK venue: deadline=%v want=%v", deadline, want)
+	}
+}
+
+func TestOlderSameGenerationRefreshCannotRestoreLowerRTTHeadroom(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var hookMu sync.Mutex
+	first := true
+	m.beforeRecoveryPublish = func(_ *peerState, _ *reseq.Resequencer, _ uint64) {
+		hookMu.Lock()
+		pause := first
+		first = false
+		hookMu.Unlock()
+		if pause {
+			paused <- struct{}{}
+			<-release
+		}
+	}
+	oldDone := make(chan struct{})
+	go func() {
+		m.refreshPeerRecoveryWindow(m.peerState)
+		close(oldDone)
+	}()
+	<-paused
+
+	recordRecoveryRTTSample(t, probers[0], m.psk, clock, 80*time.Millisecond)
+	newRTT := probers[0].RecoveryRTT().RTT
+	if newRTT <= testProbeRTT {
+		t.Fatalf("new RTT = %v, want greater than old %v", newRTT, testProbeRTT)
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	close(release)
+	<-oldDone
+
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(newRTT)))
+	if !deadline.Equal(want) {
+		t.Fatalf("older publication restored lower RTT headroom: deadline=%v want=%v", deadline, want)
+	}
+}
+
+func TestRefreshRevalidatesRTTFreshnessAtPublication(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+
+	paused := make(chan struct{}, 1)
+	release := make(chan struct{})
+	m.beforeRecoveryPublish = func(_ *peerState, _ *reseq.Resequencer, _ uint64) {
+		paused <- struct{}{}
+		<-release
+	}
+	done := make(chan struct{})
+	go func() {
+		m.refreshPeerRecoveryWindow(m.peerState)
+		close(done)
+	}()
+	<-paused
+	evidence := probers[0].RecoveryRTT()
+	advance := evidence.FreshUntil.Sub(clock.Now()) - conservativeRecoveryService + time.Nanosecond
+	if advance <= 0 {
+		t.Fatalf("precondition: initial RTT freshness = %v", evidence.FreshUntil.Sub(clock.Now()))
+	}
+	clock.advance(advance)
+	close(release)
+	<-done
+
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+	want := armedAt.Add(conservativeRecoveryService)
+	if !deadline.Equal(want) {
+		t.Fatalf("publication froze stale wall-clock evidence: deadline=%v want=%v", deadline, want)
+	}
+}
+
+func TestTopologyAdvanceBeforePublicationForcesConservativeNewGap(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+
+	renewal := receiverContractMessage(2, message.ServiceBound)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
+		t.Fatal("renewal rejected")
+	}
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+	want := armedAt.Add(conservativeRecoveryService)
+	if !deadline.Equal(want) {
+		t.Fatalf("gap armed during unpublished topology transition at %v, want %v", deadline, want)
+	}
+}
+
+func TestTopologyAdvanceBeforePublicationPreventsOldFastExpiry(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	message := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, message, func() {}); !ok {
+		t.Fatal("offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, message, pathKey, receiverContractSource) {
+		t.Fatal("ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	oldDeadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+	clock.advance(oldDeadline.Sub(clock.Now()) - time.Nanosecond)
+
+	renewal := receiverContractMessage(2, message.ServiceBound)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
+		t.Fatal("renewal rejected")
+	}
+	clock.advance(time.Nanosecond)
+	if item, ok := m.resequencer.Load().Pop(); ok {
+		t.Fatalf("old fast expiry released during unpublished topology transition: %q", item.Payload)
+	}
+	want := clock.Now().Add(conservativeRecoveryService)
+	if deadline, armed := m.resequencer.Load().ArmedDeadline(); !armed || !deadline.Equal(want) {
+		t.Fatalf("transition interval deadline=%v,%v want=%v,true", deadline, armed, want)
 	}
 }
 
@@ -1028,9 +1465,10 @@ func TestReceiveFuncWakesAtExactArmedRecoveryDeadline(t *testing.T) {
 	const hold = 60 * time.Millisecond
 	pathKey := reseqPathKey(m.paths[0].id, 9)
 	rq := m.resequencer.Load()
+	generation := m.contracts.receivedSnapshot().generation
 	rq.SetRecoveryWindow(reseq.RecoveryWindow{
 		Enabled:    true,
-		Revision:   1,
+		Revision:   generation,
 		PathKey:    pathKey,
 		Source:     receiverContractSource,
 		Hold:       hold,

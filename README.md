@@ -123,7 +123,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   Contract, session, membership, source-roam, rebaseline, resequencer-replacement,
   and teardown transitions advance one receiver/topology generation before
   clearing evidence, so a delayed ACK completion or recovery-window publication
-  from an older generation cannot restore the shorter hold.
+  from an older generation cannot restore the shorter hold. Within one unchanged
+  topology, ACK-venue and authenticated RTT/liveness changes receive ordered
+  publication revisions only after their exact inputs are revalidated; an older
+  refresh cannot erase a newer venue or restore a smaller RTT headroom. Each gap
+  keeps the evidence snapshot and deadline it armed with, so same-topology
+  updates affect only future gaps.
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
   non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
   recovery, throughput, probed RTT/liveness,

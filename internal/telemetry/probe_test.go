@@ -101,12 +101,16 @@ func TestProbeEchoRTT(t *testing.T) {
 		snapshot.FreshUntil != clk.Now().Add(proberCfg().Liveness.DownAfter) {
 		t.Fatalf("recovery RTT snapshot = %+v, want injected-clock sample/freshness", snapshot)
 	}
+	if snapshot.Revision != 1 {
+		t.Fatalf("first authenticated RTT revision = %d, want 1", snapshot.Revision)
+	}
 	clk.advance(time.Second)
 	if err := p.HandleEcho(echo); !errors.Is(err, ErrReplay) {
 		t.Fatalf("replayed echo = %v, want ErrReplay", err)
 	}
-	if got := p.RecoveryRTT().SampledAt; got != snapshot.SampledAt {
-		t.Fatalf("replay refreshed RTT timestamp from %v to %v", snapshot.SampledAt, got)
+	afterReplay := p.RecoveryRTT()
+	if afterReplay.SampledAt != snapshot.SampledAt || afterReplay.Revision != snapshot.Revision {
+		t.Fatalf("replay changed recovery snapshot from %+v to %+v", snapshot, afterReplay)
 	}
 }
 
@@ -783,6 +787,7 @@ func TestProberDrivesLiveness(t *testing.T) {
 	if got := p.Estimate().RTT; absDuration(got-rtt) > 5*time.Millisecond {
 		t.Fatalf("RTT estimate = %v, want ~%v", got, rtt)
 	}
+	upRevision := p.RecoveryRTT().Revision
 
 	// Blackhole: no more echoes. After the detection threshold elapses, Tick marks
 	// the path down.
@@ -790,5 +795,8 @@ func TestProberDrivesLiveness(t *testing.T) {
 	p.Tick()
 	if p.State() != StateDown {
 		t.Fatalf("after blackhole state = %v, want down", p.State())
+	}
+	if revision := p.RecoveryRTT().Revision; revision != upRevision+1 {
+		t.Fatalf("Down liveness revision = %d, want %d", revision, upRevision+1)
 	}
 }

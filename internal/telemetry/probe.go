@@ -122,6 +122,7 @@ type Prober struct {
 	live             *Liveness
 	lastRTTSample    time.Time
 	haveRTTSample    bool
+	recoveryRevision uint64
 }
 
 // NewProber builds a Prober for one path. sessionID is this node's per-boot
@@ -295,6 +296,7 @@ func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 	p.lastRTTSample = now
 	p.haveRTTSample = true
 	p.live.RecordEcho()
+	p.bumpRecoveryRevisionLocked()
 	return probe, nil
 }
 
@@ -303,7 +305,18 @@ func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 func (p *Prober) Tick() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	before := p.live.State()
 	p.live.Tick()
+	if p.live.State() != before {
+		p.bumpRecoveryRevisionLocked()
+	}
+}
+
+func (p *Prober) bumpRecoveryRevisionLocked() {
+	p.recoveryRevision++
+	if p.recoveryRevision == 0 {
+		p.recoveryRevision++
+	}
 }
 
 // Estimate returns the current per-path quality snapshot.
@@ -325,6 +338,7 @@ func (p *Prober) State() PathState {
 // horizon, not RideThrough: a sample too old to keep the base path heartbeat
 // current cannot shorten a receive gap.
 type RecoveryRTTSnapshot struct {
+	Revision   uint64
 	RTT        time.Duration
 	SampledAt  time.Time
 	FreshUntil time.Time
@@ -338,9 +352,10 @@ func (p *Prober) RecoveryRTT() RecoveryRTTSnapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	snapshot := RecoveryRTTSnapshot{
-		RTT:     p.est.Estimate().RTT,
-		State:   p.live.State(),
-		Present: p.haveRTTSample,
+		Revision: p.recoveryRevision,
+		RTT:      p.est.Estimate().RTT,
+		State:    p.live.State(),
+		Present:  p.haveRTTSample,
 	}
 	if p.haveRTTSample {
 		snapshot.SampledAt = p.lastRTTSample

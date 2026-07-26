@@ -357,3 +357,133 @@ func TestRecoveryPublicationRequiresExactWindowGeneration(t *testing.T) {
 		t.Fatalf("mismatched generation armed fast: %v,%v", deadline, armed)
 	}
 }
+
+func TestRecoveryPublicationOrdersSameTopologyAndKeepsLiveGapImmutable(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(16, 250*time.Millisecond, clk)
+	authority := &reseq.RecoveryAuthority{}
+	authority.AdvanceTo(1)
+	r.SetRecoveryAuthority(authority)
+	r.SetFECActive(true)
+	first := reseq.RecoveryWindow{
+		Enabled:    true,
+		Revision:   1,
+		PathKey:    7,
+		Source:     testSrc,
+		Hold:       60 * time.Millisecond,
+		ValidUntil: clk.Now().Add(time.Second),
+	}
+	if !r.SetRecoveryPublication(1, 1, []reseq.RecoveryWindow{first}) {
+		t.Fatal("initial publication rejected")
+	}
+	r.ObserveFromPath(0, []byte("zero"), testSrc, 7)
+	drainHold(r)
+	r.ObserveFromPath(2, []byte("two"), testSrc, 7)
+	immutableDeadline := clk.Now().Add(first.Hold)
+	clk.advance(10 * time.Millisecond)
+
+	second := first
+	second.Hold = 100 * time.Millisecond
+	if !r.SetRecoveryPublication(1, 2, []reseq.RecoveryWindow{second}) {
+		t.Fatal("newer same-topology publication rejected")
+	}
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != immutableDeadline {
+		t.Fatalf("same-topology evidence changed live gap: %v,%v want %v,true", deadline, armed, immutableDeadline)
+	}
+	if r.SetRecoveryPublication(1, 1, []reseq.RecoveryWindow{first}) {
+		t.Fatal("older same-topology publication accepted")
+	}
+	if !r.SetRecoveryPublication(1, 2, []reseq.RecoveryWindow{second}) {
+		t.Fatal("exact publication replay was not idempotent")
+	}
+	if r.SetRecoveryPublication(1, 2, []reseq.RecoveryWindow{first}) {
+		t.Fatal("equal revision accepted different evidence")
+	}
+
+	r.ObserveFromPath(1, []byte("one"), testSrc, 7)
+	if got := drainHold(r); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("gap fill delivery = %v, want [one two]", got)
+	}
+	r.ObserveFromPath(4, []byte("four"), testSrc, 7)
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != clk.Now().Add(second.Hold) {
+		t.Fatalf("future gap did not use newer evidence: %v,%v", deadline, armed)
+	}
+}
+
+func TestRecoveryAuthorityPreemptsOldFastExpiryBeforePublication(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(16, 250*time.Millisecond, clk)
+	authority := &reseq.RecoveryAuthority{}
+	authority.AdvanceTo(1)
+	r.SetRecoveryAuthority(authority)
+	r.SetFECActive(true)
+	window := reseq.RecoveryWindow{
+		Enabled:    true,
+		Revision:   1,
+		PathKey:    7,
+		Source:     testSrc,
+		Hold:       60 * time.Millisecond,
+		ValidUntil: clk.Now().Add(time.Second),
+	}
+	if !r.SetRecoveryPublication(1, 1, []reseq.RecoveryWindow{window}) {
+		t.Fatal("initial publication rejected")
+	}
+	r.ObserveFromPath(0, []byte("zero"), testSrc, 7)
+	drainHold(r)
+	r.ObserveFromPath(2, []byte("two"), testSrc, 7)
+	clk.advance(window.Hold)
+	authority.AdvanceTo(2)
+
+	if got := drainHold(r); len(got) != 0 {
+		t.Fatalf("old fast expiry released across topology authority advance: %v", got)
+	}
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != clk.Now().Add(250*time.Millisecond) {
+		t.Fatalf("authority transition deadline = %v,%v, want fresh T", deadline, armed)
+	}
+	window.Revision = 2
+	window.Hold = 100 * time.Millisecond
+	if !r.SetRecoveryPublication(2, 1, []reseq.RecoveryWindow{window}) {
+		t.Fatal("current-topology publication rejected")
+	}
+	if deadline, _ := r.ArmedDeadline(); deadline != clk.Now().Add(250*time.Millisecond) {
+		t.Fatalf("current evidence shortened transition gap to %v", deadline)
+	}
+}
+
+func TestRecoveryAuthorityLeavesFECOffGapUnchanged(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(16, 250*time.Millisecond, clk)
+	authority := &reseq.RecoveryAuthority{}
+	authority.AdvanceTo(1)
+	r.SetRecoveryAuthority(authority)
+	r.SetHoldBound(40 * time.Millisecond)
+	r.Observe(0, []byte("zero"), testSrc)
+	drainHold(r)
+	r.Observe(2, []byte("two"), testSrc)
+	want := clk.Now().Add(40 * time.Millisecond)
+	authority.AdvanceTo(2)
+	if deadline, armed := r.ArmedDeadline(); !armed || deadline != want {
+		t.Fatalf("FEC-off authority update changed gap: %v,%v want %v,true", deadline, armed, want)
+	}
+}
+
+func TestClosedResequencerRejectsAuthoritativePublication(t *testing.T) {
+	clk := newFakeClock()
+	r := reseq.New(16, 250*time.Millisecond, clk)
+	authority := &reseq.RecoveryAuthority{}
+	authority.AdvanceTo(1)
+	r.SetRecoveryAuthority(authority)
+	r.SetFECActive(true)
+	r.Close()
+	authority.AdvanceTo(2)
+	if r.SetRecoveryPublication(2, 1, []reseq.RecoveryWindow{{
+		Enabled:    true,
+		Revision:   2,
+		PathKey:    7,
+		Source:     testSrc,
+		Hold:       60 * time.Millisecond,
+		ValidUntil: clk.Now().Add(time.Second),
+	}}) {
+		t.Fatal("closed resequencer accepted authoritative publication")
+	}
+}

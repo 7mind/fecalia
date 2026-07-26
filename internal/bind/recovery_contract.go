@@ -49,13 +49,15 @@ type recoveryVenueKey struct {
 }
 
 type receivedRecoverySnapshot struct {
-	session    uint64
-	message    telemetry.RecoveryContractMessage
-	validUntil time.Time
-	generation uint64
-	venues     []recoveryVenueKey
-	acked      bool
-	invalid    bool
+	present          bool
+	session          uint64
+	message          telemetry.RecoveryContractMessage
+	validUntil       time.Time
+	generation       uint64
+	evidenceRevision uint64
+	venues           []recoveryVenueKey
+	acked            bool
+	invalid          bool
 }
 
 // recoveryContractCoordinator is the peer-scoped owner of both directions of
@@ -80,20 +82,24 @@ type recoveryContractCoordinator struct {
 	leaseUntil  time.Time
 	invalidated bool
 
-	haveReceived       bool
-	receivedSession    uint64
-	received           receivedRecoveryContract
-	receivedGeneration uint64
-	observedSources    map[uint32]netip.AddrPort
-	haveAdoptedSession bool
-	adoptedSession     uint64
+	haveReceived                bool
+	receivedSession             uint64
+	received                    receivedRecoveryContract
+	receivedGeneration          uint64
+	receivedEvidenceRevision    uint64
+	receivedPublicationRevision uint64
+	receivedAuthority           *reseq.RecoveryAuthority
+	observedSources             map[uint32]netip.AddrPort
+	haveAdoptedSession          bool
+	adoptedSession              uint64
 }
 
 func newRecoveryContractCoordinator(session uint64, clock fecOwnerClock) *recoveryContractCoordinator {
 	return &recoveryContractCoordinator{
-		clock:   clock,
-		session: session,
-		changed: make(chan struct{}),
+		clock:             clock,
+		session:           session,
+		changed:           make(chan struct{}),
+		receivedAuthority: &reseq.RecoveryAuthority{},
 	}
 }
 
@@ -163,7 +169,7 @@ func (c *recoveryContractCoordinator) startOfferLocked(message telemetry.Recover
 
 func (c *recoveryContractCoordinator) disable() {
 	c.mu.Lock()
-	c.bumpReceivedGenerationLocked()
+	c.advanceReceivedGenerationLocked()
 	c.barrierPending = false
 	c.barrierDue = time.Time{}
 	c.haveLease = false
@@ -200,6 +206,14 @@ func (c *recoveryContractCoordinator) bumpReceivedGenerationLocked() {
 	if c.receivedGeneration == 0 {
 		c.receivedGeneration++
 	}
+	c.receivedAuthority.AdvanceTo(c.receivedGeneration)
+}
+
+func (c *recoveryContractCoordinator) bumpReceivedEvidenceLocked() {
+	c.receivedEvidenceRevision++
+	if c.receivedEvidenceRevision == 0 {
+		c.receivedEvidenceRevision++
+	}
 }
 
 // invalidateReceivedEvidence revokes only the fast receiver evidence. The
@@ -215,6 +229,7 @@ func (c *recoveryContractCoordinator) invalidateReceivedEvidence() uint64 {
 
 func (c *recoveryContractCoordinator) advanceReceivedGenerationLocked() {
 	c.bumpReceivedGenerationLocked()
+	c.bumpReceivedEvidenceLocked()
 	c.received.venues = nil
 	c.observedSources = nil
 }
@@ -239,7 +254,10 @@ func (c *recoveryContractCoordinator) observeReceivedSource(pathKey uint32, sour
 	if c.observedSources == nil {
 		c.observedSources = make(map[uint32]netip.AddrPort)
 	}
-	c.observedSources[pathKey] = source
+	if previous, exists := c.observedSources[pathKey]; !exists || previous != source {
+		c.observedSources[pathKey] = source
+		c.bumpReceivedEvidenceLocked()
+	}
 	return c.receivedGeneration, false
 }
 
@@ -247,15 +265,20 @@ func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapsho
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.haveReceived {
-		return receivedRecoverySnapshot{generation: c.receivedGeneration}
+		return receivedRecoverySnapshot{
+			generation:       c.receivedGeneration,
+			evidenceRevision: c.receivedEvidenceRevision,
+		}
 	}
 	snapshot := receivedRecoverySnapshot{
-		session:    c.receivedSession,
-		message:    c.received.message,
-		validUntil: c.received.acceptedAt.Add(c.received.message.Lifetime),
-		generation: c.receivedGeneration,
-		acked:      len(c.received.venues) > 0,
-		invalid:    c.received.invalid,
+		present:          true,
+		session:          c.receivedSession,
+		message:          c.received.message,
+		validUntil:       c.received.acceptedAt.Add(c.received.message.Lifetime),
+		generation:       c.receivedGeneration,
+		evidenceRevision: c.receivedEvidenceRevision,
+		acked:            len(c.received.venues) > 0,
+		invalid:          c.received.invalid,
 	}
 	for venue := range c.received.venues {
 		snapshot.venues = append(snapshot.venues, venue)
@@ -267,6 +290,44 @@ func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapsho
 		return snapshot.venues[i].source.String() < snapshot.venues[j].source.String()
 	})
 	return snapshot
+}
+
+func (c *recoveryContractCoordinator) reserveReceivedPublication(
+	snapshot receivedRecoverySnapshot,
+	validate func() bool,
+) (uint64, uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.receivedGeneration != snapshot.generation ||
+		c.receivedEvidenceRevision != snapshot.evidenceRevision ||
+		c.haveReceived != snapshot.present {
+		return 0, 0, false
+	}
+	if snapshot.present &&
+		(c.receivedSession != snapshot.session ||
+			c.received.message != snapshot.message ||
+			!c.received.acceptedAt.Add(c.received.message.Lifetime).Equal(snapshot.validUntil) ||
+			c.received.invalid != snapshot.invalid ||
+			len(c.received.venues) != len(snapshot.venues)) {
+		return 0, 0, false
+	}
+	for _, venue := range snapshot.venues {
+		if _, exists := c.received.venues[venue]; !exists {
+			return 0, 0, false
+		}
+	}
+	if !validate() {
+		return 0, 0, false
+	}
+	c.receivedPublicationRevision++
+	if c.receivedPublicationRevision == 0 {
+		c.receivedPublicationRevision++
+	}
+	return c.receivedGeneration, c.receivedPublicationRevision, true
+}
+
+func (c *recoveryContractCoordinator) recoveryAuthority() *reseq.RecoveryAuthority {
+	return c.receivedAuthority
 }
 
 type receivedACKAdmission struct {
@@ -317,6 +378,7 @@ func (c *recoveryContractCoordinator) completeReceivedACK(admission receivedACKA
 			c.received.venues = make(map[recoveryVenueKey]struct{})
 		}
 		c.received.venues[venue] = struct{}{}
+		c.bumpReceivedEvidenceLocked()
 	}
 	return true
 }
@@ -587,9 +649,24 @@ func recoveryWindow(service, headroom time.Duration) time.Duration {
 	return service + headroom
 }
 
+type recoveryRefreshPath struct {
+	path     *peerPathState
+	id       uint8
+	prober   *telemetry.Prober
+	evidence telemetry.RecoveryRTTSnapshot
+}
+
+type recoveryRefreshSnapshot struct {
+	resequencer *reseq.Resequencer
+	scheduler   sched.Scheduler
+	paths       []recoveryRefreshPath
+	contract    receivedRecoverySnapshot
+}
+
 // refreshPeerRecoveryWindow derives the receiver hold from one coherent set of
-// authenticated contract, delivery-venue, liveness, and RTT snapshots. It takes
-// no bind lock while entering the resequencer.
+// authenticated contract, delivery-venue, membership, liveness, and RTT
+// snapshots. The final publication revalidates every captured revision and
+// reserves its publication order before entering the resequencer.
 func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 	if m.fecCfg == nil || peer == nil || peer.contracts == nil {
 		return
@@ -603,55 +680,68 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		}
 	}
 	rq := peer.resequencer.Load()
-	paths := append([]*peerPathState(nil), peer.paths...)
+	paths := make([]recoveryRefreshPath, 0, len(peer.paths))
+	for _, path := range peer.paths {
+		paths = append(paths, recoveryRefreshPath{
+			path:   path,
+			id:     path.id,
+			prober: path.prober,
+		})
+	}
 	scheduler := peer.scheduler
 	m.mu.Unlock()
 	if !found || rq == nil {
 		return
 	}
 
-	contract := peer.contracts.receivedSnapshot()
-	publish := func(windows []reseq.RecoveryWindow) {
-		if m.beforeRecoveryPublish != nil {
-			m.beforeRecoveryPublish(peer, rq, contract.generation)
+	for i := range paths {
+		if paths[i].prober != nil {
+			paths[i].evidence = paths[i].prober.RecoveryRTT()
 		}
-		if peer.resequencer.Load() != rq {
-			return
-		}
-		rq.SetRecoveryGeneration(contract.generation, windows)
+	}
+	snapshot := recoveryRefreshSnapshot{
+		resequencer: rq,
+		scheduler:   scheduler,
+		paths:       paths,
+		contract:    peer.contracts.receivedSnapshot(),
 	}
 	now := m.clock.Now()
+	windows := deriveRecoveryWindows(snapshot, now)
+	if m.beforeRecoveryPublish != nil {
+		m.beforeRecoveryPublish(peer, rq, snapshot.contract.generation)
+	}
+	m.commitPeerRecoveryPublication(peer, snapshot, windows)
+}
+
+func deriveRecoveryWindows(snapshot recoveryRefreshSnapshot, now time.Time) []reseq.RecoveryWindow {
+	contract := snapshot.contract
 	if !contract.acked || contract.invalid ||
 		!contract.message.Enabled ||
 		contract.message.Lifetime != telemetry.RecoveryContractLifetime ||
 		contract.message.ServiceBound <= 0 ||
 		contract.message.ServiceBound >= conservativeRecoveryService ||
 		contract.validUntil.Sub(now) < conservativeRecoveryService {
-		publish(nil)
-		return
+		return nil
 	}
-	if _, weighted := scheduler.(*sched.WeightedScheduler); weighted {
-		publish(nil)
-		return
+	if _, weighted := snapshot.scheduler.(*sched.WeightedScheduler); weighted {
+		return nil
 	}
 
 	haveQualified := false
-	qualifiedPathIDs := make(map[uint8]struct{}, len(paths))
+	qualifiedPathIDs := make(map[uint8]struct{}, len(snapshot.paths))
 	maxRTT := time.Duration(0)
 	validUntil := contract.validUntil
-	for _, path := range paths {
+	for _, path := range snapshot.paths {
 		if path.prober == nil {
-			publish(nil)
-			return
+			return nil
 		}
-		evidence := path.prober.RecoveryRTT()
+		evidence := path.evidence
 		if evidence.State != telemetry.StateUp {
 			continue
 		}
 		if !evidence.Present ||
 			evidence.FreshUntil.Sub(now) < conservativeRecoveryService {
-			publish(nil)
-			return
+			return nil
 		}
 		haveQualified = true
 		qualifiedPathIDs[path.id] = struct{}{}
@@ -663,14 +753,12 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 		}
 	}
 	if !haveQualified {
-		publish(nil)
-		return
+		return nil
 	}
 
 	hold := recoveryWindow(contract.message.ServiceBound, recoveryRTTHeadroom(maxRTT))
 	if hold >= conservativeRecoveryService {
-		publish(nil)
-		return
+		return nil
 	}
 	windows := make([]reseq.RecoveryWindow, 0, len(contract.venues))
 	for _, venue := range contract.venues {
@@ -689,7 +777,69 @@ func (m *Multipath) refreshPeerRecoveryWindow(peer *peerState) {
 			ValidUntil: validUntil,
 		})
 	}
-	publish(windows)
+	return windows
+}
+
+func (m *Multipath) commitPeerRecoveryPublication(
+	peer *peerState,
+	snapshot recoveryRefreshSnapshot,
+	windows []reseq.RecoveryWindow,
+) {
+	m.mu.Lock()
+	found := false
+	for _, candidate := range m.peers {
+		if candidate == peer {
+			found = true
+			break
+		}
+	}
+	if !found || peer.resequencer.Load() != snapshot.resequencer ||
+		peer.scheduler != snapshot.scheduler ||
+		len(peer.paths) != len(snapshot.paths) {
+		m.mu.Unlock()
+		return
+	}
+	for i, path := range peer.paths {
+		captured := snapshot.paths[i]
+		if path != captured.path || path.id != captured.id ||
+			path.prober != captured.prober {
+			m.mu.Unlock()
+			return
+		}
+	}
+
+	publishWindows := windows
+	generation, publicationRevision, ok := peer.contracts.reserveReceivedPublication(
+		snapshot.contract,
+		func() bool {
+			for _, path := range snapshot.paths {
+				if path.prober != nil && path.prober.RecoveryRTT() != path.evidence {
+					return false
+				}
+			}
+			if len(publishWindows) > 0 {
+				publishWindows = deriveRecoveryWindows(snapshot, m.clock.Now())
+			}
+			return true
+		},
+	)
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	if m.afterRecoveryPublicationReserve != nil {
+		m.afterRecoveryPublicationReserve(
+			peer,
+			snapshot.resequencer,
+			generation,
+			publicationRevision,
+		)
+	}
+	snapshot.resequencer.SetRecoveryPublication(
+		generation,
+		publicationRevision,
+		publishWindows,
+	)
 }
 
 func (m *Multipath) publishPeerRecoveryGeneration(peer *peerState, generation uint64) {
@@ -697,7 +847,7 @@ func (m *Multipath) publishPeerRecoveryGeneration(peer *peerState, generation ui
 		return
 	}
 	if rq := peer.resequencer.Load(); rq != nil {
-		rq.SetRecoveryGeneration(generation, nil)
+		rq.SetRecoveryPublication(generation, 0, nil)
 	}
 }
 

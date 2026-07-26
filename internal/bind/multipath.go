@@ -1243,6 +1243,7 @@ type Multipath struct {
 	afterRecoveryTransitionCaptureMiss func(*peerState, uint64, uint64)
 	beforeReceivePark                  func(time.Time)
 	beforeRecoveryPublish              func(*peerState, *reseq.Resequencer, uint64)
+	afterRecoveryPublicationReserve    func(*peerState, *reseq.Resequencer, uint64, uint64)
 
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then
@@ -2149,8 +2150,9 @@ func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
 	// goroutines read it WITHOUT m.mu.
 	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
 	if ps.contracts != nil {
+		rq.SetRecoveryAuthority(ps.contracts.recoveryAuthority())
 		generation := ps.contracts.invalidateReceivedEvidence()
-		rq.SetRecoveryGeneration(generation, nil)
+		rq.SetRecoveryPublication(generation, 0, nil)
 	}
 	ps.resequencer.Store(rq)
 	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
@@ -2303,8 +2305,9 @@ func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 	}
 	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
 	if ps.contracts != nil {
+		rq.SetRecoveryAuthority(ps.contracts.recoveryAuthority())
 		generation := ps.contracts.invalidateReceivedEvidence()
-		rq.SetRecoveryGeneration(generation, nil)
+		rq.SetRecoveryPublication(generation, 0, nil)
 	}
 	rq.SetNotifier(resequencerNotifier(m.deliverSignal))
 	ps.resequencer.Store(rq)
