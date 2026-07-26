@@ -1670,6 +1670,42 @@ data-idle STANDBY's sustained loss — while it stays liveness `StateUp`, so a
 role-agnostic MAX-over-`StateUp`-probers drive would have seen it — does NOT
 (the "over" half of the field's anti-phase symptom).
 
+### Recovery contract observability contract
+
+Canonical recovery notation is `D=250ms`, dispatch grace `G=10ms`, lease
+lifetime `F=1200ms`, retained-memory terms `B/C/P/Fgroup/Lio/Mtotal`, and rate
+terms `R/Rp/I`. The sender advertises the worst live-path bound
+`Sdevice=A=max_path(ceil((B+C+P+(Kdata+Mmax+1)*Lmax)/(R-Rp))+I)`;
+the post-cut completion check uses
+`Ecompletion=max_path(ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I)`. The receiver derives
+`H=clamp(4*max(SRTT among qualified paths),10ms,D)` and
+`W=min(D,A+H)`. `SessionID` identifies the authenticated process epoch,
+`ContractID` rotates the immutable service within one epoch, and `OuterSeq`
+does not reset for same-process rotations. Only an exact authenticated `ACK`
+admits fast recovery; otherwise the bounded reason reports a conservative
+fallback. The receiver never reconstructs service from data-plane shape:
+there is no zero-parity inference.
+
+The production source chain has one owner for each value: the FEC sender owns
+staged-group/data counts and decision/deadline state; the peer coordinator owns
+offer/ACK accepts and writes, rotations, session restarts, rejection reasons,
+freshness and the latest RTT/H/W decision; each path shaper owns outer-priority
+outcomes, the current recovery cut and retained-memory high-water marks; the
+resequencer owns armed deadline/window and wake/fill/fast/fallback counters.
+`internal/device` copies those snapshots into `internal/metrics`, and
+`internal/monitor` mirrors the same read model.
+
+Two requested signals deliberately remain unexported. Raw SessionID/ContractID
+values are not exported because Prometheus float64 precision cannot represent
+all `uint64` identities, labels would create process-churn cardinality, and
+either form adds identity disclosure; bounded rotation/restart counters and
+status/reason gauges expose the operational transition instead. A separate
+data/control cumulative split is also not exported: accepted/emitted/error
+bytes remain the single reconciliation authority, while the existing
+`shaper_queue_data_bytes` and `shaper_queue_control_bytes` (`queue_data` /
+`queue_control`) gauges expose current class pressure without inventing a
+second cumulative accounting authority.
+
 ### TUN lifecycle: persistence, the default-route exception, and the session signal — `internal/device`
 
 Three device-lifecycle surfaces beyond tunnel bring-up/teardown itself, all owned

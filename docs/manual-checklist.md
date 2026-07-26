@@ -622,6 +622,24 @@ step. Do not rely on these bounds if a future authenticated outer CONTROL
 producer sustains traffic beyond the declared `Rp`/`Pburst` model; that condition
 constitutes explicit overload.
 
+Canonical record notation: `D=250ms`; `G=10ms`; `F=1200ms`;
+`B/C/P/Fgroup/Lio/Mtotal`; `R/Rp/I`; `Sdevice`;
+`H=clamp(4*max(SRTT),10ms,D)`; `W=min(D,A+H)`; `Ecompletion`. Record
+`SessionID` restart versus same-process `ContractID` rotation separately and
+verify `OuterSeq` continuity across rotation. Require the exact authenticated
+`ACK` for fast recovery; otherwise record the labelled fallback. Validate
+geometry from config/contract state—there is no zero-parity inference.
+
+- [ ] During the run, capture FEC staged/decision/deadline series, recovery
+      contract status/events/reasons/freshness, RTT age/H/W, shaper
+      outer-priority outcomes/cut/high-water series, and resequencer
+      arm/deadline/wake/fill series. Confirm the monitor reports the same
+      current values.
+- [ ] Confirm `group_decisions_total` reconciles with resolved staged groups,
+      each active cut's datagram membership reconciles with its socket-call
+      delta, and aggregate accepted/emitted/error bytes remain the cumulative
+      authority while DATA/control queue gauges report current pressure.
+
 ### T304 result record
 
 Record every cycle, including invalid raw brackets; do not silently discard an

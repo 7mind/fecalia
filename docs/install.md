@@ -585,6 +585,35 @@ Common rules, either policy:
   synthetic aggregation fallback, which projects to its configured raw
   exact-byte defaults only when shaping is enabled.)
 
+#### Recovery notation and exported signals
+
+Use the following notation when comparing config, `/metrics`, and monitor JSON:
+`D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`,
+`B/C/P/Fgroup/Lio/Mtotal`, `R/Rp/I`, sender service `Sdevice`,
+`H=clamp(4*max(SRTT),10ms,D)`, `W=min(D,A+H)`, and `Ecompletion`.
+`SessionID` identifies a process epoch; `ContractID` rotates within the epoch;
+`OuterSeq` remains continuous for that rotation. An exact authenticated `ACK`
+selects fast recovery, while no offer, unacknowledged/stale/wrong/replayed
+evidence, shared writers, and transitions select a reason-labelled fallback.
+Contract/config geometry remains authoritative—there is no zero-parity
+inference.
+
+The FEC families expose staged groups/data, total group and deadline decisions,
+deadline misses/max overshoot, and the current open deadline. Recovery-contract
+families expose bounded status, freshness, writes/accepts, rotations/restarts,
+rejections and fallback reason; recovery families expose RTT age, `H`, and
+`W`. Shaper families expose outer-priority emitted/error bytes, active cut
+deadline/membership/socket calls, and `Fgroup`/`Mtotal` high-water bytes.
+Resequencer families expose armed deadline/window plus wake/fill and
+fast/fallback arm counters. The monitor mirrors the same fields.
+
+Raw `SessionID`/`ContractID` are not exported: Prometheus float64 precision,
+identity disclosure, and label cardinality make raw identities unsuitable.
+Likewise, no data/control cumulative split is added; aggregate
+accepted/emitted/error bytes remain the single reconciliation authority, while
+`shaper_queue_data_bytes` and `shaper_queue_control_bytes` report current class
+pressure.
+
 ### Optional `[dns]` resolver block
 
 Hostname peer endpoints (opt-in per peer with `dns = true`, see the endpoint
