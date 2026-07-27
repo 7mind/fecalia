@@ -604,3 +604,114 @@ func TestControllerUnloadedRingPendingDoesNotReduceIngressHeadroom(t *testing.T)
 		)
 	}
 }
+
+func TestControllerLoadedPressurePreemptsUnrelatedOuterRetargetSettlement(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 3, Generation: 9}
+	at := time.Unix(500, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: initial.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retargeted, err := controller.Observe(congestion.ActualState{
+		At:             at.Add(2 * time.Second),
+		Epoch:          epoch,
+		OuterWireBytes: 2_000_000,
+		RTT:            40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retargeted.AwaitingInstalled ||
+		retargeted.Target.OuterRateBytesPerSecond <=
+			initial.Target.OuterRateBytesPerSecond {
+		t.Fatalf("loaded outer sample did not enter retarget settlement: %+v", retargeted)
+	}
+
+	pressured, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(2100 * time.Millisecond),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: 100 * time.Millisecond,
+			Interval:              100 * time.Millisecond,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pressured.IngressServiceHeadroom >=
+		retargeted.IngressServiceHeadroom ||
+		pressured.IngressHeadroomChanges !=
+			retargeted.IngressHeadroomChanges+1 {
+		t.Fatalf(
+			"loaded local pressure was starved by outer retarget settlement: retargeted=%+v pressured=%+v",
+			retargeted,
+			pressured,
+		)
+	}
+	repeated, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(2200 * time.Millisecond),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: 100 * time.Millisecond,
+			Interval:              100 * time.Millisecond,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.IngressServiceHeadroom !=
+		pressured.IngressServiceHeadroom ||
+		repeated.IngressHeadroomChanges !=
+			pressured.IngressHeadroomChanges {
+		t.Fatalf("pressure repeated before exact ingress readback: %+v", repeated)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(2250 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: pressured.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterReadback, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(2300 * time.Millisecond),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: 100 * time.Millisecond,
+			Interval:              100 * time.Millisecond,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReadback.IngressServiceHeadroom >=
+		pressured.IngressServiceHeadroom ||
+		afterReadback.IngressHeadroomChanges !=
+			pressured.IngressHeadroomChanges+1 {
+		t.Fatalf(
+			"exact ingress readback did not release pressure gate: pressured=%+v after=%+v",
+			pressured,
+			afterReadback,
+		)
+	}
+}

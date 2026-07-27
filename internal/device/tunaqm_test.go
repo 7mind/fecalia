@@ -10,10 +10,7 @@ import (
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
 
-const (
-	tunAQMTxQueueLen    = 32
-	tunAQMDeviceTXQuota = 64
-)
+const tunAQMTxQueueLen = 32
 
 type memoryTUNAQMKernel struct {
 	actual   tunAQMActualState
@@ -23,11 +20,6 @@ type memoryTUNAQMKernel struct {
 type recordingTUNAQMKernel struct {
 	memoryTUNAQMKernel
 	events []string
-}
-
-type externalQuotaTUNAQMKernel struct {
-	memoryTUNAQMKernel
-	deviceTXQuota int
 }
 
 func (k *recordingTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
@@ -48,7 +40,6 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult,
 		LimitBytes:         target.QueueLimitBytes,
 		GSOMaxSize:         target.GSOMaxSize,
 		GSOMaxSegments:     target.GSOMaxSegments,
-		DeviceTXQuota:      target.DeviceTXQuota,
 		ObservedAt:         time.Now(),
 	}
 	return tunAQMApplyResult{}, nil
@@ -56,20 +47,6 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult,
 
 func (k *memoryTUNAQMKernel) Read() (tunAQMActualState, error) {
 	return k.actual, nil
-}
-
-func (k *externalQuotaTUNAQMKernel) Apply(
-	target tunAQMTargetState,
-) (tunAQMApplyResult, error) {
-	result, err := k.memoryTUNAQMKernel.Apply(target)
-	k.actual.DeviceTXQuota = k.deviceTXQuota
-	return result, err
-}
-
-func (k *externalQuotaTUNAQMKernel) Read() (tunAQMActualState, error) {
-	actual := k.actual
-	actual.DeviceTXQuota = k.deviceTXQuota
-	return actual, nil
 }
 
 type deferredTUNAQMKernel struct {
@@ -80,7 +57,6 @@ func (k *deferredTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResul
 	k.actual.RateBytesPerSecond = target.RateBytesPerSecond
 	k.actual.BurstBytes = target.BurstBytes
 	k.actual.TxQueueLen = target.TxQueueLen
-	k.actual.DeviceTXQuota = target.DeviceTXQuota
 	k.actual.ObservedAt = time.Now()
 	if target.QueueLimitBytes < k.actual.LimitBytes &&
 		k.actual.BacklogBytes > target.QueueLimitBytes {
@@ -106,7 +82,6 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 		Epoch: 4, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
-		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	first, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -141,48 +116,6 @@ func TestTUNAQMReconciliationContractDummy(t *testing.T) {
 	testTUNAQMReconciliationContract(t, &memoryTUNAQMKernel{})
 }
 
-func TestTUNAQMExternalDeviceTXQuotaDriftRequiresRefreshedTarget(t *testing.T) {
-	kernel := &externalQuotaTUNAQMKernel{deviceTXQuota: 64}
-	reconciler, err := newTUNAQMReconciler(kernel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := tunAQMTargetState{
-		Epoch: 4, RateBytesPerSecond: 680_000, TxQueueLen: 65,
-		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
-		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
-		DeviceTXQuota: 64,
-	}
-	initial, err := reconciler.Reconcile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !initial.Actual.Fresh || initial.Actual.DeviceTXQuota != 64 {
-		t.Fatalf("initial quota readback = %+v", initial)
-	}
-
-	kernel.deviceTXQuota = 128
-	stale, err := reconciler.Reconcile(target)
-	if err == nil {
-		t.Fatal("cached device TX quota target remained fresh after external drift")
-	}
-	if stale.Actual.Fresh || stale.Actual.DeviceTXQuota != 128 {
-		t.Fatalf("external quota drift was not published as stale: %+v", stale)
-	}
-
-	target.DeviceTXQuota = 128
-	target.TxQueueLen = 129
-	converged, err := reconciler.Reconcile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !converged.Actual.Fresh ||
-		converged.Actual.DeviceTXQuota != 128 ||
-		converged.Actual.TxQueueLen != 129 {
-		t.Fatalf("refreshed quota target did not converge: %+v", converged)
-	}
-}
-
 func TestTUNAQMUsesByteBoundedLeaf(t *testing.T) {
 	kernel := &memoryTUNAQMKernel{}
 	reconciler, err := newTUNAQMReconciler(kernel)
@@ -193,7 +126,6 @@ func TestTUNAQMUsesByteBoundedLeaf(t *testing.T) {
 		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
-		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	snapshot, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -209,7 +141,6 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: 100,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 80_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 20_000,
-		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	newTransition := func(t *testing.T, admissionApplied *bool) (
 		*tunAQMTransition,
@@ -341,7 +272,6 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 			LimitBytes:         65_000,
 			GSOMaxSize:         13_950,
 			GSOMaxSegments:     10,
-			DeviceTXQuota:      tunAQMDeviceTXQuota,
 			QueueLength:        61,
 			BacklogBytes:       83_645,
 			ObservedAt:         time.Now(),
@@ -355,7 +285,6 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 		Epoch: 5, RateBytesPerSecond: 600_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 60_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
-		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	deferred, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -393,15 +322,15 @@ func TestTUNAQMQueueGeometryCoversRingAndManagedLeafServiceWindows(t *testing.T)
 		wantRing      int
 		wantLeafBytes int
 	}{
-		{name: "Pi BDP", rate: 680_000, window: 45_000, peerCount: 1, gsoBytes: 13_950, wantRing: 21, wantLeafBytes: 45_000},
-		{name: "o3 synthetic burst", rate: 1_020_000, window: 60_000, peerCount: 1, gsoBytes: 19_530, wantRing: 30, wantLeafBytes: 60_000},
-		{name: "two peers", rate: 1_360_000, window: 45_000, peerCount: 2, gsoBytes: 12_555, wantRing: 30, wantLeafBytes: 90_000},
+		{name: "Pi BDP", rate: 680_000, window: 45_000, peerCount: 1, gsoBytes: 13_950, wantRing: 1379, wantLeafBytes: 45_000},
+		{name: "o3 synthetic burst", rate: 1_020_000, window: 60_000, peerCount: 1, gsoBytes: 19_530, wantRing: 1998, wantLeafBytes: 60_000},
+		{name: "two peers", rate: 1_360_000, window: 45_000, peerCount: 2, gsoBytes: 12_555, wantRing: 1989, wantLeafBytes: 90_000},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := deriveTUNAQMQueueGeometry(
 				test.rate, test.window, test.peerCount, test.gsoBytes,
-				engineOutboundBatchDelayBudget, 1395, 1395, 1,
+				engineOutboundBatchDelayBudget, 1395, 1395,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -436,7 +365,6 @@ func TestTUNAQMLeafBacklogBoundIsIndependentOfPacketSize(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		mtu,
 		mtu,
-		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -462,7 +390,7 @@ func TestTUNAQMLeafBacklogBoundIsIndependentOfPacketSize(t *testing.T) {
 	}
 }
 
-func TestTUNAQMRingIsOnlyTransientFullMTUHandoff(t *testing.T) {
+func TestTUNAQMRingCoversTransientMinimumPacketHandoff(t *testing.T) {
 	const (
 		rateBytesPerSecond = 680_000
 		admissionBytes     = 51_093
@@ -477,7 +405,6 @@ func TestTUNAQMRingIsOnlyTransientFullMTUHandoff(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		mtu,
 		mtu,
-		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -485,27 +412,28 @@ func TestTUNAQMRingIsOnlyTransientFullMTUHandoff(t *testing.T) {
 	arrivalBytes := int(math.Ceil(
 		rateBytesPerSecond * engineOutboundBatchDelayBudget.Seconds(),
 	))
-	maximumTransientSlots := (arrivalBytes + geometry.HTBBurstBytes + mtu - 1) / mtu
+	maximumTransientSlots :=
+		(arrivalBytes + geometry.HTBBurstBytes + minimumInnerPacketBytes - 1) /
+			minimumInnerPacketBytes
 	if geometry.RingSlots !=
 		maximumTransientSlots+tunRingImplementationGuardSlots {
 		t.Fatalf(
-			"ring permits %d full-MTU bytes in %d slots, want transient handoff %d slots plus %d implementation guard (%d bytes)",
-			geometry.RingSlots*mtu,
+			"ring has %d slots, want transient minimum-packet handoff %d slots plus %d implementation guard (%d total)",
 			geometry.RingSlots,
 			maximumTransientSlots,
 			tunRingImplementationGuardSlots,
-			(maximumTransientSlots+tunRingImplementationGuardSlots)*mtu,
+			maximumTransientSlots+tunRingImplementationGuardSlots,
 		)
 	}
 }
 
-func TestTUNAQMRingCoversEffectiveDeviceTXQuota(t *testing.T) {
+func TestTUNAQMRingCoversMinimumPacketizationOfByteHandoff(t *testing.T) {
 	const (
 		rateBytesPerSecond = 1_020_000
 		admissionBytes     = 60_000
 		mtu                = 1395
 		gsoBytes           = 19_530
-		deviceTXQuota      = 64
+		unitBoundaryBytes  = 20
 	)
 	geometry, err := deriveTUNAQMQueueGeometry(
 		rateBytesPerSecond,
@@ -515,18 +443,29 @@ func TestTUNAQMRingCoversEffectiveDeviceTXQuota(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		mtu,
 		mtu,
-		deviceTXQuota,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if geometry.DeviceTXQuota != deviceTXQuota ||
-		geometry.RingSlots != deviceTXQuota+tunRingImplementationGuardSlots {
+	handoffBytes := int(math.Ceil(
+		rateBytesPerSecond*engineOutboundBatchDelayBudget.Seconds(),
+	)) + geometry.HTBBurstBytes
+	minimumPacketSlots := (handoffBytes + unitBoundaryBytes - 1) /
+		unitBoundaryBytes
+	if minimumInnerPacketBytes != unitBoundaryBytes {
 		t.Fatalf(
-			"device TX quota geometry = %+v, want quota=%d ring=%d",
-			geometry,
-			deviceTXQuota,
-			deviceTXQuota+tunRingImplementationGuardSlots,
+			"minimum inner packet bytes = %d, want protocol boundary %d",
+			minimumInnerPacketBytes,
+			unitBoundaryBytes,
+		)
+	}
+	if geometry.RingSlots !=
+		minimumPacketSlots+tunRingImplementationGuardSlots {
+		t.Fatalf(
+			"ring slots = %d, want %d minimum-packet handoff slots plus %d guard",
+			geometry.RingSlots,
+			minimumPacketSlots,
+			tunRingImplementationGuardSlots,
 		)
 	}
 }
@@ -540,7 +479,6 @@ func TestTUNAQMHTBBurstHasExactTCTextReadback(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		1395,
 		1395,
-		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -636,7 +574,6 @@ func TestTUNAQMRingAndLeafServiceBoundUsesFullMTUPackets(t *testing.T) {
 		bounds.MaxBatchServiceTime,
 		mtu,
 		mtu,
-		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -644,8 +581,10 @@ func TestTUNAQMRingAndLeafServiceBoundUsesFullMTUPackets(t *testing.T) {
 	arrivalBytes := int(math.Ceil(
 		rateBytesPerSecond * bounds.MaxBatchServiceTime.Seconds(),
 	))
-	requiredRingSlots := (arrivalBytes+geometry.HTBBurstBytes+mtu-1)/mtu +
-		tunRingImplementationGuardSlots
+	requiredRingSlots :=
+		(arrivalBytes+geometry.HTBBurstBytes+minimumInnerPacketBytes-1)/
+			minimumInnerPacketBytes +
+			tunRingImplementationGuardSlots
 	if geometry.RingSlots != requiredRingSlots {
 		t.Fatalf(
 			"derived ring slots = %d, want %d",
@@ -653,8 +592,11 @@ func TestTUNAQMRingAndLeafServiceBoundUsesFullMTUPackets(t *testing.T) {
 			requiredRingSlots,
 		)
 	}
+	fullMTUServiceSlots :=
+		(arrivalBytes+geometry.HTBBurstBytes+mtu-1)/mtu +
+			tunRingImplementationGuardSlots
 	wantMaximumServiceTime := time.Duration(
-		float64(geometry.RingSlots*mtu+geometry.LeafLimitBytes) /
+		float64(fullMTUServiceSlots*mtu+geometry.LeafLimitBytes) /
 			rateBytesPerSecond * float64(time.Second),
 	)
 	if geometry.MaximumServiceTime != wantMaximumServiceTime {
@@ -764,7 +706,6 @@ func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatch(t *testing.T) {
 		got.MaxBatchServiceTime,
 		mtu,
 		mtu,
-		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -798,7 +739,6 @@ func TestTUNAQMFailedReconciliationPublishesObservedActualAsStale(t *testing.T) 
 		Epoch: 9, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
-		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	snapshot, err := reconciler.Reconcile(target)
 	if err == nil {

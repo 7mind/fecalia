@@ -69,7 +69,7 @@ func TestMain(m *testing.M) {
 		args = append(args, "--", self)
 		args = append(args, os.Args[1:]...)
 
-		deviceTXQuota, err := linuxDeviceTXQuota()
+		deviceTXQuota, err := nativeTUNDeviceTXQuota()
 		if err != nil {
 			fmt.Fprintln(
 				os.Stderr,

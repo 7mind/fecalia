@@ -22,11 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	tunAQMCommandTimeout        = 3 * time.Second
-	linuxDeviceWeightPath       = "/proc/sys/net/core/dev_weight"
-	linuxDeviceWeightTXBiasPath = "/proc/sys/net/core/dev_weight_tx_bias"
-)
+const tunAQMCommandTimeout = 3 * time.Second
 
 var (
 	tunAQMRatePattern = regexp.MustCompile(
@@ -38,15 +34,14 @@ var (
 )
 
 type linuxTUNAQMKernel struct {
-	name              string
-	tc                string
-	command           func(args ...string) ([]byte, error)
-	readTxQueueLen    func() (int, error)
-	writeTxQueueLen   func(int) error
-	readRingPending   func() (bool, error)
-	readDeviceTXQuota func() (int, error)
-	readGSOLimits     func() (linkGSOLimits, error)
-	writeGSOLimits    func(linkGSOLimits) error
+	name            string
+	tc              string
+	command         func(args ...string) ([]byte, error)
+	readTxQueueLen  func() (int, error)
+	writeTxQueueLen func(int) error
+	readRingPending func() (bool, error)
+	readGSOLimits   func() (linkGSOLimits, error)
+	writeGSOLimits  func(linkGSOLimits) error
 }
 
 func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
@@ -68,7 +63,6 @@ func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
 	kernel.readRingPending = func() (bool, error) {
 		return false, nil
 	}
-	kernel.readDeviceTXQuota = linuxDeviceTXQuota
 	kernel.readGSOLimits = func() (linkGSOLimits, error) {
 		return readLinkGSOLimits(name)
 	}
@@ -76,47 +70,6 @@ func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
 		return setLinkGSOLimits(name, limits)
 	}
 	return kernel, nil
-}
-
-func linuxDeviceTXQuota() (int, error) {
-	readPositive := func(path, name string) (int, error) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return 0, fmt.Errorf("device: read %s: %w", name, err)
-		}
-		value, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-		if err != nil {
-			return 0, fmt.Errorf(
-				"device: parse %s value %q: %w",
-				name,
-				raw,
-				err,
-			)
-		}
-		if value <= 0 {
-			return 0, fmt.Errorf(
-				"device: %s must contain a positive integer, got %q",
-				name,
-				raw,
-			)
-		}
-		return value, nil
-	}
-	weight, err := readPositive(linuxDeviceWeightPath, "net.core.dev_weight")
-	if err != nil {
-		return 0, err
-	}
-	bias, err := readPositive(
-		linuxDeviceWeightTXBiasPath,
-		"net.core.dev_weight_tx_bias",
-	)
-	if err != nil {
-		return 0, err
-	}
-	if weight > int(^uint(0)>>1)/bias {
-		return 0, errors.New("device: effective device TX quota overflows int")
-	}
-	return weight * bias, nil
 }
 
 func findTCBinary() (string, error) {
@@ -234,10 +187,6 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 }
 
 func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
-	deviceTXQuota, err := k.readDeviceTXQuota()
-	if err != nil {
-		return tunAQMActualState{}, err
-	}
 	txQueueLen, err := k.readTxQueueLen()
 	if err != nil {
 		return tunAQMActualState{}, err
@@ -319,7 +268,6 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		QueueLength:        queueLength,
 		BacklogBytes:       backlog,
 		RingPending:        ringPending,
-		DeviceTXQuota:      deviceTXQuota,
 		Drops:              drops,
 		ObservedAt:         time.Now(),
 	}, nil
@@ -506,10 +454,6 @@ func (t *Tunnel) startTUNAQM() error {
 	if err != nil {
 		return err
 	}
-	deviceTXQuota, err := kernel.readDeviceTXQuota()
-	if err != nil {
-		return err
-	}
 	queueGeometry, err := deriveTUNAQMQueueGeometry(
 		initial.IngressRateBytesPerSecond*float64(peerCount),
 		bounds.AdmissionLimitBytes,
@@ -518,7 +462,6 @@ func (t *Tunnel) startTUNAQM() error {
 		bounds.MaxBatchServiceTime,
 		mtu,
 		maximumMTU,
-		deviceTXQuota,
 	)
 	if err != nil {
 		return err
@@ -532,7 +475,6 @@ func (t *Tunnel) startTUNAQM() error {
 		GSOMaxSize:          bounds.GSOMaxSize,
 		GSOMaxSegments:      bounds.GSOMaxSegments,
 		AdmissionLimitBytes: bounds.AdmissionLimitBytes,
-		DeviceTXQuota:       queueGeometry.DeviceTXQuota,
 	}
 	initialSnapshot, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -567,8 +509,7 @@ func (t *Tunnel) startTUNAQM() error {
 	t.log.Info("TUN AQM installed",
 		"interface", t.name,
 		"rate_bytes_per_second", target.RateBytesPerSecond,
-		"tx_queue_len", target.TxQueueLen,
-		"device_tx_quota", target.DeviceTXQuota)
+		"tx_queue_len", target.TxQueueLen)
 	initialOutboundStats := t.dev.OutboundStats()
 	pressureSampler := tunIngressPressureSampler{
 		previous: tunIngressPressureCounters{
@@ -618,11 +559,6 @@ func (t *Tunnel) startTUNAQM() error {
 					t.log.Error("engine outbound bound derivation failed", "error", err.Error())
 					continue
 				}
-				deviceTXQuota, err := kernel.readDeviceTXQuota()
-				if err != nil {
-					t.log.Error("device TX quota readback failed", "error", err.Error())
-					continue
-				}
 				queueGeometry, err := deriveTUNAQMQueueGeometry(
 					target.RateBytesPerSecond,
 					bounds.AdmissionLimitBytes,
@@ -631,7 +567,6 @@ func (t *Tunnel) startTUNAQM() error {
 					bounds.MaxBatchServiceTime,
 					target.MTU,
 					maximumMTU,
-					deviceTXQuota,
 				)
 				if err != nil {
 					t.log.Error("TUN AQM queue-geometry derivation failed", "error", err.Error())
@@ -643,7 +578,6 @@ func (t *Tunnel) startTUNAQM() error {
 				target.GSOMaxSize = bounds.GSOMaxSize
 				target.GSOMaxSegments = bounds.GSOMaxSegments
 				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes
-				target.DeviceTXQuota = queueGeometry.DeviceTXQuota
 				snapshot, err := transition.Reconcile(target)
 				if err != nil {
 					t.log.Error("TUN AQM reconciliation failed", "error", err.Error())

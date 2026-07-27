@@ -84,13 +84,14 @@ type Snapshot struct {
 }
 
 type Controller struct {
-	mu                    sync.Mutex
-	seed                  float64
-	limit                 float64
-	snapshot              Snapshot
-	haveSample            bool
-	lastIngressPressureAt time.Time
-	cleanIngressIntervals int
+	mu                     sync.Mutex
+	seed                   float64
+	limit                  float64
+	snapshot               Snapshot
+	haveSample             bool
+	lastIngressPressureAt  time.Time
+	cleanIngressIntervals  int
+	ingressPressurePending bool
 }
 
 func New(seedBytesPerSecond, limitBytesPerSecond float64) (*Controller, error) {
@@ -173,6 +174,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		}
 		c.lastIngressPressureAt = time.Time{}
 		c.cleanIngressIntervals = 0
+		c.ingressPressurePending = false
 		c.haveSample = true
 		return c.snapshot, nil
 	}
@@ -319,7 +321,11 @@ func (c *Controller) ObserveIngressPressure(
 	} else if !actual.Loaded {
 		c.cleanIngressIntervals = 0
 	}
-	if !c.ingressTargetSettledLocked(actual.At) {
+	if c.snapshot.IngressPressure {
+		if c.ingressPressurePending {
+			return c.snapshot, nil
+		}
+	} else if !c.ingressTargetSettledLocked(actual.At) {
 		return c.snapshot, nil
 	}
 
@@ -354,6 +360,7 @@ func (c *Controller) ObserveIngressPressure(
 	c.snapshot.InstalledIngress.Fresh = false
 	c.snapshot.TargetChanges++
 	c.snapshot.IngressHeadroomChanges++
+	c.ingressPressurePending = c.snapshot.IngressPressure
 	c.snapshot.Held = false
 	return c.snapshot, nil
 }
@@ -396,6 +403,9 @@ func (c *Controller) ObserveInstalledIngress(actual InstalledIngressState) error
 		actual.At = c.snapshot.InstalledIngress.At
 	}
 	c.snapshot.InstalledIngress = actual
+	if actual.Fresh {
+		c.ingressPressurePending = false
+	}
 	return nil
 }
 

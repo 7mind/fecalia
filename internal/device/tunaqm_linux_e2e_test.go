@@ -4,6 +4,7 @@ package device
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net"
 	"os"
@@ -105,7 +106,6 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 		bounds.MaxBatchServiceTime,
 		mtu,
 		mtu,
-		deviceTXQuota,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -113,9 +113,6 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 	kernel, err := newLinuxTUNAQMKernel(name)
 	if err != nil {
 		t.Fatal(err)
-	}
-	kernel.readDeviceTXQuota = func() (int, error) {
-		return deviceTXQuota, nil
 	}
 	kernel.readRingPending = func() (bool, error) {
 		return tunRingPending(tunDevice.File())
@@ -129,7 +126,6 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 		GSOMaxSize:          bounds.GSOMaxSize,
 		GSOMaxSegments:      bounds.GSOMaxSegments,
 		AdmissionLimitBytes: bounds.AdmissionLimitBytes,
-		DeviceTXQuota:       geometry.DeviceTXQuota,
 	}
 	if _, err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
@@ -140,18 +136,15 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 	}
 	if actual.TxQueueLen != geometry.RingSlots ||
 		actual.LimitBytes != geometry.LeafLimitBytes ||
-		actual.BurstBytes != geometry.HTBBurstBytes ||
-		actual.DeviceTXQuota != deviceTXQuota {
+		actual.BurstBytes != geometry.HTBBurstBytes {
 		t.Fatalf(
-			"native TUN queue readback ring/leaf-bytes/burst/quota = %d/%d/%d/%d, want %d/%d/%d/%d",
+			"native TUN queue readback ring/leaf-bytes/burst = %d/%d/%d, want %d/%d/%d",
 			actual.TxQueueLen,
 			actual.LimitBytes,
 			actual.BurstBytes,
-			actual.DeviceTXQuota,
 			geometry.RingSlots,
 			geometry.LeafLimitBytes,
 			geometry.HTBBurstBytes,
-			deviceTXQuota,
 		)
 	}
 	t.Logf(
@@ -171,9 +164,22 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 		buffers[index] = make([]byte, linuxDefaultGSOMaxSize)
 	}
 
+	boundedHandoffBytes := int(math.Ceil(
+		rateBytesPerSecond*bounds.MaxBatchServiceTime.Seconds(),
+	)) + geometry.HTBBurstBytes
+	const minimumNativePacketBytes = 29
+	minimumPacketHandoff :=
+		(boundedHandoffBytes + minimumNativePacketBytes - 1) /
+			minimumNativePacketBytes
 	driverDropsBeforeSmallPackets := readLinkTXDrops(t, ip, name)
 	qdiscDropsBeforeSmallPackets := actual.Drops
-	writeNativeTUNPackets(t, remote, deviceTXQuota, deviceTXQuota, 64)
+	writeNativeTUNPackets(
+		t,
+		remote,
+		minimumPacketHandoff,
+		deviceTXQuota,
+		minimumNativePacketBytes-28,
+	)
 	time.Sleep(bounds.MaxBatchServiceTime)
 	actual, err = kernel.Read()
 	if err != nil {
@@ -183,11 +189,12 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 	if driverDropsAfterSmallPackets != driverDropsBeforeSmallPackets ||
 		actual.Drops != qdiscDropsBeforeSmallPackets {
 		t.Fatalf(
-			"device TX quota small-packet handoff link/qdisc drops = %d->%d/%d->%d, quota=%d ring=%d backlog=%d qlen=%d",
+			"minimum-packet handoff link/qdisc drops = %d->%d/%d->%d, packets=%d quota=%d ring=%d backlog=%d qlen=%d",
 			driverDropsBeforeSmallPackets,
 			driverDropsAfterSmallPackets,
 			qdiscDropsBeforeSmallPackets,
 			actual.Drops,
+			minimumPacketHandoff,
 			deviceTXQuota,
 			geometry.RingSlots,
 			actual.BacklogBytes,
@@ -195,7 +202,8 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 		)
 	}
 	t.Logf(
-		"device_tx_quota_handoff driver_drops=%d->%d qdisc_drops=%d->%d",
+		"minimum_packet_handoff packets=%d driver_drops=%d->%d qdisc_drops=%d->%d",
+		minimumPacketHandoff,
 		driverDropsBeforeSmallPackets,
 		driverDropsAfterSmallPackets,
 		qdiscDropsBeforeSmallPackets,
@@ -204,9 +212,6 @@ func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 	drainNativeTUN(t, tunDevice, kernel, buffers, sizes)
 
 	fullMTULeafPackets := geometry.LeafLimitBytes / mtu
-	boundedHandoffBytes := int(math.Ceil(
-		rateBytesPerSecond*bounds.MaxBatchServiceTime.Seconds(),
-	)) + geometry.HTBBurstBytes
 	boundedHandoffPackets := (boundedHandoffBytes + mtu - 1) / mtu
 	writeNativeTUNPackets(t, remote, boundedHandoffPackets, 1, mtu-28)
 	time.Sleep(bounds.MaxBatchServiceTime)
@@ -300,6 +305,35 @@ func readNativeTUNDeviceTXQuota(t testing.TB) int {
 		)
 	}
 	return quota
+}
+
+func nativeTUNDeviceTXQuota() (int, error) {
+	readPositive := func(path string) (int, error) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return 0, err
+		}
+		value, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			return 0, err
+		}
+		if value <= 0 {
+			return 0, fmt.Errorf("%s must contain a positive integer", path)
+		}
+		return value, nil
+	}
+	weight, err := readPositive("/proc/sys/net/core/dev_weight")
+	if err != nil {
+		return 0, err
+	}
+	bias, err := readPositive("/proc/sys/net/core/dev_weight_tx_bias")
+	if err != nil {
+		return 0, err
+	}
+	if weight > int(^uint(0)>>1)/bias {
+		return 0, fmt.Errorf("native TUN device TX quota overflows int")
+	}
+	return weight * bias, nil
 }
 
 func writeNativeTUNPackets(
