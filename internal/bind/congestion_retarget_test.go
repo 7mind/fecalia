@@ -64,6 +64,9 @@ func TestCongestionRetargetPreservesPathRecoveryAndSequenceGeneration(t *testing
 	beforeOuterSequence := m.outerSeq.Load()
 
 	m.driveCongestionControllers()
+	if got, want := pathCongestionRTTVariation(m), probers[0].Estimate().Jitter; got != want {
+		t.Fatalf("controller RTT variation = %s, want prober RTTVAR %s", got, want)
+	}
 	firstCarrierGeneration := m.congestionGeneration
 	if firstCarrierGeneration == 0 {
 		t.Fatal("controller did not establish the active carrier generation")
@@ -142,3 +145,7 @@ func TestCongestionRetargetPreservesPathRecoveryAndSequenceGeneration(t *testing
 }
 
 var _ pathShaperRetargeter = (*shaper.Shaper)(nil)
+
+func pathCongestionRTTVariation(m *Multipath) time.Duration {
+	return m.paths[0].congestion.Snapshot().Actual.RTTVariation
+}

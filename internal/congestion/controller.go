@@ -13,10 +13,10 @@ const (
 	minimumTargetFraction    = 0.10
 	minimumTargetRate        = 128_000.0
 	decreaseFactor           = 0.85
-	deliveredHeadroom        = 0.95
 	increaseFraction         = 0.10
 	overheadEWMAWeight       = 0.25
 	minimumQueueThreshold    = 10 * time.Millisecond
+	rttVariationFactor       = 4
 	lossCongestionThreshold  = 0.005
 	minimumRetargetSettle    = time.Second
 	installedRateTolerance   = 0.01
@@ -39,6 +39,7 @@ type ActualState struct {
 	OuterWireBytes    uint64
 	InnerDataBytes    uint64
 	RTT               time.Duration
+	RTTVariation      time.Duration
 	AuthenticatedLoss float64
 	LossFresh         bool
 	FeedbackEverSeen  bool
@@ -152,6 +153,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	if actual.RTT < 0 {
 		return Snapshot{}, errors.New("congestion RTT must be non-negative")
 	}
+	if actual.RTTVariation < 0 {
+		return Snapshot{}, errors.New("congestion RTT variation must be non-negative")
+	}
 	if math.IsNaN(actual.AuthenticatedLoss) ||
 		actual.AuthenticatedLoss < 0 ||
 		actual.AuthenticatedLoss > 1 {
@@ -218,6 +222,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	if queueThreshold < minimumQueueThreshold {
 		queueThreshold = minimumQueueThreshold
 	}
+	queueThreshold += rttVariationFactor * actual.RTTVariation
 	congested := loaded &&
 		(c.snapshot.QueueDelay >= queueThreshold ||
 			(actual.LossFresh && actual.AuthenticatedLoss >= lossCongestionThreshold))
@@ -253,9 +258,6 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	switch {
 	case congested:
 		next := target * decreaseFactor
-		if deliveredRate > 0 && deliveredRate*deliveredHeadroom < next {
-			next = deliveredRate * deliveredHeadroom
-		}
 		floor, _ := MinimumTargetRate(c.seed)
 		if next < floor {
 			next = floor

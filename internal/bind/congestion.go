@@ -63,6 +63,7 @@ func (m *Multipath) driveCongestionControllers() {
 			}
 			loss, fresh, ever = peer.dataLoss.sampleIdentity(path.id, identity, now)
 		}
+		estimate := path.prober.Estimate()
 		observations = append(observations, congestionObservation{
 			controller: path.congestion,
 			retargeter: retargeter,
@@ -73,7 +74,8 @@ func (m *Multipath) driveCongestionControllers() {
 				Epoch:             congestion.CarrierEpoch{PathID: path.id, Generation: peer.congestionGeneration},
 				OuterWireBytes:    path.outerWireBytes.Load(),
 				InnerDataBytes:    path.innerDataBytes.Load(),
-				RTT:               path.prober.Estimate().RTT,
+				RTT:               estimate.RTT,
+				RTTVariation:      estimate.Jitter,
 				AuthenticatedLoss: loss,
 				LossFresh:         fresh,
 				FeedbackEverSeen:  ever,

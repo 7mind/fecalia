@@ -769,3 +769,223 @@ func TestControllerLoadedPressurePreemptsUnrelatedOuterRetargetSettlement(t *tes
 		)
 	}
 }
+
+// Behavioral-Active Blackbox-Atomic. Regression: D130 cycle 25.
+func TestControllerCycle25NoLossVariableRTTDoesNotCollapse(t *testing.T) {
+	const (
+		seed  = 1_000_000.0
+		limit = 1_000_000.0
+	)
+	controller, err := congestion.New(seed, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(600, 0)
+	const baseRTT = 35_422_288 * time.Nanosecond
+	snapshot, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: baseRTT,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialTarget := snapshot.Target.OuterRateBytesPerSecond
+	queueDelay := []time.Duration{
+		56_091 * time.Microsecond,
+		58_344 * time.Microsecond,
+		52_702 * time.Microsecond,
+		57_018 * time.Microsecond,
+		64_860 * time.Microsecond,
+		55_465 * time.Microsecond,
+		46_732 * time.Microsecond,
+		47_781 * time.Microsecond,
+		29_220 * time.Microsecond,
+		47_150 * time.Microsecond,
+		61_981 * time.Microsecond,
+		51_619 * time.Microsecond,
+		53_326 * time.Microsecond,
+		35_173 * time.Microsecond,
+		29_334 * time.Microsecond,
+		22_801 * time.Microsecond,
+		47_953 * time.Microsecond,
+		47_911 * time.Microsecond,
+		33_630 * time.Microsecond,
+		30_736 * time.Microsecond,
+		18_492 * time.Microsecond,
+		12_731 * time.Microsecond,
+		21_504 * time.Microsecond,
+		21_665 * time.Microsecond,
+		28_129 * time.Microsecond,
+		51_253 * time.Microsecond,
+		58_205 * time.Microsecond,
+		64_363 * time.Microsecond,
+		58_332 * time.Microsecond,
+		41_943 * time.Microsecond,
+		24_458 * time.Microsecond,
+		16_120 * time.Microsecond,
+	}
+	var outerBytes, innerBytes uint64
+	for index, delay := range queueDelay {
+		target := snapshot.Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * 2)
+		innerBytes += uint64(target * 2 / 1.25)
+		at = at.Add(2 * time.Second)
+		snapshot, err = controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT:          baseRTT + delay,
+			RTTVariation: 13_517 * time.Microsecond,
+			LossFresh:    true, FeedbackEverSeen: true,
+		})
+		if err != nil {
+			t.Fatalf("trace sample %d: %v", index, err)
+		}
+		if snapshot.AwaitingInstalled {
+			if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+				At: at.Add(100 * time.Millisecond), Epoch: epoch,
+				RateBytesPerSecond: snapshot.Target.IngressRateBytesPerSecond,
+				Fresh:              true,
+			}); err != nil {
+				t.Fatalf("trace sample %d installed readback: %v", index, err)
+			}
+		}
+	}
+	if snapshot.Target.OuterRateBytesPerSecond < initialTarget {
+		t.Fatalf(
+			"cycle-25 zero-loss variable-RTT target = %g, want no decrease below initial %g",
+			snapshot.Target.OuterRateBytesPerSecond,
+			initialTarget,
+		)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: D130 emitted bytes are not delivery.
+func TestControllerCongestedDemandLimitedIntervalUsesMultiplicativeDecrease(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(700, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := initial.Target.OuterRateBytesPerSecond * 0.51
+	congested, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes: uint64(offered), InnerDataBytes: uint64(offered / 1.25),
+		RTT: 80 * time.Millisecond, RTTVariation: time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := initial.Target.OuterRateBytesPerSecond * 0.85
+	if math.Abs(congested.Target.OuterRateBytesPerSecond-want) > 0.001 {
+		t.Fatalf(
+			"51%%-loaded congested target = %g, want one 0.85 decrease to %g",
+			congested.Target.OuterRateBytesPerSecond,
+			want,
+		)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: D130 must retain a queue response.
+func TestControllerSustainedQueueExceedsVariationMarginWithinTwentyProbes(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(800, 0)
+	const baseRTT = 35 * time.Millisecond
+	snapshot, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: baseRTT, RTTVariation: 5 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srtt := float64(baseRTT)
+	rttVariation := float64(5 * time.Millisecond)
+	const elevatedRTT = float64(335 * time.Millisecond)
+	var outerBytes, innerBytes uint64
+	var decreasedAt int
+	for probe := 1; probe <= 20; probe++ {
+		deviation := math.Abs(srtt - elevatedRTT)
+		rttVariation = 0.75*rttVariation + 0.25*deviation
+		srtt = 0.875*srtt + 0.125*elevatedRTT
+		targetBefore := snapshot.Target.OuterRateBytesPerSecond
+		outerBytes += uint64(targetBefore * 0.2)
+		innerBytes += uint64(targetBefore * 0.2 / 1.25)
+		at = at.Add(200 * time.Millisecond)
+		snapshot, err = controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT: time.Duration(srtt), RTTVariation: time.Duration(rttVariation),
+			LossFresh: true, FeedbackEverSeen: true,
+		})
+		if err != nil {
+			t.Fatalf("probe %d: %v", probe, err)
+		}
+		if snapshot.Target.OuterRateBytesPerSecond < targetBefore {
+			decreasedAt = probe
+			break
+		}
+		if snapshot.AwaitingInstalled {
+			if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+				At: at.Add(time.Millisecond), Epoch: epoch,
+				RateBytesPerSecond: snapshot.Target.IngressRateBytesPerSecond,
+				Fresh:              true,
+			}); err != nil {
+				t.Fatalf("probe %d installed readback: %v", probe, err)
+			}
+		}
+	}
+	if decreasedAt == 0 {
+		t.Fatalf("stable 300ms queue produced no decrease within 20 probes: %+v", snapshot)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: D130 loss bypasses RTT noise qualification.
+func TestControllerFreshLossDecreasesImmediatelyDespiteHighRTTVariation(t *testing.T) {
+	const authenticatedLoss = 0.01
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(900, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		RTTVariation: 100 * time.Millisecond,
+		LossFresh:    true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes:    uint64(initial.Target.OuterRateBytesPerSecond),
+		InnerDataBytes:    uint64(initial.Target.OuterRateBytesPerSecond / 1.25),
+		RTT:               40 * time.Millisecond,
+		RTTVariation:      100 * time.Millisecond,
+		AuthenticatedLoss: authenticatedLoss,
+		LossFresh:         true,
+		FeedbackEverSeen:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := initial.Target.OuterRateBytesPerSecond * 0.85
+	if math.Abs(lost.Target.OuterRateBytesPerSecond-want) > 0.001 {
+		t.Fatalf("fresh-loss target = %g, want immediate decrease to %g",
+			lost.Target.OuterRateBytesPerSecond, want)
+	}
+}
