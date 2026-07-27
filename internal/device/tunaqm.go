@@ -467,6 +467,18 @@ type tunIngressPressureDelta struct {
 	AdmissionWaitDuration time.Duration
 }
 
+type tunIngressPressureSampler struct {
+	previous tunIngressPressureCounters
+}
+
+func (s *tunIngressPressureSampler) Sample(
+	current tunIngressPressureCounters,
+) (tunIngressPressureDelta, error) {
+	previous := s.previous
+	s.previous = current
+	return deriveTUNIngressPressureDelta(previous, current)
+}
+
 func deriveTUNIngressPressureDelta(
 	previous tunIngressPressureCounters,
 	current tunIngressPressureCounters,

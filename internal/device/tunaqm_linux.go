@@ -511,10 +511,12 @@ func (t *Tunnel) startTUNAQM() error {
 		"rate_bytes_per_second", target.RateBytesPerSecond,
 		"tx_queue_len", target.TxQueueLen)
 	initialOutboundStats := t.dev.OutboundStats()
-	pressureCounters := tunIngressPressureCounters{
-		ObservedAt:               time.Now(),
-		TUNBytes:                 initialOutboundStats.TUNBytes,
-		AdmissionWaitNanoseconds: initialOutboundStats.AdmissionWaitNanoseconds,
+	pressureSampler := tunIngressPressureSampler{
+		previous: tunIngressPressureCounters{
+			ObservedAt:               time.Now(),
+			TUNBytes:                 initialOutboundStats.TUNBytes,
+			AdmissionWaitNanoseconds: initialOutboundStats.AdmissionWaitNanoseconds,
+		},
 	}
 
 	done := make(chan struct{})
@@ -526,6 +528,22 @@ func (t *Tunnel) startTUNAQM() error {
 			case <-done:
 				return
 			case <-ticker.C:
+				outboundStats := t.dev.OutboundStats()
+				currentPressureCounters := tunIngressPressureCounters{
+					ObservedAt:               time.Now(),
+					TUNBytes:                 outboundStats.TUNBytes,
+					AdmissionWaitNanoseconds: outboundStats.AdmissionWaitNanoseconds,
+				}
+				pressureDelta, pressureErr := pressureSampler.Sample(
+					currentPressureCounters,
+				)
+				if pressureErr != nil {
+					t.log.Error(
+						"TUN ingress pressure derivation failed",
+						"error",
+						pressureErr.Error(),
+					)
+				}
 				rate, epoch, dataBurstBytes, ok := t.bind.TUNIngressTarget()
 				if ok {
 					target.RateBytesPerSecond = rate
@@ -572,24 +590,9 @@ func (t *Tunnel) startTUNAQM() error {
 					snapshot.RateFresh,
 				); err != nil {
 					t.log.Error("TUN AQM readback acknowledgment failed", "error", err.Error())
+					continue
 				}
-				outboundStats := t.dev.OutboundStats()
-				currentPressureCounters := tunIngressPressureCounters{
-					ObservedAt:               time.Now(),
-					TUNBytes:                 outboundStats.TUNBytes,
-					AdmissionWaitNanoseconds: outboundStats.AdmissionWaitNanoseconds,
-				}
-				pressureDelta, pressureErr := deriveTUNIngressPressureDelta(
-					pressureCounters,
-					currentPressureCounters,
-				)
-				pressureCounters = currentPressureCounters
-				if pressureErr != nil {
-					t.log.Error(
-						"TUN ingress pressure derivation failed",
-						"error",
-						pressureErr.Error(),
-					)
+				if pressureErr != nil || !ok {
 					continue
 				}
 				if err := t.bind.ObserveTUNIngressPressure(

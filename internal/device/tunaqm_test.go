@@ -476,6 +476,40 @@ func TestTUNIngressPressureUsesCounterDeltasWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestTUNIngressPressureDiscardedTickCannotReplay(t *testing.T) {
+	initial := tunIngressPressureCounters{
+		ObservedAt:               time.Unix(30, 0),
+		TUNBytes:                 100_000,
+		AdmissionWaitNanoseconds: uint64(time.Second),
+	}
+	discarded := tunIngressPressureCounters{
+		ObservedAt:               time.Unix(31, 0),
+		TUNBytes:                 700_000,
+		AdmissionWaitNanoseconds: uint64(2 * time.Second),
+	}
+	recovered := tunIngressPressureCounters{
+		ObservedAt:               time.Unix(32, 0),
+		TUNBytes:                 760_000,
+		AdmissionWaitNanoseconds: uint64(2100 * time.Millisecond),
+	}
+
+	sampler := tunIngressPressureSampler{previous: initial}
+	if _, err := sampler.Sample(discarded); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := sampler.Sample(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.TUNBytes != 60_000 ||
+		delta.AdmissionWaitDuration != 100*time.Millisecond {
+		t.Fatalf(
+			"discarded tick replayed in recovered interval: %+v",
+			delta,
+		)
+	}
+}
+
 func TestTUNAQMRingAndLeafServiceBoundUsesFullMTUPackets(t *testing.T) {
 	const (
 		rateBytesPerSecond = 1_020_000
