@@ -174,6 +174,14 @@ numbers next to each item.
       starlink and 5g.
 
 ### Failover: drop Starlink
+- [ ] With pacing enabled, calculate
+      `ceil(slowest_effective_shaper_rate_bytes_per_second * 0.005)` bytes,
+      where the rate comes from `link_bandwidth / 8` or the configured raw
+      frame-slot projection, then clamp it to the initial TUN MTU..65536 range.
+      Confirm `ip -d link show wanbond0` reports that `gso_max_size`. Confirm
+      `ethtool -k wanbond0` still reports GSO, TSO, and GRO enabled. With pacing
+      disabled, confirm startup leaves the pre-existing `gso_max_size`
+      unchanged.
 - [ ] Start the long-lived flow: edge `iperf3 -c 10.77.0.1 -t 120` (or an
       interactive SSH session to 10.77.0.1) and, in a second terminal,
       `ping -i 0.2 10.77.0.1`.

@@ -450,6 +450,13 @@ discipline after at most the active and one queued container. It does not
 inspect encrypted payloads or create a priority class: inner WireGuard DATA,
 keepalives, and control retain their existing FIFO order, while authenticated
 outer PROBE/CONTROL continues to use the Bind's independent priority path.
+With exact-byte pacing enabled, startup additionally bounds `wanbond0`'s
+`gso_max_size` to `ceil(min_path_rate_bytes_per_second * 5 ms)`, clamped to at
+least the initial inner MTU and at most the Linux 64 KiB default. Values at or
+above the default cause no link mutation, as do unpaced configurations. This
+pre-split service-quantum invariant does not assume a particular qdisc: it
+bounds one whole-container loss/admission quantum wherever backpressure reaches
+the TUN transmit ring. GSO, TSO, and GRO remain enabled.
 
 Pacing is **policy-independent** (defect D65): it is available and configured
 identically via `[scheduler] pacing_enabled` under active-backup and weighted

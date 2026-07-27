@@ -20,3 +20,14 @@ func ifState(string) (up bool, mtu int, err error) {
 func setLinkMTU(string, int) error {
 	return errors.New("device: setting the interface MTU is only supported on Linux")
 }
+
+// setLinkGSOMaxSize is unavailable off Linux (IFLA_GSO_MAX_SIZE is a Linux
+// rtnetlink attribute); see ifUp.
+func setLinkGSOMaxSize(string, uint32) error {
+	return errors.New("device: setting the interface GSO limit is only supported on Linux")
+}
+
+// readLinkGSOMaxSize is unavailable off Linux; see setLinkGSOMaxSize.
+func readLinkGSOMaxSize(string) (uint32, error) {
+	return 0, errors.New("device: reading the interface GSO limit is only supported on Linux")
+}

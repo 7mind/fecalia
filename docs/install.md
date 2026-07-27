@@ -635,7 +635,13 @@ Common rules, either policy:
   frame/byte current/high-water gauges localize backpressure before the Bind.
   The patched engine admits at most one queued container at each outbound
   handoff; a peer queue high-water above 1 violates that invariant. These
-  metrics remain present when per-path pacing is off.
+  metrics remain present when per-path pacing is off. With pacing enabled,
+  Linux startup also programs `wanbond0` through rtnetlink with
+  `gso_max_size = ceil(slowest_shaper_bytes_per_second * 5 ms)`, clamped between
+  the initial inner MTU and the 64 KiB kernel default. Startup fails if the
+  kernel rejects or does not report the exact bound. Unpaced configurations and
+  derived values at the kernel default make no link mutation; GSO, TSO, and GRO
+  remain enabled.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never

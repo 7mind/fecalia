@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -52,15 +53,62 @@ const monitorShutdownTimeout = 2 * time.Second
 // collides (it never does across the edge and concentrator network namespaces).
 const defaultTUNName = "wanbond0"
 
-// tunGSOMaxSize is the maximum GSO container wanbond0 admits from the kernel.
-// Linux defaults to 64 KiB; configureTUNGSO makes that implicit default explicit
-// at startup so the intended admission quantum has one testable owner.
-const tunGSOMaxSize = 64 * 1024
+const (
+	// maxGSOServiceTime bounds one pre-split GSO container to 5 ms of service
+	// at the slowest configured exact-byte shaper.
+	maxGSOServiceTime      = 5 * time.Millisecond
+	linuxDefaultGSOMaxSize = 64 * 1024
+)
 
 type linkGSOMaxSizeSetter func(name string, size uint32) error
+type linkGSOMaxSizeReader func(name string) (uint32, error)
 
-func configureTUNGSO(name string, apply linkGSOMaxSizeSetter) error {
-	return apply(name, tunGSOMaxSize)
+func desiredTUNGSOMaxSize(cfg *config.Config) (uint32, bool, error) {
+	if !cfg.Scheduler.PacingEnabled {
+		return 0, false, nil
+	}
+	if len(cfg.Scheduler.PerPathShapers) != len(cfg.Paths) || len(cfg.Paths) == 0 {
+		return 0, false, fmt.Errorf("pacing enabled with %d paths but %d derived shapers",
+			len(cfg.Paths), len(cfg.Scheduler.PerPathShapers))
+	}
+	minRate := cfg.Scheduler.PerPathShapers[0].RateBytesPerSecond
+	for _, shaper := range cfg.Scheduler.PerPathShapers[1:] {
+		if shaper.RateBytesPerSecond < minRate {
+			minRate = shaper.RateBytesPerSecond
+		}
+	}
+	if math.IsNaN(minRate) || math.IsInf(minRate, 0) || minRate <= 0 {
+		return 0, false, fmt.Errorf("slowest derived shaper rate must be finite and positive, got %g", minRate)
+	}
+	size := int(math.Ceil(minRate * maxGSOServiceTime.Seconds()))
+	if mtu := tunMTU(cfg); size < mtu {
+		size = mtu
+	}
+	if size >= linuxDefaultGSOMaxSize {
+		return 0, false, nil
+	}
+	return uint32(size), true, nil
+}
+
+func configureTUNGSO(cfg *config.Config, name string, read linkGSOMaxSizeReader, apply linkGSOMaxSizeSetter) error {
+	size, change, err := desiredTUNGSOMaxSize(cfg)
+	if err != nil {
+		return err
+	}
+	if !change {
+		return nil
+	}
+	if err := apply(name, size); err != nil {
+		return err
+	}
+	got, err := read(name)
+	if err != nil {
+		return err
+	}
+	if got != size {
+		return fmt.Errorf("GSO max size readback for %q = %d, want %d", name, got, size)
+	}
+	return nil
 }
 
 // wgFingerprintLen is the number of leading base64 characters of the local WG public
@@ -345,6 +393,13 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	if err := ifUp(name); err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: bring interface up: %w", err)
+	}
+	// Keep the post-GSO TUN admission quantum bounded. The engine retains its
+	// batched container path; only the largest container the kernel may enqueue
+	// changes. Fail startup if the kernel cannot enforce the invariant.
+	if err := configureTUNGSO(cfg, name, readLinkGSOMaxSize, setLinkGSOMaxSize); err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("device: configure interface GSO limit: %w", err)
 	}
 	// Apply the TUN persistence policy (I7, Q38): with tun_persist=true the
 	// kernel keeps wanbond0 (and its
