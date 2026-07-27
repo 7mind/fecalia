@@ -406,26 +406,27 @@ as historical exact-byte-shaper evidence.
 - [ ] Before deployment, run the non-privileged gate and `nix build`. On an
       ARM64 Linux host, run
       `TestLinuxTUNAQMReconciliationContract` and
-      `TestLinuxTUNAQMNativeTUNBoundedReaderStallContract`: the in-memory
+      `TestLinuxTUNAQMNativeTUNFullMTUHandoffContract`: the in-memory
       dummy and real privileged Linux adapter must pass the same
       topology/rate/queue/drift-restoration contract, and the native TUN must
-      prove bounded-stall, immediate-qdisc-overload, and over-stall placement.
+      prove zero-drop full-MTU transient handoff and visible finite-overload placement.
 - [ ] Record both endpoint commit IDs, binary SHA-256 hashes, config hashes,
       service states, TUN link details, `tc -j qdisc`, `tc class`, and a full
       `/metrics` scrape before the candidate starts.
 - [ ] On both edge and concentrator, confirm active-backup+pacing starts only
-      after exact readback: HTB root, one `fq` child with
-      `F=limit=flow_limit=ceil(peerCount*(B+C)/20)`,
-      `D=max(Device.BatchSize,ceil(gso_max_size/20))`, and
-      `wanbond0 txqueuelen=F+D`
-      and `quantum=initial_quantum=current MTU`.
+      after exact readback: HTB root and one `bfifo` child with
+      `L=limit=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service
+      time `T<=20ms`, aggregate ingress `R`, current/maximum MTUs
+      `Mcur`/`Mmax`, and exact installed burst `G`, calculate
+      `H=ceil((ceil(R*T)+G)/Mcur)` and confirm
+      `wanbond0 txqueuelen=H+1`.
       Here `B` is the maximum current active outer-shaper DATA budget and `C`
       is the complete GSO batch below.
-      Confirm HTB `burst=cburst=gso_max_size` and exact target/actual burst,
+      Confirm HTB `burst=cburst=G>=gso_max_size` and exact target/actual burst,
       epoch, rate, ring capacity, and queue-limit readback.
       `wanbond_tun_aqm_actual_fresh` must be 1. Record
-      `((F+D)+F)*20/aggregateIngressRate`; the bounded ownership service
-      window including the direct guard must remain sub-second.
+      `((H+1)*Mmax+L)/R`; the full-MTU ring plus byte-leaf service
+      bound must remain sub-second.
 - [ ] Restart each endpoint with no offered inner traffic. Startup must install
       and expose fresh TUN-AQM target/actual metrics without waiting for a TUN
       packet; an idle engine read must not block ptr-ring occupancy readback.
@@ -462,7 +463,7 @@ as historical exact-byte-shaper evidence.
       target never exceeds that explicit ceiling; with it omitted, confirm a
       clean loaded target can grow beyond `link_bandwidth`. Confirm the
       TUN target follows the learned outer/inner ratio and exact kernel
-      readback follows the target with an in-place `fq` change: packet/drop
+      readback follows the target with an in-place `bfifo` change: packet/drop
       counters must remain monotonic and a correct live leaf must never be
       deleted/re-added. The first congested tick must decrease promptly. Before
       another target change, `retarget_pending` must remain 1 until
@@ -472,10 +473,19 @@ as historical exact-byte-shaper evidence.
       under sustained congestion, the next decision occurs promptly after its
       original deadline. A stale/mismatched readback re-arms the interval, and
       a carrier-epoch transition cancels the prior wait.
+- [ ] Confirm ingress-only local service headroom starts at 0.95 without
+      changing the outer target. A loaded interval whose per-controller engine
+      admission wait occupies at least half the interval, or whose ptr ring is
+      pending, must multiply headroom by 0.85 before link drops rise. The same
+      cumulative counters or a non-advancing interval must not replay the
+      decrease; another change waits for exact readback and settlement.
+      Recovery adds 0.01 only after three consecutive loaded, clean, settled
+      intervals. Idle intervals do not recover. A carrier epoch resets
+      headroom to 0.95.
 - [ ] During a capacity shrink, `rate_fresh` may become 1 while
       `actual_fresh=0` only when a corresponding queue-limit, GSO-limit, or
       engine-admission deferred gauge is 1. The installed queue limit must
-      remain at least the desired limit until qlen fits; GSO shrink waits for
+      remain at least the desired limit until byte backlog fits; GSO shrink waits for
       zero TUN backlog; engine admission shrink waits until every peer's
       retained bytes fit. While that engine shrink remains deferred,
       `target_engine_admission_limit_bytes` must show the desired bound,
@@ -486,15 +496,13 @@ as historical exact-byte-shaper evidence.
       back before the engine value rises. All deferred gauges must return to
       zero after drain, with exact target/actual readback and no new qdisc or
       link drop.
-- [ ] Exercise one native TUN reader stall bounded to the calculated B+C
-      ownership window plus a full `Device.BatchSize`: driver and qdisc drops
-      must both remain unchanged. With the guarded ring still having room,
-      immediate overload beyond `F` must increase the `tc -s` qdisc drop
-      counter while link TX drops remain unchanged. A sustained reader stall
-      beyond the calculated service/lifecycle bound may increase link TX
-      `FULL_RING` drops; do not claim arbitrary-stall losslessness from the
-      bounded result.
-- [ ] For each single ACK-clocked TCP leg, the bounded `fq` leaf incurs zero
+- [ ] Exercise the native full-MTU transient handoff: `H` full-MTU packets
+      over one bounded complete-batch service interval must leave link and
+      qdisc drops unchanged with exact `H+1` ring readback. Overload beyond the
+      finite ring+`L` byte leaf must increase at least one captured link/qdisc
+      counter and report the layer. Do not claim arbitrary-stall or
+      minimum-packet-overload losslessness from the bounded result.
+- [ ] For each single ACK-clocked TCP leg, the byte-bounded `bfifo` leaf incurs zero
       local drops and its backlog returns to zero after the leg. An offered
       burst no larger than the calculated service backlog must also incur zero
       local drops. Overload beyond the explicit queue limit may tail-drop, but

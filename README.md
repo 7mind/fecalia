@@ -226,34 +226,38 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   bounded exact-byte shaper instead of producing scheduler-shedding records.
 - **Pacing on/off is a real tradeoff, not just a knob**: pacing applies bounded
   sender backpressure at a live outer target. Under
-  active-backup, Linux owns a small `wanbond0` HTB+bounded-`fq` qdisc and adapts
+  active-backup, Linux owns a small `wanbond0` HTB+byte-bounded-`bfifo` qdisc and adapts
   both the path shaper and TUN ingress rate from actual outer delivery, probe queue delay, measured
   encapsulation expansion, and fresh authenticated DATA loss; this prevents the
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
   `link_bandwidth` supplies the measured seed and optional
   `link_bandwidth_limit` supplies an operator ceiling.
   After any rate change, another controller decision waits for exact kernel
-  readback and a one-second-or-one-SRTT settling interval. Mutable `fq`
-  parameters change in place, preserving the live queue and counters; a limit
-  shrink waits while the current packet count exceeds the new limit, GSO
+  readback and a one-second-or-one-SRTT settling interval. The ingress target
+  starts with 5% service headroom and decreases independently of the outer
+  capacity target when engine-admission wait time or ptr-ring occupancy reports
+  local saturation; three loaded, clean, settled intervals recover it
+  additively. Mutable `bfifo` limits change in place, preserving the live queue
+  and counters; a limit shrink waits while byte backlog exceeds the new limit, GSO
   shrink waits for an empty TUN backlog, and engine admission shrink waits
   until every peer's retained bytes fit. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
-  cannot perpetually restart that settling interval. The fair-queue limit admits
-  one configured per-peer BDP plus one complete GSO batch at the 20-byte
-  minimum legal inner-packet size. The TUN ptr ring holds that same logical
-  service window plus the larger of a full device batch and one GSO-sized
-  direct/dequeue burst; the HTB burst equals that GSO byte bound and is read
-  back exactly. This prevents `FULL_RING` while the engine reader stalls for
-  the bounded B+C ownership window. A longer arbitrary reader stall lies
-  outside that invariant and may drop at the TUN driver; overload beyond the
-  bounded `fq` window may tail-drop there and remains observable. Shaped FEC
+  cannot perpetually restart that settling interval. The byte leaf admits one
+  configured per-peer BDP plus one complete GSO batch, rounded only to the
+  20-byte minimum legal inner packet. The ptr ring is a transient full-MTU
+  handoff: bytes arriving during the bounded complete-batch service interval
+  plus one HTB burst, divided by current MTU, plus one native Linux guard slot.
+  The HTB burst covers the GSO byte bound and avoids iproute2's lossy text-size
+  rendering so readback remains exact. Full-MTU handoff within that interval
+  incurs no native link/qdisc drop; overload beyond the finite byte leaf may
+  tail-drop there and remains observable. An arbitrary reader stall lies
+  outside the invariant. Shaped FEC
   retains the same engine admission reservation until
   its owner batch terminally emits or fails, so ownership admission cannot
   duplicate that backlog behind the gate. Ring occupancy uses a non-consuming
   zero-time fd poll that does not contend with the engine's blocking TUN read,
   so an idle concentrator can complete startup reconciliation. Admission
-  growth installs and reads back downstream ring/`fq` capacity before exposing
+  growth installs and reads back downstream ring/`bfifo` capacity before exposing
   the larger engine window. Admission shrink changes the engine first; if
   retained bytes defer it, the desired rate and epoch still reconcile while
   installed downstream capacity remains a safe superset until the engine

@@ -392,7 +392,7 @@ The send scheduler defaults to **active-backup** (one active path, instant
 failover); an optional `[scheduler]` block can instead select the
 **weighted-aggregation** policy. Independently of that choice, `[scheduler]`
 turns on, off by default, per-(peer,path) exact-byte send **shaping**. On Linux
-active-backup additionally installs an early `wanbond0` HTB+bounded-`fq` queue and
+active-backup additionally installs an early `wanbond0` HTB+byte-bounded-`bfifo` queue and
 adapts its TUN ingress target from the active carrier's delivered outer rate,
 probe queue delay, true outer/inner expansion, and fresh authenticated DATA
 loss. Weighted scheduling retains fixed per-path shapers because simultaneous
@@ -460,7 +460,13 @@ Common rules, either policy:
   therefore never receives such a model, and gauges never expose a wrapped
   negative Q or a saturated configured-model bound.
 - Under active-backup, the controller initially uses 85% of `Rseed` and a
-  conservative 1.25 outer/inner expansion. Clean loaded samples add 10% of
+  conservative 1.25 outer/inner expansion. Ingress additionally starts with
+  5% local-service headroom while the outer target remains independent.
+  Admission wait occupying at least half a sampling interval or a pending TUN
+  ring multiplies ingress headroom by 0.85 down to 0.50; exact readback and
+  settling block another change. Three consecutive loaded, clean, settled
+  intervals recover 0.01, while idle intervals do not recover. Clean loaded
+  outer samples add 10% of
   `Rseed`; queue delay or authenticated loss reduces the target. Every target
   retargets the same outer shaper and derives `B=max(Lmax,ceil(Rtarget*link_rtt))`.
   Already-admitted deadlines remain unchanged and B shrink waits for retained
@@ -472,17 +478,20 @@ Common rules, either policy:
   and a carrier change cancels the old wait. Q91 defines no fixed
   absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
-  the daemon can install and read back HTB+`fq`, the rate, explicit HTB burst,
-  TUN ptr-ring capacity, and every bounded-queue parameter. Let
-  `F=ceil(peerCount*(B+C)/20)`, where 20 bytes is the minimum legal inner IPv4
-  packet, `B` is the current maximum path DATA budget, and `C` is one complete
-  bounded GSO batch. The `fq` packet and per-flow limits both equal `F`.
-  `txqueuelen=F+max(Device.BatchSize,ceil(gso_max_size/20))`, and HTB
-  `burst=cburst=gso_max_size`. The guard prevents `FULL_RING` for a bounded B+C
-  ownership stall plus a full device/direct-dequeue burst; it does not promise
-  lossless behavior for an arbitrarily stalled TUN reader. Overload above the
-  logical `F` window while the guarded ring has room tail-drops at `fq` and
-  increments the qdisc drop counter. Mutable `fq` fields change in place. A
+  the daemon can install and read back HTB+`bfifo`, the rate, explicit HTB burst,
+  TUN ptr-ring capacity, and the byte limit. Let
+  `L=ceil(peerCount*(B+C)/20)*20` bytes, where 20 bytes is the minimum legal
+  inner IPv4 packet, `B` is the current maximum path DATA budget, and `C` is
+  one complete bounded GSO batch with service time `T<=20ms`. For aggregate
+  ingress `R`, current/maximum MTUs `Mcur`/`Mmax`, and exact installed HTB burst
+  `G>=gso_max_size`, `H=ceil((ceil(R*T)+G)/Mcur)` and
+  `txqueuelen=H+1`; the extra slot is the native Linux TUN guard proved by the
+  privileged full-MTU test. The leaf is `bfifo limit L`, and the conservative
+  service bound is `((H+1)*Mmax+L)/R`. `G` rounds upward by at most 15 bytes
+  when needed to avoid iproute2's lossy KiB text rendering. The contract proves
+  zero local drops for `H` full-MTU handoff packets, not lossless arbitrary
+  reader stalls or minimum-size overload. Excess byte backlog tail-drops at
+  `bfifo` and increments visible counters. Mutable `bfifo` limits change in place. A
   shrink waits rather than discarding admitted traffic when the live queue,
   ptr ring, GSO backlog, or peer-retained engine bytes do not yet fit the new
   bound. Ptr-ring occupancy uses a non-consuming zero-time fd poll independent
@@ -687,27 +696,28 @@ Common rules, either policy:
   `{target_outer,target_ingress,delivered}_bytes_per_second`,
   `{base_rtt,queue_delay}_seconds`, `authenticated_loss_ratio`,
   `loss_fresh`, `carrier_epoch`, `installed_ingress_bytes_per_second`,
-  `installed_fresh`, `retarget_pending`, `target_changes`, and `held`. The two
+  `installed_fresh`, `ingress_service_headroom_ratio`,
+  `ingress_pressure_ratio`, `ingress_pressure`,
+  `ingress_headroom_changes`, `retarget_pending`, `target_changes`, and `held`. The two
   cumulative byte counters account only successful emission; outer bytes
   include IP+UDP headers and native DATA alone contributes inner bytes.
 - `wanbond_tun_aqm_target_{rate_bytes_per_second,tx_queue_length,epoch}` and
   matching `actual_*` gauges expose target vs kernel readback.
   `{target,actual}_htb_burst_bytes` expose the explicit direct/dequeue byte
   burst that guards the ptr ring.
-  `{target,actual}_queue_limit_packets` and `actual_flow_limit_packets` expose
-  the bounded `fq` contract.
+  `{target,actual}_queue_limit_bytes` expose the byte-bounded `bfifo` contract.
   `{target,actual}_gso_max_{size_bytes,segments}` expose the pre-TUN whole-batch
   limit `C`, and `{target,actual}_engine_admission_limit_bytes` expose the
   requested/atomically-applied exact-wire per-peer `B+C` budget, where `B` is
   the configured path-shaper BDP.
   `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
-  `fq` parameters, HTB rate/burst, ptr-ring capacity, both GSO limits, and epoch matched at
+  `bfifo` limit, HTB rate/burst, ptr-ring capacity, both GSO limits, and epoch matched at
   the latest `actual_observed_timestamp_seconds`.
   `rate_fresh=1` independently acknowledges the exact HTB rate/epoch while a
   non-dropping capacity shrink remains deferred. `actual_queue_length_packets`,
   `actual_backlog_bytes`, and `actual_ring_pending` expose live queue/ring
   occupancy. `drops_total` is the maximum cumulative drop count read with
-  statistics enabled across the HTB+fq tree, so leaf tail drops remain visible
+  statistics enabled across the HTB+bfifo tree, so leaf tail drops remain visible
   without double-counting a propagated root value. `ring_size_deferred`,
   `queue_limit_deferred`, `gso_limits_deferred`, and
   `engine_admission_limit_deferred` identify the pending bound. These series are absent when
@@ -980,9 +990,9 @@ tc -j -s qdisc show dev wanbond0
 tc class show dev wanbond0
 ```
 
-`txqueuelen` must equal the derived `F+D` ptr-ring capacity, not a fixed
-constant. The root must be HTB with one `fq` child at `1:1`; its
-rate/burst and limit/flow-limit/quantum/initial-quantum values must match the
+`txqueuelen` must equal the derived `H+1` transient-handoff capacity, not a
+fixed constant. The root must be HTB with one `bfifo` child at `1:1`; its
+rate/burst and byte-limit values must match the
 daemon contract above. A later external qdisc change is
 reconciled on the next probe interval.
 

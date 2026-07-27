@@ -445,36 +445,42 @@ A downstream path shaper therefore cannot prevent the engine from first
 draining `wanbond0` into a seconds-deep private queue. The
 `wanbond_engine_*` series retain that observation boundary, but the correction
 acts before it: on Linux, active-backup+pacing installs an HTB root with one
-bounded `fq` leaf on `wanbond0`, derives the TUN ptr-ring capacity from the
-same admitted ownership window, and shapes TUN ingress at the controller's
-current inner-byte target. Let `B=maxPathDataBurstBytes`, the
+byte-bounded `bfifo` leaf on `wanbond0`, derives a transient TUN ptr-ring
+handoff, and shapes TUN ingress at the controller's current inner-byte target.
+Let `B=maxPathDataBurstBytes`, the
 already-validated per-peer BDP/synthetic service backlog used by the exact-byte
 path shaper, let `C` be one complete pre-segmented batch as derived below,
-`m=20` the minimum legal IPv4 packet size presented by a TUN device, `N` the
-device batch size, and `G=gso_max_size`. For peer count `P`, the queue contract
-is:
+`m=20` the minimum legal IPv4 packet size presented by a TUN device, `T<=20ms`
+the derived complete-batch service time, `R` the aggregate ingress target,
+`Mcur`/`Mmax` the current/maximum configured inner MTUs, and `G` the exact
+HTB burst covering `gso_max_size`. For peer count `P`, the queue contract is:
 
 ```
-F = ceil(P*(B+C)/m)
-D = max(N, ceil(G/m))
-fq limit = flow_limit = F
-TUN txqueuelen = F+D
+L = ceil(P*(B+C)/m)*m bytes
+A = ceil(R*T)+G bytes
+H = ceil(A/Mcur) full-MTU handoff slots
+bfifo limit = L
+TUN txqueuelen = H+1
 HTB burst = cburst = G bytes
-quantum = initial_quantum = current TUN MTU
 ```
 
-`F` is one logical B+C service window. The post-qdisc ptr ring carries that
-window plus `D`, so a full engine device batch or one explicit HTB/GSO
-direct-dequeue burst cannot overflow the ring while the reader remains stalled
-for the bounded B+C ownership interval. The minimum-packet-accounted combined
-ring+fq service bound, including the guard, is
-`((F+D)+F)*m/aggregateIngressRate`; this is the delay value exercised by the
-native Linux contract test and must remain sub-second rather than reproducing
-the seconds-scale cycle-6 queue. This invariant does not claim lossless
-operation for an arbitrarily stalled TUN reader: after the bounded ownership
-interval, Linux LLTX may report `SKB_DROP_REASON_FULL_RING`. Immediate overload
-above `F` while the guarded ring has room instead tail-drops at `fq` and
-increments its qdisc drop counter.
+`L` is one logical aggregate B+C byte window, independent of packet size.
+`H` carries only bytes that can arrive during one bounded engine batch-service
+interval plus the explicit HTB burst. The extra slot encodes the native Linux
+TUN boundary established by the privileged full-MTU contract test. The
+conservative full-MTU combined service bound is
+`((H+1)*Mmax+L)/R`; the native test reads back the exact geometry, proves zero
+link/qdisc drops for `H` full-MTU handoff packets, and proves overload beyond
+the finite ring+leaf bound increments a visible drop counter. This invariant
+does not claim lossless operation for an arbitrarily stalled reader or
+minimum-size overload. Excess byte backlog tail-drops at `bfifo`; link and
+qdisc counters retain the operational boundary.
+
+iproute2's plain-text size formatter prints values within 15 bytes of a KiB
+multiple in rounded `Kb` form. The derived HTB burst therefore rounds upward
+by at most 15 bytes to either that exact multiple or the first byte value
+outside the lossy window. Ring geometry covers the installed burst, and plain
+readback remains exact even on hosts whose `tc class` ignores JSON mode.
 
 The same target also closes the engine's private-queue gap without truncating
 the TUN read. Let `r` be the aggregate ingress target divided by peer count,
@@ -518,7 +524,7 @@ the engine can hold that lock indefinitely in its blocking TUN read while an
 endpoint remains idle.
 
 Engine admission and downstream capacity form a directional transaction.
-Growth reconciles and reads back the larger ptr-ring/`fq` envelope before
+Growth reconciles and reads back the larger ptr-ring/`bfifo` envelope before
 atomically raising every peer's engine admission limit. Shrink atomically
 lowers every peer limit first, then reconciles the smaller downstream envelope.
 When retained bytes defer a shrink, the daemon re-reads and retains the
@@ -550,7 +556,20 @@ transition creates three different epochs and resets base RTT/rate deltas, so
 late A evidence cannot affect the new A epoch. The aggregate TUN target sums
 the current peers' inner-byte targets.
 
-Every outer-target or expansion-derived ingress-target change enters an
+Ingress also carries controller-owned local service headroom `h`, initialized
+to `0.95` on every carrier epoch, while outer capacity discovery remains
+unchanged: `ingress=outer/overhead*h`. Every probe interval the device advances
+exact cumulative TUN-byte and engine-admission-wait baselines before routing
+the interval to the still-current aggregate carrier epoch. Aggregate wait time
+is divided across active peer controllers. Admission wait occupying at least
+half the interval or a pending ptr ring marks local pressure and multiplies
+`h` by `0.85`, with a `0.50` floor. A decrease occurs before link drops, then
+uses the same exact-readback/settling gate as every other ingress change, so a
+stale interval or unchanged cumulative counters cannot replay it. Recovery
+adds `0.01` only after three consecutive loaded, clean, settled intervals;
+idle intervals neither recover nor accumulate a streak.
+
+Every outer-target, expansion-derived ingress-target, or ingress-headroom change enters an
 `AwaitingInstalled` state. The first congestion decision remains prompt, but
 the next decrease or increase waits until the device has read back the exact
 aggregate HTB rate and carrier epoch and at least
@@ -561,9 +580,9 @@ rate and epoch retain the first acknowledgment time; periodic reconciliation
 therefore cannot move the settlement deadline forward. A stale or mismatched
 readback re-arms the acknowledgment, and a carrier-epoch transition cancels the
 old wait. Rate reconciliation replaces the HTB class without deleting or
-re-adding a matching `fq` leaf. Mutable `fq` parameters use the kernel's
+re-adding a matching `bfifo` leaf. Mutable `bfifo` limits use the kernel's
 in-place change operation, preserving queued packets and cumulative counters.
-A queue-limit shrink waits while the installed packet count exceeds the new
+A queue-limit shrink waits while installed byte backlog exceeds the new
 limit; a GSO shrink waits for an empty TUN backlog; and the peer-private engine
 gate shrinks atomically only when every peer's retained bytes fit. The desired
 rate can still receive its exact epoch acknowledgment during one of these safe
@@ -1216,14 +1235,15 @@ behaviour composes the following signals into one picture:
   `wanbond_path_congestion_loss_fresh`,
   `wanbond_path_congestion_carrier_epoch`,
   `wanbond_path_congestion_{installed_ingress_bytes_per_second,installed_fresh}`,
+  `wanbond_path_congestion_ingress_{service_headroom_ratio,pressure_ratio,pressure,headroom_changes}`,
   `wanbond_path_congestion_retarget_pending`,
   `wanbond_path_congestion_target_changes`, and
   `wanbond_path_congestion_held`. These are absent without a path controller.
   Connection-scoped `wanbond_tun_aqm_target_*` and
   `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, explicit HTB
-  burst, ptr-ring capacity, bounded `fq` queue/flow limits, epoch, freshness,
+  burst, ptr-ring capacity, byte-bounded `bfifo` limit, epoch, freshness,
   and readback timestamp; live qdisc packet/byte backlog, ptr-ring occupancy,
-  and the maximum cumulative drop counter observed in the HTB+fq tree are
+  and the maximum cumulative drop counter observed in the HTB+bfifo tree are
   explicit. Production qdisc reads request `tc -s`; a non-stat read omits these
   counters. `rate_fresh`
   separates an exact rate/epoch acknowledgment from full-envelope
