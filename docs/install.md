@@ -449,7 +449,9 @@ Common rules, either policy:
   Raw settings use the existing 1500-byte conversion
   (`R = per_path_capacity_fps*1500`,
   `B = ceil(pacing_burst_frames*1500)`) and enforce the same invariant, so a
-  raw `pacing_burst_frames` below one encoded frame is invalid. NaN, infinity,
+  raw `pacing_burst_frames` below one encoded frame is invalid. Under
+  active-backup, raw R seeds the same controller and its inferred RTT is B/R;
+  under weighted raw R/B remain fixed. NaN, infinity,
   a non-positive result, or a derived byte budget too large for the platform
   byte-count domain is rejected before numeric conversion. Config load and the
   live primitive reject `Mtotal=B+C+P+Fgroup+Lio` when that exact sum cannot fit

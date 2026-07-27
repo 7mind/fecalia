@@ -360,6 +360,9 @@ deliberate boundaries you must plan around:
   measured seed while clean loaded samples support growth, and reduce promptly
   on queue delay or authenticated loss. `link_bandwidth_limit` is the distinct
   optional operator safety ceiling; omitting it leaves discovery uncapped.
+  Legacy active-backup frame-rate knobs likewise seed the controller from
+  `R=per_path_capacity_fps*1500` and infer RTT as `B/R`; they no longer impose
+  a permanent rate cap.
   Weighted scheduling keeps `link_bandwidth` as its fixed shaping rate and does
   not accept `link_bandwidth_limit`.
   Pacing is **policy-independent** (defect D65): `pacing_enabled`,

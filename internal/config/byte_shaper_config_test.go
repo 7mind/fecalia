@@ -321,6 +321,32 @@ func TestPathShaperLegacyRawBurstBoundary(t *testing.T) {
 	}
 }
 
+func TestActiveBackupRawPacingSuppliesControllerSeedAndInferredRTT(t *testing.T) {
+	cfg, err := loadByteShaperFixture(t, byteShaperFixture(
+		"192.0.2.10",
+		"",
+		"",
+		0,
+		"pacing_enabled = true\nper_path_capacity_fps = 1000\npacing_burst_frames = 40\n",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shaper := onlyPathShaper(t, cfg)
+	if shaper.RateBytesPerSecond != 1_500_000 ||
+		shaper.DataBurstBytes != 60_000 ||
+		!shaper.CongestionControlled ||
+		shaper.LinkRTT != 40*time.Millisecond {
+		t.Fatalf(
+			"raw active-backup R/B/controller/RTT = %g/%d/%v/%s, want 1500000/60000/true/40ms",
+			shaper.RateBytesPerSecond,
+			shaper.DataBurstBytes,
+			shaper.CongestionControlled,
+			shaper.LinkRTT,
+		)
+	}
+}
+
 func TestPathShaperProbeRateBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

@@ -1506,10 +1506,12 @@ func (c *Config) derivePathShapers() error {
 		p := &c.Paths[i]
 		lmax := p.maxEncodedDatagramBytes()
 		var rateBytesPerSecond, rateLimitBytesPerSecond, burstBytes float64
+		var controllerRTT time.Duration
 		if fromLinkBandwidth {
 			rateBytesPerSecond = p.LinkBandwidthBitsPerSec / bitsPerByte
 			rateLimitBytesPerSecond = p.LinkBandwidthLimitBitsPerSec / bitsPerByte
 			burstBytes = rateBytesPerSecond * p.LinkRTT.Seconds()
+			controllerRTT = p.LinkRTT
 		} else {
 			rateBytesPerSecond = s.PerPathCapacityFPS * defaultAvgWireFrameBytes
 			burstBytes = s.PacingBurstFrames * defaultAvgWireFrameBytes
@@ -1535,6 +1537,18 @@ func (c *Config) derivePathShapers() error {
 			return fmt.Errorf("scheduler.pacing_burst_frames=%g converts to a DATA burst %d bytes below path %q maximum encoded datagram %d bytes; set pacing_burst_frames >= %g so every legal datagram is admissible",
 				s.PacingBurstFrames, dataBurstBytes, p.Name, lmax, float64(lmax)/defaultAvgWireFrameBytes)
 		}
+		if !fromLinkBandwidth {
+			controllerRTTNanoseconds :=
+				float64(dataBurstBytes) / rateBytesPerSecond * float64(time.Second)
+			if math.IsInf(controllerRTTNanoseconds, 0) ||
+				controllerRTTNanoseconds >= math.Ldexp(1, 63) {
+				return fmt.Errorf(
+					"path %q: raw pacing R/B ratio exceeds time.Duration",
+					p.Name,
+				)
+			}
+			controllerRTT = time.Duration(math.Ceil(controllerRTTNanoseconds))
+		}
 
 		probeBurstBytes := probeFramesPerBurstPair * lmax
 		probeRateBytesPerSecond := float64(probeBurstBytes) / livenessProbeInterval.Seconds()
@@ -1557,7 +1571,7 @@ func (c *Config) derivePathShapers() error {
 			recoverySlack = RecoveryWriteSlack
 			recoveryBound = recoverySlack
 			completionRate := rateBytesPerSecond
-			if fromLinkBandwidth && s.Policy == PolicyActiveBackup {
+			if s.Policy == PolicyActiveBackup {
 				completionRate, err = congestion.MinimumTargetRate(rateBytesPerSecond)
 				if err != nil {
 					return fmt.Errorf("path %q: derive minimum congestion target: %w", p.Name, err)
@@ -1616,8 +1630,8 @@ func (c *Config) derivePathShapers() error {
 		derived := PathShaperConfig{
 			RateBytesPerSecond:      rateBytesPerSecond,
 			RateLimitBytesPerSecond: rateLimitBytesPerSecond,
-			CongestionControlled:    fromLinkBandwidth && s.Policy == PolicyActiveBackup,
-			LinkRTT:                 p.LinkRTT,
+			CongestionControlled:    s.Policy == PolicyActiveBackup,
+			LinkRTT:                 controllerRTT,
 			DataBurstBytes:          dataBurstBytes,
 			ControlReserveBytes:     lmax,
 			MaxEncodedDatagramBytes: lmax,

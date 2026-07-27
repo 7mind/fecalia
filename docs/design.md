@@ -631,7 +631,9 @@ Every source rate/burst and derived `Rseed`/`Bseed` must be finite and positive,
 `ceil(B)` must fit the platform `int` byte-count domain before conversion.
 For the legacy raw knobs the byte projection uses the documented 1500-byte
 conversion unchanged: `R = per_path_capacity_fps * 1500` and
-`B = ceil(pacing_burst_frames * 1500)`. Thus the aggregation estimator and its
+`B = ceil(pacing_burst_frames * 1500)`. Under active-backup this R is the
+controller seed and `RTT=B/R` is its live BDP delay term; under weighted R/B
+remain fixed. Thus the aggregation estimator and its
 `per_path_capacity_fps` thresholds remain offered-wire-frame quantities.
 
 T299 completes the DATA/PARITY ownership cut. `device.Up` consumes
