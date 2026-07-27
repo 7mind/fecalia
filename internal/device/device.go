@@ -52,6 +52,17 @@ const monitorShutdownTimeout = 2 * time.Second
 // collides (it never does across the edge and concentrator network namespaces).
 const defaultTUNName = "wanbond0"
 
+// tunGSOMaxSize is the maximum GSO container wanbond0 admits from the kernel.
+// Linux defaults to 64 KiB; configureTUNGSO makes that implicit default explicit
+// at startup so the intended admission quantum has one testable owner.
+const tunGSOMaxSize = 64 * 1024
+
+type linkGSOMaxSizeSetter func(name string, size uint32) error
+
+func configureTUNGSO(name string, apply linkGSOMaxSizeSetter) error {
+	return apply(name, tunGSOMaxSize)
+}
+
 // wgFingerprintLen is the number of leading base64 characters of the local WG public
 // key surfaced as its fingerprint (Q63): a short, human-comparable identifier that is
 // NOT the full key. 10 base64 chars encode 60 bits — ample to distinguish daemons at a
