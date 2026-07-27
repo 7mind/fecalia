@@ -104,7 +104,7 @@ func TestTUNAQMQueueLimitIncludesServiceBacklogAndDeviceQueue(t *testing.T) {
 		want       int
 	}{
 		{name: "Pi BDP", burstBytes: 45_000, peerCount: 1, mtu: 1395, want: 65},
-		{name: "o3 synthetic burst", burstBytes: 58_880, peerCount: 1, mtu: 1395, want: 75},
+		{name: "o3 synthetic burst", burstBytes: 60_000, peerCount: 1, mtu: 1395, want: 76},
 		{name: "two peers", burstBytes: 45_000, peerCount: 2, mtu: 1395, want: 97},
 	}
 	for _, test := range tests {
