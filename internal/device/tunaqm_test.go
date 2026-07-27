@@ -521,6 +521,33 @@ func TestTUNAQMLeafUsesInnerTimeBudgetAndAtomicGSOQuantum(t *testing.T) {
 	}
 }
 
+// Regression: D131 review found that float64(maxInt) rounds to 2^63 on
+// 64-bit systems, so a strict greater-than guard allowed conversion overflow.
+func TestTUNAQMQueueGeometryRejectsExactCeilToIntOverflowBoundary(t *testing.T) {
+	if ^uint(0)>>63 == 0 {
+		t.Skip("exact float64 int overflow boundary requires 64-bit int")
+	}
+	maxIntAsFloat := float64(int(^uint(0) >> 1))
+	aggregateRate := maxIntAsFloat /
+		tunPersistentQueueDelayBudget.Seconds()
+	_, err := deriveTUNAQMQueueGeometry(
+		aggregateRate,
+		1,
+		1,
+		1,
+		time.Nanosecond,
+		minimumInnerPacketBytes,
+		minimumInnerPacketBytes,
+	)
+	if err == nil ||
+		err.Error() != "TUN AQM persistent queue-delay window overflows int" {
+		t.Fatalf(
+			"exact ceil-to-int overflow boundary error = %v, want persistent-window overflow",
+			err,
+		)
+	}
+}
+
 func TestTUNAQMRingCoversTransientMinimumPacketHandoff(t *testing.T) {
 	const (
 		rateBytesPerSecond = 680_000

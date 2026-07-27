@@ -338,9 +338,21 @@ func validateDeferredTUNAQMReadback(
 		return validateTUNAQMReadback(target, actual)
 	}
 	if actual.RootKind != "htb" ||
-		actual.LeafKind != "bfifo" ||
-		actual.BurstBytes != target.BurstBytes {
+		actual.LeafKind != "bfifo" {
 		return errors.New("TUN AQM non-deferred readback fields do not match target")
+	}
+	expectedBurstBytes := target.BurstBytes
+	if apply.GSOLimitsDeferred {
+		installedGSOBurst, err := exactTCHTBBurstBytes(actual.GSOMaxSize)
+		if err != nil {
+			return err
+		}
+		if expectedBurstBytes < installedGSOBurst {
+			expectedBurstBytes = installedGSOBurst
+		}
+	}
+	if actual.BurstBytes != expectedBurstBytes {
+		return errors.New("TUN AQM burst readback does not match installed GSO-safe target")
 	}
 	if apply.RingSizeDeferred {
 		if actual.TxQueueLen < target.TxQueueLen ||
@@ -361,6 +373,9 @@ func validateDeferredTUNAQMReadback(
 		if actual.GSOMaxSize < target.GSOMaxSize ||
 			actual.GSOMaxSegments < target.GSOMaxSegments {
 			return errors.New("TUN AQM GSO deferral has no queued installed superset")
+		}
+		if actual.LimitBytes < actual.GSOMaxSize {
+			return errors.New("TUN AQM GSO deferral leaves no atomic-skb leaf capacity")
 		}
 	} else if actual.GSOMaxSize != target.GSOMaxSize ||
 		actual.GSOMaxSegments != target.GSOMaxSegments {
@@ -542,6 +557,23 @@ func exactTCHTBBurstBytes(sizeBytes int) (int, error) {
 	return sizeBytes + increment, nil
 }
 
+func checkedCeilToInt(value float64, overflowMessage string) (int, error) {
+	maxIntAsFloat := float64(int(^uint(0) >> 1))
+	if math.IsNaN(value) || math.IsInf(value, 0) ||
+		value < 0 || value >= maxIntAsFloat {
+		return 0, errors.New(overflowMessage)
+	}
+	ceiling := math.Ceil(value)
+	if ceiling >= maxIntAsFloat {
+		return 0, errors.New(overflowMessage)
+	}
+	result := int(ceiling)
+	if result < 0 || float64(result) != ceiling {
+		return 0, errors.New(overflowMessage)
+	}
+	return result, nil
+}
+
 func deriveEngineOutboundBounds(
 	aggregateRateBytesPerSecond float64,
 	peerCount int,
@@ -633,12 +665,13 @@ func deriveTUNAQMQueueGeometry(
 	}
 	leafWindowFloat := aggregateRateBytesPerSecond *
 		tunPersistentQueueDelayBudget.Seconds()
-	if leafWindowFloat > float64(maxInt) {
-		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM persistent queue-delay window overflows int",
-		)
+	leafWindowBytes, err := checkedCeilToInt(
+		leafWindowFloat,
+		"TUN AQM persistent queue-delay window overflows int",
+	)
+	if err != nil {
+		return tunAQMQueueGeometry{}, err
 	}
-	leafWindowBytes := int(math.Ceil(leafWindowFloat))
 	atomicWindowBytes := peerCount * gsoMaxSizeBytes
 	if leafWindowBytes < atomicWindowBytes {
 		leafWindowBytes = atomicWindowBytes
@@ -649,12 +682,13 @@ func deriveTUNAQMQueueGeometry(
 	}
 	arrivalBytesFloat := aggregateRateBytesPerSecond *
 		maximumBatchServiceTime.Seconds()
-	if arrivalBytesFloat > float64(maxInt) {
-		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM batch-service arrivals overflow int",
-		)
+	arrivalBytes, err := checkedCeilToInt(
+		arrivalBytesFloat,
+		"TUN AQM batch-service arrivals overflow int",
+	)
+	if err != nil {
+		return tunAQMQueueGeometry{}, err
 	}
-	arrivalBytes := int(math.Ceil(arrivalBytesFloat))
 	if arrivalBytes > maxInt-htbBurstBytes {
 		return tunAQMQueueGeometry{}, errors.New(
 			"TUN AQM transient handoff byte bound overflows int",

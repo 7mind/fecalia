@@ -91,6 +91,15 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	topologyReady := readErr == nil &&
 		current.RootKind == "htb"
 	liveLeaf := topologyReady && current.LeafKind == "bfifo"
+	queueOccupied := current.QueueLength != 0 || current.BacklogBytes != 0
+	gsoLimitsChanging := current.GSOMaxSize != target.GSOMaxSize ||
+		current.GSOMaxSegments != target.GSOMaxSegments
+	gsoLimitsShrinking := target.GSOMaxSize < current.GSOMaxSize ||
+		target.GSOMaxSegments < current.GSOMaxSegments
+	gsoShrinkDeferred := gsoLimitsChanging && gsoLimitsShrinking &&
+		queueOccupied
+	result.GSOLimitsDeferred = gsoShrinkDeferred
+
 	queueLimit := target.QueueLimitBytes
 	if liveLeaf &&
 		target.QueueLimitBytes < current.LimitBytes &&
@@ -98,10 +107,24 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 		queueLimit = current.LimitBytes
 		result.QueueLimitDeferred = true
 	}
+	burstBytes := target.BurstBytes
+	if gsoShrinkDeferred {
+		if queueLimit < current.GSOMaxSize {
+			queueLimit = current.GSOMaxSize
+			result.QueueLimitDeferred = true
+		}
+		installedGSOBurst, err := exactTCHTBBurstBytes(current.GSOMaxSize)
+		if err != nil {
+			return result, err
+		}
+		if burstBytes < installedGSOBurst {
+			burstBytes = installedGSOBurst
+		}
+	}
 	leafReady := liveLeaf && current.LimitBytes == queueLimit
 	if !topologyReady {
 		if readErr == nil &&
-			(current.QueueLength != 0 || current.BacklogBytes != 0) {
+			queueOccupied {
 			return result, errors.New(
 				"device: refuse to replace live TUN qdisc topology with backlog",
 			)
@@ -119,16 +142,16 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	}
 
 	if !topologyReady ||
-		current.BurstBytes != target.BurstBytes ||
+		current.BurstBytes != burstBytes ||
 		math.Abs(current.RateBytesPerSecond-target.RateBytesPerSecond) >
 			target.RateBytesPerSecond*0.01 {
 		rateBits := strconv.FormatInt(int64(math.Round(target.RateBytesPerSecond*8)), 10) + "bit"
-		burstBytes := strconv.Itoa(target.BurstBytes) + "b"
+		burstText := strconv.Itoa(burstBytes) + "b"
 		if err := k.run(
 			"class", "replace", "dev", k.name,
 			"parent", "1:", "classid", "1:1", "htb",
 			"rate", rateBits, "ceil", rateBits,
-			"burst", burstBytes, "cburst", burstBytes,
+			"burst", burstText, "cburst", burstText,
 		); err != nil {
 			return result, err
 		}
@@ -169,12 +192,7 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	}
 	if current.GSOMaxSize != target.GSOMaxSize ||
 		current.GSOMaxSegments != target.GSOMaxSegments {
-		shrinking := target.GSOMaxSize < current.GSOMaxSize ||
-			target.GSOMaxSegments < current.GSOMaxSegments
-		if shrinking &&
-			(current.QueueLength != 0 || current.BacklogBytes != 0) {
-			result.GSOLimitsDeferred = true
-		} else {
+		if !gsoShrinkDeferred {
 			if err := k.writeGSOLimits(linkGSOLimits{
 				MaxSize:     uint32(target.GSOMaxSize),
 				MaxSegments: uint32(target.GSOMaxSegments),

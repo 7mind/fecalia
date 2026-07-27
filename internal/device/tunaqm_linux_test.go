@@ -249,6 +249,108 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 	}
 }
 
+// Regression: D131 review found that an occupied TUN qdisc deferred GSO shrink
+// after the class and leaf had already shrunk below the installed atomic skb.
+func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {
+	var classCommands [][]string
+	var qdiscCommands [][]string
+	gsoWrites := 0
+	occupied := true
+	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
+	kernel.readTxQueueLen = func() (int, error) {
+		return tunAQMTxQueueLen, nil
+	}
+	kernel.writeTxQueueLen = func(int) error {
+		return nil
+	}
+	kernel.readGSOLimits = func() (linkGSOLimits, error) {
+		return linkGSOLimits{MaxSize: 13_950, MaxSegments: 10}, nil
+	}
+	kernel.writeGSOLimits = func(linkGSOLimits) error {
+		gsoWrites++
+		return nil
+	}
+	kernel.command = func(args ...string) ([]byte, error) {
+		switch {
+		case len(args) >= 3 && args[0] == "-j" &&
+			args[1] == "-s" && args[2] == "qdisc":
+			if !occupied {
+				return []byte(`[
+					{"kind":"htb","root":true,"handle":"1:"},
+					{"kind":"bfifo","parent":"1:1","handle":"10:",
+					 "options":{"limit":13950}}
+				]`), nil
+			}
+			return []byte(`[
+				{"kind":"htb","root":true,"handle":"1:"},
+				{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":1,"backlog":1000,
+				 "options":{"limit":13950}}
+			]`), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
+			return []byte("class htb 1:1 root rate 5440000bit ceil 5440000bit burst 13950b cburst 13950b"), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "replace":
+			classCommands = append(classCommands, append([]string(nil), args...))
+			return nil, nil
+		case len(args) > 0 && args[0] == "qdisc":
+			qdiscCommands = append(qdiscCommands, append([]string(nil), args...))
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected tc command: %v", args)
+		}
+	}
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		BurstBytes:          1395,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimitBytes:     1395,
+		GSOMaxSize:          1395,
+		GSOMaxSegments:      1,
+		AdmissionLimitBytes: 1715,
+	}
+	result, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.GSOLimitsDeferred {
+		t.Fatal("occupied queue did not defer GSO shrink")
+	}
+	if len(classCommands) != 0 || len(qdiscCommands) != 0 {
+		t.Fatalf(
+			"occupied GSO shrink changed class/leaf below installed 13950-byte quantum: class=%v qdisc=%v",
+			classCommands,
+			qdiscCommands,
+		)
+	}
+	if gsoWrites != 0 {
+		t.Fatalf("occupied GSO shrink writes = %d, want 0", gsoWrites)
+	}
+	actual, err := kernel.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeferredTUNAQMReadback(target, actual, result); err != nil {
+		t.Fatalf("held atomic-capacity readback: %v", err)
+	}
+
+	occupied = false
+	result, err = kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GSOLimitsDeferred || result.QueueLimitDeferred ||
+		len(classCommands) != 1 || len(qdiscCommands) != 1 ||
+		gsoWrites != 1 {
+		t.Fatalf(
+			"post-drain shrink = %+v class=%v qdisc=%v GSO writes=%d, want one complete shrink",
+			result,
+			classCommands,
+			qdiscCommands,
+			gsoWrites,
+		)
+	}
+}
+
 func TestLinuxTUNAQMRetainsRingHighWaterAfterDriverRingDrains(t *testing.T) {
 	const targetRingSlots = 64
 	var qdiscCommands [][]string
