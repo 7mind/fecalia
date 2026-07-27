@@ -24,7 +24,14 @@ import (
 
 const tunAQMCommandTimeout = 3 * time.Second
 
-var tunAQMRatePattern = regexp.MustCompile(`(?m)^class htb 1:1 .* rate ([0-9]+(?:\.[0-9]+)?)([KMG]?)bit(?: |$)`)
+var (
+	tunAQMRatePattern = regexp.MustCompile(
+		`(?m)^class htb 1:1 .* rate ([0-9]+(?:\.[0-9]+)?)([KMG]?)bit(?: |$)`,
+	)
+	tunAQMBurstPattern = regexp.MustCompile(
+		`(?m)^class htb 1:1 .* burst ([0-9]+(?:\.[0-9]+)?)([KMG]?)b(?: |$)`,
+	)
+)
 
 type linuxTUNAQMKernel struct {
 	name            string
@@ -32,6 +39,7 @@ type linuxTUNAQMKernel struct {
 	command         func(args ...string) ([]byte, error)
 	readTxQueueLen  func() (int, error)
 	writeTxQueueLen func(int) error
+	readRingPending func() (bool, error)
 	readGSOLimits   func() (linkGSOLimits, error)
 	writeGSOLimits  func(linkGSOLimits) error
 }
@@ -51,6 +59,9 @@ func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
 	}
 	kernel.writeTxQueueLen = func(length int) error {
 		return setLinkTxQueueLen(name, length)
+	}
+	kernel.readRingPending = func() (bool, error) {
+		return false, nil
 	}
 	kernel.readGSOLimits = func() (linkGSOLimits, error) {
 		return readLinkGSOLimits(name)
@@ -114,13 +125,16 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	}
 
 	if !topologyReady ||
+		current.BurstBytes != target.BurstBytes ||
 		math.Abs(current.RateBytesPerSecond-target.RateBytesPerSecond) >
 			target.RateBytesPerSecond*0.01 {
 		rateBits := strconv.FormatInt(int64(math.Round(target.RateBytesPerSecond*8)), 10) + "bit"
+		burstBytes := strconv.Itoa(target.BurstBytes) + "b"
 		if err := k.run(
 			"class", "replace", "dev", k.name,
 			"parent", "1:", "classid", "1:1", "htb",
 			"rate", rateBits, "ceil", rateBits,
+			"burst", burstBytes, "cburst", burstBytes,
 		); err != nil {
 			return result, err
 		}
@@ -154,7 +168,11 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 		}
 	}
 	if !topologyReady || current.TxQueueLen != target.TxQueueLen {
-		if err := k.writeTxQueueLen(target.TxQueueLen); err != nil {
+		shrinking := topologyReady &&
+			target.TxQueueLen < current.TxQueueLen
+		if shrinking && current.RingPending {
+			result.RingSizeDeferred = true
+		} else if err := k.writeTxQueueLen(target.TxQueueLen); err != nil {
 			return result, err
 		}
 	}
@@ -186,7 +204,14 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 	if err != nil {
 		return tunAQMActualState{}, err
 	}
-	rawQdisc, err := k.output("-j", "qdisc", "show", "dev", k.name)
+	ringPending := false
+	if k.readRingPending != nil {
+		ringPending, err = k.readRingPending()
+		if err != nil {
+			return tunAQMActualState{}, err
+		}
+	}
+	rawQdisc, err := k.output("-j", "-s", "qdisc", "show", "dev", k.name)
 	if err != nil {
 		return tunAQMActualState{}, err
 	}
@@ -219,6 +244,9 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		InitialQuantum int
 	}
 	for _, qdisc := range qdiscs {
+		if qdisc.Drops > drops {
+			drops = qdisc.Drops
+		}
 		if qdisc.QLen > queueLength {
 			queueLength = qdisc.QLen
 		}
@@ -227,7 +255,6 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		}
 		if qdisc.Root {
 			rootKind = qdisc.Kind
-			drops = qdisc.Drops
 		}
 		if qdisc.Parent == "1:1" {
 			leafKind = qdisc.Kind
@@ -245,8 +272,13 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 	if err != nil {
 		return tunAQMActualState{}, err
 	}
+	burstBytes, err := parseTUNAQMBurst(string(rawClass))
+	if err != nil {
+		return tunAQMActualState{}, err
+	}
 	return tunAQMActualState{
 		RateBytesPerSecond: rate,
+		BurstBytes:         burstBytes,
 		TxQueueLen:         txQueueLen,
 		RootKind:           rootKind,
 		LeafKind:           leafKind,
@@ -258,6 +290,7 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		GSOMaxSegments:     int(gsoLimits.MaxSegments),
 		QueueLength:        queueLength,
 		BacklogBytes:       backlog,
+		RingPending:        ringPending,
 		Drops:              drops,
 		ObservedAt:         time.Now(),
 	}, nil
@@ -284,6 +317,32 @@ func parseTUNAQMRate(output string) (float64, error) {
 		return 0, fmt.Errorf("device: unsupported tc class rate unit %q", match[2])
 	}
 	return value / 8, nil
+}
+
+func parseTUNAQMBurst(output string) (int, error) {
+	match := tunAQMBurstPattern.FindStringSubmatch(output)
+	if match == nil {
+		return 0, errors.New("device: tc class readback has no htb 1:1 burst")
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, fmt.Errorf("device: parse tc class burst: %w", err)
+	}
+	switch match[2] {
+	case "":
+	case "K":
+		value *= 1 << 10
+	case "M":
+		value *= 1 << 20
+	case "G":
+		value *= 1 << 30
+	default:
+		return 0, fmt.Errorf("device: unsupported tc class burst unit %q", match[2])
+	}
+	if value > float64(int(^uint(0)>>1)) {
+		return 0, errors.New("device: tc class burst overflows int")
+	}
+	return int(math.Round(value)), nil
 }
 
 func (k *linuxTUNAQMKernel) run(args ...string) error {
@@ -339,6 +398,43 @@ func linkTxQueueLen(name string) (int, error) {
 	return int(ifr.Uint32()), nil
 }
 
+func tunRingPending(file *os.File) (bool, error) {
+	if file == nil {
+		return false, errors.New("TUN file is required for ptr-ring readback")
+	}
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return false, fmt.Errorf("access TUN file descriptor: %w", err)
+	}
+	pending := false
+	var pollErr error
+	if err := raw.Read(func(fd uintptr) bool {
+		pollFDs := []unix.PollFd{{
+			Fd:     int32(fd),
+			Events: unix.POLLIN,
+		}}
+		_, pollErr = unix.Poll(pollFDs, 0)
+		if pollErr == nil {
+			revents := pollFDs[0].Revents
+			if revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+				pollErr = fmt.Errorf(
+					"TUN ptr-ring poll returned revents %#x",
+					revents,
+				)
+			} else {
+				pending = revents&unix.POLLIN != 0
+			}
+		}
+		return true
+	}); err != nil {
+		return false, fmt.Errorf("poll TUN file descriptor: %w", err)
+	}
+	if pollErr != nil {
+		return false, fmt.Errorf("read TUN ptr-ring state: %w", pollErr)
+	}
+	return pending, nil
+}
+
 func (t *Tunnel) startTUNAQM() error {
 	if !t.cfg.Scheduler.PacingEnabled ||
 		t.cfg.Scheduler.Policy != config.PolicyActiveBackup ||
@@ -348,6 +444,9 @@ func (t *Tunnel) startTUNAQM() error {
 	kernel, err := newLinuxTUNAQMKernel(t.name)
 	if err != nil {
 		return err
+	}
+	kernel.readRingPending = func() (bool, error) {
+		return tunRingPending(t.tun.File())
 	}
 	reconciler, err := newTUNAQMReconciler(kernel)
 	if err != nil {
@@ -379,17 +478,22 @@ func (t *Tunnel) startTUNAQM() error {
 	if err != nil {
 		return err
 	}
-	queueLimit, err := deriveTUNAQMQueueLimit(
-		bounds.AdmissionLimitBytes, peerCount, mtu,
+	queueGeometry, err := deriveTUNAQMQueueGeometry(
+		initial.IngressRateBytesPerSecond*float64(peerCount),
+		bounds.AdmissionLimitBytes,
+		peerCount,
+		t.dev.BatchSize(),
+		bounds.GSOMaxSize,
 	)
 	if err != nil {
 		return err
 	}
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  initial.IngressRateBytesPerSecond * float64(peerCount),
-		TxQueueLen:          tunAQMTxQueueLen,
+		BurstBytes:          queueGeometry.HTBBurstBytes,
+		TxQueueLen:          queueGeometry.RingSlots,
 		MTU:                 mtu,
-		QueueLimit:          queueLimit,
+		QueueLimit:          queueGeometry.FQLimit,
 		GSOMaxSize:          bounds.GSOMaxSize,
 		GSOMaxSegments:      bounds.GSOMaxSegments,
 		AdmissionLimitBytes: bounds.AdmissionLimitBytes,
@@ -445,14 +549,20 @@ func (t *Tunnel) startTUNAQM() error {
 					t.log.Error("engine outbound bound derivation failed", "error", err.Error())
 					continue
 				}
-				queueLimit, err := deriveTUNAQMQueueLimit(
-					bounds.AdmissionLimitBytes, peerCount, target.MTU,
+				queueGeometry, err := deriveTUNAQMQueueGeometry(
+					target.RateBytesPerSecond,
+					bounds.AdmissionLimitBytes,
+					peerCount,
+					t.dev.BatchSize(),
+					bounds.GSOMaxSize,
 				)
 				if err != nil {
-					t.log.Error("TUN AQM queue-limit derivation failed", "error", err.Error())
+					t.log.Error("TUN AQM queue-geometry derivation failed", "error", err.Error())
 					continue
 				}
-				target.QueueLimit = queueLimit
+				target.BurstBytes = queueGeometry.HTBBurstBytes
+				target.TxQueueLen = queueGeometry.RingSlots
+				target.QueueLimit = queueGeometry.FQLimit
 				target.GSOMaxSize = bounds.GSOMaxSize
 				target.GSOMaxSegments = bounds.GSOMaxSegments
 				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes

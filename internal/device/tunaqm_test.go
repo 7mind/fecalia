@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amnezia-vpn/amneziawg-go/conn"
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
+
+const tunAQMTxQueueLen = 32
 
 type memoryTUNAQMKernel struct {
 	actual   tunAQMActualState
@@ -19,6 +22,7 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult,
 	}
 	k.actual = tunAQMActualState{
 		RateBytesPerSecond: target.RateBytesPerSecond,
+		BurstBytes:         target.BurstBytes,
 		TxQueueLen:         target.TxQueueLen,
 		RootKind:           "htb",
 		LeafKind:           "fq",
@@ -43,6 +47,7 @@ type deferredTUNAQMKernel struct {
 
 func (k *deferredTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
 	k.actual.RateBytesPerSecond = target.RateBytesPerSecond
+	k.actual.BurstBytes = target.BurstBytes
 	k.actual.TxQueueLen = target.TxQueueLen
 	k.actual.Quantum = target.MTU
 	k.actual.InitialQuantum = target.MTU
@@ -70,7 +75,7 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 	}
 	target := tunAQMTargetState{
 		Epoch: 4, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
-		MTU: 1395, QueueLimit: 65,
+		BurstBytes: 13_950, MTU: 1395, QueueLimit: 65,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	first, err := reconciler.Reconcile(target)
@@ -114,7 +119,7 @@ func TestTUNAQMUsesBoundedNonDroppingLeaf(t *testing.T) {
 	}
 	target := tunAQMTargetState{
 		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
-		MTU: 1395, QueueLimit: 65,
+		BurstBytes: 13_950, MTU: 1395, QueueLimit: 65,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	snapshot, err := reconciler.Reconcile(target)
@@ -130,6 +135,7 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 	kernel := &deferredTUNAQMKernel{
 		actual: tunAQMActualState{
 			RateBytesPerSecond: 680_000,
+			BurstBytes:         13_950,
 			TxQueueLen:         tunAQMTxQueueLen,
 			RootKind:           "htb",
 			LeafKind:           "fq",
@@ -150,7 +156,7 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 	}
 	target := tunAQMTargetState{
 		Epoch: 5, RateBytesPerSecond: 600_000, TxQueueLen: tunAQMTxQueueLen,
-		MTU: 1395, QueueLimit: 60,
+		BurstBytes: 13_950, MTU: 1395, QueueLimit: 60,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	deferred, err := reconciler.Reconcile(target)
@@ -179,30 +185,123 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 	}
 }
 
-func TestTUNAQMQueueLimitIncludesServiceBacklogAndDeviceQueue(t *testing.T) {
+func TestTUNAQMQueueGeometryCoversRingAndManagedFQServiceWindows(t *testing.T) {
 	tests := []struct {
-		name       string
-		burstBytes int
-		peerCount  int
-		mtu        int
-		want       int
+		name      string
+		rate      float64
+		window    int
+		peerCount int
+		gsoBytes  int
+		wantRing  int
+		wantFQ    int
 	}{
-		{name: "Pi BDP", burstBytes: 45_000, peerCount: 1, mtu: 1395, want: 65},
-		{name: "o3 synthetic burst", burstBytes: 60_000, peerCount: 1, mtu: 1395, want: 76},
-		{name: "two peers", burstBytes: 45_000, peerCount: 2, mtu: 1395, want: 97},
+		{name: "Pi BDP", rate: 680_000, window: 45_000, peerCount: 1, gsoBytes: 13_950, wantRing: 2_948, wantFQ: 2_250},
+		{name: "o3 synthetic burst", rate: 1_020_000, window: 60_000, peerCount: 1, gsoBytes: 19_530, wantRing: 3_977, wantFQ: 3_000},
+		{name: "two peers", rate: 1_360_000, window: 45_000, peerCount: 2, gsoBytes: 12_555, wantRing: 5_128, wantFQ: 4_500},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := deriveTUNAQMQueueLimit(
-				test.burstBytes, test.peerCount, test.mtu,
+			got, err := deriveTUNAQMQueueGeometry(
+				test.rate, test.window, test.peerCount, conn.IdealBatchSize,
+				test.gsoBytes,
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != test.want {
-				t.Fatalf("queue limit = %d, want %d", got, test.want)
+			if got.RingSlots != test.wantRing ||
+				got.FQLimit != test.wantFQ ||
+				got.HTBBurstBytes != test.gsoBytes {
+				t.Fatalf(
+					"queue geometry = %+v, want ring/fq/burst %d/%d/%d",
+					got,
+					test.wantRing,
+					test.wantFQ,
+					test.gsoBytes,
+				)
 			}
 		})
+	}
+}
+
+func TestTUNAQMDeviceRingCoversAdmissionStallAndFullDeviceBatch(t *testing.T) {
+	const (
+		rateBytesPerSecond = 1_020_000
+		dataBudgetBytes    = 51_000
+		mtu                = 1395
+	)
+	bounds, err := deriveEngineOutboundBounds(
+		rateBytesPerSecond, 1, mtu, mtu, dataBudgetBytes,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceSlots := (bounds.AdmissionLimitBytes + minimumInnerPacketBytes - 1) /
+		minimumInnerPacketBytes
+	directBurstSlots := (bounds.GSOMaxSize + minimumInnerPacketBytes - 1) /
+		minimumInnerPacketBytes
+	if directBurstSlots < conn.IdealBatchSize {
+		directBurstSlots = conn.IdealBatchSize
+	}
+	requiredRingSlots := serviceSlots + directBurstSlots
+	geometry, err := deriveTUNAQMQueueGeometry(
+		rateBytesPerSecond,
+		bounds.AdmissionLimitBytes,
+		1,
+		conn.IdealBatchSize,
+		bounds.GSOMaxSize,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.RingSlots != requiredRingSlots {
+		t.Fatalf(
+			"derived ring slots = %d, want %d",
+			geometry.RingSlots,
+			requiredRingSlots,
+		)
+	}
+
+	boundedStallAndBatch := serviceSlots + conn.IdealBatchSize
+	driverDrops := boundedStallAndBatch - geometry.RingSlots
+	if driverDrops < 0 {
+		driverDrops = 0
+	}
+	if driverDrops != 0 {
+		t.Fatalf(
+			"TUN ptr-ring capacity %d drops %d of one %d-entry B+C ownership window plus a full %d-entry device batch",
+			geometry.RingSlots,
+			driverDrops,
+			serviceSlots,
+			conn.IdealBatchSize,
+		)
+	}
+
+	immediateOverload := directBurstSlots + geometry.FQLimit + 1
+	directDequeued := directBurstSlots
+	ringOccupancy := serviceSlots + directDequeued
+	driverDrops = ringOccupancy - geometry.RingSlots
+	if driverDrops < 0 {
+		driverDrops = 0
+	}
+	qdiscDrops := immediateOverload - directDequeued - geometry.FQLimit
+	if driverDrops != 0 || qdiscDrops != 1 {
+		t.Fatalf(
+			"guarded immediate overload driver/qdisc drops = %d/%d, want 0/1 (ring %d, fq %d, direct burst %d)",
+			driverDrops,
+			qdiscDrops,
+			geometry.RingSlots,
+			geometry.FQLimit,
+			directBurstSlots,
+		)
+	}
+
+	overStallProducer := geometry.RingSlots + 1
+	overStallDriverDrops := overStallProducer - geometry.RingSlots
+	if overStallDriverDrops != 1 {
+		t.Fatalf(
+			"over-stall driver drops = %d, want 1 outside the bounded ownership contract",
+			overStallDriverDrops,
+		)
 	}
 }
 
@@ -296,25 +395,37 @@ func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatch(t *testing.T) {
 		)
 	}
 
-	queueLimit, err := deriveTUNAQMQueueLimit(
-		got.AdmissionLimitBytes, 1, mtu,
+	geometry, err := deriveTUNAQMQueueGeometry(
+		rateBytesPerSecond,
+		got.AdmissionLimitBytes,
+		1,
+		conn.IdealBatchSize,
+		got.GSOMaxSize,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	servicePackets := (wantAdmissionBytes + mtu - 1) / mtu
-	if queueLimit-tunAQMTxQueueLen < servicePackets {
+	servicePackets := (wantAdmissionBytes + minimumInnerPacketBytes - 1) /
+		minimumInnerPacketBytes
+	directBurstPackets := (got.GSOMaxSize + minimumInnerPacketBytes - 1) /
+		minimumInnerPacketBytes
+	if directBurstPackets < conn.IdealBatchSize {
+		directBurstPackets = conn.IdealBatchSize
+	}
+	if geometry.RingSlots != servicePackets+directBurstPackets ||
+		geometry.FQLimit != servicePackets {
 		t.Fatalf(
-			"fq service capacity = %d packets, want at least B+C = %d packets",
-			queueLimit-tunAQMTxQueueLen,
+			"ring/fq service capacity = %d/%d packets, want at least B+C = %d packets",
+			geometry.RingSlots,
+			geometry.FQLimit,
 			servicePackets,
 		)
 	}
-	if overloadPackets := servicePackets + tunAQMTxQueueLen + 1; overloadPackets <= queueLimit {
+	if overloadPackets := geometry.RingSlots + geometry.FQLimit + 1; overloadPackets <= geometry.RingSlots+geometry.FQLimit {
 		t.Fatalf(
-			"overload at %d packets is not observable above fq limit %d",
+			"overload at %d packets is not observable above combined limit %d",
 			overloadPackets,
-			queueLimit,
+			geometry.RingSlots+geometry.FQLimit,
 		)
 	}
 }
@@ -335,7 +446,7 @@ func TestTUNAQMFailedReconciliationPublishesObservedActualAsStale(t *testing.T) 
 	}
 	target := tunAQMTargetState{
 		Epoch: 9, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
-		MTU: 1395, QueueLimit: 65,
+		BurstBytes: 13_950, MTU: 1395, QueueLimit: 65,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	snapshot, err := reconciler.Reconcile(target)

@@ -240,9 +240,15 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   until every peer's retained bytes fit. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The fair-queue limit admits
-  one configured per-peer BDP plus one complete GSO batch and the 32-packet
-  device queue; overload beyond that explicit bound may tail-drop and remains
-  observable. Shaped FEC retains the same engine admission reservation until
+  one configured per-peer BDP plus one complete GSO batch at the 20-byte
+  minimum legal inner-packet size. The TUN ptr ring holds that same logical
+  service window plus the larger of a full device batch and one GSO-sized
+  direct/dequeue burst; the HTB burst equals that GSO byte bound and is read
+  back exactly. This prevents `FULL_RING` while the engine reader stalls for
+  the bounded B+C ownership window. A longer arbitrary reader stall lies
+  outside that invariant and may drop at the TUN driver; overload beyond the
+  bounded `fq` window may tail-drop there and remains observable. Shaped FEC
+  retains the same engine admission reservation until
   its owner batch terminally emits or fails, so ownership admission cannot
   duplicate that backlog behind the gate.
   Weighted scheduling retains fixed per-path shaping because no single

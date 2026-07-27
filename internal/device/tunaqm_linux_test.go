@@ -32,7 +32,8 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	}
 	kernel.command = func(args ...string) ([]byte, error) {
 		switch {
-		case len(args) >= 2 && args[0] == "-j" && args[1] == "qdisc":
+		case len(args) >= 3 && args[0] == "-j" &&
+			args[1] == "-s" && args[2] == "qdisc":
 			return []byte(`[
 				{"kind":"htb","root":true,"handle":"1:"},
 				{"kind":"fq","parent":"1:1","handle":"10:","options":{
@@ -42,7 +43,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 			]`), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
 			return []byte(fmt.Sprintf(
-				"class htb 1:1 root rate %dbit ceil %dbit",
+				"class htb 1:1 root rate %dbit ceil %dbit burst 13950b cburst 13950b",
 				currentRateBits, currentRateBits,
 			)), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "replace":
@@ -70,6 +71,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  400_000,
+		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
 		QueueLimit:          65,
@@ -106,12 +108,13 @@ func TestLinuxTUNAQMParameterChangePreservesLiveLeaf(t *testing.T) {
 	var qdiscCommands [][]string
 	kernel := testLinuxTUNAQMKernel(t, `[
 		{"kind":"htb","root":true,"handle":"1:","drops":37,"qlen":5,"backlog":6840},
-		{"kind":"fq","parent":"1:1","handle":"10:","drops":37,"qlen":5,"backlog":6840,
+		{"kind":"fq","parent":"1:1","handle":"10:","drops":41,"qlen":5,"backlog":6840,
 		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
 		 "initial_quantum":1395}}
 	]`, &qdiscCommands)
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  680_000,
+		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
 		QueueLimit:          60,
@@ -132,7 +135,7 @@ func TestLinuxTUNAQMParameterChangePreservesLiveLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actual.Drops != 37 ||
+	if actual.Drops != 41 ||
 		actual.QueueLength != 5 ||
 		actual.BacklogBytes != 6840 {
 		t.Fatalf("post-change queue counters = drops %d qlen %d backlog %d",
@@ -150,6 +153,7 @@ func TestLinuxTUNAQMDefersQueueLimitShrinkBelowBacklog(t *testing.T) {
 	]`, &qdiscCommands)
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  680_000,
+		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
 		QueueLimit:          60,
@@ -176,6 +180,7 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 	]`, &qdiscCommands)
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  680_000,
+		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
 		QueueLimit:          65,
@@ -192,6 +197,66 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 	}
 	if len(qdiscCommands) != 0 {
 		t.Fatalf("GSO-only shrink changed qdisc: %v", qdiscCommands)
+	}
+}
+
+func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
+	const targetRingSlots = 64
+	var qdiscCommands [][]string
+	kernel := testLinuxTUNAQMKernel(t, `[
+		{"kind":"htb","root":true,"handle":"1:"},
+		{"kind":"fq","parent":"1:1","handle":"10:",
+		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
+		 "initial_quantum":1395}}
+	]`, &qdiscCommands)
+	currentRingSlots := 128
+	pending := true
+	kernel.readTxQueueLen = func() (int, error) {
+		return currentRingSlots, nil
+	}
+	kernel.writeTxQueueLen = func(slots int) error {
+		currentRingSlots = slots
+		return nil
+	}
+	kernel.readRingPending = func() (bool, error) {
+		return pending, nil
+	}
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		BurstBytes:          13_950,
+		TxQueueLen:          targetRingSlots,
+		MTU:                 1395,
+		QueueLimit:          65,
+		GSOMaxSize:          13_950,
+		GSOMaxSegments:      10,
+		AdmissionLimitBytes: 14_270,
+	}
+	deferred, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deferred.RingSizeDeferred ||
+		currentRingSlots != 128 {
+		t.Fatalf(
+			"occupied ring shrink = %+v, installed slots %d; want deferred at 128",
+			deferred,
+			currentRingSlots,
+		)
+	}
+
+	pending = false
+	applied, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.RingSizeDeferred ||
+		currentRingSlots != targetRingSlots {
+		t.Fatalf(
+			"drained ring shrink = %+v, installed slots %d; want applied at %d",
+			applied,
+			currentRingSlots,
+			targetRingSlots,
+		)
 	}
 }
 
@@ -216,10 +281,11 @@ func testLinuxTUNAQMKernel(
 	}
 	kernel.command = func(args ...string) ([]byte, error) {
 		switch {
-		case len(args) >= 2 && args[0] == "-j" && args[1] == "qdisc":
+		case len(args) >= 3 && args[0] == "-j" &&
+			args[1] == "-s" && args[2] == "qdisc":
 			return []byte(qdiscJSON), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
-			return []byte("class htb 1:1 root rate 5440000bit ceil 5440000bit"), nil
+			return []byte("class htb 1:1 root rate 5440000bit ceil 5440000bit burst 13950b cburst 13950b"), nil
 		case len(args) > 0 && args[0] == "qdisc":
 			*qdiscCommands = append(*qdiscCommands, append([]string(nil), args...))
 			return nil, nil

@@ -445,15 +445,36 @@ A downstream path shaper therefore cannot prevent the engine from first
 draining `wanbond0` into a seconds-deep private queue. The
 `wanbond_engine_*` series retain that observation boundary, but the correction
 acts before it: on Linux, active-backup+pacing installs an HTB root with one
-bounded `fq` leaf on `wanbond0`, sets `txqueuelen=32`, and shapes TUN ingress at
-the controller's current inner-byte target. Let `B=maxPathDataBurstBytes`, the
+bounded `fq` leaf on `wanbond0`, derives the TUN ptr-ring capacity from the
+same admitted ownership window, and shapes TUN ingress at the controller's
+current inner-byte target. Let `B=maxPathDataBurstBytes`, the
 already-validated per-peer BDP/synthetic service backlog used by the exact-byte
-path shaper, and let `C` be one complete pre-segmented batch as derived below.
-For peer count `P`, the exact leaf contract is
-`limit=flow_limit=ceil(P*(B+C)/current TUN MTU)+32` and
-`quantum=initial_quantum=current TUN MTU`. Thus one ACK-clocked TCP BDP plus one
-complete admitted batch fit without an intentional tail drop; overload beyond
-the explicit packet bound may tail-drop and increments the qdisc drop counter.
+path shaper, let `C` be one complete pre-segmented batch as derived below,
+`m=20` the minimum legal IPv4 packet size presented by a TUN device, `N` the
+device batch size, and `G=gso_max_size`. For peer count `P`, the queue contract
+is:
+
+```
+F = ceil(P*(B+C)/m)
+D = max(N, ceil(G/m))
+fq limit = flow_limit = F
+TUN txqueuelen = F+D
+HTB burst = cburst = G bytes
+quantum = initial_quantum = current TUN MTU
+```
+
+`F` is one logical B+C service window. The post-qdisc ptr ring carries that
+window plus `D`, so a full engine device batch or one explicit HTB/GSO
+direct-dequeue burst cannot overflow the ring while the reader remains stalled
+for the bounded B+C ownership interval. The minimum-packet-accounted combined
+ring+fq service bound, including the guard, is
+`((F+D)+F)*m/aggregateIngressRate`; this is the delay value exercised by the
+native Linux contract test and must remain sub-second rather than reproducing
+the seconds-scale cycle-6 queue. This invariant does not claim lossless
+operation for an arbitrarily stalled TUN reader: after the bounded ownership
+interval, Linux LLTX may report `SKB_DROP_REASON_FULL_RING`. Immediate overload
+above `F` while the guarded ring has room instead tail-drops at `fq` and
+increments its qdisc drop counter.
 
 The same target also closes the engine's private-queue gap without truncating
 the TUN read. Let `r` be the aggregate ingress target divided by peer count,
@@ -486,11 +507,13 @@ cancels a waiter; independent peers never share a gate. Generated outer
 PROBE/CONTROL still bypasses this engine queue and retains the Bind shaper's
 priority reserve.
 
-Startup fails if `tc` is unavailable or topology, parameters, rate, queue
-length, or GSO limits cannot be read back. The daemon reconciles and re-reads
-the target every probe interval; it publishes a target epoch as actual/fresh
-only after every field matches. The daemon owns this root qdisc and the link's
-GSO limits while running.
+Startup fails if `tc` is unavailable or topology, parameters, rate, explicit
+HTB burst, ptr-ring capacity, or GSO limits cannot be read back. The daemon
+reconciles and re-reads the target every probe interval; it publishes a target
+epoch as actual/fresh only after every field matches. An occupied ptr-ring
+shrink remains installed as a safe superset until the TUN file reports no
+readable packet. The daemon owns this root qdisc, ptr-ring capacity, and the
+link's GSO limits while running.
 
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully
@@ -1182,12 +1205,16 @@ behaviour composes the following signals into one picture:
   `wanbond_path_congestion_target_changes`, and
   `wanbond_path_congestion_held`. These are absent without a path controller.
   Connection-scoped `wanbond_tun_aqm_target_*` and
-  `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, queue length,
-  bounded `fq` queue/flow limits, epoch, freshness, and readback timestamp;
-  live qdisc packet/byte backlog and root drops are explicit. `rate_fresh`
+  `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, explicit HTB
+  burst, ptr-ring capacity, bounded `fq` queue/flow limits, epoch, freshness,
+  and readback timestamp; live qdisc packet/byte backlog, ptr-ring occupancy,
+  and the maximum cumulative drop counter observed in the HTB+fq tree are
+  explicit. Production qdisc reads request `tc -s`; a non-stat read omits these
+  counters. `rate_fresh`
   separates an exact rate/epoch acknowledgment from full-envelope
-  `actual_fresh`, while the queue-limit, GSO-limit, and engine-admission
-  deferred gauges identify a safe pending shrink. These series are absent when the Linux
+  `actual_fresh`, while the ring-size, queue-limit, GSO-limit, and
+  engine-admission deferred gauges identify a safe pending shrink. These
+  series are absent when the Linux
   active-backup TUN AQM does not own the qdisc.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can

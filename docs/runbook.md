@@ -399,6 +399,13 @@ In summary:
   on a whole batch; it never splits or drops one after the TUN read. Under
   shaped FEC, the retained reservation transfers to the owner and releases only
   on terminal batch completion, not on the earlier ownership acknowledgement.
+  The bounded `fq` window has
+  `F=ceil(peerCount*(B+C)/20)` slots. The TUN ptr ring has
+  `F+max(Device.BatchSize,ceil(gso_max_size/20))` slots, and the explicit HTB
+  burst equals `gso_max_size`. Verify target/actual burst and ring metrics,
+  `actual_ring_pending`, and `ring_size_deferred`; use `tc -j -s` when
+  comparing `wanbond_tun_aqm_drops_total`. This guards a B+C ownership stall
+  plus one full direct/dequeue burst, not an arbitrarily stalled TUN reader.
 
 ## 6. Monitoring and health checks
 

@@ -621,6 +621,8 @@ type EngineOutboundSource interface {
 type TUNAQMSnapshot struct {
 	TargetRateBytesPerSecond  float64
 	ActualRateBytesPerSecond  float64
+	TargetHTBBurstBytes       int
+	ActualHTBBurstBytes       int
 	TargetTxQueueLen          int
 	ActualTxQueueLen          int
 	TargetEpoch               uint64
@@ -637,8 +639,10 @@ type TUNAQMSnapshot struct {
 	RateFresh                 bool
 	ActualQueueLengthPackets  int
 	ActualBacklogBytes        int
+	ActualRingPending         bool
 	ActualDrops               uint64
 	QueueLimitDeferred        bool
+	RingSizeDeferred          bool
 	GSOLimitsDeferred         bool
 	AdmissionLimitDeferred    bool
 	ActualObservedAt          time.Time
@@ -738,6 +742,8 @@ type collector struct {
 
 	tunAQMTargetRate           *prometheus.Desc
 	tunAQMActualRate           *prometheus.Desc
+	tunAQMTargetHTBBurst       *prometheus.Desc
+	tunAQMActualHTBBurst       *prometheus.Desc
 	tunAQMTargetQueue          *prometheus.Desc
 	tunAQMActualQueue          *prometheus.Desc
 	tunAQMTargetEpoch          *prometheus.Desc
@@ -754,8 +760,10 @@ type collector struct {
 	tunAQMRateFresh            *prometheus.Desc
 	tunAQMActualQueueLength    *prometheus.Desc
 	tunAQMActualBacklog        *prometheus.Desc
+	tunAQMActualRingPending    *prometheus.Desc
 	tunAQMActualDrops          *prometheus.Desc
 	tunAQMQueueLimitDeferred   *prometheus.Desc
+	tunAQMRingSizeDeferred     *prometheus.Desc
 	tunAQMGSOLimitsDeferred    *prometheus.Desc
 	tunAQMAdmissionDeferred    *prometheus.Desc
 	tunAQMObservedTime         *prometheus.Desc
@@ -1066,8 +1074,10 @@ func NewCollector(src Source) prometheus.Collector {
 
 		tunAQMTargetRate:           desc(tunAQMSubsystem, "target_rate_bytes_per_second", "Requested sender-side TUN ingress rate for the current controller epoch.", nil),
 		tunAQMActualRate:           desc(tunAQMSubsystem, "actual_rate_bytes_per_second", "Kernel-read-back HTB rate on the TUN interface.", nil),
-		tunAQMTargetQueue:          desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN interface transmit queue length.", nil),
-		tunAQMActualQueue:          desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN interface transmit queue length.", nil),
+		tunAQMTargetHTBBurst:       desc(tunAQMSubsystem, "target_htb_burst_bytes", "Requested HTB direct/dequeue burst guard in bytes.", nil),
+		tunAQMActualHTBBurst:       desc(tunAQMSubsystem, "actual_htb_burst_bytes", "Kernel-read-back HTB direct/dequeue burst guard in bytes.", nil),
+		tunAQMTargetQueue:          desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN ptr-ring slot capacity derived from the exact admitted service window.", nil),
+		tunAQMActualQueue:          desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN ptr-ring slot capacity.", nil),
 		tunAQMTargetEpoch:          desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
 		tunAQMActualEpoch:          desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
 		tunAQMTargetLimit:          desc(tunAQMSubsystem, "target_queue_limit_packets", "Requested bounded fair-queue packet limit derived from the admitted service backlog.", nil),
@@ -1082,8 +1092,10 @@ func NewCollector(src Source) prometheus.Collector {
 		tunAQMRateFresh:            desc(tunAQMSubsystem, "rate_fresh", "Whether the exact requested HTB rate and controller epoch matched even when a capacity shrink remained safely deferred (1=yes).", nil),
 		tunAQMActualQueueLength:    desc(tunAQMSubsystem, "actual_queue_length_packets", "Kernel-read-back live packet count in the TUN qdisc tree.", nil),
 		tunAQMActualBacklog:        desc(tunAQMSubsystem, "actual_backlog_bytes", "Kernel-read-back live byte backlog in the TUN qdisc tree.", nil),
+		tunAQMActualRingPending:    desc(tunAQMSubsystem, "actual_ring_pending", "Whether the TUN ptr-ring has at least one packet pending at kernel readback (1=yes).", nil),
 		tunAQMActualDrops:          desc(tunAQMSubsystem, "drops_total", "Kernel-read-back cumulative drops in the TUN root qdisc.", nil),
 		tunAQMQueueLimitDeferred:   desc(tunAQMSubsystem, "queue_limit_deferred", "Whether a queue-limit shrink awaits a packet count no greater than the requested bound (1=yes).", nil),
+		tunAQMRingSizeDeferred:     desc(tunAQMSubsystem, "ring_size_deferred", "Whether a TUN ptr-ring shrink awaits an empty driver ring (1=yes).", nil),
 		tunAQMGSOLimitsDeferred:    desc(tunAQMSubsystem, "gso_limits_deferred", "Whether a GSO-limit shrink awaits an empty TUN qdisc backlog (1=yes).", nil),
 		tunAQMAdmissionDeferred:    desc(tunAQMSubsystem, "engine_admission_limit_deferred", "Whether an engine admission shrink awaits every peer's retained bytes fitting the requested bound (1=yes).", nil),
 		tunAQMObservedTime:         desc(tunAQMSubsystem, "actual_observed_timestamp_seconds", "Unix timestamp of the latest exact kernel qdisc/link readback.", nil),
@@ -1175,6 +1187,8 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.engineAdmissionOversizeBatches
 	ch <- c.tunAQMTargetRate
 	ch <- c.tunAQMActualRate
+	ch <- c.tunAQMTargetHTBBurst
+	ch <- c.tunAQMActualHTBBurst
 	ch <- c.tunAQMTargetQueue
 	ch <- c.tunAQMActualQueue
 	ch <- c.tunAQMTargetEpoch
@@ -1191,8 +1205,10 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMRateFresh
 	ch <- c.tunAQMActualQueueLength
 	ch <- c.tunAQMActualBacklog
+	ch <- c.tunAQMActualRingPending
 	ch <- c.tunAQMActualDrops
 	ch <- c.tunAQMQueueLimitDeferred
+	ch <- c.tunAQMRingSizeDeferred
 	ch <- c.tunAQMGSOLimitsDeferred
 	ch <- c.tunAQMAdmissionDeferred
 	ch <- c.tunAQMObservedTime
@@ -1338,6 +1354,8 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		if snapshot := src.TUNAQM(); snapshot != nil {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetRate, prometheus.GaugeValue, snapshot.TargetRateBytesPerSecond)
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualRate, prometheus.GaugeValue, snapshot.ActualRateBytesPerSecond)
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetHTBBurst, prometheus.GaugeValue, float64(snapshot.TargetHTBBurstBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualHTBBurst, prometheus.GaugeValue, float64(snapshot.ActualHTBBurstBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetQueue, prometheus.GaugeValue, float64(snapshot.TargetTxQueueLen))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueue, prometheus.GaugeValue, float64(snapshot.ActualTxQueueLen))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetEpoch, prometheus.GaugeValue, float64(snapshot.TargetEpoch))
@@ -1354,8 +1372,10 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMRateFresh, prometheus.GaugeValue, boolValue(snapshot.RateFresh))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueueLength, prometheus.GaugeValue, float64(snapshot.ActualQueueLengthPackets))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualBacklog, prometheus.GaugeValue, float64(snapshot.ActualBacklogBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualRingPending, prometheus.GaugeValue, boolValue(snapshot.ActualRingPending))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualDrops, prometheus.CounterValue, float64(snapshot.ActualDrops))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMQueueLimitDeferred, prometheus.GaugeValue, boolValue(snapshot.QueueLimitDeferred))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMRingSizeDeferred, prometheus.GaugeValue, boolValue(snapshot.RingSizeDeferred))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMGSOLimitsDeferred, prometheus.GaugeValue, boolValue(snapshot.GSOLimitsDeferred))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMAdmissionDeferred, prometheus.GaugeValue, boolValue(snapshot.AdmissionLimitDeferred))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMObservedTime, prometheus.GaugeValue, timestampSeconds(snapshot.ActualObservedAt))

@@ -405,21 +405,27 @@ as historical exact-byte-shaper evidence.
 
 - [ ] Before deployment, run the non-privileged gate and `nix build`. On an
       ARM64 Linux host, run
-      `TestLinuxTUNAQMReconciliationContract`: both the in-memory dummy and
-      real privileged Linux adapter must pass the same topology/rate/queue/
-      drift-restoration contract.
+      `TestLinuxTUNAQMReconciliationContract` and
+      `TestLinuxTUNAQMNativeTUNBoundedReaderStallContract`: the in-memory
+      dummy and real privileged Linux adapter must pass the same
+      topology/rate/queue/drift-restoration contract, and the native TUN must
+      prove bounded-stall, immediate-qdisc-overload, and over-stall placement.
 - [ ] Record both endpoint commit IDs, binary SHA-256 hashes, config hashes,
       service states, TUN link details, `tc -j qdisc`, `tc class`, and a full
       `/metrics` scrape before the candidate starts.
 - [ ] On both edge and concentrator, confirm active-backup+pacing starts only
-      after exact readback: `wanbond0 txqueuelen 32`, HTB root, one `fq`
-      child with
-      `limit=flow_limit=ceil(peerCount*(B+C)/currentMTU)+32`
+      after exact readback: HTB root, one `fq` child with
+      `F=limit=flow_limit=ceil(peerCount*(B+C)/20)`,
+      `D=max(Device.BatchSize,ceil(gso_max_size/20))`, and
+      `wanbond0 txqueuelen=F+D`
       and `quantum=initial_quantum=current MTU`.
       Here `B` is the maximum current active outer-shaper DATA budget and `C`
       is the complete GSO batch below.
-      `wanbond_tun_aqm_actual_fresh` must be 1 and target/actual epoch, rate,
-      and queue length must match.
+      Confirm HTB `burst=cburst=gso_max_size` and exact target/actual burst,
+      epoch, rate, ring capacity, and queue-limit readback.
+      `wanbond_tun_aqm_actual_fresh` must be 1. Record
+      `((F+D)+F)*20/aggregateIngressRate`; the bounded ownership service
+      window including the direct guard must remain sub-second.
 - [ ] From per-peer ingress rate `r`, maximum configured inner MTU `Mmax`, and
       current inner MTU `Mcur`, calculate
       `S=min(128,floor(65536/Mcur),floor(r*20ms/(Mmax+32)))`.
@@ -470,11 +476,21 @@ as historical exact-byte-shaper evidence.
       zero TUN backlog; engine admission shrink waits until every peer's
       retained bytes fit. All deferred gauges must return to zero after drain,
       with exact target/actual readback and no new qdisc or link drop.
+- [ ] Exercise one native TUN reader stall bounded to the calculated B+C
+      ownership window plus a full `Device.BatchSize`: driver and qdisc drops
+      must both remain unchanged. With the guarded ring still having room,
+      immediate overload beyond `F` must increase the `tc -s` qdisc drop
+      counter while link TX drops remain unchanged. A sustained reader stall
+      beyond the calculated service/lifecycle bound may increase link TX
+      `FULL_RING` drops; do not claim arbitrary-stall losslessness from the
+      bounded result.
 - [ ] For each single ACK-clocked TCP leg, the bounded `fq` leaf incurs zero
       local drops and its backlog returns to zero after the leg. An offered
       burst no larger than the calculated service backlog must also incur zero
       local drops. Overload beyond the explicit queue limit may tail-drop, but
-      every such drop must advance the qdisc counter.
+      every such drop must advance `wanbond_tun_aqm_drops_total`. Confirm that
+      metric against the maximum leaf/root value from `tc -j -s qdisc`; a
+      non-stat `tc -j` read is insufficient.
 - [ ] The reproduced failure does not recur: the peer engine queue must not
       reach its 1,024-container limit,
       `wanbond_engine_admission_retained_bytes` must stay at or below
