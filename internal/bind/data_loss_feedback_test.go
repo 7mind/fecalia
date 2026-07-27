@@ -187,12 +187,12 @@ func TestDataLossFeedbackCountsOnlyUniqueAcceptedNativeOutcomes(t *testing.T) {
 func TestDataLossFeedbackCarrierTransitionDoesNotAttributePriorEpochOutcomes(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		resolveGap func(*testing.T, *Multipath, netip.AddrPort, dataLossCarrier)
+		resolveGap func(*testing.T, *Multipath, *fakeClock, netip.AddrPort, dataLossCarrier)
 	}{
 		{
 			name: "final gap",
-			resolveGap: func(_ *testing.T, m *Multipath, source netip.AddrPort, _ dataLossCarrier) {
-				m.clock.(*fakeClock).advance(resequencerTimeout)
+			resolveGap: func(_ *testing.T, m *Multipath, clock *fakeClock, source netip.AddrPort, _ dataLossCarrier) {
+				clock.advance(resequencerTimeout)
 				m.dispatchInbound(m.paths[0], frame.Data{
 					OuterSeq: 4,
 					PathID:   1,
@@ -201,8 +201,24 @@ func TestDataLossFeedbackCarrierTransitionDoesNotAttributePriorEpochOutcomes(t *
 			},
 		},
 		{
+			name: "delayed final gap",
+			resolveGap: func(_ *testing.T, m *Multipath, clock *fakeClock, source netip.AddrPort, _ dataLossCarrier) {
+				m.dispatchInbound(m.paths[0], frame.Data{
+					OuterSeq: 4,
+					PathID:   1,
+					Payload:  []byte{4},
+				}, nil, source)
+				clock.advance(resequencerTimeout)
+				for {
+					if _, ok := m.resequencer.Load().Pop(); !ok {
+						break
+					}
+				}
+			},
+		},
+		{
 			name: "recovered gap",
-			resolveGap: func(t *testing.T, m *Multipath, source netip.AddrPort, carrier dataLossCarrier) {
+			resolveGap: func(t *testing.T, m *Multipath, _ *fakeClock, source netip.AddrPort, carrier dataLossCarrier) {
 				receiver := &fecReceiver{}
 				m.observeRecovered(
 					receiver,
@@ -252,7 +268,7 @@ func TestDataLossFeedbackCarrierTransitionDoesNotAttributePriorEpochOutcomes(t *
 				source:             sourceB,
 				topologyGeneration: generation,
 			}
-			test.resolveGap(t, m, sourceB, carrierB)
+			test.resolveGap(t, m, clock, sourceB, carrierB)
 
 			contract := receivedRecoverySnapshot{
 				present:    true,

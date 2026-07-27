@@ -8,7 +8,10 @@ import (
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-const dataLossFeedbackFreshness = 2 * telemetry.DefaultProbeInterval
+const (
+	dataLossFeedbackFreshness = 2 * telemetry.DefaultProbeInterval
+	maxOuterSequence          = ^uint64(0)
+)
 
 type dataLossCarrier struct {
 	pathID             uint8
@@ -28,8 +31,10 @@ type acceptedDataLossFeedback struct {
 type dataLossFeedbackCoordinator struct {
 	mu sync.Mutex
 
-	haveCarrier       bool
-	carrier           dataLossCarrier
+	haveCarrier bool
+	carrier     dataLossCarrier
+	// carrierStartSeq is the first accepted native outcome in this carrier epoch.
+	carrierStartSeq   uint64
 	carrierGeneration uint64
 	nextReportID      uint64
 	received          uint64
@@ -46,25 +51,20 @@ type dataLossFeedbackCoordinator struct {
 	samplePathID    uint8
 }
 
-func (c *dataLossFeedbackCoordinator) observeCarrier(carrier dataLossCarrier) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.selectCarrierLocked(carrier)
-}
-
 // recordNative records an outer sequence only after ObserveFromPath admitted it.
 // The resequencer owns the per-sequence uniqueness decision.
-func (c *dataLossFeedbackCoordinator) recordNative(_ uint64, carrier dataLossCarrier) {
+func (c *dataLossFeedbackCoordinator) recordNative(seq uint64, carrier dataLossCarrier) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.selectCarrierLocked(carrier)
+	c.selectCarrierLocked(carrier, seq)
 	c.received++
 }
 
-func (c *dataLossFeedbackCoordinator) selectCarrierLocked(next dataLossCarrier) {
+func (c *dataLossFeedbackCoordinator) selectCarrierLocked(next dataLossCarrier, startSeq uint64) {
 	if !c.haveCarrier || c.carrier != next {
 		c.haveCarrier = true
 		c.carrier = next
+		c.carrierStartSeq = startSeq
 		c.carrierGeneration++
 		if c.carrierGeneration == 0 {
 			c.carrierGeneration++
@@ -74,24 +74,34 @@ func (c *dataLossFeedbackCoordinator) selectCarrierLocked(next dataLossCarrier) 
 	}
 }
 
-func (c *dataLossFeedbackCoordinator) recordLost(_ uint64, count uint64) {
+func (c *dataLossFeedbackCoordinator) recordLost(first uint64, count uint64) {
 	c.mu.Lock()
 	if count == 0 {
 		c.mu.Unlock()
 		return
 	}
 	if c.haveCarrier {
-		c.lost += count
+		if first > c.carrierStartSeq {
+			c.lost += count
+		} else if c.carrierStartSeq < maxOuterSequence {
+			excluded := c.carrierStartSeq - first + 1
+			if count > excluded {
+				c.lost += count - excluded
+			}
+		}
 	}
 	c.mu.Unlock()
 }
 
 // recordRecovered records an outer sequence only after ObserveRecovered admitted
-// it. A recovered DATA outcome counts as native loss even though FEC repaired it.
-func (c *dataLossFeedbackCoordinator) recordRecovered(_ uint64, carrier dataLossCarrier) {
+// it. A recovered DATA outcome in the current native carrier epoch counts as
+// native loss even though FEC repaired it.
+func (c *dataLossFeedbackCoordinator) recordRecovered(seq uint64, carrier dataLossCarrier) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.selectCarrierLocked(carrier)
+	if !c.haveCarrier || c.carrier != carrier || seq <= c.carrierStartSeq {
+		return
+	}
 	c.lost++
 }
 

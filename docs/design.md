@@ -1701,13 +1701,19 @@ Each report binds to the observed sender session and current recovery
 ContractID, plus the receiver's carrier path, composite path/source/topology
 epoch, carrier generation, and monotonic report ID. The sender accepts it only
 from a fresh authenticated non-bootstrap PROBE in the peer's current adopted
-reporter session. A report remains fresh for two probe intervals. For one
-matching stable carrier, the controller observes the conservative maximum of
-DATA loss and that carrier's probe loss. Once the peer has demonstrated this
-capability, stale or path/session/contract-mismatched evidence produces the
-count-zero **HOLD** branch; clean priority PROBEs cannot lower *M* while current
-DATA evidence is unavailable. A peer that has never sent feedback retains the
-legacy probe-loss behavior.
+reporter session. Only a native DATA outcome accepted by the resequencer starts
+a new carrier epoch, and that acceptance is recorded in the resequencer's
+serialized outcome order. Final gaps and parity recoveries whose sequence is at
+or before the epoch's first native sequence belong to the prior/transition
+interval and are excluded from the new carrier's report. This prevents a
+failover frame from charging old-carrier gaps to the fresh carrier while
+preserving later native-carrier loss. A report remains fresh for two probe
+intervals. For one matching stable carrier, the controller observes the
+conservative maximum of DATA loss and that carrier's probe loss. Once the peer
+has demonstrated this capability, stale or path/session/contract-mismatched
+evidence produces the count-zero **HOLD** branch; clean priority PROBEs cannot
+lower *M* while current DATA evidence is unavailable. A peer that has never sent
+feedback retains the legacy probe-loss behavior.
 
 Under the **weighted** scheduler, DATA can be striped simultaneously across
 multiple carriers. One carrier record cannot represent those distribution

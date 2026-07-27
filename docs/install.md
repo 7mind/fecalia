@@ -359,7 +359,10 @@ parity-reconstructed, and final missing DATA exactly once and reports the
 interval through a separate feedback-only authenticated PROBE; recovery OFFERs
 and ACKs remain top-level `WBRC` payloads for peers that parse the recovery
 record directly. The controller uses the higher of this pre-recovery DATA loss
-and the carrier's probe loss. Once a peer has supplied DATA feedback, stale or
+and the carrier's probe loss. An accepted native DATA frame starts a new carrier
+epoch; final or parity-recovered outcomes from before that frame are excluded
+from the fresh carrier's interval, so a path transition cannot raise parity on
+old-carrier loss. Once a peer has supplied DATA feedback, stale or
 path/session/contract-mismatched evidence holds the existing parity decision;
 clean priority PROBEs cannot make parity fall while DATA evidence is
 unavailable. A legacy peer that never supplies the feedback retains probe-loss
@@ -2133,8 +2136,10 @@ Authenticated receiver DATA-loss feedback applies only while active-backup has
 one stable DATA carrier. Weighted aggregation can use several simultaneous
 carriers, and the current one-record PROBE payload cannot represent their
 distribution shares; weighted mode therefore retains its existing weighted
-probe-loss signal. No configuration key enables or disables the feedback. A
-feedback-capable peer sends it as a separate authenticated probe and keeps
+probe-loss signal. The first accepted native DATA frame on a new carrier starts
+its feedback epoch; earlier final/recovered outcomes are not transferred into
+that carrier's counters. No configuration key enables or disables the feedback.
+A feedback-capable peer sends it as a separate authenticated probe and keeps
 recovery OFFER/ACK payloads in the legacy top-level `WBRC` encoding. A peer that
 never advertises DATA feedback remains interoperable through recovery
 negotiation and the probe-loss controller path.

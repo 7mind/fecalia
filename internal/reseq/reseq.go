@@ -412,7 +412,7 @@ func New(window uint64, timeout time.Duration, clock Clock) *Resequencer {
 // nothing else. src is the outer source address the frame arrived from. Any
 // frames that become deliverable are appended to the ready FIFO for Pop.
 func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
-	_ = r.ingest(seq, payload, src, false, 0)
+	_ = r.ingest(seq, payload, src, false, 0, nil)
 }
 
 // ObserveFromPath ingests one DATA frame carrying an OPAQUE delivering-path
@@ -426,7 +426,24 @@ func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
 // true only when this outer sequence was admitted as a new native outcome; duplicates,
 // stale frames, and suspect discontinuities return false.
 func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.AddrPort, pathKey uint32) bool {
-	return r.ingest(seq, payload, src, true, pathKey)
+	return r.ingest(seq, payload, src, true, pathKey, nil)
+}
+
+// ObserveFromPathWithAdmissionObserver behaves like ObserveFromPath and invokes
+// observeAdmission exactly once for a newly admitted native outcome. The
+// lock-leaf observer runs under the resequencer lock so external accounting
+// preserves the same total order as gap finalization.
+func (r *Resequencer) ObserveFromPathWithAdmissionObserver(
+	seq uint64,
+	payload []byte,
+	src netip.AddrPort,
+	pathKey uint32,
+	observeAdmission func(),
+) bool {
+	if observeAdmission == nil {
+		panic("reseq: admission observer must not be nil")
+	}
+	return r.ingest(seq, payload, src, true, pathKey, observeAdmission)
 }
 
 // SetFECActive toggles whether an FEC decoder is repairing this stream. While FEC
@@ -775,7 +792,14 @@ func (r *Resequencer) effectiveHoldLocked(now time.Time) (time.Duration, bool) {
 // ObserveFromPath (known == true, carrying pathKey). It records the trailing
 // delivering-path evidence before classifying the frame so the head-of-line
 // timeout logic sees the up-to-date single-vs-multi-path state.
-func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, known bool, pathKey uint32) bool {
+func (r *Resequencer) ingest(
+	seq uint64,
+	payload []byte,
+	src netip.AddrPort,
+	known bool,
+	pathKey uint32,
+	observeAdmission func(),
+) bool {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -845,6 +869,9 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 
 	r.drain()
 	r.arm(now)
+	if observeAdmission != nil {
+		observeAdmission()
+	}
 	return true
 }
 
@@ -859,6 +886,31 @@ func (r *Resequencer) ingest(seq uint64, payload []byte, src netip.AddrPort, kno
 // which the datapath uses to keep the /metrics recovered counter honest — counting
 // frames actually delivered ahead of the release point, not merely reconstructed.
 func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.AddrPort) bool {
+	return r.observeRecovered(seq, payload, src, nil)
+}
+
+// ObserveRecoveredWithAdmissionObserver behaves like ObserveRecovered and
+// invokes observeAdmission exactly once for a newly admitted recovered outcome.
+// The same lock-leaf ordering contract as ObserveFromPathWithAdmissionObserver
+// applies.
+func (r *Resequencer) ObserveRecoveredWithAdmissionObserver(
+	seq uint64,
+	payload []byte,
+	src netip.AddrPort,
+	observeAdmission func(),
+) bool {
+	if observeAdmission == nil {
+		panic("reseq: admission observer must not be nil")
+	}
+	return r.observeRecovered(seq, payload, src, observeAdmission)
+}
+
+func (r *Resequencer) observeRecovered(
+	seq uint64,
+	payload []byte,
+	src netip.AddrPort,
+	observeAdmission func(),
+) bool {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -930,6 +982,9 @@ func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.Add
 
 	r.drain()
 	r.arm(now)
+	if observeAdmission != nil {
+		observeAdmission()
+	}
 	return true
 }
 

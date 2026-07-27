@@ -3054,11 +3054,6 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		if pr.contracts != nil {
 			carrier.topologyGeneration = pr.contracts.receivedSnapshot().generation
 		}
-		if pr.dataLoss != nil {
-			// Select the carrier before ObserveFromPath can finalize an older gap, but
-			// do not count this sequence until the resequencer admits it below.
-			pr.dataLoss.observeCarrier(carrier)
-		}
 		if fr := pr.fecRecv.Load(); fr != nil {
 			// FEC on (T24): offer the data shard to the decoder BEFORE resequencing so a
 			// later parity frame can reconstruct any group-mate lost in transit, then
@@ -3073,13 +3068,29 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			if fr.connLoss != nil {
 				fr.connLoss.Observe(f.OuterSeq)
 			}
-			if rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey) && pr.dataLoss != nil {
-				pr.dataLoss.recordNative(f.OuterSeq, carrier)
+			if pr.dataLoss != nil {
+				rq.ObserveFromPathWithAdmissionObserver(
+					f.OuterSeq,
+					f.Payload,
+					srcAP,
+					pathKey,
+					func() { pr.dataLoss.recordNative(f.OuterSeq, carrier) },
+				)
+			} else {
+				rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
 			}
 			m.observeRecovered(fr, rq, recovered, srcAP, pr.dataLoss, carrier)
 		} else {
-			if rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey) && pr.dataLoss != nil {
-				pr.dataLoss.recordNative(f.OuterSeq, carrier)
+			if pr.dataLoss != nil {
+				rq.ObserveFromPathWithAdmissionObserver(
+					f.OuterSeq,
+					f.Payload,
+					srcAP,
+					pathKey,
+					func() { pr.dataLoss.recordNative(f.OuterSeq, carrier) },
+				)
+			} else {
+				rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
 			}
 		}
 	case frame.Parity:
@@ -3395,10 +3406,18 @@ func (m *Multipath) observeRecovered(
 		if fr.connLoss != nil {
 			fr.connLoss.Observe(seq)
 		}
-		if rq.ObserveRecovered(seq, inner, srcAP) {
-			if dataLoss != nil {
-				dataLoss.recordRecovered(seq, carrier)
-			}
+		admitted := false
+		if dataLoss != nil {
+			admitted = rq.ObserveRecoveredWithAdmissionObserver(
+				seq,
+				inner,
+				srcAP,
+				func() { dataLoss.recordRecovered(seq, carrier) },
+			)
+		} else {
+			admitted = rq.ObserveRecovered(seq, inner, srcAP)
+		}
+		if admitted {
 			fr.deliveredRecovered.Add(1)
 		}
 	}
