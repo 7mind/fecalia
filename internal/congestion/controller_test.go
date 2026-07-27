@@ -561,7 +561,7 @@ func TestControllerIngressPressureBacksOffAndRecoversAfterSettledCleanRun(t *tes
 	}
 }
 
-func TestControllerUnloadedRingPendingDoesNotReduceIngressHeadroom(t *testing.T) {
+func TestControllerLoadedRingPendingWithoutWaitDoesNotReduceIngressHeadroom(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -583,24 +583,47 @@ func TestControllerUnloadedRingPendingDoesNotReduceIngressHeadroom(t *testing.T)
 		t.Fatal(err)
 	}
 
-	unloaded, err := controller.ObserveIngressPressure(
+	ringOnly, err := controller.ObserveIngressPressure(
 		congestion.IngressPressureState{
 			At:          at.Add(2 * time.Second),
 			Epoch:       epoch,
 			Interval:    time.Second,
 			RingPending: true,
+			Loaded:      true,
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unloaded.IngressPressure ||
-		unloaded.Target != initial.Target ||
-		unloaded.IngressHeadroomChanges != 0 {
+	if ringOnly.IngressPressure ||
+		ringOnly.Target != initial.Target ||
+		ringOnly.IngressHeadroomChanges != 0 {
 		t.Fatalf(
-			"unloaded ring occupancy changed ingress control state: initial=%+v unloaded=%+v",
+			"loaded ring occupancy without admission wait changed ingress control state: initial=%+v ringOnly=%+v",
 			initial,
-			unloaded,
+			ringOnly,
+		)
+	}
+	subthreshold, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(3 * time.Second),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: 400 * time.Millisecond,
+			Interval:              time.Second,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subthreshold.IngressPressure ||
+		subthreshold.Target != initial.Target ||
+		subthreshold.IngressHeadroomChanges != 0 {
+		t.Fatalf(
+			"loaded ring occupancy with sub-threshold admission wait changed ingress control state: initial=%+v subthreshold=%+v",
+			initial,
+			subthreshold,
 		)
 	}
 }
