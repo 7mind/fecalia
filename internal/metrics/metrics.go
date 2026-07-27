@@ -39,6 +39,7 @@ const (
 	fecSubsystem         = "fec"
 	resequencerSubsystem = "resequencer"
 	sessionSubsystem     = "session"
+	engineSubsystem      = "engine"
 	// aggregationSubsystem partitions the weighted-scheduler aggregation-gate series
 	// (T146). The smoothed offered-load gauge deliberately carries NO subsystem (it is
 	// wanbond_offered_load_fps, not wanbond_aggregation_…) since it is the load the gate
@@ -187,6 +188,20 @@ const (
 // Follows the T94/D58 per-peer label rule below (peerLabelValues): labelled `peer=<name>`
 // only once 2+ peers are bound; a single-peer Source still emits this series, unlabelled.
 const MetricPeerSessionEstablished = "wanbond_peer_session_established"
+
+const (
+	MetricEngineTUNBytes                  = "wanbond_engine_tun_bytes_total"
+	MetricEngineTUNBatchFrames            = "wanbond_engine_tun_batch_frames"
+	MetricEngineSendBytes                 = "wanbond_engine_send_bytes_total"
+	MetricEngineSendBatchFrames           = "wanbond_engine_send_batch_frames"
+	MetricEngineEncryptionQueueContainers = "wanbond_engine_encryption_queue_containers"
+	MetricEnginePeerQueueContainers       = "wanbond_engine_peer_queue_containers"
+	MetricEnginePeerQueueHighWater        = "wanbond_engine_peer_queue_high_water_containers"
+	MetricEngineActiveSendFrames          = "wanbond_engine_active_send_frames"
+	MetricEngineActiveSendBytes           = "wanbond_engine_active_send_bytes"
+	MetricEngineActiveSendFramesHighWater = "wanbond_engine_active_send_frames_high_water"
+	MetricEngineActiveSendBytesHighWater  = "wanbond_engine_active_send_bytes_high_water"
+)
 
 // MetricWeightedCapacitySane is the Q52 WARN-arm capacity-sanity gauge (T144).
 // Unlike every other series above, it is CONFIG-DERIVED, not sourced from Source at
@@ -561,6 +576,30 @@ type Source interface {
 	PeerNames() []string
 }
 
+type EngineBatchHistogram struct {
+	Count   uint64
+	Frames  uint64
+	Buckets map[uint64]uint64
+}
+
+type EngineOutboundSnapshot struct {
+	TUNBytes                  uint64
+	TUNBatchFrames            EngineBatchHistogram
+	SendBytes                 uint64
+	SendBatchFrames           EngineBatchHistogram
+	EncryptionQueueContainers uint64
+	PeerQueueContainers       uint64
+	PeerQueueHighWater        uint64
+	ActiveSendFrames          uint64
+	ActiveSendBytes           uint64
+	ActiveSendFramesHighWater uint64
+	ActiveSendBytesHighWater  uint64
+}
+
+type EngineOutboundSource interface {
+	EngineOutbound() EngineOutboundSnapshot
+}
+
 // collector is a prometheus.Collector that reads a Source at scrape time and
 // emits per-path const-metrics plus the FEC/resequencer counters. Reading at
 // scrape time (rather than mirroring into GaugeVecs on an update path) keeps the
@@ -628,6 +667,18 @@ type collector struct {
 	sessionLastHandshake *prometheus.Desc
 
 	peerSessionEstablished *prometheus.Desc
+
+	engineTUNBytes                  *prometheus.Desc
+	engineTUNBatchFrames            *prometheus.Desc
+	engineSendBytes                 *prometheus.Desc
+	engineSendBatchFrames           *prometheus.Desc
+	engineEncryptionQueueContainers *prometheus.Desc
+	enginePeerQueueContainers       *prometheus.Desc
+	enginePeerQueueHighWater        *prometheus.Desc
+	engineActiveSendFrames          *prometheus.Desc
+	engineActiveSendBytes           *prometheus.Desc
+	engineActiveSendFramesHighWater *prometheus.Desc
+	engineActiveSendBytesHighWater  *prometheus.Desc
 }
 
 type shaperMetric struct {
@@ -848,6 +899,18 @@ func NewCollector(src Source) prometheus.Collector {
 		sessionLastHandshake: desc(sessionSubsystem, "last_handshake_seconds", "Age in seconds of the peer's most recent completed WG handshake (0 when none has completed).", nil),
 
 		peerSessionEstablished: desc("", "peer_session_established", "Per-peer WG session liveness (1 = that peer's own handshake has completed and is still fresh, 0 = still converging or wedged); distinct from the connection-scoped wanbond_session_established.", peerScopedLabels),
+
+		engineTUNBytes:                  desc(engineSubsystem, "tun_bytes_total", "Inner packet bytes read from TUN into outbound engine containers.", nil),
+		engineTUNBatchFrames:            desc(engineSubsystem, "tun_batch_frames", "Distribution of inner frames grouped into one outbound container after Linux GSO splitting.", nil),
+		engineSendBytes:                 desc(engineSubsystem, "send_bytes_total", "Encrypted WireGuard bytes handed to Bind.Send.", nil),
+		engineSendBatchFrames:           desc(engineSubsystem, "send_batch_frames", "Distribution of encrypted WireGuard frames handed to one Bind.Send call.", nil),
+		engineEncryptionQueueContainers: desc(engineSubsystem, "encryption_queue_containers", "Outbound containers currently queued for encryption.", nil),
+		enginePeerQueueContainers:       desc(engineSubsystem, "peer_queue_containers", "Outbound containers currently queued ahead of peer sequential senders.", nil),
+		enginePeerQueueHighWater:        desc(engineSubsystem, "peer_queue_high_water_containers", "Maximum observed container depth of any peer outbound queue.", nil),
+		engineActiveSendFrames:          desc(engineSubsystem, "active_send_frames", "Encrypted WireGuard frames currently held across synchronous Bind.Send calls.", nil),
+		engineActiveSendBytes:           desc(engineSubsystem, "active_send_bytes", "Encrypted WireGuard bytes currently held across synchronous Bind.Send calls.", nil),
+		engineActiveSendFramesHighWater: desc(engineSubsystem, "active_send_frames_high_water", "Maximum encrypted WireGuard frames concurrently held across Bind.Send calls.", nil),
+		engineActiveSendBytesHighWater:  desc(engineSubsystem, "active_send_bytes_high_water", "Maximum encrypted WireGuard bytes concurrently held across Bind.Send calls.", nil),
 	}
 }
 
@@ -913,6 +976,17 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.sessionEstablished
 	ch <- c.sessionLastHandshake
 	ch <- c.peerSessionEstablished
+	ch <- c.engineTUNBytes
+	ch <- c.engineTUNBatchFrames
+	ch <- c.engineSendBytes
+	ch <- c.engineSendBatchFrames
+	ch <- c.engineEncryptionQueueContainers
+	ch <- c.enginePeerQueueContainers
+	ch <- c.enginePeerQueueHighWater
+	ch <- c.engineActiveSendFrames
+	ch <- c.engineActiveSendBytes
+	ch <- c.engineActiveSendFramesHighWater
+	ch <- c.engineActiveSendBytesHighWater
 }
 
 // Collect reads the Source once and emits one const-metric per per-(peer,path)
@@ -1024,6 +1098,29 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		labels := c.peerLabelValues(ps.Peer)
 		ch <- prometheus.MustNewConstMetric(c.peerSessionEstablished, prometheus.GaugeValue, establishedValue(ps.Established), labels...)
 	}
+
+	if src, ok := c.src.(EngineOutboundSource); ok {
+		outbound := src.EngineOutbound()
+		ch <- prometheus.MustNewConstMetric(c.engineTUNBytes, prometheus.CounterValue, float64(outbound.TUNBytes))
+		ch <- prometheus.MustNewConstHistogram(c.engineTUNBatchFrames, outbound.TUNBatchFrames.Count, float64(outbound.TUNBatchFrames.Frames), histogramBuckets(outbound.TUNBatchFrames.Buckets))
+		ch <- prometheus.MustNewConstMetric(c.engineSendBytes, prometheus.CounterValue, float64(outbound.SendBytes))
+		ch <- prometheus.MustNewConstHistogram(c.engineSendBatchFrames, outbound.SendBatchFrames.Count, float64(outbound.SendBatchFrames.Frames), histogramBuckets(outbound.SendBatchFrames.Buckets))
+		ch <- prometheus.MustNewConstMetric(c.engineEncryptionQueueContainers, prometheus.GaugeValue, float64(outbound.EncryptionQueueContainers))
+		ch <- prometheus.MustNewConstMetric(c.enginePeerQueueContainers, prometheus.GaugeValue, float64(outbound.PeerQueueContainers))
+		ch <- prometheus.MustNewConstMetric(c.enginePeerQueueHighWater, prometheus.GaugeValue, float64(outbound.PeerQueueHighWater))
+		ch <- prometheus.MustNewConstMetric(c.engineActiveSendFrames, prometheus.GaugeValue, float64(outbound.ActiveSendFrames))
+		ch <- prometheus.MustNewConstMetric(c.engineActiveSendBytes, prometheus.GaugeValue, float64(outbound.ActiveSendBytes))
+		ch <- prometheus.MustNewConstMetric(c.engineActiveSendFramesHighWater, prometheus.GaugeValue, float64(outbound.ActiveSendFramesHighWater))
+		ch <- prometheus.MustNewConstMetric(c.engineActiveSendBytesHighWater, prometheus.GaugeValue, float64(outbound.ActiveSendBytesHighWater))
+	}
+}
+
+func histogramBuckets(buckets map[uint64]uint64) map[float64]uint64 {
+	out := make(map[float64]uint64, len(buckets))
+	for bound, count := range buckets {
+		out[float64(bound)] = count
+	}
+	return out
 }
 
 func recoveryDirection(stats RecoveryStats, direction string) RecoveryDirectionStats {

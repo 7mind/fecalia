@@ -744,6 +744,10 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// exist); Close stops it before dev.Close.
 	teardownMon := newPeerTeardownMonitor(dev, mpBind, concentratorMonitoredPeers(cfg, ids), telemetry.SystemClock{})
 	stopPeerTeardown := startPeerTeardownMonitor(teardownMon, sessionPollInterval, clg)
+	metricsSrc := newMetricsSource(mpBind, sessMon, peerSessMon, telemetry.SystemClock{})
+	metricsSrc.setOutboundSnapshotter(dev)
+	monitorSrc := newMetricsSource(mpBind, sessMon, peerSessMon, telemetry.SystemClock{})
+	monitorSrc.setOutboundSnapshotter(dev)
 
 	t := &Tunnel{
 		dev: dev, tun: tunDev, name: name, bind: mpBind, cfg: cfg, log: clg,
@@ -758,13 +762,13 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// WG-session snapshot is read from the engine via sessMon. It is built unconditionally
 		// (cheap) so a reload that later turns [metrics].listen ON has a Source ready; the
 		// endpoint itself is started only when a listen is configured.
-		metricsSrc: newMetricsSource(mpBind, sessMon, peerSessMon, telemetry.SystemClock{}),
+		metricsSrc: metricsSrc,
 		// A SECOND, DEDICATED Source for the [monitor] endpoint over the SAME Bind/session
 		// seam — NOT metricsSrc. The two endpoints scrape on independent cadences and each
 		// Source derives throughput from its OWN last-sample state, so sharing one Source
 		// between them would let each scrape reset the other's rate baseline (T165). Built
 		// unconditionally so a reload can turn [monitor].listen ON with a Source ready.
-		monitorSrc: newMetricsSource(mpBind, sessMon, peerSessMon, telemetry.SystemClock{}),
+		monitorSrc: monitorSrc,
 		// The identity/config/failover read seam the [monitor] endpoint is constructed with
 		// (T222): daemon role + build version, a LIVE uptime provider (fresh per snapshot,
 		// R242), the config-declared per-path link params keyed to the metrics (peer,path)

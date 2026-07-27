@@ -369,6 +369,11 @@ func (device *Device) RoutineReadFromTUN() {
 
 		for peer, elemsForPeer := range elemsByPeer {
 			if peer.isRunning.Load() {
+				bytes := 0
+				for _, elem := range elemsForPeer.elems {
+					bytes += len(elem.packet)
+				}
+				device.outbound.recordTUNBatch(len(elemsForPeer.elems), bytes)
 				peer.StagePackets(elemsForPeer)
 				peer.SendStagedPackets()
 			} else {
@@ -468,6 +473,7 @@ top:
 			// add to parallel and sequential queue
 			if peer.isRunning.Load() {
 				peer.queue.outbound.c <- elemsContainer
+				peer.device.outbound.recordPeerQueueDepth(len(peer.queue.outbound.c))
 				peer.device.queue.encryption.c <- elemsContainer
 			} else {
 				for _, elem := range elemsContainer.elems {
@@ -599,11 +605,18 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 			}
 			bufs = append(bufs, elem.packet)
 		}
+		batchBytes := 0
+		for _, buf := range bufs {
+			batchBytes += len(buf)
+		}
+		device.outbound.recordSendBatch(len(bufs), batchBytes)
+		device.outbound.addActiveSend(int64(len(bufs)), int64(batchBytes))
 
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
 
 		err := peer.SendAndCountBuffers(bufs)
+		device.outbound.addActiveSend(-int64(len(bufs)), -int64(batchBytes))
 		if dataSent {
 			peer.timersDataSent()
 		}

@@ -32,6 +32,13 @@ type fakeSource struct {
 	peerNames    []string
 }
 
+type fakeEngineSource struct {
+	fakeSource
+	outbound EngineOutboundSnapshot
+}
+
+func (f fakeEngineSource) EngineOutbound() EngineOutboundSnapshot { return f.outbound }
+
 func (f fakeSource) Paths() []PathSnapshot               { return f.paths }
 func (f fakeSource) FEC() []FECSnapshot                  { return f.fec }
 func (f fakeSource) Reseq() []ReseqSnapshot              { return f.reseq }
@@ -1302,5 +1309,54 @@ func TestSetWeightedCapacitySaneNoopWithoutGauge(t *testing.T) {
 	}
 	if exp.Has(MetricWeightedCapacitySane) {
 		t.Errorf("%s appeared after SetWeightedCapacitySane on an active-backup server, want absent", MetricWeightedCapacitySane)
+	}
+}
+
+func TestEngineOutboundExposition(t *testing.T) {
+	src := fakeEngineSource{outbound: EngineOutboundSnapshot{
+		TUNBytes: 65536,
+		TUNBatchFrames: EngineBatchHistogram{
+			Count:   2,
+			Frames:  9,
+			Buckets: map[uint64]uint64{1: 1, 8: 2, 128: 2},
+		},
+		SendBytes:                 66000,
+		SendBatchFrames:           EngineBatchHistogram{Count: 1, Frames: 8, Buckets: map[uint64]uint64{8: 1, 128: 1}},
+		EncryptionQueueContainers: 1,
+		PeerQueueContainers:       1,
+		PeerQueueHighWater:        1,
+		ActiveSendFrames:          8,
+		ActiveSendBytes:           66000,
+		ActiveSendFramesHighWater: 128,
+		ActiveSendBytesHighWater:  65536,
+	}}
+	srv := startServer(t, src)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL(), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`wanbond_engine_tun_bytes_total 65536`,
+		`wanbond_engine_tun_batch_frames_bucket{le="8"} 2`,
+		`wanbond_engine_tun_batch_frames_sum 9`,
+		`wanbond_engine_tun_batch_frames_count 2`,
+		`wanbond_engine_send_bytes_total 66000`,
+		`wanbond_engine_peer_queue_high_water_containers 1`,
+		`wanbond_engine_active_send_frames_high_water 128`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("exposition missing line %q\n---\n%s", want, text)
+		}
 	}
 }

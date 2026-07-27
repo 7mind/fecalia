@@ -6,6 +6,7 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
 
 // trafficProvider is the read seam the metrics adapter consumes: the multipath Bind's
@@ -17,6 +18,10 @@ import (
 // a multi-peer concentrator's additional peers surface as additional entries.
 type trafficProvider interface {
 	PeerSnapshots() []bind.PeerSnapshot
+}
+
+type outboundSnapshotter interface {
+	OutboundStats() awgdevice.OutboundStats
 }
 
 // sampleKey identifies one (peer,path) pair in the throughput last-sample map (T94): a
@@ -50,6 +55,7 @@ type metricsSource struct {
 	// the engine at scrape time. Like session, it is separate from provider because the
 	// bind stays WG-unaware.
 	peerSessions peerSessionSnapshotter
+	outbound     outboundSnapshotter
 	clock        telemetry.Clock
 
 	mu   sync.Mutex
@@ -74,6 +80,38 @@ type byteSample struct {
 // throughput derivation is deterministic under test.
 func newMetricsSource(provider trafficProvider, session sessionSnapshotter, peerSessions peerSessionSnapshotter, clock telemetry.Clock) *metricsSource {
 	return &metricsSource{provider: provider, session: session, peerSessions: peerSessions, clock: clock, last: make(map[sampleKey]byteSample)}
+}
+
+func (s *metricsSource) setOutboundSnapshotter(outbound outboundSnapshotter) {
+	s.outbound = outbound
+}
+
+func (s *metricsSource) EngineOutbound() metrics.EngineOutboundSnapshot {
+	if s.outbound == nil {
+		return metrics.EngineOutboundSnapshot{}
+	}
+	stats := s.outbound.OutboundStats()
+	return metrics.EngineOutboundSnapshot{
+		TUNBytes:                  stats.TUNBytes,
+		TUNBatchFrames:            engineBatchHistogram(stats.TUNBatchFrames),
+		SendBytes:                 stats.SendBytes,
+		SendBatchFrames:           engineBatchHistogram(stats.SendBatchFrames),
+		EncryptionQueueContainers: stats.EncryptionQueueContainers,
+		PeerQueueContainers:       stats.PeerQueueContainers,
+		PeerQueueHighWater:        stats.PeerQueueHighWater,
+		ActiveSendFrames:          stats.ActiveSendFrames,
+		ActiveSendBytes:           stats.ActiveSendBytes,
+		ActiveSendFramesHighWater: stats.ActiveSendFramesHighWater,
+		ActiveSendBytesHighWater:  stats.ActiveSendBytesHighWater,
+	}
+}
+
+func engineBatchHistogram(histogram awgdevice.OutboundBatchHistogram) metrics.EngineBatchHistogram {
+	return metrics.EngineBatchHistogram{
+		Count:   histogram.Count,
+		Frames:  histogram.Frames,
+		Buckets: histogram.Buckets,
+	}
 }
 
 // setPMTULookup wires the per-path discovered-PMTU accessor (device.Up, T229/D88). It is

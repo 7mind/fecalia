@@ -118,6 +118,7 @@ type Device struct {
 		decryption *inboundQueue
 		handshake  *handshakeQueue
 	}
+	outbound outboundStats
 
 	tun struct {
 		device tun.Device
