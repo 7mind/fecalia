@@ -276,7 +276,7 @@ func (top *Topology) fecIperf3RecvMbpsResult(
 			} `json:"sum_received"`
 		} `json:"end"`
 	}
-	if err := json.Unmarshal([]byte(out), &r); err != nil {
+	if err := json.Unmarshal(out, &r); err != nil {
 		return 0, fmt.Errorf("parse iperf3 json: %w\n%s", err, out)
 	}
 	return r.End.SumReceived.BitsPerSecond / 1e6, nil
