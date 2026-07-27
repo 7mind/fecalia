@@ -355,6 +355,7 @@ func (t *Tunnel) startTUNAQM() error {
 	}
 	initial, err := congestion.ConservativeSeed(
 		t.cfg.Scheduler.PerPathShapers[0].RateBytesPerSecond,
+		t.cfg.Scheduler.PerPathShapers[0].RateLimitBytesPerSecond,
 	)
 	if err != nil {
 		return err
@@ -429,10 +430,11 @@ func (t *Tunnel) startTUNAQM() error {
 			case <-done:
 				return
 			case <-ticker.C:
-				rate, epoch, ok := t.bind.TUNIngressTarget()
+				rate, epoch, dataBurstBytes, ok := t.bind.TUNIngressTarget()
 				if ok {
 					target.RateBytesPerSecond = rate
 					target.Epoch = epoch
+					maxDataBurstBytes = dataBurstBytes
 				}
 				target.MTU = t.currentTunMTU()
 				bounds, err := deriveEngineOutboundBounds(

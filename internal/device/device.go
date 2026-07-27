@@ -1234,12 +1234,14 @@ func reloadWarnings(live, desired *config.Config) []string {
 		if l.Bind != d.Bind {
 			w = append(w, fmt.Sprintf("path %q bind mode changed — the running socket keeps its original binding", d.Name))
 		}
-		// D70: a same-name path's declared link capacity (link_bandwidth/link_rtt) is NOT
+		// D70: a same-name path's declared link capacity is NOT
 		// applied by a membership reload — the running path keeps its original pacing/weight
 		// — and the D52 catch-all zeroes Paths before its DeepEqual, so a change here is
 		// otherwise silent. Warn so the operator knows the new declaration is deferred.
-		if l.LinkBandwidthBitsPerSec != d.LinkBandwidthBitsPerSec || l.LinkRTT != d.LinkRTT {
-			w = append(w, fmt.Sprintf("path %q link_bandwidth/link_rtt changed — the running path keeps its original capacity declaration; restart required", d.Name))
+		if l.LinkBandwidthBitsPerSec != d.LinkBandwidthBitsPerSec ||
+			l.LinkBandwidthLimitBitsPerSec != d.LinkBandwidthLimitBitsPerSec ||
+			l.LinkRTT != d.LinkRTT {
+			w = append(w, fmt.Sprintf("path %q link_bandwidth/link_bandwidth_limit/link_rtt changed — the running path keeps its original capacity declaration; restart required", d.Name))
 		}
 	}
 

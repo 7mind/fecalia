@@ -316,8 +316,9 @@ hole once wrapped by the tunnel.
 
 Per-path send-pacing bounds bufferbloat under sustained load by sizing each
 uplink's exact-byte shaper from its bandwidth-delay product. It is **off by default**;
-enabling it is a deliberate opt-in and requires **operator-measured** link
-figures (wanbond does not auto-tune them). Pacing is **policy-independent**
+enabling it is a deliberate opt-in and requires **operator-measured** initial
+link figures. Active-backup then auto-tunes its live target; weighted remains
+fixed. Pacing is **policy-independent**
 (defect D65): it works identically, with the same keys, under the **default
 `active-backup` policy** — most single/priority-uplink deployments never set
 `[scheduler] policy` at all — and under `policy = "weighted"`. If your uplink is
@@ -339,6 +340,7 @@ In summary:
   name           = "starlink"
   source_addr    = "192.168.1.10"
   link_bandwidth = "50Mbit"      # measured usable bandwidth
+  # link_bandwidth_limit = "80Mbit" # optional active-backup hard ceiling
   link_rtt       = "21ms"        # measured idle RTT
 
   [[paths]]
@@ -357,9 +359,11 @@ In summary:
   pacing_enabled = true          # OFF by default; sizes exact-byte shaping from the links above
   ```
 
-  Under either policy, each path's live byte shaper uses that path's own
-  declaration: `R=link_bandwidth/8`, `B=ceil(R*link_rtt)`, and
-  `Lmax` from the path MTU/address family. Config requires `B>=Lmax`, derives
+  Under weighted, each path's live byte shaper uses fixed
+  `R=link_bandwidth/8` and `B=ceil(R*link_rtt)`. Under active-backup those
+  values seed the controller, which retargets R and B from live feedback and
+  may grow above the seed unless `link_bandwidth_limit` caps it. `Lmax` comes
+  from the path MTU/address family. Config requires `B>=Lmax`, derives
   `C=Lmax`, retained priority `P`, one owned recovery group `Fgroup`, and the
   memory bound `Mtotal=B+C+P+Fgroup+Lmax`. Active-backup also retains
   per-path frame-domain compatibility values. Weighted uses the slowest

@@ -9,7 +9,7 @@ import (
 )
 
 func TestControllerReducesCongestedCarrierAndHoldsStaleFeedback(t *testing.T) {
-	controller, err := congestion.New(1_000_000)
+	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestControllerReducesCongestedCarrierAndHoldsStaleFeedback(t *testing.T) {
 }
 
 func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) {
-	controller, err := congestion.New(1_000_000)
+	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 }
 
 func TestControllerCarrierEpochDeprecatesPriorActualState(t *testing.T) {
-	controller, err := congestion.New(1_000_000)
+	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +246,114 @@ func TestControllerCarrierEpochDeprecatesPriorActualState(t *testing.T) {
 	}
 }
 
+func TestControllerDiscoversCapacityAboveSeedAndPromptlyReduces(t *testing.T) {
+	const seed = 1_000_000.0
+	controller, err := congestion.New(seed, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 4, Generation: 12}
+	at := time.Unix(250, 0)
+	snapshot, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes, innerBytes uint64
+	for step := 1; step <= 12; step++ {
+		target := snapshot.Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * 2)
+		innerBytes += uint64(target * 2 / 1.25)
+		at = at.Add(2 * time.Second)
+		snapshot, err = controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT: 40 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.AwaitingInstalled {
+			if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+				At: at.Add(100 * time.Millisecond), Epoch: epoch,
+				RateBytesPerSecond: snapshot.Target.IngressRateBytesPerSecond,
+				Fresh:              true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if snapshot.Target.OuterRateBytesPerSecond <= seed {
+		t.Fatalf("clean loaded target = %g, want discovered capacity above seed %g",
+			snapshot.Target.OuterRateBytesPerSecond, seed)
+	}
+
+	beforeCongestion := snapshot.Target.OuterRateBytesPerSecond
+	outerBytes += uint64(beforeCongestion * 2)
+	innerBytes += uint64(beforeCongestion * 2 / 1.25)
+	congested, err := controller.Observe(congestion.ActualState{
+		At: at.Add(2 * time.Second), Epoch: epoch,
+		OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+		RTT: 100 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if congested.Target.OuterRateBytesPerSecond >= beforeCongestion {
+		t.Fatalf("congested target = %g, want prompt decrease below %g",
+			congested.Target.OuterRateBytesPerSecond, beforeCongestion)
+	}
+}
+
+func TestControllerHonorsDistinctExplicitLimit(t *testing.T) {
+	const (
+		seed  = 1_000_000.0
+		limit = 1_200_000.0
+	)
+	controller, err := congestion.New(seed, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 5, Generation: 1}
+	at := time.Unix(280, 0)
+	snapshot, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes uint64
+	for step := 0; step < 10; step++ {
+		target := snapshot.Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * 2)
+		at = at.Add(2 * time.Second)
+		snapshot, err = controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+			OuterWireBytes: outerBytes,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.AwaitingInstalled {
+			if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+				At: at.Add(100 * time.Millisecond), Epoch: epoch,
+				RateBytesPerSecond: snapshot.Target.IngressRateBytesPerSecond,
+				Fresh:              true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if snapshot.Target.OuterRateBytesPerSecond != limit {
+		t.Fatalf("clean loaded target = %g, want explicit limit %g",
+			snapshot.Target.OuterRateBytesPerSecond, limit)
+	}
+}
+
 func TestControllerIgnoresUnloadedOuterInnerExpansion(t *testing.T) {
-	controller, err := congestion.New(1_000_000)
+	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

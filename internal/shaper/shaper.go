@@ -190,6 +190,7 @@ type Shaper struct {
 
 	mu                         sync.Mutex
 	queue                      []*queuedDatagram
+	dataAdmissionLimitBytes    int
 	retainedDataBytes          int
 	retainedControlBytes       int
 	retainedPriorityBytes      int
@@ -237,12 +238,13 @@ func New(config Config, clock Clock, write WriteFunc) (*Shaper, error) {
 	}
 
 	shaper := &Shaper{
-		config:          config,
-		clock:           clock,
-		write:           write,
-		priorityWaiters: make(map[*priorityWaiter]struct{}),
-		changed:         make(chan struct{}),
-		workerDone:      make(chan struct{}),
+		config:                  config,
+		clock:                   clock,
+		write:                   write,
+		dataAdmissionLimitBytes: config.DataBudgetBytes,
+		priorityWaiters:         make(map[*priorityWaiter]struct{}),
+		changed:                 make(chan struct{}),
+		workerDone:              make(chan struct{}),
 	}
 	go shaper.run()
 	return shaper, nil
@@ -380,6 +382,33 @@ func (s *Shaper) Snapshot() Snapshot {
 		FECGroupOwnedHighWaterBytes:  s.fecGroupOwnedHighWaterBytes,
 		MemoryRetainedHighWaterBytes: s.memoryRetainedHighWaterBytes,
 	}
+}
+
+// TryRetarget installs rate for future serialization and attempts to install
+// dataBudget for future admission. Existing datagram deadlines remain
+// immutable. A shrink below currently retained DATA is deferred while the new
+// rate still takes effect; the caller can retry the same budget after drain.
+func (s *Shaper) TryRetarget(rateBytesPerSecond float64, dataBudgetBytes int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return false, ErrClosed
+	}
+	next := s.config
+	next.RateBytesPerSecond = rateBytesPerSecond
+	next.DataBudgetBytes = dataBudgetBytes
+	if err := ValidateConfig(next); err != nil {
+		return false, err
+	}
+	budgetApplied := dataBudgetBytes >= s.retainedDataBytes
+	s.config.RateBytesPerSecond = rateBytesPerSecond
+	s.dataAdmissionLimitBytes = dataBudgetBytes
+	if budgetApplied {
+		s.config.DataBudgetBytes = dataBudgetBytes
+	}
+	s.notifyLocked()
+	return budgetApplied, nil
 }
 
 func (s *Shaper) memoryBound() int {
@@ -956,7 +985,7 @@ func (s *Shaper) finishAdmissionWaitLocked(waiter *priorityWaiter, now time.Time
 func (s *Shaper) capacityAvailable(class Class, size int) bool {
 	switch class {
 	case ClassData:
-		return size <= s.config.DataBudgetBytes-s.retainedDataBytes
+		return size <= s.dataAdmissionLimitBytes-s.retainedDataBytes
 	case ClassControl:
 		return size <= s.config.ControlReserveBytes-s.retainedControlBytes
 	default:

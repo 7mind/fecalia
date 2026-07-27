@@ -14,7 +14,7 @@ const (
 	minimumTargetRate       = 128_000.0
 	decreaseFactor          = 0.85
 	deliveredHeadroom       = 0.95
-	increaseFraction        = 0.02
+	increaseFraction        = 0.10
 	overheadEWMAWeight      = 0.25
 	minimumQueueThreshold   = 10 * time.Millisecond
 	lossCongestionThreshold = 0.005
@@ -66,22 +66,47 @@ type Snapshot struct {
 
 type Controller struct {
 	mu         sync.Mutex
-	ceiling    float64
+	seed       float64
+	limit      float64
 	snapshot   Snapshot
 	haveSample bool
 }
 
-func New(ceilingBytesPerSecond float64) (*Controller, error) {
-	if math.IsNaN(ceilingBytesPerSecond) ||
-		math.IsInf(ceilingBytesPerSecond, 0) ||
-		ceilingBytesPerSecond <= 0 {
-		return nil, errors.New("congestion ceiling must be finite and positive")
+func New(seedBytesPerSecond, limitBytesPerSecond float64) (*Controller, error) {
+	if _, err := MinimumTargetRate(seedBytesPerSecond); err != nil {
+		return nil, err
 	}
-	return &Controller{ceiling: ceilingBytesPerSecond}, nil
+	if math.IsNaN(limitBytesPerSecond) ||
+		math.IsInf(limitBytesPerSecond, 0) ||
+		limitBytesPerSecond < 0 {
+		return nil, errors.New("congestion limit must be finite and non-negative")
+	}
+	if limitBytesPerSecond > 0 && limitBytesPerSecond < seedBytesPerSecond {
+		return nil, errors.New("congestion limit must be at least the seed")
+	}
+	return &Controller{seed: seedBytesPerSecond, limit: limitBytesPerSecond}, nil
 }
 
-func ConservativeSeed(ceilingBytesPerSecond float64) (TargetState, error) {
-	controller, err := New(ceilingBytesPerSecond)
+// MinimumTargetRate returns the lowest rate a controller seeded at seed can
+// install after congestion. The fixed absolute floor never raises a low seed.
+func MinimumTargetRate(seedBytesPerSecond float64) (float64, error) {
+	if math.IsNaN(seedBytesPerSecond) ||
+		math.IsInf(seedBytesPerSecond, 0) ||
+		seedBytesPerSecond <= 0 {
+		return 0, errors.New("congestion seed must be finite and positive")
+	}
+	floor := seedBytesPerSecond * minimumTargetFraction
+	if floor < minimumTargetRate {
+		floor = minimumTargetRate
+	}
+	if floor > seedBytesPerSecond {
+		floor = seedBytesPerSecond
+	}
+	return floor, nil
+}
+
+func ConservativeSeed(seedBytesPerSecond, limitBytesPerSecond float64) (TargetState, error) {
+	controller, err := New(seedBytesPerSecond, limitBytesPerSecond)
 	if err != nil {
 		return TargetState{}, err
 	}
@@ -110,7 +135,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		return Snapshot{}, errors.New("authenticated loss must be in [0,1]")
 	}
 	if !c.haveSample || c.snapshot.Actual.Epoch != actual.Epoch {
-		target := c.ceiling * initialTargetFraction
+		target := c.seed * initialTargetFraction
 		c.snapshot = Snapshot{
 			Actual: actual,
 			Target: TargetState{
@@ -204,13 +229,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		if deliveredRate > 0 && deliveredRate*deliveredHeadroom < next {
 			next = deliveredRate * deliveredHeadroom
 		}
-		floor := c.ceiling * minimumTargetFraction
-		if floor < minimumTargetRate {
-			floor = minimumTargetRate
-		}
-		if floor > c.ceiling {
-			floor = c.ceiling
-		}
+		floor, _ := MinimumTargetRate(c.seed)
 		if next < floor {
 			next = floor
 		}
@@ -220,9 +239,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		// loss-based decrease. Local queue delay remains current evidence and
 		// takes the fail-closed decrease branch above.
 	case loaded && (!actual.FeedbackEverSeen || actual.LossFresh):
-		target += c.ceiling * increaseFraction
-		if target > c.ceiling {
-			target = c.ceiling
+		target += c.seed * increaseFraction
+		if c.limit > 0 && target > c.limit {
+			target = c.limit
 		}
 	}
 	c.snapshot.Target = TargetState{

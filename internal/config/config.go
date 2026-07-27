@@ -14,6 +14,7 @@ import (
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 
+	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/netutil"
 	pathshaper "github.com/7mind/wanbond/internal/shaper"
 )
@@ -313,8 +314,17 @@ type BDPSizing struct {
 // shaper. Config derives these once from validated operator input and device.Up
 // consumes them for the live T299 shaping path.
 type PathShaperConfig struct {
-	// RateBytesPerSecond is the declared sustained wire-byte rate R.
+	// RateBytesPerSecond is the measured initial wire-byte rate Rseed.
 	RateBytesPerSecond float64
+	// RateLimitBytesPerSecond is the optional operator safety ceiling Rlimit.
+	// Zero leaves the active-backup controller uncapped.
+	RateLimitBytesPerSecond float64
+	// CongestionControlled distinguishes an active-backup measured seed from
+	// the fixed-rate weighted and explicit frame-slot shapers.
+	CongestionControlled bool
+	// LinkRTT is the delay term used to derive the live DATA/PARITY budget
+	// B=ceil(Rtarget*LinkRTT) after every controller retarget.
+	LinkRTT time.Duration
 	// DataBurstBytes is the retained DATA/PARITY budget B. It is always at least
 	// one maximum legal encoded datagram, so an otherwise legal write can never
 	// be permanently inadmissible solely because it exceeds the shaper's burst.
@@ -789,13 +799,13 @@ type Path struct {
 	DestAddr netip.AddrPort `toml:"-"`
 	// DestAddrRaw is the TOML string form of DestAddr; parsed in normalize.
 	DestAddrRaw string `toml:"dest_addr"`
-	// LinkBandwidthBitsPerSec is the OPERATOR-DECLARED bottleneck bandwidth of this
-	// uplink in bits/s, parsed from LinkBandwidthRaw in normalize. It sizes that
-	// path's live exact-byte rate R and, with LinkRTT, DATA/PARITY budget B when
-	// pacing is ENABLED under either policy. It also supplies the frame-domain
+	// LinkBandwidthBitsPerSec is the OPERATOR-MEASURED bandwidth of this uplink
+	// in bits/s, parsed from LinkBandwidthRaw in normalize. Under weighted it
+	// sizes the fixed exact-byte rate R and DATA/PARITY budget B. Under
+	// active-backup it seeds the live controller, which retargets R and B. It
+	// also supplies the frame-domain
 	// scheduler compatibility values (a shared bottleneck reference under weighted,
-	// per-path vectors under active-backup) — T53/T152/T299, Q20. It is
-	// OPERATOR-DECLARED, not runtime-measured — wanbond never auto-tunes it live. Zero
+	// per-path vectors under active-backup) — T53/T152/T299/T324. Zero
 	// means "not declared": weighted retains the synthetic frame-domain
 	// aggregation reference; active-backup shaping then requires the explicit
 	// per_path_capacity_fps knobs.
@@ -804,6 +814,12 @@ type Path struct {
 	// "50Mbit" / "1Gbit" / "500kbit" (SI bit/s units; the "bit" suffix may be written
 	// "bps"). Parsed in normalize; a non-positive or unparseable value fails fast.
 	LinkBandwidthRaw string `toml:"link_bandwidth"`
+	// LinkBandwidthLimitBitsPerSec is the optional active-backup controller
+	// ceiling parsed from LinkBandwidthLimitRaw. Zero means uncapped.
+	LinkBandwidthLimitBitsPerSec float64 `toml:"-"`
+	// LinkBandwidthLimitRaw is the TOML string form of the optional safety
+	// ceiling. When set, it must be at least link_bandwidth.
+	LinkBandwidthLimitRaw string `toml:"link_bandwidth_limit"`
 	// LinkRTT is the OPERATOR-DECLARED baseline RTT of this uplink, parsed from
 	// LinkRTTRaw in normalize. It is the delay term of the bandwidth-delay-product
 	// DATA/PARITY budget B=ceil(R*RTT); required (> 0) when LinkBandwidth is set and
@@ -1299,6 +1315,16 @@ func (c *Config) normalize() error {
 			}
 			p.LinkBandwidthBitsPerSec = bw
 		}
+		if p.LinkBandwidthLimitRaw != "" {
+			limit, err := parseBandwidth(p.LinkBandwidthLimitRaw)
+			if err != nil {
+				return fmt.Errorf("path %q: invalid link_bandwidth_limit %q: %w", p.Name, p.LinkBandwidthLimitRaw, err)
+			}
+			if !finitePositive(limit) {
+				return fmt.Errorf("path %q: link_bandwidth_limit must be finite and > 0, got %q", p.Name, p.LinkBandwidthLimitRaw)
+			}
+			p.LinkBandwidthLimitBitsPerSec = limit
+		}
 		if p.LinkRTTRaw != "" {
 			rtt, err := time.ParseDuration(p.LinkRTTRaw)
 			if err != nil {
@@ -1315,6 +1341,25 @@ func (c *Config) normalize() error {
 				return fmt.Errorf("path %q: invalid ride_through %q: %w", p.Name, p.RideThroughRaw, err)
 			}
 			p.RideThrough = rt
+		}
+		if p.LinkBandwidthLimitBitsPerSec > 0 {
+			if !c.Scheduler.PacingEnabled {
+				return fmt.Errorf("path %q: link_bandwidth_limit requires scheduler.pacing_enabled = true", p.Name)
+			}
+			if c.Scheduler.Policy == PolicyWeighted {
+				return fmt.Errorf("path %q: link_bandwidth_limit is supported only by active-backup pacing", p.Name)
+			}
+			if p.LinkBandwidthBitsPerSec <= 0 {
+				return fmt.Errorf("path %q: link_bandwidth_limit requires link_bandwidth as the measured controller seed", p.Name)
+			}
+			if p.LinkBandwidthLimitBitsPerSec < p.LinkBandwidthBitsPerSec {
+				return fmt.Errorf(
+					"path %q: link_bandwidth_limit %q must be at least link_bandwidth %q",
+					p.Name,
+					p.LinkBandwidthLimitRaw,
+					p.LinkBandwidthRaw,
+				)
+			}
 		}
 	}
 	for i := range c.WireGuard.Peers {
@@ -1407,8 +1452,8 @@ func (c *Config) weightedCapacitySane() *bool {
 // SizePacingFromBDP instead of the synthetic defaultPerPathCapacityFPS. It runs
 // whenever pacing is ENABLED, under BOTH the weighted and the default active-backup
 // policy; with pacing DISABLED (the shipped default) a declared bandwidth is inert, so
-// an unrelated config is untouched. The value is OPERATOR-DECLARED and fixed at load —
-// NOT runtime auto-tuning (Q20 rejected a live control loop for the pilot).
+// an unrelated config is untouched. Weighted consumes the derived value as a
+// fixed rate; active-backup consumes it as the closed-loop seed.
 //
 // The two policies derive frame-domain compatibility values differently (D65),
 // because they egress differently; derivePathShapers separately produces each
@@ -1460,9 +1505,10 @@ func (c *Config) derivePathShapers() error {
 	for i := range c.Paths {
 		p := &c.Paths[i]
 		lmax := p.maxEncodedDatagramBytes()
-		var rateBytesPerSecond, burstBytes float64
+		var rateBytesPerSecond, rateLimitBytesPerSecond, burstBytes float64
 		if fromLinkBandwidth {
 			rateBytesPerSecond = p.LinkBandwidthBitsPerSec / bitsPerByte
+			rateLimitBytesPerSecond = p.LinkBandwidthLimitBitsPerSec / bitsPerByte
 			burstBytes = rateBytesPerSecond * p.LinkRTT.Seconds()
 		} else {
 			rateBytesPerSecond = s.PerPathCapacityFPS * defaultAvgWireFrameBytes
@@ -1510,7 +1556,14 @@ func (c *Config) derivePathShapers() error {
 			fecGroupReserveBytes = ownership.totalBytes
 			recoverySlack = RecoveryWriteSlack
 			recoveryBound = recoverySlack
-			netRate := rateBytesPerSecond - probeRateBytesPerSecond
+			completionRate := rateBytesPerSecond
+			if fromLinkBandwidth && s.Policy == PolicyActiveBackup {
+				completionRate, err = congestion.MinimumTargetRate(rateBytesPerSecond)
+				if err != nil {
+					return fmt.Errorf("path %q: derive minimum congestion target: %w", p.Name, err)
+				}
+			}
+			netRate := completionRate - probeRateBytesPerSecond
 			completionParityBytes, err := checkedIntProduct(
 				"completion parity term M*Lmax",
 				mmax,
@@ -1562,6 +1615,9 @@ func (c *Config) derivePathShapers() error {
 		}
 		derived := PathShaperConfig{
 			RateBytesPerSecond:      rateBytesPerSecond,
+			RateLimitBytesPerSecond: rateLimitBytesPerSecond,
+			CongestionControlled:    fromLinkBandwidth && s.Policy == PolicyActiveBackup,
+			LinkRTT:                 p.LinkRTT,
 			DataBurstBytes:          dataBurstBytes,
 			ControlReserveBytes:     lmax,
 			MaxEncodedDatagramBytes: lmax,
@@ -2176,6 +2232,25 @@ func (c *Config) validate() error {
 		}
 		if p.RideThrough < 0 {
 			return fmt.Errorf("path %q: ride_through must be >= 0, got %s", p.Name, p.RideThrough)
+		}
+		if p.LinkBandwidthLimitBitsPerSec > 0 {
+			if c.Scheduler.Policy != PolicyActiveBackup {
+				return fmt.Errorf("path %q: link_bandwidth_limit is supported only by active-backup pacing", p.Name)
+			}
+			if !c.Scheduler.PacingEnabled {
+				return fmt.Errorf("path %q: link_bandwidth_limit requires scheduler.pacing_enabled = true", p.Name)
+			}
+			if p.LinkBandwidthBitsPerSec <= 0 {
+				return fmt.Errorf("path %q: link_bandwidth_limit requires link_bandwidth as the measured controller seed", p.Name)
+			}
+			if p.LinkBandwidthLimitBitsPerSec < p.LinkBandwidthBitsPerSec {
+				return fmt.Errorf(
+					"path %q: link_bandwidth_limit %q must be at least link_bandwidth %q",
+					p.Name,
+					p.LinkBandwidthLimitRaw,
+					p.LinkBandwidthRaw,
+				)
+			}
 		}
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {

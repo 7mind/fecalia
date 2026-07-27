@@ -500,8 +500,8 @@ same carrier/peer/contract identity as adaptive FEC. The controller measures
 delivered outer rate from counter deltas, learns the minimum SRTT as base RTT
 within an epoch, derives queue delay, and learns the outer/inner expansion
 ratio only from loaded samples, so idle probe/control bytes cannot suppress
-the next DATA admission target. It starts at 85% of the declared outer ceiling, raises the target by 2%
-of that ceiling after a clean loaded sample, and on congestion reduces it to
+the next DATA admission target. It starts at 85% of the measured outer seed,
+raises the target by 10% of that seed after a clean loaded sample, and on congestion reduces it to
 the lower of 85% of the prior target and 95% of measured delivery. Congestion
 requires a loaded sample plus either queue delay at least
 `max(baseRTT/2,10ms)` or fresh authenticated DATA loss of at least 0.5%.
@@ -534,12 +534,18 @@ true. A target rate or MTU change may therefore resize the pre-TUN GSO limits
 and per-peer engine byte gate without discarding admitted traffic while
 retaining the 20 ms complete-batch bound plus one BDP.
 
+Each controller target retargets the same live outer shaper before the TUN
+target publishes: only future admissions use the new rate, admitted deadlines
+remain immutable, B grows immediately, and B shrink waits until owned DATA
+fits. The TUN queue/GSO/engine gate derive from the outer shaper's actual B, so
+a deferred shrink keeps a safe installed superset without packet loss.
+
 This early controller deliberately applies only to active-backup. Weighted
 striping has no single carrier epoch to which one authenticated DATA-loss
 record can truthfully apply, so it retains fixed per-path shapers and no
-daemon-owned TUN AQM. The per-path exact-byte shaper remains a hard
-operator-declared safety ceiling in both policies; the active-backup controller
-changes only the earlier TUN ingress target.
+daemon-owned TUN AQM. Active-backup treats `link_bandwidth` as its measured
+seed and optionally caps growth at `link_bandwidth_limit`; weighted keeps its
+declared fixed per-path rate.
 
 Pacing is **policy-independent** (defect D65): it is available and configured
 identically via `[scheduler] pacing_enabled` under active-backup and weighted
@@ -576,15 +582,20 @@ drops datagrams.
 
 When pacing is enabled, an **operator-declared** per-link bandwidth
 (`link_bandwidth` + `link_rtt` on each `[[paths]]`) still derives
-`R=bandwidth/8` and `B=ceil(R*RTT)` at config load. `R` is the fixed outer
-shaper safety ceiling; it is also the active-backup controller's initial
-ceiling, not a claim that the live link will continuously deliver that rate.
+`Rseed=bandwidth/8` and `Bseed=ceil(Rseed*RTT)` at config load. Under
+active-backup, `Rseed` initializes the closed loop; it does not cap capacity
+discovery. Each accepted target retargets the same outer shaper in place and
+derives `Btarget=max(Lmax,ceil(Rtarget*RTT))`. Existing queued deadlines remain
+immutable, growth applies immediately, and a B shrink waits until retained DATA
+fits. Optional `link_bandwidth_limit` supplies a distinct hard upper bound;
+unset means no operator ceiling.
 The frame-domain BDP derivation remains the weighted aggregation reference and
 an active-backup compatibility vector. Under active-backup the earlier TUN
-ingress rate adapts below this ceiling at runtime; under weighted the shaper
-rate remains fixed. With pacing off (the default), a declared bandwidth is
-inert and the direct complete-batch framing/socket-write path remains
-byte-for-byte compatible.
+ingress target and its queue/GSO/admission capacities follow the live outer
+rate and actual B. Under weighted the shaper rate remains fixed and
+`link_bandwidth_limit` is rejected. With pacing off (the default), a declared
+bandwidth is inert and the direct complete-batch framing/socket-write path
+remains byte-for-byte compatible.
 
 **Sizing from the bandwidth-delay product.** The BDP algorithm (`SizePacingFromBDP`,
 internal/config) sizes the pacing parameters as follows:
@@ -600,11 +611,12 @@ T298 separates those **offered-frame scheduler units** from the exact-byte
 configuration the live shaper consumes. With pacing enabled,
 `Config.Scheduler.PerPathShapers` contains one `PathShaperConfig` per path:
 
-- `R = link_bandwidth_bits_per_sec / 8` bytes/s.
+- `Rseed = link_bandwidth_bits_per_sec / 8` bytes/s and, for active-backup,
+  optional `Rlimit = link_bandwidth_limit_bits_per_sec / 8`.
 - `Lmax = effective_outer_mtu - outer_IP/UDP_headers`, using the configured MTU
   or 1500 and the normalized source address family (28 bytes for IPv4, 48 for
   IPv6).
-- DATA budget `B = ceil(R * link_rtt_seconds)` bytes and control reserve
+- Initial DATA budget `Bseed = ceil(Rseed * link_rtt_seconds)` bytes and control reserve
   `C = Lmax`.
 - Per-(peer,path) coincident generated control burst `Pburst = 2 * Lmax`
   (one maximum-size local probe — ordinary or padded PMTU — plus one
@@ -612,10 +624,10 @@ configuration the live shaper consumes. With pacing enabled,
   `Rp = Pburst / 200ms`, where 200 ms is the minimum/fixed liveness probe
   interval.
 
-Config load requires `B >= Lmax` and `Rp < R`. The first invariant means every
+Config load requires `Bseed >= Lmax` and `Rp < Rseed`. The first invariant means every
 legal single datagram is admissible; the second prevents the generated
 probe/echo stream from consuming the declared shaper rate by construction.
-Every source rate/burst and derived `R`/`B` must be finite and positive, and
+Every source rate/burst and derived `Rseed`/`Bseed` must be finite and positive, and
 `ceil(B)` must fit the platform `int` byte-count domain before conversion.
 For the legacy raw knobs the byte projection uses the documented 1500-byte
 conversion unchanged: `R = per_path_capacity_fps * 1500` and
@@ -938,7 +950,9 @@ fallback.
 
 Define
 `A=Sdevice=I` and
-`Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I`. Config requires `Rp<R`, checks
+`Ecompletion=ceil((P+Mmax*Lmax+Lio)/(Rmin-Rp))+I`, where `Rmin` is the
+minimum rate the active-backup controller can install (or fixed `R` for a
+non-controlled shaper). Config requires `Rp<Rmin`, checks
 the finite nonnegative `Ecompletion` quotient and the `+I` addition before
 conversion to `time.Duration`, and requires `A<250ms` and representable
 `Ecompletion`. `A` starts at the receiver-observable cut: no receiver gap can
@@ -1004,24 +1018,25 @@ retirement in progress:
 
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
-milliseconds, e.g. `"21ms"`). Bandwidth is a conservative initial/safety
-ceiling; the active-backup controller measures its own delivered capacity and
-probe base RTT. `link_rtt` continues to size the exact-byte shaper's bounded
-retained budget. If heterogeneous links are bonded (different
+milliseconds, e.g. `"21ms"`). Under active-backup bandwidth is a measured
+initial seed; the controller measures its own delivered capacity and probe base
+RTT and may grow beyond that seed. Operators who need a hard cap set the
+separate optional `link_bandwidth_limit >= link_bandwidth`. `link_rtt` sizes
+each live target's exact-byte bounded retained budget. If heterogeneous links are bonded (different
 bandwidths), the operator declares all of them; under weighted the scheduler
 uses the bottleneck (slowest link) only for the shared frame-domain aggregation
 reference, because every path may carry traffic simultaneously; each live byte
-shaper still uses its own path's declared `R` and `B`. Under active-backup only
-one path egresses at a time, and both the compatibility vector and live shaper
-use that path's OWN declared link — a fast active primary is not held to a
-slower backup's rate.
+shaper still uses its own path's declared fixed `R` and `B`. Under
+active-backup only one path egresses at a time, and both the compatibility
+vector and controller seed use that path's OWN declared link.
 
 **Frame-domain compatibility sizing.** The 1500-byte denominator translates the
 declared wire bit rate into a full-frame-equivalent rate for the weighted
 aggregation gate and its hysteresis thresholds. It does not police or protect
-the live exact-byte shaper from overfill. Each live shaper instead uses
-`R=link_bandwidth/8`, charges every encoded datagram's exact bytes, and derives
-`B=ceil(R*link_rtt)` independently for that path. Measurement on real links is
+the live exact-byte shaper from overfill. Each live shaper charges every encoded
+datagram's exact bytes. Weighted uses fixed `R=link_bandwidth/8` and
+`B=ceil(R*link_rtt)`; active-backup uses those values as its initial seed and
+derives B again from every live controller target. Measurement on real links is
 essential to validate that the declared bandwidth and RTT reflect the actual
 link properties; the netns fixture is CPU/PPS-bound and cannot build the
 standing queues shaping is designed to control (see
@@ -2535,11 +2550,12 @@ These are recorded design boundaries, not defects:
   the Bind (`multipath.go` receive default case). It is the chokepoint a future
   out-of-band signalling layer (e.g. explicit rekey/state) must route through.
 - **Pacing ships disabled by default; live control is active-backup-only.**
-  `SizePacingFromBDP` derives the per-path hard shaper ceiling from an
-  operator-declared per-link bandwidth (`link_bandwidth`/`link_rtt`) at config
-  load. Under active-backup, T324 derives a lower early-TUN ingress target from
+  `SizePacingFromBDP` derives the per-path measured seed from
+  `link_bandwidth`/`link_rtt` at config load. Under active-backup, T324 drives
+  the outer shaper and early-TUN ingress target from
   measured delivery, base RTT/queue delay, true outer/inner byte expansion, and
-  authenticated DATA loss. Weighted striping still has no live capacity
+  authenticated DATA loss; optional `link_bandwidth_limit` is the only
+  operator hard ceiling. Weighted striping still has no live capacity
   controller because it lacks one carrier identity; its exact-byte shapers
   remain fixed. The netns fixture remains CPU/PPS-bound, so absolute throughput
   and bufferbloat require real-link evidence. Pacing remains opt-in through

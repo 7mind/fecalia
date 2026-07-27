@@ -114,6 +114,13 @@ func TestReloadWarnings(t *testing.T) {
 			c.Paths = []config.Path{path("a"), b}
 			return c
 		}, `path "b"`},
+		{"same-name link_bandwidth_limit changed", func() *config.Config {
+			c := base()
+			b := path("b")
+			b.LinkBandwidthLimitBitsPerSec = 2_000_000
+			c.Paths = []config.Path{path("a"), b}
+			return c
+		}, `path "b"`},
 		{"reordered paths", func() *config.Config {
 			c := base()
 			c.Paths = []config.Path{path("b"), path("a")}
@@ -212,6 +219,9 @@ func TestReloadWarnsEveryRecoveryServiceInputUntilRestart(t *testing.T) {
 		mutate func(*config.PathShaperConfig)
 	}{
 		{"R", func(c *config.PathShaperConfig) { c.RateBytesPerSecond++ }},
+		{"Rlimit", func(c *config.PathShaperConfig) { c.RateLimitBytesPerSecond++ }},
+		{"controller", func(c *config.PathShaperConfig) { c.CongestionControlled = !c.CongestionControlled }},
+		{"RTT", func(c *config.PathShaperConfig) { c.LinkRTT++ }},
 		{"Rp", func(c *config.PathShaperConfig) { c.ProbeRateBytesPerSecond++ }},
 		{"B", func(c *config.PathShaperConfig) { c.DataBurstBytes++ }},
 		{"C", func(c *config.PathShaperConfig) { c.ControlReserveBytes++ }},
@@ -221,6 +231,8 @@ func TestReloadWarnsEveryRecoveryServiceInputUntilRestart(t *testing.T) {
 		{"Fgroup", func(c *config.PathShaperConfig) { c.FECGroupReserveBytes++ }},
 		{"I", func(c *config.PathShaperConfig) { c.RecoveryWriteSlack++ }},
 		{"A", func(c *config.PathShaperConfig) { c.RecoveryBound++ }},
+		{"Ecompletion", func(c *config.PathShaperConfig) { c.CompletionOverrunBound++ }},
+		{"Mtotal", func(c *config.PathShaperConfig) { c.MemoryBoundBytes++ }},
 	}
 	for _, test := range schedulerMutations {
 		t.Run(test.name, func(t *testing.T) {

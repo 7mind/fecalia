@@ -2,15 +2,20 @@ package bind
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
 	"github.com/7mind/wanbond/internal/congestion"
+	"github.com/7mind/wanbond/internal/shaper"
 )
 
 type congestionObservation struct {
 	controller *congestion.Controller
 	actual     congestion.ActualState
+	retargeter pathShaperRetargeter
+	linkRTT    time.Duration
+	lmax       int
 }
 
 // driveCongestionControllers samples the same active-backup carrier identity
@@ -35,6 +40,11 @@ func (m *Multipath) driveCongestionControllers() {
 		if path.congestion == nil || path.prober == nil {
 			continue
 		}
+		shaperConfig := m.shaperConfigLocked(path.name)
+		retargeter, retargetable := path.shaper.(pathShaperRetargeter)
+		if shaperConfig == nil || !retargetable {
+			continue
+		}
 		if !peer.congestionHaveCarrier || peer.congestionCarrierID != path.id {
 			peer.congestionHaveCarrier = true
 			peer.congestionCarrierID = path.id
@@ -55,6 +65,9 @@ func (m *Multipath) driveCongestionControllers() {
 		}
 		observations = append(observations, congestionObservation{
 			controller: path.congestion,
+			retargeter: retargeter,
+			linkRTT:    shaperConfig.LinkRTT,
+			lmax:       shaperConfig.MaxEncodedDatagramBytes,
 			actual: congestion.ActualState{
 				At:                now,
 				Epoch:             congestion.CarrierEpoch{PathID: path.id, Generation: peer.congestionGeneration},
@@ -70,10 +83,49 @@ func (m *Multipath) driveCongestionControllers() {
 	m.mu.Unlock()
 
 	for _, observation := range observations {
-		if _, err := observation.controller.Observe(observation.actual); err != nil {
+		snapshot, err := observation.controller.Observe(observation.actual)
+		if err != nil {
 			m.log.Warn("bind: congestion observation rejected", "error", err.Error())
+			continue
+		}
+		dataBudgetBytes, err := congestionDataBudget(
+			snapshot.Target.OuterRateBytesPerSecond,
+			observation.linkRTT,
+			observation.lmax,
+		)
+		if err != nil {
+			m.log.Warn("bind: congestion retarget rejected", "error", err.Error())
+			continue
+		}
+		if _, err := observation.retargeter.TryRetarget(
+			snapshot.Target.OuterRateBytesPerSecond,
+			dataBudgetBytes,
+		); err != nil && !errors.Is(err, shaper.ErrClosed) {
+			m.log.Warn("bind: path shaper retarget rejected", "error", err.Error())
 		}
 	}
+}
+
+func congestionDataBudget(rateBytesPerSecond float64, rtt time.Duration, lmax int) (int, error) {
+	if math.IsNaN(rateBytesPerSecond) ||
+		math.IsInf(rateBytesPerSecond, 0) ||
+		rateBytesPerSecond <= 0 {
+		return 0, errors.New("bind: congestion target rate must be finite and positive")
+	}
+	if rtt <= 0 {
+		return 0, errors.New("bind: congestion link RTT must be positive")
+	}
+	if lmax <= 0 {
+		return 0, errors.New("bind: congestion maximum datagram must be positive")
+	}
+	budget := math.Ceil(rateBytesPerSecond * rtt.Seconds())
+	if budget > float64(math.MaxInt) {
+		return 0, fmt.Errorf("bind: congestion DATA budget %g exceeds int", budget)
+	}
+	if budget < float64(lmax) {
+		return lmax, nil
+	}
+	return int(budget), nil
 }
 
 type CongestionPathSnapshot struct {
@@ -112,10 +164,16 @@ func (m *Multipath) CongestionSnapshots() []CongestionPathSnapshot {
 // TUNIngressTarget sums the current per-peer active-backup ingress targets.
 // Weighted striping has no single authenticated carrier record and therefore
 // deliberately does not participate in this early-TUN controller.
-func (m *Multipath) TUNIngressTarget() (rateBytesPerSecond float64, epoch uint64, ok bool) {
+func (m *Multipath) TUNIngressTarget() (
+	rateBytesPerSecond float64,
+	epoch uint64,
+	dataBudgetBytes int,
+	ok bool,
+) {
 	m.mu.Lock()
 	type targetRef struct {
 		controller *congestion.Controller
+		shaper     pathShaperReporter
 		epoch      congestion.CarrierEpoch
 	}
 	refs := make([]targetRef, 0, len(m.peers))
@@ -123,20 +181,26 @@ func (m *Multipath) TUNIngressTarget() (rateBytesPerSecond float64, epoch uint64
 		dataPaths := peer.scheduler.DataPaths()
 		if len(dataPaths) != 1 {
 			m.mu.Unlock()
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
 		index := dataPaths[0].Index
 		if index < 0 || index >= len(peer.paths) {
 			m.mu.Unlock()
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
 		path := peer.paths[index]
 		if path.congestion == nil || !peer.congestionHaveCarrier {
 			m.mu.Unlock()
-			return 0, 0, false
+			return 0, 0, 0, false
+		}
+		reporter, reports := path.shaper.(pathShaperReporter)
+		if !reports {
+			m.mu.Unlock()
+			return 0, 0, 0, false
 		}
 		refs = append(refs, targetRef{
 			controller: path.congestion,
+			shaper:     reporter,
 			epoch: congestion.CarrierEpoch{
 				PathID: path.id, Generation: peer.congestionGeneration,
 			},
@@ -148,12 +212,27 @@ func (m *Multipath) TUNIngressTarget() (rateBytesPerSecond float64, epoch uint64
 		snapshot := ref.controller.Snapshot()
 		if snapshot.Target.Epoch != ref.epoch ||
 			snapshot.Target.IngressRateBytesPerSecond <= 0 {
-			return 0, 0, false
+			return 0, 0, 0, false
+		}
+		shaperSnapshot := ref.shaper.Snapshot()
+		if !ratesWithinOnePercent(
+			shaperSnapshot.RateBytesPerSecond,
+			snapshot.Target.OuterRateBytesPerSecond,
+		) {
+			return 0, 0, 0, false
 		}
 		rateBytesPerSecond += snapshot.Target.IngressRateBytesPerSecond
+		if shaperSnapshot.DataBudgetBytes > dataBudgetBytes {
+			dataBudgetBytes = shaperSnapshot.DataBudgetBytes
+		}
 		epoch = epoch*1099511628211 ^ (ref.epoch.Generation<<8 | uint64(ref.epoch.PathID))
 	}
-	return rateBytesPerSecond, epoch, rateBytesPerSecond > 0
+	return rateBytesPerSecond, epoch, dataBudgetBytes,
+		rateBytesPerSecond > 0 && dataBudgetBytes > 0
+}
+
+func ratesWithinOnePercent(actual, target float64) bool {
+	return math.Abs(actual-target) <= target*0.01
 }
 
 // ObserveTUNIngressActual acknowledges an aggregate rate only when it still

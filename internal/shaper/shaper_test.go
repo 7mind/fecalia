@@ -253,6 +253,125 @@ func TestNewValidatesModelBounds(t *testing.T) {
 	}
 }
 
+func TestRetargetPreservesAdmittedDeadlinesAndRecoveryContract(t *testing.T) {
+	clock := newFakeClock()
+	config := validConfig()
+	config.FECGroupReserveBytes = 500
+	config.RecoveryWriteSlack = 10 * time.Millisecond
+	shaper, err := New(config, clock, func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shaper.Close() }()
+
+	firstDeadline := clock.Now().Add(100 * time.Millisecond)
+	secondDeadline := firstDeadline.Add(100 * time.Millisecond)
+	shaper.mu.Lock()
+	shaper.queue = []*queuedDatagram{
+		{deadline: firstDeadline, size: 100, retention: retainClass},
+		{deadline: secondDeadline, size: 100, retention: retainClass},
+	}
+	shaper.retainedDataBytes = 200
+	shaper.tail = secondDeadline
+	beforeContract := shaper.RecoveryContract()
+	shaper.mu.Unlock()
+
+	applied, err := shaper.TryRetarget(2_000, 400)
+	if err != nil {
+		t.Fatalf("TryRetarget growth: %v", err)
+	}
+	if !applied {
+		t.Fatal("growth budget was deferred")
+	}
+	shaper.mu.Lock()
+	if !shaper.queue[0].deadline.Equal(firstDeadline) ||
+		!shaper.queue[1].deadline.Equal(secondDeadline) ||
+		!shaper.tail.Equal(secondDeadline) {
+		t.Fatal("retarget changed an already-admitted datagram deadline")
+	}
+	shaper.mu.Unlock()
+	afterGrowth := shaper.Snapshot()
+	if afterGrowth.RateBytesPerSecond != 2_000 || afterGrowth.DataBudgetBytes != 400 {
+		t.Fatalf("growth actual R/B = %g/%d, want 2000/400",
+			afterGrowth.RateBytesPerSecond, afterGrowth.DataBudgetBytes)
+	}
+	if got := shaper.RecoveryContract(); got != beforeContract {
+		t.Fatalf("growth changed recovery contract from %+v to %+v", beforeContract, got)
+	}
+
+	applied, err = shaper.TryRetarget(500, 100)
+	if err != nil {
+		t.Fatalf("TryRetarget shrink: %v", err)
+	}
+	if applied {
+		t.Fatal("budget shrink below retained DATA was applied")
+	}
+	afterDeferred := shaper.Snapshot()
+	if afterDeferred.RateBytesPerSecond != 500 ||
+		afterDeferred.DataBudgetBytes != 400 ||
+		afterDeferred.QueueDataBytes != 200 {
+		t.Fatalf("deferred shrink actual R/B/retained = %g/%d/%d, want 500/400/200",
+			afterDeferred.RateBytesPerSecond,
+			afterDeferred.DataBudgetBytes,
+			afterDeferred.QueueDataBytes,
+		)
+	}
+	shaper.mu.Lock()
+	admissionLimit := shaper.dataAdmissionLimitBytes
+	shaper.mu.Unlock()
+	if admissionLimit != 100 {
+		t.Fatalf("deferred shrink admission limit = %d, want target B=100", admissionLimit)
+	}
+	admissionContext, cancelAdmission := context.WithCancel(context.Background())
+	observedAdmissionContext := observeContext(admissionContext)
+	admissionResult := make(chan error, 1)
+	go func() {
+		admissionResult <- shaper.WriteBatch(
+			observedAdmissionContext,
+			ClassData,
+			[][]byte{{1}},
+		)
+	}()
+	waitChannel(
+		t,
+		observedAdmissionContext.doneObserved,
+		"future DATA admission ignored the deferred lower B",
+	)
+	cancelAdmission()
+	if err := waitResult(t, admissionResult); !errors.Is(err, context.Canceled) {
+		t.Fatalf("future DATA admission after deferred shrink = %v, want context cancellation", err)
+	}
+	if got := shaper.RecoveryContract(); got != beforeContract {
+		t.Fatalf("deferred shrink changed recovery contract from %+v to %+v", beforeContract, got)
+	}
+
+	shaper.mu.Lock()
+	shaper.queue = shaper.queue[:1]
+	shaper.retainedDataBytes = 100
+	shaper.tail = firstDeadline
+	shaper.mu.Unlock()
+	applied, err = shaper.TryRetarget(500, 100)
+	if err != nil {
+		t.Fatalf("TryRetarget drained shrink: %v", err)
+	}
+	if !applied {
+		t.Fatal("drained budget shrink remained deferred")
+	}
+	afterDrain := shaper.Snapshot()
+	if afterDrain.DataBudgetBytes != 100 ||
+		afterDrain.AcceptedBytes != 0 ||
+		afterDrain.EmittedBytes != 0 ||
+		afterDrain.AsyncWriteErrorBytes != 0 {
+		t.Fatalf("drained shrink changed conservation counters or missed B: %+v", afterDrain)
+	}
+	shaper.mu.Lock()
+	shaper.queue = nil
+	shaper.retainedDataBytes = 0
+	shaper.tail = clock.Now()
+	shaper.notifyLocked()
+	shaper.mu.Unlock()
+}
+
 func TestValidateConfigErrorMessages(t *testing.T) {
 	tests := []struct {
 		name   string

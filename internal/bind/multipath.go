@@ -1168,6 +1168,10 @@ type pathShaperReporter interface {
 	Snapshot() shaper.Snapshot
 }
 
+type pathShaperRetargeter interface {
+	TryRetarget(float64, int) (bool, error)
+}
+
 type pathShaperFactory func(shaper.Config, shaper.WriteFunc) (pathShaper, error)
 
 // sourceBinding is one entry of the source->peer demux map (peerBySource): the peer a learned
@@ -1672,7 +1676,13 @@ func (m *Multipath) installPathShaperLocked(pp *peerPathState, cfg *config.PathS
 	}
 	pp.shaper = s
 	pp.recoveryBound = cfg.RecoveryBound
-	controller, err := congestion.New(cfg.RateBytesPerSecond)
+	if !cfg.CongestionControlled {
+		return nil
+	}
+	controller, err := congestion.New(
+		cfg.RateBytesPerSecond,
+		cfg.RateLimitBytesPerSecond,
+	)
 	if err != nil {
 		_ = s.Close()
 		return fmt.Errorf("bind: create congestion controller for path %q: %w", pp.name, err)

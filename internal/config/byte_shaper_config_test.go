@@ -97,6 +97,114 @@ func TestPathShaperDerivedBytesAndLegacyFPS(t *testing.T) {
 	}
 }
 
+func TestPathShaperSeparatesMeasuredSeedFromOptionalLimit(t *testing.T) {
+	body := byteShaperFixture(
+		"192.0.2.10", "8Mbit", "45ms", 0,
+		"pacing_enabled = true\n",
+	)
+	body = strings.Replace(
+		body,
+		"link_bandwidth = \"8Mbit\"\n",
+		"link_bandwidth = \"8Mbit\"\nlink_bandwidth_limit = \"20Mbit\"\n",
+		1,
+	)
+	cfg, err := loadByteShaperFixture(t, body)
+	if err != nil {
+		t.Fatalf("Load with explicit limit: %v", err)
+	}
+	got := onlyPathShaper(t, cfg)
+	if got.RateBytesPerSecond != 1_000_000 ||
+		got.RateLimitBytesPerSecond != 2_500_000 ||
+		!got.CongestionControlled {
+		t.Fatalf("seed/limit/controller = %g/%g/%v, want 1000000/2500000/true",
+			got.RateBytesPerSecond,
+			got.RateLimitBytesPerSecond,
+			got.CongestionControlled,
+		)
+	}
+
+	cfg, err = loadByteShaperFixture(t, byteShaperFixture(
+		"192.0.2.10", "8Mbit", "45ms", 0,
+		"pacing_enabled = true\n",
+	))
+	if err != nil {
+		t.Fatalf("Load without limit: %v", err)
+	}
+	if got := onlyPathShaper(t, cfg).RateLimitBytesPerSecond; got != 0 {
+		t.Fatalf("unset RateLimitBytesPerSecond = %g, want uncapped zero", got)
+	}
+}
+
+func TestPathShaperRejectsInvalidBandwidthLimit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		seed   string
+		limit  string
+		policy string
+		want   string
+	}{
+		{
+			name:   "below seed",
+			seed:   "8Mbit",
+			limit:  "7Mbit",
+			policy: "active-backup",
+			want:   "must be at least link_bandwidth",
+		},
+		{
+			name:   "non-finite",
+			seed:   "8Mbit",
+			limit:  "+InfMbit",
+			policy: "active-backup",
+			want:   "link_bandwidth_limit must be finite and > 0",
+		},
+		{
+			name:   "weighted",
+			seed:   "8Mbit",
+			limit:  "20Mbit",
+			policy: "weighted",
+			want:   "supported only by active-backup pacing",
+		},
+		{
+			name:   "missing seed",
+			limit:  "20Mbit",
+			policy: "active-backup",
+			want:   "requires link_bandwidth as the measured controller seed",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := byteShaperFixture(
+				"192.0.2.10", test.seed, "45ms", 0,
+				"pacing_enabled = true\n",
+			)
+			body = strings.Replace(
+				body,
+				"policy = \"active-backup\"",
+				"policy = \""+test.policy+"\"",
+				1,
+			)
+			if test.seed == "" {
+				body = strings.Replace(
+					body,
+					"source_addr = \"192.0.2.10\"\n",
+					"source_addr = \"192.0.2.10\"\nlink_bandwidth_limit = \""+test.limit+"\"\n",
+					1,
+				)
+			} else {
+				body = strings.Replace(
+					body,
+					"link_bandwidth = \""+test.seed+"\"\n",
+					"link_bandwidth = \""+test.seed+"\"\nlink_bandwidth_limit = \""+test.limit+"\"\n",
+					1,
+				)
+			}
+			_, err := loadByteShaperFixture(t, body)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestPathShaperKeepsWeightedAggregationFPS(t *testing.T) {
 	body := fill(twoPathConfig("8Mbit", "45ms", "8Mbit", "45ms")) + weightedPacing
 	cfg, err := loadByteShaperFixture(t, body)

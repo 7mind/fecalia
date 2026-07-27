@@ -404,16 +404,16 @@ striping has no single authenticated carrier epoch.
 pacing_enabled = true       # OFF by default; when on, size the pace from the links below
 ```
 
-When pacing is enabled, declare each uplink's conservative bandwidth ceiling
-and baseline RTT directly on its `[[paths]]` block. The daemon sizes the
-per-path hard shaper ceiling and retained budget from the bandwidth-delay
-product at config load:
+When pacing is enabled, declare each uplink's measured bandwidth seed and
+baseline RTT directly on its `[[paths]]` block. The daemon sizes the initial
+per-path shaper rate and retained budget from the bandwidth-delay product:
 
 ```toml
 [[paths]]
 name = "starlink"
 source_addr = "192.168.1.10"
 link_bandwidth = "50Mbit"  # SI bit/s: k/M/G = 1e3/1e6/1e9 (e.g. "10Mbit", "1Gbit")
+# link_bandwidth_limit = "80Mbit" # optional active-backup operator safety ceiling
 link_rtt = "45ms"          # baseline RTT — the delay term of B=ceil(R*RTT)
 ```
 
@@ -423,16 +423,17 @@ live byte shaper retains its own path's exact `R`/`B` envelope:
 - **Weighted** may stripe every eligible path simultaneously. Its aggregation
   gate retains the shared slowest-link `per_path_capacity_fps` reference, while
   each selected path's byte shaper uses that path's own declared bandwidth/RTT.
-- **Active-backup** egresses on exactly ONE path at a time, so each path is
-  shaped from **its own** BDP into a per-path rate/budget — NOT min-reduced
-  to the bottleneck. A fast active primary paces at its own drain rate even
-  when a much slower path is configured as its backup.
+- **Active-backup** egresses on exactly ONE path at a time. Each path starts
+  from its own BDP, then its controller retargets both the outer shaper and
+  earlier TUN AQM from live delivery, queue delay, and authenticated loss.
 
 Common rules, either policy:
 
-- The exact-byte shaper ceiling is fixed at load. Under active-backup, an
-  earlier TUN ingress target starts conservatively and adapts below this
-  ceiling. `link_bandwidth` is not a throughput floor.
+- Under weighted, the exact-byte shaper rate remains fixed at
+  `link_bandwidth`. Under active-backup, `link_bandwidth` is an initial
+  measured seed, not a ceiling or throughput floor. Set optional
+  `link_bandwidth_limit >= link_bandwidth` when an operator hard cap is
+  required; omit it for uncapped capacity discovery.
 - It is **all-or-nothing**: declare `link_bandwidth` (and `link_rtt`) on *every*
   path or none — a partial declaration is rejected.
 - A declared bandwidth with `pacing_enabled = false` (the default) is **inert** —
@@ -441,8 +442,8 @@ Common rules, either policy:
 - `link_bandwidth` is **mutually exclusive** with the raw `per_path_capacity_fps` /
   `pacing_burst_frames` knobs: declare the link bandwidth *or* set the frame-slot
   knobs, not both. A non-positive or unparseable bandwidth/RTT is rejected at load.
-- Config load derives the live exact-byte shaper envelope per path. For a declared
-  link, `R = link_bandwidth/8`, `B = ceil(R*link_rtt)`, and `Lmax` is the
+- Config load derives the initial exact-byte shaper envelope per path. For a declared
+  link, `Rseed = link_bandwidth/8`, `Bseed = ceil(Rseed*link_rtt)`, and `Lmax` is the
   configured-or-default outer MTU less the IP/UDP headers (28 bytes for IPv4,
   48 for IPv6). It rejects `B < Lmax`: one legal datagram must always fit.
   Raw settings use the existing 1500-byte conversion
@@ -456,10 +457,12 @@ Common rules, either policy:
   priority bound `2*Pburst/(R-Rp)` to fit in `time.Duration`; device bring-up
   therefore never receives such a model, and gauges never expose a wrapped
   negative Q or a saturated configured-model bound.
-- Under active-backup, `R` is also the controller's outer safety ceiling. The
-  TUN target initially uses 85% of `R` and a conservative 1.25 outer/inner
-  expansion, then follows measured delivery, queue delay, and authenticated
-  loss. Expansion learning uses loaded samples only; idle probe/control bytes
+- Under active-backup, the controller initially uses 85% of `Rseed` and a
+  conservative 1.25 outer/inner expansion. Clean loaded samples add 10% of
+  `Rseed`; queue delay or authenticated loss reduces the target. Every target
+  retargets the same outer shaper and derives `B=max(Lmax,ceil(Rtarget*link_rtt))`.
+  Already-admitted deadlines remain unchanged and B shrink waits for retained
+  DATA to fit. Expansion learning uses loaded samples only; idle probe/control bytes
   do not lower DATA admission. After a target change, another decision waits
   for exact installed-rate/epoch readback and at least the larger of one second
   or the active base RTT. Repeated exact readbacks of the unchanged target
@@ -550,7 +553,9 @@ Common rules, either policy:
   invalidates the bound; no live outer CONTROL protocol currently exists.
   For an exclusive single-path FEC group, config also derives
   `A=I=10ms` and
-  `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(R-Rp))+10ms`. Finite nonnegative
+  `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(Rmin-Rp))+10ms`, using the
+  active-backup controller's minimum possible target (or fixed R outside that
+  controller). Finite nonnegative
   `Ecompletion` nanoseconds and the slack addition must fit `time.Duration`
   before conversion; `A` remains below 250 ms. `B+C+P` and any earlier virtual
   tail drain before the cut's first DATA socket write, so they delay the whole
@@ -773,11 +778,12 @@ doh_url = "https://198.51.100.1/dns-query"       # required iff resolver = "doh"
 ### 3a. Tuning per-link bandwidth and pacing
 
 **Pacing ships DISABLED by default.** When enabled with `pacing_enabled = true`
-under the `[scheduler]` block, wanbond sizes the hard per-path shaper ceiling
-and retained budget from the bandwidth-delay product (BDP). Under
-active-backup, a separate early TUN rate then adapts below that ceiling from
+under the `[scheduler]` block, wanbond sizes each initial per-path shaper rate
+and retained budget from the bandwidth-delay product (BDP). Under active-backup,
+the closed loop then retargets both the outer shaper and early TUN AQM from
 runtime delivery, queue delay, encapsulation expansion, and authenticated DATA
-loss. Measure a conservative ceiling once per link and enter it in the config.
+loss. Measure a usable starting rate once per link and enter it in the config;
+set a separate `link_bandwidth_limit` only when an operator hard cap is needed.
 
 This section describes how to measure the required values (`link_bandwidth` and
 `link_rtt`), where to enter them, and how to verify pacing is effective.
@@ -881,13 +887,14 @@ For each path, add `link_bandwidth` and `link_rtt` to the `[[paths]]` block:
 [[paths]]
 name = "starlink"
 source_addr = "192.168.1.10"
-link_bandwidth = "50Mbit"    # conservative outer safety ceiling, not a goodput floor
+link_bandwidth = "50Mbit"    # measured active-backup seed; fixed weighted rate
+# link_bandwidth_limit = "80Mbit" # optional active-backup ceiling
 link_rtt = "21ms"            # from Step 1: 21.5 ms idle RTT → round to 21ms
 
 [[paths]]
 name = "5g"
 source_addr = "192.168.2.10"
-link_bandwidth = "10Mbit"    # conservative outer safety ceiling for this carrier
+link_bandwidth = "10Mbit"    # measured active-backup seed; fixed weighted rate
 link_rtt = "45ms"            # higher baseline latency
 ```
 
@@ -898,10 +905,10 @@ link_rtt = "45ms"            # higher baseline latency
   shaper still uses its own path's declared `R` and `B`. Under active-backup,
   the compatibility vectors and live `R`/`B` shapers are likewise per path.
   Partial declarations are rejected at load.
-- **Set a safe ceiling.** Round down if unsure (e.g., measure 49.8 Mbit/s →
-  declare `49Mbit` rather than `50Mbit`). Active-backup adapts its earlier TUN
-  target below this value, but cannot exceed an over-declared hard shaper
-  ceiling.
+- **Set a representative seed.** Round down if the measurement varies.
+  Active-backup may discover capacity above it; weighted keeps it as the fixed
+  rate. If exceeding a known safe rate would violate an operational constraint,
+  add `link_bandwidth_limit` at or above the seed.
 - **Use the `link_rtt` from Step 1**, not the loaded RTT from Step 2. The idle RTT
   is the baseline delay the BDP calculation assumes; the loaded RTT tells you how
   much bufferbloat exists.
@@ -1218,6 +1225,11 @@ source_addr = "192.168.1.10"       # REQUIRED. Bare local source IP the path's
                                    #   retains the slowest link only as its
                                    #   shared frame-domain aggregation reference.
                                    #   Inert otherwise. No default (undeclared).
+# link_bandwidth_limit = "80Mbit"  # OPTIONAL. Active-backup-only hard controller
+                                   #   ceiling. Requires pacing and
+                                   #   link_bandwidth; must be >= the seed.
+                                   #   Omit for uncapped discovery. Rejected
+                                   #   under weighted. No default.
 # link_rtt = "45ms"                # OPTIONAL. Operator-declared baseline RTT
                                    #   (Go duration). REQUIRED (> 0) when
                                    #   link_bandwidth is set with pacing enabled
@@ -1544,6 +1556,11 @@ level = "info"                     # DEFAULT "info" (empty => info). One of
   When active they are **mutually exclusive** with the raw
   `scheduler.per_path_capacity_fps` / `pacing_burst_frames` knobs — declare
   link bandwidth *or* set the frame-slot knobs, not both.
+- **`link_bandwidth_limit` is a distinct optional ceiling.** It applies only to
+  active-backup with pacing enabled, requires `link_bandwidth`, and must be
+  finite, positive, and at least the seed. Omit it to let the controller
+  discover capacity above a temporary measurement. Weighted rejects it because
+  weighted shaping already fixes R at `link_bandwidth`.
 - **`link_bandwidth` vs. the aggregation engage threshold (weighted only).** When
   `scheduler.policy = "weighted"`, every path that declares `link_bandwidth` is
   checked against the (effective, post-default) engage threshold: `Load` FAILS

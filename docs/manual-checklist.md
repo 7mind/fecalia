@@ -370,8 +370,9 @@ at ~3.67 Mbps against a link independently capable of ≥6.9 Mbps. Pacing
 (bounded per-(peer,path) exact-byte shapers, enabled via
 `[scheduler] pacing_enabled = true`) applies backpressure instead of
 pacer-induced loss, bounds the queue so loaded RTT stays near idle baseline,
-and lets single-flow TCP use learned delivered capacity below the declared
-safety ceiling. This section
+and lets single-flow TCP use learned delivered capacity. `link_bandwidth`
+supplies the initial active-backup seed; only an explicit
+`link_bandwidth_limit` supplies a safety ceiling. This section
 validates pacing's effectiveness on the real deployment
 (Pi4-edge/Starlink/o3 topology).
 
@@ -392,8 +393,9 @@ no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#
 - [ ] Record date, `wanbond version` output, current build (`git log --oneline -1`).
 - [ ] Measure and record the **idle RTT** and **measured throughput** per uplink
       (instructions in [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing));
-      these set the conservative pacing ceiling/budget
-      (`link_bandwidth` / `link_rtt`), not an absolute-goodput floor.
+      these set the initial pacing seed/budget
+      (`link_bandwidth` / `link_rtt`), not an absolute-goodput floor. Record any
+      explicit `link_bandwidth_limit` separately.
 
 ### T324 active-backup closed-loop field acceptance
 
@@ -414,7 +416,8 @@ as historical exact-byte-shaper evidence.
       child with
       `limit=flow_limit=ceil(peerCount*(B+C)/currentMTU)+32`
       and `quantum=initial_quantum=current MTU`.
-      Here `B=maxPathDataBurstBytes` and `C` is the complete GSO batch below.
+      Here `B` is the maximum current active outer-shaper DATA budget and `C`
+      is the complete GSO batch below.
       `wanbond_tun_aqm_actual_fresh` must be 1 and target/actual epoch, rate,
       and queue length must match.
 - [ ] From per-peer ingress rate `r`, maximum configured inner MTU `Mmax`, and
@@ -446,7 +449,9 @@ as historical exact-byte-shaper evidence.
       still drive a fail-closed decrease.
 - [ ] Under a loaded sample, rising queue delay or fresh authenticated DATA
       loss reduces the target; clean delivered service permits bounded
-      additive increase, never above the declared outer ceiling. Confirm the
+      additive increase above the seed. With `link_bandwidth_limit` set, the
+      target never exceeds that explicit ceiling; with it omitted, confirm a
+      clean loaded target can grow beyond `link_bandwidth`. Confirm the
       TUN target follows the learned outer/inner ratio and exact kernel
       readback follows the target with an in-place `fq` change: packet/drop
       counters must remain monotonic and a correct live leaf must never be

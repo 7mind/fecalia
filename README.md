@@ -225,11 +225,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
   bounded exact-byte shaper instead of producing scheduler-shedding records.
 - **Pacing on/off is a real tradeoff, not just a knob**: pacing applies bounded
-  sender backpressure below a declared outer safety ceiling. Under
+  sender backpressure at a live outer target. Under
   active-backup, Linux owns a small `wanbond0` HTB+bounded-`fq` qdisc and adapts
-  its TUN ingress rate from actual outer delivery, probe queue delay, measured
+  both the path shaper and TUN ingress rate from actual outer delivery, probe queue delay, measured
   encapsulation expansion, and fresh authenticated DATA loss; this prevents the
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
+  `link_bandwidth` supplies the measured seed and optional
+  `link_bandwidth_limit` supplies an operator ceiling.
   After any rate change, another controller decision waits for exact kernel
   readback and a one-second-or-one-SRTT settling interval. Mutable `fq`
   parameters change in place, preserving the live queue and counters; a limit
@@ -349,26 +351,32 @@ deliberate boundaries you must plan around:
   probe-loss signal because one carrier record cannot represent simultaneous
   distribution shares.
 - **Pacing is off by default (opt-in)** — enable it under `[scheduler]`
-  (`pacing_enabled = true`) and supply a conservative per-link
-  `link_bandwidth`/`link_rtt` ceiling (bandwidth-delay product). Pre-T299 pacing was
+  (`pacing_enabled = true`) and supply a measured per-link
+  `link_bandwidth` seed plus `link_rtt` (bandwidth-delay product). Pre-T299 pacing was
   measured on the report-only real-link tier; those measurements do not validate
   T299's replacement shaper, and the CPU/PPS-bound netns fixture cannot establish
-  absolute throughput or bufferbloat. The exact-byte path shaper stays fixed at
-  that safety ceiling. Under active-backup, a separate early TUN AQM target
-  starts conservatively and adapts below the ceiling; weighted scheduling keeps
-  fixed shaping.
+  absolute throughput or bufferbloat. Under active-backup, the outer exact-byte
+  shaper and early TUN AQM start conservatively, raise their targets above the
+  measured seed while clean loaded samples support growth, and reduce promptly
+  on queue delay or authenticated loss. `link_bandwidth_limit` is the distinct
+  optional operator safety ceiling; omitting it leaves discovery uncapped.
+  Weighted scheduling keeps `link_bandwidth` as its fixed shaping rate and does
+  not accept `link_bandwidth_limit`.
   Pacing is **policy-independent** (defect D65): `pacing_enabled`,
   `link_bandwidth`, and `link_rtt` are meaningful — and configured with the
   SAME keys — under the **default `active-backup` policy** too, not only under
   `policy = "weighted"`; see [docs/design.md §Send-side
   scheduler](docs/design.md) for the per-path-vs-bottleneck sizing distinction.
-  Config load derives the live exact-byte shaper envelope: wire rate `R`,
+  Config load derives the initial exact-byte shaper envelope: wire seed `Rseed`,
   maximum encoded datagram `Lmax`, DATA/PARITY budget `B>=Lmax`, inner-control
   reserve `C=Lmax`, retained generated-priority reserve `P=Pburst`, one owned
   FEC-group bound `Fgroup`, one writer-in-flight `Lio=Lmax`, and
   `Mtotal=B+C+P+Fgroup+Lio`. It also derives generated-priority rate `Rp`, finite
   receiver-observable recovery-cut bound `A=I`, and completion overrun
-  `Ecompletion`. It rejects
+  `Ecompletion` at the controller's minimum possible service rate. Active-backup
+  retargeting changes only future serialization/admission, recomputes
+  `B=ceil(Rtarget*link_rtt)`, and leaves already-admitted deadlines immutable;
+  a B shrink waits until retained DATA fits. It rejects
   an envelope whose maximum probe+echo rate
   consumes the whole link. Non-finite inputs and byte budgets that cannot fit
   the platform's integer byte-count domain are rejected before conversion; `Q`
