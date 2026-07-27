@@ -73,10 +73,18 @@ func TestCongestionRetargetPreservesPathRecoveryAndSequenceGeneration(t *testing
 		t.Fatalf("initial retarget actual R/B = %g/%d, want 850000/42500",
 			actual.RateBytesPerSecond, actual.DataBudgetBytes)
 	}
-	rate, _, dataBudget, ok := m.TUNIngressTarget()
+	rate, epoch, dataBudget, ok := m.TUNIngressTarget()
 	if !ok || rate <= 0 || dataBudget != 42_500 {
 		t.Fatalf("TUN target rate/B/ok = %g/%d/%v, want positive/42500/true",
 			rate, dataBudget, ok)
+	}
+	if err := m.ObserveTUNIngressActual(
+		rate,
+		epoch,
+		clock.Now(),
+		true,
+	); err != nil {
+		t.Fatal(err)
 	}
 
 	clock.advance(2 * time.Second)
@@ -105,6 +113,31 @@ func TestCongestionRetargetPreservesPathRecoveryAndSequenceGeneration(t *testing
 		snapshot.EmittedBytes != 0 ||
 		snapshot.AsyncWriteErrorBytes != 0 {
 		t.Fatalf("retarget changed byte conservation counters: %+v", snapshot)
+	}
+
+	if err := m.ObserveTUNIngressPressure(
+		200*time.Millisecond,
+		uint64(rate*0.2),
+		200*time.Millisecond,
+		true,
+		epoch,
+		clock.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	reducedRate, reducedEpoch, _, ok := m.TUNIngressTarget()
+	if !ok || reducedEpoch != epoch || reducedRate >= rate {
+		t.Fatalf(
+			"local pressure target = %g/%d/%t, want ingress below %g at epoch %d",
+			reducedRate,
+			reducedEpoch,
+			ok,
+			rate,
+			epoch,
+		)
+	}
+	if got := writer.(pathShaperReporter).Snapshot().RateBytesPerSecond; got != 850_000 {
+		t.Fatalf("local ingress pressure changed outer shaper rate to %g", got)
 	}
 }
 

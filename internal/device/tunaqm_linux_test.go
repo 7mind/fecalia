@@ -89,9 +89,8 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 			args[1] == "-s" && args[2] == "qdisc":
 			return []byte(`[
 				{"kind":"htb","root":true,"handle":"1:"},
-				{"kind":"fq","parent":"1:1","handle":"10:","options":{
-					"limit":65,"flow_limit":65,"quantum":1395,
-					"initial_quantum":1395
+				{"kind":"bfifo","parent":"1:1","handle":"10:","options":{
+					"limit":65000
 				}}
 			]`), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
@@ -127,7 +126,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
-		QueueLimit:          65,
+		QueueLimitBytes:     65_000,
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
@@ -151,7 +150,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actual.LeafKind != "fq" ||
+	if actual.LeafKind != "bfifo" ||
 		actual.RateBytesPerSecond != target.RateBytesPerSecond {
 		t.Fatalf("rate-only readback = %+v", actual)
 	}
@@ -161,16 +160,15 @@ func TestLinuxTUNAQMParameterChangePreservesLiveLeaf(t *testing.T) {
 	var qdiscCommands [][]string
 	kernel := testLinuxTUNAQMKernel(t, `[
 		{"kind":"htb","root":true,"handle":"1:","drops":37,"qlen":5,"backlog":6840},
-		{"kind":"fq","parent":"1:1","handle":"10:","drops":41,"qlen":5,"backlog":6840,
-		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
-		 "initial_quantum":1395}}
+		{"kind":"bfifo","parent":"1:1","handle":"10:","drops":41,"qlen":5,"backlog":6840,
+		 "options":{"limit":65000}}
 	]`, &qdiscCommands)
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  680_000,
 		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
-		QueueLimit:          60,
+		QueueLimitBytes:     60_000,
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
@@ -200,16 +198,15 @@ func TestLinuxTUNAQMDefersQueueLimitShrinkBelowBacklog(t *testing.T) {
 	var qdiscCommands [][]string
 	kernel := testLinuxTUNAQMKernel(t, `[
 		{"kind":"htb","root":true,"handle":"1:"},
-		{"kind":"fq","parent":"1:1","handle":"10:","qlen":61,"backlog":83645,
-		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
-		 "initial_quantum":1395}}
+		{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":61,"backlog":83645,
+		 "options":{"limit":65000}}
 	]`, &qdiscCommands)
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  680_000,
 		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
-		QueueLimit:          60,
+		QueueLimitBytes:     60_000,
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
@@ -218,7 +215,7 @@ func TestLinuxTUNAQMDefersQueueLimitShrinkBelowBacklog(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(qdiscCommands) != 0 {
-		t.Fatalf("unsafe queue-limit shrink commands = %v, want deferred with qlen 61 > limit 60",
+		t.Fatalf("unsafe queue-limit shrink commands = %v, want deferred with backlog 83645 > limit 60000 bytes",
 			qdiscCommands)
 	}
 }
@@ -227,16 +224,15 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 	var qdiscCommands [][]string
 	kernel := testLinuxTUNAQMKernel(t, `[
 		{"kind":"htb","root":true,"handle":"1:","qlen":1,"backlog":1395},
-		{"kind":"fq","parent":"1:1","handle":"10:","qlen":1,"backlog":1395,
-		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
-		 "initial_quantum":1395}}
+		{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":1,"backlog":1395,
+		 "options":{"limit":65000}}
 	]`, &qdiscCommands)
 	target := tunAQMTargetState{
 		RateBytesPerSecond:  680_000,
 		BurstBytes:          13_950,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
-		QueueLimit:          65,
+		QueueLimitBytes:     65_000,
 		GSOMaxSize:          12_555,
 		GSOMaxSegments:      9,
 		AdmissionLimitBytes: 14_270,
@@ -258,9 +254,8 @@ func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
 	var qdiscCommands [][]string
 	kernel := testLinuxTUNAQMKernel(t, `[
 		{"kind":"htb","root":true,"handle":"1:"},
-		{"kind":"fq","parent":"1:1","handle":"10:",
-		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
-		 "initial_quantum":1395}}
+		{"kind":"bfifo","parent":"1:1","handle":"10:",
+		 "options":{"limit":65000}}
 	]`, &qdiscCommands)
 	currentRingSlots := 128
 	pending := true
@@ -279,7 +274,7 @@ func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
 		BurstBytes:          13_950,
 		TxQueueLen:          targetRingSlots,
 		MTU:                 1395,
-		QueueLimit:          65,
+		QueueLimitBytes:     65_000,
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,

@@ -320,3 +320,93 @@ func (m *Multipath) ObserveTUNIngressActual(
 	}
 	return nil
 }
+
+// ObserveTUNIngressPressure routes one device-wide local-backpressure interval
+// to the active carrier controllers without changing their outer-rate targets.
+func (m *Multipath) ObserveTUNIngressPressure(
+	admissionWaitDuration time.Duration,
+	tunBytes uint64,
+	interval time.Duration,
+	ringPending bool,
+	epoch uint64,
+	observedAt time.Time,
+) error {
+	if observedAt.IsZero() {
+		return errors.New("bind: TUN ingress pressure time is required")
+	}
+	if admissionWaitDuration < 0 || interval <= 0 {
+		return errors.New(
+			"bind: TUN ingress admission wait must be non-negative and interval positive",
+		)
+	}
+
+	m.mu.Lock()
+	type pressureRef struct {
+		controller *congestion.Controller
+		epoch      congestion.CarrierEpoch
+		rate       float64
+	}
+	refs := make([]pressureRef, 0, len(m.peers))
+	for _, peer := range m.peers {
+		dataPaths := peer.scheduler.DataPaths()
+		if len(dataPaths) != 1 {
+			m.mu.Unlock()
+			return nil
+		}
+		index := dataPaths[0].Index
+		if index < 0 || index >= len(peer.paths) {
+			m.mu.Unlock()
+			return nil
+		}
+		path := peer.paths[index]
+		if path.congestion == nil || !peer.congestionHaveCarrier {
+			m.mu.Unlock()
+			return nil
+		}
+		carrierEpoch := congestion.CarrierEpoch{
+			PathID: path.id, Generation: peer.congestionGeneration,
+		}
+		snapshot := path.congestion.Snapshot()
+		if snapshot.Target.Epoch != carrierEpoch ||
+			snapshot.Target.IngressRateBytesPerSecond <= 0 {
+			m.mu.Unlock()
+			return nil
+		}
+		refs = append(refs, pressureRef{
+			controller: path.congestion,
+			epoch:      carrierEpoch,
+			rate:       snapshot.Target.IngressRateBytesPerSecond,
+		})
+	}
+	m.mu.Unlock()
+
+	var targetRate float64
+	var targetEpoch uint64
+	for _, ref := range refs {
+		targetRate += ref.rate
+		targetEpoch =
+			targetEpoch*1099511628211 ^
+				(ref.epoch.Generation<<8 | uint64(ref.epoch.PathID))
+	}
+	if targetRate <= 0 || targetEpoch != epoch || len(refs) == 0 {
+		return nil
+	}
+	loaded := float64(tunBytes) >=
+		targetRate*interval.Seconds()*0.50
+	perControllerWait := admissionWaitDuration / time.Duration(len(refs))
+	for _, ref := range refs {
+		if _, err := ref.controller.ObserveIngressPressure(
+			congestion.IngressPressureState{
+				At:                    observedAt,
+				Epoch:                 ref.epoch,
+				AdmissionWaitDuration: perControllerWait,
+				Interval:              interval,
+				RingPending:           ringPending,
+				Loaded:                loaded,
+			},
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -8,18 +8,24 @@ import (
 )
 
 const (
-	initialTargetFraction   = 0.85
-	initialOverheadRatio    = 1.25
-	minimumTargetFraction   = 0.10
-	minimumTargetRate       = 128_000.0
-	decreaseFactor          = 0.85
-	deliveredHeadroom       = 0.95
-	increaseFraction        = 0.10
-	overheadEWMAWeight      = 0.25
-	minimumQueueThreshold   = 10 * time.Millisecond
-	lossCongestionThreshold = 0.005
-	minimumRetargetSettle   = time.Second
-	installedRateTolerance  = 0.01
+	initialTargetFraction    = 0.85
+	initialOverheadRatio     = 1.25
+	minimumTargetFraction    = 0.10
+	minimumTargetRate        = 128_000.0
+	decreaseFactor           = 0.85
+	deliveredHeadroom        = 0.95
+	increaseFraction         = 0.10
+	overheadEWMAWeight       = 0.25
+	minimumQueueThreshold    = 10 * time.Millisecond
+	lossCongestionThreshold  = 0.005
+	minimumRetargetSettle    = time.Second
+	installedRateTolerance   = 0.01
+	initialIngressHeadroom   = 0.95
+	minimumIngressHeadroom   = 0.50
+	ingressPressureFactor    = 0.85
+	ingressRecoveryStep      = 0.01
+	ingressPressureThreshold = 0.50
+	ingressRecoveryIntervals = 3
 )
 
 type CarrierEpoch struct {
@@ -51,6 +57,15 @@ type InstalledIngressState struct {
 	Fresh              bool
 }
 
+type IngressPressureState struct {
+	At                    time.Time
+	Epoch                 CarrierEpoch
+	AdmissionWaitDuration time.Duration
+	Interval              time.Duration
+	RingPending           bool
+	Loaded                bool
+}
+
 type Snapshot struct {
 	Actual                      ActualState
 	Target                      TargetState
@@ -61,15 +76,21 @@ type Snapshot struct {
 	OverheadRatio               float64
 	AwaitingInstalled           bool
 	TargetChanges               uint64
+	IngressServiceHeadroom      float64
+	IngressPressureRatio        float64
+	IngressPressure             bool
+	IngressHeadroomChanges      uint64
 	Held                        bool
 }
 
 type Controller struct {
-	mu         sync.Mutex
-	seed       float64
-	limit      float64
-	snapshot   Snapshot
-	haveSample bool
+	mu                    sync.Mutex
+	seed                  float64
+	limit                 float64
+	snapshot              Snapshot
+	haveSample            bool
+	lastIngressPressureAt time.Time
+	cleanIngressIntervals int
 }
 
 func New(seedBytesPerSecond, limitBytesPerSecond float64) (*Controller, error) {
@@ -139,14 +160,19 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.snapshot = Snapshot{
 			Actual: actual,
 			Target: TargetState{
-				Epoch:                     actual.Epoch,
-				OuterRateBytesPerSecond:   target,
-				IngressRateBytesPerSecond: target / initialOverheadRatio,
+				Epoch:                   actual.Epoch,
+				OuterRateBytesPerSecond: target,
+				IngressRateBytesPerSecond: target /
+					initialOverheadRatio *
+					initialIngressHeadroom,
 			},
-			BaseRTT:       actual.RTT,
-			OverheadRatio: initialOverheadRatio,
-			Held:          true,
+			BaseRTT:                actual.RTT,
+			OverheadRatio:          initialOverheadRatio,
+			IngressServiceHeadroom: initialIngressHeadroom,
+			Held:                   true,
 		}
+		c.lastIngressPressureAt = time.Time{}
+		c.cleanIngressIntervals = 0
 		c.haveSample = true
 		return c.snapshot, nil
 	}
@@ -245,9 +271,11 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		}
 	}
 	c.snapshot.Target = TargetState{
-		Epoch:                     actual.Epoch,
-		OuterRateBytesPerSecond:   target,
-		IngressRateBytesPerSecond: target / c.snapshot.OverheadRatio,
+		Epoch:                   actual.Epoch,
+		OuterRateBytesPerSecond: target,
+		IngressRateBytesPerSecond: target /
+			c.snapshot.OverheadRatio *
+			c.snapshot.IngressServiceHeadroom,
 	}
 	c.snapshot.Held = c.snapshot.Target == previousTarget
 	c.snapshot.AwaitingInstalled = !c.snapshot.Held
@@ -256,6 +284,94 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.snapshot.InstalledIngress.Fresh = false
 	}
 	return c.snapshot, nil
+}
+
+func (c *Controller) ObserveIngressPressure(
+	actual IngressPressureState,
+) (Snapshot, error) {
+	if actual.At.IsZero() {
+		return Snapshot{}, errors.New("congestion ingress-pressure time is required")
+	}
+	if actual.Interval <= 0 {
+		return Snapshot{}, errors.New("congestion ingress-pressure interval must be positive")
+	}
+	if actual.AdmissionWaitDuration < 0 {
+		return Snapshot{}, errors.New("congestion admission-wait duration must be non-negative")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.haveSample || actual.Epoch != c.snapshot.Target.Epoch {
+		return Snapshot{}, errors.New("congestion ingress-pressure epoch does not match target")
+	}
+	if !c.lastIngressPressureAt.IsZero() &&
+		!actual.At.After(c.lastIngressPressureAt) {
+		return Snapshot{}, errors.New("congestion ingress-pressure time must advance")
+	}
+	c.lastIngressPressureAt = actual.At
+	c.snapshot.IngressPressureRatio =
+		float64(actual.AdmissionWaitDuration) / float64(actual.Interval)
+	c.snapshot.IngressPressure =
+		actual.RingPending ||
+			c.snapshot.IngressPressureRatio >= ingressPressureThreshold
+	if c.snapshot.IngressPressure {
+		c.cleanIngressIntervals = 0
+	} else if !actual.Loaded {
+		c.cleanIngressIntervals = 0
+	}
+	if !c.ingressTargetSettledLocked(actual.At) {
+		return c.snapshot, nil
+	}
+
+	nextHeadroom := c.snapshot.IngressServiceHeadroom
+	if c.snapshot.IngressPressure {
+		nextHeadroom *= ingressPressureFactor
+		if nextHeadroom < minimumIngressHeadroom {
+			nextHeadroom = minimumIngressHeadroom
+		}
+	} else if actual.Loaded {
+		c.cleanIngressIntervals++
+		if c.cleanIngressIntervals < ingressRecoveryIntervals {
+			return c.snapshot, nil
+		}
+		c.cleanIngressIntervals = 0
+		nextHeadroom += ingressRecoveryStep
+		if nextHeadroom > 1 {
+			nextHeadroom = 1
+		}
+	} else {
+		return c.snapshot, nil
+	}
+	if nextHeadroom == c.snapshot.IngressServiceHeadroom {
+		return c.snapshot, nil
+	}
+	c.snapshot.IngressServiceHeadroom = nextHeadroom
+	c.snapshot.Target.IngressRateBytesPerSecond =
+		c.snapshot.Target.OuterRateBytesPerSecond /
+			c.snapshot.OverheadRatio *
+			nextHeadroom
+	c.snapshot.AwaitingInstalled = true
+	c.snapshot.InstalledIngress.Fresh = false
+	c.snapshot.TargetChanges++
+	c.snapshot.IngressHeadroomChanges++
+	c.snapshot.Held = false
+	return c.snapshot, nil
+}
+
+func (c *Controller) ingressTargetSettledLocked(at time.Time) bool {
+	if c.snapshot.AwaitingInstalled ||
+		!c.snapshot.InstalledIngress.Fresh ||
+		c.snapshot.InstalledIngress.Epoch != c.snapshot.Target.Epoch ||
+		!ratesWithinTolerance(
+			c.snapshot.InstalledIngress.RateBytesPerSecond,
+			c.snapshot.Target.IngressRateBytesPerSecond,
+		) {
+		return false
+	}
+	settle := minimumRetargetSettle
+	if c.snapshot.BaseRTT > settle {
+		settle = c.snapshot.BaseRTT
+	}
+	return !at.Before(c.snapshot.InstalledIngress.At.Add(settle))
 }
 
 func (c *Controller) ObserveInstalledIngress(actual InstalledIngressState) error {

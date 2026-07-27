@@ -373,8 +373,190 @@ func TestControllerIgnoresUnloadedOuterInnerExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if math.Abs(unloaded.OverheadRatio-1.25) > 0.001 ||
-		math.Abs(unloaded.Target.IngressRateBytesPerSecond-680_000) > 0.001 {
+		math.Abs(unloaded.Target.IngressRateBytesPerSecond-646_000) > 0.001 {
 		t.Fatalf("unloaded sample changed expansion/ingress target: ratio=%g ingress=%g",
 			unloaded.OverheadRatio, unloaded.Target.IngressRateBytesPerSecond)
+	}
+}
+
+func TestControllerIngressPressureBacksOffAndRecoversAfterSettledCleanRun(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 3, Generation: 9}
+	at := time.Unix(400, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(initial.IngressServiceHeadroom-0.95) > 0.0001 {
+		t.Fatalf(
+			"initial ingress service headroom = %g, want 0.95",
+			initial.IngressServiceHeadroom,
+		)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: initial.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	saturated, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(2 * time.Second),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: time.Second,
+			Interval:              time.Second,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saturated.Target.IngressRateBytesPerSecond >=
+		initial.Target.IngressRateBytesPerSecond {
+		t.Fatalf(
+			"cycle-18 pressure left ingress at %g, want below %g",
+			saturated.Target.IngressRateBytesPerSecond,
+			initial.Target.IngressRateBytesPerSecond,
+		)
+	}
+	if saturated.Target.OuterRateBytesPerSecond !=
+		initial.Target.OuterRateBytesPerSecond {
+		t.Fatalf(
+			"ingress pressure changed outer target from %g to %g",
+			initial.Target.OuterRateBytesPerSecond,
+			saturated.Target.OuterRateBytesPerSecond,
+		)
+	}
+	if !saturated.IngressPressure ||
+		math.Abs(saturated.IngressPressureRatio-1) > 0.0001 ||
+		!saturated.AwaitingInstalled {
+		t.Fatalf("saturated ingress state = %+v", saturated)
+	}
+
+	pending, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(3 * time.Second),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: time.Second,
+			Interval:              time.Second,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.Target != saturated.Target ||
+		pending.IngressHeadroomChanges != saturated.IngressHeadroomChanges {
+		t.Fatalf(
+			"pressure replayed before readback: pending=%+v saturated=%+v",
+			pending,
+			saturated,
+		)
+	}
+	if _, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(3 * time.Second),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: time.Second,
+			Interval:              time.Second,
+			Loaded:                true,
+		},
+	); err == nil {
+		t.Fatal("stale ingress-pressure interval was replayed")
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(3100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: saturated.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := controller.Observe(congestion.ActualState{
+		At:    at.Add(4200 * time.Millisecond),
+		Epoch: epoch,
+		RTT:   40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.AwaitingInstalled {
+		t.Fatalf("exact ingress readback remained unsettled: %+v", settled)
+	}
+
+	unloaded, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:       at.Add(4400 * time.Millisecond),
+			Epoch:    epoch,
+			Interval: 200 * time.Millisecond,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unloaded.Target != saturated.Target {
+		t.Fatalf("idle interval recovered ingress headroom: %+v", unloaded)
+	}
+
+	for step := 0; step < 2; step++ {
+		clean, err := controller.ObserveIngressPressure(
+			congestion.IngressPressureState{
+				At:       at.Add(time.Duration(4600+step*200) * time.Millisecond),
+				Epoch:    epoch,
+				Interval: 200 * time.Millisecond,
+				Loaded:   true,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if clean.Target != saturated.Target {
+			t.Fatalf(
+				"headroom recovered after only %d clean intervals: %+v",
+				step+1,
+				clean,
+			)
+		}
+	}
+	recovered, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:       at.Add(5 * time.Second),
+			Epoch:    epoch,
+			Interval: 200 * time.Millisecond,
+			Loaded:   true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Target.IngressRateBytesPerSecond <=
+		saturated.Target.IngressRateBytesPerSecond {
+		t.Fatalf(
+			"three clean settled intervals left ingress at %g, want above %g",
+			recovered.Target.IngressRateBytesPerSecond,
+			saturated.Target.IngressRateBytesPerSecond,
+		)
+	}
+
+	nextEpoch := congestion.CarrierEpoch{PathID: 4, Generation: 10}
+	reset, err := controller.Observe(congestion.ActualState{
+		At: at.Add(5200 * time.Millisecond), Epoch: nextEpoch, RTT: 45 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(reset.IngressServiceHeadroom-0.95) > 0.0001 ||
+		reset.IngressHeadroomChanges != 0 {
+		t.Fatalf("carrier reset ingress state = %+v", reset)
 	}
 }

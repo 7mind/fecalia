@@ -24,7 +24,7 @@ type tunAQMTargetState struct {
 	BurstBytes          int
 	TxQueueLen          int
 	MTU                 int
-	QueueLimit          int
+	QueueLimitBytes     int
 	GSOMaxSize          int
 	GSOMaxSegments      int
 	AdmissionLimitBytes int
@@ -37,10 +37,7 @@ type tunAQMActualState struct {
 	TxQueueLen         int
 	RootKind           string
 	LeafKind           string
-	Limit              int
-	FlowLimit          int
-	Quantum            int
-	InitialQuantum     int
+	LimitBytes         int
 	GSOMaxSize         int
 	GSOMaxSegments     int
 	QueueLength        int
@@ -200,7 +197,7 @@ func validateTUNAQMTarget(target tunAQMTargetState) error {
 		return errors.New("TUN AQM target rate must be finite and positive")
 	}
 	if target.BurstBytes <= 0 || target.TxQueueLen <= 0 ||
-		target.MTU <= 0 || target.QueueLimit <= 0 ||
+		target.MTU <= 0 || target.QueueLimitBytes <= 0 ||
 		target.GSOMaxSize <= 0 || target.GSOMaxSegments <= 0 ||
 		target.AdmissionLimitBytes <= 0 {
 		return errors.New("TUN AQM burst, queue, GSO, and engine-admission targets must be positive")
@@ -218,8 +215,8 @@ func heldTUNAQMTarget(
 		RateBytesPerSecond:  desired.RateBytesPerSecond,
 		BurstBytes:          actual.BurstBytes,
 		TxQueueLen:          actual.TxQueueLen,
-		MTU:                 actual.Quantum,
-		QueueLimit:          actual.Limit,
+		MTU:                 desired.MTU,
+		QueueLimitBytes:     actual.LimitBytes,
 		GSOMaxSize:          actual.GSOMaxSize,
 		GSOMaxSegments:      actual.GSOMaxSegments,
 		AdmissionLimitBytes: actualAdmissionLimitBytes,
@@ -329,10 +326,8 @@ func validateDeferredTUNAQMReadback(
 		return validateTUNAQMReadback(target, actual)
 	}
 	if actual.RootKind != "htb" ||
-		actual.LeafKind != "fq" ||
-		actual.BurstBytes != target.BurstBytes ||
-		actual.Quantum != target.MTU ||
-		actual.InitialQuantum != target.MTU {
+		actual.LeafKind != "bfifo" ||
+		actual.BurstBytes != target.BurstBytes {
 		return errors.New("TUN AQM non-deferred readback fields do not match target")
 	}
 	if apply.RingSizeDeferred {
@@ -344,12 +339,10 @@ func validateDeferredTUNAQMReadback(
 		return errors.New("TUN AQM ring-size readback does not match target")
 	}
 	if apply.QueueLimitDeferred {
-		if actual.Limit < target.QueueLimit ||
-			actual.FlowLimit < target.QueueLimit {
+		if actual.LimitBytes < target.QueueLimitBytes {
 			return errors.New("TUN AQM queue-limit deferral has no safe installed superset")
 		}
-	} else if actual.Limit != target.QueueLimit ||
-		actual.FlowLimit != target.QueueLimit {
+	} else if actual.LimitBytes != target.QueueLimitBytes {
 		return errors.New("TUN AQM queue-limit readback does not match target")
 	}
 	if apply.GSOLimitsDeferred {
@@ -388,9 +381,8 @@ func (r *tunAQMReconciler) MetricsSnapshot() *metrics.TUNAQMSnapshot {
 		ActualTxQueueLen:          snapshot.Actual.TxQueueLen,
 		TargetEpoch:               snapshot.Target.Epoch,
 		ActualEpoch:               snapshot.Actual.Epoch,
-		TargetQueueLimitPackets:   snapshot.Target.QueueLimit,
-		ActualQueueLimitPackets:   snapshot.Actual.Limit,
-		ActualFlowLimitPackets:    snapshot.Actual.FlowLimit,
+		TargetQueueLimitBytes:     snapshot.Target.QueueLimitBytes,
+		ActualQueueLimitBytes:     snapshot.Actual.LimitBytes,
 		TargetGSOMaxSizeBytes:     snapshot.Target.GSOMaxSize,
 		ActualGSOMaxSizeBytes:     snapshot.Actual.GSOMaxSize,
 		TargetGSOMaxSegments:      snapshot.Target.GSOMaxSegments,
@@ -416,21 +408,18 @@ func validateTUNAQMReadback(target tunAQMTargetState, actual tunAQMActualState) 
 		return fmt.Errorf("TUN AQM tx queue length readback %d, want %d",
 			actual.TxQueueLen, target.TxQueueLen)
 	}
-	if actual.RootKind != "htb" || actual.LeafKind != "fq" {
-		return fmt.Errorf("TUN AQM qdisc readback root=%q leaf=%q, want htb/fq",
+	if actual.RootKind != "htb" || actual.LeafKind != "bfifo" {
+		return fmt.Errorf("TUN AQM qdisc readback root=%q leaf=%q, want htb/bfifo",
 			actual.RootKind, actual.LeafKind)
 	}
 	if actual.BurstBytes != target.BurstBytes {
 		return fmt.Errorf("TUN AQM HTB burst readback %d bytes, want %d",
 			actual.BurstBytes, target.BurstBytes)
 	}
-	if actual.Limit != target.QueueLimit ||
-		actual.FlowLimit != target.QueueLimit ||
-		actual.Quantum != target.MTU ||
-		actual.InitialQuantum != target.MTU {
+	if actual.LimitBytes != target.QueueLimitBytes {
 		return fmt.Errorf(
-			"TUN AQM fq readback limit=%d flow_limit=%d quantum=%d initial_quantum=%d",
-			actual.Limit, actual.FlowLimit, actual.Quantum, actual.InitialQuantum,
+			"TUN AQM bfifo readback limit=%d bytes, want %d",
+			actual.LimitBytes, target.QueueLimitBytes,
 		)
 	}
 	if actual.GSOMaxSize != target.GSOMaxSize ||
@@ -461,9 +450,72 @@ type engineOutboundBounds struct {
 
 type tunAQMQueueGeometry struct {
 	RingSlots          int
-	FQLimit            int
+	LeafLimitBytes     int
 	HTBBurstBytes      int
 	MaximumServiceTime time.Duration
+}
+
+type tunIngressPressureCounters struct {
+	ObservedAt               time.Time
+	TUNBytes                 uint64
+	AdmissionWaitNanoseconds uint64
+}
+
+type tunIngressPressureDelta struct {
+	Interval              time.Duration
+	TUNBytes              uint64
+	AdmissionWaitDuration time.Duration
+}
+
+func deriveTUNIngressPressureDelta(
+	previous tunIngressPressureCounters,
+	current tunIngressPressureCounters,
+) (tunIngressPressureDelta, error) {
+	if previous.ObservedAt.IsZero() || current.ObservedAt.IsZero() ||
+		!current.ObservedAt.After(previous.ObservedAt) {
+		return tunIngressPressureDelta{}, errors.New(
+			"TUN ingress pressure observation time must advance",
+		)
+	}
+	if current.TUNBytes < previous.TUNBytes ||
+		current.AdmissionWaitNanoseconds < previous.AdmissionWaitNanoseconds {
+		return tunIngressPressureDelta{}, errors.New(
+			"TUN ingress pressure counters moved backward",
+		)
+	}
+	waitNanoseconds :=
+		current.AdmissionWaitNanoseconds - previous.AdmissionWaitNanoseconds
+	if waitNanoseconds > uint64(math.MaxInt64) {
+		return tunIngressPressureDelta{}, errors.New(
+			"TUN ingress admission-wait delta overflows duration",
+		)
+	}
+	return tunIngressPressureDelta{
+		Interval:              current.ObservedAt.Sub(previous.ObservedAt),
+		TUNBytes:              current.TUNBytes - previous.TUNBytes,
+		AdmissionWaitDuration: time.Duration(waitNanoseconds),
+	}, nil
+}
+
+const (
+	tcSizeKibibyte                  = 1024
+	tcSizeKibibytePrintWindow       = 16
+	tunRingImplementationGuardSlots = 1
+)
+
+func exactTCHTBBurstBytes(sizeBytes int) (int, error) {
+	remainder := sizeBytes % tcSizeKibibyte
+	increment := 0
+	switch {
+	case remainder > 0 && remainder < tcSizeKibibytePrintWindow:
+		increment = tcSizeKibibytePrintWindow - remainder
+	case remainder > tcSizeKibibyte-tcSizeKibibytePrintWindow:
+		increment = tcSizeKibibyte - remainder
+	}
+	if sizeBytes > math.MaxInt-increment {
+		return 0, errors.New("TUN AQM HTB burst normalization overflows int")
+	}
+	return sizeBytes + increment, nil
 }
 
 func deriveEngineOutboundBounds(
@@ -533,18 +585,23 @@ func deriveTUNAQMQueueGeometry(
 	aggregateRateBytesPerSecond float64,
 	admissionLimitBytes int,
 	peerCount int,
-	deviceBatchSize int,
 	gsoMaxSizeBytes int,
+	maximumBatchServiceTime time.Duration,
+	currentPacketBytes int,
+	maximumPacketBytes int,
 ) (tunAQMQueueGeometry, error) {
 	if math.IsNaN(aggregateRateBytesPerSecond) ||
 		math.IsInf(aggregateRateBytesPerSecond, 0) ||
 		aggregateRateBytesPerSecond <= 0 ||
 		admissionLimitBytes <= 0 ||
 		peerCount <= 0 ||
-		deviceBatchSize <= 0 ||
-		gsoMaxSizeBytes <= 0 {
+		gsoMaxSizeBytes <= 0 ||
+		maximumBatchServiceTime <= 0 ||
+		currentPacketBytes <= 0 ||
+		maximumPacketBytes < currentPacketBytes ||
+		maximumPacketBytes <= 0 {
 		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM rate, admission limit, peer count, device batch size, and GSO maximum must be positive",
+			"TUN AQM rate, admission limit, peer count, GSO maximum, batch service time, and packet sizes must be positive and maximum packet size must cover current",
 		)
 	}
 	maxInt := int(^uint(0) >> 1)
@@ -561,41 +618,56 @@ func deriveTUNAQMQueueGeometry(
 	}
 	serviceSlots := (windowBytes + minimumInnerPacketBytes - 1) /
 		minimumInnerPacketBytes
-	if gsoMaxSizeBytes > maxInt-(minimumInnerPacketBytes-1) {
+	htbBurstBytes, err := exactTCHTBBurstBytes(gsoMaxSizeBytes)
+	if err != nil {
+		return tunAQMQueueGeometry{}, err
+	}
+	arrivalBytesFloat := aggregateRateBytesPerSecond *
+		maximumBatchServiceTime.Seconds()
+	if arrivalBytesFloat > float64(maxInt) {
 		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM direct-burst slot rounding overflows int",
+			"TUN AQM batch-service arrivals overflow int",
 		)
 	}
-	directBurstSlots := (gsoMaxSizeBytes + minimumInnerPacketBytes - 1) /
-		minimumInnerPacketBytes
-	if directBurstSlots < deviceBatchSize {
-		directBurstSlots = deviceBatchSize
-	}
-	if serviceSlots > maxInt-directBurstSlots {
+	arrivalBytes := int(math.Ceil(arrivalBytesFloat))
+	if arrivalBytes > maxInt-htbBurstBytes {
 		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM guarded ptr-ring slot count overflows int",
+			"TUN AQM transient handoff byte bound overflows int",
 		)
 	}
-	ringSlots := serviceSlots + directBurstSlots
+	handoffBytes := arrivalBytes + htbBurstBytes
+	if handoffBytes > maxInt-(currentPacketBytes-1) {
+		return tunAQMQueueGeometry{}, errors.New(
+			"TUN AQM transient handoff slot rounding overflows int",
+		)
+	}
+	handoffSlots := (handoffBytes + currentPacketBytes - 1) /
+		currentPacketBytes
+	if handoffSlots > maxInt-tunRingImplementationGuardSlots {
+		return tunAQMQueueGeometry{}, errors.New(
+			"TUN AQM ptr-ring implementation guard overflows int",
+		)
+	}
+	ringSlots := handoffSlots + tunRingImplementationGuardSlots
 	if uint64(ringSlots) > uint64(^uint32(0)) {
 		return tunAQMQueueGeometry{}, errors.New(
 			"TUN AQM ptr-ring slot count overflows Linux tx_queue_len",
 		)
 	}
-	if ringSlots > maxInt/minimumInnerPacketBytes ||
+	if ringSlots > maxInt/maximumPacketBytes ||
 		serviceSlots > maxInt/minimumInnerPacketBytes {
 		return tunAQMQueueGeometry{}, errors.New(
 			"TUN AQM total service window overflows int",
 		)
 	}
-	ringWindowBytes := ringSlots * minimumInnerPacketBytes
-	fqWindowBytes := serviceSlots * minimumInnerPacketBytes
-	if ringWindowBytes > maxInt-fqWindowBytes {
+	ringWindowBytes := ringSlots * maximumPacketBytes
+	leafWindowBytes := serviceSlots * minimumInnerPacketBytes
+	if ringWindowBytes > maxInt-leafWindowBytes {
 		return tunAQMQueueGeometry{}, errors.New(
 			"TUN AQM total service window overflows int",
 		)
 	}
-	totalWindowBytes := ringWindowBytes + fqWindowBytes
+	totalWindowBytes := ringWindowBytes + leafWindowBytes
 	serviceNanoseconds := float64(totalWindowBytes) /
 		aggregateRateBytesPerSecond *
 		float64(time.Second)
@@ -612,8 +684,8 @@ func deriveTUNAQMQueueGeometry(
 	}
 	return tunAQMQueueGeometry{
 		RingSlots:          ringSlots,
-		FQLimit:            serviceSlots,
-		HTBBurstBytes:      gsoMaxSizeBytes,
+		LeafLimitBytes:     leafWindowBytes,
+		HTBBurstBytes:      htbBurstBytes,
 		MaximumServiceTime: maximumServiceTime,
 	}, nil
 }

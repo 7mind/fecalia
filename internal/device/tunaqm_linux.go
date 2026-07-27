@@ -90,21 +90,15 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	current, readErr := k.Read()
 	topologyReady := readErr == nil &&
 		current.RootKind == "htb"
-	liveFQ := topologyReady && current.LeafKind == "fq"
-	queueLimit := target.QueueLimit
-	flowLimit := target.QueueLimit
-	if liveFQ &&
-		target.QueueLimit < current.Limit &&
-		current.QueueLength > target.QueueLimit {
-		queueLimit = current.Limit
-		flowLimit = current.FlowLimit
+	liveLeaf := topologyReady && current.LeafKind == "bfifo"
+	queueLimit := target.QueueLimitBytes
+	if liveLeaf &&
+		target.QueueLimitBytes < current.LimitBytes &&
+		current.BacklogBytes > target.QueueLimitBytes {
+		queueLimit = current.LimitBytes
 		result.QueueLimitDeferred = true
 	}
-	leafReady := liveFQ &&
-		current.Limit == queueLimit &&
-		current.FlowLimit == flowLimit &&
-		current.Quantum == target.MTU &&
-		current.InitialQuantum == target.MTU
+	leafReady := liveLeaf && current.LimitBytes == queueLimit
 	if !topologyReady {
 		if readErr == nil &&
 			(current.QueueLength != 0 || current.BacklogBytes != 0) {
@@ -142,7 +136,7 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 
 	if !leafReady {
 		action := "add"
-		if liveFQ {
+		if liveLeaf {
 			action = "change"
 		} else if topologyReady && current.LeafKind != "" {
 			if current.QueueLength != 0 || current.BacklogBytes != 0 {
@@ -158,11 +152,8 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 		}
 		if err := k.run(
 			"qdisc", action, "dev", k.name,
-			"parent", "1:1", "handle", "10:", "fq",
+			"parent", "1:1", "handle", "10:", "bfifo",
 			"limit", strconv.Itoa(queueLimit),
-			"flow_limit", strconv.Itoa(flowLimit),
-			"quantum", strconv.Itoa(target.MTU),
-			"initial_quantum", strconv.Itoa(target.MTU),
 		); err != nil {
 			return result, err
 		}
@@ -223,10 +214,7 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		Backlog int    `json:"backlog"`
 		QLen    int    `json:"qlen"`
 		Options struct {
-			Limit          int `json:"limit"`
-			FlowLimit      int `json:"flow_limit"`
-			Quantum        int `json:"quantum"`
-			InitialQuantum int `json:"initial_quantum"`
+			LimitBytes int `json:"limit"`
 		} `json:"options"`
 	}
 	if err := json.Unmarshal(rawQdisc, &qdiscs); err != nil {
@@ -237,12 +225,7 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 	var drops uint64
 	var backlog int
 	var queueLength int
-	var leafOptions struct {
-		Limit          int
-		FlowLimit      int
-		Quantum        int
-		InitialQuantum int
-	}
+	var leafLimitBytes int
 	for _, qdisc := range qdiscs {
 		if qdisc.Drops > drops {
 			drops = qdisc.Drops
@@ -258,10 +241,7 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		}
 		if qdisc.Parent == "1:1" {
 			leafKind = qdisc.Kind
-			leafOptions.Limit = qdisc.Options.Limit
-			leafOptions.FlowLimit = qdisc.Options.FlowLimit
-			leafOptions.Quantum = qdisc.Options.Quantum
-			leafOptions.InitialQuantum = qdisc.Options.InitialQuantum
+			leafLimitBytes = qdisc.Options.LimitBytes
 		}
 	}
 	rawClass, err := k.output("class", "show", "dev", k.name)
@@ -282,10 +262,7 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		TxQueueLen:         txQueueLen,
 		RootKind:           rootKind,
 		LeafKind:           leafKind,
-		Limit:              leafOptions.Limit,
-		FlowLimit:          leafOptions.FlowLimit,
-		Quantum:            leafOptions.Quantum,
-		InitialQuantum:     leafOptions.InitialQuantum,
+		LimitBytes:         leafLimitBytes,
 		GSOMaxSize:         int(gsoLimits.MaxSize),
 		GSOMaxSegments:     int(gsoLimits.MaxSegments),
 		QueueLength:        queueLength,
@@ -481,8 +458,10 @@ func (t *Tunnel) startTUNAQM() error {
 		initial.IngressRateBytesPerSecond*float64(peerCount),
 		bounds.AdmissionLimitBytes,
 		peerCount,
-		t.dev.BatchSize(),
 		bounds.GSOMaxSize,
+		bounds.MaxBatchServiceTime,
+		mtu,
+		maximumMTU,
 	)
 	if err != nil {
 		return err
@@ -492,7 +471,7 @@ func (t *Tunnel) startTUNAQM() error {
 		BurstBytes:          queueGeometry.HTBBurstBytes,
 		TxQueueLen:          queueGeometry.RingSlots,
 		MTU:                 mtu,
-		QueueLimit:          queueGeometry.FQLimit,
+		QueueLimitBytes:     queueGeometry.LeafLimitBytes,
 		GSOMaxSize:          bounds.GSOMaxSize,
 		GSOMaxSegments:      bounds.GSOMaxSegments,
 		AdmissionLimitBytes: bounds.AdmissionLimitBytes,
@@ -531,6 +510,12 @@ func (t *Tunnel) startTUNAQM() error {
 		"interface", t.name,
 		"rate_bytes_per_second", target.RateBytesPerSecond,
 		"tx_queue_len", target.TxQueueLen)
+	initialOutboundStats := t.dev.OutboundStats()
+	pressureCounters := tunIngressPressureCounters{
+		ObservedAt:               time.Now(),
+		TUNBytes:                 initialOutboundStats.TUNBytes,
+		AdmissionWaitNanoseconds: initialOutboundStats.AdmissionWaitNanoseconds,
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -560,8 +545,10 @@ func (t *Tunnel) startTUNAQM() error {
 					target.RateBytesPerSecond,
 					bounds.AdmissionLimitBytes,
 					peerCount,
-					t.dev.BatchSize(),
 					bounds.GSOMaxSize,
+					bounds.MaxBatchServiceTime,
+					target.MTU,
+					maximumMTU,
 				)
 				if err != nil {
 					t.log.Error("TUN AQM queue-geometry derivation failed", "error", err.Error())
@@ -569,7 +556,7 @@ func (t *Tunnel) startTUNAQM() error {
 				}
 				target.BurstBytes = queueGeometry.HTBBurstBytes
 				target.TxQueueLen = queueGeometry.RingSlots
-				target.QueueLimit = queueGeometry.FQLimit
+				target.QueueLimitBytes = queueGeometry.LeafLimitBytes
 				target.GSOMaxSize = bounds.GSOMaxSize
 				target.GSOMaxSegments = bounds.GSOMaxSegments
 				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes
@@ -585,6 +572,39 @@ func (t *Tunnel) startTUNAQM() error {
 					snapshot.RateFresh,
 				); err != nil {
 					t.log.Error("TUN AQM readback acknowledgment failed", "error", err.Error())
+				}
+				outboundStats := t.dev.OutboundStats()
+				currentPressureCounters := tunIngressPressureCounters{
+					ObservedAt:               time.Now(),
+					TUNBytes:                 outboundStats.TUNBytes,
+					AdmissionWaitNanoseconds: outboundStats.AdmissionWaitNanoseconds,
+				}
+				pressureDelta, pressureErr := deriveTUNIngressPressureDelta(
+					pressureCounters,
+					currentPressureCounters,
+				)
+				pressureCounters = currentPressureCounters
+				if pressureErr != nil {
+					t.log.Error(
+						"TUN ingress pressure derivation failed",
+						"error",
+						pressureErr.Error(),
+					)
+					continue
+				}
+				if err := t.bind.ObserveTUNIngressPressure(
+					pressureDelta.AdmissionWaitDuration,
+					pressureDelta.TUNBytes,
+					pressureDelta.Interval,
+					snapshot.Actual.RingPending,
+					target.Epoch,
+					currentPressureCounters.ObservedAt,
+				); err != nil {
+					t.log.Error(
+						"TUN ingress pressure observation failed",
+						"error",
+						err.Error(),
+					)
 				}
 			}
 		}

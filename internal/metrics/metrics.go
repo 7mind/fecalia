@@ -627,9 +627,8 @@ type TUNAQMSnapshot struct {
 	ActualTxQueueLen          int
 	TargetEpoch               uint64
 	ActualEpoch               uint64
-	TargetQueueLimitPackets   int
-	ActualQueueLimitPackets   int
-	ActualFlowLimitPackets    int
+	TargetQueueLimitBytes     int
+	ActualQueueLimitBytes     int
 	TargetGSOMaxSizeBytes     int
 	ActualGSOMaxSizeBytes     int
 	TargetGSOMaxSegments      int
@@ -751,7 +750,6 @@ type collector struct {
 	tunAQMActualEpoch          *prometheus.Desc
 	tunAQMTargetLimit          *prometheus.Desc
 	tunAQMActualLimit          *prometheus.Desc
-	tunAQMActualFlow           *prometheus.Desc
 	tunAQMTargetGSOMaxSize     *prometheus.Desc
 	tunAQMActualGSOMaxSize     *prometheus.Desc
 	tunAQMTargetGSOMaxSegments *prometheus.Desc
@@ -954,6 +952,18 @@ func NewCollector(src Source) prometheus.Collector {
 			makeCongestionMetric("congestion_installed_fresh", "Whether the installed TUN ingress readback matches the acknowledged controller epoch and target (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
 				return boolValue(s.InstalledIngress.Fresh)
 			}),
+			makeCongestionMetric("congestion_ingress_service_headroom_ratio", "Ingress-only local service headroom multiplying the outer/inner overhead-derived target.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.IngressServiceHeadroom
+			}),
+			makeCongestionMetric("congestion_ingress_pressure_ratio", "Latest device admission-wait duration divided by its observation interval.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.IngressPressureRatio
+			}),
+			makeCongestionMetric("congestion_ingress_pressure", "Whether admission-wait saturation or a pending TUN ring signaled local ingress pressure (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return boolValue(s.IngressPressure)
+			}),
+			makeCongestionMetric("congestion_ingress_headroom_changes", "Ingress-only service-headroom changes made in the current active-carrier epoch.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return float64(s.IngressHeadroomChanges)
+			}),
 			makeCongestionMetric("congestion_delivered_bytes_per_second", "Delivered outer wire rate derived from successive emission-counter observations.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
 				return s.DeliveredRateBytesPerSecond
 			}),
@@ -1078,26 +1088,25 @@ func NewCollector(src Source) prometheus.Collector {
 		tunAQMActualRate:           desc(tunAQMSubsystem, "actual_rate_bytes_per_second", "Kernel-read-back HTB rate on the TUN interface.", nil),
 		tunAQMTargetHTBBurst:       desc(tunAQMSubsystem, "target_htb_burst_bytes", "Requested HTB direct/dequeue burst guard in bytes.", nil),
 		tunAQMActualHTBBurst:       desc(tunAQMSubsystem, "actual_htb_burst_bytes", "Kernel-read-back HTB direct/dequeue burst guard in bytes.", nil),
-		tunAQMTargetQueue:          desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN ptr-ring slot capacity derived from the exact admitted service window.", nil),
+		tunAQMTargetQueue:          desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN ptr-ring slot capacity for transient batched handoff.", nil),
 		tunAQMActualQueue:          desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN ptr-ring slot capacity.", nil),
 		tunAQMTargetEpoch:          desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
 		tunAQMActualEpoch:          desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
-		tunAQMTargetLimit:          desc(tunAQMSubsystem, "target_queue_limit_packets", "Requested bounded fair-queue packet limit derived from the admitted service backlog.", nil),
-		tunAQMActualLimit:          desc(tunAQMSubsystem, "actual_queue_limit_packets", "Kernel-read-back bounded fair-queue packet limit.", nil),
-		tunAQMActualFlow:           desc(tunAQMSubsystem, "actual_flow_limit_packets", "Kernel-read-back per-flow packet limit on the bounded fair queue.", nil),
+		tunAQMTargetLimit:          desc(tunAQMSubsystem, "target_queue_limit_bytes", "Requested byte-bounded TUN leaf limit derived from the admitted service backlog.", nil),
+		tunAQMActualLimit:          desc(tunAQMSubsystem, "actual_queue_limit_bytes", "Kernel-read-back byte-bounded TUN leaf limit.", nil),
 		tunAQMTargetGSOMaxSize:     desc(tunAQMSubsystem, "target_gso_max_size_bytes", "Requested pre-TUN maximum GSO container size derived from the local-delay budget.", nil),
 		tunAQMActualGSOMaxSize:     desc(tunAQMSubsystem, "actual_gso_max_size_bytes", "Kernel-read-back pre-TUN maximum GSO container size.", nil),
 		tunAQMTargetGSOMaxSegments: desc(tunAQMSubsystem, "target_gso_max_segments", "Requested pre-TUN maximum GSO segment count derived from the local-delay budget.", nil),
 		tunAQMActualGSOMaxSegments: desc(tunAQMSubsystem, "actual_gso_max_segments", "Kernel-read-back pre-TUN maximum GSO segment count.", nil),
 		tunAQMTargetAdmissionLimit: desc(tunAQMSubsystem, "target_engine_admission_limit_bytes", "Requested per-peer exact-wire-byte engine backlog consistent with one bounded whole GSO batch.", nil),
 		tunAQMActualAdmissionLimit: desc(tunAQMSubsystem, "actual_engine_admission_limit_bytes", "Applied per-peer exact-wire-byte engine backlog limit.", nil),
-		tunAQMActualFresh:          desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, bounded-fq parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
+		tunAQMActualFresh:          desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, byte-bounded leaf, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
 		tunAQMRateFresh:            desc(tunAQMSubsystem, "rate_fresh", "Whether the exact requested HTB rate and controller epoch matched even when a capacity shrink remained safely deferred (1=yes).", nil),
 		tunAQMActualQueueLength:    desc(tunAQMSubsystem, "actual_queue_length_packets", "Kernel-read-back live packet count in the TUN qdisc tree.", nil),
 		tunAQMActualBacklog:        desc(tunAQMSubsystem, "actual_backlog_bytes", "Kernel-read-back live byte backlog in the TUN qdisc tree.", nil),
 		tunAQMActualRingPending:    desc(tunAQMSubsystem, "actual_ring_pending", "Whether the TUN ptr-ring has at least one packet pending at kernel readback (1=yes).", nil),
 		tunAQMActualDrops:          desc(tunAQMSubsystem, "drops_total", "Kernel-read-back cumulative drops in the TUN root qdisc.", nil),
-		tunAQMQueueLimitDeferred:   desc(tunAQMSubsystem, "queue_limit_deferred", "Whether a queue-limit shrink awaits a packet count no greater than the requested bound (1=yes).", nil),
+		tunAQMQueueLimitDeferred:   desc(tunAQMSubsystem, "queue_limit_deferred", "Whether a queue-limit shrink awaits byte backlog no greater than the requested bound (1=yes).", nil),
 		tunAQMRingSizeDeferred:     desc(tunAQMSubsystem, "ring_size_deferred", "Whether a TUN ptr-ring shrink awaits an empty driver ring (1=yes).", nil),
 		tunAQMGSOLimitsDeferred:    desc(tunAQMSubsystem, "gso_limits_deferred", "Whether a GSO-limit shrink awaits an empty TUN qdisc backlog (1=yes).", nil),
 		tunAQMAdmissionDeferred:    desc(tunAQMSubsystem, "engine_admission_limit_deferred", "Whether an engine admission shrink awaits every peer's retained bytes fitting the requested bound (1=yes).", nil),
@@ -1198,7 +1207,6 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMActualEpoch
 	ch <- c.tunAQMTargetLimit
 	ch <- c.tunAQMActualLimit
-	ch <- c.tunAQMActualFlow
 	ch <- c.tunAQMTargetGSOMaxSize
 	ch <- c.tunAQMActualGSOMaxSize
 	ch <- c.tunAQMTargetGSOMaxSegments
@@ -1364,9 +1372,8 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueue, prometheus.GaugeValue, float64(snapshot.ActualTxQueueLen))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetEpoch, prometheus.GaugeValue, float64(snapshot.TargetEpoch))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualEpoch, prometheus.GaugeValue, float64(snapshot.ActualEpoch))
-			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetLimit, prometheus.GaugeValue, float64(snapshot.TargetQueueLimitPackets))
-			ch <- prometheus.MustNewConstMetric(c.tunAQMActualLimit, prometheus.GaugeValue, float64(snapshot.ActualQueueLimitPackets))
-			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFlow, prometheus.GaugeValue, float64(snapshot.ActualFlowLimitPackets))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetLimit, prometheus.GaugeValue, float64(snapshot.TargetQueueLimitBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualLimit, prometheus.GaugeValue, float64(snapshot.ActualQueueLimitBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetGSOMaxSize, prometheus.GaugeValue, float64(snapshot.TargetGSOMaxSizeBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualGSOMaxSize, prometheus.GaugeValue, float64(snapshot.ActualGSOMaxSizeBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetGSOMaxSegments, prometheus.GaugeValue, float64(snapshot.TargetGSOMaxSegments))

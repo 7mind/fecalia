@@ -44,7 +44,7 @@ func TestLinuxTUNAQMReconciliationContract(t *testing.T) {
 	testTUNAQMReconciliationContract(t, kernel)
 }
 
-func TestLinuxTUNAQMNativeTUNBoundedReaderStallContract(t *testing.T) {
+func TestLinuxTUNAQMNativeTUNFullMTUHandoffContract(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root to create a temporary TUN")
 	}
@@ -96,8 +96,10 @@ func TestLinuxTUNAQMNativeTUNBoundedReaderStallContract(t *testing.T) {
 		rateBytesPerSecond,
 		bounds.AdmissionLimitBytes,
 		1,
-		tunDevice.BatchSize(),
 		bounds.GSOMaxSize,
+		bounds.MaxBatchServiceTime,
+		mtu,
+		mtu,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +116,7 @@ func TestLinuxTUNAQMNativeTUNBoundedReaderStallContract(t *testing.T) {
 		BurstBytes:          geometry.HTBBurstBytes,
 		TxQueueLen:          geometry.RingSlots,
 		MTU:                 mtu,
-		QueueLimit:          geometry.FQLimit,
+		QueueLimitBytes:     geometry.LeafLimitBytes,
 		GSOMaxSize:          bounds.GSOMaxSize,
 		GSOMaxSegments:      bounds.GSOMaxSegments,
 		AdmissionLimitBytes: bounds.AdmissionLimitBytes,
@@ -127,22 +129,22 @@ func TestLinuxTUNAQMNativeTUNBoundedReaderStallContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if actual.TxQueueLen != geometry.RingSlots ||
-		actual.Limit != geometry.FQLimit ||
+		actual.LimitBytes != geometry.LeafLimitBytes ||
 		actual.BurstBytes != geometry.HTBBurstBytes {
 		t.Fatalf(
-			"native TUN queue readback ring/fq/burst = %d/%d/%d, want %d/%d/%d",
+			"native TUN queue readback ring/leaf-bytes/burst = %d/%d/%d, want %d/%d/%d",
 			actual.TxQueueLen,
-			actual.Limit,
+			actual.LimitBytes,
 			actual.BurstBytes,
 			geometry.RingSlots,
-			geometry.FQLimit,
+			geometry.LeafLimitBytes,
 			geometry.HTBBurstBytes,
 		)
 	}
 	t.Logf(
-		"geometry ring=%d fq=%d htb_burst=%d maximum_service_time=%s",
+		"geometry ring=%d leaf_bytes=%d htb_burst=%d maximum_service_time=%s",
 		geometry.RingSlots,
-		geometry.FQLimit,
+		geometry.LeafLimitBytes,
 		geometry.HTBBurstBytes,
 		geometry.MaximumServiceTime,
 	)
@@ -156,27 +158,26 @@ func TestLinuxTUNAQMNativeTUNBoundedReaderStallContract(t *testing.T) {
 		buffers[index] = make([]byte, linuxDefaultGSOMaxSize)
 	}
 
-	boundedStallPackets := geometry.FQLimit + tunDevice.BatchSize()
-	writeNativeTUNPackets(t, remote, boundedStallPackets, 1)
-	time.Sleep(geometry.MaximumServiceTime)
+	fullMTULeafPackets := geometry.LeafLimitBytes / mtu
+	boundedHandoffPackets :=
+		geometry.RingSlots - tunRingImplementationGuardSlots
+	writeNativeTUNPackets(t, remote, boundedHandoffPackets, 1, mtu-28)
+	time.Sleep(bounds.MaxBatchServiceTime)
 	actual, err = kernel.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
 	driverDropsAfterBatch := readLinkTXDrops(t, ip, name)
-	if driverDropsAfterBatch != driverDropsBefore {
+	if driverDropsAfterBatch != driverDropsBefore ||
+		actual.Drops != qdiscDropsBefore {
 		t.Fatalf(
-			"bounded B+C ownership stall plus full %d-entry native TUN batch driver drops = %d -> %d",
-			tunDevice.BatchSize(),
+			"bounded full-MTU transient handoff link/qdisc drops = %d->%d/%d->%d, backlog=%d qlen=%d",
 			driverDropsBefore,
 			driverDropsAfterBatch,
-		)
-	}
-	if actual.Drops != qdiscDropsBefore {
-		t.Fatalf(
-			"bounded B+C ownership stall plus full native TUN batch qdisc drops = %d, want %d",
-			actual.Drops,
 			qdiscDropsBefore,
+			actual.Drops,
+			actual.BacklogBytes,
+			actual.QueueLength,
 		)
 	}
 	t.Logf(
@@ -206,93 +207,35 @@ func TestLinuxTUNAQMNativeTUNBoundedReaderStallContract(t *testing.T) {
 	}
 	driverDropsBeforeOverload := readLinkTXDrops(t, ip, name)
 	qdiscDropsBeforeOverload := actual.Drops
-	directBurstSlots := geometry.RingSlots - geometry.FQLimit
-	immediateOverloadPackets := directBurstSlots +
-		geometry.FQLimit +
+	overloadPackets := geometry.RingSlots +
+		fullMTULeafPackets +
 		tunDevice.BatchSize()
-	writeNativeTUNPackets(t, remote, immediateOverloadPackets, 64)
+	writeNativeTUNPackets(t, remote, overloadPackets, 64, mtu-28)
 	actual, err = kernel.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
 	driverDropsAfterOverload := readLinkTXDrops(t, ip, name)
-	if driverDropsAfterOverload != driverDropsBeforeOverload {
-		t.Fatalf(
-			"managed overload driver/qdisc drops = %d -> %d / %d -> %d",
-			driverDropsBeforeOverload,
-			driverDropsAfterOverload,
-			qdiscDropsBeforeOverload,
-			actual.Drops,
-		)
-	}
-	if actual.Drops <= qdiscDropsBeforeOverload {
+	if driverDropsAfterOverload <= driverDropsBeforeOverload &&
+		actual.Drops <= qdiscDropsBeforeOverload {
 		rawQdisc, readbackErr := exec.Command(
 			kernel.tc, "-j", "-s", "qdisc", "show", "dev", name,
 		).CombinedOutput()
 		t.Fatalf(
-			"managed overload qdisc drops = %d, want greater than %d; detailed readback error=%v output=%s",
-			actual.Drops,
+			"bounded overload had no visible link/qdisc drop: %d->%d/%d->%d; detailed readback error=%v output=%s",
+			driverDropsBeforeOverload,
+			driverDropsAfterOverload,
 			qdiscDropsBeforeOverload,
+			actual.Drops,
 			readbackErr,
 			rawQdisc,
 		)
 	}
 	t.Logf(
-		"immediate_overload driver_drops=%d->%d qdisc_drops=%d->%d",
+		"bounded_overload driver_drops=%d->%d qdisc_drops=%d->%d",
 		driverDropsBeforeOverload,
 		driverDropsAfterOverload,
 		qdiscDropsBeforeOverload,
-		actual.Drops,
-	)
-	if _, err := kernel.Apply(target); err != nil {
-		t.Fatal(err)
-	}
-	actual, err = kernel.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if actual.RateBytesPerSecond != target.RateBytesPerSecond {
-		t.Fatalf(
-			"restored HTB rate = %g B/s, want %g B/s",
-			actual.RateBytesPerSecond,
-			target.RateBytesPerSecond,
-		)
-	}
-	drainNativeTUN(t, tunDevice, kernel, buffers, sizes)
-
-	driverDropsBeforeOverStall := readLinkTXDrops(t, ip, name)
-	connection, err := net.DialUDP("udp4", nil, remote)
-	if err != nil {
-		t.Fatal(err)
-	}
-	overStallDeadline := time.Now().Add(2 * geometry.MaximumServiceTime)
-	for time.Now().Before(overStallDeadline) {
-		if _, err := connection.Write([]byte{1}); err != nil {
-			_ = connection.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := connection.Close(); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(geometry.MaximumServiceTime)
-	driverDropsAfterOverStall := readLinkTXDrops(t, ip, name)
-	if driverDropsAfterOverStall <= driverDropsBeforeOverStall {
-		t.Fatalf(
-			"reader stall beyond %s did not expose the documented ptr-ring overflow boundary: driver drops %d -> %d",
-			geometry.MaximumServiceTime,
-			driverDropsBeforeOverStall,
-			driverDropsAfterOverStall,
-		)
-	}
-	actual, err = kernel.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf(
-		"over_stall driver_drops=%d->%d qdisc_drops=%d",
-		driverDropsBeforeOverStall,
-		driverDropsAfterOverStall,
 		actual.Drops,
 	)
 }
@@ -302,10 +245,16 @@ func writeNativeTUNPackets(
 	remote *net.UDPAddr,
 	packetCount int,
 	workers int,
+	payloadBytes int,
 ) {
 	t.Helper()
-	if packetCount <= 0 || workers <= 0 {
-		t.Fatalf("packet count and workers must be positive: %d/%d", packetCount, workers)
+	if packetCount <= 0 || workers <= 0 || payloadBytes <= 0 {
+		t.Fatalf(
+			"packet count, workers, and payload bytes must be positive: %d/%d/%d",
+			packetCount,
+			workers,
+			payloadBytes,
+		)
 	}
 	start := make(chan struct{})
 	errs := make(chan error, workers)
@@ -335,7 +284,7 @@ func writeNativeTUNPackets(
 				return
 			}
 			const maximumSendBatch = 1_024
-			payload := []byte{1}
+			payload := make([]byte, payloadBytes)
 			messages := make([]ipv4.Message, count)
 			for index := range messages {
 				messages[index] = ipv4.Message{
