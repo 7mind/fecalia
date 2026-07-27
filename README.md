@@ -237,8 +237,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   starts with 5% service headroom and decreases independently of the outer
   capacity target only when a loaded interval reports either engine-admission
   wait pressure or ptr-ring occupancy; idle/opposite-direction ring activity
-  does not reduce it. Three loaded, clean, settled intervals recover it
-  additively. Mutable `bfifo` limits change in place, preserving the live queue
+  does not reduce it. The first loaded local-pressure decrease may preempt an
+  unrelated outer retarget, but another decrease waits for its own exact
+  ingress readback and one-second-or-one-SRTT settlement. Three loaded, clean,
+  settled intervals recover it additively. Mutable `bfifo` limits change in
+  place, preserving the live queue
   and counters; a limit shrink waits while byte backlog exceeds the new limit, GSO
   shrink waits for an empty TUN backlog, and engine admission shrink waits
   until every peer's retained bytes fit. Repeated exact readbacks of

@@ -569,11 +569,12 @@ is divided across active peer controllers. Only a loaded interval can mark
 local pressure; it does so when admission wait occupies at least half the
 interval or the ptr ring is pending, then multiplies `h` by `0.85`, with a
 `0.50` floor. Idle/opposite-direction occupancy does not change headroom. A decrease occurs before link drops, then
-waits for exact ingress rate/epoch readback before the same pressure can
-decrease it again. The first loaded local-pressure decrease may preempt
-settlement for an unrelated outer-capacity retarget; the pending exact ingress
-readback prevents that exception from replaying. A stale interval or unchanged
-cumulative counters cannot replay it. Recovery
+waits for exact ingress rate/epoch readback and its own
+`max(1s, active base RTT)` settlement before the same pressure can decrease it
+again. The first loaded local-pressure decrease may preempt settlement for an
+unrelated outer-capacity retarget; the independent pressure acknowledgment and
+settlement state prevents that exception from replaying. A stale interval or
+unchanged cumulative counters cannot replay it. Recovery
 adds `0.01` only after three consecutive loaded, clean, settled intervals;
 idle intervals neither recover nor accumulate a streak.
 

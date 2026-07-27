@@ -484,7 +484,8 @@ as historical exact-byte-shaper evidence.
       not replay the
       decrease. The first loaded local-pressure decrease may preempt settlement
       for an unrelated outer-capacity retarget; repeated pressure must wait for
-      exact ingress rate/epoch readback. Recovery remains settlement-gated.
+      exact ingress rate/epoch readback and its own
+      `max(1s, active base RTT)` settlement. Recovery remains settlement-gated.
       Recovery adds 0.01 only after three consecutive loaded, clean, settled
       intervals. Idle intervals do not recover. A carrier epoch resets
       headroom to 0.95.
