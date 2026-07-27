@@ -522,11 +522,13 @@ Growth reconciles and reads back the larger ptr-ring/`fq` envelope before
 atomically raising every peer's engine admission limit. Shrink atomically
 lowers every peer limit first, then reconciles the smaller downstream envelope.
 When retained bytes defer a shrink, the daemon re-reads and retains the
-previous installed kernel target; it does not acknowledge or apply the smaller
-capacity. The applied per-peer admission readback validates that every peer
-matches the device-wide atomic value and fails fast on divergence. The daemon
-owns this root qdisc, ptr-ring capacity, engine admission, and the link's GSO
-limits while running.
+previous installed kernel capacity while applying the desired HTB rate and
+controller epoch. Metrics retain the desired target, expose the larger applied
+admission and kernel capacity as actual, mark the composite actual stale, and
+acknowledge the exact rate separately. The applied per-peer admission readback
+validates that every peer matches the device-wide atomic value and fails fast
+on divergence. The daemon owns this root qdisc, ptr-ring capacity, engine
+admission, and the link's GSO limits while running.
 
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully

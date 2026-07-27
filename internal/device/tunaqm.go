@@ -125,6 +125,9 @@ func (t *tunAQMTransition) actualAdmissionLimit() int {
 }
 
 func (t *tunAQMTransition) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, error) {
+	if err := validateTUNAQMTarget(target); err != nil {
+		return t.reconciler.Snapshot(), err
+	}
 	actualAdmissionLimit := t.actualAdmissionLimit()
 	switch {
 	case target.AdmissionLimitBytes > actualAdmissionLimit:
@@ -160,13 +163,23 @@ func (t *tunAQMTransition) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 			if installedAdmissionLimit != actualAdmissionLimit {
 				panic("deferred engine outbound admission shrink changed applied limit")
 			}
-			installedTarget := t.reconciler.Snapshot().Target
-			_, err := t.reconciler.Reconcile(installedTarget)
-			t.reconciler.SetAdmissionState(installedAdmissionLimit, true)
+			installedTarget, err := heldTUNAQMTarget(
+				target,
+				t.reconciler.Snapshot().Actual,
+				installedAdmissionLimit,
+			)
 			if err != nil {
 				return t.reconciler.Snapshot(), err
 			}
-			return t.reconciler.Snapshot(), nil
+			_, err = t.reconciler.Reconcile(installedTarget)
+			if err != nil {
+				t.reconciler.SetAdmissionState(installedAdmissionLimit, true)
+				return t.reconciler.Snapshot(), err
+			}
+			return t.reconciler.SetDeferredAdmissionTarget(
+				target,
+				installedAdmissionLimit,
+			), nil
 		}
 		if installedAdmissionLimit != target.AdmissionLimitBytes {
 			panic("engine outbound admission shrink did not install requested limit")
@@ -180,17 +193,49 @@ func (t *tunAQMTransition) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 	}
 }
 
-func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, error) {
+func validateTUNAQMTarget(target tunAQMTargetState) error {
 	if math.IsNaN(target.RateBytesPerSecond) ||
 		math.IsInf(target.RateBytesPerSecond, 0) ||
 		target.RateBytesPerSecond <= 0 {
-		return tunAQMSnapshot{}, errors.New("TUN AQM target rate must be finite and positive")
+		return errors.New("TUN AQM target rate must be finite and positive")
 	}
 	if target.BurstBytes <= 0 || target.TxQueueLen <= 0 ||
 		target.MTU <= 0 || target.QueueLimit <= 0 ||
 		target.GSOMaxSize <= 0 || target.GSOMaxSegments <= 0 ||
 		target.AdmissionLimitBytes <= 0 {
-		return tunAQMSnapshot{}, errors.New("TUN AQM burst, queue, GSO, and engine-admission targets must be positive")
+		return errors.New("TUN AQM burst, queue, GSO, and engine-admission targets must be positive")
+	}
+	return nil
+}
+
+func heldTUNAQMTarget(
+	desired tunAQMTargetState,
+	actual tunAQMActualState,
+	actualAdmissionLimitBytes int,
+) (tunAQMTargetState, error) {
+	held := tunAQMTargetState{
+		Epoch:               desired.Epoch,
+		RateBytesPerSecond:  desired.RateBytesPerSecond,
+		BurstBytes:          actual.BurstBytes,
+		TxQueueLen:          actual.TxQueueLen,
+		MTU:                 actual.Quantum,
+		QueueLimit:          actual.Limit,
+		GSOMaxSize:          actual.GSOMaxSize,
+		GSOMaxSegments:      actual.GSOMaxSegments,
+		AdmissionLimitBytes: actualAdmissionLimitBytes,
+	}
+	if err := validateTUNAQMTarget(held); err != nil {
+		return tunAQMTargetState{}, fmt.Errorf(
+			"hold installed TUN AQM capacity during admission shrink: %w",
+			err,
+		)
+	}
+	return held, nil
+}
+
+func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, error) {
+	if err := validateTUNAQMTarget(target); err != nil {
+		return tunAQMSnapshot{}, err
 	}
 
 	r.mu.Lock()
@@ -250,6 +295,28 @@ func (r *tunAQMReconciler) SetAdmissionState(actualLimitBytes int, deferred bool
 	r.snapshot.ActualAdmissionLimitBytes = actualLimitBytes
 	r.snapshot.AdmissionDeferred = deferred
 	r.mu.Unlock()
+}
+
+func (r *tunAQMReconciler) SetDeferredAdmissionTarget(
+	target tunAQMTargetState,
+	actualLimitBytes int,
+) tunAQMSnapshot {
+	if actualLimitBytes <= 0 {
+		panic("engine outbound admission actual limit must be positive")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tolerance := target.RateBytesPerSecond * 0.01
+	if !r.snapshot.RateFresh ||
+		r.snapshot.Actual.Epoch != target.Epoch ||
+		math.Abs(r.snapshot.Actual.RateBytesPerSecond-target.RateBytesPerSecond) > tolerance {
+		panic("deferred engine admission target lacks exact rate and epoch readback")
+	}
+	r.snapshot.Target = target
+	r.snapshot.Actual.Fresh = false
+	r.snapshot.ActualAdmissionLimitBytes = actualLimitBytes
+	r.snapshot.AdmissionDeferred = true
+	return r.snapshot
 }
 
 func validateDeferredTUNAQMReadback(

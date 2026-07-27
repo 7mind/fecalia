@@ -1429,6 +1429,7 @@ func TestCongestionAndTUNAQMExposition(t *testing.T) {
 			RateFresh:                 true,
 			ActualRingPending:         true,
 			RingSizeDeferred:          true,
+			AdmissionLimitDeferred:    true,
 			ActualObservedAt:          time.Unix(1234, 0),
 		},
 	}
@@ -1476,6 +1477,7 @@ func TestCongestionAndTUNAQMExposition(t *testing.T) {
 		`wanbond_tun_aqm_rate_fresh 1`,
 		`wanbond_tun_aqm_actual_ring_pending 1`,
 		`wanbond_tun_aqm_ring_size_deferred 1`,
+		`wanbond_tun_aqm_engine_admission_limit_deferred 1`,
 		`wanbond_tun_aqm_actual_observed_timestamp_seconds 1234`,
 	} {
 		if !strings.Contains(text, want) {

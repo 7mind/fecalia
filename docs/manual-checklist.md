@@ -478,12 +478,14 @@ as historical exact-byte-shaper evidence.
       remain at least the desired limit until qlen fits; GSO shrink waits for
       zero TUN backlog; engine admission shrink waits until every peer's
       retained bytes fit. While that engine shrink remains deferred,
-      `target_engine_admission_limit_bytes` and downstream target/actual
-      capacity must remain at the installed
-      `actual_engine_admission_limit_bytes`; after drain, the engine value must
-      shrink before capacity. On growth, capacity must read back before the
-      engine value rises. All deferred gauges must return to zero after drain,
-      with exact target/actual readback and no new qdisc or link drop.
+      `target_engine_admission_limit_bytes` must show the desired bound,
+      `actual_engine_admission_limit_bytes` and actual downstream capacity must
+      remain at the installed envelope, the desired rate/epoch must apply,
+      `actual_fresh` must be 0, and `rate_fresh` must be 1. After drain, the
+      engine value must shrink before capacity. On growth, capacity must read
+      back before the engine value rises. All deferred gauges must return to
+      zero after drain, with exact target/actual readback and no new qdisc or
+      link drop.
 - [ ] Exercise one native TUN reader stall bounded to the calculated B+C
       ownership window plus a full `Device.BatchSize`: driver and qdisc drops
       must both remain unchanged. With the guarded ring still having room,

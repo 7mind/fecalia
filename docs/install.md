@@ -714,8 +714,9 @@ Common rules, either policy:
   the active-backup Linux TUN AQM is inactive.
   Admission growth installs downstream capacity before raising the applied
   engine value. Admission shrink lowers the engine first; while retained bytes
-  defer it, target/actual capacity remains at the installed envelope and the
-  deferred gauge stays 1.
+  defer it, the desired target remains visible, the desired rate/epoch applies,
+  actual capacity and admission remain at the installed envelope,
+  `actual_fresh=0`, `rate_fresh=1`, and the deferred gauge stays 1.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never

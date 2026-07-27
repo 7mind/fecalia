@@ -215,21 +215,35 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		admissionApplied := false
 		transition, kernel := newTransition(t, &admissionApplied)
 		target := initial
+		target.Epoch = 6
+		target.RateBytesPerSecond = 500_000
 		target.AdmissionLimitBytes = 10_000
+		target.BurstBytes = 10_000
 		target.TxQueueLen = 50
 		target.QueueLimit = 40
+		target.GSOMaxSize = 10_000
+		target.GSOMaxSegments = 7
 		snapshot, err := transition.Reconcile(target)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"admission:10000"}
+		want := []string{"admission:10000", "capacity:20000"}
 		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
 			t.Fatalf("deferred-shrink operations = %v, want %v", kernel.events, want)
 		}
-		if snapshot.Target != initial ||
+		if snapshot.Target != target ||
+			snapshot.Actual.RateBytesPerSecond != target.RateBytesPerSecond ||
+			snapshot.Actual.Epoch != target.Epoch ||
+			snapshot.Actual.BurstBytes != initial.BurstBytes ||
+			snapshot.Actual.TxQueueLen != initial.TxQueueLen ||
+			snapshot.Actual.Limit != initial.QueueLimit ||
+			snapshot.Actual.GSOMaxSize != initial.GSOMaxSize ||
+			snapshot.Actual.GSOMaxSegments != initial.GSOMaxSegments ||
 			snapshot.ActualAdmissionLimitBytes != initial.AdmissionLimitBytes ||
+			snapshot.Actual.Fresh ||
+			!snapshot.RateFresh ||
 			!snapshot.AdmissionDeferred {
-			t.Fatalf("deferred-shrink snapshot = %+v, want installed target held", snapshot)
+			t.Fatalf("deferred-shrink snapshot = %+v, want desired rate with installed capacity", snapshot)
 		}
 
 		admissionApplied = true
