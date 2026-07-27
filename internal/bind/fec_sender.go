@@ -821,7 +821,7 @@ func (m *Multipath) prepareFECDecision(
 			remote: item.remote,
 			shaped: item.shaped,
 			class:  item.class,
-			wire:   fecWire{b: wire},
+			wire:   fecWire{b: wire, innerBytes: len(inner)},
 		})
 	}
 

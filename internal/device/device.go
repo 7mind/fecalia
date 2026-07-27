@@ -253,6 +253,8 @@ type Tunnel struct {
 	// engine teardown so no resize races the interface's destruction. Idempotent; nil on
 	// the up() test seam (the loop is Up()-only).
 	stopMTUResize func()
+	tunAQM        *tunAQMReconciler
+	stopTUNAQM    func()
 	// pmtuDiscoverers holds the per-path PMTU discovery machines (T228, D88), keyed by
 	// path name, that the metrics mapping (T229) reads for each path's discovered PMTU.
 	// Populated ONLY on the privileged Up() path (nil/empty on the up() test seam).
@@ -354,6 +356,10 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	t, err := up(cfg, clg, tunDev, name, cfg.DNS.NewResolver, version)
 	if err != nil {
 		return nil, err
+	}
+	if err := t.startTUNAQM(); err != nil {
+		t.Close()
+		return nil, fmt.Errorf("device: start TUN AQM: %w", err)
 	}
 	// Install the daemon-owned TCP MSS clamp for EDGE-ORIGINATED TCP egressing wanbond0
 	// (T208, D85, accepted decision 2): a mangle/OUTPUT-chain TCPMSS --clamp-mss-to-pmtu
@@ -1569,6 +1575,9 @@ func (t *Tunnel) Close() {
 	// sink briefly takes reloadMu, so stopping it inside the block above would deadlock —
 	// and BEFORE the engine teardown so no setLinkMTU races the interface's destruction.
 	// nil on the up() test seam (the loop is Up()-only).
+	if t.stopTUNAQM != nil {
+		t.stopTUNAQM()
+	}
 	if t.stopMTUResize != nil {
 		t.stopMTUResize()
 	}

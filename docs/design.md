@@ -437,15 +437,47 @@ ordinary medium loss; the resulting cwnd collapse capped single-flow TCP at
 byte budget prevents moving an unbounded standing queue into wanbond while
 still avoiding pacer-induced packet loss.
 
-**Engine-side observation boundary.** Linux TUN offload can split one 64 KiB
-GSO read into as many as 128 WireGuard frames in one engine container. The
-sequential sender holds that whole container across synchronous `Bind.Send`.
-The upstream engine permits 1,024 queued containers per peer and another 1,024
-for encryption, so it can dequeue a standing queue from `wanbond0` before the
-exact-byte path shaper applies backpressure. Local engine instrumentation
-reports TUN/send batch size, both queue depths and active `Bind.Send` size.
-These measurements distinguish TUN/qdisc queueing from engine queueing without
-changing upstream admission semantics.
+**Active-backup closed loop and early TUN AQM (T324).** Linux TUN offload can
+split one 64 KiB GSO read into as many as 128 WireGuard frames in one engine
+container. The sequential sender holds that whole container across synchronous
+`Bind.Send`; the embedded engine admits up to 1,024 queued containers per peer.
+A downstream path shaper therefore cannot prevent the engine from first
+draining `wanbond0` into a seconds-deep private queue. The
+`wanbond_engine_*` series retain that observation boundary, but the correction
+acts before it: on Linux, active-backup+pacing installs an HTB root with one
+`fq_codel` leaf on `wanbond0`, sets `txqueuelen=32`, and shapes TUN ingress at
+the controller's current inner-byte target. The exact leaf contract is
+`limit=64`, `flows=64`, `quantum=current TUN MTU`, `target=5ms`,
+`interval=100ms`, `memory_limit=4MiB`, ECN enabled, and `drop_batch=16`.
+Startup fails if `tc` is unavailable or topology, parameters, rate, or queue
+length cannot be read back. The daemon reconciles and re-reads the target every
+probe interval; it publishes a target epoch as actual/fresh only after every
+field matches. The daemon owns this root qdisc while running.
+
+Each shaped path also owns a pure `internal/congestion.Controller`. A sample
+contains a locally monotonic active-carrier epoch, cumulative successfully
+emitted outer bytes including IP+UDP headers, native-DATA inner bytes, the
+path's probe SRTT, and authenticated pre-recovery DATA loss accepted under the
+same carrier/peer/contract identity as adaptive FEC. The controller measures
+delivered outer rate from counter deltas, learns the minimum SRTT as base RTT
+within an epoch, derives queue delay, and learns the outer/inner expansion
+ratio. It starts at 85% of the declared outer ceiling, raises the target by 2%
+of that ceiling after a clean loaded sample, and on congestion reduces it to
+the lower of 85% of the prior target and 95% of measured delivery. Congestion
+requires a loaded sample plus either queue delay at least
+`max(baseRTT/2,10ms)` or fresh authenticated DATA loss of at least 0.5%.
+After DATA feedback has been adopted, stale or identity-mismatched feedback
+holds the previous target. Counter regression also holds. An A→B→A carrier
+transition creates three different epochs and resets base RTT/rate deltas, so
+late A evidence cannot affect the new A epoch. The aggregate TUN target sums
+the current peers' inner-byte targets.
+
+This early controller deliberately applies only to active-backup. Weighted
+striping has no single carrier epoch to which one authenticated DATA-loss
+record can truthfully apply, so it retains fixed per-path shapers and no
+daemon-owned TUN AQM. The per-path exact-byte shaper remains a hard
+operator-declared safety ceiling in both policies; the active-backup controller
+changes only the earlier TUN ingress target.
 
 Pacing is **policy-independent** (defect D65): it is available and configured
 identically via `[scheduler] pacing_enabled` under active-backup and weighted
@@ -480,15 +512,17 @@ drops datagrams.
 > declared link. Those values no longer admit production traffic: T299 disables
 > scheduler token policing whenever `PerPathShapers` is present.
 
-When pacing is enabled the per-path pace can be
-sized from an **operator-declared** per-link bandwidth (`link_bandwidth` +
-`link_rtt` on each `[[paths]]`): at config load each path receives
-`R=bandwidth/8` and `B=ceil(R*RTT)`. The frame-domain BDP derivation remains the
-weighted aggregation reference and an active-backup compatibility vector, but
-does not admit production traffic. This is operator-*declared*, not runtime
-auto-tuning — the value is fixed at load. With pacing off (the default) a
-declared bandwidth is inert and the direct complete-batch framing/socket-write
-path remains byte-for-byte compatible.
+When pacing is enabled, an **operator-declared** per-link bandwidth
+(`link_bandwidth` + `link_rtt` on each `[[paths]]`) still derives
+`R=bandwidth/8` and `B=ceil(R*RTT)` at config load. `R` is the fixed outer
+shaper safety ceiling; it is also the active-backup controller's initial
+ceiling, not a claim that the live link will continuously deliver that rate.
+The frame-domain BDP derivation remains the weighted aggregation reference and
+an active-backup compatibility vector. Under active-backup the earlier TUN
+ingress rate adapts below this ceiling at runtime; under weighted the shaper
+rate remains fixed. With pacing off (the default), a declared bandwidth is
+inert and the direct complete-batch framing/socket-write path remains
+byte-for-byte compatible.
 
 **Sizing from the bandwidth-delay product.** The BDP algorithm (`SizePacingFromBDP`,
 internal/config) sizes the pacing parameters as follows:
@@ -908,9 +942,10 @@ retirement in progress:
 
 The operator measures two values per link (see [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing)):
 **`link_bandwidth`** (bits/s, e.g. `"50Mbit"`) and **`link_rtt`** (latency in
-milliseconds, e.g. `"21ms"`). The idle RTT is the baseline; pacing bounds the
-queue so RTT under load stays near the idle value, preventing bufferbloat
-(excessive delay inflation). If heterogeneous links are bonded (different
+milliseconds, e.g. `"21ms"`). Bandwidth is a conservative initial/safety
+ceiling; the active-backup controller measures its own delivered capacity and
+probe base RTT. `link_rtt` continues to size the exact-byte shaper's bounded
+retained budget. If heterogeneous links are bonded (different
 bandwidths), the operator declares all of them; under weighted the scheduler
 uses the bottleneck (slowest link) only for the shared frame-domain aggregation
 reference, because every path may carry traffic simultaneously; each live byte
@@ -1055,6 +1090,18 @@ behaviour composes the following signals into one picture:
   `wanbond_engine_peer_queue_high_water_containers`, and current/high-water
   active `Bind.Send` frames/bytes. These connection-scoped series localize
   queueing before the Bind and remain present independently of pacing.
+- active-backup congestion series:
+  `wanbond_path_congestion_{outer_wire,inner_data}_bytes_total`,
+  `wanbond_path_congestion_{target_outer,target_ingress,delivered}_bytes_per_second`,
+  `wanbond_path_congestion_{base_rtt,queue_delay}_seconds`,
+  `wanbond_path_congestion_authenticated_loss_ratio`,
+  `wanbond_path_congestion_loss_fresh`,
+  `wanbond_path_congestion_carrier_epoch`, and
+  `wanbond_path_congestion_held`. These are absent without a path controller.
+  Connection-scoped `wanbond_tun_aqm_target_*` and
+  `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, queue length,
+  epoch, freshness, and readback timestamp; they are absent when the Linux
+  active-backup TUN AQM does not own the qdisc.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can
   mathematically never engage at line rate on this path…" error) — fails
@@ -2417,17 +2464,18 @@ These are recorded design boundaries, not defects:
   anti-replay exist and are tested, but inbound CONTROL is currently dropped at
   the Bind (`multipath.go` receive default case). It is the chokepoint a future
   out-of-band signalling layer (e.g. explicit rekey/state) must route through.
-- **Pacing ships disabled by default; no live auto-tuning (Q20).** Empirical
-  sizing *is* built: `SizePacingFromBDP` derives the per-path pace from an
+- **Pacing ships disabled by default; live control is active-backup-only.**
+  `SizePacingFromBDP` derives the per-path hard shaper ceiling from an
   operator-declared per-link bandwidth (`link_bandwidth`/`link_rtt`) at config
-  load (T53). The published enabled-pacing measurements came from the pre-T299
-  policer and do not validate the current exact-byte shaper; absolute throughput
-  and bufferbloat require a fresh real-link run because the netns fixture is
-  CPU/PPS-bound. What stays a **deliberate boundary**: pacing is off unless `[scheduler] pacing_enabled
-  = true`, and the declared bandwidth is fixed at load — wanbond never re-derives
-  the pace live from runtime measurements (Q20 rejected a live control loop for the
-  pilot). Absent a declared bandwidth (or with pacing off) the default per-path
-  capacity is synthetic (~115 Mbit/s), well above realistic uplinks.
+  load. Under active-backup, T324 derives a lower early-TUN ingress target from
+  measured delivery, base RTT/queue delay, true outer/inner byte expansion, and
+  authenticated DATA loss. Weighted striping still has no live capacity
+  controller because it lacks one carrier identity; its exact-byte shapers
+  remain fixed. The netns fixture remains CPU/PPS-bound, so absolute throughput
+  and bufferbloat require real-link evidence. Pacing remains opt-in through
+  `[scheduler] pacing_enabled = true`; without a declared bandwidth (or with
+  pacing off), the default synthetic per-path capacity is not a measured link
+  property.
 - **In-fixture throughput/bufferbloat measurement is CPU-bound (a fixture
   boundary).** The netns fixture proves *functional* bonding/FEC/failover/DPI but
   is CPU/PPS-bound, so absolute "bonded ≈ sum of links" throughput and bufferbloat

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/shaper"
@@ -38,6 +39,13 @@ type fakeEngineSource struct {
 }
 
 func (f fakeEngineSource) EngineOutbound() EngineOutboundSnapshot { return f.outbound }
+
+type fakeTUNAQMSource struct {
+	fakeSource
+	tunAQM *TUNAQMSnapshot
+}
+
+func (f fakeTUNAQMSource) TUNAQM() *TUNAQMSnapshot { return f.tunAQM }
 
 func (f fakeSource) Paths() []PathSnapshot               { return f.paths }
 func (f fakeSource) FEC() []FECSnapshot                  { return f.fec }
@@ -1354,6 +1362,70 @@ func TestEngineOutboundExposition(t *testing.T) {
 		`wanbond_engine_send_bytes_total 66000`,
 		`wanbond_engine_peer_queue_high_water_containers 1`,
 		`wanbond_engine_active_send_frames_high_water 128`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("exposition missing line %q\n---\n%s", want, text)
+		}
+	}
+}
+
+func TestCongestionAndTUNAQMExposition(t *testing.T) {
+	epoch := congestion.CarrierEpoch{PathID: 3, Generation: 7}
+	src := fakeTUNAQMSource{
+		fakeSource: fakeSource{paths: []PathSnapshot{{
+			Name: "primary",
+			Congestion: &congestion.Snapshot{
+				Actual: congestion.ActualState{
+					Epoch: epoch, OuterWireBytes: 12_345, InnerDataBytes: 9_876,
+					AuthenticatedLoss: 0.02, LossFresh: true,
+				},
+				Target: congestion.TargetState{
+					Epoch: epoch, OuterRateBytesPerSecond: 800_000,
+					IngressRateBytesPerSecond: 640_000,
+				},
+				DeliveredRateBytesPerSecond: 750_000,
+				BaseRTT:                     30 * time.Millisecond,
+				QueueDelay:                  12 * time.Millisecond,
+				Held:                        true,
+			},
+		}}},
+		tunAQM: &TUNAQMSnapshot{
+			TargetRateBytesPerSecond: 640_000,
+			ActualRateBytesPerSecond: 640_000,
+			TargetTxQueueLen:         32,
+			ActualTxQueueLen:         32,
+			TargetEpoch:              7,
+			ActualEpoch:              7,
+			ActualFresh:              true,
+			ActualObservedAt:         time.Unix(1234, 0),
+		},
+	}
+	srv := startServer(t, src)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`wanbond_path_congestion_outer_wire_bytes_total{path="primary"} 12345`,
+		`wanbond_path_congestion_target_ingress_bytes_per_second{path="primary"} 640000`,
+		`wanbond_path_congestion_queue_delay_seconds{path="primary"} 0.012`,
+		`wanbond_path_congestion_loss_fresh{path="primary"} 1`,
+		`wanbond_path_congestion_carrier_epoch{path="primary"} 7`,
+		`wanbond_tun_aqm_target_rate_bytes_per_second 640000`,
+		`wanbond_tun_aqm_actual_tx_queue_length 32`,
+		`wanbond_tun_aqm_actual_fresh 1`,
+		`wanbond_tun_aqm_actual_observed_timestamp_seconds 1234`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("exposition missing line %q\n---\n%s", want, text)

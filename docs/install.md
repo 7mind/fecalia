@@ -391,10 +391,12 @@ Setting both `target_residual` and `safety_factor` is rejected at config load.
 The send scheduler defaults to **active-backup** (one active path, instant
 failover); an optional `[scheduler]` block can instead select the
 **weighted-aggregation** policy. Independently of that choice, `[scheduler]`
-also turns on, off by default, per-(peer,path) exact-byte send **shaping** that
-bounds bufferbloat under sustained load — pacing is **policy-independent**
-(D65/T152/T153/T299): it is available and configured the same way under either
-`policy = "active-backup"` (the default) or `policy = "weighted"`.
+turns on, off by default, per-(peer,path) exact-byte send **shaping**. On Linux
+active-backup additionally installs an early `wanbond0` HTB+`fq_codel` AQM and
+adapts its TUN ingress target from the active carrier's delivered outer rate,
+probe queue delay, true outer/inner expansion, and fresh authenticated DATA
+loss. Weighted scheduling retains fixed per-path shapers because simultaneous
+striping has no single authenticated carrier epoch.
 
 ```toml
 [scheduler]
@@ -402,9 +404,10 @@ bounds bufferbloat under sustained load — pacing is **policy-independent**
 pacing_enabled = true       # OFF by default; when on, size the pace from the links below
 ```
 
-When pacing is enabled you may declare each uplink's bandwidth and baseline RTT
-directly on its `[[paths]]` block; the daemon then sizes the per-path pace from the
-bandwidth-delay product at config load, instead of the synthetic default:
+When pacing is enabled, declare each uplink's conservative bandwidth ceiling
+and baseline RTT directly on its `[[paths]]` block. The daemon sizes the
+per-path hard shaper ceiling and retained budget from the bandwidth-delay
+product at config load:
 
 ```toml
 [[paths]]
@@ -427,8 +430,9 @@ live byte shaper retains its own path's exact `R`/`B` envelope:
 
 Common rules, either policy:
 
-- The declaration is **operator-declared, not auto-tuned**: the value is fixed at
-  load; wanbond does not adjust it live. Measure it once per link.
+- The exact-byte shaper ceiling is fixed at load. Under active-backup, an
+  earlier TUN ingress target starts conservatively and adapts below this
+  ceiling. `link_bandwidth` is not a throughput floor.
 - It is **all-or-nothing**: declare `link_bandwidth` (and `link_rtt`) on *every*
   path or none — a partial declaration is rejected.
 - A declared bandwidth with `pacing_enabled = false` (the default) is **inert** —
@@ -452,6 +456,14 @@ Common rules, either policy:
   priority bound `2*Pburst/(R-Rp)` to fit in `time.Duration`; device bring-up
   therefore never receives such a model, and gauges never expose a wrapped
   negative Q or a saturated configured-model bound.
+- Under active-backup, `R` is also the controller's outer safety ceiling. The
+  TUN target initially uses 85% of `R` and a conservative 1.25 outer/inner
+  expansion, then follows measured delivery, queue delay, and authenticated
+  loss. Q91 defines no fixed absolute-goodput gate.
+- Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
+  the daemon can install and read back HTB+`fq_codel`, the rate, queue length,
+  and every AQM parameter. The daemon owns the `wanbond0` root qdisc while
+  running; do not attach another root qdisc to the same interface.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
@@ -636,6 +648,19 @@ Common rules, either policy:
   These metrics remain present when per-path pacing is off. Queue depths retain
   the embedded engine's upstream admission limits; the gauges describe actual
   occupancy rather than enforcing a smaller limit.
+- Active-backup pacing adds per-path
+  `wanbond_path_congestion_{outer_wire,inner_data}_bytes_total`,
+  `{target_outer,target_ingress,delivered}_bytes_per_second`,
+  `{base_rtt,queue_delay}_seconds`, `authenticated_loss_ratio`,
+  `loss_fresh`, `carrier_epoch`, and `held`. The two cumulative byte counters
+  account only successful emission; outer bytes include IP+UDP headers and
+  native DATA alone contributes inner bytes.
+- `wanbond_tun_aqm_target_{rate_bytes_per_second,tx_queue_length,epoch}` and
+  matching `actual_*` gauges expose target vs kernel readback.
+  `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all `fq_codel`
+  parameters, HTB rate, queue length, and epoch matched at the latest
+  `actual_observed_timestamp_seconds`. These series are absent when the
+  active-backup Linux TUN AQM is inactive.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never
@@ -718,11 +743,11 @@ doh_url = "https://198.51.100.1/dns-query"       # required iff resolver = "doh"
 ### 3a. Tuning per-link bandwidth and pacing
 
 **Pacing ships DISABLED by default.** When enabled with `pacing_enabled = true`
-under the `[scheduler]` block, wanbond sizes the per-path send-pace from the
-bandwidth-delay product (BDP) — the product of each uplink's usable bandwidth and
-round-trip latency — to bound bufferbloat (excessive queueing) under sustained load.
-The declared bandwidth is **operator-measured, not auto-tuned**: you measure it once
-per link and enter it in the config.
+under the `[scheduler]` block, wanbond sizes the hard per-path shaper ceiling
+and retained budget from the bandwidth-delay product (BDP). Under
+active-backup, a separate early TUN rate then adapts below that ceiling from
+runtime delivery, queue delay, encapsulation expansion, and authenticated DATA
+loss. Measure a conservative ceiling once per link and enter it in the config.
 
 This section describes how to measure the required values (`link_bandwidth` and
 `link_rtt`), where to enter them, and how to verify pacing is effective.
@@ -826,13 +851,13 @@ For each path, add `link_bandwidth` and `link_rtt` to the `[[paths]]` block:
 [[paths]]
 name = "starlink"
 source_addr = "192.168.1.10"
-link_bandwidth = "50Mbit"    # from Step 2 measurement: 50.2 Mbit/s → round to 50Mbit
+link_bandwidth = "50Mbit"    # conservative outer safety ceiling, not a goodput floor
 link_rtt = "21ms"            # from Step 1: 21.5 ms idle RTT → round to 21ms
 
 [[paths]]
 name = "5g"
 source_addr = "192.168.2.10"
-link_bandwidth = "10Mbit"    # measured as slower
+link_bandwidth = "10Mbit"    # conservative outer safety ceiling for this carrier
 link_rtt = "45ms"            # higher baseline latency
 ```
 
@@ -843,10 +868,10 @@ link_rtt = "45ms"            # higher baseline latency
   shaper still uses its own path's declared `R` and `B`. Under active-backup,
   the compatibility vectors and live `R`/`B` shapers are likewise per path.
   Partial declarations are rejected at load.
-- **Round conservatively.** Round down if unsure (e.g., measure 49.8 Mbit/s →
-  declare `49Mbit` rather than `50Mbit`). An under-declared exact-byte shaping
-  rate is conservative; an over-declared rate may exceed the real bottleneck
-  and allow downstream bufferbloat.
+- **Set a safe ceiling.** Round down if unsure (e.g., measure 49.8 Mbit/s →
+  declare `49Mbit` rather than `50Mbit`). Active-backup adapts its earlier TUN
+  target below this value, but cannot exceed an over-declared hard shaper
+  ceiling.
 - **Use the `link_rtt` from Step 1**, not the loaded RTT from Step 2. The idle RTT
   is the baseline delay the BDP calculation assumes; the loaded RTT tells you how
   much bufferbloat exists.
@@ -889,23 +914,40 @@ A successful load will log `config loaded` (or, on reload, `config reloaded`);
 if the daemon rejects the config (e.g. inconsistent bandwidth declarations,
 unparseable values), the error message will say why.
 
+On Linux active-backup, also verify exact kernel ownership:
+
+```sh
+ip -details link show dev wanbond0
+tc -j qdisc show dev wanbond0
+tc class show dev wanbond0
+```
+
+`txqueuelen` must be 32. The root must be HTB with one `fq_codel` child at
+`1:1`; its limit/flows/quantum/target/interval/memory/ECN/drop-batch values
+must match the daemon contract above. A later external qdisc change is
+reconciled on the next probe interval.
+
 #### Step 5: Verify bufferbloat is controlled
 
-While running a sustained load (iperf3 from edge to concentrator), measure the
-RTT under pacing:
+Run sustained load in both directions and measure RTT concurrently:
 
 ```sh
 # Edge, run iperf3 traffic:
 iperf3 -c 10.77.0.1 -t 30
+iperf3 -c 10.77.0.1 -t 30 -R
 
 # Edge, another terminal, sample RTT under load:
 ping -i 0.2 10.77.0.1
 ```
 
-If pacing is working, the RTT under sustained load should be **close to the idle
-RTT** (ideally within 5–10 ms, depending on the link's buffering). Before pacing,
-you may have seen loaded RTT inflate to 100+ ms on a bufferbloated link; pacing
-bounds the queue so the inflation is minimal.
+Scrape `wanbond_path_congestion_*`, `wanbond_tun_aqm_*`,
+`wanbond_engine_*`, qdisc statistics, and TUN link statistics at synchronized
+start/end boundaries. Require fresh/matching AQM actual state, bounded engine
+queue occupancy instead of the 1,024-container high-water reproduction, and
+loaded inner RTT that tracks the outer path rather than accumulating seconds
+of hidden sender queueing. Evaluate delivered goodput, retransmits, AQM
+drops/ECN, and authenticated-loss reactions together; do not require a fixed
+absolute throughput floor.
 
 **Note:** the test suite's netns fixture is CPU-bound and does not build the
 standing queues needed to validate pacing against real links. Real-link

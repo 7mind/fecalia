@@ -63,7 +63,7 @@ func (m *Multipath) emitProbePayload(
 					ps.probeSendErrors.Add(1)
 					return
 				}
-				ps.txBytes.Add(uint64(probeSize))
+				ps.recordOuterWrite(probeSize)
 				if offer.contract != nil {
 					offer.contract.recordOffer(ps.id, telemetryProbeHeader{
 						sessionID: sent.SessionID,
@@ -93,7 +93,7 @@ func (m *Multipath) emitProbePayload(
 	// True-wire-volume accounting (D48): a PROBE frame is real egress
 	// traffic, so it counts toward txBytes exactly like a DATA/PARITY
 	// write — only on a nil write error, matching the Send hot path.
-	ps.txBytes.Add(uint64(len(raw)))
+	ps.recordOuterWrite(len(raw))
 	m.accountGeneratedPriorityAfterWrite(ps, len(raw))
 	if offer.contract != nil {
 		offer.contract.recordOffer(ps.id, telemetryProbeHeader{
@@ -242,6 +242,7 @@ func (m *Multipath) emitProbes() {
 	// lags, which is why the receive-tick path carries the guarantee, but when the
 	// loop does run it keeps the selection fresh independent of egress traffic.
 	m.nudgeSchedulerActive()
+	m.driveCongestionControllers()
 }
 
 // StartProbeLoop launches the probe cadence goroutine: it calls emitProbes every

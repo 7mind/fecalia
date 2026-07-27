@@ -150,7 +150,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   write-error series (`wanbond_path_shaper_*`) plus underlying
   `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
   inner-control socket failures; generated outer PROBE and reflected-echo
-  failures are excluded), engine-side TUN/send batch histograms and outbound
+  failures are excluded), active-backup closed-loop target/actual wire-rate,
+  delivered-capacity, base-RTT/queue-delay, authenticated-loss freshness, and
+  carrier-epoch series (`wanbond_path_congestion_*`), exact Linux TUN-AQM
+  target/readback/freshness/epoch series (`wanbond_tun_aqm_*`), engine-side TUN/send batch histograms and outbound
   queue/active-send gauges (`wanbond_engine_*`), WG-session establishment
   (`wanbond_session_established`, plus a per-peer
   `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
@@ -218,7 +221,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
   bounded exact-byte shaper instead of producing scheduler-shedding records.
 - **Pacing on/off is a real tradeoff, not just a knob**: pacing applies bounded
-  sender backpressure at the declared byte rate; leaving it off maximizes
+  sender backpressure below a declared outer safety ceiling. Under
+  active-backup, Linux owns a small `wanbond0` HTB+`fq_codel` qdisc and adapts
+  its TUN ingress rate from actual outer delivery, probe queue delay, measured
+  encapsulation expansion, and fresh authenticated DATA loss; this prevents the
+  embedded engine's 1,024-container peer queue from hiding congestion from AQM.
+  Weighted scheduling retains fixed per-path shaping because no single
+  authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under
   sustained overload. The published throughput/RTT numbers predate T299's
   exact-byte shaper and must be rerun on real hardware — see
@@ -323,12 +332,14 @@ deliberate boundaries you must plan around:
   probe-loss signal because one carrier record cannot represent simultaneous
   distribution shares.
 - **Pacing is off by default (opt-in)** — enable it under `[scheduler]`
-  (`pacing_enabled = true`) and size it from operator-declared per-link
-  `link_bandwidth`/`link_rtt` (bandwidth-delay product). Pre-T299 pacing was
+  (`pacing_enabled = true`) and supply a conservative per-link
+  `link_bandwidth`/`link_rtt` ceiling (bandwidth-delay product). Pre-T299 pacing was
   measured on the report-only real-link tier; those measurements do not validate
   T299's replacement shaper, and the CPU/PPS-bound netns fixture cannot establish
-  absolute throughput or bufferbloat. wanbond fixes the pace at config load and
-  does not auto-tune it live (Q20).
+  absolute throughput or bufferbloat. The exact-byte path shaper stays fixed at
+  that safety ceiling. Under active-backup, a separate early TUN AQM target
+  starts conservatively and adapts below the ceiling; weighted scheduling keeps
+  fixed shaping.
   Pacing is **policy-independent** (defect D65): `pacing_enabled`,
   `link_bandwidth`, and `link_rtt` are meaningful — and configured with the
   SAME keys — under the **default `active-backup` policy** too, not only under

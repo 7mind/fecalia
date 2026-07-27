@@ -64,7 +64,8 @@ type metricsSource struct {
 	// returns a path's discovered outer PMTU via the T226 converged accessor: 0 until the
 	// first search converges, so the T209 resizer keeps the configured-or-default fallback
 	// and wanbond0 does not dip at boot. nil before it is wired -> PMTU reported as 0.
-	pmtu func(pathName string) int
+	pmtu   func(pathName string) int
+	tunAQM func() *metrics.TUNAQMSnapshot
 }
 
 // byteSample is the previous scrape's cumulative (tx+rx) total for one (peer,path) and
@@ -122,6 +123,22 @@ func (s *metricsSource) setPMTULookup(fn func(pathName string) int) {
 	s.mu.Lock()
 	s.pmtu = fn
 	s.mu.Unlock()
+}
+
+func (s *metricsSource) setTUNAQMLookup(fn func() *metrics.TUNAQMSnapshot) {
+	s.mu.Lock()
+	s.tunAQM = fn
+	s.mu.Unlock()
+}
+
+func (s *metricsSource) TUNAQM() *metrics.TUNAQMSnapshot {
+	s.mu.Lock()
+	fn := s.tunAQM
+	s.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 
 // Paths implements metrics.Source. It is called on the scrape goroutine (the /metrics
@@ -186,6 +203,7 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				ShaperWriteErrors:       t.ShaperWriteErrors,
 				SocketWriteErrors:       t.SocketWriteErrors,
 				Shaper:                  t.Shaper,
+				Congestion:              t.Congestion,
 			})
 		}
 	}

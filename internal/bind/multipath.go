@@ -16,6 +16,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/config"
+	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
@@ -372,6 +373,13 @@ type peerPathState struct {
 	// readLoop), and the scrape/snapshot path reads them with a plain atomic Load.
 	txBytes atomic.Uint64
 	rxBytes atomic.Uint64
+	// outerWireBytes includes the IP and UDP headers for every successful
+	// datagram write. innerDataBytes counts only the corresponding native inner
+	// DATA payload. Their delta is the controller's measured encapsulation/FEC
+	// expansion; neither counter depends on a metrics scrape cadence.
+	outerWireBytes atomic.Uint64
+	innerDataBytes atomic.Uint64
+	congestion     *congestion.Controller
 
 	// emsgsizeDrops counts DATA/PARITY datagrams this (peer,path) failed to send with
 	// EMSGSIZE — the explicit "exceeds path MTU, DF set" the T201 DF policy surfaces in
@@ -569,6 +577,10 @@ type peerState struct {
 	serviceTransitionRequested  atomic.Uint64
 	serviceTransitionHandled    atomic.Uint64
 	serviceTransitionGeneration atomic.Uint64
+
+	congestionHaveCarrier bool
+	congestionCarrierID   uint8
+	congestionGeneration  uint64
 
 	// sendMu preserves one scheduler selection/offered event per engine Send while
 	// allowing that Send to block on the exact-byte shaper without holding m.mu.
@@ -937,7 +949,7 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 			}
 			return mapped
 		}
-		ps.txBytes.Add(uint64(len(raw)))
+		ps.recordOuterWrite(len(raw))
 		m.accountGeneratedPriorityAfterWrite(ps, len(raw))
 		return nil
 	}
@@ -981,7 +993,7 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 				}
 				return mapped
 			}
-			ps.txBytes.Add(uint64(size))
+			ps.recordOuterWrite(size)
 			return nil
 		}
 		return telemetry.NewCadencedAdmittedEchoAwaitProbe(
@@ -1660,6 +1672,12 @@ func (m *Multipath) installPathShaperLocked(pp *peerPathState, cfg *config.PathS
 	}
 	pp.shaper = s
 	pp.recoveryBound = cfg.RecoveryBound
+	controller, err := congestion.New(cfg.RateBytesPerSecond)
+	if err != nil {
+		_ = s.Close()
+		return fmt.Errorf("bind: create congestion controller for path %q: %w", pp.name, err)
+	}
+	pp.congestion = controller
 	return nil
 }
 
@@ -3338,7 +3356,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 							recordACK bool,
 						) {
 							if err := <-completion; err == nil {
-								ps.txBytes.Add(uint64(size))
+								ps.recordOuterWrite(size)
 								if recordACK && contract.completeReceivedACK(admission) {
 									m.refreshPeerRecoveryWindow(pr)
 								}
@@ -3360,7 +3378,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 						// True-wire-volume accounting (D48): the echo we just sent back is
 						// real egress traffic on this path, so it counts toward txBytes
 						// exactly like a DATA/PARITY write — only on a nil write error.
-						ps.txBytes.Add(uint64(len(echo)))
+						ps.recordOuterWrite(len(echo))
 						m.accountGeneratedPriorityAfterWrite(ps, len(echo))
 						if haveRecoveryAdmission && pr.contracts.completeReceivedACK(recoveryAdmission) {
 							m.refreshPeerRecoveryWindow(pr)
@@ -3639,7 +3657,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 				m.mu.Unlock()
 				return err
 			}
-			wires = append(wires, fecWire{b: wire})
+			wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
 			for _, par := range parity {
 				pw, err := m.encodeParityLocked(peer, par, ps.id)
 				if err != nil {
@@ -3654,7 +3672,7 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 				m.mu.Unlock()
 				return err
 			}
-			wires = append(wires, fecWire{b: wire})
+			wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
 		}
 		m.mu.Unlock()
 
@@ -3824,7 +3842,7 @@ func (m *Multipath) sendDirectBatchLocked(peer *peerState, bufs [][]byte, class 
 				m.mu.Unlock()
 				return err
 			}
-			wires = append(wires, fecWire{b: wire})
+			wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
 			for _, par := range parity {
 				wire, err := m.encodeParityLocked(peer, par, ps.id)
 				if err != nil {
@@ -3840,7 +3858,7 @@ func (m *Multipath) sendDirectBatchLocked(peer *peerState, bufs [][]byte, class 
 			m.mu.Unlock()
 			return err
 		}
-		wires = append(wires, fecWire{b: wire})
+		wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
 	}
 	m.mu.Unlock()
 
@@ -3890,8 +3908,20 @@ func (m *Multipath) recordShapedResult(ps *peerPathState, peer *peerState, fs *f
 	}
 }
 
+func (ps *peerPathState) recordOuterWrite(payloadBytes int) {
+	ps.txBytes.Add(uint64(payloadBytes))
+	overhead := IPv4UDPOverhead
+	if pathIsV6(ps.src) {
+		overhead = IPv6UDPOverhead
+	}
+	ps.outerWireBytes.Add(uint64(payloadBytes + overhead))
+}
+
 func (m *Multipath) recordWireEmission(ps *peerPathState, peer *peerState, fs *fecSender, wire fecWire) {
-	ps.txBytes.Add(uint64(len(wire.b)))
+	ps.recordOuterWrite(len(wire.b))
+	if wire.innerBytes > 0 {
+		ps.innerDataBytes.Add(uint64(wire.innerBytes))
+	}
 	peer.lastWrite.Store(m.clock.Now().UnixNano())
 	if fs == nil {
 		return
@@ -3910,8 +3940,9 @@ func (m *Multipath) recordWireEmission(ps *peerPathState, peer *peerState, fs *f
 // frame, so the write loop can charge parity-overhead accounting (T24) without a
 // second pass.
 type fecWire struct {
-	b      []byte
-	parity bool
+	b          []byte
+	parity     bool
+	innerBytes int
 }
 
 // emsgsizeWarnInterval bounds how often a path's EMSGSIZE (over-PMTU send, DF set)
@@ -5356,6 +5387,9 @@ type PathTraffic struct {
 	// Shaper is present only while this path has an active exact-byte shaper
 	// generation. The snapshot is read after m.mu is released.
 	Shaper *shaper.Snapshot
+	// Congestion is present for active-backup paths with a configured shaper.
+	// The snapshot is read after m.mu is released.
+	Congestion *congestion.Snapshot
 	// ProbeSendErrors is the cumulative count of unexpected locally-originated
 	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
 	// EMSGSIZE verdicts are excluded. Read verbatim from peerPathState.probeSendErrors.
@@ -5438,6 +5472,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		socketErrors   uint64
 		prober         *telemetry.Prober
 		shaper         pathShaperReporter
+		congestion     *congestion.Controller
 		// pp is captured under m.mu; its src/conn/bindMode/boundDevice are immutable
 		// and its remote is ps.mu-guarded (getRemote), so the addressing fields are
 		// read AFTER m.mu is released, exactly like the prober Estimate()/State() reads.
@@ -5477,6 +5512,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 				socketErrors:   pp.socketWriteErrors.Load(),
 				prober:         pp.prober,
 				shaper:         reporter,
+				congestion:     pp.congestion,
 				pp:             pp,
 			}
 		}
@@ -5510,6 +5546,10 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 				shaperSnapshot := pr.shaper.Snapshot()
 				shaperSnapshot.RecoveryContractEnabled = pr.pp.recoveryContract().Enabled
 				pt.Shaper = &shaperSnapshot
+			}
+			if pr.congestion != nil {
+				congestionSnapshot := pr.congestion.Snapshot()
+				pt.Congestion = &congestionSnapshot
 			}
 			// Addressing (G21): src/bindMode/boundDevice are immutable; LocalAddr comes
 			// from the socket; Remote is read under ps.mu via getRemote — all AFTER m.mu

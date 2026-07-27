@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -40,6 +41,7 @@ const (
 	resequencerSubsystem = "resequencer"
 	sessionSubsystem     = "session"
 	engineSubsystem      = "engine"
+	tunAQMSubsystem      = "tun_aqm"
 	// aggregationSubsystem partitions the weighted-scheduler aggregation-gate series
 	// (T146). The smoothed offered-load gauge deliberately carries NO subsystem (it is
 	// wanbond_offered_load_fps, not wanbond_aggregation_…) since it is the load the gate
@@ -445,6 +447,8 @@ type PathSnapshot struct {
 	SocketWriteErrors       uint64
 	// Shaper is nil when exact-byte shaping is disabled for this path.
 	Shaper *shaper.Snapshot
+	// Congestion is nil when the active-backup closed-loop controller is disabled.
+	Congestion *congestion.Snapshot
 	// The following addressing fields are the runtime-resolved per-path
 	// networking metadata the monitoring UI surfaces (G21). They are DEFINED here
 	// (T214) but the value-wiring from bind.PathTraffic through
@@ -600,6 +604,21 @@ type EngineOutboundSource interface {
 	EngineOutbound() EngineOutboundSnapshot
 }
 
+type TUNAQMSnapshot struct {
+	TargetRateBytesPerSecond float64
+	ActualRateBytesPerSecond float64
+	TargetTxQueueLen         int
+	ActualTxQueueLen         int
+	TargetEpoch              uint64
+	ActualEpoch              uint64
+	ActualFresh              bool
+	ActualObservedAt         time.Time
+}
+
+type TUNAQMSource interface {
+	TUNAQM() *TUNAQMSnapshot
+}
+
 // collector is a prometheus.Collector that reads a Source at scrape time and
 // emits per-path const-metrics plus the FEC/resequencer counters. Reading at
 // scrape time (rather than mirroring into GaugeVecs on an update path) keeps the
@@ -611,23 +630,24 @@ type collector struct {
 	src       Source
 	multiPeer bool
 
-	txBytes        *prometheus.Desc
-	rxBytes        *prometheus.Desc
-	loss           *prometheus.Desc
-	rtt            *prometheus.Desc
-	jitter         *prometheus.Desc
-	throughput     *prometheus.Desc
-	up             *prometheus.Desc
-	pmtu           *prometheus.Desc
-	probeErrs      *prometheus.Desc
-	probeCoalesced *prometheus.Desc
-	pmtuCanceled   *prometheus.Desc
-	echoOverflow   *prometheus.Desc
-	shaperAccepted *prometheus.Desc
-	shaperEmitted  *prometheus.Desc
-	shaperErrors   *prometheus.Desc
-	socketErrors   *prometheus.Desc
-	shaperMetrics  []shaperMetric
+	txBytes           *prometheus.Desc
+	rxBytes           *prometheus.Desc
+	loss              *prometheus.Desc
+	rtt               *prometheus.Desc
+	jitter            *prometheus.Desc
+	throughput        *prometheus.Desc
+	up                *prometheus.Desc
+	pmtu              *prometheus.Desc
+	probeErrs         *prometheus.Desc
+	probeCoalesced    *prometheus.Desc
+	pmtuCanceled      *prometheus.Desc
+	echoOverflow      *prometheus.Desc
+	shaperAccepted    *prometheus.Desc
+	shaperEmitted     *prometheus.Desc
+	shaperErrors      *prometheus.Desc
+	socketErrors      *prometheus.Desc
+	shaperMetrics     []shaperMetric
+	congestionMetrics []congestionMetric
 
 	fecData          *prometheus.Desc
 	fecRepair        *prometheus.Desc
@@ -679,12 +699,27 @@ type collector struct {
 	engineActiveSendBytes           *prometheus.Desc
 	engineActiveSendFramesHighWater *prometheus.Desc
 	engineActiveSendBytesHighWater  *prometheus.Desc
+
+	tunAQMTargetRate   *prometheus.Desc
+	tunAQMActualRate   *prometheus.Desc
+	tunAQMTargetQueue  *prometheus.Desc
+	tunAQMActualQueue  *prometheus.Desc
+	tunAQMTargetEpoch  *prometheus.Desc
+	tunAQMActualEpoch  *prometheus.Desc
+	tunAQMActualFresh  *prometheus.Desc
+	tunAQMObservedTime *prometheus.Desc
 }
 
 type shaperMetric struct {
 	desc      *prometheus.Desc
 	valueType prometheus.ValueType
 	value     func(shaper.Snapshot) float64
+}
+
+type congestionMetric struct {
+	desc      *prometheus.Desc
+	valueType prometheus.ValueType
+	value     func(congestion.Snapshot) float64
 }
 
 type fecMetric struct {
@@ -730,6 +765,18 @@ func NewCollector(src Source) prometheus.Collector {
 		value func(shaper.Snapshot) float64,
 	) shaperMetric {
 		return shaperMetric{
+			desc:      desc(pathSubsystem, name, help, pathLabels),
+			valueType: valueType,
+			value:     value,
+		}
+	}
+	makeCongestionMetric := func(
+		name string,
+		help string,
+		valueType prometheus.ValueType,
+		value func(congestion.Snapshot) float64,
+	) congestionMetric {
+		return congestionMetric{
 			desc:      desc(pathSubsystem, name, help, pathLabels),
 			valueType: valueType,
 			value:     value,
@@ -827,6 +874,41 @@ func NewCollector(src Source) prometheus.Collector {
 			makeShaperMetric("shaper_async_write_emsgsize_errors_total", "Actual UDP writer calls failing asynchronously with EMSGSIZE.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AsyncWriteEMSGSIZEErrors) }),
 			makeShaperMetric("shaper_async_write_emsgsize_bytes_total", "Reserved bytes assigned to an EMSGSIZE writer failure, including its retired unstarted batch suffix.", prometheus.CounterValue, func(s shaper.Snapshot) float64 { return float64(s.AsyncWriteEMSGSIZEBytes) }),
 		},
+		congestionMetrics: []congestionMetric{
+			makeCongestionMetric("congestion_outer_wire_bytes_total", "Actual outer IP/UDP/frame bytes emitted in the current path process lifetime.", prometheus.CounterValue, func(s congestion.Snapshot) float64 {
+				return float64(s.Actual.OuterWireBytes)
+			}),
+			makeCongestionMetric("congestion_inner_data_bytes_total", "Inner DATA payload bytes represented by emitted native DATA frames in the current path process lifetime.", prometheus.CounterValue, func(s congestion.Snapshot) float64 {
+				return float64(s.Actual.InnerDataBytes)
+			}),
+			makeCongestionMetric("congestion_target_outer_bytes_per_second", "Closed-loop target outer wire rate for the active carrier.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.Target.OuterRateBytesPerSecond
+			}),
+			makeCongestionMetric("congestion_target_ingress_bytes_per_second", "Closed-loop sender-side TUN ingress target after measured outer/inner overhead.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.Target.IngressRateBytesPerSecond
+			}),
+			makeCongestionMetric("congestion_delivered_bytes_per_second", "Delivered outer wire rate derived from successive emission-counter observations.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.DeliveredRateBytesPerSecond
+			}),
+			makeCongestionMetric("congestion_base_rtt_seconds", "Minimum probe RTT observed in the current carrier epoch.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.BaseRTT.Seconds()
+			}),
+			makeCongestionMetric("congestion_queue_delay_seconds", "Probe RTT above the current carrier epoch's base RTT.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.QueueDelay.Seconds()
+			}),
+			makeCongestionMetric("congestion_authenticated_loss_ratio", "Authenticated pre-recovery DATA loss ratio associated with the current carrier contract.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.Actual.AuthenticatedLoss
+			}),
+			makeCongestionMetric("congestion_loss_fresh", "Whether the authenticated DATA-loss sample passed carrier identity and freshness checks (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return boolValue(s.Actual.LossFresh)
+			}),
+			makeCongestionMetric("congestion_carrier_epoch", "Local monotonic active-carrier generation; A-B-A transitions create distinct epochs.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return float64(s.Target.Epoch.Generation)
+			}),
+			makeCongestionMetric("congestion_held", "Whether the controller froze the prior target because the observation could not safely advance it (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return boolValue(s.Held)
+			}),
+		},
 
 		fecData:          desc(fecSubsystem, "data_packets_total", "FEC DATA packets emitted (the fixed-ratio overhead denominator).", peerScopedLabels),
 		fecRepair:        desc(fecSubsystem, "repair_packets_total", "FEC parity packets emitted (the fixed-ratio overhead).", peerScopedLabels),
@@ -911,6 +993,15 @@ func NewCollector(src Source) prometheus.Collector {
 		engineActiveSendBytes:           desc(engineSubsystem, "active_send_bytes", "Encrypted WireGuard bytes currently held across synchronous Bind.Send calls.", nil),
 		engineActiveSendFramesHighWater: desc(engineSubsystem, "active_send_frames_high_water", "Maximum encrypted WireGuard frames concurrently held across Bind.Send calls.", nil),
 		engineActiveSendBytesHighWater:  desc(engineSubsystem, "active_send_bytes_high_water", "Maximum encrypted WireGuard bytes concurrently held across Bind.Send calls.", nil),
+
+		tunAQMTargetRate:   desc(tunAQMSubsystem, "target_rate_bytes_per_second", "Requested sender-side TUN ingress rate for the current controller epoch.", nil),
+		tunAQMActualRate:   desc(tunAQMSubsystem, "actual_rate_bytes_per_second", "Kernel-read-back HTB rate on the TUN interface.", nil),
+		tunAQMTargetQueue:  desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN interface transmit queue length.", nil),
+		tunAQMActualQueue:  desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN interface transmit queue length.", nil),
+		tunAQMTargetEpoch:  desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
+		tunAQMActualEpoch:  desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
+		tunAQMActualFresh:  desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, fq_codel parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
+		tunAQMObservedTime: desc(tunAQMSubsystem, "actual_observed_timestamp_seconds", "Unix timestamp of the latest exact kernel qdisc/link readback.", nil),
 	}
 }
 
@@ -935,6 +1026,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.shaperErrors
 	ch <- c.socketErrors
 	for _, metric := range c.shaperMetrics {
+		ch <- metric.desc
+	}
+	for _, metric := range c.congestionMetrics {
 		ch <- metric.desc
 	}
 	ch <- c.fecData
@@ -987,6 +1081,14 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.engineActiveSendBytes
 	ch <- c.engineActiveSendFramesHighWater
 	ch <- c.engineActiveSendBytesHighWater
+	ch <- c.tunAQMTargetRate
+	ch <- c.tunAQMActualRate
+	ch <- c.tunAQMTargetQueue
+	ch <- c.tunAQMActualQueue
+	ch <- c.tunAQMTargetEpoch
+	ch <- c.tunAQMActualEpoch
+	ch <- c.tunAQMActualFresh
+	ch <- c.tunAQMObservedTime
 }
 
 // Collect reads the Source once and emits one const-metric per per-(peer,path)
@@ -1013,6 +1115,11 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.shaperErrors, prometheus.CounterValue, float64(p.ShaperWriteErrors), labels...)
 			for _, metric := range c.shaperMetrics {
 				ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(*p.Shaper), labels...)
+			}
+		}
+		if p.Congestion != nil {
+			for _, metric := range c.congestionMetrics {
+				ch <- prometheus.MustNewConstMetric(metric.desc, metric.valueType, metric.value(*p.Congestion), labels...)
 			}
 		}
 		ch <- prometheus.MustNewConstMetric(c.socketErrors, prometheus.CounterValue, float64(p.SocketWriteErrors), labels...)
@@ -1112,6 +1219,18 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendBytes, prometheus.GaugeValue, float64(outbound.ActiveSendBytes))
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendFramesHighWater, prometheus.GaugeValue, float64(outbound.ActiveSendFramesHighWater))
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendBytesHighWater, prometheus.GaugeValue, float64(outbound.ActiveSendBytesHighWater))
+	}
+	if src, ok := c.src.(TUNAQMSource); ok {
+		if snapshot := src.TUNAQM(); snapshot != nil {
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetRate, prometheus.GaugeValue, snapshot.TargetRateBytesPerSecond)
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualRate, prometheus.GaugeValue, snapshot.ActualRateBytesPerSecond)
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetQueue, prometheus.GaugeValue, float64(snapshot.TargetTxQueueLen))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueue, prometheus.GaugeValue, float64(snapshot.ActualTxQueueLen))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetEpoch, prometheus.GaugeValue, float64(snapshot.TargetEpoch))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualEpoch, prometheus.GaugeValue, float64(snapshot.ActualEpoch))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFresh, prometheus.GaugeValue, boolValue(snapshot.ActualFresh))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMObservedTime, prometheus.GaugeValue, timestampSeconds(snapshot.ActualObservedAt))
+		}
 	}
 }
 

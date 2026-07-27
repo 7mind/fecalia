@@ -370,7 +370,8 @@ at ~3.67 Mbps against a link independently capable of ≥6.9 Mbps. Pacing
 (bounded per-(peer,path) exact-byte shapers, enabled via
 `[scheduler] pacing_enabled = true`) applies backpressure instead of
 pacer-induced loss, bounds the queue so loaded RTT stays near idle baseline,
-and lets single-flow TCP approach the declared link rate. This section
+and lets single-flow TCP use learned delivered capacity below the declared
+safety ceiling. This section
 validates pacing's effectiveness on the real deployment
 (Pi4-edge/Starlink/o3 topology).
 
@@ -391,9 +392,65 @@ no pass/fail gate on absolute numbers (see [design.md pacing section](design.md#
 - [ ] Record date, `wanbond version` output, current build (`git log --oneline -1`).
 - [ ] Measure and record the **idle RTT** and **measured throughput** per uplink
       (instructions in [install.md §3a](install.md#3a-tuning-per-link-bandwidth-and-pacing));
-      these become the basis for pacing config (`link_bandwidth` / `link_rtt`).
+      these set the conservative pacing ceiling/budget
+      (`link_bandwidth` / `link_rtt`), not an absolute-goodput floor.
 
-### T304 synchronized RPi4-to-o3 field acceptance
+### T324 active-backup closed-loop field acceptance
+
+This is the current Q91 acceptance and supersedes T304's fixed `8Mbit`/`5Mbit`
+condition matrix and absolute `5.6Mbit` clause below. Retain the older section
+as historical exact-byte-shaper evidence.
+
+- [ ] Before deployment, run the non-privileged gate and `nix build`. On an
+      ARM64 Linux host, run
+      `TestLinuxTUNAQMReconciliationContract`: both the in-memory dummy and
+      real privileged Linux adapter must pass the same topology/rate/queue/
+      drift-restoration contract.
+- [ ] Record both endpoint commit IDs, binary SHA-256 hashes, config hashes,
+      service states, TUN link details, `tc -j qdisc`, `tc class`, and a full
+      `/metrics` scrape before the candidate starts.
+- [ ] On both edge and concentrator, confirm active-backup+pacing starts only
+      after exact readback: `wanbond0 txqueuelen 32`, HTB root, one `fq_codel`
+      child with `limit=64`, `flows=64`, `quantum=current MTU`, `target=5ms`,
+      `interval=100ms`, `memory_limit=4MiB`, ECN, and `drop_batch=16`.
+      `wanbond_tun_aqm_actual_fresh` must be 1 and target/actual epoch, rate,
+      and queue length must match.
+- [ ] Run **two independent synchronized field cycles**. Each cycle contains
+      one 30-second Pi→o3 TCP upload and one 30-second o3→Pi TCP download
+      (`iperf3 -R` from the Pi). For each leg, start timestamped inner and outer
+      pings before traffic; scrape controller/TUN-AQM/engine/shaper/FEC/
+      resequencer metrics plus `tc -s` and `ip -s link` at `t=0`, at least once
+      per second, and at leg end. Preserve iperf JSON with one-second intervals
+      and retransmits. Quiesce traffic between legs so each direction receives
+      an unambiguous boundary.
+- [ ] In every leg, `wanbond_path_congestion_outer_wire_bytes_total` advances
+      by actual successful outer IP+UDP/frame bytes, while
+      `inner_data_bytes_total` advances only for native DATA. Reconcile their
+      ratio with FEC/control/probe overhead; do not infer capacity from inner
+      payload alone.
+- [ ] Base RTT and queue delay reset on the first A→B or B→A carrier generation.
+      Carrier epochs increase monotonically; delayed/stale/replayed/wrong-peer
+      DATA-loss feedback never changes the new epoch's target. Once current
+      authenticated feedback has been adopted, stale feedback sets `held=1`
+      and preserves the prior target.
+- [ ] Under a loaded sample, rising queue delay or fresh authenticated DATA
+      loss reduces the target; clean delivered service permits bounded
+      additive increase, never above the declared outer ceiling. Confirm the
+      TUN target follows the learned outer/inner ratio and exact kernel
+      readback follows the target without replacing/resetting a correct
+      `fq_codel` leaf.
+- [ ] The reproduced failure does not recur: the peer engine queue must not
+      reach its 1,024-container limit, hidden inner RTT must not grow into
+      seconds while outer RTT stays near baseline, and TUN/shaper/socket/FEC
+      accounting must show no unexplained loss. Evaluate receiver goodput,
+      retransmits, AQM ECN/drops, authenticated loss, and queue-delay response
+      together. Q91 has **no fixed absolute throughput floor**.
+- [ ] Stop/restart one endpoint and confirm a fresh controller/qdisc actual
+      state appears before service returns. Restore the original binaries and
+      configs if the candidate will not remain deployed; otherwise record that
+      the candidate remains installed.
+
+### Historical T304 synchronized RPi4-to-o3 field acceptance
 
 Run on the RPi4 edge with Starlink active, 5G standby, active-backup policy,
 and adaptive FEC enabled. Preserve the starting state before the first cycle:
