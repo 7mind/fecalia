@@ -60,8 +60,10 @@ gate.
       on the slowest supported worker (including a 1-vCPU aarch64 host); each
       60-second phase must collect at least 2,000 DATA frames. The iperf client
       has a 90-second wall-clock limit (60-second transmit interval plus
-      30-second control/result grace); a timeout or setup race reports both
-      daemon logs instead of leaving the phase active indefinitely.
+      30-second control/result grace). Fixture setup waits for the holder's
+      network-namespace identity to differ from the test process before
+      configuring loopback; a timeout or setup race reports both daemon logs
+      instead of leaving the phase active indefinitely.
 - [ ] Under steady `P4SteadyLossRate` path loss, adaptive total overhead ≤ the
       fixed-FEC baseline for equal masking.
 - [ ] Post-recovery residual loss ≤ `P4ResidualLossMax` (`/metrics`).

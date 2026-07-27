@@ -123,23 +123,40 @@ func waitForNetnsIdentity(
 	attempts int,
 	pause func(),
 ) (netnsIdentities, error) {
+	if attempts <= 0 {
+		return netnsIdentities{}, fmt.Errorf("network namespace readiness attempts must be positive, got %d", attempts)
+	}
 	current, err := readIdentity("/proc/self/ns/net")
 	if err != nil {
 		return netnsIdentities{}, fmt.Errorf("read current network namespace identity: %w", err)
 	}
 	var child string
+	var lastErr error
 	for i := 0; i < attempts; i++ {
 		child, err = readIdentity(childPath)
-		if err == nil {
+		if err == nil && child != current {
 			return netnsIdentities{current: current, child: child}, nil
 		}
-		pause()
+		lastErr = err
+		if i+1 < attempts {
+			pause()
+		}
 	}
-	return netnsIdentities{}, fmt.Errorf(
-		"child network namespace %s never appeared after %d attempts: %w",
+	identities := netnsIdentities{current: current, child: child}
+	if lastErr != nil {
+		return identities, fmt.Errorf(
+			"child network namespace %s did not become readable and distinct from current identity %q after %d attempts; last read: %w",
+			childPath,
+			current,
+			attempts,
+			lastErr,
+		)
+	}
+	return identities, fmt.Errorf(
+		"child network namespace %s remained at current identity %q after %d attempts",
 		childPath,
+		current,
 		attempts,
-		err,
 	)
 }
 
@@ -211,14 +228,41 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 	return top
 }
 
-// waitForNetns blocks until the holder's network namespace is observable.
+// waitForNetns blocks until the holder has published a network namespace
+// distinct from the current test process.
 func (top *Topology) waitForNetns() {
 	path := fmt.Sprintf("/proc/%d/ns/net", top.pid)
 	if _, err := waitForNetnsIdentity(os.Readlink, path, 100, func() {
 		time.Sleep(10 * time.Millisecond)
 	}); err != nil {
-		top.t.Fatalf("concentrator netns readiness: %v", err)
+		top.t.Fatalf("concentrator netns readiness: %v; holder: %s", err, top.holderDiagnostics())
 	}
+}
+
+func (top *Topology) holderDiagnostics() string {
+	if top.holder == nil {
+		return "<nil>"
+	}
+	pid := top.pid
+	procState := "unavailable"
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		procState = err.Error()
+	} else {
+		for _, line := range strings.Split(string(status), "\n") {
+			if strings.HasPrefix(line, "State:") {
+				procState = strings.TrimSpace(line)
+				break
+			}
+		}
+	}
+	return fmt.Sprintf(
+		"pid=%d argv=%q process_state=%v proc_state=%q",
+		pid,
+		top.holder.Args,
+		top.holder.ProcessState,
+		procState,
+	)
 }
 
 // netemArgs builds the netem parameter list for a path's baseline impairment
