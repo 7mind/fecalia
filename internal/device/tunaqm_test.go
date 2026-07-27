@@ -217,6 +217,8 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		target.QueueLimitBytes = 40_000
 		target.GSOMaxSize = 10_000
 		target.GSOMaxSegments = 7
+		effectiveTarget := target
+		effectiveTarget.TxQueueLen = initial.TxQueueLen
 		snapshot, err := transition.Reconcile(target)
 		if err != nil {
 			t.Fatal(err)
@@ -225,7 +227,7 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
 			t.Fatalf("deferred-shrink operations = %v, want %v", kernel.events, want)
 		}
-		if snapshot.Target != target ||
+		if snapshot.Target != effectiveTarget ||
 			snapshot.Actual.RateBytesPerSecond != target.RateBytesPerSecond ||
 			snapshot.Actual.Epoch != target.Epoch ||
 			snapshot.Actual.BurstBytes != initial.BurstBytes ||
@@ -250,13 +252,36 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
 			t.Fatalf("converged-shrink operations = %v, want %v", kernel.events, want)
 		}
-		if snapshot.Target != target ||
-			snapshot.Actual.TxQueueLen != target.TxQueueLen ||
+		if snapshot.Target != effectiveTarget ||
+			snapshot.Actual.TxQueueLen != effectiveTarget.TxQueueLen ||
 			snapshot.Actual.LimitBytes != target.QueueLimitBytes ||
 			!snapshot.Actual.Fresh ||
 			snapshot.AdmissionDeferred ||
 			snapshot.ActualAdmissionLimitBytes != target.AdmissionLimitBytes {
 			t.Fatalf("shrink convergence = %+v, transition = %+v", snapshot, transition)
+		}
+	})
+
+	t.Run("online ring capacity retains its high water", func(t *testing.T) {
+		admissionApplied := true
+		transition, kernel := newTransition(t, &admissionApplied)
+		target := initial
+		target.TxQueueLen = 50
+		snapshot, err := transition.Reconcile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Target.TxQueueLen != initial.TxQueueLen ||
+			snapshot.Actual.TxQueueLen != initial.TxQueueLen {
+			t.Fatalf(
+				"online ring target/actual = %d/%d, want retained high water %d",
+				snapshot.Target.TxQueueLen,
+				snapshot.Actual.TxQueueLen,
+				initial.TxQueueLen,
+			)
+		}
+		if len(kernel.events) != 0 {
+			t.Fatalf("online ring shrink applied capacity operations: %v", kernel.events)
 		}
 	})
 }
@@ -657,9 +682,42 @@ func TestEngineOutboundBoundsFitWholeBatchWithinDelayBudget(t *testing.T) {
 	}
 }
 
-func TestEngineOutboundBoundsRejectRateBelowOneDatagramBudget(t *testing.T) {
-	if _, err := deriveEngineOutboundBounds(50_000, 1, 1395, 1395, 45_000); err == nil {
-		t.Fatal("derived bounds below one legal WireGuard datagram per delay budget")
+func TestEngineOutboundBoundsRetainOneDatagramBelowBatchDelayBudget(t *testing.T) {
+	const (
+		rateBytesPerSecond = 66_485.73591713794
+		dataBudgetBytes    = 6_400
+		mtu                = 1320
+	)
+	got, err := deriveEngineOutboundBounds(
+		rateBytesPerSecond, 1, mtu, mtu, dataBudgetBytes,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireDatagramBytes := mtu + awgdevice.MessageTransportSize
+	if got.GSOMaxSegments != 1 ||
+		got.GSOMaxSize != mtu ||
+		got.AdmissionLimitBytes != dataBudgetBytes+wireDatagramBytes {
+		t.Fatalf(
+			"single-datagram bounds = %+v, want size=%d segments=1 gate=%d",
+			got,
+			mtu,
+			dataBudgetBytes+wireDatagramBytes,
+		)
+	}
+	wantServiceTime := time.Duration(math.Ceil(
+		float64(wireDatagramBytes) /
+			rateBytesPerSecond *
+			float64(time.Second),
+	))
+	if got.MaxBatchServiceTime != wantServiceTime ||
+		got.MaxBatchServiceTime <= engineOutboundBatchDelayBudget {
+		t.Fatalf(
+			"single-datagram service time = %s, want exact %s above nominal %s",
+			got.MaxBatchServiceTime,
+			wantServiceTime,
+			engineOutboundBatchDelayBudget,
+		)
 	}
 }
 

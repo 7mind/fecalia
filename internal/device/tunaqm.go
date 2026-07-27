@@ -80,6 +80,7 @@ type tunAQMTransition struct {
 	reconciler           *tunAQMReconciler
 	trySetAdmissionLimit func(int) (bool, error)
 	readAdmissionLimit   func() int
+	ringHighWater        int
 }
 
 func newTUNAQMReconciler(kernel tunAQMKernel) (*tunAQMReconciler, error) {
@@ -103,10 +104,15 @@ func newTUNAQMTransition(
 	if readAdmissionLimit == nil {
 		return nil, errors.New("engine outbound admission reader is required")
 	}
+	ringHighWater := reconciler.Snapshot().Actual.TxQueueLen
+	if ringHighWater <= 0 {
+		return nil, errors.New("initialized TUN AQM ring readback is required")
+	}
 	transition := &tunAQMTransition{
 		reconciler:           reconciler,
 		trySetAdmissionLimit: trySetAdmissionLimit,
 		readAdmissionLimit:   readAdmissionLimit,
+		ringHighWater:        ringHighWater,
 	}
 	actualAdmissionLimit := transition.actualAdmissionLimit()
 	transition.reconciler.SetAdmissionState(actualAdmissionLimit, false)
@@ -121,9 +127,16 @@ func (t *tunAQMTransition) actualAdmissionLimit() int {
 	return limit
 }
 
-func (t *tunAQMTransition) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, error) {
+func (t *tunAQMTransition) Reconcile(
+	target tunAQMTargetState,
+) (tunAQMSnapshot, error) {
 	if err := validateTUNAQMTarget(target); err != nil {
 		return t.reconciler.Snapshot(), err
+	}
+	if target.TxQueueLen < t.ringHighWater {
+		target.TxQueueLen = t.ringHighWater
+	} else {
+		t.ringHighWater = target.TxQueueLen
 	}
 	actualAdmissionLimit := t.actualAdmissionLimit()
 	switch {
@@ -551,13 +564,10 @@ func deriveEngineOutboundBounds(
 	perPeerRate := aggregateRateBytesPerSecond / float64(peerCount)
 	maxWireDatagram := maximumMTU + awgdevice.MessageTransportSize
 	wireBudget := int(math.Floor(perPeerRate * engineOutboundBatchDelayBudget.Seconds()))
-	if wireBudget < maxWireDatagram {
-		return engineOutboundBounds{}, fmt.Errorf(
-			"engine outbound %s delay budget permits %d bytes at %g B/s, below one %d-byte WireGuard datagram",
-			engineOutboundBatchDelayBudget, wireBudget, perPeerRate, maxWireDatagram,
-		)
-	}
 	maxSegments := wireBudget / maxWireDatagram
+	if maxSegments < 1 {
+		maxSegments = 1
+	}
 	if maxSegments > conn.IdealBatchSize {
 		maxSegments = conn.IdealBatchSize
 	}
@@ -575,16 +585,16 @@ func deriveEngineOutboundBounds(
 			"engine outbound BDP plus whole-batch admission limit overflows int",
 		)
 	}
-	admissionLimit := dataBudgetBytes + wholeBatchBytes
-	serviceTime := time.Duration(
+	serviceNanoseconds := math.Ceil(
 		float64(wholeBatchBytes) / perPeerRate * float64(time.Second),
 	)
-	if serviceTime > engineOutboundBatchDelayBudget {
-		return engineOutboundBounds{}, fmt.Errorf(
-			"engine outbound maximum batch service time %s exceeds %s",
-			serviceTime, engineOutboundBatchDelayBudget,
+	if serviceNanoseconds > float64(math.MaxInt64) {
+		return engineOutboundBounds{}, errors.New(
+			"engine outbound maximum batch service time overflows duration",
 		)
 	}
+	admissionLimit := dataBudgetBytes + wholeBatchBytes
+	serviceTime := time.Duration(serviceNanoseconds)
 	return engineOutboundBounds{
 		AdmissionLimitBytes: admissionLimit,
 		GSOMaxSize:          maxSegments * currentMTU,
