@@ -3237,7 +3237,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				}
 				if dataLossFeedback != nil && pr.dataLoss != nil && pr.contracts != nil &&
 					accepted.Acceptance != telemetry.ProbeBootstrap {
-					session, contractID, ok := pr.contracts.localOfferIdentity()
+					session, contractID, ok := pr.contracts.localDataLossIdentity()
 					if ok &&
 						dataLossFeedback.ObservedSessionID == session &&
 						dataLossFeedback.ContractID == contractID {
@@ -4079,7 +4079,7 @@ func (m *Multipath) dataPathLossLocked(peer *peerState, now time.Time) (float64,
 	if pathIndex < 0 || pathIndex >= len(peer.paths) {
 		return 0, 0
 	}
-	session, contractID, haveOffer := peer.contracts.localOfferIdentity()
+	session, contractID, haveOffer := peer.contracts.localDataLossIdentity()
 	if !haveOffer {
 		return probeLoss, probeCount
 	}

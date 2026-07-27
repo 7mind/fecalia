@@ -77,6 +77,34 @@ func TestDataLossFeedbackRejectsReplayWrongIdentityAndStaleSample(t *testing.T) 
 	}
 }
 
+func TestDataLossFeedbackIdentityRemainsOnAcknowledgedLeaseDuringRenewal(t *testing.T) {
+	clock := newFakeClock()
+	contracts := newRecoveryContractCoordinator(11, clock)
+	if err := contracts.begin(true, 125*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	acknowledged := acknowledgeCurrentContract(t, contracts, 0, 1)
+
+	clock.advance(telemetry.RecoveryContractLifetime - recoveryRenewBefore + time.Nanosecond)
+	renewal := contracts.offerSnapshot()
+	if renewal.message.ContractID == acknowledged.ContractID {
+		t.Fatal("precondition: recovery contract did not rotate for renewal")
+	}
+
+	session, contractID, ok := contracts.localDataLossIdentity()
+	if !ok {
+		t.Fatal("DATA-loss identity unavailable during renewal")
+	}
+	if session != 11 || contractID != acknowledged.ContractID {
+		t.Fatalf(
+			"DATA-loss identity during renewal = (%d, %d), want acknowledged lease (11, %d)",
+			session,
+			contractID,
+			acknowledged.ContractID,
+		)
+	}
+}
+
 func TestDataLossFeedbackRetainsFreshLossAcrossNextCleanInterval(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	feedback := &dataLossFeedbackCoordinator{}

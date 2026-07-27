@@ -370,6 +370,10 @@ func (c *recoveryContractCoordinator) localOfferIdentity() (session uint64, cont
 	return c.session, c.offer.message.ContractID, true
 }
 
+func (c *recoveryContractCoordinator) localDataLossIdentity() (session uint64, contractID uint64, ok bool) {
+	return c.localOfferIdentity()
+}
+
 func (c *recoveryContractCoordinator) reserveReceivedPublication(
 	snapshot receivedRecoverySnapshot,
 	validate func() bool,
