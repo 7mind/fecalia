@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
 	"testing"
 )
 
@@ -20,6 +24,16 @@ const nsEnvMarker = "WANBOND_E2E_NS"
 // netem. The PID-addressed peer namespace in netns.go needs no writable
 // /run/netns, so this works in both environments.
 func TestMain(m *testing.M) {
+	if pidPath := os.Getenv(netnsHolderHelperPIDPathEnv); pidPath != "" && filepath.Base(os.Args[0]) == "unshare" {
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, "e2e: write holder helper PID:", err)
+			os.Exit(2)
+		}
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM)
+		<-signals
+		os.Exit(0)
+	}
 	if os.Getenv(nsEnvMarker) == "" {
 		self, err := os.Executable()
 		if err != nil {
