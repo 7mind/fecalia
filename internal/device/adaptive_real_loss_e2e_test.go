@@ -69,8 +69,21 @@ func TestMain(m *testing.M) {
 		args = append(args, "--", self)
 		args = append(args, os.Args[1:]...)
 
+		deviceTXQuota, err := linuxDeviceTXQuota()
+		if err != nil {
+			fmt.Fprintln(
+				os.Stderr,
+				"device e2e: cannot read effective device TX quota:",
+				err,
+			)
+			os.Exit(1)
+		}
 		cmd := exec.Command("unshare", args...)
-		cmd.Env = append(os.Environ(), h96NSEnvMarker+"=1")
+		cmd.Env = append(
+			os.Environ(),
+			h96NSEnvMarker+"=1",
+			nativeTUNDeviceTXQuotaEnv+"="+strconv.Itoa(deviceTXQuota),
+		)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		err = cmd.Run()
 		if err == nil {

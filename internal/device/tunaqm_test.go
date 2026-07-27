@@ -10,7 +10,10 @@ import (
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
 
-const tunAQMTxQueueLen = 32
+const (
+	tunAQMTxQueueLen    = 32
+	tunAQMDeviceTXQuota = 64
+)
 
 type memoryTUNAQMKernel struct {
 	actual   tunAQMActualState
@@ -20,6 +23,11 @@ type memoryTUNAQMKernel struct {
 type recordingTUNAQMKernel struct {
 	memoryTUNAQMKernel
 	events []string
+}
+
+type externalQuotaTUNAQMKernel struct {
+	memoryTUNAQMKernel
+	deviceTXQuota int
 }
 
 func (k *recordingTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
@@ -40,6 +48,7 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult,
 		LimitBytes:         target.QueueLimitBytes,
 		GSOMaxSize:         target.GSOMaxSize,
 		GSOMaxSegments:     target.GSOMaxSegments,
+		DeviceTXQuota:      target.DeviceTXQuota,
 		ObservedAt:         time.Now(),
 	}
 	return tunAQMApplyResult{}, nil
@@ -47,6 +56,20 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult,
 
 func (k *memoryTUNAQMKernel) Read() (tunAQMActualState, error) {
 	return k.actual, nil
+}
+
+func (k *externalQuotaTUNAQMKernel) Apply(
+	target tunAQMTargetState,
+) (tunAQMApplyResult, error) {
+	result, err := k.memoryTUNAQMKernel.Apply(target)
+	k.actual.DeviceTXQuota = k.deviceTXQuota
+	return result, err
+}
+
+func (k *externalQuotaTUNAQMKernel) Read() (tunAQMActualState, error) {
+	actual := k.actual
+	actual.DeviceTXQuota = k.deviceTXQuota
+	return actual, nil
 }
 
 type deferredTUNAQMKernel struct {
@@ -57,6 +80,7 @@ func (k *deferredTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResul
 	k.actual.RateBytesPerSecond = target.RateBytesPerSecond
 	k.actual.BurstBytes = target.BurstBytes
 	k.actual.TxQueueLen = target.TxQueueLen
+	k.actual.DeviceTXQuota = target.DeviceTXQuota
 	k.actual.ObservedAt = time.Now()
 	if target.QueueLimitBytes < k.actual.LimitBytes &&
 		k.actual.BacklogBytes > target.QueueLimitBytes {
@@ -82,6 +106,7 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 		Epoch: 4, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
+		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	first, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -116,6 +141,48 @@ func TestTUNAQMReconciliationContractDummy(t *testing.T) {
 	testTUNAQMReconciliationContract(t, &memoryTUNAQMKernel{})
 }
 
+func TestTUNAQMExternalDeviceTXQuotaDriftRequiresRefreshedTarget(t *testing.T) {
+	kernel := &externalQuotaTUNAQMKernel{deviceTXQuota: 64}
+	reconciler, err := newTUNAQMReconciler(kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := tunAQMTargetState{
+		Epoch: 4, RateBytesPerSecond: 680_000, TxQueueLen: 65,
+		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
+		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
+		DeviceTXQuota: 64,
+	}
+	initial, err := reconciler.Reconcile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !initial.Actual.Fresh || initial.Actual.DeviceTXQuota != 64 {
+		t.Fatalf("initial quota readback = %+v", initial)
+	}
+
+	kernel.deviceTXQuota = 128
+	stale, err := reconciler.Reconcile(target)
+	if err == nil {
+		t.Fatal("cached device TX quota target remained fresh after external drift")
+	}
+	if stale.Actual.Fresh || stale.Actual.DeviceTXQuota != 128 {
+		t.Fatalf("external quota drift was not published as stale: %+v", stale)
+	}
+
+	target.DeviceTXQuota = 128
+	target.TxQueueLen = 129
+	converged, err := reconciler.Reconcile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !converged.Actual.Fresh ||
+		converged.Actual.DeviceTXQuota != 128 ||
+		converged.Actual.TxQueueLen != 129 {
+		t.Fatalf("refreshed quota target did not converge: %+v", converged)
+	}
+}
+
 func TestTUNAQMUsesByteBoundedLeaf(t *testing.T) {
 	kernel := &memoryTUNAQMKernel{}
 	reconciler, err := newTUNAQMReconciler(kernel)
@@ -126,6 +193,7 @@ func TestTUNAQMUsesByteBoundedLeaf(t *testing.T) {
 		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
+		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	snapshot, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -141,6 +209,7 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: 100,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 80_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 20_000,
+		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	newTransition := func(t *testing.T, admissionApplied *bool) (
 		*tunAQMTransition,
@@ -272,6 +341,7 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 			LimitBytes:         65_000,
 			GSOMaxSize:         13_950,
 			GSOMaxSegments:     10,
+			DeviceTXQuota:      tunAQMDeviceTXQuota,
 			QueueLength:        61,
 			BacklogBytes:       83_645,
 			ObservedAt:         time.Now(),
@@ -285,6 +355,7 @@ func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T)
 		Epoch: 5, RateBytesPerSecond: 600_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 60_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
+		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	deferred, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -330,7 +401,7 @@ func TestTUNAQMQueueGeometryCoversRingAndManagedLeafServiceWindows(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			got, err := deriveTUNAQMQueueGeometry(
 				test.rate, test.window, test.peerCount, test.gsoBytes,
-				engineOutboundBatchDelayBudget, 1395, 1395,
+				engineOutboundBatchDelayBudget, 1395, 1395, 1,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -365,6 +436,7 @@ func TestTUNAQMLeafBacklogBoundIsIndependentOfPacketSize(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		mtu,
 		mtu,
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -405,6 +477,7 @@ func TestTUNAQMRingIsOnlyTransientFullMTUHandoff(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		mtu,
 		mtu,
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -426,6 +499,38 @@ func TestTUNAQMRingIsOnlyTransientFullMTUHandoff(t *testing.T) {
 	}
 }
 
+func TestTUNAQMRingCoversEffectiveDeviceTXQuota(t *testing.T) {
+	const (
+		rateBytesPerSecond = 1_020_000
+		admissionBytes     = 60_000
+		mtu                = 1395
+		gsoBytes           = 19_530
+		deviceTXQuota      = 64
+	)
+	geometry, err := deriveTUNAQMQueueGeometry(
+		rateBytesPerSecond,
+		admissionBytes,
+		1,
+		gsoBytes,
+		engineOutboundBatchDelayBudget,
+		mtu,
+		mtu,
+		deviceTXQuota,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.DeviceTXQuota != deviceTXQuota ||
+		geometry.RingSlots != deviceTXQuota+tunRingImplementationGuardSlots {
+		t.Fatalf(
+			"device TX quota geometry = %+v, want quota=%d ring=%d",
+			geometry,
+			deviceTXQuota,
+			deviceTXQuota+tunRingImplementationGuardSlots,
+		)
+	}
+}
+
 func TestTUNAQMHTBBurstHasExactTCTextReadback(t *testing.T) {
 	geometry, err := deriveTUNAQMQueueGeometry(
 		680_000,
@@ -435,6 +540,7 @@ func TestTUNAQMHTBBurstHasExactTCTextReadback(t *testing.T) {
 		engineOutboundBatchDelayBudget,
 		1395,
 		1395,
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -530,6 +636,7 @@ func TestTUNAQMRingAndLeafServiceBoundUsesFullMTUPackets(t *testing.T) {
 		bounds.MaxBatchServiceTime,
 		mtu,
 		mtu,
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -657,6 +764,7 @@ func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatch(t *testing.T) {
 		got.MaxBatchServiceTime,
 		mtu,
 		mtu,
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -690,6 +798,7 @@ func TestTUNAQMFailedReconciliationPublishesObservedActualAsStale(t *testing.T) 
 		Epoch: 9, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		BurstBytes: 13_950, MTU: 1395, QueueLimitBytes: 65_000,
 		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
+		DeviceTXQuota: tunAQMDeviceTXQuota,
 	}
 	snapshot, err := reconciler.Reconcile(target)
 	if err == nil {

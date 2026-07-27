@@ -560,3 +560,47 @@ func TestControllerIngressPressureBacksOffAndRecoversAfterSettledCleanRun(t *tes
 		t.Fatalf("carrier reset ingress state = %+v", reset)
 	}
 }
+
+func TestControllerUnloadedRingPendingDoesNotReduceIngressHeadroom(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 3, Generation: 9}
+	at := time.Unix(450, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: initial.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unloaded, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:          at.Add(2 * time.Second),
+			Epoch:       epoch,
+			Interval:    time.Second,
+			RingPending: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unloaded.IngressPressure ||
+		unloaded.Target != initial.Target ||
+		unloaded.IngressHeadroomChanges != 0 {
+		t.Fatalf(
+			"unloaded ring occupancy changed ingress control state: initial=%+v unloaded=%+v",
+			initial,
+			unloaded,
+		)
+	}
+}

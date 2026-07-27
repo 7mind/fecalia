@@ -69,6 +69,9 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	txQueueChanges := 0
 	gsoChanges := 0
 	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
+	kernel.readDeviceTXQuota = func() (int, error) {
+		return tunAQMDeviceTXQuota, nil
+	}
 	kernel.readTxQueueLen = func() (int, error) {
 		return tunAQMTxQueueLen, nil
 	}
@@ -130,6 +133,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
+		DeviceTXQuota:       tunAQMDeviceTXQuota,
 	}
 	if _, err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
@@ -172,6 +176,7 @@ func TestLinuxTUNAQMParameterChangePreservesLiveLeaf(t *testing.T) {
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
+		DeviceTXQuota:       tunAQMDeviceTXQuota,
 	}
 	if _, err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
@@ -210,6 +215,7 @@ func TestLinuxTUNAQMDefersQueueLimitShrinkBelowBacklog(t *testing.T) {
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
+		DeviceTXQuota:       tunAQMDeviceTXQuota,
 	}
 	if _, err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
@@ -236,6 +242,7 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 		GSOMaxSize:          12_555,
 		GSOMaxSegments:      9,
 		AdmissionLimitBytes: 14_270,
+		DeviceTXQuota:       tunAQMDeviceTXQuota,
 	}
 	result, err := kernel.Apply(target)
 	if err != nil {
@@ -278,6 +285,7 @@ func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
 		GSOMaxSize:          13_950,
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
+		DeviceTXQuota:       tunAQMDeviceTXQuota,
 	}
 	deferred, err := kernel.Apply(target)
 	if err != nil {
@@ -315,6 +323,9 @@ func testLinuxTUNAQMKernel(
 ) *linuxTUNAQMKernel {
 	t.Helper()
 	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
+	kernel.readDeviceTXQuota = func() (int, error) {
+		return tunAQMDeviceTXQuota, nil
+	}
 	kernel.readTxQueueLen = func() (int, error) {
 		return tunAQMTxQueueLen, nil
 	}

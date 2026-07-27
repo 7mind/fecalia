@@ -311,8 +311,9 @@ func (c *Controller) ObserveIngressPressure(
 	c.snapshot.IngressPressureRatio =
 		float64(actual.AdmissionWaitDuration) / float64(actual.Interval)
 	c.snapshot.IngressPressure =
-		actual.RingPending ||
-			c.snapshot.IngressPressureRatio >= ingressPressureThreshold
+		actual.Loaded &&
+			(actual.RingPending ||
+				c.snapshot.IngressPressureRatio >= ingressPressureThreshold)
 	if c.snapshot.IngressPressure {
 		c.cleanIngressIntervals = 0
 	} else if !actual.Loaded {

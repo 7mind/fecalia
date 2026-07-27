@@ -635,6 +635,8 @@ type TUNAQMSnapshot struct {
 	ActualGSOMaxSegments      int
 	TargetAdmissionLimitBytes int
 	ActualAdmissionLimitBytes int
+	TargetDeviceTXQuota       int
+	ActualDeviceTXQuota       int
 	ActualFresh               bool
 	RateFresh                 bool
 	ActualQueueLengthPackets  int
@@ -746,6 +748,8 @@ type collector struct {
 	tunAQMActualHTBBurst       *prometheus.Desc
 	tunAQMTargetQueue          *prometheus.Desc
 	tunAQMActualQueue          *prometheus.Desc
+	tunAQMTargetDeviceTXQuota  *prometheus.Desc
+	tunAQMActualDeviceTXQuota  *prometheus.Desc
 	tunAQMTargetEpoch          *prometheus.Desc
 	tunAQMActualEpoch          *prometheus.Desc
 	tunAQMTargetLimit          *prometheus.Desc
@@ -1090,6 +1094,8 @@ func NewCollector(src Source) prometheus.Collector {
 		tunAQMActualHTBBurst:       desc(tunAQMSubsystem, "actual_htb_burst_bytes", "Kernel-read-back HTB direct/dequeue burst guard in bytes.", nil),
 		tunAQMTargetQueue:          desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN ptr-ring slot capacity for transient batched handoff.", nil),
 		tunAQMActualQueue:          desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN ptr-ring slot capacity.", nil),
+		tunAQMTargetDeviceTXQuota:  desc(tunAQMSubsystem, "target_device_tx_quota_packets", "Effective Linux device TX scheduler packet quota used to derive the requested TUN ptr-ring capacity.", nil),
+		tunAQMActualDeviceTXQuota:  desc(tunAQMSubsystem, "actual_device_tx_quota_packets", "Kernel-read-back effective Linux device TX scheduler packet quota.", nil),
 		tunAQMTargetEpoch:          desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
 		tunAQMActualEpoch:          desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
 		tunAQMTargetLimit:          desc(tunAQMSubsystem, "target_queue_limit_bytes", "Requested byte-bounded TUN leaf limit derived from the admitted service backlog.", nil),
@@ -1203,6 +1209,8 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMActualHTBBurst
 	ch <- c.tunAQMTargetQueue
 	ch <- c.tunAQMActualQueue
+	ch <- c.tunAQMTargetDeviceTXQuota
+	ch <- c.tunAQMActualDeviceTXQuota
 	ch <- c.tunAQMTargetEpoch
 	ch <- c.tunAQMActualEpoch
 	ch <- c.tunAQMTargetLimit
@@ -1370,6 +1378,8 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualHTBBurst, prometheus.GaugeValue, float64(snapshot.ActualHTBBurstBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetQueue, prometheus.GaugeValue, float64(snapshot.TargetTxQueueLen))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueue, prometheus.GaugeValue, float64(snapshot.ActualTxQueueLen))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetDeviceTXQuota, prometheus.GaugeValue, float64(snapshot.TargetDeviceTXQuota))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualDeviceTXQuota, prometheus.GaugeValue, float64(snapshot.ActualDeviceTXQuota))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetEpoch, prometheus.GaugeValue, float64(snapshot.TargetEpoch))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualEpoch, prometheus.GaugeValue, float64(snapshot.ActualEpoch))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetLimit, prometheus.GaugeValue, float64(snapshot.TargetQueueLimitBytes))
