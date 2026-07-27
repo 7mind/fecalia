@@ -106,6 +106,20 @@ func TestDataLossFeedbackRetainsFreshLossAcrossNextCleanInterval(t *testing.T) {
 			want,
 		)
 	}
+
+	clean.ReportID++
+	expiredAt := now.Add(dataLossFeedbackFreshness + time.Nanosecond)
+	if !feedback.accept(clean, 21, false, expiredAt) {
+		t.Fatal("clean interval after retained-loss freshness was rejected")
+	}
+	if loss, fresh, ever := feedback.sample(
+		lost.CarrierPathID,
+		lost.ObservedSessionID,
+		lost.ContractID,
+		expiredAt,
+	); !fresh || !ever || loss != 0 {
+		t.Fatalf("post-freshness sample = loss %v fresh %v ever %v, want clean fresh sample", loss, fresh, ever)
+	}
 }
 
 func TestDataLossFeedbackIsPerPeer(t *testing.T) {

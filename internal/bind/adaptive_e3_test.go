@@ -434,7 +434,7 @@ func TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss(t *testing.T) 
 	if got := sender.PeerSnapshots()[0].FEC.Adaptive.Parity; got < raised {
 		t.Fatalf("clean DATA shed parity inside dwell: got %d want at least %d", got, raised)
 	}
-	driveClean(35)
+	driveClean(38) // include the bounded two-probe retention before clean EWMA/dwell
 	if got := sender.PeerSnapshots()[0].FEC.Adaptive.Parity; got != 0 {
 		t.Fatalf("clean DATA parity after dwell = %d, want 0", got)
 	}

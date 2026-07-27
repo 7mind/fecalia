@@ -1708,7 +1708,12 @@ or before the epoch's first native sequence belong to the prior/transition
 interval and are excluded from the new carrier's report. This prevents a
 failover frame from charging old-carrier gaps to the fresh carrier while
 preserving later native-carrier loss. A report remains fresh for two probe
-intervals. For one matching stable carrier, the controller observes the
+intervals. Within that bound, a lower-loss report for the same
+session/contract/carrier epoch cannot overwrite a fresher higher-loss report
+before the controller samples it. Replay high-water still advances, while the
+retained report keeps its original acceptance time; independent publication and
+controller phases therefore cannot erase loss or refresh it indefinitely. For
+one matching stable carrier, the controller observes the
 conservative maximum of DATA loss and that carrier's probe loss. Once the peer
 has demonstrated this capability, stale or path/session/contract-mismatched
 evidence produces the count-zero **HOLD** branch; clean priority PROBEs cannot

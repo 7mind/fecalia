@@ -310,7 +310,10 @@ deliberate boundaries you must plan around:
   evidence under ordered or reordered delivery. Stale, replayed, wrong-peer, or
   path-transition evidence cannot drive parity: only an accepted native DATA
   frame starts a carrier epoch, and final/recovered outcomes from before that
-  sequence do not enter the new carrier's interval. After capability adoption,
+  sequence do not enter the new carrier's interval.
+  A lower-loss same-epoch report cannot erase a still-fresh higher-loss report;
+  the retained maximum keeps its original expiry, so cadence phase cannot hide
+  loss or extend evidence indefinitely. After capability adoption,
   missing current evidence holds the existing controller state. Peers that never
   send DATA feedback retain probe-loss adaptation.
   Weighted multi-carrier scheduling deliberately retains its existing weighted

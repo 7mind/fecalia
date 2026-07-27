@@ -162,10 +162,20 @@ func (c *dataLossFeedbackCoordinator) accept(
 	}
 	c.lastReportID = report.ReportID
 	c.lastCarrierGen = report.CarrierGeneration
-	c.accepted = acceptedDataLossFeedback{
-		report:          report,
-		reporterSession: reporterSession,
-		acceptedAt:      now,
+	retainFreshLoss := c.haveAccepted &&
+		c.accepted.reporterSession == reporterSession &&
+		c.accepted.report.ObservedSessionID == report.ObservedSessionID &&
+		c.accepted.report.ContractID == report.ContractID &&
+		c.accepted.report.CarrierPathID == report.CarrierPathID &&
+		c.accepted.report.CarrierGeneration == report.CarrierGeneration &&
+		now.Sub(c.accepted.acceptedAt) <= dataLossFeedbackFreshness &&
+		c.accepted.report.Loss() > report.Loss()
+	if !retainFreshLoss {
+		c.accepted = acceptedDataLossFeedback{
+			report:          report,
+			reporterSession: reporterSession,
+			acceptedAt:      now,
+		}
 	}
 	c.haveAccepted = true
 	c.everAccepted = true
