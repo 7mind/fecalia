@@ -515,8 +515,10 @@ Common rules, either policy:
   GSO backlog, or peer-retained engine bytes do not yet fit the new bound.
   While an occupied GSO shrink remains deferred, the effective `bfifo` limit
   stays at its installed aggregate value (one old atomic quantum per peer) and
-  the normalized HTB burst stays at least the installed link GSO maximum; all
-  three shrink to the requested geometry after drain.
+  the normalized HTB burst stays at least the installed link GSO maximum.
+  After drain, the smaller GSO limits install and read back first; a second
+  qdisc occupancy read permits the leaf/burst shrink only while still empty.
+  A new arrival retains the old leaf/burst for a later reconciliation.
   The ptr-ring capacity instead retains the maximum of the observed interface
   baseline, later larger readbacks, and derived `J+1` for the live interface.
   The daemon writes only to grow an undersized ring and never shrinks it until

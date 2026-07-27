@@ -248,7 +248,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   until every peer's retained bytes fit. While GSO shrink waits, the installed
   aggregate leaf remains unchanged (preserving one old atomic quantum per
   peer), and the normalized HTB burst remains at least the installed link GSO
-  maximum. Repeated exact readbacks of
+  maximum. After drain, the smaller GSO limits install first; the daemon
+  re-reads qdisc occupancy and shrinks the leaf and burst only if it remains
+  empty. A post-GSO-write arrival keeps both at their old values for a later
+  reconciliation. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The plaintext byte leaf
   is independent of the outer/engine admission window: it admits the greater

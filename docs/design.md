@@ -617,11 +617,14 @@ rate can still receive its exact epoch acknowledgment during one of these safe
 capacity deferrals. While GSO shrink waits, the effective `bfifo` limit remains
 at its installed aggregate value, preserving one old atomic quantum per peer,
 and the normalized HTB burst remains at least the installed link GSO maximum.
-After drain, all three shrink to the desired geometry together. Full
-`actual_fresh` remains false while `rate_fresh` is true. A target rate or MTU
-change may therefore resize the pre-TUN GSO limits and per-peer engine byte gate
-without discarding admitted traffic while retaining the nominal 20 ms
-complete-batch bound, its one-datagram low-rate exception, and one BDP.
+After drain, shrink uses two phases: install and read back the smaller GSO
+limits while the old leaf/burst remain safe, then re-read qdisc occupancy.
+Only a still-empty qdisc permits the leaf/burst shrink; a new arrival retains
+both old values until a later reconciliation. Full `actual_fresh` remains false
+while `rate_fresh` is true. A target rate or MTU change may therefore resize
+the pre-TUN GSO limits and per-peer engine byte gate without discarding admitted
+traffic while retaining the nominal 20 ms complete-batch bound, its
+one-datagram low-rate exception, and one BDP.
 
 Each controller target retargets the same live outer shaper before the TUN
 target publishes: only future admissions use the new rate, admitted deadlines

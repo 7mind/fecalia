@@ -524,6 +524,11 @@ as historical exact-byte-shaper evidence.
       capacity must read back before the engine value rises. All deferred
       gauges must return to zero after drain, with exact target/actual readback
       and no new qdisc or link drop.
+- [ ] For a drained GSO reduction, verify the smaller GSO limits write and
+      read back before any HTB burst or `bfifo` reduction. Inject one queued
+      packet at the GSO-write seam: the subsequent occupancy read must retain
+      the old aggregate leaf and burst for that reconciliation. Drain it and
+      verify a later reconciliation applies the exact desired leaf and burst.
 - [ ] Confirm the plaintext `bfifo` target equals
       `max(peerCount*gso_max_size,ceil(ingress_target*20ms))` and its persistent
       service time does not exceed
