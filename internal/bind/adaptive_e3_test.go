@@ -440,6 +440,267 @@ func TestAdaptiveControllerUsesAuthenticatedActiveCarrierDataLoss(t *testing.T) 
 	}
 }
 
+func TestAdaptiveControllerFailoverStartsNewDataLossCarrierEpoch(t *testing.T) {
+	psk := testKey(t, 0x5a)
+	clk := newFakeClock()
+	fc, ac := residualAdaptiveFECConfigs()
+	sender, senderProbers := newAdaptiveProbingMultipathCfg(t, 2, psk, clk, 0, fc, ac)
+	receiver, receiverProbers := newAdaptiveProbingMultipathCfg(t, 2, psk, clk, 0, fc, ac)
+	if _, _, err := sender.Open(0); err != nil {
+		t.Fatalf("open sender: %v", err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	if _, _, err := receiver.Open(0); err != nil {
+		t.Fatalf("open receiver: %v", err)
+	}
+	t.Cleanup(func() { _ = receiver.Close() })
+
+	for i := range 2 {
+		bringProberUpClean(t, senderProbers[i], psk, clk, 40)
+		bringProberUpClean(t, receiverProbers[i], psk, clk, 40)
+		sender.paths[i].setRemote(leftAddrPort(t, receiver.paths[i].conn))
+		receiver.paths[i].setRemote(leftAddrPort(t, sender.paths[i].conn))
+	}
+	for i := range 2 {
+		recordRecoveryRTTSample(t, senderProbers[i], psk, clk, testProbeRTT)
+		recordRecoveryRTTSample(t, receiverProbers[i], psk, clk, testProbeRTT)
+	}
+	joinNegotiatingPeers(t, sender, receiver)
+	waitForRecoveryCondition(t, func() bool {
+		s := receiver.contracts.receivedSnapshot()
+		return s.present && s.acked && !s.invalid && len(s.venues) == 2
+	})
+	contractBefore := receiver.contracts.receivedSnapshot()
+	receiver.refreshPeerRecoveryWindow(receiver.peerState)
+	if stats := receiver.contracts.stats().Receiver; !stats.FastEligible {
+		t.Fatalf("initial recovery contract = %+v, want fast eligibility", stats)
+	}
+	assertDataPath := func(m *Multipath, want int) {
+		t.Helper()
+		m.scheduler.Recompute()
+		got := m.scheduler.DataPaths()
+		if len(got) != 1 || got[0].Index != want || got[0].Weight != 1 {
+			t.Fatalf("DATA paths = %+v, want only index %d at weight 1", got, want)
+		}
+	}
+	assertDataPath(sender, 0)
+	assertDataPath(receiver, 0)
+
+	codec, err := frame.NewCodec(psk)
+	if err != nil {
+		t.Fatalf("build frame codec: %v", err)
+	}
+	nextSeq := uint64(1)
+	nextGroup := uint32(1)
+	deliver := func(pathIndex int, value frame.Frame) {
+		t.Helper()
+		raw, encodeErr := codec.Encode(nil, value)
+		if encodeErr != nil {
+			t.Fatalf("encode synthetic frame: %v", encodeErr)
+		}
+		decoded, decodeErr := codec.Decode(raw)
+		if decodeErr != nil {
+			t.Fatalf("decode synthetic frame: %v", decodeErr)
+		}
+		receiver.dispatchInbound(
+			receiver.paths[pathIndex],
+			decoded,
+			raw,
+			leftAddrPort(t, sender.paths[pathIndex].conn),
+		)
+	}
+	deliverNativeGroup := func(pathIndex, dropIndex int) {
+		t.Helper()
+		for i := range fc.DataShards {
+			seq := nextSeq
+			nextSeq++
+			if i == dropIndex {
+				continue
+			}
+			deliver(pathIndex, frame.Data{
+				OuterSeq: seq,
+				PathID:   sender.paths[pathIndex].id,
+				FECGroup: nextGroup,
+				FECIndex: uint8(i),
+				Payload:  []byte("native-DATA"),
+			})
+		}
+		nextGroup++
+	}
+	drain := func() int {
+		t.Helper()
+		n := 0
+		for {
+			if _, ok := receiver.resequencer.Load().Pop(); !ok {
+				return n
+			}
+			n++
+		}
+	}
+	expireGap := func() {
+		t.Helper()
+		drain()
+		deadline, armed := receiver.resequencer.Load().ArmedDeadline()
+		if !armed {
+			t.Fatal("missing DATA gap did not arm resequencer deadline")
+		}
+		clk.advance(deadline.Sub(clk.Now()))
+		drain()
+	}
+	reportID := func() uint64 {
+		sender.dataLoss.mu.Lock()
+		defer sender.dataLoss.mu.Unlock()
+		return sender.dataLoss.lastReportID
+	}
+	feedback := func() telemetry.DataLossFeedback {
+		t.Helper()
+		before := reportID()
+		revisions := make([]uint64, len(receiverProbers))
+		for i, prober := range receiverProbers {
+			revisions[i] = prober.RecoveryRTT().Revision
+		}
+		receiver.emitProbes()
+		waitForRecoveryCondition(t, func() bool {
+			if reportID() <= before {
+				return false
+			}
+			for i, prober := range receiverProbers {
+				if prober.RecoveryRTT().Revision <= revisions[i] {
+					return false
+				}
+			}
+			return true
+		})
+		sender.dataLoss.mu.Lock()
+		defer sender.dataLoss.mu.Unlock()
+		return sender.dataLoss.accepted.report
+	}
+
+	skipped := receiver.resequencer.Load().Stats().Skipped
+	deliverNativeGroup(0, 1)
+	expireGap()
+	if got := receiver.resequencer.Load().Stats().Skipped; got != skipped+1 {
+		t.Fatalf("primary DATA loss skipped = %d, want %d", got, skipped+1)
+	}
+	primaryReport := feedback()
+	if primaryReport.CarrierPathID != sender.paths[0].id || primaryReport.Lost != 1 {
+		t.Fatalf("primary DATA-loss report = %+v, want one primary loss", primaryReport)
+	}
+
+	clk.advance(testProbeDownAfter - time.Millisecond)
+	recordRecoveryRTTSample(t, senderProbers[1], psk, clk, testProbeRTT)
+	recordRecoveryRTTSample(t, receiverProbers[1], psk, clk, testProbeRTT)
+	for _, probers := range [][]*telemetry.Prober{senderProbers, receiverProbers} {
+		probers[0].Tick()
+		probers[1].Tick()
+	}
+	assertDataPath(sender, 1)
+	assertDataPath(receiver, 1)
+	receiver.refreshPeerRecoveryWindow(receiver.peerState)
+	contractAfter := receiver.contracts.receivedSnapshot()
+	if contractAfter.message.ContractID != contractBefore.message.ContractID ||
+		contractAfter.generation != contractBefore.generation {
+		t.Fatalf("failover changed recovery contract identity: before=%+v after=%+v", contractBefore, contractAfter)
+	}
+	if stats := receiver.contracts.stats().Receiver; !stats.FastEligible {
+		t.Fatalf("backup recovery contract = %+v, want fast eligibility", stats)
+	}
+
+	clk.advance(adaptiveControlInterval)
+	sender.driveAdaptiveController(sender.peerState)
+	if got := sender.PeerSnapshots()[0].FEC.Adaptive.Parity; got != 0 {
+		t.Fatalf("primary-epoch loss raised backup parity to %d, want M=0", got)
+	}
+
+	deliverNativeGroup(1, -1)
+	drain()
+	backupClean := feedback()
+	if backupClean.CarrierPathID != sender.paths[1].id ||
+		backupClean.CarrierGeneration <= primaryReport.CarrierGeneration ||
+		backupClean.Lost != 0 {
+		t.Fatalf("first backup DATA outcome = %+v, want a new clean carrier epoch", backupClean)
+	}
+
+	skipped = receiver.resequencer.Load().Stats().Skipped
+	deliverNativeGroup(1, 1)
+	expireGap()
+	if got := receiver.resequencer.Load().Stats().Skipped; got != skipped+1 {
+		t.Fatalf("unprotected backup DATA loss skipped = %d, want %d", got, skipped+1)
+	}
+	backupLoss := feedback()
+	if backupLoss.CarrierPathID != sender.paths[1].id ||
+		backupLoss.CarrierGeneration != backupClean.CarrierGeneration ||
+		backupLoss.Lost != 1 {
+		t.Fatalf("backup DATA-loss report = %+v, want one loss in backup epoch", backupLoss)
+	}
+	for i, prober := range senderProbers {
+		if got := prober.Estimate().Loss; got != 0 {
+			t.Fatalf("sender priority-PROBE loss on path %d = %v, want 0", i, got)
+		}
+	}
+	clk.advance(adaptiveControlInterval)
+	sender.driveAdaptiveController(sender.peerState)
+	adaptive := sender.PeerSnapshots()[0].FEC.Adaptive
+	if adaptive.EligiblePaths != 1 || adaptive.EligibleLoss <= 0 || adaptive.Parity <= 0 {
+		t.Fatalf("adaptive state after backup DATA loss = %+v, want positive loss and M>0", adaptive)
+	}
+
+	// The preceding M=0 loss creates the feedback that raises parity; only this
+	// subsequent backup loss can receive FEC protection.
+	encoder, err := fec.NewEncoder(fc, clk)
+	if err != nil {
+		t.Fatalf("build recovery encoder: %v", err)
+	}
+	if err := encoder.SetNextGroup(fec.GroupID(nextGroup)); err != nil {
+		t.Fatalf("set recovery group: %v", err)
+	}
+	encoder.SetParity(adaptive.Parity)
+	recoveredBefore := receiver.PeerSnapshots()[0].FEC.Recovered
+	skippedBefore := receiver.resequencer.Load().Stats().Skipped
+	var parity []fec.ParityShard
+	for i := range fc.DataShards {
+		seq := nextSeq
+		nextSeq++
+		dataShard, generated, admitErr := encoder.Admit(fecShardPayload(seq, []byte("protected-backup-DATA")))
+		if admitErr != nil {
+			t.Fatalf("admit protected DATA %d: %v", i, admitErr)
+		}
+		if i != 1 {
+			deliver(1, frame.Data{
+				OuterSeq: seq,
+				PathID:   sender.paths[1].id,
+				FECGroup: uint32(dataShard.Group),
+				FECIndex: uint8(dataShard.Index),
+				Payload:  []byte("protected-backup-DATA"),
+			})
+		}
+		parity = generated
+	}
+	for _, shard := range parity {
+		deliver(1, frame.Parity{
+			FECGroup:    uint32(shard.Group),
+			ParityIndex: uint16(shard.Index),
+			DataCount:   uint8(shard.DataCount),
+			PathID:      sender.paths[1].id,
+			Payload:     shard.Payload,
+		})
+	}
+	if got := drain(); got != fc.DataShards {
+		t.Fatalf("delivered protected backup DATA = %d, want %d", got, fc.DataShards)
+	}
+	if got := receiver.PeerSnapshots()[0].FEC.Recovered; got != recoveredBefore+1 {
+		t.Fatalf("recovered backup DATA = %d, want %d", got, recoveredBefore+1)
+	}
+	if got := receiver.resequencer.Load().Stats().Skipped; got != skippedBefore {
+		t.Fatalf("protected backup DATA skipped = %d, want %d", got, skippedBefore)
+	}
+
+	// Exact shaping/debit and native/recovered/final conservation remain covered
+	// by TestShapedMixedBatchSelectsAndObservesOnceWithoutLegacyAdmission,
+	// TestGeneratedProbeWritesImmediatelyBeforeExactBytePriorityDebit, and
+	// TestDataLossFeedbackConservesNativeRecoveredAndFinalOutcomes.
+}
+
 func TestAdaptiveControllerIgnoresSingleCarrierFeedbackWhileWeighted(t *testing.T) {
 	psk := testKey(t, 0x5A)
 	clk := newFakeClock()
