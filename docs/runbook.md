@@ -392,7 +392,9 @@ In summary:
   `wanbond_tun_aqm_actual_gso_max_{size_bytes,segments}` matches its target,
   `wanbond_tun_aqm_actual_fresh=1`, engine retained bytes never exceed the
   admission limit, and engine oversize batches remain zero. The engine waits
-  on a whole batch; it never splits or drops one after the TUN read.
+  on a whole batch; it never splits or drops one after the TUN read. Under
+  shaped FEC, the retained reservation transfers to the owner and releases only
+  on terminal batch completion, not on the earlier ownership acknowledgement.
 
 ## 6. Monitoring and health checks
 

@@ -728,6 +728,91 @@ func TestFailFirstShapedFECMixedPathFailureRetiresOnlyFailingGeneration(t *testi
 	}
 }
 
+type terminalCompletionSender interface {
+	SendWithCompletion([][]byte, Endpoint, func()) error
+}
+
+func TestFailFirstShapedFECCompletionFollowsTerminalEmission(t *testing.T) {
+	lg, err := log.New("error", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.PathShaperConfig{
+		RateBytesPerSecond:      10_000_000,
+		DataBurstBytes:          1472,
+		ControlReserveBytes:     1472,
+		MaxEncodedDatagramBytes: 1472,
+		ProbeRateBytesPerSecond: 1,
+		ProbeBurstBytes:         2944,
+		PriorityReserveBytes:    2944,
+	}
+	m, err := NewMultipathWithShapers(
+		loopbackPaths(1),
+		testKey(t, 0xD8),
+		&unpacedSelectionRecorder{},
+		nil,
+		nil,
+		&fec.Config{DataShards: 2, ParityShards: 1, Deadline: testFECDeadline},
+		nil,
+		config.Amnezia{},
+		[]config.PathShaperConfig{cfg},
+		lg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := &generationBlockingShaper{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	m.newPathShaper = func(shaper.Config, shaper.WriteFunc) (pathShaper, error) {
+		return blocking, nil
+	}
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	m.paths[0].setRemote(netip.MustParseAddrPort("127.0.0.1:9"))
+
+	sender, ok := any(m).(terminalCompletionSender)
+	if !ok {
+		t.Fatal("Multipath does not expose terminal batch completion")
+	}
+	completed := make(chan struct{})
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- sender.SendWithCompletion(
+			[][]byte{[]byte("completion-a"), []byte("completion-b")},
+			m.virt,
+			func() { close(completed) },
+		)
+	}()
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("shaped admission acknowledgement = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shaped send did not acknowledge ownership admission")
+	}
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shaped terminal emission did not start")
+	}
+	select {
+	case <-completed:
+		t.Fatal("completion ran before terminal emission")
+	default:
+	}
+	close(blocking.release)
+	select {
+	case <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion did not follow terminal emission")
+	}
+}
+
 func TestFailFirstShapedFECCloseDuringFallbackWriteDoesNotRetireLifecycleGeneration(t *testing.T) {
 	lg, err := log.New("error", io.Discard)
 	if err != nil {

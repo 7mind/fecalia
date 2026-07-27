@@ -656,9 +656,11 @@ Common rules, either policy:
   With active-backup pacing, `admission_{limit,retained,high_water}_bytes`,
   `admission_waits_total`, `admission_wait_seconds_total`, and
   `admission_oversize_batches_total` expose the peer-private whole-batch byte
-  gate before that queue. Retained bytes must stay at or below the limit and
-  oversize batches must remain zero after fresh GSO readback. These metrics
-  remain present with zero limits when per-path pacing is off.
+  gate. Shaped-FEC ownership keeps the reservation through the Bind's terminal
+  batch completion rather than releasing it at the earlier ownership
+  acknowledgement. Retained bytes must stay at or below the limit and oversize
+  batches must remain zero after fresh GSO readback. These metrics remain
+  present with zero limits when per-path pacing is off.
 - Active-backup pacing adds per-path
   `wanbond_path_congestion_{outer_wire,inner_data}_bytes_total`,
   `{target_outer,target_ingress,delivered}_bytes_per_second`,

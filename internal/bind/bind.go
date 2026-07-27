@@ -15,6 +15,9 @@ type (
 	// Bind is the transport the WireGuard device drives; wanbond's bonding logic
 	// lives in implementations of it.
 	Bind = conn.Bind
+	// BindBatchCompleter optionally retains a copied send batch through terminal
+	// transport completion.
+	BindBatchCompleter = conn.BindBatchCompleter
 	// Endpoint identifies a peer's transport address.
 	Endpoint = conn.Endpoint
 	// ReceiveFunc is a packet-receive callback returned by Bind.Open.

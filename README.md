@@ -234,7 +234,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   preserve the existing `fq` leaf and its state. The fair-queue limit admits
   one configured per-peer BDP plus one complete GSO batch and the 32-packet
   device queue; overload beyond that explicit bound may tail-drop and remains
-  observable.
+  observable. Shaped FEC retains the same engine admission reservation until
+  its owner batch terminally emits or fails, so ownership admission cannot
+  duplicate that backlog behind the gate.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under

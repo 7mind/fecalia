@@ -57,6 +57,14 @@ type Bind interface {
 	BatchSize() int
 }
 
+// BindBatchCompleter optionally transfers ownership of one Send batch until
+// complete runs exactly once after terminal transport completion. A return
+// from SendWithCompletion only acknowledges that the Bind copied the caller's
+// buffers. On a pre-transfer error, complete runs before return.
+type BindBatchCompleter interface {
+	SendWithCompletion(bufs [][]byte, ep Endpoint, complete func()) error
+}
+
 // BindSocketToInterface is implemented by Bind objects that support being
 // tied to a single network interface. Used by wireguard-windows.
 type BindSocketToInterface interface {

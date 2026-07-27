@@ -477,8 +477,12 @@ falling below one established ACK-clocked flight when the carrier RTT exceeds
 20 ms. The patched engine pads each container first, accounts its exact future
 encrypted bytes, then atomically waits at a peer-private byte gate immediately
 before `peer.queue.outbound`. It never splits, truncates, or drops an admitted
-TUN/GSO container. Completion or flush releases the exact reservation; peer
-stop cancels a waiter; independent peers never share a gate. Generated outer
+TUN/GSO container. A Bind that accepts asynchronous ownership transfers the
+reservation to the existing terminal batch completion; shaped FEC therefore
+releases it only after the owner has exhausted the batch and every staged frame
+has emitted or failed. Standard Binds retain synchronous release on `Send`
+return, and a pre-transfer error or engine flush releases immediately. Peer stop
+cancels a waiter; independent peers never share a gate. Generated outer
 PROBE/CONTROL still bypasses this engine queue and retains the Bind shaper's
 priority reserve.
 

@@ -117,6 +117,28 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 }
 
 func (peer *Peer) SendBuffers(buffers [][]byte) error {
+	return peer.sendBuffers(buffers, nil)
+}
+
+func (peer *Peer) SendBuffersWithCompletion(
+	buffers [][]byte,
+	complete func(),
+) error {
+	if complete == nil {
+		return errors.New("device: terminal send completion callback is required")
+	}
+	return peer.sendBuffers(buffers, complete)
+}
+
+func (peer *Peer) sendBuffers(buffers [][]byte, complete func()) error {
+	completionTransferred := false
+	if complete != nil {
+		defer func() {
+			if !completionTransferred {
+				complete()
+			}
+		}()
+	}
 	peer.device.net.RLock()
 	defer peer.device.net.RUnlock()
 
@@ -136,7 +158,17 @@ func (peer *Peer) SendBuffers(buffers [][]byte) error {
 	}
 	peer.endpoint.Unlock()
 
-	err := peer.device.net.bind.Send(buffers, endpoint)
+	var err error
+	if complete != nil {
+		if completer, ok := peer.device.net.bind.(conn.BindBatchCompleter); ok {
+			completionTransferred = true
+			err = completer.SendWithCompletion(buffers, endpoint, complete)
+		} else {
+			err = peer.device.net.bind.Send(buffers, endpoint)
+		}
+	} else {
+		err = peer.device.net.bind.Send(buffers, endpoint)
+	}
 	if err == nil {
 		var totalLen uint64
 		for _, b := range buffers {
@@ -149,6 +181,19 @@ func (peer *Peer) SendBuffers(buffers [][]byte) error {
 
 func (peer *Peer) SendAndCountBuffers(buffers [][]byte) error {
 	err := peer.SendBuffers(buffers)
+	if err == nil {
+		awg.PacketCounter.Add(uint64(len(buffers)))
+		return nil
+	}
+
+	return err
+}
+
+func (peer *Peer) SendAndCountBuffersWithCompletion(
+	buffers [][]byte,
+	complete func(),
+) error {
+	err := peer.SendBuffersWithCompletion(buffers, complete)
 	if err == nil {
 		awg.PacketCounter.Add(uint64(len(buffers)))
 		return nil

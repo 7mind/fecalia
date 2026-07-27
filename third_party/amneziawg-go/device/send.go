@@ -634,7 +634,13 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
 
-		err := peer.SendAndCountBuffers(bufs)
+		completion := elemsContainer.takeOutboundAdmissionCompletion()
+		var err error
+		if completion == nil {
+			err = peer.SendAndCountBuffers(bufs)
+		} else {
+			err = peer.SendAndCountBuffersWithCompletion(bufs, completion)
+		}
 		device.outbound.addActiveSend(-int64(len(bufs)), -int64(batchBytes))
 		if dataSent {
 			peer.timersDataSent()
@@ -643,7 +649,6 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 			device.PutMessageBuffer(elem.buffer)
 			device.PutOutboundElement(elem)
 		}
-		elemsContainer.releaseOutboundAdmission()
 		device.PutOutboundElementsContainer(elemsContainer)
 		if err != nil {
 			var errGSO conn.ErrUDPGSODisabled

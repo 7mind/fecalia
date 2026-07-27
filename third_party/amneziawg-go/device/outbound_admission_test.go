@@ -141,3 +141,29 @@ func TestOutboundAdmissionIsIndependentPerPeer(t *testing.T) {
 	nextA := requireReservation(t, aBlocked)
 	nextA.release()
 }
+
+func TestOutboundAdmissionCompletionRetainsUntilTerminalCallback(t *testing.T) {
+	admission := newOutboundAdmission(2_000)
+	admission.start()
+	reservation, ok := admission.reserve(1_000)
+	if !ok {
+		t.Fatal("running admission rejected reservation")
+	}
+	container := &QueueOutboundElementsContainer{reservation: reservation}
+
+	complete := container.takeOutboundAdmissionCompletion()
+	if complete == nil {
+		t.Fatal("container did not transfer admission completion")
+	}
+	if container.reservation != nil {
+		t.Fatal("container retained reservation after ownership transfer")
+	}
+	if got := admission.snapshot().retainedBytes; got != 1_000 {
+		t.Fatalf("retained bytes before terminal completion = %d, want 1000", got)
+	}
+
+	complete()
+	if got := admission.snapshot().retainedBytes; got != 0 {
+		t.Fatalf("retained bytes after terminal completion = %d, want 0", got)
+	}
+}

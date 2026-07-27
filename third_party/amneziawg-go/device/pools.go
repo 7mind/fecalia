@@ -104,6 +104,15 @@ func (c *QueueOutboundElementsContainer) releaseOutboundAdmission() {
 	c.reservation = nil
 }
 
+func (c *QueueOutboundElementsContainer) takeOutboundAdmissionCompletion() func() {
+	if c.reservation == nil {
+		return nil
+	}
+	reservation := c.reservation
+	c.reservation = nil
+	return reservation.release
+}
+
 func (device *Device) GetMessageBuffer() *[MaxMessageSize]byte {
 	return device.pool.messageBuffers.Get().(*[MaxMessageSize]byte)
 }

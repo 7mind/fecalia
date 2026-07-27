@@ -94,6 +94,7 @@ type fecOwnerBatch struct {
 	ackOwned bool
 	admitted chan error
 	done     chan error
+	complete func()
 
 	pending            int
 	exhausted          bool
@@ -707,6 +708,10 @@ func (o *fecSendOwner) maybeCompleteBatch(batch *fecOwnerBatch) {
 	batch.completed = true
 	batch.bufs = nil
 	batch.classes = nil
+	if batch.complete != nil {
+		batch.complete()
+		batch.complete = nil
+	}
 	batch.done <- batch.err
 }
 

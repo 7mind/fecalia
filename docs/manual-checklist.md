@@ -464,7 +464,10 @@ as historical exact-byte-shaper evidence.
       `wanbond_engine_admission_retained_bytes` must stay at or below
       `wanbond_engine_admission_limit_bytes`, and
       `wanbond_engine_admission_oversize_batches_total` must stay zero after
-      fresh GSO readback. Record both
+      fresh GSO readback. Shaped-FEC ownership must remain covered by that same
+      retained reservation through terminal emission; do not interpret the
+      simultaneously visible FEC-owned bytes as an independent capacity.
+      Record both
       `wanbond_engine_{encryption,peer}_queue_high_water_containers` to identify
       the exact queue owner. Hidden inner RTT must not grow into seconds while
       outer RTT stays near baseline, and TUN/shaper/socket/FEC accounting must

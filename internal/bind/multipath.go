@@ -3497,6 +3497,29 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 // The send Codec remains mutex-guarded, and no transmit syscall or shaper wait holds
 // m.mu.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
+	return m.send(bufs, ep, nil)
+}
+
+func (m *Multipath) SendWithCompletion(
+	bufs [][]byte,
+	ep Endpoint,
+	complete func(),
+) error {
+	if complete == nil {
+		return errors.New("bind: terminal send completion callback is required")
+	}
+	return m.send(bufs, ep, complete)
+}
+
+func (m *Multipath) send(bufs [][]byte, ep Endpoint, complete func()) error {
+	completionTransferred := false
+	if complete != nil {
+		defer func() {
+			if !completionTransferred {
+				complete()
+			}
+		}()
+	}
 	ue, ok := ep.(*udpEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
@@ -3539,7 +3562,10 @@ func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
 			}
 			defer peer.serviceGate.RUnlock()
 		}
-		return m.sendFECBatch(peer, sendFEC, bufs, classes, class, shaped)
+		completionTransferred = true
+		return m.sendFECBatch(
+			peer, sendFEC, bufs, classes, class, shaped, complete,
+		)
 	}
 	if !shaped {
 		return m.sendDirectBatchLocked(peer, bufs, class)
@@ -3700,7 +3726,16 @@ func (m *Multipath) sendFECBatch(
 	classes []shaper.Class,
 	class sched.FrameClass,
 	shaped bool,
+	complete func(),
 ) error {
+	published := false
+	if complete != nil {
+		defer func() {
+			if !published {
+				complete()
+			}
+		}()
+	}
 	// Serialize the one Pick plus one owner publication for this original Send.
 	// Exact-byte shaping and an active exclusive direct-recovery contract wait only
 	// until the owner has copied and admitted every caller buffer, allowing the
@@ -3775,6 +3810,7 @@ func (m *Multipath) sendFECBatch(
 		remote:   remote,
 		shaped:   shaped,
 		ackOwned: ackOwned,
+		complete: complete,
 		done:     make(chan error, 1),
 	}
 	if ackOwned {
@@ -3784,6 +3820,7 @@ func (m *Multipath) sendFECBatch(
 		peer.sendMu.Unlock()
 		return err
 	}
+	published = true
 	peer.sendMu.Unlock()
 	if ackOwned {
 		return fs.owner.waitAdmission(batch)
