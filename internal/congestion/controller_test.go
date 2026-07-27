@@ -53,6 +53,14 @@ func TestControllerReducesCongestedCarrierAndHoldsStaleFeedback(t *testing.T) {
 		t.Fatalf("RTT state = base %s queue %s, want 40ms/40ms",
 			congested.BaseRTT, congested.QueueDelay)
 	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(1100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: congested.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	stale, err := controller.Observe(congestion.ActualState{
 		At:               at.Add(2 * time.Second),
@@ -85,6 +93,103 @@ func TestControllerReducesCongestedCarrierAndHoldsStaleFeedback(t *testing.T) {
 		t.Fatalf("stale DATA feedback blocked local queue-delay decrease: target=%g prior=%g",
 			queueCongested.Target.OuterRateBytesPerSecond,
 			stale.Target.OuterRateBytesPerSecond)
+	}
+}
+
+func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) {
+	controller, err := congestion.New(1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 3, Generation: 8}
+	at := time.Unix(150, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := controller.Observe(congestion.ActualState{
+		At: at.Add(200 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 170_000, InnerDataBytes: 136_000,
+		RTT: 80 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Target.OuterRateBytesPerSecond >= initial.Target.OuterRateBytesPerSecond {
+		t.Fatalf("first congested control tick held target %g, want prompt decrease below %g",
+			first.Target.OuterRateBytesPerSecond, initial.Target.OuterRateBytesPerSecond)
+	}
+	if first.TargetChanges != 1 || !first.AwaitingInstalled {
+		t.Fatalf("first retarget state = changes %d awaiting=%t, want 1/true",
+			first.TargetChanges, first.AwaitingInstalled)
+	}
+	if first.InstalledIngress.Fresh {
+		t.Fatal("first retarget retained a fresh installed-rate acknowledgment")
+	}
+
+	second, err := controller.Observe(congestion.ActualState{
+		At: at.Add(400 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 314_500, InnerDataBytes: 251_600,
+		RTT: 80 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Target != first.Target || !second.Held {
+		t.Fatalf("second congested tick retargeted before installed-rate readback: target=%+v held=%t, want held %+v",
+			second.Target, second.Held, first.Target)
+	}
+	if second.TargetChanges != 1 {
+		t.Fatalf("held tick target changes = %d, want 1", second.TargetChanges)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(450 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: first.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !controller.Snapshot().InstalledIngress.Fresh {
+		t.Fatal("exact installed-rate acknowledgment remained stale")
+	}
+
+	beforeSettle, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes: 748_000, InnerDataBytes: 598_400,
+		RTT: 80 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeSettle.Target != first.Target || !beforeSettle.Held {
+		t.Fatalf("target changed before post-readback settle: target=%+v held=%t, want held %+v",
+			beforeSettle.Target, beforeSettle.Held, first.Target)
+	}
+
+	afterSettle, err := controller.Observe(congestion.ActualState{
+		At: at.Add(1500 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 1_109_250, InnerDataBytes: 887_400,
+		RTT: 80 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSettle.Target.OuterRateBytesPerSecond >= first.Target.OuterRateBytesPerSecond ||
+		afterSettle.Held {
+		t.Fatalf("target after exact readback and settle = %+v held=%t, want second decrease",
+			afterSettle.Target, afterSettle.Held)
+	}
+	if afterSettle.TargetChanges != 2 || !afterSettle.AwaitingInstalled {
+		t.Fatalf("second retarget state = changes %d awaiting=%t, want 2/true",
+			afterSettle.TargetChanges, afterSettle.AwaitingInstalled)
+	}
+	if afterSettle.InstalledIngress.Fresh {
+		t.Fatal("second retarget retained the prior installed rate as fresh")
 	}
 }
 

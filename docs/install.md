@@ -460,7 +460,10 @@ Common rules, either policy:
   TUN target initially uses 85% of `R` and a conservative 1.25 outer/inner
   expansion, then follows measured delivery, queue delay, and authenticated
   loss. Expansion learning uses loaded samples only; idle probe/control bytes
-  do not lower DATA admission. Q91 defines no fixed absolute-goodput gate.
+  do not lower DATA admission. After a target change, another decision waits
+  for exact installed-rate/epoch readback and at least the larger of one second
+  or the active base RTT; a carrier change cancels the old wait. Q91 defines no
+  fixed absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
   the daemon can install and read back HTB+`fq_codel`, the rate, queue length,
   and every AQM parameter. The daemon owns the `wanbond0` root qdisc while
@@ -653,9 +656,10 @@ Common rules, either policy:
   `wanbond_path_congestion_{outer_wire,inner_data}_bytes_total`,
   `{target_outer,target_ingress,delivered}_bytes_per_second`,
   `{base_rtt,queue_delay}_seconds`, `authenticated_loss_ratio`,
-  `loss_fresh`, `carrier_epoch`, and `held`. The two cumulative byte counters
-  account only successful emission; outer bytes include IP+UDP headers and
-  native DATA alone contributes inner bytes.
+  `loss_fresh`, `carrier_epoch`, `installed_ingress_bytes_per_second`,
+  `installed_fresh`, `retarget_pending`, `target_changes`, and `held`. The two
+  cumulative byte counters account only successful emission; outer bytes
+  include IP+UDP headers and native DATA alone contributes inner bytes.
 - `wanbond_tun_aqm_target_{rate_bytes_per_second,tx_queue_length,epoch}` and
   matching `actual_*` gauges expose target vs kernel readback.
   `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all `fq_codel`

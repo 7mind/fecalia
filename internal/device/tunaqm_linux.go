@@ -27,8 +27,11 @@ const tunAQMCommandTimeout = 3 * time.Second
 var tunAQMRatePattern = regexp.MustCompile(`(?m)^class htb 1:1 .* rate ([0-9]+(?:\.[0-9]+)?)([KMG]?)bit(?: |$)`)
 
 type linuxTUNAQMKernel struct {
-	name string
-	tc   string
+	name            string
+	tc              string
+	command         func(args ...string) ([]byte, error)
+	readTxQueueLen  func() (int, error)
+	writeTxQueueLen func(int) error
 }
 
 func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
@@ -39,7 +42,15 @@ func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &linuxTUNAQMKernel{name: name, tc: tc}, nil
+	kernel := &linuxTUNAQMKernel{name: name, tc: tc}
+	kernel.command = kernel.execute
+	kernel.readTxQueueLen = func() (int, error) {
+		return linkTxQueueLen(name)
+	}
+	kernel.writeTxQueueLen = func(length int) error {
+		return setLinkTxQueueLen(name, length)
+	}
+	return kernel, nil
 }
 
 func findTCBinary() (string, error) {
@@ -117,7 +128,7 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 		}
 	}
 	if !topologyReady || current.TxQueueLen != target.TxQueueLen {
-		if err := setLinkTxQueueLen(k.name, target.TxQueueLen); err != nil {
+		if err := k.writeTxQueueLen(target.TxQueueLen); err != nil {
 			return err
 		}
 	}
@@ -125,7 +136,7 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 }
 
 func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
-	txQueueLen, err := linkTxQueueLen(k.name)
+	txQueueLen, err := k.readTxQueueLen()
 	if err != nil {
 		return tunAQMActualState{}, err
 	}
@@ -233,6 +244,10 @@ func (k *linuxTUNAQMKernel) run(args ...string) error {
 }
 
 func (k *linuxTUNAQMKernel) output(args ...string) ([]byte, error) {
+	return k.command(args...)
+}
+
+func (k *linuxTUNAQMKernel) execute(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tunAQMCommandTimeout)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, k.tc, args...).CombinedOutput()
@@ -305,8 +320,17 @@ func (t *Tunnel) startTUNAQM() error {
 		TxQueueLen:         tunAQMTxQueueLen,
 		MTU:                t.currentTunMTU(),
 	}
-	if _, err := reconciler.Reconcile(target); err != nil {
+	initialSnapshot, err := reconciler.Reconcile(target)
+	if err != nil {
 		return fmt.Errorf("device: install TUN AQM: %w", err)
+	}
+	if err := t.bind.ObserveTUNIngressActual(
+		initialSnapshot.Actual.RateBytesPerSecond,
+		initialSnapshot.Actual.Epoch,
+		initialSnapshot.Actual.ObservedAt,
+		initialSnapshot.Actual.Fresh,
+	); err != nil {
+		return fmt.Errorf("device: acknowledge initial TUN AQM: %w", err)
 	}
 	t.tunAQM = reconciler
 	if source, ok := t.metricsSrc.(*metricsSource); ok {
@@ -335,8 +359,18 @@ func (t *Tunnel) startTUNAQM() error {
 					target.Epoch = epoch
 				}
 				target.MTU = t.currentTunMTU()
-				if _, err := reconciler.Reconcile(target); err != nil {
+				snapshot, err := reconciler.Reconcile(target)
+				if err != nil {
 					t.log.Error("TUN AQM reconciliation failed", "error", err.Error())
+					continue
+				}
+				if err := t.bind.ObserveTUNIngressActual(
+					snapshot.Actual.RateBytesPerSecond,
+					snapshot.Actual.Epoch,
+					snapshot.Actual.ObservedAt,
+					snapshot.Actual.Fresh,
+				); err != nil {
+					t.log.Error("TUN AQM readback acknowledgment failed", "error", err.Error())
 				}
 			}
 		}

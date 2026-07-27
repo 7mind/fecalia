@@ -439,7 +439,11 @@ as historical exact-byte-shaper evidence.
       additive increase, never above the declared outer ceiling. Confirm the
       TUN target follows the learned outer/inner ratio and exact kernel
       readback follows the target without replacing/resetting a correct
-      `fq_codel` leaf.
+      `fq_codel` leaf. The first congested tick must decrease promptly. Before
+      another target change, `retarget_pending` must remain 1 until
+      `installed_fresh=1` for the same rate/epoch and at least
+      `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
+      during that wait. A carrier-epoch transition cancels the prior wait.
 - [ ] The reproduced failure does not recur: the peer engine queue must not
       reach its 1,024-container limit, hidden inner RTT must not grow into
       seconds while outer RTT stays near baseline, and TUN/shaper/socket/FEC

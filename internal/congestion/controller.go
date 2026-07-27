@@ -18,6 +18,8 @@ const (
 	overheadEWMAWeight      = 0.25
 	minimumQueueThreshold   = 10 * time.Millisecond
 	lossCongestionThreshold = 0.005
+	minimumRetargetSettle   = time.Second
+	installedRateTolerance  = 0.01
 )
 
 type CarrierEpoch struct {
@@ -42,13 +44,23 @@ type TargetState struct {
 	IngressRateBytesPerSecond float64
 }
 
+type InstalledIngressState struct {
+	At                 time.Time
+	Epoch              CarrierEpoch
+	RateBytesPerSecond float64
+	Fresh              bool
+}
+
 type Snapshot struct {
 	Actual                      ActualState
 	Target                      TargetState
+	InstalledIngress            InstalledIngressState
 	DeliveredRateBytesPerSecond float64
 	BaseRTT                     time.Duration
 	QueueDelay                  time.Duration
 	OverheadRatio               float64
+	AwaitingInstalled           bool
+	TargetChanges               uint64
 	Held                        bool
 }
 
@@ -140,18 +152,6 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	feedbackStale := actual.FeedbackEverSeen && !actual.LossFresh
 	target := c.snapshot.Target.OuterRateBytesPerSecond
 	loaded := outerRate >= target*0.50
-	if innerRate > 0 && loaded && !feedbackStale {
-		observedRatio := outerRate / innerRate
-		if observedRatio < 1 {
-			observedRatio = 1
-		}
-		if observedRatio > 3 {
-			observedRatio = 3
-		}
-		c.snapshot.OverheadRatio =
-			(1-overheadEWMAWeight)*c.snapshot.OverheadRatio +
-				overheadEWMAWeight*observedRatio
-	}
 
 	deliveredRate := outerRate
 	if actual.LossFresh {
@@ -166,6 +166,38 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	congested := loaded &&
 		(c.snapshot.QueueDelay >= queueThreshold ||
 			(actual.LossFresh && actual.AuthenticatedLoss >= lossCongestionThreshold))
+	if c.snapshot.AwaitingInstalled {
+		installed := c.snapshot.InstalledIngress
+		rateMatches := installed.Epoch == actual.Epoch &&
+			installed.Fresh &&
+			ratesWithinTolerance(
+				installed.RateBytesPerSecond,
+				c.snapshot.Target.IngressRateBytesPerSecond,
+			)
+		settle := minimumRetargetSettle
+		if c.snapshot.BaseRTT > settle {
+			settle = c.snapshot.BaseRTT
+		}
+		if !rateMatches || actual.At.Before(installed.At.Add(settle)) {
+			return c.snapshot, nil
+		}
+		c.snapshot.AwaitingInstalled = false
+	}
+
+	if innerRate > 0 && loaded && !feedbackStale {
+		observedRatio := outerRate / innerRate
+		if observedRatio < 1 {
+			observedRatio = 1
+		}
+		if observedRatio > 3 {
+			observedRatio = 3
+		}
+		c.snapshot.OverheadRatio =
+			(1-overheadEWMAWeight)*c.snapshot.OverheadRatio +
+				overheadEWMAWeight*observedRatio
+	}
+
+	previousTarget := c.snapshot.Target
 	switch {
 	case congested:
 		next := target * decreaseFactor
@@ -183,7 +215,6 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 			next = floor
 		}
 		target = next
-		c.snapshot.Held = false
 	case feedbackStale:
 		// Stale authenticated evidence cannot raise the target or cause a
 		// loss-based decrease. Local queue delay remains current evidence and
@@ -193,18 +224,48 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		if target > c.ceiling {
 			target = c.ceiling
 		}
-		c.snapshot.Held = target == c.snapshot.Target.OuterRateBytesPerSecond
 	}
 	c.snapshot.Target = TargetState{
 		Epoch:                     actual.Epoch,
 		OuterRateBytesPerSecond:   target,
 		IngressRateBytesPerSecond: target / c.snapshot.OverheadRatio,
 	}
+	c.snapshot.Held = c.snapshot.Target == previousTarget
+	c.snapshot.AwaitingInstalled = !c.snapshot.Held
+	if !c.snapshot.Held {
+		c.snapshot.TargetChanges++
+		c.snapshot.InstalledIngress.Fresh = false
+	}
 	return c.snapshot, nil
+}
+
+func (c *Controller) ObserveInstalledIngress(actual InstalledIngressState) error {
+	if actual.At.IsZero() {
+		return errors.New("installed ingress observation time is required")
+	}
+	if math.IsNaN(actual.RateBytesPerSecond) ||
+		math.IsInf(actual.RateBytesPerSecond, 0) ||
+		actual.RateBytesPerSecond <= 0 {
+		return errors.New("installed ingress rate must be finite and positive")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	actual.Fresh = actual.Fresh &&
+		actual.Epoch == c.snapshot.Target.Epoch &&
+		ratesWithinTolerance(
+			actual.RateBytesPerSecond,
+			c.snapshot.Target.IngressRateBytesPerSecond,
+		)
+	c.snapshot.InstalledIngress = actual
+	return nil
 }
 
 func (c *Controller) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.snapshot
+}
+
+func ratesWithinTolerance(actual, target float64) bool {
+	return math.Abs(actual-target) <= target*installedRateTolerance
 }

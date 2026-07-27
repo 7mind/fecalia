@@ -887,6 +887,12 @@ func NewCollector(src Source) prometheus.Collector {
 			makeCongestionMetric("congestion_target_ingress_bytes_per_second", "Closed-loop sender-side TUN ingress target after measured outer/inner overhead.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
 				return s.Target.IngressRateBytesPerSecond
 			}),
+			makeCongestionMetric("congestion_installed_ingress_bytes_per_second", "Last exact sender-side TUN ingress rate read back for this controller target.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return s.InstalledIngress.RateBytesPerSecond
+			}),
+			makeCongestionMetric("congestion_installed_fresh", "Whether the installed TUN ingress readback matches the acknowledged controller epoch and target (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return boolValue(s.InstalledIngress.Fresh)
+			}),
 			makeCongestionMetric("congestion_delivered_bytes_per_second", "Delivered outer wire rate derived from successive emission-counter observations.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
 				return s.DeliveredRateBytesPerSecond
 			}),
@@ -907,6 +913,12 @@ func NewCollector(src Source) prometheus.Collector {
 			}),
 			makeCongestionMetric("congestion_held", "Whether the controller froze the prior target because the observation could not safely advance it (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
 				return boolValue(s.Held)
+			}),
+			makeCongestionMetric("congestion_retarget_pending", "Whether another controller decision awaits exact installed-rate readback and post-readback settling (1=yes).", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return boolValue(s.AwaitingInstalled)
+			}),
+			makeCongestionMetric("congestion_target_changes", "Controller target changes made in the current active-carrier epoch.", prometheus.GaugeValue, func(s congestion.Snapshot) float64 {
+				return float64(s.TargetChanges)
 			}),
 		},
 

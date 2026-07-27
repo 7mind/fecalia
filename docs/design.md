@@ -474,6 +474,16 @@ transition creates three different epochs and resets base RTT/rate deltas, so
 late A evidence cannot affect the new A epoch. The aggregate TUN target sums
 the current peers' inner-byte targets.
 
+Every outer-target or expansion-derived ingress-target change enters an
+`AwaitingInstalled` state. The first congestion decision remains prompt, but
+the next decrease or increase waits until the device has read back the exact
+aggregate HTB rate and carrier epoch and at least
+`max(1s, active base RTT)` has elapsed after that readback. The wait also
+freezes expansion learning, so it cannot alter the installed ingress rate
+behind an apparently held outer target. A carrier-epoch transition cancels the
+old wait. Rate-only reconciliation replaces the HTB class without deleting or
+re-adding a matching `fq_codel` leaf, preserving its queue and statistics.
+
 This early controller deliberately applies only to active-backup. Weighted
 striping has no single carrier epoch to which one authenticated DATA-loss
 record can truthfully apply, so it retains fixed per-path shapers and no
@@ -1098,7 +1108,10 @@ behaviour composes the following signals into one picture:
   `wanbond_path_congestion_{base_rtt,queue_delay}_seconds`,
   `wanbond_path_congestion_authenticated_loss_ratio`,
   `wanbond_path_congestion_loss_fresh`,
-  `wanbond_path_congestion_carrier_epoch`, and
+  `wanbond_path_congestion_carrier_epoch`,
+  `wanbond_path_congestion_{installed_ingress_bytes_per_second,installed_fresh}`,
+  `wanbond_path_congestion_retarget_pending`,
+  `wanbond_path_congestion_target_changes`, and
   `wanbond_path_congestion_held`. These are absent without a path controller.
   Connection-scoped `wanbond_tun_aqm_target_*` and
   `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, queue length,

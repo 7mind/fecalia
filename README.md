@@ -151,7 +151,8 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
   inner-control socket failures; generated outer PROBE and reflected-echo
   failures are excluded), active-backup closed-loop target/actual wire-rate,
-  delivered-capacity, base-RTT/queue-delay, authenticated-loss freshness, and
+  delivered-capacity, base-RTT/queue-delay, authenticated-loss freshness,
+  installed-rate acknowledgment, retarget count/pending state, and
   carrier-epoch series (`wanbond_path_congestion_*`), exact Linux TUN-AQM
   target/readback/freshness/epoch series (`wanbond_tun_aqm_*`), engine-side TUN/send batch histograms and outbound
   queue/active-send gauges (`wanbond_engine_*`), WG-session establishment
@@ -226,6 +227,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   its TUN ingress rate from actual outer delivery, probe queue delay, measured
   encapsulation expansion, and fresh authenticated DATA loss; this prevents the
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
+  After any rate change, another controller decision waits for exact kernel
+  readback and a one-second-or-one-SRTT settling interval; rate-only changes
+  preserve the existing `fq_codel` leaf and its state.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under

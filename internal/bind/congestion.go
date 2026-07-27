@@ -1,6 +1,12 @@
 package bind
 
-import "github.com/7mind/wanbond/internal/congestion"
+import (
+	"errors"
+	"math"
+	"time"
+
+	"github.com/7mind/wanbond/internal/congestion"
+)
 
 type congestionObservation struct {
 	controller *congestion.Controller
@@ -148,4 +154,90 @@ func (m *Multipath) TUNIngressTarget() (rateBytesPerSecond float64, epoch uint64
 		epoch = epoch*1099511628211 ^ (ref.epoch.Generation<<8 | uint64(ref.epoch.PathID))
 	}
 	return rateBytesPerSecond, epoch, rateBytesPerSecond > 0
+}
+
+// ObserveTUNIngressActual acknowledges an aggregate rate only when it still
+// matches the current active-carrier target. Each contributing controller then
+// receives its own exact installed share, so a concurrent retarget cannot
+// accidentally release another controller decision.
+func (m *Multipath) ObserveTUNIngressActual(
+	rateBytesPerSecond float64,
+	epoch uint64,
+	observedAt time.Time,
+	fresh bool,
+) error {
+	if observedAt.IsZero() {
+		return errors.New("bind: TUN ingress readback time is required")
+	}
+	if math.IsNaN(rateBytesPerSecond) ||
+		math.IsInf(rateBytesPerSecond, 0) ||
+		rateBytesPerSecond <= 0 {
+		return errors.New("bind: TUN ingress readback rate must be finite and positive")
+	}
+
+	m.mu.Lock()
+	type installedRef struct {
+		controller *congestion.Controller
+		epoch      congestion.CarrierEpoch
+		rate       float64
+	}
+	refs := make([]installedRef, 0, len(m.peers))
+	for _, peer := range m.peers {
+		dataPaths := peer.scheduler.DataPaths()
+		if len(dataPaths) != 1 {
+			m.mu.Unlock()
+			return nil
+		}
+		index := dataPaths[0].Index
+		if index < 0 || index >= len(peer.paths) {
+			m.mu.Unlock()
+			return nil
+		}
+		path := peer.paths[index]
+		if path.congestion == nil || !peer.congestionHaveCarrier {
+			m.mu.Unlock()
+			return nil
+		}
+		carrierEpoch := congestion.CarrierEpoch{
+			PathID: path.id, Generation: peer.congestionGeneration,
+		}
+		snapshot := path.congestion.Snapshot()
+		if snapshot.Target.Epoch != carrierEpoch ||
+			snapshot.Target.IngressRateBytesPerSecond <= 0 {
+			m.mu.Unlock()
+			return nil
+		}
+		refs = append(refs, installedRef{
+			controller: path.congestion,
+			epoch:      carrierEpoch,
+			rate:       snapshot.Target.IngressRateBytesPerSecond,
+		})
+	}
+	m.mu.Unlock()
+
+	var targetRate float64
+	var targetEpoch uint64
+	for _, ref := range refs {
+		targetRate += ref.rate
+		targetEpoch =
+			targetEpoch*1099511628211 ^
+				(ref.epoch.Generation<<8 | uint64(ref.epoch.PathID))
+	}
+	if targetRate <= 0 ||
+		epoch != targetEpoch ||
+		math.Abs(rateBytesPerSecond-targetRate) > targetRate*0.01 {
+		return nil
+	}
+
+	for _, ref := range refs {
+		if err := ref.controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+			At:                 observedAt,
+			Epoch:              ref.epoch,
+			RateBytesPerSecond: ref.rate,
+			Fresh:              fresh,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
