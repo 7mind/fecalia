@@ -515,8 +515,18 @@ shrink remains installed as a safe superset until the TUN file reports no
 readable packet. This occupancy check uses the fd control path for a
 non-consuming zero-time poll; it must never acquire the fd read lock because
 the engine can hold that lock indefinitely in its blocking TUN read while an
-endpoint remains idle. The daemon owns this root qdisc, ptr-ring capacity, and
-the link's GSO limits while running.
+endpoint remains idle.
+
+Engine admission and downstream capacity form a directional transaction.
+Growth reconciles and reads back the larger ptr-ring/`fq` envelope before
+atomically raising every peer's engine admission limit. Shrink atomically
+lowers every peer limit first, then reconciles the smaller downstream envelope.
+When retained bytes defer a shrink, the daemon re-reads and retains the
+previous installed kernel target; it does not acknowledge or apply the smaller
+capacity. The applied per-peer admission readback validates that every peer
+matches the device-wide atomic value and fails fast on divergence. The daemon
+owns this root qdisc, ptr-ring capacity, engine admission, and the link's GSO
+limits while running.
 
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully

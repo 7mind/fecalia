@@ -2,6 +2,7 @@ package device
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,16 @@ const tunAQMTxQueueLen = 32
 type memoryTUNAQMKernel struct {
 	actual   tunAQMActualState
 	applyErr error
+}
+
+type recordingTUNAQMKernel struct {
+	memoryTUNAQMKernel
+	events []string
+}
+
+func (k *recordingTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
+	k.events = append(k.events, fmt.Sprintf("capacity:%d", target.AdmissionLimitBytes))
+	return k.memoryTUNAQMKernel.Apply(target)
 }
 
 func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
@@ -129,6 +140,117 @@ func TestTUNAQMUsesBoundedNonDroppingLeaf(t *testing.T) {
 	if snapshot.Actual.LeafKind != "fq" {
 		t.Fatalf("TUN leaf kind = %q, want bounded non-dropping fq", snapshot.Actual.LeafKind)
 	}
+}
+
+func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
+	initial := tunAQMTargetState{
+		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: 100,
+		BurstBytes: 13_950, MTU: 1395, QueueLimit: 80,
+		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 20_000,
+	}
+	newTransition := func(t *testing.T, admissionApplied *bool) (
+		*tunAQMTransition,
+		*recordingTUNAQMKernel,
+	) {
+		t.Helper()
+		kernel := &recordingTUNAQMKernel{}
+		reconciler, err := newTUNAQMReconciler(kernel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reconciler.Reconcile(initial); err != nil {
+			t.Fatal(err)
+		}
+		kernel.events = nil
+		actualAdmissionLimit := initial.AdmissionLimitBytes
+		transition, err := newTUNAQMTransition(
+			reconciler,
+			func(limit int) (bool, error) {
+				kernel.events = append(kernel.events, fmt.Sprintf("admission:%d", limit))
+				if *admissionApplied {
+					actualAdmissionLimit = limit
+				}
+				return *admissionApplied, nil
+			},
+			func() int {
+				return actualAdmissionLimit
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := reconciler.Snapshot().ActualAdmissionLimitBytes; got != initial.AdmissionLimitBytes {
+			t.Fatalf("initial actual admission limit = %d, want %d",
+				got, initial.AdmissionLimitBytes)
+		}
+		return transition, kernel
+	}
+
+	t.Run("growth", func(t *testing.T) {
+		admissionApplied := true
+		transition, kernel := newTransition(t, &admissionApplied)
+		target := initial
+		target.AdmissionLimitBytes = 30_000
+		target.TxQueueLen = 150
+		target.QueueLimit = 120
+		snapshot, err := transition.Reconcile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"capacity:30000", "admission:30000"}
+		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
+			t.Fatalf("growth operations = %v, want %v", kernel.events, want)
+		}
+		if snapshot.Target != target ||
+			snapshot.Actual.TxQueueLen != target.TxQueueLen ||
+			snapshot.Actual.Limit != target.QueueLimit ||
+			!snapshot.Actual.Fresh ||
+			snapshot.AdmissionDeferred ||
+			snapshot.ActualAdmissionLimitBytes != target.AdmissionLimitBytes {
+			t.Fatalf("growth convergence = %+v, transition = %+v", snapshot, transition)
+		}
+	})
+
+	t.Run("deferred shrink", func(t *testing.T) {
+		admissionApplied := false
+		transition, kernel := newTransition(t, &admissionApplied)
+		target := initial
+		target.AdmissionLimitBytes = 10_000
+		target.TxQueueLen = 50
+		target.QueueLimit = 40
+		snapshot, err := transition.Reconcile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"admission:10000"}
+		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
+			t.Fatalf("deferred-shrink operations = %v, want %v", kernel.events, want)
+		}
+		if snapshot.Target != initial ||
+			snapshot.ActualAdmissionLimitBytes != initial.AdmissionLimitBytes ||
+			!snapshot.AdmissionDeferred {
+			t.Fatalf("deferred-shrink snapshot = %+v, want installed target held", snapshot)
+		}
+
+		admissionApplied = true
+		kernel.events = nil
+		snapshot, err = transition.Reconcile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = []string{"admission:10000", "capacity:10000"}
+		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
+			t.Fatalf("converged-shrink operations = %v, want %v", kernel.events, want)
+		}
+		if snapshot.Target != target ||
+			snapshot.Actual.TxQueueLen != target.TxQueueLen ||
+			snapshot.Actual.Limit != target.QueueLimit ||
+			!snapshot.Actual.Fresh ||
+			snapshot.AdmissionDeferred ||
+			snapshot.ActualAdmissionLimitBytes != target.AdmissionLimitBytes {
+			t.Fatalf("shrink convergence = %+v, transition = %+v", snapshot, transition)
+		}
+	})
 }
 
 func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T) {

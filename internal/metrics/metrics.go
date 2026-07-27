@@ -635,6 +635,7 @@ type TUNAQMSnapshot struct {
 	TargetGSOMaxSegments      int
 	ActualGSOMaxSegments      int
 	TargetAdmissionLimitBytes int
+	ActualAdmissionLimitBytes int
 	ActualFresh               bool
 	RateFresh                 bool
 	ActualQueueLengthPackets  int
@@ -756,6 +757,7 @@ type collector struct {
 	tunAQMTargetGSOMaxSegments *prometheus.Desc
 	tunAQMActualGSOMaxSegments *prometheus.Desc
 	tunAQMTargetAdmissionLimit *prometheus.Desc
+	tunAQMActualAdmissionLimit *prometheus.Desc
 	tunAQMActualFresh          *prometheus.Desc
 	tunAQMRateFresh            *prometheus.Desc
 	tunAQMActualQueueLength    *prometheus.Desc
@@ -1088,6 +1090,7 @@ func NewCollector(src Source) prometheus.Collector {
 		tunAQMTargetGSOMaxSegments: desc(tunAQMSubsystem, "target_gso_max_segments", "Requested pre-TUN maximum GSO segment count derived from the local-delay budget.", nil),
 		tunAQMActualGSOMaxSegments: desc(tunAQMSubsystem, "actual_gso_max_segments", "Kernel-read-back pre-TUN maximum GSO segment count.", nil),
 		tunAQMTargetAdmissionLimit: desc(tunAQMSubsystem, "target_engine_admission_limit_bytes", "Requested per-peer exact-wire-byte engine backlog consistent with one bounded whole GSO batch.", nil),
+		tunAQMActualAdmissionLimit: desc(tunAQMSubsystem, "actual_engine_admission_limit_bytes", "Applied per-peer exact-wire-byte engine backlog limit.", nil),
 		tunAQMActualFresh:          desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, bounded-fq parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
 		tunAQMRateFresh:            desc(tunAQMSubsystem, "rate_fresh", "Whether the exact requested HTB rate and controller epoch matched even when a capacity shrink remained safely deferred (1=yes).", nil),
 		tunAQMActualQueueLength:    desc(tunAQMSubsystem, "actual_queue_length_packets", "Kernel-read-back live packet count in the TUN qdisc tree.", nil),
@@ -1201,6 +1204,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMTargetGSOMaxSegments
 	ch <- c.tunAQMActualGSOMaxSegments
 	ch <- c.tunAQMTargetAdmissionLimit
+	ch <- c.tunAQMActualAdmissionLimit
 	ch <- c.tunAQMActualFresh
 	ch <- c.tunAQMRateFresh
 	ch <- c.tunAQMActualQueueLength
@@ -1368,6 +1372,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetGSOMaxSegments, prometheus.GaugeValue, float64(snapshot.TargetGSOMaxSegments))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualGSOMaxSegments, prometheus.GaugeValue, float64(snapshot.ActualGSOMaxSegments))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetAdmissionLimit, prometheus.GaugeValue, float64(snapshot.TargetAdmissionLimitBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualAdmissionLimit, prometheus.GaugeValue, float64(snapshot.ActualAdmissionLimitBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFresh, prometheus.GaugeValue, boolValue(snapshot.ActualFresh))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMRateFresh, prometheus.GaugeValue, boolValue(snapshot.RateFresh))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueueLength, prometheus.GaugeValue, float64(snapshot.ActualQueueLengthPackets))

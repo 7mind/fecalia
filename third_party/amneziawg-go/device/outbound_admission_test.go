@@ -179,6 +179,71 @@ func TestOutboundAdmissionShrinkWaitsForEveryPeerRetention(t *testing.T) {
 	}
 }
 
+func TestDeviceOutboundAdmissionLimitTracksAtomicPerPeerTransitions(t *testing.T) {
+	pair := genTestPair(t, false)
+	device := pair[1].dev
+	if got := device.OutboundAdmissionLimit(); got != 0 {
+		t.Fatalf("initial admission limit = %d, want 0", got)
+	}
+	if err := device.SetOutboundAdmissionLimit(2_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := device.OutboundAdmissionLimit(); got != 2_000 {
+		t.Fatalf("grown admission limit = %d, want 2000", got)
+	}
+
+	device.peers.RLock()
+	var admission *outboundAdmission
+	for _, peer := range device.peers.keyMap {
+		admission = peer.outboundAdmission
+		break
+	}
+	device.peers.RUnlock()
+	if admission == nil {
+		t.Fatal("test device has no peer admission")
+	}
+	reservation, ok := admission.reserve(1_500)
+	if !ok {
+		t.Fatal("peer reservation canceled")
+	}
+	applied, err := device.TrySetOutboundAdmissionLimit(1_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("admission shrink applied above retained bytes")
+	}
+	if got := device.OutboundAdmissionLimit(); got != 2_000 {
+		t.Fatalf("deferred admission limit = %d, want installed 2000", got)
+	}
+
+	reservation.release()
+	applied, err = device.TrySetOutboundAdmissionLimit(1_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("admission shrink remained deferred after retention drained")
+	}
+	if got := device.OutboundAdmissionLimit(); got != 1_000 {
+		t.Fatalf("converged admission limit = %d, want 1000", got)
+	}
+}
+
+func TestDeviceOutboundAdmissionLimitPanicsOnPerPeerDivergence(t *testing.T) {
+	var device Device
+	device.outboundAdmissionLimit.Store(2_000)
+	device.peers.keyMap = map[NoisePublicKey]*Peer{
+		NoisePublicKey{}: {outboundAdmission: newOutboundAdmission(1_000)},
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("divergent per-peer admission limits did not panic")
+		}
+	}()
+	device.OutboundAdmissionLimit()
+}
+
 func TestOutboundAdmissionCompletionRetainsUntilTerminalCallback(t *testing.T) {
 	admission := newOutboundAdmission(2_000)
 	admission.start()

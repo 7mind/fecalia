@@ -697,8 +697,9 @@ Common rules, either policy:
   `{target,actual}_queue_limit_packets` and `actual_flow_limit_packets` expose
   the bounded `fq` contract.
   `{target,actual}_gso_max_{size_bytes,segments}` expose the pre-TUN whole-batch
-  limit `C`, and `target_engine_admission_limit_bytes` is the matching
-  exact-wire per-peer `B+C` budget, where `B` is the configured path-shaper BDP.
+  limit `C`, and `{target,actual}_engine_admission_limit_bytes` expose the
+  requested/atomically-applied exact-wire per-peer `B+C` budget, where `B` is
+  the configured path-shaper BDP.
   `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
   `fq` parameters, HTB rate/burst, ptr-ring capacity, both GSO limits, and epoch matched at
   the latest `actual_observed_timestamp_seconds`.
@@ -711,6 +712,10 @@ Common rules, either policy:
   `queue_limit_deferred`, `gso_limits_deferred`, and
   `engine_admission_limit_deferred` identify the pending bound. These series are absent when
   the active-backup Linux TUN AQM is inactive.
+  Admission growth installs downstream capacity before raising the applied
+  engine value. Admission shrink lowers the engine first; while retained bytes
+  defer it, target/actual capacity remains at the installed envelope and the
+  deferred gauge stays 1.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never

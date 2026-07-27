@@ -52,13 +52,14 @@ type tunAQMActualState struct {
 }
 
 type tunAQMSnapshot struct {
-	Target             tunAQMTargetState
-	Actual             tunAQMActualState
-	RateFresh          bool
-	QueueLimitDeferred bool
-	RingSizeDeferred   bool
-	GSOLimitsDeferred  bool
-	AdmissionDeferred  bool
+	Target                    tunAQMTargetState
+	Actual                    tunAQMActualState
+	ActualAdmissionLimitBytes int
+	RateFresh                 bool
+	QueueLimitDeferred        bool
+	RingSizeDeferred          bool
+	GSOLimitsDeferred         bool
+	AdmissionDeferred         bool
 }
 
 type tunAQMApplyResult struct {
@@ -78,11 +79,105 @@ type tunAQMReconciler struct {
 	snapshot tunAQMSnapshot
 }
 
+type tunAQMTransition struct {
+	reconciler           *tunAQMReconciler
+	trySetAdmissionLimit func(int) (bool, error)
+	readAdmissionLimit   func() int
+}
+
 func newTUNAQMReconciler(kernel tunAQMKernel) (*tunAQMReconciler, error) {
 	if kernel == nil {
 		return nil, errors.New("TUN AQM kernel is required")
 	}
 	return &tunAQMReconciler{kernel: kernel}, nil
+}
+
+func newTUNAQMTransition(
+	reconciler *tunAQMReconciler,
+	trySetAdmissionLimit func(int) (bool, error),
+	readAdmissionLimit func() int,
+) (*tunAQMTransition, error) {
+	if reconciler == nil {
+		return nil, errors.New("TUN AQM reconciler is required")
+	}
+	if trySetAdmissionLimit == nil {
+		return nil, errors.New("engine outbound admission setter is required")
+	}
+	if readAdmissionLimit == nil {
+		return nil, errors.New("engine outbound admission reader is required")
+	}
+	transition := &tunAQMTransition{
+		reconciler:           reconciler,
+		trySetAdmissionLimit: trySetAdmissionLimit,
+		readAdmissionLimit:   readAdmissionLimit,
+	}
+	actualAdmissionLimit := transition.actualAdmissionLimit()
+	transition.reconciler.SetAdmissionState(actualAdmissionLimit, false)
+	return transition, nil
+}
+
+func (t *tunAQMTransition) actualAdmissionLimit() int {
+	limit := t.readAdmissionLimit()
+	if limit <= 0 {
+		panic("engine outbound admission actual limit must be positive")
+	}
+	return limit
+}
+
+func (t *tunAQMTransition) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, error) {
+	actualAdmissionLimit := t.actualAdmissionLimit()
+	switch {
+	case target.AdmissionLimitBytes > actualAdmissionLimit:
+		snapshot, err := t.reconciler.Reconcile(target)
+		if err != nil {
+			return snapshot, err
+		}
+		admissionApplied, err := t.trySetAdmissionLimit(target.AdmissionLimitBytes)
+		if err != nil {
+			t.reconciler.SetAdmissionState(t.actualAdmissionLimit(), true)
+			return t.reconciler.Snapshot(),
+				fmt.Errorf("grow engine outbound admission: %w", err)
+		}
+		installedAdmissionLimit := t.actualAdmissionLimit()
+		if admissionApplied && installedAdmissionLimit != target.AdmissionLimitBytes {
+			panic("engine outbound admission growth did not install requested limit")
+		}
+		if !admissionApplied && installedAdmissionLimit != actualAdmissionLimit {
+			panic("deferred engine outbound admission growth changed applied limit")
+		}
+		t.reconciler.SetAdmissionState(installedAdmissionLimit, !admissionApplied)
+		return t.reconciler.Snapshot(), nil
+
+	case target.AdmissionLimitBytes < actualAdmissionLimit:
+		admissionApplied, err := t.trySetAdmissionLimit(target.AdmissionLimitBytes)
+		if err != nil {
+			t.reconciler.SetAdmissionState(t.actualAdmissionLimit(), true)
+			return t.reconciler.Snapshot(),
+				fmt.Errorf("shrink engine outbound admission: %w", err)
+		}
+		installedAdmissionLimit := t.actualAdmissionLimit()
+		if !admissionApplied {
+			if installedAdmissionLimit != actualAdmissionLimit {
+				panic("deferred engine outbound admission shrink changed applied limit")
+			}
+			installedTarget := t.reconciler.Snapshot().Target
+			_, err := t.reconciler.Reconcile(installedTarget)
+			t.reconciler.SetAdmissionState(installedAdmissionLimit, true)
+			if err != nil {
+				return t.reconciler.Snapshot(), err
+			}
+			return t.reconciler.Snapshot(), nil
+		}
+		if installedAdmissionLimit != target.AdmissionLimitBytes {
+			panic("engine outbound admission shrink did not install requested limit")
+		}
+		t.reconciler.SetAdmissionState(installedAdmissionLimit, false)
+		return t.reconciler.Reconcile(target)
+
+	default:
+		t.reconciler.SetAdmissionState(actualAdmissionLimit, false)
+		return t.reconciler.Reconcile(target)
+	}
 }
 
 func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, error) {
@@ -147,8 +242,12 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 	return r.snapshot, nil
 }
 
-func (r *tunAQMReconciler) SetAdmissionDeferred(deferred bool) {
+func (r *tunAQMReconciler) SetAdmissionState(actualLimitBytes int, deferred bool) {
+	if actualLimitBytes <= 0 {
+		panic("engine outbound admission actual limit must be positive")
+	}
 	r.mu.Lock()
+	r.snapshot.ActualAdmissionLimitBytes = actualLimitBytes
 	r.snapshot.AdmissionDeferred = deferred
 	r.mu.Unlock()
 }
@@ -230,6 +329,7 @@ func (r *tunAQMReconciler) MetricsSnapshot() *metrics.TUNAQMSnapshot {
 		TargetGSOMaxSegments:      snapshot.Target.GSOMaxSegments,
 		ActualGSOMaxSegments:      snapshot.Actual.GSOMaxSegments,
 		TargetAdmissionLimitBytes: snapshot.Target.AdmissionLimitBytes,
+		ActualAdmissionLimitBytes: snapshot.ActualAdmissionLimitBytes,
 		ActualFresh:               snapshot.Actual.Fresh,
 		RateFresh:                 snapshot.RateFresh,
 		ActualQueueLengthPackets:  snapshot.Actual.QueueLength,

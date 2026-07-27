@@ -405,6 +405,22 @@ func (device *Device) SetOutboundAdmissionLimit(bytes int) error {
 	return nil
 }
 
+func (device *Device) OutboundAdmissionLimit() int {
+	limit := device.outboundAdmissionLimit.Load()
+	asInt := int(limit)
+	if limit < 0 || int64(asInt) != limit {
+		panic("device: outbound admission limit does not fit int")
+	}
+	device.peers.RLock()
+	defer device.peers.RUnlock()
+	for _, peer := range device.peers.keyMap {
+		if peer.outboundAdmission.snapshot().limitBytes != limit {
+			panic("device: per-peer outbound admission limits diverged")
+		}
+	}
+	return asInt
+}
+
 func (device *Device) TrySetOutboundAdmissionLimit(bytes int) (bool, error) {
 	if bytes <= 0 {
 		return false, errors.New("device: outbound admission limit must be positive")

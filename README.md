@@ -252,7 +252,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   its owner batch terminally emits or fails, so ownership admission cannot
   duplicate that backlog behind the gate. Ring occupancy uses a non-consuming
   zero-time fd poll that does not contend with the engine's blocking TUN read,
-  so an idle concentrator can complete startup reconciliation.
+  so an idle concentrator can complete startup reconciliation. Admission
+  growth installs and reads back downstream ring/`fq` capacity before exposing
+  the larger engine window. Admission shrink changes the engine first; if
+  retained bytes defer it, the installed downstream target remains held until
+  the engine change succeeds.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under

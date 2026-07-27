@@ -504,6 +504,14 @@ func (t *Tunnel) startTUNAQM() error {
 	if err := t.dev.SetOutboundAdmissionLimit(target.AdmissionLimitBytes); err != nil {
 		return fmt.Errorf("device: install engine outbound admission: %w", err)
 	}
+	transition, err := newTUNAQMTransition(
+		reconciler,
+		t.dev.TrySetOutboundAdmissionLimit,
+		t.dev.OutboundAdmissionLimit,
+	)
+	if err != nil {
+		return fmt.Errorf("device: install TUN AQM transition: %w", err)
+	}
 	if err := t.bind.ObserveTUNIngressActual(
 		initialSnapshot.Actual.RateBytesPerSecond,
 		initialSnapshot.Actual.Epoch,
@@ -565,15 +573,7 @@ func (t *Tunnel) startTUNAQM() error {
 				target.GSOMaxSize = bounds.GSOMaxSize
 				target.GSOMaxSegments = bounds.GSOMaxSegments
 				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes
-				admissionApplied, err := t.dev.TrySetOutboundAdmissionLimit(
-					target.AdmissionLimitBytes,
-				)
-				if err != nil {
-					t.log.Error("engine outbound admission reconciliation failed", "error", err.Error())
-					continue
-				}
-				reconciler.SetAdmissionDeferred(!admissionApplied)
-				snapshot, err := reconciler.Reconcile(target)
+				snapshot, err := transition.Reconcile(target)
 				if err != nil {
 					t.log.Error("TUN AQM reconciliation failed", "error", err.Error())
 					continue
