@@ -377,9 +377,9 @@ func TestTUNAQMQueueGeometryCoversRingAndManagedLeafServiceWindows(t *testing.T)
 		wantRing      int
 		wantLeafBytes int
 	}{
-		{name: "Pi BDP", rate: 680_000, window: 45_000, peerCount: 1, gsoBytes: 13_950, wantRing: 1379, wantLeafBytes: 45_000},
-		{name: "o3 synthetic burst", rate: 1_020_000, window: 60_000, peerCount: 1, gsoBytes: 19_530, wantRing: 1998, wantLeafBytes: 60_000},
-		{name: "two peers", rate: 1_360_000, window: 45_000, peerCount: 2, gsoBytes: 12_555, wantRing: 1989, wantLeafBytes: 90_000},
+		{name: "Pi BDP", rate: 680_000, window: 45_000, peerCount: 1, gsoBytes: 13_950, wantRing: 1379, wantLeafBytes: 13_950},
+		{name: "o3 synthetic burst", rate: 1_020_000, window: 60_000, peerCount: 1, gsoBytes: 19_530, wantRing: 1998, wantLeafBytes: 20_400},
+		{name: "two peers", rate: 1_360_000, window: 45_000, peerCount: 2, gsoBytes: 12_555, wantRing: 1989, wantLeafBytes: 27_200},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -424,14 +424,19 @@ func TestTUNAQMLeafBacklogBoundIsIndependentOfPacketSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantLeafLimitBytes := ((admissionBytes + minimumInnerPacketBytes - 1) /
-		minimumInnerPacketBytes) * minimumInnerPacketBytes
+	wantLeafLimitBytes := int(math.Ceil(
+		rateBytesPerSecond * tunPersistentQueueDelayBudget.Seconds(),
+	))
+	if gsoBytes > wantLeafLimitBytes {
+		wantLeafLimitBytes = gsoBytes
+	}
 	if geometry.LeafLimitBytes != wantLeafLimitBytes {
 		t.Fatalf(
-			"leaf byte limit = %d, want %d for W=%d",
+			"leaf byte limit = %d, want %d for R=%d G=%d",
 			geometry.LeafLimitBytes,
 			wantLeafLimitBytes,
-			admissionBytes,
+			rateBytesPerSecond,
+			gsoBytes,
 		)
 	}
 	fullMTUBacklogBytes := (geometry.LeafLimitBytes / mtu) * mtu
@@ -441,6 +446,77 @@ func TestTUNAQMLeafBacklogBoundIsIndependentOfPacketSize(t *testing.T) {
 			"full-MTU backlog boundary %d does not respect byte limit %d",
 			fullMTUBacklogBytes,
 			geometry.LeafLimitBytes,
+		)
+	}
+}
+
+// Regression D131: the plaintext TUN leaf must not inherit an outer/engine
+// admission window whose service time grows with FEC overhead.
+func TestTUNAQMLeafUsesInnerTimeBudgetAndAtomicGSOQuantum(t *testing.T) {
+	const (
+		rateBytesPerSecond = 40_000
+		peerCount          = 1
+		gsoBytes           = 1284
+		mtu                = 1284
+		queueDelayBudget   = 20 * time.Millisecond
+	)
+	derive := func(admissionBytes int) tunAQMQueueGeometry {
+		t.Helper()
+		geometry, err := deriveTUNAQMQueueGeometry(
+			rateBytesPerSecond,
+			admissionBytes,
+			peerCount,
+			gsoBytes,
+			engineOutboundBatchDelayBudget,
+			mtu,
+			mtu,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return geometry
+	}
+
+	field := derive(7200)
+	doubledAdmission := derive(14_400)
+	wantLeafBytes := peerCount * gsoBytes
+	timeBudgetBytes := int(math.Ceil(
+		rateBytesPerSecond * queueDelayBudget.Seconds(),
+	))
+	if timeBudgetBytes > wantLeafBytes {
+		wantLeafBytes = timeBudgetBytes
+	}
+	atomicServiceBound := time.Duration(math.Ceil(
+		float64(peerCount*gsoBytes) /
+			rateBytesPerSecond *
+			float64(time.Second),
+	))
+	wantServiceBound := queueDelayBudget
+	if atomicServiceBound > wantServiceBound {
+		wantServiceBound = atomicServiceBound
+	}
+	fieldServiceTime := time.Duration(math.Ceil(
+		float64(field.LeafLimitBytes) /
+			rateBytesPerSecond *
+			float64(time.Second),
+	))
+	doubledServiceTime := time.Duration(math.Ceil(
+		float64(doubledAdmission.LeafLimitBytes) /
+			rateBytesPerSecond *
+			float64(time.Second),
+	))
+	if field.LeafLimitBytes != wantLeafBytes ||
+		doubledAdmission.LeafLimitBytes != wantLeafBytes ||
+		fieldServiceTime > wantServiceBound ||
+		doubledServiceTime > wantServiceBound {
+		t.Fatalf(
+			"leaf bytes/service with engine admission 7200/14400 = %d/%s and %d/%s, want invariant %d bytes and service <= %s",
+			field.LeafLimitBytes,
+			fieldServiceTime,
+			doubledAdmission.LeafLimitBytes,
+			doubledServiceTime,
+			wantLeafBytes,
+			wantServiceBound,
 		)
 	}
 }
@@ -762,7 +838,7 @@ func TestEngineOutboundBoundsUseMaximumMTUAcrossResize(t *testing.T) {
 	}
 }
 
-func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatch(t *testing.T) {
+func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatchOutsideTUNLeaf(t *testing.T) {
 	const (
 		rateBytesPerSecond = 680_000
 		dataBudgetBytes    = 45_000
@@ -798,13 +874,18 @@ func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	servicePackets := (wantAdmissionBytes + minimumInnerPacketBytes - 1) /
-		minimumInnerPacketBytes
-	if geometry.LeafLimitBytes != servicePackets*minimumInnerPacketBytes {
+	wantLeafBytes := int(math.Ceil(
+		rateBytesPerSecond * tunPersistentQueueDelayBudget.Seconds(),
+	))
+	if got.GSOMaxSize > wantLeafBytes {
+		wantLeafBytes = got.GSOMaxSize
+	}
+	if geometry.LeafLimitBytes != wantLeafBytes {
 		t.Fatalf(
-			"leaf service capacity = %d bytes, want at least B+C = %d slots",
+			"leaf service capacity = %d bytes, want inner time/GSO bound %d independent of engine B+C=%d",
 			geometry.LeafLimitBytes,
-			servicePackets,
+			wantLeafBytes,
+			wantAdmissionBytes,
 		)
 	}
 }

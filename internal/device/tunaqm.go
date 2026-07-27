@@ -14,6 +14,7 @@ import (
 
 const (
 	engineOutboundBatchDelayBudget = 20 * time.Millisecond
+	tunPersistentQueueDelayBudget  = 20 * time.Millisecond
 	linuxDefaultGSOMaxSize         = 64 * 1024
 	minimumInnerPacketBytes        = 20
 )
@@ -625,19 +626,23 @@ func deriveTUNAQMQueueGeometry(
 		)
 	}
 	maxInt := int(^uint(0) >> 1)
-	if admissionLimitBytes > maxInt/peerCount {
+	if gsoMaxSizeBytes > maxInt/peerCount {
 		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM aggregate admission window overflows int",
+			"TUN AQM aggregate atomic GSO window overflows int",
 		)
 	}
-	windowBytes := admissionLimitBytes * peerCount
-	if windowBytes > maxInt-(minimumInnerPacketBytes-1) {
+	leafWindowFloat := aggregateRateBytesPerSecond *
+		tunPersistentQueueDelayBudget.Seconds()
+	if leafWindowFloat > float64(maxInt) {
 		return tunAQMQueueGeometry{}, errors.New(
-			"TUN AQM service-slot rounding overflows int",
+			"TUN AQM persistent queue-delay window overflows int",
 		)
 	}
-	serviceSlots := (windowBytes + minimumInnerPacketBytes - 1) /
-		minimumInnerPacketBytes
+	leafWindowBytes := int(math.Ceil(leafWindowFloat))
+	atomicWindowBytes := peerCount * gsoMaxSizeBytes
+	if leafWindowBytes < atomicWindowBytes {
+		leafWindowBytes = atomicWindowBytes
+	}
 	htbBurstBytes, err := exactTCHTBBurstBytes(gsoMaxSizeBytes)
 	if err != nil {
 		return tunAQMQueueGeometry{}, err
@@ -678,14 +683,12 @@ func deriveTUNAQMQueueGeometry(
 		currentPacketBytes
 	fullMTUServiceSlots :=
 		fullMTUHandoffSlots + tunRingImplementationGuardSlots
-	if fullMTUServiceSlots > maxInt/maximumPacketBytes ||
-		serviceSlots > maxInt/minimumInnerPacketBytes {
+	if fullMTUServiceSlots > maxInt/maximumPacketBytes {
 		return tunAQMQueueGeometry{}, errors.New(
 			"TUN AQM total service window overflows int",
 		)
 	}
 	ringWindowBytes := fullMTUServiceSlots * maximumPacketBytes
-	leafWindowBytes := serviceSlots * minimumInnerPacketBytes
 	if ringWindowBytes > maxInt-leafWindowBytes {
 		return tunAQMQueueGeometry{}, errors.New(
 			"TUN AQM total service window overflows int",
