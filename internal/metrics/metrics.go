@@ -634,6 +634,13 @@ type TUNAQMSnapshot struct {
 	ActualGSOMaxSegments      int
 	TargetAdmissionLimitBytes int
 	ActualFresh               bool
+	RateFresh                 bool
+	ActualQueueLengthPackets  int
+	ActualBacklogBytes        int
+	ActualDrops               uint64
+	QueueLimitDeferred        bool
+	GSOLimitsDeferred         bool
+	AdmissionLimitDeferred    bool
 	ActualObservedAt          time.Time
 }
 
@@ -744,6 +751,13 @@ type collector struct {
 	tunAQMActualGSOMaxSegments *prometheus.Desc
 	tunAQMTargetAdmissionLimit *prometheus.Desc
 	tunAQMActualFresh          *prometheus.Desc
+	tunAQMRateFresh            *prometheus.Desc
+	tunAQMActualQueueLength    *prometheus.Desc
+	tunAQMActualBacklog        *prometheus.Desc
+	tunAQMActualDrops          *prometheus.Desc
+	tunAQMQueueLimitDeferred   *prometheus.Desc
+	tunAQMGSOLimitsDeferred    *prometheus.Desc
+	tunAQMAdmissionDeferred    *prometheus.Desc
 	tunAQMObservedTime         *prometheus.Desc
 }
 
@@ -1065,6 +1079,13 @@ func NewCollector(src Source) prometheus.Collector {
 		tunAQMActualGSOMaxSegments: desc(tunAQMSubsystem, "actual_gso_max_segments", "Kernel-read-back pre-TUN maximum GSO segment count.", nil),
 		tunAQMTargetAdmissionLimit: desc(tunAQMSubsystem, "target_engine_admission_limit_bytes", "Requested per-peer exact-wire-byte engine backlog consistent with one bounded whole GSO batch.", nil),
 		tunAQMActualFresh:          desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, bounded-fq parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
+		tunAQMRateFresh:            desc(tunAQMSubsystem, "rate_fresh", "Whether the exact requested HTB rate and controller epoch matched even when a capacity shrink remained safely deferred (1=yes).", nil),
+		tunAQMActualQueueLength:    desc(tunAQMSubsystem, "actual_queue_length_packets", "Kernel-read-back live packet count in the TUN qdisc tree.", nil),
+		tunAQMActualBacklog:        desc(tunAQMSubsystem, "actual_backlog_bytes", "Kernel-read-back live byte backlog in the TUN qdisc tree.", nil),
+		tunAQMActualDrops:          desc(tunAQMSubsystem, "drops_total", "Kernel-read-back cumulative drops in the TUN root qdisc.", nil),
+		tunAQMQueueLimitDeferred:   desc(tunAQMSubsystem, "queue_limit_deferred", "Whether a queue-limit shrink awaits a packet count no greater than the requested bound (1=yes).", nil),
+		tunAQMGSOLimitsDeferred:    desc(tunAQMSubsystem, "gso_limits_deferred", "Whether a GSO-limit shrink awaits an empty TUN qdisc backlog (1=yes).", nil),
+		tunAQMAdmissionDeferred:    desc(tunAQMSubsystem, "engine_admission_limit_deferred", "Whether an engine admission shrink awaits every peer's retained bytes fitting the requested bound (1=yes).", nil),
 		tunAQMObservedTime:         desc(tunAQMSubsystem, "actual_observed_timestamp_seconds", "Unix timestamp of the latest exact kernel qdisc/link readback.", nil),
 	}
 }
@@ -1167,6 +1188,13 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMActualGSOMaxSegments
 	ch <- c.tunAQMTargetAdmissionLimit
 	ch <- c.tunAQMActualFresh
+	ch <- c.tunAQMRateFresh
+	ch <- c.tunAQMActualQueueLength
+	ch <- c.tunAQMActualBacklog
+	ch <- c.tunAQMActualDrops
+	ch <- c.tunAQMQueueLimitDeferred
+	ch <- c.tunAQMGSOLimitsDeferred
+	ch <- c.tunAQMAdmissionDeferred
 	ch <- c.tunAQMObservedTime
 }
 
@@ -1323,6 +1351,13 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualGSOMaxSegments, prometheus.GaugeValue, float64(snapshot.ActualGSOMaxSegments))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetAdmissionLimit, prometheus.GaugeValue, float64(snapshot.TargetAdmissionLimitBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFresh, prometheus.GaugeValue, boolValue(snapshot.ActualFresh))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMRateFresh, prometheus.GaugeValue, boolValue(snapshot.RateFresh))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueueLength, prometheus.GaugeValue, float64(snapshot.ActualQueueLengthPackets))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualBacklog, prometheus.GaugeValue, float64(snapshot.ActualBacklogBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualDrops, prometheus.CounterValue, float64(snapshot.ActualDrops))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMQueueLimitDeferred, prometheus.GaugeValue, boolValue(snapshot.QueueLimitDeferred))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMGSOLimitsDeferred, prometheus.GaugeValue, boolValue(snapshot.GSOLimitsDeferred))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMAdmissionDeferred, prometheus.GaugeValue, boolValue(snapshot.AdmissionLimitDeferred))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMObservedTime, prometheus.GaugeValue, timestampSeconds(snapshot.ActualObservedAt))
 		}
 	}

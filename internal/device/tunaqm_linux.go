@@ -74,26 +74,42 @@ func findTCBinary() (string, error) {
 	return "", errors.New("device: tc binary is required for TUN AQM")
 }
 
-func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
+func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
+	var result tunAQMApplyResult
 	current, readErr := k.Read()
 	topologyReady := readErr == nil &&
 		current.RootKind == "htb"
-	leafReady := topologyReady &&
-		current.LeafKind == "fq" &&
-		current.Limit == target.QueueLimit &&
-		current.FlowLimit == target.QueueLimit &&
+	liveFQ := topologyReady && current.LeafKind == "fq"
+	queueLimit := target.QueueLimit
+	flowLimit := target.QueueLimit
+	if liveFQ &&
+		target.QueueLimit < current.Limit &&
+		current.QueueLength > target.QueueLimit {
+		queueLimit = current.Limit
+		flowLimit = current.FlowLimit
+		result.QueueLimitDeferred = true
+	}
+	leafReady := liveFQ &&
+		current.Limit == queueLimit &&
+		current.FlowLimit == flowLimit &&
 		current.Quantum == target.MTU &&
 		current.InitialQuantum == target.MTU
 	if !topologyReady {
+		if readErr == nil &&
+			(current.QueueLength != 0 || current.BacklogBytes != 0) {
+			return result, errors.New(
+				"device: refuse to replace live TUN qdisc topology with backlog",
+			)
+		}
 		if err := k.run(
 			"qdisc", "replace", "dev", k.name,
 			"root", "handle", "1:", "htb", "default", "1",
 		); err != nil {
 			if readErr != nil {
-				return fmt.Errorf("device: restore TUN AQM after readback failure: %w",
+				return result, fmt.Errorf("device: restore TUN AQM after readback failure: %w",
 					errors.Join(readErr, err))
 			}
-			return err
+			return result, err
 		}
 	}
 
@@ -106,44 +122,59 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 			"parent", "1:", "classid", "1:1", "htb",
 			"rate", rateBits, "ceil", rateBits,
 		); err != nil {
-			return err
+			return result, err
 		}
 	}
 
 	if !leafReady {
-		if topologyReady && current.LeafKind != "" {
+		action := "add"
+		if liveFQ {
+			action = "change"
+		} else if topologyReady && current.LeafKind != "" {
+			if current.QueueLength != 0 || current.BacklogBytes != 0 {
+				return result, errors.New(
+					"device: refuse to replace live TUN leaf qdisc with backlog",
+				)
+			}
 			if err := k.run(
 				"qdisc", "delete", "dev", k.name, "parent", "1:1",
 			); err != nil {
-				return err
+				return result, err
 			}
 		}
 		if err := k.run(
-			"qdisc", "add", "dev", k.name,
+			"qdisc", action, "dev", k.name,
 			"parent", "1:1", "handle", "10:", "fq",
-			"limit", strconv.Itoa(target.QueueLimit),
-			"flow_limit", strconv.Itoa(target.QueueLimit),
+			"limit", strconv.Itoa(queueLimit),
+			"flow_limit", strconv.Itoa(flowLimit),
 			"quantum", strconv.Itoa(target.MTU),
 			"initial_quantum", strconv.Itoa(target.MTU),
 		); err != nil {
-			return err
+			return result, err
 		}
 	}
 	if !topologyReady || current.TxQueueLen != target.TxQueueLen {
 		if err := k.writeTxQueueLen(target.TxQueueLen); err != nil {
-			return err
+			return result, err
 		}
 	}
 	if current.GSOMaxSize != target.GSOMaxSize ||
 		current.GSOMaxSegments != target.GSOMaxSegments {
-		if err := k.writeGSOLimits(linkGSOLimits{
-			MaxSize:     uint32(target.GSOMaxSize),
-			MaxSegments: uint32(target.GSOMaxSegments),
-		}); err != nil {
-			return err
+		shrinking := target.GSOMaxSize < current.GSOMaxSize ||
+			target.GSOMaxSegments < current.GSOMaxSegments
+		if shrinking &&
+			(current.QueueLength != 0 || current.BacklogBytes != 0) {
+			result.GSOLimitsDeferred = true
+		} else {
+			if err := k.writeGSOLimits(linkGSOLimits{
+				MaxSize:     uint32(target.GSOMaxSize),
+				MaxSegments: uint32(target.GSOMaxSegments),
+			}); err != nil {
+				return result, err
+			}
 		}
 	}
-	return nil
+	return result, nil
 }
 
 func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
@@ -163,6 +194,9 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		Kind    string `json:"kind"`
 		Root    bool   `json:"root"`
 		Parent  string `json:"parent"`
+		Drops   uint64 `json:"drops"`
+		Backlog int    `json:"backlog"`
+		QLen    int    `json:"qlen"`
 		Options struct {
 			Limit          int `json:"limit"`
 			FlowLimit      int `json:"flow_limit"`
@@ -175,6 +209,9 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 	}
 	rootKind := ""
 	leafKind := ""
+	var drops uint64
+	var backlog int
+	var queueLength int
 	var leafOptions struct {
 		Limit          int
 		FlowLimit      int
@@ -182,8 +219,15 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		InitialQuantum int
 	}
 	for _, qdisc := range qdiscs {
+		if qdisc.QLen > queueLength {
+			queueLength = qdisc.QLen
+		}
+		if qdisc.Backlog > backlog {
+			backlog = qdisc.Backlog
+		}
 		if qdisc.Root {
 			rootKind = qdisc.Kind
+			drops = qdisc.Drops
 		}
 		if qdisc.Parent == "1:1" {
 			leafKind = qdisc.Kind
@@ -212,6 +256,9 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		InitialQuantum:     leafOptions.InitialQuantum,
 		GSOMaxSize:         int(gsoLimits.MaxSize),
 		GSOMaxSegments:     int(gsoLimits.MaxSegments),
+		QueueLength:        queueLength,
+		BacklogBytes:       backlog,
+		Drops:              drops,
 		ObservedAt:         time.Now(),
 	}, nil
 }
@@ -357,7 +404,7 @@ func (t *Tunnel) startTUNAQM() error {
 		initialSnapshot.Actual.RateBytesPerSecond,
 		initialSnapshot.Actual.Epoch,
 		initialSnapshot.Actual.ObservedAt,
-		initialSnapshot.Actual.Fresh,
+		initialSnapshot.RateFresh,
 	); err != nil {
 		return fmt.Errorf("device: acknowledge initial TUN AQM: %w", err)
 	}
@@ -407,20 +454,24 @@ func (t *Tunnel) startTUNAQM() error {
 				target.GSOMaxSize = bounds.GSOMaxSize
 				target.GSOMaxSegments = bounds.GSOMaxSegments
 				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes
+				admissionApplied, err := t.dev.TrySetOutboundAdmissionLimit(
+					target.AdmissionLimitBytes,
+				)
+				if err != nil {
+					t.log.Error("engine outbound admission reconciliation failed", "error", err.Error())
+					continue
+				}
+				reconciler.SetAdmissionDeferred(!admissionApplied)
 				snapshot, err := reconciler.Reconcile(target)
 				if err != nil {
 					t.log.Error("TUN AQM reconciliation failed", "error", err.Error())
-					continue
-				}
-				if err := t.dev.SetOutboundAdmissionLimit(target.AdmissionLimitBytes); err != nil {
-					t.log.Error("engine outbound admission reconciliation failed", "error", err.Error())
 					continue
 				}
 				if err := t.bind.ObserveTUNIngressActual(
 					snapshot.Actual.RateBytesPerSecond,
 					snapshot.Actual.Epoch,
 					snapshot.Actual.ObservedAt,
-					snapshot.Actual.Fresh,
+					snapshot.RateFresh,
 				); err != nil {
 					t.log.Error("TUN AQM readback acknowledgment failed", "error", err.Error())
 				}

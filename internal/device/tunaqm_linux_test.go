@@ -77,7 +77,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
 	}
-	if err := kernel.Apply(target); err != nil {
+	if _, err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
 	}
 	if classChanges != 1 {
@@ -100,4 +100,132 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 		actual.RateBytesPerSecond != target.RateBytesPerSecond {
 		t.Fatalf("rate-only readback = %+v", actual)
 	}
+}
+
+func TestLinuxTUNAQMParameterChangePreservesLiveLeaf(t *testing.T) {
+	var qdiscCommands [][]string
+	kernel := testLinuxTUNAQMKernel(t, `[
+		{"kind":"htb","root":true,"handle":"1:","drops":37,"qlen":5,"backlog":6840},
+		{"kind":"fq","parent":"1:1","handle":"10:","drops":37,"qlen":5,"backlog":6840,
+		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
+		 "initial_quantum":1395}}
+	]`, &qdiscCommands)
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimit:          60,
+		GSOMaxSize:          13_950,
+		GSOMaxSegments:      10,
+		AdmissionLimitBytes: 14_270,
+	}
+	if _, err := kernel.Apply(target); err != nil {
+		t.Fatal(err)
+	}
+	if len(qdiscCommands) != 1 ||
+		len(qdiscCommands[0]) < 2 ||
+		qdiscCommands[0][1] != "change" {
+		t.Fatalf("live leaf parameter commands = %v, want one in-place qdisc change",
+			qdiscCommands)
+	}
+	actual, err := kernel.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.Drops != 37 ||
+		actual.QueueLength != 5 ||
+		actual.BacklogBytes != 6840 {
+		t.Fatalf("post-change queue counters = drops %d qlen %d backlog %d",
+			actual.Drops, actual.QueueLength, actual.BacklogBytes)
+	}
+}
+
+func TestLinuxTUNAQMDefersQueueLimitShrinkBelowBacklog(t *testing.T) {
+	var qdiscCommands [][]string
+	kernel := testLinuxTUNAQMKernel(t, `[
+		{"kind":"htb","root":true,"handle":"1:"},
+		{"kind":"fq","parent":"1:1","handle":"10:","qlen":61,"backlog":83645,
+		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
+		 "initial_quantum":1395}}
+	]`, &qdiscCommands)
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimit:          60,
+		GSOMaxSize:          13_950,
+		GSOMaxSegments:      10,
+		AdmissionLimitBytes: 14_270,
+	}
+	if _, err := kernel.Apply(target); err != nil {
+		t.Fatal(err)
+	}
+	if len(qdiscCommands) != 0 {
+		t.Fatalf("unsafe queue-limit shrink commands = %v, want deferred with qlen 61 > limit 60",
+			qdiscCommands)
+	}
+}
+
+func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
+	var qdiscCommands [][]string
+	kernel := testLinuxTUNAQMKernel(t, `[
+		{"kind":"htb","root":true,"handle":"1:","qlen":1,"backlog":1395},
+		{"kind":"fq","parent":"1:1","handle":"10:","qlen":1,"backlog":1395,
+		 "options":{"limit":65,"flow_limit":65,"quantum":1395,
+		 "initial_quantum":1395}}
+	]`, &qdiscCommands)
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimit:          65,
+		GSOMaxSize:          12_555,
+		GSOMaxSegments:      9,
+		AdmissionLimitBytes: 14_270,
+	}
+	result, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.GSOLimitsDeferred {
+		t.Fatal("GSO shrink applied while one packet remained in the TUN qdisc")
+	}
+	if len(qdiscCommands) != 0 {
+		t.Fatalf("GSO-only shrink changed qdisc: %v", qdiscCommands)
+	}
+}
+
+func testLinuxTUNAQMKernel(
+	t testing.TB,
+	qdiscJSON string,
+	qdiscCommands *[][]string,
+) *linuxTUNAQMKernel {
+	t.Helper()
+	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
+	kernel.readTxQueueLen = func() (int, error) {
+		return tunAQMTxQueueLen, nil
+	}
+	kernel.writeTxQueueLen = func(int) error {
+		return nil
+	}
+	kernel.readGSOLimits = func() (linkGSOLimits, error) {
+		return linkGSOLimits{MaxSize: 13_950, MaxSegments: 10}, nil
+	}
+	kernel.writeGSOLimits = func(linkGSOLimits) error {
+		return nil
+	}
+	kernel.command = func(args ...string) ([]byte, error) {
+		switch {
+		case len(args) >= 2 && args[0] == "-j" && args[1] == "qdisc":
+			return []byte(qdiscJSON), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
+			return []byte("class htb 1:1 root rate 5440000bit ceil 5440000bit"), nil
+		case len(args) > 0 && args[0] == "qdisc":
+			*qdiscCommands = append(*qdiscCommands, append([]string(nil), args...))
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected tc command: %v", args)
+		}
+	}
+	return kernel
 }

@@ -154,7 +154,8 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   delivered-capacity, base-RTT/queue-delay, authenticated-loss freshness,
   installed-rate acknowledgment, retarget count/pending state, and
   carrier-epoch series (`wanbond_path_congestion_*`), exact Linux TUN-AQM
-  rate/queue/GSO target/readback/freshness/epoch series
+  rate/queue/GSO target/readback/freshness/epoch, live backlog/drop, and
+  non-dropping shrink-deferral series
   (`wanbond_tun_aqm_*`), engine-side TUN/send batch histograms, outbound
   queue/active-send gauges, and exact-byte admission limit/retention/wait
   counters (`wanbond_engine_*`), WG-session establishment
@@ -230,8 +231,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   encapsulation expansion, and fresh authenticated DATA loss; this prevents the
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
   After any rate change, another controller decision waits for exact kernel
-  readback and a one-second-or-one-SRTT settling interval; rate-only changes
-  preserve the existing `fq` leaf and its state. Repeated exact readbacks of
+  readback and a one-second-or-one-SRTT settling interval. Mutable `fq`
+  parameters change in place, preserving the live queue and counters; a limit
+  shrink waits while the current packet count exceeds the new limit, GSO
+  shrink waits for an empty TUN backlog, and engine admission shrink waits
+  until every peer's retained bytes fit. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The fair-queue limit admits
   one configured per-peer BDP plus one complete GSO batch and the 32-packet

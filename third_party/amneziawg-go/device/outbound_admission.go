@@ -55,14 +55,32 @@ func (a *outboundAdmission) stop() {
 	a.mu.Unlock()
 }
 
-func (a *outboundAdmission) setLimit(limit int64) {
+func trySetOutboundAdmissionLimit(
+	admissions []*outboundAdmission,
+	limit int64,
+) bool {
 	if limit <= 0 {
 		panic("device: outbound admission limit must be positive")
 	}
-	a.mu.Lock()
-	a.limit = limit
-	a.broadcastLocked()
-	a.mu.Unlock()
+	for _, admission := range admissions {
+		admission.mu.Lock()
+	}
+	for _, admission := range admissions {
+		if admission.retained > limit {
+			for index := len(admissions) - 1; index >= 0; index-- {
+				admissions[index].mu.Unlock()
+			}
+			return false
+		}
+	}
+	for _, admission := range admissions {
+		admission.limit = limit
+		admission.broadcastLocked()
+	}
+	for index := len(admissions) - 1; index >= 0; index-- {
+		admissions[index].mu.Unlock()
+	}
+	return true
 }
 
 func (a *outboundAdmission) reserve(bytes int64) (*outboundAdmissionReservation, bool) {

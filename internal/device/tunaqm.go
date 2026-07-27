@@ -41,17 +41,29 @@ type tunAQMActualState struct {
 	InitialQuantum     int
 	GSOMaxSize         int
 	GSOMaxSegments     int
+	QueueLength        int
+	BacklogBytes       int
+	Drops              uint64
 	ObservedAt         time.Time
 	Fresh              bool
 }
 
 type tunAQMSnapshot struct {
-	Target tunAQMTargetState
-	Actual tunAQMActualState
+	Target             tunAQMTargetState
+	Actual             tunAQMActualState
+	RateFresh          bool
+	QueueLimitDeferred bool
+	GSOLimitsDeferred  bool
+	AdmissionDeferred  bool
+}
+
+type tunAQMApplyResult struct {
+	QueueLimitDeferred bool
+	GSOLimitsDeferred  bool
 }
 
 type tunAQMKernel interface {
-	Apply(tunAQMTargetState) error
+	Apply(tunAQMTargetState) (tunAQMApplyResult, error)
 	Read() (tunAQMActualState, error)
 }
 
@@ -84,6 +96,9 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 	defer r.mu.Unlock()
 	r.snapshot.Target = target
 	r.snapshot.Actual.Fresh = false
+	r.snapshot.RateFresh = false
+	r.snapshot.QueueLimitDeferred = false
+	r.snapshot.GSOLimitsDeferred = false
 	actual, readErr := r.kernel.Read()
 	if readErr == nil {
 		actual.Fresh = false
@@ -92,25 +107,85 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 			actual.Epoch = target.Epoch
 			actual.Fresh = true
 			r.snapshot.Actual = actual
+			r.snapshot.RateFresh = true
 			return r.snapshot, nil
 		}
 	}
-	if err := r.kernel.Apply(target); err != nil {
+	apply, err := r.kernel.Apply(target)
+	if err != nil {
 		return r.snapshot, err
 	}
-	actual, err := r.kernel.Read()
+	actual, err = r.kernel.Read()
 	if err != nil {
 		return r.snapshot, err
 	}
 	actual.Fresh = false
 	r.snapshot.Actual = actual
-	if err := validateTUNAQMReadback(target, actual); err != nil {
+	if err := validateTUNAQMReadback(target, actual); err == nil {
+		actual.Epoch = target.Epoch
+		actual.Fresh = true
+		r.snapshot.Actual = actual
+		r.snapshot.RateFresh = true
+		return r.snapshot, nil
+	}
+	if err := validateDeferredTUNAQMReadback(target, actual, apply); err != nil {
 		return r.snapshot, err
 	}
 	actual.Epoch = target.Epoch
-	actual.Fresh = true
 	r.snapshot.Actual = actual
+	r.snapshot.RateFresh = true
+	r.snapshot.QueueLimitDeferred = apply.QueueLimitDeferred
+	r.snapshot.GSOLimitsDeferred = apply.GSOLimitsDeferred
 	return r.snapshot, nil
+}
+
+func (r *tunAQMReconciler) SetAdmissionDeferred(deferred bool) {
+	r.mu.Lock()
+	r.snapshot.AdmissionDeferred = deferred
+	r.mu.Unlock()
+}
+
+func validateDeferredTUNAQMReadback(
+	target tunAQMTargetState,
+	actual tunAQMActualState,
+	apply tunAQMApplyResult,
+) error {
+	if !apply.QueueLimitDeferred && !apply.GSOLimitsDeferred {
+		return validateTUNAQMReadback(target, actual)
+	}
+	if actual.TxQueueLen != target.TxQueueLen ||
+		actual.RootKind != "htb" ||
+		actual.LeafKind != "fq" ||
+		actual.Quantum != target.MTU ||
+		actual.InitialQuantum != target.MTU {
+		return errors.New("TUN AQM non-deferred readback fields do not match target")
+	}
+	if apply.QueueLimitDeferred {
+		if actual.Limit < target.QueueLimit ||
+			actual.FlowLimit < target.QueueLimit {
+			return errors.New("TUN AQM queue-limit deferral has no safe installed superset")
+		}
+	} else if actual.Limit != target.QueueLimit ||
+		actual.FlowLimit != target.QueueLimit {
+		return errors.New("TUN AQM queue-limit readback does not match target")
+	}
+	if apply.GSOLimitsDeferred {
+		if actual.GSOMaxSize < target.GSOMaxSize ||
+			actual.GSOMaxSegments < target.GSOMaxSegments {
+			return errors.New("TUN AQM GSO deferral has no queued installed superset")
+		}
+	} else if actual.GSOMaxSize != target.GSOMaxSize ||
+		actual.GSOMaxSegments != target.GSOMaxSegments {
+		return errors.New("TUN AQM GSO readback does not match target")
+	}
+	tolerance := target.RateBytesPerSecond * 0.01
+	if math.Abs(actual.RateBytesPerSecond-target.RateBytesPerSecond) > tolerance {
+		return errors.New("TUN AQM deferred rate readback does not match target")
+	}
+	if actual.ObservedAt.IsZero() {
+		return errors.New("TUN AQM deferred readback observation time is required")
+	}
+	return nil
 }
 
 func (r *tunAQMReconciler) Snapshot() tunAQMSnapshot {
@@ -137,6 +212,13 @@ func (r *tunAQMReconciler) MetricsSnapshot() *metrics.TUNAQMSnapshot {
 		ActualGSOMaxSegments:      snapshot.Actual.GSOMaxSegments,
 		TargetAdmissionLimitBytes: snapshot.Target.AdmissionLimitBytes,
 		ActualFresh:               snapshot.Actual.Fresh,
+		RateFresh:                 snapshot.RateFresh,
+		ActualQueueLengthPackets:  snapshot.Actual.QueueLength,
+		ActualBacklogBytes:        snapshot.Actual.BacklogBytes,
+		ActualDrops:               snapshot.Actual.Drops,
+		QueueLimitDeferred:        snapshot.QueueLimitDeferred,
+		GSOLimitsDeferred:         snapshot.GSOLimitsDeferred,
+		AdmissionLimitDeferred:    snapshot.AdmissionDeferred,
 		ActualObservedAt:          snapshot.Actual.ObservedAt,
 	}
 }

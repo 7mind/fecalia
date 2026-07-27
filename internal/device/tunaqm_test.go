@@ -13,9 +13,9 @@ type memoryTUNAQMKernel struct {
 	applyErr error
 }
 
-func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) error {
+func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
 	if k.applyErr != nil {
-		return k.applyErr
+		return tunAQMApplyResult{}, k.applyErr
 	}
 	k.actual = tunAQMActualState{
 		RateBytesPerSecond: target.RateBytesPerSecond,
@@ -30,10 +30,35 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) error {
 		GSOMaxSegments:     target.GSOMaxSegments,
 		ObservedAt:         time.Now(),
 	}
-	return nil
+	return tunAQMApplyResult{}, nil
 }
 
 func (k *memoryTUNAQMKernel) Read() (tunAQMActualState, error) {
+	return k.actual, nil
+}
+
+type deferredTUNAQMKernel struct {
+	actual tunAQMActualState
+}
+
+func (k *deferredTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
+	k.actual.RateBytesPerSecond = target.RateBytesPerSecond
+	k.actual.TxQueueLen = target.TxQueueLen
+	k.actual.Quantum = target.MTU
+	k.actual.InitialQuantum = target.MTU
+	k.actual.ObservedAt = time.Now()
+	if target.QueueLimit < k.actual.Limit &&
+		k.actual.QueueLength > target.QueueLimit {
+		return tunAQMApplyResult{QueueLimitDeferred: true}, nil
+	}
+	k.actual.Limit = target.QueueLimit
+	k.actual.FlowLimit = target.QueueLimit
+	k.actual.GSOMaxSize = target.GSOMaxSize
+	k.actual.GSOMaxSegments = target.GSOMaxSegments
+	return tunAQMApplyResult{}, nil
+}
+
+func (k *deferredTUNAQMKernel) Read() (tunAQMActualState, error) {
 	return k.actual, nil
 }
 
@@ -63,7 +88,7 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 	drift.RateBytesPerSecond = 400_000
 	drift.TxQueueLen = 128
 	drift.MTU = 1200
-	if err := kernel.Apply(drift); err != nil {
+	if _, err := kernel.Apply(drift); err != nil {
 		t.Fatalf("inject drift: %v", err)
 	}
 	restored, err := reconciler.Reconcile(target)
@@ -98,6 +123,59 @@ func TestTUNAQMUsesBoundedNonDroppingLeaf(t *testing.T) {
 	}
 	if snapshot.Actual.LeafKind != "fq" {
 		t.Fatalf("TUN leaf kind = %q, want bounded non-dropping fq", snapshot.Actual.LeafKind)
+	}
+}
+
+func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T) {
+	kernel := &deferredTUNAQMKernel{
+		actual: tunAQMActualState{
+			RateBytesPerSecond: 680_000,
+			TxQueueLen:         tunAQMTxQueueLen,
+			RootKind:           "htb",
+			LeafKind:           "fq",
+			Limit:              65,
+			FlowLimit:          65,
+			Quantum:            1395,
+			InitialQuantum:     1395,
+			GSOMaxSize:         13_950,
+			GSOMaxSegments:     10,
+			QueueLength:        61,
+			BacklogBytes:       83_645,
+			ObservedAt:         time.Now(),
+		},
+	}
+	reconciler, err := newTUNAQMReconciler(kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := tunAQMTargetState{
+		Epoch: 5, RateBytesPerSecond: 600_000, TxQueueLen: tunAQMTxQueueLen,
+		MTU: 1395, QueueLimit: 60,
+		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
+	}
+	deferred, err := reconciler.Reconcile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferred.Target.QueueLimit != 60 ||
+		deferred.Actual.Limit != 65 ||
+		deferred.Actual.Fresh ||
+		!deferred.RateFresh ||
+		!deferred.QueueLimitDeferred {
+		t.Fatalf("deferred reconciliation = %+v", deferred)
+	}
+
+	kernel.actual.QueueLength = 0
+	kernel.actual.BacklogBytes = 0
+	applied, err := reconciler.Reconcile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Actual.Fresh ||
+		!applied.RateFresh ||
+		applied.QueueLimitDeferred ||
+		applied.Actual.Limit != target.QueueLimit {
+		t.Fatalf("post-drain reconciliation = %+v", applied)
 	}
 }
 

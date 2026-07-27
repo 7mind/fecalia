@@ -469,10 +469,14 @@ Common rules, either policy:
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
   the daemon can install and read back HTB+`fq`, the rate, queue length, and
   every bounded-queue parameter. The `fq` packet and per-flow limits both equal
-  `ceil(peerCount*maxPathDataBurstBytes/currentMTU)+32`; overload above this
-  explicit service-backlog-plus-device-queue bound may tail-drop and increments
-  the qdisc drop counter. The daemon owns the `wanbond0` root qdisc while
-  running; do not attach another root qdisc to the same interface.
+  `ceil(peerCount*(B+C)/currentMTU)+32`, where `B` is the maximum configured
+  per-path data burst and `C` is one complete bounded GSO batch; overload above
+  this explicit service-backlog-plus-device-queue bound may tail-drop and
+  increments the qdisc drop counter. Mutable `fq` fields change in place. A
+  shrink waits rather than discarding admitted traffic when the live queue,
+  GSO backlog, or peer-retained engine bytes do not yet fit the new bound. The
+  daemon owns the `wanbond0` root qdisc while running; do not attach another
+  root qdisc to the same interface.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
@@ -680,7 +684,12 @@ Common rules, either policy:
   exact-wire per-peer `B+C` budget, where `B` is the configured path-shaper BDP.
   `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
   `fq` parameters, HTB rate, queue length, both GSO limits, and epoch matched at
-  the latest `actual_observed_timestamp_seconds`. These series are absent when
+  the latest `actual_observed_timestamp_seconds`.
+  `rate_fresh=1` independently acknowledges the exact HTB rate/epoch while a
+  non-dropping capacity shrink remains deferred. `actual_queue_length_packets`,
+  `actual_backlog_bytes`, and `drops_total` expose the live root-qdisc state;
+  `queue_limit_deferred`, `gso_limits_deferred`, and
+  `engine_admission_limit_deferred` identify the pending bound. These series are absent when
   the active-backup Linux TUN AQM is inactive.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +

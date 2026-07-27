@@ -393,17 +393,35 @@ func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
 }
 
 func (device *Device) SetOutboundAdmissionLimit(bytes int) error {
+	applied, err := device.TrySetOutboundAdmissionLimit(bytes)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return errors.New(
+			"device: outbound admission shrink deferred until retained bytes fit",
+		)
+	}
+	return nil
+}
+
+func (device *Device) TrySetOutboundAdmissionLimit(bytes int) (bool, error) {
 	if bytes <= 0 {
-		return errors.New("device: outbound admission limit must be positive")
+		return false, errors.New("device: outbound admission limit must be positive")
 	}
 	limit := int64(bytes)
-	device.outboundAdmissionLimit.Store(limit)
 	device.peers.RLock()
+	admissions := make([]*outboundAdmission, 0, len(device.peers.keyMap))
 	for _, peer := range device.peers.keyMap {
-		peer.outboundAdmission.setLimit(limit)
+		admissions = append(admissions, peer.outboundAdmission)
 	}
+	if !trySetOutboundAdmissionLimit(admissions, limit) {
+		device.peers.RUnlock()
+		return false, nil
+	}
+	device.outboundAdmissionLimit.Store(limit)
 	device.peers.RUnlock()
-	return nil
+	return true, nil
 }
 
 func (device *Device) RemovePeer(key NoisePublicKey) {

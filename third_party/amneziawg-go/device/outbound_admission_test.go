@@ -142,6 +142,43 @@ func TestOutboundAdmissionIsIndependentPerPeer(t *testing.T) {
 	nextA.release()
 }
 
+func TestOutboundAdmissionShrinkWaitsForEveryPeerRetention(t *testing.T) {
+	peerA := newOutboundAdmission(2_000)
+	peerB := newOutboundAdmission(2_000)
+	peerA.start()
+	peerB.start()
+	reservation, ok := peerB.reserve(1_500)
+	if !ok {
+		t.Fatal("peer B reservation canceled")
+	}
+	if trySetOutboundAdmissionLimit(
+		[]*outboundAdmission{peerA, peerB},
+		1_000,
+	) {
+		t.Fatal("admission shrink applied above peer B retained bytes")
+	}
+	if got := peerA.snapshot().limitBytes; got != 2_000 {
+		t.Fatalf("peer A limit partially shrank to %d, want 2000", got)
+	}
+	if got := peerB.snapshot().limitBytes; got != 2_000 {
+		t.Fatalf("peer B limit partially shrank to %d, want 2000", got)
+	}
+
+	reservation.release()
+	if !trySetOutboundAdmissionLimit(
+		[]*outboundAdmission{peerA, peerB},
+		1_000,
+	) {
+		t.Fatal("admission shrink remained deferred after retention drained")
+	}
+	if got := peerA.snapshot().limitBytes; got != 1_000 {
+		t.Fatalf("peer A installed limit = %d, want 1000", got)
+	}
+	if got := peerB.snapshot().limitBytes; got != 1_000 {
+		t.Fatalf("peer B installed limit = %d, want 1000", got)
+	}
+}
+
 func TestOutboundAdmissionCompletionRetainsUntilTerminalCallback(t *testing.T) {
 	admission := newOutboundAdmission(2_000)
 	admission.start()

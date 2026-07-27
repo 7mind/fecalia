@@ -448,8 +448,9 @@ as historical exact-byte-shaper evidence.
       loss reduces the target; clean delivered service permits bounded
       additive increase, never above the declared outer ceiling. Confirm the
       TUN target follows the learned outer/inner ratio and exact kernel
-      readback follows the target without replacing/resetting a correct
-      `fq` leaf. The first congested tick must decrease promptly. Before
+      readback follows the target with an in-place `fq` change: packet/drop
+      counters must remain monotonic and a correct live leaf must never be
+      deleted/re-added. The first congested tick must decrease promptly. Before
       another target change, `retarget_pending` must remain 1 until
       `installed_fresh=1` for the same rate/epoch and at least
       `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
@@ -457,6 +458,13 @@ as historical exact-byte-shaper evidence.
       under sustained congestion, the next decision occurs promptly after its
       original deadline. A stale/mismatched readback re-arms the interval, and
       a carrier-epoch transition cancels the prior wait.
+- [ ] During a capacity shrink, `rate_fresh` may become 1 while
+      `actual_fresh=0` only when a corresponding queue-limit, GSO-limit, or
+      engine-admission deferred gauge is 1. The installed queue limit must
+      remain at least the desired limit until qlen fits; GSO shrink waits for
+      zero TUN backlog; engine admission shrink waits until every peer's
+      retained bytes fit. All deferred gauges must return to zero after drain,
+      with exact target/actual readback and no new qdisc or link drop.
 - [ ] For each single ACK-clocked TCP leg, the bounded `fq` leaf incurs zero
       local drops and its backlog returns to zero after the leg. An offered
       burst no larger than the calculated service backlog must also incur zero

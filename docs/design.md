@@ -523,9 +523,16 @@ rate and epoch retain the first acknowledgment time; periodic reconciliation
 therefore cannot move the settlement deadline forward. A stale or mismatched
 readback re-arms the acknowledgment, and a carrier-epoch transition cancels the
 old wait. Rate reconciliation replaces the HTB class without deleting or
-re-adding a matching `fq` leaf, preserving its queue and statistics. A target
-rate or MTU change may independently resize the pre-TUN GSO limits and
-per-peer engine byte gate to retain the 20 ms complete-batch bound plus one BDP.
+re-adding a matching `fq` leaf. Mutable `fq` parameters use the kernel's
+in-place change operation, preserving queued packets and cumulative counters.
+A queue-limit shrink waits while the installed packet count exceeds the new
+limit; a GSO shrink waits for an empty TUN backlog; and the peer-private engine
+gate shrinks atomically only when every peer's retained bytes fit. The desired
+rate can still receive its exact epoch acknowledgment during one of these safe
+capacity deferrals: full `actual_fresh` remains false while `rate_fresh` is
+true. A target rate or MTU change may therefore resize the pre-TUN GSO limits
+and per-peer engine byte gate without discarding admitted traffic while
+retaining the 20 ms complete-batch bound plus one BDP.
 
 This early controller deliberately applies only to active-backup. Weighted
 striping has no single carrier epoch to which one authenticated DATA-loss
@@ -1160,7 +1167,10 @@ behaviour composes the following signals into one picture:
   Connection-scoped `wanbond_tun_aqm_target_*` and
   `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, queue length,
   bounded `fq` queue/flow limits, epoch, freshness, and readback timestamp;
-  they are absent when the Linux
+  live qdisc packet/byte backlog and root drops are explicit. `rate_fresh`
+  separates an exact rate/epoch acknowledgment from full-envelope
+  `actual_fresh`, while the queue-limit, GSO-limit, and engine-admission
+  deferred gauges identify a safe pending shrink. These series are absent when the Linux
   active-backup TUN AQM does not own the qdisc.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can
