@@ -494,6 +494,9 @@ top:
 				peer.queue.outbound.c <- elemsContainer
 				peer.device.outbound.recordPeerQueueDepth(len(peer.queue.outbound.c))
 				peer.device.queue.encryption.c <- elemsContainer
+				peer.device.outbound.recordEncryptionQueueDepth(
+					len(peer.device.queue.encryption.c),
+				)
 			} else {
 				for _, elem := range elemsContainer.elems {
 					peer.device.PutMessageBuffer(elem.buffer)

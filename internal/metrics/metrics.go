@@ -197,6 +197,7 @@ const (
 	MetricEngineSendBytes                 = "wanbond_engine_send_bytes_total"
 	MetricEngineSendBatchFrames           = "wanbond_engine_send_batch_frames"
 	MetricEngineEncryptionQueueContainers = "wanbond_engine_encryption_queue_containers"
+	MetricEngineEncryptionQueueHighWater  = "wanbond_engine_encryption_queue_high_water_containers"
 	MetricEnginePeerQueueContainers       = "wanbond_engine_peer_queue_containers"
 	MetricEnginePeerQueueHighWater        = "wanbond_engine_peer_queue_high_water_containers"
 	MetricEngineActiveSendFrames          = "wanbond_engine_active_send_frames"
@@ -598,6 +599,7 @@ type EngineOutboundSnapshot struct {
 	SendBytes                 uint64
 	SendBatchFrames           EngineBatchHistogram
 	EncryptionQueueContainers uint64
+	EncryptionQueueHighWater  uint64
 	PeerQueueContainers       uint64
 	PeerQueueHighWater        uint64
 	ActiveSendFrames          uint64
@@ -713,6 +715,7 @@ type collector struct {
 	engineSendBytes                 *prometheus.Desc
 	engineSendBatchFrames           *prometheus.Desc
 	engineEncryptionQueueContainers *prometheus.Desc
+	engineEncryptionQueueHighWater  *prometheus.Desc
 	enginePeerQueueContainers       *prometheus.Desc
 	enginePeerQueueHighWater        *prometheus.Desc
 	engineActiveSendFrames          *prometheus.Desc
@@ -1033,6 +1036,7 @@ func NewCollector(src Source) prometheus.Collector {
 		engineSendBytes:                 desc(engineSubsystem, "send_bytes_total", "Encrypted WireGuard bytes handed to Bind.Send.", nil),
 		engineSendBatchFrames:           desc(engineSubsystem, "send_batch_frames", "Distribution of encrypted WireGuard frames handed to one Bind.Send call.", nil),
 		engineEncryptionQueueContainers: desc(engineSubsystem, "encryption_queue_containers", "Outbound containers currently queued for encryption.", nil),
+		engineEncryptionQueueHighWater:  desc(engineSubsystem, "encryption_queue_high_water_containers", "Maximum observed outbound container depth of the shared encryption queue.", nil),
 		enginePeerQueueContainers:       desc(engineSubsystem, "peer_queue_containers", "Outbound containers currently queued ahead of peer sequential senders.", nil),
 		enginePeerQueueHighWater:        desc(engineSubsystem, "peer_queue_high_water_containers", "Maximum observed container depth of any peer outbound queue.", nil),
 		engineActiveSendFrames:          desc(engineSubsystem, "active_send_frames", "Encrypted WireGuard frames currently held across synchronous Bind.Send calls.", nil),
@@ -1135,6 +1139,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.engineSendBytes
 	ch <- c.engineSendBatchFrames
 	ch <- c.engineEncryptionQueueContainers
+	ch <- c.engineEncryptionQueueHighWater
 	ch <- c.enginePeerQueueContainers
 	ch <- c.enginePeerQueueHighWater
 	ch <- c.engineActiveSendFrames
@@ -1287,6 +1292,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.engineSendBytes, prometheus.CounterValue, float64(outbound.SendBytes))
 		ch <- prometheus.MustNewConstHistogram(c.engineSendBatchFrames, outbound.SendBatchFrames.Count, float64(outbound.SendBatchFrames.Frames), histogramBuckets(outbound.SendBatchFrames.Buckets))
 		ch <- prometheus.MustNewConstMetric(c.engineEncryptionQueueContainers, prometheus.GaugeValue, float64(outbound.EncryptionQueueContainers))
+		ch <- prometheus.MustNewConstMetric(c.engineEncryptionQueueHighWater, prometheus.GaugeValue, float64(outbound.EncryptionQueueHighWater))
 		ch <- prometheus.MustNewConstMetric(c.enginePeerQueueContainers, prometheus.GaugeValue, float64(outbound.PeerQueueContainers))
 		ch <- prometheus.MustNewConstMetric(c.enginePeerQueueHighWater, prometheus.GaugeValue, float64(outbound.PeerQueueHighWater))
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendFrames, prometheus.GaugeValue, float64(outbound.ActiveSendFrames))

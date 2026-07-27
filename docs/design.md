@@ -446,38 +446,41 @@ draining `wanbond0` into a seconds-deep private queue. The
 `wanbond_engine_*` series retain that observation boundary, but the correction
 acts before it: on Linux, active-backup+pacing installs an HTB root with one
 bounded `fq` leaf on `wanbond0`, sets `txqueuelen=32`, and shapes TUN ingress at
-the controller's current inner-byte target. For peer count `P`, the exact leaf
-contract is
-`limit=flow_limit=ceil(P*maxPathDataBurstBytes/current TUN MTU)+32` and
-`quantum=initial_quantum=current TUN MTU`. `maxPathDataBurstBytes` is the
-already-validated BDP/synthetic service backlog used by the exact-byte path
-shaper. Thus one ACK-clocked TCP flow and one admitted service burst fit without
-an intentional CoDel drop; overload beyond the explicit packet bound may
-tail-drop and increments the qdisc drop counter.
+the controller's current inner-byte target. Let `B=maxPathDataBurstBytes`, the
+already-validated per-peer BDP/synthetic service backlog used by the exact-byte
+path shaper, and let `C` be one complete pre-segmented batch as derived below.
+For peer count `P`, the exact leaf contract is
+`limit=flow_limit=ceil(P*(B+C)/current TUN MTU)+32` and
+`quantum=initial_quantum=current TUN MTU`. Thus one ACK-clocked TCP BDP plus one
+complete admitted batch fit without an intentional tail drop; overload beyond
+the explicit packet bound may tail-drop and increments the qdisc drop counter.
 
 The same target also closes the engine's private-queue gap without truncating
 the TUN read. Let `r` be the aggregate ingress target divided by peer count,
 `Mmax` the maximum configured inner MTU, `Mcur` the current inner MTU, and
 `W=Mmax+32` the maximum encrypted WireGuard datagram bytes (16-byte transport
-header plus 16-byte AEAD tag). For the 20 ms local engine-delay budget:
+header plus 16-byte AEAD tag). For the 20 ms complete-batch service budget:
 
 ```
 S = min(128, floor(65536/Mcur), floor(r*20ms/W))
 gso_max_segs = S
 gso_max_size = S*Mcur
-per-peer engine admission = S*W bytes
+C = S*W
+per-peer engine admission = B+C bytes
 ```
 
 `S` must admit at least one legal datagram or startup fails. Linux applies and
 exactly reads back both GSO limits before the engine limit changes. Therefore a
 complete pre-TUN GSO container has worst-case service time at most 20 ms even
-across a concurrent MTU recovery. The patched engine pads each container first,
-accounts its exact future encrypted bytes, then atomically waits at a
-peer-private byte gate immediately before `peer.queue.outbound`. It never
-splits, truncates, or drops an admitted TUN/GSO container. Completion or flush
-releases the exact reservation; peer stop cancels a waiter; independent peers
-never share a gate. Generated outer PROBE/CONTROL still bypasses this engine
-queue and retains the Bind shaper's priority reserve.
+across a concurrent MTU recovery. The additional `B` prevents the gate from
+falling below one established ACK-clocked flight when the carrier RTT exceeds
+20 ms. The patched engine pads each container first, accounts its exact future
+encrypted bytes, then atomically waits at a peer-private byte gate immediately
+before `peer.queue.outbound`. It never splits, truncates, or drops an admitted
+TUN/GSO container. Completion or flush releases the exact reservation; peer
+stop cancels a waiter; independent peers never share a gate. Generated outer
+PROBE/CONTROL still bypasses this engine queue and retains the Bind shaper's
+priority reserve.
 
 Startup fails if `tc` is unavailable or topology, parameters, rate, queue
 length, or GSO limits cannot be read back. The daemon reconciles and re-reads
@@ -515,7 +518,7 @@ behind an apparently held outer target. A carrier-epoch transition cancels the
 old wait. Rate reconciliation replaces the HTB class without deleting or
 re-adding a matching `fq` leaf, preserving its queue and statistics. A target
 rate or MTU change may independently resize the pre-TUN GSO limits and
-per-peer engine byte gate to retain the 20 ms local-delay invariant.
+per-peer engine byte gate to retain the 20 ms complete-batch bound plus one BDP.
 
 This early controller deliberately applies only to active-backup. Weighted
 striping has no single carrier epoch to which one authenticated DATA-loss
@@ -1132,9 +1135,10 @@ behaviour composes the following signals into one picture:
 - engine ingress/send series: `wanbond_engine_{tun,send}_bytes_total`,
   `wanbond_engine_{tun,send}_batch_frames` histograms,
   `wanbond_engine_{encryption,peer}_queue_containers`,
-  `wanbond_engine_peer_queue_high_water_containers`, and current/high-water
-  active `Bind.Send` frames/bytes. These connection-scoped series localize
-  queueing before the Bind and remain present independently of pacing.
+  `wanbond_engine_{encryption,peer}_queue_high_water_containers`, and
+  current/high-water active `Bind.Send` frames/bytes. These connection-scoped
+  series localize queueing before the Bind and remain present independently of
+  pacing.
 - active-backup congestion series:
   `wanbond_path_congestion_{outer_wire,inner_data}_bytes_total`,
   `wanbond_path_congestion_{target_outer,target_ingress,delivered}_bytes_per_second`,

@@ -16,6 +16,7 @@ type OutboundStats struct {
 	SendBytes                 uint64
 	SendBatchFrames           OutboundBatchHistogram
 	EncryptionQueueContainers uint64
+	EncryptionQueueHighWater  uint64
 	PeerQueueContainers       uint64
 	PeerQueueHighWater        uint64
 	ActiveSendFrames          uint64
@@ -31,15 +32,16 @@ type OutboundStats struct {
 }
 
 type outboundStats struct {
-	tunBytes           atomic.Uint64
-	tunBatches         outboundBatchHistogram
-	sendBytes          atomic.Uint64
-	sendBatches        outboundBatchHistogram
-	peerQueueHighWater atomic.Uint64
-	activeSendFrames   atomic.Int64
-	activeSendBytes    atomic.Int64
-	activeFramesHigh   atomic.Uint64
-	activeBytesHigh    atomic.Uint64
+	tunBytes                 atomic.Uint64
+	tunBatches               outboundBatchHistogram
+	sendBytes                atomic.Uint64
+	sendBatches              outboundBatchHistogram
+	encryptionQueueHighWater atomic.Uint64
+	peerQueueHighWater       atomic.Uint64
+	activeSendFrames         atomic.Int64
+	activeSendBytes          atomic.Int64
+	activeFramesHigh         atomic.Uint64
+	activeBytesHigh          atomic.Uint64
 }
 
 type outboundBatchHistogram struct {
@@ -60,6 +62,10 @@ func (s *outboundStats) recordSendBatch(frames, bytes int) {
 
 func (s *outboundStats) recordPeerQueueDepth(depth int) {
 	updateHighWater(&s.peerQueueHighWater, uint64(depth))
+}
+
+func (s *outboundStats) recordEncryptionQueueDepth(depth int) {
+	updateHighWater(&s.encryptionQueueHighWater, uint64(depth))
 }
 
 func (s *outboundStats) addActiveSend(frames, bytes int64) {
@@ -134,6 +140,7 @@ func (device *Device) OutboundStats() OutboundStats {
 		SendBytes:                 device.outbound.sendBytes.Load(),
 		SendBatchFrames:           device.outbound.sendBatches.snapshot(),
 		EncryptionQueueContainers: encryptionQueueContainers,
+		EncryptionQueueHighWater:  device.outbound.encryptionQueueHighWater.Load(),
 		PeerQueueContainers:       peerQueueContainers,
 		PeerQueueHighWater:        device.outbound.peerQueueHighWater.Load(),
 		ActiveSendFrames:          uint64(device.outbound.activeSendFrames.Load()),

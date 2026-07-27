@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
 
 type memoryTUNAQMKernel struct {
@@ -132,27 +134,31 @@ func TestEngineOutboundBoundsFitWholeBatchWithinDelayBudget(t *testing.T) {
 		rate     float64
 		peers    int
 		mtu      int
+		budget   int
 		wantSize int
 		wantSegs int
 		wantGate int
 	}{
 		{
 			name: "cycle 6 Pi reduced target", rate: 659_031.0606091819,
-			peers: 1, mtu: 1319, wantSize: 11_871, wantSegs: 9, wantGate: 12_159,
+			peers: 1, mtu: 1319, budget: 45_000,
+			wantSize: 11_871, wantSegs: 9, wantGate: 57_159,
 		},
 		{
 			name: "cycle 6 o3 target", rate: 1_020_000,
-			peers: 1, mtu: 1395, wantSize: 19_530, wantSegs: 14, wantGate: 19_978,
+			peers: 1, mtu: 1395, budget: 60_000,
+			wantSize: 19_530, wantSegs: 14, wantGate: 79_978,
 		},
 		{
 			name: "two peers use per-peer rate", rate: 1_360_000,
-			peers: 2, mtu: 1395, wantSize: 12_555, wantSegs: 9, wantGate: 12_843,
+			peers: 2, mtu: 1395, budget: 45_000,
+			wantSize: 12_555, wantSegs: 9, wantGate: 57_843,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := deriveEngineOutboundBounds(
-				test.rate, test.peers, test.mtu, test.mtu,
+				test.rate, test.peers, test.mtu, test.mtu, test.budget,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -163,28 +169,75 @@ func TestEngineOutboundBoundsFitWholeBatchWithinDelayBudget(t *testing.T) {
 				t.Fatalf("bounds = %+v, want size=%d segments=%d gate=%d",
 					got, test.wantSize, test.wantSegs, test.wantGate)
 			}
-			if got.MaxBatchServiceTime > engineOutboundDelayBudget {
+			if got.MaxBatchServiceTime > engineOutboundBatchDelayBudget {
 				t.Fatalf("whole-batch service time = %s, want <= %s",
-					got.MaxBatchServiceTime, engineOutboundDelayBudget)
+					got.MaxBatchServiceTime, engineOutboundBatchDelayBudget)
 			}
 		})
 	}
 }
 
 func TestEngineOutboundBoundsRejectRateBelowOneDatagramBudget(t *testing.T) {
-	if _, err := deriveEngineOutboundBounds(50_000, 1, 1395, 1395); err == nil {
+	if _, err := deriveEngineOutboundBounds(50_000, 1, 1395, 1395, 45_000); err == nil {
 		t.Fatal("derived bounds below one legal WireGuard datagram per delay budget")
 	}
 }
 
 func TestEngineOutboundBoundsUseMaximumMTUAcrossResize(t *testing.T) {
-	got, err := deriveEngineOutboundBounds(659_031.0606091819, 1, 1319, 1320)
+	got, err := deriveEngineOutboundBounds(659_031.0606091819, 1, 1319, 1320, 45_000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.GSOMaxSize != 11_871 || got.GSOMaxSegments != 9 ||
-		got.AdmissionLimitBytes != 12_168 {
-		t.Fatalf("resize-safe bounds = %+v, want size=11871 segments=9 gate=12168", got)
+		got.AdmissionLimitBytes != 57_168 {
+		t.Fatalf("resize-safe bounds = %+v, want size=11871 segments=9 gate=57168", got)
+	}
+}
+
+func TestEngineOutboundBoundsPreserveOneBDPAndWholeBatch(t *testing.T) {
+	const (
+		rateBytesPerSecond = 680_000
+		dataBudgetBytes    = 45_000
+		mtu                = 1395
+	)
+	got, err := deriveEngineOutboundBounds(
+		rateBytesPerSecond, 1, mtu, mtu, dataBudgetBytes,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wholeBatchBytes := got.GSOMaxSegments * (mtu + awgdevice.MessageTransportSize)
+	wantAdmissionBytes := dataBudgetBytes + wholeBatchBytes
+	if got.AdmissionLimitBytes != wantAdmissionBytes {
+		t.Fatalf(
+			"admission limit = %d, want B+C = %d+%d = %d",
+			got.AdmissionLimitBytes,
+			dataBudgetBytes,
+			wholeBatchBytes,
+			wantAdmissionBytes,
+		)
+	}
+
+	queueLimit, err := deriveTUNAQMQueueLimit(
+		got.AdmissionLimitBytes, 1, mtu,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servicePackets := (wantAdmissionBytes + mtu - 1) / mtu
+	if queueLimit-tunAQMTxQueueLen < servicePackets {
+		t.Fatalf(
+			"fq service capacity = %d packets, want at least B+C = %d packets",
+			queueLimit-tunAQMTxQueueLen,
+			servicePackets,
+		)
+	}
+	if overloadPackets := servicePackets + tunAQMTxQueueLen + 1; overloadPackets <= queueLimit {
+		t.Fatalf(
+			"overload at %d packets is not observable above fq limit %d",
+			overloadPackets,
+			queueLimit,
+		)
 	}
 }
 

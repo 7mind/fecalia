@@ -9,6 +9,7 @@ func TestOutboundStatsBatchHistograms(t *testing.T) {
 	device.outbound.recordTUNBatch(128, 64*1024)
 	device.outbound.recordSendBatch(4, 400)
 	device.outbound.recordPeerQueueDepth(1)
+	device.outbound.recordEncryptionQueueDepth(2)
 	device.outbound.addActiveSend(4, 400)
 
 	got := device.OutboundStats()
@@ -31,6 +32,9 @@ func TestOutboundStatsBatchHistograms(t *testing.T) {
 	}
 	if got.PeerQueueHighWater != 1 {
 		t.Errorf("PeerQueueHighWater = %d, want 1", got.PeerQueueHighWater)
+	}
+	if got.EncryptionQueueHighWater != 2 {
+		t.Errorf("EncryptionQueueHighWater = %d, want 2", got.EncryptionQueueHighWater)
 	}
 	if got.ActiveSendFrames != 4 || got.ActiveSendBytes != 400 {
 		t.Errorf("active send = %d frames, %d bytes", got.ActiveSendFrames, got.ActiveSendBytes)

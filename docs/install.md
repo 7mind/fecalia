@@ -650,8 +650,9 @@ Common rules, either policy:
   post-GSO TUN container and per `Bind.Send`; their corresponding
   `*_bytes_total` counters expose byte volume. The
   `wanbond_engine_{encryption,peer}_queue_containers` gauges,
-  `wanbond_engine_peer_queue_high_water_containers`, and active-send
-  frame/byte current/high-water gauges localize backpressure before the Bind.
+  `wanbond_engine_{encryption,peer}_queue_high_water_containers`, and
+  active-send frame/byte current/high-water gauges localize backpressure before
+  the Bind.
   With active-backup pacing, `admission_{limit,retained,high_water}_bytes`,
   `admission_waits_total`, `admission_wait_seconds_total`, and
   `admission_oversize_batches_total` expose the peer-private whole-batch byte
@@ -671,8 +672,9 @@ Common rules, either policy:
   `{target,actual}_queue_limit_packets` and `actual_flow_limit_packets` expose
   the bounded `fq` contract.
   `{target,actual}_gso_max_{size_bytes,segments}` expose the pre-TUN whole-batch
-  limit, and `target_engine_admission_limit_bytes` is the matching exact-wire
-  per-peer budget. `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
+  limit `C`, and `target_engine_admission_limit_bytes` is the matching
+  exact-wire per-peer `B+C` budget, where `B` is the configured path-shaper BDP.
+  `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
   `fq` parameters, HTB rate, queue length, both GSO limits, and epoch matched at
   the latest `actual_observed_timestamp_seconds`. These series are absent when
   the active-backup Linux TUN AQM is inactive.

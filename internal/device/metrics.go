@@ -98,6 +98,7 @@ func (s *metricsSource) EngineOutbound() metrics.EngineOutboundSnapshot {
 		SendBytes:                 stats.SendBytes,
 		SendBatchFrames:           engineBatchHistogram(stats.SendBatchFrames),
 		EncryptionQueueContainers: stats.EncryptionQueueContainers,
+		EncryptionQueueHighWater:  stats.EncryptionQueueHighWater,
 		PeerQueueContainers:       stats.PeerQueueContainers,
 		PeerQueueHighWater:        stats.PeerQueueHighWater,
 		ActiveSendFrames:          stats.ActiveSendFrames,

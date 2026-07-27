@@ -412,8 +412,9 @@ as historical exact-byte-shaper evidence.
 - [ ] On both edge and concentrator, confirm active-backup+pacing starts only
       after exact readback: `wanbond0 txqueuelen 32`, HTB root, one `fq`
       child with
-      `limit=flow_limit=ceil(peerCount*maxPathDataBurstBytes/currentMTU)+32`
+      `limit=flow_limit=ceil(peerCount*(B+C)/currentMTU)+32`
       and `quantum=initial_quantum=current MTU`.
+      Here `B=maxPathDataBurstBytes` and `C` is the complete GSO batch below.
       `wanbond_tun_aqm_actual_fresh` must be 1 and target/actual epoch, rate,
       and queue length must match.
 - [ ] From per-peer ingress rate `r`, maximum configured inner MTU `Mmax`, and
@@ -421,7 +422,9 @@ as historical exact-byte-shaper evidence.
       `S=min(128,floor(65536/Mcur),floor(r*20ms/(Mmax+32)))`.
       Confirm the link target/actual GSO readback is exactly
       `gso_max_segs=S`, `gso_max_size=S*Mcur`, and the per-peer engine byte
-      limit is `S*(Mmax+32)`. Its service time must not exceed 20 ms.
+      limit is `B+S*(Mmax+32)`. The complete batch
+      `C=S*(Mmax+32)` must have service time no greater than 20 ms; the
+      additional `B` preserves one ACK-clocked BDP.
 - [ ] Run **two independent synchronized field cycles**. Each cycle contains
       one 30-second Pi→o3 TCP upload and one 30-second o3→Pi TCP download
       (`iperf3 -R` from the Pi). For each leg, start timestamped inner and outer
@@ -461,7 +464,9 @@ as historical exact-byte-shaper evidence.
       `wanbond_engine_admission_retained_bytes` must stay at or below
       `wanbond_engine_admission_limit_bytes`, and
       `wanbond_engine_admission_oversize_batches_total` must stay zero after
-      fresh GSO readback. Hidden inner RTT must not grow into seconds while
+      fresh GSO readback. Record both
+      `wanbond_engine_{encryption,peer}_queue_high_water_containers` to identify
+      the exact queue owner. Hidden inner RTT must not grow into seconds while
       outer RTT stays near baseline, and TUN/shaper/socket/FEC accounting must
       show no unexplained loss. Evaluate receiver goodput, retransmits, AQM
       ECN/drops, authenticated loss, and queue-delay response together. Q91 has

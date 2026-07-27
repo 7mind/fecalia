@@ -324,13 +324,15 @@ func (t *Tunnel) startTUNAQM() error {
 	}
 	mtu := t.currentTunMTU()
 	maximumMTU := tunMTU(t.cfg)
-	queueLimit, err := deriveTUNAQMQueueLimit(maxDataBurstBytes, peerCount, mtu)
+	bounds, err := deriveEngineOutboundBounds(
+		initial.IngressRateBytesPerSecond*float64(peerCount),
+		peerCount, mtu, maximumMTU, maxDataBurstBytes,
+	)
 	if err != nil {
 		return err
 	}
-	bounds, err := deriveEngineOutboundBounds(
-		initial.IngressRateBytesPerSecond*float64(peerCount),
-		peerCount, mtu, maximumMTU,
+	queueLimit, err := deriveTUNAQMQueueLimit(
+		bounds.AdmissionLimitBytes, peerCount, mtu,
 	)
 	if err != nil {
 		return err
@@ -386,21 +388,22 @@ func (t *Tunnel) startTUNAQM() error {
 					target.Epoch = epoch
 				}
 				target.MTU = t.currentTunMTU()
+				bounds, err := deriveEngineOutboundBounds(
+					target.RateBytesPerSecond, peerCount, target.MTU, maximumMTU,
+					maxDataBurstBytes,
+				)
+				if err != nil {
+					t.log.Error("engine outbound bound derivation failed", "error", err.Error())
+					continue
+				}
 				queueLimit, err := deriveTUNAQMQueueLimit(
-					maxDataBurstBytes, peerCount, target.MTU,
+					bounds.AdmissionLimitBytes, peerCount, target.MTU,
 				)
 				if err != nil {
 					t.log.Error("TUN AQM queue-limit derivation failed", "error", err.Error())
 					continue
 				}
 				target.QueueLimit = queueLimit
-				bounds, err := deriveEngineOutboundBounds(
-					target.RateBytesPerSecond, peerCount, target.MTU, maximumMTU,
-				)
-				if err != nil {
-					t.log.Error("engine outbound bound derivation failed", "error", err.Error())
-					continue
-				}
 				target.GSOMaxSize = bounds.GSOMaxSize
 				target.GSOMaxSegments = bounds.GSOMaxSegments
 				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes

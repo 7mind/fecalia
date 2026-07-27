@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	tunAQMTxQueueLen          = 32
-	engineOutboundDelayBudget = 20 * time.Millisecond
-	linuxDefaultGSOMaxSize    = 64 * 1024
+	tunAQMTxQueueLen               = 32
+	engineOutboundBatchDelayBudget = 20 * time.Millisecond
+	linuxDefaultGSOMaxSize         = 64 * 1024
 )
 
 type tunAQMTargetState struct {
@@ -190,24 +190,26 @@ func deriveEngineOutboundBounds(
 	peerCount int,
 	currentMTU int,
 	maximumMTU int,
+	dataBudgetBytes int,
 ) (engineOutboundBounds, error) {
 	if math.IsNaN(aggregateRateBytesPerSecond) ||
 		math.IsInf(aggregateRateBytesPerSecond, 0) ||
 		aggregateRateBytesPerSecond <= 0 ||
 		peerCount <= 0 ||
 		currentMTU <= 0 ||
-		maximumMTU < currentMTU {
+		maximumMTU < currentMTU ||
+		dataBudgetBytes <= 0 {
 		return engineOutboundBounds{}, errors.New(
-			"engine outbound rate/peer count/MTUs must be positive and maximum MTU must cover current MTU",
+			"engine outbound rate/peer count/MTUs/data budget must be positive and maximum MTU must cover current MTU",
 		)
 	}
 	perPeerRate := aggregateRateBytesPerSecond / float64(peerCount)
 	maxWireDatagram := maximumMTU + awgdevice.MessageTransportSize
-	wireBudget := int(math.Floor(perPeerRate * engineOutboundDelayBudget.Seconds()))
+	wireBudget := int(math.Floor(perPeerRate * engineOutboundBatchDelayBudget.Seconds()))
 	if wireBudget < maxWireDatagram {
 		return engineOutboundBounds{}, fmt.Errorf(
 			"engine outbound %s delay budget permits %d bytes at %g B/s, below one %d-byte WireGuard datagram",
-			engineOutboundDelayBudget, wireBudget, perPeerRate, maxWireDatagram,
+			engineOutboundBatchDelayBudget, wireBudget, perPeerRate, maxWireDatagram,
 		)
 	}
 	maxSegments := wireBudget / maxWireDatagram
@@ -222,14 +224,20 @@ func deriveEngineOutboundBounds(
 			"engine outbound delay budget cannot admit one GSO segment",
 		)
 	}
-	admissionLimit := maxSegments * maxWireDatagram
+	wholeBatchBytes := maxSegments * maxWireDatagram
+	if dataBudgetBytes > math.MaxInt-wholeBatchBytes {
+		return engineOutboundBounds{}, errors.New(
+			"engine outbound BDP plus whole-batch admission limit overflows int",
+		)
+	}
+	admissionLimit := dataBudgetBytes + wholeBatchBytes
 	serviceTime := time.Duration(
-		float64(admissionLimit) / perPeerRate * float64(time.Second),
+		float64(wholeBatchBytes) / perPeerRate * float64(time.Second),
 	)
-	if serviceTime > engineOutboundDelayBudget {
+	if serviceTime > engineOutboundBatchDelayBudget {
 		return engineOutboundBounds{}, fmt.Errorf(
 			"engine outbound maximum batch service time %s exceeds %s",
-			serviceTime, engineOutboundDelayBudget,
+			serviceTime, engineOutboundBatchDelayBudget,
 		)
 	}
 	return engineOutboundBounds{

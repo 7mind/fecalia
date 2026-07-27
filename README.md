@@ -232,8 +232,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   After any rate change, another controller decision waits for exact kernel
   readback and a one-second-or-one-SRTT settling interval; rate-only changes
   preserve the existing `fq` leaf and its state. The fair-queue limit admits
-  one configured service backlog plus the 32-packet device queue; overload
-  beyond that explicit bound may tail-drop and remains observable.
+  one configured per-peer BDP plus one complete GSO batch and the 32-packet
+  device queue; overload beyond that explicit bound may tail-drop and remains
+  observable.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under
