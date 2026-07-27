@@ -252,6 +252,22 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 // Regression: D131 review found that an occupied TUN qdisc deferred GSO shrink
 // after the class and leaf had already shrunk below the installed atomic skb.
 func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {
+	testLinuxTUNAQMDeferredAtomicCapacityShrink(t, 13_950, 1395, 1000)
+}
+
+// Regression: the installed leaf contains one old atomic GSO quantum per peer;
+// retaining only one link GSO maximum during a two-peer shrink loses that bound.
+func TestLinuxTUNAQMDefersAggregateLeafShrinkWithOccupiedGSO(t *testing.T) {
+	testLinuxTUNAQMDeferredAtomicCapacityShrink(t, 27_900, 2790, 2000)
+}
+
+func testLinuxTUNAQMDeferredAtomicCapacityShrink(
+	t testing.TB,
+	installedLeafBytes int,
+	desiredLeafBytes int,
+	backlogBytes int,
+) {
+	t.Helper()
 	var classCommands [][]string
 	var qdiscCommands [][]string
 	gsoWrites := 0
@@ -275,17 +291,17 @@ func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {
 		case len(args) >= 3 && args[0] == "-j" &&
 			args[1] == "-s" && args[2] == "qdisc":
 			if !occupied {
-				return []byte(`[
+				return []byte(fmt.Sprintf(`[
 					{"kind":"htb","root":true,"handle":"1:"},
 					{"kind":"bfifo","parent":"1:1","handle":"10:",
-					 "options":{"limit":13950}}
-				]`), nil
+					 "options":{"limit":%d}}
+				]`, installedLeafBytes)), nil
 			}
-			return []byte(`[
+			return []byte(fmt.Sprintf(`[
 				{"kind":"htb","root":true,"handle":"1:"},
-				{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":1,"backlog":1000,
-				 "options":{"limit":13950}}
-			]`), nil
+				{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":1,"backlog":%d,
+				 "options":{"limit":%d}}
+			]`, backlogBytes, installedLeafBytes)), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
 			return []byte("class htb 1:1 root rate 5440000bit ceil 5440000bit burst 13950b cburst 13950b"), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "replace":
@@ -303,7 +319,7 @@ func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {
 		BurstBytes:          1395,
 		TxQueueLen:          tunAQMTxQueueLen,
 		MTU:                 1395,
-		QueueLimitBytes:     1395,
+		QueueLimitBytes:     desiredLeafBytes,
 		GSOMaxSize:          1395,
 		GSOMaxSegments:      1,
 		AdmissionLimitBytes: 1715,
@@ -317,7 +333,8 @@ func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {
 	}
 	if len(classCommands) != 0 || len(qdiscCommands) != 0 {
 		t.Fatalf(
-			"occupied GSO shrink changed class/leaf below installed 13950-byte quantum: class=%v qdisc=%v",
+			"occupied GSO shrink changed class/leaf below installed %d-byte aggregate quantum: class=%v qdisc=%v",
+			installedLeafBytes,
 			classCommands,
 			qdiscCommands,
 		)

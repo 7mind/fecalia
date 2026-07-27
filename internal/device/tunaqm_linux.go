@@ -109,8 +109,8 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	}
 	burstBytes := target.BurstBytes
 	if gsoShrinkDeferred {
-		if queueLimit < current.GSOMaxSize {
-			queueLimit = current.GSOMaxSize
+		if queueLimit < current.LimitBytes {
+			queueLimit = current.LimitBytes
 			result.QueueLimitDeferred = true
 		}
 		installedGSOBurst, err := exactTCHTBBurstBytes(current.GSOMaxSize)
