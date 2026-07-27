@@ -77,6 +77,37 @@ func TestDataLossFeedbackRejectsReplayWrongIdentityAndStaleSample(t *testing.T) 
 	}
 }
 
+func TestDataLossFeedbackRetainsFreshLossAcrossNextCleanInterval(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	feedback := &dataLossFeedbackCoordinator{}
+	lost := testDataLossFeedback(1, 1)
+	if !feedback.accept(lost, 21, false, now) {
+		t.Fatal("loss interval was rejected")
+	}
+	clean := testDataLossFeedback(2, 1)
+	clean.Received++
+	clean.Lost = 0
+	if !feedback.accept(clean, 21, false, now.Add(adaptiveControlInterval/2)) {
+		t.Fatal("following clean interval was rejected")
+	}
+
+	loss, fresh, ever := feedback.sample(
+		lost.CarrierPathID,
+		lost.ObservedSessionID,
+		lost.ContractID,
+		now.Add(adaptiveControlInterval),
+	)
+	if want := lost.Loss(); !fresh || !ever || loss != want {
+		t.Fatalf(
+			"next controller sample = loss %v fresh %v ever %v, want retained fresh loss %v",
+			loss,
+			fresh,
+			ever,
+			want,
+		)
+	}
+}
+
 func TestDataLossFeedbackIsPerPeer(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	first := &dataLossFeedbackCoordinator{}
