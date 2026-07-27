@@ -704,14 +704,45 @@ func TestControllerLoadedPressurePreemptsUnrelatedOuterRetargetSettlement(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterReadback.IngressServiceHeadroom >=
+	if afterReadback.IngressServiceHeadroom !=
 		pressured.IngressServiceHeadroom ||
 		afterReadback.IngressHeadroomChanges !=
-			pressured.IngressHeadroomChanges+1 {
+			pressured.IngressHeadroomChanges {
 		t.Fatalf(
-			"exact ingress readback did not release pressure gate: pressured=%+v after=%+v",
+			"pressure repeated before its exact readback settled: pressured=%+v after=%+v",
 			pressured,
 			afterReadback,
+		)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(3 * time.Second),
+		Epoch:              epoch,
+		RateBytesPerSecond: pressured.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterSettlement, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(3250 * time.Millisecond),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: 100 * time.Millisecond,
+			Interval:              100 * time.Millisecond,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSettlement.IngressServiceHeadroom >=
+		pressured.IngressServiceHeadroom ||
+		afterSettlement.IngressHeadroomChanges !=
+			pressured.IngressHeadroomChanges+1 {
+		t.Fatalf(
+			"settled exact ingress readback did not release pressure gate: pressured=%+v after=%+v",
+			pressured,
+			afterSettlement,
 		)
 	}
 }

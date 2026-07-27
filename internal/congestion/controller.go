@@ -84,14 +84,15 @@ type Snapshot struct {
 }
 
 type Controller struct {
-	mu                     sync.Mutex
-	seed                   float64
-	limit                  float64
-	snapshot               Snapshot
-	haveSample             bool
-	lastIngressPressureAt  time.Time
-	cleanIngressIntervals  int
-	ingressPressurePending bool
+	mu                            sync.Mutex
+	seed                          float64
+	limit                         float64
+	snapshot                      Snapshot
+	haveSample                    bool
+	lastIngressPressureAt         time.Time
+	cleanIngressIntervals         int
+	ingressPressurePending        bool
+	ingressPressureAcknowledgedAt time.Time
 }
 
 func New(seedBytesPerSecond, limitBytesPerSecond float64) (*Controller, error) {
@@ -175,6 +176,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.lastIngressPressureAt = time.Time{}
 		c.cleanIngressIntervals = 0
 		c.ingressPressurePending = false
+		c.ingressPressureAcknowledgedAt = time.Time{}
 		c.haveSample = true
 		return c.snapshot, nil
 	}
@@ -227,10 +229,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 				installed.RateBytesPerSecond,
 				c.snapshot.Target.IngressRateBytesPerSecond,
 			)
-		settle := minimumRetargetSettle
-		if c.snapshot.BaseRTT > settle {
-			settle = c.snapshot.BaseRTT
-		}
+		settle := c.retargetSettleLocked()
 		if !rateMatches || actual.At.Before(installed.At.Add(settle)) {
 			return c.snapshot, nil
 		}
@@ -322,7 +321,13 @@ func (c *Controller) ObserveIngressPressure(
 		c.cleanIngressIntervals = 0
 	}
 	if c.snapshot.IngressPressure {
-		if c.ingressPressurePending {
+		if c.ingressPressurePending ||
+			(!c.ingressPressureAcknowledgedAt.IsZero() &&
+				actual.At.Before(
+					c.ingressPressureAcknowledgedAt.Add(
+						c.retargetSettleLocked(),
+					),
+				)) {
 			return c.snapshot, nil
 		}
 	} else if !c.ingressTargetSettledLocked(actual.At) {
@@ -375,11 +380,15 @@ func (c *Controller) ingressTargetSettledLocked(at time.Time) bool {
 		) {
 		return false
 	}
-	settle := minimumRetargetSettle
-	if c.snapshot.BaseRTT > settle {
-		settle = c.snapshot.BaseRTT
-	}
+	settle := c.retargetSettleLocked()
 	return !at.Before(c.snapshot.InstalledIngress.At.Add(settle))
+}
+
+func (c *Controller) retargetSettleLocked() time.Duration {
+	if c.snapshot.BaseRTT > minimumRetargetSettle {
+		return c.snapshot.BaseRTT
+	}
+	return minimumRetargetSettle
 }
 
 func (c *Controller) ObserveInstalledIngress(actual InstalledIngressState) error {
@@ -403,8 +412,9 @@ func (c *Controller) ObserveInstalledIngress(actual InstalledIngressState) error
 		actual.At = c.snapshot.InstalledIngress.At
 	}
 	c.snapshot.InstalledIngress = actual
-	if actual.Fresh {
+	if actual.Fresh && c.ingressPressurePending {
 		c.ingressPressurePending = false
+		c.ingressPressureAcknowledgedAt = actual.At
 	}
 	return nil
 }
