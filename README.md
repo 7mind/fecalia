@@ -235,9 +235,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   After any rate change, another controller decision waits for exact kernel
   readback and a one-second-or-one-SRTT settling interval. The ingress target
   starts with 5% service headroom and decreases independently of the outer
-  capacity target only when a loaded interval reports either engine-admission
-  wait pressure or ptr-ring occupancy; idle/opposite-direction ring activity
-  does not reduce it. The first loaded local-pressure decrease may preempt an
+  capacity target only when engine-admission wait occupies at least half a
+  loaded interval. Ptr-ring occupancy remains diagnostic and does not reduce
+  headroom. The first loaded local-pressure decrease may preempt an
   unrelated outer retarget, but another decrease waits for its own exact
   ingress readback and one-second-or-one-SRTT settlement. Three loaded, clean,
   settled intervals recover it additively. Mutable `bfifo` limits change in

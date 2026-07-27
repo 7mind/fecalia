@@ -477,9 +477,10 @@ as historical exact-byte-shaper evidence.
       a carrier-epoch transition cancels the prior wait.
 - [ ] Confirm ingress-only local service headroom starts at 0.95 without
       changing the outer target. A loaded interval whose per-controller engine
-      admission wait occupies at least half the interval, or whose ptr ring is
-      pending, must multiply headroom by 0.85 before link drops rise. The same
-      signals in an unloaded/opposite-direction interval must not reduce
+      admission wait occupies at least half the interval must multiply
+      headroom by 0.85 before link drops rise. Ptr-ring occupancy remains
+      diagnostic: loaded ring occupancy with zero or sub-threshold admission
+      wait, and every unloaded/opposite-direction interval, must not reduce
       headroom. Unchanged cumulative counters or a non-advancing interval must
       not replay the
       decrease. The first loaded local-pressure decrease may preempt settlement

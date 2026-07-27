@@ -462,12 +462,12 @@ Common rules, either policy:
 - Under active-backup, the controller initially uses 85% of `Rseed` and a
   conservative 1.25 outer/inner expansion. Ingress additionally starts with
   5% local-service headroom while the outer target remains independent.
-  Only a loaded interval can reduce headroom: admission wait occupying at least
-  half that interval or a pending TUN ring multiplies ingress headroom by 0.85
-  down to 0.50. The first local-pressure decrease may preempt an unrelated
+  Only a loaded interval whose admission wait occupies at least half that
+  interval can reduce headroom, multiplying it by 0.85 down to 0.50. A pending
+  TUN ring remains diagnostic. The first local-pressure decrease may preempt an unrelated
   outer retarget; another pressure decrease waits for its own exact ingress
   readback and `max(1s, active base RTT)` settlement. Idle/opposite-direction
-  ring occupancy does not reduce it. Three consecutive loaded, clean, settled
+  activity does not reduce it. Three consecutive loaded, clean, settled
   intervals recover 0.01, while idle intervals do not recover. Clean loaded
   outer samples add 10% of
   `Rseed`; queue delay or authenticated loss reduces the target. Every target

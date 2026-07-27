@@ -567,8 +567,8 @@ exact cumulative TUN-byte and engine-admission-wait baselines before routing
 the interval to the still-current aggregate carrier epoch. Aggregate wait time
 is divided across active peer controllers. Only a loaded interval can mark
 local pressure; it does so when admission wait occupies at least half the
-interval or the ptr ring is pending, then multiplies `h` by `0.85`, with a
-`0.50` floor. Idle/opposite-direction occupancy does not change headroom. A decrease occurs before link drops, then
+interval, then multiplies `h` by `0.85`, with a `0.50` floor. Ptr-ring
+occupancy remains diagnostic and does not change headroom. A decrease occurs before link drops, then
 waits for exact ingress rate/epoch readback and its own
 `max(1s, active base RTT)` settlement before the same pressure can decrease it
 again. The first loaded local-pressure decrease may preempt settlement for an
