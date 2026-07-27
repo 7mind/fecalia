@@ -71,15 +71,11 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 	topologyReady := readErr == nil &&
 		current.RootKind == "htb"
 	leafReady := topologyReady &&
-		current.LeafKind == "fq_codel" &&
-		current.Limit == tunAQMLimit &&
-		current.Flows == tunAQMFlows &&
+		current.LeafKind == "fq" &&
+		current.Limit == target.QueueLimit &&
+		current.FlowLimit == target.QueueLimit &&
 		current.Quantum == target.MTU &&
-		absDuration(current.Target-tunAQMTarget) <= tunAQMTimeTolerance &&
-		absDuration(current.Interval-tunAQMInterval) <= tunAQMTimeTolerance &&
-		current.MemoryLimit == tunAQMMemoryLimit &&
-		current.ECN &&
-		current.DropBatch == tunAQMDropBatch
+		current.InitialQuantum == target.MTU
 	if !topologyReady {
 		if err := k.run(
 			"qdisc", "replace", "dev", k.name,
@@ -116,13 +112,11 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 		}
 		if err := k.run(
 			"qdisc", "add", "dev", k.name,
-			"parent", "1:1", "handle", "10:", "fq_codel",
-			"limit", strconv.Itoa(tunAQMLimit),
-			"flows", strconv.Itoa(tunAQMFlows),
+			"parent", "1:1", "handle", "10:", "fq",
+			"limit", strconv.Itoa(target.QueueLimit),
+			"flow_limit", strconv.Itoa(target.QueueLimit),
 			"quantum", strconv.Itoa(target.MTU),
-			"target", tunAQMTarget.String(), "interval", tunAQMInterval.String(),
-			"memory_limit", strconv.Itoa(tunAQMMemoryLimit),
-			"ecn", "drop_batch", strconv.Itoa(tunAQMDropBatch),
+			"initial_quantum", strconv.Itoa(target.MTU),
 		); err != nil {
 			return err
 		}
@@ -149,14 +143,10 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		Root    bool   `json:"root"`
 		Parent  string `json:"parent"`
 		Options struct {
-			Limit       int   `json:"limit"`
-			Flows       int   `json:"flows"`
-			Quantum     int   `json:"quantum"`
-			Target      int64 `json:"target"`
-			Interval    int64 `json:"interval"`
-			MemoryLimit int   `json:"memory_limit"`
-			ECN         bool  `json:"ecn"`
-			DropBatch   int   `json:"drop_batch"`
+			Limit          int `json:"limit"`
+			FlowLimit      int `json:"flow_limit"`
+			Quantum        int `json:"quantum"`
+			InitialQuantum int `json:"initial_quantum"`
 		} `json:"options"`
 	}
 	if err := json.Unmarshal(rawQdisc, &qdiscs); err != nil {
@@ -165,14 +155,10 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 	rootKind := ""
 	leafKind := ""
 	var leafOptions struct {
-		Limit       int
-		Flows       int
-		Quantum     int
-		Target      int64
-		Interval    int64
-		MemoryLimit int
-		ECN         bool
-		DropBatch   int
+		Limit          int
+		FlowLimit      int
+		Quantum        int
+		InitialQuantum int
 	}
 	for _, qdisc := range qdiscs {
 		if qdisc.Root {
@@ -181,13 +167,9 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		if qdisc.Parent == "1:1" {
 			leafKind = qdisc.Kind
 			leafOptions.Limit = qdisc.Options.Limit
-			leafOptions.Flows = qdisc.Options.Flows
+			leafOptions.FlowLimit = qdisc.Options.FlowLimit
 			leafOptions.Quantum = qdisc.Options.Quantum
-			leafOptions.Target = qdisc.Options.Target
-			leafOptions.Interval = qdisc.Options.Interval
-			leafOptions.MemoryLimit = qdisc.Options.MemoryLimit
-			leafOptions.ECN = qdisc.Options.ECN
-			leafOptions.DropBatch = qdisc.Options.DropBatch
+			leafOptions.InitialQuantum = qdisc.Options.InitialQuantum
 		}
 	}
 	rawClass, err := k.output("class", "show", "dev", k.name)
@@ -204,13 +186,9 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		RootKind:           rootKind,
 		LeafKind:           leafKind,
 		Limit:              leafOptions.Limit,
-		Flows:              leafOptions.Flows,
+		FlowLimit:          leafOptions.FlowLimit,
 		Quantum:            leafOptions.Quantum,
-		Target:             time.Duration(leafOptions.Target) * time.Microsecond,
-		Interval:           time.Duration(leafOptions.Interval) * time.Microsecond,
-		MemoryLimit:        leafOptions.MemoryLimit,
-		ECN:                leafOptions.ECN,
-		DropBatch:          leafOptions.DropBatch,
+		InitialQuantum:     leafOptions.InitialQuantum,
 		ObservedAt:         time.Now(),
 	}, nil
 }
@@ -315,10 +293,22 @@ func (t *Tunnel) startTUNAQM() error {
 	if peerCount == 0 {
 		peerCount = 1
 	}
+	maxDataBurstBytes := 0
+	for _, shaper := range t.cfg.Scheduler.PerPathShapers {
+		if shaper.DataBurstBytes > maxDataBurstBytes {
+			maxDataBurstBytes = shaper.DataBurstBytes
+		}
+	}
+	mtu := t.currentTunMTU()
+	queueLimit, err := deriveTUNAQMQueueLimit(maxDataBurstBytes, peerCount, mtu)
+	if err != nil {
+		return err
+	}
 	target := tunAQMTargetState{
 		RateBytesPerSecond: initial.IngressRateBytesPerSecond * float64(peerCount),
 		TxQueueLen:         tunAQMTxQueueLen,
-		MTU:                t.currentTunMTU(),
+		MTU:                mtu,
+		QueueLimit:         queueLimit,
 	}
 	initialSnapshot, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -359,6 +349,14 @@ func (t *Tunnel) startTUNAQM() error {
 					target.Epoch = epoch
 				}
 				target.MTU = t.currentTunMTU()
+				queueLimit, err := deriveTUNAQMQueueLimit(
+					maxDataBurstBytes, peerCount, target.MTU,
+				)
+				if err != nil {
+					t.log.Error("TUN AQM queue-limit derivation failed", "error", err.Error())
+					continue
+				}
+				target.QueueLimit = queueLimit
 				snapshot, err := reconciler.Reconcile(target)
 				if err != nil {
 					t.log.Error("TUN AQM reconciliation failed", "error", err.Error())

@@ -392,7 +392,7 @@ The send scheduler defaults to **active-backup** (one active path, instant
 failover); an optional `[scheduler]` block can instead select the
 **weighted-aggregation** policy. Independently of that choice, `[scheduler]`
 turns on, off by default, per-(peer,path) exact-byte send **shaping**. On Linux
-active-backup additionally installs an early `wanbond0` HTB+`fq_codel` AQM and
+active-backup additionally installs an early `wanbond0` HTB+bounded-`fq` queue and
 adapts its TUN ingress target from the active carrier's delivered outer rate,
 probe queue delay, true outer/inner expansion, and fresh authenticated DATA
 loss. Weighted scheduling retains fixed per-path shapers because simultaneous
@@ -465,8 +465,11 @@ Common rules, either policy:
   or the active base RTT; a carrier change cancels the old wait. Q91 defines no
   fixed absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
-  the daemon can install and read back HTB+`fq_codel`, the rate, queue length,
-  and every AQM parameter. The daemon owns the `wanbond0` root qdisc while
+  the daemon can install and read back HTB+`fq`, the rate, queue length, and
+  every bounded-queue parameter. The `fq` packet and per-flow limits both equal
+  `ceil(peerCount*maxPathDataBurstBytes/currentMTU)+32`; overload above this
+  explicit service-backlog-plus-device-queue bound may tail-drop and increments
+  the qdisc drop counter. The daemon owns the `wanbond0` root qdisc while
   running; do not attach another root qdisc to the same interface.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
@@ -662,8 +665,9 @@ Common rules, either policy:
   include IP+UDP headers and native DATA alone contributes inner bytes.
 - `wanbond_tun_aqm_target_{rate_bytes_per_second,tx_queue_length,epoch}` and
   matching `actual_*` gauges expose target vs kernel readback.
-  `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all `fq_codel`
-  parameters, HTB rate, queue length, and epoch matched at the latest
+  `{target,actual}_queue_limit_packets` and `actual_flow_limit_packets` expose
+  the bounded `fq` contract. `wanbond_tun_aqm_actual_fresh=1` means qdisc
+  topology, all `fq` parameters, HTB rate, queue length, and epoch matched at the latest
   `actual_observed_timestamp_seconds`. These series are absent when the
   active-backup Linux TUN AQM is inactive.
 - Under active-backup, pacing enabled with **neither** a declared
@@ -927,9 +931,9 @@ tc -j qdisc show dev wanbond0
 tc class show dev wanbond0
 ```
 
-`txqueuelen` must be 32. The root must be HTB with one `fq_codel` child at
-`1:1`; its limit/flows/quantum/target/interval/memory/ECN/drop-batch values
-must match the daemon contract above. A later external qdisc change is
+`txqueuelen` must be 32. The root must be HTB with one `fq` child at `1:1`;
+its limit/flow-limit/quantum/initial-quantum values must match the daemon
+contract above. A later external qdisc change is
 reconciled on the next probe interval.
 
 #### Step 5: Verify bufferbloat is controlled

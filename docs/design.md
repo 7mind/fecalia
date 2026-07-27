@@ -445,10 +445,15 @@ A downstream path shaper therefore cannot prevent the engine from first
 draining `wanbond0` into a seconds-deep private queue. The
 `wanbond_engine_*` series retain that observation boundary, but the correction
 acts before it: on Linux, active-backup+pacing installs an HTB root with one
-`fq_codel` leaf on `wanbond0`, sets `txqueuelen=32`, and shapes TUN ingress at
-the controller's current inner-byte target. The exact leaf contract is
-`limit=64`, `flows=64`, `quantum=current TUN MTU`, `target=5ms`,
-`interval=100ms`, `memory_limit=4MiB`, ECN enabled, and `drop_batch=16`.
+bounded `fq` leaf on `wanbond0`, sets `txqueuelen=32`, and shapes TUN ingress at
+the controller's current inner-byte target. For peer count `P`, the exact leaf
+contract is
+`limit=flow_limit=ceil(P*maxPathDataBurstBytes/current TUN MTU)+32` and
+`quantum=initial_quantum=current TUN MTU`. `maxPathDataBurstBytes` is the
+already-validated BDP/synthetic service backlog used by the exact-byte path
+shaper. Thus one ACK-clocked TCP flow and one admitted service burst fit without
+an intentional CoDel drop; overload beyond the explicit packet bound may
+tail-drop and increments the qdisc drop counter.
 Startup fails if `tc` is unavailable or topology, parameters, rate, or queue
 length cannot be read back. The daemon reconciles and re-reads the target every
 probe interval; it publishes a target epoch as actual/fresh only after every
@@ -482,7 +487,7 @@ aggregate HTB rate and carrier epoch and at least
 freezes expansion learning, so it cannot alter the installed ingress rate
 behind an apparently held outer target. A carrier-epoch transition cancels the
 old wait. Rate-only reconciliation replaces the HTB class without deleting or
-re-adding a matching `fq_codel` leaf, preserving its queue and statistics.
+re-adding a matching `fq` leaf, preserving its queue and statistics.
 
 This early controller deliberately applies only to active-backup. Weighted
 striping has no single carrier epoch to which one authenticated DATA-loss
@@ -1115,7 +1120,8 @@ behaviour composes the following signals into one picture:
   `wanbond_path_congestion_held`. These are absent without a path controller.
   Connection-scoped `wanbond_tun_aqm_target_*` and
   `wanbond_tun_aqm_actual_*` expose the requested/read-back rate, queue length,
-  epoch, freshness, and readback timestamp; they are absent when the Linux
+  bounded `fq` queue/flow limits, epoch, freshness, and readback timestamp;
+  they are absent when the Linux
   active-backup TUN AQM does not own the qdisc.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can

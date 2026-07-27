@@ -11,14 +11,7 @@ import (
 )
 
 const (
-	tunAQMTxQueueLen    = 32
-	tunAQMLimit         = 64
-	tunAQMFlows         = 64
-	tunAQMTarget        = 5 * time.Millisecond
-	tunAQMInterval      = 100 * time.Millisecond
-	tunAQMMemoryLimit   = 4 * 1024 * 1024
-	tunAQMDropBatch     = 16
-	tunAQMTimeTolerance = time.Millisecond
+	tunAQMTxQueueLen = 32
 )
 
 type tunAQMTargetState struct {
@@ -26,6 +19,7 @@ type tunAQMTargetState struct {
 	RateBytesPerSecond float64
 	TxQueueLen         int
 	MTU                int
+	QueueLimit         int
 }
 
 type tunAQMActualState struct {
@@ -35,13 +29,9 @@ type tunAQMActualState struct {
 	RootKind           string
 	LeafKind           string
 	Limit              int
-	Flows              int
+	FlowLimit          int
 	Quantum            int
-	Target             time.Duration
-	Interval           time.Duration
-	MemoryLimit        int
-	ECN                bool
-	DropBatch          int
+	InitialQuantum     int
 	ObservedAt         time.Time
 	Fresh              bool
 }
@@ -75,8 +65,8 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 		target.RateBytesPerSecond <= 0 {
 		return tunAQMSnapshot{}, errors.New("TUN AQM target rate must be finite and positive")
 	}
-	if target.TxQueueLen <= 0 || target.MTU <= 0 {
-		return tunAQMSnapshot{}, errors.New("TUN AQM tx queue length and MTU must be positive")
+	if target.TxQueueLen <= 0 || target.MTU <= 0 || target.QueueLimit <= 0 {
+		return tunAQMSnapshot{}, errors.New("TUN AQM tx queue length, MTU, and queue limit must be positive")
 	}
 
 	r.mu.Lock()
@@ -127,6 +117,9 @@ func (r *tunAQMReconciler) MetricsSnapshot() *metrics.TUNAQMSnapshot {
 		ActualTxQueueLen:         snapshot.Actual.TxQueueLen,
 		TargetEpoch:              snapshot.Target.Epoch,
 		ActualEpoch:              snapshot.Actual.Epoch,
+		TargetQueueLimitPackets:  snapshot.Target.QueueLimit,
+		ActualQueueLimitPackets:  snapshot.Actual.Limit,
+		ActualFlowLimitPackets:   snapshot.Actual.FlowLimit,
 		ActualFresh:              snapshot.Actual.Fresh,
 		ActualObservedAt:         snapshot.Actual.ObservedAt,
 	}
@@ -137,22 +130,17 @@ func validateTUNAQMReadback(target tunAQMTargetState, actual tunAQMActualState) 
 		return fmt.Errorf("TUN AQM tx queue length readback %d, want %d",
 			actual.TxQueueLen, target.TxQueueLen)
 	}
-	if actual.RootKind != "htb" || actual.LeafKind != "fq_codel" {
-		return fmt.Errorf("TUN AQM qdisc readback root=%q leaf=%q, want htb/fq_codel",
+	if actual.RootKind != "htb" || actual.LeafKind != "fq" {
+		return fmt.Errorf("TUN AQM qdisc readback root=%q leaf=%q, want htb/fq",
 			actual.RootKind, actual.LeafKind)
 	}
-	if actual.Limit != tunAQMLimit ||
-		actual.Flows != tunAQMFlows ||
+	if actual.Limit != target.QueueLimit ||
+		actual.FlowLimit != target.QueueLimit ||
 		actual.Quantum != target.MTU ||
-		actual.MemoryLimit != tunAQMMemoryLimit ||
-		!actual.ECN ||
-		actual.DropBatch != tunAQMDropBatch ||
-		absDuration(actual.Target-tunAQMTarget) > tunAQMTimeTolerance ||
-		absDuration(actual.Interval-tunAQMInterval) > tunAQMTimeTolerance {
+		actual.InitialQuantum != target.MTU {
 		return fmt.Errorf(
-			"TUN AQM fq_codel readback limit=%d flows=%d quantum=%d target=%s interval=%s memory_limit=%d ecn=%t drop_batch=%d",
-			actual.Limit, actual.Flows, actual.Quantum, actual.Target, actual.Interval,
-			actual.MemoryLimit, actual.ECN, actual.DropBatch,
+			"TUN AQM fq readback limit=%d flow_limit=%d quantum=%d initial_quantum=%d",
+			actual.Limit, actual.FlowLimit, actual.Quantum, actual.InitialQuantum,
 		)
 	}
 	tolerance := target.RateBytesPerSecond * 0.01
@@ -166,9 +154,21 @@ func validateTUNAQMReadback(target tunAQMTargetState, actual tunAQMActualState) 
 	return nil
 }
 
-func absDuration(value time.Duration) time.Duration {
-	if value < 0 {
-		return -value
+func deriveTUNAQMQueueLimit(dataBurstBytes, peerCount, mtu int) (int, error) {
+	if dataBurstBytes <= 0 || peerCount <= 0 || mtu <= 0 {
+		return 0, errors.New("TUN AQM burst bytes, peer count, and MTU must be positive")
 	}
-	return value
+	maxInt := int(^uint(0) >> 1)
+	if dataBurstBytes > maxInt/peerCount {
+		return 0, errors.New("TUN AQM aggregate service backlog overflows int")
+	}
+	serviceBacklogBytes := dataBurstBytes * peerCount
+	if serviceBacklogBytes > maxInt-(mtu-1) {
+		return 0, errors.New("TUN AQM service backlog rounding overflows int")
+	}
+	servicePackets := (serviceBacklogBytes + mtu - 1) / mtu
+	if servicePackets > maxInt-tunAQMTxQueueLen {
+		return 0, errors.New("TUN AQM queue limit overflows int")
+	}
+	return servicePackets + tunAQMTxQueueLen, nil
 }

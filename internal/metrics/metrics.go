@@ -611,6 +611,9 @@ type TUNAQMSnapshot struct {
 	ActualTxQueueLen         int
 	TargetEpoch              uint64
 	ActualEpoch              uint64
+	TargetQueueLimitPackets  int
+	ActualQueueLimitPackets  int
+	ActualFlowLimitPackets   int
 	ActualFresh              bool
 	ActualObservedAt         time.Time
 }
@@ -706,6 +709,9 @@ type collector struct {
 	tunAQMActualQueue  *prometheus.Desc
 	tunAQMTargetEpoch  *prometheus.Desc
 	tunAQMActualEpoch  *prometheus.Desc
+	tunAQMTargetLimit  *prometheus.Desc
+	tunAQMActualLimit  *prometheus.Desc
+	tunAQMActualFlow   *prometheus.Desc
 	tunAQMActualFresh  *prometheus.Desc
 	tunAQMObservedTime *prometheus.Desc
 }
@@ -1012,7 +1018,10 @@ func NewCollector(src Source) prometheus.Collector {
 		tunAQMActualQueue:  desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN interface transmit queue length.", nil),
 		tunAQMTargetEpoch:  desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
 		tunAQMActualEpoch:  desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
-		tunAQMActualFresh:  desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, fq_codel parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
+		tunAQMTargetLimit:  desc(tunAQMSubsystem, "target_queue_limit_packets", "Requested bounded fair-queue packet limit derived from the admitted service backlog.", nil),
+		tunAQMActualLimit:  desc(tunAQMSubsystem, "actual_queue_limit_packets", "Kernel-read-back bounded fair-queue packet limit.", nil),
+		tunAQMActualFlow:   desc(tunAQMSubsystem, "actual_flow_limit_packets", "Kernel-read-back per-flow packet limit on the bounded fair queue.", nil),
+		tunAQMActualFresh:  desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, bounded-fq parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
 		tunAQMObservedTime: desc(tunAQMSubsystem, "actual_observed_timestamp_seconds", "Unix timestamp of the latest exact kernel qdisc/link readback.", nil),
 	}
 }
@@ -1099,6 +1108,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMActualQueue
 	ch <- c.tunAQMTargetEpoch
 	ch <- c.tunAQMActualEpoch
+	ch <- c.tunAQMTargetLimit
+	ch <- c.tunAQMActualLimit
+	ch <- c.tunAQMActualFlow
 	ch <- c.tunAQMActualFresh
 	ch <- c.tunAQMObservedTime
 }
@@ -1240,6 +1252,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualQueue, prometheus.GaugeValue, float64(snapshot.ActualTxQueueLen))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetEpoch, prometheus.GaugeValue, float64(snapshot.TargetEpoch))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualEpoch, prometheus.GaugeValue, float64(snapshot.ActualEpoch))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetLimit, prometheus.GaugeValue, float64(snapshot.TargetQueueLimitPackets))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualLimit, prometheus.GaugeValue, float64(snapshot.ActualQueueLimitPackets))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFlow, prometheus.GaugeValue, float64(snapshot.ActualFlowLimitPackets))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFresh, prometheus.GaugeValue, boolValue(snapshot.ActualFresh))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMObservedTime, prometheus.GaugeValue, timestampSeconds(snapshot.ActualObservedAt))
 		}

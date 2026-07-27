@@ -27,10 +27,9 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 		case len(args) >= 2 && args[0] == "-j" && args[1] == "qdisc":
 			return []byte(`[
 				{"kind":"htb","root":true,"handle":"1:"},
-				{"kind":"fq_codel","parent":"1:1","handle":"10:","options":{
-					"limit":64,"flows":64,"quantum":1395,"target":5000,
-					"interval":100000,"memory_limit":4194304,"ecn":true,
-					"drop_batch":16
+				{"kind":"fq","parent":"1:1","handle":"10:","options":{
+					"limit":65,"flow_limit":65,"quantum":1395,
+					"initial_quantum":1395
 				}}
 			]`), nil
 		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
@@ -65,6 +64,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 		RateBytesPerSecond: 400_000,
 		TxQueueLen:         tunAQMTxQueueLen,
 		MTU:                1395,
+		QueueLimit:         65,
 	}
 	if err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actual.LeafKind != "fq_codel" ||
+	if actual.LeafKind != "fq" ||
 		actual.RateBytesPerSecond != target.RateBytesPerSecond {
 		t.Fatalf("rate-only readback = %+v", actual)
 	}

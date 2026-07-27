@@ -223,13 +223,15 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   bounded exact-byte shaper instead of producing scheduler-shedding records.
 - **Pacing on/off is a real tradeoff, not just a knob**: pacing applies bounded
   sender backpressure below a declared outer safety ceiling. Under
-  active-backup, Linux owns a small `wanbond0` HTB+`fq_codel` qdisc and adapts
+  active-backup, Linux owns a small `wanbond0` HTB+bounded-`fq` qdisc and adapts
   its TUN ingress rate from actual outer delivery, probe queue delay, measured
   encapsulation expansion, and fresh authenticated DATA loss; this prevents the
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
   After any rate change, another controller decision waits for exact kernel
   readback and a one-second-or-one-SRTT settling interval; rate-only changes
-  preserve the existing `fq_codel` leaf and its state.
+  preserve the existing `fq` leaf and its state. The fair-queue limit admits
+  one configured service backlog plus the 32-packet device queue; overload
+  beyond that explicit bound may tail-drop and remains observable.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under

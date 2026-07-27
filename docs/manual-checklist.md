@@ -410,9 +410,10 @@ as historical exact-byte-shaper evidence.
       service states, TUN link details, `tc -j qdisc`, `tc class`, and a full
       `/metrics` scrape before the candidate starts.
 - [ ] On both edge and concentrator, confirm active-backup+pacing starts only
-      after exact readback: `wanbond0 txqueuelen 32`, HTB root, one `fq_codel`
-      child with `limit=64`, `flows=64`, `quantum=current MTU`, `target=5ms`,
-      `interval=100ms`, `memory_limit=4MiB`, ECN, and `drop_batch=16`.
+      after exact readback: `wanbond0 txqueuelen 32`, HTB root, one `fq`
+      child with
+      `limit=flow_limit=ceil(peerCount*maxPathDataBurstBytes/currentMTU)+32`
+      and `quantum=initial_quantum=current MTU`.
       `wanbond_tun_aqm_actual_fresh` must be 1 and target/actual epoch, rate,
       and queue length must match.
 - [ ] Run **two independent synchronized field cycles**. Each cycle contains
@@ -439,11 +440,16 @@ as historical exact-byte-shaper evidence.
       additive increase, never above the declared outer ceiling. Confirm the
       TUN target follows the learned outer/inner ratio and exact kernel
       readback follows the target without replacing/resetting a correct
-      `fq_codel` leaf. The first congested tick must decrease promptly. Before
+      `fq` leaf. The first congested tick must decrease promptly. Before
       another target change, `retarget_pending` must remain 1 until
       `installed_fresh=1` for the same rate/epoch and at least
       `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
       during that wait. A carrier-epoch transition cancels the prior wait.
+- [ ] For each single ACK-clocked TCP leg, the bounded `fq` leaf incurs zero
+      local drops and its backlog returns to zero after the leg. An offered
+      burst no larger than the calculated service backlog must also incur zero
+      local drops. Overload beyond the explicit queue limit may tail-drop, but
+      every such drop must advance the qdisc counter.
 - [ ] The reproduced failure does not recur: the peer engine queue must not
       reach its 1,024-container limit, hidden inner RTT must not grow into
       seconds while outer RTT stays near baseline, and TUN/shaper/socket/FEC
