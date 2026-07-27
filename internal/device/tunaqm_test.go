@@ -48,7 +48,7 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 	}
 	first, err := reconciler.Reconcile(target)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("initial reconciliation: %v", err)
 	}
 	if !first.Actual.Fresh ||
 		first.Actual.Epoch != target.Epoch ||
@@ -62,11 +62,11 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 	drift.TxQueueLen = 128
 	drift.MTU = 1200
 	if err := kernel.Apply(drift); err != nil {
-		t.Fatal(err)
+		t.Fatalf("inject drift: %v", err)
 	}
 	restored, err := reconciler.Reconcile(target)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("restore drift: %v", err)
 	}
 	if !restored.Actual.Fresh ||
 		restored.Actual.RateBytesPerSecond != target.RateBytesPerSecond ||

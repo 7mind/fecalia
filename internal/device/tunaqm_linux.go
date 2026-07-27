@@ -69,11 +69,15 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 		current.MemoryLimit == tunAQMMemoryLimit &&
 		current.ECN &&
 		current.DropBatch == tunAQMDropBatch
-	if !leafReady {
+	if !topologyReady {
 		if err := k.run(
 			"qdisc", "replace", "dev", k.name,
 			"root", "handle", "1:", "htb", "default", "1",
 		); err != nil {
+			if readErr != nil {
+				return fmt.Errorf("device: restore TUN AQM after readback failure: %w",
+					errors.Join(readErr, err))
+			}
 			return err
 		}
 	}
@@ -91,9 +95,16 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 		}
 	}
 
-	if !topologyReady {
+	if !leafReady {
+		if topologyReady && current.LeafKind != "" {
+			if err := k.run(
+				"qdisc", "delete", "dev", k.name, "parent", "1:1",
+			); err != nil {
+				return err
+			}
+		}
 		if err := k.run(
-			"qdisc", "replace", "dev", k.name,
+			"qdisc", "add", "dev", k.name,
 			"parent", "1:1", "handle", "10:", "fq_codel",
 			"limit", strconv.Itoa(tunAQMLimit),
 			"flows", strconv.Itoa(tunAQMFlows),
