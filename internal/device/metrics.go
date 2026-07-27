@@ -104,6 +104,12 @@ func (s *metricsSource) EngineOutbound() metrics.EngineOutboundSnapshot {
 		ActiveSendBytes:           stats.ActiveSendBytes,
 		ActiveSendFramesHighWater: stats.ActiveSendFramesHighWater,
 		ActiveSendBytesHighWater:  stats.ActiveSendBytesHighWater,
+		AdmissionLimitBytes:       stats.AdmissionLimitBytes,
+		AdmissionRetainedBytes:    stats.AdmissionRetainedBytes,
+		AdmissionHighWaterBytes:   stats.AdmissionHighWaterBytes,
+		AdmissionWaits:            stats.AdmissionWaits,
+		AdmissionWaitNanoseconds:  stats.AdmissionWaitNanoseconds,
+		AdmissionOversizeBatches:  stats.AdmissionOversizeBatches,
 	}
 }
 

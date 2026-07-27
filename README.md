@@ -154,8 +154,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   delivered-capacity, base-RTT/queue-delay, authenticated-loss freshness,
   installed-rate acknowledgment, retarget count/pending state, and
   carrier-epoch series (`wanbond_path_congestion_*`), exact Linux TUN-AQM
-  target/readback/freshness/epoch series (`wanbond_tun_aqm_*`), engine-side TUN/send batch histograms and outbound
-  queue/active-send gauges (`wanbond_engine_*`), WG-session establishment
+  rate/queue/GSO target/readback/freshness/epoch series
+  (`wanbond_tun_aqm_*`), engine-side TUN/send batch histograms, outbound
+  queue/active-send gauges, and exact-byte admission limit/retention/wait
+  counters (`wanbond_engine_*`), WG-session establishment
   (`wanbond_session_established`, plus a per-peer
   `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
   including the first configured one, carries its configured `peer` label, while

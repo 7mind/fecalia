@@ -118,7 +118,8 @@ type Device struct {
 		decryption *inboundQueue
 		handshake  *handshakeQueue
 	}
-	outbound outboundStats
+	outbound               outboundStats
+	outboundAdmissionLimit atomic.Int64
 
 	tun struct {
 		device tun.Device
@@ -389,6 +390,20 @@ func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
 	defer device.peers.RUnlock()
 
 	return device.peers.keyMap[pk]
+}
+
+func (device *Device) SetOutboundAdmissionLimit(bytes int) error {
+	if bytes <= 0 {
+		return errors.New("device: outbound admission limit must be positive")
+	}
+	limit := int64(bytes)
+	device.outboundAdmissionLimit.Store(limit)
+	device.peers.RLock()
+	for _, peer := range device.peers.keyMap {
+		peer.outboundAdmission.setLimit(limit)
+	}
+	device.peers.RUnlock()
+	return nil
 }
 
 func (device *Device) RemovePeer(key NoisePublicKey) {

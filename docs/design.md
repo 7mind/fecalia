@@ -454,10 +454,36 @@ already-validated BDP/synthetic service backlog used by the exact-byte path
 shaper. Thus one ACK-clocked TCP flow and one admitted service burst fit without
 an intentional CoDel drop; overload beyond the explicit packet bound may
 tail-drop and increments the qdisc drop counter.
-Startup fails if `tc` is unavailable or topology, parameters, rate, or queue
-length cannot be read back. The daemon reconciles and re-reads the target every
-probe interval; it publishes a target epoch as actual/fresh only after every
-field matches. The daemon owns this root qdisc while running.
+
+The same target also closes the engine's private-queue gap without truncating
+the TUN read. Let `r` be the aggregate ingress target divided by peer count,
+`Mmax` the maximum configured inner MTU, `Mcur` the current inner MTU, and
+`W=Mmax+32` the maximum encrypted WireGuard datagram bytes (16-byte transport
+header plus 16-byte AEAD tag). For the 20 ms local engine-delay budget:
+
+```
+S = min(128, floor(65536/Mcur), floor(r*20ms/W))
+gso_max_segs = S
+gso_max_size = S*Mcur
+per-peer engine admission = S*W bytes
+```
+
+`S` must admit at least one legal datagram or startup fails. Linux applies and
+exactly reads back both GSO limits before the engine limit changes. Therefore a
+complete pre-TUN GSO container has worst-case service time at most 20 ms even
+across a concurrent MTU recovery. The patched engine pads each container first,
+accounts its exact future encrypted bytes, then atomically waits at a
+peer-private byte gate immediately before `peer.queue.outbound`. It never
+splits, truncates, or drops an admitted TUN/GSO container. Completion or flush
+releases the exact reservation; peer stop cancels a waiter; independent peers
+never share a gate. Generated outer PROBE/CONTROL still bypasses this engine
+queue and retains the Bind shaper's priority reserve.
+
+Startup fails if `tc` is unavailable or topology, parameters, rate, queue
+length, or GSO limits cannot be read back. The daemon reconciles and re-reads
+the target every probe interval; it publishes a target epoch as actual/fresh
+only after every field matches. The daemon owns this root qdisc and the link's
+GSO limits while running.
 
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully
@@ -486,8 +512,10 @@ aggregate HTB rate and carrier epoch and at least
 `max(1s, active base RTT)` has elapsed after that readback. The wait also
 freezes expansion learning, so it cannot alter the installed ingress rate
 behind an apparently held outer target. A carrier-epoch transition cancels the
-old wait. Rate-only reconciliation replaces the HTB class without deleting or
-re-adding a matching `fq` leaf, preserving its queue and statistics.
+old wait. Rate reconciliation replaces the HTB class without deleting or
+re-adding a matching `fq` leaf, preserving its queue and statistics. A target
+rate or MTU change may independently resize the pre-TUN GSO limits and
+per-peer engine byte gate to retain the 20 ms local-delay invariant.
 
 This early controller deliberately applies only to active-backup. Weighted
 striping has no single carrier epoch to which one authenticated DATA-loss

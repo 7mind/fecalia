@@ -14,12 +14,20 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	classChanges := 0
 	qdiscChanges := 0
 	txQueueChanges := 0
+	gsoChanges := 0
 	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
 	kernel.readTxQueueLen = func() (int, error) {
 		return tunAQMTxQueueLen, nil
 	}
 	kernel.writeTxQueueLen = func(int) error {
 		txQueueChanges++
+		return nil
+	}
+	kernel.readGSOLimits = func() (linkGSOLimits, error) {
+		return linkGSOLimits{MaxSize: 13_950, MaxSegments: 10}, nil
+	}
+	kernel.writeGSOLimits = func(linkGSOLimits) error {
+		gsoChanges++
 		return nil
 	}
 	kernel.command = func(args ...string) ([]byte, error) {
@@ -61,10 +69,13 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	}
 
 	target := tunAQMTargetState{
-		RateBytesPerSecond: 400_000,
-		TxQueueLen:         tunAQMTxQueueLen,
-		MTU:                1395,
-		QueueLimit:         65,
+		RateBytesPerSecond:  400_000,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimit:          65,
+		GSOMaxSize:          13_950,
+		GSOMaxSegments:      10,
+		AdmissionLimitBytes: 14_270,
 	}
 	if err := kernel.Apply(target); err != nil {
 		t.Fatal(err)
@@ -77,6 +88,9 @@ func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	}
 	if txQueueChanges != 0 {
 		t.Fatalf("rate-only apply tx queue changes = %d, want 0", txQueueChanges)
+	}
+	if gsoChanges != 0 {
+		t.Fatalf("rate-only apply GSO changes = %d, want 0", gsoChanges)
 	}
 	actual, err := kernel.Read()
 	if err != nil {

@@ -384,6 +384,14 @@ In summary:
 - Verify the loaded RTT stays close to the idle RTT under sustained load — §3a
   Step 5. (A declared bandwidth with `pacing_enabled = false` is inert.)
 
+- Under active-backup pacing, Linux also bounds each complete pre-TUN GSO
+  container and the matching per-peer engine backlog to at most 20 ms at the
+  current controller ingress target. Confirm
+  `wanbond_tun_aqm_actual_gso_max_{size_bytes,segments}` matches its target,
+  `wanbond_tun_aqm_actual_fresh=1`, engine retained bytes never exceed the
+  admission limit, and engine oversize batches remain zero. The engine waits
+  on a whole batch; it never splits or drops one after the TUN read.
+
 ## 6. Monitoring and health checks
 
 Each daemon serves Prometheus metrics on the **loopback-only** `[metrics].listen`

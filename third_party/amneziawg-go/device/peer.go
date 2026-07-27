@@ -57,6 +57,7 @@ type Peer struct {
 	cookieGenerator             CookieGenerator
 	trieEntries                 list.List
 	persistentKeepaliveInterval atomic.Uint32
+	outboundAdmission           *outboundAdmission
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
@@ -84,6 +85,7 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	peer.queue.outbound = newAutodrainingOutboundQueue(device)
 	peer.queue.inbound = newAutodrainingInboundQueue(device)
 	peer.queue.staged = make(chan *QueueOutboundElementsContainer, QueueStagedSize)
+	peer.outboundAdmission = newOutboundAdmission(device.outboundAdmissionLimit.Load())
 
 	// map public key
 	_, ok := device.peers.keyMap[pk]
@@ -212,6 +214,7 @@ func (peer *Peer) Start() {
 
 	device.flushInboundQueue(peer.queue.inbound)
 	device.flushOutboundQueue(peer.queue.outbound)
+	peer.outboundAdmission.start()
 
 	// Use the device batch size, not the bind batch size, as the device size is
 	// the size of the batch pools.
@@ -274,6 +277,7 @@ func (peer *Peer) Stop() {
 	if !peer.isRunning.Swap(false) {
 		return
 	}
+	peer.outboundAdmission.stop()
 
 	peer.device.log.Verbosef("%v - Stopping", peer)
 

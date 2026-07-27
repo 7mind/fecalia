@@ -22,6 +22,12 @@ type OutboundStats struct {
 	ActiveSendBytes           uint64
 	ActiveSendFramesHighWater uint64
 	ActiveSendBytesHighWater  uint64
+	AdmissionLimitBytes       uint64
+	AdmissionRetainedBytes    uint64
+	AdmissionHighWaterBytes   uint64
+	AdmissionWaits            uint64
+	AdmissionWaitNanoseconds  uint64
+	AdmissionOversizeBatches  uint64
 }
 
 type outboundStats struct {
@@ -98,9 +104,22 @@ func updateHighWater(high *atomic.Uint64, value uint64) {
 
 func (device *Device) OutboundStats() OutboundStats {
 	var peerQueueContainers uint64
+	var admissionLimitBytes uint64
+	var admissionRetainedBytes uint64
+	var admissionHighWaterBytes uint64
+	var admissionWaits uint64
+	var admissionWaitNanoseconds uint64
+	var admissionOversizeBatches uint64
 	device.peers.RLock()
 	for _, peer := range device.peers.keyMap {
 		peerQueueContainers += uint64(len(peer.queue.outbound.c))
+		admission := peer.outboundAdmission.snapshot()
+		admissionLimitBytes += uint64(admission.limitBytes)
+		admissionRetainedBytes += uint64(admission.retainedBytes)
+		admissionHighWaterBytes += uint64(admission.highWaterBytes)
+		admissionWaits += admission.waits
+		admissionWaitNanoseconds += uint64(admission.waitDuration)
+		admissionOversizeBatches += admission.oversize
 	}
 	device.peers.RUnlock()
 
@@ -121,5 +140,11 @@ func (device *Device) OutboundStats() OutboundStats {
 		ActiveSendBytes:           uint64(device.outbound.activeSendBytes.Load()),
 		ActiveSendFramesHighWater: device.outbound.activeFramesHigh.Load(),
 		ActiveSendBytesHighWater:  device.outbound.activeBytesHigh.Load(),
+		AdmissionLimitBytes:       admissionLimitBytes,
+		AdmissionRetainedBytes:    admissionRetainedBytes,
+		AdmissionHighWaterBytes:   admissionHighWaterBytes,
+		AdmissionWaits:            admissionWaits,
+		AdmissionWaitNanoseconds:  admissionWaitNanoseconds,
+		AdmissionOversizeBatches:  admissionOversizeBatches,
 	}
 }

@@ -203,6 +203,12 @@ const (
 	MetricEngineActiveSendBytes           = "wanbond_engine_active_send_bytes"
 	MetricEngineActiveSendFramesHighWater = "wanbond_engine_active_send_frames_high_water"
 	MetricEngineActiveSendBytesHighWater  = "wanbond_engine_active_send_bytes_high_water"
+	MetricEngineAdmissionLimitBytes       = "wanbond_engine_admission_limit_bytes"
+	MetricEngineAdmissionRetainedBytes    = "wanbond_engine_admission_retained_bytes"
+	MetricEngineAdmissionHighWaterBytes   = "wanbond_engine_admission_high_water_bytes"
+	MetricEngineAdmissionWaits            = "wanbond_engine_admission_waits_total"
+	MetricEngineAdmissionWaitSeconds      = "wanbond_engine_admission_wait_seconds_total"
+	MetricEngineAdmissionOversizeBatches  = "wanbond_engine_admission_oversize_batches_total"
 )
 
 // MetricWeightedCapacitySane is the Q52 WARN-arm capacity-sanity gauge (T144).
@@ -598,6 +604,12 @@ type EngineOutboundSnapshot struct {
 	ActiveSendBytes           uint64
 	ActiveSendFramesHighWater uint64
 	ActiveSendBytesHighWater  uint64
+	AdmissionLimitBytes       uint64
+	AdmissionRetainedBytes    uint64
+	AdmissionHighWaterBytes   uint64
+	AdmissionWaits            uint64
+	AdmissionWaitNanoseconds  uint64
+	AdmissionOversizeBatches  uint64
 }
 
 type EngineOutboundSource interface {
@@ -605,17 +617,22 @@ type EngineOutboundSource interface {
 }
 
 type TUNAQMSnapshot struct {
-	TargetRateBytesPerSecond float64
-	ActualRateBytesPerSecond float64
-	TargetTxQueueLen         int
-	ActualTxQueueLen         int
-	TargetEpoch              uint64
-	ActualEpoch              uint64
-	TargetQueueLimitPackets  int
-	ActualQueueLimitPackets  int
-	ActualFlowLimitPackets   int
-	ActualFresh              bool
-	ActualObservedAt         time.Time
+	TargetRateBytesPerSecond  float64
+	ActualRateBytesPerSecond  float64
+	TargetTxQueueLen          int
+	ActualTxQueueLen          int
+	TargetEpoch               uint64
+	ActualEpoch               uint64
+	TargetQueueLimitPackets   int
+	ActualQueueLimitPackets   int
+	ActualFlowLimitPackets    int
+	TargetGSOMaxSizeBytes     int
+	ActualGSOMaxSizeBytes     int
+	TargetGSOMaxSegments      int
+	ActualGSOMaxSegments      int
+	TargetAdmissionLimitBytes int
+	ActualFresh               bool
+	ActualObservedAt          time.Time
 }
 
 type TUNAQMSource interface {
@@ -702,18 +719,29 @@ type collector struct {
 	engineActiveSendBytes           *prometheus.Desc
 	engineActiveSendFramesHighWater *prometheus.Desc
 	engineActiveSendBytesHighWater  *prometheus.Desc
+	engineAdmissionLimitBytes       *prometheus.Desc
+	engineAdmissionRetainedBytes    *prometheus.Desc
+	engineAdmissionHighWaterBytes   *prometheus.Desc
+	engineAdmissionWaits            *prometheus.Desc
+	engineAdmissionWaitSeconds      *prometheus.Desc
+	engineAdmissionOversizeBatches  *prometheus.Desc
 
-	tunAQMTargetRate   *prometheus.Desc
-	tunAQMActualRate   *prometheus.Desc
-	tunAQMTargetQueue  *prometheus.Desc
-	tunAQMActualQueue  *prometheus.Desc
-	tunAQMTargetEpoch  *prometheus.Desc
-	tunAQMActualEpoch  *prometheus.Desc
-	tunAQMTargetLimit  *prometheus.Desc
-	tunAQMActualLimit  *prometheus.Desc
-	tunAQMActualFlow   *prometheus.Desc
-	tunAQMActualFresh  *prometheus.Desc
-	tunAQMObservedTime *prometheus.Desc
+	tunAQMTargetRate           *prometheus.Desc
+	tunAQMActualRate           *prometheus.Desc
+	tunAQMTargetQueue          *prometheus.Desc
+	tunAQMActualQueue          *prometheus.Desc
+	tunAQMTargetEpoch          *prometheus.Desc
+	tunAQMActualEpoch          *prometheus.Desc
+	tunAQMTargetLimit          *prometheus.Desc
+	tunAQMActualLimit          *prometheus.Desc
+	tunAQMActualFlow           *prometheus.Desc
+	tunAQMTargetGSOMaxSize     *prometheus.Desc
+	tunAQMActualGSOMaxSize     *prometheus.Desc
+	tunAQMTargetGSOMaxSegments *prometheus.Desc
+	tunAQMActualGSOMaxSegments *prometheus.Desc
+	tunAQMTargetAdmissionLimit *prometheus.Desc
+	tunAQMActualFresh          *prometheus.Desc
+	tunAQMObservedTime         *prometheus.Desc
 }
 
 type shaperMetric struct {
@@ -1011,18 +1039,29 @@ func NewCollector(src Source) prometheus.Collector {
 		engineActiveSendBytes:           desc(engineSubsystem, "active_send_bytes", "Encrypted WireGuard bytes currently held across synchronous Bind.Send calls.", nil),
 		engineActiveSendFramesHighWater: desc(engineSubsystem, "active_send_frames_high_water", "Maximum encrypted WireGuard frames concurrently held across Bind.Send calls.", nil),
 		engineActiveSendBytesHighWater:  desc(engineSubsystem, "active_send_bytes_high_water", "Maximum encrypted WireGuard bytes concurrently held across Bind.Send calls.", nil),
+		engineAdmissionLimitBytes:       desc(engineSubsystem, "admission_limit_bytes", "Aggregate per-peer exact-wire-byte admission limit ahead of private peer outbound queues.", nil),
+		engineAdmissionRetainedBytes:    desc(engineSubsystem, "admission_retained_bytes", "Exact encrypted WireGuard bytes admitted but not yet completed by peer senders.", nil),
+		engineAdmissionHighWaterBytes:   desc(engineSubsystem, "admission_high_water_bytes", "Sum of per-peer maximum admitted exact-wire-byte backlog.", nil),
+		engineAdmissionWaits:            desc(engineSubsystem, "admission_waits_total", "Whole outbound batches that waited for per-peer byte admission.", nil),
+		engineAdmissionWaitSeconds:      desc(engineSubsystem, "admission_wait_seconds_total", "Cumulative time whole outbound batches waited for per-peer byte admission.", nil),
+		engineAdmissionOversizeBatches:  desc(engineSubsystem, "admission_oversize_batches_total", "Whole outbound batches larger than their admission target; expected to remain zero when kernel GSO readback is fresh.", nil),
 
-		tunAQMTargetRate:   desc(tunAQMSubsystem, "target_rate_bytes_per_second", "Requested sender-side TUN ingress rate for the current controller epoch.", nil),
-		tunAQMActualRate:   desc(tunAQMSubsystem, "actual_rate_bytes_per_second", "Kernel-read-back HTB rate on the TUN interface.", nil),
-		tunAQMTargetQueue:  desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN interface transmit queue length.", nil),
-		tunAQMActualQueue:  desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN interface transmit queue length.", nil),
-		tunAQMTargetEpoch:  desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
-		tunAQMActualEpoch:  desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
-		tunAQMTargetLimit:  desc(tunAQMSubsystem, "target_queue_limit_packets", "Requested bounded fair-queue packet limit derived from the admitted service backlog.", nil),
-		tunAQMActualLimit:  desc(tunAQMSubsystem, "actual_queue_limit_packets", "Kernel-read-back bounded fair-queue packet limit.", nil),
-		tunAQMActualFlow:   desc(tunAQMSubsystem, "actual_flow_limit_packets", "Kernel-read-back per-flow packet limit on the bounded fair queue.", nil),
-		tunAQMActualFresh:  desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, bounded-fq parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
-		tunAQMObservedTime: desc(tunAQMSubsystem, "actual_observed_timestamp_seconds", "Unix timestamp of the latest exact kernel qdisc/link readback.", nil),
+		tunAQMTargetRate:           desc(tunAQMSubsystem, "target_rate_bytes_per_second", "Requested sender-side TUN ingress rate for the current controller epoch.", nil),
+		tunAQMActualRate:           desc(tunAQMSubsystem, "actual_rate_bytes_per_second", "Kernel-read-back HTB rate on the TUN interface.", nil),
+		tunAQMTargetQueue:          desc(tunAQMSubsystem, "target_tx_queue_length", "Requested TUN interface transmit queue length.", nil),
+		tunAQMActualQueue:          desc(tunAQMSubsystem, "actual_tx_queue_length", "Kernel-read-back TUN interface transmit queue length.", nil),
+		tunAQMTargetEpoch:          desc(tunAQMSubsystem, "target_epoch", "Aggregate active-carrier generation requested from the kernel.", nil),
+		tunAQMActualEpoch:          desc(tunAQMSubsystem, "actual_epoch", "Aggregate active-carrier generation whose kernel readback matched the target.", nil),
+		tunAQMTargetLimit:          desc(tunAQMSubsystem, "target_queue_limit_packets", "Requested bounded fair-queue packet limit derived from the admitted service backlog.", nil),
+		tunAQMActualLimit:          desc(tunAQMSubsystem, "actual_queue_limit_packets", "Kernel-read-back bounded fair-queue packet limit.", nil),
+		tunAQMActualFlow:           desc(tunAQMSubsystem, "actual_flow_limit_packets", "Kernel-read-back per-flow packet limit on the bounded fair queue.", nil),
+		tunAQMTargetGSOMaxSize:     desc(tunAQMSubsystem, "target_gso_max_size_bytes", "Requested pre-TUN maximum GSO container size derived from the local-delay budget.", nil),
+		tunAQMActualGSOMaxSize:     desc(tunAQMSubsystem, "actual_gso_max_size_bytes", "Kernel-read-back pre-TUN maximum GSO container size.", nil),
+		tunAQMTargetGSOMaxSegments: desc(tunAQMSubsystem, "target_gso_max_segments", "Requested pre-TUN maximum GSO segment count derived from the local-delay budget.", nil),
+		tunAQMActualGSOMaxSegments: desc(tunAQMSubsystem, "actual_gso_max_segments", "Kernel-read-back pre-TUN maximum GSO segment count.", nil),
+		tunAQMTargetAdmissionLimit: desc(tunAQMSubsystem, "target_engine_admission_limit_bytes", "Requested per-peer exact-wire-byte engine backlog consistent with one bounded whole GSO batch.", nil),
+		tunAQMActualFresh:          desc(tunAQMSubsystem, "actual_fresh", "Whether qdisc topology, bounded-fq parameters, rate, queue length, and epoch matched at the latest readback (1=yes).", nil),
+		tunAQMObservedTime:         desc(tunAQMSubsystem, "actual_observed_timestamp_seconds", "Unix timestamp of the latest exact kernel qdisc/link readback.", nil),
 	}
 }
 
@@ -1102,6 +1141,12 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.engineActiveSendBytes
 	ch <- c.engineActiveSendFramesHighWater
 	ch <- c.engineActiveSendBytesHighWater
+	ch <- c.engineAdmissionLimitBytes
+	ch <- c.engineAdmissionRetainedBytes
+	ch <- c.engineAdmissionHighWaterBytes
+	ch <- c.engineAdmissionWaits
+	ch <- c.engineAdmissionWaitSeconds
+	ch <- c.engineAdmissionOversizeBatches
 	ch <- c.tunAQMTargetRate
 	ch <- c.tunAQMActualRate
 	ch <- c.tunAQMTargetQueue
@@ -1111,6 +1156,11 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tunAQMTargetLimit
 	ch <- c.tunAQMActualLimit
 	ch <- c.tunAQMActualFlow
+	ch <- c.tunAQMTargetGSOMaxSize
+	ch <- c.tunAQMActualGSOMaxSize
+	ch <- c.tunAQMTargetGSOMaxSegments
+	ch <- c.tunAQMActualGSOMaxSegments
+	ch <- c.tunAQMTargetAdmissionLimit
 	ch <- c.tunAQMActualFresh
 	ch <- c.tunAQMObservedTime
 }
@@ -1243,6 +1293,12 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendBytes, prometheus.GaugeValue, float64(outbound.ActiveSendBytes))
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendFramesHighWater, prometheus.GaugeValue, float64(outbound.ActiveSendFramesHighWater))
 		ch <- prometheus.MustNewConstMetric(c.engineActiveSendBytesHighWater, prometheus.GaugeValue, float64(outbound.ActiveSendBytesHighWater))
+		ch <- prometheus.MustNewConstMetric(c.engineAdmissionLimitBytes, prometheus.GaugeValue, float64(outbound.AdmissionLimitBytes))
+		ch <- prometheus.MustNewConstMetric(c.engineAdmissionRetainedBytes, prometheus.GaugeValue, float64(outbound.AdmissionRetainedBytes))
+		ch <- prometheus.MustNewConstMetric(c.engineAdmissionHighWaterBytes, prometheus.GaugeValue, float64(outbound.AdmissionHighWaterBytes))
+		ch <- prometheus.MustNewConstMetric(c.engineAdmissionWaits, prometheus.CounterValue, float64(outbound.AdmissionWaits))
+		ch <- prometheus.MustNewConstMetric(c.engineAdmissionWaitSeconds, prometheus.CounterValue, float64(outbound.AdmissionWaitNanoseconds)/float64(time.Second))
+		ch <- prometheus.MustNewConstMetric(c.engineAdmissionOversizeBatches, prometheus.CounterValue, float64(outbound.AdmissionOversizeBatches))
 	}
 	if src, ok := c.src.(TUNAQMSource); ok {
 		if snapshot := src.TUNAQM(); snapshot != nil {
@@ -1255,6 +1311,11 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetLimit, prometheus.GaugeValue, float64(snapshot.TargetQueueLimitPackets))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualLimit, prometheus.GaugeValue, float64(snapshot.ActualQueueLimitPackets))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFlow, prometheus.GaugeValue, float64(snapshot.ActualFlowLimitPackets))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetGSOMaxSize, prometheus.GaugeValue, float64(snapshot.TargetGSOMaxSizeBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualGSOMaxSize, prometheus.GaugeValue, float64(snapshot.ActualGSOMaxSizeBytes))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetGSOMaxSegments, prometheus.GaugeValue, float64(snapshot.TargetGSOMaxSegments))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMActualGSOMaxSegments, prometheus.GaugeValue, float64(snapshot.ActualGSOMaxSegments))
+			ch <- prometheus.MustNewConstMetric(c.tunAQMTargetAdmissionLimit, prometheus.GaugeValue, float64(snapshot.TargetAdmissionLimitBytes))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMActualFresh, prometheus.GaugeValue, boolValue(snapshot.ActualFresh))
 			ch <- prometheus.MustNewConstMetric(c.tunAQMObservedTime, prometheus.GaugeValue, timestampSeconds(snapshot.ActualObservedAt))
 		}

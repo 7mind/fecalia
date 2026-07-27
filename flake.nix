@@ -18,7 +18,7 @@
           src = ./.;
           # Updated whenever go.mod dependencies or the local replaced module change;
           # see `nix build` error output.
-          vendorHash = "sha256-JLPmMPpM+6DCslXgjhvgPrhJwQmwOWhRpoZcM1FGN48=";
+          vendorHash = "sha256-p/AVb1fsumL56Hp1MAjEt1GqXylBqTgCs3i4U7u1588=";
           subPackages = [ "cmd/wanbond" ];
           env.CGO_ENABLED = 0;
           ldflags = [ "-s" "-w" ];

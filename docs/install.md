@@ -652,9 +652,12 @@ Common rules, either policy:
   `wanbond_engine_{encryption,peer}_queue_containers` gauges,
   `wanbond_engine_peer_queue_high_water_containers`, and active-send
   frame/byte current/high-water gauges localize backpressure before the Bind.
-  These metrics remain present when per-path pacing is off. Queue depths retain
-  the embedded engine's upstream admission limits; the gauges describe actual
-  occupancy rather than enforcing a smaller limit.
+  With active-backup pacing, `admission_{limit,retained,high_water}_bytes`,
+  `admission_waits_total`, `admission_wait_seconds_total`, and
+  `admission_oversize_batches_total` expose the peer-private whole-batch byte
+  gate before that queue. Retained bytes must stay at or below the limit and
+  oversize batches must remain zero after fresh GSO readback. These metrics
+  remain present with zero limits when per-path pacing is off.
 - Active-backup pacing adds per-path
   `wanbond_path_congestion_{outer_wire,inner_data}_bytes_total`,
   `{target_outer,target_ingress,delivered}_bytes_per_second`,
@@ -666,10 +669,13 @@ Common rules, either policy:
 - `wanbond_tun_aqm_target_{rate_bytes_per_second,tx_queue_length,epoch}` and
   matching `actual_*` gauges expose target vs kernel readback.
   `{target,actual}_queue_limit_packets` and `actual_flow_limit_packets` expose
-  the bounded `fq` contract. `wanbond_tun_aqm_actual_fresh=1` means qdisc
-  topology, all `fq` parameters, HTB rate, queue length, and epoch matched at the latest
-  `actual_observed_timestamp_seconds`. These series are absent when the
-  active-backup Linux TUN AQM is inactive.
+  the bounded `fq` contract.
+  `{target,actual}_gso_max_{size_bytes,segments}` expose the pre-TUN whole-batch
+  limit, and `target_engine_admission_limit_bytes` is the matching exact-wire
+  per-peer budget. `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
+  `fq` parameters, HTB rate, queue length, both GSO limits, and epoch matched at
+  the latest `actual_observed_timestamp_seconds`. These series are absent when
+  the active-backup Linux TUN AQM is inactive.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never
@@ -952,9 +958,10 @@ ping -i 0.2 10.77.0.1
 Scrape `wanbond_path_congestion_*`, `wanbond_tun_aqm_*`,
 `wanbond_engine_*`, qdisc statistics, and TUN link statistics at synchronized
 start/end boundaries. Require fresh/matching AQM actual state, bounded engine
-queue occupancy instead of the 1,024-container high-water reproduction, and
-loaded inner RTT that tracks the outer path rather than accumulating seconds
-of hidden sender queueing. Evaluate delivered goodput, retransmits, AQM
+exact-byte occupancy instead of the 1,024-container high-water reproduction,
+zero engine oversize batches after GSO readback, and loaded inner RTT that
+tracks the outer path rather than accumulating seconds of hidden sender
+queueing. Evaluate delivered goodput, retransmits, AQM
 drops/ECN, and authenticated-loss reactions together; do not require a fixed
 absolute throughput floor.
 

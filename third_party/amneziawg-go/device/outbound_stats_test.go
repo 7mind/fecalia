@@ -45,3 +45,35 @@ func TestOutboundStatsBatchHistograms(t *testing.T) {
 		t.Errorf("active send after completion = %d frames, %d bytes", got.ActiveSendFrames, got.ActiveSendBytes)
 	}
 }
+
+func TestOutboundStatsAggregatePerPeerAdmission(t *testing.T) {
+	var device Device
+	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
+	for index := range 2 {
+		admission := newOutboundAdmission(2_000)
+		admission.start()
+		reservation, ok := admission.reserve(int64(500 + index*100))
+		if !ok {
+			t.Fatal("running admission rejected reservation")
+		}
+		defer reservation.release()
+		var key NoisePublicKey
+		key[0] = byte(index + 1)
+		peer := &Peer{outboundAdmission: admission}
+		peer.queue.outbound = &autodrainingOutboundQueue{
+			c: make(chan *QueueOutboundElementsContainer, 1),
+		}
+		device.peers.keyMap[key] = peer
+	}
+
+	got := device.OutboundStats()
+	if got.AdmissionLimitBytes != 4_000 ||
+		got.AdmissionRetainedBytes != 1_100 ||
+		got.AdmissionHighWaterBytes != 1_100 {
+		t.Fatalf("admission byte stats = limit %d retained %d high-water %d",
+			got.AdmissionLimitBytes,
+			got.AdmissionRetainedBytes,
+			got.AdmissionHighWaterBytes,
+		)
+	}
+}

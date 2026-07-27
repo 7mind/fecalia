@@ -24,6 +24,8 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) error {
 		FlowLimit:          target.QueueLimit,
 		Quantum:            target.MTU,
 		InitialQuantum:     target.MTU,
+		GSOMaxSize:         target.GSOMaxSize,
+		GSOMaxSegments:     target.GSOMaxSegments,
 		ObservedAt:         time.Now(),
 	}
 	return nil
@@ -42,6 +44,7 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 	target := tunAQMTargetState{
 		Epoch: 4, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		MTU: 1395, QueueLimit: 65,
+		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	first, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -85,6 +88,7 @@ func TestTUNAQMUsesBoundedNonDroppingLeaf(t *testing.T) {
 	target := tunAQMTargetState{
 		Epoch: 5, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		MTU: 1395, QueueLimit: 65,
+		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	snapshot, err := reconciler.Reconcile(target)
 	if err != nil {
@@ -122,6 +126,68 @@ func TestTUNAQMQueueLimitIncludesServiceBacklogAndDeviceQueue(t *testing.T) {
 	}
 }
 
+func TestEngineOutboundBoundsFitWholeBatchWithinDelayBudget(t *testing.T) {
+	tests := []struct {
+		name     string
+		rate     float64
+		peers    int
+		mtu      int
+		wantSize int
+		wantSegs int
+		wantGate int
+	}{
+		{
+			name: "cycle 6 Pi reduced target", rate: 659_031.0606091819,
+			peers: 1, mtu: 1319, wantSize: 11_871, wantSegs: 9, wantGate: 12_159,
+		},
+		{
+			name: "cycle 6 o3 target", rate: 1_020_000,
+			peers: 1, mtu: 1395, wantSize: 19_530, wantSegs: 14, wantGate: 19_978,
+		},
+		{
+			name: "two peers use per-peer rate", rate: 1_360_000,
+			peers: 2, mtu: 1395, wantSize: 12_555, wantSegs: 9, wantGate: 12_843,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := deriveEngineOutboundBounds(
+				test.rate, test.peers, test.mtu, test.mtu,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.GSOMaxSize != test.wantSize ||
+				got.GSOMaxSegments != test.wantSegs ||
+				got.AdmissionLimitBytes != test.wantGate {
+				t.Fatalf("bounds = %+v, want size=%d segments=%d gate=%d",
+					got, test.wantSize, test.wantSegs, test.wantGate)
+			}
+			if got.MaxBatchServiceTime > engineOutboundDelayBudget {
+				t.Fatalf("whole-batch service time = %s, want <= %s",
+					got.MaxBatchServiceTime, engineOutboundDelayBudget)
+			}
+		})
+	}
+}
+
+func TestEngineOutboundBoundsRejectRateBelowOneDatagramBudget(t *testing.T) {
+	if _, err := deriveEngineOutboundBounds(50_000, 1, 1395, 1395); err == nil {
+		t.Fatal("derived bounds below one legal WireGuard datagram per delay budget")
+	}
+}
+
+func TestEngineOutboundBoundsUseMaximumMTUAcrossResize(t *testing.T) {
+	got, err := deriveEngineOutboundBounds(659_031.0606091819, 1, 1319, 1320)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GSOMaxSize != 11_871 || got.GSOMaxSegments != 9 ||
+		got.AdmissionLimitBytes != 12_168 {
+		t.Fatalf("resize-safe bounds = %+v, want size=11871 segments=9 gate=12168", got)
+	}
+}
+
 func TestTUNAQMFailedReconciliationPublishesObservedActualAsStale(t *testing.T) {
 	kernel := &memoryTUNAQMKernel{
 		actual: tunAQMActualState{
@@ -139,6 +205,7 @@ func TestTUNAQMFailedReconciliationPublishesObservedActualAsStale(t *testing.T) 
 	target := tunAQMTargetState{
 		Epoch: 9, RateBytesPerSecond: 680_000, TxQueueLen: tunAQMTxQueueLen,
 		MTU: 1395, QueueLimit: 65,
+		GSOMaxSize: 13_950, GSOMaxSegments: 10, AdmissionLimitBytes: 14_270,
 	}
 	snapshot, err := reconciler.Reconcile(target)
 	if err == nil {

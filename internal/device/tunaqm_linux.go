@@ -32,6 +32,8 @@ type linuxTUNAQMKernel struct {
 	command         func(args ...string) ([]byte, error)
 	readTxQueueLen  func() (int, error)
 	writeTxQueueLen func(int) error
+	readGSOLimits   func() (linkGSOLimits, error)
+	writeGSOLimits  func(linkGSOLimits) error
 }
 
 func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
@@ -49,6 +51,12 @@ func newLinuxTUNAQMKernel(name string) (*linuxTUNAQMKernel, error) {
 	}
 	kernel.writeTxQueueLen = func(length int) error {
 		return setLinkTxQueueLen(name, length)
+	}
+	kernel.readGSOLimits = func() (linkGSOLimits, error) {
+		return readLinkGSOLimits(name)
+	}
+	kernel.writeGSOLimits = func(limits linkGSOLimits) error {
+		return setLinkGSOLimits(name, limits)
 	}
 	return kernel, nil
 }
@@ -126,11 +134,24 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) error {
 			return err
 		}
 	}
+	if current.GSOMaxSize != target.GSOMaxSize ||
+		current.GSOMaxSegments != target.GSOMaxSegments {
+		if err := k.writeGSOLimits(linkGSOLimits{
+			MaxSize:     uint32(target.GSOMaxSize),
+			MaxSegments: uint32(target.GSOMaxSegments),
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 	txQueueLen, err := k.readTxQueueLen()
+	if err != nil {
+		return tunAQMActualState{}, err
+	}
+	gsoLimits, err := k.readGSOLimits()
 	if err != nil {
 		return tunAQMActualState{}, err
 	}
@@ -189,6 +210,8 @@ func (k *linuxTUNAQMKernel) Read() (tunAQMActualState, error) {
 		FlowLimit:          leafOptions.FlowLimit,
 		Quantum:            leafOptions.Quantum,
 		InitialQuantum:     leafOptions.InitialQuantum,
+		GSOMaxSize:         int(gsoLimits.MaxSize),
+		GSOMaxSegments:     int(gsoLimits.MaxSegments),
 		ObservedAt:         time.Now(),
 	}, nil
 }
@@ -300,19 +323,33 @@ func (t *Tunnel) startTUNAQM() error {
 		}
 	}
 	mtu := t.currentTunMTU()
+	maximumMTU := tunMTU(t.cfg)
 	queueLimit, err := deriveTUNAQMQueueLimit(maxDataBurstBytes, peerCount, mtu)
 	if err != nil {
 		return err
 	}
+	bounds, err := deriveEngineOutboundBounds(
+		initial.IngressRateBytesPerSecond*float64(peerCount),
+		peerCount, mtu, maximumMTU,
+	)
+	if err != nil {
+		return err
+	}
 	target := tunAQMTargetState{
-		RateBytesPerSecond: initial.IngressRateBytesPerSecond * float64(peerCount),
-		TxQueueLen:         tunAQMTxQueueLen,
-		MTU:                mtu,
-		QueueLimit:         queueLimit,
+		RateBytesPerSecond:  initial.IngressRateBytesPerSecond * float64(peerCount),
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 mtu,
+		QueueLimit:          queueLimit,
+		GSOMaxSize:          bounds.GSOMaxSize,
+		GSOMaxSegments:      bounds.GSOMaxSegments,
+		AdmissionLimitBytes: bounds.AdmissionLimitBytes,
 	}
 	initialSnapshot, err := reconciler.Reconcile(target)
 	if err != nil {
 		return fmt.Errorf("device: install TUN AQM: %w", err)
+	}
+	if err := t.dev.SetOutboundAdmissionLimit(target.AdmissionLimitBytes); err != nil {
+		return fmt.Errorf("device: install engine outbound admission: %w", err)
 	}
 	if err := t.bind.ObserveTUNIngressActual(
 		initialSnapshot.Actual.RateBytesPerSecond,
@@ -357,9 +394,23 @@ func (t *Tunnel) startTUNAQM() error {
 					continue
 				}
 				target.QueueLimit = queueLimit
+				bounds, err := deriveEngineOutboundBounds(
+					target.RateBytesPerSecond, peerCount, target.MTU, maximumMTU,
+				)
+				if err != nil {
+					t.log.Error("engine outbound bound derivation failed", "error", err.Error())
+					continue
+				}
+				target.GSOMaxSize = bounds.GSOMaxSize
+				target.GSOMaxSegments = bounds.GSOMaxSegments
+				target.AdmissionLimitBytes = bounds.AdmissionLimitBytes
 				snapshot, err := reconciler.Reconcile(target)
 				if err != nil {
 					t.log.Error("TUN AQM reconciliation failed", "error", err.Error())
+					continue
+				}
+				if err := t.dev.SetOutboundAdmissionLimit(target.AdmissionLimitBytes); err != nil {
+					t.log.Error("engine outbound admission reconciliation failed", "error", err.Error())
 					continue
 				}
 				if err := t.bind.ObserveTUNIngressActual(

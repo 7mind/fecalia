@@ -8,18 +8,25 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/metrics"
+	"github.com/amnezia-vpn/amneziawg-go/conn"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
 )
 
 const (
-	tunAQMTxQueueLen = 32
+	tunAQMTxQueueLen          = 32
+	engineOutboundDelayBudget = 20 * time.Millisecond
+	linuxDefaultGSOMaxSize    = 64 * 1024
 )
 
 type tunAQMTargetState struct {
-	Epoch              uint64
-	RateBytesPerSecond float64
-	TxQueueLen         int
-	MTU                int
-	QueueLimit         int
+	Epoch               uint64
+	RateBytesPerSecond  float64
+	TxQueueLen          int
+	MTU                 int
+	QueueLimit          int
+	GSOMaxSize          int
+	GSOMaxSegments      int
+	AdmissionLimitBytes int
 }
 
 type tunAQMActualState struct {
@@ -32,6 +39,8 @@ type tunAQMActualState struct {
 	FlowLimit          int
 	Quantum            int
 	InitialQuantum     int
+	GSOMaxSize         int
+	GSOMaxSegments     int
 	ObservedAt         time.Time
 	Fresh              bool
 }
@@ -65,8 +74,10 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 		target.RateBytesPerSecond <= 0 {
 		return tunAQMSnapshot{}, errors.New("TUN AQM target rate must be finite and positive")
 	}
-	if target.TxQueueLen <= 0 || target.MTU <= 0 || target.QueueLimit <= 0 {
-		return tunAQMSnapshot{}, errors.New("TUN AQM tx queue length, MTU, and queue limit must be positive")
+	if target.TxQueueLen <= 0 || target.MTU <= 0 || target.QueueLimit <= 0 ||
+		target.GSOMaxSize <= 0 || target.GSOMaxSegments <= 0 ||
+		target.AdmissionLimitBytes <= 0 {
+		return tunAQMSnapshot{}, errors.New("TUN AQM queue, GSO, and engine-admission targets must be positive")
 	}
 
 	r.mu.Lock()
@@ -111,17 +122,22 @@ func (r *tunAQMReconciler) Snapshot() tunAQMSnapshot {
 func (r *tunAQMReconciler) MetricsSnapshot() *metrics.TUNAQMSnapshot {
 	snapshot := r.Snapshot()
 	return &metrics.TUNAQMSnapshot{
-		TargetRateBytesPerSecond: snapshot.Target.RateBytesPerSecond,
-		ActualRateBytesPerSecond: snapshot.Actual.RateBytesPerSecond,
-		TargetTxQueueLen:         snapshot.Target.TxQueueLen,
-		ActualTxQueueLen:         snapshot.Actual.TxQueueLen,
-		TargetEpoch:              snapshot.Target.Epoch,
-		ActualEpoch:              snapshot.Actual.Epoch,
-		TargetQueueLimitPackets:  snapshot.Target.QueueLimit,
-		ActualQueueLimitPackets:  snapshot.Actual.Limit,
-		ActualFlowLimitPackets:   snapshot.Actual.FlowLimit,
-		ActualFresh:              snapshot.Actual.Fresh,
-		ActualObservedAt:         snapshot.Actual.ObservedAt,
+		TargetRateBytesPerSecond:  snapshot.Target.RateBytesPerSecond,
+		ActualRateBytesPerSecond:  snapshot.Actual.RateBytesPerSecond,
+		TargetTxQueueLen:          snapshot.Target.TxQueueLen,
+		ActualTxQueueLen:          snapshot.Actual.TxQueueLen,
+		TargetEpoch:               snapshot.Target.Epoch,
+		ActualEpoch:               snapshot.Actual.Epoch,
+		TargetQueueLimitPackets:   snapshot.Target.QueueLimit,
+		ActualQueueLimitPackets:   snapshot.Actual.Limit,
+		ActualFlowLimitPackets:    snapshot.Actual.FlowLimit,
+		TargetGSOMaxSizeBytes:     snapshot.Target.GSOMaxSize,
+		ActualGSOMaxSizeBytes:     snapshot.Actual.GSOMaxSize,
+		TargetGSOMaxSegments:      snapshot.Target.GSOMaxSegments,
+		ActualGSOMaxSegments:      snapshot.Actual.GSOMaxSegments,
+		TargetAdmissionLimitBytes: snapshot.Target.AdmissionLimitBytes,
+		ActualFresh:               snapshot.Actual.Fresh,
+		ActualObservedAt:          snapshot.Actual.ObservedAt,
 	}
 }
 
@@ -143,6 +159,14 @@ func validateTUNAQMReadback(target tunAQMTargetState, actual tunAQMActualState) 
 			actual.Limit, actual.FlowLimit, actual.Quantum, actual.InitialQuantum,
 		)
 	}
+	if actual.GSOMaxSize != target.GSOMaxSize ||
+		actual.GSOMaxSegments != target.GSOMaxSegments {
+		return fmt.Errorf(
+			"TUN AQM GSO readback size=%d segments=%d, want size=%d segments=%d",
+			actual.GSOMaxSize, actual.GSOMaxSegments,
+			target.GSOMaxSize, target.GSOMaxSegments,
+		)
+	}
 	tolerance := target.RateBytesPerSecond * 0.01
 	if math.Abs(actual.RateBytesPerSecond-target.RateBytesPerSecond) > tolerance {
 		return fmt.Errorf("TUN AQM rate readback %g B/s, want %g B/s within 1%%",
@@ -152,6 +176,68 @@ func validateTUNAQMReadback(target tunAQMTargetState, actual tunAQMActualState) 
 		return errors.New("TUN AQM readback observation time is required")
 	}
 	return nil
+}
+
+type engineOutboundBounds struct {
+	AdmissionLimitBytes int
+	GSOMaxSize          int
+	GSOMaxSegments      int
+	MaxBatchServiceTime time.Duration
+}
+
+func deriveEngineOutboundBounds(
+	aggregateRateBytesPerSecond float64,
+	peerCount int,
+	currentMTU int,
+	maximumMTU int,
+) (engineOutboundBounds, error) {
+	if math.IsNaN(aggregateRateBytesPerSecond) ||
+		math.IsInf(aggregateRateBytesPerSecond, 0) ||
+		aggregateRateBytesPerSecond <= 0 ||
+		peerCount <= 0 ||
+		currentMTU <= 0 ||
+		maximumMTU < currentMTU {
+		return engineOutboundBounds{}, errors.New(
+			"engine outbound rate/peer count/MTUs must be positive and maximum MTU must cover current MTU",
+		)
+	}
+	perPeerRate := aggregateRateBytesPerSecond / float64(peerCount)
+	maxWireDatagram := maximumMTU + awgdevice.MessageTransportSize
+	wireBudget := int(math.Floor(perPeerRate * engineOutboundDelayBudget.Seconds()))
+	if wireBudget < maxWireDatagram {
+		return engineOutboundBounds{}, fmt.Errorf(
+			"engine outbound %s delay budget permits %d bytes at %g B/s, below one %d-byte WireGuard datagram",
+			engineOutboundDelayBudget, wireBudget, perPeerRate, maxWireDatagram,
+		)
+	}
+	maxSegments := wireBudget / maxWireDatagram
+	if maxSegments > conn.IdealBatchSize {
+		maxSegments = conn.IdealBatchSize
+	}
+	if sizeSegments := linuxDefaultGSOMaxSize / currentMTU; maxSegments > sizeSegments {
+		maxSegments = sizeSegments
+	}
+	if maxSegments < 1 {
+		return engineOutboundBounds{}, errors.New(
+			"engine outbound delay budget cannot admit one GSO segment",
+		)
+	}
+	admissionLimit := maxSegments * maxWireDatagram
+	serviceTime := time.Duration(
+		float64(admissionLimit) / perPeerRate * float64(time.Second),
+	)
+	if serviceTime > engineOutboundDelayBudget {
+		return engineOutboundBounds{}, fmt.Errorf(
+			"engine outbound maximum batch service time %s exceeds %s",
+			serviceTime, engineOutboundDelayBudget,
+		)
+	}
+	return engineOutboundBounds{
+		AdmissionLimitBytes: admissionLimit,
+		GSOMaxSize:          maxSegments * currentMTU,
+		GSOMaxSegments:      maxSegments,
+		MaxBatchServiceTime: serviceTime,
+	}, nil
 }
 
 func deriveTUNAQMQueueLimit(dataBurstBytes, peerCount, mtu int) (int, error) {

@@ -55,7 +55,8 @@ type QueueOutboundElement struct {
 
 type QueueOutboundElementsContainer struct {
 	sync.Mutex
-	elems []*QueueOutboundElement
+	elems       []*QueueOutboundElement
+	reservation *outboundAdmissionReservation
 }
 
 func (device *Device) NewOutboundElement() *QueueOutboundElement {
@@ -425,6 +426,7 @@ func (peer *Peer) StagePackets(elems *QueueOutboundElementsContainer) {
 }
 
 func (peer *Peer) SendStagedPackets() {
+	var paddingZeros [PaddingMultiple]byte
 top:
 	if len(peer.queue.staged) == 0 || !peer.device.isUp() {
 		return
@@ -472,6 +474,23 @@ top:
 
 			// add to parallel and sequential queue
 			if peer.isRunning.Load() {
+				mtu := int(peer.device.tun.mtu.Load())
+				var wireBytes int64
+				for _, elem := range elemsContainer.elems {
+					paddingSize := calculatePaddingSize(len(elem.packet), mtu)
+					elem.packet = append(elem.packet, paddingZeros[:paddingSize]...)
+					wireBytes += int64(MessageTransportSize + len(elem.packet))
+				}
+				reservation, admitted := peer.outboundAdmission.reserve(wireBytes)
+				if !admitted {
+					for _, elem := range elemsContainer.elems {
+						peer.device.PutMessageBuffer(elem.buffer)
+						peer.device.PutOutboundElement(elem)
+					}
+					peer.device.PutOutboundElementsContainer(elemsContainer)
+					return
+				}
+				elemsContainer.reservation = reservation
 				peer.queue.outbound.c <- elemsContainer
 				peer.device.outbound.recordPeerQueueDepth(len(peer.queue.outbound.c))
 				peer.device.queue.encryption.c <- elemsContainer
@@ -528,7 +547,6 @@ func calculatePaddingSize(packetSize, mtu int) int {
  * Obs. One instance per core
  */
 func (device *Device) RoutineEncryption(id int) {
-	var paddingZeros [PaddingMultiple]byte
 	var nonce [chacha20poly1305.NonceSize]byte
 
 	defer device.log.Verbosef("Routine: encryption worker %d - stopped", id)
@@ -549,10 +567,6 @@ func (device *Device) RoutineEncryption(id int) {
 			binary.LittleEndian.PutUint32(fieldType, messageTransportType)
 			binary.LittleEndian.PutUint32(fieldReceiver, elem.keypair.remoteIndex)
 			binary.LittleEndian.PutUint64(fieldNonce, elem.nonce)
-
-			// pad content to multiple of 16
-			paddingSize := calculatePaddingSize(len(elem.packet), int(device.tun.mtu.Load()))
-			elem.packet = append(elem.packet, paddingZeros[:paddingSize]...)
 
 			// encrypt content and release to consumer
 
@@ -595,6 +609,8 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 				device.PutMessageBuffer(elem.buffer)
 				device.PutOutboundElement(elem)
 			}
+			elemsContainer.releaseOutboundAdmission()
+			device.PutOutboundElementsContainer(elemsContainer)
 			continue
 		}
 		dataSent := false
@@ -624,6 +640,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 			device.PutMessageBuffer(elem.buffer)
 			device.PutOutboundElement(elem)
 		}
+		elemsContainer.releaseOutboundAdmission()
 		device.PutOutboundElementsContainer(elemsContainer)
 		if err != nil {
 			var errGSO conn.ErrUDPGSODisabled

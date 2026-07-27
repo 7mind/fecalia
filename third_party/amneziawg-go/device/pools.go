@@ -86,11 +86,22 @@ func (device *Device) GetOutboundElementsContainer() *QueueOutboundElementsConta
 }
 
 func (device *Device) PutOutboundElementsContainer(c *QueueOutboundElementsContainer) {
+	if c.reservation != nil {
+		panic("device: pooled outbound container retains admission reservation")
+	}
 	for i := range c.elems {
 		c.elems[i] = nil
 	}
 	c.elems = c.elems[:0]
 	device.pool.outboundElementsContainer.Put(c)
+}
+
+func (c *QueueOutboundElementsContainer) releaseOutboundAdmission() {
+	if c.reservation == nil {
+		return
+	}
+	c.reservation.release()
+	c.reservation = nil
 }
 
 func (device *Device) GetMessageBuffer() *[MaxMessageSize]byte {

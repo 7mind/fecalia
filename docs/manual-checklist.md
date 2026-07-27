@@ -416,6 +416,12 @@ as historical exact-byte-shaper evidence.
       and `quantum=initial_quantum=current MTU`.
       `wanbond_tun_aqm_actual_fresh` must be 1 and target/actual epoch, rate,
       and queue length must match.
+- [ ] From per-peer ingress rate `r`, maximum configured inner MTU `Mmax`, and
+      current inner MTU `Mcur`, calculate
+      `S=min(128,floor(65536/Mcur),floor(r*20ms/(Mmax+32)))`.
+      Confirm the link target/actual GSO readback is exactly
+      `gso_max_segs=S`, `gso_max_size=S*Mcur`, and the per-peer engine byte
+      limit is `S*(Mmax+32)`. Its service time must not exceed 20 ms.
 - [ ] Run **two independent synchronized field cycles**. Each cycle contains
       one 30-second Pi→o3 TCP upload and one 30-second o3→Pi TCP download
       (`iperf3 -R` from the Pi). For each leg, start timestamped inner and outer
@@ -451,11 +457,15 @@ as historical exact-byte-shaper evidence.
       local drops. Overload beyond the explicit queue limit may tail-drop, but
       every such drop must advance the qdisc counter.
 - [ ] The reproduced failure does not recur: the peer engine queue must not
-      reach its 1,024-container limit, hidden inner RTT must not grow into
-      seconds while outer RTT stays near baseline, and TUN/shaper/socket/FEC
-      accounting must show no unexplained loss. Evaluate receiver goodput,
-      retransmits, AQM ECN/drops, authenticated loss, and queue-delay response
-      together. Q91 has **no fixed absolute throughput floor**.
+      reach its 1,024-container limit,
+      `wanbond_engine_admission_retained_bytes` must stay at or below
+      `wanbond_engine_admission_limit_bytes`, and
+      `wanbond_engine_admission_oversize_batches_total` must stay zero after
+      fresh GSO readback. Hidden inner RTT must not grow into seconds while
+      outer RTT stays near baseline, and TUN/shaper/socket/FEC accounting must
+      show no unexplained loss. Evaluate receiver goodput, retransmits, AQM
+      ECN/drops, authenticated loss, and queue-delay response together. Q91 has
+      **no fixed absolute throughput floor**.
 - [ ] Stop/restart one endpoint and confirm a fresh controller/qdisc actual
       state appears before service returns. Restore the original binaries and
       configs if the candidate will not remain deployed; otherwise record that

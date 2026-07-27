@@ -1337,6 +1337,12 @@ func TestEngineOutboundExposition(t *testing.T) {
 		ActiveSendBytes:           66000,
 		ActiveSendFramesHighWater: 128,
 		ActiveSendBytesHighWater:  65536,
+		AdmissionLimitBytes:       20_000,
+		AdmissionRetainedBytes:    10_000,
+		AdmissionHighWaterBytes:   19_000,
+		AdmissionWaits:            7,
+		AdmissionWaitNanoseconds:  uint64(1500 * time.Millisecond),
+		AdmissionOversizeBatches:  0,
 	}}
 	srv := startServer(t, src)
 
@@ -1362,6 +1368,12 @@ func TestEngineOutboundExposition(t *testing.T) {
 		`wanbond_engine_send_bytes_total 66000`,
 		`wanbond_engine_peer_queue_high_water_containers 1`,
 		`wanbond_engine_active_send_frames_high_water 128`,
+		`wanbond_engine_admission_limit_bytes 20000`,
+		`wanbond_engine_admission_retained_bytes 10000`,
+		`wanbond_engine_admission_high_water_bytes 19000`,
+		`wanbond_engine_admission_waits_total 7`,
+		`wanbond_engine_admission_wait_seconds_total 1.5`,
+		`wanbond_engine_admission_oversize_batches_total 0`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("exposition missing line %q\n---\n%s", want, text)
@@ -1395,17 +1407,22 @@ func TestCongestionAndTUNAQMExposition(t *testing.T) {
 			},
 		}}},
 		tunAQM: &TUNAQMSnapshot{
-			TargetRateBytesPerSecond: 640_000,
-			ActualRateBytesPerSecond: 640_000,
-			TargetTxQueueLen:         32,
-			ActualTxQueueLen:         32,
-			TargetEpoch:              7,
-			ActualEpoch:              7,
-			TargetQueueLimitPackets:  65,
-			ActualQueueLimitPackets:  65,
-			ActualFlowLimitPackets:   65,
-			ActualFresh:              true,
-			ActualObservedAt:         time.Unix(1234, 0),
+			TargetRateBytesPerSecond:  640_000,
+			ActualRateBytesPerSecond:  640_000,
+			TargetTxQueueLen:          32,
+			ActualTxQueueLen:          32,
+			TargetEpoch:               7,
+			ActualEpoch:               7,
+			TargetQueueLimitPackets:   65,
+			ActualQueueLimitPackets:   65,
+			ActualFlowLimitPackets:    65,
+			TargetGSOMaxSizeBytes:     13_950,
+			ActualGSOMaxSizeBytes:     13_950,
+			TargetGSOMaxSegments:      10,
+			ActualGSOMaxSegments:      10,
+			TargetAdmissionLimitBytes: 14_270,
+			ActualFresh:               true,
+			ActualObservedAt:          time.Unix(1234, 0),
 		},
 	}
 	srv := startServer(t, src)
@@ -1439,6 +1456,11 @@ func TestCongestionAndTUNAQMExposition(t *testing.T) {
 		`wanbond_tun_aqm_target_queue_limit_packets 65`,
 		`wanbond_tun_aqm_actual_queue_limit_packets 65`,
 		`wanbond_tun_aqm_actual_flow_limit_packets 65`,
+		`wanbond_tun_aqm_target_gso_max_size_bytes 13950`,
+		`wanbond_tun_aqm_actual_gso_max_size_bytes 13950`,
+		`wanbond_tun_aqm_target_gso_max_segments 10`,
+		`wanbond_tun_aqm_actual_gso_max_segments 10`,
+		`wanbond_tun_aqm_target_engine_admission_limit_bytes 14270`,
 		`wanbond_tun_aqm_actual_fresh 1`,
 		`wanbond_tun_aqm_actual_observed_timestamp_seconds 1234`,
 	} {
