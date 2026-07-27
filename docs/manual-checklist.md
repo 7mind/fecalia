@@ -58,7 +58,10 @@ gate.
       accounting, and the weighted multi-carrier boundary.
 - [ ] Run `sudo -E go test -tags e2e -run '^TestP4AdaptiveFEC$' -v ./test/e2e`
       on the slowest supported worker (including a 1-vCPU aarch64 host); each
-      60-second phase must collect at least 2,000 DATA frames.
+      60-second phase must collect at least 2,000 DATA frames. The iperf client
+      has a 90-second wall-clock limit (60-second transmit interval plus
+      30-second control/result grace); a timeout or setup race reports both
+      daemon logs instead of leaving the phase active indefinitely.
 - [ ] Under steady `P4SteadyLossRate` path loss, adaptive total overhead ≤ the
       fixed-FEC baseline for equal masking.
 - [ ] Post-recovery residual loss ≤ `P4ResidualLossMax` (`/metrics`).

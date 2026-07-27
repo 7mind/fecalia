@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -175,7 +176,22 @@ func runP4Phase(t *testing.T, bin string, adaptive bool) p4Result {
 	edgeBefore := fetchMetrics(t, ctxB, p4MetricsURL)
 	concBefore := fetchMetricsInNetns(t, top.pid, p4MetricsURL)
 
-	goodput := top.fecIperf3RecvMbps(t, concInner, p4LoadSecs)
+	loadLimit := time.Duration(p4LoadSecs)*time.Second + fecIperfWallClockGrace
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), loadLimit)
+	loadStarted := time.Now()
+	goodput, loadErr := top.fecIperf3RecvMbpsResult(t, loadCtx, concInner, p4LoadSecs)
+	cancelLoad()
+	if loadErr != nil {
+		t.Fatalf(
+			"p4 %s: iperf client failed after %s (wall-clock limit %s): %v\n--- edge ---\n%s\n--- conc ---\n%s",
+			label,
+			time.Since(loadStarted),
+			loadLimit,
+			loadErr,
+			edge.log(),
+			conc.log(),
+		)
+	}
 
 	ctxM, cancelM := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelM()
@@ -321,16 +337,66 @@ level = "error"
 	edge = top.startProc(t, "edge", bin, "--config", edgeCfg)
 
 	if !top.waitLink(tunDev, false, 5*time.Second) {
-		t.Fatalf("edge %s never appeared\n%s", tunDev, edge.log())
+		t.Fatalf("edge %s never appeared\n--- edge ---\n%s\n--- conc ---\n%s", tunDev, edge.log(), conc.log())
 	}
 	if !top.waitLink(tunDev, true, 5*time.Second) {
-		t.Fatalf("concentrator %s never appeared\n%s", tunDev, conc.log())
+		t.Fatalf("concentrator %s never appeared\n--- edge ---\n%s\n--- conc ---\n%s", tunDev, edge.log(), conc.log())
 	}
-	top.run("ip", "addr", "add", edgeInner+"/24", "dev", tunDev)
-	top.run("ip", "link", "set", tunDev, "up")
-	top.nsenter("ip", "addr", "add", concInner+"/24", "dev", tunDev)
-	top.nsenter("ip", "link", "set", tunDev, "up")
+	runP4SetupCommand(t, edge, conc, "ip", "addr", "add", edgeInner+"/24", "dev", tunDev)
+	runP4SetupCommand(t, edge, conc, "ip", "link", "set", tunDev, "up")
+	runP4SetupCommand(
+		t,
+		edge,
+		conc,
+		"nsenter",
+		"-t",
+		strconv.Itoa(top.pid),
+		"-n",
+		"ip",
+		"addr",
+		"add",
+		concInner+"/24",
+		"dev",
+		tunDev,
+	)
+	runP4SetupCommand(
+		t,
+		edge,
+		conc,
+		"nsenter",
+		"-t",
+		strconv.Itoa(top.pid),
+		"-n",
+		"ip",
+		"link",
+		"set",
+		tunDev,
+		"up",
+	)
 	return edge, conc
+}
+
+func runP4SetupCommand(
+	t *testing.T,
+	edge *proc,
+	conc *proc,
+	name string,
+	args ...string,
+) {
+	t.Helper()
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err == nil {
+		return
+	}
+	t.Fatalf(
+		"p4 setup command %s %s: %v\n%s\n--- edge ---\n%s\n--- conc ---\n%s",
+		name,
+		strings.Join(args, " "),
+		err,
+		out,
+		edge.log(),
+		conc.log(),
+	)
 }
 
 // p4ChecklistMarker is the idempotency sentinel for appendP4Checklist.

@@ -46,6 +46,10 @@ const (
 	// fecCollapseFrac is the collapse gate: single-flow TCP goodput at >=1%
 	// configured loss must fall below this fraction of the 0%-loss capped figure.
 	fecCollapseFrac = 0.5
+
+	// fecIperfWallClockGrace bounds iperf's control-connection setup and result
+	// exchange beyond its requested transmit interval.
+	fecIperfWallClockGrace = 30 * time.Second
 )
 
 type fecIperfCommandRunner interface {
@@ -54,10 +58,13 @@ type fecIperfCommandRunner interface {
 
 type execFECIperfCommandRunner struct{}
 
-// combinedOutput retains the fixture's current synchronous subprocess behavior.
-// The deadline contract is pinned separately before the implementation changes.
-func (execFECIperfCommandRunner) combinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+func (execFECIperfCommandRunner) combinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return out, ctxErr
+	}
+	return out, err
 }
 
 // fecLossSweep are the configured netem loss points (percent). 0% is the capped,
@@ -226,11 +233,30 @@ level = "error"
 // the shared iperf3Mbps used by the P0/baseline tests.
 func (top *Topology) fecIperf3RecvMbps(t *testing.T, serverIP string, secs int) float64 {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(secs)*time.Second+fecIperfWallClockGrace,
+	)
+	defer cancel()
+	mbps, err := top.fecIperf3RecvMbpsResult(t, ctx, serverIP, secs)
+	if err != nil {
+		t.Fatalf("iperf3 -c %s: %v", serverIP, err)
+	}
+	return mbps
+}
+
+func (top *Topology) fecIperf3RecvMbpsResult(
+	t *testing.T,
+	ctx context.Context,
+	serverIP string,
+	secs int,
+) (float64, error) {
+	t.Helper()
 	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP)
 	time.Sleep(500 * time.Millisecond) // allow the server to bind and listen
 
 	out, err := (execFECIperfCommandRunner{}).combinedOutput(
-		context.Background(),
+		ctx,
 		"iperf3",
 		"-c",
 		serverIP,
@@ -241,7 +267,7 @@ func (top *Topology) fecIperf3RecvMbps(t *testing.T, serverIP string, secs int) 
 		"-J",
 	)
 	if err != nil {
-		t.Fatalf("iperf3 -c %s: %v\n%s", serverIP, err, out)
+		return 0, fmt.Errorf("client failed: %w\n%s", err, out)
 	}
 	var r struct {
 		End struct {
@@ -251,9 +277,9 @@ func (top *Topology) fecIperf3RecvMbps(t *testing.T, serverIP string, secs int) 
 		} `json:"end"`
 	}
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
-		t.Fatalf("parse iperf3 json: %v\n%s", err, out)
+		return 0, fmt.Errorf("parse iperf3 json: %w\n%s", err, out)
 	}
-	return r.End.SumReceived.BitsPerSecond / 1e6
+	return r.End.SumReceived.BitsPerSecond / 1e6, nil
 }
 
 // fecBaselineDocPath resolves docs/fec-baseline.md relative to the module root,
