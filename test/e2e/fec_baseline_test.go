@@ -3,9 +3,11 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -45,6 +47,18 @@ const (
 	// configured loss must fall below this fraction of the 0%-loss capped figure.
 	fecCollapseFrac = 0.5
 )
+
+type fecIperfCommandRunner interface {
+	combinedOutput(context.Context, string, ...string) ([]byte, error)
+}
+
+type execFECIperfCommandRunner struct{}
+
+// combinedOutput retains the fixture's current synchronous subprocess behavior.
+// The deadline contract is pinned separately before the implementation changes.
+func (execFECIperfCommandRunner) combinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
 
 // fecLossSweep are the configured netem loss points (percent). 0% is the capped,
 // lossless reference; 0.5/1/2% quantify the collapse. Order matters: 0% first so
@@ -215,7 +229,20 @@ func (top *Topology) fecIperf3RecvMbps(t *testing.T, serverIP string, secs int) 
 	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", serverIP)
 	time.Sleep(500 * time.Millisecond) // allow the server to bind and listen
 
-	out := top.runOut("iperf3", "-c", serverIP, "-t", strconv.Itoa(secs), "--congestion", fecCongestionControl, "-J")
+	out, err := (execFECIperfCommandRunner{}).combinedOutput(
+		context.Background(),
+		"iperf3",
+		"-c",
+		serverIP,
+		"-t",
+		strconv.Itoa(secs),
+		"--congestion",
+		fecCongestionControl,
+		"-J",
+	)
+	if err != nil {
+		t.Fatalf("iperf3 -c %s: %v\n%s", serverIP, err, out)
+	}
 	var r struct {
 		End struct {
 			SumReceived struct {
