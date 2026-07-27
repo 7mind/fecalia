@@ -462,9 +462,10 @@ Common rules, either policy:
 - Under active-backup, the controller initially uses 85% of `Rseed` and a
   conservative 1.25 outer/inner expansion. Ingress additionally starts with
   5% local-service headroom while the outer target remains independent.
-  Admission wait occupying at least half a sampling interval or a pending TUN
-  ring multiplies ingress headroom by 0.85 down to 0.50; exact readback and
-  settling block another change. Three consecutive loaded, clean, settled
+  Only a loaded interval can reduce headroom: admission wait occupying at least
+  half that interval or a pending TUN ring multiplies ingress headroom by 0.85
+  down to 0.50. Idle/opposite-direction ring occupancy does not reduce it;
+  exact readback and settling block another change. Three consecutive loaded, clean, settled
   intervals recover 0.01, while idle intervals do not recover. Clean loaded
   outer samples add 10% of
   `Rseed`; queue delay or authenticated loss reduces the target. Every target
@@ -483,14 +484,19 @@ Common rules, either policy:
   `L=ceil(peerCount*(B+C)/20)*20` bytes, where 20 bytes is the minimum legal
   inner IPv4 packet, `B` is the current maximum path DATA budget, and `C` is
   one complete bounded GSO batch with service time `T<=20ms`. For aggregate
-  ingress `R`, current/maximum MTUs `Mcur`/`Mmax`, and exact installed HTB burst
-  `G>=gso_max_size`, `H=ceil((ceil(R*T)+G)/Mcur)` and
-  `txqueuelen=H+1`; the extra slot is the native Linux TUN guard proved by the
-  privileged full-MTU test. The leaf is `bfifo limit L`, and the conservative
-  service bound is `((H+1)*Mmax+L)/R`. `G` rounds upward by at most 15 bytes
+  ingress `R`, current/maximum MTUs `Mcur`/`Mmax`, exact installed HTB burst
+  `G>=gso_max_size`, and effective Linux device-TX quota
+  `Q=net.core.dev_weight*net.core.dev_weight_tx_bias`, derive
+  `H=ceil((ceil(R*T)+G)/Mcur)`, `K=max(H,Q)`, and `txqueuelen=K+1`; the
+  extra slot is the native Linux TUN guard proved by the privileged packet
+  handoff test. Both sysctls must contain positive integers and their product
+  must fit the platform `int`. The daemon re-reads them each interval, exposes
+  exact target/actual quota, and reconciles an operator change. The leaf is
+  `bfifo limit L`, and the conservative service bound is
+  `((K+1)*Mmax+L)/R`. `G` rounds upward by at most 15 bytes
   when needed to avoid iproute2's lossy KiB text rendering. The contract proves
-  zero local drops for `H` full-MTU handoff packets, not lossless arbitrary
-  reader stalls or minimum-size overload. Excess byte backlog tail-drops at
+  zero local drops for independent `H` full-MTU and `Q` small-packet handoff
+  phases, not lossless arbitrary reader stalls. Excess byte backlog tail-drops at
   `bfifo` and increments visible counters. Mutable `bfifo` limits change in place. A
   shrink waits rather than discarding admitted traffic when the live queue,
   ptr ring, GSO backlog, or peer-retained engine bytes do not yet fit the new
@@ -703,6 +709,8 @@ Common rules, either policy:
   include IP+UDP headers and native DATA alone contributes inner bytes.
 - `wanbond_tun_aqm_target_{rate_bytes_per_second,tx_queue_length,epoch}` and
   matching `actual_*` gauges expose target vs kernel readback.
+  `{target,actual}_device_tx_quota_packets` expose the exact effective Linux
+  scheduler quota used by ring derivation.
   `{target,actual}_htb_burst_bytes` expose the explicit direct/dequeue byte
   burst that guards the ptr ring.
   `{target,actual}_queue_limit_bytes` expose the byte-bounded `bfifo` contract.
@@ -711,7 +719,8 @@ Common rules, either policy:
   requested/atomically-applied exact-wire per-peer `B+C` budget, where `B` is
   the configured path-shaper BDP.
   `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
-  `bfifo` limit, HTB rate/burst, ptr-ring capacity, both GSO limits, and epoch matched at
+  `bfifo` limit, HTB rate/burst, ptr-ring capacity, effective device-TX quota,
+  both GSO limits, and epoch matched at
   the latest `actual_observed_timestamp_seconds`.
   `rate_fresh=1` independently acknowledges the exact HTB rate/epoch while a
   non-dropping capacity shrink remains deferred. `actual_queue_length_packets`,
@@ -990,8 +999,8 @@ tc -j -s qdisc show dev wanbond0
 tc class show dev wanbond0
 ```
 
-`txqueuelen` must equal the derived `H+1` transient-handoff capacity, not a
-fixed constant. The root must be HTB with one `bfifo` child at `1:1`; its
+`txqueuelen` must equal the derived `max(H,Q)+1` packet-handoff capacity, not
+a fixed constant. The root must be HTB with one `bfifo` child at `1:1`; its
 rate/burst and byte-limit values must match the
 daemon contract above. A later external qdisc change is
 reconciled on the next probe interval.

@@ -235,8 +235,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   After any rate change, another controller decision waits for exact kernel
   readback and a one-second-or-one-SRTT settling interval. The ingress target
   starts with 5% service headroom and decreases independently of the outer
-  capacity target when engine-admission wait time or ptr-ring occupancy reports
-  local saturation; three loaded, clean, settled intervals recover it
+  capacity target only when a loaded interval reports either engine-admission
+  wait pressure or ptr-ring occupancy; idle/opposite-direction ring activity
+  does not reduce it. Three loaded, clean, settled intervals recover it
   additively. Mutable `bfifo` limits change in place, preserving the live queue
   and counters; a limit shrink waits while byte backlog exceeds the new limit, GSO
   shrink waits for an empty TUN backlog, and engine admission shrink waits
@@ -244,9 +245,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The byte leaf admits one
   configured per-peer BDP plus one complete GSO batch, rounded only to the
-  20-byte minimum legal inner packet. The ptr ring is a transient full-MTU
-  handoff: bytes arriving during the bounded complete-batch service interval
-  plus one HTB burst, divided by current MTU, plus one native Linux guard slot.
+  20-byte minimum legal inner packet. The ptr ring covers the larger of the
+  transient full-MTU byte handoff and Linux's effective device-TX scheduler
+  packet quota (`net.core.dev_weight * net.core.dev_weight_tx_bias`), plus one
+  native Linux guard slot. Both sysctls are re-read and exactly reconciled, so
+  an operator change cannot leave cached ring geometry.
   The HTB burst covers the GSO byte bound and avoids iproute2's lossy text-size
   rendering so readback remains exact. Full-MTU handoff within that interval
   incurs no native link/qdisc drop; overload beyond the finite byte leaf may

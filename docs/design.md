@@ -453,28 +453,41 @@ path shaper, let `C` be one complete pre-segmented batch as derived below,
 `m=20` the minimum legal IPv4 packet size presented by a TUN device, `T<=20ms`
 the derived complete-batch service time, `R` the aggregate ingress target,
 `Mcur`/`Mmax` the current/maximum configured inner MTUs, and `G` the exact
-HTB burst covering `gso_max_size`. For peer count `P`, the queue contract is:
+HTB burst covering `gso_max_size`. Let
+`Q=net.core.dev_weight*net.core.dev_weight_tx_bias` be Linux's effective
+device-TX scheduler packet quota. For peer count `P`, the queue contract is:
 
 ```
 L = ceil(P*(B+C)/m)*m bytes
 A = ceil(R*T)+G bytes
 H = ceil(A/Mcur) full-MTU handoff slots
+K = max(H,Q)
 bfifo limit = L
-TUN txqueuelen = H+1
+TUN txqueuelen = K+1
 HTB burst = cburst = G bytes
 ```
 
 `L` is one logical aggregate B+C byte window, independent of packet size.
 `H` carries only bytes that can arrive during one bounded engine batch-service
-interval plus the explicit HTB burst. The extra slot encodes the native Linux
-TUN boundary established by the privileged full-MTU contract test. The
+interval plus the explicit HTB burst. `Q` covers one legal small-packet
+`__qdisc_run` dequeue quantum; without it, a full ptr ring drops at the TUN
+driver while HTB and `bfifo` still report zero drops. The extra slot encodes
+the native Linux TUN boundary established by the privileged contract test. The
 conservative full-MTU combined service bound is
-`((H+1)*Mmax+L)/R`; the native test reads back the exact geometry, proves zero
-link/qdisc drops for `H` full-MTU handoff packets, and proves overload beyond
-the finite ring+leaf bound increments a visible drop counter. This invariant
-does not claim lossless operation for an arbitrarily stalled reader or
-minimum-size overload. Excess byte backlog tail-drops at `bfifo`; link and
-qdisc counters retain the operational boundary.
+`((K+1)*Mmax+L)/R`; the native test reads back the exact geometry, proves zero
+link/qdisc drops independently for `H` full-MTU handoff packets and `Q`
+small-packet handoff packets on a fresh queue, and proves overload beyond the
+finite ring+leaf bound increments a visible drop counter. This invariant does
+not claim lossless operation for an arbitrarily stalled reader. Excess byte
+backlog tail-drops at `bfifo`; link and qdisc counters retain the operational
+boundary.
+
+The daemon reads both positive quota sysctls at startup and before every
+reconciliation, rejects parse/product overflow, and publishes the effective
+quota as target and actual external state. Exact quota equality participates
+in freshness. An operator change therefore makes the old observation stale
+and derives/reconciles a new ring on the next interval instead of retaining a
+cached quota.
 
 iproute2's plain-text size formatter prints values within 15 bytes of a KiB
 multiple in rounded `Kb` form. The derived HTB burst therefore rounds upward
@@ -561,9 +574,10 @@ to `0.95` on every carrier epoch, while outer capacity discovery remains
 unchanged: `ingress=outer/overhead*h`. Every probe interval the device advances
 exact cumulative TUN-byte and engine-admission-wait baselines before routing
 the interval to the still-current aggregate carrier epoch. Aggregate wait time
-is divided across active peer controllers. Admission wait occupying at least
-half the interval or a pending ptr ring marks local pressure and multiplies
-`h` by `0.85`, with a `0.50` floor. A decrease occurs before link drops, then
+is divided across active peer controllers. Only a loaded interval can mark
+local pressure; it does so when admission wait occupies at least half the
+interval or the ptr ring is pending, then multiplies `h` by `0.85`, with a
+`0.50` floor. Idle/opposite-direction occupancy does not change headroom. A decrease occurs before link drops, then
 uses the same exact-readback/settling gate as every other ingress change, so a
 stale interval or unchanged cumulative counters cannot replay it. Recovery
 adds `0.01` only after three consecutive loaded, clean, settled intervals;

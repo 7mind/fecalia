@@ -418,14 +418,16 @@ as historical exact-byte-shaper evidence.
       `L=limit=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service
       time `T<=20ms`, aggregate ingress `R`, current/maximum MTUs
       `Mcur`/`Mmax`, and exact installed burst `G`, calculate
-      `H=ceil((ceil(R*T)+G)/Mcur)` and confirm
-      `wanbond0 txqueuelen=H+1`.
+      `H=ceil((ceil(R*T)+G)/Mcur)`. Read positive
+      `net.core.dev_weight` and `net.core.dev_weight_tx_bias`, calculate their
+      overflow-checked product `Q`, and confirm
+      `wanbond0 txqueuelen=max(H,Q)+1`.
       Here `B` is the maximum current active outer-shaper DATA budget and `C`
       is the complete GSO batch below.
       Confirm HTB `burst=cburst=G>=gso_max_size` and exact target/actual burst,
-      epoch, rate, ring capacity, and queue-limit readback.
+      device-TX quota, epoch, rate, ring capacity, and queue-limit readback.
       `wanbond_tun_aqm_actual_fresh` must be 1. Record
-      `((H+1)*Mmax+L)/R`; the full-MTU ring plus byte-leaf service
+      `((max(H,Q)+1)*Mmax+L)/R`; the conservatively full-MTU-valued ring plus byte-leaf service
       bound must remain sub-second.
 - [ ] Restart each endpoint with no offered inner traffic. Startup must install
       and expose fresh TUN-AQM target/actual metrics without waiting for a TUN
@@ -477,6 +479,8 @@ as historical exact-byte-shaper evidence.
       changing the outer target. A loaded interval whose per-controller engine
       admission wait occupies at least half the interval, or whose ptr ring is
       pending, must multiply headroom by 0.85 before link drops rise. The same
+      signals in an unloaded/opposite-direction interval must not reduce
+      headroom.
       cumulative counters or a non-advancing interval must not replay the
       decrease; another change waits for exact readback and settlement.
       Recovery adds 0.01 only after three consecutive loaded, clean, settled
@@ -496,9 +500,11 @@ as historical exact-byte-shaper evidence.
       back before the engine value rises. All deferred gauges must return to
       zero after drain, with exact target/actual readback and no new qdisc or
       link drop.
-- [ ] Exercise the native full-MTU transient handoff: `H` full-MTU packets
-      over one bounded complete-batch service interval must leave link and
-      qdisc drops unchanged with exact `H+1` ring readback. Overload beyond the
+- [ ] Exercise independent native handoff phases on a fresh queue: `H` full-MTU
+      packets over one bounded complete-batch service interval and `Q`
+      concurrent small packets over one device-TX scheduler quantum must each
+      leave link and qdisc drops unchanged with exact `max(H,Q)+1` ring
+      readback. Overload beyond the
       finite ring+`L` byte leaf must increase at least one captured link/qdisc
       counter and report the layer. Do not claim arbitrary-stall or
       minimum-packet-overload losslessness from the bounded result.

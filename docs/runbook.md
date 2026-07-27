@@ -403,8 +403,10 @@ In summary:
   `L=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service time
   `T<=20ms`, aggregate ingress `R`, current MTU `Mcur`, and exact installed HTB
   burst `G`, the TUN ptr ring has
-  `H+1` slots where `H=ceil((ceil(R*T)+G)/Mcur)`; the final slot is the
-  native Linux TUN guard. Verify target/actual byte-limit, burst, and ring metrics,
+  `max(H,Q)+1` slots where `H=ceil((ceil(R*T)+G)/Mcur)` and
+  `Q=net.core.dev_weight*net.core.dev_weight_tx_bias`; the final slot is the
+  native Linux TUN guard. Verify target/actual byte-limit, burst, effective
+  device-TX quota, and ring metrics,
   `actual_ring_pending`, and `ring_size_deferred`; use `tc -j -s` when
   comparing `wanbond_tun_aqm_drops_total`. This bounds one full-MTU transient
   handoff, not an arbitrarily stalled TUN reader.
