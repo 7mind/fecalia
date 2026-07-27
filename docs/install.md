@@ -393,9 +393,9 @@ failover); an optional `[scheduler]` block can instead select the
 **weighted-aggregation** policy. Independently of that choice, `[scheduler]`
 turns on, off by default, per-(peer,path) exact-byte send **shaping**. On Linux
 active-backup additionally installs an early `wanbond0` HTB+byte-bounded-`bfifo` queue and
-adapts its TUN ingress target from the active carrier's delivered outer rate,
-probe queue delay, true outer/inner expansion, and fresh authenticated DATA
-loss. Weighted scheduling retains fixed per-path shapers because simultaneous
+adapts its TUN ingress target from the active carrier's emitted outer rate,
+probe queue delay qualified by probe RTTVAR, true outer/inner expansion, and
+fresh authenticated DATA loss. Weighted scheduling retains fixed per-path shapers because simultaneous
 striping has no single authenticated carrier epoch.
 
 ```toml
@@ -425,7 +425,8 @@ live byte shaper retains its own path's exact `R`/`B` envelope:
   each selected path's byte shaper uses that path's own declared bandwidth/RTT.
 - **Active-backup** egresses on exactly ONE path at a time. Each path starts
   from its own BDP, then its controller retargets both the outer shaper and
-  earlier TUN AQM from live delivery, queue delay, and authenticated loss.
+  earlier TUN AQM from emitted outer service, jitter-qualified queue delay, and
+  authenticated loss.
 
 Common rules, either policy:
 
@@ -470,7 +471,12 @@ Common rules, either policy:
   activity does not reduce it. Three consecutive loaded, clean, settled
   intervals recover 0.01, while idle intervals do not recover. Clean loaded
   outer samples add 10% of
-  `Rseed`; queue delay or authenticated loss reduces the target. Every target
+  `Rseed`; queue delay at least
+  `max(active base RTT/2,10ms)+4*probe RTTVAR`, or fresh authenticated loss of
+  at least 0.5%, reduces the target by one 0.85 multiplicative step. Emitted
+  outer rate is not acknowledged delivery and does not impose another
+  downward cap. RTTVAR qualifies only queue delay; fresh authenticated loss
+  remains immediate. Every target
   retargets the same outer shaper and derives `B=max(Lmax,ceil(Rtarget*link_rtt))`.
   Already-admitted deadlines remain unchanged and B shrink waits for retained
   DATA to fit. Expansion learning uses loaded samples only; idle probe/control bytes
@@ -1023,7 +1029,8 @@ iperf3 -c 10.77.0.1 -t 30 -R
 ping -i 0.2 10.77.0.1
 ```
 
-Scrape `wanbond_path_congestion_*`, `wanbond_tun_aqm_*`,
+Scrape `wanbond_path_congestion_*`, `wanbond_path_jitter_seconds`,
+`wanbond_tun_aqm_*`,
 `wanbond_engine_*`, qdisc statistics, and TUN link statistics at synchronized
 start/end boundaries. Require fresh/matching AQM actual state, bounded engine
 exact-byte occupancy instead of the 1,024-container high-water reproduction,

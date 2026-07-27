@@ -555,16 +555,19 @@ limits while running.
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully
 emitted outer bytes including IP+UDP headers, native-DATA inner bytes, the
-path's probe SRTT, and authenticated pre-recovery DATA loss accepted under the
-same carrier/peer/contract identity as adaptive FEC. The controller measures
-delivered outer rate from counter deltas, learns the minimum SRTT as base RTT
-within an epoch, derives queue delay, and learns the outer/inner expansion
+path's probe SRTT and RFC 6298 RTTVAR, and authenticated pre-recovery DATA loss
+accepted under the same carrier/peer/contract identity as adaptive FEC. The
+controller measures emitted outer rate from counter deltas, learns the minimum
+SRTT as base RTT within an epoch, derives queue delay, and learns the outer/inner expansion
 ratio only from loaded samples, so idle probe/control bytes cannot suppress
 the next DATA admission target. It starts at 85% of the measured outer seed,
-raises the target by 10% of that seed after a clean loaded sample, and on congestion reduces it to
-the lower of 85% of the prior target and 95% of measured delivery. Congestion
-requires a loaded sample plus either queue delay at least
-`max(baseRTT/2,10ms)` or fresh authenticated DATA loss of at least 0.5%.
+raises the target by 10% of that seed after a clean loaded sample, and on
+congestion reduces it to 85% of the prior target. Emitted bytes are not
+acknowledged delivery and therefore do not impose a second downward cap.
+Congestion requires a loaded sample plus either queue delay at least
+`max(baseRTT/2,10ms)+4*RTTVAR` or fresh authenticated DATA loss of at least
+0.5%. RTTVAR qualifies only the delay signal; fresh authenticated loss remains
+an immediate congestion observation.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
 delay can still decrease it. Counter regression holds the target. An A→B→A carrier

@@ -465,8 +465,14 @@ as historical exact-byte-shaper evidence.
       authenticated feedback has been adopted, stale feedback cannot raise the
       target or cause a loss-based decrease; only current local queue delay may
       still drive a fail-closed decrease.
-- [ ] Under a loaded sample, rising queue delay or fresh authenticated DATA
-      loss reduces the target; clean delivered service permits bounded
+- [ ] Under a loaded sample, queue delay at least
+      `max(base RTT/2,10ms)+4*wanbond_path_jitter_seconds`, or fresh
+      authenticated DATA loss of at least 0.5%, reduces the target; RTTVAR
+      qualifies only delay and must not suppress the fresh-loss response.
+      A no-loss variable-RTT trace whose delay remains below that threshold
+      must not reduce the target. One congested decision multiplies the prior
+      target by exactly 0.85; a partially offered/emitted interval must not
+      impose a second delivery-derived cap. Clean emitted service permits bounded
       additive increase above the seed. With `link_bandwidth_limit` set, the
       target never exceeds that explicit ceiling; with it omitted, confirm a
       clean loaded target can grow beyond `link_bandwidth`. Confirm the
