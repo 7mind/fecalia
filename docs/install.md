@@ -485,14 +485,16 @@ Common rules, either policy:
   TUN ptr-ring capacity, and the byte limit. Let
   `L=ceil(peerCount*(B+C)/20)*20` bytes, where 20 bytes is the minimum legal
   inner IPv4 packet, `B` is the current maximum path DATA budget, and `C` is
-  one complete bounded GSO batch with service time `T<=20ms`. For aggregate
-  ingress `R`, current/maximum MTUs `Mcur`/`Mmax`, exact installed HTB burst
+  one complete bounded GSO batch. Let `D=20ms` be its nominal service budget,
+  `r=R/peerCount`, and `W=Mmax+32`; its conservatively rounded actual service
+  time satisfies `T<=max(D,W/r)`. For aggregate ingress `R`,
+  current/maximum MTUs `Mcur`/`Mmax`, exact installed HTB burst
   `G>=gso_max_size`, and `A=ceil(R*T)+G`, derive
   `H=ceil(A/Mcur)`, `J=ceil(A/20)`, and `txqueuelen=J+1`; the extra slot
   is the native Linux TUN guard proved by the privileged packet handoff test.
-  The leaf is `bfifo limit L`. Conditional on the `T<=20ms` reader-service
-  precondition, the full-MTU-valued service bound is
-  `((H+1)*Mmax+L)/R`. `G` rounds upward by at most 15 bytes
+  The leaf is `bfifo limit L`. Conditional on the
+  `T<=max(D,W/r)` reader-service precondition, the full-MTU-valued service
+  bound is `((H+1)*Mmax+L)/R`. `G` rounds upward by at most 15 bytes
   when needed to avoid iproute2's lossy KiB text rendering. The contract proves
   zero local drops for independent `H` full-MTU and `ceil(A/29)` minimum legal
   UDP-over-IPv4 TUN packet handoff phases. An arbitrary reader stall can fill
@@ -500,12 +502,13 @@ Common rules, either policy:
   backlog tail-drops at `bfifo` and increments visible counters. Mutable
   `bfifo` limits change in place. A
   shrink waits rather than discarding admitted traffic when the live queue,
-  ptr ring, GSO backlog, or peer-retained engine bytes do not yet fit the new
-  bound. Ptr-ring occupancy uses a non-consuming zero-time fd poll independent
-  of the engine's blocking TUN read lock, so startup must complete without
-  requiring inner traffic. The daemon owns the `wanbond0` root qdisc and
-  ptr-ring capacity while running; do not attach another root qdisc to the
-  same interface.
+  GSO backlog, or peer-retained engine bytes do not yet fit the new bound.
+  The ptr-ring capacity instead retains the maximum derived `J+1` for the live
+  interface: it grows when required and never shrinks until interface
+  recreation. This avoids an arrival race between occupancy readback and a
+  live shrink without adding slots beyond a previously derived envelope. The
+  daemon owns the `wanbond0` root qdisc and ptr-ring capacity while running;
+  do not attach another root qdisc to the same interface.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
@@ -726,7 +729,9 @@ Common rules, either policy:
   `actual_backlog_bytes`, and `actual_ring_pending` expose live queue/ring
   occupancy. `drops_total` is the maximum cumulative drop count read with
   statistics enabled across the HTB+bfifo tree, so leaf tail drops remain visible
-  without double-counting a propagated root value. `ring_size_deferred`,
+  without double-counting a propagated root value. `ring_size_deferred`
+  reports only an initial pre-transition kernel deferral; online reconciliation
+  retains the ring high-water and does not request shrink.
   `queue_limit_deferred`, `gso_limits_deferred`, and
   `engine_admission_limit_deferred` identify the pending bound. These series are absent when
   the active-backup Linux TUN AQM is inactive.

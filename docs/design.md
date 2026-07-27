@@ -450,8 +450,9 @@ handoff, and shapes TUN ingress at the controller's current inner-byte target.
 Let `B=maxPathDataBurstBytes`, the
 already-validated per-peer BDP/synthetic service backlog used by the exact-byte
 path shaper, let `C` be one complete pre-segmented batch as derived below,
-`m=20` the minimum legal IPv4 packet size presented by a TUN device, `T<=20ms`
-the derived complete-batch service time, `R` the aggregate ingress target,
+`m=20` the minimum legal IPv4 packet size presented by a TUN device, `D=20ms`
+the nominal complete-batch service budget, `T` the derived complete-batch
+service time, `R` the aggregate ingress target,
 `Mcur`/`Mmax` the current/maximum configured inner MTUs, and `G` the exact
 HTB burst covering `gso_max_size`. For peer count `P`, the queue contract is:
 
@@ -470,8 +471,9 @@ HTB burst = cburst = G bytes
 interval plus the explicit HTB burst. `J` covers every packetization of those
 bytes down to the 20-byte protocol minimum; the extra slot encodes the native
 Linux TUN boundary established by the privileged contract test. Conditional
-on the `T<=20ms` reader-service precondition, the full-MTU-valued combined
-service bound is `((H+1)*Mmax+L)/R`. It deliberately uses `H`, not `J`: an
+on the `T<=max(D,W/r)` reader-service precondition defined below, the
+full-MTU-valued combined service bound is `((H+1)*Mmax+L)/R`. It deliberately
+uses `H`, not `J`: an
 arbitrary reader stall can fill `J` slots with packets larger than `m` and lies
 outside this transient-handoff invariant. The unit contract tests the exact
 20-byte boundary. The native test reads back `J+1`, proves zero link/qdisc
@@ -490,22 +492,27 @@ The same target also closes the engine's private-queue gap without truncating
 the TUN read. Let `r` be the aggregate ingress target divided by peer count,
 `Mmax` the maximum configured inner MTU, `Mcur` the current inner MTU, and
 `W=Mmax+32` the maximum encrypted WireGuard datagram bytes (16-byte transport
-header plus 16-byte AEAD tag). For the 20 ms complete-batch service budget:
+header plus 16-byte AEAD tag). For nominal complete-batch service budget
+`D=20ms`:
 
 ```
-S = min(128, floor(65536/Mcur), floor(r*20ms/W))
+S = max(1, min(128, floor(65536/Mcur), floor(r*D/W)))
 gso_max_segs = S
 gso_max_size = S*Mcur
 C = S*W
 per-peer engine admission = B+C bytes
 ```
 
-`S` must admit at least one legal datagram or startup fails. Linux applies and
+When `floor(r*D/W)>=1`, the complete batch retains the nominal `T=C/r<=D`
+bound. Below that threshold, an atomic legal datagram cannot satisfy `D`;
+`S=1` preserves that datagram and `T=W/r>D`, rounded upward to a whole
+nanosecond. Thus the universal bound is `T<=max(D,W/r)`. Linux applies and
 exactly reads back both GSO limits before the engine limit changes. Therefore a
-complete pre-TUN GSO container has worst-case service time at most 20 ms even
-across a concurrent MTU recovery. The additional `B` prevents the gate from
-falling below one established ACK-clocked flight when the carrier RTT exceeds
-20 ms. The patched engine pads each container first, accounts its exact future
+complete pre-TUN GSO container remains bounded even across a concurrent MTU
+recovery, while a pressure-only rate reduction below the nominal threshold can
+still reconcile. The additional `B` prevents the gate from falling below one
+established ACK-clocked flight when the carrier RTT exceeds `D`. The patched
+engine pads each container first, accounts its exact future
 encrypted bytes, then atomically waits at a peer-private byte gate immediately
 before `peer.queue.outbound`. It never splits, truncates, or drops an admitted
 TUN/GSO container. A Bind that accepts asynchronous ownership transfers the
@@ -520,12 +527,13 @@ priority reserve.
 Startup fails if `tc` is unavailable or topology, parameters, rate, explicit
 HTB burst, ptr-ring capacity, or GSO limits cannot be read back. The daemon
 reconciles and re-reads the target every probe interval; it publishes a target
-epoch as actual/fresh only after every field matches. An occupied ptr-ring
-shrink remains installed as a safe superset until the TUN file reports no
-readable packet. This occupancy check uses the fd control path for a
-non-consuming zero-time poll; it must never acquire the fd read lock because
-the engine can hold that lock indefinitely in its blocking TUN read while an
-endpoint remains idle.
+epoch as actual/fresh only after every field matches. During one live interface
+lifetime, the installed ptr-ring capacity is the monotonic high-water mark of
+the derived `J+1`: growth remains exact, while a lower derived target retains
+the prior installed value. Interface recreation establishes a new baseline.
+This removes the unavoidable arrival race between an occupancy poll and a
+live ring shrink without increasing the ring beyond a capacity already
+derived for that interface.
 
 Engine admission and downstream capacity form a directional transaction.
 Growth reconciles and reads back the larger ptr-ring/`bfifo` envelope before
@@ -537,8 +545,10 @@ controller epoch. Metrics retain the desired target, expose the larger applied
 admission and kernel capacity as actual, mark the composite actual stale, and
 acknowledge the exact rate separately. The applied per-peer admission readback
 validates that every peer matches the device-wide atomic value and fails fast
-on divergence. The daemon owns this root qdisc, ptr-ring capacity, engine
-admission, and the link's GSO limits while running.
+on divergence. The smaller downstream envelope excludes ptr-ring shrink:
+online ring target and actual remain at their high-water value. The daemon
+owns this root qdisc, ptr-ring capacity, engine admission, and the link's GSO
+limits while running.
 
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully
@@ -598,7 +608,8 @@ rate can still receive its exact epoch acknowledgment during one of these safe
 capacity deferrals: full `actual_fresh` remains false while `rate_fresh` is
 true. A target rate or MTU change may therefore resize the pre-TUN GSO limits
 and per-peer engine byte gate without discarding admitted traffic while
-retaining the 20 ms complete-batch bound plus one BDP.
+retaining the nominal 20 ms complete-batch bound, its one-datagram low-rate
+exception, and one BDP.
 
 Each controller target retargets the same live outer shaper before the TUN
 target publishes: only future admissions use the new rate, admitted deadlines

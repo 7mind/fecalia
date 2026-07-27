@@ -415,9 +415,11 @@ as historical exact-byte-shaper evidence.
       `/metrics` scrape before the candidate starts.
 - [ ] On both edge and concentrator, confirm active-backup+pacing starts only
       after exact readback: HTB root and one `bfifo` child with
-      `L=limit=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service
-      time `T<=20ms`, aggregate ingress `R`, current/maximum MTUs
-      `Mcur`/`Mmax`, and exact installed burst `G`, calculate
+      `L=limit=ceil(peerCount*(B+C)/20)*20` bytes. With nominal service
+      budget `D=20ms`, aggregate ingress `R`, per-peer rate `r`, maximum
+      WireGuard datagram `W=Mmax+32`, conservatively rounded complete-batch
+      service time `T<=max(D,W/r)`, current/maximum MTUs `Mcur`/`Mmax`, and
+      exact installed burst `G`, calculate
       `A=ceil(R*T)+G`, `H=ceil(A/Mcur)`, and `J=ceil(A/20)`. Confirm
       `wanbond0 txqueuelen=J+1`.
       Here `B` is the maximum current active outer-shaper DATA budget and `C`
@@ -425,7 +427,8 @@ as historical exact-byte-shaper evidence.
       Confirm HTB `burst=cburst=G>=gso_max_size` and exact target/actual burst,
       epoch, rate, ring capacity, and queue-limit readback.
       `wanbond_tun_aqm_actual_fresh` must be 1. Record
-      `((H+1)*Mmax+L)/R`; conditional on the `T<=20ms` reader-service
+      `((H+1)*Mmax+L)/R`; conditional on the
+      `T<=max(D,W/r)` reader-service
       precondition, this full-MTU-valued transient handoff plus byte-leaf
       service bound must remain sub-second. Do not value all `J` slots at
       `Mmax`: an arbitrary reader stall lies outside this invariant.
@@ -434,12 +437,14 @@ as historical exact-byte-shaper evidence.
       packet; an idle engine read must not block ptr-ring occupancy readback.
 - [ ] From per-peer ingress rate `r`, maximum configured inner MTU `Mmax`, and
       current inner MTU `Mcur`, calculate
-      `S=min(128,floor(65536/Mcur),floor(r*20ms/(Mmax+32)))`.
+      `S=max(1,min(128,floor(65536/Mcur),floor(r*20ms/(Mmax+32))))`.
       Confirm the link target/actual GSO readback is exactly
       `gso_max_segs=S`, `gso_max_size=S*Mcur`, and the per-peer engine byte
       limit is `B+S*(Mmax+32)`. The complete batch
-      `C=S*(Mmax+32)` must have service time no greater than 20 ms; the
-      additional `B` preserves one ACK-clocked BDP.
+      `C=S*(Mmax+32)` must have service time no greater than 20 ms whenever
+      `floor(r*20ms/(Mmax+32))>=1`. Below that threshold, confirm `S=1` and
+      conservatively rounded `T=(Mmax+32)/r>20ms`; the additional `B`
+      preserves one ACK-clocked BDP.
 - [ ] Run **two independent synchronized field cycles**. Each cycle contains
       one 30-second Pi→o3 TCP upload and one 30-second o3→Pi TCP download
       (`iperf3 -R` from the Pi). For each leg, start timestamped inner and outer
@@ -500,10 +505,12 @@ as historical exact-byte-shaper evidence.
       `actual_engine_admission_limit_bytes` and actual downstream capacity must
       remain at the installed envelope, the desired rate/epoch must apply,
       `actual_fresh` must be 0, and `rate_fresh` must be 1. After drain, the
-      engine value must shrink before capacity. On growth, capacity must read
-      back before the engine value rises. All deferred gauges must return to
-      zero after drain, with exact target/actual readback and no new qdisc or
-      link drop.
+      engine value must shrink before capacity. The online ptr-ring target and
+      actual must retain their maximum previously derived `J+1` across lower
+      rate/MTU targets, and reset only on interface recreation. On growth,
+      capacity must read back before the engine value rises. All deferred
+      gauges must return to zero after drain, with exact target/actual readback
+      and no new qdisc or link drop.
 - [ ] Exercise independent native handoff phases on a fresh queue: `H` full-MTU
       packets and `ceil(A/29)` minimum legal UDP-over-IPv4 TUN packets over one
       bounded complete-batch service interval must each leave link and qdisc

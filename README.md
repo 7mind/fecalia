@@ -249,8 +249,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   cannot perpetually restart that settling interval. The byte leaf admits one
   configured per-peer BDP plus one complete GSO batch, rounded only to the
   20-byte minimum legal inner packet. For the bounded transient byte handoff
-  `A=ceil(R*T)+G`, the ptr ring holds `ceil(A/20)+1` packet slots: minimum
-  packetization of the handoff plus one native Linux guard slot.
+  `A=ceil(R*T)+G`, the derived ptr ring holds `ceil(A/20)+1` packet slots:
+  minimum packetization of the handoff plus one native Linux guard slot.
+  While the interface remains live, its installed ring capacity is the
+  high-water mark of that derived value: it can grow but never shrinks until
+  interface recreation, eliminating an arrival race between occupancy
+  readback and a live shrink without adding capacity beyond a previously
+  derived envelope.
   The HTB burst covers the GSO byte bound and avoids iproute2's lossy text-size
   rendering so readback remains exact. Full-MTU handoff within that interval
   incurs no native link/qdisc drop; overload beyond the finite byte leaf may
@@ -266,6 +271,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   retained bytes defer it, the desired rate and epoch still reconcile while
   installed downstream capacity remains a safe superset until the engine
   change succeeds.
+  The 20 ms complete-batch budget applies whenever it admits at least one
+  maximum WireGuard datagram. Below that rate, atomicity keeps one datagram
+  admissible and the conservative service bound becomes its wire size divided
+  by the per-peer ingress rate; a local-pressure retarget therefore continues
+  to reconcile instead of retaining a stale higher rate.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under
