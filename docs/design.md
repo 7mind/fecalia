@@ -512,8 +512,11 @@ HTB burst, ptr-ring capacity, or GSO limits cannot be read back. The daemon
 reconciles and re-reads the target every probe interval; it publishes a target
 epoch as actual/fresh only after every field matches. An occupied ptr-ring
 shrink remains installed as a safe superset until the TUN file reports no
-readable packet. The daemon owns this root qdisc, ptr-ring capacity, and the
-link's GSO limits while running.
+readable packet. This occupancy check uses the fd control path for a
+non-consuming zero-time poll; it must never acquire the fd read lock because
+the engine can hold that lock indefinitely in its blocking TUN read while an
+endpoint remains idle. The daemon owns this root qdisc, ptr-ring capacity, and
+the link's GSO limits while running.
 
 Each shaped path also owns a pure `internal/congestion.Controller`. A sample
 contains a locally monotonic active-carrier epoch, cumulative successfully

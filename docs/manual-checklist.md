@@ -426,6 +426,9 @@ as historical exact-byte-shaper evidence.
       `wanbond_tun_aqm_actual_fresh` must be 1. Record
       `((F+D)+F)*20/aggregateIngressRate`; the bounded ownership service
       window including the direct guard must remain sub-second.
+- [ ] Restart each endpoint with no offered inner traffic. Startup must install
+      and expose fresh TUN-AQM target/actual metrics without waiting for a TUN
+      packet; an idle engine read must not block ptr-ring occupancy readback.
 - [ ] From per-peer ingress rate `r`, maximum configured inner MTU `Mmax`, and
       current inner MTU `Mcur`, calculate
       `S=min(128,floor(65536/Mcur),floor(r*20ms/(Mmax+32)))`.

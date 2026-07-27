@@ -4,10 +4,63 @@ package device
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestTUNRingPendingDoesNotContendWithEngineRead(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	raw, err := reader.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readLocked := make(chan struct{})
+	releaseRead := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- raw.Read(func(uintptr) bool {
+			close(readLocked)
+			<-releaseRead
+			return true
+		})
+	}()
+	<-readLocked
+
+	pollDone := make(chan error, 1)
+	go func() {
+		_, err := tunRingPending(reader)
+		pollDone <- err
+	}()
+	var pollErr error
+	timedOut := false
+	select {
+	case pollErr = <-pollDone:
+	case <-time.After(250 * time.Millisecond):
+		timedOut = true
+	}
+	close(releaseRead)
+	if err := <-holderDone; err != nil {
+		t.Fatal(err)
+	}
+	if timedOut {
+		pollErr = <-pollDone
+		t.Fatalf(
+			"TUN ring poll waited for the engine's blocking read lock: %v",
+			pollErr,
+		)
+	}
+	if pollErr != nil {
+		t.Fatal(pollErr)
+	}
+}
 
 func TestLinuxTUNAQMRateOnlyChangePreservesLeaf(t *testing.T) {
 	currentRateBits := int64(5_440_000)

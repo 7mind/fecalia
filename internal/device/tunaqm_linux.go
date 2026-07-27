@@ -408,7 +408,7 @@ func tunRingPending(file *os.File) (bool, error) {
 	}
 	pending := false
 	var pollErr error
-	if err := raw.Read(func(fd uintptr) bool {
+	if err := raw.Control(func(fd uintptr) {
 		pollFDs := []unix.PollFd{{
 			Fd:     int32(fd),
 			Events: unix.POLLIN,
@@ -425,7 +425,6 @@ func tunRingPending(file *os.File) (bool, error) {
 				pending = revents&unix.POLLIN != 0
 			}
 		}
-		return true
 	}); err != nil {
 		return false, fmt.Errorf("poll TUN file descriptor: %w", err)
 	}

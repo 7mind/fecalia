@@ -485,8 +485,11 @@ Common rules, either policy:
   increments the qdisc drop counter. Mutable `fq` fields change in place. A
   shrink waits rather than discarding admitted traffic when the live queue,
   ptr ring, GSO backlog, or peer-retained engine bytes do not yet fit the new
-  bound. The daemon owns the `wanbond0` root qdisc and ptr-ring capacity while
-  running; do not attach another root qdisc to the same interface.
+  bound. Ptr-ring occupancy uses a non-consuming zero-time fd poll independent
+  of the engine's blocking TUN read lock, so startup must complete without
+  requiring inner traffic. The daemon owns the `wanbond0` root qdisc and
+  ptr-ring capacity while running; do not attach another root qdisc to the
+  same interface.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary

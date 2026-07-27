@@ -250,7 +250,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   bounded `fq` window may tail-drop there and remains observable. Shaped FEC
   retains the same engine admission reservation until
   its owner batch terminally emits or fails, so ownership admission cannot
-  duplicate that backlog behind the gate.
+  duplicate that backlog behind the gate. Ring occupancy uses a non-consuming
+  zero-time fd poll that does not contend with the engine's blocking TUN read,
+  so an idle concentrator can complete startup reconciliation.
   Weighted scheduling retains fixed per-path shaping because no single
   authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
   offered throughput but risks bufferbloat-driven liveness flaps under
