@@ -313,7 +313,9 @@ deliberate boundaries you must plan around:
   sequence do not enter the new carrier's interval.
   A lower-loss same-epoch report cannot erase a still-fresh higher-loss report;
   the retained maximum keeps its original expiry, so cadence phase cannot hide
-  loss or extend evidence indefinitely. After capability adoption,
+  loss or extend evidence indefinitely. While a lease renewal remains pending,
+  both the still-valid acknowledged ContractID and pending renewal ContractID
+  can authenticate feedback; old-lease expiry removes the former. After capability adoption,
   missing current evidence holds the existing controller state. Peers that never
   send DATA feedback retain probe-loss adaptation.
   Weighted multi-carrier scheduling deliberately retains its existing weighted

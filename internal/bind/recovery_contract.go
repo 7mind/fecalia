@@ -370,8 +370,28 @@ func (c *recoveryContractCoordinator) localOfferIdentity() (session uint64, cont
 	return c.session, c.offer.message.ContractID, true
 }
 
-func (c *recoveryContractCoordinator) localDataLossIdentity() (session uint64, contractID uint64, ok bool) {
-	return c.localOfferIdentity()
+type localDataLossIdentity struct {
+	session                uint64
+	acknowledgedContractID uint64
+	offeredContractID      uint64
+}
+
+func (i localDataLossIdentity) matches(session uint64, contractID uint64) bool {
+	return session == i.session && contractID != 0 &&
+		(contractID == i.acknowledgedContractID || contractID == i.offeredContractID)
+}
+
+func (c *recoveryContractCoordinator) localDataLossIdentity() (localDataLossIdentity, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	identity := localDataLossIdentity{session: c.session}
+	if c.haveLease && c.lease.ContractID != 0 && c.clock.Now().Before(c.leaseUntil) {
+		identity.acknowledgedContractID = c.lease.ContractID
+	}
+	if c.offer != nil {
+		identity.offeredContractID = c.offer.message.ContractID
+	}
+	return identity, identity.acknowledgedContractID != 0 || identity.offeredContractID != 0
 }
 
 func (c *recoveryContractCoordinator) reserveReceivedPublication(

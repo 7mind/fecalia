@@ -581,6 +581,10 @@ valid feedback-only request does not revoke received recovery evidence merely
 because it contains no OFFER, and its echo does not enter the recovery-ACK
 parser. Unknown versions remain opaque for forward compatibility; recognized
 malformed records create neither recovery evidence nor DATA-loss evidence.
+During lease renewal the sender validates DATA-loss reports against both the
+still-valid acknowledged contract and the newer pending OFFER. The old identity
+stops validating only when its lease expires; the renewal becomes the sole
+identity once acknowledged or once that expiry leaves it as the pending offer.
 
 `SessionID` remains the process boot epoch. Within that epoch the sender mints a
 monotonically increasing `ContractID` whenever the selectable writer service

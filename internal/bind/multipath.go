@@ -3237,10 +3237,11 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				}
 				if dataLossFeedback != nil && pr.dataLoss != nil && pr.contracts != nil &&
 					accepted.Acceptance != telemetry.ProbeBootstrap {
-					session, contractID, ok := pr.contracts.localDataLossIdentity()
-					if ok &&
-						dataLossFeedback.ObservedSessionID == session &&
-						dataLossFeedback.ContractID == contractID {
+					identity, ok := pr.contracts.localDataLossIdentity()
+					if ok && identity.matches(
+						dataLossFeedback.ObservedSessionID,
+						dataLossFeedback.ContractID,
+					) {
 						pr.dataLoss.accept(
 							*dataLossFeedback,
 							accepted.Probe.SessionID,
@@ -4079,11 +4080,11 @@ func (m *Multipath) dataPathLossLocked(peer *peerState, now time.Time) (float64,
 	if pathIndex < 0 || pathIndex >= len(peer.paths) {
 		return 0, 0
 	}
-	session, contractID, haveOffer := peer.contracts.localDataLossIdentity()
+	identity, haveOffer := peer.contracts.localDataLossIdentity()
 	if !haveOffer {
 		return probeLoss, probeCount
 	}
-	dataLoss, fresh, ever := peer.dataLoss.sample(peer.paths[pathIndex].id, session, contractID, now)
+	dataLoss, fresh, ever := peer.dataLoss.sampleIdentity(peer.paths[pathIndex].id, identity, now)
 	if fresh {
 		if dataLoss > probeLoss {
 			return dataLoss, 1

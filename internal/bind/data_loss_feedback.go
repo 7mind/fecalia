@@ -190,6 +190,17 @@ func (c *dataLossFeedbackCoordinator) sample(
 	contractID uint64,
 	now time.Time,
 ) (loss float64, fresh bool, ever bool) {
+	return c.sampleIdentity(pathID, localDataLossIdentity{
+		session:           observedSessionID,
+		offeredContractID: contractID,
+	}, now)
+}
+
+func (c *dataLossFeedbackCoordinator) sampleIdentity(
+	pathID uint8,
+	identity localDataLossIdentity,
+	now time.Time,
+) (loss float64, fresh bool, ever bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ever = c.everAccepted
@@ -202,8 +213,7 @@ func (c *dataLossFeedbackCoordinator) sample(
 	}
 	if !c.haveAccepted ||
 		c.accepted.report.CarrierPathID != pathID ||
-		c.accepted.report.ObservedSessionID != observedSessionID ||
-		c.accepted.report.ContractID != contractID ||
+		!identity.matches(c.accepted.report.ObservedSessionID, c.accepted.report.ContractID) ||
 		now.Sub(c.accepted.acceptedAt) > dataLossFeedbackFreshness {
 		return 0, false, ever
 	}

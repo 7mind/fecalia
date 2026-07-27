@@ -91,16 +91,36 @@ func TestDataLossFeedbackIdentityRemainsOnAcknowledgedLeaseDuringRenewal(t *test
 		t.Fatal("precondition: recovery contract did not rotate for renewal")
 	}
 
-	session, contractID, ok := contracts.localDataLossIdentity()
+	identity, ok := contracts.localDataLossIdentity()
 	if !ok {
 		t.Fatal("DATA-loss identity unavailable during renewal")
 	}
-	if session != 11 || contractID != acknowledged.ContractID {
+	if !identity.matches(11, acknowledged.ContractID) {
 		t.Fatalf(
-			"DATA-loss identity during renewal = (%d, %d), want acknowledged lease (11, %d)",
-			session,
-			contractID,
+			"DATA-loss identity during renewal = %+v, want acknowledged lease (11, %d)",
+			identity,
 			acknowledged.ContractID,
+		)
+	}
+	if !identity.matches(11, renewal.message.ContractID) {
+		t.Fatalf(
+			"DATA-loss identity during renewal = %+v, want pending renewal (11, %d)",
+			identity,
+			renewal.message.ContractID,
+		)
+	}
+
+	clock.advance(recoveryRenewBefore)
+	identity, ok = contracts.localDataLossIdentity()
+	if !ok {
+		t.Fatal("DATA-loss identity unavailable after acknowledged lease expiry")
+	}
+	if identity.matches(11, acknowledged.ContractID) ||
+		!identity.matches(11, renewal.message.ContractID) {
+		t.Fatalf(
+			"DATA-loss identity after lease expiry = %+v, want only pending renewal (11, %d)",
+			identity,
+			renewal.message.ContractID,
 		)
 	}
 }
