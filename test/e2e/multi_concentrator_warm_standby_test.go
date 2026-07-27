@@ -627,7 +627,7 @@ func startConcHolder(t *testing.T, base *Topology, name, portVeth, ceth string, 
 	})
 
 	c := &concNS{t: t, base: base, name: name, pid: pid, holder: holder, ceth: ceth}
-	(&Topology{t: t, pid: pid}).waitForNetns()
+	(&Topology{t: t, pid: pid}).waitForNetns(holder)
 
 	// veth pair: bridge-side end onto the bridge, other end into the concentrator netns.
 	base.run("ip", "link", "add", portVeth, "type", "veth", "peer", "name", ceth)

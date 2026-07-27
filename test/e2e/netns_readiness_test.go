@@ -236,9 +236,9 @@ func TestWaitForNetnsCallSitesSupplyHolderDiagnostics(t *testing.T) {
 func TestHolderDiagnosticsIncludesPIDArgvAndState(t *testing.T) {
 	holder := exec.Command("unshare", "-n", "sleep", "600")
 	holder.Process = &os.Process{Pid: 2_000_000_000}
-	top := &Topology{holder: holder, pid: holder.Process.Pid}
+	top := &Topology{pid: holder.Process.Pid}
 
-	got := top.holderDiagnostics()
+	got := top.holderDiagnostics(holder)
 	for _, want := range []string{
 		"pid=2000000000",
 		`argv=["unshare" "-n" "sleep" "600"]`,

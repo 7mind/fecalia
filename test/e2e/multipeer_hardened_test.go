@@ -759,7 +759,7 @@ func newHwNATEdge(t *testing.T, base *Topology, name, privCIDR, baseVeth, edgeVe
 	})
 
 	e := &hwEdge{t: t, base: base, name: name, pid: pid}
-	(&Topology{t: t, pid: pid}).waitForNetns()
+	(&Topology{t: t, pid: pid}).waitForNetns(holder)
 	e.run("ip", "link", "set", "lo", "up")
 
 	baseAddr := baseSideAddr(privCIDR)

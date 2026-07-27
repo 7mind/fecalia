@@ -509,7 +509,7 @@ func newMPEdge(t *testing.T, base *Topology, bin, name, cfgPath, inner, peerLabe
 	})
 
 	e := &mpEdge{t: t, base: base, name: name, pid: pid, holder: holder, bin: bin, cfgPath: cfgPath, inner: inner, peerLabel: peerLabel}
-	(&Topology{t: t, pid: pid}).waitForNetns()
+	(&Topology{t: t, pid: pid}).waitForNetns(holder)
 	e.run("ip", "link", "set", "lo", "up")
 
 	for _, u := range uplinks {

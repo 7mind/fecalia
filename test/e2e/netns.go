@@ -180,7 +180,8 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 		t.Fatalf("start concentrator netns holder: %v", err)
 	}
 	top.pid = top.holder.Process.Pid
-	top.waitForNetns()
+	t.Cleanup(top.Teardown)
+	top.waitForNetns(top.holder)
 
 	pid := strconv.Itoa(top.pid)
 	top.run("ip", "link", "set", "lo", "up")
@@ -224,23 +225,22 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 		qargs := append([]string{"qdisc", "add", "dev", p.edgeVeth, "root", "netem"}, top.netemArgs(p)...)
 		top.run("tc", qargs...)
 	}
-	t.Cleanup(top.Teardown)
 	return top
 }
 
 // waitForNetns blocks until the holder has published a network namespace
 // distinct from the current test process.
-func (top *Topology) waitForNetns() {
+func (top *Topology) waitForNetns(holder *exec.Cmd) {
 	path := fmt.Sprintf("/proc/%d/ns/net", top.pid)
 	if _, err := waitForNetnsIdentity(os.Readlink, path, 100, func() {
 		time.Sleep(10 * time.Millisecond)
 	}); err != nil {
-		top.t.Fatalf("concentrator netns readiness: %v; holder: %s", err, top.holderDiagnostics())
+		top.t.Fatalf("concentrator netns readiness: %v; holder: %s", err, top.holderDiagnostics(holder))
 	}
 }
 
-func (top *Topology) holderDiagnostics() string {
-	if top.holder == nil {
+func (top *Topology) holderDiagnostics(holder *exec.Cmd) string {
+	if holder == nil {
 		return "<nil>"
 	}
 	pid := top.pid
@@ -259,8 +259,8 @@ func (top *Topology) holderDiagnostics() string {
 	return fmt.Sprintf(
 		"pid=%d argv=%q process_state=%v proc_state=%q",
 		pid,
-		top.holder.Args,
-		top.holder.ProcessState,
+		holder.Args,
+		holder.ProcessState,
 		procState,
 	)
 }

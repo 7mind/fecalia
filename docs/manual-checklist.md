@@ -62,8 +62,10 @@ gate.
       has a 90-second wall-clock limit (60-second transmit interval plus
       30-second control/result grace). Fixture setup waits for the holder's
       network-namespace identity to differ from the test process before
-      configuring loopback; a timeout or setup race reports both daemon logs
-      instead of leaving the phase active indefinitely.
+      configuring loopback; a readiness failure terminates and reaps that
+      holder while reporting its PID, argv, and process state. A later phase
+      timeout reports both daemon logs instead of leaving the phase active
+      indefinitely.
 - [ ] Under steady `P4SteadyLossRate` path loss, adaptive total overhead ≤ the
       fixed-FEC baseline for equal masking.
 - [ ] Post-recovery residual loss ≤ `P4ResidualLossMax` (`/metrics`).

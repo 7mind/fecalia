@@ -375,7 +375,7 @@ func startHubHolder(t *testing.T, base *Topology, edgePortVeth, hubCeth, hubIP s
 	})
 
 	h := &Topology{t: t, pid: pid}
-	h.waitForNetns()
+	h.waitForNetns(holder)
 
 	// veth pair: bridge-side end onto the bridge, other end into the hub namespace.
 	base.run("ip", "link", "add", edgePortVeth, "type", "veth", "peer", "name", hubCeth)
