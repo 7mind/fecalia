@@ -218,11 +218,10 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	}
 	c.snapshot.DeliveredRateBytesPerSecond = deliveredRate
 
-	queueThreshold := c.snapshot.BaseRTT / 2
-	if queueThreshold < minimumQueueThreshold {
-		queueThreshold = minimumQueueThreshold
-	}
-	queueThreshold += rttVariationFactor * actual.RTTVariation
+	queueThreshold := queueDelayThreshold(
+		c.snapshot.BaseRTT,
+		actual.RTTVariation,
+	)
 	congested := loaded &&
 		(c.snapshot.QueueDelay >= queueThreshold ||
 			(actual.LossFresh && actual.AuthenticatedLoss >= lossCongestionThreshold))
@@ -428,4 +427,16 @@ func (c *Controller) Snapshot() Snapshot {
 
 func ratesWithinTolerance(actual, target float64) bool {
 	return math.Abs(actual-target) <= target*installedRateTolerance
+}
+
+func queueDelayThreshold(baseRTT, rttVariation time.Duration) time.Duration {
+	threshold := baseRTT / 2
+	if threshold < minimumQueueThreshold {
+		threshold = minimumQueueThreshold
+	}
+	const maximumDuration = time.Duration(1<<63 - 1)
+	if rttVariation > (maximumDuration-threshold)/rttVariationFactor {
+		return maximumDuration
+	}
+	return threshold + rttVariationFactor*rttVariation
 }

@@ -841,6 +841,14 @@ func TestControllerCycle25NoLossVariableRTTDoesNotCollapse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("trace sample %d: %v", index, err)
 		}
+		if snapshot.Target.OuterRateBytesPerSecond < target {
+			t.Fatalf(
+				"cycle-25 trace sample %d decreased target from %g to %g",
+				index,
+				target,
+				snapshot.Target.OuterRateBytesPerSecond,
+			)
+		}
 		if snapshot.AwaitingInstalled {
 			if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
 				At: at.Add(100 * time.Millisecond), Epoch: epoch,
@@ -987,5 +995,40 @@ func TestControllerFreshLossDecreasesImmediatelyDespiteHighRTTVariation(t *testi
 	if math.Abs(lost.Target.OuterRateBytesPerSecond-want) > 0.001 {
 		t.Fatalf("fresh-loss target = %g, want immediate decrease to %g",
 			lost.Target.OuterRateBytesPerSecond, want)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: D130 duration arithmetic must not wrap.
+func TestControllerMaximumRTTVariationCannotBecomeCongestion(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(1000, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes: uint64(initial.Target.OuterRateBytesPerSecond),
+		InnerDataBytes: uint64(initial.Target.OuterRateBytesPerSecond / 1.25),
+		RTT:            80 * time.Millisecond,
+		RTTVariation:   time.Duration(1<<63 - 1),
+		LossFresh:      true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Target.OuterRateBytesPerSecond < initial.Target.OuterRateBytesPerSecond {
+		t.Fatalf(
+			"maximum RTT variation decreased target from %g to %g",
+			initial.Target.OuterRateBytesPerSecond,
+			observed.Target.OuterRateBytesPerSecond,
+		)
 	}
 }
