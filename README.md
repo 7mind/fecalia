@@ -245,11 +245,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The byte leaf admits one
   configured per-peer BDP plus one complete GSO batch, rounded only to the
-  20-byte minimum legal inner packet. The ptr ring covers the larger of the
-  transient full-MTU byte handoff and Linux's effective device-TX scheduler
-  packet quota (`net.core.dev_weight * net.core.dev_weight_tx_bias`), plus one
-  native Linux guard slot. Both sysctls are re-read and exactly reconciled, so
-  an operator change cannot leave cached ring geometry.
+  20-byte minimum legal inner packet. For the bounded transient byte handoff
+  `A=ceil(R*T)+G`, the ptr ring holds `ceil(A/20)+1` packet slots: minimum
+  packetization of the handoff plus one native Linux guard slot.
   The HTB burst covers the GSO byte bound and avoids iproute2's lossy text-size
   rendering so readback remains exact. Full-MTU handoff within that interval
   incurs no native link/qdisc drop; overload beyond the finite byte leaf may

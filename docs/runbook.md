@@ -402,14 +402,13 @@ In summary:
   The byte-bounded `bfifo` window is
   `L=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service time
   `T<=20ms`, aggregate ingress `R`, current MTU `Mcur`, and exact installed HTB
-  burst `G`, the TUN ptr ring has
-  `max(H,Q)+1` slots where `H=ceil((ceil(R*T)+G)/Mcur)` and
-  `Q=net.core.dev_weight*net.core.dev_weight_tx_bias`; the final slot is the
-  native Linux TUN guard. Verify target/actual byte-limit, burst, effective
-  device-TX quota, and ring metrics,
+  burst `G`, let `A=ceil(R*T)+G`, `H=ceil(A/Mcur)`, and `J=ceil(A/20)`.
+  The TUN ptr ring has `J+1` slots; the final slot is the native Linux TUN
+  guard. Verify target/actual byte-limit, burst, and ring metrics,
   `actual_ring_pending`, and `ring_size_deferred`; use `tc -j -s` when
-  comparing `wanbond_tun_aqm_drops_total`. This bounds one full-MTU transient
-  handoff, not an arbitrarily stalled TUN reader.
+  comparing `wanbond_tun_aqm_drops_total`. Conditional on the `T<=20ms`
+  reader-service precondition, value the transient handoff as
+  `(H+1)*Mmax`; an arbitrarily stalled TUN reader lies outside the invariant.
 
 ## 6. Monitoring and health checks
 

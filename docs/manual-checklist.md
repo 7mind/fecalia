@@ -418,17 +418,17 @@ as historical exact-byte-shaper evidence.
       `L=limit=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service
       time `T<=20ms`, aggregate ingress `R`, current/maximum MTUs
       `Mcur`/`Mmax`, and exact installed burst `G`, calculate
-      `H=ceil((ceil(R*T)+G)/Mcur)`. Read positive
-      `net.core.dev_weight` and `net.core.dev_weight_tx_bias`, calculate their
-      overflow-checked product `Q`, and confirm
-      `wanbond0 txqueuelen=max(H,Q)+1`.
+      `A=ceil(R*T)+G`, `H=ceil(A/Mcur)`, and `J=ceil(A/20)`. Confirm
+      `wanbond0 txqueuelen=J+1`.
       Here `B` is the maximum current active outer-shaper DATA budget and `C`
       is the complete GSO batch below.
       Confirm HTB `burst=cburst=G>=gso_max_size` and exact target/actual burst,
-      device-TX quota, epoch, rate, ring capacity, and queue-limit readback.
+      epoch, rate, ring capacity, and queue-limit readback.
       `wanbond_tun_aqm_actual_fresh` must be 1. Record
-      `((max(H,Q)+1)*Mmax+L)/R`; the conservatively full-MTU-valued ring plus byte-leaf service
-      bound must remain sub-second.
+      `((H+1)*Mmax+L)/R`; conditional on the `T<=20ms` reader-service
+      precondition, this full-MTU-valued transient handoff plus byte-leaf
+      service bound must remain sub-second. Do not value all `J` slots at
+      `Mmax`: an arbitrary reader stall lies outside this invariant.
 - [ ] Restart each endpoint with no offered inner traffic. Startup must install
       and expose fresh TUN-AQM target/actual metrics without waiting for a TUN
       packet; an idle engine read must not block ptr-ring occupancy readback.
@@ -480,9 +480,11 @@ as historical exact-byte-shaper evidence.
       admission wait occupies at least half the interval, or whose ptr ring is
       pending, must multiply headroom by 0.85 before link drops rise. The same
       signals in an unloaded/opposite-direction interval must not reduce
-      headroom.
-      cumulative counters or a non-advancing interval must not replay the
-      decrease; another change waits for exact readback and settlement.
+      headroom. Unchanged cumulative counters or a non-advancing interval must
+      not replay the
+      decrease. The first loaded local-pressure decrease may preempt settlement
+      for an unrelated outer-capacity retarget; repeated pressure must wait for
+      exact ingress rate/epoch readback. Recovery remains settlement-gated.
       Recovery adds 0.01 only after three consecutive loaded, clean, settled
       intervals. Idle intervals do not recover. A carrier epoch resets
       headroom to 0.95.
@@ -501,13 +503,12 @@ as historical exact-byte-shaper evidence.
       zero after drain, with exact target/actual readback and no new qdisc or
       link drop.
 - [ ] Exercise independent native handoff phases on a fresh queue: `H` full-MTU
-      packets over one bounded complete-batch service interval and `Q`
-      concurrent small packets over one device-TX scheduler quantum must each
-      leave link and qdisc drops unchanged with exact `max(H,Q)+1` ring
-      readback. Overload beyond the
-      finite ring+`L` byte leaf must increase at least one captured link/qdisc
-      counter and report the layer. Do not claim arbitrary-stall or
-      minimum-packet-overload losslessness from the bounded result.
+      packets and `ceil(A/29)` minimum legal UDP-over-IPv4 TUN packets over one
+      bounded complete-batch service interval must each leave link and qdisc
+      drops unchanged with exact `J+1` ring readback. The unit contract must
+      separately prove the exact 20-byte slot boundary. A deliberate overload
+      must increase at least one captured link/qdisc counter and report the
+      layer. Do not claim arbitrary-stall losslessness from the bounded result.
 - [ ] For each single ACK-clocked TCP leg, the byte-bounded `bfifo` leaf incurs zero
       local drops and its backlog returns to zero after the leg. An offered
       burst no larger than the calculated service backlog must also incur zero
