@@ -513,6 +513,9 @@ Common rules, either policy:
   `bfifo` limits change in place. A
   shrink waits rather than discarding admitted traffic when the live queue,
   GSO backlog, or peer-retained engine bytes do not yet fit the new bound.
+  While an occupied GSO shrink remains deferred, the effective `bfifo` limit
+  and normalized HTB burst stay at least the installed GSO maximum; all three
+  shrink to the requested geometry after drain.
   The ptr-ring capacity instead retains the maximum of the observed interface
   baseline, later larger readbacks, and derived `J+1` for the live interface.
   The daemon writes only to grow an undersized ring and never shrinks it until

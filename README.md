@@ -243,9 +243,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   ingress readback and one-second-or-one-SRTT settlement. Three loaded, clean,
   settled intervals recover it additively. Mutable `bfifo` limits change in
   place, preserving the live queue
-  and counters; a limit shrink waits while byte backlog exceeds the new limit, GSO
-  shrink waits for an empty TUN backlog, and engine admission shrink waits
-  until every peer's retained bytes fit. Repeated exact readbacks of
+  and counters; a limit shrink waits while byte backlog exceeds the new limit,
+  GSO shrink waits for an empty TUN backlog, and engine admission shrink waits
+  until every peer's retained bytes fit. While GSO shrink waits, the installed
+  leaf and normalized HTB burst remain at least the installed GSO maximum, so
+  one queued atomic skb still fits. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The plaintext byte leaf
   is independent of the outer/engine admission window: it admits the greater

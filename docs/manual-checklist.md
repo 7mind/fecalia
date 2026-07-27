@@ -508,9 +508,11 @@ as historical exact-byte-shaper evidence.
 - [ ] During a capacity shrink, `rate_fresh` may become 1 while
       `actual_fresh=0` only when a corresponding queue-limit, GSO-limit, or
       engine-admission deferred gauge is 1. The installed queue limit must
-      remain at least the desired limit until byte backlog fits; GSO shrink waits for
-      zero TUN backlog; engine admission shrink waits until every peer's
-      retained bytes fit. While that engine shrink remains deferred,
+      remain at least the desired limit until byte backlog fits; GSO shrink
+      waits for zero TUN backlog, with the installed leaf limit and normalized
+      HTB burst both at least the installed GSO maximum; engine admission
+      shrink waits until every peer's retained bytes fit. While that engine
+      shrink remains deferred,
       `target_engine_admission_limit_bytes` must show the desired bound,
       `actual_engine_admission_limit_bytes` and actual downstream capacity must
       remain at the installed envelope, the desired rate/epoch must apply,
