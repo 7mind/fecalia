@@ -110,6 +110,39 @@ type Topology struct {
 	paths  []pathSpec
 }
 
+type netnsIdentities struct {
+	current string
+	child   string
+}
+
+type netnsIdentityReader func(string) (string, error)
+
+func waitForNetnsIdentity(
+	readIdentity netnsIdentityReader,
+	childPath string,
+	attempts int,
+	pause func(),
+) (netnsIdentities, error) {
+	current, err := readIdentity("/proc/self/ns/net")
+	if err != nil {
+		return netnsIdentities{}, fmt.Errorf("read current network namespace identity: %w", err)
+	}
+	var child string
+	for i := 0; i < attempts; i++ {
+		child, err = readIdentity(childPath)
+		if err == nil {
+			return netnsIdentities{current: current, child: child}, nil
+		}
+		pause()
+	}
+	return netnsIdentities{}, fmt.Errorf(
+		"child network namespace %s never appeared after %d attempts: %w",
+		childPath,
+		attempts,
+		err,
+	)
+}
+
 // Setup builds the two-path topology from DefaultPaths (uncapped, lossless). It
 // requires CAP_NET_ADMIN, which the e2e TestMain provides via an unprivileged
 // user+net namespace (`unshare -Urmn`).
@@ -181,13 +214,11 @@ func SetupWithPaths(t *testing.T, paths []pathSpec) *Topology {
 // waitForNetns blocks until the holder's network namespace is observable.
 func (top *Topology) waitForNetns() {
 	path := fmt.Sprintf("/proc/%d/ns/net", top.pid)
-	for i := 0; i < 100; i++ {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
+	if _, err := waitForNetnsIdentity(os.Readlink, path, 100, func() {
 		time.Sleep(10 * time.Millisecond)
+	}); err != nil {
+		top.t.Fatalf("concentrator netns readiness: %v", err)
 	}
-	top.t.Fatalf("concentrator netns %s never appeared", path)
 }
 
 // netemArgs builds the netem parameter list for a path's baseline impairment
