@@ -468,7 +468,8 @@ the lower of 85% of the prior target and 95% of measured delivery. Congestion
 requires a loaded sample plus either queue delay at least
 `max(baseRTT/2,10ms)` or fresh authenticated DATA loss of at least 0.5%.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
-holds the previous target. Counter regression also holds. An A→B→A carrier
+cannot raise the target or cause a loss-based decrease; current local queue
+delay can still decrease it. Counter regression holds the target. An A→B→A carrier
 transition creates three different epochs and resets base RTT/rate deltas, so
 late A evidence cannot affect the new A epoch. The aggregate TUN target sums
 the current peers' inner-byte targets.

@@ -167,9 +167,6 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		(c.snapshot.QueueDelay >= queueThreshold ||
 			(actual.LossFresh && actual.AuthenticatedLoss >= lossCongestionThreshold))
 	switch {
-	case feedbackStale:
-		// Authenticated feedback adoption is sticky. Stale evidence cannot raise
-		// or lower a carrier target.
 	case congested:
 		next := target * decreaseFactor
 		if deliveredRate > 0 && deliveredRate*deliveredHeadroom < next {
@@ -187,6 +184,10 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		}
 		target = next
 		c.snapshot.Held = false
+	case feedbackStale:
+		// Stale authenticated evidence cannot raise the target or cause a
+		// loss-based decrease. Local queue delay remains current evidence and
+		// takes the fail-closed decrease branch above.
 	case loaded && (!actual.FeedbackEverSeen || actual.LossFresh):
 		target += c.ceiling * increaseFraction
 		if target > c.ceiling {

@@ -69,6 +69,23 @@ func TestControllerReducesCongestedCarrierAndHoldsStaleFeedback(t *testing.T) {
 		t.Fatalf("stale feedback target = %+v held=%v, want held %+v",
 			stale.Target, stale.Held, congested.Target)
 	}
+
+	queueCongested, err := controller.Observe(congestion.ActualState{
+		At:               at.Add(3 * time.Second),
+		Epoch:            epoch,
+		OuterWireBytes:   2_295_000,
+		InnerDataBytes:   1_900_000,
+		RTT:              80 * time.Millisecond,
+		FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queueCongested.Target.OuterRateBytesPerSecond >= stale.Target.OuterRateBytesPerSecond {
+		t.Fatalf("stale DATA feedback blocked local queue-delay decrease: target=%g prior=%g",
+			queueCongested.Target.OuterRateBytesPerSecond,
+			stale.Target.OuterRateBytesPerSecond)
+	}
 }
 
 func TestControllerCarrierEpochDeprecatesPriorActualState(t *testing.T) {

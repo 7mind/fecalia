@@ -431,8 +431,9 @@ as historical exact-byte-shaper evidence.
 - [ ] Base RTT and queue delay reset on the first A→B or B→A carrier generation.
       Carrier epochs increase monotonically; delayed/stale/replayed/wrong-peer
       DATA-loss feedback never changes the new epoch's target. Once current
-      authenticated feedback has been adopted, stale feedback sets `held=1`
-      and preserves the prior target.
+      authenticated feedback has been adopted, stale feedback cannot raise the
+      target or cause a loss-based decrease; only current local queue delay may
+      still drive a fail-closed decrease.
 - [ ] Under a loaded sample, rising queue delay or fresh authenticated DATA
       loss reduces the target; clean delivered service permits bounded
       additive increase, never above the declared outer ceiling. Confirm the
