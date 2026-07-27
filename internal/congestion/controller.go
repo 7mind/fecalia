@@ -138,7 +138,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	outerRate := float64(actual.OuterWireBytes-previous.OuterWireBytes) / elapsed
 	innerRate := float64(actual.InnerDataBytes-previous.InnerDataBytes) / elapsed
 	feedbackStale := actual.FeedbackEverSeen && !actual.LossFresh
-	if innerRate > 0 && !feedbackStale {
+	target := c.snapshot.Target.OuterRateBytesPerSecond
+	loaded := outerRate >= target*0.50
+	if innerRate > 0 && loaded && !feedbackStale {
 		observedRatio := outerRate / innerRate
 		if observedRatio < 1 {
 			observedRatio = 1
@@ -157,8 +159,6 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	}
 	c.snapshot.DeliveredRateBytesPerSecond = deliveredRate
 
-	target := c.snapshot.Target.OuterRateBytesPerSecond
-	loaded := outerRate >= target*0.50
 	queueThreshold := c.snapshot.BaseRTT / 2
 	if queueThreshold < minimumQueueThreshold {
 		queueThreshold = minimumQueueThreshold

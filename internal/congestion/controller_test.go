@@ -111,3 +111,30 @@ func TestControllerCarrierEpochDeprecatesPriorActualState(t *testing.T) {
 			reset.Target.OuterRateBytesPerSecond)
 	}
 }
+
+func TestControllerIgnoresUnloadedOuterInnerExpansion(t *testing.T) {
+	controller, err := congestion.New(1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(300, 0)
+	if _, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 30 * time.Millisecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unloaded, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes: 100_000, InnerDataBytes: 10_000,
+		RTT: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(unloaded.OverheadRatio-1.25) > 0.001 ||
+		math.Abs(unloaded.Target.IngressRateBytesPerSecond-680_000) > 0.001 {
+		t.Fatalf("unloaded sample changed expansion/ingress target: ratio=%g ingress=%g",
+			unloaded.OverheadRatio, unloaded.Target.IngressRateBytesPerSecond)
+	}
+}

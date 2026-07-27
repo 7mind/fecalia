@@ -459,7 +459,8 @@ Common rules, either policy:
 - Under active-backup, `R` is also the controller's outer safety ceiling. The
   TUN target initially uses 85% of `R` and a conservative 1.25 outer/inner
   expansion, then follows measured delivery, queue delay, and authenticated
-  loss. Q91 defines no fixed absolute-goodput gate.
+  loss. Expansion learning uses loaded samples only; idle probe/control bytes
+  do not lower DATA admission. Q91 defines no fixed absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
   the daemon can install and read back HTB+`fq_codel`, the rate, queue length,
   and every AQM parameter. The daemon owns the `wanbond0` root qdisc while
