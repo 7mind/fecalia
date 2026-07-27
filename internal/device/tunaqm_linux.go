@@ -158,12 +158,12 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 			return result, err
 		}
 	}
-	if !topologyReady || current.TxQueueLen != target.TxQueueLen {
-		shrinking := topologyReady &&
-			target.TxQueueLen < current.TxQueueLen
-		if shrinking && current.RingPending {
-			result.RingSizeDeferred = true
-		} else if err := k.writeTxQueueLen(target.TxQueueLen); err != nil {
+	installedRing, err := k.readTxQueueLen()
+	if err != nil {
+		return result, err
+	}
+	if installedRing < target.TxQueueLen {
+		if err := k.writeTxQueueLen(target.TxQueueLen); err != nil {
 			return result, err
 		}
 	}

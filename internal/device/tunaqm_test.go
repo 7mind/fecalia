@@ -31,10 +31,14 @@ func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult,
 	if k.applyErr != nil {
 		return tunAQMApplyResult{}, k.applyErr
 	}
+	txQueueLen := target.TxQueueLen
+	if k.actual.TxQueueLen > txQueueLen {
+		txQueueLen = k.actual.TxQueueLen
+	}
 	k.actual = tunAQMActualState{
 		RateBytesPerSecond: target.RateBytesPerSecond,
 		BurstBytes:         target.BurstBytes,
-		TxQueueLen:         target.TxQueueLen,
+		TxQueueLen:         txQueueLen,
 		RootKind:           "htb",
 		LeafKind:           "bfifo",
 		LimitBytes:         target.QueueLimitBytes,
@@ -56,7 +60,9 @@ type deferredTUNAQMKernel struct {
 func (k *deferredTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
 	k.actual.RateBytesPerSecond = target.RateBytesPerSecond
 	k.actual.BurstBytes = target.BurstBytes
-	k.actual.TxQueueLen = target.TxQueueLen
+	if k.actual.TxQueueLen < target.TxQueueLen {
+		k.actual.TxQueueLen = target.TxQueueLen
+	}
 	k.actual.ObservedAt = time.Now()
 	if target.QueueLimitBytes < k.actual.LimitBytes &&
 		k.actual.BacklogBytes > target.QueueLimitBytes {
@@ -107,7 +113,8 @@ func testTUNAQMReconciliationContract(t testing.TB, kernel tunAQMKernel) {
 	}
 	if !restored.Actual.Fresh ||
 		restored.Actual.RateBytesPerSecond != target.RateBytesPerSecond ||
-		restored.Actual.TxQueueLen != target.TxQueueLen {
+		restored.Target.TxQueueLen != drift.TxQueueLen ||
+		restored.Actual.TxQueueLen != drift.TxQueueLen {
 		t.Fatalf("reconciliation after drift = %+v", restored)
 	}
 }
@@ -282,6 +289,29 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		}
 		if len(kernel.events) != 0 {
 			t.Fatalf("online ring shrink applied capacity operations: %v", kernel.events)
+		}
+	})
+
+	t.Run("online ring absorbs a larger installed value", func(t *testing.T) {
+		admissionApplied := true
+		transition, kernel := newTransition(t, &admissionApplied)
+		kernel.actual.TxQueueLen = 150
+		target := initial
+		target.TxQueueLen = 50
+		snapshot, err := transition.Reconcile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Target.TxQueueLen != 150 ||
+			snapshot.Actual.TxQueueLen != 150 {
+			t.Fatalf(
+				"online ring target/actual = %d/%d, want absorbed installed high water 150",
+				snapshot.Target.TxQueueLen,
+				snapshot.Actual.TxQueueLen,
+			)
+		}
+		if len(kernel.events) != 0 {
+			t.Fatalf("larger installed ring triggered capacity operations: %v", kernel.events)
 		}
 	})
 }

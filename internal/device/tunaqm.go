@@ -80,7 +80,6 @@ type tunAQMTransition struct {
 	reconciler           *tunAQMReconciler
 	trySetAdmissionLimit func(int) (bool, error)
 	readAdmissionLimit   func() int
-	ringHighWater        int
 }
 
 func newTUNAQMReconciler(kernel tunAQMKernel) (*tunAQMReconciler, error) {
@@ -104,15 +103,10 @@ func newTUNAQMTransition(
 	if readAdmissionLimit == nil {
 		return nil, errors.New("engine outbound admission reader is required")
 	}
-	ringHighWater := reconciler.Snapshot().Actual.TxQueueLen
-	if ringHighWater <= 0 {
-		return nil, errors.New("initialized TUN AQM ring readback is required")
-	}
 	transition := &tunAQMTransition{
 		reconciler:           reconciler,
 		trySetAdmissionLimit: trySetAdmissionLimit,
 		readAdmissionLimit:   readAdmissionLimit,
-		ringHighWater:        ringHighWater,
 	}
 	actualAdmissionLimit := transition.actualAdmissionLimit()
 	transition.reconciler.SetAdmissionState(actualAdmissionLimit, false)
@@ -132,11 +126,6 @@ func (t *tunAQMTransition) Reconcile(
 ) (tunAQMSnapshot, error) {
 	if err := validateTUNAQMTarget(target); err != nil {
 		return t.reconciler.Snapshot(), err
-	}
-	if target.TxQueueLen < t.ringHighWater {
-		target.TxQueueLen = t.ringHighWater
-	} else {
-		t.ringHighWater = target.TxQueueLen
 	}
 	actualAdmissionLimit := t.actualAdmissionLimit()
 	switch {
@@ -181,11 +170,12 @@ func (t *tunAQMTransition) Reconcile(
 			if err != nil {
 				return t.reconciler.Snapshot(), err
 			}
-			_, err = t.reconciler.Reconcile(installedTarget)
+			heldSnapshot, err := t.reconciler.Reconcile(installedTarget)
 			if err != nil {
 				t.reconciler.SetAdmissionState(installedAdmissionLimit, true)
 				return t.reconciler.Snapshot(), err
 			}
+			target.TxQueueLen = heldSnapshot.Target.TxQueueLen
 			return t.reconciler.SetDeferredAdmissionTarget(
 				target,
 				installedAdmissionLimit,
@@ -258,6 +248,10 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 	r.snapshot.GSOLimitsDeferred = false
 	actual, readErr := r.kernel.Read()
 	if readErr == nil {
+		if actual.TxQueueLen > target.TxQueueLen {
+			target.TxQueueLen = actual.TxQueueLen
+			r.snapshot.Target = target
+		}
 		actual.Fresh = false
 		r.snapshot.Actual = actual
 		if validateTUNAQMReadback(target, actual) == nil {
@@ -275,6 +269,10 @@ func (r *tunAQMReconciler) Reconcile(target tunAQMTargetState) (tunAQMSnapshot, 
 	actual, err = r.kernel.Read()
 	if err != nil {
 		return r.snapshot, err
+	}
+	if actual.TxQueueLen > target.TxQueueLen {
+		target.TxQueueLen = actual.TxQueueLen
+		r.snapshot.Target = target
 	}
 	actual.Fresh = false
 	r.snapshot.Actual = actual
@@ -348,8 +346,8 @@ func validateDeferredTUNAQMReadback(
 			!actual.RingPending {
 			return errors.New("TUN AQM ring-size deferral has no occupied installed superset")
 		}
-	} else if actual.TxQueueLen != target.TxQueueLen {
-		return errors.New("TUN AQM ring-size readback does not match target")
+	} else if actual.TxQueueLen < target.TxQueueLen {
+		return errors.New("TUN AQM ring-size readback is below target minimum")
 	}
 	if apply.QueueLimitDeferred {
 		if actual.LimitBytes < target.QueueLimitBytes {
@@ -417,8 +415,8 @@ func (r *tunAQMReconciler) MetricsSnapshot() *metrics.TUNAQMSnapshot {
 }
 
 func validateTUNAQMReadback(target tunAQMTargetState, actual tunAQMActualState) error {
-	if actual.TxQueueLen != target.TxQueueLen {
-		return fmt.Errorf("TUN AQM tx queue length readback %d, want %d",
+	if actual.TxQueueLen < target.TxQueueLen {
+		return fmt.Errorf("TUN AQM tx queue length readback %d, want at least %d",
 			actual.TxQueueLen, target.TxQueueLen)
 	}
 	if actual.RootKind != "htb" || actual.LeafKind != "bfifo" {

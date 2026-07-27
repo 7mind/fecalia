@@ -249,7 +249,7 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 	}
 }
 
-func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
+func TestLinuxTUNAQMRetainsRingHighWaterAfterDriverRingDrains(t *testing.T) {
 	const targetRingSlots = 64
 	var qdiscCommands [][]string
 	kernel := testLinuxTUNAQMKernel(t, `[
@@ -258,11 +258,13 @@ func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
 		 "options":{"limit":65000}}
 	]`, &qdiscCommands)
 	currentRingSlots := 128
+	ringWrites := 0
 	pending := true
 	kernel.readTxQueueLen = func() (int, error) {
 		return currentRingSlots, nil
 	}
 	kernel.writeTxQueueLen = func(slots int) error {
+		ringWrites++
 		currentRingSlots = slots
 		return nil
 	}
@@ -279,31 +281,34 @@ func TestLinuxTUNAQMDefersRingShrinkUntilDriverRingDrains(t *testing.T) {
 		GSOMaxSegments:      10,
 		AdmissionLimitBytes: 14_270,
 	}
-	deferred, err := kernel.Apply(target)
+	occupied, err := kernel.Apply(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !deferred.RingSizeDeferred ||
-		currentRingSlots != 128 {
+	if occupied.RingSizeDeferred ||
+		currentRingSlots != 128 ||
+		ringWrites != 0 {
 		t.Fatalf(
-			"occupied ring shrink = %+v, installed slots %d; want deferred at 128",
-			deferred,
+			"occupied ring reconcile = %+v, installed slots/writes %d/%d; want retained at 128 with no write",
+			occupied,
 			currentRingSlots,
+			ringWrites,
 		)
 	}
 
 	pending = false
-	applied, err := kernel.Apply(target)
+	drained, err := kernel.Apply(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.RingSizeDeferred ||
-		currentRingSlots != targetRingSlots {
+	if drained.RingSizeDeferred ||
+		currentRingSlots != 128 ||
+		ringWrites != 0 {
 		t.Fatalf(
-			"drained ring shrink = %+v, installed slots %d; want applied at %d",
-			applied,
+			"drained ring reconcile = %+v, installed slots/writes %d/%d; want retained at 128 with no write",
+			drained,
 			currentRingSlots,
-			targetRingSlots,
+			ringWrites,
 		)
 	}
 }
