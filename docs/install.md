@@ -490,7 +490,7 @@ Common rules, either policy:
   time satisfies `T<=max(D,W/r)`. For aggregate ingress `R`,
   current/maximum MTUs `Mcur`/`Mmax`, exact installed HTB burst
   `G>=gso_max_size`, and `A=ceil(R*T)+G`, derive
-  `H=ceil(A/Mcur)`, `J=ceil(A/20)`, and `txqueuelen=J+1`; the extra slot
+  `H=ceil(A/Mcur)`, `J=ceil(A/20)`, and minimum `txqueuelen=J+1`; the extra slot
   is the native Linux TUN guard proved by the privileged packet handoff test.
   The leaf is `bfifo limit L`. Conditional on the
   `T<=max(D,W/r)` reader-service precondition, the full-MTU-valued service
@@ -503,12 +503,13 @@ Common rules, either policy:
   `bfifo` limits change in place. A
   shrink waits rather than discarding admitted traffic when the live queue,
   GSO backlog, or peer-retained engine bytes do not yet fit the new bound.
-  The ptr-ring capacity instead retains the maximum derived `J+1` for the live
-  interface: it grows when required and never shrinks until interface
-  recreation. This avoids an arrival race between occupancy readback and a
-  live shrink without adding slots beyond a previously derived envelope. The
-  daemon owns the `wanbond0` root qdisc and ptr-ring capacity while running;
-  do not attach another root qdisc to the same interface.
+  The ptr-ring capacity instead retains the maximum of the observed interface
+  baseline, later larger readbacks, and derived `J+1` for the live interface.
+  The daemon writes only to grow an undersized ring and never shrinks it until
+  interface recreation. This avoids the read/apply arrival race without
+  requesting speculative slots. The daemon owns the `wanbond0` root qdisc and
+  ptr-ring capacity while running; do not attach another root qdisc to the
+  same interface.
 - The same envelope reserves `C=Lmax` for control and budgets one coincident
   maximum-size probe+echo pair per peer/path:
   `Pburst=2*Lmax`, `Rp=Pburst/200ms`. The local member is either the ordinary
@@ -721,7 +722,7 @@ Common rules, either policy:
   requested/atomically-applied exact-wire per-peer `B+C` budget, where `B` is
   the configured path-shaper BDP.
   `wanbond_tun_aqm_actual_fresh=1` means qdisc topology, all
-  `bfifo` limit, HTB rate/burst, ptr-ring capacity, both GSO limits, and epoch
+  `bfifo` limit, HTB rate/burst, the ptr-ring minimum, both GSO limits, and epoch
   matched at
   the latest `actual_observed_timestamp_seconds`.
   `rate_fresh=1` independently acknowledges the exact HTB rate/epoch while a
@@ -730,8 +731,7 @@ Common rules, either policy:
   occupancy. `drops_total` is the maximum cumulative drop count read with
   statistics enabled across the HTB+bfifo tree, so leaf tail drops remain visible
   without double-counting a propagated root value. `ring_size_deferred`
-  reports only an initial pre-transition kernel deferral; online reconciliation
-  retains the ring high-water and does not request shrink.
+  remains zero under the grow-only ring contract.
   `queue_limit_deferred`, `gso_limits_deferred`, and
   `engine_admission_limit_deferred` identify the pending bound. These series are absent when
   the active-backup Linux TUN AQM is inactive.
@@ -1003,8 +1003,9 @@ tc -j -s qdisc show dev wanbond0
 tc class show dev wanbond0
 ```
 
-`txqueuelen` must equal the derived `J+1` minimum-packet handoff capacity, not
-a fixed constant. The root must be HTB with one `bfifo` child at `1:1`; its
+`txqueuelen` must be at least the derived `J+1` minimum-packet handoff
+capacity. A larger readback is the live interface high-water, not a fixed
+constant. The root must be HTB with one `bfifo` child at `1:1`; its
 rate/burst and byte-limit values must match the
 daemon contract above. A later external qdisc change is
 reconciled on the next probe interval.

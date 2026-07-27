@@ -251,11 +251,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   20-byte minimum legal inner packet. For the bounded transient byte handoff
   `A=ceil(R*T)+G`, the derived ptr ring holds `ceil(A/20)+1` packet slots:
   minimum packetization of the handoff plus one native Linux guard slot.
-  While the interface remains live, its installed ring capacity is the
-  high-water mark of that derived value: it can grow but never shrinks until
-  interface recreation, eliminating an arrival race between occupancy
-  readback and a live shrink without adding capacity beyond a previously
-  derived envelope.
+  While the interface remains live, `ceil(A/20)+1` is a minimum: the installed
+  ring capacity is the high-water mark of the observed interface baseline,
+  later larger readbacks, and derived requirements. The daemon writes only to
+  grow an undersized ring and never shrinks it until interface recreation,
+  eliminating the read/apply arrival race without requesting speculative
+  capacity.
   The HTB burst covers the GSO byte bound and avoids iproute2's lossy text-size
   rendering so readback remains exact. Full-MTU handoff within that interval
   incurs no native link/qdisc drop; overload beyond the finite byte leaf may

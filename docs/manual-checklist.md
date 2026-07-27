@@ -421,7 +421,8 @@ as historical exact-byte-shaper evidence.
       service time `T<=max(D,W/r)`, current/maximum MTUs `Mcur`/`Mmax`, and
       exact installed burst `G`, calculate
       `A=ceil(R*T)+G`, `H=ceil(A/Mcur)`, and `J=ceil(A/20)`. Confirm
-      `wanbond0 txqueuelen=J+1`.
+      `wanbond0 txqueuelen>=J+1`; a larger observed baseline is promoted to
+      the target and retained as the live-interface high-water.
       Here `B` is the maximum current active outer-shaper DATA budget and `C`
       is the complete GSO batch below.
       Confirm HTB `burst=cburst=G>=gso_max_size` and exact target/actual burst,
@@ -506,15 +507,16 @@ as historical exact-byte-shaper evidence.
       remain at the installed envelope, the desired rate/epoch must apply,
       `actual_fresh` must be 0, and `rate_fresh` must be 1. After drain, the
       engine value must shrink before capacity. The online ptr-ring target and
-      actual must retain their maximum previously derived `J+1` across lower
-      rate/MTU targets, and reset only on interface recreation. On growth,
+      actual must retain the maximum of their observed interface baseline,
+      later larger readbacks, and derived `J+1` across lower rate/MTU targets,
+      and reset only on interface recreation. On growth,
       capacity must read back before the engine value rises. All deferred
       gauges must return to zero after drain, with exact target/actual readback
       and no new qdisc or link drop.
 - [ ] Exercise independent native handoff phases on a fresh queue: `H` full-MTU
       packets and `ceil(A/29)` minimum legal UDP-over-IPv4 TUN packets over one
       bounded complete-batch service interval must each leave link and qdisc
-      drops unchanged with exact `J+1` ring readback. The unit contract must
+      drops unchanged with ring readback at least `J+1`. The unit contract must
       separately prove the exact 20-byte slot boundary. A deliberate overload
       must increase at least one captured link/qdisc counter and report the
       layer. Do not claim arbitrary-stall losslessness from the bounded result.

@@ -462,7 +462,7 @@ A = ceil(R*T)+G bytes
 H = ceil(A/Mcur) full-MTU handoff slots
 J = ceil(A/m) minimum-packet handoff slots
 bfifo limit = L
-TUN txqueuelen = J+1
+minimum TUN txqueuelen = J+1
 HTB burst = cburst = G bytes
 ```
 
@@ -476,7 +476,7 @@ full-MTU-valued combined service bound is `((H+1)*Mmax+L)/R`. It deliberately
 uses `H`, not `J`: an
 arbitrary reader stall can fill `J` slots with packets larger than `m` and lies
 outside this transient-handoff invariant. The unit contract tests the exact
-20-byte boundary. The native test reads back `J+1`, proves zero link/qdisc
+20-byte boundary. The native test reads back at least `J+1`, proves zero link/qdisc
 drops independently for `H` full-MTU packets and `ceil(A/29)` minimum legal
 UDP-over-IPv4 TUN packets on fresh queues, and proves a deliberate overload
 increments a visible drop counter. Excess byte backlog tail-drops at `bfifo`;
@@ -528,12 +528,14 @@ Startup fails if `tc` is unavailable or topology, parameters, rate, explicit
 HTB burst, ptr-ring capacity, or GSO limits cannot be read back. The daemon
 reconciles and re-reads the target every probe interval; it publishes a target
 epoch as actual/fresh only after every field matches. During one live interface
-lifetime, the installed ptr-ring capacity is the monotonic high-water mark of
-the derived `J+1`: growth remains exact, while a lower derived target retains
-the prior installed value. Interface recreation establishes a new baseline.
-This removes the unavoidable arrival race between an occupancy poll and a
-live ring shrink without increasing the ring beyond a capacity already
-derived for that interface.
+lifetime, derived `J+1` is a minimum. The installed ptr-ring capacity is the
+monotonic high-water mark of the observed interface baseline, any later larger
+readback, and the derived minimum. The kernel adapter writes `tx_queue_len`
+only when the installed value falls below that minimum; it never issues a live
+shrink, even during topology repair. Reconciliation promotes a larger readback
+to the published target, while interface recreation establishes a new
+baseline. This removes the unavoidable read/apply arrival race without
+requesting speculative ring capacity.
 
 Engine admission and downstream capacity form a directional transaction.
 Growth reconciles and reads back the larger ptr-ring/`bfifo` envelope before
@@ -1267,8 +1269,10 @@ behaviour composes the following signals into one picture:
   explicit. Production qdisc reads request `tc -s`; a non-stat read omits these
   counters. `rate_fresh`
   separates an exact rate/epoch acknowledgment from full-envelope
-  `actual_fresh`, while the ring-size, queue-limit, GSO-limit, and
-  engine-admission deferred gauges identify a safe pending shrink. These
+  `actual_fresh`, while the queue-limit, GSO-limit, and engine-admission
+  deferred gauges identify a safe pending shrink. The retained
+  `ring_size_deferred` schema remains zero because ring capacity is grow-only.
+  These
   series are absent when the Linux
   active-backup TUN AQM does not own the qdisc.
 - the config-load hard-fail guard
