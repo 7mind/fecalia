@@ -614,13 +614,14 @@ A queue-limit shrink waits while installed byte backlog exceeds the new
 limit; a GSO shrink waits for an empty TUN backlog; and the peer-private engine
 gate shrinks atomically only when every peer's retained bytes fit. The desired
 rate can still receive its exact epoch acknowledgment during one of these safe
-capacity deferrals. While GSO shrink waits, the effective `bfifo` limit and
-normalized HTB burst remain at least the installed GSO maximum; after drain,
-all three shrink to the desired geometry together. Full `actual_fresh` remains
-false while `rate_fresh` is true. A target rate or MTU change may therefore
-resize the pre-TUN GSO limits and per-peer engine byte gate without discarding
-admitted traffic while retaining the nominal 20 ms complete-batch bound, its
-one-datagram low-rate exception, and one BDP.
+capacity deferrals. While GSO shrink waits, the effective `bfifo` limit remains
+at its installed aggregate value, preserving one old atomic quantum per peer,
+and the normalized HTB burst remains at least the installed link GSO maximum.
+After drain, all three shrink to the desired geometry together. Full
+`actual_fresh` remains false while `rate_fresh` is true. A target rate or MTU
+change may therefore resize the pre-TUN GSO limits and per-peer engine byte gate
+without discarding admitted traffic while retaining the nominal 20 ms
+complete-batch bound, its one-datagram low-rate exception, and one BDP.
 
 Each controller target retargets the same live outer shaper before the TUN
 target publishes: only future admissions use the new rate, admitted deadlines

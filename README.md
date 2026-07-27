@@ -246,8 +246,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   and counters; a limit shrink waits while byte backlog exceeds the new limit,
   GSO shrink waits for an empty TUN backlog, and engine admission shrink waits
   until every peer's retained bytes fit. While GSO shrink waits, the installed
-  leaf and normalized HTB burst remain at least the installed GSO maximum, so
-  one queued atomic skb still fits. Repeated exact readbacks of
+  aggregate leaf remains unchanged (preserving one old atomic quantum per
+  peer), and the normalized HTB burst remains at least the installed link GSO
+  maximum. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The plaintext byte leaf
   is independent of the outer/engine admission window: it admits the greater
