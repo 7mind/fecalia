@@ -453,11 +453,13 @@ path shaper, let `C` be one complete pre-segmented batch as derived below,
 `m=20` the minimum legal IPv4 packet size presented by a TUN device, `D=20ms`
 the nominal complete-batch service budget, `T` the derived complete-batch
 service time, `R` the aggregate ingress target,
-`Mcur`/`Mmax` the current/maximum configured inner MTUs, and `G` the exact
-HTB burst covering `gso_max_size`. For peer count `P`, the queue contract is:
+`Mcur`/`Mmax` the current/maximum configured inner MTUs, `U` the installed
+`gso_max_size`, `G` the exact HTB burst covering `U`, and `Q=20ms` the
+persistent plaintext queue-delay budget. For peer count `P`, the queue
+contract is:
 
 ```
-L = ceil(P*(B+C)/m)*m bytes
+L = max(P*U, ceil(R*Q)) bytes
 A = ceil(R*T)+G bytes
 H = ceil(A/Mcur) full-MTU handoff slots
 J = ceil(A/m) minimum-packet handoff slots
@@ -466,7 +468,9 @@ minimum TUN txqueuelen = J+1
 HTB burst = cburst = G bytes
 ```
 
-`L` is one logical aggregate B+C byte window, independent of packet size.
+`L` is an inner-byte/time contract independent of the outer/engine `B+C`
+window. It preserves one atomic GSO quantum per peer at low rates and bounds
+persistent leaf service by `L/R = max(Q,P*U/R)`.
 `A` carries only bytes that can arrive during one bounded engine batch-service
 interval plus the explicit HTB burst. `J` covers every packetization of those
 bytes down to the 20-byte protocol minimum; the extra slot encodes the native

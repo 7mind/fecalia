@@ -247,9 +247,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   shrink waits for an empty TUN backlog, and engine admission shrink waits
   until every peer's retained bytes fit. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
-  cannot perpetually restart that settling interval. The byte leaf admits one
-  configured per-peer BDP plus one complete GSO batch, rounded only to the
-  20-byte minimum legal inner packet. For the bounded transient byte handoff
+  cannot perpetually restart that settling interval. The plaintext byte leaf
+  is independent of the outer/engine admission window: it admits the greater
+  of 20 ms of aggregate inner traffic or one complete GSO quantum per peer.
+  Its persistent service bound is therefore the greater of 20 ms or the
+  aggregate atomic-GSO window divided by the ingress rate. Engine admission
+  separately retains its per-peer BDP plus one complete batch. For the bounded
+  transient byte handoff
   `A=ceil(R*T)+G`, the derived ptr ring holds `ceil(A/20)+1` packet slots:
   minimum packetization of the handoff plus one native Linux guard slot.
   While the interface remains live, `ceil(A/20)+1` is a minimum: the installed

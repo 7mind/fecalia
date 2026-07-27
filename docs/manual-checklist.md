@@ -415,16 +415,19 @@ as historical exact-byte-shaper evidence.
       `/metrics` scrape before the candidate starts.
 - [ ] On both edge and concentrator, confirm active-backup+pacing starts only
       after exact readback: HTB root and one `bfifo` child with
-      `L=limit=ceil(peerCount*(B+C)/20)*20` bytes. With nominal service
-      budget `D=20ms`, aggregate ingress `R`, per-peer rate `r`, maximum
+      `L=limit=max(P*U,ceil(R*Q))` bytes, where `P` is the peer count,
+      `U=gso_max_size`, `Q=20ms`, and `R` is aggregate ingress. Confirm its
+      persistent service bound is at most `max(Q,P*U/R)`. With nominal
+      complete-batch service budget `D=20ms`, per-peer rate `r`, maximum
       WireGuard datagram `W=Mmax+32`, conservatively rounded complete-batch
       service time `T<=max(D,W/r)`, current/maximum MTUs `Mcur`/`Mmax`, and
       exact installed burst `G`, calculate
       `A=ceil(R*T)+G`, `H=ceil(A/Mcur)`, and `J=ceil(A/20)`. Confirm
       `wanbond0 txqueuelen>=J+1`; a larger observed baseline is promoted to
       the target and retained as the live-interface high-water.
-      Here `B` is the maximum current active outer-shaper DATA budget and `C`
-      is the complete GSO batch below.
+      Separately confirm per-peer engine admission `B+C`, where `B` is the
+      maximum current active outer-shaper DATA budget and `C` is the complete
+      GSO batch below.
       Confirm HTB `burst=cburst=G>=gso_max_size` and exact target/actual burst,
       epoch, rate, ring capacity, and queue-limit readback.
       `wanbond_tun_aqm_actual_fresh` must be 1. Record
@@ -519,6 +522,14 @@ as historical exact-byte-shaper evidence.
       capacity must read back before the engine value rises. All deferred
       gauges must return to zero after drain, with exact target/actual readback
       and no new qdisc or link drop.
+- [ ] Confirm the plaintext `bfifo` target equals
+      `max(peerCount*gso_max_size,ceil(ingress_target*20ms))` and its persistent
+      service time does not exceed
+      `max(20ms,peerCount*gso_max_size/ingress_target)`. Holding ingress rate,
+      peer count, and GSO size fixed while doubling the engine admission window
+      must not change the leaf limit. At 40,000 B/s with one 1,284-byte GSO
+      quantum, read back 1,284 bytes and at most 32.1 ms, not the prior
+      7,200-byte/180 ms engine-derived window.
 - [ ] Exercise independent native handoff phases on a fresh queue: `H` full-MTU
       packets and `ceil(A/29)` minimum legal UDP-over-IPv4 TUN packets over one
       bounded complete-batch service interval must each leave link and qdisc

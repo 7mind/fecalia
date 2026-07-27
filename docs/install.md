@@ -488,10 +488,14 @@ Common rules, either policy:
   absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
   the daemon can install and read back HTB+`bfifo`, the rate, explicit HTB burst,
-  TUN ptr-ring capacity, and the byte limit. Let
-  `L=ceil(peerCount*(B+C)/20)*20` bytes, where 20 bytes is the minimum legal
-  inner IPv4 packet, `B` is the current maximum path DATA budget, and `C` is
-  one complete bounded GSO batch. Let `D=20ms` be its nominal service budget,
+  TUN ptr-ring capacity, and the byte limit. Let `U=gso_max_size`,
+  `Q=20ms`, and `L=max(peerCount*U,ceil(R*Q))` bytes for aggregate inner
+  ingress target `R`. This keeps the plaintext leaf independent of the
+  outer/engine admission window, preserves one atomic GSO quantum per peer,
+  and bounds persistent leaf service by `max(Q,peerCount*U/R)`.
+  Engine admission separately retains the current maximum path DATA budget
+  `B` plus one complete bounded GSO batch `C`. Let `D=20ms` be that batch's
+  nominal service budget,
   `r=R/peerCount`, and `W=Mmax+32`; its conservatively rounded actual service
   time satisfies `T<=max(D,W/r)`. For aggregate ingress `R`,
   current/maximum MTUs `Mcur`/`Mmax`, exact installed HTB burst
