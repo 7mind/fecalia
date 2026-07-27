@@ -11,7 +11,7 @@ import "github.com/amnezia-vpn/amneziawg-go/conn"
 
 const (
 	QueueStagedSize            = conn.IdealBatchSize
-	QueueOutboundSize          = 1024
+	QueueOutboundSize          = 1
 	QueueInboundSize           = 1024
 	QueueHandshakeSize         = 1024
 	MaxSegmentSize             = (1 << 16) - 1 // largest possible UDP datagram

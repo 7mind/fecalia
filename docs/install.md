@@ -626,6 +626,16 @@ Common rules, either policy:
   caller-ownership acknowledgement. These series (and the monitor UI's `shaper` block) are absent when
   pacing is off, and all cumulative values reset when the path receives a new
   socket/shaper generation.
+- `wanbond_engine_tun_batch_frames` and
+  `wanbond_engine_send_batch_frames` are cumulative histograms of frames per
+  post-GSO TUN container and per `Bind.Send`; their corresponding
+  `*_bytes_total` counters expose byte volume. The
+  `wanbond_engine_{encryption,peer}_queue_containers` gauges,
+  `wanbond_engine_peer_queue_high_water_containers`, and active-send
+  frame/byte current/high-water gauges localize backpressure before the Bind.
+  The patched engine admits at most one queued container at each outbound
+  handoff; a peer queue high-water above 1 violates that invariant. These
+  metrics remain present when per-path pacing is off.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never

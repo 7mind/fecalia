@@ -12,7 +12,7 @@ package device
 // them further.
 var (
 	QueueStagedSize                   = 128
-	QueueOutboundSize                 = 1024
+	QueueOutboundSize                 = 1
 	QueueInboundSize                  = 1024
 	QueueHandshakeSize                = 1024
 	PreallocatedBuffersPerPool uint32 = 1024

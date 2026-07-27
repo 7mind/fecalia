@@ -437,6 +437,20 @@ ordinary medium loss; the resulting cwnd collapse capped single-flow TCP at
 byte budget prevents moving an unbounded standing queue into wanbond while
 still avoiding pacer-induced packet loss.
 
+**Engine-side backpressure boundary.** Linux TUN offload can split one 64 KiB
+GSO read into as many as 128 WireGuard frames in one engine container. The
+sequential sender holds that whole container across synchronous `Bind.Send`.
+The upstream engine default buffered 1,024 such containers per peer and another
+1,024 for encryption, so it could dequeue a standing queue from `wanbond0`
+before the exact-byte shaper applied backpressure; the interface `fq_codel`
+then had no backlog on which to act. The local engine patch bounds both
+outbound channels to one queued container. This preserves container batching
+and UDP offload while returning sustained excess load to the TUN queue
+discipline after at most the active and one queued container. It does not
+inspect encrypted payloads or create a priority class: inner WireGuard DATA,
+keepalives, and control retain their existing FIFO order, while authenticated
+outer PROBE/CONTROL continues to use the Bind's independent priority path.
+
 Pacing is **policy-independent** (defect D65): it is available and configured
 identically via `[scheduler] pacing_enabled` under active-backup and weighted
 selection. Both policies expose `PickUnpaced`; production composition disables
@@ -1039,6 +1053,12 @@ behaviour composes the following signals into one picture:
   bound. Ordinary capacity waits increment no error counter; they increment
   admission waits/duration instead. All shaper series are absent with pacing
   off and reset with the owning socket generation.
+- engine ingress/send series: `wanbond_engine_{tun,send}_bytes_total`,
+  `wanbond_engine_{tun,send}_batch_frames` histograms,
+  `wanbond_engine_{encryption,peer}_queue_containers`,
+  `wanbond_engine_peer_queue_high_water_containers`, and current/high-water
+  active `Bind.Send` frames/bytes. These connection-scoped series localize
+  queueing before the Bind and remain present independently of pacing.
 - the config-load hard-fail guard
   (`validateWeightedEngageAgainstBandwidth`, the "…aggregation can
   mathematically never engage at line rate on this path…" error) — fails

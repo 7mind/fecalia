@@ -42,7 +42,7 @@ In priority order (earlier properties never regress for later ones):
 
 ## How it works, in one paragraph
 
-wanbond embeds the **unmodified** [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go)
+wanbond embeds a locally patched [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go)
 WireGuard engine (TUN, Noise handshake, AEAD, rekey, roaming, keepalive) and puts
 **all** bonding logic — multipath scheduling, an obfuscated outer frame codec,
 Reed-Solomon FEC, a receive resequencer, and per-path telemetry — into a custom
@@ -150,7 +150,8 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   write-error series (`wanbond_path_shaper_*`) plus underlying
   `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
   inner-control socket failures; generated outer PROBE and reflected-echo
-  failures are excluded), WG-session establishment
+  failures are excluded), engine-side TUN/send batch histograms and outbound
+  queue/active-send gauges (`wanbond_engine_*`), WG-session establishment
   (`wanbond_session_established`, plus a per-peer
   `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
   including the first configured one, carries its configured `peer` label, while
@@ -288,7 +289,7 @@ internal/monitor/       monitoring-UI endpoint, read-only except the loopback-on
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
-third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), test vet fix (#157)
+third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), bounded outbound admission, engine queue/batch observability, test vet fix (#157)
 test/e2e/               -tags e2e netns fixture (P0–P5)
 test/realhosts/         -tags realhosts real-machine tier
 docs/                   design, install, findings, manual checklist

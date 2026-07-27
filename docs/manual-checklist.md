@@ -430,7 +430,7 @@ Before the real-link cycles, validate the T309/T318/T323 FEC sender-owner invari
 - [ ] Use one 30-second edge-to-o3 TCP upload per tunnel leg, discarding the
       first 5 seconds as warmup. During the whole leg collect timestamped loaded
       ping, one-second `iperf3` intervals/retransmits, FEC counters, and every
-      `wanbond_path_shaper_*` series. Take synchronized counter scrapes at
+      `wanbond_path_shaper_*` and `wanbond_engine_*` series. Take synchronized counter scrapes at
       `t=0`, the final-window boundary `t=10s`, and the leg end `t=30s` (or
       continuously sample with timestamps at least this precisely). Compute the
       final-20-second outer rate and counter deltas strictly from `t=10s` through
@@ -467,6 +467,10 @@ predeclared gates:
 - [ ] No ordinary queue loss occurs: no scheduler-shedding record appears, and
       deltas for admission-canceled datagrams, terminal shaped-call errors, and
       asynchronous generic/`EMSGSIZE` writer errors are all zero.
+- [ ] Engine queue evidence remains bounded:
+      `wanbond_engine_peer_queue_high_water_containers <= 1`, current peer and
+      encryption queue gauges never exceed 1, and TUN/send batch histogram
+      deltas account for the observed frames without a throughput collapse.
 - [ ] TCP receiver goodput is at least **70%** of emitted DATA bytes. Reconcile
       DATA, FEC parity, inner control, and direct outer-priority bytes rather
       than treating parity as application goodput.

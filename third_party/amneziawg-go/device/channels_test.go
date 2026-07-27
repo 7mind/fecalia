@@ -30,4 +30,5 @@ func assertOneContainerAheadOfConsumer(t *testing.T, name string, queue chan *Qu
 		t.Fatalf("%s outbound queue admitted more than one GSO container without a consumer; TUN traffic can accumulate ahead of the shaped Bind.Send boundary", name)
 	default:
 	}
+	<-queue
 }
