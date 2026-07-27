@@ -174,14 +174,6 @@ numbers next to each item.
       starlink and 5g.
 
 ### Failover: drop Starlink
-- [ ] With pacing enabled, calculate
-      `ceil(slowest_effective_shaper_rate_bytes_per_second * 0.005)` bytes,
-      where the rate comes from `link_bandwidth / 8` or the configured raw
-      frame-slot projection, then clamp it to the initial TUN MTU..65536 range.
-      Confirm `ip -d link show wanbond0` reports that `gso_max_size`. Confirm
-      `ethtool -k wanbond0` still reports GSO, TSO, and GRO enabled. With pacing
-      disabled, confirm startup leaves the pre-existing `gso_max_size`
-      unchanged.
 - [ ] Start the long-lived flow: edge `iperf3 -c 10.77.0.1 -t 120` (or an
       interactive SSH session to 10.77.0.1) and, in a second terminal,
       `ping -i 0.2 10.77.0.1`.
@@ -438,7 +430,8 @@ Before the real-link cycles, validate the T309/T318/T323 FEC sender-owner invari
 - [ ] Use one 30-second edge-to-o3 TCP upload per tunnel leg, discarding the
       first 5 seconds as warmup. During the whole leg collect timestamped loaded
       ping, one-second `iperf3` intervals/retransmits, FEC counters, and every
-      `wanbond_path_shaper_*` and `wanbond_engine_*` series. Take synchronized counter scrapes at
+      `wanbond_path_shaper_*` and `wanbond_engine_*` series. Take synchronized
+      counter scrapes at
       `t=0`, the final-window boundary `t=10s`, and the leg end `t=30s` (or
       continuously sample with timestamps at least this precisely). Compute the
       final-20-second outer rate and counter deltas strictly from `t=10s` through
@@ -475,10 +468,6 @@ predeclared gates:
 - [ ] No ordinary queue loss occurs: no scheduler-shedding record appears, and
       deltas for admission-canceled datagrams, terminal shaped-call errors, and
       asynchronous generic/`EMSGSIZE` writer errors are all zero.
-- [ ] Engine queue evidence remains bounded:
-      `wanbond_engine_peer_queue_high_water_containers <= 1`, current peer and
-      encryption queue gauges never exceed 1, and TUN/send batch histogram
-      deltas account for the observed frames without a throughput collapse.
 - [ ] TCP receiver goodput is at least **70%** of emitted DATA bytes. Reconcile
       DATA, FEC parity, inner control, and direct outer-priority bytes rather
       than treating parity as application goodput.

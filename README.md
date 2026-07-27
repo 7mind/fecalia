@@ -151,10 +151,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
   inner-control socket failures; generated outer PROBE and reflected-echo
   failures are excluded), engine-side TUN/send batch histograms and outbound
-  queue/active-send gauges (`wanbond_engine_*`). With exact-byte pacing enabled,
-  Linux startup also bounds the TUN GSO container to at most 5 ms of service at
-  the slowest shaped path without disabling GSO/TSO/GRO. Unpaced configurations
-  do not change the kernel default. WG-session establishment
+  queue/active-send gauges (`wanbond_engine_*`), WG-session establishment
   (`wanbond_session_established`, plus a per-peer
   `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
   including the first configured one, carries its configured `peer` label, while
@@ -292,7 +289,7 @@ internal/monitor/       monitoring-UI endpoint, read-only except the loopback-on
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
-third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), bounded outbound admission, engine queue/batch observability, test vet fix (#157)
+third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), engine queue/batch observability, test vet fix (#157)
 test/e2e/               -tags e2e netns fixture (P0–P5)
 test/realhosts/         -tags realhosts real-machine tier
 docs/                   design, install, findings, manual checklist

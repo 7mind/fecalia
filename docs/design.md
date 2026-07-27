@@ -437,26 +437,15 @@ ordinary medium loss; the resulting cwnd collapse capped single-flow TCP at
 byte budget prevents moving an unbounded standing queue into wanbond while
 still avoiding pacer-induced packet loss.
 
-**Engine-side backpressure boundary.** Linux TUN offload can split one 64 KiB
+**Engine-side observation boundary.** Linux TUN offload can split one 64 KiB
 GSO read into as many as 128 WireGuard frames in one engine container. The
 sequential sender holds that whole container across synchronous `Bind.Send`.
-The upstream engine default buffered 1,024 such containers per peer and another
-1,024 for encryption, so it could dequeue a standing queue from `wanbond0`
-before the exact-byte shaper applied backpressure; the interface `fq_codel`
-then had no backlog on which to act. The local engine patch bounds both
-outbound channels to one queued container. This preserves container batching
-and UDP offload while returning sustained excess load to the TUN queue
-discipline after at most the active and one queued container. It does not
-inspect encrypted payloads or create a priority class: inner WireGuard DATA,
-keepalives, and control retain their existing FIFO order, while authenticated
-outer PROBE/CONTROL continues to use the Bind's independent priority path.
-With exact-byte pacing enabled, startup additionally bounds `wanbond0`'s
-`gso_max_size` to `ceil(min_path_rate_bytes_per_second * 5 ms)`, clamped to at
-least the initial inner MTU and at most the Linux 64 KiB default. Values at or
-above the default cause no link mutation, as do unpaced configurations. This
-pre-split service-quantum invariant does not assume a particular qdisc: it
-bounds one whole-container loss/admission quantum wherever backpressure reaches
-the TUN transmit ring. GSO, TSO, and GRO remain enabled.
+The upstream engine permits 1,024 queued containers per peer and another 1,024
+for encryption, so it can dequeue a standing queue from `wanbond0` before the
+exact-byte path shaper applies backpressure. Local engine instrumentation
+reports TUN/send batch size, both queue depths and active `Bind.Send` size.
+These measurements distinguish TUN/qdisc queueing from engine queueing without
+changing upstream admission semantics.
 
 Pacing is **policy-independent** (defect D65): it is available and configured
 identically via `[scheduler] pacing_enabled` under active-backup and weighted

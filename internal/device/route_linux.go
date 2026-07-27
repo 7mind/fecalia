@@ -53,9 +53,9 @@ func ifIndex(name string) (int, error) {
 	return int(ifr.Uint32()), nil
 }
 
-// rtnetlinkSocket opens and binds an AF_NETLINK rtnetlink socket for one batch
-// of link or route requests. The caller closes it.
-func rtnetlinkSocket() (int, error) {
+// routeSocket opens and binds an AF_NETLINK rtnetlink socket for one batch of
+// route requests. The caller closes it.
+func routeSocket() (int, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
 	if err != nil {
 		return -1, fmt.Errorf("open rtnetlink socket: %w", err)
@@ -207,7 +207,7 @@ func installRoutes(ifname string, prefixes []netip.Prefix) error {
 	if err != nil {
 		return err
 	}
-	fd, err := rtnetlinkSocket()
+	fd, err := routeSocket()
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func removeRoutes(ifname string, prefixes []netip.Prefix) error {
 		}
 		return err
 	}
-	fd, err := rtnetlinkSocket()
+	fd, err := routeSocket()
 	if err != nil {
 		return err
 	}

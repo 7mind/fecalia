@@ -17,7 +17,7 @@
           version = "0.0.0";
           src = ./.;
           # Updated whenever go.mod dependencies change; see `nix build` error output.
-          vendorHash = "sha256-556adHvmhRzocu5ai9pEjC7LBEMnPuDTFyG8xdyDg/w=";
+          vendorHash = "sha256-WR9BGeomnT/sBvN7V69HhzjhKjC6e+FxXT75k+4FpSg=";
           subPackages = [ "cmd/wanbond" ];
           env.CGO_ENABLED = 0;
           ldflags = [ "-s" "-w" ];
