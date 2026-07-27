@@ -249,6 +249,134 @@ func TestLinuxTUNAQMDefersGSOShrinkWithBacklog(t *testing.T) {
 	}
 }
 
+type linuxTUNAQMShrinkRaceState struct {
+	events           []string
+	gso              linkGSOLimits
+	backlog          bool
+	injectOnGSOWrite bool
+}
+
+func newLinuxTUNAQMShrinkRaceKernel(
+	injectOnGSOWrite bool,
+) (*linuxTUNAQMKernel, *linuxTUNAQMShrinkRaceState) {
+	state := &linuxTUNAQMShrinkRaceState{
+		gso:              linkGSOLimits{MaxSize: 13_950, MaxSegments: 10},
+		injectOnGSOWrite: injectOnGSOWrite,
+	}
+	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
+	kernel.readTxQueueLen = func() (int, error) {
+		return tunAQMTxQueueLen, nil
+	}
+	kernel.writeTxQueueLen = func(int) error {
+		return nil
+	}
+	kernel.readGSOLimits = func() (linkGSOLimits, error) {
+		return state.gso, nil
+	}
+	kernel.writeGSOLimits = func(limits linkGSOLimits) error {
+		state.events = append(state.events, "gso")
+		state.gso = limits
+		if state.injectOnGSOWrite {
+			state.backlog = true
+		}
+		return nil
+	}
+	kernel.command = func(args ...string) ([]byte, error) {
+		switch {
+		case len(args) >= 3 && args[0] == "-j" &&
+			args[1] == "-s" && args[2] == "qdisc":
+			if state.backlog {
+				return []byte(`[
+					{"kind":"htb","root":true,"handle":"1:"},
+					{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":1,"backlog":1000,
+					 "options":{"limit":13950}}
+				]`), nil
+			}
+			return []byte(`[
+				{"kind":"htb","root":true,"handle":"1:"},
+				{"kind":"bfifo","parent":"1:1","handle":"10:",
+				 "options":{"limit":13950}}
+			]`), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
+			return []byte("class htb 1:1 root rate 5440000bit ceil 5440000bit burst 13950b cburst 13950b"), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "replace":
+			state.events = append(state.events, "class")
+			return nil, nil
+		case len(args) > 0 && args[0] == "qdisc":
+			state.events = append(state.events, "leaf")
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected tc command: %v", args)
+		}
+	}
+	return kernel, state
+}
+
+func linuxTUNAQMShrinkRaceTarget() tunAQMTargetState {
+	return tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		BurstBytes:          1395,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimitBytes:     1395,
+		GSOMaxSize:          1395,
+		GSOMaxSegments:      1,
+		AdmissionLimitBytes: 1715,
+	}
+}
+
+// Regression: D131 final review found that a drained shrink reduced the class
+// and leaf before the GSO write, exposing old-size arrivals to smaller capacity.
+func TestLinuxTUNAQMGSOShrinksBeforeLeafAndBurst(t *testing.T) {
+	kernel, state := newLinuxTUNAQMShrinkRaceKernel(false)
+	result, err := kernel.Apply(linuxTUNAQMShrinkRaceTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GSOLimitsDeferred || result.QueueLimitDeferred {
+		t.Fatalf("drained shrink unexpectedly deferred: %+v", result)
+	}
+	if got := strings.Join(state.events, ","); got != "gso,class,leaf" {
+		t.Fatalf("drained shrink mutation order = %q, want %q", got, "gso,class,leaf")
+	}
+}
+
+func TestLinuxTUNAQMPostGSOWriteBacklogDefersLeafAndBurst(t *testing.T) {
+	kernel, state := newLinuxTUNAQMShrinkRaceKernel(true)
+	target := linuxTUNAQMShrinkRaceTarget()
+	result, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(state.events, ","); got != "gso" {
+		t.Fatalf("injected-backlog shrink mutations = %q, want only GSO", got)
+	}
+	if !result.QueueLimitDeferred || result.GSOLimitsDeferred {
+		t.Fatalf("injected-backlog deferral = %+v, want leaf/burst held after applied GSO", result)
+	}
+	actual, err := kernel.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeferredTUNAQMReadback(target, actual, result); err != nil {
+		t.Fatalf("injected-backlog held readback: %v", err)
+	}
+
+	state.events = nil
+	state.backlog = false
+	state.injectOnGSOWrite = false
+	result, err = kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.QueueLimitDeferred || result.GSOLimitsDeferred {
+		t.Fatalf("post-drain reconciliation remained deferred: %+v", result)
+	}
+	if got := strings.Join(state.events, ","); got != "class,leaf" {
+		t.Fatalf("post-drain mutations = %q, want %q", got, "class,leaf")
+	}
+}
+
 // Regression: D131 review found that an occupied TUN qdisc deferred GSO shrink
 // after the class and leaf had already shrunk below the installed atomic skb.
 func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {
@@ -272,6 +400,7 @@ func testLinuxTUNAQMDeferredAtomicCapacityShrink(
 	var qdiscCommands [][]string
 	gsoWrites := 0
 	occupied := true
+	gsoLimits := linkGSOLimits{MaxSize: 13_950, MaxSegments: 10}
 	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
 	kernel.readTxQueueLen = func() (int, error) {
 		return tunAQMTxQueueLen, nil
@@ -280,10 +409,11 @@ func testLinuxTUNAQMDeferredAtomicCapacityShrink(
 		return nil
 	}
 	kernel.readGSOLimits = func() (linkGSOLimits, error) {
-		return linkGSOLimits{MaxSize: 13_950, MaxSegments: 10}, nil
+		return gsoLimits, nil
 	}
-	kernel.writeGSOLimits = func(linkGSOLimits) error {
+	kernel.writeGSOLimits = func(limits linkGSOLimits) error {
 		gsoWrites++
+		gsoLimits = limits
 		return nil
 	}
 	kernel.command = func(args ...string) ([]byte, error) {

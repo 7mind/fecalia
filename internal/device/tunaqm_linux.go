@@ -99,15 +99,48 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	gsoShrinkDeferred := gsoLimitsChanging && gsoLimitsShrinking &&
 		queueOccupied
 	result.GSOLimitsDeferred = gsoShrinkDeferred
+	postGSOWriteOccupied := false
+	if gsoLimitsChanging && gsoLimitsShrinking && !gsoShrinkDeferred {
+		if err := k.writeGSOLimits(linkGSOLimits{
+			MaxSize:     uint32(target.GSOMaxSize),
+			MaxSegments: uint32(target.GSOMaxSegments),
+		}); err != nil {
+			return result, err
+		}
+		postGSO, err := k.Read()
+		if err != nil {
+			return result, fmt.Errorf(
+				"device: read TUN AQM after GSO shrink: %w",
+				err,
+			)
+		}
+		if postGSO.GSOMaxSize != target.GSOMaxSize ||
+			postGSO.GSOMaxSegments != target.GSOMaxSegments {
+			return result, errors.New(
+				"device: GSO shrink readback does not match target",
+			)
+		}
+		current = postGSO
+		topologyReady = current.RootKind == "htb"
+		liveLeaf = topologyReady && current.LeafKind == "bfifo"
+		queueOccupied = current.QueueLength != 0 ||
+			current.BacklogBytes != 0
+		postGSOWriteOccupied = queueOccupied
+	}
 
 	queueLimit := target.QueueLimitBytes
 	if liveLeaf &&
 		target.QueueLimitBytes < current.LimitBytes &&
-		current.BacklogBytes > target.QueueLimitBytes {
+		(current.BacklogBytes > target.QueueLimitBytes ||
+			postGSOWriteOccupied) {
 		queueLimit = current.LimitBytes
 		result.QueueLimitDeferred = true
 	}
 	burstBytes := target.BurstBytes
+	if postGSOWriteOccupied && burstBytes < current.BurstBytes {
+		burstBytes = current.BurstBytes
+		result.QueueLimitDeferred = true
+	}
 	if gsoShrinkDeferred {
 		if queueLimit < current.LimitBytes {
 			queueLimit = current.LimitBytes
@@ -201,6 +234,7 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 			}
 		}
 	}
+	result.AppliedBurstBytes = burstBytes
 	return result, nil
 }
 

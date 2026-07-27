@@ -66,7 +66,10 @@ func (k *deferredTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResul
 	k.actual.ObservedAt = time.Now()
 	if target.QueueLimitBytes < k.actual.LimitBytes &&
 		k.actual.BacklogBytes > target.QueueLimitBytes {
-		return tunAQMApplyResult{QueueLimitDeferred: true}, nil
+		return tunAQMApplyResult{
+			QueueLimitDeferred: true,
+			AppliedBurstBytes:  target.BurstBytes,
+		}, nil
 	}
 	k.actual.LimitBytes = target.QueueLimitBytes
 	k.actual.GSOMaxSize = target.GSOMaxSize

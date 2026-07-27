@@ -64,6 +64,7 @@ type tunAQMApplyResult struct {
 	QueueLimitDeferred bool
 	RingSizeDeferred   bool
 	GSOLimitsDeferred  bool
+	AppliedBurstBytes  int
 }
 
 type tunAQMKernel interface {
@@ -341,17 +342,10 @@ func validateDeferredTUNAQMReadback(
 		actual.LeafKind != "bfifo" {
 		return errors.New("TUN AQM non-deferred readback fields do not match target")
 	}
-	expectedBurstBytes := target.BurstBytes
-	if apply.GSOLimitsDeferred {
-		installedGSOBurst, err := exactTCHTBBurstBytes(actual.GSOMaxSize)
-		if err != nil {
-			return err
-		}
-		if expectedBurstBytes < installedGSOBurst {
-			expectedBurstBytes = installedGSOBurst
-		}
+	if apply.AppliedBurstBytes <= 0 {
+		return errors.New("TUN AQM deferred apply omitted exact burst target")
 	}
-	if actual.BurstBytes != expectedBurstBytes {
+	if actual.BurstBytes != apply.AppliedBurstBytes {
 		return errors.New("TUN AQM burst readback does not match installed GSO-safe target")
 	}
 	if apply.RingSizeDeferred {
