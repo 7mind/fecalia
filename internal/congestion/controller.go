@@ -256,6 +256,9 @@ func (c *Controller) ObserveInstalledIngress(actual InstalledIngressState) error
 			actual.RateBytesPerSecond,
 			c.snapshot.Target.IngressRateBytesPerSecond,
 		)
+	if actual.Fresh && c.snapshot.InstalledIngress.Fresh {
+		actual.At = c.snapshot.InstalledIngress.At
+	}
 	c.snapshot.InstalledIngress = actual
 	return nil
 }

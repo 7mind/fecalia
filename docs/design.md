@@ -518,7 +518,10 @@ the next decrease or increase waits until the device has read back the exact
 aggregate HTB rate and carrier epoch and at least
 `max(1s, active base RTT)` has elapsed after that readback. The wait also
 freezes expansion learning, so it cannot alter the installed ingress rate
-behind an apparently held outer target. A carrier-epoch transition cancels the
+behind an apparently held outer target. Repeated fresh readbacks of the same
+rate and epoch retain the first acknowledgment time; periodic reconciliation
+therefore cannot move the settlement deadline forward. A stale or mismatched
+readback re-arms the acknowledgment, and a carrier-epoch transition cancels the
 old wait. Rate reconciliation replaces the HTB class without deleting or
 re-adding a matching `fq` leaf, preserving its queue and statistics. A target
 rate or MTU change may independently resize the pre-TUN GSO limits and

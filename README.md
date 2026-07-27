@@ -231,7 +231,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
   After any rate change, another controller decision waits for exact kernel
   readback and a one-second-or-one-SRTT settling interval; rate-only changes
-  preserve the existing `fq` leaf and its state. The fair-queue limit admits
+  preserve the existing `fq` leaf and its state. Repeated exact readbacks of
+  the unchanged target retain the first acknowledgment time, so reconciliation
+  cannot perpetually restart that settling interval. The fair-queue limit admits
   one configured per-peer BDP plus one complete GSO batch and the 32-packet
   device queue; overload beyond that explicit bound may tail-drop and remains
   observable. Shaped FEC retains the same engine admission reservation until

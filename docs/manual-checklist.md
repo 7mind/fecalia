@@ -453,7 +453,10 @@ as historical exact-byte-shaper evidence.
       another target change, `retarget_pending` must remain 1 until
       `installed_fresh=1` for the same rate/epoch and at least
       `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
-      during that wait. A carrier-epoch transition cancels the prior wait.
+      during that wait. Repeated exact readbacks must not restart the interval:
+      under sustained congestion, the next decision occurs promptly after its
+      original deadline. A stale/mismatched readback re-arms the interval, and
+      a carrier-epoch transition cancels the prior wait.
 - [ ] For each single ACK-clocked TCP leg, the bounded `fq` leaf incurs zero
       local drops and its backlog returns to zero after the leg. An offered
       burst no larger than the calculated service backlog must also incur zero

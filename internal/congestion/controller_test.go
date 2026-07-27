@@ -170,6 +170,18 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 		t.Fatalf("target changed before post-readback settle: target=%+v held=%t, want held %+v",
 			beforeSettle.Target, beforeSettle.Held, first.Target)
 	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(time.Second),
+		Epoch:              epoch,
+		RateBytesPerSecond: first.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := controller.Snapshot().InstalledIngress.At; got != at.Add(450*time.Millisecond) {
+		t.Fatalf("repeated exact installed-rate readback moved settle start to %s, want %s",
+			got, at.Add(450*time.Millisecond))
+	}
 
 	afterSettle, err := controller.Observe(congestion.ActualState{
 		At: at.Add(1500 * time.Millisecond), Epoch: epoch,

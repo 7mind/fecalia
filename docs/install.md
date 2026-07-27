@@ -462,8 +462,10 @@ Common rules, either policy:
   loss. Expansion learning uses loaded samples only; idle probe/control bytes
   do not lower DATA admission. After a target change, another decision waits
   for exact installed-rate/epoch readback and at least the larger of one second
-  or the active base RTT; a carrier change cancels the old wait. Q91 defines no
-  fixed absolute-goodput gate.
+  or the active base RTT. Repeated exact readbacks of the unchanged target
+  retain the first acknowledgment time; a stale/mismatched readback re-arms it,
+  and a carrier change cancels the old wait. Q91 defines no fixed
+  absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
   the daemon can install and read back HTB+`fq`, the rate, queue length, and
   every bounded-queue parameter. The `fq` packet and per-flow limits both equal
