@@ -415,7 +415,8 @@ deliberate boundaries you must plan around:
   shaper and early TUN AQM start conservatively, raise their targets above the
   measured seed while clean loaded samples support growth, and reduce on queue
   delay that remains beyond both the base-RTT allowance and four probe RTTVARs
-  for one continuous second, or immediately on fresh authenticated loss.
+  for one continuous second, or immediately once per fresh authenticated-loss
+  report even when that report arrives after a later unloaded byte interval.
   `link_bandwidth_limit` is the distinct
   optional operator safety ceiling; omitting it leaves discovery uncapped.
   Legacy active-backup frame-rate knobs likewise seed the controller from

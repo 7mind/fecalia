@@ -575,14 +575,16 @@ the next DATA admission target. It starts at 85% of the measured outer seed,
 raises the target by 10% of that seed after a clean loaded sample, and on
 congestion reduces it to 85% of the prior target. Emitted bytes are not
 acknowledged delivery and therefore do not impose a second downward cap.
-Congestion requires a loaded sample plus either fresh authenticated DATA loss
-of at least 0.5%, or queue delay that remains at least
+Congestion requires either a newly accepted authenticated DATA-loss report of
+at least 0.5%, or a loaded sample whose queue delay remains at least
 `max(baseRTT/2,10ms)+4*RTTVAR` continuously for one elapsed second. The first
 qualifying delay observation holds the target and starts that dwell; a
 below-threshold or unloaded observation, counter regression, carrier-epoch
 transition, or pending retarget settlement resets it. RTTVAR and the dwell
-qualify only the delay signal; fresh authenticated loss remains an immediate
-congestion observation.
+qualify only the delay signal. DATA-loss reports finalize after resequencing
+and return asynchronously, so the controller identifies each locally accepted
+report with a monotonic revision and applies its immediate decrease exactly
+once, regardless of the later byte interval's load.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
 delay can still decrease it after the same continuous dwell. Counter regression

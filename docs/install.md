@@ -474,13 +474,15 @@ Common rules, either policy:
   outer samples add 10% of
   `Rseed`; queue delay that remains at least
   `max(active base RTT/2,10ms)+4*probe RTTVAR` continuously for one elapsed
-  second, or fresh authenticated loss of at least 0.5%, reduces the target by
-  one 0.85 multiplicative step. A transient delay crossing holds the target;
+  second reduces the target. Each newly accepted fresh authenticated-loss
+  report of at least 0.5% independently reduces the target by one 0.85
+  multiplicative step, even if it arrives during a later unloaded byte
+  interval; a retained report cannot replay that decrease. A transient delay crossing holds the target;
   a below-threshold or unloaded observation, counter regression, carrier
   transition, or pending retarget settlement resets the dwell. Emitted
   outer rate is not acknowledged delivery and does not impose another
-  downward cap. RTTVAR qualifies only queue delay; fresh authenticated loss
-  remains immediate. Every target
+  downward cap. RTTVAR qualifies only queue delay; a new authenticated-loss
+  report remains immediate. Every target
   retargets the same outer shaper and derives `B=max(Lmax,ceil(Rtarget*link_rtt))`.
   Already-admitted deadlines remain unchanged and B shrink waits for retained
   DATA to fit. Expansion learning uses loaded samples only; idle probe/control bytes

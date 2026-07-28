@@ -471,11 +471,14 @@ as historical exact-byte-shaper evidence.
       authenticated feedback has been adopted, stale feedback cannot raise the
       target or cause a loss-based decrease; only current local queue delay may
       still drive a fail-closed decrease after continuous qualification.
-- [ ] Under a loaded sample, queue delay at least
-      `max(base RTT/2,10ms)+4*wanbond_path_jitter_seconds` continuously for one
-      elapsed second, or fresh authenticated DATA loss of at least 0.5%,
-      reduces the target; RTTVAR and dwell qualify only delay and must not
-      suppress the immediate fresh-loss response.
+- [ ] Queue delay at least
+      `max(base RTT/2,10ms)+4*wanbond_path_jitter_seconds` under continuous load
+      for one elapsed second reduces the target. A newly accepted fresh
+      authenticated DATA-loss report of at least 0.5% also reduces it exactly
+      once, even when the report arrives after a later unloaded byte interval;
+      retaining the same report through another controller tick must not
+      decrease again. RTTVAR and dwell qualify only delay and must not suppress
+      the immediate fresh-loss response.
       A no-loss variable-RTT trace whose delay remains below that threshold
       must not reduce the target. A single crossing followed by a
       below-threshold or unloaded observation must not reduce it; counter
