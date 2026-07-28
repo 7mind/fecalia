@@ -197,7 +197,7 @@ func (m *Multipath) emitProbes() {
 			continue
 		}
 		feedbacks[h.peer] = h.peer.dataLoss.buildReport(
-			h.peer.contracts.receivedSnapshot(),
+			h.peer.contracts.receivedDataLossSnapshot(),
 			m.clock.Now(),
 		)
 	}

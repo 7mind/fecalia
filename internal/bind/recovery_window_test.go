@@ -536,7 +536,7 @@ func TestRecoveryHeadroomFactorFloorAndSaturation(t *testing.T) {
 	}
 }
 
-func TestReceivedContractRotationClearsEvidencePreservingHighWater(t *testing.T) {
+func TestReceivedServiceChangeClearsEvidencePreservingHighWater(t *testing.T) {
 	clock := newFakeClock()
 	coordinator := newRecoveryContractCoordinator(1, clock)
 	first := receiverContractMessage(1, 80*time.Millisecond)
@@ -546,16 +546,16 @@ func TestReceivedContractRotationClearsEvidencePreservingHighWater(t *testing.T)
 	if !completeReceiverACK(coordinator, 100, first, 7, receiverContractSource) {
 		t.Fatal("first ACK rejected")
 	}
-	second := receiverContractMessage(2, 80*time.Millisecond)
+	second := receiverContractMessage(2, 90*time.Millisecond)
 	if _, ok := coordinator.acceptOffer(100, second, func() {}); !ok {
-		t.Fatal("renewal offer rejected")
+		t.Fatal("service-change offer rejected")
 	}
 	snapshot := coordinator.receivedSnapshot()
 	if snapshot.acked || snapshot.message.ContractID != 2 {
-		t.Fatalf("renewal snapshot = %+v, want ID 2 unacked", snapshot)
+		t.Fatalf("service-change snapshot = %+v, want ID 2 unacked", snapshot)
 	}
 	if _, ok := coordinator.acceptOffer(100, first, func() {}); ok {
-		t.Fatal("lower ContractID accepted after renewal")
+		t.Fatal("lower ContractID accepted after service change")
 	}
 	if got := coordinator.receivedSnapshot().message.ContractID; got != 2 {
 		t.Fatalf("lower ContractID changed high-water to %d", got)
@@ -569,6 +569,116 @@ func TestReceivedContractRotationClearsEvidencePreservingHighWater(t *testing.T)
 	snapshot = coordinator.receivedSnapshot()
 	if installs != 1 || snapshot.session != 101 || snapshot.acked {
 		t.Fatalf("restart snapshot = %+v installs=%d, want session 101 unacked", snapshot, installs)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: a same-service lease renewal is not a topology transition.
+func TestSameServiceRenewalPreservesAcknowledgedWindowUntilACKCompletion(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	first := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, first, func() {}); !ok {
+		t.Fatal("first offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, first, pathKey, receiverContractSource) {
+		t.Fatal("first ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	before := m.contracts.receivedSnapshot()
+	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
+	fallbackArms := m.resequencer.Load().Stats().FallbackWindowArms
+
+	clock.advance(100 * time.Millisecond)
+	second := receiverContractMessage(2, first.ServiceBound)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, second, func() {}); !ok {
+		t.Fatal("same-service renewal rejected")
+	}
+	pending := m.contracts.receivedSnapshot()
+	if pending.generation != before.generation {
+		t.Fatalf(
+			"same-service renewal generation = %d, want retained %d",
+			pending.generation,
+			before.generation,
+		)
+	}
+	if !pending.acked || pending.message != first || pending.validUntil != before.validUntil {
+		t.Fatalf("pending renewal snapshot = %+v, want prior acknowledged lease %+v", pending, before)
+	}
+	dataLoss := m.contracts.receivedDataLossSnapshot()
+	if dataLoss.generation != before.generation ||
+		dataLoss.message != second ||
+		!dataLoss.validUntil.Equal(clock.Now().Add(second.Lifetime)) {
+		t.Fatalf("pending renewal DATA-loss identity = %+v", dataLoss)
+	}
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, first, func() {}); ok {
+		t.Fatal("lower ContractID accepted during pending renewal")
+	}
+	if got := m.contracts.receivedDataLossSnapshot().message.ContractID; got != second.ContractID {
+		t.Fatalf("lower ContractID changed accepted high-water to %d", got)
+	}
+	if got, armed := m.resequencer.Load().ArmedDeadline(); !armed || got != deadline {
+		t.Fatalf("pending renewal deadline = %v,%v, want retained %v,true", got, armed, deadline)
+	}
+	if got := m.resequencer.Load().Stats().FallbackWindowArms; got != fallbackArms {
+		t.Fatalf("pending renewal fallback arms = %d, want %d", got, fallbackArms)
+	}
+
+	if !completeReceiverACK(m.contracts, receiverContractSession, second, pathKey, receiverContractSource) {
+		t.Fatal("renewal ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	completed := m.contracts.receivedSnapshot()
+	if completed.generation != before.generation ||
+		!completed.acked ||
+		completed.message != second ||
+		!completed.validUntil.Equal(clock.Now().Add(second.Lifetime)) {
+		t.Fatalf("completed renewal snapshot = %+v", completed)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. A failed renewal cannot refresh older ACK evidence.
+func TestFailedSameServiceRenewalDoesNotExtendAcknowledgedWindow(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 1)
+	bringProberUpClean(t, probers[0], m.psk, clock, testProbeUpSucc)
+	first := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, first, func() {}); !ok {
+		t.Fatal("first offer rejected")
+	}
+	pathKey := reseqPathKey(m.paths[0].id, 9)
+	if !completeReceiverACK(m.contracts, receiverContractSession, first, pathKey, receiverContractSource) {
+		t.Fatal("first ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	before := m.contracts.receivedSnapshot()
+
+	clock.advance(100 * time.Millisecond)
+	second := receiverContractMessage(2, first.ServiceBound)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, second, func() {}); !ok {
+		t.Fatal("same-service renewal rejected")
+	}
+	admission, ok := m.contracts.admitReceivedACK(
+		receiverContractSession,
+		second,
+		pathKey,
+		receiverContractSource,
+	)
+	if !ok || !m.contracts.cancelReceivedACK(admission) {
+		t.Fatal("failed renewal ACK was not admitted and cancelled")
+	}
+	pending := m.contracts.receivedSnapshot()
+	if !pending.acked || pending.message != first || pending.validUntil != before.validUntil {
+		t.Fatalf("failed renewal changed acknowledged evidence: before=%+v after=%+v", before, pending)
+	}
+
+	clock.advance(before.validUntil.Sub(clock.Now()) - conservativeRecoveryService + time.Nanosecond)
+	m.refreshPeerRecoveryWindow(m.peerState)
+	armedAt := clock.Now()
+	if deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey); !deadline.Equal(
+		armedAt.Add(conservativeRecoveryService),
+	) {
+		t.Fatalf("failed renewal extended old evidence: deadline=%v want=%v",
+			deadline, armedAt.Add(conservativeRecoveryService))
 	}
 }
 
@@ -669,11 +779,11 @@ func TestPausedRecoveryRefreshCannotCrossReceiverGeneration(t *testing.T) {
 		run  transition
 	}{
 		{
-			name: "ContractID renewal",
+			name: "contract service change",
 			run: func(t *testing.T, m *Multipath, _ *reseq.Resequencer, _ uint32) {
-				second := receiverContractMessage(2, 80*time.Millisecond)
+				second := receiverContractMessage(2, 90*time.Millisecond)
 				if _, ok := m.contracts.acceptOffer(receiverContractSession, second, func() {}); !ok {
-					t.Fatal("renewal rejected")
+					t.Fatal("service change rejected")
 				}
 				m.publishPeerRecoveryGeneration(m.peerState, m.contracts.receivedSnapshot().generation)
 			},
@@ -781,17 +891,17 @@ func TestPausedRecoveryRefreshCannotCrossReceiverGeneration(t *testing.T) {
 	}
 }
 
-func TestLiveFastGapRearmsFreshTOnContractOrSessionGeneration(t *testing.T) {
+func TestLiveFastGapRearmsFreshTOnServiceOrSessionGeneration(t *testing.T) {
 	tests := []struct {
 		name       string
 		transition func(*testing.T, *Multipath)
 	}{
 		{
-			name: "ContractID",
+			name: "service",
 			transition: func(t *testing.T, m *Multipath) {
-				next := receiverContractMessage(2, 80*time.Millisecond)
+				next := receiverContractMessage(2, 90*time.Millisecond)
 				if _, ok := m.contracts.acceptOffer(receiverContractSession, next, func() {}); !ok {
-					t.Fatal("renewal rejected")
+					t.Fatal("service change rejected")
 				}
 				m.publishPeerRecoveryGeneration(m.peerState, m.contracts.receivedSnapshot().generation)
 			},
@@ -877,19 +987,6 @@ func TestTopologyAuthorityClosesEveryPrepublicationTransitionInterval(t *testing
 		name string
 		run  transition
 	}{
-		{
-			name: "ContractID renewal",
-			run: func(t *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
-				if _, ok := m.contracts.acceptOffer(
-					receiverContractSession,
-					receiverContractMessage(2, 80*time.Millisecond),
-					func() {},
-				); !ok {
-					t.Fatal("renewal rejected")
-				}
-				return rq
-			},
-		},
 		{
 			name: "contract service change",
 			run: func(t *testing.T, m *Multipath, rq *reseq.Resequencer, _ uint32) *reseq.Resequencer {
@@ -1215,9 +1312,9 @@ func TestTopologyAdvanceBeforePublicationForcesConservativeNewGap(t *testing.T) 
 	}
 	m.refreshPeerRecoveryWindow(m.peerState)
 
-	renewal := receiverContractMessage(2, message.ServiceBound)
-	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
-		t.Fatal("renewal rejected")
+	serviceChange := receiverContractMessage(2, message.ServiceBound+time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, serviceChange, func() {}); !ok {
+		t.Fatal("service change rejected")
 	}
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
@@ -1242,10 +1339,10 @@ func TestTopologyAdvanceBeforePublicationPreventsOldFastExpiry(t *testing.T) {
 	oldDeadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
 	clock.advance(oldDeadline.Sub(clock.Now()) - time.Nanosecond)
 
-	renewal := receiverContractMessage(2, message.ServiceBound)
+	serviceChange := receiverContractMessage(2, message.ServiceBound+time.Millisecond)
 	transitionAt := clock.Now()
-	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
-		t.Fatal("renewal rejected")
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, serviceChange, func() {}); !ok {
+		t.Fatal("service change rejected")
 	}
 	clock.advance(time.Nanosecond)
 	if item, ok := m.resequencer.Load().Pop(); ok {
@@ -1717,9 +1814,9 @@ func TestReceiveFuncReleasesByAuthorityTransitionDeadlineWhenPublicationStalls(t
 
 	clock.advance(time.Nanosecond)
 	transitionAt := clock.Now()
-	renewal := receiverContractMessage(2, recoveryReceiveService)
-	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
-		t.Fatal("renewal rejected")
+	serviceChange := receiverContractMessage(2, recoveryReceiveService+time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, serviceChange, func() {}); !ok {
+		t.Fatal("service change rejected")
 	}
 	// Deliberately do not call publishPeerRecoveryGeneration: this holds the
 	// production interval between coordinator advance and explicit publication.
@@ -1753,9 +1850,9 @@ func TestReceiveFuncExpiresImmediatelyWhenAuthorityObservedPastTransitionDeadlin
 	drainRecoveryReceiveSignals(m)
 	clock.advance(time.Nanosecond)
 	transitionAt := clock.Now()
-	renewal := receiverContractMessage(2, recoveryReceiveService)
-	if _, ok := m.contracts.acceptOffer(receiverContractSession, renewal, func() {}); !ok {
-		t.Fatal("renewal rejected")
+	serviceChange := receiverContractMessage(2, recoveryReceiveService+time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, serviceChange, func() {}); !ok {
+		t.Fatal("service change rejected")
 	}
 	clock.advance(conservativeRecoveryService + time.Nanosecond)
 
@@ -1820,10 +1917,10 @@ func TestReceiveFuncCoalescesTopologyAdvancesAtLatestTransitionDeadline(t *testi
 	clock.advance(time.Millisecond)
 	if _, ok := m.contracts.acceptOffer(
 		receiverContractSession,
-		receiverContractMessage(2, recoveryReceiveService),
+		receiverContractMessage(2, recoveryReceiveService+time.Millisecond),
 		func() {},
 	); !ok {
-		t.Fatal("renewal rejected")
+		t.Fatal("service change rejected")
 	}
 	clock.advance(time.Millisecond)
 	if _, changed := m.contracts.adoptReceivedSession(receiverContractSession + 1); !changed {

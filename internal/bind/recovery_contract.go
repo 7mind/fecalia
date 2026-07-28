@@ -82,9 +82,13 @@ type recoveryContractCoordinator struct {
 	leaseUntil  time.Time
 	invalidated bool
 
-	haveReceived                bool
-	receivedSession             uint64
+	haveReceived    bool
+	receivedSession uint64
+	// received owns accepted identity/high-water; acknowledged owns only ACK-completed evidence.
 	received                    receivedRecoveryContract
+	haveAcknowledged            bool
+	acknowledgedSession         uint64
+	acknowledged                receivedRecoveryContract
 	receivedGeneration          uint64
 	receivedEvidenceRevision    uint64
 	receivedPublicationRevision uint64
@@ -218,6 +222,9 @@ func (c *recoveryContractCoordinator) disable() {
 	c.haveReceived = false
 	c.receivedSession = 0
 	c.received = receivedRecoveryContract{}
+	c.haveAcknowledged = false
+	c.acknowledgedSession = 0
+	c.acknowledged = receivedRecoveryContract{}
 	c.observedSources = nil
 	c.haveAdoptedSession = false
 	c.adoptedSession = 0
@@ -281,7 +288,7 @@ func (c *recoveryContractCoordinator) invalidateReceivedEvidence() uint64 {
 func (c *recoveryContractCoordinator) invalidateReceivedFastEvidence() (uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.pendingReceivedACKs) == 0 && len(c.received.venues) == 0 {
+	if len(c.pendingReceivedACKs) == 0 && len(c.acknowledged.venues) == 0 {
 		return c.receivedGeneration, false
 	}
 	c.advanceReceivedGenerationLocked()
@@ -292,6 +299,9 @@ func (c *recoveryContractCoordinator) advanceReceivedGenerationLocked() {
 	c.bumpReceivedGenerationLocked()
 	c.bumpReceivedEvidenceLocked()
 	c.received.venues = nil
+	c.haveAcknowledged = false
+	c.acknowledgedSession = 0
+	c.acknowledged = receivedRecoveryContract{}
 	c.observedSources = nil
 	c.pendingReceivedACKs = nil
 	c.receiverDecision = recoveryReceiverDecision{
@@ -333,7 +343,33 @@ func (c *recoveryContractCoordinator) observeReceivedSource(pathKey uint32, sour
 func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.haveReceived {
+	session, contract, present := c.receivedRecoveryEvidenceLocked()
+	return c.receivedSnapshotLocked(session, contract, present)
+}
+
+func (c *recoveryContractCoordinator) receivedDataLossSnapshot() receivedRecoverySnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.receivedSnapshotLocked(c.receivedSession, c.received, c.haveReceived)
+}
+
+func (c *recoveryContractCoordinator) receivedRecoveryEvidenceLocked() (
+	uint64,
+	receivedRecoveryContract,
+	bool,
+) {
+	if c.haveAcknowledged {
+		return c.acknowledgedSession, c.acknowledged, true
+	}
+	return c.receivedSession, c.received, c.haveReceived
+}
+
+func (c *recoveryContractCoordinator) receivedSnapshotLocked(
+	session uint64,
+	contract receivedRecoveryContract,
+	present bool,
+) receivedRecoverySnapshot {
+	if !present {
 		return receivedRecoverySnapshot{
 			generation:       c.receivedGeneration,
 			evidenceRevision: c.receivedEvidenceRevision,
@@ -341,15 +377,15 @@ func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapsho
 	}
 	snapshot := receivedRecoverySnapshot{
 		present:          true,
-		session:          c.receivedSession,
-		message:          c.received.message,
-		validUntil:       c.received.acceptedAt.Add(c.received.message.Lifetime),
+		session:          session,
+		message:          contract.message,
+		validUntil:       contract.acceptedAt.Add(contract.message.Lifetime),
 		generation:       c.receivedGeneration,
 		evidenceRevision: c.receivedEvidenceRevision,
-		acked:            len(c.received.venues) > 0,
-		invalid:          c.received.invalid,
+		acked:            len(contract.venues) > 0,
+		invalid:          contract.invalid,
 	}
-	for venue := range c.received.venues {
+	for venue := range contract.venues {
 		snapshot.venues = append(snapshot.venues, venue)
 	}
 	sort.Slice(snapshot.venues, func(i, j int) bool {
@@ -400,21 +436,22 @@ func (c *recoveryContractCoordinator) reserveReceivedPublication(
 ) (uint64, uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	session, contract, present := c.receivedRecoveryEvidenceLocked()
 	if c.receivedGeneration != snapshot.generation ||
 		c.receivedEvidenceRevision != snapshot.evidenceRevision ||
-		c.haveReceived != snapshot.present {
+		present != snapshot.present {
 		return 0, 0, false
 	}
 	if snapshot.present &&
-		(c.receivedSession != snapshot.session ||
-			c.received.message != snapshot.message ||
-			!c.received.acceptedAt.Add(c.received.message.Lifetime).Equal(snapshot.validUntil) ||
-			c.received.invalid != snapshot.invalid ||
-			len(c.received.venues) != len(snapshot.venues)) {
+		(session != snapshot.session ||
+			contract.message != snapshot.message ||
+			!contract.acceptedAt.Add(contract.message.Lifetime).Equal(snapshot.validUntil) ||
+			contract.invalid != snapshot.invalid ||
+			len(contract.venues) != len(snapshot.venues)) {
 		return 0, 0, false
 	}
 	for _, venue := range snapshot.venues {
-		if _, exists := c.received.venues[venue]; !exists {
+		if _, exists := contract.venues[venue]; !exists {
 			return 0, 0, false
 		}
 	}
@@ -487,11 +524,19 @@ func (c *recoveryContractCoordinator) completeReceivedACK(admission receivedACKA
 		return false
 	}
 	venue := admission.venue
-	if _, exists := c.received.venues[venue]; !exists {
-		if c.received.venues == nil {
-			c.received.venues = make(map[recoveryVenueKey]struct{})
+	if !c.haveAcknowledged ||
+		c.acknowledgedSession != admission.session ||
+		c.acknowledged.message != admission.message {
+		c.haveAcknowledged = true
+		c.acknowledgedSession = admission.session
+		c.acknowledged = receivedRecoveryContract{
+			message:    c.received.message,
+			acceptedAt: c.received.acceptedAt,
+			venues:     map[recoveryVenueKey]struct{}{venue: {}},
 		}
-		c.received.venues[venue] = struct{}{}
+		c.bumpReceivedEvidenceLocked()
+	} else if _, exists := c.acknowledged.venues[venue]; !exists {
+		c.acknowledged.venues[venue] = struct{}{}
 		c.bumpReceivedEvidenceLocked()
 	}
 	c.ackWrites++
@@ -773,7 +818,7 @@ func (c *recoveryContractCoordinator) acceptOffer(
 			return ack, true
 		}
 		if sameRecoveryService(existing.message, message) {
-			c.advanceReceivedGenerationLocked()
+			c.pendingReceivedACKs = nil
 			c.received = receivedRecoveryContract{message: message, acceptedAt: now}
 			ack := message
 			ack.Type = telemetry.RecoveryContractACK
