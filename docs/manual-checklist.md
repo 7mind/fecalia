@@ -529,6 +529,11 @@ as historical exact-byte-shaper evidence.
       packet at the GSO-write seam: the subsequent occupancy read must retain
       the old aggregate leaf and burst for that reconciliation. Drain it and
       verify a later reconciliation applies the exact desired leaf and burst.
+- [ ] Exercise a mixed transition from `gso_max_size/gso_max_segs=64000/64`
+      to `64170/46`. Despite the segment-count decrease, verify leaf and burst
+      grow to at least 64,170 bytes before the combined GSO write. A
+      segment-only change at fixed maximum byte size must not trigger the
+      byte-capacity shrink sequence.
 - [ ] Confirm the plaintext `bfifo` target equals
       `max(peerCount*gso_max_size,ceil(ingress_target*20ms))` and its persistent
       service time does not exceed

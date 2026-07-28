@@ -248,7 +248,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   until every peer's retained bytes fit. While GSO shrink waits, the installed
   aggregate leaf remains unchanged (preserving one old atomic quantum per
   peer), and the normalized HTB burst remains at least the installed link GSO
-  maximum. After drain, the smaller GSO limits install first; the daemon
+  maximum. Ordering follows the maximum GSO byte size, not segment-count
+  direction: a larger byte quantum grows leaf/burst first even if the segment
+  count falls. After drain, a smaller byte quantum installs first; the daemon
   re-reads qdisc occupancy and shrinks the leaf and burst only if it remains
   empty. A post-GSO-write arrival keeps both at their old values for a later
   reconciliation. Repeated exact readbacks of

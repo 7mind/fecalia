@@ -516,9 +516,12 @@ Common rules, either policy:
   While an occupied GSO shrink remains deferred, the effective `bfifo` limit
   stays at its installed aggregate value (one old atomic quantum per peer) and
   the normalized HTB burst stays at least the installed link GSO maximum.
-  After drain, the smaller GSO limits install and read back first; a second
-  qdisc occupancy read permits the leaf/burst shrink only while still empty.
-  A new arrival retains the old leaf/burst for a later reconciliation.
+  Ordering follows `gso_max_size`, not segment-count direction: a larger byte
+  quantum grows leaf/burst before the combined GSO size/segment write, even if
+  the segment count decreases. After drain, a smaller byte quantum installs
+  and reads back first; a second qdisc occupancy read permits the leaf/burst
+  shrink only while still empty. A new arrival retains the old leaf/burst for
+  a later reconciliation.
   The ptr-ring capacity instead retains the maximum of the observed interface
   baseline, later larger readbacks, and derived `J+1` for the live interface.
   The daemon writes only to grow an undersized ring and never shrinks it until
