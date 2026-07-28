@@ -394,8 +394,9 @@ failover); an optional `[scheduler]` block can instead select the
 turns on, off by default, per-(peer,path) exact-byte send **shaping**. On Linux
 active-backup additionally installs an early `wanbond0` HTB+byte-bounded-`bfifo` queue and
 adapts its TUN ingress target from the active carrier's emitted outer rate,
-probe queue delay qualified by probe RTTVAR, true outer/inner expansion, and
-fresh authenticated DATA loss. Weighted scheduling retains fixed per-path shapers because simultaneous
+probe queue delay qualified by probe RTTVAR and sustained for one elapsed
+second, true outer/inner expansion, and fresh authenticated DATA loss. Weighted
+scheduling retains fixed per-path shapers because simultaneous
 striping has no single authenticated carrier epoch.
 
 ```toml
@@ -471,9 +472,12 @@ Common rules, either policy:
   activity does not reduce it. Three consecutive loaded, clean, settled
   intervals recover 0.01, while idle intervals do not recover. Clean loaded
   outer samples add 10% of
-  `Rseed`; queue delay at least
-  `max(active base RTT/2,10ms)+4*probe RTTVAR`, or fresh authenticated loss of
-  at least 0.5%, reduces the target by one 0.85 multiplicative step. Emitted
+  `Rseed`; queue delay that remains at least
+  `max(active base RTT/2,10ms)+4*probe RTTVAR` continuously for one elapsed
+  second, or fresh authenticated loss of at least 0.5%, reduces the target by
+  one 0.85 multiplicative step. A transient delay crossing holds the target;
+  a below-threshold or unloaded observation, counter regression, carrier
+  transition, or pending retarget settlement resets the dwell. Emitted
   outer rate is not acknowledged delivery and does not impose another
   downward cap. RTTVAR qualifies only queue delay; fresh authenticated loss
   remains immediate. Every target
@@ -484,7 +488,8 @@ Common rules, either policy:
   for exact installed-rate/epoch readback and at least the larger of one second
   or the active base RTT. Repeated exact readbacks of the unchanged target
   retain the first acknowledgment time; a stale/mismatched readback re-arms it,
-  and a carrier change cancels the old wait. Q91 defines no fixed
+  a carrier change cancels the old wait, and the wait cannot accumulate delay
+  dwell. Q91 defines no fixed
   absolute-goodput gate.
 - Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
   the daemon can install and read back HTB+`bfifo`, the rate, explicit HTB burst,

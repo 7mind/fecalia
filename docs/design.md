@@ -568,13 +568,18 @@ the next DATA admission target. It starts at 85% of the measured outer seed,
 raises the target by 10% of that seed after a clean loaded sample, and on
 congestion reduces it to 85% of the prior target. Emitted bytes are not
 acknowledged delivery and therefore do not impose a second downward cap.
-Congestion requires a loaded sample plus either queue delay at least
-`max(baseRTT/2,10ms)+4*RTTVAR` or fresh authenticated DATA loss of at least
-0.5%. RTTVAR qualifies only the delay signal; fresh authenticated loss remains
-an immediate congestion observation.
+Congestion requires a loaded sample plus either fresh authenticated DATA loss
+of at least 0.5%, or queue delay that remains at least
+`max(baseRTT/2,10ms)+4*RTTVAR` continuously for one elapsed second. The first
+qualifying delay observation holds the target and starts that dwell; a
+below-threshold or unloaded observation, counter regression, carrier-epoch
+transition, or pending retarget settlement resets it. RTTVAR and the dwell
+qualify only the delay signal; fresh authenticated loss remains an immediate
+congestion observation.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
-delay can still decrease it. Counter regression holds the target. An A→B→A carrier
+delay can still decrease it after the same continuous dwell. Counter regression
+holds the target. An A→B→A carrier
 transition creates three different epochs and resets base RTT/rate deltas, so
 late A evidence cannot affect the new A epoch. The aggregate TUN target sums
 the current peers' inner-byte targets.
@@ -598,12 +603,14 @@ adds `0.01` only after three consecutive loaded, clean, settled intervals;
 idle intervals neither recover nor accumulate a streak.
 
 Every outer-target, expansion-derived ingress-target, or ingress-headroom change enters an
-`AwaitingInstalled` state. The first congestion decision remains prompt, but
-the next decrease or increase waits until the device has read back the exact
+`AwaitingInstalled` state. A fresh-loss congestion decision remains prompt,
+while a delay-only decision requires its continuous dwell. The next decrease
+or increase waits until the device has read back the exact
 aggregate HTB rate and carrier epoch and at least
 `max(1s, active base RTT)` has elapsed after that readback. The wait also
-freezes expansion learning, so it cannot alter the installed ingress rate
-behind an apparently held outer target. Repeated fresh readbacks of the same
+freezes expansion learning and resets delay dwell, so neither can alter the
+installed ingress rate or accumulate congestion evidence behind an apparently
+held outer target. Repeated fresh readbacks of the same
 rate and epoch retain the first acknowledgment time; periodic reconciliation
 therefore cannot move the settlement deadline forward. A stale or mismatched
 readback re-arms the acknowledgment, and a carrier-epoch transition cancels the

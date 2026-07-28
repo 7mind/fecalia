@@ -228,8 +228,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   sender backpressure at a live outer target. Under
   active-backup, Linux owns a small `wanbond0` HTB+byte-bounded-`bfifo` qdisc and adapts
   both the path shaper and TUN ingress rate from successfully emitted outer
-  bytes, probe queue delay qualified by the probe RTTVAR, measured encapsulation
-  expansion, and fresh authenticated DATA loss; this prevents the
+  bytes, probe queue delay qualified by the probe RTTVAR and sustained for one
+  elapsed second, measured encapsulation expansion, and fresh authenticated
+  DATA loss; this prevents the
   embedded engine's 1,024-container peer queue from hiding congestion from AQM.
   `link_bandwidth` supplies the measured seed and optional
   `link_bandwidth_limit` supplies an operator ceiling.
@@ -411,8 +412,9 @@ deliberate boundaries you must plan around:
   absolute throughput or bufferbloat. Under active-backup, the outer exact-byte
   shaper and early TUN AQM start conservatively, raise their targets above the
   measured seed while clean loaded samples support growth, and reduce on queue
-  delay beyond both the base-RTT allowance and four probe RTTVARs, or on fresh
-  authenticated loss. `link_bandwidth_limit` is the distinct
+  delay that remains beyond both the base-RTT allowance and four probe RTTVARs
+  for one continuous second, or immediately on fresh authenticated loss.
+  `link_bandwidth_limit` is the distinct
   optional operator safety ceiling; omitting it leaves discovery uncapped.
   Legacy active-backup frame-rate knobs likewise seed the controller from
   `R=per_path_capacity_fps*1500` and infer RTT as `B/R`; they no longer impose

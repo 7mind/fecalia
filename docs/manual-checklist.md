@@ -467,14 +467,19 @@ as historical exact-byte-shaper evidence.
       DATA-loss feedback never changes the new epoch's target. Once current
       authenticated feedback has been adopted, stale feedback cannot raise the
       target or cause a loss-based decrease; only current local queue delay may
-      still drive a fail-closed decrease.
+      still drive a fail-closed decrease after continuous qualification.
 - [ ] Under a loaded sample, queue delay at least
-      `max(base RTT/2,10ms)+4*wanbond_path_jitter_seconds`, or fresh
-      authenticated DATA loss of at least 0.5%, reduces the target; RTTVAR
-      qualifies only delay and must not suppress the fresh-loss response.
+      `max(base RTT/2,10ms)+4*wanbond_path_jitter_seconds` continuously for one
+      elapsed second, or fresh authenticated DATA loss of at least 0.5%,
+      reduces the target; RTTVAR and dwell qualify only delay and must not
+      suppress the immediate fresh-loss response.
       A no-loss variable-RTT trace whose delay remains below that threshold
-      must not reduce the target. One congested decision multiplies the prior
-      target by exactly 0.85; a partially offered/emitted interval must not
+      must not reduce the target. A single crossing followed by a
+      below-threshold or unloaded observation must not reduce it; counter
+      regression, carrier transition, and pending retarget settlement must
+      also reset the dwell. Sustained delay must reduce after the continuous
+      second. One congested decision multiplies the prior target by exactly
+      0.85; a partially offered/emitted interval must not
       impose a second delivery-derived cap. Clean emitted service permits bounded
       additive increase above the seed. With `link_bandwidth_limit` set, the
       target never exceeds that explicit ceiling; with it omitted, confirm a
@@ -482,8 +487,8 @@ as historical exact-byte-shaper evidence.
       TUN target follows the learned outer/inner ratio and exact kernel
       readback follows the target with an in-place `bfifo` change: packet/drop
       counters must remain monotonic and a correct live leaf must never be
-      deleted/re-added. The first congested tick must decrease promptly. Before
-      another target change, `retarget_pending` must remain 1 until
+      deleted/re-added. The first fresh authenticated-loss tick must decrease
+      promptly. Before another target change, `retarget_pending` must remain 1 until
       `installed_fresh=1` for the same rate/epoch and at least
       `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
       during that wait. Repeated exact readbacks must not restart the interval:
