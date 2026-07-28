@@ -5,11 +5,13 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	v2 "math/rand/v2"
+	"sync"
 )
 
 type junkCreator struct {
-	aSecCfg  aSecCfgType
-	cha8Rand *v2.ChaCha8
+	aSecCfg    aSecCfgType
+	cha8Rand   *v2.ChaCha8
+	cha8RandMu *sync.Mutex
 }
 
 func NewJunkCreator(aSecCfg aSecCfgType) (junkCreator, error) {
@@ -18,7 +20,11 @@ func NewJunkCreator(aSecCfg aSecCfgType) (junkCreator, error) {
 	if err != nil {
 		return junkCreator{}, err
 	}
-	return junkCreator{aSecCfg: aSecCfg, cha8Rand: v2.NewChaCha8([32]byte(buf))}, nil
+	return junkCreator{
+		aSecCfg:    aSecCfg,
+		cha8Rand:   v2.NewChaCha8([32]byte(buf)),
+		cha8RandMu: new(sync.Mutex),
+	}, nil
 }
 
 // Should be called with aSecMux RLocked
@@ -40,6 +46,8 @@ func (jc *junkCreator) CreateJunkPackets(junks *[][]byte) error {
 
 // Should be called with aSecMux RLocked
 func (jc *junkCreator) randomPacketSize() int {
+	jc.cha8RandMu.Lock()
+	defer jc.cha8RandMu.Unlock()
 	return int(
 		jc.cha8Rand.Uint64()%uint64(
 			jc.aSecCfg.JunkPacketMaxSize-jc.aSecCfg.JunkPacketMinSize,
@@ -64,6 +72,8 @@ func (jc *junkCreator) AppendJunk(writer *bytes.Buffer, size int) error {
 func (jc *junkCreator) randomJunkWithSize(size int) ([]byte, error) {
 	// TODO: use a memory pool to allocate
 	junk := make([]byte, size)
+	jc.cha8RandMu.Lock()
+	defer jc.cha8RandMu.Unlock()
 	_, err := jc.cha8Rand.Read(junk)
 	return junk, err
 }

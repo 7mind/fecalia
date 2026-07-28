@@ -3,6 +3,7 @@ package awg
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -112,4 +113,47 @@ func Test_junkCreator_appendJunk(t *testing.T) {
 		buffer.Read(read)
 		fmt.Println(string(read))
 	})
+}
+
+func TestJunkCreatorConcurrentUse(t *testing.T) {
+	jc, err := setUpJunkCreator(t)
+	if err != nil {
+		return
+	}
+	const (
+		workers    = 8
+		iterations = 100
+	)
+	start := make(chan struct{})
+	results := make(chan error, workers)
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	for worker := range workers {
+		go func() {
+			ready.Done()
+			<-start
+			for range iterations {
+				if worker%2 == 0 {
+					var junks [][]byte
+					if createErr := jc.CreateJunkPackets(&junks); createErr != nil {
+						results <- createErr
+						return
+					}
+					continue
+				}
+				if appendErr := jc.AppendJunk(new(bytes.Buffer), 64); appendErr != nil {
+					results <- appendErr
+					return
+				}
+			}
+			results <- nil
+		}()
+	}
+	ready.Wait()
+	close(start)
+	for range workers {
+		if result := <-results; result != nil {
+			t.Fatal(result)
+		}
+	}
 }
