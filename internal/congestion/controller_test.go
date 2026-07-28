@@ -270,6 +270,49 @@ func TestControllerCarrierEpochDeprecatesPriorActualState(t *testing.T) {
 	}
 }
 
+// Behavioral-Active Blackbox-Atomic. Regression: fresh loss arriving with a new
+// carrier epoch must remain actionable after the epoch initializes.
+func TestControllerNewCarrierEpochDoesNotConsumeFirstLossResponse(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(250, 0)
+	firstEpoch := congestion.CarrierEpoch{PathID: 1, Generation: 4}
+	if _, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: firstEpoch, RTT: 35 * time.Millisecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	nextEpoch := congestion.CarrierEpoch{PathID: 2, Generation: 5}
+	reset, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: nextEpoch,
+		OuterWireBytes: 100_000, InnerDataBytes: 80_000,
+		RTT:               40 * time.Millisecond,
+		AuthenticatedLoss: 0.02, LossRevision: 7,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responded, err := controller.Observe(congestion.ActualState{
+		At: at.Add(2 * time.Second), Epoch: nextEpoch,
+		OuterWireBytes: 950_000, InnerDataBytes: 760_000,
+		RTT:               40 * time.Millisecond,
+		AuthenticatedLoss: 0.02, LossRevision: 7,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := reset.Target.OuterRateBytesPerSecond * 0.85
+	if responded.Target.OuterRateBytesPerSecond != want {
+		t.Fatalf("first new-epoch loss response = %g, want %g",
+			responded.Target.OuterRateBytesPerSecond, want)
+	}
+}
+
 func TestControllerDiscoversCapacityAboveSeedAndPromptlyReduces(t *testing.T) {
 	const seed = 1_000_000.0
 	controller, err := congestion.New(seed, 0)
@@ -1449,6 +1492,176 @@ func TestControllerSustainedFreshLossEpisodeDecreasesOnceUntilCleanDwell(t *test
 	if recurrence.Target.OuterRateBytesPerSecond != wantRecurrence {
 		t.Fatalf("re-armed loss target = %g, want %g",
 			recurrence.Target.OuterRateBytesPerSecond, wantRecurrence)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: pending target settlement is
+// not fresh below-threshold evidence and must break the clean-loss dwell.
+func TestControllerLossCleanDwellDoesNotSpanRetargetSettlement(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(790, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes, innerBytes uint64
+	observe := func(
+		elapsed time.Duration,
+		loss float64,
+		revision uint64,
+		fresh bool,
+	) congestion.Snapshot {
+		t.Helper()
+		target := controller.Snapshot().Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * elapsed.Seconds())
+		innerBytes += uint64(target * elapsed.Seconds() / 1.25)
+		at = at.Add(elapsed)
+		snapshot, observeErr := controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT:               40 * time.Millisecond,
+			AuthenticatedLoss: loss, LossRevision: revision,
+			LossFresh: fresh, FeedbackEverSeen: true,
+		})
+		if observeErr != nil {
+			t.Fatal(observeErr)
+		}
+		return snapshot
+	}
+	first := observe(time.Second, 0.02, 1, true)
+	if first.Target.OuterRateBytesPerSecond !=
+		initial.Target.OuterRateBytesPerSecond*0.85 {
+		t.Fatalf("first loss target = %g", first.Target.OuterRateBytesPerSecond)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: first.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled := observe(1200*time.Millisecond, 0.02, 2, true)
+	cleanStart := observe(500*time.Millisecond, 0, 3, true)
+	if cleanStart.Target != settled.Target {
+		t.Fatalf("first clean target = %+v, want held %+v",
+			cleanStart.Target, settled.Target)
+	}
+	pressured, err := controller.ObserveIngressPressure(
+		congestion.IngressPressureState{
+			At:                    at.Add(100 * time.Millisecond),
+			Epoch:                 epoch,
+			AdmissionWaitDuration: time.Second,
+			Interval:              time.Second,
+			RingPending:           true,
+			Loaded:                true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pressured.AwaitingInstalled {
+		t.Fatalf("ingress pressure did not start settlement: %+v", pressured)
+	}
+	pending := observe(300*time.Millisecond, 0, 0, false)
+	if pending.Target != pressured.Target {
+		t.Fatalf("pending settlement target = %+v, want %+v",
+			pending.Target, pressured.Target)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: pressured.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterSettle := observe(1200*time.Millisecond, 0, 4, true)
+	if afterSettle.Target != pressured.Target {
+		t.Fatalf("post-settlement clean target = %+v, want dwell restarted at %+v",
+			afterSettle.Target, pressured.Target)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: fresh loss observed while a
+// target settles must remain pending until the controller may retarget again.
+func TestControllerRetainsFreshLossAcrossRetargetSettlement(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(795, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: initial.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raised, err := controller.Observe(congestion.ActualState{
+		At: at.Add(1200 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 1_020_000, InnerDataBytes: 816_000,
+		RTT: 40 * time.Millisecond, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !raised.AwaitingInstalled ||
+		raised.Target.OuterRateBytesPerSecond !=
+			initial.Target.OuterRateBytesPerSecond+100_000 {
+		t.Fatalf("clean loaded retarget = %+v", raised)
+	}
+	duringSettlement, err := controller.Observe(congestion.ActualState{
+		At: at.Add(1400 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 1_210_000, InnerDataBytes: 968_000,
+		RTT:               40 * time.Millisecond,
+		AuthenticatedLoss: 0.02, LossRevision: 1,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duringSettlement.Target != raised.Target {
+		t.Fatalf("loss changed unsettled target = %+v, want %+v",
+			duringSettlement.Target, raised.Target)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(1500 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: raised.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterSettlement, err := controller.Observe(congestion.ActualState{
+		At: at.Add(2600 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 2_350_000, InnerDataBytes: 1_880_000,
+		RTT: 40 * time.Millisecond, LossRevision: 2,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := raised.Target.OuterRateBytesPerSecond * 0.85
+	if afterSettlement.Target.OuterRateBytesPerSecond != want {
+		t.Fatalf("deferred loss target = %g, want %g",
+			afterSettlement.Target.OuterRateBytesPerSecond, want)
 	}
 }
 

@@ -100,6 +100,7 @@ type Controller struct {
 	ingressPressureAcknowledgedAt time.Time
 	delayCongestedSince           time.Time
 	lossCleanSince                time.Time
+	lossDecreasePending           bool
 	lossEpisodeActive             bool
 	lastLossRevision              uint64
 }
@@ -196,7 +197,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.ingressPressureAcknowledgedAt = time.Time{}
 		c.delayCongestedSince = time.Time{}
 		c.lossCleanSince = time.Time{}
-		c.lossEpisodeActive = false
+		c.lossDecreasePending = actual.LossFresh &&
+			actual.AuthenticatedLoss >= lossCongestionThreshold
+		c.lossEpisodeActive = c.lossDecreasePending
 		c.lastLossRevision = actual.LossRevision
 		c.haveSample = true
 		return c.snapshot, nil
@@ -221,6 +224,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	if actual.OuterWireBytes < previous.OuterWireBytes ||
 		actual.InnerDataBytes < previous.InnerDataBytes {
 		c.delayCongestedSince = time.Time{}
+		c.lossCleanSince = time.Time{}
 		return c.snapshot, nil
 	}
 	elapsed := actual.At.Sub(previous.At).Seconds()
@@ -242,8 +246,37 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.snapshot.BaseRTT,
 		actual.RTTVariation,
 	)
+	newLossEvidence := actual.LossFresh &&
+		actual.LossRevision != 0 &&
+		actual.LossRevision != c.lastLossRevision
+	if actual.LossFresh && actual.LossRevision != 0 {
+		c.lastLossRevision = actual.LossRevision
+	}
+	lossAboveThreshold := actual.LossFresh &&
+		actual.AuthenticatedLoss >= lossCongestionThreshold
+	switch {
+	case lossAboveThreshold:
+		c.lossCleanSince = time.Time{}
+		if newLossEvidence && !c.lossEpisodeActive {
+			c.lossDecreasePending = true
+		}
+		c.lossEpisodeActive = true
+	case c.lossDecreasePending:
+		c.lossCleanSince = time.Time{}
+	case actual.LossFresh && c.lossEpisodeActive:
+		if c.lossCleanSince.IsZero() {
+			c.lossCleanSince = actual.At
+		}
+		if actual.At.Sub(c.lossCleanSince) >= lossRecoveryDwell {
+			c.lossCleanSince = time.Time{}
+			c.lossEpisodeActive = false
+		}
+	default:
+		c.lossCleanSince = time.Time{}
+	}
 	if c.snapshot.AwaitingInstalled {
 		c.delayCongestedSince = time.Time{}
+		c.lossCleanSince = time.Time{}
 		installed := c.snapshot.InstalledIngress
 		rateMatches := installed.Epoch == actual.Epoch &&
 			installed.Fresh &&
@@ -257,33 +290,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		}
 		c.snapshot.AwaitingInstalled = false
 	}
-	newLossEvidence := actual.LossFresh &&
-		actual.LossRevision != 0 &&
-		actual.LossRevision != c.lastLossRevision
-	if actual.LossFresh && actual.LossRevision != 0 {
-		c.lastLossRevision = actual.LossRevision
-	}
-	lossAboveThreshold := actual.LossFresh &&
-		actual.AuthenticatedLoss >= lossCongestionThreshold
-	lossCongested := false
-	switch {
-	case lossAboveThreshold:
-		c.lossCleanSince = time.Time{}
-		if newLossEvidence && !c.lossEpisodeActive {
-			lossCongested = true
-		}
-		c.lossEpisodeActive = true
-	case actual.LossFresh && c.lossEpisodeActive:
-		if c.lossCleanSince.IsZero() {
-			c.lossCleanSince = actual.At
-		}
-		if actual.At.Sub(c.lossCleanSince) >= lossRecoveryDwell {
-			c.lossCleanSince = time.Time{}
-			c.lossEpisodeActive = false
-		}
-	default:
-		c.lossCleanSince = time.Time{}
-	}
+	lossCongested := c.lossDecreasePending
 	delayCandidate := loaded && c.snapshot.QueueDelay >= queueThreshold
 	delayCongested := false
 	if lossCongested {
@@ -308,6 +315,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	previousTarget := c.snapshot.Target
 	switch {
 	case lossCongested || delayCongested:
+		if lossCongested {
+			c.lossDecreasePending = false
+		}
 		next := target * decreaseFactor
 		floor, _ := MinimumTargetRate(c.seed)
 		if next < floor {
