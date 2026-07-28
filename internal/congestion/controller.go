@@ -102,6 +102,7 @@ type Controller struct {
 	lossCleanSince                time.Time
 	lossDecreasePending           bool
 	lossEpisodeActive             bool
+	lossRecoveryBlockedByRetarget bool
 	lastLossRevision              uint64
 }
 
@@ -200,6 +201,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.lossDecreasePending = actual.LossFresh &&
 			actual.AuthenticatedLoss >= lossCongestionThreshold
 		c.lossEpisodeActive = c.lossDecreasePending
+		c.lossRecoveryBlockedByRetarget = false
 		c.lastLossRevision = actual.LossRevision
 		c.haveSample = true
 		return c.snapshot, nil
@@ -266,7 +268,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	)
 	if c.snapshot.AwaitingInstalled {
 		c.delayCongestedSince = time.Time{}
-		c.lossCleanSince = time.Time{}
+		if c.lossRecoveryBlockedByRetarget {
+			c.lossCleanSince = time.Time{}
+		}
 		installed := c.snapshot.InstalledIngress
 		rateMatches := installed.Epoch == actual.Epoch &&
 			installed.Fresh &&
@@ -276,22 +280,26 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 			)
 		settle := c.retargetSettleLocked()
 		if !rateMatches || actual.At.Before(installed.At.Add(settle)) {
+			c.observeLossRecoveryLocked(
+				actual.At,
+				!c.lossRecoveryBlockedByRetarget &&
+					actual.LossFresh &&
+					!lossAboveThreshold &&
+					!c.lossDecreasePending &&
+					c.lossEpisodeActive,
+			)
 			return c.snapshot, nil
 		}
 		c.snapshot.AwaitingInstalled = false
+		c.lossRecoveryBlockedByRetarget = false
 	}
-	if actual.LossFresh &&
-		!lossAboveThreshold &&
-		!c.lossDecreasePending &&
-		c.lossEpisodeActive {
-		if c.lossCleanSince.IsZero() {
-			c.lossCleanSince = actual.At
-		}
-		if actual.At.Sub(c.lossCleanSince) >= lossRecoveryDwell {
-			c.lossCleanSince = time.Time{}
-			c.lossEpisodeActive = false
-		}
-	}
+	c.observeLossRecoveryLocked(
+		actual.At,
+		actual.LossFresh &&
+			!lossAboveThreshold &&
+			!c.lossDecreasePending &&
+			c.lossEpisodeActive,
+	)
 	lossCongested := c.lossDecreasePending
 	delayCandidate := loaded && c.snapshot.QueueDelay >= queueThreshold
 	delayCongested := false
@@ -352,11 +360,27 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	c.snapshot.Held = c.snapshot.Target == previousTarget
 	c.snapshot.AwaitingInstalled = !c.snapshot.Held
 	if !c.snapshot.Held {
+		c.lossRecoveryBlockedByRetarget =
+			c.snapshot.Target.OuterRateBytesPerSecond !=
+				previousTarget.OuterRateBytesPerSecond
 		c.delayCongestedSince = time.Time{}
 		c.snapshot.TargetChanges++
 		c.snapshot.InstalledIngress.Fresh = false
 	}
 	return c.snapshot, nil
+}
+
+func (c *Controller) observeLossRecoveryLocked(at time.Time, eligible bool) {
+	if !eligible {
+		return
+	}
+	if c.lossCleanSince.IsZero() {
+		c.lossCleanSince = at
+	}
+	if at.Sub(c.lossCleanSince) >= lossRecoveryDwell {
+		c.lossCleanSince = time.Time{}
+		c.lossEpisodeActive = false
+	}
 }
 
 func (c *Controller) observeDelayCongestionLocked(

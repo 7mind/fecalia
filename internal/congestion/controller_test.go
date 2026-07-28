@@ -1621,8 +1621,8 @@ func TestControllerSustainedFreshLossEpisodeDecreasesOnceUntilCleanDwell(t *test
 	}
 }
 
-// Behavioral-Active Blackbox-Atomic. Regression: pending target settlement is
-// not fresh below-threshold evidence and must break the clean-loss dwell.
+// Behavioral-Active Blackbox-Atomic. Regression: settlement of the first loss
+// response is not fresh below-threshold evidence and must break clean dwell.
 func TestControllerLossCleanDwellDoesNotSpanRetargetSettlement(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
@@ -1674,40 +1674,119 @@ func TestControllerLossCleanDwellDoesNotSpanRetargetSettlement(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	settled := observe(1200*time.Millisecond, 0.02, 2, true)
-	cleanStart := observe(500*time.Millisecond, 0, 3, true)
-	if cleanStart.Target != settled.Target {
-		t.Fatalf("first clean target = %+v, want held %+v",
-			cleanStart.Target, settled.Target)
+	duringSettlement := observe(500*time.Millisecond, 0, 2, true)
+	if duringSettlement.Target.OuterRateBytesPerSecond !=
+		first.Target.OuterRateBytesPerSecond {
+		t.Fatalf("clean sample changed unsettled loss target = %+v, want %+v",
+			duringSettlement.Target, first.Target)
 	}
-	pressured, err := controller.ObserveIngressPressure(
-		congestion.IngressPressureState{
-			At:                    at.Add(100 * time.Millisecond),
-			Epoch:                 epoch,
-			AdmissionWaitDuration: time.Second,
-			Interval:              time.Second,
-			RingPending:           true,
-			Loaded:                true,
-		},
-	)
+	afterSettlement := observe(700*time.Millisecond, 0, 3, true)
+	if afterSettlement.Target.OuterRateBytesPerSecond !=
+		first.Target.OuterRateBytesPerSecond {
+		t.Fatalf("first settled clean sample = %+v, want dwell restarted at %+v",
+			afterSettlement.Target, first.Target)
+	}
+	sameEpisode := observe(200*time.Millisecond, 0.02, 4, true)
+	if sameEpisode.Target.OuterRateBytesPerSecond !=
+		first.Target.OuterRateBytesPerSecond {
+		t.Fatalf("post-settlement same-episode loss target = %+v, want held %+v",
+			sameEpisode.Target, first.Target)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: ingress-only expansion
+// retargets must not prevent a clean loss episode from rearming indefinitely.
+func TestControllerIngressOnlyRetargetDoesNotBlockLossRecoveryDwell(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pressured.AwaitingInstalled {
-		t.Fatalf("ingress pressure did not start settlement: %+v", pressured)
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(792, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes, innerBytes uint64
+	observe := func(
+		elapsed time.Duration,
+		ratio float64,
+		loss float64,
+		revision uint64,
+	) congestion.Snapshot {
+		t.Helper()
+		target := controller.Snapshot().Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * elapsed.Seconds())
+		innerBytes += uint64(target * elapsed.Seconds() / ratio)
+		at = at.Add(elapsed)
+		snapshot, observeErr := controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT:               40 * time.Millisecond,
+			AuthenticatedLoss: loss, LossRevision: revision,
+			LossFresh: true, FeedbackEverSeen: true,
+		})
+		if observeErr != nil {
+			t.Fatal(observeErr)
+		}
+		return snapshot
+	}
+	first := observe(time.Second, 1.25, 0.02, 1)
+	if first.Target.OuterRateBytesPerSecond !=
+		initial.Target.OuterRateBytesPerSecond*0.85 {
+		t.Fatalf("first loss target = %g", first.Target.OuterRateBytesPerSecond)
 	}
 	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
-		At:                 at.Add(200 * time.Millisecond),
+		At:                 at.Add(100 * time.Millisecond),
 		Epoch:              epoch,
-		RateBytesPerSecond: pressured.Target.IngressRateBytesPerSecond,
+		RateBytesPerSecond: first.Target.IngressRateBytesPerSecond,
 		Fresh:              true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	afterSettle := observe(1200*time.Millisecond, 0, 4, true)
-	if afterSettle.Target != pressured.Target {
-		t.Fatalf("post-settlement clean target = %+v, want dwell restarted at %+v",
-			afterSettle.Target, pressured.Target)
+	settled := observe(1200*time.Millisecond, 1.25, 0.02, 2)
+	cleanStart := observe(200*time.Millisecond, 2, 0, 3)
+	if cleanStart.Target.OuterRateBytesPerSecond !=
+		settled.Target.OuterRateBytesPerSecond ||
+		!cleanStart.AwaitingInstalled {
+		t.Fatalf("expansion retarget = %+v, want outer held and ingress pending",
+			cleanStart)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: cleanStart.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	duringSettlement := observe(400*time.Millisecond, 2, 0, 4)
+	if duringSettlement.Target != cleanStart.Target {
+		t.Fatalf("unsettled expansion target = %+v, want %+v",
+			duringSettlement.Target, cleanStart.Target)
+	}
+	cleanDwell := observe(700*time.Millisecond, 2, 0, 5)
+	wantRecovered := settled.Target.OuterRateBytesPerSecond + 100_000
+	if cleanDwell.Target.OuterRateBytesPerSecond != wantRecovered {
+		t.Fatalf("clean expansion target = %g, want recovered %g",
+			cleanDwell.Target.OuterRateBytesPerSecond, wantRecovered)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: cleanDwell.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recurrence := observe(1200*time.Millisecond, 2, 0.02, 6)
+	want := wantRecovered * 0.85
+	if recurrence.Target.OuterRateBytesPerSecond != want {
+		t.Fatalf("rearmed post-expansion loss target = %g, want %g",
+			recurrence.Target.OuterRateBytesPerSecond, want)
 	}
 }
 
