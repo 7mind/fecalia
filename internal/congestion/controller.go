@@ -221,31 +221,6 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.snapshot.QueueDelay = 0
 	}
 
-	if actual.OuterWireBytes < previous.OuterWireBytes ||
-		actual.InnerDataBytes < previous.InnerDataBytes {
-		c.delayCongestedSince = time.Time{}
-		c.lossCleanSince = time.Time{}
-		return c.snapshot, nil
-	}
-	elapsed := actual.At.Sub(previous.At).Seconds()
-	outerRate := float64(actual.OuterWireBytes-previous.OuterWireBytes) / elapsed
-	innerRate := float64(actual.InnerDataBytes-previous.InnerDataBytes) / elapsed
-	feedbackStale := actual.FeedbackEverSeen && !actual.LossFresh
-	target := c.snapshot.Target.OuterRateBytesPerSecond
-	loaded := outerRate >= target*loadThreshold
-	ingressLoaded := innerRate >=
-		c.snapshot.Target.IngressRateBytesPerSecond*loadThreshold
-
-	deliveredRate := outerRate
-	if actual.LossFresh {
-		deliveredRate *= 1 - actual.AuthenticatedLoss
-	}
-	c.snapshot.DeliveredRateBytesPerSecond = deliveredRate
-
-	queueThreshold := queueDelayThreshold(
-		c.snapshot.BaseRTT,
-		actual.RTTVariation,
-	)
 	newLossEvidence := actual.LossFresh &&
 		actual.LossRevision != 0 &&
 		actual.LossRevision != c.lastLossRevision
@@ -274,6 +249,31 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	default:
 		c.lossCleanSince = time.Time{}
 	}
+	if actual.OuterWireBytes < previous.OuterWireBytes ||
+		actual.InnerDataBytes < previous.InnerDataBytes {
+		c.delayCongestedSince = time.Time{}
+		c.lossCleanSince = time.Time{}
+		return c.snapshot, nil
+	}
+	elapsed := actual.At.Sub(previous.At).Seconds()
+	outerRate := float64(actual.OuterWireBytes-previous.OuterWireBytes) / elapsed
+	innerRate := float64(actual.InnerDataBytes-previous.InnerDataBytes) / elapsed
+	feedbackStale := actual.FeedbackEverSeen && !actual.LossFresh
+	target := c.snapshot.Target.OuterRateBytesPerSecond
+	loaded := outerRate >= target*loadThreshold
+	ingressLoaded := innerRate >=
+		c.snapshot.Target.IngressRateBytesPerSecond*loadThreshold
+
+	deliveredRate := outerRate
+	if actual.LossFresh {
+		deliveredRate *= 1 - actual.AuthenticatedLoss
+	}
+	c.snapshot.DeliveredRateBytesPerSecond = deliveredRate
+
+	queueThreshold := queueDelayThreshold(
+		c.snapshot.BaseRTT,
+		actual.RTTVariation,
+	)
 	if c.snapshot.AwaitingInstalled {
 		c.delayCongestedSince = time.Time{}
 		c.lossCleanSince = time.Time{}

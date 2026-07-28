@@ -1292,6 +1292,51 @@ func TestControllerDelayDwellResetsAcrossDiscontinuities(t *testing.T) {
 	}
 }
 
+// Behavioral-Active Blackbox-Atomic. Regression: counter discontinuity invalidates
+// byte-rate deltas, not independently authenticated loss evidence.
+func TestControllerRetainsFreshLossAcrossCounterRegression(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(698, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch,
+		OuterWireBytes: 1000, InnerDataBytes: 800,
+		RTT: 40 * time.Millisecond, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	regressed, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes: 900, InnerDataBytes: 700,
+		RTT:               40 * time.Millisecond,
+		AuthenticatedLoss: 0.02, LossRevision: 1,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regressed.Target != initial.Target {
+		t.Fatalf("counter regression changed target immediately: %+v", regressed)
+	}
+	afterRegression, err := controller.Observe(congestion.ActualState{
+		At: at.Add(2 * time.Second), Epoch: epoch,
+		OuterWireBytes: 850_900, InnerDataBytes: 680_700,
+		RTT: 40 * time.Millisecond, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := initial.Target.OuterRateBytesPerSecond * 0.85
+	if afterRegression.Target.OuterRateBytesPerSecond != want {
+		t.Fatalf("deferred counter-regression loss target = %g, want %g",
+			afterRegression.Target.OuterRateBytesPerSecond, want)
+	}
+}
+
 // Behavioral-Active Blackbox-Atomic. Regression: D130 emitted bytes are not delivery.
 func TestControllerCongestedDemandLimitedIntervalUsesMultiplicativeDecrease(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
@@ -1652,8 +1697,7 @@ func TestControllerRetainsFreshLossAcrossRetargetSettlement(t *testing.T) {
 	afterSettlement, err := controller.Observe(congestion.ActualState{
 		At: at.Add(2600 * time.Millisecond), Epoch: epoch,
 		OuterWireBytes: 2_350_000, InnerDataBytes: 1_880_000,
-		RTT: 40 * time.Millisecond, LossRevision: 2,
-		LossFresh: true, FeedbackEverSeen: true,
+		RTT: 40 * time.Millisecond, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
