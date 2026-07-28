@@ -471,9 +471,10 @@ deliberate boundaries you must plan around:
   that service can shorten a stable active-backup receiver gap to `A` plus
   the fresh active DATA-carrier SRTT plus four RTTVARs (10 ms floor, 250 ms cap);
   this estimates the residual differential-delay tail after the successor
-  exposes the gap, while only the 250 ms fallback is a deterministic bound.
-  Evidence uncertainty, path/source change, rebaseline, or weighted scheduling
-  uses the full 250 ms. A buffered gap's deadline starts when its first successor becomes
+  exposes the gap. Neither that estimate nor 250 ms bounds Internet differential
+  delay; 250 ms deterministically bounds receiver waiting and remains the
+  conservative operational fallback. Evidence uncertainty, path/source change,
+  rebaseline, or weighted scheduling uses the full 250 ms. A buffered gap's deadline starts when its first successor becomes
   receiver-observable, even if an earlier gap still blocks it; a successor first
   observed later retains its own remaining recovery time. Encoded DATA and
   every decided FEC parity datagram

@@ -59,6 +59,12 @@ func TestRecoveryDocumentationFormulaAndDecisionMapping(t *testing.T) {
 				t.Errorf("%s omitted canonical recovery keyword %q", name, keyword)
 			}
 		}
+		if formula := "h=clamp(max(srtt+4*rttvar"; !strings.Contains(doc, formula) {
+			t.Errorf("%s omitted canonical recovery formula %q", name, formula)
+		}
+		if old := "h=clamp(4*max(srtt"; strings.Contains(doc, old) {
+			t.Errorf("%s retained superseded recovery formula %q", name, old)
+		}
 	}
 
 	design := compactRecoveryDoc(read("docs/design.md"))

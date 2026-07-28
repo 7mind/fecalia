@@ -942,8 +942,10 @@ completion order reverses. A same-topology evidence update changes only windows
 available to **future** gap arms; a live gap's deadline and arm-time evidence
 snapshot remain immutable. This statistical tail estimate retains one full
 SRTT because probe RTTVAR does not bound one-way DATA/PARITY differential
-delay; only `T` is a deterministic upper bound. Evidence must retain at least
-`T` validity when the gap arms. FEC repair remains unchanged:
+delay. Neither the estimate nor `T` bounds network differential delay; `T`
+deterministically bounds receiver waiting and remains the conservative
+operational fallback. Evidence must retain at least `T` validity when the gap
+arms. FEC repair remains unchanged:
 `ObserveRecovered` may fill the missing sequence only in the half-open interval
 before expiry (`W-1ns` succeeds; at `W` the gap has expired).
 

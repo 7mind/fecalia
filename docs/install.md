@@ -642,8 +642,9 @@ Common rules, either policy:
   not completed; when no such evidence remains, subsequent probes do not
   advance the generation or move an armed conservative deadline.
   The SRTT-plus-four-RTTVAR term estimates the residual differential-delay
-  tail; probe RTTVAR does not provide a deterministic one-way bound, so only
-  the 250 ms fallback carries that guarantee. ACK-venue and authenticated
+  tail. Neither that estimate nor 250 ms bounds network differential delay;
+  250 ms deterministically bounds receiver waiting and remains the conservative
+  operational fallback. ACK-venue and authenticated
   RTT/liveness changes use ordered evidence publication revisions after exact
   membership, sample revision, and current freshness revalidation. Older same-generation refreshes therefore cannot
   erase a newer venue or reduce maximum RTT headroom. A live gap retains its
