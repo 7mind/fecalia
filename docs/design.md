@@ -570,8 +570,11 @@ path's probe SRTT and RFC 6298 RTTVAR, and authenticated pre-recovery DATA loss
 accepted under the same carrier/peer/contract identity as adaptive FEC. The
 controller measures emitted outer rate from counter deltas, learns the minimum
 SRTT as base RTT within an epoch, derives queue delay, and learns the outer/inner expansion
-ratio only from loaded samples, so idle probe/control bytes cannot suppress
-the next DATA admission target. It starts at 85% of the measured outer seed,
+ratio while either outer service or native DATA reaches half its corresponding
+target. The native-DATA gate lets a backlogged flow relearn after a prior
+high-expansion interval lowered ingress below the outer-load threshold, while
+idle probe/control bytes still cannot suppress the next DATA admission target.
+It starts at 85% of the measured outer seed,
 raises the target by 10% of that seed after a clean loaded sample, and on
 congestion reduces it to 85% of the prior target. Emitted bytes are not
 acknowledged delivery and therefore do not impose a second downward cap.
@@ -898,7 +901,7 @@ active-backup delivery with `0<A<T`, fixed `F=1200ms`, and at least `T`
 remaining in both the contract and each current DATA carrier's authenticated
 RTT sample, it computes
 
-`H = clamp(4 * max(SRTT of current DATA-carrying paths), 10ms, T)`
+`H = clamp(max(SRTT + 4 * RTTVAR of current DATA-carrying paths), 10ms, T)`
 
 and arms a newly observed matching gap for `W=min(T,A+H)`. Active-backup has
 exactly one DATA carrier; an idle Up backup neither inflates `H` nor gates the
@@ -937,8 +940,10 @@ resequencer compares that pair lexicographically: an older publication cannot
 erase a newer venue or restore lower RTT headroom, including when socket
 completion order reverses. A same-topology evidence update changes only windows
 available to **future** gap arms; a live gap's deadline and arm-time evidence
-snapshot remain immutable. This remains safe because evidence must retain at
-least `T` validity when the gap arms. FEC repair remains unchanged:
+snapshot remain immutable. This statistical tail estimate retains one full
+SRTT because probe RTTVAR does not bound one-way DATA/PARITY differential
+delay; only `T` is a deterministic upper bound. Evidence must retain at least
+`T` validity when the gap arms. FEC repair remains unchanged:
 `ObserveRecovered` may fill the missing sequence only in the half-open interval
 before expiry (`W-1ns` succeeds; at `W` the gap has expired).
 
@@ -2068,7 +2073,7 @@ terms `R/Rp/I`. The sender advertises the worst live-path bound
 `Sdevice=A=max_path(I)` (currently `10ms` for every exclusive writer);
 the post-cut completion check uses
 `Ecompletion=max_path(ceil((P+Mmax*Lmax+Lio)/(R-Rp))+I)`. The receiver derives
-`H=clamp(4*max(SRTT among qualified fresh DATA carriers),10ms,D)` and
+`H=clamp(max(SRTT+4*RTTVAR among qualified fresh DATA carriers),10ms,D)` and
 `W=min(D,A+H)`. Stale or `Down` evidence contributes neither RTT age nor `H`.
 Fast recovery requires `A+H<D`; saturation publishes the installed
 conservative `W=D` with fallback reason `saturated`. `SessionID` identifies the authenticated process epoch,

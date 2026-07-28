@@ -485,8 +485,10 @@ Common rules, either policy:
   report remains immediate. Every target
   retargets the same outer shaper and derives `B=max(Lmax,ceil(Rtarget*link_rtt))`.
   Already-admitted deadlines remain unchanged and B shrink waits for retained
-  DATA to fit. Expansion learning uses loaded samples only; idle probe/control bytes
-  do not lower DATA admission. After a target change, another decision waits
+  DATA to fit. Expansion learning runs when either outer service or native DATA
+  reaches half its corresponding target. The native-DATA gate permits
+  relearning when a stale high ratio has lowered ingress below the outer-load
+  threshold; idle probe/control bytes do not lower DATA admission. After a target change, another decision waits
   for exact installed-rate/epoch readback and at least the larger of one second
   or the active base RTT. Repeated exact readbacks of the unchanged target
   retain the first acknowledgment time; a stale/mismatched readback re-arms it,
@@ -621,7 +623,7 @@ Common rules, either policy:
   group uniformly but cannot lengthen a receiver gap that has already armed.
   After the peer successfully writes the exact authenticated ACK, a stable
   active-backup FEC receiver may use
-  `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))` for a matching
+  `W=min(250ms,A+clamp(max(SRTT+4*RTTVAR),10ms,250ms))` for a matching
   head-of-line gap. The contract and current DATA carrier's authenticated RTT
   sample must retain at least 250 ms of validity, and the ACK's composite
   path/source must still match delivery. Until then—and after a path/source,
@@ -639,9 +641,11 @@ Common rules, either policy:
   acknowledged receiver evidence once, including an ACK whose echo write has
   not completed; when no such evidence remains, subsequent probes do not
   advance the generation or move an armed conservative deadline.
-  ACK-venue and authenticated RTT/liveness changes use ordered evidence
-  publication revisions after exact membership, sample revision, and current
-  freshness revalidation. Older same-generation refreshes therefore cannot
+  The SRTT-plus-four-RTTVAR term estimates the residual differential-delay
+  tail; probe RTTVAR does not provide a deterministic one-way bound, so only
+  the 250 ms fallback carries that guarantee. ACK-venue and authenticated
+  RTT/liveness changes use ordered evidence publication revisions after exact
+  membership, sample revision, and current freshness revalidation. Older same-generation refreshes therefore cannot
   erase a newer venue or reduce maximum RTT headroom. A live gap retains its
   arm-time evidence and deadline; same-generation updates apply to later gaps.
   Each buffered gap's deadline starts when its first successor becomes
@@ -791,7 +795,7 @@ Common rules, either policy:
 Use the following notation when comparing config, `/metrics`, and monitor JSON:
 `D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`,
 `B/C/P/Fgroup/Lio/Mtotal`, `R/Rp/I`, sender service `Sdevice`,
-`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh DATA carriers only,
+`H=clamp(max(SRTT+4*RTTVAR),10ms,D)` over qualified fresh DATA carriers only,
 `W=min(D,A+H)`, and `Ecompletion`.
 `SessionID` identifies a process epoch; `ContractID` rotates within the epoch;
 `OuterSeq` remains continuous for that rotation. An exact authenticated `ACK`

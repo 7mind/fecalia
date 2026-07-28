@@ -490,7 +490,10 @@ as historical exact-byte-shaper evidence.
       additive increase above the seed. With `link_bandwidth_limit` set, the
       target never exceeds that explicit ceiling; with it omitted, confirm a
       clean loaded target can grow beyond `link_bandwidth`. Confirm the
-      TUN target follows the learned outer/inner ratio and exact kernel
+      TUN target follows the learned outer/inner ratio. After first driving the
+      ratio above 2.5, reduce actual expansion to 1.1 while native DATA saturates
+      the installed ingress target but outer service remains below half its
+      target; the ratio must decline and the ingress target must rise. Exact kernel
       readback follows the target with an in-place `bfifo` change: packet/drop
       counters must remain monotonic and a correct live leaf must never be
       deleted/re-added. The first fresh authenticated-loss tick must decrease
@@ -780,11 +783,11 @@ predeclared gates:
       across a ContractID rotation
       and confirm its completion cannot authorize the new identity.
 - [ ] With active-backup FEC and an exact successfully emitted ACK, record `A`
-      and the authenticated SRTT of the current DATA carrier. An idle Up backup
+      and the authenticated SRTT and RTTVAR of the current DATA carrier. An idle Up backup
       must neither inflate `H` nor gate freshness. Lose one
       DATA frame on the ACKed composite path/source and confirm the receiver
       releases at
-      `W=min(250ms,A+clamp(4*max(SRTT),10ms,250ms))`: repair at `W-1ns`
+      `W=min(250ms,A+clamp(max(SRTT+4*RTTVAR),10ms,250ms))`: repair at `W-1ns`
       fills exactly once in order, while repair at `W` loses the gap and
       releases the successor. Repeat with no ACK, wrong path/source, a second
       delivering key, absent/stale RTT, less than 250 ms contract/RTT validity,
@@ -881,7 +884,7 @@ constitutes explicit overload.
 
 Canonical record notation: `D=250ms`; `G=10ms`; `F=1200ms`;
 `B/C/P/Fgroup/Lio/Mtotal`; `R/Rp/I`; `Sdevice`;
-`H=clamp(4*max(SRTT),10ms,D)` over qualified fresh DATA carriers only;
+`H=clamp(max(SRTT+4*RTTVAR),10ms,D)` over qualified fresh DATA carriers only;
 `W=min(D,A+H)`; `Ecompletion`. Record
 `SessionID` restart versus same-process `ContractID` rotation separately and
 verify `OuterSeq` continuity across rotation. Require the exact authenticated

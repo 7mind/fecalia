@@ -65,7 +65,7 @@ func TestRecoveryDocumentationFormulaAndDecisionMapping(t *testing.T) {
 	for _, formula := range []string{
 		"a=sdevice=i",
 		"ecompletion=max_path(ceil((p+mmax*lmax+lio)/(r-rp))+i)",
-		"h=clamp(4*max(srtt",
+		"h=clamp(max(srtt+4*rttvar",
 		"w=min(d,a+h)",
 	} {
 		if !strings.Contains(design, formula) {
