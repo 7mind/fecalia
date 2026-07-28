@@ -478,10 +478,14 @@ as historical exact-byte-shaper evidence.
       once, even when the report arrives after a later unloaded byte interval;
       adjacent above-threshold reports from the same loss episode must hold the
       target. One continuous second of fresh below-threshold evidence must
-      rearm a later episode, while stale evidence must not clear the current
-      episode. RTTVAR and dwell qualify only delay and must not suppress the
-      first immediate fresh-loss response; sustained queue delay may still
-      reduce during an active loss episode.
+      rearm a later episode. Stale evidence, counter regression, and pending
+      retarget settlement must break that clean dwell without clearing the
+      current episode. Fresh loss received on the carrier-initialization sample
+      must remain actionable on the next observation. Fresh loss received while
+      another target settles must remain pending and apply one decrease once
+      settlement permits a retarget. RTTVAR and dwell qualify only delay and
+      must not suppress the first immediate fresh-loss response; sustained queue
+      delay may still reduce during an active loss episode.
       A no-loss variable-RTT trace whose delay remains below that threshold
       must not reduce the target. A single crossing followed by a
       below-threshold or unloaded observation must not reduce it; counter
@@ -504,9 +508,10 @@ as historical exact-byte-shaper evidence.
       `installed_fresh=1` for the same rate/epoch and at least
       `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
       during that wait. Repeated exact readbacks must not restart the interval:
-      under sustained congestion, the next decision occurs promptly after its
-      original deadline. A stale/mismatched readback re-arms the interval, and
-      a carrier-epoch transition cancels the prior wait.
+      under sustained queue-delay congestion, the next delay decision occurs
+      promptly after its original deadline. Adjacent loss reports from the same
+      episode continue to hold. A stale/mismatched readback re-arms the interval,
+      and a carrier-epoch transition cancels the prior wait.
 - [ ] Confirm ingress-only local service headroom starts at 0.95 without
       changing the outer target. A loaded interval whose per-controller engine
       admission wait occupies at least half the interval must multiply

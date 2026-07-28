@@ -478,8 +478,11 @@ Common rules, either policy:
   report of at least 0.5% in an episode reduces the target by one 0.85
   multiplicative step, even if it arrives during a later unloaded byte
   interval. Adjacent above-threshold reports hold that target. One continuous
-  second of fresh below-threshold evidence rearms the response; stale evidence
-  does not. The sustained queue-delay path remains independent. A transient delay crossing holds the target;
+  second of fresh below-threshold evidence rearms the response. Stale evidence,
+  counter regression, and pending retarget settlement break that clean dwell;
+  fresh loss received during carrier initialization remains actionable on the
+  next observation, while fresh loss received during target settlement remains
+  pending until the installed target settles. The sustained queue-delay path remains independent. A transient delay crossing holds the target;
   a below-threshold or unloaded observation, counter regression, carrier
   transition, or pending retarget settlement resets the dwell. Emitted
   outer rate is not acknowledged delivery and does not impose another

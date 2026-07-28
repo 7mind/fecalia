@@ -591,8 +591,13 @@ loss episode applies one immediate decrease regardless of the later byte
 interval's load. Adjacent above-threshold reports from that episode hold the
 target instead of compounding the multiplicative response. One continuous
 second of fresh below-threshold evidence ends the episode and rearms a later
-immediate response; stale evidence neither clears nor rearms it. The independent
-sustained queue-delay path may still decrease the target during a loss episode.
+immediate response. Stale evidence, counter regression, and pending retarget
+settlement break that clean dwell without ending or rearming the episode. A
+fresh loss report received while a carrier epoch initializes remains actionable
+on the next observation. Fresh loss received while an installed target settles
+remains pending and applies one decrease as soon as settlement permits another
+retarget. The independent sustained queue-delay path may still decrease the
+target during a loss episode.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
 delay can still decrease it after the same continuous dwell. Counter regression
