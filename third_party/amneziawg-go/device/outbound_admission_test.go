@@ -105,6 +105,24 @@ func TestOutboundAdmissionPreservesOneOversizeWholeBatch(t *testing.T) {
 	next.release()
 }
 
+func TestOutboundAdmissionAcceptsOldGSOOversizeBatchAtZeroRetention(t *testing.T) {
+	admission := newOutboundAdmission(10_000)
+	admission.start()
+
+	reservation := requireReservation(t, reserveAsync(admission, 14_270))
+	got := admission.snapshot()
+	if got.retainedBytes != 14_270 ||
+		got.highWaterBytes != 14_270 ||
+		got.oversize != 1 ||
+		got.waits != 0 {
+		t.Fatalf(
+			"old-GSO oversize snapshot = %+v, want immediate 14270-byte reservation and one oversize batch",
+			got,
+		)
+	}
+	reservation.release()
+}
+
 func TestOutboundAdmissionStopCancelsWaiter(t *testing.T) {
 	admission := newOutboundAdmission(1_000)
 	admission.start()

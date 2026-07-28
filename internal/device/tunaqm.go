@@ -153,6 +153,16 @@ func (t *tunAQMTransition) Reconcile(
 		return t.reconciler.Snapshot(), nil
 
 	case target.AdmissionLimitBytes < actualAdmissionLimit:
+		installedCapacity := t.reconciler.Snapshot().Actual
+		snapshot, err := t.reconciler.Reconcile(target)
+		if err != nil {
+			t.reconciler.SetAdmissionState(actualAdmissionLimit, true)
+			return t.reconciler.Snapshot(), err
+		}
+		if snapshot.GSOLimitsDeferred {
+			t.reconciler.SetAdmissionState(actualAdmissionLimit, true)
+			return t.reconciler.Snapshot(), nil
+		}
 		admissionApplied, err := t.trySetAdmissionLimit(target.AdmissionLimitBytes)
 		if err != nil {
 			t.reconciler.SetAdmissionState(t.actualAdmissionLimit(), true)
@@ -166,7 +176,7 @@ func (t *tunAQMTransition) Reconcile(
 			}
 			installedTarget, err := heldTUNAQMTarget(
 				target,
-				t.reconciler.Snapshot().Actual,
+				installedCapacity,
 				installedAdmissionLimit,
 			)
 			if err != nil {
@@ -187,7 +197,7 @@ func (t *tunAQMTransition) Reconcile(
 			panic("engine outbound admission shrink did not install requested limit")
 		}
 		t.reconciler.SetAdmissionState(installedAdmissionLimit, false)
-		return t.reconciler.Reconcile(target)
+		return t.reconciler.Snapshot(), nil
 
 	default:
 		t.reconciler.SetAdmissionState(actualAdmissionLimit, false)

@@ -22,9 +22,38 @@ type recordingTUNAQMKernel struct {
 	events []string
 }
 
+type recordingDeferredGSOTUNAQMKernel struct {
+	actual tunAQMActualState
+	events []string
+}
+
 func (k *recordingTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
 	k.events = append(k.events, fmt.Sprintf("capacity:%d", target.AdmissionLimitBytes))
 	return k.memoryTUNAQMKernel.Apply(target)
+}
+
+func (k *recordingDeferredGSOTUNAQMKernel) Apply(
+	target tunAQMTargetState,
+) (tunAQMApplyResult, error) {
+	k.events = append(k.events, fmt.Sprintf("capacity:%d", target.AdmissionLimitBytes))
+	k.actual.RateBytesPerSecond = target.RateBytesPerSecond
+	k.actual.ObservedAt = time.Now()
+	if k.actual.QueueLength != 0 || k.actual.BacklogBytes != 0 {
+		return tunAQMApplyResult{
+			QueueLimitDeferred: true,
+			GSOLimitsDeferred:  true,
+			AppliedBurstBytes:  k.actual.BurstBytes,
+		}, nil
+	}
+	k.actual.BurstBytes = target.BurstBytes
+	k.actual.LimitBytes = target.QueueLimitBytes
+	k.actual.GSOMaxSize = target.GSOMaxSize
+	k.actual.GSOMaxSegments = target.GSOMaxSegments
+	return tunAQMApplyResult{}, nil
+}
+
+func (k *recordingDeferredGSOTUNAQMKernel) Read() (tunAQMActualState, error) {
+	return k.actual, nil
 }
 
 func (k *memoryTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, error) {
@@ -233,7 +262,7 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"admission:10000", "capacity:20000"}
+		want := []string{"capacity:10000", "admission:10000", "capacity:20000"}
 		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
 			t.Fatalf("deferred-shrink operations = %v, want %v", kernel.events, want)
 		}
@@ -258,7 +287,7 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want = []string{"admission:10000", "capacity:10000"}
+		want = []string{"capacity:10000", "admission:10000"}
 		if fmt.Sprint(kernel.events) != fmt.Sprint(want) {
 			t.Fatalf("converged-shrink operations = %v, want %v", kernel.events, want)
 		}
@@ -317,6 +346,96 @@ func TestTUNAQMTransitionOrdersCapacityAndAdmissionByDirection(t *testing.T) {
 			t.Fatalf("larger installed ring triggered capacity operations: %v", kernel.events)
 		}
 	})
+}
+
+func TestTUNAQMTransitionDefersAdmissionUntilOccupiedGSOShrinkConverges(t *testing.T) {
+	const (
+		oldAdmissionLimit = 20_000
+		newAdmissionLimit = 10_000
+		oldGSOMaxSize     = 13_950
+		newGSOMaxSize     = 10_000
+	)
+	kernel := &recordingDeferredGSOTUNAQMKernel{
+		actual: tunAQMActualState{
+			Epoch:              5,
+			RateBytesPerSecond: 680_000,
+			BurstBytes:         oldGSOMaxSize,
+			TxQueueLen:         100,
+			RootKind:           "htb",
+			LeafKind:           "bfifo",
+			LimitBytes:         80_000,
+			GSOMaxSize:         oldGSOMaxSize,
+			GSOMaxSegments:     10,
+			QueueLength:        1,
+			BacklogBytes:       1395,
+			ObservedAt:         time.Now(),
+		},
+	}
+	reconciler, err := newTUNAQMReconciler(kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualAdmissionLimit := oldAdmissionLimit
+	transition, err := newTUNAQMTransition(
+		reconciler,
+		func(limit int) (bool, error) {
+			kernel.events = append(kernel.events, fmt.Sprintf("admission:%d", limit))
+			actualAdmissionLimit = limit
+			return true, nil
+		},
+		func() int {
+			return actualAdmissionLimit
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := tunAQMTargetState{
+		Epoch: 6, RateBytesPerSecond: 500_000, TxQueueLen: 50,
+		BurstBytes: newGSOMaxSize, MTU: 1395, QueueLimitBytes: 40_000,
+		GSOMaxSize: newGSOMaxSize, GSOMaxSegments: 7,
+		AdmissionLimitBytes: newAdmissionLimit,
+	}
+
+	deferred, err := transition.Reconcile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDeferredEvents := []string{"capacity:10000"}
+	if fmt.Sprint(kernel.events) != fmt.Sprint(wantDeferredEvents) ||
+		deferred.ActualAdmissionLimitBytes != oldAdmissionLimit ||
+		!deferred.AdmissionDeferred ||
+		!deferred.GSOLimitsDeferred ||
+		deferred.ActualAdmissionLimitBytes < deferred.Actual.GSOMaxSize {
+		t.Fatalf(
+			"occupied GSO shrink events/snapshot = %v / %+v, want capacity-only deferral with admission %d >= installed GSO %d",
+			kernel.events,
+			deferred,
+			oldAdmissionLimit,
+			oldGSOMaxSize,
+		)
+	}
+
+	kernel.actual.QueueLength = 0
+	kernel.actual.BacklogBytes = 0
+	kernel.events = nil
+	converged, err := transition.Reconcile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantConvergedEvents := []string{"capacity:10000", "admission:10000"}
+	if fmt.Sprint(kernel.events) != fmt.Sprint(wantConvergedEvents) ||
+		converged.ActualAdmissionLimitBytes != newAdmissionLimit ||
+		converged.AdmissionDeferred ||
+		converged.GSOLimitsDeferred ||
+		!converged.Actual.Fresh ||
+		converged.Actual.GSOMaxSize != newGSOMaxSize {
+		t.Fatalf(
+			"drained GSO shrink events/snapshot = %v / %+v, want capacity then admission convergence",
+			kernel.events,
+			converged,
+		)
+	}
 }
 
 func TestTUNAQMDeferredCapacityDoesNotBlockExactRateAcknowledgment(t *testing.T) {
