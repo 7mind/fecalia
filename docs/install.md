@@ -481,13 +481,14 @@ Common rules, either policy:
   second of fresh below-threshold evidence rearms the response. Stale evidence,
   counter regression, and pending retarget settlement break that clean dwell;
   fresh loss received during carrier initialization remains actionable on the
-  next observation, while fresh loss received during target settlement remains
-  pending until the installed target settles. The sustained queue-delay path remains independent. A transient delay crossing holds the target;
+  next observation, while fresh loss received with a counter regression or
+  during target settlement remains pending until a valid observation or the
+  installed target settles. The sustained queue-delay path remains independent. A transient delay crossing holds the target;
   a below-threshold or unloaded observation, counter regression, carrier
   transition, or pending retarget settlement resets the dwell. Emitted
   outer rate is not acknowledged delivery and does not impose another
-  downward cap. RTTVAR qualifies only queue delay; a new authenticated-loss
-  report remains immediate. Every target
+  downward cap. RTTVAR qualifies only queue delay; it does not add a dwell to
+  an otherwise eligible authenticated-loss response. Every target
   retargets the same outer shaper and derives `B=max(Lmax,ceil(Rtarget*link_rtt))`.
   Already-admitted deadlines remain unchanged and B shrink waits for retained
   DATA to fit. Expansion learning runs when either outer service or native DATA

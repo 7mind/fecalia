@@ -482,10 +482,11 @@ as historical exact-byte-shaper evidence.
       retarget settlement must break that clean dwell without clearing the
       current episode. Fresh loss received on the carrier-initialization sample
       must remain actionable on the next observation. Fresh loss received while
-      another target settles must remain pending and apply one decrease once
-      settlement permits a retarget. RTTVAR and dwell qualify only delay and
-      must not suppress the first immediate fresh-loss response; sustained queue
-      delay may still reduce during an active loss episode.
+      counters regress or another target settles must remain pending and apply
+      one decrease once a valid observation or settlement permits a retarget.
+      RTTVAR and dwell qualify only delay and must not suppress the first
+      eligible fresh-loss response; sustained queue delay may still reduce
+      during an active loss episode.
       A no-loss variable-RTT trace whose delay remains below that threshold
       must not reduce the target. A single crossing followed by a
       below-threshold or unloaded observation must not reduce it; counter
@@ -503,8 +504,10 @@ as historical exact-byte-shaper evidence.
       target; the ratio must decline and the ingress target must rise. Exact kernel
       readback follows the target with an in-place `bfifo` change: packet/drop
       counters must remain monotonic and a correct live leaf must never be
-      deleted/re-added. The first fresh authenticated-loss tick must decrease
-      promptly. Before another target change, `retarget_pending` must remain 1 until
+      deleted/re-added. The first eligible fresh authenticated-loss tick must
+      decrease promptly; a discontinuity or pending target must retain it until
+      the next valid, settled tick. Before another target change,
+      `retarget_pending` must remain 1 until
       `installed_fresh=1` for the same rate/epoch and at least
       `max(1s, active base RTT)` has elapsed; `target_changes` must not advance
       during that wait. Repeated exact readbacks must not restart the interval:

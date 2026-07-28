@@ -587,17 +587,19 @@ transition, or pending retarget settlement resets it. RTTVAR and the dwell
 qualify only the delay signal. DATA-loss reports finalize after resequencing
 and return asynchronously, so the controller identifies each locally accepted
 report with a monotonic revision. The first fresh report at or above 0.5% in a
-loss episode applies one immediate decrease regardless of the later byte
-interval's load. Adjacent above-threshold reports from that episode hold the
-target instead of compounding the multiplicative response. One continuous
+loss episode applies one decrease regardless of the later byte interval's load.
+It applies immediately when the controller may retarget; initialization,
+counter regression, or pending target settlement latches it for the next valid,
+settled observation. Adjacent above-threshold reports from that episode hold
+the target instead of compounding the multiplicative response. One continuous
 second of fresh below-threshold evidence ends the episode and rearms a later
-immediate response. Stale evidence, counter regression, and pending retarget
+response. Stale evidence, counter regression, and pending retarget
 settlement break that clean dwell without ending or rearming the episode. A
 fresh loss report received while a carrier epoch initializes remains actionable
-on the next observation. Fresh loss received while an installed target settles
-remains pending and applies one decrease as soon as settlement permits another
-retarget. The independent sustained queue-delay path may still decrease the
-target during a loss episode.
+on the next observation. Fresh loss received with a counter regression or while
+an installed target settles remains pending and applies one decrease as soon as
+a valid observation or settlement permits another retarget. The independent
+sustained queue-delay path may still decrease the target during a loss episode.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
 delay can still decrease it after the same continuous dwell. Counter regression
