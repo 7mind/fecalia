@@ -611,11 +611,13 @@ old wait. Rate reconciliation replaces the HTB class without deleting or
 re-adding a matching `bfifo` leaf. Mutable `bfifo` limits use the kernel's
 in-place change operation, preserving queued packets and cumulative counters.
 A queue-limit shrink waits while installed byte backlog exceeds the new
-limit; a GSO shrink waits for an empty TUN backlog; and the peer-private engine
-gate shrinks atomically only when every peer's retained bytes fit. The desired
-rate can still receive its exact epoch acknowledgment during one of these safe
-capacity deferrals. While GSO shrink waits, the effective `bfifo` limit remains
-at its installed aggregate value, preserving one old atomic quantum per peer,
+limit, and a GSO shrink waits for an empty TUN backlog. A combined shrink
+reconciles and reads back downstream AQM/GSO under the old peer-private engine
+gate. If GSO remains deferred, the engine gate is not changed and its deferred
+state remains visible. The desired rate can still receive its exact epoch
+acknowledgment during one of these safe capacity deferrals. While GSO shrink
+waits, the effective `bfifo` limit remains at its installed aggregate value,
+preserving one old atomic quantum per peer,
 and the normalized HTB burst remains at least the installed link GSO maximum.
 Transition ordering follows `gso_max_size`, the atomic byte quantum, rather
 than combining its direction with `gso_max_segs`: a larger byte quantum grows
@@ -623,11 +625,18 @@ leaf/burst first even when the segment count decreases. After drain, a smaller
 byte quantum uses two phases: install and read back the GSO size/segment pair
 while the old leaf/burst remain safe, then re-read qdisc occupancy. Only a
 still-empty qdisc permits the leaf/burst shrink; a new arrival retains both old
-values until a later reconciliation. Full `actual_fresh` remains false while
-`rate_fresh` is true. A target rate or MTU change may therefore resize the
-pre-TUN GSO limits and per-peer engine byte gate without discarding admitted
-traffic while retaining the nominal 20 ms complete-batch bound, its
-one-datagram low-rate exception, and one BDP.
+values until a later reconciliation. Only exact smaller-GSO readback permits
+the engine gate shrink. If any peer still retains more than the desired gate,
+the old downstream capacity envelope is restored until those bytes drain.
+Full `actual_fresh` remains false while `rate_fresh` is true. A target rate or
+MTU change may therefore resize the pre-TUN GSO limits and per-peer engine byte
+gate without discarding admitted traffic while retaining the nominal 20 ms
+complete-batch bound, its one-datagram low-rate exception, and one BDP.
+
+This transition belongs exclusively to active-backup pacing with configured
+per-path shapers. The e2e `TestP1Failover` fixture omits `[scheduler]`; pacing
+defaults off, `startTUNAQM` returns without installing the controller, and P1
+results therefore provide no evidence for or against this transition.
 
 Each controller target retargets the same live outer shaper before the TUN
 target publishes: only future admissions use the new rate, admitted deadlines

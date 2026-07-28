@@ -244,8 +244,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   settled intervals recover it additively. Mutable `bfifo` limits change in
   place, preserving the live queue
   and counters; a limit shrink waits while byte backlog exceeds the new limit,
-  GSO shrink waits for an empty TUN backlog, and engine admission shrink waits
-  until every peer's retained bytes fit. While GSO shrink waits, the installed
+  and GSO shrink waits for an empty TUN backlog. During a combined shrink, the
+  daemon reconciles and reads back the smaller GSO under the old engine
+  admission limit. While GSO shrink waits, admission remains at its installed
+  value and both deferred gauges stay set; the installed
   aggregate leaf remains unchanged (preserving one old atomic quantum per
   peer), and the normalized HTB burst remains at least the installed link GSO
   maximum. Ordering follows the maximum GSO byte size, not segment-count
@@ -253,7 +255,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   count falls. After drain, a smaller byte quantum installs first; the daemon
   re-reads qdisc occupancy and shrinks the leaf and burst only if it remains
   empty. A post-GSO-write arrival keeps both at their old values for a later
-  reconciliation. Repeated exact readbacks of
+  reconciliation. Only after exact smaller-GSO readback may engine admission
+  shrink. If peer-retained bytes do not yet fit, the old downstream capacity
+  envelope is restored and the admission shrink remains deferred until they
+  drain. Repeated exact readbacks of
   the unchanged target retain the first acknowledgment time, so reconciliation
   cannot perpetually restart that settling interval. The plaintext byte leaf
   is independent of the outer/engine admission window: it admits the greater
@@ -274,7 +279,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   rendering so readback remains exact. Full-MTU handoff within that interval
   incurs no native link/qdisc drop; overload beyond the finite byte leaf may
   tail-drop there and remains observable. An arbitrary reader stall lies
-  outside the invariant. Shaped FEC
+  outside the invariant. This cross-layer transition runs only when
+  active-backup pacing and per-path shaping activate TUN AQM.
+  `TestP1Failover` omits `[scheduler]`, defaults pacing off, and therefore
+  cannot exercise or validate this transition. Shaped FEC
   retains the same engine admission reservation until
   its owner batch terminally emits or fails, so ownership admission cannot
   duplicate that backlog behind the gate. Ring occupancy uses a non-consuming

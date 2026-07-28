@@ -511,19 +511,27 @@ as historical exact-byte-shaper evidence.
       remain at least the desired limit until byte backlog fits; GSO shrink
       waits for zero TUN backlog, with the aggregate leaf held at its installed
       value and the normalized HTB burst at least the installed link GSO
-      maximum; engine admission shrink waits until every peer's retained bytes
-      fit. While that engine shrink remains deferred,
-      `target_engine_admission_limit_bytes` must show the desired bound,
-      `actual_engine_admission_limit_bytes` and actual downstream capacity must
-      remain at the installed envelope, the desired rate/epoch must apply,
-      `actual_fresh` must be 0, and `rate_fresh` must be 1. After drain, the
-      engine value must shrink before capacity. The online ptr-ring target and
-      actual must retain the maximum of their observed interface baseline,
+      maximum. Engine admission must remain at its old value while GSO shrink
+      is deferred. After exact smaller-GSO readback, attempt the engine shrink;
+      if any peer's retained bytes do not fit, restore the old downstream
+      capacity envelope and leave admission deferred. While that engine shrink
+      remains deferred, `target_engine_admission_limit_bytes` must show the
+      desired bound, `actual_engine_admission_limit_bytes` and actual downstream
+      capacity must remain at the installed envelope, the desired rate/epoch
+      must apply, `actual_fresh` must be 0, and `rate_fresh` must be 1. After
+      both queues drain, downstream capacity must read back before the engine
+      value shrinks. The online ptr-ring target and actual must retain the
+      maximum of their observed interface baseline,
       later larger readbacks, and derived `J+1` across lower rate/MTU targets,
       and reset only on interface recreation. On growth,
       capacity must read back before the engine value rises. All deferred
       gauges must return to zero after drain, with exact target/actual readback
       and no new qdisc or link drop.
+- [ ] Do not use `TestP1Failover` to validate the preceding transition. Its
+      generated config omits `[scheduler]`, so pacing defaults off and TUN AQM
+      never starts. Use an active-backup fixture with pacing enabled and
+      per-path shapers, then confirm the TUN AQM gauges are present before
+      interpreting transition order.
 - [ ] For a drained GSO reduction, verify the smaller GSO limits write and
       read back before any HTB burst or `bfifo` reduction. Inject one queued
       packet at the GSO-write seam: the subsequent occupancy read must retain

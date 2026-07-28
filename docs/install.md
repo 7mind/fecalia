@@ -521,7 +521,10 @@ Common rules, either policy:
   the segment count decreases. After drain, a smaller byte quantum installs
   and reads back first; a second qdisc occupancy read permits the leaf/burst
   shrink only while still empty. A new arrival retains the old leaf/burst for
-  a later reconciliation.
+  a later reconciliation. Engine admission remains at its old value while GSO
+  shrink is deferred. After exact smaller-GSO readback, the engine admission
+  shrink is attempted; if retained peer bytes do not fit, the old downstream
+  capacity envelope is restored until they drain.
   The ptr-ring capacity instead retains the maximum of the observed interface
   baseline, later larger readbacks, and derived `J+1` for the live interface.
   The daemon writes only to grow an undersized ring and never shrinks it until
@@ -752,13 +755,17 @@ Common rules, either policy:
   without double-counting a propagated root value. `ring_size_deferred`
   remains zero under the grow-only ring contract.
   `queue_limit_deferred`, `gso_limits_deferred`, and
-  `engine_admission_limit_deferred` identify the pending bound. These series are absent when
-  the active-backup Linux TUN AQM is inactive.
-  Admission growth installs downstream capacity before raising the applied
-  engine value. Admission shrink lowers the engine first; while retained bytes
-  defer it, the desired target remains visible, the desired rate/epoch applies,
-  actual capacity and admission remain at the installed envelope,
-  `actual_fresh=0`, `rate_fresh=1`, and the deferred gauge stays 1.
+  `engine_admission_limit_deferred` identify the pending bound. These series are
+  absent when the active-backup Linux TUN AQM is inactive. Admission growth
+  installs downstream capacity before raising the applied engine value.
+  Admission shrink first reconciles downstream AQM/GSO under the old engine
+  limit. An occupied GSO shrink leaves admission unchanged and both deferrals
+  visible. After exact smaller-GSO readback, admission may shrink; while
+  retained bytes defer it, the desired target remains visible, the desired
+  rate/epoch applies, actual capacity and admission remain at the installed
+  envelope, `actual_fresh=0`, `rate_fresh=1`, and the deferred gauge stays 1.
+  Configurations with pacing disabled install none of these series or
+  transitions.
 - Under active-backup, pacing enabled with **neither** a declared
   `link_bandwidth` **nor** the explicit `per_path_capacity_fps` +
   `pacing_burst_frames` pair fails config load fast — active-backup never
