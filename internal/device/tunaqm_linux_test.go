@@ -377,6 +377,135 @@ func TestLinuxTUNAQMPostGSOWriteBacklogDefersLeafAndBurst(t *testing.T) {
 	}
 }
 
+// Regression: a segment-count decrease can coincide with a larger atomic byte
+// quantum. Ordering that mixed transition as a shrink exposes the larger skb
+// before the leaf and burst have grown.
+func TestLinuxTUNAQMMixedTransitionGrowsCapacityBeforeGSOSize(t *testing.T) {
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		BurstBytes:          64_170,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimitBytes:     64_170,
+		GSOMaxSize:          64_170,
+		GSOMaxSegments:      46,
+		AdmissionLimitBytes: 64_490,
+	}
+	installedBurst := 64_000
+	installedLeaf := 64_000
+	installedGSO := linkGSOLimits{MaxSize: 64_000, MaxSegments: 64}
+	var events []string
+	unsafeArrival := false
+
+	kernel := &linuxTUNAQMKernel{name: "wanbond-test0"}
+	kernel.readTxQueueLen = func() (int, error) {
+		return tunAQMTxQueueLen, nil
+	}
+	kernel.writeTxQueueLen = func(int) error {
+		return nil
+	}
+	kernel.readGSOLimits = func() (linkGSOLimits, error) {
+		return installedGSO, nil
+	}
+	kernel.writeGSOLimits = func(limits linkGSOLimits) error {
+		events = append(events, "gso")
+		if installedBurst < int(limits.MaxSize) ||
+			installedLeaf < int(limits.MaxSize) {
+			unsafeArrival = true
+		}
+		installedGSO = limits
+		return nil
+	}
+	kernel.command = func(args ...string) ([]byte, error) {
+		switch {
+		case len(args) >= 3 && args[0] == "-j" &&
+			args[1] == "-s" && args[2] == "qdisc":
+			return []byte(fmt.Sprintf(`[
+				{"kind":"htb","root":true,"handle":"1:"},
+				{"kind":"bfifo","parent":"1:1","handle":"10:",
+				 "options":{"limit":%d}}
+			]`, installedLeaf)), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "show":
+			return []byte(fmt.Sprintf(
+				"class htb 1:1 root rate 5440000bit ceil 5440000bit burst %db cburst %db",
+				installedBurst,
+				installedBurst,
+			)), nil
+		case len(args) >= 2 && args[0] == "class" && args[1] == "replace":
+			events = append(events, "class")
+			installedBurst = target.BurstBytes
+			return nil, nil
+		case len(args) > 0 && args[0] == "qdisc":
+			events = append(events, "leaf")
+			installedLeaf = target.QueueLimitBytes
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected tc command: %v", args)
+		}
+	}
+
+	result, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.QueueLimitDeferred || result.GSOLimitsDeferred {
+		t.Fatalf("mixed capacity growth unexpectedly deferred: %+v", result)
+	}
+	if unsafeArrival {
+		t.Error("larger GSO quantum became visible before leaf and burst growth")
+	}
+	if got := strings.Join(events, ","); got != "class,leaf,gso" {
+		t.Fatalf("mixed GSO transition order = %q, want %q", got, "class,leaf,gso")
+	}
+	actual, err := kernel.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTUNAQMReadback(target, actual); err != nil {
+		t.Fatalf("mixed GSO transition readback: %v", err)
+	}
+}
+
+func TestLinuxTUNAQMSegmentOnlyChangeDoesNotDeferAtomicCapacity(t *testing.T) {
+	var qdiscCommands [][]string
+	kernel := testLinuxTUNAQMKernel(t, `[
+		{"kind":"htb","root":true,"handle":"1:"},
+		{"kind":"bfifo","parent":"1:1","handle":"10:","qlen":1,"backlog":1000,
+		 "options":{"limit":13950}}
+	]`, &qdiscCommands)
+	gsoWrites := 0
+	kernel.writeGSOLimits = func(limits linkGSOLimits) error {
+		gsoWrites++
+		if limits.MaxSize != 13_950 || limits.MaxSegments != 9 {
+			t.Fatalf("segment-only GSO write = %+v", limits)
+		}
+		return nil
+	}
+	target := tunAQMTargetState{
+		RateBytesPerSecond:  680_000,
+		BurstBytes:          13_950,
+		TxQueueLen:          tunAQMTxQueueLen,
+		MTU:                 1395,
+		QueueLimitBytes:     13_950,
+		GSOMaxSize:          13_950,
+		GSOMaxSegments:      9,
+		AdmissionLimitBytes: 14_270,
+	}
+	result, err := kernel.Apply(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GSOLimitsDeferred || result.QueueLimitDeferred ||
+		gsoWrites != 1 || len(qdiscCommands) != 0 {
+		t.Fatalf(
+			"segment-only transition = %+v GSO writes=%d qdisc=%v, want immediate isolated GSO write",
+			result,
+			gsoWrites,
+			qdiscCommands,
+		)
+	}
+}
+
 // Regression: D131 review found that an occupied TUN qdisc deferred GSO shrink
 // after the class and leaf had already shrunk below the installed atomic skb.
 func TestLinuxTUNAQMDefersLeafAndBurstShrinkWithOccupiedGSO(t *testing.T) {

@@ -94,13 +94,12 @@ func (k *linuxTUNAQMKernel) Apply(target tunAQMTargetState) (tunAQMApplyResult, 
 	queueOccupied := current.QueueLength != 0 || current.BacklogBytes != 0
 	gsoLimitsChanging := current.GSOMaxSize != target.GSOMaxSize ||
 		current.GSOMaxSegments != target.GSOMaxSegments
-	gsoLimitsShrinking := target.GSOMaxSize < current.GSOMaxSize ||
-		target.GSOMaxSegments < current.GSOMaxSegments
-	gsoShrinkDeferred := gsoLimitsChanging && gsoLimitsShrinking &&
+	gsoSizeShrinking := target.GSOMaxSize < current.GSOMaxSize
+	gsoShrinkDeferred := gsoLimitsChanging && gsoSizeShrinking &&
 		queueOccupied
 	result.GSOLimitsDeferred = gsoShrinkDeferred
 	postGSOWriteOccupied := false
-	if gsoLimitsChanging && gsoLimitsShrinking && !gsoShrinkDeferred {
+	if gsoLimitsChanging && gsoSizeShrinking && !gsoShrinkDeferred {
 		if err := k.writeGSOLimits(linkGSOLimits{
 			MaxSize:     uint32(target.GSOMaxSize),
 			MaxSegments: uint32(target.GSOMaxSegments),
