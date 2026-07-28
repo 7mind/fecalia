@@ -836,13 +836,19 @@ only incomplete FEC groups while preserving completed groups and the trusted
 GroupID high-water, and performs any authenticated restart resequencer
 rebaseline before the ACK. A higher ContractID in the same SessionID with the
 same immutable service value (`enabled`, `Sdevice`, and validity) is a lease
-renewal: it advances the accepted identity and acceptance time but preserves
-incomplete receiver groups. Repeating the identical identity does not refresh
-its original acceptance time. A new SessionID or changed service value installs
+renewal: it advances the accepted identity/high-water and acceptance time
+without advancing the receiver topology generation, and preserves incomplete
+receiver groups. Until the renewal ACK write completes, recovery-window
+publication continues using the prior ACK-completed venues and their original
+expiry; DATA-loss reporting uses the newly accepted identity. Successful ACK
+completion promotes the new acceptance time and the completing venue. A failed
+write leaves only the old evidence until its original expiry, so renewal cannot
+extend unacknowledged evidence. Repeating the identical identity does not
+refresh its acceptance time. A new SessionID or changed service value installs
 a new receiver generation and clears incomplete groups. Reusing an identity
-with different fields first clears that untrustworthy receiver generation, then
-permanently invalidates the identity; an expired or lower ContractID remains
-stale and receives no ACK.
+with different fields first clears that untrustworthy receiver generation,
+then permanently invalidates the identity; an expired or lower ContractID
+remains stale and receives no ACK.
 
 Before runtime path add/remove, deferred-path promotion, or
 recovery-generation retirement, the peer's
@@ -863,10 +869,12 @@ peer reflects the OFFER bytes as an OFFER, never satisfying that rule. The
 `T` DATA fallback does not discard the still-live OFFER: a later exact ACK may
 enable fast recovery while at least `T` of `F` remains. Acknowledged leases
 publish a fresh same-service ContractID before the old lease enters its unsafe
-window; loss of that renewal returns service to conservative mode before the
-old lease has less than `T` validity. OFFER loss likewise rotates again before
-expiry. Thus fallback controls DATA admission while OFFER/lease validity remains
-a separate state machine.
+window. The receiver keeps using the old ACK-completed lease only while at
+least `T` of its original validity remains; loss of the renewal therefore
+returns service to conservative mode without creating an earlier
+unacknowledged interval. OFFER loss likewise rotates again before expiry. Thus
+fallback controls DATA admission while OFFER/lease validity remains a separate
+state machine.
 
 An ordinary or bootstrap probe without a recovery ACK revokes any admitted or
 acknowledged receiver evidence once. This includes an ACK admitted before its
@@ -900,7 +908,7 @@ ACK, a different composite key/source, weighted aggregation, `A>=T`, or a
 saturated `A+H` retains `T`. Bootstrap, padded, replayed, malformed, or
 inconsistent control traffic cannot create new fast evidence. Evidence arriving
 after a conservative gap armed never shortens
-that live gap. Contract, adopted-session, membership, roam, rebaseline,
+that live gap. Service-contract, adopted-session, membership, roam, rebaseline,
 resequencer-replacement, and teardown transitions first advance a monotonic
 peer receiver/topology generation and then clear its exact venues. ACK
 admission captures that generation and venue; both ACK completion and

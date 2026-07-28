@@ -768,9 +768,14 @@ predeclared gates:
       250 ms of its own validity remains, and a lost renewal disables fast
       recovery before the prior lease becomes unsafe. With an incomplete
       receiver FEC group, accept a higher same-session ContractID carrying the
-      identical service value and confirm the group still recovers; repeat with
-      a changed value or new SessionID and confirm the incomplete group clears
-      before ACK. Hold an old OFFER's socket write across a ContractID rotation
+      identical service value and hold its ACK write. Confirm the prior
+      ACK-completed venue, expiry, topology generation, and any live fast
+      deadline remain unchanged while DATA-loss identity advances. Complete
+      the ACK and confirm the new expiry becomes eligible; fail it and confirm
+      the old evidence expires at its original time. Confirm the group still
+      recovers; repeat with a changed value or new SessionID and confirm the
+      incomplete group clears before ACK. Hold an old OFFER's socket write
+      across a ContractID rotation
       and confirm its completion cannot authorize the new identity.
 - [ ] With active-backup FEC and an exact successfully emitted ACK, record `A`
       and the authenticated SRTT of the current DATA carrier. An idle Up backup
@@ -781,7 +786,7 @@ predeclared gates:
       fills exactly once in order, while repair at `W` loses the gap and
       releases the successor. Repeat with no ACK, wrong path/source, a second
       delivering key, absent/stale RTT, less than 250 ms contract/RTT validity,
-      `A>=250ms`, weighted policy, rebaseline, and membership/session/contract
+      `A>=250ms`, weighted policy, rebaseline, and membership/session/service
       transitions; every case must use or re-arm a fresh 250 ms fallback. Hold
       an old ACK completion and an old window refresh across each transition,
       source roam, resequencer replacement, and teardown; neither may restore
@@ -797,8 +802,8 @@ predeclared gates:
       already armed before the same-topology update, confirm its exact deadline
       does not change and the new venue/RTT applies only to the next gap.
 - [ ] Pause each topology transition after the coordinator generation advances
-      but before the explicit resequencer publication: ContractID renewal and
-      service change, SessionID adoption, membership add/remove, same-key roam,
+      but before the explicit resequencer publication: service change,
+      SessionID adoption, membership add/remove, same-key roam,
       rebaseline, resequencer replacement, and teardown. At the old `W`
       boundary, concurrent receive/`Pop` must not release; it must observe the
       authoritative generation and set the fallback deadline to the topology

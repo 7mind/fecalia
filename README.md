@@ -122,10 +122,13 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   while the ACK's composite path/source and the current DATA carrier's
   authenticated RTT sample remain fresh for at least 250 ms; missing, stale,
   changed, weighted, or otherwise uncertain evidence keeps the 250 ms fallback.
-  Contract, session, membership, source-roam, rebaseline, resequencer-replacement,
-  and teardown transitions advance one receiver/topology generation before
-  clearing evidence, so a delayed ACK completion or recovery-window publication
-  from an older generation cannot restore the shorter hold. The authority
+  Service-contract, session, membership, source-roam, rebaseline,
+  resequencer-replacement, and teardown transitions advance one
+  receiver/topology generation before clearing evidence, so a delayed ACK
+  completion or recovery-window publication from an older generation cannot
+  restore the shorter hold. A same-service lease renewal instead keeps the
+  prior ACK-completed window to its original expiry until the replacement ACK
+  completes; a failed renewal cannot extend that evidence. The authority
   carries that generation with its exact transition time and wakes the receive
   drainer through a coalescing notification. A conservative gap therefore
   remains bounded by `transitionAt+250ms`, including when the later explicit

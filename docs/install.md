@@ -672,9 +672,12 @@ Common rules, either policy:
   later ACK may still enable fast recovery. Acknowledged service renews under a
   new ContractID before the old lease becomes unsafe. A same-session renewal
   whose immutable service value is unchanged preserves incomplete receiver FEC
-  groups; a changed service value or new SessionID clears them before ACK. A
-  lost renewal disables fast recovery before the old lease has less than `T`
-  left. A legacy peer merely echoes the OFFER and therefore stays conservative.
+  groups and keeps the prior ACK-completed recovery venue to its original
+  expiry until the replacement ACK write succeeds. A failed renewal does not
+  extend old evidence; a changed service value or new SessionID clears it and
+  the incomplete groups before ACK. A lost renewal disables fast recovery
+  before the old lease has less than `T` left. A legacy peer merely echoes the
+  OFFER and therefore stays conservative.
   Shared-socket/mixed-path service advertises a disabled contract.
   Writer/deadline failure and Close invalidate the old contract before operation
   can continue, but ordinary lifecycle cancellation does not classify itself as
