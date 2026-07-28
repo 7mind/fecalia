@@ -236,17 +236,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 			c.lossDecreasePending = true
 		}
 		c.lossEpisodeActive = true
-	case c.lossDecreasePending:
-		c.lossCleanSince = time.Time{}
-	case actual.LossFresh && c.lossEpisodeActive:
-		if c.lossCleanSince.IsZero() {
-			c.lossCleanSince = actual.At
-		}
-		if actual.At.Sub(c.lossCleanSince) >= lossRecoveryDwell {
-			c.lossCleanSince = time.Time{}
-			c.lossEpisodeActive = false
-		}
-	default:
+	case c.lossDecreasePending || !actual.LossFresh:
 		c.lossCleanSince = time.Time{}
 	}
 	if actual.OuterWireBytes < previous.OuterWireBytes ||
@@ -289,6 +279,18 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 			return c.snapshot, nil
 		}
 		c.snapshot.AwaitingInstalled = false
+	}
+	if actual.LossFresh &&
+		!lossAboveThreshold &&
+		!c.lossDecreasePending &&
+		c.lossEpisodeActive {
+		if c.lossCleanSince.IsZero() {
+			c.lossCleanSince = actual.At
+		}
+		if actual.At.Sub(c.lossCleanSince) >= lossRecoveryDwell {
+			c.lossCleanSince = time.Time{}
+			c.lossEpisodeActive = false
+		}
 	}
 	lossCongested := c.lossDecreasePending
 	delayCandidate := loaded && c.snapshot.QueueDelay >= queueThreshold

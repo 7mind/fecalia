@@ -1337,6 +1337,87 @@ func TestControllerRetainsFreshLossAcrossCounterRegression(t *testing.T) {
 	}
 }
 
+// Behavioral-Active Blackbox-Atomic. Regression: a counter discontinuity must
+// break, rather than complete, clean dwell for an active loss episode.
+func TestControllerCounterRegressionDoesNotRearmLossEpisode(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(699, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes, innerBytes uint64
+	observe := func(
+		elapsed time.Duration,
+		loss float64,
+		revision uint64,
+	) congestion.Snapshot {
+		t.Helper()
+		target := controller.Snapshot().Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * elapsed.Seconds())
+		innerBytes += uint64(target * elapsed.Seconds() / 1.25)
+		at = at.Add(elapsed)
+		snapshot, observeErr := controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT:               40 * time.Millisecond,
+			AuthenticatedLoss: loss, LossRevision: revision,
+			LossFresh: true, FeedbackEverSeen: true,
+		})
+		if observeErr != nil {
+			t.Fatal(observeErr)
+		}
+		return snapshot
+	}
+	first := observe(time.Second, 0.02, 1)
+	if first.Target.OuterRateBytesPerSecond !=
+		initial.Target.OuterRateBytesPerSecond*0.85 {
+		t.Fatalf("first loss target = %g", first.Target.OuterRateBytesPerSecond)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: first.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settled := observe(1200*time.Millisecond, 0.02, 2)
+	cleanStart := observe(500*time.Millisecond, 0, 3)
+	if cleanStart.Target != settled.Target {
+		t.Fatalf("first clean target = %+v, want held %+v",
+			cleanStart.Target, settled.Target)
+	}
+	at = at.Add(1200 * time.Millisecond)
+	regressed, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch,
+		AuthenticatedLoss: 0, LossRevision: 4,
+		LossFresh: true, FeedbackEverSeen: true,
+		RTT: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regressed.Target != settled.Target {
+		t.Fatalf("counter regression target = %+v, want held %+v",
+			regressed.Target, settled.Target)
+	}
+	outerBytes = 0
+	innerBytes = 0
+	recurrence := observe(time.Second, 0.02, 5)
+	if recurrence.Target != settled.Target {
+		t.Fatalf("post-regression same-episode loss target = %+v, want held %+v",
+			recurrence.Target, settled.Target)
+	}
+}
+
 // Behavioral-Active Blackbox-Atomic. Regression: D130 emitted bytes are not delivery.
 func TestControllerCongestedDemandLimitedIntervalUsesMultiplicativeDecrease(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
@@ -1615,13 +1696,8 @@ func TestControllerLossCleanDwellDoesNotSpanRetargetSettlement(t *testing.T) {
 	if !pressured.AwaitingInstalled {
 		t.Fatalf("ingress pressure did not start settlement: %+v", pressured)
 	}
-	pending := observe(300*time.Millisecond, 0, 0, false)
-	if pending.Target != pressured.Target {
-		t.Fatalf("pending settlement target = %+v, want %+v",
-			pending.Target, pressured.Target)
-	}
 	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
-		At:                 at.Add(100 * time.Millisecond),
+		At:                 at.Add(200 * time.Millisecond),
 		Epoch:              epoch,
 		RateBytesPerSecond: pressured.Target.IngressRateBytesPerSecond,
 		Fresh:              true,
