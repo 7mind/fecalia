@@ -425,6 +425,8 @@ deliberate boundaries you must plan around:
   retarget; otherwise it remains pending through initialization, a counter
   discontinuity, or target settlement. Adjacent above-threshold reports hold
   the target; one second of fresh below-threshold evidence rearms the response.
+  Ingress-only expansion or headroom settlement does not interrupt that clean
+  dwell.
   `link_bandwidth_limit` is the distinct
   optional operator safety ceiling; omitting it leaves discovery uncapped.
   Legacy active-backup frame-rate knobs likewise seed the controller from

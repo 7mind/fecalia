@@ -479,14 +479,17 @@ as historical exact-byte-shaper evidence.
       adjacent above-threshold reports from the same loss episode must hold the
       target. One continuous second of fresh below-threshold evidence must
       rearm a later episode. Stale evidence, counter regression, and pending
-      retarget settlement must break that clean dwell without clearing the
-      current episode. Fresh loss received on the carrier-initialization sample
-      must remain actionable on the next observation. Fresh loss received while
-      counters regress or another target settles must remain pending and apply
-      one decrease once a valid observation or settlement permits a retarget.
-      RTTVAR and dwell qualify only delay and must not suppress the first
-      eligible fresh-loss response; sustained queue delay may still reduce
-      during an active loss episode.
+      settlement caused by an outer-rate change must break that clean dwell
+      without clearing the current episode. Ingress-only expansion or headroom
+      settlement must not break it: after one loss response, vary expansion
+      while supplying fresh zero-loss feedback for one second and confirm outer
+      additive recovery resumes. Fresh loss received on the
+      carrier-initialization sample must remain actionable on the next
+      observation. Fresh loss received while counters regress or another target
+      settles must remain pending and apply one decrease once a valid
+      observation or settlement permits a retarget. RTTVAR and dwell qualify
+      only delay and must not suppress the first eligible fresh-loss response;
+      sustained queue delay may still reduce during an active loss episode.
       A no-loss variable-RTT trace whose delay remains below that threshold
       must not reduce the target. A single crossing followed by a
       below-threshold or unloaded observation must not reduce it; counter

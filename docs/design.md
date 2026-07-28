@@ -594,12 +594,15 @@ settled observation. Adjacent above-threshold reports from that episode hold
 the target instead of compounding the multiplicative response. One continuous
 second of fresh below-threshold evidence ends the episode and rearms a later
 response. Stale evidence, counter regression, and pending retarget
-settlement break that clean dwell without ending or rearming the episode. A
-fresh loss report received while a carrier epoch initializes remains actionable
-on the next observation. Fresh loss received with a counter regression or while
-an installed target settles remains pending and applies one decrease as soon as
-a valid observation or settlement permits another retarget. The independent
-sustained queue-delay path may still decrease the target during a loss episode.
+settlement caused by an outer-rate change break that clean dwell without ending
+or rearming the episode. Ingress-only expansion or headroom settlement does not
+break it, so continuous clean DATA feedback can rearm recovery while the
+admission rate tracks changing encapsulation. A fresh loss report received
+while a carrier epoch initializes remains actionable on the next observation.
+Fresh loss received with a counter regression or while an installed target
+settles remains pending and applies one decrease as soon as a valid observation
+or settlement permits another retarget. The independent sustained queue-delay
+path may still decrease the target during a loss episode.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
 delay can still decrease it after the same continuous dwell. Counter regression

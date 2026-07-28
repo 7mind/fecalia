@@ -479,9 +479,10 @@ Common rules, either policy:
   multiplicative step, even if it arrives during a later unloaded byte
   interval. Adjacent above-threshold reports hold that target. One continuous
   second of fresh below-threshold evidence rearms the response. Stale evidence,
-  counter regression, and pending retarget settlement break that clean dwell;
-  fresh loss received during carrier initialization remains actionable on the
-  next observation, while fresh loss received with a counter regression or
+  counter regression, and pending settlement caused by an outer-rate change
+  break that clean dwell; ingress-only expansion or headroom settlement does
+  not. Fresh loss received during carrier initialization remains actionable on
+  the next observation, while fresh loss received with a counter regression or
   during target settlement remains pending until a valid observation or the
   installed target settles. The sustained queue-delay path remains independent. A transient delay crossing holds the target;
   a below-threshold or unloaded observation, counter regression, carrier
