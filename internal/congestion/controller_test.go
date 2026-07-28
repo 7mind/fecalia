@@ -33,6 +33,7 @@ func TestControllerReducesCongestedCarrierAndHoldsStaleFeedback(t *testing.T) {
 		InnerDataBytes:    700_000,
 		RTT:               80 * time.Millisecond,
 		AuthenticatedLoss: 0.02,
+		LossRevision:      1,
 		LossFresh:         true,
 		FeedbackEverSeen:  true,
 	})
@@ -130,7 +131,8 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 		At: at.Add(200 * time.Millisecond), Epoch: epoch,
 		OuterWireBytes: 170_000, InnerDataBytes: 136_000,
 		RTT: 80 * time.Millisecond, AuthenticatedLoss: 0.01,
-		LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 1,
+		LossFresh:    true, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +153,8 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 		At: at.Add(400 * time.Millisecond), Epoch: epoch,
 		OuterWireBytes: 314_500, InnerDataBytes: 251_600,
 		RTT: 80 * time.Millisecond, AuthenticatedLoss: 0.01,
-		LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 1,
+		LossFresh:    true, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +182,8 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 		At: at.Add(time.Second), Epoch: epoch,
 		OuterWireBytes: 748_000, InnerDataBytes: 598_400,
 		RTT: 80 * time.Millisecond, AuthenticatedLoss: 0.01,
-		LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 2,
+		LossFresh:    true, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +209,8 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 		At: at.Add(1500 * time.Millisecond), Epoch: epoch,
 		OuterWireBytes: 1_109_250, InnerDataBytes: 887_400,
 		RTT: 80 * time.Millisecond, AuthenticatedLoss: 0.01,
-		LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 3,
+		LossFresh:    true, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +245,7 @@ func TestControllerCarrierEpochDeprecatesPriorActualState(t *testing.T) {
 		At: at.Add(time.Second), Epoch: firstEpoch,
 		OuterWireBytes: 850_000, InnerDataBytes: 700_000,
 		RTT: 90 * time.Millisecond, AuthenticatedLoss: 0.05, LossFresh: true,
+		LossRevision: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +322,8 @@ func TestControllerDiscoversCapacityAboveSeedAndPromptlyReduces(t *testing.T) {
 		At: at.Add(2 * time.Second), Epoch: epoch,
 		OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
 		RTT: 100 * time.Millisecond, AuthenticatedLoss: 0.01,
-		LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 1,
+		LossFresh:    true, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1187,6 +1194,7 @@ func TestControllerCongestedDemandLimitedIntervalUsesMultiplicativeDecrease(t *t
 		OuterWireBytes: uint64(offered), InnerDataBytes: uint64(offered / 1.25),
 		RTT: 80 * time.Millisecond, RTTVariation: time.Millisecond,
 		AuthenticatedLoss: 0.01, LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1196,6 +1204,89 @@ func TestControllerCongestedDemandLimitedIntervalUsesMultiplicativeDecrease(t *t
 		t.Fatalf(
 			"51%%-loaded congested target = %g, want one 0.85 decrease to %g",
 			congested.Target.OuterRateBytesPerSecond,
+			want,
+		)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: authenticated loss arrives after its DATA interval.
+func TestControllerFreshLossDecreasesWhenCurrentIntervalIsUnloaded(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(750, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := controller.Observe(congestion.ActualState{
+		At: at.Add(time.Second), Epoch: epoch,
+		OuterWireBytes:    uint64(initial.Target.OuterRateBytesPerSecond * 0.25),
+		InnerDataBytes:    uint64(initial.Target.OuterRateBytesPerSecond * 0.25 / 1.25),
+		RTT:               40 * time.Millisecond,
+		AuthenticatedLoss: 0.01, LossFresh: true, FeedbackEverSeen: true,
+		LossRevision: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := initial.Target.OuterRateBytesPerSecond * 0.85
+	if math.Abs(observed.Target.OuterRateBytesPerSecond-want) > 0.001 {
+		t.Fatalf(
+			"fresh-loss unloaded target = %g, want one 0.85 decrease to %g",
+			observed.Target.OuterRateBytesPerSecond,
+			want,
+		)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(1100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: observed.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outerBytes := uint64(initial.Target.OuterRateBytesPerSecond * 0.25)
+	innerBytes := uint64(initial.Target.OuterRateBytesPerSecond * 0.25 / 1.25)
+	outerBytes += uint64(observed.Target.OuterRateBytesPerSecond * 0.25 * 1.2)
+	innerBytes += uint64(observed.Target.OuterRateBytesPerSecond * 0.25 / 1.25 * 1.2)
+	repeated, err := controller.Observe(congestion.ActualState{
+		At: at.Add(2200 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+		RTT: 40 * time.Millisecond, AuthenticatedLoss: 0.01,
+		LossRevision: 1, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Target != observed.Target {
+		t.Fatalf(
+			"repeated loss revision target = %+v, want held %+v",
+			repeated.Target,
+			observed.Target,
+		)
+	}
+	outerBytes += uint64(repeated.Target.OuterRateBytesPerSecond * 0.25)
+	innerBytes += uint64(repeated.Target.OuterRateBytesPerSecond * 0.25 / 1.25)
+	next, err := controller.Observe(congestion.ActualState{
+		At: at.Add(3200 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+		RTT: 40 * time.Millisecond, AuthenticatedLoss: 0.01,
+		LossRevision: 2, LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = repeated.Target.OuterRateBytesPerSecond * 0.85
+	if math.Abs(next.Target.OuterRateBytesPerSecond-want) > 0.001 {
+		t.Fatalf(
+			"new loss revision target = %g, want one decrease to %g",
+			next.Target.OuterRateBytesPerSecond,
 			want,
 		)
 	}
@@ -1298,6 +1389,7 @@ func TestControllerFreshLossDecreasesImmediatelyDespiteHighRTTVariation(t *testi
 		RTT:               40 * time.Millisecond,
 		RTTVariation:      100 * time.Millisecond,
 		AuthenticatedLoss: authenticatedLoss,
+		LossRevision:      1,
 		LossFresh:         true,
 		FeedbackEverSeen:  true,
 	})

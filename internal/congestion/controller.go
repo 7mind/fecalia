@@ -42,6 +42,7 @@ type ActualState struct {
 	RTT               time.Duration
 	RTTVariation      time.Duration
 	AuthenticatedLoss float64
+	LossRevision      uint64
 	LossFresh         bool
 	FeedbackEverSeen  bool
 }
@@ -96,6 +97,7 @@ type Controller struct {
 	ingressPressurePending        bool
 	ingressPressureAcknowledgedAt time.Time
 	delayCongestedSince           time.Time
+	lastLossRevision              uint64
 }
 
 func New(seedBytesPerSecond, limitBytesPerSecond float64) (*Controller, error) {
@@ -163,6 +165,11 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		actual.AuthenticatedLoss > 1 {
 		return Snapshot{}, errors.New("authenticated loss must be in [0,1]")
 	}
+	if actual.LossFresh &&
+		actual.AuthenticatedLoss > 0 &&
+		actual.LossRevision == 0 {
+		return Snapshot{}, errors.New("fresh authenticated loss revision is required")
+	}
 	if !c.haveSample || c.snapshot.Actual.Epoch != actual.Epoch {
 		target := c.seed * initialTargetFraction
 		c.snapshot = Snapshot{
@@ -184,6 +191,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.ingressPressurePending = false
 		c.ingressPressureAcknowledgedAt = time.Time{}
 		c.delayCongestedSince = time.Time{}
+		c.lastLossRevision = actual.LossRevision
 		c.haveSample = true
 		return c.snapshot, nil
 	}
@@ -241,8 +249,13 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		}
 		c.snapshot.AwaitingInstalled = false
 	}
-	lossCongested := loaded &&
-		actual.LossFresh &&
+	newLossEvidence := actual.LossFresh &&
+		actual.LossRevision != 0 &&
+		actual.LossRevision != c.lastLossRevision
+	if actual.LossFresh && actual.LossRevision != 0 {
+		c.lastLossRevision = actual.LossRevision
+	}
+	lossCongested := newLossEvidence &&
 		actual.AuthenticatedLoss >= lossCongestionThreshold
 	delayCandidate := loaded && c.snapshot.QueueDelay >= queueThreshold
 	delayCongested := false

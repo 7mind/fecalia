@@ -24,6 +24,7 @@ type acceptedDataLossFeedback struct {
 	report          telemetry.DataLossFeedback
 	reporterSession uint64
 	acceptedAt      time.Time
+	revision        uint64
 }
 
 // dataLossFeedbackCoordinator owns the receive-side interval accumulator and
@@ -43,6 +44,7 @@ type dataLossFeedbackCoordinator struct {
 	haveAccepted    bool
 	everAccepted    bool
 	accepted        acceptedDataLossFeedback
+	nextRevision    uint64
 	haveReporter    bool
 	reporterSession uint64
 	lastReportID    uint64
@@ -171,10 +173,15 @@ func (c *dataLossFeedbackCoordinator) accept(
 		now.Sub(c.accepted.acceptedAt) <= dataLossFeedbackFreshness &&
 		c.accepted.report.Loss() > report.Loss()
 	if !retainFreshLoss {
+		c.nextRevision++
+		if c.nextRevision == 0 {
+			c.nextRevision++
+		}
 		c.accepted = acceptedDataLossFeedback{
 			report:          report,
 			reporterSession: reporterSession,
 			acceptedAt:      now,
+			revision:        c.nextRevision,
 		}
 	}
 	c.haveAccepted = true
@@ -201,6 +208,15 @@ func (c *dataLossFeedbackCoordinator) sampleIdentity(
 	identity localDataLossIdentity,
 	now time.Time,
 ) (loss float64, fresh bool, ever bool) {
+	loss, _, fresh, ever = c.sampleIdentityRevision(pathID, identity, now)
+	return loss, fresh, ever
+}
+
+func (c *dataLossFeedbackCoordinator) sampleIdentityRevision(
+	pathID uint8,
+	identity localDataLossIdentity,
+	now time.Time,
+) (loss float64, revision uint64, fresh bool, ever bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ever = c.everAccepted
@@ -215,7 +231,7 @@ func (c *dataLossFeedbackCoordinator) sampleIdentity(
 		c.accepted.report.CarrierPathID != pathID ||
 		!identity.matches(c.accepted.report.ObservedSessionID, c.accepted.report.ContractID) ||
 		now.Sub(c.accepted.acceptedAt) > dataLossFeedbackFreshness {
-		return 0, false, ever
+		return 0, 0, false, ever
 	}
-	return c.accepted.report.Loss(), true, ever
+	return c.accepted.report.Loss(), c.accepted.revision, true, ever
 }

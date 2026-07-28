@@ -55,13 +55,15 @@ func (m *Multipath) driveCongestionControllers() {
 		}
 
 		var loss float64
+		var lossRevision uint64
 		var fresh, ever bool
 		if peer.dataLoss != nil {
 			identity := localDataLossIdentity{}
 			if peer.contracts != nil {
 				identity, _ = peer.contracts.localDataLossIdentity()
 			}
-			loss, fresh, ever = peer.dataLoss.sampleIdentity(path.id, identity, now)
+			loss, lossRevision, fresh, ever =
+				peer.dataLoss.sampleIdentityRevision(path.id, identity, now)
 		}
 		estimate := path.prober.Estimate()
 		observations = append(observations, congestionObservation{
@@ -77,6 +79,7 @@ func (m *Multipath) driveCongestionControllers() {
 				RTT:               estimate.RTT,
 				RTTVariation:      estimate.Jitter,
 				AuthenticatedLoss: loss,
+				LossRevision:      lossRevision,
 				LossFresh:         fresh,
 				FeedbackEverSeen:  ever,
 			},

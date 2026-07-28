@@ -139,16 +139,19 @@ func TestDataLossFeedbackRetainsFreshLossAcrossNextCleanInterval(t *testing.T) {
 		t.Fatal("following clean interval was rejected")
 	}
 
-	loss, fresh, ever := feedback.sample(
+	loss, revision, fresh, ever := feedback.sampleIdentityRevision(
 		lost.CarrierPathID,
-		lost.ObservedSessionID,
-		lost.ContractID,
+		localDataLossIdentity{
+			session:           lost.ObservedSessionID,
+			offeredContractID: lost.ContractID,
+		},
 		now.Add(adaptiveControlInterval),
 	)
-	if want := lost.Loss(); !fresh || !ever || loss != want {
+	if want := lost.Loss(); !fresh || !ever || loss != want || revision != 1 {
 		t.Fatalf(
-			"next controller sample = loss %v fresh %v ever %v, want retained fresh loss %v",
+			"next controller sample = loss %v revision %d fresh %v ever %v, want retained fresh loss %v revision 1",
 			loss,
+			revision,
 			fresh,
 			ever,
 			want,
@@ -160,13 +163,21 @@ func TestDataLossFeedbackRetainsFreshLossAcrossNextCleanInterval(t *testing.T) {
 	if !feedback.accept(clean, 21, false, expiredAt) {
 		t.Fatal("clean interval after retained-loss freshness was rejected")
 	}
-	if loss, fresh, ever := feedback.sample(
+	if loss, revision, fresh, ever := feedback.sampleIdentityRevision(
 		lost.CarrierPathID,
-		lost.ObservedSessionID,
-		lost.ContractID,
+		localDataLossIdentity{
+			session:           lost.ObservedSessionID,
+			offeredContractID: lost.ContractID,
+		},
 		expiredAt,
-	); !fresh || !ever || loss != 0 {
-		t.Fatalf("post-freshness sample = loss %v fresh %v ever %v, want clean fresh sample", loss, fresh, ever)
+	); !fresh || !ever || loss != 0 || revision != 2 {
+		t.Fatalf(
+			"post-freshness sample = loss %v revision %d fresh %v ever %v, want clean fresh sample revision 2",
+			loss,
+			revision,
+			fresh,
+			ever,
+		)
 	}
 }
 
