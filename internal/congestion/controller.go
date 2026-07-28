@@ -17,6 +17,7 @@ const (
 	overheadEWMAWeight       = 0.25
 	minimumQueueThreshold    = 10 * time.Millisecond
 	rttVariationFactor       = 4
+	delayCongestionDwell     = time.Second
 	lossCongestionThreshold  = 0.005
 	minimumRetargetSettle    = time.Second
 	installedRateTolerance   = 0.01
@@ -94,6 +95,7 @@ type Controller struct {
 	cleanIngressIntervals         int
 	ingressPressurePending        bool
 	ingressPressureAcknowledgedAt time.Time
+	delayCongestedSince           time.Time
 }
 
 func New(seedBytesPerSecond, limitBytesPerSecond float64) (*Controller, error) {
@@ -181,6 +183,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.cleanIngressIntervals = 0
 		c.ingressPressurePending = false
 		c.ingressPressureAcknowledgedAt = time.Time{}
+		c.delayCongestedSince = time.Time{}
 		c.haveSample = true
 		return c.snapshot, nil
 	}
@@ -203,6 +206,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 
 	if actual.OuterWireBytes < previous.OuterWireBytes ||
 		actual.InnerDataBytes < previous.InnerDataBytes {
+		c.delayCongestedSince = time.Time{}
 		return c.snapshot, nil
 	}
 	elapsed := actual.At.Sub(previous.At).Seconds()
@@ -222,10 +226,8 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.snapshot.BaseRTT,
 		actual.RTTVariation,
 	)
-	congested := loaded &&
-		(c.snapshot.QueueDelay >= queueThreshold ||
-			(actual.LossFresh && actual.AuthenticatedLoss >= lossCongestionThreshold))
 	if c.snapshot.AwaitingInstalled {
+		c.delayCongestedSince = time.Time{}
 		installed := c.snapshot.InstalledIngress
 		rateMatches := installed.Epoch == actual.Epoch &&
 			installed.Fresh &&
@@ -238,6 +240,16 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 			return c.snapshot, nil
 		}
 		c.snapshot.AwaitingInstalled = false
+	}
+	lossCongested := loaded &&
+		actual.LossFresh &&
+		actual.AuthenticatedLoss >= lossCongestionThreshold
+	delayCandidate := loaded && c.snapshot.QueueDelay >= queueThreshold
+	delayCongested := false
+	if lossCongested {
+		c.delayCongestedSince = time.Time{}
+	} else {
+		delayCongested = c.observeDelayCongestionLocked(actual.At, delayCandidate)
 	}
 
 	if innerRate > 0 && loaded && !feedbackStale {
@@ -255,7 +267,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 
 	previousTarget := c.snapshot.Target
 	switch {
-	case congested:
+	case lossCongested || delayCongested:
 		next := target * decreaseFactor
 		floor, _ := MinimumTargetRate(c.seed)
 		if next < floor {
@@ -265,7 +277,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	case feedbackStale:
 		// Stale authenticated evidence cannot raise the target or cause a
 		// loss-based decrease. Local queue delay remains current evidence and
-		// takes the fail-closed decrease branch above.
+		// takes the fail-closed decrease branch after its dwell.
+	case delayCandidate:
+		// A transient queue crossing holds the target while its dwell accrues.
 	case loaded && (!actual.FeedbackEverSeen || actual.LossFresh):
 		target += c.seed * increaseFraction
 		if c.limit > 0 && target > c.limit {
@@ -282,10 +296,26 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	c.snapshot.Held = c.snapshot.Target == previousTarget
 	c.snapshot.AwaitingInstalled = !c.snapshot.Held
 	if !c.snapshot.Held {
+		c.delayCongestedSince = time.Time{}
 		c.snapshot.TargetChanges++
 		c.snapshot.InstalledIngress.Fresh = false
 	}
 	return c.snapshot, nil
+}
+
+func (c *Controller) observeDelayCongestionLocked(
+	at time.Time,
+	candidate bool,
+) bool {
+	if !candidate {
+		c.delayCongestedSince = time.Time{}
+		return false
+	}
+	if c.delayCongestedSince.IsZero() {
+		c.delayCongestedSince = at
+		return false
+	}
+	return at.Sub(c.delayCongestedSince) >= delayCongestionDwell
 }
 
 func (c *Controller) ObserveIngressPressure(
