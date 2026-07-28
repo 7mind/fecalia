@@ -597,8 +597,11 @@ response. Stale evidence, counter regression, and pending retarget
 settlement caused by an outer-rate change break that clean dwell without ending
 or rearming the episode. Ingress-only expansion or headroom settlement does not
 break it, so continuous clean DATA feedback can rearm recovery while the
-admission rate tracks changing encapsulation. A fresh loss report received
-while a carrier epoch initializes remains actionable on the next observation.
+admission rate tracks changing encapsulation. When pressure preempts an
+outer-rate retarget, the exact combined-target readback must settle before the
+next headroom-only change releases the outer recovery block. A fresh loss report
+received while a carrier epoch initializes remains actionable on the next
+observation.
 Fresh loss received with a counter regression or while an installed target
 settles remains pending and applies one decrease as soon as a valid observation
 or settlement permits another retarget. The independent sustained queue-delay

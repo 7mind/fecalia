@@ -483,7 +483,9 @@ as historical exact-byte-shaper evidence.
       without clearing the current episode. Ingress-only expansion or headroom
       settlement must not break it: after one loss response, vary expansion
       while supplying fresh zero-loss feedback for one second and confirm outer
-      additive recovery resumes. Fresh loss received on the
+      additive recovery resumes. Repeat with pressure preempting the outer
+      retarget; after exact combined-target readback settles and the next
+      headroom-only change, clean dwell must resume. Fresh loss received on the
       carrier-initialization sample must remain actionable on the next
       observation. Fresh loss received while counters regress or another target
       settles must remain pending and apply one decrease once a valid
