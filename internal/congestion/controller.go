@@ -27,6 +27,7 @@ const (
 	ingressRecoveryStep      = 0.01
 	ingressPressureThreshold = 0.50
 	ingressRecoveryIntervals = 3
+	loadThreshold            = 0.50
 )
 
 type CarrierEpoch struct {
@@ -222,7 +223,9 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	innerRate := float64(actual.InnerDataBytes-previous.InnerDataBytes) / elapsed
 	feedbackStale := actual.FeedbackEverSeen && !actual.LossFresh
 	target := c.snapshot.Target.OuterRateBytesPerSecond
-	loaded := outerRate >= target*0.50
+	loaded := outerRate >= target*loadThreshold
+	ingressLoaded := innerRate >=
+		c.snapshot.Target.IngressRateBytesPerSecond*loadThreshold
 
 	deliveredRate := outerRate
 	if actual.LossFresh {
@@ -265,7 +268,7 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		delayCongested = c.observeDelayCongestionLocked(actual.At, delayCandidate)
 	}
 
-	if innerRate > 0 && loaded && !feedbackStale {
+	if innerRate > 0 && (loaded || ingressLoaded) && !feedbackStale {
 		observedRatio := outerRate / innerRate
 		if observedRatio < 1 {
 			observedRatio = 1

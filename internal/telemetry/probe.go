@@ -338,12 +338,13 @@ func (p *Prober) State() PathState {
 // horizon, not RideThrough: a sample too old to keep the base path heartbeat
 // current cannot shorten a receive gap.
 type RecoveryRTTSnapshot struct {
-	Revision   uint64
-	RTT        time.Duration
-	SampledAt  time.Time
-	FreshUntil time.Time
-	State      PathState
-	Present    bool
+	Revision     uint64
+	RTT          time.Duration
+	RTTVariation time.Duration
+	SampledAt    time.Time
+	FreshUntil   time.Time
+	State        PathState
+	Present      bool
 }
 
 // RecoveryRTT returns one coherent snapshot under the Prober lock. Only a
@@ -351,11 +352,13 @@ type RecoveryRTTSnapshot struct {
 func (p *Prober) RecoveryRTT() RecoveryRTTSnapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	estimate := p.est.Estimate()
 	snapshot := RecoveryRTTSnapshot{
-		Revision: p.recoveryRevision,
-		RTT:      p.est.Estimate().RTT,
-		State:    p.live.State(),
-		Present:  p.haveRTTSample,
+		Revision:     p.recoveryRevision,
+		RTT:          estimate.RTT,
+		RTTVariation: estimate.Jitter,
+		State:        p.live.State(),
+		Present:      p.haveRTTSample,
 	}
 	if p.haveRTTSample {
 		snapshot.SampledAt = p.lastRTTSample

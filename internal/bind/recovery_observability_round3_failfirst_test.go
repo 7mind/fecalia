@@ -71,14 +71,18 @@ func TestReceiverRecoveryStatsUseResequencerFreshnessBoundary(t *testing.T) {
 	recordRecoveryRTTSample(t, probers[0], m.psk, clock, testProbeRTT)
 	m.refreshPeerRecoveryWindow(m.peerState)
 	restored := m.contracts.stats().Receiver
-	if !restored.FastEligible || restored.Window != initial.Window ||
-		restored.FallbackReason != "" {
+	evidence := probers[0].RecoveryRTT()
+	wantWindow := recoveryWindow(
+		message.ServiceBound,
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation),
+	)
+	if !restored.FastEligible || restored.Window != wantWindow || restored.FallbackReason != "" {
 		t.Fatalf("fresh receiver commit did not restore fast stats: %+v", restored)
 	}
 	restoredAt := clock.Now()
 	rq.ObserveFromPath(6, []byte("six"), receiverContractSource, pathKey)
 	deadline, armed = rq.ArmedDeadline()
-	if !armed || deadline != restoredAt.Add(initial.Window) {
-		t.Fatalf("restored resequence deadline = %v armed=%v, want %v", deadline, armed, restoredAt.Add(initial.Window))
+	if !armed || deadline != restoredAt.Add(wantWindow) {
+		t.Fatalf("restored resequence deadline = %v armed=%v, want %v", deadline, armed, restoredAt.Add(wantWindow))
 	}
 }

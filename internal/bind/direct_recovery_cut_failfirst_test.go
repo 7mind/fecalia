@@ -265,11 +265,12 @@ func TestSharedUnshapedSocketDoesNotAdvertiseDirectRecovery(t *testing.T) {
 
 func TestFieldRecoveryGeometryUsesFastWindow(t *testing.T) {
 	const fieldSRTT = 42*time.Millisecond + 957*time.Microsecond + 109*time.Nanosecond
-	headroom := recoveryRTTHeadroom(fieldSRTT)
+	const fieldRTTVariation = 4 * time.Millisecond
+	headroom := recoveryRTTHeadroom(fieldSRTT, fieldRTTVariation)
 	got := recoveryWindow(10*time.Millisecond, headroom)
-	want := 181*time.Millisecond + 828*time.Microsecond + 436*time.Nanosecond
+	want := 68*time.Millisecond + 957*time.Microsecond + 109*time.Nanosecond
 	if got != want {
-		t.Fatalf("field recovery window = %s, want A+4*SRTT = %s", got, want)
+		t.Fatalf("field recovery window = %s, want A+SRTT+4*RTTVAR = %s", got, want)
 	}
 	if got >= conservativeRecoveryService {
 		t.Fatalf("field recovery window = %s, want below conservative fallback %s",

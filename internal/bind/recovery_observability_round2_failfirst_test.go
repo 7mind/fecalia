@@ -163,7 +163,8 @@ func TestReceiverDecisionUsesOnlyQualifiedRTTEvidence(t *testing.T) {
 	if receiverAge != freshAge {
 		t.Fatalf("receiver RTT age = %v, want qualified UP path age %v; stale DOWN path dominated", receiverAge, freshAge)
 	}
-	wantHeadroom := recoveryRTTHeadroom(probers[0].RecoveryRTT().RTT)
+	evidence := probers[0].RecoveryRTT()
+	wantHeadroom := recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation)
 	if got := recoveryObservationField(t, stats, "Receiver", "Headroom").Interface().(time.Duration); got != wantHeadroom {
 		t.Fatalf("receiver H = %v, want qualified H=%v", got, wantHeadroom)
 	}

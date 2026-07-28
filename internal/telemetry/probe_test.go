@@ -101,6 +101,10 @@ func TestProbeEchoRTT(t *testing.T) {
 		snapshot.FreshUntil != clk.Now().Add(proberCfg().Liveness.DownAfter) {
 		t.Fatalf("recovery RTT snapshot = %+v, want injected-clock sample/freshness", snapshot)
 	}
+	if snapshot.RTT != rtt || snapshot.RTTVariation != rtt/2 {
+		t.Fatalf("recovery RTT estimate = %s/%s, want RTT/variation %s/%s",
+			snapshot.RTT, snapshot.RTTVariation, rtt, rtt/2)
+	}
 	if snapshot.Revision != 1 {
 		t.Fatalf("first authenticated RTT revision = %d, want 1", snapshot.Revision)
 	}
@@ -109,7 +113,7 @@ func TestProbeEchoRTT(t *testing.T) {
 		t.Fatalf("replayed echo = %v, want ErrReplay", err)
 	}
 	afterReplay := p.RecoveryRTT()
-	if afterReplay.SampledAt != snapshot.SampledAt || afterReplay.Revision != snapshot.Revision {
+	if afterReplay != snapshot {
 		t.Fatalf("replay changed recovery snapshot from %+v to %+v", snapshot, afterReplay)
 	}
 }

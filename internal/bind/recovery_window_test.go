@@ -189,7 +189,9 @@ func TestReceiverRecoveryWindowUsesExactACKAndFreshMaxRTT(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
-	want := armedAt.Add(80*time.Millisecond + recoveryRTTHeadroom(testProbeRTT))
+	evidence := probers[0].RecoveryRTT()
+	want := armedAt.Add(80*time.Millisecond +
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation))
 	if deadline != want {
 		t.Fatalf("fast deadline = %v, want A+H %v", deadline, want)
 	}
@@ -216,7 +218,9 @@ func TestReceiverRecoveryWindowUsesActiveCarrierRTT(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
-	want := armedAt.Add(message.ServiceBound + 4*fastRTT)
+	evidence := probers[0].RecoveryRTT()
+	want := armedAt.Add(message.ServiceBound +
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation))
 	if deadline != want {
 		t.Fatalf("active-backup deadline = %v, want active carrier RTT deadline %v; idle backup RTT inflated H", deadline, want)
 	}
@@ -297,7 +301,9 @@ func TestReceiverPublicationRejectsStaleActiveCarrier(t *testing.T) {
 	m.beforeRecoveryPublish = nil
 	m.refreshPeerRecoveryWindow(m.peerState)
 	stats := m.contracts.stats().Receiver
-	if !stats.FastEligible || stats.Headroom != recoveryRTTHeadroom(probers[1].RecoveryRTT().RTT) {
+	evidence := probers[1].RecoveryRTT()
+	if !stats.FastEligible ||
+		stats.Headroom != recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation) {
 		t.Fatalf("backup carrier publication = %+v, want fresh fast backup evidence", stats)
 	}
 }
@@ -518,17 +524,19 @@ func TestReceiverRecoveryWindowFallsBackWithoutExactEvidence(t *testing.T) {
 
 func TestRecoveryHeadroomFactorFloorAndSaturation(t *testing.T) {
 	tests := []struct {
-		rtt  time.Duration
-		want time.Duration
+		rtt       time.Duration
+		variation time.Duration
+		want      time.Duration
 	}{
 		{rtt: 0, want: recoveryRTTFloor},
-		{rtt: time.Millisecond, want: recoveryRTTFloor},
-		{rtt: 20 * time.Millisecond, want: 80 * time.Millisecond},
-		{rtt: 100 * time.Millisecond, want: conservativeRecoveryService},
+		{rtt: time.Millisecond, variation: time.Millisecond, want: recoveryRTTFloor},
+		{rtt: 20 * time.Millisecond, variation: 5 * time.Millisecond, want: 40 * time.Millisecond},
+		{rtt: 100 * time.Millisecond, variation: 40 * time.Millisecond, want: conservativeRecoveryService},
 	}
 	for _, test := range tests {
-		if got := recoveryRTTHeadroom(test.rtt); got != test.want {
-			t.Fatalf("H(%v) = %v, want %v", test.rtt, got, test.want)
+		if got := recoveryRTTHeadroom(test.rtt, test.variation); got != test.want {
+			t.Fatalf("H(%v,%v) = %v, want %v",
+				test.rtt, test.variation, got, test.want)
 		}
 	}
 	if got := recoveryWindow(200*time.Millisecond, 80*time.Millisecond); got != conservativeRecoveryService {
@@ -710,7 +718,9 @@ func TestStandbyRenewalACKPreservesOlderActiveVenue(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverContractSource, primaryPathKey)
-	want := armedAt.Add(first.ServiceBound + recoveryRTTHeadroom(testProbeRTT))
+	evidence := probers[0].RecoveryRTT()
+	want := armedAt.Add(first.ServiceBound +
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation))
 	if !deadline.Equal(want) {
 		t.Fatalf(
 			"standby-first renewal primary deadline = %v, want retained %v; snapshot=%+v stats=%+v",
@@ -1050,7 +1060,7 @@ func TestSameTopologyEvidenceUpdateDoesNotChangeLiveGap(t *testing.T) {
 	clock.advance(time.Millisecond)
 
 	recordRecoveryRTTSample(t, probers[0], m.psk, clock, 80*time.Millisecond)
-	newRTT := probers[0].RecoveryRTT().RTT
+	newEvidence := probers[0].RecoveryRTT()
 	m.refreshPeerRecoveryWindow(m.peerState)
 	if deadline, armed := rq.ArmedDeadline(); !armed || !deadline.Equal(oldDeadline) {
 		t.Fatalf("same-topology RTT update changed live gap: %v,%v want %v,true", deadline, armed, oldDeadline)
@@ -1063,7 +1073,10 @@ func TestSameTopologyEvidenceUpdateDoesNotChangeLiveGap(t *testing.T) {
 		}
 	}
 	rq.ObserveFromPath(4, []byte("four"), receiverContractSource, pathKey)
-	want := clock.Now().Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(newRTT)))
+	want := clock.Now().Add(recoveryWindow(
+		message.ServiceBound,
+		recoveryRTTHeadroom(newEvidence.RTT, newEvidence.RTTVariation),
+	))
 	if deadline, armed := rq.ArmedDeadline(); !armed || !deadline.Equal(want) {
 		t.Fatalf("future gap did not use current evidence: %v,%v want %v,true", deadline, armed, want)
 	}
@@ -1227,7 +1240,11 @@ func TestOlderSameGenerationRefreshCannotEraseNewACKVenue(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverStandbySource, newKey)
-	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
+	evidence := probers[0].RecoveryRTT()
+	want := armedAt.Add(recoveryWindow(
+		message.ServiceBound,
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation),
+	))
 	if !deadline.Equal(want) {
 		t.Fatalf("older publication erased the new ACK venue: deadline=%v want=%v", deadline, want)
 	}
@@ -1282,7 +1299,11 @@ func TestReservedOlderPublicationCannotEraseNewACKVenue(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverStandbySource, newKey)
-	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
+	evidence := probers[0].RecoveryRTT()
+	want := armedAt.Add(recoveryWindow(
+		message.ServiceBound,
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation),
+	))
 	if !deadline.Equal(want) {
 		t.Fatalf("older reserved publication erased new ACK venue: deadline=%v want=%v", deadline, want)
 	}
@@ -1326,9 +1347,9 @@ func TestOlderSameGenerationRefreshCannotRestoreLowerRTTHeadroom(t *testing.T) {
 	<-paused
 
 	recordRecoveryRTTSample(t, probers[0], m.psk, clock, 80*time.Millisecond)
-	newRTT := probers[0].RecoveryRTT().RTT
-	if newRTT <= testProbeRTT {
-		t.Fatalf("new RTT = %v, want greater than old %v", newRTT, testProbeRTT)
+	newEvidence := probers[0].RecoveryRTT()
+	if newEvidence.RTT <= testProbeRTT {
+		t.Fatalf("new RTT = %v, want greater than old %v", newEvidence.RTT, testProbeRTT)
 	}
 	m.refreshPeerRecoveryWindow(m.peerState)
 	close(release)
@@ -1336,12 +1357,16 @@ func TestOlderSameGenerationRefreshCannotRestoreLowerRTTHeadroom(t *testing.T) {
 
 	armedAt := clock.Now()
 	deadline := armRecoveryWindowGap(m, receiverContractSource, pathKey)
-	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(newRTT)))
+	wantHeadroom := recoveryRTTHeadroom(
+		newEvidence.RTT,
+		newEvidence.RTTVariation,
+	)
+	want := armedAt.Add(recoveryWindow(message.ServiceBound, wantHeadroom))
 	if !deadline.Equal(want) {
 		t.Fatalf("older publication restored lower RTT headroom: deadline=%v want=%v", deadline, want)
 	}
 	stats := m.contracts.stats().Receiver
-	if wantHeadroom := recoveryRTTHeadroom(newRTT); stats.Headroom != wantHeadroom {
+	if stats.Headroom != wantHeadroom {
 		t.Fatalf("older rejected publication restored observed H=%v, want newer H=%v", stats.Headroom, wantHeadroom)
 	}
 }
@@ -1507,7 +1532,11 @@ func TestDispatchAuthenticatedACKCompletionRejectsSameKeyRoam(t *testing.T) {
 	pathKey := reseqPathKey(view.id, view.id)
 	armedAt := clock.Now()
 	deadlineAt := armRecoveryWindowGap(m, secondSource, pathKey)
-	want := armedAt.Add(recoveryWindow(message.ServiceBound, recoveryRTTHeadroom(testProbeRTT)))
+	evidence := probers[0].RecoveryRTT()
+	want := armedAt.Add(recoveryWindow(
+		message.ServiceBound,
+		recoveryRTTHeadroom(evidence.RTT, evidence.RTTVariation),
+	))
 	if deadlineAt != want {
 		t.Fatalf("current dispatch venue deadline = %v, want %v", deadlineAt, want)
 	}

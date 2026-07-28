@@ -966,14 +966,22 @@ func sameRecoveryService(left, right telemetry.RecoveryContractMessage) bool {
 	return left == right
 }
 
-func recoveryRTTHeadroom(maxRTT time.Duration) time.Duration {
-	if maxRTT <= recoveryRTTFloor/recoveryRTTMultiple {
-		return recoveryRTTFloor
-	}
-	if maxRTT >= conservativeRecoveryService/recoveryRTTMultiple {
+func recoveryRTTHeadroom(rtt, rttVariation time.Duration) time.Duration {
+	if rtt >= conservativeRecoveryService {
 		return conservativeRecoveryService
 	}
-	return recoveryRTTMultiple * maxRTT
+	if rttVariation >=
+		(conservativeRecoveryService-rtt)/recoveryRTTMultiple {
+		return conservativeRecoveryService
+	}
+	headroom := rtt + recoveryRTTMultiple*rttVariation
+	if headroom <= recoveryRTTFloor {
+		return recoveryRTTFloor
+	}
+	if headroom >= conservativeRecoveryService {
+		return conservativeRecoveryService
+	}
+	return headroom
 }
 
 func recoveryWindow(service, headroom time.Duration) time.Duration {
@@ -1130,7 +1138,10 @@ func deriveRecoveryDecision(
 	}
 
 	decision.freshUntil = time.Time{}
-	decision.headroom = recoveryRTTHeadroom(carrier.evidence.RTT)
+	decision.headroom = recoveryRTTHeadroom(
+		carrier.evidence.RTT,
+		carrier.evidence.RTTVariation,
+	)
 	hold := recoveryWindow(contract.message.ServiceBound, decision.headroom)
 	if hold >= conservativeRecoveryService {
 		decision.fallbackReason = "saturated"

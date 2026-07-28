@@ -406,6 +406,83 @@ func TestControllerIgnoresUnloadedOuterInnerExpansion(t *testing.T) {
 	}
 }
 
+// Regression: a prior high-expansion interval must not permanently suppress
+// relearning once a backlogged flow saturates the resulting TUN ingress target.
+func TestControllerRelearnsExpansionAtInstalledIngressLimit(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(350, 0)
+	snapshot, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 30 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes, innerBytes uint64
+	for step := 0; step < 8; step++ {
+		outerRate := snapshot.Target.OuterRateBytesPerSecond * 0.8
+		innerRate := outerRate / 3
+		outerBytes += uint64(2 * outerRate)
+		innerBytes += uint64(2 * innerRate)
+		at = at.Add(2 * time.Second)
+		snapshot, err = controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT:       30 * time.Millisecond,
+			LossFresh: true, FeedbackEverSeen: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.AwaitingInstalled {
+			if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+				At: at.Add(100 * time.Millisecond), Epoch: epoch,
+				RateBytesPerSecond: snapshot.Target.IngressRateBytesPerSecond,
+				Fresh:              true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	inflatedRatio := snapshot.OverheadRatio
+	if inflatedRatio < 2.5 {
+		t.Fatalf("fixture overhead ratio = %g, want at least 2.5", inflatedRatio)
+	}
+
+	innerRate := snapshot.Target.IngressRateBytesPerSecond
+	outerRate := innerRate * 1.1
+	if outerRate >= snapshot.Target.OuterRateBytesPerSecond*0.5 {
+		t.Fatalf("fixture outer rate = %g, want below outer loaded threshold %g",
+			outerRate, snapshot.Target.OuterRateBytesPerSecond*0.5)
+	}
+	outerBytes += uint64(2 * outerRate)
+	innerBytes += uint64(2 * innerRate)
+	at = at.Add(2 * time.Second)
+	relearned, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch,
+		OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+		RTT:       30 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relearned.OverheadRatio >= inflatedRatio {
+		t.Fatalf("ingress-saturated expansion ratio = %g, want below stale %g",
+			relearned.OverheadRatio, inflatedRatio)
+	}
+	if relearned.Target.IngressRateBytesPerSecond <=
+		snapshot.Target.IngressRateBytesPerSecond {
+		t.Fatalf("relearned ingress target = %g, want above stale %g",
+			relearned.Target.IngressRateBytesPerSecond,
+			snapshot.Target.IngressRateBytesPerSecond)
+	}
+}
+
 func TestControllerIngressPressureBacksOffAndRecoversAfterSettledCleanRun(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
