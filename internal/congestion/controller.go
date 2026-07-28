@@ -19,6 +19,7 @@ const (
 	rttVariationFactor       = 4
 	delayCongestionDwell     = time.Second
 	lossCongestionThreshold  = 0.005
+	lossRecoveryDwell        = time.Second
 	minimumRetargetSettle    = time.Second
 	installedRateTolerance   = 0.01
 	initialIngressHeadroom   = 0.95
@@ -98,6 +99,8 @@ type Controller struct {
 	ingressPressurePending        bool
 	ingressPressureAcknowledgedAt time.Time
 	delayCongestedSince           time.Time
+	lossCleanSince                time.Time
+	lossEpisodeActive             bool
 	lastLossRevision              uint64
 }
 
@@ -192,6 +195,8 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		c.ingressPressurePending = false
 		c.ingressPressureAcknowledgedAt = time.Time{}
 		c.delayCongestedSince = time.Time{}
+		c.lossCleanSince = time.Time{}
+		c.lossEpisodeActive = false
 		c.lastLossRevision = actual.LossRevision
 		c.haveSample = true
 		return c.snapshot, nil
@@ -258,8 +263,27 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 	if actual.LossFresh && actual.LossRevision != 0 {
 		c.lastLossRevision = actual.LossRevision
 	}
-	lossCongested := newLossEvidence &&
+	lossAboveThreshold := actual.LossFresh &&
 		actual.AuthenticatedLoss >= lossCongestionThreshold
+	lossCongested := false
+	switch {
+	case lossAboveThreshold:
+		c.lossCleanSince = time.Time{}
+		if newLossEvidence && !c.lossEpisodeActive {
+			lossCongested = true
+		}
+		c.lossEpisodeActive = true
+	case actual.LossFresh && c.lossEpisodeActive:
+		if c.lossCleanSince.IsZero() {
+			c.lossCleanSince = actual.At
+		}
+		if actual.At.Sub(c.lossCleanSince) >= lossRecoveryDwell {
+			c.lossCleanSince = time.Time{}
+			c.lossEpisodeActive = false
+		}
+	default:
+		c.lossCleanSince = time.Time{}
+	}
 	delayCandidate := loaded && c.snapshot.QueueDelay >= queueThreshold
 	delayCongested := false
 	if lossCongested {
@@ -294,6 +318,10 @@ func (c *Controller) Observe(actual ActualState) (Snapshot, error) {
 		// Stale authenticated evidence cannot raise the target or cause a
 		// loss-based decrease. Local queue delay remains current evidence and
 		// takes the fail-closed decrease branch after its dwell.
+	case c.lossEpisodeActive:
+		// Adjacent reports from one sustained loss episode hold the target after
+		// its first multiplicative response. Clean evidence must dwell before
+		// additive recovery or a later episode can re-arm the response.
 	case delayCandidate:
 		// A transient queue crossing holds the target while its dwell accrues.
 	case loaded && (!actual.FeedbackEverSeen || actual.LossFresh):

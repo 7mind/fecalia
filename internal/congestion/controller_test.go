@@ -215,17 +215,16 @@ func TestControllerHoldsRepeatedRetargetUntilInstalledRateSettles(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterSettle.Target.OuterRateBytesPerSecond >= first.Target.OuterRateBytesPerSecond ||
-		afterSettle.Held {
-		t.Fatalf("target after exact readback and settle = %+v held=%t, want second decrease",
-			afterSettle.Target, afterSettle.Held)
+	if afterSettle.Target != first.Target || !afterSettle.Held {
+		t.Fatalf("same loss episode after exact readback and settle = %+v held=%t, want held %+v",
+			afterSettle.Target, afterSettle.Held, first.Target)
 	}
-	if afterSettle.TargetChanges != 2 || !afterSettle.AwaitingInstalled {
-		t.Fatalf("second retarget state = changes %d awaiting=%t, want 2/true",
+	if afterSettle.TargetChanges != 1 || afterSettle.AwaitingInstalled {
+		t.Fatalf("same-episode state = changes %d awaiting=%t, want 1/false",
 			afterSettle.TargetChanges, afterSettle.AwaitingInstalled)
 	}
-	if afterSettle.InstalledIngress.Fresh {
-		t.Fatal("second retarget retained the prior installed rate as fresh")
+	if !afterSettle.InstalledIngress.Fresh {
+		t.Fatal("same loss episode invalidated the settled installed rate")
 	}
 }
 
@@ -1359,13 +1358,97 @@ func TestControllerFreshLossDecreasesWhenCurrentIntervalIsUnloaded(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = repeated.Target.OuterRateBytesPerSecond * 0.85
-	if math.Abs(next.Target.OuterRateBytesPerSecond-want) > 0.001 {
+	if next.Target != repeated.Target {
 		t.Fatalf(
-			"new loss revision target = %g, want one decrease to %g",
-			next.Target.OuterRateBytesPerSecond,
-			want,
+			"same loss episode revision target = %+v, want held %+v",
+			next.Target,
+			repeated.Target,
 		)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Regression: adjacent interval reports from
+// one sustained loss episode must not compound the multiplicative decrease.
+func TestControllerSustainedFreshLossEpisodeDecreasesOnceUntilCleanDwell(t *testing.T) {
+	controller, err := congestion.New(1_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+	at := time.Unix(780, 0)
+	initial, err := controller.Observe(congestion.ActualState{
+		At: at, Epoch: epoch, RTT: 40 * time.Millisecond,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outerBytes, innerBytes uint64
+	observe := func(
+		elapsed time.Duration,
+		loss float64,
+		revision uint64,
+	) congestion.Snapshot {
+		t.Helper()
+		target := controller.Snapshot().Target.OuterRateBytesPerSecond
+		outerBytes += uint64(target * elapsed.Seconds())
+		innerBytes += uint64(target * elapsed.Seconds() / 1.25)
+		at = at.Add(elapsed)
+		snapshot, observeErr := controller.Observe(congestion.ActualState{
+			At: at, Epoch: epoch,
+			OuterWireBytes: outerBytes, InnerDataBytes: innerBytes,
+			RTT:               40 * time.Millisecond,
+			AuthenticatedLoss: loss, LossRevision: revision,
+			LossFresh: true, FeedbackEverSeen: true,
+		})
+		if observeErr != nil {
+			t.Fatal(observeErr)
+		}
+		return snapshot
+	}
+	first := observe(time.Second, 0.02, 1)
+	wantFirst := initial.Target.OuterRateBytesPerSecond * 0.85
+	if first.Target.OuterRateBytesPerSecond != wantFirst {
+		t.Fatalf("first loss target = %g, want %g",
+			first.Target.OuterRateBytesPerSecond, wantFirst)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: first.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repeated := observe(1200*time.Millisecond, 0.03, 2)
+	if repeated.Target != first.Target {
+		t.Fatalf("same loss episode target = %+v, want held %+v",
+			repeated.Target, first.Target)
+	}
+	cleanStart := observe(500*time.Millisecond, 0, 3)
+	if cleanStart.Target != first.Target {
+		t.Fatalf("first clean interval target = %+v, want held %+v",
+			cleanStart.Target, first.Target)
+	}
+	cleanDwell := observe(1100*time.Millisecond, 0, 4)
+	wantRecovered := first.Target.OuterRateBytesPerSecond + 100_000
+	if cleanDwell.Target.OuterRateBytesPerSecond != wantRecovered {
+		t.Fatalf("post-dwell clean target = %g, want additive recovery %g",
+			cleanDwell.Target.OuterRateBytesPerSecond, wantRecovered)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(100 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: cleanDwell.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recurrence := observe(1200*time.Millisecond, 0.02, 5)
+	wantRecurrence := wantRecovered * 0.85
+	if recurrence.Target.OuterRateBytesPerSecond != wantRecurrence {
+		t.Fatalf("re-armed loss target = %g, want %g",
+			recurrence.Target.OuterRateBytesPerSecond, wantRecurrence)
 	}
 }
 
