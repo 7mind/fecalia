@@ -14,10 +14,13 @@ see [install.md](install.md); for the front-door overview see the
 We embed [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) as a library
 for TUN management, the Noise handshake, AEAD encryption, key rotation (rekey),
 endpoint roaming, and keepalives. The local `third_party/amneziawg-go` source is
-v1.0.4 plus one upstream-reported runtime correctness patch (#155): Amnezia
-message headers and packet-shape maps live per `Device`, not in package globals,
-so two concurrent devices cannot race or overwrite one another. It also carries
-the one-line upstream #157 test fix so `go vet ./device/...` remains a valid gate. Everything wanbond-
+v1.0.4 plus runtime correctness patches. Upstream #155 moves Amnezia
+message headers and packet-shape maps into per-`Device` state, not package globals,
+so two concurrent devices cannot race or overwrite one another. A local
+follow-up serializes each `Device`'s stateful ChaCha8 junk generator across
+simultaneous peer handshakes; the device's read lock permits those calls and
+does not itself serialize PRNG mutation. The source also carries the one-line
+upstream #157 test fix so `go vet ./device/...` remains a valid gate. Everything wanbond-
 specific — multipath scheduling, outer-frame obfuscation, forward error
 correction, receive resequencing, and per-path telemetry — remains in the
 engine's `conn.Bind` transport implementation.
@@ -42,11 +45,13 @@ security/perf fixes. We contain that risk: the entire dependency on the engine's
 `conn` package is isolated to **one file**, `internal/bind/bind.go`, via type
 aliases (`Bind = conn.Bind`, `Endpoint = conn.Endpoint`,
 `ReceiveFunc = conn.ReceiveFunc`). The local source patch is engine-generic and
-covered both by the root multi-device race regression and the nested module's
-`device/...` tests; the unrelated `tun/netstack` package is excluded because
-v1.0.4 pins a gVisor module that cannot be built by the Go module toolchain
-(upstream #156), and wanbond does not import it. Remove the `replace` once a
-stable upstream release contains the per-device state. The `conn.Bind`/`conn.Endpoint` contracts are
+covered by the root multi-device race regression, the nested concurrent-junk
+race regression, and the nested module's `device/...` tests; the unrelated
+`tun/netstack` package is excluded because v1.0.4 pins a gVisor module that
+cannot be built by the Go module toolchain (upstream #156), and wanbond does not
+import it. Remove the `replace` once a stable upstream release contains both
+per-device protocol state and concurrency-safe junk generation. The
+`conn.Bind`/`conn.Endpoint` contracts are
 byte-identical between the two forks, so swapping back to upstream wireguard-go
 (dropping obfuscation) touches only that file.
 

@@ -373,7 +373,7 @@ internal/monitor/       monitoring-UI endpoint, read-only except the loopback-on
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
-third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), engine queue/batch observability, test vet fix (#157)
+third_party/amneziawg-go local v1.0.4 patches: per-Device protocol state (#155), serialized per-Device junk PRNG, engine queue/batch observability, test vet fix (#157)
 test/e2e/               -tags e2e netns fixture (P0–P5)
 test/realhosts/         -tags realhosts real-machine tier
 docs/                   design, install, findings, manual checklist

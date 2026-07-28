@@ -12,6 +12,9 @@ Prerequisites (all phases):
 - [ ] Concentrator reachable on its public IP; UDP not blocked end to end.
 - [ ] `wanbond` running both ends from a `0600` config; `/metrics` reachable on
       localhost each end.
+- [ ] With Amnezia obfuscation enabled, run
+      `(cd third_party/amneziawg-go && go test -race ./device/awg -run '^TestJunkCreatorConcurrentUse$' -count=5)`;
+      simultaneous peer handshakes report no shared ChaCha8 access.
 
 ## P0 — spike / baseline
 - [ ] Tunnel comes up edge ↔ concentrator (WG handshake completes).
