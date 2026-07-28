@@ -476,9 +476,12 @@ as historical exact-byte-shaper evidence.
       for one elapsed second reduces the target. A newly accepted fresh
       authenticated DATA-loss report of at least 0.5% also reduces it exactly
       once, even when the report arrives after a later unloaded byte interval;
-      retaining the same report through another controller tick must not
-      decrease again. RTTVAR and dwell qualify only delay and must not suppress
-      the immediate fresh-loss response.
+      adjacent above-threshold reports from the same loss episode must hold the
+      target. One continuous second of fresh below-threshold evidence must
+      rearm a later episode, while stale evidence must not clear the current
+      episode. RTTVAR and dwell qualify only delay and must not suppress the
+      first immediate fresh-loss response; sustained queue delay may still
+      reduce during an active loss episode.
       A no-loss variable-RTT trace whose delay remains below that threshold
       must not reduce the target. A single crossing followed by a
       below-threshold or unloaded observation must not reduce it; counter

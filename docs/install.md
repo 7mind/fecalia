@@ -474,10 +474,12 @@ Common rules, either policy:
   outer samples add 10% of
   `Rseed`; queue delay that remains at least
   `max(active base RTT/2,10ms)+4*probe RTTVAR` continuously for one elapsed
-  second reduces the target. Each newly accepted fresh authenticated-loss
-  report of at least 0.5% independently reduces the target by one 0.85
+  second reduces the target. The first newly accepted fresh authenticated-loss
+  report of at least 0.5% in an episode reduces the target by one 0.85
   multiplicative step, even if it arrives during a later unloaded byte
-  interval; a retained report cannot replay that decrease. A transient delay crossing holds the target;
+  interval. Adjacent above-threshold reports hold that target. One continuous
+  second of fresh below-threshold evidence rearms the response; stale evidence
+  does not. The sustained queue-delay path remains independent. A transient delay crossing holds the target;
   a below-threshold or unloaded observation, counter regression, carrier
   transition, or pending retarget settlement resets the dwell. Emitted
   outer rate is not acknowledged delivery and does not impose another

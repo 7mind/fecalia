@@ -586,8 +586,13 @@ below-threshold or unloaded observation, counter regression, carrier-epoch
 transition, or pending retarget settlement resets it. RTTVAR and the dwell
 qualify only the delay signal. DATA-loss reports finalize after resequencing
 and return asynchronously, so the controller identifies each locally accepted
-report with a monotonic revision and applies its immediate decrease exactly
-once, regardless of the later byte interval's load.
+report with a monotonic revision. The first fresh report at or above 0.5% in a
+loss episode applies one immediate decrease regardless of the later byte
+interval's load. Adjacent above-threshold reports from that episode hold the
+target instead of compounding the multiplicative response. One continuous
+second of fresh below-threshold evidence ends the episode and rearms a later
+immediate response; stale evidence neither clears nor rearms it. The independent
+sustained queue-delay path may still decrease the target during a loss episode.
 After DATA feedback has been adopted, stale or identity-mismatched feedback
 cannot raise the target or cause a loss-based decrease; current local queue
 delay can still decrease it after the same continuous dwell. Counter regression
