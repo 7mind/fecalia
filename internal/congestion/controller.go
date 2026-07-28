@@ -466,6 +466,10 @@ func (c *Controller) ObserveIngressPressure(
 	if nextHeadroom == c.snapshot.IngressServiceHeadroom {
 		return c.snapshot, nil
 	}
+	if c.lossRecoveryBlockedByRetarget &&
+		c.installedIngressSettledLocked(actual.At) {
+		c.lossRecoveryBlockedByRetarget = false
+	}
 	c.snapshot.IngressServiceHeadroom = nextHeadroom
 	c.snapshot.Target.IngressRateBytesPerSecond =
 		c.snapshot.Target.OuterRateBytesPerSecond /
@@ -481,8 +485,12 @@ func (c *Controller) ObserveIngressPressure(
 }
 
 func (c *Controller) ingressTargetSettledLocked(at time.Time) bool {
-	if c.snapshot.AwaitingInstalled ||
-		!c.snapshot.InstalledIngress.Fresh ||
+	return !c.snapshot.AwaitingInstalled &&
+		c.installedIngressSettledLocked(at)
+}
+
+func (c *Controller) installedIngressSettledLocked(at time.Time) bool {
+	if !c.snapshot.InstalledIngress.Fresh ||
 		c.snapshot.InstalledIngress.Epoch != c.snapshot.Target.Epoch ||
 		!ratesWithinTolerance(
 			c.snapshot.InstalledIngress.RateBytesPerSecond,

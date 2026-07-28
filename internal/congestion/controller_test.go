@@ -774,6 +774,9 @@ func TestControllerLoadedRingPendingWithoutWaitDoesNotReduceIngressHeadroom(t *t
 	}
 }
 
+// Behavioral-Active Blackbox-Atomic. Regression: pressure may preempt an outer
+// retarget, but a later ingress-only pressure change must release its settled
+// loss-recovery block.
 func TestControllerLoadedPressurePreemptsUnrelatedOuterRetargetSettlement(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
 	if err != nil {
@@ -796,18 +799,21 @@ func TestControllerLoadedPressurePreemptsUnrelatedOuterRetargetSettlement(t *tes
 		t.Fatal(err)
 	}
 	retargeted, err := controller.Observe(congestion.ActualState{
-		At:             at.Add(2 * time.Second),
-		Epoch:          epoch,
-		OuterWireBytes: 2_000_000,
-		RTT:            40 * time.Millisecond,
+		At:                at.Add(2 * time.Second),
+		Epoch:             epoch,
+		OuterWireBytes:    2_000_000,
+		InnerDataBytes:    1_600_000,
+		RTT:               40 * time.Millisecond,
+		AuthenticatedLoss: 0.02, LossRevision: 1,
+		LossFresh: true, FeedbackEverSeen: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !retargeted.AwaitingInstalled ||
-		retargeted.Target.OuterRateBytesPerSecond <=
+		retargeted.Target.OuterRateBytesPerSecond >=
 			initial.Target.OuterRateBytesPerSecond {
-		t.Fatalf("loaded outer sample did not enter retarget settlement: %+v", retargeted)
+		t.Fatalf("loss sample did not enter outer retarget settlement: %+v", retargeted)
 	}
 
 	pressured, err := controller.ObserveIngressPressure(
@@ -913,6 +919,41 @@ func TestControllerLoadedPressurePreemptsUnrelatedOuterRetargetSettlement(t *tes
 			pressured,
 			afterSettlement,
 		)
+	}
+	firstClean, err := controller.Observe(congestion.ActualState{
+		At: at.Add(3300 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 2_939_250, InnerDataBytes: 2_351_400,
+		RTT: 40 * time.Millisecond, LossRevision: 2,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstClean.Target.OuterRateBytesPerSecond !=
+		retargeted.Target.OuterRateBytesPerSecond {
+		t.Fatalf("first clean pressure-settlement target = %+v", firstClean)
+	}
+	if err := controller.ObserveInstalledIngress(congestion.InstalledIngressState{
+		At:                 at.Add(3400 * time.Millisecond),
+		Epoch:              epoch,
+		RateBytesPerSecond: afterSettlement.Target.IngressRateBytesPerSecond,
+		Fresh:              true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := controller.Observe(congestion.ActualState{
+		At: at.Add(4400 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: 3_734_000, InnerDataBytes: 2_987_200,
+		RTT: 40 * time.Millisecond, LossRevision: 3,
+		LossFresh: true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRecovered := retargeted.Target.OuterRateBytesPerSecond + 100_000
+	if recovered.Target.OuterRateBytesPerSecond != wantRecovered {
+		t.Fatalf("post-pressure clean target = %g, want recovery to %g",
+			recovered.Target.OuterRateBytesPerSecond, wantRecovered)
 	}
 }
 
