@@ -1075,6 +1075,97 @@ func TestControllerDelayDwellStartsAfterRetargetSettlement(t *testing.T) {
 	}
 }
 
+// Behavioral-Active Blackbox-Atomic. D130 discontinuities reset armed delay dwell.
+func TestControllerDelayDwellResetsAcrossDiscontinuities(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		interrupt  congestion.ActualState
+		finalEpoch congestion.CarrierEpoch
+	}{
+		{
+			name: "unloaded",
+			interrupt: congestion.ActualState{
+				OuterWireBytes: 850_000,
+				InnerDataBytes: 680_000,
+				RTT:            70 * time.Millisecond,
+			},
+			finalEpoch: congestion.CarrierEpoch{PathID: 1, Generation: 1},
+		},
+		{
+			name: "counter-regression",
+			interrupt: congestion.ActualState{
+				RTT: 70 * time.Millisecond,
+			},
+			finalEpoch: congestion.CarrierEpoch{PathID: 1, Generation: 1},
+		},
+		{
+			name: "carrier-epoch",
+			interrupt: congestion.ActualState{
+				Epoch: congestion.CarrierEpoch{PathID: 2, Generation: 2},
+				RTT:   40 * time.Millisecond,
+			},
+			finalEpoch: congestion.CarrierEpoch{PathID: 2, Generation: 2},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			controller, err := congestion.New(1_000_000, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstEpoch := congestion.CarrierEpoch{PathID: 1, Generation: 1}
+			at := time.Unix(695, 0)
+			initial, err := controller.Observe(congestion.ActualState{
+				At: at, Epoch: firstEpoch, RTT: 40 * time.Millisecond,
+				FeedbackEverSeen: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := initial.Target.OuterRateBytesPerSecond
+			armed, err := controller.Observe(congestion.ActualState{
+				At: at.Add(time.Second), Epoch: firstEpoch,
+				OuterWireBytes: uint64(target), InnerDataBytes: uint64(target / 1.25),
+				RTT: 70 * time.Millisecond, RTTVariation: time.Millisecond,
+				FeedbackEverSeen: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if armed.Target.OuterRateBytesPerSecond != target {
+				t.Fatalf("first delay crossing changed target to %g, want %g",
+					armed.Target.OuterRateBytesPerSecond, target)
+			}
+
+			interrupt := testCase.interrupt
+			interrupt.At = at.Add(1500 * time.Millisecond)
+			if interrupt.Epoch == (congestion.CarrierEpoch{}) {
+				interrupt.Epoch = firstEpoch
+			}
+			interrupt.RTTVariation = time.Millisecond
+			interrupt.FeedbackEverSeen = true
+			if _, err := controller.Observe(interrupt); err != nil {
+				t.Fatal(err)
+			}
+
+			finalOuter := interrupt.OuterWireBytes + uint64(target*0.5)
+			finalInner := interrupt.InnerDataBytes + uint64(target*0.5/1.25)
+			afterReset, err := controller.Observe(congestion.ActualState{
+				At: at.Add(2 * time.Second), Epoch: testCase.finalEpoch,
+				OuterWireBytes: finalOuter, InnerDataBytes: finalInner,
+				RTT: 70 * time.Millisecond, RTTVariation: time.Millisecond,
+				FeedbackEverSeen: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterReset.Target.OuterRateBytesPerSecond != target {
+				t.Fatalf("first post-%s delay crossing changed target to %g, want %g",
+					testCase.name, afterReset.Target.OuterRateBytesPerSecond, target)
+			}
+		})
+	}
+}
+
 // Behavioral-Active Blackbox-Atomic. Regression: D130 emitted bytes are not delivery.
 func TestControllerCongestedDemandLimitedIntervalUsesMultiplicativeDecrease(t *testing.T) {
 	controller, err := congestion.New(1_000_000, 0)
@@ -1184,6 +1275,21 @@ func TestControllerFreshLossDecreasesImmediatelyDespiteHighRTTVariation(t *testi
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	armed, err := controller.Observe(congestion.ActualState{
+		At: at.Add(500 * time.Millisecond), Epoch: epoch,
+		OuterWireBytes: uint64(initial.Target.OuterRateBytesPerSecond * 0.5),
+		InnerDataBytes: uint64(initial.Target.OuterRateBytesPerSecond * 0.5 / 1.25),
+		RTT:            500 * time.Millisecond,
+		RTTVariation:   100 * time.Millisecond,
+		LossFresh:      true, FeedbackEverSeen: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if armed.Target != initial.Target {
+		t.Fatalf("first high-variation delay crossing changed target: got %+v want %+v",
+			armed.Target, initial.Target)
 	}
 	lost, err := controller.Observe(congestion.ActualState{
 		At: at.Add(time.Second), Epoch: epoch,
