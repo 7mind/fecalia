@@ -590,6 +590,7 @@ func TestSameServiceRenewalPreservesAcknowledgedWindowUntilACKCompletion(t *test
 	fallbackArms := m.resequencer.Load().Stats().FallbackWindowArms
 
 	clock.advance(100 * time.Millisecond)
+	recordRecoveryRTTSample(t, probers[0], m.psk, clock, testProbeRTT)
 	second := receiverContractMessage(2, first.ServiceBound)
 	if _, ok := m.contracts.acceptOffer(receiverContractSession, second, func() {}); !ok {
 		t.Fatal("same-service renewal rejected")
@@ -634,6 +635,93 @@ func TestSameServiceRenewalPreservesAcknowledgedWindowUntilACKCompletion(t *test
 		completed.message != second ||
 		!completed.validUntil.Equal(clock.Now().Add(second.Lifetime)) {
 		t.Fatalf("completed renewal snapshot = %+v", completed)
+	}
+}
+
+// Behavioral-Active Blackbox-Atomic. Each venue retains its own ACK-completed lease.
+func TestStandbyRenewalACKPreservesOlderActiveVenue(t *testing.T) {
+	m, probers, clock := openRecoveryWindowPeer(t, 2)
+	for _, prober := range probers {
+		bringProberUpClean(t, prober, m.psk, clock, testProbeUpSucc)
+	}
+	first := receiverContractMessage(1, 80*time.Millisecond)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, first, func() {}); !ok {
+		t.Fatal("first offer rejected")
+	}
+	primaryPathKey := reseqPathKey(m.paths[0].id, 9)
+	standbyPathKey := reseqPathKey(m.paths[1].id, 10)
+	if !completeReceiverACK(
+		m.contracts,
+		receiverContractSession,
+		first,
+		primaryPathKey,
+		receiverContractSource,
+	) {
+		t.Fatal("first primary ACK completion rejected")
+	}
+	if !completeReceiverACK(
+		m.contracts,
+		receiverContractSession,
+		first,
+		standbyPathKey,
+		receiverStandbySource,
+	) {
+		t.Fatal("first standby ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	before := m.contracts.receivedSnapshot()
+	fallbackArms := m.resequencer.Load().Stats().FallbackWindowArms
+
+	clock.advance(100 * time.Millisecond)
+	recordRecoveryRTTSample(t, probers[0], m.psk, clock, testProbeRTT)
+	second := receiverContractMessage(2, first.ServiceBound)
+	if _, ok := m.contracts.acceptOffer(receiverContractSession, second, func() {}); !ok {
+		t.Fatal("same-service renewal rejected")
+	}
+	if !completeReceiverACK(
+		m.contracts,
+		receiverContractSession,
+		second,
+		standbyPathKey,
+		receiverStandbySource,
+	) {
+		t.Fatal("renewal standby ACK completion rejected")
+	}
+	m.refreshPeerRecoveryWindow(m.peerState)
+	overlap := m.contracts.receivedSnapshot()
+	if len(overlap.venueEvidence) != 2 {
+		t.Fatalf("renewal overlap evidence = %+v, want two venues", overlap.venueEvidence)
+	}
+	for _, evidence := range overlap.venueEvidence {
+		switch evidence.venue.pathKey {
+		case primaryPathKey:
+			if evidence.message != first || !evidence.validUntil.Equal(before.validUntil) {
+				t.Fatalf("primary overlap evidence = %+v, want original lease", evidence)
+			}
+		case standbyPathKey:
+			if evidence.message != second ||
+				!evidence.validUntil.Equal(clock.Now().Add(second.Lifetime)) {
+				t.Fatalf("standby overlap evidence = %+v, want renewal lease", evidence)
+			}
+		default:
+			t.Fatalf("unexpected renewal venue = %+v", evidence.venue)
+		}
+	}
+
+	armedAt := clock.Now()
+	deadline := armRecoveryWindowGap(m, receiverContractSource, primaryPathKey)
+	want := armedAt.Add(first.ServiceBound + recoveryRTTHeadroom(testProbeRTT))
+	if !deadline.Equal(want) {
+		t.Fatalf(
+			"standby-first renewal primary deadline = %v, want retained %v; snapshot=%+v stats=%+v",
+			deadline,
+			want,
+			m.contracts.receivedSnapshot(),
+			m.contracts.stats().Receiver,
+		)
+	}
+	if got := m.resequencer.Load().Stats().FallbackWindowArms; got != fallbackArms {
+		t.Fatalf("standby-first renewal fallback arms = %d, want %d", got, fallbackArms)
 	}
 }
 

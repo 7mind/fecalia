@@ -40,12 +40,24 @@ type receivedRecoveryContract struct {
 	message    telemetry.RecoveryContractMessage
 	acceptedAt time.Time
 	invalid    bool
-	venues     map[recoveryVenueKey]struct{}
 }
 
 type recoveryVenueKey struct {
 	pathKey uint32
 	source  netip.AddrPort
+}
+
+type acknowledgedRecoveryVenue struct {
+	session    uint64
+	message    telemetry.RecoveryContractMessage
+	acceptedAt time.Time
+}
+
+type receivedRecoveryVenueEvidence struct {
+	venue      recoveryVenueKey
+	session    uint64
+	message    telemetry.RecoveryContractMessage
+	validUntil time.Time
 }
 
 type receivedRecoverySnapshot struct {
@@ -56,6 +68,7 @@ type receivedRecoverySnapshot struct {
 	generation       uint64
 	evidenceRevision uint64
 	venues           []recoveryVenueKey
+	venueEvidence    []receivedRecoveryVenueEvidence
 	acked            bool
 	invalid          bool
 }
@@ -84,11 +97,9 @@ type recoveryContractCoordinator struct {
 
 	haveReceived    bool
 	receivedSession uint64
-	// received owns accepted identity/high-water; acknowledged owns only ACK-completed evidence.
+	// received owns accepted identity/high-water; acknowledged owns per-venue ACK evidence.
 	received                    receivedRecoveryContract
-	haveAcknowledged            bool
-	acknowledgedSession         uint64
-	acknowledged                receivedRecoveryContract
+	acknowledged                map[recoveryVenueKey]acknowledgedRecoveryVenue
 	receivedGeneration          uint64
 	receivedEvidenceRevision    uint64
 	receivedPublicationRevision uint64
@@ -222,9 +233,7 @@ func (c *recoveryContractCoordinator) disable() {
 	c.haveReceived = false
 	c.receivedSession = 0
 	c.received = receivedRecoveryContract{}
-	c.haveAcknowledged = false
-	c.acknowledgedSession = 0
-	c.acknowledged = receivedRecoveryContract{}
+	c.acknowledged = nil
 	c.observedSources = nil
 	c.haveAdoptedSession = false
 	c.adoptedSession = 0
@@ -288,7 +297,7 @@ func (c *recoveryContractCoordinator) invalidateReceivedEvidence() uint64 {
 func (c *recoveryContractCoordinator) invalidateReceivedFastEvidence() (uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.pendingReceivedACKs) == 0 && len(c.acknowledged.venues) == 0 {
+	if len(c.pendingReceivedACKs) == 0 && len(c.acknowledged) == 0 {
 		return c.receivedGeneration, false
 	}
 	c.advanceReceivedGenerationLocked()
@@ -298,10 +307,7 @@ func (c *recoveryContractCoordinator) invalidateReceivedFastEvidence() (uint64, 
 func (c *recoveryContractCoordinator) advanceReceivedGenerationLocked() {
 	c.bumpReceivedGenerationLocked()
 	c.bumpReceivedEvidenceLocked()
-	c.received.venues = nil
-	c.haveAcknowledged = false
-	c.acknowledgedSession = 0
-	c.acknowledged = receivedRecoveryContract{}
+	c.acknowledged = nil
 	c.observedSources = nil
 	c.pendingReceivedACKs = nil
 	c.receiverDecision = recoveryReceiverDecision{
@@ -343,28 +349,60 @@ func (c *recoveryContractCoordinator) observeReceivedSource(pathKey uint32, sour
 func (c *recoveryContractCoordinator) receivedSnapshot() receivedRecoverySnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	session, contract, present := c.receivedRecoveryEvidenceLocked()
-	return c.receivedSnapshotLocked(session, contract, present)
+	return c.receivedSnapshotLocked()
 }
 
 func (c *recoveryContractCoordinator) receivedDataLossSnapshot() receivedRecoverySnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.receivedSnapshotLocked(c.receivedSession, c.received, c.haveReceived)
+	return c.receivedContractSnapshotLocked(c.receivedSession, c.received, c.haveReceived)
 }
 
-func (c *recoveryContractCoordinator) receivedRecoveryEvidenceLocked() (
-	uint64,
-	receivedRecoveryContract,
-	bool,
-) {
-	if c.haveAcknowledged {
-		return c.acknowledgedSession, c.acknowledged, true
+func (c *recoveryContractCoordinator) receivedSnapshotLocked() receivedRecoverySnapshot {
+	if len(c.acknowledged) == 0 {
+		return c.receivedContractSnapshotLocked(c.receivedSession, c.received, c.haveReceived)
 	}
-	return c.receivedSession, c.received, c.haveReceived
+	snapshot := receivedRecoverySnapshot{
+		present:          true,
+		generation:       c.receivedGeneration,
+		evidenceRevision: c.receivedEvidenceRevision,
+		acked:            true,
+	}
+	var latest acknowledgedRecoveryVenue
+	haveLatest := false
+	for venue, evidence := range c.acknowledged {
+		validUntil := evidence.acceptedAt.Add(evidence.message.Lifetime)
+		snapshot.venues = append(snapshot.venues, venue)
+		snapshot.venueEvidence = append(
+			snapshot.venueEvidence,
+			receivedRecoveryVenueEvidence{
+				venue:      venue,
+				session:    evidence.session,
+				message:    evidence.message,
+				validUntil: validUntil,
+			},
+		)
+		if !haveLatest || evidence.message.ContractID > latest.message.ContractID {
+			latest = evidence
+			haveLatest = true
+			snapshot.session = evidence.session
+			snapshot.message = evidence.message
+			snapshot.validUntil = validUntil
+		}
+	}
+	sort.Slice(snapshot.venues, func(i, j int) bool {
+		return recoveryVenueLess(snapshot.venues[i], snapshot.venues[j])
+	})
+	sort.Slice(snapshot.venueEvidence, func(i, j int) bool {
+		return recoveryVenueLess(
+			snapshot.venueEvidence[i].venue,
+			snapshot.venueEvidence[j].venue,
+		)
+	})
+	return snapshot
 }
 
-func (c *recoveryContractCoordinator) receivedSnapshotLocked(
+func (c *recoveryContractCoordinator) receivedContractSnapshotLocked(
 	session uint64,
 	contract receivedRecoveryContract,
 	present bool,
@@ -382,19 +420,16 @@ func (c *recoveryContractCoordinator) receivedSnapshotLocked(
 		validUntil:       contract.acceptedAt.Add(contract.message.Lifetime),
 		generation:       c.receivedGeneration,
 		evidenceRevision: c.receivedEvidenceRevision,
-		acked:            len(contract.venues) > 0,
 		invalid:          contract.invalid,
 	}
-	for venue := range contract.venues {
-		snapshot.venues = append(snapshot.venues, venue)
-	}
-	sort.Slice(snapshot.venues, func(i, j int) bool {
-		if snapshot.venues[i].pathKey != snapshot.venues[j].pathKey {
-			return snapshot.venues[i].pathKey < snapshot.venues[j].pathKey
-		}
-		return snapshot.venues[i].source.String() < snapshot.venues[j].source.String()
-	})
 	return snapshot
+}
+
+func recoveryVenueLess(left, right recoveryVenueKey) bool {
+	if left.pathKey != right.pathKey {
+		return left.pathKey < right.pathKey
+	}
+	return left.source.String() < right.source.String()
 }
 
 func (c *recoveryContractCoordinator) localOfferIdentity() (session uint64, contractID uint64, ok bool) {
@@ -436,24 +471,11 @@ func (c *recoveryContractCoordinator) reserveReceivedPublication(
 ) (uint64, uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	session, contract, present := c.receivedRecoveryEvidenceLocked()
+	current := c.receivedSnapshotLocked()
 	if c.receivedGeneration != snapshot.generation ||
 		c.receivedEvidenceRevision != snapshot.evidenceRevision ||
-		present != snapshot.present {
+		!sameReceivedRecoverySnapshot(current, snapshot) {
 		return 0, 0, false
-	}
-	if snapshot.present &&
-		(session != snapshot.session ||
-			contract.message != snapshot.message ||
-			!contract.acceptedAt.Add(contract.message.Lifetime).Equal(snapshot.validUntil) ||
-			contract.invalid != snapshot.invalid ||
-			len(contract.venues) != len(snapshot.venues)) {
-		return 0, 0, false
-	}
-	for _, venue := range snapshot.venues {
-		if _, exists := contract.venues[venue]; !exists {
-			return 0, 0, false
-		}
 	}
 	if !validate() {
 		return 0, 0, false
@@ -463,6 +485,37 @@ func (c *recoveryContractCoordinator) reserveReceivedPublication(
 		c.receivedPublicationRevision++
 	}
 	return c.receivedGeneration, c.receivedPublicationRevision, true
+}
+
+func sameReceivedRecoverySnapshot(left, right receivedRecoverySnapshot) bool {
+	if left.present != right.present ||
+		left.session != right.session ||
+		left.message != right.message ||
+		!left.validUntil.Equal(right.validUntil) ||
+		left.generation != right.generation ||
+		left.evidenceRevision != right.evidenceRevision ||
+		left.acked != right.acked ||
+		left.invalid != right.invalid ||
+		len(left.venues) != len(right.venues) ||
+		len(left.venueEvidence) != len(right.venueEvidence) {
+		return false
+	}
+	for index := range left.venues {
+		if left.venues[index] != right.venues[index] {
+			return false
+		}
+	}
+	for index := range left.venueEvidence {
+		leftEvidence := left.venueEvidence[index]
+		rightEvidence := right.venueEvidence[index]
+		if leftEvidence.venue != rightEvidence.venue ||
+			leftEvidence.session != rightEvidence.session ||
+			leftEvidence.message != rightEvidence.message ||
+			!leftEvidence.validUntil.Equal(rightEvidence.validUntil) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *recoveryContractCoordinator) recoveryAuthority() *reseq.RecoveryAuthority {
@@ -524,19 +577,16 @@ func (c *recoveryContractCoordinator) completeReceivedACK(admission receivedACKA
 		return false
 	}
 	venue := admission.venue
-	if !c.haveAcknowledged ||
-		c.acknowledgedSession != admission.session ||
-		c.acknowledged.message != admission.message {
-		c.haveAcknowledged = true
-		c.acknowledgedSession = admission.session
-		c.acknowledged = receivedRecoveryContract{
-			message:    c.received.message,
-			acceptedAt: c.received.acceptedAt,
-			venues:     map[recoveryVenueKey]struct{}{venue: {}},
+	evidence := acknowledgedRecoveryVenue{
+		session:    admission.session,
+		message:    c.received.message,
+		acceptedAt: c.received.acceptedAt,
+	}
+	if current, exists := c.acknowledged[venue]; !exists || current != evidence {
+		if c.acknowledged == nil {
+			c.acknowledged = make(map[recoveryVenueKey]acknowledgedRecoveryVenue)
 		}
-		c.bumpReceivedEvidenceLocked()
-	} else if _, exists := c.acknowledged.venues[venue]; !exists {
-		c.acknowledged.venues[venue] = struct{}{}
+		c.acknowledged[venue] = evidence
 		c.bumpReceivedEvidenceLocked()
 	}
 	c.ackWrites++
@@ -803,7 +853,6 @@ func (c *recoveryContractCoordinator) acceptOffer(
 				c.advanceReceivedGenerationLocked()
 				install()
 				existing.invalid = true
-				existing.venues = nil
 				c.received = existing
 				c.receiverWrong++
 				return telemetry.RecoveryContractMessage{}, false
@@ -1054,8 +1103,7 @@ func deriveRecoveryDecision(
 		return nil, decision
 	case contract.message.Lifetime != telemetry.RecoveryContractLifetime ||
 		contract.message.ServiceBound <= 0 ||
-		contract.message.ServiceBound >= conservativeRecoveryService ||
-		contract.validUntil.Sub(now) < conservativeRecoveryService:
+		contract.message.ServiceBound >= conservativeRecoveryService:
 		return nil, decision
 	}
 	if _, weighted := snapshot.scheduler.(*sched.WeightedScheduler); weighted {
@@ -1077,28 +1125,34 @@ func deriveRecoveryDecision(
 		return nil, decision
 	}
 	qualifiedPathIDs := map[uint8]struct{}{carrier.id: {}}
-	validUntil := contract.validUntil
 	if now.After(carrier.evidence.SampledAt) {
 		decision.rttAge = now.Sub(carrier.evidence.SampledAt)
 	}
-	if carrier.evidence.FreshUntil.Before(validUntil) {
-		validUntil = carrier.evidence.FreshUntil
-	}
 
-	decision.freshUntil = validUntil
+	decision.freshUntil = time.Time{}
 	decision.headroom = recoveryRTTHeadroom(carrier.evidence.RTT)
 	hold := recoveryWindow(contract.message.ServiceBound, decision.headroom)
 	if hold >= conservativeRecoveryService {
 		decision.fallbackReason = "saturated"
 		return nil, decision
 	}
-	windows := make([]reseq.RecoveryWindow, 0, len(contract.venues))
-	for _, venue := range contract.venues {
+	windows := make([]reseq.RecoveryWindow, 0, len(contract.venueEvidence))
+	for _, evidence := range contract.venueEvidence {
+		venue := evidence.venue
 		if !venue.source.IsValid() {
 			continue
 		}
 		if _, qualified := qualifiedPathIDs[uint8(venue.pathKey>>8)]; !qualified {
 			continue
+		}
+		if !sameRecoveryService(contract.message, evidence.message) ||
+			evidence.message.Lifetime != telemetry.RecoveryContractLifetime ||
+			evidence.validUntil.Sub(now) < conservativeRecoveryService {
+			continue
+		}
+		validUntil := evidence.validUntil
+		if carrier.evidence.FreshUntil.Before(validUntil) {
+			validUntil = carrier.evidence.FreshUntil
 		}
 		windows = append(windows, reseq.RecoveryWindow{
 			Enabled:    true,
@@ -1108,6 +1162,9 @@ func deriveRecoveryDecision(
 			Hold:       hold,
 			ValidUntil: validUntil,
 		})
+		if decision.freshUntil.IsZero() || validUntil.After(decision.freshUntil) {
+			decision.freshUntil = validUntil
+		}
 	}
 	if len(windows) == 0 {
 		decision.fallbackReason = "unacked"
