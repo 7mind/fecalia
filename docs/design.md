@@ -543,15 +543,17 @@ requesting speculative ring capacity.
 
 Engine admission and downstream capacity form a directional transaction.
 Growth reconciles and reads back the larger ptr-ring/`bfifo` envelope before
-atomically raising every peer's engine admission limit. Shrink atomically
-lowers every peer limit first, then reconciles the smaller downstream envelope.
-When retained bytes defer a shrink, the daemon re-reads and retains the
-previous installed kernel capacity while applying the desired HTB rate and
-controller epoch. Metrics retain the desired target, expose the larger applied
-admission and kernel capacity as actual, mark the composite actual stale, and
-acknowledge the exact rate separately. The applied per-peer admission readback
-validates that every peer matches the device-wide atomic value and fails fast
-on divergence. The smaller downstream envelope excludes ptr-ring shrink:
+atomically raising every peer's engine admission limit. Shrink first reconciles
+and reads back the smaller GSO/AQM envelope while retaining the old peer
+limits; a deferred GSO shrink blocks admission. Once GSO matches, the daemon
+attempts the atomic per-peer admission shrink. When retained bytes defer that
+shrink, it re-reads admission and restores the previous installed kernel
+capacity while applying the desired HTB rate and controller epoch. Metrics
+retain the desired target, expose the larger applied admission and kernel
+capacity as actual, mark the composite actual stale, and acknowledge the exact
+rate separately. The applied per-peer admission readback validates that every
+peer matches the device-wide atomic value and fails fast on divergence. The
+smaller downstream envelope excludes ptr-ring shrink:
 online ring target and actual remain at their high-water value. The daemon
 owns this root qdisc, ptr-ring capacity, engine admission, and the link's GSO
 limits while running.

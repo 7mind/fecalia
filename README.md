@@ -290,10 +290,12 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   zero-time fd poll that does not contend with the engine's blocking TUN read,
   so an idle concentrator can complete startup reconciliation. Admission
   growth installs and reads back downstream ring/`bfifo` capacity before exposing
-  the larger engine window. Admission shrink changes the engine first; if
-  retained bytes defer it, the desired rate and epoch still reconcile while
-  installed downstream capacity remains a safe superset until the engine
-  change succeeds.
+  the larger engine window. Shrink first reconciles and reads back the smaller
+  GSO/AQM envelope while retaining the old engine window; a deferred GSO shrink
+  blocks the admission change. Once GSO matches, the daemon attempts admission
+  shrink; if retained bytes defer it, the desired rate and epoch still
+  reconcile while downstream capacity returns to the prior safe superset until
+  the admission change succeeds.
   The 20 ms complete-batch budget applies whenever it admits at least one
   maximum WireGuard datagram. Below that rate, atomicity keeps one datagram
   admissible and the conservative service bound becomes its wire size divided
