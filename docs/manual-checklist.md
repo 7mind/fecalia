@@ -773,7 +773,9 @@ predeclared gates:
       deadline remain unchanged while DATA-loss identity advances. Complete
       the ACK and confirm the new expiry becomes eligible; fail it and confirm
       the old evidence expires at its original time. Confirm the group still
-      recovers; repeat with a changed value or new SessionID and confirm the
+      recovers. With active and standby venues, complete the standby renewal
+      ACK first and confirm the active venue retains its old fast window until
+      its own renewal ACK or original expiry. Repeat with a changed value or new SessionID and confirm the
       incomplete group clears before ACK. Hold an old OFFER's socket write
       across a ContractID rotation
       and confirm its completion cannot authorize the new identity.

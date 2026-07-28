@@ -126,9 +126,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   resequencer-replacement, and teardown transitions advance one
   receiver/topology generation before clearing evidence, so a delayed ACK
   completion or recovery-window publication from an older generation cannot
-  restore the shorter hold. A same-service lease renewal instead keeps the
-  prior ACK-completed window to its original expiry until the replacement ACK
-  completes; a failed renewal cannot extend that evidence. The authority
+  restore the shorter hold. During a same-service lease renewal, each venue
+  keeps its prior ACK-completed window and original expiry until that venue's
+  replacement ACK completes; a standby ACK therefore cannot revoke active
+  evidence, and a failed renewal cannot extend it. The authority
   carries that generation with its exact transition time and wakes the receive
   drainer through a coalescing notification. A conservative gap therefore
   remains bounded by `transitionAt+250ms`, including when the later explicit

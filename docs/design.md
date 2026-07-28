@@ -841,9 +841,11 @@ without advancing the receiver topology generation, and preserves incomplete
 receiver groups. Until the renewal ACK write completes, recovery-window
 publication continues using the prior ACK-completed venues and their original
 expiry; DATA-loss reporting uses the newly accepted identity. Successful ACK
-completion promotes the new acceptance time and the completing venue. A failed
-write leaves only the old evidence until its original expiry, so renewal cannot
-extend unacknowledged evidence. Repeating the identical identity does not
+completion promotes only the completing venue to the new acceptance time;
+other venues retain their own prior expiry until their own replacement ACKs
+complete. A standby completion therefore cannot revoke still-safe active
+evidence. A failed write leaves that venue's old evidence until its original
+expiry, so renewal cannot extend unacknowledged evidence. Repeating the identical identity does not
 refresh its acceptance time. A new SessionID or changed service value installs
 a new receiver generation and clears incomplete groups. Reusing an identity
 with different fields first clears that untrustworthy receiver generation,
@@ -869,8 +871,8 @@ peer reflects the OFFER bytes as an OFFER, never satisfying that rule. The
 `T` DATA fallback does not discard the still-live OFFER: a later exact ACK may
 enable fast recovery while at least `T` of `F` remains. Acknowledged leases
 publish a fresh same-service ContractID before the old lease enters its unsafe
-window. The receiver keeps using the old ACK-completed lease only while at
-least `T` of its original validity remains; loss of the renewal therefore
+window. The receiver keeps using each old ACK-completed venue only while at
+least `T` of that venue's original validity remains; loss of the renewal therefore
 returns service to conservative mode without creating an earlier
 unacknowledged interval. OFFER loss likewise rotates again before expiry. Thus
 fallback controls DATA admission while OFFER/lease validity remains a separate
