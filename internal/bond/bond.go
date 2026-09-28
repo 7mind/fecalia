@@ -18,7 +18,8 @@ const (
 	targetQueue      = 10 * time.Millisecond
 	maxQueueAge      = 100 * time.Millisecond
 	maxPacketAge     = 250 * time.Millisecond
-	ackInterval      = 10 * time.Millisecond
+	ackInterval      = 25 * time.Millisecond
+	ackBatchPackets  = 64
 	priorityLead     = 5 * time.Millisecond
 	pathLease        = time.Second
 	minimumRTO       = 60 * time.Millisecond
@@ -30,6 +31,7 @@ const (
 	maxPackets       = 8192
 	smallPacket      = 384
 	redundancyRate   = 64000.0
+	redundancyShare  = 0.1
 	maxDatagram      = 9000
 	wireOverhead     = 129 // outer CONTROL, adaptive header, sequences, IP and UDP
 )
@@ -93,6 +95,7 @@ type lane struct {
 	deliveryRate    float64
 	peakDelivery    float64
 	rtt             time.Duration
+	rttVariation    time.Duration
 	baseRTT         time.Duration
 	baseAt          time.Time
 	nextSend        time.Time
@@ -110,6 +113,8 @@ type lane struct {
 	firstSent       time.Time
 	transitBase     time.Duration
 	haveTransit     bool
+	intervalTransit time.Duration
+	haveInterval    bool
 	queueDelay      time.Duration
 	nextBaseline    time.Time
 	drainUntil      time.Time
@@ -125,8 +130,7 @@ type lane struct {
 type receiver struct {
 	path       PathID
 	remoteLane PathID
-	high       uint64
-	mask       uint64
+	receipts   receiptWindow
 	bytes      uint64
 	start      time.Time
 	last       time.Time
@@ -154,8 +158,12 @@ type Transport struct {
 	drops            uint64
 	expired          uint64
 	duplicates       uint64
-	receivedHigh     uint64
-	receivedMask     [maxPackets / 64]uint64
+	received         receiptWindow
+}
+
+type receiptWindow struct {
+	high uint64
+	mask [maxPackets / 64]uint64
 }
 
 func New(epoch Epoch) *Transport {
@@ -191,7 +199,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 	t.pendingOrder = nil
 	t.seq, t.bulkSeq, t.interactiveSeq = 0, 0, 0
 	t.receivers = make(map[PathID]*receiver)
-	t.receivedHigh, t.receivedMask = 0, [maxPackets / 64]uint64{}
+	t.received = receiptWindow{}
 	for _, p := range t.paths {
 		p.lease = time.Time{}
 		p.attempts = make(map[uint64]attempt)
@@ -204,6 +212,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.ackRevision = 0
 		p.ackedBytes, p.ackedElapsed = 0, 0
 		p.haveTransit = false
+		p.haveInterval = false
 		p.firstSent = time.Time{}
 		p.feedbackAt = time.Time{}
 	}
@@ -261,9 +270,23 @@ func (t *Transport) Enqueue(payload []byte, now time.Time) error {
 
 func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.lease) < pathLease }
 
-func (p *lane) rto() time.Duration { return max(minimumRTO, 2*p.rtt) }
+func (p *lane) rto() time.Duration {
+	return max(minimumRTO, p.rtt+4*p.rttVariation+ackInterval)
+}
 
-func (p *lane) window() int { return max(4*1500, int(p.rate*(p.rtt+2*targetQueue).Seconds())) }
+func (p *lane) window() int {
+	return max(4*1500, int(p.rate*(p.baseRTT+2*targetQueue+ackInterval).Seconds()))
+}
+
+func (t *Transport) PacingRate(now time.Time) float64 {
+	var rate float64
+	for _, p := range t.paths {
+		if p.up(now) && !p.stalled {
+			rate += p.rate
+		}
+	}
+	return rate
+}
 
 func (t *Transport) choose(now time.Time, size int, exclude PathID, retry bool) *lane {
 	var best *lane
@@ -315,14 +338,15 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 
 func (t *Transport) Poll(now time.Time) []Transmission {
 	if !t.lastPoll.IsZero() {
-		t.redundancyTokens = math.Min(redundancyRate/10, t.redundancyTokens+now.Sub(t.lastPoll).Seconds()*redundancyRate)
+		budget := math.Min(redundancyRate, redundancyShare*t.PacingRate(now))
+		t.redundancyTokens = math.Min(budget/10, t.redundancyTokens+now.Sub(t.lastPoll).Seconds()*budget)
 	}
 	t.lastPoll = now
 	out := make([]Transmission, 0, 8)
 	for _, r := range t.receivers {
-		if r.pending > 0 && (r.pending >= 8 || now.Sub(r.ackAt) >= ackInterval) {
+		if r.pending > 0 && (r.pending >= ackBatchPackets || now.Sub(r.ackAt) >= ackInterval) {
 			r.revision++
-			a := acknowledgement{observed: t.remote, high: r.high, mask: r.mask, bytes: r.bytes, elapsed: uint64(r.highAt.Sub(r.start)), delay: uint64(now.Sub(r.highAt)), receivedHigh: t.receivedHigh, receivedMask: [4]uint64(t.receivedMask[:4])}
+			a := acknowledgement{observed: t.remote, high: r.receipts.high, mask: r.receipts.mask[0], bytes: r.bytes, elapsed: uint64(r.highAt.Sub(r.start)), delay: uint64(now.Sub(r.highAt)), receivedHigh: t.received.high, receivedMask: [4]uint64(t.received.mask[:4])}
 			out = append(out, Transmission{r.path, ackFrame(t.epoch, r.remoteLane, r.revision, a)})
 			r.pending = 0
 			r.ackAt = now
@@ -480,27 +504,21 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 		if r.path != path {
 			return nil, errors.New("bond: receiver lane changed without probe")
 		}
-		if f.Seq > r.high {
-			shift := f.Seq - r.high
-			if shift >= 64 {
-				r.mask = 0
-			} else {
-				r.mask <<= shift
-			}
-			r.high = f.Seq
-			r.highAt = now
-		} else if r.high-f.Seq >= 64 || r.mask&(uint64(1)<<(r.high-f.Seq)) != 0 {
+		previousHigh := r.receipts.high
+		if !r.receipts.mark(f.Seq) {
 			t.duplicates++
 			return nil, nil
 		}
-		r.mask |= uint64(1) << (r.high - f.Seq)
+		if f.Seq > previousHigh {
+			r.highAt = now
+		}
 		r.bytes += uint64(len(f.Payload) - headerBytes - 32 + wireOverhead)
 		r.last = now
 		r.pending++
 		if seq == 0 {
 			return nil, nil
 		}
-		if !t.markReceived(seq) {
+		if !t.received.mark(seq) {
 			t.duplicates++
 			return nil, nil
 		}
@@ -528,13 +546,10 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 }
 
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
+	backlogged := len(t.queue)+len(t.priority) > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
 	for seq, pending := range t.pending {
-		if seq > a.receivedHigh || a.receivedHigh-seq >= 256 {
-			continue
-		}
-		delta := a.receivedHigh - seq
-		if a.receivedMask[delta/64]&(uint64(1)<<(delta%64)) != 0 {
+		if a.received(seq) {
 			pending.acked = true
 			delete(t.pending, seq)
 		}
@@ -556,16 +571,32 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 				transit := time.Duration(a.elapsed) - sent.sent.Sub(p.firstSent)
 				if p.baselinePending && !sent.sent.Before(p.drainUntil) {
 					p.haveTransit = false
+					p.haveInterval = false
 					p.baselinePending = false
 				}
 				if !p.haveTransit || transit < p.transitBase {
 					p.transitBase, p.haveTransit = transit, true
 				}
 				p.queueDelay = transit - p.transitBase
+				if !p.haveInterval || transit < p.intervalTransit {
+					p.intervalTransit, p.haveInterval = transit, true
+				}
 			}
+		} else if sent.packet != nil && a.received(sent.packet.seq) && seq < a.high && a.high-seq >= 64 {
+			// The global receipt confirms delivery after the lane bitmap moved on.
+			// Release ownership without claiming which physical attempt arrived.
+			if !sent.timedOut {
+				p.inflight -= sent.bytes
+			}
+			delete(p.attempts, seq)
 		}
 	}
 	if sample > 0 {
+		difference := sample - p.rtt
+		if difference < 0 {
+			difference = -difference
+		}
+		p.rttVariation = (3*p.rttVariation + difference) / 4
 		p.rtt = (7*p.rtt + sample) / 8
 		if p.lastACK.IsZero() || sample < p.baseRTT || now.Sub(p.baseAt) > 30*time.Second {
 			p.baseRTT, p.baseAt = sample, now
@@ -589,47 +620,54 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 		return
 	}
 	p.lastAdjust = now
+	queueDelay := p.queueDelay
+	if p.haveInterval {
+		queueDelay = max(0, p.intervalTransit-p.transitBase)
+		p.haveInterval = false
+	}
 	lost := p.lostSinceAdjust
 	p.lostSinceAdjust = false
-	backlogged := len(t.queue)+len(t.priority) > 0 || p.inflight >= p.window()/2
+	if !backlogged {
+		return
+	}
 	if lost && p.deliveryRate > 0 && p.rate > 1.25*p.deliveryRate {
 		p.rate = math.Max(minimumRate, 1.05*p.deliveryRate)
-	} else if sample > 0 && p.queueDelay > targetQueue {
+	} else if sample > 0 && queueDelay > targetQueue {
 		p.rate = math.Max(minimumRate, p.rate*0.9)
-	} else if sample > 0 && backlogged {
+	} else if sample > 0 {
 		p.rate = math.Min(maximumRate, p.rate*1.06+1500)
 	}
 }
 
-func (t *Transport) markReceived(seq uint64) bool {
-	if seq > t.receivedHigh {
-		delta := seq - t.receivedHigh
+func (w *receiptWindow) mark(seq uint64) bool {
+	if seq > w.high {
+		delta := seq - w.high
 		if delta >= maxPackets {
-			t.receivedMask = [maxPackets / 64]uint64{}
+			w.mask = [maxPackets / 64]uint64{}
 		} else {
 			words, shift := int(delta/64), uint(delta%64)
-			for i := len(t.receivedMask) - 1; i >= 0; i-- {
+			for i := len(w.mask) - 1; i >= 0; i-- {
 				var value uint64
 				if i >= words {
-					value = t.receivedMask[i-words] << shift
+					value = w.mask[i-words] << shift
 				}
 				if shift > 0 && i > words {
-					value |= t.receivedMask[i-words-1] >> (64 - shift)
+					value |= w.mask[i-words-1] >> (64 - shift)
 				}
-				t.receivedMask[i] = value
+				w.mask[i] = value
 			}
 		}
-		t.receivedHigh = seq
+		w.high = seq
 	}
-	delta := t.receivedHigh - seq
+	delta := w.high - seq
 	if delta >= maxPackets {
 		return false
 	}
 	bit := uint64(1) << (delta % 64)
-	if t.receivedMask[delta/64]&bit != 0 {
+	if w.mask[delta/64]&bit != 0 {
 		return false
 	}
-	t.receivedMask[delta/64] |= bit
+	w.mask[delta/64] |= bit
 	return true
 }
 

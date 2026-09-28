@@ -71,6 +71,14 @@ type acknowledgement struct {
 	receivedMask [4]uint64
 }
 
+func (a acknowledgement) received(seq uint64) bool {
+	if seq == 0 || seq > a.receivedHigh || a.receivedHigh-seq >= uint64(len(a.receivedMask)*64) {
+		return false
+	}
+	delta := a.receivedHigh - seq
+	return a.receivedMask[delta/64]&(uint64(1)<<(delta%64)) != 0
+}
+
 func ackFrame(epoch Epoch, lane PathID, revision uint64, a acknowledgement) frame.Control {
 	b := appendHeader(packetHeader{epoch, lane})
 	for _, value := range []uint64{a.observed.Boot, a.observed.Generation, a.high, a.mask, a.bytes, a.elapsed, a.delay} {

@@ -2582,6 +2582,8 @@ func (m *Multipath) nudgeSchedulerActive() {
 // head-of-line-blocked run still makes timeout progress even if the last live path fell
 // silent right after buffering it. A single drainer delivers with ZERO added reorder
 // (only it calls Pop), which is stricter than T12's per-path receivers.
+// Adaptive bulk coalesces for at most adaptiveReceiveBatchDelay for TUN GRO;
+// interactive arrivals flush immediately.
 func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct{}) ReceiveFunc {
 	// One reusable injected-clock timer per drainer. Every empty scan resets it to
 	// the earliest exact armed gap deadline, with T as the conservative poll
@@ -2594,6 +2596,8 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 	// engine goroutine, so it needs no synchronisation.
 	var rr int
 	return func(packets [][]byte, sizes []int, eps []Endpoint) (int, error) {
+		count := 0
+		var batchUntil time.Time
 		for {
 			select {
 			case <-closed:
@@ -2617,8 +2621,11 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 				}
 				var it reseq.Item
 				var ok bool
-				if adaptive := ps.adaptive.Load(); adaptive != nil {
+				interactive := false
+				adaptive := ps.adaptive.Load()
+				if adaptive != nil {
 					it, ok = adaptive.popInteractive()
+					interactive = ok
 				}
 				if !ok {
 					it, ok = rq.Pop()
@@ -2627,20 +2634,36 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 					continue
 				}
 				rr = (rr + i + 1) % n // start the next scan after this peer (fairness)
-				if len(it.Payload) > len(packets[0]) {
+				if len(it.Payload) > len(packets[count]) {
 					// Oversize inner datagram: drop it, but a frame WAS dequeued this pass,
 					// so keep draining (re-scan) rather than parking.
 					progressed = true
 					break
 				}
-				sizes[0] = copy(packets[0], it.Payload)
-				eps[0] = m.virtualEndpoint(ps, it.Src)
-				return 1, nil
+				sizes[count] = copy(packets[count], it.Payload)
+				eps[count] = m.virtualEndpoint(ps, it.Src)
+				count++
+				if count == len(packets) || interactive {
+					return count, nil
+				}
+				if count == 1 && adaptive != nil {
+					batchUntil = m.clock.Now().Add(adaptive.receiveBatchDelay(len(it.Payload)))
+				}
+				progressed = true
+				break
 			}
 			if progressed {
-				continue // dropped an oversize frame; re-scan before parking
+				continue // re-scan after delivering or dropping a frame
 			}
 			wakeAt := earliestResequencerDeadline(peers, m.clock.Now().Add(resequencerTimeout))
+			if count > 0 {
+				if batchUntil.IsZero() || !m.clock.Now().Before(batchUntil) {
+					return count, nil
+				}
+				if batchUntil.Before(wakeAt) {
+					wakeAt = batchUntil
+				}
+			}
 			timer.ResetAt(wakeAt)
 			if m.beforeReceivePark != nil {
 				m.beforeReceivePark(wakeAt)

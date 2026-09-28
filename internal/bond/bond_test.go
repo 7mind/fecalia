@@ -112,16 +112,16 @@ func TestACKRejectsOverflowingDurations(t *testing.T) {
 	if _, err := b.Receive(0, a.Poll(now)[0].Frame, now); err != nil {
 		t.Fatal(err)
 	}
-	valid := b.Poll(now.Add(12 * time.Millisecond))[0].Frame
+	valid := b.Poll(now.Add(30 * time.Millisecond))[0].Frame
 	for _, offset := range []int{59, 67} {
 		malformed := valid
 		malformed.Payload = append([]byte(nil), valid.Payload...)
 		binary.BigEndian.PutUint64(malformed.Payload[offset:], ^uint64(0))
-		if _, err := a.Receive(0, malformed, now.Add(12*time.Millisecond)); err == nil {
+		if _, err := a.Receive(0, malformed, now.Add(30*time.Millisecond)); err == nil {
 			t.Errorf("overflowing duration at %d accepted", offset)
 		}
 	}
-	if _, err := a.Receive(0, valid, now.Add(12*time.Millisecond)); err != nil {
+	if _, err := a.Receive(0, valid, now.Add(30*time.Millisecond)); err != nil {
 		t.Fatalf("malformed duration consumed valid ACK revision: %v", err)
 	}
 }
@@ -264,7 +264,7 @@ func TestEpochAndReplayIsolation(t *testing.T) {
 	if err != nil || len(got) != 0 {
 		t.Fatalf("replay delivered: %v %v", got, err)
 	}
-	ack := b.Poll(now.Add(12 * time.Millisecond))[0]
+	ack := b.Poll(now.Add(30 * time.Millisecond))[0]
 	restarted := bond.New(bond.Epoch{Boot: 1, Generation: 2})
 	restarted.SetRemote(b.Epoch(), true)
 	restarted.Path(0, 0, time.Millisecond, now)
@@ -299,23 +299,26 @@ func TestLateACKStillMeasuresCongestion(t *testing.T) {
 	b.SetRemote(a.Epoch(), true)
 	a.Path(0, 0, 30*time.Millisecond, now)
 	b.Path(0, 0, 30*time.Millisecond, now)
-	for _, step := range []struct{ send, arrival, ack time.Duration }{{0, 15 * time.Millisecond, 35 * time.Millisecond}, {100 * time.Millisecond, 200 * time.Millisecond, 220 * time.Millisecond}} {
+	for _, step := range []struct{ send, arrival, ack time.Duration }{{0, 15 * time.Millisecond, 60 * time.Millisecond}, {100 * time.Millisecond, 200 * time.Millisecond, 245 * time.Millisecond}} {
 		if err := a.Enqueue(make([]byte, 1200), now.Add(step.send)); err != nil {
 			t.Fatal(err)
 		}
 		packet := a.Poll(now.Add(step.send))[0]
 		if step.send > 0 {
-			a.Poll(now.Add(step.send + 65*time.Millisecond))
+			a.Poll(now.Add(step.send + 110*time.Millisecond))
+			if err := a.Enqueue(make([]byte, 1200), now.Add(step.ack)); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if _, err := b.Receive(0, packet.Frame, now.Add(step.arrival)); err != nil {
 			t.Fatal(err)
 		}
-		ack := b.Poll(now.Add(step.arrival + 12*time.Millisecond))[0]
+		ack := b.Poll(now.Add(step.arrival + 30*time.Millisecond))[0]
 		if _, err := a.Receive(0, ack.Frame, now.Add(step.ack)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s := a.Snapshot(now.Add(220 * time.Millisecond)).Paths[0]
+	s := a.Snapshot(now.Add(245 * time.Millisecond)).Paths[0]
 	if s.QueueDelay < 80*time.Millisecond || s.Rate >= 125000 {
 		t.Fatalf("late delivery evidence was lost: %+v", s)
 	}

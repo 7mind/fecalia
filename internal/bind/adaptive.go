@@ -11,7 +11,10 @@ import (
 	"github.com/7mind/wanbond/internal/reseq"
 )
 
-const adaptiveReorderHold = 300 * time.Millisecond
+const (
+	adaptiveReorderHold       = 300 * time.Millisecond
+	adaptiveReceiveBatchDelay = 2 * time.Millisecond
+)
 
 type adaptiveRoute struct {
 	path   *peerPathState
@@ -201,6 +204,16 @@ func (a *adaptivePeer) popInteractive() (reseq.Item, bool) {
 	default:
 		return reseq.Item{}, false
 	}
+}
+
+func (a *adaptivePeer) receiveBatchDelay(size int) time.Duration {
+	a.mu.Lock()
+	rate := a.transport.PacingRate(time.Now())
+	a.mu.Unlock()
+	if rate <= 0 {
+		return adaptiveReceiveBatchDelay
+	}
+	return min(adaptiveReceiveBatchDelay, time.Duration(float64(size)/rate*float64(time.Second)))
 }
 
 func (a *adaptivePeer) flush(now time.Time) {

@@ -462,15 +462,50 @@ func tunRingPending(file *os.File) (bool, error) {
 	return pending, nil
 }
 
-func (t *Tunnel) startTUNAQM() error {
-	if !t.cfg.Scheduler.PacingEnabled ||
-		t.cfg.Scheduler.Policy != config.PolicyActiveBackup ||
-		len(t.cfg.Scheduler.PerPathShapers) == 0 {
-		return nil
+func (k *linuxTUNAQMKernel) removeLegacyShaper() (bool, error) {
+	raw, err := k.output("-j", "qdisc", "show", "dev", k.name)
+	if err != nil {
+		return false, err
 	}
+	var qdiscs []struct {
+		Kind   string `json:"kind"`
+		Handle string `json:"handle"`
+		Parent string `json:"parent"`
+		Root   bool   `json:"root"`
+	}
+	if err := json.Unmarshal(raw, &qdiscs); err != nil {
+		return false, fmt.Errorf("device: read previous TUN shaper: %w", err)
+	}
+	root, leaf := false, false
+	for _, qdisc := range qdiscs {
+		root = root || (qdisc.Root && qdisc.Kind == "htb" && qdisc.Handle == "1:")
+		leaf = leaf || (qdisc.Parent == "1:1" && qdisc.Kind == "bfifo" && qdisc.Handle == "10:")
+	}
+	if !root || !leaf {
+		return false, nil
+	}
+	if err := k.run("qdisc", "delete", "dev", k.name, "root"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (t *Tunnel) startTUNAQM() error {
 	kernel, err := newLinuxTUNAQMKernel(t.name)
 	if err != nil {
 		return err
+	}
+	if !t.cfg.Scheduler.PacingEnabled ||
+		t.cfg.Scheduler.Policy != config.PolicyActiveBackup ||
+		len(t.cfg.Scheduler.PerPathShapers) == 0 {
+		removed, err := kernel.removeLegacyShaper()
+		if err != nil {
+			return fmt.Errorf("device: remove obsolete TUN shaper: %w", err)
+		}
+		if removed {
+			t.log.Info("removed obsolete TUN shaper", "interface", t.name)
+		}
+		return nil
 	}
 	kernel.readRingPending = func() (bool, error) {
 		return tunRingPending(t.tun.File())

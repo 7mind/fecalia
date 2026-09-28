@@ -119,8 +119,11 @@ def main():
     parser.add_argument("--policy", required=True)
     parser.add_argument("--seconds", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=5, help="convergence period; retained as omitted intervals in raw iperf output")
+    parser.add_argument("--idle-seconds", type=int, default=0, help="leave the tunnel idle before measuring startup from sparse feedback")
     parser.add_argument("--profile", type=Path, default=Path(__file__).with_name("profiles") / "basic.json")
     args = parser.parse_args()
+    if args.idle_seconds < 0:
+        parser.error("--idle-seconds must be nonnegative")
     lab = Lab()
     lab.acquire()
     output = lab.state / (time.strftime("%Y%m%d-%H%M%S") + "-" + args.policy)
@@ -128,8 +131,12 @@ def main():
     profile = profile_from(args.profile)
     apply_profile(lab, profile)
     provision(lab, args.binary, args.policy)
-    summary = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "policy": args.policy, "profile": profile, "warmup_seconds": args.warmup, "measurement_seconds": args.seconds}
+    summary = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "policy": args.policy, "profile": profile, "warmup_seconds": args.warmup, "measurement_seconds": args.seconds, "idle_seconds": args.idle_seconds}
     try:
+        if args.idle_seconds:
+            for guest in GUESTS:
+                (output / f"idle-start-{guest}-metrics.txt").write_text(lab.execute(guest, "curl -sf http://127.0.0.1:9090/metrics", capture_output=True).stdout)
+            time.sleep(args.idle_seconds)
         for reverse in (False, True):
             name = "downlink" if reverse else "uplink"
             summary[name] = measure(lab, output, name, args.seconds, args.warmup, reverse)

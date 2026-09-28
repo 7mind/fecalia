@@ -1,0 +1,10 @@
+{
+  "hub": {
+    "1": {"rate": 0.5, "delay": 15, "jitter": 4, "loss": 0},
+    "2": {"rate": 100, "delay": 40, "jitter": 10, "loss": 0}
+  },
+  "edge": {
+    "1": {"rate": 0.4, "delay": 15, "jitter": 4, "loss": 0},
+    "2": {"rate": 1.25, "delay": 40, "jitter": 10, "loss": 0}
+  }
+}
