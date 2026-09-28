@@ -6,6 +6,46 @@ The operator's subsequent Speedtest results show approximately 0.45–0.48 Mbps
 download and failed/0.19 Mbps upload. Resolve that regression before retiring
 fallback implementations. No production deployment was performed for this audit.
 
+## Agreed scope and work order
+
+The operator requested a code audit covering obsolete policies, unnecessary
+code, cleanup and deduplication, and a migration pathway to AmneziaWG 3. They
+explicitly approved removing the legacy ledger. The detailed runtime removal
+list below is a proposal; the audit request does not settle whether metered-link
+conservation or FEC should remain supported features.
+
+1. **Completed: remove the ledger.** `.cq/` was removed in `7d23ed7`, ignored,
+   and retained in Git history. Do not recreate the ledger or rewrite history.
+2. **In progress: validate adaptive bonding.** Reproduce actual asymmetric
+   links, idle periods, jitter and temporary outages in the autonomous VM lab.
+   Saturate both uplinks in both directions while preserving connections and
+   low-latency interactive traffic. Bulk packets are striped, with bounded
+   recovery; small packets may receive budgeted replication. The intermediate
+   candidate `af2d54c` is being deployed by the operator. Its measured gains and
+   remaining failures are recorded in [the VM results](../../test/vm/README.md#intermediate-correction--2026-09-28-623d36f).
+3. **Next cleanup decision: supported modes.** Once the retained transport
+   meets the supported envelope, decide explicitly whether static weighted
+   scheduling, legacy active-backup/data thrift and Reed–Solomon FEC are to be
+   retired. Remove each retired feature together with its exclusive knobs,
+   metrics, examples, dependencies and tests. Preserve shared path health,
+   authenticated demux, replay protection, ordering and lifecycle contracts.
+4. **Simplify the remaining code.** Extract shared path membership from the
+   legacy scheduler; reduce competing transport/control owners; deduplicate DNS
+   result aggregation and repeated recovery documentation. Preserve behavioral
+   assertions when consolidating tests. Do not count file splitting as cleanup
+   or polish a legacy controller immediately before deleting it.
+5. **Then migrate the engine.** Evaluate the pinned AmneziaWG v3 candidate below
+   after resolving which local patches survive cleanup. Upgrade the engine
+   with current wire settings first, prove mixed-version operation, and treat
+   activation of new obfuscation settings as a separate coordinated change.
+   The user performs all production deployments.
+
+Acceptance is measured behavior and reduced supported complexity, not a target
+line-count reduction. No runtime mode has been removed and no engine upgrade
+has been applied by this audit. Outstanding decisions are the retained policy
+set, whether FEC/data thrift remain requirements, and which engine statistics
+justify keeping custom patches.
+
 ## Evidence and size
 
 Counts below use tracked files, physical lines including comments/blanks, and
@@ -101,10 +141,11 @@ with one authoritative design section and short operational links, then retain
 checks for actual configuration/metric contracts rather than prose duplication.
 
 Keep deterministic transport tests separate from real-kernel/VM performance
-tests. Existing VM profiles cover 3 ms jitter at most, short fresh processes,
-and one peer. They do not establish behavior after long idle periods, substantial
-RF jitter, multiple exits, or upgrades with persistent kernel state. Expand that
-matrix in response to the reported performance failure. Do not replace the
+tests. At the audited baseline, VM profiles covered 3 ms jitter at most, short
+fresh processes, and one peer. The intermediate correction adds 10 ms jitter,
+idle-to-load and asymmetric mobile profiles, plus a real-kernel test for retiring
+the persistent TUN cap. Multiple exits and broader RF conditions still require
+coverage. Do not replace the
 existing namespace/real-host suites wholesale: their routing, DNS, roaming and
 multiple-peer contracts exceed the VM benchmark's current scope.
 
