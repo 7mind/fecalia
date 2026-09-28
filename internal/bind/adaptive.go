@@ -142,15 +142,19 @@ func (a *adaptivePeer) learn(ps *peerPathState, remote netip.AddrPort, payload [
 	a.signal()
 }
 
-func (a *adaptivePeer) enqueue(bufs [][]byte) error {
+func (a *adaptivePeer) enqueue(bufs [][]byte, metadata []PacketMetadata) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
 		return errClosed
 	}
 	now := time.Now()
-	for _, b := range bufs {
-		if err := a.transport.Enqueue(b, now); err != nil {
+	for i, b := range bufs {
+		var meta bond.PacketMetadata
+		if metadata != nil {
+			meta = bond.PacketMetadata{Flow: bond.FlowID(metadata[i].Flow), ACK: bond.TCPACK(metadata[i].ACK)}
+		}
+		if err := a.transport.Enqueue(b, meta, now); err != nil {
 			return err
 		}
 	}

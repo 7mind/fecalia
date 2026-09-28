@@ -120,6 +120,7 @@ type Device struct {
 	}
 	outbound               outboundStats
 	outboundAdmissionLimit atomic.Int64
+	packetBind             conn.BindPacketBatchCompleter
 
 	tun struct {
 		device tun.Device
@@ -334,6 +335,9 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.net.bind = bind
+	if packetBind, ok := bind.(conn.BindPacketBatchCompleter); ok && packetBind.PacketMetadataEnabled() {
+		device.packetBind = packetBind
+	}
 	device.tun.device = tunDevice
 	mtu, err := device.tun.device.MTU()
 	if err != nil {

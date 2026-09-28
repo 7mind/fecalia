@@ -10,7 +10,7 @@ func TestAttemptRetentionReleasesCongestionWindowBeforeLongRTO(t *testing.T) {
 	transport := New(Epoch{Boot: 1, Generation: 1})
 	transport.SetRemote(Epoch{Boot: 2, Generation: 1}, true)
 	transport.Path(0, 0, 60*time.Millisecond, now)
-	if err := transport.Enqueue(make([]byte, 1200), now); err != nil {
+	if err := transport.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
 	transport.Poll(now)
@@ -33,7 +33,7 @@ func TestRecentDataDelayIsNotLearnedAsIdleJitter(t *testing.T) {
 	b.SetRemote(a.Epoch(), true)
 	a.Path(0, 0, 60*time.Millisecond, now)
 	b.Path(0, 0, 60*time.Millisecond, now)
-	if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, tx := range a.Poll(now) {

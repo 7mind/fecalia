@@ -28,7 +28,7 @@ func testLateReceipts(t *testing.T, missing int) {
 	delivered := 0
 	for i := 0; i < 400; i++ {
 		now := start.Add(time.Duration(i) * 120 * time.Microsecond)
-		if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 			t.Fatal(err)
 		}
 		for _, tx := range a.Poll(now) {
@@ -91,7 +91,7 @@ func TestCrossLaneReceiptReleasesOriginalCongestionWindow(t *testing.T) {
 		a.Path(path, path, 60*time.Millisecond, now)
 		b.Path(path, path, 60*time.Millisecond, now)
 	}
-	if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, tx := range a.Poll(now) {
@@ -136,7 +136,7 @@ func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
 	a.paths[0].rate = 12500000
 	for i := 0; i < 400; i++ {
 		at := now.Add(time.Duration(i) * 120 * time.Microsecond)
-		if err := a.Enqueue(make([]byte, 1200), at); err != nil {
+		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, at); err != nil {
 			t.Fatal(err)
 		}
 		a.Poll(at)

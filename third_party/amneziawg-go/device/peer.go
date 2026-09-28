@@ -117,20 +117,10 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 }
 
 func (peer *Peer) SendBuffers(buffers [][]byte) error {
-	return peer.sendBuffers(buffers, nil)
+	return peer.sendBuffers(buffers, nil, nil)
 }
 
-func (peer *Peer) SendBuffersWithCompletion(
-	buffers [][]byte,
-	complete func(),
-) error {
-	if complete == nil {
-		return errors.New("device: terminal send completion callback is required")
-	}
-	return peer.sendBuffers(buffers, complete)
-}
-
-func (peer *Peer) sendBuffers(buffers [][]byte, complete func()) error {
+func (peer *Peer) sendBuffers(buffers [][]byte, metadata []conn.PacketMetadata, complete func()) error {
 	completionTransferred := false
 	if complete != nil {
 		defer func() {
@@ -159,7 +149,13 @@ func (peer *Peer) sendBuffers(buffers [][]byte, complete func()) error {
 	peer.endpoint.Unlock()
 
 	var err error
-	if complete != nil {
+	if metadata != nil {
+		if complete == nil {
+			complete = func() {}
+		}
+		completionTransferred = true
+		err = peer.device.packetBind.SendWithMetadata(buffers, metadata, endpoint, complete)
+	} else if complete != nil {
 		if completer, ok := peer.device.net.bind.(conn.BindBatchCompleter); ok {
 			completionTransferred = true
 			err = completer.SendWithCompletion(buffers, endpoint, complete)
@@ -180,20 +176,11 @@ func (peer *Peer) sendBuffers(buffers [][]byte, complete func()) error {
 }
 
 func (peer *Peer) SendAndCountBuffers(buffers [][]byte) error {
-	err := peer.SendBuffers(buffers)
-	if err == nil {
-		awg.PacketCounter.Add(uint64(len(buffers)))
-		return nil
-	}
-
-	return err
+	return peer.sendAndCountBuffers(buffers, nil, nil)
 }
 
-func (peer *Peer) SendAndCountBuffersWithCompletion(
-	buffers [][]byte,
-	complete func(),
-) error {
-	err := peer.SendBuffersWithCompletion(buffers, complete)
+func (peer *Peer) sendAndCountBuffers(buffers [][]byte, metadata []conn.PacketMetadata, complete func()) error {
+	err := peer.sendBuffers(buffers, metadata, complete)
 	if err == nil {
 		awg.PacketCounter.Add(uint64(len(buffers)))
 		return nil

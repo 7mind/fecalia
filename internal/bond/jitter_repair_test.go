@@ -24,7 +24,7 @@ func TestLossFreeRadioJitterDoesNotCauseRepeatedRepairs(t *testing.T) {
 	for tick := 0; tick < 15000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		if tick%2 == 0 {
-			if err := peers[0].Enqueue(make([]byte, 800), now); err != nil {
+			if err := peers[0].Enqueue(make([]byte, 800), bond.PacketMetadata{}, now); err != nil {
 				t.Fatal(err)
 			}
 		}

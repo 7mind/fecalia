@@ -16,7 +16,7 @@ import (
 )
 
 type adaptiveHarness struct {
-	send   func(int, []byte) error
+	send   func(int, []byte, PacketMetadata) error
 	step   func()
 	read   func(int) [][]byte
 	outage func(bool)
@@ -39,7 +39,7 @@ func TestAdaptiveDeliveryContract(t *testing.T) {
 						size = 160
 					}
 					for side := range 2 {
-						if err := h.send(side, bytes.Repeat([]byte{seq}, size)); err != nil {
+						if err := h.send(side, bytes.Repeat([]byte{seq}, size), PacketMetadata{}); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -70,6 +70,60 @@ func TestAdaptiveDeliveryContract(t *testing.T) {
 	}
 }
 
+func TestAdaptiveSmallFlowIsolation(t *testing.T) {
+	for name, factory := range map[string]func(*testing.T) adaptiveHarness{
+		"memory": memoryAdaptiveHarness, "udp": udpAdaptiveHarness,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := factory(t)
+			for range 1024 {
+				if err := h.send(0, make([]byte, 80), PacketMetadata{Flow: FlowID{1}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			voice := bytes.Repeat([]byte{0x7f}, 224)
+			if err := h.send(0, voice, PacketMetadata{Flow: FlowID{2}}); err != nil {
+				t.Fatal(err)
+			}
+			for range 50 {
+				h.step()
+				for _, p := range h.read(1) {
+					if bytes.Equal(p, voice) {
+						return
+					}
+				}
+			}
+			t.Fatal("a small-packet burst from one flow prevented another flow from receiving priority service")
+		})
+	}
+}
+
+func TestAdaptiveCumulativeACKCoalescing(t *testing.T) {
+	for name, factory := range map[string]func(*testing.T) adaptiveHarness{
+		"memory": memoryAdaptiveHarness, "udp": udpAdaptiveHarness,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := factory(t)
+			const last = 200
+			for seq := 1; seq <= last; seq++ {
+				meta := PacketMetadata{Flow: FlowID{1}, ACK: TCPACK{Eligible: true, Sequence: 7, Acknowledgement: uint32(seq), Window: 4096}}
+				if err := h.send(0, bytes.Repeat([]byte{byte(seq)}, 80), meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 50 {
+				h.step()
+				for _, p := range h.read(1) {
+					if bytes.Equal(p, bytes.Repeat([]byte{last}, 80)) {
+						return
+					}
+				}
+			}
+			t.Fatal("superseded TCP acknowledgements delayed the latest cumulative acknowledgement")
+		})
+	}
+}
+
 func memoryAdaptiveHarness(t *testing.T) adaptiveHarness {
 	now := time.Unix(100, 0)
 	peers := [2]*bond.Transport{bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})}
@@ -82,7 +136,9 @@ func memoryAdaptiveHarness(t *testing.T) adaptiveHarness {
 		}
 	}
 	return adaptiveHarness{
-		send:   func(side int, p []byte) error { return peers[side].Enqueue(p, now) },
+		send: func(side int, p []byte, meta PacketMetadata) error {
+			return peers[side].Enqueue(p, bond.PacketMetadata{Flow: bond.FlowID(meta.Flow), ACK: bond.TCPACK(meta.ACK)}, now)
+		},
 		outage: func(value bool) { drop = value },
 		read:   func(side int) [][]byte { out := received[side]; received[side] = nil; return out },
 		step: func() {
@@ -186,7 +242,9 @@ func udpAdaptiveHarness(t *testing.T) adaptiveHarness {
 		time.Sleep(time.Millisecond)
 	}
 	return adaptiveHarness{
-		send:   func(side int, p []byte) error { return peers[side].Send([][]byte{p}, peers[side].virt) },
+		send: func(side int, p []byte, meta PacketMetadata) error {
+			return peers[side].SendWithMetadata([][]byte{p}, []PacketMetadata{meta}, peers[side].virt, func() {})
+		},
 		outage: drop.Store,
 		step:   func() { time.Sleep(time.Millisecond) },
 		read: func(side int) [][]byte {

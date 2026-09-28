@@ -18,7 +18,7 @@ func TestReorderedDataBeyondACKBitmapIsDelivered(t *testing.T) {
 	b.SetRemote(a.Epoch(), true)
 	a.Path(0, 0, 60*time.Millisecond, now)
 	b.Path(0, 0, 60*time.Millisecond, now)
-	if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
 	first := a.Poll(now)[0].Frame
@@ -51,7 +51,7 @@ func TestDeliveredPacketsOutsideLaneACKBitmapReleaseWindow(t *testing.T) {
 		now = now.Add(11 * time.Millisecond)
 		a.Path(0, 0, time.Second, now)
 		b.Path(0, 0, time.Second, now)
-		if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+		if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 			t.Fatal(err)
 		}
 		for _, tx := range a.Poll(now) {
@@ -78,7 +78,7 @@ func TestBulkACKCadenceBoundsReverseBandwidth(t *testing.T) {
 	b.SetRemote(a.Epoch(), true)
 	a.Path(0, 0, 60*time.Millisecond, now)
 	b.Path(0, 0, 60*time.Millisecond, now)
-	if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
 	first := a.Poll(now)[0].Frame
@@ -138,7 +138,7 @@ func TestReplicationBudgetTracksPacingCapacity(t *testing.T) {
 	for tick := 0; tick < 2000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		if tick%5 == 0 {
-			if err := peers[0].Enqueue(make([]byte, 100), now); err != nil {
+			if err := peers[0].Enqueue(make([]byte, 100), bond.PacketMetadata{}, now); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -177,7 +177,7 @@ func TestWindowDeliveryDrivesPacingWithoutQueuedData(t *testing.T) {
 	initial := a.Snapshot(start).Paths[0].Rate
 	for i := 0; i < 8; i++ {
 		now := start.Add(time.Duration(i) * 11 * time.Millisecond)
-		if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+		if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 			t.Fatal(err)
 		}
 		for _, tx := range a.Poll(now) {
@@ -205,7 +205,7 @@ func TestJitteredPathRepairsBeforePacketExpires(t *testing.T) {
 		now := start.Add(time.Duration(i) * 250 * time.Millisecond)
 		a.Path(0, 0, 80*time.Millisecond, now)
 		b.Path(0, 0, 80*time.Millisecond, now)
-		if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+		if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 			t.Fatal(err)
 		}
 		rtt := time.Duration(60+40*(i%2)) * time.Millisecond
@@ -223,7 +223,7 @@ func TestJitteredPathRepairsBeforePacketExpires(t *testing.T) {
 	now := start.Add(30 * 250 * time.Millisecond)
 	a.Path(0, 0, 80*time.Millisecond, now)
 	a.Path(1, 1, 150*time.Millisecond, now)
-	if err := a.Enqueue(make([]byte, 1200), now); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
 	a.Poll(now) // Drop the first attempt.
@@ -271,7 +271,7 @@ func runJitterCapacity(t *testing.T, busy bool, minimumDelayMS, delaySpreadMS, c
 	for tick := 0; tick < 30000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		if busy && tick >= idleMS {
-			if err := peers[0].Enqueue(make([]byte, 1200), now); err != nil {
+			if err := peers[0].Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 				t.Fatal(err)
 			}
 		}

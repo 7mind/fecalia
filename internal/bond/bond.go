@@ -52,6 +52,22 @@ type Delivery struct {
 	Payload     []byte
 }
 
+type FlowID [40]byte
+
+type TCPACK struct {
+	Eligible                  bool
+	Sequence, Acknowledgement uint32
+	Window                    uint16
+	TrafficClass              byte
+	Timestamp                 bool
+	TSVal, TSEcr              uint32
+}
+
+type PacketMetadata struct {
+	Flow FlowID
+	ACK  TCPACK
+}
+
 type PathStats struct {
 	Path                 PathID
 	Rate                 float64
@@ -76,11 +92,14 @@ type Snapshot struct {
 	QueueDrops            uint64
 	InteractiveQueueDrops uint64
 	InteractiveQueued     int
+	CoalescedACKs         uint64
 	Expired               uint64
 	Duplicates            uint64
 }
 
 type packet struct {
+	flow        FlowID
+	ack         TCPACK
 	seq         uint64
 	order       uint64
 	interactive bool
@@ -171,8 +190,8 @@ type Transport struct {
 	remote           Epoch
 	paths            []*lane
 	receivers        map[PathID]*receiver
-	queue            []*packet
-	priority         []*packet
+	queue            packetFIFO
+	priority         fairPacketQueue
 	pending          map[uint64]*packet
 	pendingOrder     []*packet
 	seq              uint64
@@ -182,6 +201,7 @@ type Transport struct {
 	lastPoll         time.Time
 	drops            uint64
 	interactiveDrops uint64
+	coalescedACKs    uint64
 	expired          uint64
 	duplicates       uint64
 	received         receiptWindow
@@ -279,21 +299,23 @@ func (t *Transport) find(id PathID) *lane {
 	return nil
 }
 
-func (t *Transport) Enqueue(payload []byte, now time.Time) error {
+func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Time) error {
 	if len(payload) == 0 || len(payload) > maxDatagram {
 		return errors.New("bond: invalid datagram length")
 	}
-	if len(t.queue)+len(t.priority)+len(t.pending) >= maxPackets {
+	if len(t.queue)+t.priority.count+len(t.pending) >= maxPackets {
 		t.drops++
 		if len(payload) <= smallPacket {
 			t.interactiveDrops++
 		}
 		return nil
 	}
-	p := &packet{payload: append([]byte(nil), payload...), created: now}
+	p := &packet{flow: metadata.Flow, ack: metadata.ACK, payload: append([]byte(nil), payload...), created: now}
 	if len(payload) <= smallPacket {
 		p.interactive = true
-		t.priority = append(t.priority, p)
+		if t.priority.push(p) {
+			t.coalescedACKs++
+		}
 	} else {
 		t.queue = append(t.queue, p)
 	}
@@ -488,11 +510,10 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	}
 	clear(t.pendingOrder[len(retained):])
 	t.pendingOrder = retained
-	for _, queue := range []*[]*packet{&t.priority, &t.queue} {
-		for len(*queue) > 0 {
-			p := (*queue)[0]
+	for _, queue := range []packetQueue{&t.priority, &t.queue} {
+		for p := queue.peek(); p != nil; p = queue.peek() {
 			if now.Sub(p.created) > maxQueueAge {
-				*queue = (*queue)[1:]
+				queue.pop()
 				t.drops++
 				if p.interactive {
 					t.interactiveDrops++
@@ -500,13 +521,13 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 				continue
 			}
 			path := t.choose(now, len(p.payload)+wireOverhead, 0, false)
-			if queue == &t.priority {
+			if p.interactive {
 				path = t.choosePriority(now, len(p.payload)+wireOverhead, 0, false)
 			}
 			if path == nil {
 				break
 			}
-			*queue = (*queue)[1:]
+			queue.pop()
 			out = append(out, t.transmit(p, path, now))
 			if len(p.payload) <= smallPacket && t.redundancyTokens >= float64(len(p.payload)+wireOverhead) {
 				second := t.choosePriority(now, len(p.payload)+wireOverhead, path.id, true)
@@ -622,7 +643,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 }
 
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
-	backlogged := len(t.queue)+len(t.priority) > 0 || p.inflight >= p.window()/2
+	backlogged := len(t.queue)+t.priority.count > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
 	var physicalFeedback time.Duration
 	for seq, pending := range t.pending {
@@ -838,7 +859,7 @@ func maxTime(a, b time.Time) time.Time {
 }
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
-	s := Snapshot{QueueDrops: t.drops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: len(t.priority), Expired: t.expired, Duplicates: t.duplicates}
+	s := Snapshot{QueueDrops: t.drops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.priority.count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
 	for _, p := range t.paths {
 		s.Paths = append(s.Paths, PathStats{
 			Path: p.id, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,

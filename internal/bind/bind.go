@@ -17,7 +17,11 @@ type (
 	Bind = conn.Bind
 	// BindBatchCompleter optionally retains a copied send batch through terminal
 	// transport completion.
-	BindBatchCompleter = conn.BindBatchCompleter
+	BindBatchCompleter       = conn.BindBatchCompleter
+	FlowID                   = conn.FlowID
+	PacketMetadata           = conn.PacketMetadata
+	TCPACK                   = conn.TCPACK
+	BindPacketBatchCompleter = conn.BindPacketBatchCompleter
 	// Endpoint identifies a peer's transport address.
 	Endpoint = conn.Endpoint
 	// ReceiveFunc is a packet-receive callback returned by Bind.Open.

@@ -65,6 +65,33 @@ type BindBatchCompleter interface {
 	SendWithCompletion(bufs [][]byte, ep Endpoint, complete func()) error
 }
 
+// FlowID identifies a local IP flow. It is metadata and is never transmitted.
+// Zero identifies packets without a classified IP flow, including keepalives.
+type FlowID [40]byte
+
+// TCPACK describes a pure cumulative acknowledgement eligible for coalescing.
+// Eligible is false for payload, control flags, fragments and unknown options.
+type TCPACK struct {
+	Eligible                  bool
+	Sequence, Acknowledgement uint32
+	Window                    uint16
+	TrafficClass              byte
+	Timestamp                 bool
+	TSVal, TSEcr              uint32
+}
+
+type PacketMetadata struct {
+	Flow FlowID
+	ACK  TCPACK
+}
+
+// BindPacketBatchCompleter accepts local metadata for each encrypted datagram.
+// Completion has the same ownership contract as BindBatchCompleter.
+type BindPacketBatchCompleter interface {
+	PacketMetadataEnabled() bool
+	SendWithMetadata(bufs [][]byte, metadata []PacketMetadata, ep Endpoint, complete func()) error
+}
+
 // BindSocketToInterface is implemented by Bind objects that support being
 // tied to a single network interface. Used by wireguard-windows.
 type BindSocketToInterface interface {

@@ -22,7 +22,7 @@ func TestSerializationDoesNotInventForwardQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := now.Add(350 * time.Millisecond)
-	if err := a.Enqueue(make([]byte, 1200), sent); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, sent); err != nil {
 		t.Fatal(err)
 	}
 	packets := a.Poll(sent)
@@ -38,7 +38,7 @@ func TestSerializationDoesNotInventForwardQueue(t *testing.T) {
 		t.Fatalf("an isolated larger datagram acquired %s of invented queue delay from serialization", delay)
 	}
 	sent = now.Add(500 * time.Millisecond)
-	if err := a.Enqueue(make([]byte, 1200), sent); err != nil {
+	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, sent); err != nil {
 		t.Fatal(err)
 	}
 	a.Poll(sent)

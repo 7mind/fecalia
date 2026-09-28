@@ -46,11 +46,12 @@ import (
  */
 
 type QueueOutboundElement struct {
-	buffer  *[MaxMessageSize]byte // slice holding the packet data
-	packet  []byte                // slice of "buffer" (always!)
-	nonce   uint64                // nonce for encryption
-	keypair *Keypair              // keypair for encryption
-	peer    *Peer                 // related peer
+	buffer   *[MaxMessageSize]byte // slice holding the packet data
+	packet   []byte                // slice of "buffer" (always!)
+	nonce    uint64                // nonce for encryption
+	keypair  *Keypair              // keypair for encryption
+	peer     *Peer                 // related peer
+	metadata conn.PacketMetadata
 }
 
 type QueueOutboundElementsContainer struct {
@@ -63,6 +64,7 @@ func (device *Device) NewOutboundElement() *QueueOutboundElement {
 	elem := device.GetOutboundElement()
 	elem.buffer = device.GetMessageBuffer()
 	elem.nonce = 0
+	elem.metadata = conn.PacketMetadata{}
 	// keypair and peer were cleared (if necessary) by clearPointers.
 	return elem
 }
@@ -358,6 +360,9 @@ func (device *Device) RoutineReadFromTUN() {
 			if peer == nil {
 				continue
 			}
+			if device.packetBind != nil {
+				elem.metadata = packetMetadata(elem.packet)
+			}
 			elemsForPeer, ok := elemsByPeer[peer]
 			if !ok {
 				elemsForPeer = device.GetOutboundElementsContainer()
@@ -594,9 +599,14 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 	device.log.Verbosef("%v - Routine: sequential sender - started", peer)
 
 	bufs := make([][]byte, 0, maxBatchSize)
+	var metadata []conn.PacketMetadata
+	if device.packetBind != nil {
+		metadata = make([]conn.PacketMetadata, 0, maxBatchSize)
+	}
 
 	for elemsContainer := range peer.queue.outbound.c {
 		bufs = bufs[:0]
+		metadata = metadata[:0]
 		if elemsContainer == nil {
 			return
 		}
@@ -623,6 +633,9 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 				dataSent = true
 			}
 			bufs = append(bufs, elem.packet)
+			if device.packetBind != nil {
+				metadata = append(metadata, elem.metadata)
+			}
 		}
 		batchBytes := 0
 		for _, buf := range bufs {
@@ -635,12 +648,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		peer.timersAnyAuthenticatedPacketSent()
 
 		completion := elemsContainer.takeOutboundAdmissionCompletion()
-		var err error
-		if completion == nil {
-			err = peer.SendAndCountBuffers(bufs)
-		} else {
-			err = peer.SendAndCountBuffersWithCompletion(bufs, completion)
-		}
+		err := peer.sendAndCountBuffers(bufs, metadata, completion)
 		device.outbound.addActiveSend(-int64(len(bufs)), -int64(batchBytes))
 		if dataSent {
 			peer.timersDataSent()

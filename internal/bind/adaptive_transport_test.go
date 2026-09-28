@@ -37,7 +37,7 @@ func testAdaptiveReorderedStart(t *testing.T, delay time.Duration) {
 	var frames []frame.Control
 	for i := byte(1); i <= 2; i++ {
 		at := now.Add(time.Duration(i) * 20 * time.Millisecond)
-		if err := sender.Enqueue(bytes.Repeat([]byte{i}, 1000), at); err != nil {
+		if err := sender.Enqueue(bytes.Repeat([]byte{i}, 1000), bond.PacketMetadata{}, at); err != nil {
 			t.Fatal(err)
 		}
 		frames = append(frames, sender.Poll(at)[0].Frame)
@@ -125,7 +125,7 @@ func TestAdaptiveSmallDatagramsDoNotWaitForMissingPredecessor(t *testing.T) {
 	var frames []frame.Control
 	for i := byte(1); i <= 3; i++ {
 		at := now.Add(time.Duration(i) * 10 * time.Millisecond)
-		if err := sender.Enqueue([]byte{i}, at); err != nil {
+		if err := sender.Enqueue([]byte{i}, bond.PacketMetadata{}, at); err != nil {
 			t.Fatal(err)
 		}
 		frames = append(frames, sender.Poll(at)[0].Frame)

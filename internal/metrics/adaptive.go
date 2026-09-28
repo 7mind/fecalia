@@ -27,6 +27,7 @@ type adaptiveCollector struct {
 	paths                               []adaptiveMetric
 	drops, expired                      *prometheus.Desc
 	interactiveDrops, interactiveQueued *prometheus.Desc
+	coalescedACKs                       *prometheus.Desc
 }
 
 func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
@@ -56,6 +57,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		}),
 	}, drops: prometheus.NewDesc("wanbond_adaptive_queue_drops_total", "Datagrams dropped by bounded queue admission or residence time.", []string{"peer"}, nil),
 		expired:           prometheus.NewDesc("wanbond_adaptive_expired_packets_total", "Packets whose bounded repair lifetime expired.", []string{"peer"}, nil),
+		coalescedACKs:     prometheus.NewDesc("wanbond_adaptive_coalesced_tcp_acks_total", "Unsent pure TCP acknowledgements superseded by newer cumulative acknowledgements.", []string{"peer"}, nil),
 		interactiveDrops:  prometheus.NewDesc("wanbond_adaptive_interactive_queue_drops_total", "Small datagrams dropped by bounded queue admission or residence time; included in queue_drops_total.", []string{"peer"}, nil),
 		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil)}
 }
@@ -68,6 +70,7 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.expired
 	ch <- c.interactiveDrops
 	ch <- c.interactiveQueued
+	ch <- c.coalescedACKs
 }
 
 func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
@@ -81,5 +84,6 @@ func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.expired, prometheus.CounterValue, float64(peer.State.Expired), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.interactiveDrops, prometheus.CounterValue, float64(peer.State.InteractiveQueueDrops), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.interactiveQueued, prometheus.GaugeValue, float64(peer.State.InteractiveQueued), peer.Peer)
+		ch <- prometheus.MustNewConstMetric(c.coalescedACKs, prometheus.CounterValue, float64(peer.State.CoalescedACKs), peer.Peer)
 	}
 }

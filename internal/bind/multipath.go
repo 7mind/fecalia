@@ -3571,7 +3571,20 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 // The send Codec remains mutex-guarded, and no transmit syscall or shaper wait holds
 // m.mu.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
-	return m.send(bufs, ep, nil)
+	return m.send(bufs, nil, ep, nil)
+}
+
+func (m *Multipath) PacketMetadataEnabled() bool { return m.adaptiveEnabled }
+
+func (m *Multipath) SendWithMetadata(bufs [][]byte, metadata []PacketMetadata, ep Endpoint, complete func()) error {
+	if complete == nil {
+		return errors.New("bind: terminal send completion callback is required")
+	}
+	if len(metadata) != len(bufs) {
+		complete()
+		return errors.New("bind: flow metadata does not match send batch")
+	}
+	return m.send(bufs, metadata, ep, complete)
 }
 
 func (m *Multipath) SendWithCompletion(
@@ -3582,10 +3595,10 @@ func (m *Multipath) SendWithCompletion(
 	if complete == nil {
 		return errors.New("bind: terminal send completion callback is required")
 	}
-	return m.send(bufs, ep, complete)
+	return m.send(bufs, nil, ep, complete)
 }
 
-func (m *Multipath) send(bufs [][]byte, ep Endpoint, complete func()) error {
+func (m *Multipath) send(bufs [][]byte, metadata []PacketMetadata, ep Endpoint, complete func()) error {
 	completionTransferred := false
 	if complete != nil {
 		defer func() {
@@ -3628,7 +3641,7 @@ func (m *Multipath) send(bufs [][]byte, ep Endpoint, complete func()) error {
 	}
 	if adaptive := peer.adaptive.Load(); adaptive != nil {
 		m.mu.Unlock()
-		return adaptive.enqueue(bufs)
+		return adaptive.enqueue(bufs, metadata)
 	}
 	shaped := m.shaperConfigs != nil
 	sendFEC := peer.fecSend.Load()

@@ -30,7 +30,7 @@
           src = ./.;
           # Updated whenever go.mod dependencies or the local replaced module change;
           # see `nix build` error output.
-          vendorHash = "sha256-u+Suc0k0e/2/5SfiECRYzCSPYAH52rOI6YrniicxRC8=";
+          vendorHash = "sha256-xo0u/qHy4EzDccrGVMWXcEwT7damVNg0Lbeb/JiGh1Y=";
           subPackages = [ "cmd/wanbond" ];
           preBuild = ''cp -r ${monitorUI}/. internal/monitor/dist/'';
           env.CGO_ENABLED = 0;
