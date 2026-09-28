@@ -386,6 +386,39 @@ func TestNonLoopbackWithTokenAccepted(t *testing.T) {
 	}
 }
 
+func TestWildcardBindAllowsConfiguredHostname(t *testing.T) {
+	const hostname = "pi.mo.7mind.io"
+	srv, err := NewServer("0.0.0.0:0", "secret-token", fakeSource{}, Info{}, nil, false, testLogger(t), hostname)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.Start()
+	defer closeMonitor(t, srv)
+
+	for _, tc := range []struct {
+		host string
+		want int
+	}{
+		{hostname, http.StatusOK},
+		{"other.example", http.StatusForbidden},
+	} {
+		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+fmt.Sprint(srv.Addr().(*net.TCPAddr).Port)+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = tc.host
+		req.Header.Set("Authorization", "Bearer secret-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("Host %q: HTTP %d, want %d", tc.host, resp.StatusCode, tc.want)
+		}
+	}
+}
+
 // startAuthTestServer starts a monitor Server on loopback with the given token
 // and returns it, its base http URL, and a client that does NOT auto-follow
 // redirects (so the ?token= bootstrap 302 is observable).

@@ -28,6 +28,7 @@ node/npm, which the dev shell provides. A committed `dist/.gitkeep` keeps the
 embed compilable even without running `web-build` first (so a tagless `go
 build`/`just lint` never fails on a missing directory); `web-build` restores it
 after Vite empties the directory, so the working tree stays clean.
+`nix build` also builds the frontend and embeds it in the packaged binary.
 
 This cross-compiles `cmd/wanbond` with `CGO_ENABLED=0` (fully static, no libc
 dependency) for both deployment architectures into `dist/`:
@@ -2208,6 +2209,7 @@ without this section):
 [monitor]
 listen = "127.0.0.1:9101"
 # token = "..."           # required only if listen is non-loopback
+# allowed_hosts = ["monitor.example.com"] # DNS names for wildcard listen
 # reveal_addressing = false # optional, default false; enables addressing
                              # disclosure to token holders on non-loopback
                              # binds (per-path sources, hub endpoints,
@@ -2221,11 +2223,16 @@ listen = "127.0.0.1:9101"
   daemon even attempts to bind), not merely at bind time. See [docs/design.md
   §Security model](design.md) for the full invariant and the accepted residual
   risk of running non-loopback.
+- **Host names**: with a wildcard `listen` such as `0.0.0.0:9101`, list each
+  DNS name used to access the dashboard in `allowed_hosts`. Host and Origin
+  validation accepts these exact names alongside the bound addresses; other
+  names receive HTTP 403.
 - **Auth model**: every request — including the `/ws` WebSocket upgrade — is
   validated against the request's `Host` and `Origin` headers regardless of
   whether a token is configured (DNS-rebinding/CSRF defense, no secret
   needed). When `token` IS set, the browser presents it once as
-  `?token=<value>` in the URL; the server verifies it, sets a
+  `?token=<value>` in the URL. URL-encode the token when constructing this URL:
+  a literal `+` in a query parameter decodes as a space. The server verifies it, sets a
   `wanbond_monitor_token` cookie (`SameSite=Strict`, `HttpOnly`), and
   redirects (302) to the same URL with `?token=` stripped, so the token does
   not persist in the address bar or browser history. Subsequent requests

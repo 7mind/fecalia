@@ -2112,6 +2112,17 @@ func TestMonitorValidation(t *testing.T) {
 	}
 }
 
+func TestMonitorAllowedHosts(t *testing.T) {
+	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"0.0.0.0:9101\"\ntoken = \"secret\"\nallowed_hosts = [\"pi.mo.7mind.io\"]\n"
+	c, err := Load(writeConfig(t, 0o600, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Monitor.AllowedHosts) != 1 || c.Monitor.AllowedHosts[0] != "pi.mo.7mind.io" {
+		t.Fatalf("monitor.allowed_hosts = %v", c.Monitor.AllowedHosts)
+	}
+}
+
 // TestMonitorUnknownKeyRejected mirrors D41's strict-decoding coverage for
 // [metrics]/[fec]/etc: a misspelled [monitor] key is rejected at Load with the
 // dotted key path named, rather than silently dropped (DisallowUnknownFields).

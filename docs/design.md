@@ -2572,7 +2572,9 @@ misbehaves subtly. Agents and contributors must preserve them.
   serves — including the `/ws` WebSocket upgrade — passes unconditional Host +
   Origin validation (`hostAllowed`/`originAllowed`, `internal/monitor/server.go`),
   defending against DNS-rebinding and cross-origin/CSRF regardless of whether a
-  token is configured. When a token IS configured, it is presented once as
+  token is configured. `[monitor].allowed_hosts` adds exact DNS names to the
+  Host and Origin allowlist for a wildcard bind; it does not bypass token
+  authentication. Unlisted names remain forbidden. When a token IS configured, it is presented once as
   `?token=…`; the server then sets a `wanbond_monitor_token` `SameSite=Strict`,
   `HttpOnly` cookie and 302-redirects to the same path with the query stripped,
   so the token does not linger in the URL bar or browser history. All token
