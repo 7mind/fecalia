@@ -33,6 +33,9 @@ func run(args []string) error {
 		fmt.Println("wanbond", version)
 		return nil
 	}
+	if len(args) > 0 && args[0] == "monitor" {
+		return runMonitor(args[1:], os.Stdout)
+	}
 
 	fs := flag.NewFlagSet("wanbond", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to the TOML configuration file (mode 0600)")

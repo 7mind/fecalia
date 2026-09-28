@@ -2218,6 +2218,14 @@ complementing `/metrics`. It is read-only except for one authenticated control
 empty, and no monitoring-UI endpoint is served (the daemon behaves exactly as
 without this section):
 
+The same endpoint also feeds the read-only terminal view on either daemon role:
+`sudo wanbond monitor` (Ctrl+C to leave) or `sudo wanbond monitor --once` for
+plain output. It discovers one config under `/run/wanbond/` or
+`/etc/wanbond/config.toml`; use `--config PATH` if there is more than one.
+Root is needed only when the daemon's `0600` config is root-owned. The command
+reads the configured token and connects to the local monitor port; when
+`[monitor].listen` is disabled it reports that no stream is available.
+
 ```toml
 [monitor]
 listen = "127.0.0.1:9101"

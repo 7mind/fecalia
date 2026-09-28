@@ -12,6 +12,9 @@ Prerequisites (all phases):
 - [ ] Concentrator reachable on its public IP; UDP not blocked end to end.
 - [ ] `wanbond` running both ends from a `0600` config; `/metrics` reachable on
       localhost each end.
+- [ ] On both roles with `[monitor].listen` enabled, `sudo wanbond monitor`
+      shows new frames every second; Ctrl+C restores the terminal. Check
+      `sudo wanbond monitor --once` emits plain text and exits.
 - [ ] With Amnezia obfuscation enabled, run
       `(cd third_party/amneziawg-go && go test -race ./device/awg -run '^TestJunkCreatorConcurrentUse$' -count=5)`;
       simultaneous peer handshakes report no shared ChaCha8 access.

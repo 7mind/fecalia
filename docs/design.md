@@ -2320,6 +2320,10 @@ by `internal/device`:
   pushes a fresh snapshot every 1s. Loopback-only by default, like `/metrics`,
   but MAY bind non-loopback when a `token` is configured (see *Security
   model* below for the auth layer and the accepted residual risk). The
+  `wanbond monitor` CLI subscribes to this same read-only `/ws` stream on
+  the local host, using the token from the daemon's protected config. It does
+  not add a second telemetry sampler or a control route, and works for either
+  daemon role when the monitor endpoint is enabled. The
   `MonitorSnapshot` wire contract (`monitor.go`) also carries a
   `DaemonSnapshot` (role, version, process uptime, always shown); per-path
   `bindMode`/`boundDevice` (runtime-resolved, via the `bind.PathTraffic`

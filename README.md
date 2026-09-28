@@ -229,6 +229,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   including a token-authorized one — they are redacted server-side and the
   dashboard renders an "addressing hidden on non-loopback binding" placeholder
   instead (unless `reveal_addressing` is explicitly set).
+- **Terminal monitor**: `sudo wanbond monitor` shows the same live snapshot on
+  edge and concentrator hosts when `[monitor].listen` is enabled. It discovers
+  the rendered `/run/wanbond/{edge,concentrator}.toml` config, reads its token,
+  and connects locally. `sudo wanbond monitor --once` prints one plain snapshot;
+  use `--config PATH` for a different config location. This view is read-only.
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
   flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
