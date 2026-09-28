@@ -2271,8 +2271,9 @@ listen = "127.0.0.1:9101"
   `{"peer": "auto"}` or `{"peer": "<exit-name>"}`. The response contains both
   `activeExit` (the current traffic owner) and `exitMode` (the selected policy).
   The dashboard's `<select>` lists `auto` plus the configured exit-capable peers,
-  selects the current `exitMode`, and displays `activeExit` separately. It is
-  available on loopback and token-authenticated non-loopback bindings; the
+  selects the current `exitMode`, and displays `activeExit` separately. The
+  select stays mounted across live telemetry updates, so an open menu remains
+  usable. The control is available on loopback and token-authenticated non-loopback bindings; the
   browser's same-origin cookie supplies the token. It is hidden when fewer than
   two exit-capable peers are configured. The usual auth applies (cross-origin → 403, missing/invalid
   token → 401); a non-POST method is 405 and an unknown/non-exit-capable peer

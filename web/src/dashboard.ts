@@ -33,10 +33,8 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 // here). Hidden off the edge role and when !snapshot.exitControlAvailable
 // (the server's loopback-or-token availability, independent of addressing
 // disclosure) or when fewer than two exit-capable peers exist (no alternate).
-// Pending/error state is held OUTSIDE onSnapshot's per-frame render (in
-// `exitControlState`, a mountDashboard-scoped closure variable) so it
-// survives the innerHTML replacement every snapshot frame triggers; the
-// change listener is re-attached after every render for the same reason.
+// The control stays mounted across snapshot frames so its native popup and
+// keyboard focus are not interrupted by live telemetry updates.
 
 interface PathBuffers {
   loss: number[];
@@ -129,13 +127,17 @@ interface ExitControlState {
 
 /**
  * Mounts the dashboard into `container`. Returns a handle whose onSnapshot
- * callback re-renders the whole tree from the latest MonitorSnapshot,
+ * callback updates the control and re-renders the telemetry from the latest MonitorSnapshot,
  * accumulating client-side sparkline history across calls.
  */
 export function mountDashboard(container: HTMLElement): DashboardHandle {
   const root = document.createElement('div');
   root.className = 'dashboard';
-  root.style.cssText = 'font-family:system-ui,sans-serif; font-size:0.85em; display:flex; flex-direction:column; gap:1em; margin-top:1em;';
+  const header = document.createElement('div');
+  const control = document.createElement('div');
+  const telemetry = document.createElement('div');
+  telemetry.className = 'dashboard-telemetry';
+  root.append(header, control, telemetry);
   container.appendChild(root);
 
   // Rolling sparkline history, kept in memory only (Q50) — never sent
@@ -167,7 +169,6 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     pushSample(buf.loss, p.loss);
     pushSample(buf.rtt, p.rttSeconds);
     pushSample(buf.throughput, p.throughputBps);
-    const stateColor = p.up ? '#2e7d32' : '#c62828';
     const bindLabel = p.boundDevice ? `${escapeHtml(p.bindMode)} (${escapeHtml(p.boundDevice)})` : escapeHtml(p.bindMode);
     // Addressing is optional per path (Q61/Q62): present only when the
     // monitor is loopback-bound. The client trusts the server's redaction —
@@ -194,12 +195,12 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>async errors</td><td colspan="2">${p.shaper.asyncWriteErrors} generic (${formatBytes(p.shaper.asyncWriteErrorBytes)}) / ${p.shaper.asyncWriteEmsgsizeErrors} EMSGSIZE (${formatBytes(p.shaper.asyncWriteEmsgsizeBytes)})</td></tr>`
       : '';
     return `
-      <div class="path-card" data-testid="path-card" data-path="${escapeHtml(p.name)}" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; min-width:16em;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div class="path-card ${p.up ? 'is-up' : 'is-down'}" data-testid="path-card" data-path="${escapeHtml(p.name)}">
+        <div class="path-card-heading">
           <strong>${escapeHtml(p.name)}</strong>
-          <span style="color:${stateColor}; font-weight:600;">${p.up ? 'UP' : 'DOWN'}</span>
+          <span class="state-pill">${p.up ? 'UP' : 'DOWN'}</span>
         </div>
-        <table style="width:100%; border-collapse:collapse;">
+        <table>
           <tr><td>loss</td><td>${formatPct(p.loss)}</td><td>${renderSparklineSvg(buf.loss)}</td></tr>
           <tr><td>RTT</td><td>${formatMs(p.rttSeconds)}</td><td>${renderSparklineSvg(buf.rtt)}</td></tr>
           <tr><td>jitter</td><td>${formatMs(p.jitterSeconds)}</td><td></td></tr>
@@ -207,9 +208,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>tx / rx</td><td colspan="2">${formatBytes(p.txBytes)} / ${formatBytes(p.rxBytes)}</td></tr>
           <tr><td>bind</td><td colspan="2" data-testid="path-bind">${bindLabel}</td></tr>
           <tr><td>link</td><td colspan="2" data-testid="path-link">${formatBytesPerSec(p.linkBandwidthBps)} / ${formatMs(p.linkRttSeconds)}</td></tr>
-          ${shaperRows}
-          ${addressingRow}
         </table>
+        ${shaperRows || addressingRow ? `<details class="path-details" data-path-detail="${encodeURIComponent(p.peer)}:${encodeURIComponent(p.name)}"><summary>Path details</summary><table>${shaperRows}${addressingRow}</table></details>` : ''}
       </div>`;
   }
 
@@ -217,8 +217,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     const buf = fecBufferFor(bufferKey);
     pushSample(buf, f.residualLossRatio);
     return `
-      <div class="fec-card" data-testid="fec-card" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; margin-bottom:0.5em;">
-        <table style="width:100%; border-collapse:collapse;">
+      <div class="fec-card" data-testid="fec-card">
+        <table>
           <tr><td>data pkts</td><td>${f.dataPackets}</td><td>repair pkts</td><td>${f.repairPackets}</td></tr>
           <tr><td>recovered</td><td>${f.recoveredPackets}</td><td>unrecoverable</td><td>${f.unrecoverablePackets}</td></tr>
           <tr><td>data bytes</td><td>${formatBytes(f.dataBytes)}</td><td>repair bytes</td><td>${formatBytes(f.repairBytes)}</td></tr>
@@ -229,8 +229,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
 
   function renderReseqCard(r: ReseqSnapshot): string {
     return `
-      <div class="reseq-card" data-testid="reseq-card" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; margin-bottom:0.5em;">
-        <table style="width:100%; border-collapse:collapse;">
+      <div class="reseq-card" data-testid="reseq-card">
+        <table>
           <tr><td>released</td><td>${r.released}</td><td>skipped</td><td>${r.skipped}</td></tr>
           <tr><td>dup dropped</td><td>${r.droppedDup}</td><td>old dropped</td><td>${r.droppedOld}</td></tr>
           <tr><td>suspect dropped</td><td>${r.droppedSuspect}</td><td>resyncs</td><td>${r.resyncs}</td></tr>
@@ -241,7 +241,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
 
   function renderAggregationCard(a: AggregationSnapshot): string {
     return `
-      <div class="aggregation-card" data-testid="aggregation-card" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; margin-bottom:0.5em;">
+      <div class="aggregation-card" data-testid="aggregation-card">
         aggregating: ${a.aggregating ? 'yes' : 'no'} &middot;
         offered: ${a.offeredLoadFps.toFixed(1)}fps &middot;
         engage: ${a.engageThresholdFps.toFixed(1)}fps &middot;
@@ -250,20 +250,20 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   }
 
   function renderSessionCard(s: SessionSnapshot): string {
-    const color = s.established ? '#2e7d32' : '#c62828';
     return `
-      <div class="session-card" data-testid="session-card" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; display:inline-block;">
-        <span style="color:${color}; font-weight:600;">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
+      <div class="session-card ${s.established ? 'is-up' : 'is-down'}" data-testid="session-card">
+        <span class="state-text">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
         <span> &middot; last handshake ${formatHandshakeAge(s.lastHandshakeSeconds, s.established)}</span>
       </div>`;
   }
 
   function renderDaemonHeader(d: DaemonSnapshot): string {
     return `
-      <div class="daemon-header" data-testid="daemon-header" style="display:flex; gap:1em; align-items:center;">
-        <span class="role-badge" data-testid="role-badge" style="text-transform:uppercase; font-weight:600; border:1px solid #888; border-radius:4px; padding:0.1em 0.5em;">${escapeHtml(d.role)}</span>
+      <div class="daemon-header" data-testid="daemon-header">
+        <div class="brand"><span class="brand-mark">w.</span><div><strong>wanbond</strong><small>Network monitor</small></div></div>
+        <div class="daemon-meta"><span class="role-badge" data-testid="role-badge">${escapeHtml(d.role)}</span>
         <span data-testid="daemon-version">v${escapeHtml(d.version)}</span>
-        <span data-testid="daemon-uptime">up ${formatUptime(d.uptimeSeconds)}</span>
+        <span data-testid="daemon-uptime">Up ${formatUptime(d.uptimeSeconds)}</span></div>
       </div>`;
   }
 
@@ -285,7 +285,6 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     }
     const rows = endpoints
       .map((e) => {
-        const style = e.active ? 'font-weight:600; color:#2e7d32;' : 'color:#666;';
         // Q62: a blanked address (empty string) on a redacted (non-loopback)
         // binding is the server-side redaction, not a data gap — render the
         // same established placeholder copy as path addressing, never the
@@ -295,7 +294,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
             ? `<span data-testid="endpoint-address-hidden">hidden on non-loopback binding</span>`
             : escapeHtml(e.address);
         return `
-        <div class="endpoint-row" data-testid="endpoint-row" data-active="${e.active}" style="${style}">
+        <div class="endpoint-row" data-testid="endpoint-row" data-active="${e.active}">
           <span>${e.active ? 'ACTIVE' : 'standby'}</span> <span>${addressCell}</span>
         </div>`;
       })
@@ -308,39 +307,29 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   }
 
   function renderPeerSessionCard(s: PeerSessionSnapshot): string {
-    const color = s.established ? '#2e7d32' : '#c62828';
     return `
       <div class="stat-group" data-kind="peer-session" data-testid="stat-group-peer-session">
-        <div class="peer-session-card" data-testid="peer-session-card" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; display:inline-block;">
-          <span style="color:${color}; font-weight:600;">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
+        <div class="peer-session-card ${s.established ? 'is-up' : 'is-down'}" data-testid="peer-session-card">
+          <span class="state-text">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
           <span> &middot; last handshake ${formatHandshakeAge(s.lastHandshakeSeconds, s.established)}</span>
         </div>
       </div>`;
   }
 
-  function renderExitControl(candidates: string[], activeExit: string, mode: string, state: ExitControlState): string {
-    if (candidates.length < 2) {
-      return '';
-    }
+  function renderExitControl(candidates: string[], activeExit: string, mode: string): string {
     const options = ['auto', ...candidates]
       .map((peer) => {
         const isSelected = peer === mode;
         return `<option value="${escapeHtml(peer)}" ${isSelected ? 'selected' : ''}>${escapeHtml(peer)}</option>`;
       })
       .join('');
-    const pendingNote = state.pending
-      ? `<span data-testid="exit-control-pending" style="color:#666;">switching&hellip;</span>`
-      : '';
-    const errorNote = state.error
-      ? `<div class="exit-control-error" data-testid="exit-control-error" style="color:#c62828;">${escapeHtml(state.error)}</div>`
-      : '';
     return `
-      <div class="exit-control" data-testid="exit-control" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; display:flex; align-items:center; gap:0.5em; flex-wrap:wrap;">
-        <label for="exit-control-select">Exit selection</label>
-        <select id="exit-control-select" data-testid="exit-control-select" ${state.pending ? 'disabled' : ''}>${options}</select>
+      <div class="exit-control" data-testid="exit-control">
+        <div class="exit-control-copy"><span class="eyebrow">TRAFFIC ROUTING</span><h2>Exit selection</h2><p>Choose an exit or let wanbond follow the lowest healthy RTT.</p></div>
+        <div class="exit-control-fields"><label for="exit-control-select">Policy</label>
+        <select id="exit-control-select" data-testid="exit-control-select">${options}</select>
         <span data-testid="exit-control-active">Active: ${escapeHtml(activeExit)}</span>
-        ${pendingNote}
-        ${errorNote}
+        <span class="exit-control-notes" aria-live="polite"></span></div>
       </div>`;
   }
 
@@ -357,7 +346,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   ): string {
     const keyPrefix = peerLabel ?? ' flat';
     const activeExitBadge = isActiveExit
-      ? `<span class="active-exit-badge" data-testid="active-exit-badge" style="text-transform:uppercase; font-weight:600; color:#fff; background:#2e7d32; border-radius:4px; padding:0.1em 0.5em; margin-left:0.5em;">ACTIVE-EXIT</span>`
+      ? `<span class="active-exit-badge" data-testid="active-exit-badge">ACTIVE-EXIT</span>`
       : '';
     const heading =
       peerLabel !== null
@@ -385,7 +374,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
         ${peerSessionGroup}
         <div class="stat-group" data-kind="paths" data-testid="stat-group-paths">
           <h4>Paths</h4>
-          <div style="display:flex; flex-wrap:wrap; gap:0.5em;">${paths.map((p) => renderPathCard(p, addressingHidden)).join('')}</div>
+          <div class="path-grid">${paths.map((p) => renderPathCard(p, addressingHidden)).join('')}</div>
         </div>
         <div class="stat-group" data-kind="fec" data-testid="stat-group-fec">
           <h4>FEC</h4>
@@ -400,9 +389,9 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </section>`;
   }
 
-  // Held outside render(): must survive the innerHTML replacement every
-  // snapshot frame triggers (see the T260 header comment above).
+  // Held outside render(): command state survives every telemetry frame.
   let lastSnapshot: MonitorSnapshot | null = null;
+  let controlCandidates = '';
   const exitControlState: ExitControlState = {
     pending: false,
     optimisticActiveExit: null,
@@ -503,26 +492,52 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     // snapshot — there is no alternate exit to switch to with only one peer
     // bound. Deliberately keyed on exitControlAvailable, not addressingHidden:
     // disclosure and control authorization are independent.
-    const exitControlHtml =
-      snapshot.daemon.role === 'edge' && snapshot.exitControlAvailable && grouped
-        ? renderExitControl(snapshot.exitCapablePeers, effectiveActiveExit, effectiveMode, exitControlState)
-        : '';
+    const controlAvailable = snapshot.daemon.role === 'edge' && snapshot.exitControlAvailable && grouped && snapshot.exitCapablePeers.length >= 2;
+    if (controlAvailable) {
+      const candidates = JSON.stringify(snapshot.exitCapablePeers);
+      if (controlCandidates !== candidates) {
+        control.innerHTML = renderExitControl(snapshot.exitCapablePeers, effectiveActiveExit, effectiveMode);
+        controlCandidates = candidates;
+        const select = control.querySelector<HTMLSelectElement>('select')!;
+        select.addEventListener('change', () => handleExitChange(select.value));
+      }
+      const select = control.querySelector<HTMLSelectElement>('select')!;
+      select.disabled = exitControlState.pending;
+      if (!exitControlState.pending && (document.activeElement !== select || exitControlState.error !== null || exitControlState.optimisticMode !== null)) {
+        select.value = effectiveMode;
+      }
+      control.querySelector<HTMLElement>('[data-testid="exit-control-active"]')!.textContent = `Active: ${effectiveActiveExit}`;
+      const notes = control.querySelector<HTMLElement>('.exit-control-notes')!;
+      notes.replaceChildren();
+      if (exitControlState.pending) {
+        const pending = document.createElement('span');
+        pending.dataset.testid = 'exit-control-pending';
+        pending.textContent = 'Switching…';
+        notes.appendChild(pending);
+      }
+      if (exitControlState.error !== null) {
+        const error = document.createElement('span');
+        error.className = 'exit-control-error';
+        error.dataset.testid = 'exit-control-error';
+        error.textContent = exitControlState.error;
+        notes.appendChild(error);
+      }
+    } else {
+      control.replaceChildren();
+      controlCandidates = '';
+    }
 
-    root.innerHTML = `
-      ${renderDaemonHeader(snapshot.daemon)}
-      ${renderWgKeyLine(snapshot.wgPublicKeyFingerprint)}
-      ${exitControlHtml}
+    header.innerHTML = `${renderDaemonHeader(snapshot.daemon)}${renderWgKeyLine(snapshot.wgPublicKeyFingerprint)}`;
+    const openDetails = new Set(Array.from(telemetry.querySelectorAll<HTMLDetailsElement>('details.path-details[open]'), (detail) => detail.dataset.pathDetail));
+    telemetry.innerHTML = `
       ${sectionsHtml}
       ${grouped ? '' : renderEndpointsSection(snapshot.endpoints, snapshot.addressingHidden)}
       <div class="stat-group" data-kind="session" data-testid="stat-group-session">
         <h4>WG Session</h4>
         ${renderSessionCard(snapshot.session)}
       </div>`;
-
-    // innerHTML wipes all listeners on every render — re-attach after each one.
-    const selectEl = root.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]');
-    if (selectEl) {
-      selectEl.addEventListener('change', () => handleExitChange(selectEl.value));
+    for (const detail of telemetry.querySelectorAll<HTMLDetailsElement>('details.path-details')) {
+      detail.open = openDetails.has(detail.dataset.pathDetail);
     }
   }
 

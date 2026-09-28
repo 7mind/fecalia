@@ -362,6 +362,17 @@ describe('mountDashboard', () => {
     expect(container.querySelectorAll('[data-testid="flat-section"]').length).toBe(1);
   });
 
+  it('keeps expanded path diagnostics expanded when telemetry updates', () => {
+    const dashboard = mountDashboard(container);
+    dashboard.onSnapshot(singlePeerSnapshot());
+    const details = container.querySelector<HTMLDetailsElement>('.path-details')!;
+    details.open = true;
+
+    dashboard.onSnapshot(singlePeerSnapshot());
+
+    expect(container.querySelector<HTMLDetailsElement>('.path-details')!.open).toBe(true);
+  });
+
   it('renders the daemon header, bind/link path columns, populated addressing, and an ordered endpoint list on a full edge snapshot', () => {
     const dashboard = mountDashboard(container);
     const snapshot: MonitorSnapshot = {
@@ -646,6 +657,20 @@ describe('mountDashboard', () => {
 
       expect(container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!.value).toBe('auto');
       expect(container.querySelector('[data-testid="exit-control-active"]')!.textContent).toBe('Active: peerB');
+    });
+
+    it('keeps the exit select mounted and focused across incoming snapshots', () => {
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.focus();
+
+      const updated = twoPeerConcentratorSnapshot();
+      updated.paths[0].rttSeconds = 0.035;
+      dashboard.onSnapshot(updated);
+
+      expect(container.querySelector('[data-testid="exit-control-select"]')).toBe(select);
+      expect(document.activeElement).toBe(select);
     });
 
     it('selecting auto posts the policy while leaving the reported active exit visible', async () => {

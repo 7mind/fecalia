@@ -2615,10 +2615,10 @@ misbehaves subtly. Agents and contributors must preserve them.
       response adopts the returned `activeExit` optimistically (reconciled
       against the next real snapshot frame, which always wins); a non-2xx or
       network failure surfaces a visible error notice and leaves the prior
-      `activeExit` in place. This client-side state is held OUTSIDE the
-      per-snapshot `innerHTML` re-render (a dashboard-scoped closure
-      variable) and the `change` listener is re-attached after every render,
-      so neither is lost on the next pushed frame.
+      `activeExit` in place. This client-side state is held outside the
+      telemetry render. The exit control stays mounted across snapshots so an
+      open native select and its keyboard focus survive live updates; its
+      options change only when the configured candidate list changes.
     - **Control availability.** A verified loopback binding permits local
       control. A non-loopback binding requires the configured token, checked by
       the existing auth middleware before the handler. The addressing-reveal

@@ -239,6 +239,8 @@ with an ORDERED list — `endpoints = ["<hubA ip:port>", "<hubB ip:port>"]` (ind
 - [ ] On the token-authenticated remote monitor, select a fixed exit and then
       `auto`. Confirm the combobox tracks `exitMode` while the active badge
       tracks `activeExit`, and a restart restores the configured selection.
+- [ ] Open the exit selection menu while live snapshots arrive. Confirm it
+      stays open, keeps keyboard focus, and a choice sends one switch request.
 
 ### Startup with a not-yet-assignable path (tolerant bind)
 - [ ] Bring one uplink's interface DOWN (so its configured `source_addr` is not held
