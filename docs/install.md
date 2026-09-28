@@ -2220,7 +2220,9 @@ without this section):
 
 The same endpoint also feeds the read-only terminal view on either daemon role:
 `sudo wanbond monitor` (Ctrl+C to leave) or `sudo wanbond monitor --once` for
-plain output. It discovers one config under `/run/wanbond/` or
+one snapshot. Headings and states are colored when stdout is a capable terminal;
+redirected output is plain, and `--no-color` or `NO_COLOR` disables colors.
+It discovers one config under `/run/wanbond/` or
 `/etc/wanbond/config.toml`; use `--config PATH` if there is more than one.
 Root is needed only when the daemon's `0600` config is root-owned. The command
 reads the configured token and connects to the local monitor port; when

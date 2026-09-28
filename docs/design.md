@@ -2323,7 +2323,9 @@ by `internal/device`:
   `wanbond monitor` CLI subscribes to this same read-only `/ws` stream on
   the local host, using the token from the daemon's protected config. It does
   not add a second telemetry sampler or a control route, and works for either
-  daemon role when the monitor endpoint is enabled. The
+  daemon role when the monitor endpoint is enabled. Its ANSI status and heading
+  colors are selected locally for capable terminals and can be disabled with
+  `--no-color` or `NO_COLOR`; the snapshot wire format is unchanged. The
   `MonitorSnapshot` wire contract (`monitor.go`) also carries a
   `DaemonSnapshot` (role, version, process uptime, always shown); per-path
   `bindMode`/`boundDevice` (runtime-resolved, via the `bind.PathTraffic`

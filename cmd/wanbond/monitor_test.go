@@ -46,7 +46,7 @@ func TestMonitorOnceReadsAuthenticatedSnapshot(t *testing.T) {
 	var out strings.Builder
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := streamMonitor(ctx, strings.TrimPrefix(srv.URL, "http://"), "secret", true, &out); err != nil {
+	if err := streamMonitor(ctx, strings.TrimPrefix(srv.URL, "http://"), "secret", true, false, &out); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"edge", "Exit       raspi5l    Policy auto", "raspi5l / starlink", "80.0ms"} {
@@ -64,7 +64,7 @@ func TestConcentratorViewDoesNotShowExitPolicy(t *testing.T) {
 		Daemon:       monitor.DaemonSnapshot{Role: "concentrator", Version: "test"},
 		PeerSessions: []monitor.PeerSessionSnapshot{{Peer: "pi-mo", Established: true}},
 		Paths:        []monitor.PathSnapshot{{Peer: "pi-mo", Name: "wan0", Up: true}},
-	}, time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC), true)
+	}, time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC), true, false)
 	for _, want := range []string{"concentrator", "pi-mo", "wan0", "Ctrl+C to quit"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q:\n%s", want, output)
@@ -73,6 +73,58 @@ func TestConcentratorViewDoesNotShowExitPolicy(t *testing.T) {
 	if strings.Contains(output, "Policy") {
 		t.Errorf("concentrator has no exit policy:\n%s", output)
 	}
+}
+
+func TestMonitorColorSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, term                              string
+		terminal, noColorFlag, noColorEnv, want bool
+	}{
+		{name: "terminal", term: "xterm-256color", terminal: true, want: true},
+		{name: "redirected", term: "xterm-256color"},
+		{name: "dumb terminal", term: "dumb", terminal: true},
+		{name: "missing term", terminal: true},
+		{name: "flag", term: "xterm-256color", terminal: true, noColorFlag: true},
+		{name: "environment", term: "xterm-256color", terminal: true, noColorEnv: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := monitorColorEnabled(tc.terminal, tc.term, tc.noColorFlag, tc.noColorEnv); got != tc.want {
+				t.Fatalf("monitorColorEnabled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMonitorRenderColorsStatesWithoutChangingPlainOutput(t *testing.T) {
+	snapshot := monitor.MonitorSnapshot{
+		Daemon:  monitor.DaemonSnapshot{Role: "edge", Version: "test"},
+		Session: monitor.SessionSnapshot{Established: true},
+		Paths: []monitor.PathSnapshot{
+			{Peer: "pi-mo", Name: "wan0", Up: true},
+			{Peer: "pi-mo", Name: "wan1"},
+		},
+	}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	plain := renderMonitor(snapshot, now, true, false)
+	colored := renderMonitor(snapshot, now, true, true)
+	if strings.Contains(plain, "\x1b[") {
+		t.Fatalf("plain output contains color controls: %q", plain)
+	}
+	for _, want := range []string{"\x1b[32mUP", "\x1b[31mDOWN", "\x1b[1;36mPATHS\x1b[0m"} {
+		if !strings.Contains(colored, want) {
+			t.Errorf("colored output missing %q:\n%s", want, colored)
+		}
+	}
+	if got := stripMonitorColor(colored); got != plain {
+		t.Errorf("color changed plain content:\n got %q\nwant %q", got, plain)
+	}
+}
+
+func stripMonitorColor(s string) string {
+	for _, sequence := range []string{"\x1b[1;36m", "\x1b[32m", "\x1b[31m", "\x1b[33m", "\x1b[0m"} {
+		s = strings.ReplaceAll(s, sequence, "")
+	}
+	return s
 }
 
 func TestFindMonitorConfigRejectsAmbiguousHosts(t *testing.T) {

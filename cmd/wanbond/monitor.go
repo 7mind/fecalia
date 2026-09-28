@@ -25,12 +25,17 @@ import (
 const (
 	monitorDialTimeout  = 5 * time.Second
 	monitorFrameTimeout = 5 * time.Second
+	monitorHeadingColor = "1;36"
+	monitorUpColor      = "32"
+	monitorDownColor    = "31"
+	monitorIdleColor    = "33"
 )
 
 func runMonitor(args []string, out *os.File) error {
 	fs := flag.NewFlagSet("wanbond monitor", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to the running daemon's TOML config")
 	once := fs.Bool("once", false, "print one snapshot and exit")
+	noColor := fs.Bool("no-color", false, "disable ANSI colors")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -60,18 +65,26 @@ func runMonitor(args []string, out *os.File) error {
 	if err != nil {
 		return err
 	}
+	_, termErr := unix.IoctlGetTermios(int(out.Fd()), unix.TCGETS)
+	terminal := termErr == nil
 	if !*once {
-		if _, err := unix.IoctlGetTermios(int(out.Fd()), unix.TCGETS); err != nil {
-			return fmt.Errorf("monitor: terminal required; use --once for plain output")
+		if !terminal {
+			return fmt.Errorf("monitor: terminal required; use --once for redirected output")
 		}
 	}
+	_, noColorEnv := os.LookupEnv("NO_COLOR")
+	color := monitorColorEnabled(terminal, os.Getenv("TERM"), *noColor, noColorEnv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return streamMonitor(ctx, addr, cfg.Monitor.Token, *once, out)
+	return streamMonitor(ctx, addr, cfg.Monitor.Token, *once, color, out)
 }
 
-func streamMonitor(ctx context.Context, addr, token string, once bool, out io.Writer) error {
+func monitorColorEnabled(terminal bool, term string, noColorFlag, noColorEnv bool) bool {
+	return terminal && term != "" && term != "dumb" && !noColorFlag && !noColorEnv
+}
+
+func streamMonitor(ctx context.Context, addr, token string, once, color bool, out io.Writer) error {
 	dialCtx, cancel := context.WithTimeout(ctx, monitorDialTimeout)
 	defer cancel()
 	options := &websocket.DialOptions{HTTPHeader: make(http.Header)}
@@ -105,10 +118,10 @@ func streamMonitor(ctx context.Context, addr, token string, once bool, out io.Wr
 			return fmt.Errorf("monitor: decode snapshot: %w", err)
 		}
 		if once {
-			_, err = io.WriteString(out, renderMonitor(snapshot, time.Now(), false)+"\n")
+			_, err = io.WriteString(out, renderMonitor(snapshot, time.Now(), false, color)+"\n")
 			return err
 		}
-		if _, err := io.WriteString(out, "\x1b[H\x1b[2J"+renderMonitor(snapshot, time.Now(), true)+"\n"); err != nil {
+		if _, err := io.WriteString(out, "\x1b[H\x1b[2J"+renderMonitor(snapshot, time.Now(), true, color)+"\n"); err != nil {
 			return err
 		}
 	}
@@ -148,9 +161,9 @@ func localMonitorAddress(listen string) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive bool) string {
+func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "wanbond  %s  v%s  up %s\n", s.Daemon.Role, s.Daemon.Version, (time.Duration(s.Daemon.UptimeSeconds) * time.Second).Truncate(time.Second))
+	fmt.Fprintf(&b, "%s  %s  v%s  up %s\n", monitorStyle("wanbond", monitorHeadingColor, color), s.Daemon.Role, s.Daemon.Version, (time.Duration(s.Daemon.UptimeSeconds) * time.Second).Truncate(time.Second))
 	fmt.Fprintf(&b, "Updated %s", now.Format("15:04:05"))
 	if interactive {
 		fmt.Fprint(&b, "    Ctrl+C to quit")
@@ -161,21 +174,22 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive bool) s
 	if s.Session.Established {
 		session = fmt.Sprintf("UP · handshake %.0fs ago", s.Session.LastHandshakeSeconds)
 	}
+	session = monitorStatus(session, s.Session.Established, color)
 	fmt.Fprintf(&b, "WireGuard  %s    Key %s\n", session, s.WGPublicKeyFingerprint)
 	if s.Daemon.Role == "edge" && len(s.ExitCapablePeers) > 0 {
 		fmt.Fprintf(&b, "Exit       %s    Policy %s\n", s.ActiveExit, s.ExitMode)
 	}
 	if len(s.PeerSessions) > 0 {
-		fmt.Fprintln(&b, "\nPEERS")
+		fmt.Fprintln(&b, "\n"+monitorStyle("PEERS", monitorHeadingColor, color))
 		for _, p := range s.PeerSessions {
 			state := "DOWN"
 			if p.Established {
 				state = fmt.Sprintf("UP · handshake %.0fs ago", p.LastHandshakeSeconds)
 			}
-			fmt.Fprintf(&b, "  %-18s %s\n", peerName(p.Peer), state)
+			fmt.Fprintf(&b, "  %-18s %s\n", peerName(p.Peer), monitorStatus(state, p.Established, color))
 		}
 	}
-	fmt.Fprintln(&b, "\nPATHS")
+	fmt.Fprintln(&b, "\n"+monitorStyle("PATHS", monitorHeadingColor, color))
 	fmt.Fprintln(&b, "  PEER / PATH                 STATE    RTT      LOSS     JITTER")
 	for _, p := range s.Paths {
 		state := "DOWN"
@@ -186,8 +200,8 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive bool) s
 		if p.Peer != "" {
 			name = p.Peer + " / " + name
 		}
-		fmt.Fprintf(&b, "  %-27.27s %-7s %6.1fms  %5.1f%%  %6.1fms\n",
-			name, state, p.RTTSeconds*1000, p.Loss*100, p.JitterSeconds*1000)
+		fmt.Fprintf(&b, "  %-27.27s %s %6.1fms  %5.1f%%  %6.1fms\n",
+			name, monitorStatus(fmt.Sprintf("%-7s", state), p.Up, color), p.RTTSeconds*1000, p.Loss*100, p.JitterSeconds*1000)
 		fmt.Fprintf(&b, "    rate %-11s tx %-11s rx %s\n",
 			formatRate(p.ThroughputBps), formatBytes(p.TxBytes), formatBytes(p.RxBytes))
 		if p.Addressing != nil {
@@ -195,31 +209,37 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive bool) s
 		}
 	}
 	if len(s.Aggregation) > 0 {
-		fmt.Fprintln(&b, "\nAGGREGATION")
+		fmt.Fprintln(&b, "\n"+monitorStyle("AGGREGATION", monitorHeadingColor, color))
 		for _, a := range s.Aggregation {
 			state := "idle"
 			if a.Aggregating {
 				state = "active"
 			}
-			fmt.Fprintf(&b, "  %-18s %-7s offered %.1f fps\n", peerName(a.Peer), state, a.OfferedLoadFPS)
+			state = fmt.Sprintf("%-7s", state)
+			if a.Aggregating {
+				state = monitorStyle(state, monitorUpColor, color)
+			} else {
+				state = monitorStyle(state, monitorIdleColor, color)
+			}
+			fmt.Fprintf(&b, "  %-18s %s offered %.1f fps\n", peerName(a.Peer), state, a.OfferedLoadFPS)
 		}
 	}
 	if len(s.FEC) > 0 {
-		fmt.Fprintln(&b, "\nFEC")
+		fmt.Fprintln(&b, "\n"+monitorStyle("FEC", monitorHeadingColor, color))
 		for _, f := range s.FEC {
 			fmt.Fprintf(&b, "  %-18s data %d  repair %d  recovered %d  lost %d  residual %.2f%%\n",
 				peerName(f.Peer), f.DataPackets, f.RepairPackets, f.RecoveredPackets, f.UnrecoverablePackets, f.ResidualLossRatio*100)
 		}
 	}
 	if len(s.Reseq) > 0 {
-		fmt.Fprintln(&b, "\nRESEQUENCER")
+		fmt.Fprintln(&b, "\n"+monitorStyle("RESEQUENCER", monitorHeadingColor, color))
 		for _, r := range s.Reseq {
 			fmt.Fprintf(&b, "  %-18s released %d  skipped %d  dup %d  old %d  resync %d\n",
 				peerName(r.Peer), r.Released, r.Skipped, r.DroppedDup, r.DroppedOld, r.Resyncs)
 		}
 	}
 	if len(s.Endpoints) > 0 {
-		fmt.Fprintln(&b, "\nENDPOINTS")
+		fmt.Fprintln(&b, "\n"+monitorStyle("ENDPOINTS", monitorHeadingColor, color))
 		for _, e := range s.Endpoints {
 			state := "standby"
 			if e.Active {
@@ -229,10 +249,30 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive bool) s
 			if s.AddressingHidden {
 				address = "hidden"
 			}
-			fmt.Fprintf(&b, "  %-18s %-7s %s\n", peerName(e.Peer), state, address)
+			state = fmt.Sprintf("%-7s", state)
+			if e.Active {
+				state = monitorStyle(state, monitorUpColor, color)
+			} else {
+				state = monitorStyle(state, monitorIdleColor, color)
+			}
+			fmt.Fprintf(&b, "  %-18s %s %s\n", peerName(e.Peer), state, address)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func monitorStatus(state string, up, color bool) string {
+	if up {
+		return monitorStyle(state, monitorUpColor, color)
+	}
+	return monitorStyle(state, monitorDownColor, color)
+}
+
+func monitorStyle(value, code string, color bool) string {
+	if !color {
+		return value
+	}
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
 }
 
 func peerName(name string) string {

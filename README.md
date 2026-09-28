@@ -232,7 +232,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 - **Terminal monitor**: `sudo wanbond monitor` shows the same live snapshot on
   edge and concentrator hosts when `[monitor].listen` is enabled. It discovers
   the rendered `/run/wanbond/{edge,concentrator}.toml` config, reads its token,
-  and connects locally. `sudo wanbond monitor --once` prints one plain snapshot;
+  and connects locally. Terminal colors highlight headings and connection states
+  when `TERM` supports them; `--no-color` or `NO_COLOR` disables colors.
+  `sudo wanbond monitor --once` prints one snapshot (plain when redirected);
   use `--config PATH` for a different config location. This view is read-only.
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
