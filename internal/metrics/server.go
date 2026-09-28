@@ -70,6 +70,11 @@ func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane
 	if err := reg.Register(NewCollector(src)); err != nil {
 		return nil, fmt.Errorf("metrics: register collector: %w", err)
 	}
+	if adaptive, ok := src.(AdaptiveSource); ok {
+		if err := reg.Register(newAdaptiveCollector(adaptive)); err != nil {
+			return nil, err
+		}
+	}
 	var weightedCapacityGauge prometheus.Gauge
 	if weightedCapacitySane != nil {
 		weightedCapacityGauge = newWeightedCapacityGauge(*weightedCapacitySane)

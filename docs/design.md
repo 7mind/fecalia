@@ -117,8 +117,9 @@ tag. Frame kinds:
   **unpadded** PROBE may also carry the 27-byte recovery-contract record described
   below; padded PMTU probes never carry it. With either feature off, the ordinary
   unpadded encoding remains byte-for-byte identical to the pre-contract encoding.
-- **CONTROL** — reserved out-of-band control. **PSK-HMAC authenticated**, carries
-  a MAC-covered monotonic `Seq`. *(See "Not yet built" — currently unwired.)*
+- **CONTROL** — **PSK-HMAC authenticated**, with a MAC-covered `Seq`. Adaptive
+  bonding uses it for opaque data and ACKs with epoch-scoped per-lane replay
+  windows. Legacy policies ignore it.
 
 DPI resistance comes from here: the nonce randomizes every frame, the body is
 XChaCha20-obfuscated, and there are **no magic bytes or fixed offsets** — the
@@ -126,6 +127,92 @@ wire is high-entropy UDP indistinguishable from noise (verified by
 `internal/wireaudit` and `TestP5DPI`/`TestWireFormatAudit`). Overhead is small
 and fixed: **DATA ≈ 17 bytes**, **PARITY ≈ 18 bytes** of header on top of the
 nonce; the daemon subtracts this from the TUN MTU so there is no fragmentation.
+
+### Adaptive transport — `internal/bond`
+
+`policy = "adaptive"` selects a separate transport beneath the same virtual
+endpoint and WireGuard engine. `bond.Transport` owns no I/O or goroutines: its
+owner supplies authenticated frames, validated paths, monotonic time and calls
+`Poll`. `bind/adaptive.go` serializes this state and performs UDP I/O outside
+its state mutex. The legacy scheduler retains physical membership bookkeeping;
+it does not select or pace adaptive traffic.
+
+**Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
+capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
+Open generation. Padded PMTU probes retain their original size. A logical lane
+is `(local physical ID << 8) | remote physical ID`. One concentrator socket can
+therefore schedule separately to both authenticated NAT mappings of an edge.
+Each direction owns its own rate estimate and pacing clock. Capabilities expire
+after one second without fresh probes. Missing data ACKs stall the lane earlier;
+keepalives test recovery. Socket retirement invalidates its lanes. Endpoint
+repointing requires fresh route evidence.
+
+**Wire format.** CONTROL types `0xa1` (data) and `0xa2` (ACK) use version 1.
+Both carry a 19-byte header: version, Boot ID, Open generation, lane ID. Data
+uses CONTROL.Seq for its lane attempt, followed by the destination Boot/Open
+epoch, a global datagram sequence, a delivery sequence whose high bit denotes
+the small-packet class, and the untouched encrypted WireGuard datagram. Zero
+sequence/order with no datagram denotes a keepalive. ACKs contain the observed
+sender epoch, high lane attempt and 64-bit receipt bitmap, cumulative wire
+bytes, receiver elapsed time, ACK delay, and a global high sequence plus 256-bit
+receipt bitmap. ACK revisions increase per lane. Epoch, lane, source, length and
+freshness checks precede feedback use. A changed Boot requires the existing
+PROBE challenge; old Open generations and data/ACKs addressed to an old local
+epoch are rejected. Each new epoch pair restarts its sequences at 1; the bulk
+resequencer starts there explicitly, including when packet 2 arrives first.
+Outstanding packets from the old epoch pair expire; the new pair retains
+unassigned queued packets. Adaptive receivers reject legacy unauthenticated
+DATA/PARITY. The envelope adds 61 bytes over legacy DATA; boot MTU and runtime
+PMTU resizing both reserve it.
+
+**Rate and latency.** Each lane starts at 125 kB/s. ACK timing measures RTT and
+delivery rate over receiver-clock intervals of at least 50 ms, avoiding ACK
+arrival-compression bias; receiver-relative arrival time minus local send time
+measures changes in forward transit without synchronized clocks. The controller
+raises a backlogged lane's target and reduces it when forward queue delay
+exceeds 10 ms or delivery stalls. Loss with a pacing target substantially above
+measured delivery caps the target near delivery, covering shallow router buffers
+that drop without accumulating 10 ms of queueing. ACKs wait at most 10 ms or
+eight arrivals. They bypass data pacing: charging reverse feedback to a data-
+only rate estimate can accumulate permanent pacing debt and starve voice/TCP
+ACKs while receiving a fast bulk stream. Congestion samples reflect the data
+capacity remaining after feedback traffic. Target rate and measured delivery
+remain separate values in metrics. A persistent delay increase with a collapsed
+target triggers baseline calibration, at most once per 10 seconds: bulk pauses
+on that lane for `max(200 ms, 2*SRTT)` to drain its queue, then a fresh sample
+establishes the forward-delay baseline. Small packets continue; other lanes
+remain eligible. This distinguishes changed propagation delay from persistent
+queueing without synchronized clocks. Targets are bounded to 16 kB/s–1.25 GB/s;
+links below that floor or beyond the bounded packet windows are outside the
+tested envelope.
+
+Datagrams wait at most 100 ms before first transmission, with at most 8192
+queued and outstanding datagrams per peer. Repair lifetime is 250 ms from
+admission, with at most four attempts and a timer of `max(60 ms, 2*SRTT)`.
+Repairs prefer a different healthy lane. Small datagrams (encrypted size <=384
+bytes) have a priority queue, may borrow 5 ms of pacing, and may be copied onto
+a second lane. Additional copies have a 64 kB/s allowance and 6.4 kB burst. All-
+small-packet overload can consume priority service: this heuristic does not
+identify voice or provide per-application fairness.
+
+**Receive ordering decision.** Bulk has its own delivery sequence and a 300 ms
+resequencing hold before WireGuard, covering the sender's 250 ms repair lifetime
+plus the tested one-way propagation delay. An 8192-packet receive bitmap covers
+cross-lane reorder; ACKs advertise its newest 256 entries plus their lane
+receipts. Small packets are deduplicated and delivered immediately through a
+bounded 256-entry queue. A late small packet does not become lost merely because
+a newer packet arrived. This deliberately permits reorder at the engine instead
+of letting bulk loss stall voice candidates. Inner anti-replay remains
+authoritative; extreme delay/PPS combinations outside its window can still
+discard stragglers. When a bulk gap fills, the next gap's deadline derives from
+its own buffered successor observation, not the older gap's deadline.
+
+The transport cannot compose with legacy FEC, shapers or `link_bandwidth_limit`.
+Both ends must select it. Per-peer metrics expose lane targets, delivery rates,
+RTT, queue delay, in-flight bytes, repairs, eligibility, drops and expiration.
+The deterministic transport and real UDP adapter share a delivery contract test;
+the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
+and independently shaped WANs.
 
 ### The multipath Bind — `internal/bind`
 
@@ -1076,10 +1163,10 @@ This bound covers the authenticated probe/echo workload from which `Pburst` and
 occupies an eligible local periodic slot instead of generating extra traffic,
 and every such slot forces the next one to ordinary liveness.
 Sustained authenticated, on-demand outer CONTROL generation beyond that
-declared model constitutes explicit overload and invalidates the bound. No live
-outer CONTROL protocol currently exists; any future trusted local producer must
-use the same retained-priority path and fit the declared `Rp`/`Pburst`
-envelope before relying on `Dp`.
+declared model constitutes explicit overload and invalidates the legacy bound.
+Adaptive CONTROL uses a separate transport and does not claim this bound. Any
+new producer on the legacy plane must fit its `Rp`/`Pburst` envelope before
+relying on `Dp`.
 
 For a naturally single-path decided FEC group on an exclusive writer
 generation, group admission snapshots a recovery cut. The already-retained
@@ -2528,11 +2615,14 @@ misbehaves subtly. Agents and contributors must preserve them.
    churn to the engine.
 2. **Own outer sequence space.** The resequencer/FEC use wanbond's outer-seq;
    never reuse or perturb the inner WireGuard counter.
-3. **Resequence before inner anti-replay.** Restore cross-path order in `reseq`
-   before the engine's replay window validates.
+3. **Bulk resequencing precedes inner anti-replay.** Legacy transport resequences
+   the whole stream. Adaptive resequences bulk; its authenticated, deduplicated
+   small-packet class bypasses bulk ordering as described above. Inner replay
+   validation is never bypassed.
 4. **Inner fail-closed; outer control authenticated.** WireGuard authenticates the
    payload; PROBE/CONTROL are PSK-HMAC authenticated with monotonic anti-replay;
-   DATA/PARITY are deliberately unauthenticated (see Security model).
+   legacy DATA/PARITY are deliberately unauthenticated (see Security model).
+   Adaptive data uses authenticated CONTROL and rejects that legacy plane.
 5. **Amnezia `conn` coupling is isolated to `bind.go`.** All transport-interface
    coupling goes through the type aliases there; the engine-generic source patch
    under `third_party/` contains no wanbond logic.
@@ -2719,11 +2809,9 @@ misbehaves subtly. Agents and contributors must preserve them.
 
 These are recorded design boundaries, not defects:
 
-- **No live CONTROL protocol.** The CONTROL frame kind and its `ControlGuard`
-  anti-replay exist and are tested, but inbound CONTROL is currently dropped at
-  the Bind (`multipath.go` receive default case). It is the chokepoint a future
-  out-of-band signalling layer (e.g. explicit rekey/state) must route through.
-- **Pacing ships disabled by default; live control is active-backup-only.**
+- **CONTROL is policy-specific.** Adaptive uses epoch/lane replay rules;
+  legacy policies still ignore inbound CONTROL.
+- **Legacy pacing ships disabled by default; adaptive always paces.**
   `SizePacingFromBDP` derives the per-path measured seed from
   `link_bandwidth`/`link_rtt` at config load. Under active-backup, T324 drives
   the outer shaper and early-TUN ingress target from

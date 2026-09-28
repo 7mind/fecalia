@@ -22,3 +22,4 @@ coverage.txt
 # Timestamped P0 real-link baseline reports emitted by `just p0-baseline`
 # (report-only artifacts, not tracked; see docs/manual-checklist.md §P0).
 /test/realhosts/reports/
+/test/vm/__pycache__/

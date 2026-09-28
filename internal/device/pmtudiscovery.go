@@ -57,7 +57,7 @@ func pmtuConfigFor(p config.Path, junk int) telemetry.PMTUConfig {
 // Source, whose Paths() mutates the throughput last-sample state (T165).
 func (t *Tunnel) startPMTUDiscovery() {
 	machines := make(map[string]*telemetry.PMTUDiscovery, len(t.cfg.Paths))
-	junk := t.cfg.Amnezia.MaxJunkPrefix()
+	junk := outerHeadroom(t.cfg)
 	stops := make([]func(), 0, len(t.cfg.Paths))
 	for i := range t.cfg.Paths {
 		p := t.cfg.Paths[i]

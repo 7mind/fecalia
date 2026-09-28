@@ -18,7 +18,7 @@ The same binary serves both roles; the role is chosen from the config file.
 
 ## What it gives you
 
-In priority order (earlier properties never regress for later ones):
+Available behaviors, selected by policy:
 
 1. **Transparent failover** — a TCP flow survives a WAN dying mid-session, with
    no reset (WireGuard's roaming + our per-path liveness/failover).
@@ -53,6 +53,21 @@ and, on a concentrator with multiple edges, demuxes inbound traffic to the
 owning peer from PROBE frames authenticated under that peer's own PSK. For the
 full picture and the exact list of what we built on top of amneziawg-go, read
 **[docs/design.md](docs/design.md)**.
+
+### Adaptive bidirectional bonding
+
+Set `[scheduler] policy = "adaptive"` on **both ends**, with `[fec] enabled = false`.
+This policy learns each authenticated return path, including multiple edge WANs
+behind one concentrator socket. It measures delivery and forward queue delay,
+paces each direction independently, and uses every available path under load.
+Static bandwidth hints are not required. Legacy policies keep their defaults.
+
+Lost datagrams receive bounded cross-path retries. Small encrypted datagrams
+(up to 384 bytes, including WireGuard overhead) receive priority and budgeted
+replication; they bypass bulk receive ordering. This is a size heuristic, not
+application identification. Bulk datagrams remain resequenced. See the
+[transport design](docs/design.md#adaptive-transport--internalbond) and
+[autonomous VM lab](test/vm/README.md).
 
 ## Quick start
 
@@ -333,6 +348,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 
 ## Testing
 
+The [KVM lab](test/vm/README.md) runs actual edge/concentrator daemons and independent
+HTB/netem WANs, with capacity calibration, bidirectional TCP, voice-like UDP,
+capacity changes and temporary outages. Guest disks and per-candidate results
+are retained for comparison without production deployments.
+
 ### Recovery contract and observability notation
 
 The recovery path uses one notation across config, metrics, and the monitor:
@@ -402,6 +422,12 @@ docs/                   design, install, findings, manual checklist
 
 The P0–P5 build is functionally complete, reviewed, and hardened. Known,
 deliberate boundaries you must plan around:
+
+- **Adaptive requires both ends to opt in.** Its data/ACK protocol differs from
+  legacy DATA/PARITY; mixed-policy peers cannot carry tunnel data. It has
+  mandatory pacing and cannot compose with legacy FEC or `link_bandwidth_limit`.
+  It spends both uplinks under load and replicates some small traffic. Local
+  simulation validates recorded profiles, not every RF link or packet rate.
 
 - **Receiver DATA-loss feedback covers exactly one stable active-backup
   carrier.** It rides a separate feedback-only authenticated PROBE, is bound to
@@ -565,12 +591,13 @@ deliberate boundaries you must plan around:
   debit changes only future admission and cannot revoke the waiting call's
   eligibility.
   Sustained authenticated generated outer-priority traffic beyond the declared
-  `Rp`/`Pburst` model constitutes overload; no live CONTROL protocol exists.
+  `Rp`/`Pburst` model constitutes overload for the legacy shaper. Adaptive
+  CONTROL uses its separate transport budget.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
   them instead; validate on your own uplinks before a production rollout.
-- **No live CONTROL protocol** — the frame type and its anti-replay guard exist,
-  but inbound CONTROL is currently dropped (reserved for future signalling).
+- **CONTROL is policy-specific** — adaptive uses authenticated data and ACKs;
+  legacy policies ignore inbound CONTROL.
 - **Multi-concentrator hub-failover: built and validated** — an
   edge peer may declare an ORDERED `endpoints` list (active concentrator + ordered
   standbys); the single `endpoint` form still works unchanged (its one-element

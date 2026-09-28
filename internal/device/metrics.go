@@ -329,6 +329,16 @@ func (s *metricsSource) Aggregation() []metrics.AggregationSnapshot {
 	return out
 }
 
+func (s *metricsSource) Adaptive() []metrics.AdaptiveSnapshot {
+	var out []metrics.AdaptiveSnapshot
+	for _, peer := range s.provider.PeerSnapshots() {
+		if peer.Adaptive != nil {
+			out = append(out, metrics.AdaptiveSnapshot{Peer: peer.Name, State: *peer.Adaptive})
+		}
+	}
+	return out
+}
+
 // PeerNames implements metrics.Source: it returns the current bound-peer name set,
 // queried once by metrics.NewCollector to fix the `peer` label's presence for the
 // collector's whole life (T94) — see the metrics package doc for the back-compat rule.

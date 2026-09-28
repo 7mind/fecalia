@@ -141,10 +141,11 @@ const (
 	// weight, collapsing to the primary at low load (5G stays ~idle) with hysteresis,
 	// and per-path send-pacing to bound bufferbloat.
 	PolicyWeighted SchedulerPolicy = "weighted"
+	PolicyAdaptive SchedulerPolicy = "adaptive"
 )
 
 func (p SchedulerPolicy) valid() bool {
-	return p == PolicyActiveBackup || p == PolicyWeighted
+	return p == PolicyActiveBackup || p == PolicyWeighted || p == PolicyAdaptive
 }
 
 // Weighted-aggregation policy defaults (T21). They are applied when [scheduler]
@@ -1508,7 +1509,7 @@ func (c *Config) derivePacingFromBDP() error {
 // disables the legacy scheduler policer for production shaped composition.
 func (c *Config) derivePathShapers() error {
 	s := &c.Scheduler
-	if !s.PacingEnabled {
+	if !s.PacingEnabled || s.Policy == PolicyAdaptive {
 		return nil
 	}
 
@@ -1886,7 +1887,10 @@ func (s *SchedulerConfig) applyDefaults() {
 // (the hysteresis band, in particular, is only a band when disengage < engage).
 func (s SchedulerConfig) validate() error {
 	if !s.Policy.valid() {
-		return fmt.Errorf("scheduler.policy must be %q or %q, got %q", PolicyActiveBackup, PolicyWeighted, s.Policy)
+		return fmt.Errorf("scheduler.policy must be %q, %q or %q, got %q", PolicyActiveBackup, PolicyWeighted, PolicyAdaptive, s.Policy)
+	}
+	if s.Policy == PolicyAdaptive {
+		return nil
 	}
 	if s.Policy != PolicyWeighted {
 		// active-backup (an omitted policy has already been defaulted to it). The
@@ -2207,6 +2211,9 @@ func (c *Config) validateEdgePeerSet(peerPrefixes [][]netip.Prefix) error {
 
 // validate enforces the required-field invariants, failing on the first problem.
 func (c *Config) validate() error {
+	if c.Scheduler.Policy == PolicyAdaptive && c.FEC.Enabled {
+		return errors.New("scheduler.policy=adaptive uses bounded retransmission and small-packet replication; fec.enabled must be false")
+	}
 	if !c.Role.valid() {
 		return fmt.Errorf("role must be %q or %q, got %q", RoleEdge, RoleConcentrator, c.Role)
 	}

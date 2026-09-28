@@ -400,6 +400,45 @@ weight-weighted probe-loss mix.
 
 Setting both `target_residual` and `safety_factor` is rejected at config load.
 
+### Adaptive bidirectional aggregation
+
+Install a build supporting adaptive on **every peer**, then set this on both
+edge and concentrator. Changing policy requires a restart, not SIGHUP.
+
+```toml
+[scheduler]
+policy = "adaptive"
+[fec]
+enabled = false
+```
+
+The policy always paces from live feedback. `pacing_enabled`, the legacy frame
+slot settings and static bandwidth hints do not control it. Remove
+`link_bandwidth_limit`; configuration rejects that unsupported hard ceiling.
+Legacy FEC must be disabled because adaptive owns bounded retransmission and
+small-packet replication. Mixed adaptive/legacy peers cannot exchange tunnel
+data, although their ordinary probes may still report healthy.
+
+Source routing and router FastTrack exclusions remain necessary: each edge
+source address must reach its intended WAN. The concentrator learns both
+return addresses from authenticated probes, including when it binds only one
+UDP socket. Restarting one endpoint can interrupt service during a coordinated
+upgrade; the policy preserves the tunnel endpoint across subsequent WAN outages.
+
+Inspect `wanbond_adaptive_*` on the existing `/metrics` endpoint. All lane series
+have `peer` and `lane` labels; lane is `(local physical ID << 8) | remote physical
+ID`. Rates are bytes/second; `target_rate_bytes_per_second` is the commanded
+pacing rate and `delivery_rate_bytes_per_second` is measured receipt. RTT,
+forward queue delay, in-flight bytes, sent/ACKed bytes, repair copies, and
+eligibility are also exposed. Peer counters report queue drops and expired
+repairs. `up=1` requires both a current authenticated lane lease and non-stalled
+delivery feedback. Legacy shaper/FEC metrics do not describe this policy.
+
+Use the [VM lab](../test/vm/README.md) to compare candidate binaries before
+deployment. Small-packet priority uses encrypted size (<=384 bytes), so test
+the packet sizes and codec used by the actual application. RF loss patterns,
+provider queues and CPU capacity still require deployment-specific observation.
+
 ### Optional `[scheduler]` weighted aggregation + pacing
 
 The send scheduler defaults to **active-backup** (one active path, instant
@@ -632,7 +671,8 @@ Common rules, either policy:
   hold. Built-in PMTU discovery remains inside this model because
   it occupies periodic local probe slots. Sustained authenticated on-demand
   outer CONTROL beyond this `Rp`/`Pburst` model constitutes overload and
-  invalidates the bound; no live outer CONTROL protocol currently exists.
+  invalidates the legacy bound. Adaptive CONTROL uses its separate transport
+  budget and does not claim this legacy shaper bound.
   For an exclusive single-path FEC group, config also derives
   `A=I=10ms` and
   `Ecompletion=ceil((P+Mmax*Lmax+Lio)/(Rmin-Rp))+10ms`, using the
@@ -1442,10 +1482,14 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 
 # ── scheduler: OPTIONAL. Omitted => active-backup, pacing off ─────────────────
 # [scheduler]
-# policy = "active-backup"         # "active-backup" (DEFAULT) | "weighted".
+# policy = "active-backup"         # DEFAULT; also "weighted" or "adaptive".
+                                   #   adaptive: mandatory live pacing; set on
+                                   #   BOTH ends, fec.enabled = false, no
+                                   #   link_bandwidth_limit. Legacy knobs below
+                                   #   do not control the adaptive transport.
                                    #   pacing_enabled/per_path_capacity_fps/
                                    #   pacing_burst_frames below apply under
-                                   #   EITHER policy (policy-independent
+                                   #   BOTH legacy policies (policy-independent
                                    #   pacing, D65/T152/T153); the
                                    #   engage_fraction..weight_loss_floor knobs
                                    #   apply ONLY to "weighted" and stay

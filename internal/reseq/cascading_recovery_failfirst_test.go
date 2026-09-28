@@ -7,6 +7,43 @@ import (
 	"github.com/7mind/wanbond/internal/reseq"
 )
 
+// BG regression: filling one gap must not lend its older deadline to the next.
+func TestFilledGapDoesNotExpireYoungerGap(t *testing.T) {
+	for _, recovered := range []bool{false, true} {
+		t.Run(map[bool]string{false: "native", true: "repaired"}[recovered], func(t *testing.T) {
+			clk := newFakeClock()
+			r := reseq.New(64, 150*time.Millisecond, clk)
+			r.SetMultiPathExpected(true)
+			r.ObserveFromPath(0, payloadOf(0), testSrc, 7)
+			drain(r)
+			r.ObserveFromPath(2, payloadOf(2), testSrc, 7)
+			clk.advance(100 * time.Millisecond)
+			r.ObserveFromPath(4, payloadOf(4), testSrc, 8)
+			secondObserved := clk.Now()
+			clk.advance(20 * time.Millisecond)
+			if recovered {
+				r.ObserveRecovered(1, payloadOf(1), testSrc)
+			} else {
+				r.ObserveFromPath(1, payloadOf(1), testSrc, 7)
+			}
+			if got := drain(r); !equalSeqs(got, []uint64{1, 2}) {
+				t.Fatalf("first gap fill: %v", got)
+			}
+			deadline, armed := r.ArmedDeadline()
+			if !armed || deadline != secondObserved.Add(150*time.Millisecond) {
+				t.Fatalf("younger gap inherited old deadline: %v, want %v", deadline, secondObserved.Add(150*time.Millisecond))
+			}
+			clk.advance(40 * time.Millisecond)
+			if !r.ObserveFromPath(3, payloadOf(3), testSrc, 7) {
+				t.Fatal("in-window straggler discarded")
+			}
+			if got := drain(r); !equalSeqs(got, []uint64{3, 4}) {
+				t.Fatalf("younger gap fill: %v", got)
+			}
+		})
+	}
+}
+
 func TestBufferedRecoveryGapsExpireFromSuccessorObservation(t *testing.T) {
 	const hold = 60 * time.Millisecond
 	clk := newFakeClock()

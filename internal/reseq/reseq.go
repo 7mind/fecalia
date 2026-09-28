@@ -865,6 +865,7 @@ func (r *Resequencer) ingest(
 	}
 	if fillsGap {
 		r.gapFills++
+		r.endHoldLocked(now)
 	}
 
 	r.drain()
@@ -978,6 +979,7 @@ func (r *Resequencer) observeRecovered(
 	}
 	if fillsGap {
 		r.gapFills++
+		r.endHoldLocked(now)
 	}
 
 	r.drain()
@@ -1453,16 +1455,24 @@ func (r *Resequencer) resyncReset() {
 // legitimate deliveries is untouched. Idempotent and safe before the first Observe
 // (started stays false). Takes r.mu; the caller must NOT hold it.
 func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
-	r.rebaseline(expectedSrc, 0, true)
+	r.rebaseline(expectedSrc, 0, true, 0)
 }
 
 // RebaselineGeneration applies a trusted rebaseline in an externally owned
 // peer receiver/topology generation. Older generations are ignored.
 func (r *Resequencer) RebaselineGeneration(expectedSrc netip.AddrPort, generation uint64) {
-	r.rebaseline(expectedSrc, generation, false)
+	r.rebaseline(expectedSrc, generation, false, 0)
 }
 
-func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, advance bool) {
+// RebaselineAt starts a trusted, generation-fenced stream at its known first sequence.
+func (r *Resequencer) RebaselineAt(next uint64) {
+	if next == 0 {
+		panic("reseq: explicit first sequence must be nonzero")
+	}
+	r.rebaseline(netip.AddrPort{}, 0, true, next)
+}
+
+func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, advance bool, next uint64) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1486,7 +1496,8 @@ func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, 
 		r.ring[i] = slot{}
 	}
 	r.buf = 0
-	r.started = false
+	r.started = next != 0
+	r.next = next
 	r.endHoldLocked(now) // T242: account the discarded hold's elapsed time, then disarm.
 	// A full unpin SUPERSEDES any pending low-anchor re-baseline (T119). If a peer
 	// restart had armed pendingLow (via RebaselineToLow) and the restarted low-seq

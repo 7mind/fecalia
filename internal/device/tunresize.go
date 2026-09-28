@@ -170,7 +170,7 @@ func sampleMTU(src metrics.Source, cfg *config.Config) []pathMTUSample {
 	// the boot sizing does, else a path-membership change on an obfuscated bond would
 	// loosen wanbond0 past the junk-safe envelope and re-expose the D85 shredding on
 	// obfuscated DATA. 0 (byte-identical) when obfuscation is off.
-	junk := cfg.Amnezia.MaxJunkPrefix()
+	junk := outerHeadroom(cfg)
 	configured := make(map[string]int, len(cfg.Paths))
 	for _, p := range cfg.Paths {
 		mtu := p.MTU

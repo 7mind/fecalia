@@ -180,6 +180,9 @@ func (m *Multipath) emitProbes() {
 	// yet contribute nothing; with no sample at all the bound is left unset and the
 	// resequencer keeps the full fixed hold (conservative).
 	for _, h := range holds {
+		if h.peer.adaptive.Load() != nil {
+			continue
+		}
 		var maxRTT time.Duration
 		for _, pr := range h.prs {
 			if rtt := pr.Estimate().RTT; rtt > maxRTT {
@@ -223,6 +226,9 @@ func (m *Multipath) emitProbes() {
 				m.emitProbePayload(t.ps, t.pr, remote, feedbackPayload, probeOfferRecord{})
 			}
 			contractPayload := offered.payload
+			if adaptive := t.peer.adaptive.Load(); adaptive != nil {
+				contractPayload = adaptive.hello(t.ps.id)
+			}
 			m.emitProbePayload(t.ps, t.pr, remote, contractPayload, probeOfferRecord{
 				contract: t.contract,
 				offered:  offered,

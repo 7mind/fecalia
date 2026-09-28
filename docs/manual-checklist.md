@@ -25,6 +25,26 @@ Prerequisites (all phases):
       `(cd third_party/amneziawg-go && go test -race ./device/awg -run '^TestJunkCreatorConcurrentUse$' -count=5)`;
       simultaneous peer handshakes report no shared ChaCha8 access.
 
+## Adaptive transport and autonomous VM verification
+
+- [ ] Run the [KVM lab procedure](../test/vm/README.md): calibrate each WAN before
+      interpreting tunnel throughput; save the profile and binary hash.
+- [ ] Benchmark upload and download, confirming bulk bytes on both WANs and
+      goodput above the profile's acceptance threshold.
+- [ ] Repeat with opposite upload/download capacities and seeded jitter.
+- [ ] Run simultaneous bidirectional TCP and 50 Hz UDP during a capacity drop,
+      five-second failure of either WAN, recovery and seeded packet loss.
+      Check UDP loss, p99 RTT, maximum receive gap, and ongoing TCP progress in
+      each direction during each outage. A surviving process alone is not proof
+      of continuing traffic.
+- [ ] On a production rollout, enable adaptive and disable legacy FEC at both
+      endpoints; confirm WireGuard handshake and actual tunnel traffic in
+      addition to green outer probes. Production deployment is operator-owned.
+- [ ] Compare lane target/delivery-rate metrics with observed per-WAN bytes;
+      verify a slow Starlink path does not monopolize concentrator downlink.
+- [ ] Repeat the voice test with the real application's packet sizes and codec.
+      Record live RF results separately from reproducible emulation results.
+
 ## P0 — spike / baseline
 - [ ] Tunnel comes up edge ↔ concentrator (WG handshake completes).
 - [ ] `ping` and a TCP transfer pass through the tunnel.

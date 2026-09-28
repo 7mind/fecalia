@@ -346,10 +346,14 @@ allowed_ips = ["10.77.0.1/32"]     # REQUIRED: >= 1 CIDR routed to this peer
 
 # ── scheduler: OPTIONAL. Omitted => active-backup, pacing off ─────────────────
 # [scheduler]
-# policy = "active-backup"         # "active-backup" (DEFAULT) | "weighted".
+# policy = "active-backup"         # DEFAULT; also "weighted" or "adaptive".
+                                   #   adaptive: mandatory live pacing; set on
+                                   #   BOTH ends, fec.enabled = false, no
+                                   #   link_bandwidth_limit. Legacy knobs below
+                                   #   do not control the adaptive transport.
                                    #   pacing_enabled/per_path_capacity_fps/
                                    #   pacing_burst_frames below apply under
-                                   #   EITHER policy (policy-independent
+                                   #   BOTH legacy policies (policy-independent
                                    #   pacing); engage_fraction..weight_loss_floor
                                    #   apply ONLY to "weighted" and stay
                                    #   inert/unset under active-backup.

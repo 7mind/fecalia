@@ -43,6 +43,15 @@ func TestSampleMTUReservesJunkPrefix(t *testing.T) {
 	}
 }
 
+func TestAdaptiveRuntimeMTUMatchesBoot(t *testing.T) {
+	cfg := &config.Config{Paths: []config.Path{{Name: "wan", MTU: 1500}}, Scheduler: config.SchedulerConfig{Policy: config.PolicyAdaptive}}
+	src := stubMTUSource{paths: []metrics.PathSnapshot{{Name: "wan", State: telemetry.StateUp, PMTU: 1500}}}
+	got, ok := minInnerMTU(sampleMTU(src, cfg), false)
+	if !ok || got != tunMTU(cfg) {
+		t.Fatalf("runtime MTU %d differs from safe boot MTU %d", got, tunMTU(cfg))
+	}
+}
+
 // newTestResizer builds an mtuResizer over a manually-advanced fakeClock and a
 // recording apply, so the recompute-and-decide logic is exercised with no netlink
 // socket (the netlink apply itself is e2e-covered, T212). It returns the resizer, the

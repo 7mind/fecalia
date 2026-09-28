@@ -74,10 +74,14 @@ short:
    second peer is configured.
 2. Use wanbond's **own outer sequence space**; never reuse/perturb the inner
    WireGuard counter.
-3. **Resequence before** the inner anti-replay window validates.
+3. **Resequence bulk before** the inner anti-replay window validates. The adaptive
+   small-packet class is the documented exception to whole-stream ordering: it
+   is authenticated and deduplicated, then delivered immediately; inner replay
+   validation is never bypassed.
 4. Inner fail-closed; **PROBE/CONTROL are PSK-HMAC authenticated** with monotonic
-   anti-replay; DATA/PARITY are unauthenticated **by design** (DoS-grade risk
-   accepted — do not "fix" this without a design decision).
+   anti-replay; legacy DATA/PARITY are unauthenticated **by design** (DoS-grade
+   risk accepted). Adaptive data uses authenticated CONTROL and rejects legacy
+   DATA/PARITY.
 5. All engine (`conn`) coupling stays isolated to **`internal/bind/bind.go`** —
    preserve the fork-swap hedge.
 6. Amnezia config is **all-or-nothing per device**. The local v1.0.4 source patch

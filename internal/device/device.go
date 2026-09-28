@@ -28,6 +28,7 @@ import (
 
 	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/fec"
@@ -75,7 +76,7 @@ func tunMTU(cfg *config.Config) int {
 	// data-frame envelope (T225, D85 fix-direction 4). Subtracting it from each path's
 	// effective MTU before bind.InnerMTU keeps the FEC/overhead accounting intact; an
 	// unconfigured block yields 0, leaving the derived MTU byte-identical to plain WG.
-	junk := cfg.Amnezia.MaxJunkPrefix()
+	junk := outerHeadroom(cfg)
 	if len(cfg.Paths) == 0 {
 		return bind.InnerMTU(bind.DefaultPathMTU-junk, cfg.FEC.Enabled)
 	}
@@ -91,6 +92,14 @@ func tunMTU(cfg *config.Config) int {
 		}
 	}
 	return min
+}
+
+func outerHeadroom(cfg *config.Config) int {
+	headroom := cfg.Amnezia.MaxJunkPrefix()
+	if cfg.Scheduler.Policy == config.PolicyAdaptive {
+		headroom += bond.ExtraOverhead
+	}
+	return headroom
 }
 
 // wgPublicKeyFingerprint derives the local WireGuard public key from the configured
@@ -534,6 +543,12 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
+	}
+	if cfg.Scheduler.Policy == config.PolicyAdaptive {
+		if err := mpBind.EnableAdaptive(); err != nil {
+			_ = tunDev.Close()
+			return nil, err
+		}
 	}
 	// A multi-peer concentrator names its primary too (D58): NewMultipath always mints the
 	// primary as peers[0] with name="" (a single-peer edge/hub needs no name — there is only
@@ -1535,6 +1550,9 @@ func buildScheduler(cfg *config.Config, psk config.Key, sessionID uint64, lg log
 // checks (which the wiring satisfies) apply.
 func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sched.PathQuality, clock telemetry.Clock, lg log.Logger) (sched.Scheduler, error) {
 	legacyPacing := cfg.Scheduler.PacingEnabled && cfg.Scheduler.PerPathShapers == nil
+	if cfg.Scheduler.Policy == config.PolicyAdaptive {
+		legacyPacing = false
+	}
 	switch cfg.Scheduler.Policy {
 	case config.PolicyWeighted:
 		sc := cfg.Scheduler

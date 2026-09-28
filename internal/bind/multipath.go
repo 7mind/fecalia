@@ -15,6 +15,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 
 	"github.com/7mind/wanbond/internal/adaptivefec"
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/fec"
@@ -481,6 +482,7 @@ type remoteEntry struct {
 // fecRecv stay atomic.Pointer, and outerSeq atomic, so the lock-free receive/send fast paths
 // read them WITHOUT m.mu.
 type peerState struct {
+	adaptive atomic.Pointer[adaptivePeer]
 	// name is the peer id/name, the key under which Multipath.peersByName holds this peer.
 	// Empty on the single-peer edge/hub (there is only one peer to key) and on the
 	// concentrator's primary UNTIL SetPrimaryPeerName re-keys it to its configured name
@@ -1185,7 +1187,8 @@ type sourceBinding struct {
 }
 
 type Multipath struct {
-	defs []config.Path
+	defs            []config.Path
+	adaptiveEnabled bool
 
 	// shaperConfigs is nil for legacy/unit callers and otherwise index-aligned with
 	// defs. A configured entry produces one independently queued exact-byte shaper
@@ -1927,6 +1930,9 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 	// m.peers holds only the primary, so this is byte-identical to the pre-split rebuild.
 	// See openPeerDatapathLocked.
 	for _, p := range m.peers {
+		if m.adaptiveEnabled && len(p.probers) == 0 {
+			return nil, 0, fmt.Errorf("bind: adaptive peer %q requires authenticated probes", p.name)
+		}
 		if err := m.openPeerDatapathLocked(p); err != nil {
 			return nil, 0, err
 		}
@@ -2175,6 +2181,11 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 	m.deliverSignal = make(chan struct{}, 1)
 	m.recvClosed = make(chan struct{})
 	for _, peer := range m.peers {
+		if m.adaptiveEnabled {
+			if err := m.openAdaptivePeer(peer); err != nil {
+				return nil, 0, err
+			}
+		}
 		if rq := peer.resequencer.Load(); rq != nil {
 			rq.SetNotifier(resequencerNotifier(m.deliverSignal))
 		}
@@ -2535,6 +2546,9 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 // eager-failover guarantee holds for BOTH the active-backup and the weighted policy
 // (defect D18).
 func (m *Multipath) nudgeSchedulerActive() {
+	if m.adaptiveEnabled {
+		return
+	}
 	// Recompute EVERY bound peer's active egress set (T93): each peer schedules over its OWN
 	// paths, so a liveness DOWN on one peer's path must nudge THAT peer's scheduler. The peer
 	// set is read lock-free through peersView (published under m.mu at construction / peer
@@ -2601,7 +2615,14 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 				if rq == nil {
 					continue // a peer not yet Open on this span has no resequencer
 				}
-				it, ok := rq.Pop()
+				var it reseq.Item
+				var ok bool
+				if adaptive := ps.adaptive.Load(); adaptive != nil {
+					it, ok = adaptive.popInteractive()
+				}
+				if !ok {
+					it, ok = rq.Pop()
+				}
 				if !ok {
 					continue
 				}
@@ -3059,7 +3080,14 @@ func (m *Multipath) SetOnFirstPathUp(fn func()) {
 func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byte, srcAP netip.AddrPort) {
 	pr := ps.peer
 	switch f := fr.(type) {
+	case frame.Control:
+		if adaptive := pr.adaptive.Load(); adaptive != nil {
+			adaptive.receive(ps, srcAP, f)
+		}
 	case frame.Data:
+		if m.adaptiveEnabled {
+			return
+		}
 		// The edge's uplink DATA rides only its ACTIVE WAN, so an address-match-gated
 		// DATA sample selects (never establishes) the downlink destination among the
 		// probe-established entries (T246, defect D94).
@@ -3122,6 +3150,9 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			}
 		}
 	case frame.Parity:
+		if m.adaptiveEnabled {
+			return
+		}
 		// PARITY feeds the FEC decoder (T24); a group that has now accumulated enough
 		// shards reconstructs its missing data frames, each resequenced at its ORIGINAL
 		// outer-seq (carried in the recovered shard's coded bytes) so recovery composes
@@ -3160,6 +3191,11 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				// ps.prober is the path's OWN immutable prober — never a lookup into a
 				// dynamically-mutated slice — so runtime add/remove cannot race this.
 				fresh, echoErr := ps.prober.HandleEchoProbe(raw)
+				if echoErr == nil {
+					if adaptive := pr.adaptive.Load(); adaptive != nil {
+						adaptive.learn(ps, srcAP, fresh.Payload, false)
+					}
+				}
 				if echoErr == nil && pr.contracts != nil {
 					recoveryPayload := fresh.Payload
 					feedbackOnly := false
@@ -3213,6 +3249,14 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		if pr.reflector != nil {
 			if accepted, rerr := pr.reflector.AcceptProbe(raw); rerr == nil {
 				echoPayload := accepted.Probe.Payload
+				if adaptive := pr.adaptive.Load(); adaptive != nil {
+					if accepted.Acceptance != telemetry.ProbeBootstrap {
+						adaptive.learn(ps, srcAP, accepted.Probe.Payload, accepted.Acceptance == telemetry.ProbeAdopted)
+					}
+					if !accepted.Probe.Padded {
+						echoPayload = adaptive.hello(ps.id)
+					}
+				}
 				recoveryPayload := accepted.Probe.Payload
 				var dataLossFeedback *telemetry.DataLossFeedback
 				feedbackOnly := false
@@ -3241,7 +3285,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 						transitionGeneration = generation
 					}
 				}
-				if accepted.EpochChanged {
+				if accepted.EpochChanged && pr.adaptive.Load() == nil {
 					if pr.contracts != nil && !sessionChanged {
 						transitionGeneration = m.invalidatePeerRecoveryEvidence(pr)
 					}
@@ -3319,7 +3363,7 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				}
 				// Preserve the existing restart recovery for legacy/unknown payloads,
 				// but complete it before the echo can become socket-visible.
-				if accepted.EpochChanged && !rebaselined {
+				if accepted.EpochChanged && !rebaselined && pr.adaptive.Load() == nil {
 					if rq := pr.resequencer.Load(); rq != nil {
 						if transitionGeneration != 0 {
 							rq.RebaselineToLowGeneration(transitionGeneration)
@@ -3561,6 +3605,10 @@ func (m *Multipath) send(bufs [][]byte, ep Endpoint, complete func()) error {
 	if !ok {
 		m.mu.Unlock()
 		return ErrNoHealthyPath
+	}
+	if adaptive := peer.adaptive.Load(); adaptive != nil {
+		m.mu.Unlock()
+		return adaptive.enqueue(bufs)
 	}
 	shaped := m.shaperConfigs != nil
 	sendFEC := peer.fecSend.Load()
@@ -4344,9 +4392,15 @@ func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 // one peer WITHOUT touching m.defaultRemote (a per-peer hub switch has no bind-global meaning;
 // see that function and the m.defaultRemote field doc for the reader audit).
 func (m *Multipath) setPeerRemoteLocked(ps *peerState, ap netip.AddrPort) *reseq.Resequencer {
+	if adaptive := ps.adaptive.Load(); adaptive != nil {
+		adaptive.forgetRoutes()
+	}
 	m.defaultRemote, m.hasDefaultRemote = ap, true
 	for _, pp := range ps.paths {
 		pp.setRemote(ap)
+	}
+	if ps.adaptive.Load() != nil {
+		return nil
 	}
 	return ps.resequencer.Load()
 }
@@ -4440,8 +4494,14 @@ func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) (*re
 	}
 	p.configuredRemote, p.hasConfiguredRemote = ap, true
 	m.edgePeerByRemote[ap] = p
+	if adaptive := p.adaptive.Load(); adaptive != nil {
+		adaptive.forgetRoutes()
+	}
 	for _, pp := range p.paths {
 		pp.setRemote(ap)
+	}
+	if p.adaptive.Load() != nil {
+		return nil, nil
 	}
 	return p.resequencer.Load(), nil
 }
@@ -4693,6 +4753,14 @@ func (r *socketGenerationRetirement) preparePeerPathLocked(pp *peerPathState) {
 // in-flight I/O before joining the exact writer/read/shaper generation.
 func (r *socketGenerationRetirement) prepareSharedLocked(sp *sharedPathState) {
 	sp.stopWrites()
+	for _, view := range r.peerPaths {
+		if view.sharedPathState != sp {
+			continue
+		}
+		if adaptive := view.peer.adaptive.Load(); adaptive != nil {
+			adaptive.forgetSocket(sp)
+		}
+	}
 	r.shared = append(r.shared, sp)
 }
 
@@ -5471,10 +5539,11 @@ type PathTraffic struct {
 // the peer's configured name otherwise, including the concentrator's first-configured peer
 // once SetPrimaryPeerName has run (D58).
 type PeerSnapshot struct {
-	Name  string
-	Paths []PathTraffic
-	FEC   FECStats
-	Reseq reseq.Stats
+	Adaptive *bond.Snapshot
+	Name     string
+	Paths    []PathTraffic
+	FEC      FECStats
+	Reseq    reseq.Stats
 	// Aggregation is the weighted scheduler's aggregation-gate snapshot (T146),
 	// present ONLY for a peer whose scheduler exposes it (the weighted policy, via
 	// *sched.WeightedScheduler's AggregationSnapshot(), T143). It is nil for an
@@ -5526,6 +5595,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		pp *peerPathState
 	}
 	type peerRef struct {
+		adaptive  *adaptivePeer
 		name      string
 		paths     []pathRef
 		fs        *fecSender
@@ -5539,6 +5609,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 	refs := make([]peerRef, len(m.peers))
 	for i, p := range m.peers {
 		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler, contracts: p.contracts}
+		r.adaptive = p.adaptive.Load()
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
 			var reporter pathShaperReporter
@@ -5570,6 +5641,12 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 	out := make([]PeerSnapshot, len(refs))
 	for i, r := range refs {
 		snap := PeerSnapshot{Name: r.name}
+		if r.adaptive != nil {
+			r.adaptive.mu.Lock()
+			state := r.adaptive.transport.Snapshot(time.Now())
+			r.adaptive.mu.Unlock()
+			snap.Adaptive = &state
+		}
 		snap.Paths = make([]PathTraffic, len(r.paths))
 		for j, pr := range r.paths {
 			pt := PathTraffic{
