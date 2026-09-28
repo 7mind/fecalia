@@ -1,6 +1,4 @@
-/.cq/ledgers.yaml
-/.cq/*.lock
-/.cq/*.bak
+/.cq/
 /result
 /result-*
 /.worktrees/

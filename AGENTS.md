@@ -107,7 +107,7 @@ short:
   behavior on the standing worker machines (an amd64 NAT edge + an aarch64 public
   concentrator) before considering them done; these tiers are report-only and not
   in the default gate.
-- Never commit code changes on a ledger/docs commit and vice versa; keep commits
+- Never commit code changes on a docs commit and vice versa; keep commits
   scoped.
 
 ## Conventions
@@ -121,9 +121,7 @@ short:
 - Keep new comments minimal and only for the non-obvious; don't delete correct
   existing comments.
 
-## Planning ledger (cq)
+## Historical planning references
 
-This repo tracks work in a cq planning ledger under `.cq/` (goals, tasks,
-defects, reviews, decisions). If you use it, record provenance
-(`author`/`session`) on every write and keep ledger commits (`.cq/` only)
-separate from code commits. It is optional for one-off changes.
+The retired `.cq/` ledger is available in Git history before commit `7d23ed7`.
+Existing task and defect identifiers refer to that history; do not recreate the ledger.

@@ -39,7 +39,8 @@ percent of loss on a long-fat path collapses a single flow far below the link
 capacity. The P0 real-host validation over live uplinks recorded the same
 effect — a single TCP flow over a ~29 ms RTT path held only ~18-48 Mbit/s
 under sub-percent (~0.1-0.8%) loss, well under the available capacity (see
-`docs/p0-findings.md` and the ledger handoff HO5 / goal G1 follow-up section).
+`docs/p0-findings.md`; historical ledger handoff HO5 / goal G1 is available in
+Git history before commit `7d23ed7`).
 
 The results above reproduce the phenomenon in the netns fixture: at >=1%
 configured loss the tunnel's single-flow TCP goodput drops below 50% of the
