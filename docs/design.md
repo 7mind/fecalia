@@ -154,9 +154,13 @@ epoch, a global datagram sequence, a delivery sequence whose high bit denotes
 the small-packet class, and the untouched encrypted WireGuard datagram. Zero
 sequence/order with no datagram denotes a keepalive. ACKs contain the observed
 sender epoch, high lane attempt and 64-bit receipt bitmap, cumulative wire
-bytes, receiver elapsed time, ACK delay, and a global high sequence plus 256-bit
-receipt bitmap. ACK revisions increase per lane. Epoch, lane, source, length and
-freshness checks precede feedback use. A changed Boot requires the existing
+bytes, receiver elapsed time, ACK delay, and a global receipt anchor plus 256-bit
+receipt bitmap. ACK revisions increase per lane; an 8192-revision replay window
+accepts each reordered ACK once. Older ACKs merge delivery receipts and may
+contribute newly confirmed delivery timing, but cannot update cumulative rate
+snapshots, propagation samples, pacing or liveness freshness. Fresh ACK byte
+counts and elapsed times cannot regress. Epoch, lane, source, length and
+replay checks precede feedback use. A changed Boot requires the existing
 PROBE challenge; old Open generations and data/ACKs addressed to an old local
 epoch are rejected. Each new epoch pair restarts its sequences at 1; the bulk
 resequencer starts there explicitly, including when packet 2 arrives first.
@@ -169,47 +173,84 @@ Receive deduplication keeps 8192 attempts per lane and 8192 global datagrams;
 the shorter ACK bitmaps do not constrain valid receive reordering. A global
 receipt releases an old attempt after the lane bitmap has advanced past it,
 without attributing that receipt to a specific replicated physical attempt.
+Global confirmation releases every copy's congestion-window ownership, including
+copies on other lanes. Physical attempt metadata remains available for later
+RTT/byte accounting; a later physical ACK cannot release those bytes twice.
+The global ACK bitmap first covers the oldest receipt not yet reported, then
+returns to the newest window. Additional pending windows drain on the ACK timer
+even after incoming data stops. This acknowledges late arrivals outside the
+newest 256 entries without changing the wire format. The receipt anchor may
+move backwards; ACK revisions, byte counts and elapsed times remain monotonic.
+Missing bits never acknowledge absent packets.
 The engine-facing receiver drains ready packets into one batch while preserving
 per-peer order and virtual endpoints. Adaptive bulk batches coalesce for at most
-one packet's serialization time at the reverse pacing target, capped at 2 ms.
+one packet's serialization time at the reverse pacing target, capped at 4 ms.
 This lets TUN GRO combine packets and reduce reverse TCP ACK traffic, while fast
 symmetric links use shorter batches. Interactive arrivals flush immediately.
 
 **Rate and latency.** Each lane starts at 125 kB/s. ACK timing measures RTT and
 delivery rate over receiver-clock intervals of at least 50 ms, avoiding ACK
-arrival-compression bias; receiver-relative arrival time minus local send time
-measures changes in forward transit without synchronized clocks. The controller
+arrival-compression bias. The same observation also measures bytes submitted by
+the sender over at least 50 ms of local time. Receiver-relative arrival time
+minus local send time measures changes in forward transit without synchronized
+clocks. Minimum transit baselines are separated into 128-byte wire-size buckets;
+comparing a full datagram with a tiny keepalive otherwise mistakes serialization
+time for router queueing. Within a bucket the serialization difference is less
+than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
+minimum, and explicit baseline calibration clears all buckets. Control intervals
+take the minimum of the resulting queue-delay samples. The controller
 raises a backlogged lane's target and reduces it when the minimum forward queue
-delay across a control interval exceeds 10 ms or delivery stalls. Idle feedback
-still measures path health but does not reduce the pacing target. Instantaneous
+delay across a control interval exceeds `max(10 ms, 2*idleRTTVariation)` or delivery
+stalls. Idle variation is updated only after two seconds without transmitting
+application datagrams on that lane; a transient empty queue during a transfer
+does not qualify. Its RTT mean and variation are independent of the loaded
+history, so an outage recovery sample cannot copy earlier congestion into the
+idle estimate. Idle feedback still measures path health but does not reduce
+the pacing target; a lost empty
+keepalive stalls the lane without applying a congestion rate cut. Instantaneous
 delay remains visible in metrics. Demand is sampled before ACK processing releases
 the congestion window, so delivery of a busy window can raise the target even
-when no packets remain queued. Loss with a pacing target substantially above
-measured delivery caps the target near delivery, covering shallow router buffers
+when no packets remain queued. A control interval with timed-out data reduces
+the pacing target by 10% and caps it at 105% of measured delivery. A shallow
+buffer can otherwise discard sustained excess traffic without generating a
+large delay signal. Actual send rate is reported
+separately: a low interval average does not establish safe burst pacing and must
+not suppress this ceiling. This also covers shallow router buffers
 that drop without accumulating 10 ms of queueing. ACKs wait at most 25 ms or
 64 arrivals, matching the per-lane ACK bitmap without
 sending one ACK for every eight packets on a fast download. They bypass data
 pacing: charging reverse feedback to a data-only rate estimate can accumulate
 permanent pacing debt and starve voice/TCP
 ACKs while receiving a fast bulk stream. Congestion samples reflect the data
-capacity remaining after feedback traffic. Target rate and measured delivery
-remain separate values in metrics. A persistent delay increase with a collapsed
-target triggers baseline calibration, at most once per 10 seconds: bulk pauses
+capacity remaining after feedback traffic. Target rate, actual send rate and
+measured delivery remain separate values in metrics. A persistent delay increase
+with a collapsed target triggers baseline calibration, at most once per 10 seconds: bulk pauses
 on that lane for `max(200 ms, 2*SRTT)` to drain its queue, then a fresh sample
 establishes the forward-delay baseline. Small packets continue; other lanes
 remain eligible. This distinguishes changed propagation delay from persistent
 queueing without synchronized clocks. Targets are bounded to 16 kB/s–1.25 GB/s;
 links below that floor or beyond the bounded packet windows are outside the
 tested envelope.
-The congestion window uses the minimum observed RTT plus 20 ms of queue budget
-and the 25 ms ACK interval, with a four-packet floor. Loaded RTT does not enlarge
-the window as a queue builds.
+The congestion window uses the minimum observed RTT plus twice the RTT variation,
+20 ms of queue budget and the 25 ms ACK interval, with a four-packet floor.
+The variation allowance prevents propagation jitter from constraining the sender
+below its pacing target. Standing queue delay does not replace the minimum RTT.
 
 Datagrams wait at most 100 ms before first transmission, with at most 8192
 queued and outstanding datagrams per peer. Repair lifetime is 250 ms from
-admission, with at most four attempts and a timer of
-`max(60 ms, SRTT + 4*RTTVariation + 25 ms)`. RTT variation is the EWMA of
-absolute sample error; the final 25 ms covers the delayed-ACK interval.
+admission, with at most four attempts. The repair timer is the maximum of
+60 ms, `SRTT + 4*RTTVariation + 25 ms`, and
+`feedbackRTT + 4*feedbackRTTVariation`. The feedback estimate includes the full
+time until delivery confirmation, including receipt-window buffering. Each ACK
+contributes the oldest newly confirmed attempt per lane. Physical receipts
+identify the attempt; global receipts contribute timing only for datagrams sent
+once, since replication makes their physical route ambiguous. Each attempt
+contributes at most once. Sampling only the highest physical sequence favours
+fast arrivals under reordering and underestimates the repair deadline. RTT
+variation is the EWMA of absolute sample error; the 25 ms term covers delayed
+ACKs before the feedback estimate has converged.
+Physical attempt records expire after two seconds and release their in-flight
+bytes even when an RTT spike has raised the repair timer beyond that horizon.
 Repairs prefer a different healthy lane. Small datagrams (encrypted size <=384
 bytes) have a priority queue, may borrow 5 ms of pacing, and may be copied onto
 a second lane. Additional copies have an allowance of 10% of the healthy lanes'
@@ -220,7 +261,7 @@ identify voice or provide per-application fairness.
 **Receive ordering decision.** Bulk has its own delivery sequence and a 300 ms
 resequencing hold before WireGuard, covering the sender's 250 ms repair lifetime
 plus the tested one-way propagation delay. An 8192-packet receive bitmap covers
-cross-lane reorder; ACKs advertise its newest 256 entries plus their lane
+cross-lane reorder; ACKs advertise 256-entry receipt windows plus their lane
 receipts. Small packets are deduplicated and delivered immediately through a
 bounded 256-entry queue. A late small packet does not become lost merely because
 a newer packet arrived. This deliberately permits reorder at the engine instead
@@ -230,8 +271,9 @@ discard stragglers. When a bulk gap fills, the next gap's deadline derives from
 its own buffered successor observation, not the older gap's deadline.
 
 The transport cannot compose with legacy FEC, shapers or `link_bandwidth_limit`.
-Both ends must select it. Per-peer metrics expose lane targets, delivery rates,
-RTT, queue delay, in-flight bytes, repairs, eligibility, drops and expiration.
+Both ends must select it. Per-peer metrics expose lane targets, actual send and
+delivery rates, physical and confirmation RTT/variation, idle variation, queue
+delay, in-flight bytes, repairs, eligibility, drops and expiration.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.
@@ -2642,7 +2684,9 @@ misbehaves subtly. Agents and contributors must preserve them.
    small-packet class bypasses bulk ordering as described above. Inner replay
    validation is never bypassed.
 4. **Inner fail-closed; outer control authenticated.** WireGuard authenticates the
-   payload; PROBE/CONTROL are PSK-HMAC authenticated with monotonic anti-replay;
+   payload; PROBE/CONTROL are PSK-HMAC authenticated with anti-replay checks;
+   adaptive data and ACKs use bounded sequence windows, while PROBE freshness
+   remains monotonic;
    legacy DATA/PARITY are deliberately unauthenticated (see Security model).
    Adaptive data uses authenticated CONTROL and rejects that legacy plane.
 5. **Amnezia `conn` coupling is isolated to `bind.go`.** All transport-interface
@@ -2658,8 +2702,10 @@ misbehaves subtly. Agents and contributors must preserve them.
 
 - **Payload**: confidentiality, integrity, authenticity provided by inner
   WireGuard (Noise + AEAD). wanbond never sees plaintext.
-- **Outer control plane** (PROBE, CONTROL): PSK-HMAC authenticated + per-peer
-  monotonic anti-replay — an attacker cannot forge or replay them.
+- **Outer control plane** (PROBE, CONTROL): PSK-HMAC authenticated with per-peer
+  anti-replay checks. PROBE freshness is monotonic; adaptive data and ACKs accept
+  unseen reordered frames within bounded sequence windows. A duplicate cannot
+  renew liveness or update rate control.
   - **Per-peer PSK (multi-peer concentrator, G4):** on a concentrator with more
     than one configured peer, each edge authenticates PROBE frames with its OWN
     per-peer `psk` — this field is REQUIRED and must be pairwise-distinct across

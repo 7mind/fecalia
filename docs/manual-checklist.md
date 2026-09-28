@@ -36,6 +36,10 @@ Prerequisites (all phases):
       an idle sender retains its pacing target and a faster WAN carries bulk
       after the idle period. Run `go test ./internal/bond` and the VM
       `profiles/jitter.json` benchmark with `--idle-seconds 30`.
+- [ ] Run `profiles/radio.json` with `--idle-seconds 60 --warmup 10`: LTE
+      propagation varies by 30 ms in each direction, with loss on Starlink.
+      Retain failures; the milder jitter profile alone missed the deployed
+      rate-collapse defect.
 - [ ] In a disposable Linux guest, run the tagged
       `TestInactiveTUNAQMRemovesOnlyLegacyShaper` test. On a persistent-interface
       upgrade, check `tc qdisc show dev wanbond0`: disabled legacy HTB/bfifo
@@ -43,12 +47,14 @@ Prerequisites (all phases):
 - [ ] Run simultaneous bidirectional TCP and 50 Hz UDP during a capacity drop,
       five-second failure of either WAN, recovery and seeded packet loss.
       Check UDP loss, p99 RTT, maximum receive gap, and ongoing TCP progress in
-      each direction during each outage. A surviving process alone is not proof
-      of continuing traffic.
+      each direction during each outage. Use receiver reports and 1 KiB blocks
+      as in `continuity.py`: default 128 KiB iperf blocks can report zero bytes
+      while the kernel continues delivering. A surviving process alone is not
+      proof of continuing traffic.
 - [ ] On a production rollout, enable adaptive and disable legacy FEC at both
       endpoints; confirm WireGuard handshake and actual tunnel traffic in
       addition to green outer probes. Production deployment is operator-owned.
-- [ ] Compare lane target/delivery-rate metrics with observed per-WAN bytes;
+- [ ] Compare lane target/send/delivery-rate metrics with observed per-WAN bytes;
       verify a slow Starlink path does not monopolize concentrator downlink.
 - [ ] Repeat the voice test with the real application's packet sizes and codec.
       Record live RF results separately from reproducible emulation results.

@@ -78,8 +78,9 @@ short:
    small-packet class is the documented exception to whole-stream ordering: it
    is authenticated and deduplicated, then delivered immediately; inner replay
    validation is never bypassed.
-4. Inner fail-closed; **PROBE/CONTROL are PSK-HMAC authenticated** with monotonic
-   anti-replay; legacy DATA/PARITY are unauthenticated **by design** (DoS-grade
+4. Inner fail-closed; **PROBE/CONTROL are PSK-HMAC authenticated** with anti-replay
+   checks. PROBE freshness is monotonic; adaptive data and ACKs use bounded
+   sequence windows. Legacy DATA/PARITY are unauthenticated **by design** (DoS-grade
    risk accepted). Adaptive data uses authenticated CONTROL and rejects legacy
    DATA/PARITY.
 5. All engine (`conn`) coupling stays isolated to **`internal/bind/bind.go`** —

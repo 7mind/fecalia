@@ -435,11 +435,21 @@ upgrade; the policy preserves the tunnel endpoint across subsequent WAN outages.
 Inspect `wanbond_adaptive_*` on the existing `/metrics` endpoint. All lane series
 have `peer` and `lane` labels; lane is `(local physical ID << 8) | remote physical
 ID`. Rates are bytes/second; `target_rate_bytes_per_second` is the commanded
-pacing rate and `delivery_rate_bytes_per_second` is measured receipt. RTT,
+pacing rate, `send_rate_bytes_per_second` is the measured rate submitted by the
+adaptive sender, and `delivery_rate_bytes_per_second` is measured receipt. A high
+target with low actual send rate can indicate an in-flight window constraint or
+insufficient offered traffic; it does not establish link saturation. RTT,
+`rtt_variation_seconds`, `unloaded_rtt_variation_seconds`,
+`feedback_rtt_seconds`, `feedback_rtt_variation_seconds`,
 forward queue delay, in-flight bytes, sent/ACKed bytes, repair copies, and
 eligibility are also exposed. Peer counters report queue drops and expired
-repairs. `up=1` requires both a current authenticated lane lease and non-stalled
+repairs. `interactive_queue_drops_total` counts the small-packet subset of
+queue drops, and `interactive_queued_packets` counts small datagrams awaiting
+their first transmission. These distinguish local priority-queue contention
+from datagrams lost after transmission. `up=1` requires both a current authenticated lane lease and non-stalled
 delivery feedback. Legacy shaper/FEC metrics do not describe this policy.
+Confirmation RTT includes reordering and receipt buffering; it controls the
+repair deadline independently of the newest physical packet's RTT sample.
 
 Use the [VM lab](../test/vm/README.md) to compare candidate binaries before
 deployment. Small-packet priority uses encrypted size (<=384 bytes), so test
@@ -2283,6 +2293,9 @@ The displayed path rate is combined transmit and receive outer UDP traffic,
 including feedback and copies. It is not application goodput or a capacity
 estimate. JSON `throughputBps` and `linkBandwidthBps` are bits per second; the
 byte-rate displays divide by eight. Cumulative `tx`/`rx` values are already bytes.
+Receive bytes are attributed after decoding and peer resolution, so peers
+sharing a UDP socket retain separate counters. Undecodable or unbound traffic
+is excluded from these per-peer counters.
 
 ```toml
 [monitor]

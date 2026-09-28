@@ -61,9 +61,15 @@ This policy learns each authenticated return path, including multiple edge WANs
 behind one concentrator socket. It measures delivery and forward queue delay,
 paces each direction independently, and uses every available path under load.
 Static bandwidth hints are not required. Legacy policies keep their defaults.
-Idle feedback does not lower the pacing target. Loaded feedback uses a minimum
-over each control interval to separate transient jitter from sustained queueing;
-the repair timer also accounts for RTT variation. Linux startup requires `tc`
+Idle feedback, including lost empty keepalives, does not lower the pacing target.
+Loaded feedback uses a minimum
+over each control interval, with a jitter allowance learned while the lane is
+idle, to separate propagation variation from sustained queueing;
+the congestion window and repair timer also account for RTT variation. Loss
+response caps pacing near measured delivery with headroom for jitter; metrics
+distinguish the pacing target from actual send and delivery rates. The repair
+timer also measures full delivery-confirmation time so reordered packets do not
+trigger premature retries. Linux startup requires `tc`
 and removes the old wanbond HTB/bfifo cap when that shaper is no longer enabled.
 Small-packet duplication follows learned capacity, capped at 10% of the aggregate
 pacing target and 64 kB/s. Bulk receive batching reduces return ACK traffic and
@@ -75,6 +81,10 @@ replication; they bypass bulk receive ordering. This is a size heuristic, not
 application identification. Bulk datagrams remain resequenced. See the
 [transport design](docs/design.md#adaptive-transport--internalbond) and
 [autonomous VM lab](test/vm/README.md).
+
+The adaptive policy remains experimental: the mobile and radio profiles have
+unmet throughput gates. VM improvements have not yet established production
+performance; recorded failures and measurements are in the lab report.
 
 ## Quick start
 
