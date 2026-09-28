@@ -2428,10 +2428,6 @@ func (m *Multipath) readLoop(ps *peerPathState, deliver chan<- struct{}) {
 		if err != nil {
 			return // socket closed: this path was removed, or the bind was closed
 		}
-		// Per-path received-wire accounting (T23): count the OUTER datagram this path
-		// pulled off its socket before dispatch, lock-free. This goroutine is the sole
-		// writer of ps.rxBytes, so the atomic Add is uncontended.
-		ps.rxBytes.Add(uint64(n))
 		m.demuxInbound(ps, readBuf[:n], srcAP)
 		// Advance liveness off the receive path (throttled): a live signal on THIS path
 		// is what lets a DIFFERENT, silent path be marked DOWN promptly even when the
@@ -3101,6 +3097,7 @@ func (m *Multipath) SetOnFirstPathUp(fn func()) {
 // embedded primary, so this is byte-identical to the pre-split singleton. raw is retained for
 // the probe transport (HandleEcho / Reflect re-decode it under the peer's psk).
 func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byte, srcAP netip.AddrPort) {
+	ps.rxBytes.Add(uint64(len(raw)))
 	pr := ps.peer
 	switch f := fr.(type) {
 	case frame.Control:
