@@ -276,6 +276,7 @@ type Tunnel struct {
 	exitSelector *exitSelector
 	// stopExitPromotion waits for that retry to stop before the engine closes.
 	stopExitPromotion func()
+	stopExitRTT       func()
 	// metricsSrc is the live metrics.Source over the Bind; it is stable for the tunnel's
 	// life (the Bind pointer never changes), so a reload that rebinds the endpoint reuses
 	// the SAME Source — its derived-throughput last-sample state survives the rebind.
@@ -706,9 +707,18 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// reads each exit peer's OWN liveness plane (perPeerProbers[i]) and the engine's per-peer
 	// last-handshake age.
 	var stopExitPromotion func()
+	var exitRTTSource exitRTT
 	if exitSel != nil {
 		exitCtrls := make(map[string]exitController)
 		healthPeers := make(map[string]exitPeerHealth)
+		peerPaths := func(name string) []bind.PathTraffic {
+			for _, peer := range mpBind.PeerSnapshots() {
+				if peer.Name == name {
+					return peer.Paths
+				}
+			}
+			return nil
+		}
 		for _, i := range exitCapablePeerIndices(cfg) {
 			name := ids[i].Name
 			if c, ok := hubFailoverCtrls[name]; ok {
@@ -724,7 +734,18 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		}
 		stopExitPromotion = exitSel.enableAutoPromotion(exitCtrls, &deviceExitHealth{
 			engine: dev, clock: telemetry.SystemClock{}, expiry: awgdevice.RejectAfterTime, peers: healthPeers,
+			pathUp: func(name string) bool {
+				for _, path := range peerPaths(name) {
+					if path.State != telemetry.StateDown {
+						return true
+					}
+				}
+				return false
+			},
 		})
+		exitRTTSource = func(name string) (time.Duration, bool) {
+			return bestUpPathRTT(peerPaths(name))
+		}
 	}
 
 	// The session monitor reads the engine's peer last-handshake state (I2). It backs BOTH
@@ -802,7 +823,24 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 				}
 				return exitSel.ActiveExit()
 			},
+			ExitMode: func() string {
+				if exitSel == nil {
+					return ""
+				}
+				return exitSel.Mode()
+			},
 		},
+	}
+	if exitSel != nil {
+		mode := cfg.Exit
+		if mode == "" {
+			mode = "auto"
+		}
+		if err := exitSel.setMode(mode, "configured"); err != nil {
+			t.Close()
+			return nil, fmt.Errorf("device: select configured exit: %w", err)
+		}
+		t.stopExitRTT = exitSel.enableRTTSelection(exitRTTSource)
 	}
 
 	// Stand up the /metrics endpoint when configured. A non-loopback listen is refused
@@ -1181,6 +1219,9 @@ func reloadWarnings(live, desired *config.Config) []string {
 	if live.Role != desired.Role {
 		w = append(w, fmt.Sprintf("role %q -> %q", live.Role, desired.Role))
 	}
+	if live.Exit != desired.Exit {
+		w = append(w, fmt.Sprintf("exit %q -> %q — restart to apply the configured default", live.Exit, desired.Exit))
+	}
 	if !reflect.DeepEqual(live.PSK, desired.PSK) {
 		w = append(w, "psk changed")
 	}
@@ -1265,6 +1306,7 @@ func reloadWarnings(live, desired *config.Config) []string {
 	// regress by omission.
 	lc, dc := *live, *desired
 	lc.Role, dc.Role = "", ""
+	lc.Exit, dc.Exit = "", ""
 	lc.PSK, dc.PSK = config.Key{}, config.Key{}
 	lc.WireGuard, dc.WireGuard = config.WireGuard{}, config.WireGuard{}
 	lc.Amnezia, dc.Amnezia = config.Amnezia{}, config.Amnezia{}
@@ -1547,9 +1589,8 @@ func (t *Tunnel) ActiveExit() string {
 }
 
 // switchActiveExit is the monitor.ExitSwitcher the [monitor] endpoint's POST
-// /api/exit route invokes (T258): it repoints default-route ownership onto the
-// named exit-capable peer via exitSelector.Switch (reason=manual, logged by the
-// selector) and returns the resulting active exit. The selector's typed
+// /api/exit route invokes (T258): it selects auto policy or a fixed exit peer
+// via exitSelector.Switch and returns the resulting active exit. The selector's typed
 // *unknownExitError — an unknown name, a non-exit-capable peer, or the absence of
 // any multi-exit selector on this role — is adapted to monitor.ErrUnknownExitPeer
 // so the handler maps it to 400 WITHOUT the monitor package importing
@@ -1606,6 +1647,9 @@ func (t *Tunnel) Close() {
 	}
 	if t.stopExitPromotion != nil {
 		t.stopExitPromotion()
+	}
+	if t.stopExitRTT != nil {
+		t.stopExitRTT()
 	}
 	// Stop the DNS re-resolution loop between hub-failover and the engine teardown (T74): no
 	// re-resolve may race the engine peer's install/repoint or the socket close.
@@ -1892,6 +1936,19 @@ func exitCapablePeerIndices(cfg *config.Config) []int {
 		}
 	}
 	return idx
+}
+
+func bestUpPathRTT(paths []bind.PathTraffic) (time.Duration, bool) {
+	var best time.Duration
+	for _, path := range paths {
+		if path.State != telemetry.StateUp || path.Estimate.RTT <= 0 {
+			continue
+		}
+		if best == 0 || path.Estimate.RTT < best {
+			best = path.Estimate.RTT
+		}
+	}
+	return best, best > 0
 }
 
 func exitCapablePeerNames(cfg *config.Config, ids []config.PeerIdentity) []string {

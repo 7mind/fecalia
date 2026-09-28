@@ -609,6 +609,22 @@ func TestBuildSnapshotExitCapablePeersUsesAuthoritativeInfo(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotSeparatesExitModeFromActiveExit(t *testing.T) {
+	mode := "auto"
+	active := "osaka"
+	info := Info{ExitMode: func() string { return mode }, ActiveExit: func() string { return active }}
+	src := fakeSource{peerNames: []string{"tokyo", "osaka"}}
+	first := BuildSnapshot(src, info, true, true)
+	if first.ExitMode != "auto" || first.ActiveExit != "osaka" {
+		t.Fatalf("first selection = %q/%q", first.ExitMode, first.ActiveExit)
+	}
+	mode, active = "tokyo", "tokyo"
+	second := BuildSnapshot(src, info, true, true)
+	if second.ExitMode != "tokyo" || second.ActiveExit != "tokyo" {
+		t.Fatalf("second selection = %q/%q", second.ExitMode, second.ActiveExit)
+	}
+}
+
 // TestBuildSnapshotEmptyIsNotNull asserts that empty per-(peer,path)/FEC/
 // Reseq/Aggregation sets marshal as `[]`, not `null` — a nil slice would force
 // the frontend to null-check every field before iterating.
@@ -684,6 +700,7 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	// ...and, once stripped, the remainder must equal the pre-T257 shape exactly.
 	delete(got, "peerSessions")
 	delete(got, "activeExit")
+	delete(got, "exitMode")
 	delete(got, "exitControlAvailable")
 	delete(got, "exitCapablePeers")
 	delete(ep0, "peer")

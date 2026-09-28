@@ -2567,3 +2567,35 @@ func TestEdgeMultiExitValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestExitSelectionConfigAcceptsAuto(t *testing.T) {
+	base := edgeMultiPeerTOML(edgePathSrcs(2), []edgePeerSpec{
+		{pub: 2, name: "c0", psk: testKey(5), endpoint: "203.0.113.5:51820", allowedIPs: []string{"0.0.0.0/0", "10.77.0.1/32"}, mode: "default-route"},
+		{pub: 4, name: "c1", psk: testKey(6), endpoint: "203.0.113.9:51820", allowedIPs: []string{"0.0.0.0/0", "10.77.0.2/32"}, mode: "default-route"},
+	})
+	defaultCfg, err := Load(writeConfig(t, 0o600, base))
+	if err != nil {
+		t.Fatalf("load default exit: %v", err)
+	}
+	if defaultCfg.Exit != "auto" {
+		t.Fatalf("default exit = %q, want auto", defaultCfg.Exit)
+	}
+	body := strings.Replace(base, "role = \"edge\"", "role = \"edge\"\nexit = \"auto\"", 1)
+	if _, err := Load(writeConfig(t, 0o600, body)); err != nil {
+		t.Fatalf("load auto exit selection: %v", err)
+	}
+	fixed := strings.Replace(base, "role = \"edge\"", "role = \"edge\"\nexit = \"c1\"", 1)
+	if cfg, err := Load(writeConfig(t, 0o600, fixed)); err != nil {
+		t.Fatalf("load fixed exit: %v", err)
+	} else if cfg.Exit != "c1" {
+		t.Fatalf("fixed exit = %q, want c1", cfg.Exit)
+	}
+	unknown := strings.Replace(base, "role = \"edge\"", "role = \"edge\"\nexit = \"missing\"", 1)
+	if _, err := Load(writeConfig(t, 0o600, unknown)); err == nil || !strings.Contains(err.Error(), "not a configured default-route peer") {
+		t.Fatalf("unknown exit error = %v", err)
+	}
+	reserved := strings.Replace(base, "name = \"c0\"", "name = \"auto\"", 1)
+	if _, err := Load(writeConfig(t, 0o600, reserved)); err == nil || !strings.Contains(err.Error(), "reserved for exit selection") {
+		t.Fatalf("reserved exit name error = %v", err)
+	}
+}

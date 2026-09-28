@@ -275,6 +275,7 @@ type deviceExitHealth struct {
 	clock  telemetry.Clock
 	expiry time.Duration
 	peers  map[string]exitPeerHealth
+	pathUp func(name string) bool
 }
 
 func (d *deviceExitHealth) healthy(name string) bool {
@@ -285,10 +286,14 @@ func (d *deviceExitHealth) healthy(name string) bool {
 	// At least one path up (the liveness plane). Checked first: it is a cheap in-memory read and
 	// avoids an engine IpcGet for an obviously-down candidate.
 	anyUp := false
-	for _, hp := range ph.health {
-		if hp.State() != telemetry.StateDown {
-			anyUp = true
-			break
+	if d.pathUp != nil {
+		anyUp = d.pathUp(name)
+	} else {
+		for _, hp := range ph.health {
+			if hp.State() != telemetry.StateDown {
+				anyUp = true
+				break
+			}
 		}
 	}
 	if !anyUp {

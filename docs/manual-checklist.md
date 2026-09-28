@@ -233,6 +233,12 @@ with an ORDERED list — `endpoints = ["<hubA ip:port>", "<hubB ip:port>"]` (ind
       with `reason=auto-promotion` and confirm new tunnel traffic uses the standby.
 - [ ] Repeat with the boot exit recovering before the standby session becomes
       healthy; confirm no promotion occurs after recovery.
+- [ ] With `exit = "auto"`, compare both exits' up-path RTTs. Confirm the lower
+      best RTT becomes active, a changed ranking does not switch again before
+      five minutes, and a fully failed active exit promotes immediately.
+- [ ] On the token-authenticated remote monitor, select a fixed exit and then
+      `auto`. Confirm the combobox tracks `exitMode` while the active badge
+      tracks `activeExit`, and a restart restores the configured selection.
 
 ### Startup with a not-yet-assignable path (tolerant bind)
 - [ ] Bring one uplink's interface DOWN (so its configured `source_addr` is not held

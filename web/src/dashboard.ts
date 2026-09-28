@@ -26,15 +26,13 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 // G28/M107), each carrying its own session state (from peerSessions) and an
 // ACTIVE-EXIT badge when that peer is snapshot.activeExit.
 //
-// Exit-switch control (T260, G28/M107): a single top-level <select> listing
-// the authoritative snapshot.exitCapablePeers candidate set, issuing a same-
+// Exit selection (T260, G28/M107): a single top-level <select> listing auto
+// and the authoritative snapshot.exitCapablePeers candidate set, issuing a same-
 // origin POST /api/exit {peer} on selection. Cookie
 // auth rides automatically (ws-client.ts precedent — no token handling
 // here). Hidden off the edge role and when !snapshot.exitControlAvailable
-// (T280, G32: mirrors the server's loopback-only 403 gate on POST /api/exit — this is
-// deliberately NOT addressingHidden, since a reveal_addressing opt-in can
-// unhide addressing on a non-loopback bind without enabling the mutating
-// control) or when fewer than two exit-capable peers exist (no alternate).
+// (the server's loopback-or-token availability, independent of addressing
+// disclosure) or when fewer than two exit-capable peers exist (no alternate).
 // Pending/error state is held OUTSIDE onSnapshot's per-frame render (in
 // `exitControlState`, a mountDashboard-scoped closure variable) so it
 // survives the innerHTML replacement every snapshot frame triggers; the
@@ -125,6 +123,7 @@ interface ExitControlState {
   pending: boolean;
   /** Adopted from a 2xx POST /api/exit response; cleared once the next snapshot frame reconciles it. */
   optimisticActiveExit: string | null;
+  optimisticMode: string | null;
   error: string | null;
 }
 
@@ -319,14 +318,14 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
-  function renderExitControl(candidates: string[], activeExit: string, state: ExitControlState): string {
+  function renderExitControl(candidates: string[], activeExit: string, mode: string, state: ExitControlState): string {
     if (candidates.length < 2) {
       return '';
     }
-    const options = candidates
+    const options = ['auto', ...candidates]
       .map((peer) => {
-        const isActive = peer === activeExit;
-        return `<option value="${escapeHtml(peer)}" ${isActive ? 'selected' : ''}>${escapeHtml(peer)}${isActive ? ' (active)' : ''}</option>`;
+        const isSelected = peer === mode;
+        return `<option value="${escapeHtml(peer)}" ${isSelected ? 'selected' : ''}>${escapeHtml(peer)}</option>`;
       })
       .join('');
     const pendingNote = state.pending
@@ -337,8 +336,9 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       : '';
     return `
       <div class="exit-control" data-testid="exit-control" style="border:1px solid #ccc; border-radius:6px; padding:0.5em; display:flex; align-items:center; gap:0.5em; flex-wrap:wrap;">
-        <label for="exit-control-select">Active exit</label>
+        <label for="exit-control-select">Exit selection</label>
         <select id="exit-control-select" data-testid="exit-control-select" ${state.pending ? 'disabled' : ''}>${options}</select>
+        <span data-testid="exit-control-active">Active: ${escapeHtml(activeExit)}</span>
         ${pendingNote}
         ${errorNote}
       </div>`;
@@ -406,6 +406,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   const exitControlState: ExitControlState = {
     pending: false,
     optimisticActiveExit: null,
+    optimisticMode: null,
     error: null,
   };
 
@@ -424,6 +425,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
         if (res.ok) {
           const parsed = (await res.json()) as ExitResponse;
           exitControlState.optimisticActiveExit = parsed.activeExit;
+          exitControlState.optimisticMode = parsed.exitMode;
         } else {
           let message = `exit switch failed (HTTP ${res.status})`;
           try {
@@ -455,6 +457,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     // every real snapshot frame (T260) — a stale client-side guess never
     // outlives the next push.
     const effectiveActiveExit = exitControlState.optimisticActiveExit ?? snapshot.activeExit;
+    const effectiveMode = exitControlState.optimisticMode ?? snapshot.exitMode;
 
     let sectionsHtml: string;
     const grouped = snapshot.multiPeer && snapshot.peerNames.length > 1;
@@ -496,15 +499,13 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     }
 
     // Exit-switch control (T260, re-keyed T280/G32): hidden entirely when the
-    // monitor's kernel loopback bind is unavailable (mirrors the server's
-    // hard loopback-only 403 gate on POST /api/exit) or on a single-peer
+    // monitor's loopback-or-token control is unavailable or on a single-peer
     // snapshot — there is no alternate exit to switch to with only one peer
-    // bound. Deliberately keyed on exitControlAvailable, NOT addressingHidden:
-    // a reveal_addressing opt-in can make addressingHidden false on a
-    // non-loopback bind while the mutating control stays unavailable there.
+    // bound. Deliberately keyed on exitControlAvailable, not addressingHidden:
+    // disclosure and control authorization are independent.
     const exitControlHtml =
       snapshot.daemon.role === 'edge' && snapshot.exitControlAvailable && grouped
-        ? renderExitControl(snapshot.exitCapablePeers, effectiveActiveExit, exitControlState)
+        ? renderExitControl(snapshot.exitCapablePeers, effectiveActiveExit, effectiveMode, exitControlState)
         : '';
 
     root.innerHTML = `
@@ -528,6 +529,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   function onSnapshot(snapshot: MonitorSnapshot): void {
     lastSnapshot = snapshot;
     exitControlState.optimisticActiveExit = null;
+    exitControlState.optimisticMode = null;
     render();
   }
 

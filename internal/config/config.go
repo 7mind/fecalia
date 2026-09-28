@@ -42,6 +42,7 @@ const keyLen = 32
 // from a single TOML file.
 type Config struct {
 	Role      Role            `toml:"role"`
+	Exit      string          `toml:"exit"` // edge boot policy: "auto" (default) or an exit peer name
 	Paths     []Path          `toml:"paths"`
 	WireGuard WireGuard       `toml:"wireguard"`
 	Amnezia   Amnezia         `toml:"amnezia"`
@@ -1282,6 +1283,9 @@ func (k Key) Bytes() [keyLen]byte { return k.bytes }
 
 // normalize parses the string-typed fields (addresses) into their typed forms.
 func (c *Config) normalize() error {
+	if c.Exit == "" && c.Role == RoleEdge {
+		c.Exit = "auto"
+	}
 	// Resolve the global bind default BEFORE the per-path loop so an omitted
 	// per-path `bind` can fall back to it: an empty top-level Bind defaults to
 	// BindModeAuto (today's selectDeviceBinds behavior), matching an existing
@@ -2368,6 +2372,26 @@ func (c *Config) validate() error {
 		}
 	} else if err := c.validateConcentratorDefaultRoutes(peerPrefixes); err != nil {
 		return err
+	}
+	if c.Role != RoleEdge && c.Exit != "" {
+		return fmt.Errorf("exit %q requires edge role", c.Exit)
+	}
+	for i, peer := range c.WireGuard.Peers {
+		if peer.Mode == PeerModeDefaultRoute && peer.Name == "auto" {
+			return fmt.Errorf("wireguard peer %d: name %q is reserved for exit selection", i, peer.Name)
+		}
+	}
+	if c.Exit != "" && c.Exit != "auto" {
+		found := false
+		for _, peer := range c.WireGuard.Peers {
+			if peer.Name == c.Exit && peer.Mode == PeerModeDefaultRoute {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("exit %q is not a configured default-route peer", c.Exit)
+		}
 	}
 	// Per-peer name/psk (Q21 multi-peer concentrator): with a single peer the
 	// top-level Config.PSK remains the sole authenticator (T80) and a per-peer

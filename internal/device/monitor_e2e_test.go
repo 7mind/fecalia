@@ -602,10 +602,9 @@ func TestMonitorE2E_NonLoopbackRevealAddressingServesAddressing(t *testing.T) {
 			t.Fatalf("endpoint address blank under reveal opt-in: %+v", snap.Endpoints)
 		}
 	}
-	// The RAW loopback verdict is still false off-loopback: exit control stays unavailable even
-	// though addressing is revealed — the T280 split between the two verdicts, observed on the wire.
-	if snap.ExitControlAvailable {
-		t.Fatalf("exitControlAvailable must be false on a non-loopback bind even with reveal_addressing: %s", raw)
+	// Token-authenticated control is available independently of addressing reveal.
+	if !snap.ExitControlAvailable {
+		t.Fatalf("token-authenticated exit control must be available: %s", raw)
 	}
 }
 

@@ -52,9 +52,13 @@ type exitSelector struct {
 	engine ipcSetter
 	log    log.Logger
 
-	mu     sync.Mutex
-	active string              // name of the exit peer currently owning the default route
-	exits  map[string]exitPeer // exit-capable peers keyed by configured name
+	mu         sync.Mutex
+	active     string // name of the exit peer currently owning the default route
+	mode       string // operator target: "auto" or a configured exit peer
+	clock      telemetry.Clock
+	lastSwitch time.Time
+	rtt        exitRTT
+	exits      map[string]exitPeer // exit-capable peers keyed by configured name
 	// order is the exit-capable peer names in CONFIG order — the deterministic order the
 	// auto-promotion standby search walks (Q75: "first HEALTHY exit-capable peer in config
 	// order"). Fixed at construction. Guarded by mu (read only, never mutated).
@@ -89,6 +93,13 @@ type exitController interface {
 type exitHealth interface {
 	healthy(name string) bool
 }
+
+type exitRTT func(name string) (time.Duration, bool)
+
+const (
+	autoExitCooldown     = 5 * time.Minute
+	autoExitPollInterval = 5 * time.Second
+)
 
 // unknownExitError is the typed error exitSelector.Switch returns when the
 // requested name is not a configured exit-capable peer — an unknown name, or a
@@ -132,6 +143,8 @@ func newExitSelector(cfg *config.Config, engine ipcSetter, lg log.Logger) *exitS
 		engine: engine,
 		log:    lg.Component("exitselector"),
 		active: ids[idx[0]].Name,
+		mode:   "auto",
+		clock:  telemetry.SystemClock{},
 		exits:  exits,
 		order:  order,
 	}
@@ -162,15 +175,46 @@ func (s *exitSelector) ActiveExit() string {
 	return s.active
 }
 
+func (s *exitSelector) Mode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mode
+}
+
+// SetMode changes the operator's target. A fixed peer takes effect immediately;
+// auto chooses from live RTT samples on the next evaluation.
+func (s *exitSelector) SetMode(mode string) error {
+	return s.setMode(mode, "manual")
+}
+
+func (s *exitSelector) setMode(mode, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mode == "auto" {
+		if s.mode == "auto" {
+			return nil
+		}
+		s.mode = mode
+		s.lastSwitch = time.Time{}
+		return nil
+	}
+	if _, ok := s.exits[mode]; !ok {
+		return &unknownExitError{name: mode}
+	}
+	if err := s.switchLocked(mode, reason); err != nil {
+		return err
+	}
+	s.mode = mode
+	return nil
+}
+
 // Switch moves default-route ownership to the named exit-capable peer on OPERATOR request (the
 // manual UI switch, T258/T260). It is the manual entry point onto switchLocked (reason=manual);
 // see switchLocked for the steal-on-insert mechanics. A manual switch WINS over auto-promotion:
 // it re-subscribes the exhaustion trigger onto the chosen peer, and a subsequently-firing stale
 // exhaustion signal for the peer we moved off is a no-op (onActiveExhausted's active-guard).
 func (s *exitSelector) Switch(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.switchLocked(name, "manual")
+	return s.SetMode(name)
 }
 
 // switchLocked moves default-route ownership to the named exit-capable peer under s.mu, tagging
@@ -208,9 +252,65 @@ func (s *exitSelector) switchLocked(name, reason string) error {
 		return fmt.Errorf("exitselector: switch default route from %q to %q: %w", from, name, err)
 	}
 	s.active = name
+	s.lastSwitch = s.clock.Now()
 	s.resubscribeLocked(from, name)
 	s.log.Info("active exit switched", "from", from, "to", name, "reason", reason)
 	return nil
+}
+
+// enableRTTSelection evaluates the best currently up path of each established
+// exit. The existing exhaustion callback remains the immediate failure path.
+func (s *exitSelector) enableRTTSelection(rtt exitRTT) func() {
+	s.mu.Lock()
+	s.rtt = rtt
+	s.mu.Unlock()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(autoExitPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				s.evaluateAuto()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done); <-stopped }) }
+}
+
+func (s *exitSelector) evaluateAuto() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mode != "auto" || s.rtt == nil || s.health == nil {
+		return
+	}
+	if !s.lastSwitch.IsZero() && s.clock.Now().Sub(s.lastSwitch) < autoExitCooldown {
+		return
+	}
+	best := ""
+	var bestRTT time.Duration
+	for _, name := range s.order {
+		if !s.health.healthy(name) {
+			continue
+		}
+		rtt, ok := s.rtt(name)
+		if !ok || rtt <= 0 {
+			continue
+		}
+		if best == "" || rtt < bestRTT {
+			best, bestRTT = name, rtt
+		}
+	}
+	if best != "" && best != s.active {
+		if err := s.switchLocked(best, "auto-rtt"); err != nil {
+			s.log.Warn("auto RTT switch failed", "to", best, "error", err.Error())
+		}
+	}
 }
 
 // enableAutoPromotion wires health-driven auto-promotion (T269): it records the per-peer
@@ -306,8 +406,7 @@ func (s *exitSelector) resubscribeLocked(from, to string) {
 // reason=auto-promotion. It is a NO-OP when:
 //   - the exhausted peer is no longer the active exit: a manual Switch or a prior promotion
 //     already moved egress off it. MANUAL WINS — a stale signal never overrides a standing
-//     choice, and this is also the NO-AUTO-FAILBACK guard (the promoted peer stays active until
-//     IT itself exhausts).
+//     choice. A later RTT decision in auto mode may select the recovered peer.
 //   - no standby is healthy: egress stays on the dead exit (nothing to promote to) and the
 //     condition is logged once per outage (the controller latch suppresses repeats) — do NOT
 //     thrash.

@@ -157,6 +157,9 @@ func (h *autoPromoteHarness) assertOwnsDefaultRoute(t *testing.T, wantHex, other
 func TestExitSelectorAutoPromoteOnExhaustion(t *testing.T) {
 	h := newAutoPromoteHarness(t)
 	h.health.set("b", true) // b is a healthy warm standby.
+	h.sel.mu.Lock()
+	h.sel.lastSwitch = h.sel.clock.Now() // failure promotion must bypass the RTT cooldown
+	h.sel.mu.Unlock()
 
 	h.driveADown()
 	// Two advances of a 2-endpoint list under continuous hub loss: 0->1 (first advance, not yet a

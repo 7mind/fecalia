@@ -192,10 +192,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   absent entirely for a fixed-ratio or FEC-off peer.
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
-  a `/ws` WebSocket every 1s) — read-only except the loopback-only `POST
-  /api/exit` control (which 403s on any non-loopback bind), exposed in the
-  dashboard itself as an exit-switch `<select>` populated from the daemon's
-  authoritative configured exit-capable peer set — loopback-only by default
+  a `/ws` WebSocket every 1s). The exit-selection control offers `auto` and
+  each configured exit, and shows the active exit separately. `auto` is the
+  edge config default: it selects the healthy exit with the lowest RTT on any
+  up uplink, with a five-minute cooldown between RTT-driven switches. The
+  control is available on loopback or a token-authenticated non-loopback bind — loopback-only by default
   like `[metrics]`, but
   it MAY bind non-loopback if you also set `[monitor].token` (otherwise
   refused at config load). Every request, including the WebSocket upgrade, is
@@ -377,7 +378,7 @@ internal/config/        TOML load + fail-fast validation
 internal/dnsresolve/    DNS resolution seam (Resolver interface, system + DoH + DoT impls, test fake)
 internal/device/        tunnel lifecycle (Up/Down/Reload), metrics wiring
 internal/metrics/       loopback Prometheus /metrics
-internal/monitor/       monitoring-UI endpoint, read-only except the loopback-only POST /api/exit control (auth + /ws push + embedded frontend)
+internal/monitor/       monitoring-UI endpoint, read-only except authenticated POST /api/exit (auth + /ws push + embedded frontend)
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
@@ -603,10 +604,10 @@ deliberate boundaries you must plan around:
   within-concentrator failover) onto the first healthy warm standby, logged with
   `reason=auto-promotion`. If the standby session becomes healthy only after
   exhaustion, promotion retries at the probe cadence while the active exit stays
-  exhausted; a manual switch always wins and there is no auto-failback
-  onto a recovered exit. Per-concentrator stats are grouped per-peer on the
+  exhausted; selecting a fixed exit suspends RTT-driven switches, while selecting
+  `auto` resumes them. Per-concentrator stats are grouped per-peer on the
   monitor dashboard, and on-the-fly exit switching is exposed there through a
-  loopback-only exit-switch widget (T259/T260, G28/M107; see
+  token-authenticated exit-switch widget (T259/T260, G28/M107; see
   [docs/design.md §Security model](docs/design.md)).
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP

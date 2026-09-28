@@ -49,6 +49,7 @@ function makeSnapshot(): MonitorSnapshot {
     endpoints: [],
     peerSessions: [],
     activeExit: '',
+    exitMode: '',
     exitCapablePeers: [],
     wgPublicKeyFingerprint: '',
     addressingHidden: true,

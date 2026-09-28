@@ -222,8 +222,10 @@ tunnel to a separate concentrator; the sockets are shared (one UDP socket per
 uplink, fanned out to every peer), while the per-peer scheduler / FEC /
 resequencer state stays independent. Every peer marked `mode = "default-route"`
 is an **exit-capable** alternate for the full-tunnel egress; the **first**
-default-route peer in config order is the **boot-default exit** (the selection is
-not persisted — the daemon always boots to the config default, Q74). On-the-fly
+default-route peer in config order owns the route at boot until auto selection
+has healthy RTT samples. Top-level `exit = "auto"` is the default; set it to an
+exit peer name to select that peer at startup. Runtime UI changes are not
+persisted, so a restart restores this config setting. On-the-fly
 switching of the active exit and per-concentrator statistics are surfaced by the
 monitor dashboard's web UI (T259/T260, G28/M107; see
 [docs/design.md §Security model](design.md)); this section covers only the
@@ -233,10 +235,15 @@ When the boot-default exit exhausts before a standby completes its WireGuard
 handshake, the active exit remains unchanged until a standby is healthy. The
 edge retries promotion at the probe cadence while the boot exit remains fully
 down; the journal then records `active exit switched` with
-`reason=auto-promotion`. A recovered boot exit does not cause auto-failback.
+`reason=auto-promotion`. Recovery alone does not switch a fixed selection back;
+`auto` may return to it after cooldown if it has the lowest healthy RTT.
+In `auto` mode, the best RTT of each exit's up uplinks is compared among exits
+with established WireGuard sessions. RTT-driven changes have a five-minute
+cooldown; failure promotion remains immediate.
 
 ```toml
 role = "edge"
+exit = "auto" # optional; the default. Use an exit peer name for fixed selection.
 psk = "<base64 32-byte outer-control PSK, same on all ends>"
 
 # The SAME uplinks carry every concentrator bond.
@@ -2206,7 +2213,7 @@ that is rejected outright), but failover will be slower than the P1 target.
 ### 6c. Monitoring UI (`[monitor]`)
 
 An OPTIONAL dashboard — live per-peer throughput/loss/FEC sparklines —
-complementing `/metrics`. It is read-only except for one loopback-only control
+complementing `/metrics`. It is read-only except for one authenticated control
 (`POST /api/exit`, see **Scope** below). Omit the block, or leave `listen`
 empty, and no monitoring-UI endpoint is served (the daemon behaves exactly as
 without this section):
@@ -2260,22 +2267,14 @@ listen = "127.0.0.1:9101"
     dashboard traffic are visible in CLEARTEXT to anyone on-path; see
     [docs/design.md §Security model](design.md) for the accepted risk this
     trades off.
-- **Scope (v1)**: read-only EXCEPT one loopback-only control. The dashboard
-  shows live stats only, with a single mutating action: `POST /api/exit`
-  (`{"peer": "<name>"}`) switches the active exit-capable peer on a multi-exit
-  edge, returning `200 {"activeExit": "<name>"}`. In the dashboard itself
-  (T260) this is a `<select>` populated from the daemon's authoritative
-  config-order `exitCapablePeers` set, with the current `activeExit` marked,
-  disabled while a switch is in flight, and showing a
-  visible error notice (reverting the display) on a non-2xx or network
-  failure — no manual `curl`/token handling needed in the browser. This
-  control is **LOOPBACK-ONLY**: it is refused with **403 on any non-loopback
-  bind, regardless of a valid token**, so a token'd LAN-exposed monitor stays
-  strictly read-only — you can watch the exits from off-host but can only
-  *switch* them from a loopback-bound session (e.g. over the SSH tunnel
-  above); the dashboard hides the `<select>` entirely on a token'd
-  non-loopback bind (mirroring this gate) and whenever fewer than two
-  exit-capable peers are configured (nothing to switch to). The usual auth applies (cross-origin → 403, missing/invalid
+- **Scope**: the single mutating action is `POST /api/exit` with
+  `{"peer": "auto"}` or `{"peer": "<exit-name>"}`. The response contains both
+  `activeExit` (the current traffic owner) and `exitMode` (the selected policy).
+  The dashboard's `<select>` lists `auto` plus the configured exit-capable peers,
+  selects the current `exitMode`, and displays `activeExit` separately. It is
+  available on loopback and token-authenticated non-loopback bindings; the
+  browser's same-origin cookie supplies the token. It is hidden when fewer than
+  two exit-capable peers are configured. The usual auth applies (cross-origin → 403, missing/invalid
   token → 401); a non-POST method is 405 and an unknown/non-exit-capable peer
   is 400. See [docs/design.md §Security model](design.md) for the full
   posture.

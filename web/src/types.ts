@@ -208,12 +208,9 @@ export interface PeerSessionSnapshot {
  * control applies only with 2+ names, and the frontend must not infer the set
  * from generic endpoint or session telemetry.
  *
- * exitControlAvailable (T280, G32) mirrors the Go RAW loopbackBound verdict —
- * the SAME hard gate the mutating POST /api/exit control enforces
- * server-side — and is deliberately independent of addressingHidden: a
- * reveal_addressing opt-in can set addressingHidden false on a non-loopback
- * bind while exit control stays unavailable there, so the frontend MUST key
- * exit-widget visibility off this field, never off addressingHidden.
+ * exitMode is the selected policy (auto or a fixed exit); activeExit is the
+ * actual route owner. exitControlAvailable reflects loopback-or-token control
+ * authorization, independently of addressingHidden.
  */
 export interface MonitorSnapshot {
   paths: PathSnapshot[];
@@ -227,6 +224,7 @@ export interface MonitorSnapshot {
   endpoints: EndpointSnapshot[];
   peerSessions: PeerSessionSnapshot[];
   activeExit: string;
+  exitMode: string;
   exitCapablePeers: string[];
   wgPublicKeyFingerprint: string;
   addressingHidden: boolean;
@@ -235,10 +233,9 @@ export interface MonitorSnapshot {
 
 /**
  * Mirrors the POST /api/exit request body (monitor.exitRequest in
- * internal/monitor/server.go): the name of the exit-capable peer to make
- * active. This is the ONE mutating control call (T258); it is available ONLY on
- * a loopback-bound monitor (a non-loopback bind refuses it with 403, regardless
- * of a valid token). T259/T260 wire the UI switch onto it.
+ * internal/monitor/server.go): "auto" or an exit-capable peer name.
+ * This is the ONE mutating control call (T258); it is available on
+ * a loopback or token-authenticated monitor. T259/T260 wire the UI switch onto it.
  */
 export interface ExitRequest {
   peer: string;
@@ -246,16 +243,16 @@ export interface ExitRequest {
 
 /**
  * Mirrors the POST /api/exit 200 response body (monitor.exitResponse): the
- * resulting active exit name (the requested peer, whether an actual switch
- * occurred or an idempotent same-name no-op).
+ * current route owner and the selected policy.
  */
 export interface ExitResponse {
   activeExit: string;
+  exitMode: string;
 }
 
 /**
  * Mirrors the stable error body (monitor.exitError) every non-200 POST
- * /api/exit response carries: 403 (non-loopback bind), 400 (malformed JSON or an
+ * /api/exit response carries: 403 (forbidden Host/Origin), 400 (malformed JSON or an
  * unknown/non-exit-capable peer — the body names only the caller-supplied peer,
  * never selector internals), 401 (missing/invalid token), 405 (non-POST method).
  */

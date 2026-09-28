@@ -138,11 +138,8 @@ func TestExit_LoopbackBearer_Switches(t *testing.T) {
 	}
 }
 
-// TestExit_NonLoopbackWithToken_Forbidden is the HARD loopback gate: a
-// token-authorized NON-loopback bind refuses the mutating control with 403 EVEN
-// with a valid Bearer token, and the selector is NEVER called — a remote/exposed
-// monitor stays strictly read-only.
-func TestExit_NonLoopbackWithToken_Forbidden(t *testing.T) {
+// A token-authorized non-loopback monitor accepts same-origin exit control.
+func TestExit_NonLoopbackWithToken_Allowed(t *testing.T) {
 	const token = "remote-tok"
 	sw := &recordingSwitcher{known: map[string]bool{"tokyo": true}}
 	srv, base := startExitServer(t, "0.0.0.0:0", token, sw.fn)
@@ -154,27 +151,41 @@ func TestExit_NonLoopbackWithToken_Forbidden(t *testing.T) {
 	})
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("non-loopback + valid token POST => %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("non-loopback + valid token POST => %d, want 200", resp.StatusCode)
 	}
-	if sw.callCount() != 0 {
-		t.Fatalf("selector called %d times on a forbidden non-loopback POST, want 0", sw.callCount())
+	if sw.callCount() != 1 {
+		t.Fatalf("selector called %d times on an authorized non-loopback POST, want 1", sw.callCount())
 	}
 }
 
-// TestExit_NonLoopbackRevealAddressing_StillForbidden is the T280 SECURITY pin: a
-// token-authorized NON-loopback bind with reveal_addressing=TRUE still refuses the
-// mutating POST /api/exit with 403 EVEN with a valid Bearer token — the reveal
-// opt-in unhides the addressing surface but MUST NOT widen the HARD loopback-only
-// exit-control gate, which keys on the RAW loopbackBound verdict, not the widened
-// revealAddressing. The selector is never called, and the 403 carries the
-// loopback-only body. MUTATION-VERIFY (T280 acceptance d): feeding newExitHandler
-// the widened reveal verdict instead of loopbackBound (server.go) turns this red.
-func TestExit_NonLoopbackRevealAddressing_StillForbidden(t *testing.T) {
+func TestExit_AutoModeResponse(t *testing.T) {
+	srv, base := startExitServer(t, "127.0.0.1:0", "", func(peer string) (string, error) {
+		if peer != "auto" {
+			t.Fatalf("requested peer = %q, want auto", peer)
+		}
+		return "tokyo", nil
+	})
+	defer closeMonitor(t, srv)
+	resp := postExit(t, exitClient(), base, `{"peer":"auto"}`, nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST auto => %d, want 200", resp.StatusCode)
+	}
+	var got exitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode auto response: %v", err)
+	}
+	if got.ExitMode != "auto" || got.ActiveExit != "tokyo" {
+		t.Fatalf("auto response = %+v, want mode auto and active tokyo", got)
+	}
+}
+
+// Addressing disclosure does not affect a token-authorized control request.
+func TestExit_NonLoopbackRevealAddressing_AllowedWithToken(t *testing.T) {
 	const token = "reveal-remote-tok"
 	sw := &recordingSwitcher{known: map[string]bool{"tokyo": true}}
-	// revealOptIn=true on a wildcard (non-loopback) bind: addressing is revealed,
-	// but loopbackBound stays false, so exit control must remain refused.
+	// revealOptIn=true on a wildcard bind reveals addressing; token auth permits control.
 	srv, err := NewServer("0.0.0.0:0", token, fakeSource{}, Info{}, sw.fn, true, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewServer(0.0.0.0:0, token, reveal): %v", err)
@@ -189,18 +200,18 @@ func TestExit_NonLoopbackRevealAddressing_StillForbidden(t *testing.T) {
 	})
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("non-loopback + reveal_addressing + valid token POST => %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("non-loopback + reveal_addressing + valid token POST => %d, want 200", resp.StatusCode)
 	}
-	var e exitError
-	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
-		t.Fatalf("decode exitError: %v", err)
+	var response exitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatalf("decode exitResponse: %v", err)
 	}
-	if !strings.Contains(e.Error, "loopback-bound monitor") {
-		t.Errorf("403 body = %q, want the loopback-only message", e.Error)
+	if response.ExitMode != "tokyo" {
+		t.Errorf("exit mode = %q, want tokyo", response.ExitMode)
 	}
-	if sw.callCount() != 0 {
-		t.Fatalf("selector called %d times on a forbidden reveal-override POST, want 0", sw.callCount())
+	if sw.callCount() != 1 {
+		t.Fatalf("selector called %d times on an authorized reveal-override POST, want 1", sw.callCount())
 	}
 }
 

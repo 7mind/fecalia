@@ -29,8 +29,7 @@ const (
 	// exitPath is the SOLE mutating control route (T258, G28/M106): POST switches
 	// the active exit-capable peer. The handler is registered for both GET and
 	// POST (see NewServer) so a non-POST returns a clean 405 instead of falling
-	// through to the "/" static subtree; the handler also enforces the hard
-	// loopback-only gate, independent of the auth layer.
+	// through to the "/" static subtree; the handler shares the endpoint auth layer.
 	exitPath = "/api/exit"
 )
 
@@ -74,8 +73,8 @@ type Server struct {
 //
 // revealOptIn is the operator's [monitor].reveal_addressing config flag (T280):
 // it widens the addressing-reveal verdict to cover an authenticated non-loopback
-// bind, but it does NOT widen the RAW loopbackBound verdict — the mutating exit
-// control's hard loopback-only gate is unaffected by it.
+// bind. It does not change exit-control authorization, which depends on the
+// verified loopback bind or the configured token.
 func NewServer(addr, token string, src metrics.Source, info Info, switchExit ExitSwitcher, revealOptIn bool, logger log.Logger, extraHosts ...string) (*Server, error) {
 	loopback, err := netutil.IsLoopbackHost(addr)
 	if err != nil {
@@ -101,18 +100,16 @@ func NewServer(addr, token string, src metrics.Source, info Info, switchExit Exi
 	}
 	// Two DISTINCT verdicts are computed here and threaded separately (T280):
 	//
-	//   - loopbackBound is the RAW kernel-bound act-then-verify verdict: true ONLY
-	//     when the kernel ACTUALLY bound a loopback interface (the same
-	//     act-then-verify check as the tokenless guard above, but computed
-	//     unconditionally). It is the HARD gate for the mutating POST /api/exit
-	//     control (T258) and feeds MonitorSnapshot.ExitControlAvailable — a
-	//     reveal_addressing opt-in must NOT widen it.
+	//   - loopbackBound records the verified kernel binding. Exit control is
+	//     available on loopback or with a configured token; middleware validates
+	//     that token on each remote request.
 	//   - revealAddressing is the Q62/Q64 addressing-reveal gate: loopbackBound OR
 	//     the operator reveal_addressing opt-in. A token-authorized NON-loopback
 	//     bind still redacts per Q62 UNLESS the operator opted in. BuildSnapshot
 	//     performs the server-side redaction when this is false.
 	loopbackBound := verifyLoopbackBind(ln.Addr()) == nil
 	revealAddressing := loopbackBound || revealOptIn
+	controlAvailable := loopbackBound || token != ""
 
 	// srvCtx is cancelled by Close so the /ws push handlers (T165) stop promptly
 	// on shutdown — http.Server.Shutdown does NOT cancel a hijacked WebSocket
@@ -129,18 +126,16 @@ func NewServer(addr, token string, src metrics.Source, info Info, switchExit Exi
 
 	mux := http.NewServeMux()
 	mux.Handle("GET "+rootPath, staticHandler(static))
-	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, info, revealAddressing, loopbackBound, logger.Component("monitor")))
-	// POST /api/exit — the sole mutating route (T258). It is gated by the RAW
-	// loopbackBound verdict, NOT revealAddressing: a non-loopback bind refuses the
-	// control REGARDLESS of a valid token OR a reveal_addressing opt-in, so a
-	// remote/exposed monitor stays strictly read-only even when it reveals
-	// addressing (T280). The auth middleware (Host/Origin + token) wraps it exactly
+	mux.HandleFunc("GET "+wsPath, newWSHandler(srvCtx, src, info, revealAddressing, controlAvailable, logger.Component("monitor")))
+	// POST /api/exit — the sole mutating route (T258). Loopback requests are
+	// local; non-loopback requests require the configured token. The auth
+	// middleware (Host/Origin + token) wraps it exactly
 	// like every other route. The handler is registered for BOTH GET and POST: POST
 	// is the real control; GET is shadowed here (rather than falling through to the
 	// "/" static subtree and 404ing) so a non-POST method returns a clean 405 from
 	// the handler's own method check. Any other method (PUT/DELETE/…) matches
 	// neither /api/exit pattern and the mux returns 405 for it directly.
-	exitHandler := newExitHandler(loopbackBound, switchExit, logger.Component("monitor"))
+	exitHandler := newExitHandler(controlAvailable, switchExit, logger.Component("monitor"))
 	mux.HandleFunc("POST "+exitPath, exitHandler)
 	mux.HandleFunc("GET "+exitPath, exitHandler)
 
@@ -236,7 +231,7 @@ func staticHandler(fsys fs.FS) http.Handler {
 // independent readers on one instance corrupt each other's rates. This handler
 // only consumes whatever Source it was given; the dedicated-instance wiring is
 // enforced at construction (T169 device wiring).
-func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealAddressing, loopbackBound bool, logger log.Logger) http.HandlerFunc {
+func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealAddressing, controlAvailable bool, logger log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -262,7 +257,7 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealA
 		defer ticker.Stop()
 
 		for {
-			if err := writeSnapshot(loopCtx, c, src, info, revealAddressing, loopbackBound); err != nil {
+			if err := writeSnapshot(loopCtx, c, src, info, revealAddressing, controlAvailable); err != nil {
 				// A context cancellation (client close or shutdown) is an
 				// expected teardown, not an application error.
 				if loopCtx.Err() == nil {
@@ -287,12 +282,12 @@ func newWSHandler(srvCtx context.Context, src metrics.Source, info Info, revealA
 // writeSnapshot marshals one MonitorSnapshot and writes it as a text frame,
 // bounded by writeTimeout so a slow/stuck client reader cannot wedge the push
 // goroutine.
-func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source, info Info, revealAddressing, loopbackBound bool) error {
+func writeSnapshot(ctx context.Context, c *websocket.Conn, src metrics.Source, info Info, revealAddressing, controlAvailable bool) error {
 	// info + both verdicts are threaded from NewServer: revealAddressing (loopback
 	// OR reveal opt-in) drives the Q62/Q64 server-side redaction, while the raw
-	// loopbackBound drives ExitControlAvailable. info is a placeholder zero value
+	// controlAvailable drives ExitControlAvailable. info is a placeholder zero value
 	// until the device layer supplies the real identity/endpoint seam (T222).
-	payload, err := json.Marshal(BuildSnapshot(src, info, revealAddressing, loopbackBound))
+	payload, err := json.Marshal(BuildSnapshot(src, info, revealAddressing, controlAvailable))
 	if err != nil {
 		return err
 	}
@@ -476,13 +471,13 @@ func (a *authConfig) tokenMatches(got string) bool {
 var ErrUnknownExitPeer = errors.New("monitor: unknown or non-exit-capable exit peer")
 
 // ExitSwitcher is the mutating control seam the POST /api/exit handler invokes to
-// repoint default-route ownership onto the named exit-capable peer, returning the
-// resulting active exit name on success. The device layer supplies it (adapting
+// select auto policy or a fixed exit peer, returning the current route owner.
+// The device layer supplies it (adapting
 // exitSelector.Switch); the monitor package never imports internal/device — the
 // provider is injected exactly like the Info read-seam closures. A nil switcher
 // (a role with no multi-exit selector, or the test/read-only path) makes every
 // request a 400. The implementation MUST return an error wrapping
-// ErrUnknownExitPeer when peer is not a configured exit-capable peer, and MUST
+// ErrUnknownExitPeer when peer is neither "auto" nor a configured exit peer, and MUST
 // NOT leak any selector internals beyond the caller-supplied name.
 type ExitSwitcher func(peer string) (activeExit string, err error)
 
@@ -493,16 +488,15 @@ type ExitSwitcher func(peer string) (activeExit string, err error)
 // http.MaxBytesReader).
 const maxExitBodyBytes = 4 << 10 // 4 KiB
 
-// exitRequest is the POST /api/exit JSON body: the name of the exit-capable peer
-// to make active.
+// exitRequest is the POST /api/exit JSON body: "auto" or an exit peer name.
 type exitRequest struct {
 	Peer string `json:"peer"`
 }
 
-// exitResponse is the 200 body: the resulting active exit name (the requested
-// peer, whether an actual switch occurred or an idempotent same-name no-op).
+// exitResponse separates the active route owner from the selected policy.
 type exitResponse struct {
 	ActiveExit string `json:"activeExit"`
+	ExitMode   string `json:"exitMode"`
 }
 
 // exitError is the stable JSON error body every non-200 exit response carries.
@@ -511,31 +505,19 @@ type exitError struct {
 }
 
 // newExitHandler builds the POST /api/exit control handler. Check order: method
-// (405 for non-POST) → HARD loopback gate (403 on any non-loopback bind, before
-// any state is read, regardless of a valid token) → decode (400 on malformed
+// (405 for non-POST) → control availability → decode (400 on malformed
 // JSON) → switchExit (400 on an unknown/non-exit-capable peer, 500 on an engine
 // failure, 200 with the active exit otherwise, including an idempotent same-name
-// switch). loopbackBound is the RAW kernel-bound act-then-verify verdict,
-// DISTINCT from the widened revealAddressing gate (T280): revealAddressing is
-// loopbackBound OR the reveal_addressing opt-in, so on a reveal-override
-// non-loopback bind addressing is revealed while this gate still refuses. It is
-// captured at construction — the bound address does not change over the
-// listener's life.
-func newExitHandler(loopbackBound bool, switchExit ExitSwitcher, logger log.Logger) http.HandlerFunc {
+// switch). Authorization is enforced by the wrapping middleware.
+func newExitHandler(controlAvailable bool, switchExit ExitSwitcher, logger log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeExitError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		// HARD loopback gate: the mutating control surface exists ONLY on a monitor
-		// the kernel actually bound to loopback — the RAW loopbackBound verdict,
-		// NOT the widened revealAddressing/AddressingHidden gate (T280). A
-		// remote/exposed (token-authorized non-loopback) monitor stays strictly
-		// read-only, so this 403 fires even with a valid token AND even when a
-		// reveal_addressing opt-in has unhidden addressing (AddressingHidden=false).
-		if !loopbackBound {
-			writeExitError(w, http.StatusForbidden, "exit control is available only on a loopback-bound monitor")
+		if !controlAvailable {
+			writeExitError(w, http.StatusForbidden, "exit control requires loopback or a configured token")
 			return
 		}
 		if switchExit == nil {
@@ -562,7 +544,7 @@ func newExitHandler(loopbackBound bool, switchExit ExitSwitcher, logger log.Logg
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(exitResponse{ActiveExit: active}); err != nil {
+		if err := json.NewEncoder(w).Encode(exitResponse{ActiveExit: active, ExitMode: req.Peer}); err != nil {
 			logger.Error("monitor exit response encode failed", "err", err.Error())
 		}
 	}

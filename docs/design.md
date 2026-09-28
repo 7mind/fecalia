@@ -2191,6 +2191,15 @@ by `internal/device`:
     the guaranteed inner `/32` (kept warm end-to-end by keepalive, provable via the
     inner ping). The stripping is inert (render byte-identical) for the single-exit
     and concentrator shapes.
+  - **Selection target**: top-level `exit = "auto"` is the edge default. A peer
+    name fixes the startup selection; a monitor command changes the live target
+    until restart. `exitMode` reports that target, while `activeExit` reports
+    which peer currently owns the default route. In `auto`, the selector scans
+    exits with established sessions, takes each exit's lowest RTT among paths
+    in `StateUp`, and selects the lowest RTT (config order breaks ties). It
+    reevaluates every five seconds and waits five minutes after an RTT-driven
+    switch before another RTT-driven switch. Endpoint-list exhaustion retains
+    its immediate health failover regardless of this cooldown.
   - **Switch** (`exitSelector.Switch(name)`): validates `name` is a configured
     exit-capable peer (a typed `*unknownExitError`, mutating nothing, otherwise),
     no-ops idempotently when the peer is already active, and otherwise issues ONE
@@ -2241,16 +2250,15 @@ by `internal/device`:
     - **MANUAL WINS**: an operator's manual switch during or after a promotion
       stands; auto-promotion never overrides a standing choice beyond moving egress
       off a dead exit.
-    - **NO auto-failback** (anti-flap): a promoted exit stays active until IT
-      itself fully fails or the operator switches — the selector does NOT
-      auto-fail-BACK to the original when it recovers, so an intermittent
-      partial/full recovery of the original never flaps egress. Return to a
-      preferred exit is operator-driven.
+    - **No failure-only failback**: recovery alone does not reverse a promotion.
+      In fixed mode, the promoted exit stays active until it fails or the
+      operator switches. In `auto`, RTT evaluation can select the recovered
+      exit after the five-minute cooldown if it is the fastest healthy exit.
     - **No healthy standby**: if no warm standby is healthy, egress stays on the
       failed exit and the condition is logged. Promotion is retried while the
       active exit remains exhausted, without repeated no-standby logs.
-    - **No persistence** (Q74): auto-promotion does not rewrite the boot default;
-      on restart the edge still boots to the config-default (first) exit.
+    - **No persistence** (Q74): runtime mode changes and promotion do not rewrite
+      the configured selection; restart restores `exit`, whose default is `auto`.
 - **WG-session liveness signal** (`wanbond_session_established`, T101,
   `session.go`). The per-path liveness plane (probes) tells you a path's
   **transport** is reachable; it says nothing about whether the **inner**
@@ -2305,7 +2313,7 @@ by `internal/device`:
 - `internal/metrics` — a private-registry Prometheus `/metrics` endpoint that
   **refuses any non-loopback bind**.
 - `internal/monitor` — the monitoring-UI endpoint for the `[monitor]` surface,
-  read-only EXCEPT the single loopback-only `POST /api/exit` control (T258; see
+  read-only EXCEPT authenticated `POST /api/exit` (T258; see
   *Security model* below): an embedded (`//go:embed all:dist`) Vite/TypeScript
   dashboard at `/`
   showing per-peer throughput/loss/FEC sparklines, fed by a `/ws` upgrade that
@@ -2583,8 +2591,8 @@ misbehaves subtly. Agents and contributors must preserve them.
   `HttpOnly` cookie and 302-redirects to the same path with the query stripped,
   so the token does not linger in the URL bar or browser history. All token
   comparisons are constant-time (`crypto/subtle`).
-  - **Control surface — read-only EXCEPT `POST /api/exit`, loopback-only
-    (T258, G28/M106, Q73 user-approved).** The dashboard is read-only in v1 with
+  - **Control surface — read-only EXCEPT authenticated `POST /api/exit`
+    (T258, G28/M106).** The dashboard is read-only in v1 with
     ONE deliberate exception: `POST /api/exit` (`internal/monitor/server.go`)
     switches the active exit-capable peer on a multi-exit edge, wired to
     `exitSelector.Switch` (`reason=manual`) through a `monitor.ExitSwitcher`
@@ -2593,18 +2601,15 @@ misbehaves subtly. Agents and contributors must preserve them.
     injection seam. Every OTHER route stays a pure read. The mutating route is
     protected in depth:
     - **Frontend widget (T260, G28/M107).** `web/src/dashboard.ts` renders a
-      single `<select>` exit-switch control from the snapshot's authoritative
+      single `<select>` policy control with `auto` and the snapshot's authoritative
       config-order `exitCapablePeers` field — never by inferring candidates from
       generic `endpoints`/`peerSessions` telemetry — and issues the `POST` on
       selection via a same-origin `fetch` — no token/cookie handling in JS,
       the browser's `SameSite=Strict` cookie jar carries auth automatically
       (the `ws-client.ts` precedent). The control mirrors the server's gate
       client-side rather than relying on it: it is omitted off the edge role,
-      when `!snapshot.exitControlAvailable` (T281 — the wire field mirroring the
-      server's RAW `loopbackBound` verdict; a non-loopback bind would 403 the
-      POST anyway; deliberately NOT keyed on `addressingHidden`, which a
-      `reveal_addressing` opt-in can clear on a non-loopback bind while exit
-      control stays unavailable) or whenever fewer than two exit-capable peers
+      when `!snapshot.exitControlAvailable` (loopback-bound or token-authenticated
+      non-loopback; independent of `addressingHidden`) or whenever fewer than two exit-capable peers
       are configured (nothing to switch to). Pending
       state disables the `<select>` while the POST is in flight; a 2xx
       response adopts the returned `activeExit` optimistically (reconciled
@@ -2614,18 +2619,10 @@ misbehaves subtly. Agents and contributors must preserve them.
       per-snapshot `innerHTML` re-render (a dashboard-scoped closure
       variable) and the `change` listener is re-attached after every render,
       so neither is lost on the next pushed frame.
-    - **HARD loopback gate (act-then-verify), independent of the token.** The
-      handler refuses with **403** whenever the server's ACTUAL kernel-bound
-      address is non-loopback — the RAW `loopbackBound` verdict from
-      `verifyLoopbackBind(ln.Addr())` (T280). This is a DISTINCT verdict from
-      `revealAddressing` (which is `loopbackBound` OR the `reveal_addressing`
-      opt-in and drives `addressingHidden`): the exit gate uses `loopbackBound`
-      alone, so a `reveal_addressing` opt-in never widens the control surface. A
-      token-authorized **non-loopback** monitor therefore stays **strictly
-      read-only**: the 403 fires REGARDLESS of a valid token, so an off-host
-      operator can watch but never steer. This is stricter than the read surface
-      (which a token exposes off-host); the control surface is loopback-ONLY,
-      full stop.
+    - **Control availability.** A verified loopback binding permits local
+      control. A non-loopback binding requires the configured token, checked by
+      the existing auth middleware before the handler. The addressing-reveal
+      setting is independent and never grants control by itself.
     - **The auth middleware covers it like every route.** Host/Origin validation
       (DNS-rebinding + cross-origin/CSRF defense) and, when configured, token
       gating apply to the whole mux, so a cross-origin `POST` is **403** and a
@@ -2639,12 +2636,12 @@ misbehaves subtly. Agents and contributors must preserve them.
       `*unknownExitError` adapted to `monitor.ErrUnknownExitPeer`, the body naming
       ONLY the caller-supplied peer, never selector internals); a successful
       switch — and an idempotent same-name switch — is **200**
-      `{"activeExit": "<name>"}`.
+      `{"activeExit": "<name>", "exitMode": "auto|<name>"}`.
   - **Addressing redaction gate (Q62/Q64) — server-side, not client-side.**
     Per-path `addressing` (`source`, `remote`) and the ordered, per-peer-grouped
     `endpoints` list's `address` values are the one REDACTABLE part of the
     extended wire contract (role/version/uptime/bind-mode/link-params/
-    fingerprint/`peerSessions`/`activeExit`/`exitCapablePeers` are NOT gated — see the
+    fingerprint/`peerSessions`/`activeExit`/`exitMode`/`exitCapablePeers` are NOT gated — see the
     `internal/monitor` bullet above). `monitor.NewServer`
     derives a `revealAddressing` verdict via **act-then-verify**:
     `verifyLoopbackBind(ln.Addr())` inspects the address the KERNEL actually
@@ -2690,23 +2687,19 @@ misbehaves subtly. Agents and contributors must preserve them.
     visible ONLY when the kernel bound a loopback interface OR the operator
     sets `reveal_addressing`, never on a token-authorized non-loopback bind by
     default, consistent with Q64's "loopback-binding only" answer. The
-    `POST /api/exit` loopback-only gate (control surface, separate from
-    addressing redaction) remains entirely independent of `reveal_addressing`
-    and continues to refuse the control with 403 on any non-loopback bind,
-    regardless of token or addressing disclosure setting.
+    `POST /api/exit` authorization remains independent of `reveal_addressing`:
+    loopback control is local, and non-loopback control requires a valid token.
   - **Accepted residual risk: cleartext token over a non-loopback LAN bind
     (Q58, answer (a)).** The monitor serves plain HTTP — there is no TLS in v1.
     On a non-loopback `listen` (the explicit off-host opt-in above), the bearer
     `token` therefore travels in **CLEARTEXT**: once as the `?token=` query
     parameter and thereafter as the session cookie, on every request. A
     **passive on-path observer on that LAN segment can capture the token** and
-    thereby gain the same read-only access to live stats as a legitimate
+    thereby gain the same access to live stats and exit selection as a legitimate
     operator. This is a knowingly accepted trade-off, not an oversight: the
-    blast radius of a captured non-loopback token is READ-ONLY telemetry (no key
-    material, and NO control-plane actions — the sole mutating route
-    `POST /api/exit` is loopback-ONLY and 403s on any non-loopback bind
-    regardless of the token, so a LAN token-capturer cannot steer the exit), and
-    the mitigation is operational rather than cryptographic. **Recommendation:** keep `[monitor]` on its loopback default
+    blast radius of a captured non-loopback token includes exit selection but
+    not key disclosure; the token authorizes `POST /api/exit` remotely. The
+    mitigation is operational rather than cryptographic. **Recommendation:** keep `[monitor]` on its loopback default
     and reach it from elsewhere with `ssh -L <local>:127.0.0.1:<port> …`
     port-forwarding; reserve a non-loopback `listen` + `token` for networks you
     already trust, and never for an untrusted/shared LAN.

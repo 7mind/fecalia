@@ -305,6 +305,8 @@ type Info struct {
 	// active-exit concept applies: the concentrator role, or an edge with fewer
 	// than two exit-capable peers / no default-route peer.
 	ActiveExit func() string
+	// ExitMode is the live operator target, distinct from ActiveExit.
+	ExitMode func() string
 	// ExitCapablePeers is the configured, config-order set of peer names that may
 	// own the default route. It is empty off the edge role.
 	ExitCapablePeers []string
@@ -343,6 +345,8 @@ type MonitorSnapshot struct {
 	// concentrator role and on an edge with no default-route ownership to
 	// report. It is a peer NAME, never an address, so it is NOT redacted.
 	ActiveExit string `json:"activeExit"`
+	// ExitMode is "auto" or the configured exit name selected by the operator.
+	ExitMode string `json:"exitMode"`
 	// ExitCapablePeers is the configured, config-order set of peers eligible to
 	// own the default route. The control applies only when this set has 2+ names;
 	// it is not inferred from endpoint or session telemetry.
@@ -357,13 +361,9 @@ type MonitorSnapshot struct {
 	// so it can be false even on a non-loopback bind when the operator opted in.
 	// The frontend renders a "hidden" placeholder; it never reconstructs the values.
 	AddressingHidden bool `json:"addressingHidden"`
-	// ExitControlAvailable is true ONLY when the kernel ACTUALLY bound a loopback
-	// interface (the raw loopbackBound verdict) — the SAME hard gate the POST
-	// /api/exit control enforces (T258). It is deliberately independent of
-	// AddressingHidden: a reveal_addressing opt-in can unhide addressing on a
-	// non-loopback bind WITHOUT enabling the mutating exit control, so the frontend
-	// hides/disables the exit switch whenever this is false even if addressing is
-	// visible. (T280, G32.)
+	// ExitControlAvailable is true for a verified loopback binding or a
+	// token-authenticated non-loopback binding. It is independent of the
+	// addressing-reveal setting.
 	ExitControlAvailable bool `json:"exitControlAvailable"`
 }
 
@@ -401,14 +401,9 @@ func addrPortString(a netip.AddrPort) string {
 // NOT part of the redactable set: it is present on any binding, and there is
 // deliberately no full key to gate.
 //
-// loopbackBound is the RAW kernel-bound act-then-verify verdict, distinct from
-// revealAddressing (which is loopbackBound OR the operator reveal opt-in): it
-// feeds ExitControlAvailable, which mirrors the HARD loopback-only gate on the
-// mutating POST /api/exit control (T258/T280). A reveal_addressing opt-in can set
-// revealAddressing true on a non-loopback bind, but loopbackBound stays false
-// there, so exit control remains unavailable — the two verdicts are threaded
-// separately on purpose.
-func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBound bool) MonitorSnapshot {
+// controlAvailable reports the server's authorization surface independently of
+// revealAddressing; the latter controls only addressing redaction.
+func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvailable bool) MonitorSnapshot {
 	paths := src.Paths()
 	fec := src.FEC()
 	reseqSnapshots := src.Reseq()
@@ -432,6 +427,10 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 	if info.ActiveExit != nil {
 		activeExit = info.ActiveExit()
 	}
+	var exitMode string
+	if info.ExitMode != nil {
+		exitMode = info.ExitMode()
+	}
 
 	out := MonitorSnapshot{
 		Paths:            make([]PathSnapshot, len(paths)),
@@ -440,6 +439,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 		Aggregation:      make([]AggregationSnapshot, len(aggregation)),
 		PeerSessions:     make([]PeerSessionSnapshot, len(peerSessions)),
 		ActiveExit:       activeExit,
+		ExitMode:         exitMode,
 		ExitCapablePeers: append([]string{}, info.ExitCapablePeers...),
 		Session: SessionSnapshot{
 			Established:          session.Established,
@@ -454,7 +454,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, loopbackBoun
 		},
 		WGPublicKeyFingerprint: info.WGPublicKeyFingerprint,
 		AddressingHidden:       !revealAddressing,
-		ExitControlAvailable:   loopbackBound,
+		ExitControlAvailable:   controlAvailable,
 	}
 
 	for i, p := range paths {

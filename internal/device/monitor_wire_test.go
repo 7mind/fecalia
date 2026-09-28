@@ -219,7 +219,7 @@ func TestReloadRevealAddressingFlipRebindsMonitorWithoutTearingTunnel(t *testing
 	addrBefore := tun.monitorSrv.Addr().String()
 
 	// assertReveal dials the CURRENT running endpoint over a real /ws and asserts the addressing
-	// verdict; exit control must stay unavailable on this non-loopback bind either way.
+	// verdict; token-authenticated exit control remains available either way.
 	assertReveal := func(desc string, wantHidden bool) {
 		t.Helper()
 		readRaw, cleanup := dialMonitorAt(t, tun.monitorSrv, token)
@@ -228,8 +228,8 @@ func TestReloadRevealAddressingFlipRebindsMonitorWithoutTearingTunnel(t *testing
 		if snap.AddressingHidden != wantHidden {
 			t.Fatalf("%s: addressingHidden = %v, want %v: %s", desc, snap.AddressingHidden, wantHidden, raw)
 		}
-		if snap.ExitControlAvailable {
-			t.Fatalf("%s: exitControlAvailable must stay false on a non-loopback bind: %s", desc, raw)
+		if !snap.ExitControlAvailable {
+			t.Fatalf("%s: token-authenticated exit control must be available: %s", desc, raw)
 		}
 	}
 

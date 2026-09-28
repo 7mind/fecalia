@@ -131,6 +131,11 @@ func TestReloadWarnings(t *testing.T) {
 			c.Role = config.RoleConcentrator
 			return c
 		}, "role"},
+		{"configured exit changed", func() *config.Config {
+			c := base()
+			c.Exit = "auto"
+			return c
+		}, "restart to apply"},
 		{"log changed", func() *config.Config {
 			c := base()
 			c.Log = config.Log{Level: "debug"}
@@ -326,7 +331,7 @@ func TestReloadWarningsBind(t *testing.T) {
 // addition to the zeroed set) fails this test, forcing the invariant to be honoured.
 func TestReloadWarningsCatchAll(t *testing.T) {
 	known := map[string]bool{
-		"Role": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
+		"Role": true, "Exit": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
 		"Metrics": true, "Monitor": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
 		"Liveness": true, "Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
 		"LivenessBudgetSane": true,

@@ -126,6 +126,77 @@ func twoExitEdgeConfig(t *testing.T) (cfg *config.Config, aHex, bHex string) {
 	return cfg, hex.EncodeToString(aPubRaw), hex.EncodeToString(bPubRaw)
 }
 
+func TestExitSelectorAutoChoosesBestHealthyRTTWithCooldown(t *testing.T) {
+	cfg, _, _ := twoExitEdgeConfig(t)
+	engine := &recordingIpcSetter{}
+	s := newExitSelector(cfg, engine, discardLogger(t))
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	s.clock = clock
+	health := map[string]bool{"a": true, "b": true}
+	rtts := map[string]time.Duration{"a": 100 * time.Millisecond, "b": 60 * time.Millisecond}
+	s.health = exitHealthFunc(func(name string) bool { return health[name] })
+	s.rtt = func(name string) (time.Duration, bool) { return rtts[name], rtts[name] > 0 }
+
+	s.evaluateAuto()
+	if got := s.ActiveExit(); got != "b" {
+		t.Fatalf("initial best RTT exit = %q, want b", got)
+	}
+	if got := s.Mode(); got != "auto" {
+		t.Fatalf("mode after auto switch = %q, want auto", got)
+	}
+	rtts["a"] = 20 * time.Millisecond
+	clock.advance(4 * time.Minute)
+	s.evaluateAuto()
+	if got := s.ActiveExit(); got != "b" {
+		t.Fatalf("exit before cooldown = %q, want b", got)
+	}
+	clock.advance(time.Minute)
+	s.evaluateAuto()
+	if got := s.ActiveExit(); got != "a" {
+		t.Fatalf("exit after cooldown = %q, want a", got)
+	}
+	if got := engine.count(); got != 2 {
+		t.Fatalf("engine switches = %d, want 2", got)
+	}
+
+	if err := s.SetMode("b"); err != nil {
+		t.Fatalf("select fixed exit: %v", err)
+	}
+	clock.advance(10 * time.Minute)
+	s.evaluateAuto()
+	if got := s.ActiveExit(); got != "b" {
+		t.Fatalf("fixed mode exit = %q, want b", got)
+	}
+	if err := s.SetMode("auto"); err != nil {
+		t.Fatalf("restore auto: %v", err)
+	}
+	s.evaluateAuto()
+	if got := s.ActiveExit(); got != "a" {
+		t.Fatalf("restored auto exit = %q, want a", got)
+	}
+	health["a"] = false
+	clock.advance(autoExitCooldown)
+	s.evaluateAuto()
+	if got := s.ActiveExit(); got != "b" {
+		t.Fatalf("unhealthy faster exit was selected: got %q, want b", got)
+	}
+}
+
+func TestBestUpPathRTTIgnoresDownAndUnmeasuredPaths(t *testing.T) {
+	paths := []bind.PathTraffic{
+		{State: telemetry.StateDown, Estimate: telemetry.Estimate{RTT: 5 * time.Millisecond}},
+		{State: telemetry.StateUp, Estimate: telemetry.Estimate{RTT: 80 * time.Millisecond}},
+		{State: telemetry.StateUp, Estimate: telemetry.Estimate{RTT: 40 * time.Millisecond}},
+		{State: telemetry.StateUp},
+	}
+	if got, ok := bestUpPathRTT(paths); !ok || got != 40*time.Millisecond {
+		t.Fatalf("best up-path RTT = %s/%v, want 40ms/true", got, ok)
+	}
+	if got, ok := bestUpPathRTT(paths[:1]); ok || got != 0 {
+		t.Fatalf("all-down RTT = %s/%v, want 0/false", got, ok)
+	}
+}
+
 func TestExitCapablePeerNamesPreservesConfigOrder(t *testing.T) {
 	cfg, _, _ := twoExitEdgeConfig(t)
 	got := exitCapablePeerNames(cfg, cfg.PeerIdentities())

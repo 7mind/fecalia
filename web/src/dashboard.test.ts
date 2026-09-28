@@ -144,6 +144,7 @@ function multiPeerSnapshot(): MonitorSnapshot {
     endpoints: [],
     peerSessions: [],
     activeExit: '',
+    exitMode: '',
     exitCapablePeers: [],
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
@@ -164,6 +165,7 @@ function singlePeerSnapshot(): MonitorSnapshot {
     endpoints: [],
     peerSessions: [],
     activeExit: '',
+    exitMode: '',
     exitCapablePeers: [],
     wgPublicKeyFingerprint: '',
     addressingHidden: true,
@@ -192,6 +194,7 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
     ],
     peerSessions: [peerSession({ peer: 'peerA', established: true, lastHandshakeSeconds: 7 }), peerSession({ peer: 'peerB', established: false, lastHandshakeSeconds: 0 })],
     activeExit: 'peerB',
+    exitMode: 'peerB',
     exitCapablePeers: ['peerA', 'peerB'],
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
@@ -220,6 +223,7 @@ function singlePeerNamedSnapshot(): MonitorSnapshot {
     endpoints: [endpoint({ peer: 'peerA', address: 'hub-a1:51820', active: true })],
     peerSessions: [peerSession({ peer: 'peerA', established: true, lastHandshakeSeconds: 7 })],
     activeExit: 'peerA',
+    exitMode: 'peerA',
     exitCapablePeers: ['peerA'],
     wgPublicKeyFingerprint: 'ConcFp01',
     addressingHidden: false,
@@ -382,6 +386,7 @@ describe('mountDashboard', () => {
       endpoints: [endpoint({ address: '198.51.100.1:51820', active: true }), endpoint({ address: '198.51.100.2:51820', active: false })],
       peerSessions: [],
       activeExit: '',
+      exitMode: '',
       exitCapablePeers: [],
       wgPublicKeyFingerprint: 'AbCd1234',
       addressingHidden: false,
@@ -618,7 +623,7 @@ describe('mountDashboard', () => {
 
       const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]');
       expect(select).not.toBeNull();
-      expect(Array.from(select!.options).map((o) => o.value)).toEqual(['peerA', 'peerB']);
+      expect(Array.from(select!.options).map((o) => o.value)).toEqual(['auto', 'peerA', 'peerB']);
     });
 
     it('renders for a multi-peer, exitControlAvailable fixture, listing every exit-capable peer', () => {
@@ -629,12 +634,38 @@ describe('mountDashboard', () => {
       expect(control).not.toBeNull();
       const select = control!.querySelector('select')!;
       const values = Array.from(select.options).map((o) => o.value);
-      expect(values).toEqual(['peerA', 'peerB']);
+      expect(values).toEqual(['auto', 'peerA', 'peerB']);
       expect(select.value).toBe('peerB'); // marks the current activeExit
     });
 
+    it('shows auto as the selected policy while displaying the active exit separately', () => {
+      const dashboard = mountDashboard(container);
+      const snapshot = twoPeerConcentratorSnapshot();
+      snapshot.exitMode = 'auto';
+      dashboard.onSnapshot(snapshot);
+
+      expect(container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!.value).toBe('auto');
+      expect(container.querySelector('[data-testid="exit-control-active"]')!.textContent).toBe('Active: peerB');
+    });
+
+    it('selecting auto posts the policy while leaving the reported active exit visible', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerB', exitMode: 'auto' }));
+      vi.stubGlobal('fetch', fetchMock);
+      const dashboard = mountDashboard(container);
+      dashboard.onSnapshot(twoPeerConcentratorSnapshot());
+
+      const select = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
+      select.value = 'auto';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+
+      expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ peer: 'auto' }));
+      expect(container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!.value).toBe('auto');
+      expect(container.querySelector('[data-testid="exit-control-active"]')!.textContent).toBe('Active: peerB');
+    });
+
     it('selecting a standby concentrator issues POST /api/exit with the exact JSON body', async () => {
-      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA' }));
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA', exitMode: 'peerA' }));
       vi.stubGlobal('fetch', fetchMock);
 
       const dashboard = mountDashboard(container);
@@ -653,7 +684,7 @@ describe('mountDashboard', () => {
     });
 
     it('a 200 response updates the badge (optimistically, ahead of the next snapshot)', async () => {
-      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA' }));
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA', exitMode: 'peerA' }));
       vi.stubGlobal('fetch', fetchMock);
 
       const dashboard = mountDashboard(container);
@@ -716,7 +747,7 @@ describe('mountDashboard', () => {
     });
 
     it('the next snapshot frame reconciles the optimistic update with the server truth', async () => {
-      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA' }));
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { activeExit: 'peerA', exitMode: 'peerA' }));
       vi.stubGlobal('fetch', fetchMock);
 
       const dashboard = mountDashboard(container);
@@ -767,7 +798,7 @@ describe('mountDashboard', () => {
       expect(pendingSelect.disabled).toBe(true);
       expect(container.querySelector('[data-testid="exit-control-pending"]')).not.toBeNull();
 
-      resolveFetch(jsonResponse(200, { activeExit: 'peerA' }));
+      resolveFetch(jsonResponse(200, { activeExit: 'peerA', exitMode: 'peerA' }));
       await flush();
 
       const settledSelect = container.querySelector<HTMLSelectElement>('[data-testid="exit-control-select"]')!;
