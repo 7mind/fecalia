@@ -2295,6 +2295,11 @@ listen = "127.0.0.1:9101"
   fingerprint, and the ordered hub-endpoint failover list with the active
   entry highlighted — all of these are shown **on ANY binding**, loopback or
   token'd non-loopback alike.
+  The compact layout automatically follows your system's light/dark preference,
+  including changes while the page is open. The top bar shows overall WG-session
+  status and live-update health. Each peer heading includes its session status
+  and last-handshake age; path diagnostics and addressing expand under
+  **Path details**. Exit policy and the current active exit share a compact toolbar.
   - **On a loopback binding**, you ALSO see full per-path addressing (each
     path's bound source address and its current remote) and every endpoint's
     address in the failover list; on the concentrator role, each connected

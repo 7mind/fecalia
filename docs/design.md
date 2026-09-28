@@ -2317,7 +2317,12 @@ by `internal/device`:
   *Security model* below): an embedded (`//go:embed all:dist`) Vite/TypeScript
   dashboard at `/`
   showing per-peer throughput/loss/FEC sparklines, fed by a `/ws` upgrade that
-  pushes a fresh snapshot every 1s. Loopback-only by default, like `/metrics`,
+  pushes a fresh snapshot every 1s. The frontend follows `prefers-color-scheme`
+  for automatic light/dark styling, with compact, square sections. The top bar
+  holds the connection-scoped WG session and WebSocket freshness; grouped
+  peers show their own session and handshake age inline with the peer heading.
+  Path metrics use flat grids with expandable diagnostics.
+  Loopback-only by default, like `/metrics`,
   but MAY bind non-loopback when a `token` is configured (see *Security
   model* below for the auth layer and the accepted residual risk). The
   `wanbond monitor` CLI subscribes to this same read-only `/ws` stream on

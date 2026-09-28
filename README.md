@@ -192,7 +192,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   absent entirely for a fixed-ratio or FEC-off peer.
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
   live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
-  a `/ws` WebSocket every 1s). The exit-selection control offers `auto` and
+  a `/ws` WebSocket every 1s). The compact dashboard automatically follows the
+  system light/dark theme, shows overall WG-session status in the top bar,
+  and places each peer's session and handshake age beside its name.
+  The exit-selection control offers `auto` and
   each configured exit, and shows the active exit separately. `auto` is the
   edge config default: it selects the healthy exit with the lowest RTT on any
   up uplink, with a five-minute cooldown between RTT-driven switches. The
