@@ -165,16 +165,32 @@ unassigned queued packets. Adaptive receivers reject legacy unauthenticated
 DATA/PARITY. The envelope adds 61 bytes over legacy DATA; boot MTU and runtime
 PMTU resizing both reserve it.
 
+Receive deduplication keeps 8192 attempts per lane and 8192 global datagrams;
+the shorter ACK bitmaps do not constrain valid receive reordering. A global
+receipt releases an old attempt after the lane bitmap has advanced past it,
+without attributing that receipt to a specific replicated physical attempt.
+The engine-facing receiver drains ready packets into one batch while preserving
+per-peer order and virtual endpoints. Adaptive bulk batches coalesce for at most
+one packet's serialization time at the reverse pacing target, capped at 2 ms.
+This lets TUN GRO combine packets and reduce reverse TCP ACK traffic, while fast
+symmetric links use shorter batches. Interactive arrivals flush immediately.
+
 **Rate and latency.** Each lane starts at 125 kB/s. ACK timing measures RTT and
 delivery rate over receiver-clock intervals of at least 50 ms, avoiding ACK
 arrival-compression bias; receiver-relative arrival time minus local send time
 measures changes in forward transit without synchronized clocks. The controller
-raises a backlogged lane's target and reduces it when forward queue delay
-exceeds 10 ms or delivery stalls. Loss with a pacing target substantially above
+raises a backlogged lane's target and reduces it when the minimum forward queue
+delay across a control interval exceeds 10 ms or delivery stalls. Idle feedback
+still measures path health but does not reduce the pacing target. Instantaneous
+delay remains visible in metrics. Demand is sampled before ACK processing releases
+the congestion window, so delivery of a busy window can raise the target even
+when no packets remain queued. Loss with a pacing target substantially above
 measured delivery caps the target near delivery, covering shallow router buffers
-that drop without accumulating 10 ms of queueing. ACKs wait at most 10 ms or
-eight arrivals. They bypass data pacing: charging reverse feedback to a data-
-only rate estimate can accumulate permanent pacing debt and starve voice/TCP
+that drop without accumulating 10 ms of queueing. ACKs wait at most 25 ms or
+64 arrivals, matching the per-lane ACK bitmap without
+sending one ACK for every eight packets on a fast download. They bypass data
+pacing: charging reverse feedback to a data-only rate estimate can accumulate
+permanent pacing debt and starve voice/TCP
 ACKs while receiving a fast bulk stream. Congestion samples reflect the data
 capacity remaining after feedback traffic. Target rate and measured delivery
 remain separate values in metrics. A persistent delay increase with a collapsed
@@ -185,13 +201,19 @@ remain eligible. This distinguishes changed propagation delay from persistent
 queueing without synchronized clocks. Targets are bounded to 16 kB/s–1.25 GB/s;
 links below that floor or beyond the bounded packet windows are outside the
 tested envelope.
+The congestion window uses the minimum observed RTT plus 20 ms of queue budget
+and the 25 ms ACK interval, with a four-packet floor. Loaded RTT does not enlarge
+the window as a queue builds.
 
 Datagrams wait at most 100 ms before first transmission, with at most 8192
 queued and outstanding datagrams per peer. Repair lifetime is 250 ms from
-admission, with at most four attempts and a timer of `max(60 ms, 2*SRTT)`.
+admission, with at most four attempts and a timer of
+`max(60 ms, SRTT + 4*RTTVariation + 25 ms)`. RTT variation is the EWMA of
+absolute sample error; the final 25 ms covers the delayed-ACK interval.
 Repairs prefer a different healthy lane. Small datagrams (encrypted size <=384
 bytes) have a priority queue, may borrow 5 ms of pacing, and may be copied onto
-a second lane. Additional copies have a 64 kB/s allowance and 6.4 kB burst. All-
+a second lane. Additional copies have an allowance of 10% of the healthy lanes'
+aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance. All-
 small-packet overload can consume priority service: this heuristic does not
 identify voice or provide per-application fairness.
 

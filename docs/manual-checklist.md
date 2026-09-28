@@ -32,6 +32,14 @@ Prerequisites (all phases):
 - [ ] Benchmark upload and download, confirming bulk bytes on both WANs and
       goodput above the profile's acceptance threshold.
 - [ ] Repeat with opposite upload/download capacities and seeded jitter.
+- [ ] Include idle-to-load transitions and at least 10 ms of jitter. Confirm
+      an idle sender retains its pacing target and a faster WAN carries bulk
+      after the idle period. Run `go test ./internal/bond` and the VM
+      `profiles/jitter.json` benchmark with `--idle-seconds 30`.
+- [ ] In a disposable Linux guest, run the tagged
+      `TestInactiveTUNAQMRemovesOnlyLegacyShaper` test. On a persistent-interface
+      upgrade, check `tc qdisc show dev wanbond0`: disabled legacy HTB/bfifo
+      must be removed, with the interface and addressing preserved.
 - [ ] Run simultaneous bidirectional TCP and 50 Hz UDP during a capacity drop,
       five-second failure of either WAN, recovery and seeded packet loss.
       Check UDP loss, p99 RTT, maximum receive gap, and ongoing TCP progress in

@@ -419,6 +419,13 @@ Legacy FEC must be disabled because adaptive owns bounded retransmission and
 small-packet replication. Mixed adaptive/legacy peers cannot exchange tunnel
 data, although their ordinary probes may still report healthy.
 
+Linux startup requires `tc` from iproute2, including for adaptive mode. When
+legacy TUN shaping is disabled, startup removes its exact `htb 1:` / `bfifo 10:`
+under `1:1` arrangement from a retained interface. This prevents an old rate cap
+surviving a policy change with `tun_persist=true`; unrelated qdiscs remain intact.
+The interface, addresses and routes are retained. Previously configured ring
+and GSO limits are not restored by this qdisc cleanup.
+
 Source routing and router FastTrack exclusions remain necessary: each edge
 source address must reach its intended WAN. The concentrator learns both
 return addresses from authenticated probes, including when it binds only one
@@ -555,7 +562,8 @@ Common rules, either policy:
   a carrier change cancels the old wait, and the wait cannot accumulate delay
   dwell. Q91 defines no fixed
   absolute-goodput gate.
-- Linux active-backup pacing requires `tc` from iproute2. Startup fails unless
+- Linux startup requires `tc` from iproute2 to reconcile retained TUN shaping.
+  With active-backup pacing enabled, startup fails unless
   the daemon can install and read back HTB+`bfifo`, the rate, explicit HTB burst,
   TUN ptr-ring capacity, and the byte limit. Let `U=gso_max_size`,
   `Q=20ms`, and `L=max(peerCount*U,ceil(R*Q))` bytes for aggregate inner
@@ -2271,6 +2279,10 @@ It discovers one config under `/run/wanbond/` or
 Root is needed only when the daemon's `0600` config is root-owned. The command
 reads the configured token and connects to the local monitor port; when
 `[monitor].listen` is disabled it reports that no stream is available.
+The displayed path rate is combined transmit and receive outer UDP traffic,
+including feedback and copies. It is not application goodput or a capacity
+estimate. JSON `throughputBps` and `linkBandwidthBps` are bits per second; the
+byte-rate displays divide by eight. Cumulative `tx`/`rx` values are already bytes.
 
 ```toml
 [monitor]

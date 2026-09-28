@@ -61,6 +61,13 @@ This policy learns each authenticated return path, including multiple edge WANs
 behind one concentrator socket. It measures delivery and forward queue delay,
 paces each direction independently, and uses every available path under load.
 Static bandwidth hints are not required. Legacy policies keep their defaults.
+Idle feedback does not lower the pacing target. Loaded feedback uses a minimum
+over each control interval to separate transient jitter from sustained queueing;
+the repair timer also accounts for RTT variation. Linux startup requires `tc`
+and removes the old wanbond HTB/bfifo cap when that shaper is no longer enabled.
+Small-packet duplication follows learned capacity, capped at 10% of the aggregate
+pacing target and 64 kB/s. Bulk receive batching reduces return ACK traffic and
+flushes immediately for interactive packets.
 
 Lost datagrams receive bounded cross-path retries. Small encrypted datagrams
 (up to 384 bytes, including WireGuard overhead) receive priority and budgeted
