@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
+	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // ipcSetter is the engine seam exitSelector.Switch repoints default-route
@@ -77,6 +79,7 @@ type exitSelector struct {
 // controller mu) — from inside the callback without inverting the s.mu -> controller.mu order.
 type exitController interface {
 	SetOnExhausted(cb func())
+	Exhausted() bool
 }
 
 // exitHealth reports whether a candidate exit-capable peer is a HEALTHY warm standby fit for
@@ -213,15 +216,54 @@ func (s *exitSelector) switchLocked(name, reason string) error {
 // enableAutoPromotion wires health-driven auto-promotion (T269): it records the per-peer
 // exhaustion-signal controllers (keyed by exit-peer name) and the warm-standby health seam, then
 // subscribes the exhaustion trigger onto the CURRENTLY-ACTIVE exit's controller. Called ONCE at
-// boot after the controllers exist. nil ctrls or nil health leaves auto-promotion disabled (the
-// single-exit / no-controller shapes). A peer absent from ctrls (a single-endpoint exit with no
-// controller) simply carries no exhaustion signal and is never subscribed.
-func (s *exitSelector) enableAutoPromotion(ctrls map[string]exitController, health exitHealth) {
+// boot after the controllers exist. The returned stop function waits for the retry loop to exit
+// before engine teardown. nil ctrls or nil health leaves auto-promotion disabled (the single-exit /
+// no-controller shapes). A peer absent from ctrls carries no exhaustion signal.
+func (s *exitSelector) enableAutoPromotion(ctrls map[string]exitController, health exitHealth) func() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.ctrls = ctrls
 	s.health = health
 	s.subscribeActiveLocked()
+	s.mu.Unlock()
+
+	if len(ctrls) == 0 || health == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(telemetry.DefaultProbeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				s.retryExhaustedPromotion()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done); <-stopped }) }
+}
+
+// retryExhaustedPromotion catches a standby session that becomes healthy after the active exit's
+// one-shot exhaustion signal. Checking current path loss also prevents a late switch after recovery.
+func (s *exitSelector) retryExhaustedPromotion() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctrl, ok := s.ctrls[s.active]
+	if !ok || !ctrl.Exhausted() {
+		return
+	}
+	target := s.firstHealthyStandbyLocked()
+	if target == "" {
+		return
+	}
+	if err := s.switchLocked(target, "auto-promotion"); err != nil {
+		s.log.Warn("auto-promotion retry failed", "from", s.active, "to", target, "error", err.Error())
+	}
 }
 
 // subscribeActiveLocked subscribes onActiveExhausted onto the CURRENTLY-ACTIVE exit's controller

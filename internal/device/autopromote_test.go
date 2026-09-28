@@ -99,10 +99,10 @@ func newAutoPromoteHarness(t *testing.T) *autoPromoteHarness {
 	ctrlA := newHubFailover(epsA, []hubHealth{hpA[0], hpA[1]}, remA, func() {}, clkA, testSettle, lg)
 
 	health := newFakeExitHealth()
-	sel.enableAutoPromotion(
+	t.Cleanup(sel.enableAutoPromotion(
 		map[string]exitController{"a": ctrlA},
 		exitHealthFunc(health.isHealthy),
-	)
+	))
 
 	return &autoPromoteHarness{
 		dev: dev, sel: sel, ctrlA: ctrlA, hpA: hpA, clkA: clkA, remA: remA,
@@ -176,6 +176,28 @@ func TestExitSelectorAutoPromoteOnExhaustion(t *testing.T) {
 	if !strings.Contains(out, `"reason":"auto-promotion"`) || !strings.Contains(out, `"from":"a"`) || !strings.Contains(out, `"to":"b"`) {
 		t.Fatalf("auto-promotion switch not logged with reason/from/to; log:\n%s", out)
 	}
+}
+
+// Regression: a standby may establish its session after the active exit first exhausts.
+func TestExitSelectorPromotesWhenStandbyBecomesHealthyAfterExhaustion(t *testing.T) {
+	h := newAutoPromoteHarness(t)
+	h.driveADown()
+	h.stepA()
+	h.stepA()
+	if got := h.sel.ActiveExit(); got != "a" {
+		t.Fatalf("unhealthy standby was promoted: active exit = %q, want a", got)
+	}
+
+	h.health.set("b", true)
+	h.stepA()
+	deadline := time.Now().Add(time.Second)
+	for h.sel.ActiveExit() != "b" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := h.sel.ActiveExit(); got != "b" {
+		t.Fatalf("healthy standby was not promoted after active exit exhaustion: active exit = %q, want b", got)
+	}
+	h.assertOwnsDefaultRoute(t, h.bHex, h.aHex, "10.0.1.1/32", "10.0.0.1/32")
 }
 
 // TestExitSelectorSingleAdvanceDoesNotPromote is T269 acceptance (a): a within-concentrator T57
@@ -428,7 +450,7 @@ func TestExitSelectorPromotesFirstHealthyInConfigOrder(t *testing.T) {
 	health := newFakeExitHealth()
 	health.set("b", true)
 	health.set("c", true)
-	sel.enableAutoPromotion(map[string]exitController{"a": ctrlA}, exitHealthFunc(health.isHealthy))
+	t.Cleanup(sel.enableAutoPromotion(map[string]exitController{"a": ctrlA}, exitHealthFunc(health.isHealthy)))
 
 	// Exhaust a (2-endpoint list: advance 0->1, then wrap 1->0 = exhaustion).
 	hpA[0].(*fakeHealth).state = telemetry.StateDown
@@ -526,10 +548,10 @@ func TestStartFailoverAndResolutionSingleLiteralExitWiring(t *testing.T) {
 	}
 	health := newFakeExitHealth()
 	health.set("b", true)
-	sel.enableAutoPromotion(
+	t.Cleanup(sel.enableAutoPromotion(
 		map[string]exitController{"a": ctrlA, "b": ctrlB},
 		exitHealthFunc(health.isHealthy),
-	)
+	))
 
 	// Drive a's SOLE path down past the dwell: total==1 exhaustion (onset step + one past-dwell step)
 	// raises the signal with NO advance/repoint (single endpoint), promoting egress to b.

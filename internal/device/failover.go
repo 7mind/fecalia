@@ -394,6 +394,13 @@ func (h *hubFailover) SetOnExhausted(cb func()) {
 	h.mu.Unlock()
 }
 
+// Exhausted is true only while the endpoint list remains exhausted and every path stays down.
+func (h *hubFailover) Exhausted() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.exhaustedLatched && h.allDownLocked()
+}
+
 // check is one failover-evaluation step: on confirmed hub loss (and once the active endpoint's
 // settle dwell has elapsed) it advances to the next endpoint, repoints the bond's remote, initiates
 // a fresh re-handshake, and — on a full flattened-list wrap (or a single-endpoint peer's sole

@@ -229,6 +229,12 @@ monitor dashboard's web UI (T259/T260, G28/M107; see
 [docs/design.md §Security model](design.md)); this section covers only the
 **config surface**.
 
+When the boot-default exit exhausts before a standby completes its WireGuard
+handshake, the active exit remains unchanged until a standby is healthy. The
+edge retries promotion at the probe cadence while the boot exit remains fully
+down; the journal then records `active exit switched` with
+`reason=auto-promotion`. A recovered boot exit does not cause auto-failback.
+
 ```toml
 role = "edge"
 psk = "<base64 32-byte outer-control PSK, same on all ends>"

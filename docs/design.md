@@ -2234,6 +2234,10 @@ by `internal/device`:
     subscriber), so the selector taking its own lock — and re-subscribing, which
     re-takes controller locks — cannot deadlock against the firing poll loop
     (`s.mu` → `controller.mu` ordering, never inverted).
+    A probe-cadence retry checks the current controller's latched exhaustion and
+    live all-paths-down state, then promotes when a standby session becomes healthy
+    after the one-shot exhaustion signal. Recovery of the active exit cancels that
+    condition; `Close` stops the retry before engine teardown.
     - **MANUAL WINS**: an operator's manual switch during or after a promotion
       stands; auto-promotion never overrides a standing choice beyond moving egress
       off a dead exit.
@@ -2243,8 +2247,8 @@ by `internal/device`:
       partial/full recovery of the original never flaps egress. Return to a
       preferred exit is operator-driven.
     - **No healthy standby**: if no warm standby is healthy, egress stays on the
-      failed exit (nothing to promote to) and the condition is logged — the
-      selector does not thrash.
+      failed exit and the condition is logged. Promotion is retried while the
+      active exit remains exhausted, without repeated no-standby logs.
     - **No persistence** (Q74): auto-promotion does not rewrite the boot default;
       on restart the edge still boots to the config-default (first) exit.
 - **WG-session liveness signal** (`wanbond_session_established`, T101,

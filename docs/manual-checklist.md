@@ -225,6 +225,15 @@ with an ORDERED list — `endpoints = ["<hubA ip:port>", "<hubB ip:port>"]` (ind
       line, no endpoint switch); behaviour is identical to pre-T57. Recovery
       happens only when hubA itself returns.
 
+### Multi-exit promotion after a late standby handshake
+- [ ] With two exit-capable peers, make the boot-default exit unreachable before
+      the standby completes its WireGuard handshake. Confirm the active exit stays
+      on the boot default at first, then switches to the standby after its session
+      becomes healthy and the boot exit's endpoint list is exhausted. Check `active exit switched`
+      with `reason=auto-promotion` and confirm new tunnel traffic uses the standby.
+- [ ] Repeat with the boot exit recovering before the standby session becomes
+      healthy; confirm no promotion occurs after recovery.
+
 ### Startup with a not-yet-assignable path (tolerant bind)
 - [ ] Bring one uplink's interface DOWN (so its configured `source_addr` is not held
       by any interface), then `systemctl restart wanbond-edge`. The daemon comes up

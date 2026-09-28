@@ -601,7 +601,9 @@ deliberate boundaries you must plan around:
   untouched. **Auto-promotion (T269)** moves egress off a FULLY-failed active exit
   (its endpoint list exhausted — every endpoint tried and down, distinct from
   within-concentrator failover) onto the first healthy warm standby, logged with
-  `reason=auto-promotion`; a manual switch always wins and there is no auto-failback
+  `reason=auto-promotion`. If the standby session becomes healthy only after
+  exhaustion, promotion retries at the probe cadence while the active exit stays
+  exhausted; a manual switch always wins and there is no auto-failback
   onto a recovered exit. Per-concentrator stats are grouped per-peer on the
   monitor dashboard, and on-the-fly exit switching is exposed there through a
   loopback-only exit-switch widget (T259/T260, G28/M107; see

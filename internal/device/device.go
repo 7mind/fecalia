@@ -271,10 +271,11 @@ type Tunnel struct {
 	// exitSelector owns WHICH exit-capable peer carries the default route on a
 	// multi-exit edge (T254, G28/M105); nil when the selector does not apply
 	// (concentrator, single-exit edge, or fewer than two exit-capable peers). It
-	// holds no goroutine — it acts only when Switch is invoked; ActiveExit reports
-	// the current owner for the monitor. T269 (auto-promotion) and T255 (composition)
-	// wire triggers onto it next.
+	// retries promotion while the active exit remains exhausted, so a standby
+	// that establishes its session later can become active.
 	exitSelector *exitSelector
+	// stopExitPromotion waits for that retry to stop before the engine closes.
+	stopExitPromotion func()
 	// metricsSrc is the live metrics.Source over the Bind; it is stable for the tunnel's
 	// life (the Bind pointer never changes), so a reload that rebinds the endpoint reuses
 	// the SAME Source — its derived-throughput last-sample state survives the rebind.
@@ -686,9 +687,8 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// splits and left the standbys with only their inner /32). Constructed AFTER
 	// dev.IpcSet/dev.Up so every peer exists in the engine — Switch then REPOINTS an
 	// existing peer by steal-on-insert rather than creating one. nil for the
-	// single-exit and concentrator shapes (no default-route ownership to move). It
-	// holds no goroutine, so Close needs no exit-selector stopper. T255 wires the
-	// monitor exposure onto it.
+	// single-exit and concentrator shapes (no default-route ownership to move).
+	// T255 wires the monitor exposure onto it.
 	exitSel := newExitSelector(cfg, dev, clg)
 
 	// Auto-promotion wiring (T269, G28/M105): subscribe the exit selector to each exit-capable
@@ -705,6 +705,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// (no liveness plane) still carries no controller and is absent from exitCtrls. The health seam
 	// reads each exit peer's OWN liveness plane (perPeerProbers[i]) and the engine's per-peer
 	// last-handshake age.
+	var stopExitPromotion func()
 	if exitSel != nil {
 		exitCtrls := make(map[string]exitController)
 		healthPeers := make(map[string]exitPeerHealth)
@@ -721,7 +722,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 			}
 			healthPeers[name] = exitPeerHealth{publicKeyHex: hex.EncodeToString(pub[:]), health: hp}
 		}
-		exitSel.enableAutoPromotion(exitCtrls, &deviceExitHealth{
+		stopExitPromotion = exitSel.enableAutoPromotion(exitCtrls, &deviceExitHealth{
 			engine: dev, clock: telemetry.SystemClock{}, expiry: awgdevice.RejectAfterTime, peers: healthPeers,
 		})
 	}
@@ -763,8 +764,9 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		stopProbes:    stopProbes, stopReconcile: stopReconcile,
 		stopHubFailover: stopHubFailover, stopResolution: stopResolution,
 		stopSession: stopSession, stopPeerTeardown: stopPeerTeardown,
-		exitSelector:   exitSel,
-		primaryProbers: probers,
+		exitSelector:      exitSel,
+		stopExitPromotion: stopExitPromotion,
+		primaryProbers:    probers,
 		// The Source reads live per-path counters/telemetry from the Bind and derives
 		// throughput from the byte-counter delta between scrapes (see metricsSource). The
 		// WG-session snapshot is read from the engine via sessMon. It is built unconditionally
@@ -1601,6 +1603,9 @@ func (t *Tunnel) Close() {
 	}
 	if t.stopHubFailover != nil {
 		t.stopHubFailover()
+	}
+	if t.stopExitPromotion != nil {
+		t.stopExitPromotion()
 	}
 	// Stop the DNS re-resolution loop between hub-failover and the engine teardown (T74): no
 	// re-resolve may race the engine peer's install/repoint or the socket close.
