@@ -10,6 +10,18 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        monitorUI = pkgs.buildNpmPackage {
+          pname = "wanbond-monitor-ui";
+          version = "0.0.0";
+          src = ./web;
+          npmDepsHash = "sha256-2j+OKF3MkKtVwCsnNgmEK3b/y90V5t9gmvrmIRJXAYg=";
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp -r ../internal/monitor/dist/. "$out/"
+            runHook postInstall
+          '';
+        };
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -18,8 +30,9 @@
           src = ./.;
           # Updated whenever go.mod dependencies or the local replaced module change;
           # see `nix build` error output.
-          vendorHash = "sha256-u52HIhWVWXJ382zq69ZrP/pkpRmtH2ZriJ3GQMiNmSk=";
+          vendorHash = "sha256-u+Suc0k0e/2/5SfiECRYzCSPYAH52rOI6YrniicxRC8=";
           subPackages = [ "cmd/wanbond" ];
+          preBuild = ''cp -r ${monitorUI}/. internal/monitor/dist/'';
           env.CGO_ENABLED = 0;
           ldflags = [ "-s" "-w" ];
           # Unit tests run via CI/Justfile; the e2e suite needs root and is never

@@ -539,6 +539,8 @@ listen = "127.0.0.1:9090"          # No default. LOOPBACK-ONLY (127.0.0.0/8, ::1
                                    #   URL. No TLS in v1: a non-loopback bind
                                    #   sends this token in CLEARTEXT over the
                                    #   LAN.
+# allowed_hosts = ["monitor.example.com"] # Explicit DNS names accepted in
+                                   #   Host and Origin when listen is wildcard.
 # reveal_addressing = false        # OPTIONAL, default false. A default-off
                                    #   opt-in that enables addressing disclosure
                                    #   on non-loopback binds. When set true,

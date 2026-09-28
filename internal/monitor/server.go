@@ -76,7 +76,7 @@ type Server struct {
 // it widens the addressing-reveal verdict to cover an authenticated non-loopback
 // bind, but it does NOT widen the RAW loopbackBound verdict — the mutating exit
 // control's hard loopback-only gate is unaffected by it.
-func NewServer(addr, token string, src metrics.Source, info Info, switchExit ExitSwitcher, revealOptIn bool, logger log.Logger) (*Server, error) {
+func NewServer(addr, token string, src metrics.Source, info Info, switchExit ExitSwitcher, revealOptIn bool, logger log.Logger, extraHosts ...string) (*Server, error) {
 	loopback, err := netutil.IsLoopbackHost(addr)
 	if err != nil {
 		return nil, fmt.Errorf("monitor: %w", err)
@@ -147,8 +147,12 @@ func NewServer(addr, token string, src metrics.Source, info Info, switchExit Exi
 	// Wrap the mux with the auth layer (T164): unconditional Host/Origin
 	// validation on EVERY route + the /ws upgrade, plus optional static-token
 	// gating when a token is configured. The allowed-host set is derived from
-	// the configured listen host plus the loopback aliases.
-	auth := &authConfig{token: token, allowed: allowedHosts(addr)}
+	// the configured listen host, explicit allowed hosts, and loopback aliases.
+	allowed := allowedHosts(addr)
+	for _, host := range extraHosts {
+		allowed[host] = struct{}{}
+	}
+	auth := &authConfig{token: token, allowed: allowed}
 
 	return &Server{
 		ln: ln,

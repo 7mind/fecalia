@@ -1206,6 +1206,9 @@ type Monitor struct {
 	// Listen is non-loopback. Optional when Listen is loopback; ignored when
 	// Listen is empty.
 	Token string `toml:"token"`
+	// AllowedHosts adds exact DNS names accepted in the HTTP Host header when
+	// Listen binds a wildcard address.
+	AllowedHosts []string `toml:"allowed_hosts"`
 	// RevealAddressing controls whether the monitoring-UI endpoint reveals
 	// addressing detail that is otherwise redacted. Default false preserves
 	// today's non-loopback redaction; the flag composes with — never
@@ -1224,6 +1227,11 @@ type Monitor struct {
 // internal/netutil helper (duplicated rather than imported, so config does not
 // depend on the metrics package's internals).
 func (m Monitor) validate() error {
+	for _, host := range m.AllowedHosts {
+		if host == "" || strings.TrimSpace(host) != host || strings.ContainsAny(host, "/:@") {
+			return fmt.Errorf("monitor.allowed_hosts: invalid host %q", host)
+		}
+	}
 	if m.Listen == "" {
 		return nil
 	}

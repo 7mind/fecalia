@@ -201,7 +201,11 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   refused at config load). Every request, including the WebSocket upgrade, is
   Host/Origin-validated (DNS-rebinding/CSRF defense); a configured token is
   presented once as `?token=…` and then carried by a `SameSite=Strict`
-  `HttpOnly` cookie. Reach it via `ssh -L 9101:127.0.0.1:9101 …` for the
+  `HttpOnly` cookie. URL-encode the token in the query, especially `+` and `/`.
+  When using a DNS name with a wildcard `listen`, add that name to
+  `[monitor].allowed_hosts`; unlisted Host and Origin values are rejected.
+  The Nix package embeds the built dashboard assets. Reach it via
+  `ssh -L 9101:127.0.0.1:9101 …` for the
   loopback case, or a token + non-loopback bind on a trusted LAN — the monitor
   has no TLS in v1, so a non-loopback bind trades in an explicitly accepted
   cleartext-token risk (see [docs/design.md §Security
