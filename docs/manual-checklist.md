@@ -40,6 +40,11 @@ Prerequisites (all phases):
       propagation varies by 30 ms in each direction, with loss on Starlink.
       Retain failures; the milder jitter profile alone missed the deployed
       rate-collapse defect.
+- [ ] Run `TestAdaptiveSmallFlowIsolation` and
+      `TestAdaptiveCumulativeACKCoalescing` against both transport adapters,
+      `TestACKCoalescingPreservesTCPInformation`, and the vendored engine's
+      `TestEncryptedFlowMetadata`. Check that metadata stays local, duplicate
+      ACKs/control information survive, and encrypted packets remain intact.
 - [ ] In a disposable Linux guest, run the tagged
       `TestInactiveTUNAQMRemovesOnlyLegacyShaper` test. On a persistent-interface
       upgrade, check `tc qdisc show dev wanbond0`: disabled legacy HTB/bfifo

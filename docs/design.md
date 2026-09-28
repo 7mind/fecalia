@@ -254,9 +254,37 @@ bytes even when an RTT spike has raised the repair timer beyond that horizon.
 Repairs prefer a different healthy lane. Small datagrams (encrypted size <=384
 bytes) have a priority queue, may borrow 5 ms of pacing, and may be copied onto
 a second lane. Additional copies have an allowance of 10% of the healthy lanes'
-aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance. All-
-small-packet overload can consume priority service: this heuristic does not
-identify voice or provide per-application fairness.
+aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance.
+
+**Flow isolation and TCP ACK coalescing.** The engine optionally classifies IP
+packets before encryption. `conn.BindPacketBatchCompleter` carries local
+`PacketMetadata` alongside encrypted datagrams and retains the existing
+exactly-once terminal completion contract. The Bind opts in before engine
+creation; other Binds retain their existing send path. Pooled outbound elements
+reset their metadata, including for generated keepalives. All engine type aliases
+remain in `internal/bind/bind.go`.
+
+The 40-byte flow identity contains the IP version, protocol, full source and
+destination addresses, and TCP/UDP ports. IPv6 hop-by-hop, routing and destination
+options are traversed with length checks. Fragments and unsupported extension
+headers share an address/protocol queue; invalid IP headers and generated
+packets use the unclassified queue. A ring of nonempty small-packet flow queues
+rotates after each datagram, preserving FIFO within each flow. Bulk remains one
+FIFO. This prevents an ACK burst from taking every small-packet scheduling turn;
+it does not identify applications or guarantee bandwidth against arbitrarily
+many competing flows. Flow identities are neither transmitted nor metric labels.
+
+For unfragmented IPv4 without options and IPv6 without extension headers, the
+engine also identifies pure TCP ACKs with no payload, reserved/control/ECN flags,
+urgent pointer, zero window, or options other than padding and a single valid
+timestamp. Coalescing replaces only the middle of three queued, strictly
+advancing cumulative ACKs in the same flow. Sequence number, advertised window,
+traffic class and timestamp presence must match; timestamp values cannot go
+backwards. Comparisons use TCP serial arithmetic. At least two queued ACKs remain
+in a sustained eligible burst. Duplicate ACKs, SACKs, window updates, unknown
+options and other control information are preserved. Replacement happens before
+assigning any outer delivery sequence, so it creates no resequencing gap and
+never changes an encrypted datagram. It is counted separately from queue drops.
 
 **Receive ordering decision.** Bulk has its own delivery sequence and a 300 ms
 resequencing hold before WireGuard, covering the sender's 250 ms repair lifetime

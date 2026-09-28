@@ -179,6 +179,7 @@ isolated to `bind.go` is stale: `multipath.go` and `device/tunaqm.go` import
 | Locked stateful ChaCha8 junk generator and concurrency test | Candidate removed the old `device/awg` implementation and uses different randomness paths. Reassess concurrent-handshake behavior; old patch no longer applies directly. |
 | One-line pools test/vet repair (#157) | Inspect new tests and retain a passing nested-device vet/test gate. |
 | `conn.BindBatchCompleter`, terminal completion plumbing | Custom API absent upstream. Retire with the legacy admission/shaper ownership model if no longer required, or port as an explicit generic patch with its tests. |
+| `conn.BindPacketBatchCompleter`, pre-encryption `PacketMetadata` | New adaptive dependency: full IP flow identity and conservative pure-TCP-ACK metadata survive encryption and batching through a local side channel. Port the TUN classifier, pooled-element reset and send completion contract; rerun the real-engine metadata test, parser fuzzing and memory/UDP flow-isolation contracts. Metadata never enters the wire format. |
 | `outbound_admission.go`, peer/container/send admission accounting | Custom APIs absent upstream. Required by current TUN AQM. Decide retirement before paying the rebase cost. |
 | `outbound_stats.go`, pipeline/histogram/high-water metrics | Used even when adaptive is selected. Retain only measurements operators need, via a narrow engine adapter or a reviewed upstream patch. Do not replace missing accounting with fabricated zeros. |
 

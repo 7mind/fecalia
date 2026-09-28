@@ -78,7 +78,10 @@ flushes immediately for interactive packets.
 Lost datagrams receive bounded cross-path retries. Small encrypted datagrams
 (up to 384 bytes, including WireGuard overhead) receive priority and budgeted
 replication; they bypass bulk receive ordering. This is a size heuristic, not
-application identification. Bulk datagrams remain resequenced. See the
+application identification. Small packets receive one scheduling turn per IP
+flow; a TCP ACK burst cannot monopolize that queue. Unsent redundant pure TCP
+ACKs can be coalesced while preserving control information. Flow metadata is
+local to the sender and does not change the wire protocol. Bulk datagrams remain resequenced. See the
 [transport design](docs/design.md#adaptive-transport--internalbond) and
 [autonomous VM lab](test/vm/README.md).
 

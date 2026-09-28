@@ -293,3 +293,41 @@ benchmark measured 1.256/65.954 Mbit/s (`20260928-232608-adaptive`); download
 still failed its gate. The radio continuity test still failed
 (`20260928-232821-continuity`), so this correction does not resolve reverse
 priority-queue contention.
+
+## Local flow metadata and ACK coalescing — 2026-09-29
+
+A 1024-packet small-packet burst delayed another flow past its service deadline
+in both the pure transport and real UDP adapter. Per-flow round-robin scheduling
+now passes that same contract. A separate real-engine test first confirmed that
+plaintext reached the receiving TUN without any flow identity reaching the Bind;
+the optional metadata interface now carries IP flow identity and pure-TCP-ACK
+metadata through encryption. It is disabled for legacy Binds and adds no wire
+fields. Pure-ACK parsing was fuzzed for five seconds (499,158 inputs).
+
+Coalescing has separate failing-before/passing-after memory and UDP tests for
+delivery of the newest cumulative ACK. Preservation tests cover duplicate and
+backwards ACKs, window/sequence/traffic-class changes, control information,
+timestamp regressions and different flows. It removes only unsent redundant
+ACKs and reports `wanbond_adaptive_coalesced_tcp_acks_total` separately from
+queue drops. It does not configure CAKE or require known emulator capacities.
+
+| Candidate/scenario | Measured outcome | Verdict / artifact |
+| --- | --- | --- |
+| Per-flow scheduling, radio benchmark | 1.185 / 54.735 Mbit/s upload/download | Both gates failed; `20260928-234935-adaptive` |
+| Per-flow scheduling, radio continuity | Hub/edge loss 0.769%/0.831%; p99 RTT 236.7/221.7 ms | Latency/gap and TCP progress failed; `20260928-234724-continuity` |
+| Plus conservative ACK coalescing, radio benchmark | 1.286 / 57.918 Mbit/s | Upload passed; download failed; `20260928-235422-adaptive` |
+| Plus ACK coalescing, radio continuity | Hub/edge loss 1.262%/0.585%; p99 RTT 239.4/232.0 ms | Latency/gaps, hub loss and TCP progress failed; `20260928-235305-continuity` |
+| Plus ACK coalescing, basic continuity | Zero loss; hub/edge p99 RTT 124.1/140.5 ms; gaps 145.7/100.1 ms | All gates passed; `20260928-235848-continuity` |
+| Plus ACK coalescing, fast benchmark | 69.347 / 93.271 Mbit/s | Both gates failed; `20260929-000005-adaptive` |
+| Per-flow scheduling without ACK coalescing, fast benchmark | 71.050 / 94.687 Mbit/s | Both gates failed; `20260929-000219-adaptive` |
+
+The radio benchmark rows include 60 seconds idle, 10 seconds warmup and 30
+seconds measurement per direction. These two fast runs use five seconds warmup
+and 20 seconds measurement; earlier fast runs used 15 seconds warmup. Their
+early convergence curves are similar, so comparing their aggregate numbers
+without matching warmup incorrectly suggests a large new regression.
+Flow isolation improves one proven source
+of contention; these results do not establish the requested radio continuity
+or saturation goals. Production deployments and the Nix configuration pin were
+left to the operator. The new engine API also requires refreshing the Nix
+vendor hash when its local source changes, even if `go.mod` is unchanged.

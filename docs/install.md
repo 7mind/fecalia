@@ -446,7 +446,11 @@ eligibility are also exposed. Peer counters report queue drops and expired
 repairs. `interactive_queue_drops_total` counts the small-packet subset of
 queue drops, and `interactive_queued_packets` counts small datagrams awaiting
 their first transmission. These distinguish local priority-queue contention
-from datagrams lost after transmission. `up=1` requires both a current authenticated lane lease and non-stalled
+from datagrams lost after transmission. `coalesced_tcp_acks_total` counts unsent
+pure TCP acknowledgements superseded by later cumulative acknowledgements;
+these are separate from queue drops. No extra configuration is needed for the
+local flow metadata and per-flow small-packet scheduling.
+`up=1` requires both a current authenticated lane lease and non-stalled
 delivery feedback. Legacy shaper/FEC metrics do not describe this policy.
 Confirmation RTT includes reordering and receipt buffering; it controls the
 repair deadline independently of the newest physical packet's RTT sample.
