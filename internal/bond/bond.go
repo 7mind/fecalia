@@ -6,34 +6,39 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"math/bits"
 	"time"
 
 	"github.com/7mind/wanbond/internal/frame"
 )
 
 const (
-	initialRate      = 125000.0
-	minimumRate      = 16000.0
-	maximumRate      = 1250000000.0
-	targetQueue      = 10 * time.Millisecond
-	maxQueueAge      = 100 * time.Millisecond
-	maxPacketAge     = 250 * time.Millisecond
-	ackInterval      = 25 * time.Millisecond
-	ackBatchPackets  = 64
-	priorityLead     = 5 * time.Millisecond
-	pathLease        = time.Second
-	minimumRTO       = 60 * time.Millisecond
-	feedbackHorizon  = 2 * time.Second
-	deliveryInterval = 50 * time.Millisecond
-	baselineInterval = 10 * time.Second
-	baselineDrain    = 200 * time.Millisecond
-	baselineStagger  = 500 * time.Millisecond
-	maxPackets       = 8192
-	smallPacket      = 384
-	redundancyRate   = 64000.0
-	redundancyShare  = 0.1
-	maxDatagram      = 9000
-	wireOverhead     = 129 // outer CONTROL, adaptive header, sequences, IP and UDP
+	initialRate           = 125000.0
+	minimumRate           = 16000.0
+	maximumRate           = 1250000000.0
+	targetQueue           = 10 * time.Millisecond
+	jitterAllowanceFactor = 2
+	lossPacingHeadroom    = 1.05
+	lossRateReduction     = 0.9
+	maxQueueAge           = 100 * time.Millisecond
+	maxPacketAge          = 250 * time.Millisecond
+	ackInterval           = 25 * time.Millisecond
+	ackBatchPackets       = 64
+	priorityLead          = 5 * time.Millisecond
+	pathLease             = time.Second
+	minimumRTO            = 60 * time.Millisecond
+	feedbackHorizon       = 2 * time.Second
+	deliveryInterval      = 50 * time.Millisecond
+	baselineInterval      = 10 * time.Second
+	baselineDrain         = 200 * time.Millisecond
+	baselineStagger       = 500 * time.Millisecond
+	maxPackets            = 8192
+	smallPacket           = 384
+	redundancyRate        = 64000.0
+	redundancyShare       = 0.1
+	maxDatagram           = 9000
+	wireOverhead          = 129 // outer CONTROL, adaptive header, sequences, IP and UDP
+	transitSizeBucket     = 128
 )
 
 type Transmission struct {
@@ -48,24 +53,31 @@ type Delivery struct {
 }
 
 type PathStats struct {
-	Path         PathID
-	Rate         float64
-	DeliveryRate float64
-	RTT          time.Duration
-	BaseRTT      time.Duration
-	QueueDelay   time.Duration
-	InFlight     int
-	Sent         uint64
-	ACKed        uint64
-	Retransmits  uint64
-	Up           bool
+	Path                 PathID
+	Rate                 float64
+	SendRate             float64
+	DeliveryRate         float64
+	RTT                  time.Duration
+	RTTVariation         time.Duration
+	IdleRTTVariation     time.Duration
+	FeedbackRTT          time.Duration
+	FeedbackRTTVariation time.Duration
+	BaseRTT              time.Duration
+	QueueDelay           time.Duration
+	InFlight             int
+	Sent                 uint64
+	ACKed                uint64
+	Retransmits          uint64
+	Up                   bool
 }
 
 type Snapshot struct {
-	Paths      []PathStats
-	QueueDrops uint64
-	Expired    uint64
-	Duplicates uint64
+	Paths                 []PathStats
+	QueueDrops            uint64
+	InteractiveQueueDrops uint64
+	InteractiveQueued     int
+	Expired               uint64
+	Duplicates            uint64
 }
 
 type packet struct {
@@ -81,50 +93,63 @@ type packet struct {
 }
 
 type attempt struct {
-	packet   *packet
-	sent     time.Time
-	bytes    int
-	timedOut bool
+	packet    *packet
+	sent      time.Time
+	bytes     int
+	released  bool
+	confirmed bool
+}
+
+type transitBaseline struct {
+	delay time.Duration
+	known bool
 }
 
 type lane struct {
-	id              PathID
-	remoteID        PathID
-	lease           time.Time
-	rate            float64
-	deliveryRate    float64
-	peakDelivery    float64
-	rtt             time.Duration
-	rttVariation    time.Duration
-	baseRTT         time.Duration
-	baseAt          time.Time
-	nextSend        time.Time
-	lastACK         time.Time
-	lastAdjust      time.Time
-	lostSinceAdjust bool
-	inflight        int
-	seq             uint64
-	ackRevision     uint64
-	ackedBytes      uint64
-	ackedElapsed    uint64
-	feedbackAt      time.Time
-	rateBytes       uint64
-	rateElapsed     uint64
-	firstSent       time.Time
-	transitBase     time.Duration
-	haveTransit     bool
-	intervalTransit time.Duration
-	haveInterval    bool
-	queueDelay      time.Duration
-	nextBaseline    time.Time
-	drainUntil      time.Time
-	baselinePending bool
-	stalled         bool
-	lastTransmit    time.Time
-	attempts        map[uint64]attempt
-	sent            uint64
-	acked           uint64
-	retries         uint64
+	id                   PathID
+	remoteID             PathID
+	lease                time.Time
+	rate                 float64
+	deliveryRate         float64
+	sendRate             float64
+	peakDelivery         float64
+	rtt                  time.Duration
+	rttVariation         time.Duration
+	idleRTTVariation     time.Duration
+	idleRTT              time.Duration
+	feedbackRTT          time.Duration
+	feedbackRTTVariation time.Duration
+	baseRTT              time.Duration
+	baseAt               time.Time
+	nextSend             time.Time
+	lastACK              time.Time
+	lastAdjust           time.Time
+	lostSinceAdjust      bool
+	inflight             int
+	seq                  uint64
+	ackRevision          uint64
+	ackReceipts          receiptWindow
+	ackedBytes           uint64
+	ackedElapsed         uint64
+	feedbackAt           time.Time
+	rateBytes            uint64
+	rateSentBytes        uint64
+	rateElapsed          uint64
+	firstSent            time.Time
+	transitBases         [(maxDatagram+wireOverhead)/transitSizeBucket + 1]transitBaseline
+	intervalQueueDelay   time.Duration
+	haveInterval         bool
+	queueDelay           time.Duration
+	nextBaseline         time.Time
+	drainUntil           time.Time
+	baselinePending      bool
+	stalled              bool
+	lastTransmit         time.Time
+	lastPayload          time.Time
+	attempts             map[uint64]attempt
+	sent                 uint64
+	acked                uint64
+	retries              uint64
 }
 
 type receiver struct {
@@ -156,9 +181,11 @@ type Transport struct {
 	redundancyTokens float64
 	lastPoll         time.Time
 	drops            uint64
+	interactiveDrops uint64
 	expired          uint64
 	duplicates       uint64
 	received         receiptWindow
+	unreported       receiptWindow
 }
 
 type receiptWindow struct {
@@ -200,6 +227,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 	t.seq, t.bulkSeq, t.interactiveSeq = 0, 0, 0
 	t.receivers = make(map[PathID]*receiver)
 	t.received = receiptWindow{}
+	t.unreported = receiptWindow{}
 	for _, p := range t.paths {
 		p.lease = time.Time{}
 		p.attempts = make(map[uint64]attempt)
@@ -210,8 +238,9 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.stalled = false
 		p.lostSinceAdjust = false
 		p.ackRevision = 0
+		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
-		p.haveTransit = false
+		clear(p.transitBases[:])
 		p.haveInterval = false
 		p.firstSent = time.Time{}
 		p.feedbackAt = time.Time{}
@@ -256,6 +285,9 @@ func (t *Transport) Enqueue(payload []byte, now time.Time) error {
 	}
 	if len(t.queue)+len(t.priority)+len(t.pending) >= maxPackets {
 		t.drops++
+		if len(payload) <= smallPacket {
+			t.interactiveDrops++
+		}
 		return nil
 	}
 	p := &packet{payload: append([]byte(nil), payload...), created: now}
@@ -271,11 +303,29 @@ func (t *Transport) Enqueue(payload []byte, now time.Time) error {
 func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.lease) < pathLease }
 
 func (p *lane) rto() time.Duration {
-	return max(minimumRTO, p.rtt+4*p.rttVariation+ackInterval)
+	return max(minimumRTO, p.rtt+4*p.rttVariation+ackInterval, p.feedbackRTT+4*p.feedbackRTTVariation)
+}
+
+func (p *lane) observeFeedbackRTT(sample time.Duration) {
+	// Receipt-window buffering and reordered arrivals belong in the repair timer.
+	// Sampling only the highest physical sequence favours the fastest arrivals.
+	if sample <= 0 {
+		return
+	}
+	if p.feedbackRTT == 0 {
+		p.feedbackRTT = sample
+		return
+	}
+	difference := sample - p.feedbackRTT
+	if difference < 0 {
+		difference = -difference
+	}
+	p.feedbackRTTVariation = (3*p.feedbackRTTVariation + difference) / 4
+	p.feedbackRTT = (7*p.feedbackRTT + sample) / 8
 }
 
 func (p *lane) window() int {
-	return max(4*1500, int(p.rate*(p.baseRTT+2*targetQueue+ackInterval).Seconds()))
+	return max(4*1500, int(p.rate*(p.baseRTT+jitterAllowanceFactor*p.rttVariation+2*targetQueue+ackInterval).Seconds()))
 }
 
 func (t *Transport) PacingRate(now time.Time) float64 {
@@ -332,6 +382,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	p.attempts++
 	p.lastSent, p.lastPath = now, path.id
 	path.lastTransmit = now
+	path.lastPayload = now
 	t.pending[p.seq] = p
 	return Transmission{path.id, dataFrame(t.epoch, t.remote, path.id, path.seq, p.seq, p.order, p.payload)}
 }
@@ -344,10 +395,22 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	t.lastPoll = now
 	out := make([]Transmission, 0, 8)
 	for _, r := range t.receivers {
-		if r.pending > 0 && (r.pending >= ackBatchPackets || now.Sub(r.ackAt) >= ackInterval) {
+		path := t.find(r.path)
+		if path == nil || !path.up(now) {
+			continue
+		}
+		oldest := t.unreported.oldest()
+		if (r.pending > 0 || oldest != 0) && (r.pending >= ackBatchPackets || now.Sub(r.ackAt) >= ackInterval) {
 			r.revision++
-			a := acknowledgement{observed: t.remote, high: r.receipts.high, mask: r.receipts.mask[0], bytes: r.bytes, elapsed: uint64(r.highAt.Sub(r.start)), delay: uint64(now.Sub(r.highAt)), receivedHigh: t.received.high, receivedMask: [4]uint64(t.received.mask[:4])}
+			high := t.received.high
+			if oldest != 0 {
+				// A late receipt must reach the sender even after newer data moved
+				// outside the wire bitmap. Its anchor need not be monotonic.
+				high = oldest + min(ackReceiptBits-1, high-oldest)
+			}
+			a := acknowledgement{observed: t.remote, high: r.receipts.high, mask: r.receipts.mask[0], bytes: r.bytes, elapsed: uint64(r.highAt.Sub(r.start)), delay: uint64(now.Sub(r.highAt)), receivedHigh: high, receivedMask: t.received.bitmap(high)}
 			out = append(out, Transmission{r.path, ackFrame(t.epoch, r.remoteLane, r.revision, a)})
+			t.unreported.forgetThrough(high)
 			r.pending = 0
 			r.ackAt = now
 		}
@@ -359,20 +422,23 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			path.baselinePending = true
 		}
 		for seq, a := range path.attempts {
-			if !a.timedOut && now.Sub(a.sent) >= path.rto() {
-				path.lostSinceAdjust = true
+			if !a.released && now.Sub(a.sent) >= path.rto() {
+				path.lostSinceAdjust = path.lostSinceAdjust || a.packet != nil
 				if path.lastACK.Before(a.sent) {
 					path.stalled = true
-					if now.Sub(path.lastAdjust) >= 50*time.Millisecond {
+					if a.packet != nil && now.Sub(path.lastAdjust) >= deliveryInterval {
 						path.rate = math.Max(minimumRate, path.rate*0.7)
 						path.lastAdjust = now
 					}
 				}
 				path.inflight -= a.bytes
-				a.timedOut = true
+				a.released = true
 				path.attempts[seq] = a
 			}
 			if now.Sub(a.sent) >= feedbackHorizon {
+				if !a.released {
+					path.inflight -= a.bytes
+				}
 				delete(path.attempts, seq)
 			}
 		}
@@ -428,6 +494,9 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			if now.Sub(p.created) > maxQueueAge {
 				*queue = (*queue)[1:]
 				t.drops++
+				if p.interactive {
+					t.interactiveDrops++
+				}
 				continue
 			}
 			path := t.choose(now, len(p.payload)+wireOverhead, 0, false)
@@ -522,6 +591,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 			t.duplicates++
 			return nil, nil
 		}
+		t.unreported.mark(seq)
 		return []Delivery{{Sequence: order & ^interactiveBit, Interactive: order&interactiveBit != 0, Payload: f.Payload[headerBytes+32:]}}, nil
 	case ACKType:
 		if h.lane != path {
@@ -534,20 +604,27 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 		if a.observed != t.epoch {
 			return nil, errors.New("bond: ACK for stale local epoch")
 		}
-		if f.Seq <= local.ackRevision || a.high > local.seq || a.receivedHigh > t.seq || a.bytes < local.ackedBytes || a.elapsed < local.ackedElapsed {
+		fresh := f.Seq > local.ackRevision
+		if a.high > local.seq || a.receivedHigh > t.seq ||
+			fresh && (a.bytes < local.ackedBytes || a.elapsed < local.ackedElapsed) ||
+			!fresh && (a.bytes > local.ackedBytes || a.elapsed > local.ackedElapsed) ||
+			!local.ackReceipts.mark(f.Seq) {
 			return nil, errors.New("bond: stale or impossible ACK")
 		}
-		local.ackRevision = f.Seq
-		t.ack(local, a, now)
+		if fresh {
+			local.ackRevision = f.Seq
+		}
+		t.ack(local, a, now, fresh)
 		return nil, nil
 	default:
 		return nil, errors.New("bond: unknown frame type")
 	}
 }
 
-func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
+func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	backlogged := len(t.queue)+len(t.priority) > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
+	var physicalFeedback time.Duration
 	for seq, pending := range t.pending {
 		if a.received(seq) {
 			pending.acked = true
@@ -556,7 +633,10 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 	}
 	for seq, sent := range p.attempts {
 		if seq <= a.high && a.high-seq < 64 && a.mask&(uint64(1)<<(a.high-seq)) != 0 {
-			if !sent.timedOut {
+			if !sent.confirmed {
+				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
+			}
+			if !sent.released {
 				p.inflight -= sent.bytes
 			}
 			p.acked += uint64(sent.bytes)
@@ -565,31 +645,61 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 				delete(t.pending, sent.packet.seq)
 			}
 			delete(p.attempts, seq)
-			if seq == a.high && a.delay <= uint64(now.Sub(sent.sent)) {
+			if fresh && seq == a.high && a.delay <= uint64(now.Sub(sent.sent)) {
 				p.stalled = false
 				sample = now.Sub(sent.sent) - time.Duration(a.delay)
 				transit := time.Duration(a.elapsed) - sent.sent.Sub(p.firstSent)
 				if p.baselinePending && !sent.sent.Before(p.drainUntil) {
-					p.haveTransit = false
+					clear(p.transitBases[:])
 					p.haveInterval = false
 					p.baselinePending = false
 				}
-				if !p.haveTransit || transit < p.transitBase {
-					p.transitBase, p.haveTransit = transit, true
+				// Different-sized datagrams have different serialization delays.
+				// A bucket spans less than 8 ms at the minimum supported rate.
+				baseline := &p.transitBases[sent.bytes/transitSizeBucket]
+				if !baseline.known || transit < baseline.delay {
+					baseline.delay, baseline.known = transit, true
 				}
-				p.queueDelay = transit - p.transitBase
-				if !p.haveInterval || transit < p.intervalTransit {
-					p.intervalTransit, p.haveInterval = transit, true
+				p.queueDelay = transit - baseline.delay
+				if !p.haveInterval || p.queueDelay < p.intervalQueueDelay {
+					p.intervalQueueDelay, p.haveInterval = p.queueDelay, true
 				}
 			}
-		} else if sent.packet != nil && a.received(sent.packet.seq) && seq < a.high && a.high-seq >= 64 {
+		} else if sent.packet != nil && (sent.packet.acked || a.received(sent.packet.seq)) && seq < a.high && a.high-seq >= 64 {
 			// The global receipt confirms delivery after the lane bitmap moved on.
 			// Release ownership without claiming which physical attempt arrived.
-			if !sent.timedOut {
+			if !sent.released {
 				p.inflight -= sent.bytes
+			}
+			if !sent.confirmed && sent.packet.attempts == 1 {
+				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
 			}
 			delete(p.attempts, seq)
 		}
+	}
+	for _, path := range t.paths {
+		var feedbackSample time.Duration
+		if path == p {
+			feedbackSample = physicalFeedback
+		}
+		for seq, sent := range path.attempts {
+			if sent.packet != nil && (sent.packet.acked || a.received(sent.packet.seq)) && !sent.confirmed {
+				sent.packet.acked = true
+				if !sent.released {
+					path.inflight -= sent.bytes
+				}
+				if sent.packet.attempts == 1 {
+					feedbackSample = max(feedbackSample, now.Sub(sent.sent))
+				}
+				sent.released = true
+				sent.confirmed = true
+				path.attempts[seq] = sent
+			}
+		}
+		path.observeFeedbackRTT(feedbackSample)
+	}
+	if !fresh {
+		return
 	}
 	if sample > 0 {
 		difference := sample - p.rtt
@@ -597,6 +707,18 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 			difference = -difference
 		}
 		p.rttVariation = (3*p.rttVariation + difference) / 4
+		if now.Sub(p.lastPayload) >= feedbackHorizon {
+			if p.idleRTT == 0 {
+				p.idleRTT = sample
+			} else {
+				difference := sample - p.idleRTT
+				if difference < 0 {
+					difference = -difference
+				}
+				p.idleRTTVariation = (3*p.idleRTTVariation + difference) / 4
+				p.idleRTT = (7*p.idleRTT + sample) / 8
+			}
+		}
 		p.rtt = (7*p.rtt + sample) / 8
 		if p.lastACK.IsZero() || sample < p.baseRTT || now.Sub(p.baseAt) > 30*time.Second {
 			p.baseRTT, p.baseAt = sample, now
@@ -604,14 +726,19 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 	}
 	if p.feedbackAt.IsZero() {
 		p.rateBytes, p.rateElapsed, p.feedbackAt = a.bytes, a.elapsed, now
-	} else if a.elapsed-p.rateElapsed >= uint64(deliveryInterval) {
+		p.rateSentBytes = p.sent
+	} else if a.elapsed-p.rateElapsed >= uint64(deliveryInterval) && now.Sub(p.feedbackAt) >= deliveryInterval {
 		rate := float64(a.bytes-p.rateBytes) / time.Duration(a.elapsed-p.rateElapsed).Seconds()
+		sendRate := float64(p.sent-p.rateSentBytes) / now.Sub(p.feedbackAt).Seconds()
 		if p.deliveryRate == 0 {
 			p.deliveryRate = rate
+			p.sendRate = sendRate
 		} else {
 			p.deliveryRate = 0.8*p.deliveryRate + 0.2*rate
+			p.sendRate = 0.8*p.sendRate + 0.2*sendRate
 		}
 		p.rateBytes, p.rateElapsed, p.feedbackAt = a.bytes, a.elapsed, now
+		p.rateSentBytes = p.sent
 	}
 	p.peakDelivery = math.Max(p.peakDelivery, p.deliveryRate)
 	p.ackedBytes, p.ackedElapsed = a.bytes, a.elapsed
@@ -622,7 +749,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 	p.lastAdjust = now
 	queueDelay := p.queueDelay
 	if p.haveInterval {
-		queueDelay = max(0, p.intervalTransit-p.transitBase)
+		queueDelay = p.intervalQueueDelay
 		p.haveInterval = false
 	}
 	lost := p.lostSinceAdjust
@@ -630,9 +757,9 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time) {
 	if !backlogged {
 		return
 	}
-	if lost && p.deliveryRate > 0 && p.rate > 1.25*p.deliveryRate {
-		p.rate = math.Max(minimumRate, 1.05*p.deliveryRate)
-	} else if sample > 0 && queueDelay > targetQueue {
+	if lost && p.deliveryRate > 0 {
+		p.rate = math.Max(minimumRate, math.Min(lossRateReduction*p.rate, lossPacingHeadroom*p.deliveryRate))
+	} else if sample > 0 && queueDelay > max(targetQueue, jitterAllowanceFactor*p.idleRTTVariation) {
 		p.rate = math.Max(minimumRate, p.rate*0.9)
 	} else if sample > 0 {
 		p.rate = math.Min(maximumRate, p.rate*1.06+1500)
@@ -671,6 +798,38 @@ func (w *receiptWindow) mark(seq uint64) bool {
 	return true
 }
 
+func (w *receiptWindow) oldest() uint64 {
+	for i := len(w.mask) - 1; i >= 0; i-- {
+		if word := w.mask[i]; word != 0 {
+			return w.high - uint64(i*64+bits.Len64(word)-1)
+		}
+	}
+	return 0
+}
+
+func (w *receiptWindow) bitmap(high uint64) [ackReceiptWords]uint64 {
+	var result [ackReceiptWords]uint64
+	for offset := uint64(0); offset < ackReceiptBits && offset < high; offset++ {
+		delta := w.high - (high - offset)
+		if delta < maxPackets && w.mask[delta/64]&(uint64(1)<<(delta%64)) != 0 {
+			result[offset/64] |= uint64(1) << (offset % 64)
+		}
+	}
+	return result
+}
+
+func (w *receiptWindow) forgetThrough(high uint64) {
+	if high >= w.high {
+		clear(w.mask[:])
+		return
+	}
+	delta := w.high - high
+	if delta < maxPackets {
+		w.mask[delta/64] &= (uint64(1) << (delta % 64)) - 1
+		clear(w.mask[delta/64+1:])
+	}
+}
+
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {
 		return a
@@ -679,9 +838,16 @@ func maxTime(a, b time.Time) time.Time {
 }
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
-	s := Snapshot{QueueDrops: t.drops, Expired: t.expired, Duplicates: t.duplicates}
+	s := Snapshot{QueueDrops: t.drops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: len(t.priority), Expired: t.expired, Duplicates: t.duplicates}
 	for _, p := range t.paths {
-		s.Paths = append(s.Paths, PathStats{p.id, p.rate, p.deliveryRate, p.rtt, p.baseRTT, p.queueDelay, p.inflight, p.sent, p.acked, p.retries, p.up(now) && !p.stalled})
+		s.Paths = append(s.Paths, PathStats{
+			Path: p.id, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
+			RTT: p.rtt, RTTVariation: p.rttVariation, IdleRTTVariation: p.idleRTTVariation,
+			FeedbackRTT: p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
+			BaseRTT: p.baseRTT, QueueDelay: p.queueDelay,
+			InFlight: p.inflight, Sent: p.sent, ACKed: p.acked, Retransmits: p.retries,
+			Up: p.up(now) && !p.stalled,
+		})
 	}
 	return s
 }

@@ -376,6 +376,7 @@ func TestCapacityWithShallowRouterBuffer(t *testing.T) {
 	heap.Init(queue)
 	var available [2]time.Time
 	bytes := 0
+	steadySent, steadyDropped := 0, 0
 	for tick := 0; tick < 5000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		for _, p := range peers {
@@ -390,7 +391,14 @@ func TestCapacityWithShallowRouterBuffer(t *testing.T) {
 				if available[side].After(begin) {
 					begin = available[side]
 				}
+				measured := side == 0 && tick >= 2000 && len(tx.Frame.Payload) > 1000
+				if measured {
+					steadySent++
+				}
 				if begin.Sub(now) > 5*time.Millisecond {
+					if measured {
+						steadyDropped++
+					}
 					continue
 				}
 				available[side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / 125000 * float64(time.Second)))
@@ -411,6 +419,10 @@ func TestCapacityWithShallowRouterBuffer(t *testing.T) {
 		}
 	}
 	rate := peers[0].Snapshot(start.Add(5 * time.Second)).Paths[0].Rate
+	t.Logf("shallow buffer: %d/%d steady datagrams dropped; target %.0f bytes/s; delivered %d bytes", steadyDropped, steadySent, rate, bytes)
+	if steadySent == 0 || steadyDropped > steadySent/10 {
+		t.Errorf("persistent shallow-buffer loss: %d of %d wire datagrams dropped", steadyDropped, steadySent)
+	}
 	if rate > 187500 || bytes < 400000 {
 		t.Fatalf("1 Mbit/s shallow queue: target %.0f bytes/s, delivered %d bytes in 5s", rate, bytes)
 	}

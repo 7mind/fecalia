@@ -23,9 +23,10 @@ type adaptiveMetric struct {
 }
 
 type adaptiveCollector struct {
-	source         AdaptiveSource
-	paths          []adaptiveMetric
-	drops, expired *prometheus.Desc
+	source                              AdaptiveSource
+	paths                               []adaptiveMetric
+	drops, expired                      *prometheus.Desc
+	interactiveDrops, interactiveQueued *prometheus.Desc
 }
 
 func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
@@ -34,8 +35,13 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 	}
 	return &adaptiveCollector{source: source, paths: []adaptiveMetric{
 		makeMetric("target_rate_bytes_per_second", "Sender pacing target.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Rate }),
+		makeMetric("send_rate_bytes_per_second", "Measured wire rate submitted by the adaptive sender.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.SendRate }),
 		makeMetric("delivery_rate_bytes_per_second", "Authenticated receiver delivery estimate.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.DeliveryRate }),
 		makeMetric("rtt_seconds", "DATA acknowledgement RTT.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.RTT.Seconds() }),
+		makeMetric("rtt_variation_seconds", "Smoothed absolute DATA acknowledgement RTT variation.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.RTTVariation.Seconds() }),
+		makeMetric("unloaded_rtt_variation_seconds", "RTT variation observed after two seconds without application datagram transmission.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.IdleRTTVariation.Seconds() }),
+		makeMetric("feedback_rtt_seconds", "Smoothed time until newly confirmed deliveries were acknowledged, including receipt buffering.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.FeedbackRTT.Seconds() }),
+		makeMetric("feedback_rtt_variation_seconds", "Smoothed absolute delivery-confirmation RTT variation.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.FeedbackRTTVariation.Seconds() }),
 		makeMetric("base_rtt_seconds", "Minimum DATA acknowledgement RTT.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.BaseRTT.Seconds() }),
 		makeMetric("queue_delay_seconds", "Forward transit delay above its observed minimum.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.QueueDelay.Seconds() }),
 		makeMetric("in_flight_bytes", "Unacknowledged wire bytes.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return float64(p.InFlight) }),
@@ -49,7 +55,9 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 			return 0
 		}),
 	}, drops: prometheus.NewDesc("wanbond_adaptive_queue_drops_total", "Datagrams dropped by bounded queue admission or residence time.", []string{"peer"}, nil),
-		expired: prometheus.NewDesc("wanbond_adaptive_expired_packets_total", "Packets whose bounded repair lifetime expired.", []string{"peer"}, nil)}
+		expired:           prometheus.NewDesc("wanbond_adaptive_expired_packets_total", "Packets whose bounded repair lifetime expired.", []string{"peer"}, nil),
+		interactiveDrops:  prometheus.NewDesc("wanbond_adaptive_interactive_queue_drops_total", "Small datagrams dropped by bounded queue admission or residence time; included in queue_drops_total.", []string{"peer"}, nil),
+		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil)}
 }
 
 func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -58,6 +66,8 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	}
 	ch <- c.drops
 	ch <- c.expired
+	ch <- c.interactiveDrops
+	ch <- c.interactiveQueued
 }
 
 func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
@@ -69,5 +79,7 @@ func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 		ch <- prometheus.MustNewConstMetric(c.drops, prometheus.CounterValue, float64(peer.State.QueueDrops), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.expired, prometheus.CounterValue, float64(peer.State.Expired), peer.Peer)
+		ch <- prometheus.MustNewConstMetric(c.interactiveDrops, prometheus.CounterValue, float64(peer.State.InteractiveQueueDrops), peer.Peer)
+		ch <- prometheus.MustNewConstMetric(c.interactiveQueued, prometheus.GaugeValue, float64(peer.State.InteractiveQueued), peer.Peer)
 	}
 }

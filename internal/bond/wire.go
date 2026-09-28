@@ -9,11 +9,13 @@ import (
 )
 
 const (
-	DataType    = 0xa1
-	ACKType     = 0xa2
-	Version     = 1
-	headerBytes = 19
-	ackBytes    = 96
+	DataType        = 0xa1
+	ACKType         = 0xa2
+	Version         = 1
+	headerBytes     = 19
+	ackBytes        = 96
+	ackReceiptWords = 4
+	ackReceiptBits  = 64 * ackReceiptWords
 	// ExtraOverhead is the difference from a legacy DATA frame, including the MAC.
 	ExtraOverhead         = 61
 	interactiveBit uint64 = 1 << 63
@@ -68,7 +70,7 @@ type acknowledgement struct {
 	elapsed      uint64
 	delay        uint64
 	receivedHigh uint64
-	receivedMask [4]uint64
+	receivedMask [ackReceiptWords]uint64
 }
 
 func (a acknowledgement) received(seq uint64) bool {

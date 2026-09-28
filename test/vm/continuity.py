@@ -9,42 +9,47 @@ from pathlib import Path
 import time
 
 from lab import GUESTS, Lab
-from benchmark import provision
+from benchmark import apply_profile, profile_from, provision
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--profile", type=Path, default=Path(__file__).with_name("profiles") / "basic.json")
     args = parser.parse_args()
     lab = Lab()
     lab.acquire()
     output = lab.state / (time.strftime("%Y%m%d-%H%M%S") + "-continuity")
     output.mkdir()
-    manifest = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "phases": []}
-    for guest in GUESTS:
-        for lane, rate, delay in ((1, 2, 15), (2, 6, 25)):
-            lab.impair(guest, lane, rate, delay, 0, 0)
+    profile = profile_from(args.profile)
+    manifest = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "profile": profile, "phases": []}
+    apply_profile(lab, profile)
     provision(lab, args.binary, "adaptive")
     for guest in GUESTS:
         address = "10.77.0.1" if guest == "hub" else "10.77.0.2"
         lab.put(guest, Path(__file__).with_name("voice.py"), "/root/voice.py")
         lab.execute(guest, f"nohup python3 /root/voice.py server {address} > /root/voice-server.log 2>&1 < /dev/null & echo $! > /root/voice.pid")
-    lab.execute("hub", "iperf3 -s -1 -D -B 10.77.0.1")
+    lab.execute("hub", "iperf3 -s -1 -D -J -B 10.77.0.1")
     try:
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            tcp = pool.submit(lab.execute, "edge", "iperf3 -c 10.77.0.1 --bidir -t 65 -J", capture_output=True)
+            tcp = pool.submit(lab.execute, "edge", "iperf3 -c 10.77.0.1 --bidir -l 1K -t 65 -J --get-server-output", capture_output=True)
             voices = {guest: pool.submit(lab.execute, guest, f"python3 /root/voice.py client 10.77.0.{2 if guest == 'hub' else 1} --seconds 65", capture_output=True) for guest in GUESTS}
             start = time.monotonic()
-            phases = [(15, "starlink-standby", 1, 0.5, 15, 0), (25, "starlink-outage", 1, 0.5, 15, 100),
-                      (30, "starlink-recovery", 1, 2, 15, 0), (40, "lte-outage", 2, 6, 25, 100),
-                      (45, "lte-recovery", 2, 6, 25, 0), (55, "starlink-loss", 1, 2, 15, 1)]
-            for offset, name, lane, rate, delay, loss in phases:
+            phases = [(15, "starlink-standby", 1, 0, True), (25, "starlink-outage", 1, 100, True),
+                      (30, "starlink-recovery", 1, 0, False), (40, "lte-outage", 2, 100, False),
+                      (45, "lte-recovery", 2, 0, False), (55, "starlink-loss", 1, 1, False)]
+            for offset, name, lane, loss, standby in phases:
                 time.sleep(max(0, start+offset-time.monotonic()))
                 print(name, flush=True)
-                changes = [pool.submit(lab.impair, guest, lane, rate, delay, loss, 0) for guest in GUESTS]
+                conditions = {guest: dict(profile[guest][str(lane)]) for guest in GUESTS}
+                for condition in conditions.values():
+                    if standby:
+                        condition["rate"] = min(condition["rate"], 0.5)
+                    condition["loss"] = max(condition["loss"], loss)
+                changes = [pool.submit(lab.impair, guest, lane, **conditions[guest]) for guest in GUESTS]
                 for change in changes:
                     change.result()
-                manifest["phases"].append({"name": name, "at_seconds": time.monotonic()-start, "lane": lane, "rate_mbit": rate, "one_way_delay_ms": delay, "loss_percent": loss})
+                manifest["phases"].append({"name": name, "at_seconds": time.monotonic()-start, "lane": lane, "conditions": conditions})
                 (output / "scenario.json").write_text(json.dumps(manifest, indent=2))
                 for guest in GUESTS:
                     metrics = lab.execute(guest, "curl -sf http://127.0.0.1:9090/metrics", capture_output=True).stdout
@@ -62,10 +67,14 @@ def main():
             print(output, flush=True)
             assert "error" not in tcp_result, tcp_result.get("error")
             assert len(tcp_result["intervals"]) >= 60, "TCP did not survive the complete scenario"
-            for key in ("sum", "sum_bidir_reverse"):
+            # Check delivery at each receiver; completed 128 KiB writes can be
+            # absent for a whole interval while the kernel still transmits.
+            for receiver, report in (("edge", tcp_result), ("hub", tcp_result["server_output_json"])):
+                received = [entry[key] for entry in report["intervals"]
+                            for key in ("sum", "sum_bidir_reverse") if not entry[key]["sender"]]
                 for begin, end in ((26, 30), (41, 45)):
-                    intervals = [entry[key] for entry in tcp_result["intervals"] if begin <= entry[key]["start"] < end]
-                    assert len(intervals) >= 3 and all(entry["bytes"] > 0 for entry in intervals), f"TCP {key} stopped making progress during WAN outage at {begin}s"
+                    intervals = [entry for entry in received if begin <= entry["start"] < end]
+                    assert len(intervals) >= 3 and all(entry["bytes"] > 0 for entry in intervals), f"TCP receiver {receiver} stopped making progress during WAN outage at {begin}s"
             for guest, report in reports.items():
                 assert report["loss_percent"] < 1, f"{guest} voice loss: {report}"
                 assert report["max_gap_ms"] < 150, f"{guest} voice outage gap: {report}"

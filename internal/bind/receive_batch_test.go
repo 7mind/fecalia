@@ -57,7 +57,7 @@ func TestAdaptiveReceiveCoalescesBulkAndFlushesInteractive(t *testing.T) {
 			rq.ObserveFromPath(1, []byte{1}, src, 0)
 			injected := false
 			m.beforeReceivePark = func(deadline time.Time) {
-				if injected || deadline != start.Add(2*time.Millisecond) {
+				if injected || deadline != start.Add(4*time.Millisecond) {
 					t.Fatalf("unexpected receive deadline: %v, injected=%v", deadline, injected)
 				}
 				injected = true
@@ -67,7 +67,7 @@ func TestAdaptiveReceiveCoalescesBulkAndFlushesInteractive(t *testing.T) {
 					a.notify()
 				} else {
 					rq.ObserveFromPath(2, []byte{2}, src, 0)
-					clock.advance(2 * time.Millisecond)
+					clock.advance(4 * time.Millisecond)
 				}
 			}
 			packets := [][]byte{make([]byte, 1500), make([]byte, 1500), make([]byte, 1500)}

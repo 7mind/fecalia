@@ -107,7 +107,24 @@ func TestBulkACKCadenceBoundsReverseBandwidth(t *testing.T) {
 }
 
 func TestIdleJitterDoesNotCollapsePacingRate(t *testing.T) {
-	runJitterCapacity(t, false)
+	runJitterCapacity(t, false, 15, 30, 1250000, 0)
+}
+
+func TestIdleKeepaliveTimeoutPreservesPacingTarget(t *testing.T) {
+	start := time.Unix(100, 0)
+	a := bond.New(bond.Epoch{Boot: 1, Generation: 1})
+	a.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
+	a.Path(0, 0, 80*time.Millisecond, start)
+	initial := a.Snapshot(start).Paths[0].Rate
+	a.Poll(start.Add(200 * time.Millisecond)) // Drop the idle keepalive.
+	a.Poll(start.Add(400 * time.Millisecond))
+	state := a.Snapshot(start.Add(400 * time.Millisecond)).Paths[0]
+	if state.Up {
+		t.Fatal("missing keepalive ACK must still stall the path")
+	}
+	if state.Rate != initial {
+		t.Fatalf("no application traffic was offered, but a keepalive timeout changed pacing: %.0f -> %.0f", initial, state.Rate)
+	}
 }
 
 func TestReplicationBudgetTracksPacingCapacity(t *testing.T) {
@@ -219,10 +236,22 @@ func TestJitteredPathRepairsBeforePacketExpires(t *testing.T) {
 }
 
 func TestBusyJitterDoesNotCollapsePacingRate(t *testing.T) {
-	runJitterCapacity(t, true)
+	runJitterCapacity(t, true, 15, 30, 1250000, 0)
 }
 
-func runJitterCapacity(t *testing.T, busy bool) {
+func TestBusyRadioJitterDoesNotCollapsePacingRate(t *testing.T) {
+	runJitterCapacity(t, true, 10, 60, 1250000, 0)
+}
+
+func TestSlowRadioJitterDoesNotCollapsePacingRate(t *testing.T) {
+	runJitterCapacity(t, true, 10, 60, 156250, 5000)
+}
+
+func TestStandbySerializationIsNotMistakenForQueueDelay(t *testing.T) {
+	runJitterCapacity(t, true, 20, 0, 50000, 5000)
+}
+
+func runJitterCapacity(t *testing.T, busy bool, minimumDelayMS, delaySpreadMS, capacityBytesPerSecond, idleMS int) {
 	t.Helper()
 	start := time.Unix(100, 0)
 	peers := [2]*bond.Transport{
@@ -241,7 +270,7 @@ func runJitterCapacity(t *testing.T, busy bool) {
 	var delivered int
 	for tick := 0; tick < 30000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
-		if busy {
+		if busy && tick >= idleMS {
 			if err := peers[0].Enqueue(make([]byte, 1200), now); err != nil {
 				t.Fatal(err)
 			}
@@ -250,7 +279,7 @@ func runJitterCapacity(t *testing.T, busy bool) {
 			peer.Path(0, 0, 60*time.Millisecond, now)
 			for _, tx := range peer.Poll(now) {
 				transmissions[side]++
-				delay := time.Duration(15+transmissions[side]*17%31) * time.Millisecond
+				delay := time.Duration(minimumDelayMS+transmissions[side]*17%(delaySpreadMS+1)) * time.Millisecond
 				begin := now
 				if available[side].After(begin) {
 					begin = available[side]
@@ -258,7 +287,7 @@ func runJitterCapacity(t *testing.T, busy bool) {
 				if begin.Sub(now) > 100*time.Millisecond {
 					continue
 				}
-				available[side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / 1250000 * float64(time.Second)))
+				available[side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / float64(capacityBytesPerSecond) * float64(time.Second)))
 				heap.Push(queue, event{available[side].Add(delay), 1 - side, tx.Path, tx.Frame})
 			}
 		}
@@ -284,7 +313,9 @@ func runJitterCapacity(t *testing.T, busy bool) {
 			t.Errorf("idle peer %d reduced pacing from %.0f to %.0f bytes/s without offered data or congestion: %+v", side, initial, rate, state)
 		}
 	}
-	if busy && delivered < 4_000_000 {
-		t.Errorf("10 Mbit/s with propagation jitter delivered only %d bytes in final 5s: %+v", delivered, peers[0].Snapshot(start.Add(30*time.Second)))
+	const measuredSeconds = 5
+	const minimumUtilizationPercent = 64
+	if busy && delivered < measuredSeconds*capacityBytesPerSecond*minimumUtilizationPercent/100 {
+		t.Errorf("%d bytes/s with propagation jitter delivered only %d bytes in final 5s: %+v", capacityBytesPerSecond, delivered, peers[0].Snapshot(start.Add(30*time.Second)))
 	}
 }

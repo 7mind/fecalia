@@ -13,7 +13,7 @@ import (
 
 const (
 	adaptiveReorderHold       = 300 * time.Millisecond
-	adaptiveReceiveBatchDelay = 2 * time.Millisecond
+	adaptiveReceiveBatchDelay = 4 * time.Millisecond
 )
 
 type adaptiveRoute struct {
