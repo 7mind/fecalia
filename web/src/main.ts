@@ -10,8 +10,8 @@ if (app === null) {
   throw new Error('main.ts: #app element missing from index.html');
 }
 
-const indicator = mountHealthIndicator(app);
 const dashboard = mountDashboard(app);
+const indicator = mountHealthIndicator(dashboard.healthContainer);
 
 const client = new ResilientWsClient({
   onSnapshot: (snapshot: MonitorSnapshot) => {

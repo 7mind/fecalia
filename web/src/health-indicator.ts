@@ -17,10 +17,10 @@ const LABELS: Record<ConnectionHealth, string> = {
 // Two-channel encoding (V3): color AND shape/motion (dot vs ring) AND text,
 // so the indicator survives colorblindness and screenshots.
 const DOT_STYLES: Record<ConnectionHealth, string> = {
-  connecting: 'background:#999999;',
-  live: 'background:#2e7d32;',
-  reconnecting: 'background:#f9a825; animation: wanbond-pulse 1s ease-in-out infinite;',
-  offline: 'background:#c62828;',
+  connecting: 'background:var(--muted);',
+  live: 'background:var(--success);',
+  reconnecting: 'background:var(--warning); animation: wanbond-pulse 1s ease-in-out infinite;',
+  offline: 'background:var(--danger);',
 };
 
 const STALENESS_TICK_MS = 1000;
@@ -41,7 +41,7 @@ export function mountHealthIndicator(container: HTMLElement): {
   document.head.appendChild(style);
 
   const wrapper = document.createElement('div');
-  wrapper.style.cssText = 'display:flex; align-items:center; gap:0.5em; font-family:system-ui,sans-serif; font-size:0.9em;';
+  wrapper.className = 'health-indicator';
 
   const dot = document.createElement('span');
   dot.style.cssText = 'display:inline-block; width:0.75em; height:0.75em; border-radius:50%;';
@@ -52,7 +52,7 @@ export function mountHealthIndicator(container: HTMLElement): {
   label.setAttribute('aria-label', 'WebSocket connection health');
 
   const staleness = document.createElement('span');
-  staleness.style.cssText = 'color:#666666;';
+  staleness.className = 'health-staleness';
 
   wrapper.append(dot, label, staleness);
   container.appendChild(wrapper);

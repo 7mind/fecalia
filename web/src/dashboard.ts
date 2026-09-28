@@ -44,6 +44,7 @@ interface PathBuffers {
 
 /** Handle returned to the caller: feed it snapshots as they arrive. */
 export interface DashboardHandle {
+  healthContainer: HTMLElement;
   onSnapshot: (snapshot: MonitorSnapshot) => void;
 }
 
@@ -133,11 +134,17 @@ interface ExitControlState {
 export function mountDashboard(container: HTMLElement): DashboardHandle {
   const root = document.createElement('div');
   root.className = 'dashboard';
+  const topbar = document.createElement('header');
+  topbar.className = 'topbar';
   const header = document.createElement('div');
+  const healthContainer = document.createElement('div');
+  healthContainer.className = 'connection-status';
+  topbar.append(header, healthContainer);
   const control = document.createElement('div');
+  control.className = 'dashboard-controls';
   const telemetry = document.createElement('div');
   telemetry.className = 'dashboard-telemetry';
-  root.append(header, control, telemetry);
+  root.append(topbar, control, telemetry);
   container.appendChild(root);
 
   // Rolling sparkline history, kept in memory only (Q50) — never sent
@@ -249,11 +256,12 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
-  function renderSessionCard(s: SessionSnapshot): string {
+  function renderSessionCard(s: SessionSnapshot, kind: 'session-card' | 'peer-session-card'): string {
     return `
-      <div class="session-card ${s.established ? 'is-up' : 'is-down'}" data-testid="session-card">
+      <div class="${kind} ${s.established ? 'is-up' : 'is-down'}" data-testid="${kind}">
+        <span class="session-label">WG session</span>
         <span class="state-text">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
-        <span> &middot; last handshake ${formatHandshakeAge(s.lastHandshakeSeconds, s.established)}</span>
+        <span class="session-handshake">last handshake ${formatHandshakeAge(s.lastHandshakeSeconds, s.established)}</span>
       </div>`;
   }
 
@@ -306,16 +314,6 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
-  function renderPeerSessionCard(s: PeerSessionSnapshot): string {
-    return `
-      <div class="stat-group" data-kind="peer-session" data-testid="stat-group-peer-session">
-        <div class="peer-session-card ${s.established ? 'is-up' : 'is-down'}" data-testid="peer-session-card">
-          <span class="state-text">${s.established ? 'ESTABLISHED' : 'NOT ESTABLISHED'}</span>
-          <span> &middot; last handshake ${formatHandshakeAge(s.lastHandshakeSeconds, s.established)}</span>
-        </div>
-      </div>`;
-  }
-
   function renderExitControl(candidates: string[], activeExit: string, mode: string): string {
     const options = ['auto', ...candidates]
       .map((peer) => {
@@ -325,10 +323,10 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       .join('');
     return `
       <div class="exit-control" data-testid="exit-control">
-        <div class="exit-control-copy"><span class="eyebrow">TRAFFIC ROUTING</span><h2>Exit selection</h2><p>Choose an exit or let wanbond follow the lowest healthy RTT.</p></div>
-        <div class="exit-control-fields"><label for="exit-control-select">Policy</label>
+        <div class="exit-control-fields"><label for="exit-control-select">Exit policy</label>
         <select id="exit-control-select" data-testid="exit-control-select">${options}</select>
         <span data-testid="exit-control-active">Active: ${escapeHtml(activeExit)}</span>
+        <span class="exit-control-hint">Auto follows the lowest healthy RTT.</span>
         <span class="exit-control-notes" aria-live="polite"></span></div>
       </div>`;
   }
@@ -348,9 +346,13 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     const activeExitBadge = isActiveExit
       ? `<span class="active-exit-badge" data-testid="active-exit-badge">ACTIVE-EXIT</span>`
       : '';
+    // Per-concentrator session state (T259, G28/M107): each peer's OWN
+    // WG-session health, sourced from MonitorSnapshot.peerSessions — distinct
+    // from the connection-scoped SessionSnapshot rendered once outside every
+    // section. Only present in grouped (multiPeer) mode.
     const heading =
       peerLabel !== null
-        ? `<h3 class="peer-label" data-testid="peer-label">${escapeHtml(peerLabel)}${activeExitBadge}</h3>`
+        ? `<div class="peer-heading"><h3 class="peer-label" data-testid="peer-label">${escapeHtml(peerLabel)}${activeExitBadge}</h3>${peerSession ? renderSessionCard(peerSession, 'peer-session-card') : ''}</div>`
         : '';
     const aggregationGroup =
       aggregation.length > 0
@@ -360,18 +362,12 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
         ${aggregation.map((a) => renderAggregationCard(a)).join('')}
       </div>`
         : '';
-    // Per-concentrator session state (T259, G28/M107): each peer's OWN
-    // WG-session health, sourced from MonitorSnapshot.peerSessions — distinct
-    // from the connection-scoped SessionSnapshot rendered once outside every
-    // section. Only present in grouped (multiPeer) mode.
-    const peerSessionGroup = peerSession ? renderPeerSessionCard(peerSession) : '';
     const endpointsGroup = renderEndpointsSection(endpoints, addressingHidden);
     return `
       <section class="${peerLabel !== null ? 'dashboard-peer-section' : 'dashboard-flat-section'}"
                data-testid="${peerLabel !== null ? 'peer-section' : 'flat-section'}"
                ${peerLabel !== null ? `data-peer="${escapeHtml(peerLabel)}"` : ''}>
         ${heading}
-        ${peerSessionGroup}
         <div class="stat-group" data-kind="paths" data-testid="stat-group-paths">
           <h4>Paths</h4>
           <div class="path-grid">${paths.map((p) => renderPathCard(p, addressingHidden)).join('')}</div>
@@ -527,15 +523,11 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       controlCandidates = '';
     }
 
-    header.innerHTML = `${renderDaemonHeader(snapshot.daemon)}${renderWgKeyLine(snapshot.wgPublicKeyFingerprint)}`;
+    header.innerHTML = `${renderDaemonHeader(snapshot.daemon)}<div class="daemon-status">${renderSessionCard(snapshot.session, 'session-card')}${renderWgKeyLine(snapshot.wgPublicKeyFingerprint)}</div>`;
     const openDetails = new Set(Array.from(telemetry.querySelectorAll<HTMLDetailsElement>('details.path-details[open]'), (detail) => detail.dataset.pathDetail));
     telemetry.innerHTML = `
       ${sectionsHtml}
-      ${grouped ? '' : renderEndpointsSection(snapshot.endpoints, snapshot.addressingHidden)}
-      <div class="stat-group" data-kind="session" data-testid="stat-group-session">
-        <h4>WG Session</h4>
-        ${renderSessionCard(snapshot.session)}
-      </div>`;
+      ${grouped ? '' : renderEndpointsSection(snapshot.endpoints, snapshot.addressingHidden)}`;
     for (const detail of telemetry.querySelectorAll<HTMLDetailsElement>('details.path-details')) {
       detail.open = openDetails.has(detail.dataset.pathDetail);
     }
@@ -548,5 +540,5 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     render();
   }
 
-  return { onSnapshot };
+  return { healthContainer, onSnapshot };
 }
