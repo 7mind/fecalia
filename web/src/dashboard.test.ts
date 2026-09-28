@@ -253,6 +253,18 @@ describe('mountDashboard', () => {
     document.body.appendChild(container);
   });
 
+  it('converts bit-rate telemetry to byte-rate display units', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = singlePeerSnapshot();
+    snapshot.paths = [path({ throughputBps: 8192, linkBandwidthBps: 16384 })];
+    dashboard.onSnapshot(snapshot);
+    const rows = Array.from(container.querySelectorAll('[data-testid="path-card"] tr'));
+    const throughput = rows.find((row) => row.firstElementChild!.textContent === 'throughput');
+    expect(throughput).toBeDefined();
+    expect(throughput!.textContent).toContain('1.0KB/s');
+    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('2.0KB/s');
+  });
+
   it('renders exact-byte shaper state only for a paced path', () => {
     const dashboard = mountDashboard(container);
     const paced = singlePeerSnapshot();
@@ -413,7 +425,7 @@ describe('mountDashboard', () => {
 
     expect(container.querySelector('[data-testid="path-bind"]')!.textContent).toContain('device');
     expect(container.querySelector('[data-testid="path-bind"]')!.textContent).toContain('eth0');
-    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('1.0MB/s');
+    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('128KB/s');
     expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('25.0ms');
 
     const addressing = container.querySelector('[data-testid="addressing"]');

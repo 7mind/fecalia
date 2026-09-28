@@ -32,7 +32,7 @@ func TestMonitorOnceReadsAuthenticatedSnapshot(t *testing.T) {
 			Daemon:   monitor.DaemonSnapshot{Role: "edge", Version: "test"},
 			Session:  monitor.SessionSnapshot{Established: true},
 			ExitMode: "auto", ActiveExit: "raspi5l", ExitCapablePeers: []string{"raspi5l", "o2"},
-			Paths: []monitor.PathSnapshot{{Peer: "raspi5l", Name: "starlink", Up: true, RTTSeconds: 0.08}},
+			Paths: []monitor.PathSnapshot{{Peer: "raspi5l", Name: "starlink", Up: true, RTTSeconds: 0.08, ThroughputBps: 8192}},
 		})
 		if err != nil {
 			t.Errorf("marshal: %v", err)
@@ -49,7 +49,7 @@ func TestMonitorOnceReadsAuthenticatedSnapshot(t *testing.T) {
 	if err := streamMonitor(ctx, strings.TrimPrefix(srv.URL, "http://"), "secret", true, false, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"edge", "Exit       raspi5l    Policy auto", "raspi5l / starlink", "80.0ms"} {
+	for _, want := range []string{"edge", "Exit       raspi5l    Policy auto", "raspi5l / starlink", "80.0ms", "rate 1.0KiB/s"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}

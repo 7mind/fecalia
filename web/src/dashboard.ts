@@ -211,10 +211,10 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>loss</td><td>${formatPct(p.loss)}</td><td>${renderSparklineSvg(buf.loss)}</td></tr>
           <tr><td>RTT</td><td>${formatMs(p.rttSeconds)}</td><td>${renderSparklineSvg(buf.rtt)}</td></tr>
           <tr><td>jitter</td><td>${formatMs(p.jitterSeconds)}</td><td></td></tr>
-          <tr><td>throughput</td><td>${formatBytesPerSec(p.throughputBps)}</td><td>${renderSparklineSvg(buf.throughput)}</td></tr>
+          <tr><td>throughput</td><td>${formatBytesPerSec(p.throughputBps / 8)}</td><td>${renderSparklineSvg(buf.throughput)}</td></tr>
           <tr><td>tx / rx</td><td colspan="2">${formatBytes(p.txBytes)} / ${formatBytes(p.rxBytes)}</td></tr>
           <tr><td>bind</td><td colspan="2" data-testid="path-bind">${bindLabel}</td></tr>
-          <tr><td>link</td><td colspan="2" data-testid="path-link">${formatBytesPerSec(p.linkBandwidthBps)} / ${formatMs(p.linkRttSeconds)}</td></tr>
+          <tr><td>link</td><td colspan="2" data-testid="path-link">${formatBytesPerSec(p.linkBandwidthBps / 8)} / ${formatMs(p.linkRttSeconds)}</td></tr>
         </table>
         ${shaperRows || addressingRow ? `<details class="path-details" data-path-detail="${encodeURIComponent(p.peer)}:${encodeURIComponent(p.name)}"><summary>Path details</summary><table>${shaperRows}${addressingRow}</table></details>` : ''}
       </div>`;

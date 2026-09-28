@@ -203,7 +203,7 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 		fmt.Fprintf(&b, "  %-27.27s %s %6.1fms  %5.1f%%  %6.1fms\n",
 			name, monitorStatus(fmt.Sprintf("%-7s", state), p.Up, color), p.RTTSeconds*1000, p.Loss*100, p.JitterSeconds*1000)
 		fmt.Fprintf(&b, "    rate %-11s tx %-11s rx %s\n",
-			formatRate(p.ThroughputBps), formatBytes(p.TxBytes), formatBytes(p.RxBytes))
+			formatRate(p.ThroughputBps/8), formatBytes(p.TxBytes), formatBytes(p.RxBytes))
 		if p.Addressing != nil {
 			fmt.Fprintf(&b, "    source %s  remote %s\n", p.Addressing.Source, p.Addressing.Remote)
 		}
