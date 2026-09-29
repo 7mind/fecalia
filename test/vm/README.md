@@ -635,3 +635,23 @@ profile; the hub build does not matter, the edge build does):
 | hub | `r1` | `05ed8bd` | 1.59, 1.59 |
 | hub | `05ed8bd` | `r1` | 16.1, 16.1 |
 | edge | `r1` | `r1` | 0.70, 0.70 |
+
+### Copy allowance of 10% against 20% — 2026-09-29
+
+A = `hub-restart` with the allowance at 10% (`11a6b020…`), B = the same with
+20% (`8df04d31…`); order A, B, B, A, B, A; radio profile, two continuity runs
+per step. "p99" is over datagrams sent after the first five seconds while the
+Starlink WAN was up, hub / edge.
+
+| Binary | Voice p99, ms | Voice loss, % | Radio up / down, Mbit/s | Continuity gates |
+|---|---|---|---|---|
+| A | 212/220, 158/162, 155/150, 144/149, 178/176, 136/139 | 0.03-0.43 | 1.257/82.8, 1.290/80.6, 1.290/70.8 | 2 of 6 pass |
+| B | 212/207, 146/133, 134/134, 175/174, 158/156, 173/160 | 0.00-0.58 | 1.290/74.0, 1.289/75.8, 1.289/81.2 | 0 of 6 pass |
+
+The two are indistinguishable; the allowance stays at 10%. Between 0.7% and
+3.5% of voice datagrams took over 150 ms with Starlink up, more than its
+emulated loss accounts for, so late recovery of lost datagrams is not the main
+source of the tail. Its source has not been identified. Two of the failures of
+B were gaps of 205 and 206 ms in the first two seconds. All six basic-profile
+continuity runs passed. Radio download was below its gate in one run of each
+binary.
