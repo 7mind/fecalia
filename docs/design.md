@@ -1974,6 +1974,18 @@ suppressed; a no-op on a cold boot with no keypairs yet). It **must** be registe
 before the probe loop starts (the latch's edge is not retroactive), so `up()` wires it
 right after the engine is constructed, well before `StartProbeLoop`.
 
+**Initiation after a concentrator restart.** A restarted concentrator has lost its
+sessions and, as the responder, starts none. The engine on the edge notices only when
+its new-handshake timer fires (`KeepaliveTimeout` + `RekeyTimeout`, 15 s), and until then
+sends under a session the concentrator cannot decrypt. The adaptive transport already
+learns the peer's process epoch from authenticated probe payloads; when an adopted epoch
+names a different process than the one known before, the bind calls
+`Multipath.SetOnPeerRestart`'s callback with the peer's name, and
+`startPeerRestartHandshake` (edge role only) runs that peer's `deviceRehandshake`. First
+contact and a new generation of the same process do not trigger it. It applies to the
+adaptive policy only; other policies carry no process epoch. An edge built before this
+change still waits for the engine's timer.
+
 ### Per-path telemetry — `internal/telemetry`
 
 Measures per-path quality (RTT, loss, jitter) by exchanging authenticated PROBE

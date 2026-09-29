@@ -603,3 +603,13 @@ session the hub has lost, and starts a new handshake only when the engine's
 new-handshake timer fires (`KeepaliveTimeout` 10 s + `RekeyTimeout` 5 s without
 a reply). The figure is the same on every build, including the one before the
 engine migration. The cause is inferred from the timer constants, not traced.
+
+With the edge initiating on a concentrator restart (edge build `r1`, basic
+profile; the hub build does not matter, the edge build does):
+
+| Restarted | Edge build | Hub build | Seconds |
+|---|---|---|---|
+| hub | `r1` | `r1` | 1.58, 1.58, 1.58 |
+| hub | `r1` | `05ed8bd` | 1.59, 1.59 |
+| hub | `05ed8bd` | `r1` | 16.1, 16.1 |
+| edge | `r1` | `r1` | 0.70, 0.70 |
