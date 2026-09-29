@@ -212,10 +212,13 @@ slow start instead of growing 6% per adjustment. Discovery ends on the first
 queue-delay reduction; on a delivery round (ended by acknowledgement of data
 sent after it began) with at least three timed-out datagrams and 2% of the
 round's transmissions; or, when the lane sends at least 75% of its target, on
-three consecutive rounds without 25% delivery growth, in which case the target
-becomes 105% of the best delivery seen (BBR's full-pipe rule, needed because
-radio jitter widens the delay threshold). An isolated timeout during discovery
-holds the target instead of ending discovery. A cold burst of TCP initial
+three consecutive rounds without 25% delivery growth (BBR's full-pipe rule,
+needed because radio jitter widens the delay threshold). An isolated timeout
+during discovery holds the target instead of ending discovery. The target leads
+what the lane carries by the discovery gain only: a target inflated while the
+sender was the limit leaves the path unprotected when the sender catches up
+(VM trace `20260929-140805-radio-down-e2`: 259 datagrams expired in one second).
+A cold burst of TCP initial
 windows otherwise loses most of its datagrams before feedback arrives, and the
 resulting loss run sets every flow's slow-start threshold to a few segments
 (VM trace `20260929-122641-ramp-radio-down-c1-ss`). ACK timing measures RTT and
@@ -228,10 +231,31 @@ comparing a full datagram with a tiny keepalive otherwise mistakes serialization
 time for router queueing. Within a bucket the serialization difference is less
 than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
 minimum, and explicit baseline calibration clears all buckets. Control intervals
-take the minimum of the resulting queue-delay samples. The controller
-raises a backlogged lane's target and reduces it when the minimum forward queue
-delay across a control interval exceeds `max(10 ms, 2*idleForwardVariation)` or delivery
-stalls. Unloaded estimates update only after two seconds without transmitting
+take the minimum of the resulting queue-delay samples. A congestion signal is
+timed-out data, or a minimum forward queue delay across a control interval
+above `max(10 ms, 2*idleForwardVariation)`.
+
+*Hold and pulse (`control.go`).* Raising the target until the path queues, then
+cutting it, keeps a standing queue in the path's own buffer, where small
+datagrams have no priority over bulk: a steady 100 Mbit/s model held 40 ms
+there (`TestSteadyPathIsUsedWithoutStandingLinkQueue`). Discovery therefore
+ends with a capacity estimate, the delivery measured while the path was
+saturated, and the target holds at 95% of it. About once a second a lane with
+waiting datagrams pulses its target to 110% of the estimate, long enough to
+build 1.5 times the detection threshold of queue (150-500 ms), so the queue a
+probe costs is bounded by the pulse and not by feedback lag. A congestion
+signal before the pulse's feedback is complete confirms the estimate; the
+target drops to 85% until a clear interval shows the queue has drained, and
+signals in that period do not change the estimate. A pulse without a signal
+raises the estimate by 5%, the next by 10%, and the third returns the lane to
+discovery at a gain of 1.5. While holding, one signal may be jitter: only a
+second consecutive signal cuts the target, by 10%, and lowers the estimate by
+3%. Cuts that take the target below 75% of the estimate mean capacity fell;
+delivery is measured again and a pulse follows at once. A signal while no
+datagram has waited 5 ms for a lane measures the sender, not the path, and
+starts no hold. The drained sample that re-establishes the delay baseline also
+refreshes the unloaded round trip used for the window: a held target can no
+longer compensate for a window sized from an outdated round trip. Unloaded estimates update only after two seconds without transmitting
 application datagrams on that lane; a transient empty queue during a transfer
 does not qualify. The forward estimate uses only empty keepalive transit samples
 and excludes return-path delay. Its relative-clock mean is reset when the remote
@@ -282,9 +306,14 @@ storage. A datagram larger than the window may depart when no bytes are in
 flight, so the startup limit cannot deadlock a supported larger MTU.
 
 Small datagrams wait at most 100 ms before first transmission. Bulk datagrams
-use RFC 8289 CoDel (5 ms target, 100 ms interval) at dequeue, so a burst or
+use RFC 8289 CoDel at dequeue, so a burst or
 target reduction produces spaced congestion signals instead of a contiguous
-loss run, with a hard residence bound of 250 ms. While any up lane is
+loss run, with a hard residence bound of 250 ms. Its target is the slowest
+lane's round trip (10-100 ms) and its interval twice that (at least 100 ms),
+not RFC 8289's 5 ms: a loss-based sender cuts its window by 30%, and only a
+standing queue of about 0.43 of its round trip keeps the lanes busy afterwards
+(VM trace `20260929-134042-fast-up-d1`). Small datagrams bypass this queue.
+While any up lane is
 discovering, CoDel does not drop and a bulk datagram admitted then keeps a 1 s
 bound: that queue reflects the lane's own pacing, not path capacity, and small
 datagrams bypass it. Each datagram keeps the bound in force at admission. At
@@ -310,12 +339,30 @@ the estimator initialization in [RFC 6298 §2.2](https://www.rfc-editor.org/rfc/
 This is a bounded datagram repair policy, not TCP's full retransmission timer.
 Physical attempt records expire after two seconds and release their in-flight
 bytes even when an RTT spike has raised the repair timer beyond that horizon.
-Repairs prefer a different healthy lane. Small datagrams (encrypted size <=384
-bytes) have a priority queue, may borrow 5 ms of pacing and at most one datagram
-beyond a full congestion window, and may be copied onto
-a second lane. Additional copies have an allowance of 10% of the healthy lanes'
+Repairs prefer a different healthy lane.
+
+**Traffic classes (`schedule.go`).** Datagrams of at most 384 encrypted bytes
+are small. Small datagrams that are not TCP form the real-time class (voice,
+DNS, WireGuard keepalives); small TCP datagrams, mostly ACKs, the second; larger
+datagrams are bulk. This is a size and protocol heuristic, not an application
+classifier. Classes are served in that order. Equal turns are not enough: two
+50 Hz voice streams need 70% of a 0.4 Mbit/s lane, more than an equal share
+beside a TCP ACK stream and bulk. The measured demand of each small class, plus
+10%, is reserved on the lanes in order of unloaded round trip plus twice its
+variation, and lower classes are paced and windowed to leave it free; a lane
+filled by bulk otherwise sends voice to a slower lane. The loaded round trip is
+not used for ranking, since it rises on the lane that carries the traffic
+preferring it. Each lower class keeps 5% of one lane, the lane with the most
+capacity left for it, so a flood in a higher class cannot take every
+transmission slot; the guarantee does not sit on the lane voice prefers while
+another lane has room, because one bulk datagram occupies a 0.4 Mbit/s lane for
+28 ms. Small datagrams may borrow 5 ms of pacing, and bulk competing with
+queued small datagrams gets the same lead. Real-time datagrams may exceed a
+full congestion window by one datagram and go to the lane on which they would
+arrive first. Only real-time datagrams are copied onto a second lane.
+Additional copies have an allowance of 10% of the healthy lanes'
 aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance.
-An initially unreplicated small packet can use this same budget for one earlier
+An initially unreplicated real-time datagram can use this same budget for one earlier
 cross-path copy after `max(60 ms, baseRTT + 25 ms)` if its original lane has
 returned no ACK since it was sent. This avoids waiting for a long feedback tail
 to consume its entire repair lifetime. Fresh feedback, insufficient budget,
@@ -334,17 +381,13 @@ The 40-byte flow identity contains the IP version, protocol, full source and
 destination addresses, and TCP/UDP ports. IPv6 hop-by-hop, routing and destination
 options are traversed with length checks. Fragments and unsupported extension
 headers share an address/protocol queue; invalid IP headers and generated
-packets use the unclassified queue. A ring of nonempty small-packet flow queues
-rotates after each datagram, preserving FIFO within each flow. Bulk remains one
-FIFO. This prevents an ACK burst from taking every small-packet scheduling turn;
+packets use the unclassified queue. Within each small class a ring of nonempty
+flow queues rotates after each datagram, preserving FIFO within each flow. Bulk
+remains one FIFO. This prevents one flow from taking every turn of its class;
 it does not identify applications or guarantee bandwidth against arbitrarily
 many competing flows. Flow identities are neither transmitted nor metric labels.
-Strict priority would still starve the bulk FIFO under continuous ACK traffic.
-After 8 KiB of newly transmitted small datagrams, a waiting bulk datagram gets
-one reserved turn with the same 5 ms pacing lead and single-datagram window
-overshoot. Any first transmission of a bulk datagram resets that credit.
-Expired bulk packets are discarded before spending the turn. This limits the
-priority burst without imposing equal bandwidth shares on voice and bulk flows.
+Strict priority would starve the classes below; their minimum shares, described
+under traffic classes, bound that.
 
 For unfragmented IPv4 without options and IPv6 without extension headers, the
 engine also identifies pure TCP ACKs with no payload, reserved/control/ECN flags,

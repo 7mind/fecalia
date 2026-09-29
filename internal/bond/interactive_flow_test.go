@@ -1,5 +1,3 @@
-//go:build progression
-
 package bond_test
 
 import (
