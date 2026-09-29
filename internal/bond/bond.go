@@ -99,6 +99,7 @@ type PathStats struct {
 	Sent                 uint64
 	ACKed                uint64
 	Retransmits          uint64
+	InteractiveSent      uint64
 	Up                   bool
 	Discovering          bool
 }
@@ -204,6 +205,7 @@ type lane struct {
 	lastPayload          time.Time
 	attempts             map[uint64]attempt
 	sent                 uint64
+	interactiveSent      uint64
 	acked                uint64
 	retries              uint64
 }
@@ -457,6 +459,9 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	path.roundSent++
 	path.inflight += size
 	path.sent += uint64(size)
+	if p.interactive {
+		path.interactiveSent += uint64(size)
+	}
 	path.nextSend = maxTime(path.nextSend, now.Add(-2*time.Millisecond)).Add(time.Duration(float64(size) / path.rate * float64(time.Second)))
 	if p.attempts > 0 {
 		path.retries++
@@ -1035,7 +1040,7 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 			IdleForwardVariation: p.idleForwardVariation,
 			FeedbackRTT:          p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
 			BaseRTT: p.baseRTT, QueueDelay: p.queueDelay,
-			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries,
+			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries, InteractiveSent: p.interactiveSent,
 			Up:          p.up(now) && !p.stalled,
 			Discovering: p.startup,
 		})

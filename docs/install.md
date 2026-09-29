@@ -443,7 +443,8 @@ insufficient offered traffic; it does not establish link saturation. RTT,
 `unloaded_forward_variation_seconds`,
 `feedback_rtt_seconds`, `feedback_rtt_variation_seconds`,
 forward queue delay, in-flight bytes, sent/ACKed bytes, repair copies, and
-eligibility are also exposed. `discovering` is 1 until a lane's first
+eligibility are also exposed. `interactive_sent_bytes_total` counts the small-datagram share of each
+lane's sent bytes. `discovering` is 1 until a lane's first
 congestion signal ends its capacity discovery. `window_bytes` reports the current in-flight
 allowance, including its initial delivery-credit limit; compare it with
 `in_flight_bytes` when a target rate is high but sending remains low.

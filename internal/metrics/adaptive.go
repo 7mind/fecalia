@@ -50,6 +50,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		makeMetric("in_flight_bytes", "Unacknowledged wire bytes.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return float64(p.InFlight) }),
 		makeMetric("window_bytes", "Current in-flight allowance, including startup discovery limit.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return float64(p.Window) }),
 		makeMetric("sent_bytes_total", "Wire bytes submitted by the adaptive sender.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Sent) }),
+		makeMetric("interactive_sent_bytes_total", "Wire bytes of small datagrams submitted on this lane, including copies; included in sent_bytes_total.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.InteractiveSent) }),
 		makeMetric("acked_bytes_total", "Wire bytes acknowledged by the peer.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.ACKed) }),
 		makeMetric("repair_packets_total", "Additional copies, including small-packet replication.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Retransmits) }),
 		makeMetric("discovering", "Lane has not yet observed a congestion signal and follows measured delivery.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
