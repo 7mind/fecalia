@@ -56,17 +56,21 @@ Using the engine as-is means WireGuard's battle-tested crypto and roaming come
 for free while the obfuscation knobs are available when configured.
 
 **Fork-lag hedge.** amneziawg-go is a fork of wireguard-go and can lag upstream
-security/perf fixes. We contain that risk: the entire dependency on the engine's
-`conn` package is isolated to **one file**, `internal/bind/bind.go`, via type
+security/perf fixes. We contain that risk: the engine's `conn` transport
+interfaces enter through **one file**, `internal/bind/bind.go`, via type
 aliases (`Bind = conn.Bind`, `Endpoint = conn.Endpoint`,
-`ReceiveFunc = conn.ReceiveFunc`). The local source patch is engine-generic and
+`ReceiveFunc = conn.ReceiveFunc`) and the completion/metadata contracts.
+`internal/bind/multipath.go` and `internal/device/tunaqm.go` reference only
+`conn` constants and sentinel errors (`IdealBatchSize`, `ErrBindAlreadyOpen`,
+`ErrWrongEndpointType`); `internal/device` also calls the patched `device`
+observability and admission APIs. The local source patch is engine-generic and
 covered by the root multi-device race regression, the nested concurrent-junk
 race regression, and the nested module's `device/...` tests. The `replace`
 remains until upstream provides the completion, admission/statistics and
-metadata contracts, or wanbond stops requiring them. The
-`conn.Bind`/`conn.Endpoint` contracts are
-byte-identical between the two forks, so swapping back to upstream wireguard-go
-(dropping obfuscation) touches only that file.
+metadata contracts, or wanbond stops requiring them. The base
+`conn.Bind`/`conn.Endpoint` contracts match wireguard-go, but swapping back to
+it (dropping obfuscation) also requires porting or retiring the local
+completion, metadata, admission and statistics patches.
 
 ## The data path
 
@@ -2771,9 +2775,10 @@ misbehaves subtly. Agents and contributors must preserve them.
    remains monotonic;
    legacy DATA/PARITY are deliberately unauthenticated (see Security model).
    Adaptive data uses authenticated CONTROL and rejects that legacy plane.
-5. **Amnezia `conn` coupling is isolated to `bind.go`.** All transport-interface
-   coupling goes through the type aliases there; the engine-generic source patch
-   under `third_party/` contains no wanbond logic.
+5. **Amnezia `conn` transport coupling enters through `bind.go`.** Transport
+   interfaces go through the type aliases and completion/metadata contracts
+   there; other files use only `conn` constants and sentinel errors. The
+   engine-generic source patch under `third_party/` contains no wanbond logic.
 6. **Amnezia is all-or-nothing per device.** Config validation enforces the
    complete parameter set. The v3 engine keeps magic headers, paddings and
    junk parameters per `Device`, so concurrent engines do not share mutable

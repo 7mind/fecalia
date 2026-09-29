@@ -83,8 +83,14 @@ short:
    sequence windows. Legacy DATA/PARITY are unauthenticated **by design** (DoS-grade
    risk accepted). Adaptive data uses authenticated CONTROL and rejects legacy
    DATA/PARITY.
-5. All engine (`conn`) coupling stays isolated to **`internal/bind/bind.go`** —
-   preserve the fork-swap hedge.
+5. Engine `conn` coupling is concentrated in **`internal/bind/bind.go`** (the
+   `Bind`/`Endpoint`/`ReceiveFunc` aliases and the completion/metadata
+   contracts). `internal/bind/multipath.go` and `internal/device/tunaqm.go` use
+   only `conn` constants and sentinel errors (`IdealBatchSize`,
+   `ErrBindAlreadyOpen`, `ErrWrongEndpointType`). Route any new `conn`
+   dependency through `bind.go`. `internal/device` also uses patched `device`
+   APIs (`OutboundStats`, outbound admission), so an engine swap must port or
+   retire those as well.
 6. Amnezia config is **all-or-nothing per device**. The v3 engine keeps message
    headers, paddings and junk parameters per `Device` (the v1.0.4 globals were
    upstream #155), so concurrent engines must remain race-free and
