@@ -22,7 +22,15 @@ const (
 	lossPacingHeadroom    = 1.05
 	lossRateReduction     = 0.9
 	queueSendExcessRatio  = 1.2
+	startupDeliveryGain   = 2
+	startupPlateauGrowth  = 1.25
+	startupPlateauRounds  = 3
+	startupPlateauSending = 0.75
+	startupLossEvents     = 3
+	startupLossRatio      = 0.02
 	maxQueueAge           = 100 * time.Millisecond
+	maxBulkQueueAge       = 250 * time.Millisecond
+	discoveryQueueAge     = time.Second
 	maxPacketAge          = 250 * time.Millisecond
 	ackInterval           = 25 * time.Millisecond
 	ackBatchPackets       = 64
@@ -110,6 +118,7 @@ type packet struct {
 	interactive    bool
 	payload        []byte
 	created        time.Time
+	queueDeadline  time.Time
 	repairDeadline time.Time
 	lastSent       time.Time
 	lastPath       PathID
@@ -136,7 +145,16 @@ type lane struct {
 	lease                time.Time
 	rate                 float64
 	deliveryRate         float64
+	deliverySample       float64
 	sendRate             float64
+	startup              bool
+	startupBest          float64
+	startupFlatRounds    int
+	roundEnd             uint64
+	roundDone            bool
+	roundSent            int
+	roundLost            int
+	startupLossy         bool
 	peakDelivery         float64
 	rtt                  time.Duration
 	rttVariation         time.Duration
@@ -201,6 +219,7 @@ type Transport struct {
 	paths            []*lane
 	receivers        map[PathID]*receiver
 	queue            packetFIFO
+	bulkAQM          codel
 	priority         fairPacketQueue
 	priorityBytes    int
 	pending          map[uint64]*packet
@@ -289,7 +308,7 @@ func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) 
 		if rtt <= 0 {
 			rtt = 50 * time.Millisecond
 		}
-		p = &lane{id: id, remoteID: remoteID, rate: initialRate, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt)}
+		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt)}
 		p.lastTransmit = now
 		p.nextBaseline = now.Add(baselineInterval + time.Duration((uint16(id)^uint16(id)>>8)&255)*baselineStagger)
 		t.paths = append(t.paths, p)
@@ -324,8 +343,12 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 		return nil
 	}
 	p := &packet{flow: metadata.Flow, ack: metadata.ACK, payload: append([]byte(nil), payload...), created: now}
+	// Each bulk datagram keeps the residence bound in force when it arrived, so
+	// the end of discovery does not discard its backlog at once.
+	p.queueDeadline = now.Add(t.bulkQueueAge(now))
 	if len(payload) <= smallPacket {
 		p.interactive = true
+		p.queueDeadline = now.Add(maxQueueAge)
 		if t.priority.push(p) {
 			t.coalescedACKs++
 		}
@@ -417,6 +440,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	}
 	size := len(p.payload) + wireOverhead
 	path.attempts[path.seq] = attempt{packet: p, sent: now, bytes: size}
+	path.roundSent++
 	path.inflight += size
 	path.sent += uint64(size)
 	path.nextSend = maxTime(path.nextSend, now.Add(-2*time.Millisecond)).Add(time.Duration(float64(size) / path.rate * float64(time.Second)))
@@ -468,6 +492,9 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 		for seq, a := range path.attempts {
 			if !a.released && now.Sub(a.sent) >= path.rto() {
 				path.lostSinceAdjust = path.lostSinceAdjust || a.packet != nil
+				if a.packet != nil {
+					path.roundLost++
+				}
 				if path.lastACK.Before(a.sent) {
 					path.stalled = true
 					if a.packet != nil && now.Sub(path.lastAdjust) >= deliveryInterval {
@@ -547,7 +574,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	t.pendingOrder = retained
 	if t.priorityBytes >= priorityBurstBytes {
 		for p := t.queue.peek(); p != nil; p = t.queue.peek() {
-			if now.Sub(p.created) > maxQueueAge {
+			if now.After(p.queueDeadline) {
 				t.queue.pop()
 				t.drops++
 				continue
@@ -556,6 +583,10 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			// future. Reserve one bulk turn with the same bounded pacing lead.
 			if path := t.choosePriority(now, 0, false); path != nil {
 				t.queue.pop()
+				if !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue)) {
+					t.drops++
+					continue
+				}
 				t.priorityBytes = 0
 				out = append(out, t.transmit(p, path, now))
 			}
@@ -564,7 +595,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	}
 	for _, queue := range []packetQueue{&t.priority, &t.queue} {
 		for p := queue.peek(); p != nil; p = queue.peek() {
-			if now.Sub(p.created) > maxQueueAge {
+			if now.After(p.queueDeadline) {
 				queue.pop()
 				t.drops++
 				if p.interactive {
@@ -580,6 +611,10 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 				break
 			}
 			queue.pop()
+			if !p.interactive && !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue)) {
+				t.drops++
+				continue
+			}
 			if p.interactive {
 				t.priorityBytes = min(priorityBurstBytes, t.priorityBytes+len(p.payload)+wireOverhead)
 			} else {
@@ -596,6 +631,25 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 		}
 	}
 	return out
+}
+
+// discovering reports whether an up lane has not yet seen congestion. Its
+// queue then reflects the lane's pacing, not path capacity, so dropping would
+// signal congestion that does not exist.
+func (t *Transport) discovering(now time.Time) bool {
+	for _, p := range t.paths {
+		if p.up(now) && !p.stalled && p.startup {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Transport) bulkQueueAge(now time.Time) time.Duration {
+	if t.discovering(now) {
+		return discoveryQueueAge
+	}
+	return maxBulkQueueAge
 }
 
 func (t *Transport) choosePriority(now time.Time, exclude PathID, duplicate bool) *lane {
@@ -770,6 +824,12 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			delete(p.attempts, seq)
 		}
 	}
+	if fresh && a.high >= p.roundEnd {
+		// A delivery round ends once data sent after it began is acknowledged.
+		p.roundEnd, p.roundDone = p.seq+1, true
+		p.startupLossy = p.roundLost >= startupLossEvents && float64(p.roundLost) >= startupLossRatio*float64(p.roundSent)
+		p.roundSent, p.roundLost = 0, 0
+	}
 	for _, path := range t.paths {
 		var feedbackSample time.Duration
 		if path == p {
@@ -823,6 +883,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	} else if a.elapsed-p.rateElapsed >= uint64(deliveryInterval) && now.Sub(p.feedbackAt) >= deliveryInterval {
 		rate := float64(a.bytes-p.rateBytes) / time.Duration(a.elapsed-p.rateElapsed).Seconds()
 		sendRate := float64(p.sent-p.rateSentBytes) / now.Sub(p.feedbackAt).Seconds()
+		p.deliverySample = rate
 		if p.deliveryRate == 0 {
 			p.deliveryRate = rate
 			p.sendRate = sendRate
@@ -850,15 +911,43 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if !backlogged {
 		return
 	}
+	if p.startup && lost && !p.startupLossy {
+		// Isolated timeouts under jitter are not the material loss that ends
+		// discovery (BBRv2 exits startup on a round's loss rate); hold instead.
+		return
+	}
 	if lost && p.deliveryRate > 0 {
+		p.startup = false
 		p.rate = math.Max(minimumRate, math.Min(lossRateReduction*p.rate, lossPacingHeadroom*p.deliveryRate))
 	} else if sample > 0 && queueDelay > max(targetQueue, jitterAllowanceFactor*p.idleForwardVariation) {
+		p.startup = false
 		p.rate = math.Max(minimumRate, p.rate*0.9)
 		if p.deliveryRate > 0 && p.sendRate > queueSendExcessRatio*p.deliveryRate {
 			p.rate = math.Max(minimumRate, math.Min(p.rate, lossPacingHeadroom*p.deliveryRate))
 		}
 	} else if sample > 0 {
 		p.rate = math.Min(maximumRate, p.rate*1.06+1500)
+		if p.startup {
+			// Until the first congestion signal, follow measured delivery at the
+			// pace of a sender's slow start instead of probing 6% per round trip.
+			// Jitter can mask queue delay, so a lane that sends at its pacing
+			// rate while delivery stops growing has found its capacity (BBR's
+			// full-pipe rule). Flat delivery below the pacing rate is not a plateau.
+			delivered := math.Max(p.deliveryRate, p.deliverySample)
+			if p.roundDone {
+				p.roundDone = false
+				if delivered >= startupPlateauGrowth*p.startupBest {
+					p.startupBest, p.startupFlatRounds = delivered, 0
+				} else if p.sendRate < startupPlateauSending*p.rate {
+					p.startupFlatRounds = 0
+				} else if p.startupFlatRounds++; p.startupFlatRounds >= startupPlateauRounds {
+					p.startup = false
+					p.rate = math.Max(minimumRate, lossPacingHeadroom*p.startupBest)
+					return
+				}
+			}
+			p.rate = math.Min(maximumRate, math.Max(p.rate, startupDeliveryGain*delivered))
+		}
 	}
 }
 
