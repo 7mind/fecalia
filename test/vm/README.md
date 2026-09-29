@@ -54,7 +54,7 @@ Guest WAN changes cannot disconnect the management NIC.
 | `profiles/jitter.json` | 2+6 Mbit/s, 15/40 ms delay, 4/10 ms jitter | Same throughput gates, including a 30-second idle period before load |
 | `profiles/mobile.json` | 0.4+1.25 Mbit/s uplink, 0.5+100 downlink, 4/10 ms jitter | Same throughput gates; stress model for standby Starlink and asymmetric LTE |
 | `profiles/radio.json` | Mobile capacities; Starlink 20±10 ms delay and 0.4% loss, LTE 40±30 ms delay, independently in each direction | Same throughput gates after 60 seconds idle; reproduces the collapse missed by milder jitter |
-| `continuity.py` | Simultaneous TCP in both directions plus two 50 Hz, 160-byte UDP echo streams | TCP completes 65 seconds; each receiver reports progress in every measured outage interval with 1 KiB application blocks; each UDP stream has <1% loss, <150 ms maximum receive gap and <150 ms p99 RTT |
+| `continuity.py` | Simultaneous TCP in both directions plus two 50 Hz, 160-byte UDP echo streams | TCP completes 65 seconds and meets the progress rule below; each UDP stream has <1% loss and meets the gap and latency rules below (`continuity_gates.py`) |
 
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
 seconds WAN1 is capped at 0.5 Mbit/s in each direction; lower profile rates are
@@ -64,6 +64,28 @@ at least 1% random loss after 55 seconds. Directional delay and jitter remain
 as configured. The phase manifest records actual application times and each
 direction's conditions. Echo traffic exercises both directions;
 RTT includes forward and return delay.
+
+Voice latency is judged against the WANs that were up when a datagram was sent,
+using the times recorded in the phase manifest:
+
+| Condition | Rule |
+| --- | --- |
+| First 5 seconds (cold start, no capacity estimate) | Receive gaps under 200 ms; latency not gated |
+| WAN with the lowest idle round trip up | p99 RTT under 150 ms over all such datagrams |
+| Only a slower WAN up | p99 RTT under that WAN's idle p99 plus 50 ms, and never stricter than 150 ms |
+| After the first 5 seconds | Receive gaps under 150 ms |
+
+A WAN's idle p99 follows from its profile: one-way delays are uniform within
+delay ± jitter in each direction, which gives 131.6 ms for the radio profile's
+LTE. No tunnel can deliver below that figure on that WAN alone.
+
+TCP must deliver to each receiver in every three-second window of an outage
+and in the first whole one-second interval after recovery. With two voice
+streams on a 0.4 Mbit/s WAN a single second without TCP delivery is accepted;
+voice keeps priority. `continuity_gates.py DIRECTORY...` re-evaluates recorded
+runs. Runs before 2026-09-29 20:30 were judged by the earlier rule: under
+150 ms p99 RTT and gap over the whole run, TCP delivery in every second of an
+outage.
 
 TCP progress uses the receiving side of each flow, collecting server JSON with
 `--get-server-output`. The earlier check used client reports and default
