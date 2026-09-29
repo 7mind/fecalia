@@ -252,8 +252,12 @@ storage. A datagram larger than the window may depart when no bytes are in
 flight, so the startup limit cannot deadlock a supported larger MTU.
 
 Datagrams wait at most 100 ms before first transmission, with at most 8192
-queued and outstanding datagrams per peer. Repair lifetime is 250 ms from
-admission, with at most four attempts. The repair timer is the maximum of
+queued and outstanding datagrams per peer. Bulk repair lifetime is 250 ms from
+first transmission, when its receive-order sequence is assigned. Queue residence
+must not consume that repair window: a packet queued for 90 ms could otherwise
+expire before a 190 ms feedback timeout permits its first retry. Small packets
+retain the 250 ms deadline from admission. Neither deadline is extended by a
+retry, and both classes have at most four attempts. The repair timer is the maximum of
 60 ms, `SRTT + 4*RTTVariation + 25 ms`, and
 `feedbackRTT + 4*feedbackRTTVariation`. The feedback estimate includes the full
 time until delivery confirmation, including receipt-window buffering. Each ACK

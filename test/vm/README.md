@@ -400,3 +400,80 @@ and packaging gates, not a substitute for the failed radio tests.
 
 The retained code is commit `4d3d0da`. Production services and the Nix configuration pin were
 not changed by these experiments.
+
+## Repair lifetime and rejected discovery experiments — 2026-09-29
+
+The next retained correction separates queue residence from bulk repair lifetime.
+A failing reproduction queued a bulk datagram for 90 ms, then observed it expire
+after only 195 ms in flight, before a 190 ms repair timeout had been polled.
+Bulk now gets 250 ms from its first transmission. Small packets retain the
+enqueue-relative deadline, and retransmission never extends either deadline.
+The same reproduction verifies the alternate-path retry and fixed expiry.
+
+| Candidate/scenario | Measured outcome | Verdict / artifact |
+| --- | --- | --- |
+| Repair lifetime correction, radio | 1.183128 / 71.897991 Mbit/s upload/download | Both gates failed; `20260929-011714-adaptive` |
+| Same candidate, radio continuity | TCP progress and gaps passed; hub/edge loss 0.985%/1.323%, p99 RTT 198.2/197.2 ms | Edge loss and latency failed; `20260929-011557-continuity` |
+| Same candidate, fast | 97.356924 / 95.997262 Mbit/s | Upload passed; download was below the 96 Mbit/s threshold; `20260929-011948-adaptive` |
+| Same candidate, basic continuity | Zero loss; hub/edge p99 RTT 117.1/113.6 ms, gaps 77.9/80.7 ms | All gates passed; `20260929-014420-continuity` |
+| Rejected faster discovery, radio | 1.185465 / 59.000602 Mbit/s | Both gates failed; `20260929-013411-adaptive` |
+| Same rejected candidate, radio continuity | Loss 0.677%/1.415%, p99 RTT 200.5/199.6 ms | TCP progress, gaps and voice gates failed; `20260929-013253-continuity` |
+| Same rejected candidate, fast | 94.849307 / 96.940982 Mbit/s | Upload failed; download passed; `20260929-013644-adaptive` |
+
+Benchmark timings match the preceding table. The repair correction addresses
+a reproduced deadline defect; these runs do not prove a throughput improvement.
+The fast download failure must not be rounded into a pass.
+The repair correction is commit `ee61de2`. The default frontend/Go/vendor gate,
+focused race tests, ARM64 cross-build and Nix packaging passed. Production
+deployment and the `nix-config` pin remain operator-owned and unchanged.
+
+The rejected discovery experiment reached 94–97 Mbit/s within five seconds in
+a deterministic 100 Mbit/s, 80 ms RTT model, including a 2-to-100 Mbit/s capacity
+increase. The preceding controller reached 16–25 Mbit/s. The radio regression
+above is why the faster growth is not retained. Its patch is saved in
+investigation scratch as `discovery-v22-rejected.patch`.
+
+A separate loss-free, symmetric 0.4 Mbit/s model offered two 50 Hz voice-sized
+flows, a continuous pure-ACK flow, and bulk in each direction. In its final
+second the unchanged queue delivered 142/200 voice datagrams, with 158 ms p99
+one-way delay. Prepending new flows did not fix it. Preferring non-ACK flow
+heads restored all 200 datagrams but still measured 91 ms, above the model's
+75 ms bound. Doubling the bulk reservation interval failed the existing
+memory/UDP starvation contract. Doubling the feedback interval worsened startup
+voice delivery. None of these queue or interval experiments is retained;
+the `sparse-flow-*.log` scratch files retain their results. A passing isolated loss check would not establish radio latency
+or continuing TCP progress under overload.
+
+Both deterministic reproductions are committed under the `progression` build
+tag. They intentionally fail on the retained controller and are excluded from
+the default correctness gate. Run them explicitly from the repository root:
+
+```sh
+nix develop --command go test -tags progression ./internal/bond \
+  -run 'TestCapacityDiscoveryAtCellularRTT|TestSparseSmallFlowsSurviveSustainedACKBacklog' \
+  -count=1 -v
+```
+
+They run in virtual time without VMs, root, or known-capacity configuration in
+the controller. Preserve their assertions while evaluating candidates; passing
+them does not replace the full VM radio gates. Move a reproduction into the
+default suite only when the corresponding defect is corrected and the broader
+radio checks show no regression.
+
+### CPU and warmed throughput measurements
+
+A temporary profiling build of the preceding candidate recorded 25 seconds of
+CPU samples during fast-profile reverse TCP. The transfer measured 93.85 Mbit/s;
+the daemon used 7.19 CPU-seconds on the hub and 10.13 on the edge. Aggregate guest
+CPU remained 89.7%/86.2% idle. These measurements do not support CPU saturation
+as the limiting factor in that run. Profiling used a build overlay; it added no
+production listener or permanent profiling code.
+
+A subsequent warmed transfer measured 96.50 Mbit/s TCP with 237 retransmissions.
+UDP received 99.39 Mbit/s from a 110 Mbit/s offer, with 8.71% loss. The receiver's
+rate is used here: iperf's UDP sender summary would incorrectly imply 110 Mbit/s
+was delivered. TCP receive windows were about 9 MB, and the outer resequencer
+reported no skips. Bulk queue drops and repair expiry still increased. These
+observations narrow the investigation; they do not establish one cause of all
+remaining losses. Raw profiles, TCP state samples, metrics and transfer reports
+are under investigation scratch `profile-v20/`.

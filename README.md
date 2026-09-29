@@ -76,7 +76,9 @@ Small-packet duplication follows learned capacity, capped at 10% of the aggregat
 pacing target and 64 kB/s. Bulk receive batching reduces return ACK traffic and
 flushes immediately for interactive packets.
 
-Lost datagrams receive bounded cross-path retries. Small encrypted datagrams
+Lost datagrams receive bounded cross-path retries. Bulk repair lasts at most
+250 ms from first transmission; small packets retain a 250 ms limit from enqueue.
+Retries do not extend either deadline. Small encrypted datagrams
 (up to 384 bytes, including WireGuard overhead) receive priority and budgeted
 replication; they bypass bulk receive ordering. This is a size heuristic, not
 application identification. Small packets receive one scheduling turn per IP

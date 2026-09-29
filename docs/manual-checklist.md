@@ -56,6 +56,13 @@ Prerequisites (all phases):
       duplicate ACKs and SACKs. In the VM, verify TCP receiver progress with
       simultaneous upload, download and voice; separate one-way runs miss
       reverse ACK starvation.
+- [ ] Run `TestBulkRepairLifetimeStartsWithFirstTransmission`. Queue residence
+      must not prevent the first bulk repair; retries must not extend the fixed
+      deadline, and small packets must keep their enqueue-relative expiry.
+- [ ] Run the opt-in `progression` tests for capacity discovery and sustained
+      ACK/voice contention, using the [lab commands](../test/vm/README.md).
+      These currently fail. Retain their output alongside full VM results;
+      default test-suite success does not establish those requirements.
 - [ ] In a disposable Linux guest, run the tagged
       `TestInactiveTUNAQMRemovesOnlyLegacyShaper` test. On a persistent-interface
       upgrade, check `tc qdisc show dev wanbond0`: disabled legacy HTB/bfifo
