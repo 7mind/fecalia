@@ -79,7 +79,7 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 		p.control.holdSignal, p.control.draining, p.control.flushUntil = false, false, time.Time{}
 		switch {
 		case p.startup:
-			p.discover(now, realtime)
+			p.discover(now, realtime, laneLimited)
 		case p.control.capacity == 0:
 			p.rate = math.Min(maximumRate, p.rate*1.06+1500)
 		default:
@@ -184,7 +184,7 @@ func (p *lane) pulse(now time.Time) {
 
 // discover follows measured delivery at the pace of a sender's slow start
 // until the first congestion signal or a delivery plateau.
-func (p *lane) discover(now time.Time, realtime bool) {
+func (p *lane) discover(now time.Time, realtime, laneLimited bool) {
 	gain := p.discoveryGain
 	if realtime {
 		gain = math.Min(gain, rediscoveryGain)
@@ -213,9 +213,14 @@ func (p *lane) discover(now time.Time, realtime bool) {
 	// unprotected when the sender catches up.
 	p.rate = math.Max(p.rate, gain*delivered)
 	if carried := math.Max(delivered, p.sendRate); carried > 0 {
-		// Once delivery is measured the initial assumption no longer
-		// applies: on a lane slower than it, the window sized from it admits
-		// a queue of hundreds of milliseconds.
-		p.rate = math.Max(minimumRate, math.Min(p.rate, gain*carried))
+		// While datagrams wait for the lane, measured delivery replaces the
+		// initial assumption: on a lane slower than it, the window sized from
+		// it admits a queue of hundreds of milliseconds. A sparse sender's
+		// delivery says nothing about the lane.
+		floor := initialRate
+		if laneLimited {
+			floor = minimumRate
+		}
+		p.rate = math.Min(p.rate, math.Max(floor, gain*carried))
 	}
 }
