@@ -30,6 +30,15 @@ func tcpFlow() bond.FlowID { return bond.FlowID{4, 6} }
 // their one-way 99th percentile delay.
 func voiceUnderLoad(t *testing.T, rates []float64, delays, jitters []time.Duration, acksPerSecond int) (delivered, sent int, p99 time.Duration) {
 	t.Helper()
+	delivered, sent, p99, _ = voiceThroughOutage(t, rates, delays, jitters, acksPerSecond, -1, 0, 0)
+	return
+}
+
+// voiceThroughOutage is voiceUnderLoad with one lane losing every datagram in
+// both directions from failAt for failFor milliseconds. It also returns the
+// longest interval between voice arrivals in the measured period.
+func voiceThroughOutage(t *testing.T, rates []float64, delays, jitters []time.Duration, acksPerSecond, failed, failAt, failFor int) (delivered, sent int, p99, gap time.Duration) {
+	t.Helper()
 	const (
 		duration = 15000
 		measured = 10000
@@ -44,12 +53,17 @@ func voiceUnderLoad(t *testing.T, rates []float64, delays, jitters []time.Durati
 	heap.Init(queue)
 	available := make([][2]time.Time, len(rates))
 	var waits []time.Duration
+	lastArrival := -1
 	acknowledgement := uint32(1)
 	for tick := 0; tick < duration+500; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
+		down := func(lane int) bool { return lane == failed && tick >= failAt && tick < failAt+failFor }
 		for _, p := range peers {
 			for lane := range rates {
-				p.Path(bond.PathID(lane), bond.PathID(lane), 2*delays[lane], now)
+				// Probes stop confirming a failed path; its lease then expires.
+				if !down(lane) {
+					p.Path(bond.PathID(lane), bond.PathID(lane), 2*delays[lane], now)
+				}
 			}
 		}
 		for side, p := range peers {
@@ -79,6 +93,9 @@ func voiceUnderLoad(t *testing.T, rates []float64, delays, jitters []time.Durati
 			}
 			for _, tx := range p.Poll(now) {
 				lane := int(tx.Path)
+				if down(lane) {
+					continue
+				}
 				begin := maxTimeTest(now, available[lane][side])
 				if begin.Sub(now) > 100*time.Millisecond {
 					continue
@@ -93,24 +110,32 @@ func voiceUnderLoad(t *testing.T, rates []float64, delays, jitters []time.Durati
 		}
 		for queue.Len() > 0 && !(*queue)[0].at.After(now) {
 			e := heap.Pop(queue).(event)
+			if down(int(e.path)) {
+				continue
+			}
 			got, err := peers[e.to].Receive(e.path, e.frame, now)
 			if err != nil {
-				t.Fatal(err)
+				// A frame in flight when the path's lease expired.
+				continue
 			}
 			for _, d := range got {
 				if e.to == 1 && len(d.Payload) == voiceWireGuardBytes {
 					if at := int(binary.BigEndian.Uint64(d.Payload)); at >= measured {
 						waits = append(waits, time.Duration(tick-at)*time.Millisecond)
+						if lastArrival >= 0 {
+							gap = max(gap, time.Duration(tick-lastArrival)*time.Millisecond)
+						}
+						lastArrival = tick
 					}
 				}
 			}
 		}
 	}
 	if len(waits) == 0 {
-		return 0, sent, 0
+		return 0, sent, 0, 0
 	}
 	sort.Slice(waits, func(i, j int) bool { return waits[i] < waits[j] })
-	return len(waits), sent, waits[len(waits)*99/100]
+	return len(waits), sent, waits[len(waits)*99/100], gap
 }
 
 // Voice must get the low-latency lane while bulk and the TCP ACK stream of a
@@ -136,5 +161,20 @@ func TestVoiceSurvivesOnSingleSlowLane(t *testing.T) {
 	t.Logf("delivered %d/%d voice datagrams, one-way p99 %s", delivered, sent, p99)
 	if delivered < sent*99/100 || p99 > 75*time.Millisecond {
 		t.Fatalf("voice displaced on a slow lane: %d/%d delivered, one-way p99 %s", delivered, sent, p99)
+	}
+}
+
+// When the lane voice rides fails, the silence must stay below what a
+// conversation tolerates, and only the datagrams already in flight may be lost
+// (VM runs 20260929-142206-continuity: 337 and 458 ms gaps at a lane failure).
+func TestVoiceSurvivesFailureOfItsLane(t *testing.T) {
+	for _, failed := range []int{0, 1} {
+		delivered, sent, p99, gap := voiceThroughOutage(t, []float64{50000, 156250},
+			[]time.Duration{20 * time.Millisecond, 40 * time.Millisecond},
+			[]time.Duration{0, 30 * time.Millisecond}, 400, failed, 12000, 2000)
+		t.Logf("lane %d failed: delivered %d/%d voice datagrams, one-way p99 %s, longest gap %s", failed, delivered, sent, p99, gap)
+		if delivered < sent*98/100 || gap > 150*time.Millisecond {
+			t.Errorf("lane %d failed: %d/%d delivered, longest gap %s", failed, delivered, sent, gap)
+		}
 	}
 }
