@@ -28,8 +28,8 @@ const (
 	startupPlateauSending = 0.75
 	startupLossEvents     = 3
 	startupLossRatio      = 0.02
-	jitteryVariation      = 5 * time.Millisecond
-	jitterySamples        = 4
+	maxDelaySamples       = 16
+	jitterWarmup          = 8
 	maxQueueAge           = 100 * time.Millisecond
 	maxBulkQueueAge       = 250 * time.Millisecond
 	discoveryQueueAge     = time.Second
@@ -200,6 +200,9 @@ type lane struct {
 	firstSent            time.Time
 	transitBases         [(maxDatagram+wireOverhead)/transitSizeBucket + 1]transitBaseline
 	intervalQueueDelay   time.Duration
+	delayJitter          time.Duration
+	intervalJitter       time.Duration
+	delayDifferences     int
 	intervalSamples      int
 	haveInterval         bool
 	queueDelay           time.Duration
@@ -310,7 +313,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
 		clear(p.transitBases[:])
-		p.haveInterval, p.intervalSamples = false, 0
+		p.haveInterval, p.intervalSamples, p.delayJitter, p.delayDifferences, p.intervalJitter = false, 0, 0, 0, 0
 		p.firstSent = time.Time{}
 		p.idleForwardMean, p.idleForwardVariation = 0, 0
 		p.idleForwardKnown = false
@@ -387,6 +390,23 @@ func (p *lane) rto() time.Duration {
 		variation = max(variation, p.rtt/2)
 	}
 	return max(minimumRTO, p.rtt+4*variation+ackInterval, p.feedbackRTT+4*p.feedbackRTTVariation)
+}
+
+// delaySamplesNeeded is the number of queue-delay samples whose minimum
+// separates a standing queue from jitter. Consecutive samples of a uniform
+// spread s differ by s/3 on average, and the minimum of n of them lies about
+// s/(n+1) above the true floor; it must fall well below the threshold before
+// exceeding it means a queue.
+func (p *lane) delaySamplesNeeded() int {
+	// The estimate from before this interval: a queue's onset must not count
+	// as the jitter that excuses it.
+	spread := 3 * p.intervalJitter
+	threshold := p.congestionThreshold()
+	// A few differences cannot tell jitter from the onset of a queue.
+	if p.delayDifferences <= jitterWarmup || spread <= threshold {
+		return 1
+	}
+	return min(maxDelaySamples, int(2*spread/threshold))
 }
 
 func (p *lane) observeFeedbackRTT(sample time.Duration) {
@@ -764,7 +784,18 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 				if !baseline.known || transit < baseline.delay {
 					baseline.delay, baseline.known = transit, true
 				}
+				previous := p.queueDelay
 				p.queueDelay = transit - baseline.delay
+				// Jitter makes consecutive samples differ by a large part of
+				// its spread; a queue changes little between them.
+				difference := p.queueDelay - previous
+				if difference < 0 {
+					difference = -difference
+				}
+				if p.delayDifferences > 0 {
+					p.delayJitter += (difference - p.delayJitter) / 8
+				}
+				p.delayDifferences = min(jitterWarmup+1, p.delayDifferences+1)
 				if !p.haveInterval || p.queueDelay < p.intervalQueueDelay {
 					p.intervalQueueDelay, p.haveInterval = p.queueDelay, true
 				}
@@ -864,12 +895,12 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		queueDelay = p.intervalQueueDelay
 	}
 	delayed := sample > 0 && queueDelay > p.congestionThreshold()
-	if delayed && p.idleForwardVariation >= jitteryVariation && p.intervalSamples < jitterySamples {
-		// On a jittery lane the minimum of a few samples exceeds the
-		// threshold by chance; keep collecting before calling it a queue.
+	if delayed && p.intervalSamples < p.delaySamplesNeeded() {
+		// Jitter spreads the samples, and the minimum of a few of them exceeds
+		// the threshold by chance; keep collecting before calling it a queue.
 		return
 	}
-	p.haveInterval, p.intervalSamples = false, 0
+	p.haveInterval, p.intervalSamples, p.intervalJitter = false, 0, p.delayJitter
 	lost := p.lostSinceAdjust
 	p.lostSinceAdjust = false
 	if !backlogged {
