@@ -37,6 +37,9 @@ const (
 	ackInterval           = 25 * time.Millisecond
 	ackBatchPackets       = 64
 	priorityLead          = 5 * time.Millisecond
+	minimumClassShare     = 0.05
+	reservationHeadroom   = 1.1
+	ipProtocolTCP         = 6
 	pathLease             = time.Second
 	minimumRTO            = 60 * time.Millisecond
 	feedbackHorizon       = 2 * time.Second
@@ -46,7 +49,6 @@ const (
 	baselineStagger       = 500 * time.Millisecond
 	maxPackets            = 8192
 	smallPacket           = 384
-	priorityBurstBytes    = 8 * 1024
 	redundancyRate        = 64000.0
 	redundancyShare       = 0.1
 	maxDatagram           = 9000
@@ -121,6 +123,7 @@ type packet struct {
 	ack            TCPACK
 	seq            uint64
 	order          uint64
+	class          class
 	interactive    bool
 	payload        []byte
 	created        time.Time
@@ -177,6 +180,9 @@ type lane struct {
 	baseRTT              time.Duration
 	baseAt               time.Time
 	nextSend             time.Time
+	classNext            [classes]time.Time
+	reserved             [classBulk]float64
+	guaranteed           [classes]bool
 	lastACK              time.Time
 	lastAdjust           time.Time
 	lostSinceAdjust      bool
@@ -231,9 +237,8 @@ type Transport struct {
 	receivers        map[PathID]*receiver
 	queue            packetFIFO
 	bulkAQM          codel
-	bulkWait         waitWindow
-	priority         fairPacketQueue
-	priorityBytes    int
+	small            [classBulk]fairPacketQueue
+	demand           [classBulk]rateMeter
 	pending          map[uint64]*packet
 	pendingOrder     []*packet
 	seq              uint64
@@ -350,7 +355,7 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 	if len(payload) == 0 || len(payload) > maxDatagram {
 		return errors.New("bond: invalid datagram length")
 	}
-	if len(t.queue)+t.priority.count+len(t.pending) >= maxPackets {
+	if t.queued()+len(t.pending) >= maxPackets {
 		t.drops++
 		t.admissionDrops++
 		if len(payload) <= smallPacket {
@@ -358,14 +363,14 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 		}
 		return nil
 	}
-	p := &packet{flow: metadata.Flow, ack: metadata.ACK, payload: append([]byte(nil), payload...), created: now}
+	p := &packet{flow: metadata.Flow, ack: metadata.ACK, class: classify(len(payload), metadata), payload: append([]byte(nil), payload...), created: now}
 	// Each bulk datagram keeps the residence bound in force when it arrived, so
 	// the end of discovery does not discard its backlog at once.
 	p.queueDeadline = now.Add(t.bulkQueueAge(now))
-	if len(payload) <= smallPacket {
+	if p.class != classBulk {
 		p.interactive = true
 		p.queueDeadline = now.Add(maxQueueAge)
-		if t.priority.push(p) {
+		if t.small[p.class].push(p) {
 			t.coalescedACKs++
 		}
 	} else {
@@ -417,24 +422,12 @@ func (t *Transport) PacingRate(now time.Time) float64 {
 	return rate
 }
 
-func (t *Transport) choose(now time.Time, size int, exclude PathID, retry bool) *lane {
-	var best *lane
-	for _, p := range t.paths {
-		if !p.up(now) || p.stalled || p.nextSend.After(now) || now.Before(p.drainUntil) || p.inflight+size > max(size, p.window()) {
-			continue
-		}
-		if retry && p.id == exclude {
-			continue
-		}
-		if best == nil || p.rtt < best.rtt {
-			best = p
-		}
-	}
-	return best
-}
-
 func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission {
+	size := len(p.payload) + wireOverhead
 	if p.seq == 0 {
+		if p.class != classBulk {
+			t.demand[p.class].add(now, float64(size))
+		}
 		p.repairDeadline = now.Add(maxPacketAge)
 		if p.interactive {
 			p.repairDeadline = p.created.Add(maxPacketAge)
@@ -454,7 +447,6 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	if path.firstSent.IsZero() {
 		path.firstSent = now
 	}
-	size := len(p.payload) + wireOverhead
 	path.attempts[path.seq] = attempt{packet: p, sent: now, bytes: size}
 	path.roundSent++
 	path.inflight += size
@@ -463,6 +455,9 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 		path.interactiveSent += uint64(size)
 	}
 	path.nextSend = maxTime(path.nextSend, now.Add(-2*time.Millisecond)).Add(time.Duration(float64(size) / path.rate * float64(time.Second)))
+	if allowed := path.allowed(p.class); allowed > 0 {
+		path.classNext[p.class] = maxTime(path.classNext[p.class], now.Add(-2*time.Millisecond)).Add(time.Duration(float64(size) / allowed * float64(time.Second)))
+	}
 	if p.attempts > 0 {
 		path.retries++
 	}
@@ -568,11 +563,11 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 		// A long feedback tail must not consume the entire lifetime of a small
 		// datagram. One earlier cross-path copy shares the replication budget.
 		size := len(p.payload) + wireOverhead
-		if p.interactive && p.attempts == 1 && previous != nil &&
+		if p.class == classRealtime && p.attempts == 1 && previous != nil &&
 			!previous.lastACK.After(p.lastSent) &&
 			now.Sub(p.lastSent) >= max(minimumRTO, previous.baseRTT+ackInterval) &&
 			t.redundancyTokens >= float64(size) {
-			if path := t.choosePriority(now, p.lastPath, true); path != nil {
+			if path := t.chooseLane(now, p.class, size, p.lastPath, true); path != nil {
 				t.redundancyTokens -= float64(size)
 				out = append(out, t.transmit(p, path, now))
 				continue
@@ -581,9 +576,9 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 		if now.Sub(p.lastSent) < rto || p.attempts >= 4 {
 			continue
 		}
-		path := t.choose(now, len(p.payload)+wireOverhead, p.lastPath, true)
+		path := t.chooseLane(now, classBulk, size, p.lastPath, true)
 		if path == nil {
-			path = t.choose(now, len(p.payload)+wireOverhead, 0, false)
+			path = t.chooseLane(now, classBulk, size, 0, false)
 		}
 		if path != nil {
 			out = append(out, t.transmit(p, path, now))
@@ -591,71 +586,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	}
 	clear(t.pendingOrder[len(retained):])
 	t.pendingOrder = retained
-	if t.priorityBytes >= priorityBurstBytes {
-		for p := t.queue.peek(); p != nil; p = t.queue.peek() {
-			if now.After(p.queueDeadline) {
-				t.queue.pop()
-				t.drops++
-				continue
-			}
-			// A continuous ACK stream can keep every pacing deadline in the
-			// future. Reserve one bulk turn with the same bounded pacing lead.
-			if path := t.choosePriority(now, 0, false); path != nil {
-				t.queue.pop()
-				t.bulkWait.observe(now, now.Sub(p.created))
-				if !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue), t.slowestRoundTrip(now)) {
-					t.drops++
-					t.aqmDrops++
-					continue
-				}
-				t.priorityBytes = 0
-				out = append(out, t.transmit(p, path, now))
-			}
-			break
-		}
-	}
-	for _, queue := range []packetQueue{&t.priority, &t.queue} {
-		for p := queue.peek(); p != nil; p = queue.peek() {
-			if now.After(p.queueDeadline) {
-				queue.pop()
-				t.drops++
-				if p.interactive {
-					t.interactiveDrops++
-				}
-				continue
-			}
-			path := t.choose(now, len(p.payload)+wireOverhead, 0, false)
-			if p.interactive {
-				path = t.choosePriority(now, 0, false)
-			}
-			if path == nil {
-				break
-			}
-			queue.pop()
-			if !p.interactive {
-				t.bulkWait.observe(now, now.Sub(p.created))
-			}
-			if !p.interactive && !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue), t.slowestRoundTrip(now)) {
-				t.drops++
-				t.aqmDrops++
-				continue
-			}
-			if p.interactive {
-				t.priorityBytes = min(priorityBurstBytes, t.priorityBytes+len(p.payload)+wireOverhead)
-			} else {
-				t.priorityBytes = 0
-			}
-			out = append(out, t.transmit(p, path, now))
-			if len(p.payload) <= smallPacket && t.redundancyTokens >= float64(len(p.payload)+wireOverhead) {
-				second := t.choosePriority(now, path.id, true)
-				if second != nil {
-					t.redundancyTokens -= float64(len(p.payload) + wireOverhead)
-					out = append(out, t.transmit(p, second, now))
-				}
-			}
-		}
-	}
-	return out
+	return t.send(now, out)
 }
 
 // discovering reports whether an up lane has not yet seen congestion. Its
@@ -685,19 +616,6 @@ func (t *Transport) bulkQueueAge(now time.Time) time.Duration {
 		return discoveryQueueAge
 	}
 	return maxBulkQueueAge
-}
-
-func (t *Transport) choosePriority(now time.Time, exclude PathID, duplicate bool) *lane {
-	var best *lane
-	for _, p := range t.paths {
-		if !p.up(now) || p.stalled || (duplicate && p.id == exclude) || p.inflight > p.window() || p.nextSend.After(now.Add(priorityLead)) {
-			continue
-		}
-		if best == nil || p.rtt < best.rtt {
-			best = p
-		}
-	}
-	return best
 }
 
 func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Delivery, error) {
@@ -789,7 +707,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 }
 
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
-	backlogged := len(t.queue)+t.priority.count > 0 || p.inflight >= p.window()/2
+	backlogged := t.queued() > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
 	var physicalFeedback time.Duration
 	for seq, pending := range t.pending {
@@ -957,7 +875,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if !backlogged {
 		return
 	}
-	p.adjust(now, lost, delayed, sample > 0, t.bulkWait.standing(now))
+	p.adjust(now, lost, delayed, sample > 0, t.laneLimited(now))
 }
 
 func (w *receiptWindow) mark(seq uint64) bool {
@@ -1032,7 +950,7 @@ func maxTime(a, b time.Time) time.Time {
 }
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
-	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.priority.count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
+	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
 	for _, p := range t.paths {
 		s.Paths = append(s.Paths, PathStats{
 			Path: p.id, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
