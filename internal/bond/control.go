@@ -58,7 +58,12 @@ func (p *lane) congestionThreshold() time.Duration {
 // adjust runs once per control interval of a lane with demand. laneLimited
 // reports that bulk datagrams consistently waited for a lane, so the lanes,
 // not the sender, limit what is carried.
-func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited bool) {
+//
+// realtime reports that real-time datagrams are being carried. Discovery then
+// uses the gentler gain: its overshoot queues in the path's buffer ahead of
+// them (VM run 20260929-152215-continuity: 370 ms voice round trips in the
+// first five seconds of a cold start).
+func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realtime bool) {
 	if p.startup && lost && !p.startupLossy {
 		// Isolated timeouts under jitter are not the material loss that ends
 		// discovery (BBRv2 exits startup on a round's loss rate); hold instead.
@@ -72,7 +77,7 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited bool) {
 		p.control.holdSignal, p.control.draining = false, false
 		switch {
 		case p.startup:
-			p.discover(now)
+			p.discover(now, realtime)
 		case p.control.capacity == 0:
 			p.rate = math.Min(maximumRate, p.rate*1.06+1500)
 		default:
@@ -167,13 +172,17 @@ func (p *lane) pulse(now time.Time) {
 	length := time.Duration(pulseQueueFactor / pulseExcess * float64(p.congestionThreshold()))
 	length = min(maxPulse, max(minPulse, length))
 	c.pulseEnd = now.Add(length)
-	c.verdictAt = c.pulseEnd.Add(p.rtt + ackInterval)
+	c.verdictAt = c.pulseEnd.Add(p.rtt + p.peerACKInterval())
 	p.rate = math.Min(maximumRate, (1+pulseExcess)*c.capacity)
 }
 
 // discover follows measured delivery at the pace of a sender's slow start
 // until the first congestion signal or a delivery plateau.
-func (p *lane) discover(now time.Time) {
+func (p *lane) discover(now time.Time, realtime bool) {
+	gain := p.discoveryGain
+	if realtime {
+		gain = math.Min(gain, rediscoveryGain)
+	}
 	p.rate = math.Min(maximumRate, p.rate*1.06+1500)
 	// Jitter can mask queue delay, so a lane that sends at its pacing rate
 	// while delivery stops growing has found its capacity (BBR's full-pipe
@@ -196,8 +205,8 @@ func (p *lane) discover(now time.Time) {
 	// The target may lead what the lane carries by the discovery gain only: a
 	// target inflated while the sender was the limit leaves the path
 	// unprotected when the sender catches up.
-	p.rate = math.Max(p.rate, p.discoveryGain*delivered)
+	p.rate = math.Max(p.rate, gain*delivered)
 	if carried := math.Max(delivered, p.sendRate); carried > 0 {
-		p.rate = math.Min(p.rate, math.Max(initialRate, p.discoveryGain*carried))
+		p.rate = math.Min(p.rate, math.Max(initialRate, gain*carried))
 	}
 }

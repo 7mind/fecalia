@@ -147,9 +147,9 @@ func TestVoiceKeepsLowLatencyLaneUnderLoad(t *testing.T) {
 		[]time.Duration{20 * time.Millisecond, 40 * time.Millisecond},
 		[]time.Duration{0, 30 * time.Millisecond}, 400)
 	t.Logf("delivered %d/%d voice datagrams, one-way p99 %s", delivered, sent, p99)
-	// The low-latency lane costs 20 ms, one 28 ms bulk datagram ahead and 7 ms
-	// of voice serialization.
-	if delivered < sent*99/100 || p99 > 65*time.Millisecond {
+	// The low-latency lane costs 20 ms, one 28 ms bulk datagram ahead, 7 ms of
+	// voice serialization and the 15 ms queue of a capacity pulse.
+	if delivered < sent*99/100 || p99 > 70*time.Millisecond {
 		t.Fatalf("voice lost its lane: %d/%d delivered, one-way p99 %s", delivered, sent, p99)
 	}
 }

@@ -35,6 +35,11 @@ const (
 	discoveryQueueAge     = time.Second
 	maxPacketAge          = 250 * time.Millisecond
 	ackInterval           = 25 * time.Millisecond
+	maxACKInterval        = 50 * time.Millisecond
+	ackShare              = 0.08
+	ackStreak             = 3
+	ackWireBytes          = headerBytes + ackBytes + 78
+	ackGapHorizon         = 4 * maxACKInterval
 	ackBatchPackets       = 64
 	priorityLead          = 5 * time.Millisecond
 	minimumClassShare     = 0.05
@@ -184,6 +189,7 @@ type lane struct {
 	reserved             [classBulk]float64
 	guaranteed           [classes]bool
 	lastACK              time.Time
+	ackGap               time.Duration
 	lastAdjust           time.Time
 	lostSinceAdjust      bool
 	inflight             int
@@ -229,6 +235,8 @@ type receiver struct {
 	highAt     time.Time
 	pending    int
 	ackAt      time.Time
+	streak     int
+	received   rateMeter
 	revision   uint64
 }
 
@@ -305,7 +313,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.attempts = make(map[uint64]attempt)
 		p.inflight = 0
 		p.seq = 0
-		p.lastACK = time.Time{}
+		p.lastACK, p.ackGap = time.Time{}, 0
 		p.nextSend = time.Time{}
 		p.stalled = false
 		p.lostSinceAdjust = false
@@ -389,7 +397,37 @@ func (p *lane) rto() time.Duration {
 	if p.feedbackRTT == 0 {
 		variation = max(variation, p.rtt/2)
 	}
-	return max(minimumRTO, p.rtt+4*variation+ackInterval, p.feedbackRTT+4*p.feedbackRTTVariation)
+	return max(minimumRTO, p.rtt+4*variation+p.peerACKInterval(), p.feedbackRTT+4*p.feedbackRTTVariation)
+}
+
+// ackIntervalFor bounds acknowledgement bytes to a share of the bytes they
+// acknowledge. Acknowledgements bypass pacing, so a fixed cadence costs the
+// reverse direction of a slow lane a fixed slice that data cannot use.
+func ackIntervalFor(received float64) time.Duration {
+	if received <= 0 {
+		return maxACKInterval
+	}
+	interval := time.Duration(ackWireBytes / (ackShare * received) * float64(time.Second))
+	return min(maxACKInterval, max(ackInterval, interval))
+}
+
+// ackDue reports whether the receiver owes an acknowledgement. The first
+// acknowledgements of a burst keep the shortest interval, so sparse traffic
+// is confirmed promptly; sustained reception stretches it.
+func (r *receiver) ackDue(now time.Time) bool {
+	if r.pending >= ackBatchPackets {
+		return true
+	}
+	interval := ackInterval
+	if r.streak >= ackStreak {
+		interval = ackIntervalFor(r.received.rate(now))
+	}
+	return now.Sub(r.ackAt) >= interval
+}
+
+// peerACKInterval is the acknowledgement cadence observed from the peer.
+func (p *lane) peerACKInterval() time.Duration {
+	return min(maxACKInterval, max(ackInterval, p.ackGap))
 }
 
 // delaySamplesNeeded is the number of queue-delay samples whose minimum
@@ -429,7 +467,7 @@ func (p *lane) observeFeedbackRTT(sample time.Duration) {
 }
 
 func (p *lane) window() int {
-	return min(initialWindowBytes+p.confirmedWireBytes, max(initialWindowBytes, int(p.rate*(p.idleRTT+jitterAllowanceFactor*p.idleRTTVariation+2*targetQueue+ackInterval).Seconds())))
+	return min(initialWindowBytes+p.confirmedWireBytes, max(initialWindowBytes, int(p.rate*(p.idleRTT+jitterAllowanceFactor*p.idleRTTVariation+2*targetQueue+p.peerACKInterval()).Seconds())))
 }
 
 func (t *Transport) PacingRate(now time.Time) float64 {
@@ -502,7 +540,12 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			continue
 		}
 		oldest := t.unreported.oldest()
-		if (r.pending > 0 || oldest != 0) && (r.pending >= ackBatchPackets || now.Sub(r.ackAt) >= ackInterval) {
+		if (r.pending > 0 || oldest != 0) && r.ackDue(now) {
+			if now.Sub(r.ackAt) < ackGapHorizon {
+				r.streak++
+			} else {
+				r.streak = 0
+			}
 			r.revision++
 			high := t.received.high
 			if oldest != 0 {
@@ -585,7 +628,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 		size := len(p.payload) + wireOverhead
 		if p.class == classRealtime && p.attempts == 1 && previous != nil &&
 			!previous.lastACK.After(p.lastSent) &&
-			now.Sub(p.lastSent) >= max(minimumRTO, previous.baseRTT+ackInterval) &&
+			now.Sub(p.lastSent) >= max(minimumRTO, previous.baseRTT+previous.peerACKInterval()) &&
 			t.redundancyTokens >= float64(size) {
 			if path := t.chooseLane(now, p.class, size, p.lastPath, true); path != nil {
 				t.redundancyTokens -= float64(size)
@@ -687,6 +730,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 			r.highAt = now
 		}
 		r.bytes += uint64(len(f.Payload) - headerBytes - 32 + wireOverhead)
+		r.received.add(now, float64(len(f.Payload)-headerBytes-32+wireOverhead))
 		r.last = now
 		r.pending++
 		if seq == 0 {
@@ -885,6 +929,10 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	}
 	p.peakDelivery = math.Max(p.peakDelivery, p.deliveryRate)
 	p.ackedBytes, p.ackedElapsed = a.bytes, a.elapsed
+	if gap := now.Sub(p.lastACK); !p.lastACK.IsZero() && gap < ackGapHorizon {
+		// Longer gaps are idle periods, not the peer's cadence.
+		p.ackGap += (gap - p.ackGap) / 8
+	}
 	p.lastACK = now
 	if now.Before(p.drainUntil) || now.Sub(p.lastAdjust) < max(min(p.rtt, 100*time.Millisecond), 50*time.Millisecond) {
 		return
@@ -906,7 +954,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if !backlogged {
 		return
 	}
-	p.adjust(now, lost, delayed, sample > 0, t.laneLimited(now))
+	p.adjust(now, lost, delayed, sample > 0, t.laneLimited(now), t.demand[classRealtime].rate(now) > 0)
 }
 
 func (w *receiptWindow) mark(seq uint64) bool {
