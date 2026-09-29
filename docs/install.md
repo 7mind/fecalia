@@ -440,9 +440,13 @@ adaptive sender, and `delivery_rate_bytes_per_second` is measured receipt. A hig
 target with low actual send rate can indicate an in-flight window constraint or
 insufficient offered traffic; it does not establish link saturation. RTT,
 `rtt_variation_seconds`, `unloaded_rtt_variation_seconds`,
+`unloaded_forward_variation_seconds`,
 `feedback_rtt_seconds`, `feedback_rtt_variation_seconds`,
 forward queue delay, in-flight bytes, sent/ACKed bytes, repair copies, and
-eligibility are also exposed. Peer counters report queue drops and expired
+eligibility are also exposed. `window_bytes` reports the current in-flight
+allowance, including its initial delivery-credit limit; compare it with
+`in_flight_bytes` when a target rate is high but sending remains low.
+Peer counters report queue drops and expired
 repairs. `interactive_queue_drops_total` counts the small-packet subset of
 queue drops, and `interactive_queued_packets` counts small datagrams awaiting
 their first transmission. These distinguish local priority-queue contention
@@ -454,6 +458,9 @@ local flow metadata and per-flow small-packet scheduling.
 delivery feedback. Legacy shaper/FEC metrics do not describe this policy.
 Confirmation RTT includes reordering and receipt buffering; it controls the
 repair deadline independently of the newest physical packet's RTT sample.
+The unloaded forward variation excludes ACK return delay and controls the
+forward-queue allowance; round-trip variation must not be interpreted as forward
+queueing alone.
 
 Use the [VM lab](../test/vm/README.md) to compare candidate binaries before
 deployment. Small-packet priority uses encrypted size (<=384 bytes), so test

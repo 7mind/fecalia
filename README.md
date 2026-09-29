@@ -64,8 +64,9 @@ Static bandwidth hints are not required. Legacy policies keep their defaults.
 Idle feedback, including lost empty keepalives, does not lower the pacing target.
 Loaded feedback uses a minimum
 over each control interval, with a jitter allowance learned while the lane is
-idle, to separate propagation variation from sustained queueing;
-the congestion window and repair timer also account for RTT variation. Loss
+idle, to separate propagation variation from sustained queueing. The queue
+allowance excludes return-path jitter; the window uses unloaded RTT history.
+The congestion window and repair timer also account for RTT variation. Loss
 response caps pacing near measured delivery with headroom for jitter; metrics
 distinguish the pacing target from actual send and delivery rates. The repair
 timer also measures full delivery-confirmation time so reordered packets do not
@@ -79,8 +80,10 @@ Lost datagrams receive bounded cross-path retries. Small encrypted datagrams
 (up to 384 bytes, including WireGuard overhead) receive priority and budgeted
 replication; they bypass bulk receive ordering. This is a size heuristic, not
 application identification. Small packets receive one scheduling turn per IP
-flow; a TCP ACK burst cannot monopolize that queue. Unsent redundant pure TCP
-ACKs can be coalesced while preserving control information. Flow metadata is
+flow; a TCP ACK burst cannot monopolize that queue. A waiting bulk packet gets
+a reserved turn after 8 KiB of small-packet service. Unsent redundant pure TCP
+ACKs can be coalesced while retaining the latest advertised window and preserving
+window-only updates and other control information. Flow metadata is
 local to the sender and does not change the wire protocol. Bulk datagrams remain resequenced. See the
 [transport design](docs/design.md#adaptive-transport--internalbond) and
 [autonomous VM lab](test/vm/README.md).

@@ -45,6 +45,17 @@ Prerequisites (all phases):
       `TestACKCoalescingPreservesTCPInformation`, and the vendored engine's
       `TestEncryptedFlowMetadata`. Check that metadata stays local, duplicate
       ACKs/control information survive, and encrypted packets remain intact.
+- [ ] Run `TestStandbyLinkStartupDoesNotFloodVoice` and
+      `TestReverseJitterDoesNotMaskForwardCongestion` before the VM radio gates.
+      Preserve the zero-loss startup bound and distinguish forward congestion
+      from varying ACK return delay; a passing deterministic model does not
+      replace the two-direction VM continuity test.
+- [ ] Run `TestAdaptiveSmallBacklogCannotStarveBulk` against both adapters.
+      Run `TestAdaptiveCumulativeACKCoalescing` with constant, increasing and
+      decreasing windows; retain window-only updates, zero-window transitions,
+      duplicate ACKs and SACKs. In the VM, verify TCP receiver progress with
+      simultaneous upload, download and voice; separate one-way runs miss
+      reverse ACK starvation.
 - [ ] In a disposable Linux guest, run the tagged
       `TestInactiveTUNAQMRemovesOnlyLegacyShaper` test. On a persistent-interface
       upgrade, check `tc qdisc show dev wanbond0`: disabled legacy HTB/bfifo

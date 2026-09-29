@@ -331,3 +331,72 @@ of contention; these results do not establish the requested radio continuity
 or saturation goals. Production deployments and the Nix configuration pin were
 left to the operator. The new engine API also requires refreshing the Nix
 vendor hash when its local source changes, even if `go.mod` is unchanged.
+
+## Startup, directional feedback and reverse ACK contention — 2026-09-29
+
+Further failing-before/passing-after reproductions established these defects:
+
+- A first data packet was declared lost before propagation, serialization and
+  the delayed ACK could complete. The initial timeout now includes uncertainty.
+- Loaded RTT variation and a loaded RTT minimum could expand the sending window.
+  The window now uses independent unloaded history, bounded initial delivery
+  credit, and a single-datagram overshoot for priority service. A 0.4 Mbit/s
+  startup model delivered all 100 voice datagrams; its p99 one-way delay fell
+  from 215 ms to 72 ms in the final candidate. This is a deterministic
+  model, not a measured radio result.
+- Reverse-only jitter made the controller increase pacing from 125,000 to
+  134,000 bytes/s despite a real 30 ms forward queue. The forward delay allowance
+  now uses idle forward-transit variation, independently of ACK return delay.
+- Strict size priority starved bulk under continuous small-packet load in both
+  memory and real UDP adapters. One reserved bulk turn after 8 KiB of priority
+  service passes that same contract. An actual 30-second bidirectional capture
+  had upload stop around 12 seconds while download continued; captures and raw
+  iperf reports are in investigation scratch under `bidir-capture/`.
+- Only 100 of 15,745 consecutive, advancing ACK triples in the captured download
+  had an unchanged advertised window. Requiring window equality defeated
+  coalescing. Constant, growing and shrinking nonzero windows now share the
+  same delivery contract; the newest advancing ACK retains current window state.
+  Separate tests preserve window-only changes, window closure/reopening,
+  duplicate/backwards ACKs, SACKs and other control information.
+
+The first earlier-repair experiment copied small datagrams even while fresh
+feedback continued. It increased general latency and was narrowed to lanes
+with no ACK since the original send. An attempt to put all flows into a common
+deficit scheduler removed starvation but lost 49 of 100 startup voice packets;
+weighted variants still lost 26–29. Those scheduler experiments were discarded.
+The retained reservation leaves the small-flow queue in place. Test thresholds
+and emulator capacities remain unchanged.
+
+| Candidate/scenario | Measured outcome | Verdict / artifact |
+| --- | --- | --- |
+| ACK-coalescing baseline, fast with matching 15 s warmup | 93.102 / 88.867 Mbit/s upload/download | Both gates failed; `20260929-000422-adaptive` |
+| Startup window/timer candidate, radio | 1.219 / 68.472 Mbit/s | Both gates failed; `20260929-002744-adaptive` |
+| Same candidate, radio continuity | Hub/edge loss 1.815%/2.123%; p99 RTT 240.6/241.6 ms | Failed; `20260929-002626-continuity` |
+| Plus directional jitter correction, radio | 1.187 / 70.431 Mbit/s | Both gates failed; `20260929-003456-adaptive` |
+| Same candidate, radio continuity | Hub/edge loss 0.8%/0.4%; p99 RTT 202.5/208.1 ms | TCP progress, gaps and latency failed; `20260929-003339-continuity` |
+| Plus bulk reservation and unloaded mean window, radio | 1.185 / 65.222 Mbit/s | Both gates failed; `20260929-005342-adaptive` |
+| Same candidate, radio continuity | TCP progress passed in both outage windows; loss 1.785%/0.831%, p99 RTT 209.5/214.5 ms | Voice gates failed; `20260929-005224-continuity` |
+| Same candidate, fast | 92.938 / 97.414 Mbit/s | Upload failed; download passed; `20260929-005615-adaptive` |
+| Same candidate, basic continuity | Zero loss; p99 RTT 114.6/108.8 ms; gaps 79.7/74.9 ms | All gates passed; `20260929-005738-continuity` |
+| Plus current-window ACK coalescing, radio | 1.182 / 69.591 Mbit/s | Both gates failed; `20260929-010037-adaptive` |
+| Same candidate, radio continuity | TCP progress and receive gaps passed; hub/edge loss 1.108%/0.923%, p99 RTT 187.9/182.5 ms | Hub loss and both latency gates failed; `20260929-005920-continuity` |
+| Same candidate, fast | 94.390 / 89.182 Mbit/s | Both gates failed; `20260929-010311-adaptive` |
+| Same candidate, basic continuity | Zero loss; p99 RTT 109.8/105.9 ms; gaps 86.7/86.9 ms | All gates passed; `20260929-010434-continuity` |
+
+Radio benchmarks use 60 seconds idle, 10 seconds warmup and 30 seconds
+measurement per direction. Fast benchmarks in this table use 15 seconds warmup
+and 20 seconds measurement. Continuity always combines both TCP directions and
+two echo streams. Passing the basic profile or an isolated regression test does
+not satisfy the radio latency, loss or saturation requirements.
+
+In the last radio continuity run, all 36 missing hub echoes occurred during the
+five-second LTE outage. The edge missed 29 during that outage and one just before
+it. Small-packet queue drops continued beyond the initial outage transition.
+Thus improved failover timing alone does not explain or resolve the remaining
+loss: the single standby link must also carry feedback, both echo streams and
+the surviving TCP traffic. The full frontend/Go/vendor gate, focused race tests,
+ARM64 build and Nix build passed for this intermediate code; these are correctness
+and packaging gates, not a substitute for the failed radio tests.
+
+The retained code is commit `4d3d0da`. Production services and the Nix configuration pin were
+not changed by these experiments.

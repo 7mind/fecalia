@@ -200,12 +200,15 @@ than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
 minimum, and explicit baseline calibration clears all buckets. Control intervals
 take the minimum of the resulting queue-delay samples. The controller
 raises a backlogged lane's target and reduces it when the minimum forward queue
-delay across a control interval exceeds `max(10 ms, 2*idleRTTVariation)` or delivery
-stalls. Idle variation is updated only after two seconds without transmitting
+delay across a control interval exceeds `max(10 ms, 2*idleForwardVariation)` or delivery
+stalls. Unloaded estimates update only after two seconds without transmitting
 application datagrams on that lane; a transient empty queue during a transfer
-does not qualify. Its RTT mean and variation are independent of the loaded
-history, so an outage recovery sample cannot copy earlier congestion into the
-idle estimate. Idle feedback still measures path health but does not reduce
+does not qualify. The forward estimate uses only empty keepalive transit samples
+and excludes return-path delay. Its relative-clock mean is reset when the remote
+epoch changes. Round-trip mean/variation remain separate inputs to the window
+and timeout: reverse jitter must not permit a larger forward queue. All unloaded
+estimates have history independent of loaded samples, so an outage recovery
+sample cannot copy earlier congestion into them. Idle feedback still measures path health but does not reduce
 the pacing target; a lost empty
 keepalive stalls the lane without applying a congestion rate cut. Instantaneous
 delay remains visible in metrics. Demand is sampled before ACK processing releases
@@ -216,7 +219,12 @@ buffer can otherwise discard sustained excess traffic without generating a
 large delay signal. Actual send rate is reported
 separately: a low interval average does not establish safe burst pacing and must
 not suppress this ceiling. This also covers shallow router buffers
-that drop without accumulating 10 ms of queueing. ACKs wait at most 25 ms or
+that drop without accumulating 10 ms of queueing. A queue-delay reduction also
+caps the target at 105% of measured delivery when measured sending exceeds
+delivery by more than 20%. Without that guard, propagation jitter and a partially
+filled discovery window can incorrectly turn low observed delivery into a hard
+capacity estimate. The ordinary 10% delay reduction still applies when this
+additional evidence is absent. ACKs wait at most 25 ms or
 64 arrivals, matching the per-lane ACK bitmap without
 sending one ACK for every eight packets on a fast download. They bypass data
 pacing: charging reverse feedback to a data-only rate estimate can accumulate
@@ -231,10 +239,17 @@ remain eligible. This distinguishes changed propagation delay from persistent
 queueing without synchronized clocks. Targets are bounded to 16 kB/s–1.25 GB/s;
 links below that floor or beyond the bounded packet windows are outside the
 tested envelope.
-The congestion window uses the minimum observed RTT plus twice the RTT variation,
-20 ms of queue budget and the 25 ms ACK interval, with a four-packet floor.
-The variation allowance prevents propagation jitter from constraining the sender
-below its pacing target. Standing queue delay does not replace the minimum RTT.
+The congestion window uses the unloaded mean RTT,
+twice the unloaded RTT variation, 20 ms of queue budget and the 25 ms ACK
+interval, multiplied by the pacing target, with a 3000-byte floor. The unloaded
+mean starts with the authenticated path's RTT estimate. Neither variation nor
+the minimum of loaded RTT samples can expand this allowance. Discovery additionally
+caps the window at 3000 bytes plus physically acknowledged application wire
+bytes; empty keepalives do not grow it. Each physical receipt contributes once,
+including a receipt arriving after global delivery confirmation through another
+lane. The credit counter saturates at the transport's maximum bounded packet
+storage. A datagram larger than the window may depart when no bytes are in
+flight, so the startup limit cannot deadlock a supported larger MTU.
 
 Datagrams wait at most 100 ms before first transmission, with at most 8192
 queued and outstanding datagrams per peer. Repair lifetime is 250 ms from
@@ -248,13 +263,24 @@ once, since replication makes their physical route ambiguous. Each attempt
 contributes at most once. Sampling only the highest physical sequence favours
 fast arrivals under reordering and underestimates the repair deadline. RTT
 variation is the EWMA of absolute sample error; the 25 ms term covers delayed
-ACKs before the feedback estimate has converged.
+ACKs before the feedback estimate has converged. Before the first confirmation,
+the timeout calculation allows variation of at least half the path RTT. The
+first confirmation initializes its variation to half that sample, following
+the estimator initialization in [RFC 6298 §2.2](https://www.rfc-editor.org/rfc/rfc6298.html#section-2).
+This is a bounded datagram repair policy, not TCP's full retransmission timer.
 Physical attempt records expire after two seconds and release their in-flight
 bytes even when an RTT spike has raised the repair timer beyond that horizon.
 Repairs prefer a different healthy lane. Small datagrams (encrypted size <=384
-bytes) have a priority queue, may borrow 5 ms of pacing, and may be copied onto
+bytes) have a priority queue, may borrow 5 ms of pacing and at most one datagram
+beyond a full congestion window, and may be copied onto
 a second lane. Additional copies have an allowance of 10% of the healthy lanes'
 aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance.
+An initially unreplicated small packet can use this same budget for one earlier
+cross-path copy after `max(60 ms, baseRTT + 25 ms)` if its original lane has
+returned no ACK since it was sent. This avoids waiting for a long feedback tail
+to consume its entire repair lifetime. Fresh feedback, insufficient budget,
+or no eligible alternate path suppresses the early copy. Bulk retains the full
+feedback timeout.
 
 **Flow isolation and TCP ACK coalescing.** The engine optionally classifies IP
 packets before encryption. `conn.BindPacketBatchCompleter` carries local
@@ -273,15 +299,26 @@ rotates after each datagram, preserving FIFO within each flow. Bulk remains one
 FIFO. This prevents an ACK burst from taking every small-packet scheduling turn;
 it does not identify applications or guarantee bandwidth against arbitrarily
 many competing flows. Flow identities are neither transmitted nor metric labels.
+Strict priority would still starve the bulk FIFO under continuous ACK traffic.
+After 8 KiB of newly transmitted small datagrams, a waiting bulk datagram gets
+one reserved turn with the same 5 ms pacing lead and single-datagram window
+overshoot. Any first transmission of a bulk datagram resets that credit.
+Expired bulk packets are discarded before spending the turn. This limits the
+priority burst without imposing equal bandwidth shares on voice and bulk flows.
 
 For unfragmented IPv4 without options and IPv6 without extension headers, the
 engine also identifies pure TCP ACKs with no payload, reserved/control/ECN flags,
 urgent pointer, zero window, or options other than padding and a single valid
 timestamp. Coalescing replaces only the middle of three queued, strictly
-advancing cumulative ACKs in the same flow. Sequence number, advertised window,
+advancing cumulative ACKs in the same flow. Sequence number,
 traffic class and timestamp presence must match; timestamp values cannot go
 backwards. Comparisons use TCP serial arithmetic. At least two queued ACKs remain
-in a sustained eligible burst. Duplicate ACKs, SACKs, window updates, unknown
+in a sustained eligible burst. The newest advancing ACK carries the current
+nonzero advertised window, which supersedes the earlier snapshot even if the
+encoded window field changed. This follows TCP's window update ordering by
+segment sequence and acknowledgement number ([RFC 9293 §3.10.7.4](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4));
+it does not require learning the negotiated window scale. Duplicate ACKs, SACKs,
+window-only updates, zero-window transitions, unknown
 options and other control information are preserved. Replacement happens before
 assigning any outer delivery sequence, so it creates no resequencing gap and
 never changes an encrypted datagram. It is counted separately from queue drops.
