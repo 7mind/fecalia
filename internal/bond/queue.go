@@ -6,15 +6,25 @@ import (
 )
 
 const (
-	codelTarget   = 5 * time.Millisecond
-	codelInterval = 100 * time.Millisecond
+	codelMinTarget   = 10 * time.Millisecond
+	codelMaxTarget   = 100 * time.Millisecond
+	codelMinInterval = 100 * time.Millisecond
 )
 
 // codel is the RFC 8289 controlled-delay drop schedule for the bulk queue. It
 // drops at dequeue only after sojourn stays above target for an interval, then
 // spaces drops by interval/sqrt(count), so a burst or rate cut costs each TCP
 // flow one congestion signal instead of a contiguous loss run.
+//
+// The target is the slowest lane's round trip rather than RFC 8289's 5 ms: a
+// loss-based sender cuts its window by 30%, and only a standing queue of at
+// least 0.43 of the sender's round trip, which includes resequencing and
+// acknowledgement delay, keeps the lanes busy afterwards (VM trace
+// 20260929-134042-fast-up-d1). Small datagrams bypass this queue, so the
+// deeper target does not delay them.
 type codel struct {
+	target     time.Duration
+	interval   time.Duration
 	firstAbove time.Time
 	dropNext   time.Time
 	count      int
@@ -23,19 +33,21 @@ type codel struct {
 }
 
 func (c *codel) okToDrop(now time.Time, sojourn time.Duration, remaining int) bool {
-	if sojourn < codelTarget || remaining == 0 {
+	if sojourn < c.target || remaining == 0 {
 		c.firstAbove = time.Time{}
 		return false
 	}
 	if c.firstAbove.IsZero() {
-		c.firstAbove = now.Add(codelInterval)
+		c.firstAbove = now.Add(c.interval)
 		return false
 	}
 	return !now.Before(c.firstAbove)
 }
 
 // drop reports whether the dequeued packet must be discarded instead of sent.
-func (c *codel) drop(now time.Time, sojourn time.Duration, remaining int) bool {
+func (c *codel) drop(now time.Time, sojourn time.Duration, remaining int, roundTrip time.Duration) bool {
+	c.target = min(codelMaxTarget, max(codelMinTarget, roundTrip))
+	c.interval = max(codelMinInterval, 2*roundTrip)
 	ok := c.okToDrop(now, sojourn, remaining)
 	if c.dropping {
 		if !ok {
@@ -46,25 +58,25 @@ func (c *codel) drop(now time.Time, sojourn time.Duration, remaining int) bool {
 			return false
 		}
 		c.count++
-		c.dropNext = codelControlLaw(c.dropNext, c.count)
+		c.dropNext = c.controlLaw(c.dropNext)
 		return true
 	}
 	if !ok {
 		return false
 	}
 	c.dropping = true
-	if delta := c.count - c.lastCount; delta > 1 && now.Sub(c.dropNext) < 16*codelInterval {
+	if delta := c.count - c.lastCount; delta > 1 && now.Sub(c.dropNext) < 16*c.interval {
 		c.count = delta
 	} else {
 		c.count = 1
 	}
 	c.lastCount = c.count
-	c.dropNext = codelControlLaw(now, c.count)
+	c.dropNext = c.controlLaw(now)
 	return true
 }
 
-func codelControlLaw(t time.Time, count int) time.Time {
-	return t.Add(time.Duration(float64(codelInterval) / math.Sqrt(float64(count))))
+func (c *codel) controlLaw(t time.Time) time.Time {
+	return t.Add(time.Duration(float64(c.interval) / math.Sqrt(float64(c.count))))
 }
 
 type packetQueue interface {

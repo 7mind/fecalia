@@ -28,6 +28,13 @@ const (
 	startupPlateauSending = 0.75
 	startupLossEvents     = 3
 	startupLossRatio      = 0.02
+	capacityHold          = 0.95
+	capacityDrop          = 0.75
+	capacityDrain         = 0.85
+	probeGrowth           = 1.02
+	capacityRediscovery   = 1.25
+	probeInterval         = 5 * time.Second
+	probeStagger          = 250 * time.Millisecond
 	maxQueueAge           = 100 * time.Millisecond
 	maxBulkQueueAge       = 250 * time.Millisecond
 	discoveryQueueAge     = time.Second
@@ -158,6 +165,10 @@ type lane struct {
 	roundSent            int
 	roundLost            int
 	startupLossy         bool
+	previousDelivery     float64
+	capacity             float64
+	holdSignal           bool
+	holdUntil            time.Time
 	peakDelivery         float64
 	rtt                  time.Duration
 	rttVariation         time.Duration
@@ -301,6 +312,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.idleForwardMean, p.idleForwardVariation = 0, 0
 		p.idleForwardKnown = false
 		p.feedbackAt = time.Time{}
+		p.capacity, p.holdSignal, p.holdUntil = 0, false, time.Time{}
 	}
 	return true
 }
@@ -589,7 +601,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			// future. Reserve one bulk turn with the same bounded pacing lead.
 			if path := t.choosePriority(now, 0, false); path != nil {
 				t.queue.pop()
-				if !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue)) {
+				if !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue), t.slowestRoundTrip(now)) {
 					t.drops++
 					t.aqmDrops++
 					continue
@@ -618,7 +630,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 				break
 			}
 			queue.pop()
-			if !p.interactive && !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue)) {
+			if !p.interactive && !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue), t.slowestRoundTrip(now)) {
 				t.drops++
 				t.aqmDrops++
 				continue
@@ -651,6 +663,16 @@ func (t *Transport) discovering(now time.Time) bool {
 		}
 	}
 	return false
+}
+
+func (t *Transport) slowestRoundTrip(now time.Time) time.Duration {
+	var slowest time.Duration
+	for _, p := range t.paths {
+		if p.up(now) && !p.stalled {
+			slowest = max(slowest, p.rtt)
+		}
+	}
+	return slowest
 }
 
 func (t *Transport) bulkQueueAge(now time.Time) time.Duration {
@@ -805,6 +827,10 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 					}
 				}
 				if p.baselinePending && !sent.sent.Before(p.drainUntil) {
+					// The drained lane is unloaded: a changed propagation delay
+					// must also resize the window, which the target can no
+					// longer compensate for while it holds below capacity.
+					p.idleRTT = sample
 					clear(p.transitBases[:])
 					p.haveInterval = false
 					p.baselinePending = false
@@ -891,7 +917,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	} else if a.elapsed-p.rateElapsed >= uint64(deliveryInterval) && now.Sub(p.feedbackAt) >= deliveryInterval {
 		rate := float64(a.bytes-p.rateBytes) / time.Duration(a.elapsed-p.rateElapsed).Seconds()
 		sendRate := float64(p.sent-p.rateSentBytes) / now.Sub(p.feedbackAt).Seconds()
-		p.deliverySample = rate
+		p.previousDelivery, p.deliverySample = p.deliverySample, rate
 		if p.deliveryRate == 0 {
 			p.deliveryRate = rate
 			p.sendRate = sendRate
@@ -925,16 +951,38 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		return
 	}
 	if lost && p.deliveryRate > 0 {
-		p.startup = false
-		p.rate = math.Max(minimumRate, math.Min(lossRateReduction*p.rate, lossPacingHeadroom*p.deliveryRate))
+		if floor, cut := p.congested(now); cut {
+			p.rate = math.Max(math.Max(minimumRate, floor), math.Min(lossRateReduction*p.rate, lossPacingHeadroom*p.deliveryRate))
+		}
 	} else if sample > 0 && queueDelay > max(targetQueue, jitterAllowanceFactor*p.idleForwardVariation) {
-		p.startup = false
-		p.rate = math.Max(minimumRate, p.rate*0.9)
-		if p.deliveryRate > 0 && p.sendRate > queueSendExcessRatio*p.deliveryRate {
-			p.rate = math.Max(minimumRate, math.Min(p.rate, lossPacingHeadroom*p.deliveryRate))
+		if floor, cut := p.congested(now); cut {
+			p.rate = math.Max(minimumRate, p.rate*0.9)
+			if p.deliveryRate > 0 && p.sendRate > queueSendExcessRatio*p.deliveryRate {
+				p.rate = math.Max(minimumRate, math.Min(p.rate, lossPacingHeadroom*p.deliveryRate))
+			}
+			p.rate = math.Max(p.rate, floor)
 		}
 	} else if sample > 0 {
-		p.rate = math.Min(maximumRate, p.rate*1.06+1500)
+		p.holdSignal = false
+		switch {
+		case p.startup || p.capacity == 0:
+			p.rate = math.Min(maximumRate, p.rate*1.06+1500)
+		case now.Before(p.holdUntil):
+			// Continuous probing keeps a standing queue in the path's buffer,
+			// where small datagrams have no priority. Between probes the target
+			// stays just below the delivery a saturating probe demonstrated.
+			if limit := capacityHold * p.capacity; p.rate < limit {
+				p.rate = math.Min(limit, p.rate*1.06+1500)
+			}
+		case p.rate >= capacityRediscovery*p.capacity:
+			// A probe this far above demonstrated delivery without a congestion
+			// signal means capacity rose; follow delivery again.
+			p.startup, p.startupBest, p.startupFlatRounds = true, 0, 0
+		default:
+			// Feedback lags a round trip or more; small steps bound how far a
+			// probe overshoots before its queue is observed.
+			p.rate = math.Min(maximumRate, p.rate*probeGrowth+1500)
+		}
 		if p.startup {
 			// Until the first congestion signal, follow measured delivery at the
 			// pace of a sender's slow start instead of probing 6% per round trip.
@@ -950,13 +998,48 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 					p.startupFlatRounds = 0
 				} else if p.startupFlatRounds++; p.startupFlatRounds >= startupPlateauRounds {
 					p.startup = false
-					p.rate = math.Max(minimumRate, lossPacingHeadroom*p.startupBest)
+					p.capacity = p.startupBest
+					p.hold(now)
+					p.rate = math.Max(minimumRate, capacityHold*p.startupBest)
 					return
 				}
 			}
 			p.rate = math.Min(maximumRate, math.Max(p.rate, startupDeliveryGain*delivered))
 		}
 	}
+}
+
+// congested handles a loss or queue-delay signal and reports whether the
+// target must be cut and the lowest target that cut may reach.
+//
+// While probing, the path was saturated: recent delivery measures its capacity,
+// a hold begins, and the cut stops at the level that drains the probe's queue.
+// While holding, one signal may be jitter, so only a second consecutive one
+// cuts. Cuts that take the target well below the estimate mean capacity
+// dropped: delivery is measured again and probing resumes at once, because
+// that measurement was taken below the path's new capacity.
+func (p *lane) congested(now time.Time) (floor float64, cut bool) {
+	probing := p.startup || p.capacity == 0 || !now.Before(p.holdUntil)
+	p.startup = false
+	measured := math.Max(p.deliveryRate, (p.deliverySample+p.previousDelivery)/2)
+	switch {
+	case probing:
+		p.capacity, p.holdSignal = measured, false
+		p.hold(now)
+		return capacityDrain * measured, true
+	case p.rate < capacityDrop*p.capacity:
+		p.capacity, p.holdUntil = measured, now
+		return 0, true
+	case !p.holdSignal:
+		p.holdSignal = true
+		return 0, false
+	default:
+		return 0, true
+	}
+}
+
+func (p *lane) hold(now time.Time) {
+	p.holdUntil = now.Add(probeInterval + time.Duration((uint16(p.id)^uint16(p.id)>>8)&7)*probeStagger)
 }
 
 func (w *receiptWindow) mark(seq uint64) bool {
