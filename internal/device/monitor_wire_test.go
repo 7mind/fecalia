@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/tun/tuntest"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 	"github.com/coder/websocket"
 	"go.uber.org/goleak"
 

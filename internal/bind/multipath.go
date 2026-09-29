@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 
 	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bond"

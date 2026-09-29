@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/metrics"
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
 const (

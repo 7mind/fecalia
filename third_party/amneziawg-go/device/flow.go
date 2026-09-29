@@ -3,7 +3,7 @@ package device
 import (
 	"encoding/binary"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
 
 const (

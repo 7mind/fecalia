@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
 const tunAQMTxQueueLen = 32

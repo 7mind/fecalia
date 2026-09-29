@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
 
 // TestMultipathEngineLifecycleCloseThenOpen reproduces the bind-lifecycle defect

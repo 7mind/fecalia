@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2023 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -12,8 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
-	"github.com/amnezia-vpn/amneziawg-go/device/awg"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
 
 type Peer struct {
@@ -40,6 +39,7 @@ type Peer struct {
 		zeroKeyMaterial         *Timer
 		persistentKeepalive     *Timer
 		handshakeAttempts       atomic.Uint32
+		maxHandshakeAttempts    atomic.Uint32
 		needAnotherKeepalive    atomic.Bool
 		sentLastMinuteHandshake atomic.Bool
 	}
@@ -56,7 +56,8 @@ type Peer struct {
 
 	cookieGenerator             CookieGenerator
 	trieEntries                 list.List
-	persistentKeepaliveInterval atomic.Uint32
+	persistentKeepaliveInterval AtomicUintRange
+	udpWindow                   atomic.Uint32
 	outboundAdmission           *outboundAdmission
 }
 
@@ -79,6 +80,8 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 
 	// create peer
 	peer := new(Peer)
+
+	peer.udpWindow.Store(DefaultUdpWindow)
 
 	peer.cookieGenerator.Init(pk)
 	peer.device = device
@@ -175,20 +178,6 @@ func (peer *Peer) sendBuffers(buffers [][]byte, metadata []conn.PacketMetadata, 
 	return err
 }
 
-func (peer *Peer) SendAndCountBuffers(buffers [][]byte) error {
-	return peer.sendAndCountBuffers(buffers, nil, nil)
-}
-
-func (peer *Peer) sendAndCountBuffers(buffers [][]byte, metadata []conn.PacketMetadata, complete func()) error {
-	err := peer.sendBuffers(buffers, metadata, complete)
-	if err == nil {
-		awg.PacketCounter.Add(uint64(len(buffers)))
-		return nil
-	}
-
-	return err
-}
-
 func (peer *Peer) String() string {
 	// The awful goo that follows is identical to:
 	//
@@ -237,7 +226,7 @@ func (peer *Peer) Start() {
 	peer.stopping.Add(2)
 
 	peer.handshake.mutex.Lock()
-	peer.handshake.lastSentHandshake = time.Now().Add(-(RekeyTimeout + time.Second))
+	peer.handshake.lastSentHandshake = time.Now().Add(-(peer.device.rekeyMinTimeout() + time.Second))
 	peer.handshake.mutex.Unlock()
 
 	peer.device.queue.encryption.wg.Add(1) // keep encryption queue open for our writes
@@ -288,7 +277,7 @@ func (peer *Peer) ExpireCurrentKeypairs() {
 	handshake.mutex.Lock()
 	peer.device.indexTable.Delete(handshake.localIndex)
 	handshake.Clear()
-	peer.handshake.lastSentHandshake = time.Now().Add(-(RekeyTimeout + time.Second))
+	peer.handshake.lastSentHandshake = time.Now().Add(-(peer.device.rekeyMinTimeout() + time.Second))
 	handshake.mutex.Unlock()
 
 	keypairs := &peer.keypairs
@@ -328,6 +317,9 @@ func (peer *Peer) SetEndpointFromPacket(endpoint conn.Endpoint) {
 	defer peer.endpoint.Unlock()
 	if peer.endpoint.disableRoaming {
 		return
+	}
+	if peer.endpoint.val != endpoint {
+		peer.udpWindow.Store(DefaultUdpWindow)
 	}
 	peer.endpoint.clearSrcOnTx = false
 	peer.endpoint.val = endpoint

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/tun/tuntest"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 	"go.uber.org/goleak"
 
 	"github.com/7mind/wanbond/internal/config"

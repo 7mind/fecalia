@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
-	"github.com/amnezia-vpn/amneziawg-go/tun/tuntest"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"

@@ -6,7 +6,7 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
-	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
 // trafficProvider is the read seam the metrics adapter consumes: the multipath Bind's

@@ -23,8 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
-	"github.com/amnezia-vpn/amneziawg-go/tun"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
 	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bind"

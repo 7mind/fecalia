@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	awgdevice "github.com/amnezia-vpn/amneziawg-go/device"
+	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 
 	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/netutil"

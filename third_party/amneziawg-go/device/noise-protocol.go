@@ -1,21 +1,23 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2023 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
  */
 
 package device
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/blake2s"
+	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/poly1305"
 
-	"github.com/amnezia-vpn/amneziawg-go/tai64n"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tai64n"
 )
 
 type handshakeState int
@@ -53,17 +55,11 @@ const (
 )
 
 const (
-	DefaultMessageInitiationType  uint32 = 1
-	DefaultMessageResponseType    uint32 = 2
-	DefaultMessageCookieReplyType uint32 = 3
-	DefaultMessageTransportType   uint32 = 4
-)
-
-const (
-	MessageInitiationType  uint32 = DefaultMessageInitiationType
-	MessageResponseType    uint32 = DefaultMessageResponseType
-	MessageCookieReplyType uint32 = DefaultMessageCookieReplyType
-	MessageTransportType   uint32 = DefaultMessageTransportType
+	MessageUnknownType     uint32 = 0
+	MessageInitiationType  uint32 = 1
+	MessageResponseType    uint32 = 2
+	MessageCookieReplyType uint32 = 3
+	MessageTransportType   uint32 = 4
 )
 
 const (
@@ -81,24 +77,6 @@ const (
 	MessageTransportOffsetCounter  = 8
 	MessageTransportOffsetContent  = 16
 )
-
-type protocolState struct {
-	messageInitiationType  uint32
-	messageResponseType    uint32
-	messageCookieReplyType uint32
-	messageTransportType   uint32
-	packetSizeToMsgType    map[int]uint32
-	msgTypeToJunkSize      map[uint32]int
-}
-
-func defaultProtocolState() protocolState {
-	return protocolState{
-		messageInitiationType:  MessageInitiationType,
-		messageResponseType:    MessageResponseType,
-		messageCookieReplyType: MessageCookieReplyType,
-		messageTransportType:   MessageTransportType,
-	}
-}
 
 /* Type is an 8-bit field, followed by 3 nul bytes,
  * by marshalling the messages in little-endian byteorder
@@ -218,12 +196,12 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 
 	handshake.mixHash(handshake.remoteStatic[:])
 
-	device.awg.ASecMux.RLock()
+	msgType := device.headers.init.Load().PickOne()
+
 	msg := MessageInitiation{
-		Type:      device.protocol.messageInitiationType,
+		Type:      msgType,
 		Ephemeral: handshake.localEphemeral.publicKey(),
 	}
-	device.awg.ASecMux.RUnlock()
 
 	handshake.mixKey(msg.Ephemeral[:])
 	handshake.mixHash(msg.Ephemeral[:])
@@ -277,12 +255,9 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 		chainKey [blake2s.Size]byte
 	)
 
-	device.awg.ASecMux.RLock()
-	if msg.Type != device.protocol.messageInitiationType {
-		device.awg.ASecMux.RUnlock()
+	if msg.Type != MessageInitiationType {
 		return nil
 	}
-	device.awg.ASecMux.RUnlock()
 
 	device.staticIdentity.RLock()
 	defer device.staticIdentity.RUnlock()
@@ -397,9 +372,7 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 	}
 
 	var msg MessageResponse
-	device.awg.ASecMux.RLock()
-	msg.Type = device.protocol.messageResponseType
-	device.awg.ASecMux.RUnlock()
+	msg.Type = device.headers.response.Load().PickOne()
 	msg.Sender = handshake.localIndex
 	msg.Receiver = handshake.remoteIndex
 
@@ -449,12 +422,9 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 }
 
 func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
-	device.awg.ASecMux.RLock()
-	if msg.Type != device.protocol.messageResponseType {
-		device.awg.ASecMux.RUnlock()
+	if msg.Type != MessageResponseType {
 		return nil
 	}
-	device.awg.ASecMux.RUnlock()
 
 	// lookup handshake by receiver
 
@@ -657,4 +627,30 @@ func (peer *Peer) ReceivedWithKeypair(receivedKeypair *Keypair) bool {
 	keypairs.current = keypairs.next.Load()
 	keypairs.next.Store(nil)
 	return true
+}
+
+func (device *Device) JunkPackets() [][]byte {
+	var bufs [][]byte
+
+	min := device.junk.min.Load()
+	max := device.junk.max.Load()
+
+	for range device.junk.count.Load() {
+		buf := make([]byte, min+fastrandn(max-min))
+		rand.Read(buf)
+		bufs = append(bufs, buf)
+	}
+
+	return bufs
+}
+
+func (device *Device) HeaderProtectionCipher(salt []byte) (*chacha20.Cipher, error) {
+	device.headerProtection.RLock()
+	defer device.headerProtection.RUnlock()
+
+	if device.headerProtection.key.IsZero() {
+		return nil, nil
+	}
+
+	return chacha20.NewUnauthenticatedCipher(device.headerProtection.key[:], salt)
 }

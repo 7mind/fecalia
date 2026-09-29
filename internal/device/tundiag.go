@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
 	"github.com/7mind/wanbond/internal/log"
 )

@@ -5,7 +5,7 @@ package device
 import (
 	"errors"
 
-	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 )
 
 // setTUNPersist is unavailable off Linux (TUNSETPERSIST is a Linux ioctl).

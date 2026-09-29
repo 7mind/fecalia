@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/tun/tuntest"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
@@ -67,7 +67,7 @@ func writeLoadedConfig(t *testing.T, name, body string) *config.Config {
 // in-process concentrator engines — no root, the pattern of monitor_e2e_test.go (real engines +
 // real Binds over loopback UDP, driven through the production up() wiring). All three engines use
 // the same non-default Amnezia profile, making this the configured multi-Device race/isolation
-// regression for the local upstream #155 patch. It asserts, end to end:
+// regression for per-Device engine protocol state (upstream #155). It asserts, end to end:
 //
 //	(a) per-(peer,path) probers reach StateUp for ALL FOUR (peer,uplink) combinations — the edge's
 //	    shared-socket fan-out probes every peer over every uplink (attachSharedPathLocked);

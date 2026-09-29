@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"sync/atomic"
 
-	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
 
 // The type aliases below isolate the embedded WireGuard engine's conn package to

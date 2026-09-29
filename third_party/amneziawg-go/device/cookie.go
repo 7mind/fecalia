@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2023 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2025 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -17,8 +17,7 @@ import (
 
 type CookieChecker struct {
 	sync.RWMutex
-	messageCookieReplyType uint32
-	mac1                   struct {
+	mac1 struct {
 		key [blake2s.Size]byte
 	}
 	mac2 struct {
@@ -46,10 +45,6 @@ func (st *CookieChecker) Init(pk NoisePublicKey) {
 	st.Lock()
 	defer st.Unlock()
 
-	if st.messageCookieReplyType == 0 {
-		st.messageCookieReplyType = MessageCookieReplyType
-	}
-
 	// mac1 state
 
 	func() {
@@ -69,12 +64,6 @@ func (st *CookieChecker) Init(pk NoisePublicKey) {
 	}()
 
 	st.mac2.secretSet = time.Time{}
-}
-
-func (st *CookieChecker) SetMessageCookieReplyType(messageType uint32) {
-	st.Lock()
-	defer st.Unlock()
-	st.messageCookieReplyType = messageType
 }
 
 func (st *CookieChecker) CheckMAC1(msg []byte) bool {
@@ -129,6 +118,7 @@ func (st *CookieChecker) CreateReply(
 	msg []byte,
 	recv uint32,
 	src []byte,
+	msgType uint32,
 ) (*MessageCookieReply, error) {
 	st.RLock()
 
@@ -164,7 +154,7 @@ func (st *CookieChecker) CreateReply(
 	smac1 := smac2 - blake2s.Size128
 
 	reply := new(MessageCookieReply)
-	reply.Type = st.messageCookieReplyType
+	reply.Type = msgType
 	reply.Receiver = recv
 
 	_, err := rand.Read(reply.Nonce[:])
