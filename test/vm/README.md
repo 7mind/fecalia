@@ -48,6 +48,7 @@ Guest WAN changes cannot disconnect the management NIC.
 | --- | --- | --- |
 | `calibrate.py` | Plain TCP and 1300-byte UDP, both WANs concurrently, both directions | Each WAN delivers at least 85% of its configured rate |
 | `benchmark.py` | One TCP flow, then its reverse; default 2+6 Mbit/s, 15/25 ms one-way delay | Each direction reaches 75% of combined wire capacity; both WAN byte counters advance by over 100 kB |
+| `udp.py` | Constant-rate UDP of full 1311-byte datagrams, then its reverse, offered at the rate full datagrams could carry (86.6% of wire capacity) | Each direction delivers 80% of combined wire capacity after a 10-second warmup; both WAN byte counters advance by over 100 kB |
 | `profiles/asymmetric.json` | 6+2 Mbit/s uplink, 1+7 downlink, 3 ms jitter | Same throughput gates; independent directional capacity estimates |
 | `profiles/fast.json` | 32+96 Mbit/s in each direction | Same throughput gates; calibrate this profile before interpreting results |
 | `profiles/jitter.json` | 2+6 Mbit/s, 15/40 ms delay, 4/10 ms jitter | Same throughput gates, including a 30-second idle period before load |
@@ -514,3 +515,91 @@ while UDP on that leg delivered 96.8 Mbit/s and every other TCP/UDP leg reached
 at least 91% of its rate. Per-packet netem jitter reorders that link; UDP
 calibration is the capacity reference for radio results. Earlier radio
 results were not calibrated.
+
+## Hold-and-pulse control, traffic classes and path MTU — 2026-09-29
+
+Binaries: A = `25aba42` (`e453ff5f…`, deployed that day), B = the candidate
+(`d431571a…`). Matched runs in ABBA order on one lab session
+(`ab-series4.log`):
+
+| Scenario | A run 1 | B run 1 | B run 2 | A run 2 | Gate |
+| --- | --- | --- | --- | --- | --- |
+| Fast TCP up/down Mbit/s | 93.49 / 101.30 | 100.43 / 100.19 | 103.43 / 101.92 | 90.19 / 91.49 | 96 |
+| Radio TCP up/down Mbit/s | 1.149 / 60.12 | 1.288 / 77.67 | 1.254 / 83.54 | 1.117 / 73.19 | 1.2375 / 75.375 |
+| Four-flow radio download from idle, 20 s mean Mbit/s | 60.8 | 72.1 | 74.9 | 76.8 | — |
+| Radio continuity voice loss hub/edge % | 2.185 / 2.369 | 0.185 / 0.185 | 0.031 / 0.215 | 2.154 / 0.862 | 1 |
+| Radio continuity max gap hub/edge ms | 201.4 / 294.6 | 114.7 / 120.7 | 128.1 / 109.4 | 156.9 / 111.1 | 150 |
+| Radio continuity p99 RTT hub/edge ms | 198.1 / 198.6 | 184.6 / 186.0 | 206.5 / 198.7 | 211.1 / 203.9 | 150 |
+| Radio continuity TCP outage progress | pass | pass | fail (both receivers, LTE outage) | pass | pass |
+| Basic continuity p99 RTT hub/edge ms | 99.4 / 103.8 | 82.8 / 75.3 | 87.9 / 72.8 | 135.3 / 126.6 | 150 |
+
+B passes every TCP throughput gate in both runs, and voice loss and gap. It
+fails the voice p99 gate, as A does, and TCP outage progress in one run of two.
+Three further runs of B before the matched series gave radio downloads of
+80.4, 70.2 and 82.9 Mbit/s: one of five below the gate.
+
+Constant-rate UDP (`udp.py`, B only, one run per profile): fast 104.7 / 105.4
+Mbit/s up/down (gate 102.4), radio 1.359 / 81.6 (gates 1.32 / 80.4).
+
+What the traces showed, and what remains:
+
+- Voice median RTT in the radio continuity scenario fell from 90-100 ms to
+  42-60 ms: voice now keeps the low-latency WAN. The p99 over the run stays
+  above 150 ms. Per five-second window it is 95-150 ms in most windows; the
+  first five seconds of a cold start reach 135-300 ms, and the window in which
+  only the LTE WAN is up is bounded by that WAN's own jitter (two directions of
+  40±30 ms give about 135 ms before any queueing).
+- During the LTE outage two voice streams need 56-74% of the remaining WAN
+  (0.4 Mbit/s up, 0.5 down). Bulk keeps 5% of it, about two datagrams per
+  second, and TCP also backs off after losing 100 Mbit/s of capacity, so some
+  one-second intervals deliver nothing. More for bulk cost voice in the
+  deterministic model (`TestVoiceSurvivesOnSingleSlowLane` with an equal split:
+  490/500 delivered, 129 ms one-way p99).
+- A voice datagram in flight on a WAN that fails is recovered about 250 ms
+  later unless a copy was already on the other WAN. The copy allowance of 10%
+  of capacity covers about half of two voice streams on these WANs; the
+  longest gap at the Starlink outage was 135-175 ms in two of five runs.
+- Path MTU discovery converged below the links' 1500 bytes in about half of all
+  runs before `9e9f7fb`, across every binary, shrinking the tunnel MTU by up to
+  170 bytes. That added noise to every earlier measurement in this file. After
+  it, 8 of 8 runs converged to 1500.
+- `iperf3 --omit` makes its UDP totals inconsistent (received bytes and packet
+  counts disagree); `udp.py` measures from the receiver's interval reports.
+
+### Final tree
+
+The `nix build` binary of the final tree (`d178eff6…`), two rounds, not matched
+against A: fast 102.5 / 102.4 and 103.1 / 103.3 Mbit/s up/down; radio upload
+1.289 and 1.291; radio download 73.4 (below the gate) and 84.2; voice loss
+0.09-0.15%; longest voice gap at a link failure 109 and 128 ms (158 ms once at
+0.5 s into a cold start); voice p99 178-204 ms; TCP outage progress pass and
+fail. UDP: fast 104.3 / 105.6, radio 1.333 / 83.2. Over all runs of B, radio
+download was below the gate in two of seven.
+
+### Mixed versions and daemon restarts
+
+Basic profile, candidate B against `25aba42` (the build deployed at the time):
+
+| Hub | Edge | Traffic both ways | Rekey, ping loss |
+|---|---|---|---|
+| B | `25aba42` | yes | 0 of 270 |
+| `25aba42` | B | yes | 0 of 270 |
+| B | B | yes | 0 of 270 |
+
+The adaptive wire format did not change, so either end can be upgraded first.
+
+Time from restarting one daemon until a ping from the edge succeeds again:
+
+| Restarted | Build | Seconds |
+|---|---|---|
+| edge | B | 0.70 |
+| hub | B | 16.1 |
+| hub | `25aba42` | 16.1 |
+| hub | `6de11e0` | 16.1 |
+| hub | pre-v3 `e19751c` | 16.1 |
+
+The hub does not initiate: after its restart the edge keeps sending under the
+session the hub has lost, and starts a new handshake only when the engine's
+new-handshake timer fires (`KeepaliveTimeout` 10 s + `RekeyTimeout` 5 s without
+a reply). The figure is the same on every build, including the one before the
+engine migration. The cause is inferred from the timer constants, not traced.

@@ -80,10 +80,13 @@ Lost datagrams receive bounded cross-path retries. Bulk repair lasts at most
 250 ms from first transmission; small packets retain a 250 ms limit from enqueue.
 Retries do not extend either deadline. Small encrypted datagrams
 (up to 384 bytes, including WireGuard overhead) receive priority and budgeted
-replication; they bypass bulk receive ordering. This is a size heuristic, not
-application identification. Small packets receive one scheduling turn per IP
-flow; a TCP ACK burst cannot monopolize that queue. A waiting bulk packet gets
-a reserved turn after 8 KiB of small-packet service. Unsent redundant pure TCP
+replication; they bypass bulk receive ordering. Small datagrams that are not
+TCP (voice, DNS) are served first and get the lowest-latency link, small TCP
+datagrams (ACKs) next, bulk last; each lower class keeps a minimum share. This
+is a size and protocol heuristic, not application identification. Within a
+class each IP flow gets one turn at a time. Between capacity probes each link's
+target holds just below the capacity it demonstrated, so the queue forms in
+the tunnel, where voice has priority, and not in the modem. Unsent redundant pure TCP
 ACKs can be coalesced while retaining the latest advertised window and preserving
 window-only updates and other control information. Flow metadata is
 local to the sender and does not change the wire protocol. Bulk datagrams remain resequenced. See the
