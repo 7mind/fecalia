@@ -103,17 +103,18 @@ type Snapshot struct {
 }
 
 type packet struct {
-	flow        FlowID
-	ack         TCPACK
-	seq         uint64
-	order       uint64
-	interactive bool
-	payload     []byte
-	created     time.Time
-	lastSent    time.Time
-	lastPath    PathID
-	attempts    int
-	acked       bool
+	flow           FlowID
+	ack            TCPACK
+	seq            uint64
+	order          uint64
+	interactive    bool
+	payload        []byte
+	created        time.Time
+	repairDeadline time.Time
+	lastSent       time.Time
+	lastPath       PathID
+	attempts       int
+	acked          bool
 }
 
 type attempt struct {
@@ -395,6 +396,10 @@ func (t *Transport) choose(now time.Time, size int, exclude PathID, retry bool) 
 
 func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission {
 	if p.seq == 0 {
+		p.repairDeadline = now.Add(maxPacketAge)
+		if p.interactive {
+			p.repairDeadline = p.created.Add(maxPacketAge)
+		}
 		t.seq++
 		p.seq = t.seq
 		if p.interactive {
@@ -503,7 +508,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			delete(t.pending, p.seq)
 			continue
 		}
-		if now.Sub(p.created) > maxPacketAge {
+		if now.After(p.repairDeadline) {
 			delete(t.pending, p.seq)
 			t.expired++
 			continue
