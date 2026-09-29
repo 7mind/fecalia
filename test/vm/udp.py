@@ -19,14 +19,20 @@ REQUIRED_SHARE = 0.80
 
 def measure(lab, output, name, offered, seconds, warmup, reverse):
     before = counters(lab)
-    lab.execute("hub", "iperf3 -s -1 -D --pidfile /root/iperf.pid -B 10.77.0.1")
-    result = lab.execute("edge", f"iperf3 -c 10.77.0.1 -u -b {offered:.4f}M -l {UDP_PAYLOAD} -t {seconds} -O {warmup} -J {'-R' if reverse else ''}", capture_output=True)
+    lab.execute("hub", "iperf3 -s -1 -D -J --pidfile /root/iperf.pid -B 10.77.0.1")
+    # iperf3's --omit makes its UDP totals inconsistent (received bytes and
+    # packet counts disagree), so the warmup is excluded here from the
+    # receiver's own interval reports.
+    result = lab.execute("edge", f"iperf3 -c 10.77.0.1 -u -b {offered:.4f}M -l {UDP_PAYLOAD} -t {warmup + seconds} -J --get-server-output {'-R' if reverse else ''}", capture_output=True)
     after = counters(lab)
     for guest in GUESTS:
         (output / f"{name}-after-{guest}-metrics.txt").write_text(lab.execute(guest, "curl -sf http://127.0.0.1:9090/metrics", capture_output=True).stdout)
     data = json.loads(result.stdout)
     (output / f"{name}.json").write_text(json.dumps(data, indent=2))
-    total = data["end"]["sum"]
+    receiver = data if reverse else data["server_output_json"]
+    measured = [interval["sum"] for interval in receiver["intervals"] if interval["sum"]["start"] >= warmup - 0.5]
+    assert len(measured) >= seconds - 1, f"{name}: receiver reported {len(measured)} measured intervals"
+    duration = measured[-1]["end"] - measured[0]["start"]
     key = "rx" if reverse else "tx"
     byte_counts = {}
     for lane in (1, 2):
@@ -34,8 +40,8 @@ def measure(lab, output, name, offered, seconds, warmup, reverse):
             entry = next(e for e in snapshot if e["ifname"] == f"eth{lane}")
             return entry["stats64"][key]["bytes"]
         byte_counts[f"wan{lane}"] = wan(after) - wan(before)
-    summary = {"offered_mbit_s": offered, "mbit_s": total["bits_per_second"] * (1 - total["lost_percent"] / 100) / 1e6,
-               "lost_percent": total["lost_percent"], "jitter_ms": total["jitter_ms"], "bytes": byte_counts}
+    summary = {"offered_mbit_s": offered, "mbit_s": sum(interval["bytes"] for interval in measured) * 8 / duration / 1e6,
+               "lost_percent": data["end"]["sum"]["lost_percent"], "bytes": byte_counts}
     print(name, json.dumps(summary), flush=True)
     return summary
 
