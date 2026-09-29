@@ -222,9 +222,12 @@ While datagrams wait for the lane, measured delivery also replaces the initial
 125 kB/s assumption: on a slower lane the window sized from it admits a queue
 of hundreds of milliseconds (VM trace `20260929-155641-continuity`: 117 ms of
 queue on a 0.4 Mbit/s lane in the first second). When discovery ends, lower
-classes wait on that lane until a clear interval shows its queue has gone, at
-most 500 ms; real-time traffic alone may use most of a slow lane, and a
-reduced target would then drain nothing.
+classes wait on that lane for twice the queue delay measured, at most 500 ms,
+or until a clear interval shows the queue has gone; real-time traffic alone
+may use most of a slow lane, and a reduced target would then drain nothing. A
+fixed 500 ms pause filled the tunnel queue of a 100 Mbit/s lane beyond its
+bound, and 995 datagrams expired at once (VM trace
+`20260929-165408-radio-down-k1`).
 A cold burst of TCP initial
 windows otherwise loses most of its datagrams before feedback arrives, and the
 resulting loss run sets every flow's slow-start threshold to a few segments
@@ -360,7 +363,11 @@ contributes at most once. Sampling only the highest physical sequence favours
 fast arrivals under reordering and underestimates the repair deadline. RTT
 variation is the EWMA of absolute sample error; the 25 ms term covers delayed
 ACKs before the feedback estimate has converged. Before the first confirmation,
-the timeout calculation allows variation of at least half the path RTT. The
+the timeout calculation allows variation of at least the variation the lane
+measured while idle, or half the path RTT if it measured none. Half the RTT
+puts the first repair of a radio lane (80 ms RTT: 265 ms) beyond the 250 ms
+repair lifetime, so a datagram lost as a transfer starts reaches the sender's
+TCP as loss and ends its slow start. The
 first confirmation initializes its variation to half that sample, following
 the estimator initialization in [RFC 6298 §2.2](https://www.rfc-editor.org/rfc/rfc6298.html#section-2).
 This is a bounded datagram repair policy, not TCP's full retransmission timer.
