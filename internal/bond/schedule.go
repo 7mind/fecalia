@@ -208,6 +208,9 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 		if !p.up(now) || p.stalled || now.Before(p.drainUntil) && c == classBulk || avoid && p.id == exclude {
 			continue
 		}
+		if now.Before(p.control.flushUntil) && c != classRealtime {
+			continue
+		}
 		window := p.window()
 		// Small datagrams may lead the pacing clock. Bulk competing with them
 		// for the same slots needs the same lead to receive its share.

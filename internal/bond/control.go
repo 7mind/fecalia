@@ -20,6 +20,7 @@ const (
 	minPulse         = 150 * time.Millisecond
 	maxPulse         = 500 * time.Millisecond
 	verdictExpiry    = time.Second
+	maxFlush         = 500 * time.Millisecond
 )
 
 // control holds a lane's target between discovery runs.
@@ -33,6 +34,7 @@ const (
 type control struct {
 	capacity   float64
 	draining   bool
+	flushUntil time.Time
 	holdSignal bool
 	nextPulse  time.Time
 	pulseEnd   time.Time
@@ -74,7 +76,7 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 	case lost || delayed:
 		p.congested(now, lost, laneLimited)
 	case sampled:
-		p.control.holdSignal, p.control.draining = false, false
+		p.control.holdSignal, p.control.draining, p.control.flushUntil = false, false, time.Time{}
 		switch {
 		case p.startup:
 			p.discover(now, realtime)
@@ -104,8 +106,12 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// Discovery saturated the path, so recent delivery measures capacity,
 		// unless the sender was the limit: then it measures the sender, and
 		// pulses must find the rest.
+		// Discovery leaves a queue of up to a window in the path. Lower
+		// classes wait, for a bounded time, until a clear interval shows it
+		// has gone: real-time traffic alone may use most of a slow lane, and
+		// a reduced target would then drain nothing.
 		p.startup = false
-		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.measuredDelivery(), false, 0, true
+		c.capacity, c.holdSignal, c.pulseWins, c.draining, c.flushUntil = p.measuredDelivery(), false, 0, true, now.Add(maxFlush)
 		p.schedulePulse(now)
 		if !laneLimited {
 			p.rate = math.Max(minimumRate, math.Max(p.cut(lost), c.capacity))
@@ -207,6 +213,9 @@ func (p *lane) discover(now time.Time, realtime bool) {
 	// unprotected when the sender catches up.
 	p.rate = math.Max(p.rate, gain*delivered)
 	if carried := math.Max(delivered, p.sendRate); carried > 0 {
-		p.rate = math.Min(p.rate, math.Max(initialRate, gain*carried))
+		// Once delivery is measured the initial assumption no longer
+		// applies: on a lane slower than it, the window sized from it admits
+		// a queue of hundreds of milliseconds.
+		p.rate = math.Max(minimumRate, math.Min(p.rate, gain*carried))
 	}
 }
