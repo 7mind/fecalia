@@ -332,9 +332,12 @@ flight, so the startup limit cannot deadlock a supported larger MTU.
 Small datagrams wait at most 100 ms before first transmission. Bulk datagrams
 use RFC 8289 CoDel at dequeue, so a burst or
 target reduction produces spaced congestion signals instead of a contiguous
-loss run, with a hard residence bound of 250 ms. Its target is the slowest
-lane's round trip (10-100 ms) and its interval twice that (at least 100 ms),
-not RFC 8289's 5 ms: a loss-based sender cuts its window by 30%, and only a
+loss run, with a hard residence bound of 250 ms, or the sum of CoDel's target
+and interval if that is longer, up to 1 s. Its target is the slowest
+lane's round trip (10-100 ms), not RFC 8289's 5 ms, and its interval twice the
+sum of that round trip and the target (at least 100 ms), since the sender's
+round trip includes this queue and a second drop before its response to the
+first is visible cuts its window twice: a loss-based sender cuts its window by 30%, and only a
 standing queue of about 0.43 of its round trip keeps the lanes busy afterwards
 (VM trace `20260929-134042-fast-up-d1`). Small datagrams bypass this queue.
 While any up lane is

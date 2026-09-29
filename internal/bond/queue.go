@@ -47,7 +47,11 @@ func (c *codel) okToDrop(now time.Time, sojourn time.Duration, remaining int) bo
 // drop reports whether the dequeued packet must be discarded instead of sent.
 func (c *codel) drop(now time.Time, sojourn time.Duration, remaining int, roundTrip time.Duration) bool {
 	c.target = min(codelMaxTarget, max(codelMinTarget, roundTrip))
-	c.interval = max(codelMinInterval, 2*roundTrip)
+	// The interval must cover the sender's round trip, which includes this
+	// queue: a second drop before the response to the first is visible halves
+	// the sender's window twice (VM run 20260929-163021-adaptive: 8 drops in 3
+	// loss events, and 9 s at 65-80% of the rate after one of them).
+	c.interval = max(codelMinInterval, 2*(roundTrip+c.target))
 	ok := c.okToDrop(now, sojourn, remaining)
 	if c.dropping {
 		if !ok {

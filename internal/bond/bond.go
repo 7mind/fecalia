@@ -692,7 +692,9 @@ func (t *Transport) bulkQueueAge(now time.Time) time.Duration {
 	if t.discovering(now) {
 		return discoveryQueueAge
 	}
-	return maxBulkQueueAge
+	// The bound is a backstop. It must leave the drop schedule room to act:
+	// expiring the head first discards a run of datagrams at once.
+	return min(discoveryQueueAge, max(maxBulkQueueAge, t.bulkAQM.target+t.bulkAQM.interval))
 }
 
 func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Delivery, error) {
