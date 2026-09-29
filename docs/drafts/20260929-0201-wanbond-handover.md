@@ -13,11 +13,12 @@ reproduced defects have been corrected, and a reusable autonomous VM lab exists.
 Passing the default tests or the basic VM profile does not establish success
 under the radio profile.
 
-The user performs production deployments. The adjacent `nix-config` repository
-is at `c49dfa66`; its `fecalia` input still pins
+The user performs production deployments. At the original handover, the adjacent
+`nix-config` repository was at `c49dfa66`; its `fecalia` input pinned
 `af2d54c4fcdcda89fb74842d951c687e02e43a27`. That pin does **not** include the later
-corrections listed below. No production deployment or pin update accompanies
-this handover. Current live service state has not been rechecked for this document.
+corrections listed below. The user subsequently reported deploying the latest
+candidate and a substantially improved Speedtest result, recorded below.
+The deployed revision was not independently checked with that report.
 
 ## Goals and outcome
 
@@ -84,8 +85,36 @@ not assertions about a subsequent user deployment.
 
 The stronger VM radio profile reproduced approximately 0.417/0.472 Mbps
 upload/download before the later corrections. The newer VM results establish
-improvement in that emulator; production improvement from the latest checkpoint
-has not been verified.
+improvement in that emulator. The subsequent user report also establishes
+improved observed production throughput, with slow discovery still evident.
+
+### Subsequent user-reported production result
+
+After deploying what the user described as the latest candidate, Speedtest
+against **Blacknight, Dublin (server 4604)**, with Blacknight as the reported
+ISP, returned:
+
+| Measurement | Result |
+| --- | --- |
+| Download | 44.57 Mbps; 55.1 MB transferred |
+| Upload | 2.25 Mbps; 3.4 MB transferred |
+| Idle latency | 32.00 ms; jitter 2.07 ms; range 31.86–39.99 ms |
+| Download loaded latency | 46.63 ms; jitter 15.65 ms; maximum 373.01 ms |
+| Upload loaded latency | 74.52 ms; jitter 27.07 ms; maximum 390.49 ms |
+| Reported packet loss | 0.0% |
+
+The preceding reported test against the same server measured 0.49 Mbps download
+and 0.48 Mbps upload. RF conditions and raw-link capacity were not measured
+alongside both runs, so this is an observed improvement rather than a controlled
+estimate of the code's effect. Binary hashes and an exact deployed revision
+were not supplied with the new result.
+
+The user observed peak throughput only after approximately **60% of the test's
+allocated time**. This is consistent with the committed capacity-discovery
+reproduction and makes faster convergence the first controller investigation.
+Record time to reach the sustained rate as well as whole-test average goodput;
+do not hide the ramp by lengthening warmup. The zero-loss Speedtest result does
+not exercise a WAN outage or establish the separate voice-continuity gates.
 
 ### Latest retained runtime candidate
 
@@ -156,7 +185,8 @@ or rule out CPU limits on different hardware. No permanent profiler was added.
 1. **Resume from the committed baseline.** Run the two progression tests and
    retain their failure output before changing code. Keep candidate binaries,
    source revision/diff, profile, warmup, SHA256 and raw results together.
-2. **Separate discovery from steady congestion response.** Instrument one
+2. **Prioritize the slow ramp reported in production.** Separate discovery
+   from steady congestion response and instrument one
    capacity transition: pacing target, actual send/delivery rates, window versus
    bytes in flight, queue-delay samples and feedback timing. Establish why each
    increase or decrease happens. Any faster discovery candidate must preserve
