@@ -32,6 +32,7 @@ const (
 	jitterWarmup          = 8
 	maxQueueAge           = 100 * time.Millisecond
 	maxBulkQueueAge       = 250 * time.Millisecond
+	bulkServiceTurns      = 2
 	discoveryQueueAge     = time.Second
 	maxPacketAge          = 250 * time.Millisecond
 	ackInterval           = 25 * time.Millisecond
@@ -43,6 +44,8 @@ const (
 	ackBatchPackets       = 64
 	priorityLead          = 5 * time.Millisecond
 	minimumClassShare     = 0.05
+	smallClassShare       = 0.5
+	realtimeLane          = 0.5
 	reservationHeadroom   = 1.1
 	ipProtocolTCP         = 6
 	pathLease             = time.Second
@@ -188,11 +191,13 @@ type lane struct {
 	classNext            [classes]time.Time
 	reserved             [classBulk]float64
 	guaranteed           [classes]bool
+	shared               bool
 	lastACK              time.Time
 	ackGap               time.Duration
 	lastAdjust           time.Time
 	lostSinceAdjust      bool
 	inflight             int
+	classInflight        [classes]int
 	confirmedWireBytes   int
 	seq                  uint64
 	ackRevision          uint64
@@ -311,7 +316,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 	for _, p := range t.paths {
 		p.lease = time.Time{}
 		p.attempts = make(map[uint64]attempt)
-		p.inflight = 0
+		p.inflight, p.classInflight = 0, [classes]int{}
 		p.seq = 0
 		p.lastACK, p.ackGap = time.Time{}, 0
 		p.nextSend = time.Time{}
@@ -388,6 +393,14 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 		t.queue = append(t.queue, p)
 	}
 	return nil
+}
+
+// release returns an attempt's bytes to the lane's window.
+func (p *lane) release(a attempt) {
+	p.inflight -= a.bytes
+	if a.packet != nil {
+		p.classInflight[a.packet.class] -= a.bytes
+	}
 }
 
 func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.lease) < pathLease }
@@ -508,6 +521,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	path.attempts[path.seq] = attempt{packet: p, sent: now, bytes: size}
 	path.roundSent++
 	path.inflight += size
+	path.classInflight[p.class] += size
 	path.sent += uint64(size)
 	if p.interactive {
 		path.interactiveSent += uint64(size)
@@ -579,13 +593,13 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 						path.lastAdjust = now
 					}
 				}
-				path.inflight -= a.bytes
+				path.release(a)
 				a.released = true
 				path.attempts[seq] = a
 			}
 			if now.Sub(a.sent) >= feedbackHorizon {
 				if !a.released {
-					path.inflight -= a.bytes
+					path.release(a)
 				}
 				delete(path.attempts, seq)
 			}
@@ -789,7 +803,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 				p.confirmedWireBytes = min(maxPackets*maxDatagram, p.confirmedWireBytes+sent.bytes)
 			}
 			if !sent.released {
-				p.inflight -= sent.bytes
+				p.release(sent)
 			}
 			p.acked += uint64(sent.bytes)
 			if sent.packet != nil {
@@ -849,7 +863,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			// The global receipt confirms delivery after the lane bitmap moved on.
 			// Release ownership without claiming which physical attempt arrived.
 			if !sent.released {
-				p.inflight -= sent.bytes
+				p.release(sent)
 			}
 			if !sent.confirmed && sent.packet.attempts == 1 {
 				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
@@ -872,7 +886,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			if sent.packet != nil && (sent.packet.acked || a.received(sent.packet.seq)) && !sent.confirmed {
 				sent.packet.acked = true
 				if !sent.released {
-					path.inflight -= sent.bytes
+					path.release(sent)
 				}
 				if sent.packet.attempts == 1 {
 					feedbackSample = max(feedbackSample, now.Sub(sent.sent))

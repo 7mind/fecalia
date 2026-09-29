@@ -91,6 +91,13 @@ func (t *Transport) queued() int {
 // order of round trip. Lower classes are paced to leave that capacity free:
 // a lane filled by bulk otherwise sends voice to a slower lane.
 //
+// Small TCP datagrams are mostly the ACK stream of a transfer in the other
+// direction, which can be coalesced; bulk cannot. While bulk waits, that class
+// is held to half of what real-time traffic leaves, and bulk gets the rest.
+// A lane on which real-time traffic has reserved more than half the capacity
+// is the exception: each bulk datagram occupies a slow lane for tens of
+// milliseconds, so bulk keeps only its guaranteed minimum there.
+//
 // Each lower class keeps a minimum share so a flood above it cannot take every
 // transmission slot. One lane guarantees it, the lane with the most capacity
 // left for the class: a bulk datagram occupies a slow lane for tens of
@@ -98,8 +105,9 @@ func (t *Transport) queued() int {
 // while another lane has room.
 func (t *Transport) reserve(now time.Time) {
 	lanes := make([]*lane, 0, len(t.paths))
+	bulkWaiting := len(t.queue) > 0
 	for _, p := range t.paths {
-		p.reserved, p.guaranteed = [classBulk]float64{}, [classes]bool{}
+		p.reserved, p.guaranteed, p.shared = [classBulk]float64{}, [classes]bool{}, bulkWaiting
 		if p.up(now) && !p.stalled {
 			lanes = append(lanes, p)
 		}
@@ -125,6 +133,9 @@ func (t *Transport) reserve(now time.Time) {
 			room := free[i]
 			if i == guarantor {
 				room -= float64(classBulk-c) * minimumClassShare * p.rate
+			}
+			if c == classSmall && bulkWaiting && !p.realtimeLane() {
+				room = min(room, smallClassShare*free[i])
 			}
 			p.reserved[c] = max(0, min(need, room))
 			need -= p.reserved[c]
@@ -153,7 +164,24 @@ func (p *lane) latency() time.Duration {
 
 // allowed is the rate a class may use on the lane: what higher classes have
 // not reserved, and at least the minimum share on the lane that guarantees it.
+func (p *lane) realtimeLane() bool {
+	return p.reserved[classRealtime] > realtimeLane*p.rate
+}
+
 func (p *lane) allowed(c class) float64 {
+	if c == classBulk && p.realtimeLane() {
+		if p.guaranteed[c] {
+			return minimumClassShare * p.rate
+		}
+		return 0
+	}
+	if c == classSmall && p.shared && !p.realtimeLane() {
+		rate := p.reserved[classSmall]
+		if p.guaranteed[c] {
+			rate = max(rate, minimumClassShare*p.rate)
+		}
+		return rate
+	}
 	rate := p.rate
 	for higher := classRealtime; higher < c; higher++ {
 		rate -= p.reserved[higher]
@@ -189,10 +217,16 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 		}
 		if c == classRealtime {
 			// A small datagram may borrow one datagram beyond a full window.
-			if p.inflight > window {
+			// Within the share of the window reserved for them, real-time
+			// datagrams are not blocked by the bytes of lower classes: on a
+			// slow lane one bulk datagram in flight is a third of the window.
+			if p.inflight > window && float64(p.classInflight[c]) > float64(window)*p.reserved[c]/p.rate {
 				continue
 			}
-		} else if allowed := p.allowed(c); allowed == 0 || p.inflight+size > max(size, int(float64(window)*allowed/p.rate)) {
+		} else if allowed := p.allowed(c); allowed == 0 || p.inflight+size > max(size, window) ||
+			p.classInflight[c]+size > max(size, int(float64(window)*allowed/p.rate)) {
+			// A class is held to its own share of the window: the bytes of
+			// higher classes in flight must not shut it out.
 			continue
 		}
 		if p.classNext[c].After(now.Add(lead)) || p.nextSend.After(now.Add(lead)) {

@@ -30,14 +30,16 @@ func tcpFlow() bond.FlowID { return bond.FlowID{4, 6} }
 // their one-way 99th percentile delay.
 func voiceUnderLoad(t *testing.T, rates []float64, delays, jitters []time.Duration, acksPerSecond int) (delivered, sent int, p99 time.Duration) {
 	t.Helper()
-	delivered, sent, p99, _ = voiceThroughOutage(t, rates, delays, jitters, acksPerSecond, -1, 0, 0)
+	delivered, sent, p99, _, _ = voiceThroughOutage(t, rates, delays, jitters, acksPerSecond, -1, 0, 0)
 	return
 }
 
 // voiceThroughOutage is voiceUnderLoad with one lane losing every datagram in
 // both directions from failAt for failFor milliseconds. It also returns the
 // longest interval between voice arrivals in the measured period.
-func voiceThroughOutage(t *testing.T, rates []float64, delays, jitters []time.Duration, acksPerSecond, failed, failAt, failFor int) (delivered, sent int, p99, gap time.Duration) {
+//
+// bulk holds the bulk bytes delivered in each of the final five seconds.
+func voiceThroughOutage(t *testing.T, rates []float64, delays, jitters []time.Duration, acksPerSecond, failed, failAt, failFor int) (delivered, sent int, p99, gap time.Duration, bulk [5]int) {
 	t.Helper()
 	const (
 		duration = 15000
@@ -119,6 +121,9 @@ func voiceThroughOutage(t *testing.T, rates []float64, delays, jitters []time.Du
 				continue
 			}
 			for _, d := range got {
+				if e.to == 1 && len(d.Payload) == 1200 && tick >= measured && tick < duration {
+					bulk[(tick-measured)/1000] += len(d.Payload)
+				}
 				if e.to == 1 && len(d.Payload) == voiceWireGuardBytes {
 					if at := int(binary.BigEndian.Uint64(d.Payload)); at >= measured {
 						waits = append(waits, time.Duration(tick-at)*time.Millisecond)
@@ -132,10 +137,10 @@ func voiceThroughOutage(t *testing.T, rates []float64, delays, jitters []time.Du
 		}
 	}
 	if len(waits) == 0 {
-		return 0, sent, 0, 0
+		return 0, sent, 0, 0, bulk
 	}
 	sort.Slice(waits, func(i, j int) bool { return waits[i] < waits[j] })
-	return len(waits), sent, waits[len(waits)*99/100], gap
+	return len(waits), sent, waits[len(waits)*99/100], gap, bulk
 }
 
 // Voice must get the low-latency lane while bulk and the TCP ACK stream of a
@@ -169,12 +174,44 @@ func TestVoiceSurvivesOnSingleSlowLane(t *testing.T) {
 // (VM runs 20260929-142206-continuity: 337 and 458 ms gaps at a lane failure).
 func TestVoiceSurvivesFailureOfItsLane(t *testing.T) {
 	for _, failed := range []int{0, 1} {
-		delivered, sent, p99, gap := voiceThroughOutage(t, []float64{50000, 156250},
+		delivered, sent, p99, gap, _ := voiceThroughOutage(t, []float64{50000, 156250},
 			[]time.Duration{20 * time.Millisecond, 40 * time.Millisecond},
 			[]time.Duration{0, 30 * time.Millisecond}, 400, failed, 12000, 2000)
 		t.Logf("lane %d failed: delivered %d/%d voice datagrams, one-way p99 %s, longest gap %s", failed, delivered, sent, p99, gap)
 		if delivered < sent*98/100 || gap > 150*time.Millisecond {
 			t.Errorf("lane %d failed: %d/%d delivered, longest gap %s", failed, delivered, sent, gap)
 		}
+	}
+}
+
+// A download's TCP ACK stream can be coalesced; an upload's data cannot. The
+// ACK stream must not take everything voice leaves (VM run
+// 20260929-152215-continuity: the upload received nothing for ten seconds at
+// a time while the download's ACKs filled a 1.65 Mbit/s uplink).
+func TestBulkSharesCapacityWithACKStream(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		rates        []float64
+		delays       []time.Duration
+		jitters      []time.Duration
+		minimumBytes int
+	}{
+		// Voice takes 35 of 206 kB/s; bulk is owed about half the remainder.
+		{"two lanes", []float64{50000, 156250}, []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, []time.Duration{0, 30 * time.Millisecond}, 50000},
+		// Voice takes 35 of 50 kB/s; bulk must still move every second.
+		{"slow lane", []float64{50000}, []time.Duration{20 * time.Millisecond}, []time.Duration{0}, 1200},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			delivered, sent, p99, _, bulk := voiceThroughOutage(t, scenario.rates, scenario.delays, scenario.jitters, 2000, -1, 0, 0)
+			t.Logf("voice %d/%d, one-way p99 %s; bulk bytes per second %v", delivered, sent, p99, bulk)
+			if delivered < sent*99/100 {
+				t.Errorf("voice delivered %d/%d", delivered, sent)
+			}
+			for second, bytes := range bulk {
+				if bytes < scenario.minimumBytes {
+					t.Errorf("bulk received %d bytes in second %d, want at least %d", bytes, second, scenario.minimumBytes)
+				}
+			}
+		})
 	}
 }
