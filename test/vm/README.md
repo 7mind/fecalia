@@ -48,6 +48,7 @@ Guest WAN changes cannot disconnect the management NIC.
 | --- | --- | --- |
 | `calibrate.py` | Plain TCP and 1300-byte UDP, both WANs concurrently, both directions | Each WAN delivers at least 85% of its configured rate |
 | `benchmark.py` | One TCP flow, then its reverse; default 2+6 Mbit/s, 15/25 ms one-way delay | Each direction reaches 75% of combined wire capacity; both WAN byte counters advance by over 100 kB |
+| `udp.py` | Constant-rate UDP of full 1311-byte datagrams, then its reverse, offered at the rate full datagrams could carry (86.6% of wire capacity) | Each direction delivers 80% of combined wire capacity after a 10-second warmup; both WAN byte counters advance by over 100 kB |
 | `profiles/asymmetric.json` | 6+2 Mbit/s uplink, 1+7 downlink, 3 ms jitter | Same throughput gates; independent directional capacity estimates |
 | `profiles/fast.json` | 32+96 Mbit/s in each direction | Same throughput gates; calibrate this profile before interpreting results |
 | `profiles/jitter.json` | 2+6 Mbit/s, 15/40 ms delay, 4/10 ms jitter | Same throughput gates, including a 30-second idle period before load |

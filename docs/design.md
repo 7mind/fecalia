@@ -233,7 +233,14 @@ than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
 minimum, and explicit baseline calibration clears all buckets. Control intervals
 take the minimum of the resulting queue-delay samples. A congestion signal is
 timed-out data, or a minimum forward queue delay across a control interval
-above `max(10 ms, 2*idleForwardVariation)`.
+above `max(10 ms, 2*idleForwardVariation)`. Jitter spreads the samples, and the
+minimum of a few exceeds the threshold by chance: with a 60 ms spread and two
+samples, in most intervals. The mean difference between consecutive samples
+estimates the spread (a third of it for a uniform spread; a queue changes
+little between samples), and a delay signal needs `2*spread/threshold` samples,
+at most 16, before it counts. The estimate in force is the one from before
+the interval, so the onset of a queue cannot excuse itself, and it applies
+after eight differences.
 
 *Hold and pulse (`control.go`).* Raising the target until the path queues, then
 cutting it, keeps a standing queue in the path's own buffer, where small
@@ -248,7 +255,10 @@ signal before the pulse's feedback is complete confirms the estimate; the
 target drops to 85% until a clear interval shows the queue has drained, and
 signals in that period do not change the estimate. A pulse without a signal
 raises the estimate by 5%, the next by 10%, and the third returns the lane to
-discovery at a gain of 1.5. While holding, one signal may be jitter: only a
+discovery at a gain of 1.5. Discovery also uses that gain instead of 2 while
+real-time datagrams are carried: its overshoot queues in the path's buffer
+ahead of them (VM run `20260929-152215-continuity`: 370 ms voice round trips in
+the first five seconds of a cold start). While holding, one signal may be jitter: only a
 second consecutive signal cuts the target, by 10%, and lowers the estimate by
 3%. Cuts that take the target below 75% of the estimate mean capacity fell;
 delivery is measured again and a pulse follows at once. A signal while no
@@ -280,7 +290,14 @@ filled discovery window can incorrectly turn low observed delivery into a hard
 capacity estimate. The ordinary 10% delay reduction still applies when this
 additional evidence is absent. ACKs wait at most 25 ms or
 64 arrivals, matching the per-lane ACK bitmap without
-sending one ACK for every eight packets on a fast download. They bypass data
+sending one ACK for every eight packets on a fast download. After three
+consecutive ACKs on a lane the interval stretches, up to 50 ms, so that ACK
+bytes stay within 8% of the bytes they acknowledge: at a fixed 25 ms they took
+14% of a 0.4 Mbit/s lane (`TestSlowLaneAcknowledgementShareIsBounded`). Sparse
+traffic keeps the 25 ms confirmation. The sender learns the peer's cadence
+from ACK arrivals and uses it in the repair timer, the early copy of a
+real-time datagram and the window, so a peer running an earlier version, which
+always uses 25 ms, interoperates. They bypass data
 pacing: charging reverse feedback to a data-only rate estimate can accumulate
 permanent pacing debt and starve voice/TCP
 ACKs while receiving a fast bulk stream. Congestion samples reflect the data
