@@ -3,6 +3,7 @@ package telemetry
 import (
 	"errors"
 	"math"
+	"math/rand/v2"
 	"testing"
 	"time"
 )
@@ -352,5 +353,44 @@ func TestPMTUProbeErrorRetries(t *testing.T) {
 	}
 	if got := d.PathMTU(); got != 1400 {
 		t.Errorf("PathMTU after retry = %d, want 1400", got)
+	}
+}
+
+// lossyPMTUProbe echoes sizes within the path MTU except for a fraction lost
+// regardless of size, as on a loaded or radio path.
+type lossyPMTUProbe struct {
+	mtu    int
+	loss   float64
+	random *rand.Rand
+}
+
+func (f *lossyPMTUProbe) ProbePMTU(onWire int) (bool, error) {
+	return onWire <= f.mtu && f.random.Float64() >= f.loss, nil
+}
+
+// Loss that does not depend on size says nothing about the path MTU. Rejecting
+// a candidate on its first unanswered probe made a 1500-byte path converge
+// lower in half of the VM runs of 2026-09-29 and every few minutes in
+// production (tunnel MTU 1339 -> 1166 -> 1339 -> 1283 -> 1119).
+func TestPMTUSearchToleratesSizeIndependentLoss(t *testing.T) {
+	const searches = 400
+	for _, mtu := range []int{1500, 1400} {
+		wrong := 0
+		for seed := uint64(1); seed <= searches; seed++ {
+			probe := &lossyPMTUProbe{mtu: mtu, loss: 0.05, random: rand.New(rand.NewPCG(seed, 0))}
+			d := NewPMTUDiscovery("radio", PMTUConfig{DefaultMTU: 1500}, probe, newFakeClock(), discardLogger(t))
+			if err := d.Tick(StateUp); err != nil {
+				t.Fatal(err)
+			}
+			if got := d.PathMTU(); got > mtu {
+				t.Fatalf("seed %d: converged to %d above the path MTU %d", seed, got, mtu)
+			} else if got != mtu {
+				wrong++
+			}
+		}
+		t.Logf("path MTU %d with 5%% probe loss: %d of %d searches converged lower", mtu, wrong, searches)
+		if wrong > searches/20 {
+			t.Errorf("path MTU %d: %d of %d searches converged lower", mtu, wrong, searches)
+		}
 	}
 }

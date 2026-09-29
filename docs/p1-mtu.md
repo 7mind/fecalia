@@ -139,19 +139,31 @@ not change the binary search's unit domain.
 - **Re-probe triggers.** A path `DOWN→UP` transition, an endpoint roam (the
   concentrator learning a new edge endpoint, or an edge hub-failover repoint),
   and a slow periodic refresh each re-run the search.
+- **Loss that does not depend on size.** A candidate is rejected after **three**
+  unanswered probes attributable to its size. An unanswered probe is
+  attributable to size only when a control probe of a size already known to
+  traverse the path is answered straight after it; when the control is lost
+  too, the path dropped both. Rejecting on the first unanswered probe let
+  ordinary loss lower the result: a search sends some 24 probes, so at 5% loss
+  72% of searches on a 1500-byte path converged below 1500
+  (`TestPMTUSearchToleratesSizeIndependentLoss`; after the change under 2%). In
+  the VM lab half of all runs on 2026-09-29 converged below the links' 1500, and
+  in production the tunnel MTU changed every few minutes (1339, 1166, 1283,
+  1119). A candidate is given at most five probes per required confirmation and
+  is rejected without a verdict.
 - **Reliability-aware acceptance (D91).** The search accepts a candidate size
-  only after **N consecutive** echoing probes (`Confirmations`, default **3**),
-  and short-circuits a candidate on its **first** non-echo. Single-echo
+  only after **N consecutive** echoing probes (`Confirmations`, default **3**);
+  an unanswered probe restarts that count. Single-echo
   acceptance was the D91 defect: on a partially-lossy carrier (a 5G path
   dropping ~30 % of packets) a size *above* the reliably-carried MTU still
   echoes on the ~70 % of probes that pass, so a lone echo accepted it and the
   search converged tens of bytes too high (field: inner 1331 vs a reliable
   ~1268–1300) — full-MTU DATA then black-holed (TCP 0 bytes rx). Requiring N
   consecutive successes rejects such an intermittently-echoing size, so the
-  search settles at/below the size that echoes *reliably*. The short-circuit
-  bounds a candidate to N probes and keeps the failing candidates — the only
-  ones that wait a probe deadline — at ≤ log2(window), so worst-case search time
-  still fits the e2e 20 s window. The end-to-end confirmation is
+  search settles at/below the size that echoes *reliably*. A failing candidate
+  now costs three unanswered probes and three control probes instead of one
+  unanswered probe, so a search over a path below the ceiling takes longer; the
+  `-tags e2e` window below has not been re-measured with this change. The end-to-end confirmation is
   `TestE2ELossyPathPMTUConvergence` (`-tags e2e`, hardware-tier): over a real
   socket path that deterministically drops every 3rd *oversize* outer datagram
   (nft `ip length > T` + `numgen inc mod 3`), the N-consecutive search converges
