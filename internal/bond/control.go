@@ -21,6 +21,7 @@ const (
 	maxPulse         = 500 * time.Millisecond
 	verdictExpiry    = time.Second
 	maxFlush         = 500 * time.Millisecond
+	flushQueues      = 2 // flush for this many times the queue delay measured
 )
 
 // control holds a lane's target between discovery runs.
@@ -101,17 +102,21 @@ func (p *lane) cut(lost bool) float64 {
 
 func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	c := &p.control
+	queued := p.queueDelay
 	switch {
 	case p.startup || c.capacity == 0:
 		// Discovery saturated the path, so recent delivery measures capacity,
 		// unless the sender was the limit: then it measures the sender, and
 		// pulses must find the rest.
-		// Discovery leaves a queue of up to a window in the path. Lower
-		// classes wait, for a bounded time, until a clear interval shows it
-		// has gone: real-time traffic alone may use most of a slow lane, and
-		// a reduced target would then drain nothing.
+		// Discovery leaves a queue in the path. Lower classes wait for
+		// about as long as it takes to drain, or until a clear interval
+		// shows it has gone: real-time traffic alone may use most of a slow
+		// lane, and a reduced target would then drain nothing. A longer
+		// pause on a fast lane fills the tunnel queue beyond its bound (VM
+		// trace 20260929-171122-radio-down-k1: 995 datagrams expired at once).
 		p.startup = false
-		c.capacity, c.holdSignal, c.pulseWins, c.draining, c.flushUntil = p.measuredDelivery(), false, 0, true, now.Add(maxFlush)
+		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.measuredDelivery(), false, 0, true
+		c.flushUntil = now.Add(min(maxFlush, flushQueues*queued))
 		p.schedulePulse(now)
 		if !laneLimited {
 			p.rate = math.Max(minimumRate, math.Max(p.cut(lost), c.capacity))

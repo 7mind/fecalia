@@ -408,7 +408,15 @@ func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.le
 func (p *lane) rto() time.Duration {
 	variation := p.rttVariation
 	if p.feedbackRTT == 0 {
-		variation = max(variation, p.rtt/2)
+		// Before the first confirmation the variation is unknown, unless the
+		// lane measured it while idle. Half the round trip puts the first
+		// repair of a radio lane beyond the repair lifetime, and a datagram
+		// lost as a transfer starts then reaches the sender's TCP as loss.
+		unknown := p.rtt / 2
+		if p.idleRTTVariation > 0 {
+			unknown = p.idleRTTVariation
+		}
+		variation = max(variation, unknown)
 	}
 	return max(minimumRTO, p.rtt+4*variation+p.peerACKInterval(), p.feedbackRTT+4*p.feedbackRTTVariation)
 }
