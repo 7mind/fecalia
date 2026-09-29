@@ -30,6 +30,22 @@ const PMTUFloor = 1280
 // overrides it; a zero value maps to this default so existing callers are unchanged.
 const defaultPMTUConfirmations = 3
 
+// pmtuRejections is the number of unanswered probes attributable to the
+// candidate's size that reject it. An unanswered probe is attributable to size
+// only when a control probe of a size already known to traverse the path is
+// answered straight after it; when the control is lost too, the path dropped
+// both and the probe says nothing about size. Rejecting on the first
+// unanswered probe made loss that does not depend on size lower the result: a
+// search sends some 24 probes, so at 5% loss most searches on a 1500-byte path
+// converged below 1500. A size that passes only intermittently still cannot
+// collect the consecutive answers acceptance needs before it is rejected.
+const pmtuRejections = 3
+
+// pmtuAttemptsPerConfirmation bounds the probes of one candidate, so a path
+// that answers erratically cannot hold the search on it. A candidate without
+// a verdict within the bound is rejected.
+const pmtuAttemptsPerConfirmation = 5
+
 // PMTUProbe is the seam the PMTU discovery machine drives to test one candidate outer
 // path-MTU: it sends a padded MTU probe sized to onWire outer bytes (DF set, T201; the
 // echo carries the same on-wire size, T202) and reports whether a matching echo
@@ -339,9 +355,8 @@ func (d *PMTUDiscovery) decideLocked(state PathState) bool {
 func (d *PMTUDiscovery) search() (int, error) {
 	lo, hi := d.floor, d.ceiling
 	for lo < hi {
-		// Round the midpoint up so a two-wide window probes hi, letting lo advance to it.
 		mid := (lo + hi + 1) / 2
-		echoed, err := d.confirmCandidate(mid)
+		echoed, err := d.confirmCandidate(mid, lo)
 		if err != nil {
 			return 0, err
 		}
@@ -354,23 +369,33 @@ func (d *PMTUDiscovery) search() (int, error) {
 	return lo, nil
 }
 
-// confirmCandidate reports whether the on-wire size `mid` echoes RELIABLY: it counts as
-// passing (echoed=true) only after d.confirmations CONSECUTIVE ProbePMTU(mid) successes
-// (defect D91). It SHORT-CIRCUITS on the FIRST non-echo — treating the candidate as
-// failed (echoed=false) so the binary search narrows downward (hi = mid-1) — which bounds
-// the probes spent on a candidate to d.confirmations worst-case and rejects a marginal,
-// intermittently-echoing size fast (the deadline-waiting drop is spent at most once per
-// candidate). A genuine transport error (err != nil) aborts the whole search unconverged,
-// exactly as a single-probe error did, so a later tick retries.
-func (d *PMTUDiscovery) confirmCandidate(mid int) (bool, error) {
-	for i := 0; i < d.confirmations; i++ {
+// confirmCandidate probes one candidate size until it collects the consecutive
+// answers that accept it or the size-attributable misses that reject it.
+// control is a size already known to traverse the path.
+func (d *PMTUDiscovery) confirmCandidate(mid, control int) (bool, error) {
+	consecutive, rejections := 0, 0
+	for attempt := 0; attempt < pmtuAttemptsPerConfirmation*d.confirmations; attempt++ {
 		echoed, err := d.probe.ProbePMTU(mid)
 		if err != nil {
 			return false, err
 		}
-		if !echoed {
+		if echoed {
+			if consecutive++; consecutive >= d.confirmations {
+				return true, nil
+			}
+			continue
+		}
+		consecutive = 0
+		controlEchoed, err := d.probe.ProbePMTU(control)
+		if err != nil {
+			return false, err
+		}
+		if !controlEchoed {
+			continue
+		}
+		if rejections++; rejections >= pmtuRejections {
 			return false, nil
 		}
 	}
-	return true, nil
+	return false, nil
 }
