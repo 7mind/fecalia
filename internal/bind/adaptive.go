@@ -31,6 +31,7 @@ type adaptivePeer struct {
 	closed      bool
 	interactive chan reseq.Item
 	notify      func()
+	restarted   func()
 }
 
 // EnableAdaptive must be called before Open. The transport owns its pacing and
@@ -58,6 +59,11 @@ func (m *Multipath) openAdaptivePeer(peer *peerState) error {
 		wake:        make(chan struct{}, 1),
 		interactive: make(chan reseq.Item, 256),
 		notify:      resequencerNotifier(m.deliverSignal),
+		restarted: func() {
+			if fn := m.onPeerRestart.Load(); fn != nil && *fn != nil {
+				(*fn)(peer.name)
+			}
+		},
 	}
 	peer.adaptive.Store(a)
 	if rq := peer.resequencer.Load(); rq != nil {
@@ -116,11 +122,15 @@ func (a *adaptivePeer) learn(ps *peerPathState, remote netip.AddrPort, payload [
 	if retired {
 		return
 	}
+	previous := a.transport.Remote()
 	changed := a.transport.SetRemote(epoch, adopted)
 	if a.transport.Remote() != epoch {
 		return
 	}
 	if changed {
+		if previous.Boot != 0 && previous.Boot != epoch.Boot {
+			go a.restarted()
+		}
 		a.routes = make(map[bond.PathID]adaptiveRoute)
 		for len(a.interactive) > 0 {
 			select {

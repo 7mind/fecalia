@@ -640,6 +640,37 @@ func startFirstPathUpHandshake(cfg *config.Config, mp *bind.Multipath, rh rehand
 	mp.SetOnFirstPathUp(rh)
 }
 
+// startPeerRestartHandshake makes the edge initiate a fresh handshake with a concentrator
+// as soon as the bind sees that the concentrator restarted. Without it the edge keeps
+// sending under the session the concentrator lost until the engine's new-handshake timer
+// fires (KeepaliveTimeout + RekeyTimeout). byPeer maps the bind's peer name to that peer's
+// rehandshake; a single-peer bind names its peer "". The concentrator initiates nothing.
+func startPeerRestartHandshake(cfg *config.Config, mp *bind.Multipath, byPeer map[string]rehandshake) {
+	if cfg.Role != config.RoleEdge {
+		return
+	}
+	mp.SetOnPeerRestart(func(peer string) {
+		if rh, ok := byPeer[peer]; ok {
+			rh()
+		}
+	})
+}
+
+// deviceRehandshakeByPeer keys each configured peer's rehandshake by the name the bind
+// reports for it.
+func deviceRehandshakeByPeer(dev *awgdevice.Device, cfg *config.Config) map[string]rehandshake {
+	ids := cfg.PeerIdentities()
+	byPeer := make(map[string]rehandshake, len(ids))
+	for i, p := range cfg.WireGuard.Peers {
+		name := ""
+		if len(ids) > 1 {
+			name = ids[i].Name
+		}
+		byPeer[name] = deviceRehandshake(dev, p.PublicKey)
+	}
+	return byPeer
+}
+
 // deviceInstallEndpoint returns an install function that populates the ENGINE peer's endpoint via
 // the UAPI/IpcSet path — an `endpoint=` line for pk routed through the engine to
 // Multipath.ParseEndpoint (R70). This is the ONLY way to give the engine peer an addressable

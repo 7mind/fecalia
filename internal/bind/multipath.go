@@ -1464,6 +1464,12 @@ type Multipath struct {
 	// SetOnFirstPathUp; read lock-free (atomic.Pointer) so the receive hot path never
 	// blocks on m.mu to check it.
 	onFirstPathUp atomic.Pointer[func()]
+
+	// onPeerRestart is invoked, off the receive path, with the peer's name when an
+	// authenticated hello shows that an already known peer runs as a new process. The
+	// peer has lost its engine sessions, which the engine itself notices only when
+	// its new-handshake timer fires.
+	onPeerRestart atomic.Pointer[func(string)]
 }
 
 // compile-time proof that Multipath satisfies the engine's Bind contract.
@@ -3088,6 +3094,12 @@ func (m *Multipath) EverHadLivePath() bool {
 // not a level-triggered "call me if already up" registration).
 func (m *Multipath) SetOnFirstPathUp(fn func()) {
 	m.onFirstPathUp.Store(&fn)
+}
+
+// SetOnPeerRestart registers fn to be called with the peer's name each time a known
+// peer is seen to have restarted. Pass nil to clear it.
+func (m *Multipath) SetOnPeerRestart(fn func(peer string)) {
+	m.onPeerRestart.Store(&fn)
 }
 
 // dispatchInbound handles one already-decoded inbound frame on the resolved peer's view (ps):

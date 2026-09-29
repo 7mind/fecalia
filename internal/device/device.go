@@ -594,6 +594,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// first-path-up edge fires an initiation against each peer's static key. A single-peer edge
 	// composes exactly one, byte-identical to the pre-T251 primary-only call.
 	startFirstPathUpHandshake(cfg, mpBind, deviceRehandshakeAllPeers(dev, cfg.WireGuard.Peers))
+	startPeerRestartHandshake(cfg, mpBind, deviceRehandshakeByPeer(dev, cfg))
 
 	// Bounded initial hostname resolution (Q30): construct the resolver ONCE (only when some peer
 	// carries a hostname spec — Q29 inertness), resolve each hostname spec under a short timeout,
