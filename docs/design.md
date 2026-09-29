@@ -14,13 +14,28 @@ see [install.md](install.md); for the front-door overview see the
 We embed [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) as a library
 for TUN management, the Noise handshake, AEAD encryption, key rotation (rekey),
 endpoint roaming, and keepalives. The local `third_party/amneziawg-go` source is
-v1.0.4 plus runtime correctness patches. Upstream #155 moves Amnezia
-message headers and packet-shape maps into per-`Device` state, not package globals,
-so two concurrent devices cannot race or overwrite one another. A local
-follow-up serializes each `Device`'s stateful ChaCha8 junk generator across
-simultaneous peer handshakes; the device's read lock permits those calls and
-does not itself serialize PRNG mutation. The source also carries the one-line
-upstream #157 test fix so `go vet ./device/...` remains a valid gate. Everything wanbond-
+the AmneziaWG Go engine `v3.1.20260828` (module `github.com/amnezia-vpn/amneziawg-go/v3`,
+commit `b5928ef`) plus engine-generic local patches:
+
+- `conn.BindBatchCompleter` / `conn.BindPacketBatchCompleter`: terminal send
+  completion, and local per-datagram flow/pure-TCP-ACK metadata classified
+  before encryption. Metadata never enters the wire format.
+- Per-peer outbound byte admission and outbound pipeline statistics
+  (`OutboundStats`, `SetOutboundAdmissionLimit`). v3 chooses transport padding
+  (S4 prefix, content padding, random trailers, 16-byte rounding); the patch
+  fixes that choice at staging, before admission, so each reservation equals
+  the encrypted datagram size.
+- The unmerged upstream PR #169 correction for issue #168: a packet read while
+  a UAPI update changed S4 is re-based to the current transport padding.
+- The one-line upstream #157 test fix so `go vet ./device/...` remains a valid gate.
+
+v3 keeps message headers, paddings and junk parameters in per-`Device` atomics,
+so the former v1.0.4 per-device protocol-state and junk-PRNG patches are no
+longer needed; their isolation and concurrent-junk regressions remain in
+`device/protocol_state_test.go`. wanbond renders only the v1-compatible
+Amnezia keys (`jc`, `jmin`, `jmax`, `s1`, `s2`, `h1`–`h4`); v3-only settings
+(S3/S4, header ranges, header protection, content padding, timings, random
+trailers, disabled cookies) stay at their engine defaults. Everything wanbond-
 specific — multipath scheduling, outer-frame obfuscation, forward error
 correction, receive resequencing, and per-path telemetry — remains in the
 engine's `conn.Bind` transport implementation.
@@ -46,11 +61,9 @@ security/perf fixes. We contain that risk: the entire dependency on the engine's
 aliases (`Bind = conn.Bind`, `Endpoint = conn.Endpoint`,
 `ReceiveFunc = conn.ReceiveFunc`). The local source patch is engine-generic and
 covered by the root multi-device race regression, the nested concurrent-junk
-race regression, and the nested module's `device/...` tests; the unrelated
-`tun/netstack` package is excluded because v1.0.4 pins a gVisor module that
-cannot be built by the Go module toolchain (upstream #156), and wanbond does not
-import it. Remove the `replace` once a stable upstream release contains both
-per-device protocol state and concurrency-safe junk generation. The
+race regression, and the nested module's `device/...` tests. The `replace`
+remains until upstream provides the completion, admission/statistics and
+metadata contracts, or wanbond stops requiring them. The
 `conn.Bind`/`conn.Endpoint` contracts are
 byte-identical between the two forks, so swapping back to upstream wireguard-go
 (dropping obfuscation) touches only that file.
@@ -2762,9 +2775,9 @@ misbehaves subtly. Agents and contributors must preserve them.
    coupling goes through the type aliases there; the engine-generic source patch
    under `third_party/` contains no wanbond logic.
 6. **Amnezia is all-or-nothing per device.** Config validation enforces the
-   complete parameter set. The local #155 patch keeps magic headers and packet-
-   shape maps per `Device`, so concurrent engines do not share mutable protocol
-   state.
+   complete parameter set. The v3 engine keeps magic headers, paddings and
+   junk parameters per `Device`, so concurrent engines do not share mutable
+   protocol state.
 7. **Re-verify the reedsolomon prefix invariant** on any FEC-dependency bump.
 
 ## Security model

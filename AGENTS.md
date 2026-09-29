@@ -85,10 +85,11 @@ short:
    DATA/PARITY.
 5. All engine (`conn`) coupling stays isolated to **`internal/bind/bind.go`** —
    preserve the fork-swap hedge.
-6. Amnezia config is **all-or-nothing per device**. The local v1.0.4 source patch
-   keeps message headers and packet-shape maps per `Device` (upstream #155), so
-   concurrent engines must remain race-free and configuration-isolated. Keep the
-   all-or-nothing config validation and the multi-device race regression.
+6. Amnezia config is **all-or-nothing per device**. The v3 engine keeps message
+   headers, paddings and junk parameters per `Device` (the v1.0.4 globals were
+   upstream #155), so concurrent engines must remain race-free and
+   configuration-isolated. Keep the all-or-nothing config validation, the
+   multi-device race regression and `device/protocol_state_test.go`.
 7. On **any `klauspost/reedsolomon` (or amneziawg-go) version bump**, re-verify
    `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing —
    a flipped default matrix silently corrupts every reconstructed payload.

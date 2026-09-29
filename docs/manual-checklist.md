@@ -22,8 +22,9 @@ Prerequisites (all phases):
       peer name. Use the keyboard to select an exit and expand Path details;
       verify the exit selector's focus and expanded details survive live updates.
 - [ ] With Amnezia obfuscation enabled, run
-      `(cd third_party/amneziawg-go && go test -race ./device/awg -run '^TestJunkCreatorConcurrentUse$' -count=5)`;
-      simultaneous peer handshakes report no shared ChaCha8 access.
+      `(cd third_party/amneziawg-go && go test -race ./device -run '^(TestJunkPacketsConcurrentUse|TestProtocolStateIsPerDevice)$' -count=5)`;
+      concurrent junk generation reports no race and devices keep independent
+      Amnezia settings.
 
 ## Adaptive transport and autonomous VM verification
 
