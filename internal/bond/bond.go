@@ -98,11 +98,14 @@ type PathStats struct {
 	ACKed                uint64
 	Retransmits          uint64
 	Up                   bool
+	Discovering          bool
 }
 
 type Snapshot struct {
 	Paths                 []PathStats
 	QueueDrops            uint64
+	AdmissionDrops        uint64
+	AQMDrops              uint64
 	InteractiveQueueDrops uint64
 	InteractiveQueued     int
 	CoalescedACKs         uint64
@@ -230,6 +233,8 @@ type Transport struct {
 	redundancyTokens float64
 	lastPoll         time.Time
 	drops            uint64
+	admissionDrops   uint64
+	aqmDrops         uint64
 	interactiveDrops uint64
 	coalescedACKs    uint64
 	expired          uint64
@@ -337,6 +342,7 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 	}
 	if len(t.queue)+t.priority.count+len(t.pending) >= maxPackets {
 		t.drops++
+		t.admissionDrops++
 		if len(payload) <= smallPacket {
 			t.interactiveDrops++
 		}
@@ -585,6 +591,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 				t.queue.pop()
 				if !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue)) {
 					t.drops++
+					t.aqmDrops++
 					continue
 				}
 				t.priorityBytes = 0
@@ -613,6 +620,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			queue.pop()
 			if !p.interactive && !t.discovering(now) && t.bulkAQM.drop(now, now.Sub(p.created), len(t.queue)) {
 				t.drops++
+				t.aqmDrops++
 				continue
 			}
 			if p.interactive {
@@ -1023,7 +1031,7 @@ func maxTime(a, b time.Time) time.Time {
 }
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
-	s := Snapshot{QueueDrops: t.drops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.priority.count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
+	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.priority.count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
 	for _, p := range t.paths {
 		s.Paths = append(s.Paths, PathStats{
 			Path: p.id, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
@@ -1032,7 +1040,8 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 			FeedbackRTT:          p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
 			BaseRTT: p.baseRTT, QueueDelay: p.queueDelay,
 			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries,
-			Up: p.up(now) && !p.stalled,
+			Up:          p.up(now) && !p.stalled,
+			Discovering: p.startup,
 		})
 	}
 	return s
