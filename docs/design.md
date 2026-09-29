@@ -218,6 +218,13 @@ during discovery holds the target instead of ending discovery. The target leads
 what the lane carries by the discovery gain only: a target inflated while the
 sender was the limit leaves the path unprotected when the sender catches up
 (VM trace `20260929-140805-radio-down-e2`: 259 datagrams expired in one second).
+While datagrams wait for the lane, measured delivery also replaces the initial
+125 kB/s assumption: on a slower lane the window sized from it admits a queue
+of hundreds of milliseconds (VM trace `20260929-155641-continuity`: 117 ms of
+queue on a 0.4 Mbit/s lane in the first second). When discovery ends, lower
+classes wait on that lane until a clear interval shows its queue has gone, at
+most 500 ms; real-time traffic alone may use most of a slow lane, and a
+reduced target would then drain nothing.
 A cold burst of TCP initial
 windows otherwise loses most of its datagrams before feedback arrives, and the
 resulting loss run sets every flow's slow-start threshold to a few segments
@@ -373,7 +380,16 @@ preferring it. Each lower class keeps 5% of one lane, the lane with the most
 capacity left for it, so a flood in a higher class cannot take every
 transmission slot; the guarantee does not sit on the lane voice prefers while
 another lane has room, because one bulk datagram occupies a 0.4 Mbit/s lane for
-28 ms. Small datagrams may borrow 5 ms of pacing, and bulk competing with
+28 ms. Small TCP datagrams are mostly the ACK stream of a transfer in the other
+direction, which can be coalesced; bulk cannot. While bulk waits, that class is
+held to half of what real-time traffic leaves and bulk gets the rest: given
+everything, the ACK stream of a fast download left an upload nothing for ten
+seconds at a time (VM run `20260929-152215-continuity`). A lane on which
+real-time traffic has reserved more than half the capacity is the exception:
+bulk keeps only its guaranteed minimum there. Each class is held to its share
+of the window by its own bytes in flight, and real-time datagrams within their
+reserved share are not blocked by the bytes of lower classes: on a slow lane
+one bulk datagram in flight is a third of the window. Small datagrams may borrow 5 ms of pacing, and bulk competing with
 queued small datagrams gets the same lead. Real-time datagrams may exceed a
 full congestion window by one datagram and go to the lane on which they would
 arrive first. Only real-time datagrams are copied onto a second lane.
