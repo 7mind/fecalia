@@ -24,6 +24,7 @@ func testLateReceipts(t *testing.T, missing int) {
 	b.Path(0, 0, 80*time.Millisecond, start)
 	// Start at a converged 100 Mbit/s rate to isolate ACK coverage from discovery.
 	a.paths[0].rate = 12500000
+	a.paths[0].confirmedWireBytes = maxPackets * maxDatagram
 	var delayed []Transmission
 	delivered := 0
 	for i := 0; i < 400; i++ {
@@ -125,6 +126,9 @@ func TestCrossLaneReceiptReleasesOriginalCongestionWindow(t *testing.T) {
 	if got := a.Snapshot(now).Paths[0].ACKed; got != 1200+wireOverhead {
 		t.Fatalf("later physical receipt was not accounted: %d bytes", got)
 	}
+	if got := a.paths[0].confirmedWireBytes; got != 1200+wireOverhead {
+		t.Fatalf("global confirmation hid later physical delivery from startup discovery: %d bytes", got)
+	}
 }
 
 func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
@@ -134,6 +138,7 @@ func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
 	a.SetRemote(remote, true)
 	a.Path(0, 0, 80*time.Millisecond, now)
 	a.paths[0].rate = 12500000
+	a.paths[0].confirmedWireBytes = maxPackets * maxDatagram
 	for i := 0; i < 400; i++ {
 		at := now.Add(time.Duration(i) * 120 * time.Microsecond)
 		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, at); err != nil {

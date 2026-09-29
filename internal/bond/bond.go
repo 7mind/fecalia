@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	initialWindowBytes    = 3000
 	initialRate           = 125000.0
 	minimumRate           = 16000.0
 	maximumRate           = 1250000000.0
@@ -20,6 +21,7 @@ const (
 	jitterAllowanceFactor = 2
 	lossPacingHeadroom    = 1.05
 	lossRateReduction     = 0.9
+	queueSendExcessRatio  = 1.2
 	maxQueueAge           = 100 * time.Millisecond
 	maxPacketAge          = 250 * time.Millisecond
 	ackInterval           = 25 * time.Millisecond
@@ -34,6 +36,7 @@ const (
 	baselineStagger       = 500 * time.Millisecond
 	maxPackets            = 8192
 	smallPacket           = 384
+	priorityBurstBytes    = 8 * 1024
 	redundancyRate        = 64000.0
 	redundancyShare       = 0.1
 	maxDatagram           = 9000
@@ -76,11 +79,13 @@ type PathStats struct {
 	RTT                  time.Duration
 	RTTVariation         time.Duration
 	IdleRTTVariation     time.Duration
+	IdleForwardVariation time.Duration
 	FeedbackRTT          time.Duration
 	FeedbackRTTVariation time.Duration
 	BaseRTT              time.Duration
 	QueueDelay           time.Duration
 	InFlight             int
+	Window               int
 	Sent                 uint64
 	ACKed                uint64
 	Retransmits          uint64
@@ -136,6 +141,9 @@ type lane struct {
 	rttVariation         time.Duration
 	idleRTTVariation     time.Duration
 	idleRTT              time.Duration
+	idleForwardMean      time.Duration
+	idleForwardVariation time.Duration
+	idleForwardKnown     bool
 	feedbackRTT          time.Duration
 	feedbackRTTVariation time.Duration
 	baseRTT              time.Duration
@@ -145,6 +153,7 @@ type lane struct {
 	lastAdjust           time.Time
 	lostSinceAdjust      bool
 	inflight             int
+	confirmedWireBytes   int
 	seq                  uint64
 	ackRevision          uint64
 	ackReceipts          receiptWindow
@@ -192,6 +201,7 @@ type Transport struct {
 	receivers        map[PathID]*receiver
 	queue            packetFIFO
 	priority         fairPacketQueue
+	priorityBytes    int
 	pending          map[uint64]*packet
 	pendingOrder     []*packet
 	seq              uint64
@@ -263,6 +273,8 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		clear(p.transitBases[:])
 		p.haveInterval = false
 		p.firstSent = time.Time{}
+		p.idleForwardMean, p.idleForwardVariation = 0, 0
+		p.idleForwardKnown = false
 		p.feedbackAt = time.Time{}
 	}
 	return true
@@ -276,7 +288,7 @@ func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) 
 		if rtt <= 0 {
 			rtt = 50 * time.Millisecond
 		}
-		p = &lane{id: id, remoteID: remoteID, rate: initialRate, rtt: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt)}
+		p = &lane{id: id, remoteID: remoteID, rate: initialRate, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt)}
 		p.lastTransmit = now
 		p.nextBaseline = now.Add(baselineInterval + time.Duration((uint16(id)^uint16(id)>>8)&255)*baselineStagger)
 		t.paths = append(t.paths, p)
@@ -325,7 +337,11 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.lease) < pathLease }
 
 func (p *lane) rto() time.Duration {
-	return max(minimumRTO, p.rtt+4*p.rttVariation+ackInterval, p.feedbackRTT+4*p.feedbackRTTVariation)
+	variation := p.rttVariation
+	if p.feedbackRTT == 0 {
+		variation = max(variation, p.rtt/2)
+	}
+	return max(minimumRTO, p.rtt+4*variation+ackInterval, p.feedbackRTT+4*p.feedbackRTTVariation)
 }
 
 func (p *lane) observeFeedbackRTT(sample time.Duration) {
@@ -336,6 +352,7 @@ func (p *lane) observeFeedbackRTT(sample time.Duration) {
 	}
 	if p.feedbackRTT == 0 {
 		p.feedbackRTT = sample
+		p.feedbackRTTVariation = sample / 2
 		return
 	}
 	difference := sample - p.feedbackRTT
@@ -347,7 +364,7 @@ func (p *lane) observeFeedbackRTT(sample time.Duration) {
 }
 
 func (p *lane) window() int {
-	return max(4*1500, int(p.rate*(p.baseRTT+jitterAllowanceFactor*p.rttVariation+2*targetQueue+ackInterval).Seconds()))
+	return min(initialWindowBytes+p.confirmedWireBytes, max(initialWindowBytes, int(p.rate*(p.idleRTT+jitterAllowanceFactor*p.idleRTTVariation+2*targetQueue+ackInterval).Seconds())))
 }
 
 func (t *Transport) PacingRate(now time.Time) float64 {
@@ -363,7 +380,7 @@ func (t *Transport) PacingRate(now time.Time) float64 {
 func (t *Transport) choose(now time.Time, size int, exclude PathID, retry bool) *lane {
 	var best *lane
 	for _, p := range t.paths {
-		if !p.up(now) || p.stalled || p.nextSend.After(now) || now.Before(p.drainUntil) || p.inflight+size > p.window() {
+		if !p.up(now) || p.stalled || p.nextSend.After(now) || now.Before(p.drainUntil) || p.inflight+size > max(size, p.window()) {
 			continue
 		}
 		if retry && p.id == exclude {
@@ -497,6 +514,19 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 		if previous != nil {
 			rto = previous.rto()
 		}
+		// A long feedback tail must not consume the entire lifetime of a small
+		// datagram. One earlier cross-path copy shares the replication budget.
+		size := len(p.payload) + wireOverhead
+		if p.interactive && p.attempts == 1 && previous != nil &&
+			!previous.lastACK.After(p.lastSent) &&
+			now.Sub(p.lastSent) >= max(minimumRTO, previous.baseRTT+ackInterval) &&
+			t.redundancyTokens >= float64(size) {
+			if path := t.choosePriority(now, p.lastPath, true); path != nil {
+				t.redundancyTokens -= float64(size)
+				out = append(out, t.transmit(p, path, now))
+				continue
+			}
+		}
 		if now.Sub(p.lastSent) < rto || p.attempts >= 4 {
 			continue
 		}
@@ -510,6 +540,23 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	}
 	clear(t.pendingOrder[len(retained):])
 	t.pendingOrder = retained
+	if t.priorityBytes >= priorityBurstBytes {
+		for p := t.queue.peek(); p != nil; p = t.queue.peek() {
+			if now.Sub(p.created) > maxQueueAge {
+				t.queue.pop()
+				t.drops++
+				continue
+			}
+			// A continuous ACK stream can keep every pacing deadline in the
+			// future. Reserve one bulk turn with the same bounded pacing lead.
+			if path := t.choosePriority(now, 0, false); path != nil {
+				t.queue.pop()
+				t.priorityBytes = 0
+				out = append(out, t.transmit(p, path, now))
+			}
+			break
+		}
+	}
 	for _, queue := range []packetQueue{&t.priority, &t.queue} {
 		for p := queue.peek(); p != nil; p = queue.peek() {
 			if now.Sub(p.created) > maxQueueAge {
@@ -522,15 +569,20 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			}
 			path := t.choose(now, len(p.payload)+wireOverhead, 0, false)
 			if p.interactive {
-				path = t.choosePriority(now, len(p.payload)+wireOverhead, 0, false)
+				path = t.choosePriority(now, 0, false)
 			}
 			if path == nil {
 				break
 			}
 			queue.pop()
+			if p.interactive {
+				t.priorityBytes = min(priorityBurstBytes, t.priorityBytes+len(p.payload)+wireOverhead)
+			} else {
+				t.priorityBytes = 0
+			}
 			out = append(out, t.transmit(p, path, now))
 			if len(p.payload) <= smallPacket && t.redundancyTokens >= float64(len(p.payload)+wireOverhead) {
-				second := t.choosePriority(now, len(p.payload)+wireOverhead, path.id, true)
+				second := t.choosePriority(now, path.id, true)
 				if second != nil {
 					t.redundancyTokens -= float64(len(p.payload) + wireOverhead)
 					out = append(out, t.transmit(p, second, now))
@@ -541,10 +593,10 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	return out
 }
 
-func (t *Transport) choosePriority(now time.Time, size int, exclude PathID, duplicate bool) *lane {
+func (t *Transport) choosePriority(now time.Time, exclude PathID, duplicate bool) *lane {
 	var best *lane
 	for _, p := range t.paths {
-		if !p.up(now) || p.stalled || (duplicate && p.id == exclude) || p.inflight+size > p.window()+4096 || p.nextSend.After(now.Add(priorityLead)) {
+		if !p.up(now) || p.stalled || (duplicate && p.id == exclude) || p.inflight > p.window() || p.nextSend.After(now.Add(priorityLead)) {
 			continue
 		}
 		if best == nil || p.rtt < best.rtt {
@@ -657,6 +709,9 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			if !sent.confirmed {
 				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
 			}
+			if sent.packet != nil {
+				p.confirmedWireBytes = min(maxPackets*maxDatagram, p.confirmedWireBytes+sent.bytes)
+			}
 			if !sent.released {
 				p.inflight -= sent.bytes
 			}
@@ -670,6 +725,18 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 				p.stalled = false
 				sample = now.Sub(sent.sent) - time.Duration(a.delay)
 				transit := time.Duration(a.elapsed) - sent.sent.Sub(p.firstSent)
+				if sent.packet == nil && now.Sub(p.lastPayload) >= feedbackHorizon {
+					if !p.idleForwardKnown {
+						p.idleForwardMean, p.idleForwardKnown = transit, true
+					} else {
+						difference := transit - p.idleForwardMean
+						p.idleForwardMean += difference / 8
+						if difference < 0 {
+							difference = -difference
+						}
+						p.idleForwardVariation = (3*p.idleForwardVariation + difference) / 4
+					}
+				}
 				if p.baselinePending && !sent.sent.Before(p.drainUntil) {
 					clear(p.transitBases[:])
 					p.haveInterval = false
@@ -780,8 +847,11 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	}
 	if lost && p.deliveryRate > 0 {
 		p.rate = math.Max(minimumRate, math.Min(lossRateReduction*p.rate, lossPacingHeadroom*p.deliveryRate))
-	} else if sample > 0 && queueDelay > max(targetQueue, jitterAllowanceFactor*p.idleRTTVariation) {
+	} else if sample > 0 && queueDelay > max(targetQueue, jitterAllowanceFactor*p.idleForwardVariation) {
 		p.rate = math.Max(minimumRate, p.rate*0.9)
+		if p.deliveryRate > 0 && p.sendRate > queueSendExcessRatio*p.deliveryRate {
+			p.rate = math.Max(minimumRate, math.Min(p.rate, lossPacingHeadroom*p.deliveryRate))
+		}
 	} else if sample > 0 {
 		p.rate = math.Min(maximumRate, p.rate*1.06+1500)
 	}
@@ -864,9 +934,10 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 		s.Paths = append(s.Paths, PathStats{
 			Path: p.id, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
 			RTT: p.rtt, RTTVariation: p.rttVariation, IdleRTTVariation: p.idleRTTVariation,
-			FeedbackRTT: p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
+			IdleForwardVariation: p.idleForwardVariation,
+			FeedbackRTT:          p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
 			BaseRTT: p.baseRTT, QueueDelay: p.queueDelay,
-			InFlight: p.inflight, Sent: p.sent, ACKed: p.acked, Retransmits: p.retries,
+			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries,
 			Up: p.up(now) && !p.stalled,
 		})
 	}

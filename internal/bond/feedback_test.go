@@ -117,8 +117,8 @@ func TestIdleKeepaliveTimeoutPreservesPacingTarget(t *testing.T) {
 	a.Path(0, 0, 80*time.Millisecond, start)
 	initial := a.Snapshot(start).Paths[0].Rate
 	a.Poll(start.Add(200 * time.Millisecond)) // Drop the idle keepalive.
-	a.Poll(start.Add(400 * time.Millisecond))
-	state := a.Snapshot(start.Add(400 * time.Millisecond)).Paths[0]
+	a.Poll(start.Add(500 * time.Millisecond))
+	state := a.Snapshot(start.Add(500 * time.Millisecond)).Paths[0]
 	if state.Up {
 		t.Fatal("missing keepalive ACK must still stall the path")
 	}

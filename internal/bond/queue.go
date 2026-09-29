@@ -54,7 +54,8 @@ func (q *fairPacketQueue) push(p *packet) (coalesced bool) {
 	if n := len(flow.packets); n >= 2 && p.flow != (FlowID{}) {
 		previous, last := flow.packets[n-2].ack, flow.packets[n-1].ack
 		// Keep an ACK clock and all duplicate/control ACKs. Only replace the
-		// middle of three strictly advancing, equivalent cumulative ACKs.
+		// middle of three strictly advancing cumulative ACKs. The newest ACK
+		// also supersedes the advertised window; window-only updates stay.
 		if last.supersedes(previous) && p.ack.supersedes(last) {
 			flow.packets[n-1] = p
 			return true
@@ -67,7 +68,7 @@ func (q *fairPacketQueue) push(p *packet) (coalesced bool) {
 
 func (ack TCPACK) supersedes(old TCPACK) bool {
 	return ack.Eligible && old.Eligible && ack.Sequence == old.Sequence &&
-		ack.Window == old.Window && ack.TrafficClass == old.TrafficClass &&
+		ack.Window != 0 && old.Window != 0 && ack.TrafficClass == old.TrafficClass &&
 		int32(ack.Acknowledgement-old.Acknowledgement) > 0 &&
 		ack.Timestamp == old.Timestamp && (!ack.Timestamp ||
 		(int32(ack.TSVal-old.TSVal) >= 0 && int32(ack.TSEcr-old.TSEcr) >= 0))

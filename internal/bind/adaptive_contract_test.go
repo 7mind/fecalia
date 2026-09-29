@@ -2,6 +2,7 @@ package bind
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -99,27 +100,64 @@ func TestAdaptiveSmallFlowIsolation(t *testing.T) {
 }
 
 func TestAdaptiveCumulativeACKCoalescing(t *testing.T) {
+	for _, windowStep := range []int{0, 1, -1} {
+		t.Run(fmt.Sprintf("window-step-%d", windowStep), func(t *testing.T) {
+			for name, factory := range map[string]func(*testing.T) adaptiveHarness{
+				"memory": memoryAdaptiveHarness, "udp": udpAdaptiveHarness,
+			} {
+				t.Run(name, func(t *testing.T) {
+					h := factory(t)
+					const last = 200
+					for seq := 1; seq <= last; seq++ {
+						meta := PacketMetadata{Flow: FlowID{1}, ACK: TCPACK{Eligible: true, Sequence: 7, Acknowledgement: uint32(seq), Window: uint16(4096 + seq*windowStep)}}
+						if err := h.send(0, bytes.Repeat([]byte{byte(seq)}, 80), meta); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for range 50 {
+						h.step()
+						for _, p := range h.read(1) {
+							if bytes.Equal(p, bytes.Repeat([]byte{last}, 80)) {
+								return
+							}
+						}
+					}
+					t.Fatal("superseded TCP acknowledgements delayed the latest cumulative acknowledgement")
+				})
+			}
+		})
+	}
+}
+
+func TestAdaptiveSmallBacklogCannotStarveBulk(t *testing.T) {
 	for name, factory := range map[string]func(*testing.T) adaptiveHarness{
 		"memory": memoryAdaptiveHarness, "udp": udpAdaptiveHarness,
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := factory(t)
-			const last = 200
-			for seq := 1; seq <= last; seq++ {
-				meta := PacketMetadata{Flow: FlowID{1}, ACK: TCPACK{Eligible: true, Sequence: 7, Acknowledgement: uint32(seq), Window: 4096}}
-				if err := h.send(0, bytes.Repeat([]byte{byte(seq)}, 80), meta); err != nil {
+			for range 128 {
+				if err := h.send(0, make([]byte, 80), PacketMetadata{Flow: FlowID{1}}); err != nil {
 					t.Fatal(err)
 				}
 			}
+			bulk := bytes.Repeat([]byte{0x7f}, 1200)
+			if err := h.send(0, bulk, PacketMetadata{Flow: FlowID{2}}); err != nil {
+				t.Fatal(err)
+			}
 			for range 50 {
+				for range 20 {
+					if err := h.send(0, make([]byte, 80), PacketMetadata{Flow: FlowID{1}}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				h.step()
 				for _, p := range h.read(1) {
-					if bytes.Equal(p, bytes.Repeat([]byte{last}, 80)) {
+					if bytes.Equal(p, bulk) {
 						return
 					}
 				}
 			}
-			t.Fatal("superseded TCP acknowledgements delayed the latest cumulative acknowledgement")
+			t.Fatal("continuous small datagrams prevented a bulk flow from receiving any service")
 		})
 	}
 }
