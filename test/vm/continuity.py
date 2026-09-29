@@ -10,6 +10,7 @@ import time
 
 from lab import GUESTS, Lab
 from benchmark import apply_profile, profile_from, provision
+from continuity_gates import evaluate
 
 
 def main():
@@ -65,20 +66,8 @@ def main():
             (output / "summary.json").write_text(json.dumps(reports, indent=2))
             print(json.dumps(reports, indent=2), flush=True)
             print(output, flush=True)
-            assert "error" not in tcp_result, tcp_result.get("error")
-            assert len(tcp_result["intervals"]) >= 60, "TCP did not survive the complete scenario"
-            # Check delivery at each receiver; completed 128 KiB writes can be
-            # absent for a whole interval while the kernel still transmits.
-            for receiver, report in (("edge", tcp_result), ("hub", tcp_result["server_output_json"])):
-                received = [entry[key] for entry in report["intervals"]
-                            for key in ("sum", "sum_bidir_reverse") if not entry[key]["sender"]]
-                for begin, end in ((26, 30), (41, 45)):
-                    intervals = [entry for entry in received if begin <= entry["start"] < end]
-                    assert len(intervals) >= 3 and all(entry["bytes"] > 0 for entry in intervals), f"TCP receiver {receiver} stopped making progress during WAN outage at {begin}s"
-            for guest, report in reports.items():
-                assert report["loss_percent"] < 1, f"{guest} voice loss: {report}"
-                assert report["max_gap_ms"] < 150, f"{guest} voice outage gap: {report}"
-                assert report["p99_rtt_ms"] < 150, f"{guest} voice latency under load: {report}"
+            failures = evaluate(output)
+            assert not failures, "; ".join(failures)
     finally:
         for guest in GUESTS:
             lab.execute(guest, "if test -f /root/voice.pid; then kill $(cat /root/voice.pid) 2>/dev/null || true; rm /root/voice.pid; fi")
