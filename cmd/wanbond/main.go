@@ -4,8 +4,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,6 +22,10 @@ var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		// The flag package already printed the requested usage.
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "wanbond:", err)
 		os.Exit(1)
 	}
@@ -36,14 +42,25 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "monitor" {
 		return runMonitor(args[1:], os.Stdout)
 	}
+	if len(args) > 0 && args[0] == "set-exit" {
+		return runSetExit(args[1:], os.Stdout)
+	}
 
 	fs := flag.NewFlagSet("wanbond", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to the TOML configuration file (mode 0600)")
+	fs.Usage = func() { writeUsage(fs.Output(), fs) }
+	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "-help" || args[0] == "--help") {
+		writeUsage(os.Stdout, fs)
+		return nil
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unknown command %q (see `wanbond --help`)", fs.Arg(0))
+	}
 	if *configPath == "" {
-		return fmt.Errorf("--config is required (or `wanbond version`)")
+		return fmt.Errorf("--config is required (see `wanbond --help`)")
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -88,6 +105,24 @@ func run(args []string) error {
 			return fmt.Errorf("tunnel device stopped unexpectedly")
 		}
 	}
+}
+
+// writeUsage prints the command overview followed by the daemon's flags.
+func writeUsage(w io.Writer, daemonFlags *flag.FlagSet) {
+	_, _ = io.WriteString(w, `Usage:
+  wanbond --config PATH                        run the tunnel daemon (role from config)
+  wanbond monitor [flags]                      live terminal view of a running daemon
+  wanbond set-exit [flags] <exit-peer>|auto    select the active exit on a running edge
+                                               (runtime only; not persisted)
+  wanbond version                              print the version
+  wanbond help                                 show this help
+
+Run 'wanbond <command> --help' for command flags.
+
+Daemon flags:
+`)
+	daemonFlags.SetOutput(w)
+	daemonFlags.PrintDefaults()
 }
 
 // warnUnverifiableWeightedCapacity logs the Q52 WARN-arm startup diagnostic (T144)

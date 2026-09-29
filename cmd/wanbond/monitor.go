@@ -42,26 +42,7 @@ func runMonitor(args []string, out *os.File) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("monitor: unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	path := *configPath
-	if path == "" {
-		var err error
-		path, err = findMonitorConfig([]string{
-			"/run/wanbond/edge.toml",
-			"/run/wanbond/concentrator.toml",
-			"/etc/wanbond/config.toml",
-		})
-		if err != nil {
-			return err
-		}
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		return fmt.Errorf("monitor: load %s: %w", path, err)
-	}
-	if cfg.Monitor.Listen == "" {
-		return fmt.Errorf("monitor: [monitor].listen is disabled in %s", path)
-	}
-	addr, err := localMonitorAddress(cfg.Monitor.Listen)
+	endpoint, err := resolveMonitorEndpoint(*configPath)
 	if err != nil {
 		return err
 	}
@@ -77,7 +58,46 @@ func runMonitor(args []string, out *os.File) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return streamMonitor(ctx, addr, cfg.Monitor.Token, *once, color, out)
+	return streamMonitor(ctx, endpoint.addr, endpoint.token, *once, color, out)
+}
+
+// monitorEndpoint is the local address and bearer token of a running daemon's
+// [monitor] endpoint, as read from its config.
+type monitorEndpoint struct {
+	addr  string
+	token string
+}
+
+// defaultMonitorConfigs are the config locations probed when --config is absent.
+var defaultMonitorConfigs = []string{
+	"/run/wanbond/edge.toml",
+	"/run/wanbond/concentrator.toml",
+	"/etc/wanbond/config.toml",
+}
+
+// resolveMonitorEndpoint loads configPath (or the single discovered default
+// config when it is empty) and returns the daemon's local monitor endpoint.
+func resolveMonitorEndpoint(configPath string) (monitorEndpoint, error) {
+	path := configPath
+	if path == "" {
+		var err error
+		path, err = findMonitorConfig(defaultMonitorConfigs)
+		if err != nil {
+			return monitorEndpoint{}, err
+		}
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return monitorEndpoint{}, fmt.Errorf("monitor: load %s: %w", path, err)
+	}
+	if cfg.Monitor.Listen == "" {
+		return monitorEndpoint{}, fmt.Errorf("monitor: [monitor].listen is disabled in %s", path)
+	}
+	addr, err := localMonitorAddress(cfg.Monitor.Listen)
+	if err != nil {
+		return monitorEndpoint{}, err
+	}
+	return monitorEndpoint{addr: addr, token: cfg.Monitor.Token}, nil
 }
 
 func monitorColorEnabled(terminal bool, term string, noColorFlag, noColorEnv bool) bool {
