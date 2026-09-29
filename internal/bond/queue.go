@@ -83,11 +83,6 @@ func (c *codel) controlLaw(t time.Time) time.Time {
 	return t.Add(time.Duration(float64(c.interval) / math.Sqrt(float64(c.count))))
 }
 
-type packetQueue interface {
-	peek() *packet
-	pop()
-}
-
 type packetFIFO []*packet
 
 func (q *packetFIFO) peek() *packet {

@@ -32,7 +32,6 @@ const (
 	jitterWarmup          = 8
 	maxQueueAge           = 100 * time.Millisecond
 	maxBulkQueueAge       = 250 * time.Millisecond
-	bulkServiceTurns      = 2
 	discoveryQueueAge     = time.Second
 	maxPacketAge          = 250 * time.Millisecond
 	ackInterval           = 25 * time.Millisecond
