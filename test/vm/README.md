@@ -477,3 +477,40 @@ reported no skips. Bulk queue drops and repair expiry still increased. These
 observations narrow the investigation; they do not establish one cause of all
 remaining losses. Raw profiles, TCP state samples, metrics and transfer reports
 are under investigation scratch `profile-v20/`.
+
+## AmneziaWG v3 engine migration — 2026-09-29, `541aacc`
+
+The engine moved from local v1.0.4 to v3.1.20260828 with unchanged wire
+settings; the adaptive controller is identical to `e19751c`. Binaries:
+A = `e19751c` (`3174b9f2…`), B = `541aacc`/`6de11e0` (`6de11e0b…`).
+
+Mixed versions (`20260929-100235-mixed-versions-awg3`, basic profile): old hub
+with new edge, old edge with new hub, and new/new each re-established in
+about 0.15 s, moved 6.26–6.42 Mbit/s in each direction with both WAN counters
+advancing, and lost 0/270 pings across a 135-second window containing the
+120-second rekey (last handshake 40–45 s old at the end).
+
+Matched runs in ABBA order (A, B, B, A) on one lab session:
+
+| Scenario | A run 1 | B run 1 | B run 2 | A run 2 |
+| --- | --- | --- | --- | --- |
+| Fast up/down Mbit/s | 95.20 / 96.78 | 96.43 / 98.67 | 97.00 / 95.58 | 94.97 / 98.20 |
+| Radio up/down Mbit/s | 1.186 / 72.67 | 1.186 / 73.16 | 1.186 / 72.04 | 1.185 / 73.58 |
+| Radio continuity loss hub/edge % | 0.769 / 0.554 | 0.954 / 1.446 | 0.892 / 0.708 | 1.231 / 1.262 |
+| Radio continuity p99 RTT hub/edge ms | 199.4 / 188.4 | 207.9 / 206.9 | 208.1 / 201.1 | 208.5 / 206.9 |
+| Radio continuity max gap hub/edge ms | 104.8 / 134.2 | 116.4 / 189.5 | 141.7 / 147.8 | 172.7 / 206.1 |
+| Basic continuity | pass | pass | pass | pass |
+
+TCP outage progress passed in every continuity run. Radio throughput and radio
+voice latency fail their gates for both binaries, as before the migration.
+The B values lie within the A spread for radio throughput and continuity; the
+fast-profile differences are about 2 Mbit/s with two runs per binary. These
+runs therefore show no measurable engine regression and no engine-attributable
+improvement.
+
+Radio calibration (`20260929-101244-calibration`) failed its gate on one leg:
+plain TCP on the 100 Mbit/s, 40±30 ms LTE downlink reached 16.9 Mbit/s,
+while UDP on that leg delivered 96.8 Mbit/s and every other TCP/UDP leg reached
+at least 91% of its rate. Per-packet netem jitter reorders that link; UDP
+calibration is the capacity reference for radio results. Earlier radio
+results were not calibrated.
