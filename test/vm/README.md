@@ -565,3 +565,31 @@ What the traces showed, and what remains:
   it, 8 of 8 runs converged to 1500.
 - `iperf3 --omit` makes its UDP totals inconsistent (received bytes and packet
   counts disagree); `udp.py` measures from the receiver's interval reports.
+
+### Mixed versions and daemon restarts
+
+Basic profile, candidate B against `25aba42` (the build deployed at the time):
+
+| Hub | Edge | Traffic both ways | Rekey, ping loss |
+|---|---|---|---|
+| B | `25aba42` | yes | 0 of 270 |
+| `25aba42` | B | yes | 0 of 270 |
+| B | B | yes | 0 of 270 |
+
+The adaptive wire format did not change, so either end can be upgraded first.
+
+Time from restarting one daemon until a ping from the edge succeeds again:
+
+| Restarted | Build | Seconds |
+|---|---|---|
+| edge | B | 0.70 |
+| hub | B | 16.1 |
+| hub | `25aba42` | 16.1 |
+| hub | `6de11e0` | 16.1 |
+| hub | pre-v3 `e19751c` | 16.1 |
+
+The hub does not initiate: after its restart the edge keeps sending under the
+session the hub has lost, and starts a new handshake only when the engine's
+new-handshake timer fires (`KeepaliveTimeout` 10 s + `RekeyTimeout` 5 s without
+a reply). The figure is the same on every build, including the one before the
+engine migration. The cause is inferred from the timer constants, not traced.
