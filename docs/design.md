@@ -205,7 +205,20 @@ one packet's serialization time at the reverse pacing target, capped at 4 ms.
 This lets TUN GRO combine packets and reduce reverse TCP ACK traffic, while fast
 symmetric links use shorter batches. Interactive arrivals flush immediately.
 
-**Rate and latency.** Each lane starts at 125 kB/s. ACK timing measures RTT and
+**Rate and latency.** Each lane starts at 125 kB/s in a discovery phase. While
+backlogged, each adjustment sets the target to at least twice the larger of the
+smoothed and latest delivery measurements, so the target follows a sender's
+slow start instead of growing 6% per adjustment. Discovery ends on the first
+queue-delay reduction; on a delivery round (ended by acknowledgement of data
+sent after it began) with at least three timed-out datagrams and 2% of the
+round's transmissions; or, when the lane sends at least 75% of its target, on
+three consecutive rounds without 25% delivery growth, in which case the target
+becomes 105% of the best delivery seen (BBR's full-pipe rule, needed because
+radio jitter widens the delay threshold). An isolated timeout during discovery
+holds the target instead of ending discovery. A cold burst of TCP initial
+windows otherwise loses most of its datagrams before feedback arrives, and the
+resulting loss run sets every flow's slow-start threshold to a few segments
+(VM trace `20260929-122641-ramp-radio-down-c1-ss`). ACK timing measures RTT and
 delivery rate over receiver-clock intervals of at least 50 ms, avoiding ACK
 arrival-compression bias. The same observation also measures bytes submitted by
 the sender over at least 50 ms of local time. Receiver-relative arrival time
@@ -268,8 +281,14 @@ lane. The credit counter saturates at the transport's maximum bounded packet
 storage. A datagram larger than the window may depart when no bytes are in
 flight, so the startup limit cannot deadlock a supported larger MTU.
 
-Datagrams wait at most 100 ms before first transmission, with at most 8192
-queued and outstanding datagrams per peer. Bulk repair lifetime is 250 ms from
+Small datagrams wait at most 100 ms before first transmission. Bulk datagrams
+use RFC 8289 CoDel (5 ms target, 100 ms interval) at dequeue, so a burst or
+target reduction produces spaced congestion signals instead of a contiguous
+loss run, with a hard residence bound of 250 ms. While any up lane is
+discovering, CoDel does not drop and a bulk datagram admitted then keeps a 1 s
+bound: that queue reflects the lane's own pacing, not path capacity, and small
+datagrams bypass it. Each datagram keeps the bound in force at admission. At
+most 8192 datagrams are queued or outstanding per peer. Bulk repair lifetime is 250 ms from
 first transmission, when its receive-order sequence is assigned. Queue residence
 must not consume that repair window: a packet queued for 90 ms could otherwise
 expire before a 190 ms feedback timeout permits its first retry. Small packets
@@ -2875,6 +2894,12 @@ misbehaves subtly. Agents and contributors must preserve them.
       telemetry render. The exit control stays mounted across snapshots so an
       open native select and its keyboard focus survive live updates; its
       options change only when the configured candidate list changes.
+    - **CLI client.** `wanbond set-exit <exit-peer>|auto` (`cmd/wanbond/setexit.go`)
+      is a second client of the same route: it resolves the local monitor
+      address and token from the daemon's protected config (shared with
+      `wanbond monitor`), sends `Authorization: Bearer <token>` with no
+      `Origin`, and reports the `{activeExit, exitMode}` response or the
+      rejection status and message. It adds no server-side surface.
     - **Control availability.** A verified loopback binding permits local
       control. A non-loopback binding requires the configured token, checked by
       the existing auth middleware before the handler. The addressing-reveal

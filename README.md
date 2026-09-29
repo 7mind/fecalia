@@ -279,6 +279,14 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   when `TERM` supports them; `--no-color` or `NO_COLOR` disables colors.
   `sudo wanbond monitor --once` prints one snapshot (plain when redirected);
   use `--config PATH` for a different config location. This view is read-only.
+  `wanbond --help` lists all subcommands.
+- **Exit switching from the shell**: `sudo wanbond set-exit <exit-peer>` pins
+  the default route to one exit peer on a running multi-exit edge;
+  `sudo wanbond set-exit auto` returns to RTT-driven selection. It discovers
+  the config like `wanbond monitor` and issues the same authenticated
+  `POST /api/exit` as the dashboard's exit selector, so it needs
+  `[monitor].listen` enabled. The override is runtime-only; a restart restores
+  the config's top-level `exit`.
 - **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
   one-shot `"scheduler aggregation change"` record on every engage/disengage
   flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
@@ -669,7 +677,7 @@ deliberate boundaries you must plan around:
   exhausted; selecting a fixed exit suspends RTT-driven switches, while selecting
   `auto` resumes them. Per-concentrator stats are grouped per-peer on the
   monitor dashboard, and on-the-fly exit switching is exposed there through a
-  token-authenticated exit-switch widget (T259/T260, G28/M107; see
+  token-authenticated exit-switch widget and `wanbond set-exit` (T259/T260, G28/M107; see
   [docs/design.md §Security model](docs/design.md)).
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP

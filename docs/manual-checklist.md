@@ -15,6 +15,10 @@ Prerequisites (all phases):
 - [ ] On both roles with `[monitor].listen` enabled, `sudo wanbond monitor`
       shows new frames every second; Ctrl+C restores the terminal. Check
       `sudo wanbond monitor --once` emits plain text and exits.
+- [ ] On a multi-exit edge, `sudo wanbond set-exit <standby>` moves the
+      monitor's active exit to that peer with `Policy <standby>`, and
+      `sudo wanbond set-exit auto` shows `Policy auto`; an unknown name exits
+      non-zero with the daemon's 400 message.
 - [ ] Open the web monitor at desktop and phone widths. Switch the system
       between light and dark appearance with the page open; text, status colors,
       sparklines, and controls remain readable without horizontal scrolling.

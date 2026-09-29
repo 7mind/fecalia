@@ -224,8 +224,8 @@ resequencer state stays independent. Every peer marked `mode = "default-route"`
 is an **exit-capable** alternate for the full-tunnel egress; the **first**
 default-route peer in config order owns the route at boot until auto selection
 has healthy RTT samples. Top-level `exit = "auto"` is the default; set it to an
-exit peer name to select that peer at startup. Runtime UI changes are not
-persisted, so a restart restores this config setting. On-the-fly
+exit peer name to select that peer at startup. Runtime changes (web UI or
+`wanbond set-exit`) are not persisted, so a restart restores this config setting. On-the-fly
 switching of the active exit and per-concentrator statistics are surfaced by the
 monitor dashboard's web UI (T259/T260, G28/M107; see
 [docs/design.md §Security model](design.md)); this section covers only the
@@ -2300,6 +2300,14 @@ It discovers one config under `/run/wanbond/` or
 Root is needed only when the daemon's `0600` config is root-owned. The command
 reads the configured token and connects to the local monitor port; when
 `[monitor].listen` is disabled it reports that no stream is available.
+
+On a multi-exit edge, `sudo wanbond set-exit <exit-peer>` selects a fixed exit
+and `sudo wanbond set-exit auto` restores RTT-driven selection — the CLI
+equivalent of the dashboard's exit selector (same `POST /api/exit`, same
+config discovery and `--config PATH` as `wanbond monitor`). It prints the
+selected policy and the current active exit; a rejection (unknown peer, bad
+token, control unavailable) is reported with the daemon's HTTP status and
+message and a non-zero exit. The selection is not persisted.
 The displayed path rate is combined transmit and receive outer UDP traffic,
 including feedback and copies. It is not application goodput or a capacity
 estimate. JSON `throughputBps` and `linkBandwidthBps` are bits per second; the
@@ -2365,7 +2373,8 @@ listen = "127.0.0.1:9101"
   select stays mounted across live telemetry updates, so an open menu remains
   usable. The control is available on loopback and token-authenticated non-loopback bindings; the
   browser's same-origin cookie supplies the token. It is hidden when fewer than
-  two exit-capable peers are configured. The usual auth applies (cross-origin → 403, missing/invalid
+  two exit-capable peers are configured. `wanbond set-exit` sends the same
+  request from the shell with the config's token as a bearer header. The usual auth applies (cross-origin → 403, missing/invalid
   token → 401); a non-POST method is 405 and an unknown/non-exit-capable peer
   is 400. See [docs/design.md §Security model](design.md) for the full
   posture.
