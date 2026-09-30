@@ -69,6 +69,18 @@ func (m *rateMeter) rate(now time.Time) float64 {
 	return highest / meterBucket.Seconds()
 }
 
+// steady reports that every recent bucket carried traffic: a stream, not a
+// burst.
+func (m *rateMeter) steady(now time.Time) bool {
+	m.rotate(now)
+	for i, bucket := range m.buckets {
+		if bucket == 0 && i != m.index {
+			return false
+		}
+	}
+	return true
+}
+
 const standingWait = 5 * time.Millisecond
 
 // laneLimited reports whether a queued datagram has waited for a lane. A
@@ -107,7 +119,7 @@ func (t *Transport) reserve(now time.Time) {
 	lanes := make([]*lane, 0, len(t.paths))
 	bulkWaiting := len(t.queue) > 0
 	for _, p := range t.paths {
-		p.reserved, p.guaranteed, p.shared = [classBulk]float64{}, [classes]bool{}, bulkWaiting
+		p.reserved, p.guaranteed, p.shared, p.copies = [classBulk]float64{}, [classes]bool{}, bulkWaiting, 0
 		if p.up(now) && !p.stalled {
 			lanes = append(lanes, p)
 		}
@@ -142,6 +154,29 @@ func (t *Transport) reserve(now time.Time) {
 			free[i] -= p.reserved[c]
 		}
 		lanes[guarantor].guaranteed[c+1] = true
+		if c == classRealtime {
+			t.reserveCopies(now, lanes, free)
+		}
+	}
+}
+
+// reserveCopies sets capacity aside for the copies of real-time datagrams. A
+// copy travels on another lane than its original, so each lane reserves for
+// the originals the other lanes carry. Without it lower classes fill that
+// lane's window and pacing slots, and the copy, which is sent with its
+// original or not at all, finds no room.
+func (t *Transport) reserveCopies(now time.Time, lanes []*lane, free []float64) {
+	var originals float64
+	for _, p := range lanes {
+		originals += p.reserved[classRealtime]
+	}
+	if originals == 0 || len(lanes) < 2 {
+		return
+	}
+	need := min(t.copyBudget(now), originals)
+	for i, p := range lanes {
+		p.copies = min(free[i], need*(1-p.reserved[classRealtime]/originals))
+		free[i] -= p.copies
 	}
 }
 
@@ -186,6 +221,9 @@ func (p *lane) allowed(c class) float64 {
 	for higher := classRealtime; higher < c; higher++ {
 		rate -= p.reserved[higher]
 	}
+	if c > classRealtime {
+		rate -= p.copies
+	}
 	for lower := c + 1; lower < classes; lower++ {
 		if p.guaranteed[lower] {
 			rate -= minimumClassShare * p.rate
@@ -223,8 +261,14 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 			// Within the share of the window reserved for them, real-time
 			// datagrams are not blocked by the bytes of lower classes: on a
 			// slow lane one bulk datagram in flight is a third of the window.
-			if p.inflight > window && float64(p.classInflight[c]) > float64(window)*p.reserved[c]/p.rate {
+			if p.inflight > window && float64(p.classInflight[c]) > float64(window)*(p.reserved[c]+p.copies)/p.rate {
 				continue
+			}
+			if avoid && p.copies > 0 {
+				// A copy cannot wait for its slot. Capacity is reserved for it, so
+				// it may lead the pacing clock by the datagram of a lower class
+				// that took the slot before it.
+				lead += time.Duration(float64(fullDatagramWireBytes) / p.rate * float64(time.Second))
 			}
 		} else if allowed := p.allowed(c); allowed == 0 || p.inflight+size > max(size, window) ||
 			p.classInflight[c]+size > max(size, int(float64(window)*allowed/p.rate)) {
@@ -243,12 +287,38 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 	return best
 }
 
+// stale reports that a waiting real-time datagram should give way to the ones
+// behind it. A backlog formed when a lane failed drains only as fast as the
+// remaining capacity exceeds the flow's rate, which on a slow lane takes
+// seconds, and every datagram meanwhile arrives late by the backlog. Once
+// datagrams have waited longer than the target for a whole interval, the
+// oldest are dropped until the queue is current again.
+func (t *Transport) stale(now time.Time, head *packet) bool {
+	if now.Sub(head.created) <= realtimeQueueTarget {
+		t.realtimeLate, t.realtimeSkipping = time.Time{}, false
+		return false
+	}
+	if t.realtimeSkipping {
+		return true
+	}
+	if t.realtimeLate.IsZero() {
+		t.realtimeLate = now
+	}
+	t.realtimeSkipping = now.Sub(t.realtimeLate) >= realtimeQueueInterval
+	return t.realtimeSkipping
+}
+
 func (t *Transport) send(now time.Time, out []Transmission) []Transmission {
 	t.reserve(now)
 	for c := classRealtime; c < classBulk; c++ {
 		queue := &t.small[c]
+		if c == classRealtime && queue.peek() == nil {
+			// An empty queue ends the backlog, however late its last
+			// datagram left.
+			t.realtimeLate, t.realtimeSkipping = time.Time{}, false
+		}
 		for p := queue.peek(); p != nil; p = queue.peek() {
-			if now.After(p.queueDeadline) {
+			if now.After(p.queueDeadline) || c == classRealtime && t.stale(now, p) {
 				queue.pop()
 				t.drops++
 				t.interactiveDrops++

@@ -17,7 +17,8 @@ func TestInteractiveRepairPrecedesFeedbackTimeout(t *testing.T) {
 	}{
 		{"small", 224, initialRate, true, true, false},
 		{"bulk", 1200, initialRate, true, false, false},
-		{"budget-exhausted", 224, minimumRate, true, false, false},
+		// Below the minimum rate the allowance never accumulates one datagram.
+		{"budget-exhausted", 224, minimumRate / 2, true, false, false},
 		{"no-alternate", 224, initialRate, false, false, false},
 		{"fresh-feedback", 224, initialRate, true, false, true},
 	} {

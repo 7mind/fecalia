@@ -161,7 +161,7 @@ func TestReplicationBudgetTracksPacingCapacity(t *testing.T) {
 	for _, path := range peers[0].Snapshot(start.Add(2 * time.Second)).Paths {
 		copiedBytes += path.Retransmits * (100 + 129)
 	}
-	const capacityShareWithBurst = 55000 // 10% of two 125 kB/s lanes for 2 s, plus burst allowance.
+	const capacityShareWithBurst = 105000 // 20% of two 125 kB/s lanes for 2 s, plus burst allowance.
 	if copiedBytes > capacityShareWithBurst {
 		t.Fatalf("small-packet copies consumed %d wire bytes, exceeding learned-capacity budget %d", copiedBytes, capacityShareWithBurst)
 	}

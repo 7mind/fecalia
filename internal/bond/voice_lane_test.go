@@ -196,8 +196,9 @@ func TestBulkSharesCapacityWithACKStream(t *testing.T) {
 		jitters      []time.Duration
 		minimumBytes int
 	}{
-		// Voice takes 35 of 206 kB/s; bulk is owed about half the remainder.
-		{"two lanes", []float64{50000, 156250}, []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, []time.Duration{0, 30 * time.Millisecond}, 50000},
+		// Voice and its copies take 70 of 206 kB/s; bulk is owed about half
+		// the remainder.
+		{"two lanes", []float64{50000, 156250}, []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, []time.Duration{0, 30 * time.Millisecond}, 40000},
 		// Voice takes 35 of 50 kB/s; bulk must still move every second.
 		{"slow lane", []float64{50000}, []time.Duration{20 * time.Millisecond}, []time.Duration{0}, 1200},
 	} {

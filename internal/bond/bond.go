@@ -31,6 +31,8 @@ const (
 	maxDelaySamples       = 16
 	jitterWarmup          = 8
 	maxQueueAge           = 100 * time.Millisecond
+	realtimeQueueTarget   = 20 * time.Millisecond
+	realtimeQueueInterval = 100 * time.Millisecond
 	maxBulkQueueAge       = 250 * time.Millisecond
 	discoveryQueueAge     = time.Second
 	maxPacketAge          = 250 * time.Millisecond
@@ -57,8 +59,10 @@ const (
 	maxPackets            = 8192
 	smallPacket           = 384
 	redundancyRate        = 64000.0
-	redundancyShare       = 0.1
+	redundancyShare       = 0.2
 	maxDatagram           = 9000
+	// fullDatagramWireBytes is an ordinary full-size datagram on the wire.
+	fullDatagramWireBytes = 1500
 	wireOverhead          = 129 // outer CONTROL, adaptive header, sequences, IP and UDP
 	transitSizeBucket     = 128
 )
@@ -175,6 +179,7 @@ type lane struct {
 	previousDelivery     float64
 	control              control
 	peakDelivery         float64
+	recentDelivery       peak
 	rtt                  time.Duration
 	rttVariation         time.Duration
 	idleRTTVariation     time.Duration
@@ -189,6 +194,7 @@ type lane struct {
 	nextSend             time.Time
 	classNext            [classes]time.Time
 	reserved             [classBulk]float64
+	copies               float64
 	guaranteed           [classes]bool
 	shared               bool
 	lastACK              time.Time
@@ -260,6 +266,8 @@ type Transport struct {
 	bulkSeq          uint64
 	interactiveSeq   uint64
 	redundancyTokens float64
+	realtimeLate     time.Time
+	realtimeSkipping bool
 	lastPoll         time.Time
 	drops            uint64
 	admissionDrops   uint64
@@ -500,6 +508,26 @@ func (t *Transport) PacingRate(now time.Time) float64 {
 	return rate
 }
 
+// rebaseline takes a round trip measured on the drained lane as unloaded: a
+// changed propagation delay must also resize the window, which the target can
+// no longer compensate for while it holds below capacity.
+//
+// The sample moves the estimate halfway. One sample is a draw from the lane's
+// jitter, not its round trip: replacing the estimate with it ranked a lane of
+// 80 ms mean round trip, at 23 ms, ahead of one of 46 ms, and real-time
+// datagrams moved to the slower lane. The variation is left alone: counting
+// the step towards it ranked a steady lane behind a slower one after its rate
+// changed (VM run 20260930-003806-continuity: voice on the 25 ms lane, a
+// 246 ms gap when that lane failed).
+func (p *lane) rebaseline(sample time.Duration) {
+	p.idleRTT += (sample - p.idleRTT) / 2
+}
+
+// copyBudget is the rate allowed for copies of real-time datagrams.
+func (t *Transport) copyBudget(now time.Time) float64 {
+	return math.Min(redundancyRate, redundancyShare*t.PacingRate(now))
+}
+
 func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission {
 	size := len(p.payload) + wireOverhead
 	if p.seq == 0 {
@@ -550,7 +578,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 
 func (t *Transport) Poll(now time.Time) []Transmission {
 	if !t.lastPoll.IsZero() {
-		budget := math.Min(redundancyRate, redundancyShare*t.PacingRate(now))
+		budget := t.copyBudget(now)
 		t.redundancyTokens = math.Min(budget/10, t.redundancyTokens+now.Sub(t.lastPoll).Seconds()*budget)
 	}
 	t.lastPoll = now
@@ -837,10 +865,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 					}
 				}
 				if p.baselinePending && !sent.sent.Before(p.drainUntil) {
-					// The drained lane is unloaded: a changed propagation delay
-					// must also resize the window, which the target can no
-					// longer compensate for while it holds below capacity.
-					p.idleRTT = sample
+					p.rebaseline(sample)
 					clear(p.transitBases[:])
 					p.haveInterval, p.intervalSamples = false, 0
 					p.baselinePending = false
@@ -952,6 +977,8 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	}
 	p.peakDelivery = math.Max(p.peakDelivery, p.deliveryRate)
 	p.ackedBytes, p.ackedElapsed = a.bytes, a.elapsed
+	p.recentDelivery.record(now, p.deliveryRate)
+	p.boundByDelivery(now, t.demand[classRealtime].steady(now))
 	if gap := now.Sub(p.lastACK); !p.lastACK.IsZero() && gap < ackGapHorizon {
 		// Longer gaps are idle periods, not the peer's cadence.
 		p.ackGap += (gap - p.ackGap) / 8
@@ -977,7 +1004,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if !backlogged {
 		return
 	}
-	p.adjust(now, lost, delayed, sample > 0, t.laneLimited(now), t.demand[classRealtime].rate(now) > 0)
+	p.adjust(now, lost, delayed, sample > 0, t.laneLimited(now), t.demand[classRealtime].rate(now) > 0, t.demand[classRealtime].steady(now))
 }
 
 func (w *receiptWindow) mark(seq uint64) bool {

@@ -65,8 +65,9 @@ func (p *lane) congestionThreshold() time.Duration {
 // realtime reports that real-time datagrams are being carried. Discovery then
 // uses the gentler gain: its overshoot queues in the path's buffer ahead of
 // them (VM run 20260929-152215-continuity: 370 ms voice round trips in the
-// first five seconds of a cold start).
-func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realtime bool) {
+// first five seconds of a cold start). stream reports that they arrive as a
+// steady stream.
+func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realtime, stream bool) {
 	if p.startup && lost && !p.startupLossy {
 		// Isolated timeouts under jitter are not the material loss that ends
 		// discovery (BBRv2 exits startup on a round's loss rate); hold instead.
@@ -80,7 +81,7 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 		p.control.holdSignal, p.control.draining, p.control.flushUntil = false, false, time.Time{}
 		switch {
 		case p.startup:
-			p.discover(now, realtime, laneLimited)
+			p.discover(now, realtime, stream, laneLimited)
 		case p.control.capacity == 0:
 			p.rate = math.Min(maximumRate, p.rate*1.06+1500)
 		default:
@@ -169,7 +170,9 @@ func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
 		p.pulse(now)
 	case c.awaitingVerdict():
 		p.schedulePulse(now)
-	case !now.Before(c.nextPulse) && p.rate >= limit && laneLimited:
+	case !now.Before(c.nextPulse) && p.rate >= limit && laneLimited && p.sendRate >= startupPlateauSending*limit:
+		// A pulse on a lane that sends less than its target tests nothing,
+		// and its silence would raise the estimate without evidence.
 		p.pulse(now)
 	case p.rate < limit:
 		p.rate = math.Min(limit, p.rate*1.06+1500)
@@ -189,7 +192,7 @@ func (p *lane) pulse(now time.Time) {
 
 // discover follows measured delivery at the pace of a sender's slow start
 // until the first congestion signal or a delivery plateau.
-func (p *lane) discover(now time.Time, realtime, laneLimited bool) {
+func (p *lane) discover(now time.Time, realtime, stream, laneLimited bool) {
 	gain := p.discoveryGain
 	if realtime {
 		gain = math.Min(gain, rediscoveryGain)
@@ -217,6 +220,9 @@ func (p *lane) discover(now time.Time, realtime, laneLimited bool) {
 	// target inflated while the sender was the limit leaves the path
 	// unprotected when the sender catches up.
 	p.rate = math.Max(p.rate, gain*delivered)
+	if p.boundByDelivery(now, stream) {
+		return
+	}
 	if carried := math.Max(delivered, p.sendRate); carried > 0 {
 		// While datagrams wait for the lane, measured delivery replaces the
 		// initial assumption: on a lane slower than it, the window sized from
@@ -228,4 +234,70 @@ func (p *lane) discover(now time.Time, realtime, laneLimited bool) {
 		}
 		p.rate = math.Min(p.rate, math.Max(floor, gain*carried))
 	}
+}
+
+const (
+	peakBucket  = 2 * time.Second
+	peakBuckets = 5
+)
+
+// peak reports the highest of the values recorded in the last ten seconds.
+type peak struct {
+	start   time.Time
+	buckets [peakBuckets]float64
+	index   int
+}
+
+func (m *peak) rotate(now time.Time) {
+	if m.start.IsZero() || now.Sub(m.start) >= peakBuckets*peakBucket {
+		*m = peak{start: now}
+		return
+	}
+	for now.Sub(m.start) >= peakBucket {
+		m.start = m.start.Add(peakBucket)
+		m.index = (m.index + 1) % peakBuckets
+		m.buckets[m.index] = 0
+	}
+}
+
+func (m *peak) record(now time.Time, value float64) {
+	m.rotate(now)
+	m.buckets[m.index] = max(m.buckets[m.index], value)
+}
+
+func (m *peak) value(now time.Time) float64 {
+	m.rotate(now)
+	var highest float64
+	for _, bucket := range m.buckets {
+		highest = max(highest, bucket)
+	}
+	return highest
+}
+
+// boundByDelivery holds the target of a discovering lane that carries a
+// real-time stream within the discovery gain of the most it delivered
+// recently, and reports whether it applied. What the lane was offered is no
+// evidence of what it can carry, nor is the initial assumption: a target
+// inflated while the lane was lightly loaded overfills the path when another
+// lane fails and its traffic arrives here (VM runs of 2026-09-29: targets of
+// 81-97 kB/s on a 62.5 kB/s lane, 300-390 ms voice round trips after the
+// failure). A burst delivers too little to measure anything.
+//
+// Other lanes are not bound: their overshoot delays no real-time datagram,
+// and a bound that followed a paused sender's delivery down left bulk to
+// start again from nothing (VM run 20260929-234339-continuity: no TCP
+// delivery in 65 seconds).
+//
+// It applies to every acknowledgement: a lightly loaded lane is never
+// backlogged, and the control interval does not run for it.
+func (p *lane) boundByDelivery(now time.Time, stream bool) bool {
+	if !p.startup || !stream || p.reserved[classRealtime] == 0 {
+		return false
+	}
+	delivered := p.recentDelivery.value(now)
+	if delivered == 0 {
+		return false
+	}
+	p.rate = math.Min(p.rate, math.Max(minimumRate, rediscoveryGain*delivered))
+	return true
 }
