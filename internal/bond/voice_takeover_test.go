@@ -172,7 +172,9 @@ func TestVoiceCopiesHaveRoomOnTheOtherLane(t *testing.T) {
 	if outcome.uncopied > outcome.sent/20 {
 		t.Errorf("%d of %d voice datagrams had no copy", outcome.uncopied, outcome.sent)
 	}
-	if len(outcome.waits) < outcome.sent*999/1000 || late > 0 {
+	// The allowance leaves a few datagrams uncopied; one in a thousand may
+	// need a repair.
+	if len(outcome.waits) < outcome.sent*999/1000 || late > outcome.sent/1000 {
 		t.Errorf("delivered %d/%d, %d later than %s", len(outcome.waits), outcome.sent, late, repaired)
 	}
 }

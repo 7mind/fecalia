@@ -175,7 +175,7 @@ type lane struct {
 	roundDone            bool
 	roundSent            int
 	roundLost            int
-	startupLossy         bool
+	roundLossy           bool
 	previousDelivery     float64
 	control              control
 	peakDelivery         float64
@@ -466,10 +466,18 @@ func (p *lane) peerACKInterval() time.Duration {
 func (p *lane) delaySamplesNeeded() int {
 	// The estimate from before this interval: a queue's onset must not count
 	// as the jitter that excuses it.
-	spread := 3 * p.intervalJitter
+	jitter := p.intervalJitter
+	if p.delayDifferences <= jitterWarmup {
+		// A few differences cannot tell jitter from the onset of a queue; the
+		// probes' unloaded round-trip variation stands in until they can. One
+		// sample ended discovery of a 300 Mbit/s lane with 30 ms of jitter in
+		// its first 100 ms, at a capacity measured from a handful of
+		// datagrams (`TestJitteryLaneStartsUp`).
+		jitter = max(jitter, p.idleRTTVariation)
+	}
+	spread := 3 * jitter
 	threshold := p.congestionThreshold()
-	// A few differences cannot tell jitter from the onset of a queue.
-	if p.delayDifferences <= jitterWarmup || spread <= threshold {
+	if spread <= threshold {
 		return 1
 	}
 	return min(maxDelaySamples, int(2*spread/threshold))
@@ -908,7 +916,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if fresh && a.high >= p.roundEnd {
 		// A delivery round ends once data sent after it began is acknowledged.
 		p.roundEnd, p.roundDone = p.seq+1, true
-		p.startupLossy = p.roundLost >= startupLossEvents && float64(p.roundLost) >= startupLossRatio*float64(p.roundSent)
+		p.roundLossy = p.roundLost >= startupLossEvents && float64(p.roundLost) >= startupLossRatio*float64(p.roundSent)
 		p.roundSent, p.roundLost = 0, 0
 	}
 	for _, path := range t.paths {

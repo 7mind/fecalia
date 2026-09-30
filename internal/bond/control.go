@@ -68,12 +68,17 @@ func (p *lane) congestionThreshold() time.Duration {
 // first five seconds of a cold start). stream reports that they arrive as a
 // steady stream.
 func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realtime, stream bool) {
-	if p.startup && lost && !p.startupLossy {
+	if p.startup && lost && !p.roundLossy {
 		// Isolated timeouts under jitter are not the material loss that ends
 		// discovery (BBRv2 exits startup on a round's loss rate); hold instead.
 		return
 	}
-	lost = lost && p.deliveryRate > 0
+	// The same rule holds the target: a path that loses a fraction of a
+	// percent at random loses something in every control interval at a high
+	// rate, and cutting on each of them drove a 300 Mbit/s model lane to
+	// 3 MB/s (`TestRandomLossDoesNotCollapseTheTarget`). Repair covers such
+	// loss; only a round's material loss is congestion.
+	lost = lost && p.roundLossy && p.deliveryRate > 0
 	switch {
 	case lost || delayed:
 		p.congested(now, lost, laneLimited)
