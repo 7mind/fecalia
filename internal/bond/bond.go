@@ -28,7 +28,6 @@ const (
 	startupPlateauSending = 0.75
 	startupLossEvents     = 3
 	startupLossRatio      = 0.02
-	heavyLossRatio        = 0.1
 	maxDelaySamples       = 16
 	jitterWarmup          = 8
 	maxQueueAge           = 100 * time.Millisecond
@@ -52,10 +51,6 @@ const (
 	ipProtocolTCP         = 6
 	pathLease             = time.Second
 	minimumRTO            = 60 * time.Millisecond
-	minReorderAllowance   = 10 * time.Millisecond
-	reorderJitterFactor   = 4
-	reorderObservedFactor = 1.25             // allowance above the reordering seen
-	reorderMemory         = 10 * time.Second // per bucket; reordering is remembered for five
 	feedbackHorizon       = 2 * time.Second
 	deliveryInterval      = 50 * time.Millisecond
 	baselineInterval      = 10 * time.Second
@@ -147,7 +142,6 @@ type packet struct {
 	repairDeadline time.Time
 	lastSent       time.Time
 	lastPath       PathID
-	lastSeq        uint64
 	attempts       int
 	acked          bool
 }
@@ -158,11 +152,6 @@ type attempt struct {
 	bytes     int
 	released  bool
 	confirmed bool
-	// lost records that later attempts on the lane were acknowledged while
-	// this one was not, beyond the reordering the lane's jitter allows;
-	// lostBy is how far it trailed the newest acknowledged send.
-	lost   bool
-	lostBy time.Duration
 }
 
 type transitBaseline struct {
@@ -191,7 +180,6 @@ type lane struct {
 	control              control
 	peakDelivery         float64
 	recentDelivery       peak
-	reordering           peak
 	rtt                  time.Duration
 	rttVariation         time.Duration
 	idleRTTVariation     time.Duration
@@ -363,7 +351,7 @@ func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) 
 		if rtt <= 0 {
 			rtt = 50 * time.Millisecond
 		}
-		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, discoveryGain: startupDeliveryGain, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt), reordering: peak{bucket: reorderMemory}}
+		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, discoveryGain: startupDeliveryGain, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt)}
 		p.lastTransmit = now
 		p.nextBaseline = now.Add(baselineInterval + time.Duration((uint16(id)^uint16(id)>>8)&255)*baselineStagger)
 		t.paths = append(t.paths, p)
@@ -423,19 +411,6 @@ func (p *lane) release(a attempt) {
 }
 
 func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.lease) < pathLease }
-
-// reorderAllowance is how much earlier than an acknowledged datagram an
-// unacknowledged one must have been sent before its absence means loss rather
-// than reordering by the path's jitter.
-func (p *lane) reorderAllowance() time.Duration {
-	// The spread of forward delay is about three times the mean difference
-	// between consecutive samples (see delaySamplesNeeded); the unloaded
-	// variations cover a lane that has not sampled it yet, and reordering
-	// observed in the last fifty seconds raises the allowance above it.
-	observed := time.Duration(reorderObservedFactor * p.reordering.value(p.lastACK))
-	return max(minReorderAllowance, reorderJitterFactor*p.delayJitter, reorderJitterFactor*p.idleForwardVariation,
-		reorderJitterFactor*p.idleRTTVariation, reorderJitterFactor*p.rttVariation, observed)
-}
 
 func (p *lane) rto() time.Duration {
 	variation := p.rttVariation
@@ -602,7 +577,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 		path.retries++
 	}
 	p.attempts++
-	p.lastSent, p.lastPath, p.lastSeq = now, path.id, path.seq
+	p.lastSent, p.lastPath = now, path.id
 	path.lastTransmit = now
 	path.lastPayload = now
 	t.pending[p.seq] = p
@@ -718,13 +693,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 				continue
 			}
 		}
-		lost := false
-		if previous != nil {
-			if last, ok := previous.attempts[p.lastSeq]; ok {
-				lost = last.lost
-			}
-		}
-		if !lost && now.Sub(p.lastSent) < rto || p.attempts >= 4 {
+		if now.Sub(p.lastSent) < rto || p.attempts >= 4 {
 			continue
 		}
 		path := t.chooseLane(now, classBulk, size, p.lastPath, true)
@@ -870,36 +839,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			delete(t.pending, seq)
 		}
 	}
-	// The newest send on this lane whose datagram the receiver reports having:
-	// an older unacknowledged send is lost once it trails that by more than
-	// the reordering the lane's jitter allows.
-	var newestReceived time.Time
-	if fresh {
-		for seq, sent := range p.attempts {
-			if sent.packet == nil {
-				continue
-			}
-			inMask := seq <= a.high && a.high-seq < 64 && a.mask&(uint64(1)<<(a.high-seq)) != 0
-			if inMask || a.received(sent.packet.seq) {
-				newestReceived = maxTime(newestReceived, sent.sent)
-			}
-		}
-	}
 	for seq, sent := range p.attempts {
-		if fresh && !newestReceived.IsZero() && !sent.released && !sent.lost && sent.packet != nil &&
-			!(seq <= a.high && a.high-seq < 64 && a.mask&(uint64(1)<<(a.high-seq)) != 0) &&
-			a.covers(sent.packet.seq) && !a.received(sent.packet.seq) &&
-			newestReceived.Sub(sent.sent) >= p.reorderAllowance() {
-			// Later datagrams on this lane were acknowledged and this one was
-			// not: it is lost, and its repair need not wait for the timeout
-			// (VM run of 2026-09-30: 100-200 ms timeouts held the receiver's
-			// resequencer for 33.6 s of a 35 s run). Reordering beyond the
-			// allowance would be mistaken for loss, so only the repair moves:
-			// the window and the round's loss count follow the timeout.
-			sent.lost, sent.lostBy = true, newestReceived.Sub(sent.sent)
-			p.attempts[seq] = sent
-			continue
-		}
 		if seq <= a.high && a.high-seq < 64 && a.mask&(uint64(1)<<(a.high-seq)) != 0 {
 			if !sent.confirmed {
 				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
@@ -909,13 +849,6 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			}
 			if !sent.released {
 				p.release(sent)
-			}
-			if sent.lost {
-				// The datagram was reordered, not lost: the lane reorders by at
-				// least this much, and the allowance follows (TCP's RACK does
-				// the same). A drifting latency otherwise convicted a fifth of
-				// a lossless lane's datagrams (`TestDriftingLatencyIsNotLoss`).
-				p.reordering.record(now, float64(sent.lostBy))
 			}
 			p.acked += uint64(sent.bytes)
 			if sent.packet != nil {
@@ -983,10 +916,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if fresh && a.high >= p.roundEnd {
 		// A delivery round ends once data sent after it began is acknowledged.
 		p.roundEnd, p.roundDone = p.seq+1, true
-		// A round on a slow lane has ten datagrams: one lost is a tenth, and a
-		// shallow buffer overrun shows as such a share, not as a count.
-		p.roundLossy = p.roundLost >= startupLossEvents && float64(p.roundLost) >= startupLossRatio*float64(p.roundSent) ||
-			p.roundLost > 0 && float64(p.roundLost) >= heavyLossRatio*float64(p.roundSent)
+		p.roundLossy = p.roundLost >= startupLossEvents && float64(p.roundLost) >= startupLossRatio*float64(p.roundSent)
 		p.roundSent, p.roundLost = 0, 0
 	}
 	for _, path := range t.paths {

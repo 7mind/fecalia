@@ -73,12 +73,6 @@ type acknowledgement struct {
 	receivedMask [ackReceiptWords]uint64
 }
 
-// covers reports whether the receipt bitmap can speak for seq at all: a
-// datagram outside it is neither confirmed nor missing.
-func (a acknowledgement) covers(seq uint64) bool {
-	return seq != 0 && seq <= a.receivedHigh && a.receivedHigh-seq < uint64(len(a.receivedMask)*64)
-}
-
 func (a acknowledgement) received(seq uint64) bool {
 	if seq == 0 || seq > a.receivedHigh || a.receivedHigh-seq >= uint64(len(a.receivedMask)*64) {
 		return false
