@@ -16,7 +16,13 @@ const (
 	pulseGain        = 1.05 // estimate increase after a first pulse without congestion; doubles per further one
 	pulseQueueFactor = 1.5  // pulse queue relative to the detection threshold
 	pulseWinsToLeave = 3    // consecutive clean pulses before rediscovery
-	pulseInterval    = time.Second
+	// A pulse is won once this many datagrams followed it without loss: on a
+	// path that drops a tenth of them, a run this long without one is rare.
+	pulseConfirmDatagrams = 30
+	pulseInterval         = time.Second
+	// A probe that ends in loss found a path that drops rather than queues;
+	// the next waits twice as long, up to this, until one ends without loss.
+	maxPulseInterval = 16 * time.Second
 	// The least time between two tests of a lane's transit floor doubles with
 	// every test that finds a queue, up to the longest, and starts again when
 	// one finds the floor moved: a lane whose delay keeps turning out to be a
@@ -54,16 +60,25 @@ type control struct {
 	flushUntil time.Time
 	holdSignal bool
 	nextPulse  time.Time
+	pulseEvery time.Duration
 	pulseEnd   time.Time
 	verdictAt  time.Time
 	pulseWins  int
+	// A pulse without a signal raises the estimate at once but counts as won
+	// only once the loss it may have caused would have shown: loss is known
+	// a settling period after it happens. wonFrom is the estimate to return
+	// to if it does.
+	pending bool
+	wonAt   time.Time
+	wonSeq  uint64
+	wonFrom float64
 }
 
 func (c *control) awaitingVerdict() bool { return !c.verdictAt.IsZero() }
 
 func (p *lane) schedulePulse(now time.Time) {
 	p.control.verdictAt, p.control.pulseEnd = time.Time{}, time.Time{}
-	p.control.nextPulse = now.Add(pulseInterval + time.Duration((uint16(p.id)^uint16(p.id)>>8)&7)*pulseStagger)
+	p.control.nextPulse = now.Add(max(pulseInterval, p.control.pulseEvery) + time.Duration((uint16(p.id)^uint16(p.id)>>8)&7)*pulseStagger)
 }
 
 func (p *lane) measuredDelivery() float64 {
@@ -163,7 +178,17 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 
 func (p *lane) cut(lost bool) float64 {
 	if lost {
-		return math.Min(lossRateReduction*p.rate, lossPacingHeadroom*p.deliveryRate)
+		// A saturated path delivers its capacity while it drops the rest, so
+		// the target must go below what was delivered, not above it. A lane
+		// sending well below its target lost to its bursts, and what it
+		// delivered says nothing about the path (a lane that took over voice
+		// from a failed one sent 30 kB/s of a 42 kB/s target into a policed
+		// 50 kB/s path and was cut to 25 kB/s: 96 voice datagrams dropped in
+		// its own queue).
+		if !p.saturating() {
+			return lossRateReduction * p.rate
+		}
+		return math.Min(lossRateReduction*p.rate, capacityHold*p.deliveryRate)
 	}
 	rate := p.rate * 0.9
 	if p.deliveryRate > 0 && p.sendRate > queueSendExcessRatio*p.deliveryRate {
@@ -175,6 +200,19 @@ func (p *lane) cut(lost bool) float64 {
 func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	c := &p.control
 	queued := p.queueDelay
+	if c.pending && lost {
+		// The loss the last pulse caused has shown: it was not won. The path
+		// dropped the pulse's excess instead of queueing it; probing such a
+		// path costs datagrams, so the next probe waits longer
+		// (`TestPolicedLaneIsNotOverdriven`).
+		p.decisions.PulseLosses++
+		c.capacity = math.Min(c.capacity, c.wonFrom)
+		c.pending, c.pulseWins = false, 0
+		c.pulseEvery = min(maxPulseInterval, 2*max(pulseInterval, c.pulseEvery))
+	} else if c.pending && p.pulseSettled(now) {
+		p.decisions.PulseWins++
+		c.pending, c.pulseEvery = false, 0
+	}
 	probed := c.drainBy
 	if lost {
 		// What a probe lost is known a settling period after it was lost.
@@ -213,8 +251,14 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		p.rate = math.Max(minimumRate, math.Max(p.cut(lost), capacityDrain*c.capacity))
 	case c.awaitingVerdict():
 		// The pulse found the limit: the estimate stands and its queue drains.
+		// A path that answered with loss instead of delay drops what it
+		// cannot forward: probing it costs datagrams, so the next probe waits
+		// longer (`TestPolicedLaneIsNotOverdriven`).
 		p.decisions.PulseLosses++
 		c.pulseWins, c.draining = 0, true
+		if lost {
+			c.pulseEvery = min(maxPulseInterval, 2*max(pulseInterval, c.pulseEvery))
+		}
 		c.drainBy = now.Add(p.drainTime(queued))
 		p.rate = math.Max(minimumRate, capacityDrain*c.capacity)
 		p.schedulePulse(now)
@@ -222,8 +266,10 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// The queue a probe built is still draining; it says nothing new
 		// about capacity.
 		p.rate = math.Max(minimumRate, math.Max(p.cut(lost), capacityDrop*c.capacity))
-	case !c.holdSignal:
-		// One signal below demonstrated capacity may be jitter.
+	case !c.holdSignal && !lost:
+		// One delay signal below demonstrated capacity may be jitter.
+		// Material loss is judged over enough datagrams already, and on a
+		// slow lane it shows in one control interval of several.
 		c.holdSignal = true
 	case !lost && p.floorTestable(now, p.signalDelay):
 		// Delay that persists on a lane holding below its capacity is either
@@ -245,9 +291,20 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	default:
 		p.decisions.CapacityDecays++
 		c.capacity *= capacityDecay
+		if lost && p.saturating() {
+			// Material loss while sending the target: the path delivers no
+			// more than it did.
+			c.capacity = math.Min(c.capacity, p.deliveryRate)
+		}
 		p.rate = math.Max(minimumRate, p.cut(lost))
 		c.drainBy = now.Add(p.drainTime(queued))
 	}
+}
+
+// saturating reports that the lane sends about its target, so what the path
+// delivers measures the path and not the sender.
+func (p *lane) saturating() bool {
+	return p.sendRate >= capacityDrain*p.rate
 }
 
 // drainTime is how long a queue may take to leave a path sent to at the
@@ -326,6 +383,12 @@ func (p *lane) floorTestable(now time.Time, queued time.Duration) bool {
 		now.Sub(p.floorTested) >= max(floorTestInterval, p.floorTestEvery)
 }
 
+// pulseSettled reports that loss the last pulse may have caused would have
+// shown by now.
+func (p *lane) pulseSettled(now time.Time) bool {
+	return now.Sub(p.control.wonAt) >= lossSettle+p.rtt && p.seq-p.control.wonSeq >= pulseConfirmDatagrams
+}
+
 func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
 	c := &p.control
 	limit := capacityHold * c.capacity
@@ -334,9 +397,20 @@ func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
 	case c.awaitingVerdict() && now.Before(c.verdictAt):
 		p.rate = limit
 	case c.awaitingVerdict() && now.Sub(c.verdictAt) < verdictExpiry:
-		// The pulse's feedback arrived without a congestion signal.
-		p.decisions.PulseWins++
+		// The pulse's feedback arrived without a congestion signal. The
+		// estimate rises now; the win counts, and the next pulse follows,
+		// once loss the pulse may have caused would have shown.
+		c.pending, c.wonAt, c.wonSeq, c.wonFrom = true, now, p.seq, c.capacity
 		c.capacity *= 1 + (pulseGain-1)*float64(int(1)<<c.pulseWins)
+		p.schedulePulse(now)
+		c.nextPulse = now.Add(lossSettle + p.rtt)
+		p.rate = capacityHold * c.capacity
+	case c.awaitingVerdict():
+		p.schedulePulse(now)
+	case c.pending && p.pulseSettled(now):
+		// No loss followed the pulse: it is won.
+		p.decisions.PulseWins++
+		c.pending, c.pulseEvery = false, 0
 		if c.pulseWins++; c.pulseWins >= pulseWinsToLeave {
 			p.decisions.Rediscoveries++
 			c.pulseWins = 0
@@ -344,9 +418,9 @@ func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
 			p.startup, p.startupBest, p.startupFlatRounds, p.discoveryGain = true, 0, 0, rediscoveryGain
 			return
 		}
-		p.pulse(now)
-	case c.awaitingVerdict():
-		p.schedulePulse(now)
+		if p.rate >= limit && laneLimited && p.sendRate >= startupPlateauSending*limit {
+			p.pulse(now)
+		}
 	case !now.Before(c.nextPulse) && p.rate >= limit && laneLimited && p.sendRate >= startupPlateauSending*limit:
 		// A pulse on a lane that sends less than its target tests nothing,
 		// and its silence would raise the estimate without evidence.
@@ -441,12 +515,16 @@ type lossEntry struct {
 const (
 	lossHorizon = time.Second
 	lossSettle  = 200 * time.Millisecond
+	// Three lost datagrams in a hundred and fifty are the material loss that
+	// counts; a lane too slow to send that many in a second is judged over
+	// longer, up to this.
+	maxLossHorizon = 4 * time.Second
 )
 
 // record adds the counts confirmed with the acknowledgement of seq; late is
 // what the sender believes is still on its way below seq.
 func (l *lossLedger) record(now time.Time, seq, sent, received, late uint64) {
-	for len(l.entries) > 0 && now.Sub(l.entries[0].at) >= lossHorizon+2*lossSettle {
+	for len(l.entries) > 0 && now.Sub(l.entries[0].at) >= maxLossHorizon+2*lossSettle {
 		l.entries = l.entries[1:]
 	}
 	if n := len(l.entries); n > 0 && seq <= l.entries[n-1].seq {
@@ -467,26 +545,38 @@ func (l *lossLedger) settled(now time.Time) (deficit float64, known bool) {
 }
 
 // lost is the loss, in bytes, between the settling period a horizon ago and
-// the current one, with the bytes and datagrams sent in between.
+// the current one, with the bytes and datagrams sent in between. The horizon
+// is a second, or as much longer as it takes the lane to send enough
+// datagrams for three lost ones to mean two percent (a 45-datagram-a-second
+// lane lost 5% for good with a one-second horizon: three losses a second was
+// 6.7% of it).
 func (l *lossLedger) lost(now time.Time) (bytes, sent, datagrams float64) {
-	var old, recent *lossEntry
+	var recent *lossEntry
 	for i := range l.entries {
-		e := &l.entries[i]
-		switch age := now.Sub(e.at); {
-		case age >= lossHorizon && age < lossHorizon+lossSettle:
-			if old == nil || e.deficit < old.deficit {
-				old = e
-			}
-		case age < lossSettle:
-			if recent == nil || e.deficit < recent.deficit {
-				recent = e
-			}
+		if e := &l.entries[i]; now.Sub(e.at) < lossSettle && (recent == nil || e.deficit < recent.deficit) {
+			recent = e
 		}
 	}
-	if old == nil || recent == nil || recent.seq <= old.seq {
+	if recent == nil {
 		return 0, 0, 0
 	}
-	return math.Max(0, recent.deficit-old.deficit), float64(recent.sent - old.sent), float64(recent.seq - old.seq)
+	const judged = startupLossEvents / startupLossRatio
+	for horizon := lossHorizon; horizon <= maxLossHorizon; horizon += lossSettle {
+		var old *lossEntry
+		for i := range l.entries {
+			e := &l.entries[i]
+			if age := now.Sub(e.at); age >= horizon && age < horizon+lossSettle && (old == nil || e.deficit < old.deficit) {
+				old = e
+			}
+		}
+		if old == nil || recent.seq <= old.seq {
+			continue
+		}
+		if datagrams = float64(recent.seq - old.seq); datagrams >= judged || horizon+lossSettle > maxLossHorizon {
+			return math.Max(0, recent.deficit-old.deficit), float64(recent.sent - old.sent), datagrams
+		}
+	}
+	return 0, 0, 0
 }
 
 // material reports loss of at least three datagrams and 2% of what was sent
