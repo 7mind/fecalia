@@ -745,44 +745,60 @@ calibration's TCP check does not apply to this profile; UDP calibrates at
 290 Mbit/s per WAN. The tunnel's own CPU on the 4-vCPU guests stayed below
 1.5 cores at 600 Mbit/s and no thread above a third of a core.
 
-First runs of `main` at `e14db98`: TCP 31 / 93 Mbit/s, UDP 229 / 250 (up /
-down, gates 450 / 480). Two causes reproduced in the deterministic model
-(`fast_lane_test.go`):
+First runs of `main` at `e14db98`, before the lab corrections described under
+"Scenarios and gates": TCP 31 / 93 Mbit/s, UDP 229 / 250 (up / down, gates
+450 / 480).
 
-| Cause | Model | Change |
+Changes kept, each reproduced first:
+
+| Cause | Reproduction | Change |
 |---|---|---|
-| Any timed-out datagram was a congestion signal; at 300 Mbit/s a 0.4% random loss times something out in every control interval | lane collapsed from 28 to 3 MB/s within 12 s | loss is congestion only when a round lost 3+ datagrams and 2% (the startup rule, in every state) |
+| Any timed-out datagram was a congestion signal; at 300 Mbit/s a 0.4% random loss times something out in every control interval | model lane collapsed from 28 to 3 MB/s within 12 s | loss is congestion only when a round lost 3+ datagrams and 2% (the startup rule, in every state) |
 | Before eight delay differences, one delayed sample ended discovery | 30 ms jitter lane held at 16 kB/s for 6 s of a cold start | the probes' unloaded variation stands in for the spread |
+| The resequencer's 2048-frame window abandoned a gap once 2048 later frames arrived | unit test: 12500 frames arrive during a 250 ms repair at 600 Mbit/s; in the lab every abandoned sequence arrived afterwards as a stale frame | window of 32768 frames; the engine's anti-replay window raised from 8128 to 131008 messages to stay above it |
 
-Two further changes were tried and rejected: a timeout bounded by the recent
-peak confirmation time (TCP fell to 12 / 37 Mbit/s: repairs approached the
-250 ms lifetime), a timeout including the recently measured queue delay
-(within variation), and a window sized from confirmation time (no gain, two
-model tests fail).
+Candidate W (`wanbond-w1`, branch `fast-links`) against `main` (A,
+`11a6b020…`), W A A W:
 
-Regression series, `main` (A, `11a6b020…`) against the candidate (G,
-`34921a4d…` plus the two changes; `wanbond-g5`), A G G A order per binary:
-
-| Measurement | A | G |
+| Measurement | A | W |
 |---|---|---|
-| Radio TCP up / down, Mbit/s | 1.322/74.0, 1.290/82.8 | 1.326/82.5, 1.290/75.5 |
+| Radio TCP up / down, Mbit/s | 1.256/67.6, 1.292/83.6 | 1.291/82.6, 1.254/79.9 |
 | Radio continuity | 2 of 2 pass | 2 of 2 pass |
-| 300+300 UDP up / down, Mbit/s | 210/260, 252/249 | 308/367, 324/347 |
-| 300+300 TCP up / down, Mbit/s | 147/205, 120/138 | 70/90, 98/74 |
+| 300+300 UDP up / down, Mbit/s | 254/240, 227/219 | 319/346, 353/382 |
+| 300+300 TCP up / down, Mbit/s (20 s after a 15 s warm-up) | 134/103, 151/70 | 87/98, 114/161 |
 
-Six more 300+300 runs of G-equivalent builds gave UDP 310-387 and TCP
-52-126 Mbit/s. G carries more UDP and less TCP than A, and neither reaches the
-gates. The traces explain both: on A the loss cuts hold the lanes at a third
-of their capacity; on G the lanes fill, the 0.4% loss then costs about 100
-datagrams a second, and each is repaired only after a timeout of 100-200 ms,
-during which the receiver's resequencer holds everything behind it (hub: 5378
-holds totalling 33.6 s in a 35 s run). TCP sees a 100-230 ms round trip with
-occasional loss and stays at a 1-3 MB window. The slower lanes of A stall TCP
-less often. Faster loss detection than the timeout (acknowledgement gaps) or
-forward error correction for bulk on a lossy lane would address this; neither
-was attempted.
+W carries about half as much more UDP at 300+300 Mbit/s, the radio profile
+does not move, and TCP at 300+300 Mbit/s is within run-to-run variation on
+both (50-205 Mbit/s over all runs of all builds today). Neither reaches the
+gates at 300+300 Mbit/s.
 
-UDP on G is limited by the lossy lane, which sends 20-27 of its 37.5 MB/s
-while its window of about 3 MB, sized from the unloaded round trip, is
-exhausted before acknowledgements return through the path's jitter and the
-25-50 ms cadence.
+Why TCP stays near 100 Mbit/s, from traces of W-equivalent builds:
+
+- TCP's window sits at 1-3 MB with a 100-230 ms round trip: in-order delivery
+  across the two WANs costs the slower one's latency and jitter, and the
+  resequencer is holding for some gap during the whole transfer on every
+  build. A loss reaches TCP every 10-15 s; at that round trip CUBIC needs
+  longer than that to grow.
+- The lanes' targets stay at 6-30 MB/s of 37.5 during a TCP transfer. Of 32
+  rate cuts in a 30 s transfer, 27 were loss cuts, 10 of them on the lossless
+  5G WAN: jitter carries round trips past the repair timer (100-125 ms against
+  a 140 ms tail), those timeouts count as loss, and TCP's small rounds make
+  one or two of them material. Discovery then ends at whatever TCP happened
+  to be sending.
+- The losses TCP sees are gaps the resequencer abandons (2-15 a minute) and
+  the tunnel's own CoDel drops.
+
+Tried and rejected, each measured:
+
+| Attempt | Result |
+|---|---|
+| Timeout bounded by the recent peak confirmation time | TCP 12 / 37 Mbit/s in the lab: repairs approach the 250 ms lifetime. In the model it also removed the controller's loss signal, and a 75 ms queue stood in the path |
+| Timeout including the recently measured queue delay | within variation |
+| Window sized from confirmation time | no gain; two model tests fail |
+| Repair from acknowledgement gaps (a lost datagram is one that later acknowledged sends have passed) | no lab gain. At 27000 datagrams a second the acknowledgement's 256-entry receipt bitmap spans 10 ms, less than any usable reordering allowance, so nothing inside it is old enough to judge; judging what has left the bitmap produced false verdicts. It needs a receipt bitmap that scales with the rate, a wire format change |
+| Gap-detected repairs on the earliest-arrival lane | abandoned gaps 3-15 a minute against 2-4 |
+
+Open, in the order I would take them: an acknowledgement format whose receipt
+bitmap scales with the rate, then repair from gaps; a loss signal that does
+not count timeouts later shown spurious; a capacity estimate that is not
+taken from an application-limited transfer.

@@ -448,7 +448,7 @@ internal/monitor/       monitoring-UI endpoint, read-only except authenticated P
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
-third_party/amneziawg-go AmneziaWG engine v3.1.20260828 + local patches: send completion, flow metadata, outbound admission/observability, S4 read rebase (#169), test vet fix (#157)
+third_party/amneziawg-go AmneziaWG engine v3.1.20260828 + local patches: send completion, flow metadata, outbound admission/observability, S4 read rebase (#169), test vet fix (#157), 131008-message anti-replay window
 test/e2e/               -tags e2e netns fixture (P0–P5)
 test/realhosts/         -tags realhosts real-machine tier
 docs/                   design, install, findings, manual checklist

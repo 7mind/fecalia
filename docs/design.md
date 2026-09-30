@@ -28,6 +28,10 @@ commit `b5928ef`) plus engine-generic local patches:
 - The unmerged upstream PR #169 correction for issue #168: a packet read while
   a UAPI update changed S4 is re-based to the current transport padding.
 - The one-line upstream #157 test fix so `go vet ./device/...` remains a valid gate.
+- The RFC 6479 anti-replay window (`replay.ringBlocks`) is 131008 messages
+  instead of 8128: real-time datagrams are delivered ahead of bulk the
+  resequencer still holds for repair, so counters arrive out of order by as
+  many datagrams as are held.
 
 v3 keeps message headers, paddings and junk parameters in per-`Device` atomics,
 so the former v1.0.4 per-device protocol-state and junk-PRNG patches are no
@@ -499,7 +503,11 @@ never changes an encrypted datagram. It is counted separately from queue drops.
 
 **Receive ordering decision.** Bulk has its own delivery sequence and a 300 ms
 resequencing hold before WireGuard, covering the sender's 250 ms repair lifetime
-plus the tested one-way propagation delay. An 8192-packet receive bitmap covers
+plus the tested one-way propagation delay. The resequencer's window is 32768
+frames, so that a gap can wait that long at 600 Mbit/s (12500 datagrams arrive
+in 250 ms); at 2048 frames it was abandoned, a loss to TCP, once the flow
+exceeded about 10000 datagrams a second
+(`TestResequencerHoldsARepairAtHighRate`). An 8192-packet receive bitmap covers
 cross-lane reorder; ACKs advertise 256-entry receipt windows plus their lane
 receipts. Small packets are deduplicated and delivered immediately through a
 bounded 256-entry queue. A late small packet does not become lost merely because
