@@ -977,6 +977,80 @@ lanes, and the late confirmations time out. Production shows no such
 reordering (lane acknowledgements confirmed 98% of the bytes the edge sent
 and 88% of the bytes sent back, read-only metrics of 2026-09-30), so the lab
 figures under `wander.py` are a lower bound.
+### Loss from byte counts, level shifts, and a policed WAN — 2026-09-30
+
+Branch `level-shift` (rebuilt on `main` `aef36c9` as `level-shift2`), each
+change with a failing test first; the scatter discount and the probe-drain
+expiry of the previous section came from it:
+
+| Cause | Change |
+|---|---|
+| A timeout cannot tell a lost datagram from a late one; under `wander.py` 284 loss cuts in one transfer over links that dropped nothing | loss is measured from the receiver's cumulative byte count per lane against the bytes sent through the acknowledged sequence, settled over 200 ms and judged over a second (`lossLedger`); timeouts still trigger the repair (`TestLossLedgerTellsLateFromLost`) |
+| A latency level that moves up reads as a queue until the ten-second baseline refresh; a 15 ms shift on a 300 Mbit/s lane cut delivery by up to half for two to three seconds, and one that fell on a probe held the target at 75% for as long as the level lasted | on the second consecutive delay signal of a holding lane, when neither a target above the estimate nor a probe or cut still draining explains it, bulk pauses for twice the delay and the samples sent afterwards give the verdict: floor where it was, the delay was a queue and the estimate drops 3%; still late, the floor moved and the target stands (`TestLatencyLevelShiftDoesNotCutTheTarget`) |
+| The production satellite link polices rather than queues: on 2026-09-30 at 20:21 the concentrator sent 107 kB/s into it while it delivered 65, for fifteen seconds, with queue delay under 7 ms and the loss repaired over the other lane. In the model of such a path (a two-datagram token bucket beside a 100 Mbit/s lane) the target stood at 1.04-1.10 of capacity with 4-10% loss | the loss cut goes below delivery (95%, not 105%) and lowers the estimate to it when the lane was sending its target; material loss is judged over 150 datagrams, up to 4 s, and is its own confirmation; a probe is won only after 30 datagrams and a settling period without loss, and loss in that time returns the estimate and doubles the wait before the next probe, up to 16 s (`TestPolicedLaneIsNotOverdriven`: 1.3% loss, all in the seconds a probe ran) |
+
+The reordering measurement introduced with the ledger compared the
+datagrams one acknowledgement confirms with each other in map order, so an
+in-order path measured 37 ms of reordering and model runs were not
+repeatable (`TestInOrderPathShowsNoReordering`; the datagrams one
+acknowledgement confirms arrive in an order it does not tell).
+
+#### Model
+
+Deterministic TCP model, 300+300 Mbit/s unless stated, last 30 of 60 s,
+Mbit/s. The model's loss now draws from its own random stream, so every
+version meets the same path; the figures are not comparable with the
+previous section's. Four seeds, X against Z (all four changes):
+
+| Scenario | X | Z |
+|---|---|---|
+| Measured latency on both lanes, no loss | 511, 530, 522, 533 | 519, 522, 523, 529 |
+| Measured latency, 0.1% loss on the satellite lane | 503, 486, 486, 474 (2423 and 3464 TCP retransmits in two of them) | 447, 494, 373, 511 (462 in one) |
+| Satellite lane alone | 263, 262, 262, 244 | 250, 250, 267, 266 |
+| Today's uplink, 0.4+1.25 Mbit/s | 1.40, 1.34, 1.37, 1.40 | 1.39, 1.35, 1.38, 1.36 |
+| Today's downlink, 0.5+100 Mbit/s | 86.5, 87.6, 86.9, 89.4 | 86.8, 88.2, 86.0, 89.0 |
+
+Over ten seeds the lossy scenario averages 473 Mbit/s without the scatter
+discount and 456 with it (paired difference −16 ± 44); the satellite lane
+alone 259 and 257. The report (`-tags model`) now also prints the wait for
+the link that 95% of the sender's datagrams stayed below, per lane: with the
+first version of the floor test, which swallowed the congestion signal when
+the delay turned out to be a queue, the lossy scenario ran with targets a
+quarter above capacity and 40 ms standing in both paths; the verdict that
+lowers the estimate brought that back to 17-31 ms (X: 15-24 ms).
+
+#### Throughput
+
+Both profiles, interleaved runs through the day (Z4 and Z6 differ only in
+the scatter discount and the floor-test verdict), Mbit/s:
+
+| Measurement | X | Z4 / Z6 |
+|---|---|---|
+| Radio TCP up / down | 1.322/83.0, 1.290/83.1, 1.324/79.9 | 1.290/73.4, 1.322/81.1, 1.326/75.1 |
+| 300+300 netem jitter, TCP up / down | 102/144, 167/67, 111/75 | 206/62, 89/115, 124/61 |
+| 300+300 netem jitter, UDP up / down | 382/363, 377/396, 405/418 | 391/379, 397/362, 397/408 |
+| 300+300 `wander.py`, TCP up / down, 60 s | 96/117, 148/140, 112/132 | Z3 204/181, 200/198, 234/197; Z6 224/196, 236/201 |
+| 300+300 `wander.py`, UDP up / down | 160/106, 202/160, 220/178 | Z3 246/191, 222/167, 246/222; Z6 242/181, 198/125 |
+
+The ledger alone (Y, before the floor test) gave 179-239/184-202 TCP under
+`wander.py` in seven runs; the floor test adds nothing measurable there, and
+the model says why: the lab's latency steps reorder datagrams, its level
+shifts are what the floor test is for, and the random path of the model's
+report has small ones. Radio download is 5-10 Mbit/s lower with Z in three
+of three pairs; the netem-jitter TCP figures scatter too much for three
+pairs to say anything.
+
+#### The policed WAN
+
+`radio-policed.json` is the radio profile with the 0.4/0.5 Mbit/s WAN
+policed (a token bucket of two datagrams, `"police": true`, `lab.py`).
+Before the loss responses above were limited to a lane sending its target
+(Z7), the lane that took over voice when the other WAN failed sent 30 kB/s
+of a 42 kB/s target, lost to its bursts, was cut to 25 kB/s and dropped
+96 voice datagrams in its own queue: voice loss 1.35-1.57% in two of three
+runs against a gate of 1%. With the limit (Z8), three continuity runs lost
+0.06-0.49% (X: 0.06-0.28%); TCP up/down 1.255-1.290 / 60-82 Mbit/s against
+X's 1.288-1.291 / 68-79 in three pairs.
 
 ## A call beside bulk: one lane, a flood, and the lane a call rides — 2026-10-01
 

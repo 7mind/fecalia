@@ -68,7 +68,13 @@ over each control interval, with a jitter allowance learned while the lane is
 idle, to separate propagation variation from sustained queueing. The queue
 allowance excludes return-path jitter; the window uses unloaded RTT history.
 The in-flight window and repair timer also account for RTT variation. Loss
-response caps pacing near measured delivery with headroom for jitter; metrics
+is measured from the receiver's byte counts, not from timeouts, so late or
+reordered datagrams are not taken for lost ones. Delay that persists on a link
+holding below its capacity first pauses bulk on it briefly and measures the
+link's latency floor again, so a latency that moved to a higher level is not
+taken for a queue. Loss
+response caps pacing just below measured delivery, since a path that drops
+instead of queueing delivers its capacity while it drops the rest; metrics
 distinguish the pacing target from actual send and delivery rates. The repair
 timer also measures full delivery-confirmation time so reordered packets do not
 trigger premature retries.

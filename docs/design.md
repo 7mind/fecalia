@@ -279,8 +279,31 @@ production links (600 pings each, idle, 2026-09-30) has a round-trip standard
 deviation of 7-10 ms, and on one of them moves between levels 10-20 ms apart
 that last for seconds; a model lane with that wander and the fixed 10 ms
 threshold was held at its minimum rate (`TestWanderingLatencyIsNotAQueue`).
-netem's jitter is drawn anew for every datagram and does not show this. Loss is material when the last
-second timed out at least three datagrams and 2% of those sent (BBRv2's startup
+netem's jitter is drawn anew for every datagram and does not show this.
+
+Loss is measured from byte counts. Every acknowledgement carries the bytes the
+receiver has received on the lane, and the sender knows the bytes it had sent
+through the acknowledged sequence. The difference is the loss so far plus what
+was sent before that sequence and has not arrived yet. That backlog is never
+negative and empties as the late datagrams arrive, so the lowest difference
+within 200 ms is the loss so far, and its growth from one such period to the
+one a second later is the loss of that second. Datagrams below the
+acknowledged sequence that the acknowledgement does not confirm, and that
+were sent less than the path's reordering allowance before the acknowledged
+datagram, count as still on their way: the allowance is the largest of 10 ms,
+three times the delay jitter, three times the unloaded forward variation, and
+1.25 times the longest reordering of the last ten seconds. Reordering is what
+confirmations show: a datagram confirmed by a later acknowledgement than one
+sent after it was overtaken by the difference of their send times. The
+datagrams one acknowledgement confirms are not compared with each other,
+since their order of arrival is not known (`TestInOrderPathShowsNoReordering`).
+A timeout cannot tell a lost
+datagram from a late one. A datagram whose timeout passes is sent again at
+once, but timeouts are not counted: with latency that wanders, datagrams that
+arrived were timed out, repaired and counted as lost, and the target was cut
+for loss on links that dropped nothing (VM runs of 2026-09-30 with
+`wander.py`: 284 loss cuts in one transfer). Loss is material when the last
+second lost at least three datagrams' worth of bytes and 2% of those sent (BBRv2's startup
 exit threshold, applied in every state): a path that loses a fraction of a
 percent at random loses something in every control interval at a high rate, and
 cutting on each of them held a 300 Mbit/s lane at 3 MB/s
@@ -288,12 +311,22 @@ cutting on each of them held a 300 Mbit/s lane at 3 MB/s
 is taken over a second and not over one delivery round: a round of a hundred
 datagrams on a path losing 0.4% holds three losses once in fifty rounds, and
 each then ended discovery at the sender's own rate
-(`TestUnderusedLossyLaneKeepsItsTarget`). A datagram whose timeout passes is
-sent again at once but counts as lost only when it stays unconfirmed for a
-second timeout, or is confirmed no sooner than its repair could have been: a
-confirmation delayed by jitter or by the acknowledgement cadence arrives
-after the first timeout as often as a loss does, and counting those cut the
-target of a lane that lost nothing. Jitter spreads the samples, and the
+(`TestUnderusedLossyLaneKeepsItsTarget`). A lane too slow to send a hundred
+and fifty datagrams in a second is judged over as long as that takes, up to
+four seconds: three losses a second were 6.7% of a 45-datagram lane, and it
+lost 5% for good. Material loss is its own confirmation and cuts at once; a
+lane losing one datagram in several control intervals never gives two
+consecutive signals. Its cut takes the target to 95% of what was delivered,
+not 105%: a path that polices rather than queues delivers its capacity while
+it drops the rest, and the estimate follows it down. Both apply only to a
+lane sending about its target (85% of it or more); a lane sending well below
+it lost to its bursts, and what it delivered says nothing about the path (a
+lane that took over voice from a failed one sent 30 kB/s of a 42 kB/s target
+into a policed 50 kB/s path and was cut to 25 kB/s, dropping 96 voice
+datagrams in its own queue); it is cut by 10% and its estimate left alone
+(`TestPolicedLaneIsNotOverdriven`).
+
+Jitter spreads the queue-delay samples, and the
 minimum of a few exceeds the threshold by chance: with a 60 ms spread and two
 samples, in most intervals. The mean difference between consecutive samples
 estimates the spread (a third of it for a uniform spread; a queue changes
@@ -318,14 +351,20 @@ signal before the pulse's feedback is complete confirms the estimate; the
 target drops to 85% until a clear interval shows the queue has drained, and
 signals in that period do not change the estimate. That period ends after the
 time the queue may need to leave at 85%, `2*queue/0.15 + 2*SRTT` (twice the
-queue measured, since the probe ran on while its feedback travelled): delay
-that outlasts it is not the probe's and counts as a repeated signal on a
-holding lane. Taken for the probe's queue without limit, the delay of a lane
-that lost half its capacity while a probe drained held the target at three
-quarters of the old capacity, with the path's buffer full
+queue measured, since the probe ran on while its feedback travelled; loss a
+probe caused is known 200 ms later still): delay that outlasts it is not the
+probe's and counts as a repeated signal on a holding lane. Taken for the probe's queue without limit, the delay of a lane that lost
+half its capacity while a probe drained held the target at three quarters of
+the old capacity, with the path's buffer full
 (`TestCapacityDropIsNotALevelShift`). A pulse without a signal
 raises the estimate by 5%, the next by 10%, and the third returns the lane to
-discovery at a gain of 1.5. Discovery also uses that gain instead of 2 while
+discovery at a gain of 1.5. The estimate rises at once, but the pulse is won,
+and the next follows, only after thirty datagrams and a loss settling period
+(200 ms) have passed without loss: a path that polices rather than queues
+drops the pulse's excess instead of delaying it, too little of it to be
+material, and its loss is known a settling period late. Loss in that time
+returns the estimate to what it was and doubles the wait before the next
+pulse, up to 16 s, until one is won without loss. Discovery also uses that gain instead of 2 while
 real-time datagrams are carried: its overshoot queues in the path's buffer
 ahead of them (VM run `20260929-152215-continuity`: 370 ms voice round trips in
 the first five seconds of a cold start).
@@ -348,8 +387,36 @@ seconds after the failure; `TestLightlyLoadedLaneTargetStaysWithinCapacity`).
 The cost is a slower start of bulk traffic beside voice.
 
 While holding, one signal may be jitter: only a
-second consecutive signal cuts the target, by 10%, and lowers the estimate by
-3%. A peer that restarts takes the lane's sequence spaces and probing state
+second consecutive signal acts. Delay that persists on a lane holding below
+its capacity is either a queue or a path whose latency moved to a higher
+level: measured from the transit floor of the lower level, the higher one
+reads as a queue for as long as it lasts, and no reduction of the target
+removes it. The two are told apart before the target is cut, when nothing
+explains the delay already: the target is not above the estimate, and neither
+a probe nor an earlier cut can still be draining its queue. Bulk pauses on the
+lane for twice the delay the control interval judged (the delay is measured a
+round trip late, and a queue may have grown since), divided by the share of
+the target that bulk gives up, since the higher classes keep sending. What is
+sent after the pause finds an empty path, and the control interval that begins
+with it gives the verdict. One sample near the floor shows the floor where it
+was: the delay was a queue, the pause has drained it, and the estimate is
+lowered by 3% as a repeated signal lowers it, with the target at no more than
+95% of it. If the samples are still late, as many of them as a delay signal
+needs, the path's latency moved: the floor is measured anew from there, and
+the target stands. No probe follows a test for a second. The least time
+between two tests of a lane starts at 2 s, doubles with every test that finds
+a queue, up to 16 s, and starts again when one finds the floor moved. No test
+runs when the pause would exceed 200 ms: on a lane that mostly carries
+real-time traffic a bulk pause drains little
+(`TestVoiceSurvivesOnSingleSlowLane`). Otherwise a second consecutive signal
+is a queue: it cuts the target by 10% and lowers the estimate by 3%, and the
+queue it leaves counts as explained for the time it needs to drain. Without
+the test, a 15 ms level shift on a 300 Mbit/s lane cut delivery by up to half
+for two to three seconds, and one that fell on a probe held the target at
+three quarters of the capacity for as long as the level lasted
+(`TestLatencyLevelShiftDoesNotCutTheTarget`). A lane that lost 20-75% of its
+capacity still settles within five seconds
+(`TestCapacityDropIsNotALevelShift`). A peer that restarts takes the lane's sequence spaces and probing state
 with it but not its capacity estimate: the path did not restart. Cleared with
 the rest, the estimate left the lane out of discovery with no bound but a
 congestion signal, and on the production satellite link, which drops rather
@@ -406,7 +473,10 @@ with a collapsed target triggers baseline calibration, at most once per 10 secon
 on that lane for `max(200 ms, 2*SRTT)` to drain its queue, then a fresh sample
 establishes the forward-delay baseline. Small packets continue; other lanes
 remain eligible. This distinguishes changed propagation delay from persistent
-queueing without synchronized clocks. Targets are bounded to 16 kB/s–1.25 GB/s;
+queueing without synchronized clocks. It is the backstop for a lane whose
+target has already collapsed; a holding lane asks the same question on the
+second consecutive delay signal, with a pause sized to the delay and a verdict
+that keeps the floor when the delay was a queue (hold and pulse, above). Targets are bounded to 16 kB/s–1.25 GB/s;
 links below that floor or beyond the bounded packet windows are outside the
 tested envelope.
 The congestion window uses the unloaded mean RTT,
