@@ -252,10 +252,13 @@ type receiver struct {
 
 // Transport has no goroutines or I/O. Its owner serializes calls.
 type Transport struct {
-	epoch            Epoch
-	remote           Epoch
-	paths            []*lane
-	receivers        map[PathID]*receiver
+	epoch     Epoch
+	remote    Epoch
+	paths     []*lane
+	receivers map[PathID]*receiver
+	// receiverOrder holds the receivers in order of creation: acknowledgements
+	// leave in that order, so a run does not depend on map iteration.
+	receiverOrder    []*receiver
 	queue            packetFIFO
 	bulkAQM          codel
 	small            [classBulk]fairPacketQueue
@@ -318,6 +321,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 	t.pendingOrder = nil
 	t.seq, t.bulkSeq, t.interactiveSeq = 0, 0, 0
 	t.receivers = make(map[PathID]*receiver)
+	t.receiverOrder = nil
 	t.received = receiptWindow{}
 	t.unreported = receiptWindow{}
 	for _, p := range t.paths {
@@ -591,7 +595,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	}
 	t.lastPoll = now
 	out := make([]Transmission, 0, 8)
-	for _, r := range t.receivers {
+	for _, r := range t.receiverOrder {
 		path := t.find(r.path)
 		if path == nil || !path.up(now) {
 			continue
@@ -776,6 +780,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 		if r == nil {
 			r = &receiver{path: path, remoteLane: h.lane, start: now, ackAt: now}
 			t.receivers[h.lane] = r
+			t.receiverOrder = append(t.receiverOrder, r)
 		}
 		if r.path != path {
 			return nil, errors.New("bond: receiver lane changed without probe")
