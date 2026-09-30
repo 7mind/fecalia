@@ -42,6 +42,12 @@ key authentication and rejection of password/keyboard-interactive methods.
 No host networking, production host, router or production credential is used.
 Guest WAN changes cannot disconnect the management NIC.
 
+A transport change is judged on both link profiles, `radio` and `gigaradio`,
+interleaved with the baseline in one lab session, before it is proposed for
+deployment. A result on one profile alone does not support a deployment
+decision: on 2026-09-30 a candidate raised UDP at 300+300 Mbit/s and lowered
+TCP there while the radio profile did not move.
+
 ## Scenarios and gates
 
 | Scenario | Conditions | Pass criteria |
