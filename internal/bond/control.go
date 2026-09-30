@@ -7,6 +7,7 @@ import (
 
 const (
 	capacityHold     = 0.95 // held target, as a fraction of demonstrated capacity
+	wanderLoad       = 0.5  // a lane sending below this share of its target queues nothing
 	capacityDrain    = 0.85 // target after a probe found the limit, to drain its queue
 	capacityDecay    = 0.97 // estimate reduction per congestion cut while holding
 	capacityDrop     = 0.75 // held target this far below the estimate: capacity fell
@@ -54,8 +55,52 @@ func (p *lane) measuredDelivery() float64 {
 	return math.Max(p.deliveryRate, (p.deliverySample+p.previousDelivery)/2)
 }
 
+// congestionThreshold is the queue delay above which the path is taken to be
+// queueing this lane's datagrams.
+//
+// Queue delay is measured from the lowest transit time seen. A path whose
+// latency wanders over tens of milliseconds sits above that floor most of the
+// time, by more than the unloaded variation suggests when the wander is slow:
+// the samples of a control interval then move together, and their minimum is
+// no nearer the floor than any of them. The threshold therefore stands above
+// the delay seen while the lane sent too little to queue anything (latency
+// measured on the production links on 2026-09-30 wanders with a standard
+// deviation of 3-5 ms one way; a model lane with that wander and a 10 ms
+// threshold was held at its minimum rate, `TestWanderingLatencyIsNotAQueue`).
 func (p *lane) congestionThreshold() time.Duration {
-	return max(targetQueue, jitterAllowanceFactor*p.idleForwardVariation)
+	threshold := max(targetQueue, jitterAllowanceFactor*p.idleForwardVariation)
+	if p.wanderKnown {
+		threshold = max(threshold, p.wander+jitterAllowanceFactor*p.wanderVariation+targetQueue)
+	}
+	return threshold
+}
+
+// lightlyLoaded reports that the lane sends well below what it has shown it
+// can carry and that delivery keeps up: whatever delay it sees, it did not
+// queue. Before any capacity is known the target stands in for it; a target
+// inflated by discovery is then no excuse, since the lane sends half of it
+// only while the sender, not the lane, is the limit.
+func (p *lane) lightlyLoaded() bool {
+	reference := p.control.capacity
+	if p.startup || reference == 0 {
+		reference = math.Min(p.rate, math.Max(initialRate, p.recentDelivery.value(p.lastACK)))
+	}
+	return p.sendRate < wanderLoad*reference && p.deliveryRate > 0 && p.sendRate <= queueSendExcessRatio*p.deliveryRate
+}
+
+// observeWander folds the queue delay of a lightly loaded control interval
+// into the estimate of the path's own wander above its floor.
+func (p *lane) observeWander(delay time.Duration) {
+	if !p.wanderKnown {
+		p.wander, p.wanderVariation, p.wanderKnown = delay, delay/2, true
+		return
+	}
+	difference := delay - p.wander
+	if difference < 0 {
+		difference = -difference
+	}
+	p.wanderVariation = (3*p.wanderVariation + difference) / 4
+	p.wander = (7*p.wander + delay) / 8
 }
 
 // adjust runs once per control interval of a lane with demand. laneLimited

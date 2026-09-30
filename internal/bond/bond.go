@@ -51,16 +51,21 @@ const (
 	ipProtocolTCP         = 6
 	pathLease             = time.Second
 	minimumRTO            = 60 * time.Millisecond
-	feedbackHorizon       = 2 * time.Second
-	deliveryInterval      = 50 * time.Millisecond
-	baselineInterval      = 10 * time.Second
-	baselineDrain         = 200 * time.Millisecond
-	baselineStagger       = 500 * time.Millisecond
-	maxPackets            = 8192
-	smallPacket           = 384
-	redundancyRate        = 64000.0
-	redundancyShare       = 0.2
-	maxDatagram           = 9000
+	// maxWander bounds what passes for a path's own latency wander; a larger
+	// delay on a lightly loaded lane is somebody's queue.
+	maxWander          = 3 * targetQueue
+	lossConfirmation   = 2 // timeouts without confirmation before a datagram counts as lost
+	repairConfirmation = 8 // tenths of the base round trip a repair needs to be confirmed
+	feedbackHorizon    = 2 * time.Second
+	deliveryInterval   = 50 * time.Millisecond
+	baselineInterval   = 10 * time.Second
+	baselineDrain      = 200 * time.Millisecond
+	baselineStagger    = 500 * time.Millisecond
+	maxPackets         = 8192
+	smallPacket        = 384
+	redundancyRate     = 64000.0
+	redundancyShare    = 0.2
+	maxDatagram        = 9000
 	// fullDatagramWireBytes is an ordinary full-size datagram on the wire.
 	fullDatagramWireBytes = 1500
 	wireOverhead          = 129 // outer CONTROL, adaptive header, sequences, IP and UDP
@@ -152,6 +157,11 @@ type attempt struct {
 	bytes     int
 	released  bool
 	confirmed bool
+	// timedOut: the timeout passed without a confirmation and the datagram
+	// was offered for repair. counted: it has been counted as lost, which
+	// waits until the timeout is shown not to have been premature.
+	timedOut bool
+	counted  bool
 }
 
 type transitBaseline struct {
@@ -180,6 +190,9 @@ type lane struct {
 	control              control
 	peakDelivery         float64
 	recentDelivery       peak
+	wander               time.Duration
+	wanderVariation      time.Duration
+	wanderKnown          bool
 	rtt                  time.Duration
 	rttVariation         time.Duration
 	idleRTTVariation     time.Duration
@@ -628,11 +641,20 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			path.baselinePending = true
 		}
 		for seq, a := range path.attempts {
+			if a.timedOut && !a.counted && !a.confirmed && a.packet != nil && now.Sub(a.sent) >= lossConfirmation*path.rto() {
+				// Still unconfirmed after a further timeout: lost.
+				path.lostSinceAdjust = true
+				path.recentLost.add(now, 1)
+				a.counted = true
+				path.attempts[seq] = a
+			}
 			if !a.released && now.Sub(a.sent) >= path.rto() {
-				path.lostSinceAdjust = path.lostSinceAdjust || a.packet != nil
-				if a.packet != nil {
-					path.recentLost.add(now, 1)
-				}
+				// The datagram is sent again now, but not yet counted as lost:
+				// a confirmation delayed by jitter or by the acknowledgement
+				// cadence arrives after this as often as a loss does (model:
+				// 77 timeouts a second on a lane losing 37), and counting
+				// those cut the target of a lane that lost nothing.
+				a.timedOut = true
 				if path.lastACK.Before(a.sent) {
 					path.stalled = true
 					if a.packet != nil && now.Sub(path.lastAdjust) >= deliveryInterval {
@@ -935,6 +957,13 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		}
 		for seq, sent := range path.attempts {
 			if sent.packet != nil && (sent.packet.acked || a.received(sent.packet.seq)) && !sent.confirmed {
+				if sent.timedOut && !sent.counted && sent.packet.attempts > 1 && now.Sub(sent.packet.lastSent) >= repairConfirmation*path.baseRTT/10 {
+					// Confirmed no sooner than its repair could have been: the
+					// timed-out transmission itself was lost.
+					path.lostSinceAdjust = true
+					path.recentLost.add(now, 1)
+					sent.counted = true
+				}
 				sent.packet.acked = true
 				if !sent.released {
 					path.release(sent)
@@ -1008,6 +1037,9 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	queueDelay := p.queueDelay
 	if p.haveInterval {
 		queueDelay = p.intervalQueueDelay
+	}
+	if sample > 0 && queueDelay <= maxWander && p.lightlyLoaded() {
+		p.observeWander(queueDelay)
 	}
 	delayed := sample > 0 && queueDelay > p.congestionThreshold()
 	if delayed && p.intervalSamples < p.delaySamplesNeeded() {
