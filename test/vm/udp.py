@@ -23,7 +23,7 @@ def measure(lab, output, name, offered, seconds, warmup, reverse):
     # iperf3's --omit makes its UDP totals inconsistent (received bytes and
     # packet counts disagree), so the warmup is excluded here from the
     # receiver's own interval reports.
-    result = lab.execute("edge", f"iperf3 -c 10.77.0.1 -u -b {offered:.4f}M -l {UDP_PAYLOAD} -t {warmup + seconds} -J --get-server-output {'-R' if reverse else ''}", capture_output=True)
+    result = lab.execute("edge", f"iperf3 -c 10.77.0.1 -u -b {offered:.4f}M -l {UDP_PAYLOAD} -w 4M -t {warmup + seconds} -J --get-server-output {'-R' if reverse else ''}", capture_output=True)
     after = counters(lab)
     for guest in GUESTS:
         (output / f"{name}-after-{guest}-metrics.txt").write_text(lab.execute(guest, "curl -sf http://127.0.0.1:9090/metrics", capture_output=True).stdout)

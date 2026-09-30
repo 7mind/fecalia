@@ -184,7 +184,12 @@ runcmd:
     def network(self):
         for guest in GUESTS:
             suffix = 1 if guest == "hub" else 2
-            commands = ["set -eu", "modprobe tun", "modprobe sch_netem", "modprobe sch_htb", "test -c /dev/net/tun", "sysctl -w net.ipv4.conf.all.rp_filter=0", "sysctl -w net.ipv4.conf.default.rp_filter=0"]
+            commands = ["set -eu", "modprobe tun", "modprobe sch_netem", "modprobe sch_htb", "test -c /dev/net/tun", "sysctl -w net.ipv4.conf.all.rp_filter=0", "sysctl -w net.ipv4.conf.default.rp_filter=0",
+                        # A 300 Mbit/s path with 150 ms of round trip needs a 6 MB TCP
+                        # window; the kernel's default ceiling of 6 MB would cap the
+                        # test at the tunnel's round trip rather than its capacity.
+                        "sysctl -w net.core.rmem_max=67108864", "sysctl -w net.core.wmem_max=67108864",
+                        "sysctl -w net.ipv4.tcp_rmem='4096 131072 67108864'", "sysctl -w net.ipv4.tcp_wmem='4096 131072 67108864'"]
             for lane in (1, 2):
                 commands += [f"ip link set eth{lane} up", f"ip addr replace 10.77.{lane}.{suffix}/24 dev eth{lane}",
                              f"sysctl -w net.ipv4.conf.eth{lane}.rp_filter=0"]
@@ -197,8 +202,11 @@ runcmd:
             self.execute(guest, "\n".join(commands))
         self.execute("edge", "ping -c 2 -I 10.77.1.2 10.77.200.1 && ping -c 2 -I 10.77.2.2 10.77.200.1")
 
-    def impair(self, guest, lane, rate, delay, loss, jitter):
-        if guest not in GUESTS or lane not in (1, 2) or rate <= 0 or delay < jitter or jitter < 0 or not 0 <= loss <= 100:
+    def impair(self, guest, lane, rate, delay, loss, jitter, correlation=0):
+        """correlation is netem's delay correlation in percent: successive
+        delays stay close, as on a radio link whose latency drifts rather than
+        scatters, so a fast link does not reorder thousands of datagrams."""
+        if guest not in GUESTS or lane not in (1, 2) or rate <= 0 or delay < jitter or jitter < 0 or not 0 <= loss <= 100 or not 0 <= correlation < 100:
             raise ValueError("invalid guest/lane or impairment values")
         # netem holds propagation traffic as well as the router queue. Reserve
         # its bandwidth-delay product before adding the 100-packet router buffer.
@@ -209,7 +217,7 @@ if ! tc qdisc show dev {interface} | grep -q 'qdisc htb 1:'; then
   tc qdisc add dev {interface} root handle 1: htb default 10
 fi
 tc class replace dev {interface} parent 1: classid 1:10 htb rate {rate}mbit ceil {rate}mbit burst 4k
-tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms loss {loss}% limit {limit} seed {100 + lane + GUESTS.index(guest) * 10}
+tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms{f' {correlation}%' if correlation else ''} loss {loss}% limit {limit} seed {100 + lane + GUESTS.index(guest) * 10}
 tc -s qdisc show dev {interface}
 """)
 
