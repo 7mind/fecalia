@@ -2,7 +2,9 @@ package bond_test
 
 import (
 	"container/heap"
+	"encoding/binary"
 	"math/rand/v2"
+	"sort"
 	"testing"
 	"time"
 
@@ -15,6 +17,15 @@ import (
 // latency drift slowly across its range, as a radio link's does.
 func fastLane(t *testing.T, rate float64, delay, jitter time.Duration, loss float64, correlation float64, seconds int) []float64 {
 	t.Helper()
+	delivered, _, _ := fastLaneTransit(t, rate, delay, jitter, loss, correlation, seconds)
+	return delivered
+}
+
+// fastLaneTransit also returns, for the datagrams first transmitted after the
+// third second, the time from first transmission to delivery, sorted: for all
+// of them, and for those that needed more than one transmission.
+func fastLaneTransit(t *testing.T, rate float64, delay, jitter time.Duration, loss float64, correlation float64, seconds int) ([]float64, []time.Duration, []time.Duration) {
+	t.Helper()
 	start := time.Unix(100, 0)
 	random := rand.New(rand.NewPCG(1, 0))
 	peers := [2]*bond.Transport{bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})}
@@ -26,6 +37,10 @@ func fastLane(t *testing.T, rate float64, delay, jitter time.Duration, loss floa
 	var available [2]time.Time
 	var previous [2]time.Duration
 	delivered := make([]float64, seconds)
+	var transit, repaired []time.Duration
+	firstSent := map[int]int{}
+	transmissions := map[int]int{}
+	next := 0
 	// The path buffers 100 ms, as a router before a fast link does.
 	const routerBuffer = 100 * time.Millisecond
 	for tick := 0; tick < seconds*1000; tick++ {
@@ -36,12 +51,22 @@ func fastLane(t *testing.T, rate float64, delay, jitter time.Duration, loss floa
 		for side, p := range peers {
 			if side == 0 && tick >= 1000 {
 				for range 40 {
-					if err := p.Enqueue(make([]byte, 1300), bond.PacketMetadata{Flow: bond.FlowID{4, 6, 1}}, now); err != nil {
+					datagram := make([]byte, 1300)
+					next++
+					binary.BigEndian.PutUint64(datagram, uint64(next))
+					if err := p.Enqueue(datagram, bond.PacketMetadata{Flow: bond.FlowID{4, 6, 1}}, now); err != nil {
 						break
 					}
 				}
 			}
 			for _, tx := range p.Poll(now) {
+				if payload := tx.Frame.Payload; side == 0 && len(payload) > 1300 && len(payload) < 1300+64 {
+					id := int(binary.BigEndian.Uint64(payload[len(payload)-1300:]))
+					transmissions[id]++
+					if firstSent[id] == 0 {
+						firstSent[id] = tick
+					}
+				}
 				begin := maxTimeTest(now, available[side])
 				if begin.Sub(now) > routerBuffer {
 					continue
@@ -68,11 +93,19 @@ func fastLane(t *testing.T, rate float64, delay, jitter time.Duration, loss floa
 			if e.to == 1 {
 				for _, d := range got {
 					delivered[tick/1000] += float64(len(d.Payload))
+					if id := int(binary.BigEndian.Uint64(d.Payload)); firstSent[id] >= 3000 {
+						transit = append(transit, time.Duration(tick-firstSent[id])*time.Millisecond)
+						if transmissions[id] > 1 {
+							repaired = append(repaired, time.Duration(tick-firstSent[id])*time.Millisecond)
+						}
+					}
 				}
 			}
 		}
 	}
-	return delivered
+	sort.Slice(transit, func(i, j int) bool { return transit[i] < transit[j] })
+	sort.Slice(repaired, func(i, j int) bool { return repaired[i] < repaired[j] })
+	return delivered, transit, repaired
 }
 
 // A 300 Mbit/s lane, 37.5 MB/s of wire. Bulk payload of 1300 bytes in
@@ -125,5 +158,24 @@ func TestDriftingLatencyIsNotLoss(t *testing.T) {
 		if delivered[second] < 0.6*fastLaneRate {
 			t.Fatalf("second %d delivered %.1f MB/s on a drifting %.1f MB/s lane", second, delivered[second]/1e6, fastLaneRate/1e6)
 		}
+	}
+}
+
+// A datagram lost on a lossy lane is repaired only after the lane's timeout,
+// 100-200 ms at these rates, and the receiver holds everything behind it
+// meanwhile (VM run of 2026-09-30: 5378 holds totalling 33.6 s in 35 s; TCP
+// at 52-126 of 450 Mbit/s). Acknowledgements of later datagrams show the loss
+// within a round trip.
+func TestLossIsRepairedWithinARoundTrip(t *testing.T) {
+	_, transit, repaired := fastLaneTransit(t, fastLaneRate, 20*time.Millisecond, 10*time.Millisecond, 0.004, 0, 12)
+	median := repaired[len(repaired)/2]
+	t.Logf("%d datagrams, transit p50 %s p99.9 %s; %d repaired, transit p50 %s p90 %s max %s",
+		len(transit), transit[len(transit)/2], transit[len(transit)*999/1000], len(repaired), median, repaired[len(repaired)*9/10], repaired[len(repaired)-1])
+	// A repaired datagram travels the path twice and its loss is learnt from
+	// the acknowledgement of the datagrams behind it: about three one-way
+	// delays plus the acknowledgement cadence, on top of the queue the first
+	// transmission waited in.
+	if median > transit[len(transit)/2]+100*time.Millisecond {
+		t.Fatalf("repaired datagrams take %s at the median against %s unrepaired: repairs wait for the timeout", median, transit[len(transit)/2])
 	}
 }

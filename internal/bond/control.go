@@ -246,20 +246,30 @@ const (
 	peakBuckets = 5
 )
 
-// peak reports the highest of the values recorded in the last ten seconds.
+// peak reports the highest of the values recorded in the last five buckets
+// of two seconds, or of the bucket length set.
 type peak struct {
+	bucket  time.Duration
 	start   time.Time
 	buckets [peakBuckets]float64
 	index   int
 }
 
+func (m *peak) length() time.Duration {
+	if m.bucket == 0 {
+		return peakBucket
+	}
+	return m.bucket
+}
+
 func (m *peak) rotate(now time.Time) {
-	if m.start.IsZero() || now.Sub(m.start) >= peakBuckets*peakBucket {
-		*m = peak{start: now}
+	bucket := m.length()
+	if m.start.IsZero() || now.Sub(m.start) >= peakBuckets*bucket {
+		*m = peak{bucket: m.bucket, start: now}
 		return
 	}
-	for now.Sub(m.start) >= peakBucket {
-		m.start = m.start.Add(peakBucket)
+	for now.Sub(m.start) >= bucket {
+		m.start = m.start.Add(bucket)
 		m.index = (m.index + 1) % peakBuckets
 		m.buckets[m.index] = 0
 	}

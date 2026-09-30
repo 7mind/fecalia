@@ -26,11 +26,16 @@ func testLateReceipts(t *testing.T, missing int) {
 	a.paths[0].rate = 12500000
 	a.paths[0].confirmedWireBytes = maxPackets * maxDatagram
 	var delayed []Transmission
-	delivered := 0
-	for i := 0; i < 400; i++ {
+	delivered := map[uint64]bool{}
+	// The 100 delayed datagrams look lost to the sender once the ones behind
+	// them are acknowledged, and their repairs take pacing slots from the
+	// originals still queued; the loop runs on until every original has left.
+	for i := 0; i < 500; i++ {
 		now := start.Add(time.Duration(i) * 120 * time.Microsecond)
-		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
-			t.Fatal(err)
+		if i < 400 {
+			if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
+				t.Fatal(err)
+			}
 		}
 		for _, tx := range a.Poll(now) {
 			if i+1 == missing {
@@ -44,7 +49,9 @@ func testLateReceipts(t *testing.T, missing int) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			delivered += len(ds)
+			for _, d := range ds {
+				delivered[d.Sequence] = true
+			}
 		}
 		for _, tx := range b.Poll(now) {
 			if _, err := a.Receive(tx.Path, tx.Frame, now); err != nil {
@@ -52,22 +59,24 @@ func testLateReceipts(t *testing.T, missing int) {
 			}
 		}
 	}
-	now := start.Add(50 * time.Millisecond)
+	now := start.Add(65 * time.Millisecond)
 	for _, tx := range delayed {
 		ds, err := b.Receive(tx.Path, tx.Frame, now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		delivered += len(ds)
+		for _, d := range ds {
+			delivered[d.Sequence] = true
+		}
 	}
-	wantPending := 0
-	if missing != 0 {
-		wantPending = 1
+	// The datagram dropped on its first transmission is found lost from the
+	// acknowledgements behind it and repaired within the loop, unless too few
+	// followed it; then it alone stays pending.
+	wantPending := 400 - len(delivered)
+	if wantPending > 1 || wantPending == 1 && missing == 0 {
+		t.Fatalf("reproduction requires 400 packets delivered, got %d", len(delivered))
 	}
-	if delivered != 400-wantPending {
-		t.Fatalf("reproduction requires %d packets delivered, got %d", 400-wantPending, delivered)
-	}
-	for tick := 50; tick <= 150; tick++ {
+	for tick := 65; tick <= 165; tick++ {
 		now = start.Add(time.Duration(tick) * time.Millisecond)
 		for _, tx := range b.Poll(now) {
 			if _, err := a.Receive(tx.Path, tx.Frame, now); err != nil {
@@ -76,10 +85,12 @@ func testLateReceipts(t *testing.T, missing int) {
 		}
 	}
 	if len(a.pending) != wantPending {
-		t.Fatalf("delivered %d packets, but %d receipts remain unacknowledged; want %d", delivered, len(a.pending), wantPending)
+		t.Fatalf("delivered %d packets, but %d receipts remain unacknowledged; want %d", len(delivered), len(a.pending), wantPending)
 	}
-	if missing != 0 && a.pending[uint64(missing)] == nil {
-		t.Fatalf("packet %d was acknowledged without being received", missing)
+	for seq := uint64(1); seq <= 400; seq++ {
+		if !delivered[seq] && a.pending[seq] == nil {
+			t.Fatalf("packet %d was acknowledged without being received", seq)
+		}
 	}
 }
 
