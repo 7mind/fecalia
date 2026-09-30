@@ -256,6 +256,7 @@ type lane struct {
 	firstSent          time.Time
 	transitBases       [(maxDatagram+wireOverhead)/transitSizeBucket + 1]transitBaseline
 	intervalQueueDelay time.Duration
+	signalDelay        time.Duration // the queue delay the last control interval judged
 	delayJitter        time.Duration
 	intervalJitter     time.Duration
 	delayDifferences   int
@@ -265,6 +266,10 @@ type lane struct {
 	nextBaseline       time.Time
 	drainUntil         time.Time
 	baselinePending    bool
+	floorTesting       bool
+	floorSampling      bool
+	floorTested        time.Time
+	floorTestEvery     time.Duration
 	stalled            bool
 	lastTransmit       time.Time
 	lastPayload        time.Time
@@ -379,6 +384,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.ackedBytes, p.ackedElapsed = 0, 0
 		clear(p.transitBases[:])
 		p.haveInterval, p.intervalSamples, p.delayJitter, p.delayDifferences, p.intervalJitter = false, 0, 0, 0, 0
+		p.floorTesting, p.floorSampling, p.floorTestEvery = false, false, 0
 		p.firstSent = time.Time{}
 		p.idleForwardMean, p.idleForwardVariation = 0, 0
 		p.idleForwardKnown = false
@@ -981,8 +987,15 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 					}
 				}
 				if p.baselinePending && !sent.sent.Before(p.drainUntil) {
-					p.rebaseline(sample)
-					clear(p.transitBases[:])
+					// This datagram met no queue of the lane's own. A floor
+					// test asks whether it and those after it are late all
+					// the same; the control interval that begins here answers.
+					if p.floorTesting {
+						p.floorTesting, p.floorSampling = false, true
+					} else {
+						p.rebaseline(sample)
+						clear(p.transitBases[:])
+					}
 					p.haveInterval, p.intervalSamples = false, 0
 					p.baselinePending = false
 				}
@@ -1105,13 +1118,34 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		p.ackGap += (gap - p.ackGap) / 8
 	}
 	p.lastACK = now
-	if now.Before(p.drainUntil) || now.Sub(p.lastAdjust) < max(min(p.rtt, 100*time.Millisecond), 50*time.Millisecond) {
+	if now.Before(p.drainUntil) || p.baselinePending || now.Sub(p.lastAdjust) < max(min(p.rtt, 100*time.Millisecond), 50*time.Millisecond) {
 		return
 	}
 	p.lastAdjust = now
 	queueDelay := p.queueDelay
 	if p.haveInterval {
 		queueDelay = p.intervalQueueDelay
+	}
+	p.signalDelay = queueDelay
+	if p.floorSampling {
+		// What was sent after the pause of a floor test found an empty path.
+		// One sample near the floor shows the floor where it was; that it
+		// moved takes as many late ones as a delay signal does.
+		if sample == 0 {
+			return
+		}
+		late := queueDelay > p.congestionThreshold()
+		if late && p.intervalSamples < p.delaySamplesNeeded() {
+			return
+		}
+		p.haveInterval, p.intervalSamples, p.intervalJitter = false, 0, p.delayJitter
+		p.floorSampling = false
+		if late {
+			p.floorMoved(sample)
+		} else {
+			p.queueFound()
+		}
+		return
 	}
 	if sample > 0 && queueDelay <= maxWander && p.lightlyLoaded() {
 		// Jitter drawn anew for every datagram also lifts the lowest of a few

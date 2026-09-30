@@ -17,14 +17,23 @@ const (
 	pulseQueueFactor = 1.5  // pulse queue relative to the detection threshold
 	pulseWinsToLeave = 3    // consecutive clean pulses before rediscovery
 	pulseInterval    = time.Second
-	pulseStagger     = 100 * time.Millisecond
-	minPulse         = 150 * time.Millisecond
-	maxPulse         = 500 * time.Millisecond
-	verdictExpiry    = time.Second
-	maxFlush         = 500 * time.Millisecond
-	flushQueues      = 2 // flush for this many times the queue delay measured
-	// A probe's queue is allowed this many times the delay measured to
-	// drain: the delay is measured a round trip late, and the probe ran on.
+	// The least time between two tests of a lane's transit floor doubles with
+	// every test that finds a queue, up to the longest, and starts again when
+	// one finds the floor moved: a lane whose delay keeps turning out to be a
+	// queue pays a pause for nothing (a 0.4 Mbit/s lane tested every two
+	// seconds delivered 87% of its capacity instead of 93%,
+	// `TestSlowLaneAcknowledgementShareIsBounded`).
+	floorTestInterval    = 2 * time.Second
+	maxFloorTestInterval = 16 * time.Second
+	pulseStagger         = 100 * time.Millisecond
+	minPulse             = 150 * time.Millisecond
+	maxPulse             = 500 * time.Millisecond
+	verdictExpiry        = time.Second
+	maxFlush             = 500 * time.Millisecond
+	flushQueues          = 2 // flush for this many times the queue delay measured
+	// A queue is allowed this many times the delay measured to drain, and a
+	// test of the transit floor pauses bulk for as long: the delay is
+	// measured a round trip late, and what built the queue ran on.
 	drainQueues = 2
 )
 
@@ -39,7 +48,8 @@ const (
 type control struct {
 	capacity float64
 	draining bool
-	// drainBy is when the probe's queue will have left the path.
+	// drainBy is when the queue that explains the lane's delay will have
+	// left the path: a probe's, or the one a cut is draining.
 	drainBy    time.Time
 	flushUntil time.Time
 	holdSignal bool
@@ -165,7 +175,12 @@ func (p *lane) cut(lost bool) float64 {
 func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	c := &p.control
 	queued := p.queueDelay
-	if c.draining && !now.Before(c.drainBy) {
+	probed := c.drainBy
+	if lost {
+		// What a probe lost is known a settling period after it was lost.
+		probed = probed.Add(lossSettle)
+	}
+	if c.draining && !now.Before(probed) {
 		// The probe's queue has had the time to leave, and delay was seen
 		// throughout: it is not the probe's. Taken for it, the delay of a lane
 		// that lost half its capacity while a probe drained held the target at
@@ -210,6 +225,13 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	case !c.holdSignal:
 		// One signal below demonstrated capacity may be jitter.
 		c.holdSignal = true
+	case !lost && p.floorTestable(now, p.signalDelay):
+		// Delay that persists on a lane holding below its capacity is either
+		// a queue or a path whose latency moved to a higher level: measured
+		// from the floor of the lower one, the higher level reads as a queue
+		// for as long as it lasts, and no reduction of the target removes it.
+		// The two are told apart before the target is cut.
+		p.testFloor(now, p.signalDelay)
 	case p.rate < capacityDrop*c.capacity:
 		// Repeated cuts took the target well below the estimate: capacity
 		// fell. This measurement was taken below the new capacity, so test
@@ -217,20 +239,91 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		p.decisions.CapacityRemeasured++
 		c.capacity, c.pulseWins = p.measuredDelivery(), 0
 		p.rate = math.Max(minimumRate, p.cut(lost))
+		c.drainBy = now.Add(p.drainTime(queued))
 		p.schedulePulse(now)
 		c.nextPulse = now
 	default:
 		p.decisions.CapacityDecays++
 		c.capacity *= capacityDecay
 		p.rate = math.Max(minimumRate, p.cut(lost))
+		c.drainBy = now.Add(p.drainTime(queued))
 	}
 }
 
-// drainTime is how long a probe's queue may take to leave a path sent to at
-// the draining target, with the round trip its feedback needs and a control
-// interval.
+// drainTime is how long a queue may take to leave a path sent to at the
+// draining target, with the round trip its feedback needs and a control
+// interval. The delay is measured a round trip late and what built the queue
+// ran on meanwhile, so twice the queue measured is allowed for.
 func (p *lane) drainTime(queued time.Duration) time.Duration {
 	return time.Duration(drainQueues*float64(queued)/(1-capacityDrain)) + 2*p.rtt
+}
+
+// testFloor asks whether the lane's delay is a queue. Bulk pauses for long
+// enough to drain the queue the delay would be; what is sent afterwards finds
+// an empty path. If it is still as late, the path's latency moved: the floor
+// is measured anew, and the target stands (floorMoved). If it is not, the
+// delay was a queue, and the estimate that let it form is lowered
+// (queueFound).
+//
+// A test is no answer to a lane that keeps queueing: between tests, delay is
+// taken for a queue.
+func (p *lane) testFloor(now time.Time, queued time.Duration) {
+	pause, _ := p.floorTestPause(queued)
+	p.drainUntil = now.Add(pause)
+	p.baselinePending, p.floorTesting = true, true
+	p.floorTested = now
+	p.control.holdSignal = false
+	// A probe now would queue on top of whatever the test is about.
+	p.schedulePulse(now)
+}
+
+// queueFound concludes a floor test that found the floor where it was. The
+// pause has drained the queue; the estimate is lowered as a repeated signal
+// lowers it, or the queue forms again at once. Swallowed by the test instead,
+// the signals of two model lanes with an estimate a quarter too high left
+// 40 ms standing in the path.
+func (p *lane) queueFound() {
+	c := &p.control
+	c.capacity *= capacityDecay
+	p.rate = math.Max(minimumRate, math.Min(p.rate, capacityHold*c.capacity))
+	p.floorTestEvery = min(maxFloorTestInterval, 2*max(floorTestInterval, p.floorTestEvery))
+}
+
+// floorMoved concludes a floor test that found the path's latency at a new
+// level: the floor is measured from here.
+func (p *lane) floorMoved(sample time.Duration) {
+	p.rebaseline(sample)
+	clear(p.transitBases[:])
+	p.floorTestEvery = floorTestInterval
+}
+
+// floorTestPause is how long bulk must pause for a queue of the given delay to
+// drain, if a pause short enough does that. The higher classes keep sending,
+// so the queue drains at the share of the lane that bulk gives up.
+func (p *lane) floorTestPause(queued time.Duration) (pause time.Duration, short bool) {
+	bulk := p.allowed(classBulk)
+	if bulk <= 0 {
+		return 0, false
+	}
+	needed := drainQueues * float64(queued) * p.rate / bulk
+	if needed > float64(baselineDrain) {
+		return 0, false
+	}
+	return time.Duration(needed), true
+}
+
+// floorTestable reports that the delay needs explaining and that pausing bulk
+// would explain it. A target above the estimate, or a probe's queue that may
+// still be in the path, explains it already. The last test must not be
+// recent, and the pause must be short: on a lane that mostly carries the
+// higher classes a pause drains little (a 0.4 Mbit/s lane with voice on 70%
+// of it kept its queue through the pause, and the queue became the floor:
+// `TestVoiceSurvivesOnSingleSlowLane`).
+func (p *lane) floorTestable(now time.Time, queued time.Duration) bool {
+	c := &p.control
+	_, short := p.floorTestPause(queued)
+	return short && p.rate <= c.capacity && !now.Before(c.drainBy) &&
+		now.Sub(p.floorTested) >= max(floorTestInterval, p.floorTestEvery)
 }
 
 func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
