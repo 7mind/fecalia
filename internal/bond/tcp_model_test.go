@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -61,6 +62,10 @@ type tcpOutcome struct {
 	// tunnel queue totals.
 	targetMB             []float64
 	queueDrops, aqmDrops uint64
+	// linkQueue is, per lane, the wait for the link that 95% of the sender's
+	// datagrams stayed below over the last half of the transfer: the queue in
+	// the path's own buffer, where nothing has priority.
+	linkQueue []time.Duration
 }
 
 const (
@@ -176,6 +181,9 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 	start := time.Unix(100, 0)
 	clock := &modelClock{now: start}
 	random := rand.New(rand.NewPCG(m.seed, 0))
+	// Loss draws one number per datagram; from the stream that moves the
+	// latency, it would give each version of the transport a different path.
+	drops := rand.New(rand.NewPCG(m.seed, 1))
 	peers := [2]*bond.Transport{bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})}
 	for side, p := range peers {
 		p.SetRemote(peers[1-side].Epoch(), true)
@@ -195,6 +203,7 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 	var receiverRanges [][2]uint64 // received beyond receiverNext, ascending, half-open
 	outcome := tcpOutcome{delivered: make([]float64, m.seconds), windowMB: make([]float64, m.seconds)}
 	targets := make([]float64, len(m.lanes))
+	waits := make([][]time.Duration, len(m.lanes))
 	targetSamples := 0
 	send := func(now time.Time, seq uint64) {
 		segment := make([]byte, tcpSegment)
@@ -259,8 +268,11 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 				if begin.Sub(now) > modelRouterBuffer {
 					continue
 				}
+				if side == 0 && tick >= (m.seconds/2+1)*1000 {
+					waits[lane] = append(waits[lane], begin.Sub(now))
+				}
 				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / l.rate * float64(time.Second)))
-				if random.Float64() < l.loss {
+				if drops.Float64() < l.loss {
 					continue
 				}
 				transit := l.delay + level[lane][side] + time.Duration(wander[lane][side])
@@ -381,6 +393,14 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 	}
 	for _, sum := range targets {
 		outcome.targetMB = append(outcome.targetMB, sum/float64(targetSamples)/1e6)
+	}
+	for _, lane := range waits {
+		slices.Sort(lane)
+		var wait time.Duration
+		if len(lane) > 0 {
+			wait = lane[len(lane)*95/100]
+		}
+		outcome.linkQueue = append(outcome.linkQueue, wait.Round(time.Millisecond))
 	}
 	final := peers[0].Snapshot(start.Add(time.Duration(m.seconds+1) * time.Second))
 	outcome.queueDrops, outcome.aqmDrops = final.QueueDrops, final.AQMDrops

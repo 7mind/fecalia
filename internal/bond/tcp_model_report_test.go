@@ -36,8 +36,8 @@ func TestTCPTransferModelReports(t *testing.T) {
 		for _, bytes := range outcome.delivered[30:] {
 			last += bytes
 		}
-		t.Logf("%s: last 30 s %.0f Mbit/s; every 4th second %v", scenario.name, last*8/30e6, everyFourth(megabits(outcome.delivered)))
-		t.Logf("    lane targets %.1f MB/s; tcp retransmits %d timeouts %d; abandoned %d; tunnel queue drops %d (schedule %d)",
-			outcome.targetMB, outcome.retransmits, outcome.timeouts, outcome.abandoned, outcome.queueDrops, outcome.aqmDrops)
+		t.Logf("%s: last 30 s %.4g Mbit/s; every 4th second %v", scenario.name, last*8/30e6, everyFourth(megabits(outcome.delivered)))
+		t.Logf("    lane targets %.3g MB/s, link queues %v; tcp retransmits %d timeouts %d; abandoned %d; tunnel queue drops %d (schedule %d)",
+			outcome.targetMB, outcome.linkQueue, outcome.retransmits, outcome.timeouts, outcome.abandoned, outcome.queueDrops, outcome.aqmDrops)
 	}
 }
