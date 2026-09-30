@@ -202,21 +202,31 @@ runcmd:
             self.execute(guest, "\n".join(commands))
         self.execute("edge", "ping -c 2 -I 10.77.1.2 10.77.200.1 && ping -c 2 -I 10.77.2.2 10.77.200.1")
 
-    def impair(self, guest, lane, rate, delay, loss, jitter, correlation=0):
+    def impair(self, guest, lane, rate, delay, loss, jitter, correlation=0, police=False):
         """correlation is netem's delay correlation in percent: successive
         delays stay close, as on a radio link whose latency drifts rather than
-        scatters, so a fast link does not reorder thousands of datagrams."""
+        scatters, so a fast link does not reorder thousands of datagrams.
+
+        police drops what exceeds the rate instead of queueing it, with a
+        burst of two datagrams: overload then shows as loss and not as delay,
+        as it does on the production satellite link."""
         if guest not in GUESTS or lane not in (1, 2) or rate <= 0 or delay < jitter or jitter < 0 or not 0 <= loss <= 100 or not 0 <= correlation < 100:
             raise ValueError("invalid guest/lane or impairment values")
         # netem holds propagation traffic as well as the router queue. Reserve
         # its bandwidth-delay product before adding the 100-packet router buffer.
         limit = 100 + math.ceil(rate * 1e6 / 8 * (delay + jitter) / 1000 / 1200)
         interface = f"eth{lane}"
+        shaping = f"tc class replace dev {interface} parent 1: classid 1:10 htb rate {rate}mbit ceil {rate}mbit burst 4k"
+        policing = f"tc filter del dev {interface} parent 1: prio 1 2>/dev/null || true"
+        if police:
+            shaping = f"tc class replace dev {interface} parent 1: classid 1:10 htb rate 1000mbit ceil 1000mbit"
+            policing += f"\ntc filter add dev {interface} parent 1: prio 1 protocol all matchall action police rate {rate}mbit burst 3k conform-exceed drop/pipe flowid 1:10"
         self.execute(guest, f"""set -eu
 if ! tc qdisc show dev {interface} | grep -q 'qdisc htb 1:'; then
   tc qdisc add dev {interface} root handle 1: htb default 10
 fi
-tc class replace dev {interface} parent 1: classid 1:10 htb rate {rate}mbit ceil {rate}mbit burst 4k
+{shaping}
+{policing}
 tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms{f' {correlation}%' if correlation else ''} loss {loss}% limit {limit} seed {100 + lane + GUESTS.index(guest) * 10}
 tc -s qdisc show dev {interface}
 """)
