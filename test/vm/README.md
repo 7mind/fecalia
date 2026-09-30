@@ -776,7 +776,7 @@ Candidate W (`wanbond-w1`, branch `fast-links`) against `main` (A,
 | Measurement | A | W |
 |---|---|---|
 | Radio TCP up / down, Mbit/s | 1.256/67.6, 1.292/83.6 | 1.291/82.6, 1.254/79.9 |
-| Radio continuity | 2 of 2 pass | 2 of 2 pass |
+| Radio continuity (corrected 2026-09-30, see below) | 1 of 2 pass: voice p99 197/203 ms with the low-latency WAN up (gate 150), a 201 ms gap | 2 of 2 pass |
 | 300+300 UDP up / down, Mbit/s | 254/240, 227/219 | 319/346, 353/382 |
 | 300+300 TCP up / down, Mbit/s (20 s after a 15 s warm-up) | 134/103, 151/70 | 87/98, 114/161 |
 
@@ -834,7 +834,7 @@ T = `6199555` (`wanbond-t1`), W = `main` (`wanbond-w1`), order T W W T:
 | Measurement | W | T |
 |---|---|---|
 | Radio TCP up / down, Mbit/s | 1.222/82.4, 1.289/83.7 | 1.290/73.0, 1.291/80.6 |
-| Radio continuity | 2 of 2 pass | 2 of 2 pass |
+| Radio continuity (corrected 2026-09-30, see below) | 2 of 2 pass | 1 of 2 pass: voice p99 192/183 ms with only the 40±30 ms WAN up (gate 181.6) |
 | 300+300 UDP up / down, Mbit/s | 291/321, 314/244 | 291/367, 407/405 |
 | 300+300 TCP up / down, Mbit/s | 107/98, 122/82 | 103/81, 121/73 |
 
@@ -907,7 +907,7 @@ Lab, X (`wanbond-x1`) against `main` (W, `wanbond-w1`), order X W W X:
 | Measurement | W | X |
 |---|---|---|
 | Radio TCP up / down, Mbit/s | 1.290/49.7, 1.290/73.2 | 1.291/83.0, 1.323/82.1 |
-| Radio continuity | 2 of 2 pass | 2 of 2 pass |
+| Radio continuity (corrected 2026-09-30, see below) | 2 of 2 pass | 0 of 2 pass: voice p99 203/205 and 209/183 ms with only the 40±30 ms WAN up (gate 181.6); TCP not resumed after the LTE recovery once |
 | 300+300 netem jitter, TCP up / down | 115/125, 73/86 | 101/125, 67/139 |
 | 300+300 netem jitter, UDP up / down | 351/306, 308/321 | 361/316, 286/279 |
 
@@ -918,10 +918,60 @@ With `wander.py` on both WANs and no loss, order W X X W:
 | 300+300 wandering latency, TCP up / down, 60 s | 83/45, 116/58 | 102/132, 147/122 |
 | 300+300 wandering latency, UDP up / down | 121/129, 137/96 | 187/162, 184/182 |
 
-X is better wherever latency has memory, in the model and in the lab, and no
-worse elsewhere. With wandering latency the lab stays far below the model
+X is better wherever latency has memory, in the model and in the lab. It is
+worse in one respect the series did not catch at the time (its continuity
+row above is corrected): voice with only the 40±30 ms WAN up got 25-30 ms
+slower, the wander allowance taken by per-datagram jitter (`001b5cf` corrects
+it; see the next section). With wandering latency the lab stays far below the model
 (UDP 162-187 of 600 Mbit/s, against 451-517 for TCP in the model) and below
 its own netem-jitter figures; the delay changes reorder datagrams within a
 WAN there, and how much of the gap that accounts for is not known. The
 satellite lane alone loses 13% in the model with X: a level shift upwards
 still reads as queue until the ten-second baseline refresh.
+
+### Corrected continuity readout and two corrections on `main` — 2026-09-30
+
+`regress_series.sh` reported `rc=0` for every continuity run regardless of
+the result (the exit code it echoed was `basename`'s), so the "2 of 2 pass"
+rows of the three preceding sections were wrong; they are corrected in
+place from the recordings (`continuity_gates.py` on each run directory).
+Every recorded radio-profile continuity run, re-evaluated per build; voice
+round-trip p99 over both guests in ms, with only the 40±30 ms WAN up (gate
+181.6) and with the 20±10 ms WAN up (gate 150):
+
+| Build | Runs | Pass | Only 40±30 ms WAN up | 20±10 ms WAN up | Other failures |
+|---|---|---|---|---|---|
+| `1802c9e` (fast-links) | 16 | 12 | 148-194 (mean 167), over the gate in 3 runs, all after 19:00 | 110-137 (123) | TCP gates in the LTE outage once |
+| `4aa5948` | 13 | 5 | 172-212 (mean 188), over the gate in 8 runs | 114-149 (129) | TCP gates in the LTE outage twice |
+| `4aa5948` + ledger + floor test + scatter discount (branch `level-shift`) | 15 | 8 | 157-195 (mean 171), over the gate in 2 runs | 108-143 (121) | TCP gates in the LTE outage five times; a 305 ms voice gap once |
+
+The voice regression of `4aa5948` is the wander allowance taken by
+per-datagram jitter: the lowest of a control interval's few samples lies
+above the floor by the spread over one more than their number, and that
+raised the 40±30 ms WAN's threshold by 20 ms and the queue voice shares with
+bulk there by as much. `001b5cf` discounts it
+(`TestVoiceOnJitteryLaneAloneKeepsItsLatency`: one-way p99 142 → 108 ms; the
+model's ten-seed averages move by 1-3%, within their spread). `94b7783`
+bounds how long a probe's queue explains delay: a lane that lost half its
+capacity while a probe drained held its target at 75% of the old capacity
+with the path's buffer full for as long as the loss lasted
+(`TestCapacityDropIsNotALevelShift`, failing on `4aa5948` for 50% and 25%
+remaining when the loss fell on a probe). Both are cherry-picked from
+`level-shift`; the ledger and the floor test stay on the branch until
+production measurements show the defects they address on real links.
+
+The TCP gates in the LTE outage are marginal by construction: bulk keeps 5%
+of the 0.4 Mbit/s WAN while voice takes 70%, about two datagrams a second,
+and every build delivered 7-11 bulk frames to the hub in those five seconds
+(polled once a second, the hub's slow lane held a 55-62 kB/s target and gave
+bulk 1.5-3 kB/s with every build). Whether TCP's retransmissions land in the
+windows decides the gate; the evening runs were the noisier ones for every
+build. Under `wander.py` a quarter of the wire bytes are repairs of datagrams
+that arrived (an instrumented build showed the hub's duplicate count growing
+by the sender's repair count): netem reorders datagrams within a WAN
+whenever it lowers the delay, the acknowledgement's lane bitmap covers the
+64 newest lane datagrams and its global bitmap 256 sequences shared by both
+lanes, and the late confirmations time out. Production shows no such
+reordering (lane acknowledgements confirmed 98% of the bytes the edge sent
+and 88% of the bytes sent back, read-only metrics of 2026-09-30), so the lab
+figures under `wander.py` are a lower bound.

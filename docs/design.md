@@ -255,7 +255,14 @@ together and their minimum is no nearer the floor than any of them. `wander`
 is the smoothed queue delay of control intervals in which the lane sent less
 than half of what it has shown it can carry (half its target, before that is
 known) while delivery kept up, so that whatever delay it saw it did not
-queue; delays above 30 ms are not taken for wander. Latency measured on the
+queue, less the spread of independent samples over one more than their
+number: jitter drawn anew for every datagram lifts the lowest of a few
+samples above the floor as well, and taken for wander it raised the
+threshold of the lab's 40±30 ms WAN by 20 ms, and the queue voice shares
+with bulk there by as much (`TestVoiceOnJitteryLaneAloneKeepsItsLatency`;
+in the lab, voice round trips with only that WAN up had a p99 of 172-212 ms
+against 148-194 before the wander allowance). Delays above 30 ms are not
+taken for wander. Latency measured on the
 production links (600 pings each, idle, 2026-09-30) has a round-trip standard
 deviation of 7-10 ms, and on one of them moves between levels 10-20 ms apart
 that last for seconds; a model lane with that wander and the fixed 10 ms
@@ -297,7 +304,14 @@ build 1.5 times the detection threshold of queue (150-500 ms), so the queue a
 probe costs is bounded by the pulse and not by feedback lag. A congestion
 signal before the pulse's feedback is complete confirms the estimate; the
 target drops to 85% until a clear interval shows the queue has drained, and
-signals in that period do not change the estimate. A pulse without a signal
+signals in that period do not change the estimate. That period ends after the
+time the queue may need to leave at 85%, `2*queue/0.15 + 2*SRTT` (twice the
+queue measured, since the probe ran on while its feedback travelled): delay
+that outlasts it is not the probe's and counts as a repeated signal on a
+holding lane. Taken for the probe's queue without limit, the delay of a lane
+that lost half its capacity while a probe drained held the target at three
+quarters of the old capacity, with the path's buffer full
+(`TestCapacityDropIsNotALevelShift`). A pulse without a signal
 raises the estimate by 5%, the next by 10%, and the third returns the lane to
 discovery at a gain of 1.5. Discovery also uses that gain instead of 2 while
 real-time datagrams are carried: its overshoot queues in the path's buffer
