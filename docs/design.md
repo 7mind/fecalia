@@ -247,7 +247,20 @@ than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
 minimum, and explicit baseline calibration clears all buckets. Control intervals
 take the minimum of the resulting queue-delay samples. A congestion signal is
 material loss, or a minimum forward queue delay across a control interval
-above `max(10 ms, 2*idleForwardVariation)`. Loss is material when the last
+above the threshold: the largest of 10 ms, `2*idleForwardVariation`, and
+`wander + 2*wanderVariation + 10 ms`. Queue delay is measured from the lowest
+transit time seen, and a path whose latency wanders sits above that floor most
+of the time; when the wander is slow, the samples of one control interval move
+together and their minimum is no nearer the floor than any of them. `wander`
+is the smoothed queue delay of control intervals in which the lane sent less
+than half of what it has shown it can carry (half its target, before that is
+known) while delivery kept up, so that whatever delay it saw it did not
+queue; delays above 30 ms are not taken for wander. Latency measured on the
+production links (600 pings each, idle, 2026-09-30) has a round-trip standard
+deviation of 7-10 ms, and on one of them moves between levels 10-20 ms apart
+that last for seconds; a model lane with that wander and the fixed 10 ms
+threshold was held at its minimum rate (`TestWanderingLatencyIsNotAQueue`).
+netem's jitter is drawn anew for every datagram and does not show this. Loss is material when the last
 second timed out at least three datagrams and 2% of those sent (BBRv2's startup
 exit threshold, applied in every state): a path that loses a fraction of a
 percent at random loses something in every control interval at a high rate, and
@@ -256,7 +269,12 @@ cutting on each of them held a 300 Mbit/s lane at 3 MB/s
 is taken over a second and not over one delivery round: a round of a hundred
 datagrams on a path losing 0.4% holds three losses once in fifty rounds, and
 each then ended discovery at the sender's own rate
-(`TestUnderusedLossyLaneKeepsItsTarget`). Jitter spreads the samples, and the
+(`TestUnderusedLossyLaneKeepsItsTarget`). A datagram whose timeout passes is
+sent again at once but counts as lost only when it stays unconfirmed for a
+second timeout, or is confirmed no sooner than its repair could have been: a
+confirmation delayed by jitter or by the acknowledgement cadence arrives
+after the first timeout as often as a loss does, and counting those cut the
+target of a lane that lost nothing. Jitter spreads the samples, and the
 minimum of a few exceeds the threshold by chance: with a 60 ms spread and two
 samples, in most intervals. The mean difference between consecutive samples
 estimates the spread (a third of it for a uniform spread; a queue changes

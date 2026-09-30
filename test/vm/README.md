@@ -61,6 +61,7 @@ TCP there while the radio profile did not move.
 | `profiles/mobile.json` | 0.4+1.25 Mbit/s uplink, 0.5+100 downlink, 4/10 ms jitter | Same throughput gates; stress model for standby Starlink and asymmetric LTE |
 | `profiles/radio.json` | Mobile capacities; Starlink 20±10 ms delay and 0.4% loss, LTE 40±30 ms delay, independently in each direction | Same throughput gates after 60 seconds idle; reproduces the collapse missed by milder jitter |
 | `profiles/gigaradio.json` | 300+300 Mbit/s in each direction with the radio profile's delay, jitter and loss; delay correlation 95% | Same throughput gates; a model of an upgraded Starlink beside 5G |
+| `profiles/gigasteady.json` with `wander.py` | 300+300 Mbit/s with steady netem delays that `wander.py`, run in each guest, moves as measured links' latency moves | Same throughput gates; the only scenario in which latency has memory |
 | `continuity.py` | Simultaneous TCP in both directions plus two 50 Hz, 160-byte UDP echo streams | TCP completes 65 seconds and meets the progress rule below; each UDP stream has <1% loss and meets the gap and latency rules below (`continuity_gates.py`) |
 
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
@@ -82,6 +83,18 @@ their TCP buffer ceilings to 64 MB at start (`lab.py`): a 300 Mbit/s path with
 cap the test. `udp.py` gives iperf3 a 4 MB socket buffer; with the default
 208 kB its receiver overflowed on 2% of the tunnel's bursty deliveries and
 under-counted.
+
+netem draws its jitter anew for every datagram. Latency measured on the
+production links (600 pings each at 5 Hz, idle, 2026-09-30) behaves
+otherwise: the ~40 ms link has a round-trip standard deviation of 10 ms and an
+autocorrelation of 0.52 at 0.2 s and 0.39 at 5 s, moving between levels 10-20
+ms apart that last for seconds; the ~24 ms link has 6.6 ms and no memory
+beyond a fraction of a second. `wander.py INTERFACE --delay --scatter
+[--shift]` changes an interface's netem delay every 20 ms along such a walk.
+With `--delay 20 --scatter 3 --shift 8` and `--delay 12 --scatter 4.5` the
+lab's two WANs measured 6.3 ms (autocorrelation 0.55, 0.36) and 6.5 ms (0.01,
+-0.02). Lowering a netem delay lets new datagrams overtake queued ones, so
+this reorders within a WAN, which the real links are not known to do.
 
 Voice latency is judged against the WANs that were up when a datagram was sent,
 using the times recorded in the phase manifest:
@@ -857,3 +870,58 @@ lossy lane of the model carries a 35 ms standing queue on `main` as well
 (transit p50 58 ms against 20 ms of path). A model of a TCP sender through the
 real resequencer would let these be judged in seconds instead of half-hour lab
 series whose TCP results vary between 50 and 200 Mbit/s.
+
+### Latency with memory — 2026-09-30
+
+A deterministic model of one TCP transfer (CUBIC-like, selective
+acknowledgements) through two bonded endpoints and the real resequencer
+(`internal/bond/tcp_model_test.go`; the report is `-tags model`) showed what
+the netem profiles cannot: with latency that wanders as the measured links'
+does, a lane can be held at its minimum rate. Queue delay is measured from
+the lowest transit time seen; a wandering path sits above that floor most of
+the time, and when the wander is slow the samples of a control interval move
+together, so their minimum is no nearer the floor than any of them.
+
+Model, 300+300 Mbit/s unless stated, last 30 of 60 s, Mbit/s (T =
+`668f40a`, X = the candidate):
+
+| Scenario | T | X |
+|---|---|---|
+| Measured latency on both lanes, no loss | 496 | 517 |
+| Measured latency, 0.1% loss on the satellite lane | 217 | 451 |
+| Steady latency, no loss | 525 | 525 |
+| Satellite lane alone, measured latency | 234 | 203 |
+| Satellite lane alone, scatter without level shifts | 263 | 258 |
+| Mobile lane alone, measured latency | 0 | 265 |
+| Today's downlink (0.5+100 Mbit/s), measured latency | 86 | 88 |
+
+X changes two things, each with a failing model test first:
+
+| Cause | Change |
+|---|---|
+| A fixed 10 ms threshold above the transit floor | the threshold also stands above the delay seen while the lane sent less than half of what it can carry (`TestWanderingLatencyIsNotAQueue`) |
+| A timeout counted as loss at once; a confirmation delayed by jitter or the acknowledgement cadence arrives after it as often as a loss does (77 timeouts a second on a model lane losing 37) | the datagram is sent again at the timeout but counts as lost only if still unconfirmed after a second one, or confirmed no sooner than its repair could have been |
+
+Lab, X (`wanbond-x1`) against `main` (W, `wanbond-w1`), order X W W X:
+
+| Measurement | W | X |
+|---|---|---|
+| Radio TCP up / down, Mbit/s | 1.290/49.7, 1.290/73.2 | 1.291/83.0, 1.323/82.1 |
+| Radio continuity | 2 of 2 pass | 2 of 2 pass |
+| 300+300 netem jitter, TCP up / down | 115/125, 73/86 | 101/125, 67/139 |
+| 300+300 netem jitter, UDP up / down | 351/306, 308/321 | 361/316, 286/279 |
+
+With `wander.py` on both WANs and no loss, order W X X W:
+
+| Measurement | W | X |
+|---|---|---|
+| 300+300 wandering latency, TCP up / down, 60 s | 83/45, 116/58 | 102/132, 147/122 |
+| 300+300 wandering latency, UDP up / down | 121/129, 137/96 | 187/162, 184/182 |
+
+X is better wherever latency has memory, in the model and in the lab, and no
+worse elsewhere. With wandering latency the lab stays far below the model
+(UDP 162-187 of 600 Mbit/s, against 451-517 for TCP in the model) and below
+its own netem-jitter figures; the delay changes reorder datagrams within a
+WAN there, and how much of the gap that accounts for is not known. The
+satellite lane alone loses 13% in the model with X: a level shift upwards
+still reads as queue until the ten-second baseline refresh.
