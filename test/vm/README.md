@@ -54,6 +54,7 @@ Guest WAN changes cannot disconnect the management NIC.
 | `profiles/jitter.json` | 2+6 Mbit/s, 15/40 ms delay, 4/10 ms jitter | Same throughput gates, including a 30-second idle period before load |
 | `profiles/mobile.json` | 0.4+1.25 Mbit/s uplink, 0.5+100 downlink, 4/10 ms jitter | Same throughput gates; stress model for standby Starlink and asymmetric LTE |
 | `profiles/radio.json` | Mobile capacities; Starlink 20±10 ms delay and 0.4% loss, LTE 40±30 ms delay, independently in each direction | Same throughput gates after 60 seconds idle; reproduces the collapse missed by milder jitter |
+| `profiles/gigaradio.json` | 300+300 Mbit/s in each direction with the radio profile's delay, jitter and loss; delay correlation 95% | Same throughput gates; a model of an upgraded Starlink beside 5G |
 | `continuity.py` | Simultaneous TCP in both directions plus two 50 Hz, 160-byte UDP echo streams | TCP completes 65 seconds and meets the progress rule below; each UDP stream has <1% loss and meets the gap and latency rules below (`continuity_gates.py`) |
 
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
@@ -64,6 +65,17 @@ at least 1% random loss after 55 seconds. Directional delay and jitter remain
 as configured. The phase manifest records actual application times and each
 direction's conditions. Echo traffic exercises both directions;
 RTT includes forward and return delay.
+
+A profile condition may set `correlation` (percent), netem's delay
+correlation: successive delays stay close, as on a radio link whose latency
+drifts rather than scatters. Without it a 300 Mbit/s link with 30 ms of jitter
+reorders thousands of datagrams, which no radio link does; at 1.25 Mbit/s the
+same jitter reorders little, so the radio profile leaves it unset. Guests raise
+their TCP buffer ceilings to 64 MB at start (`lab.py`): a 300 Mbit/s path with
+150 ms of round trip needs a 6 MB window, and the kernel default of 6 MB would
+cap the test. `udp.py` gives iperf3 a 4 MB socket buffer; with the default
+208 kB its receiver overflowed on 2% of the tunnel's bursty deliveries and
+under-counted.
 
 Voice latency is judged against the WANs that were up when a datagram was sent,
 using the times recorded in the phase manifest:
@@ -717,3 +729,54 @@ Rejected on the way, each measured in a series of its own:
 
 Series 6-9 and 11 (`C20`, `E0`, `E1`, `e2`, `e4`) are in the lab state
 directory under the binaries' hashes.
+
+### 300+300 Mbit/s links — 2026-09-30
+
+`profiles/gigaradio.json`: the radio profile's delay, jitter and loss at
+300 Mbit/s per WAN. Plain TCP over the emulated Starlink WAN alone reaches
+8 Mbit/s (random 0.4% loss at 40 ms round trip, Mathis's bound), so the
+calibration's TCP check does not apply to this profile; UDP calibrates at
+290 Mbit/s per WAN. The tunnel's own CPU on the 4-vCPU guests stayed below
+1.5 cores at 600 Mbit/s and no thread above a third of a core.
+
+First runs of `main` at `e14db98`: TCP 31 / 93 Mbit/s, UDP 229 / 250 (up /
+down, gates 450 / 480). Two causes reproduced in the deterministic model
+(`fast_lane_test.go`):
+
+| Cause | Model | Change |
+|---|---|---|
+| Any timed-out datagram was a congestion signal; at 300 Mbit/s a 0.4% random loss times something out in every control interval | lane collapsed from 28 to 3 MB/s within 12 s | loss is congestion only when a round lost 3+ datagrams and 2% (the startup rule, in every state) |
+| Before eight delay differences, one delayed sample ended discovery | 30 ms jitter lane held at 16 kB/s for 6 s of a cold start | the probes' unloaded variation stands in for the spread |
+
+Two further changes were tried and rejected: a timeout bounded by the recent
+peak confirmation time (TCP fell to 12 / 37 Mbit/s: repairs approached the
+250 ms lifetime), a timeout including the recently measured queue delay
+(within variation), and a window sized from confirmation time (no gain, two
+model tests fail).
+
+Regression series, `main` (A, `11a6b020…`) against the candidate (G,
+`34921a4d…` plus the two changes; `wanbond-g5`), A G G A order per binary:
+
+| Measurement | A | G |
+|---|---|---|
+| Radio TCP up / down, Mbit/s | 1.322/74.0, 1.290/82.8 | 1.326/82.5, 1.290/75.5 |
+| Radio continuity | 2 of 2 pass | 2 of 2 pass |
+| 300+300 UDP up / down, Mbit/s | 210/260, 252/249 | 308/367, 324/347 |
+| 300+300 TCP up / down, Mbit/s | 147/205, 120/138 | 70/90, 98/74 |
+
+Six more 300+300 runs of G-equivalent builds gave UDP 310-387 and TCP
+52-126 Mbit/s. G carries more UDP and less TCP than A, and neither reaches the
+gates. The traces explain both: on A the loss cuts hold the lanes at a third
+of their capacity; on G the lanes fill, the 0.4% loss then costs about 100
+datagrams a second, and each is repaired only after a timeout of 100-200 ms,
+during which the receiver's resequencer holds everything behind it (hub: 5378
+holds totalling 33.6 s in a 35 s run). TCP sees a 100-230 ms round trip with
+occasional loss and stays at a 1-3 MB window. The slower lanes of A stall TCP
+less often. Faster loss detection than the timeout (acknowledgement gaps) or
+forward error correction for bulk on a lossy lane would address this; neither
+was attempted.
+
+UDP on G is limited by the lossy lane, which sends 20-27 of its 37.5 MB/s
+while its window of about 3 MB, sized from the unloaded round trip, is
+exhausted before acknowledgements return through the path's jitter and the
+25-50 ms cadence.

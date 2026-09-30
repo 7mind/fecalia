@@ -242,15 +242,23 @@ time for router queueing. Within a bucket the serialization difference is less
 than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
 minimum, and explicit baseline calibration clears all buckets. Control intervals
 take the minimum of the resulting queue-delay samples. A congestion signal is
-timed-out data, or a minimum forward queue delay across a control interval
-above `max(10 ms, 2*idleForwardVariation)`. Jitter spreads the samples, and the
+material loss, or a minimum forward queue delay across a control interval
+above `max(10 ms, 2*idleForwardVariation)`. Loss is material when a delivery
+round timed out at least three datagrams and 2% of those sent (BBRv2's startup
+exit rule, applied in every state): a path that loses a fraction of a percent
+at random loses something in every control interval at a high rate, and
+cutting on each of them held a 300 Mbit/s lane at 3 MB/s
+(`TestRandomLossDoesNotCollapseTheTarget`); repair covers such loss. Jitter spreads the samples, and the
 minimum of a few exceeds the threshold by chance: with a 60 ms spread and two
 samples, in most intervals. The mean difference between consecutive samples
 estimates the spread (a third of it for a uniform spread; a queue changes
 little between samples), and a delay signal needs `2*spread/threshold` samples,
 at most 16, before it counts. The estimate in force is the one from before
-the interval, so the onset of a queue cannot excuse itself, and it applies
-after eight differences.
+the interval, so the onset of a queue cannot excuse itself. Until eight
+differences have been observed, the probes' unloaded round-trip variation
+stands in for the spread: a single delayed sample otherwise ended the discovery
+of a 300 Mbit/s lane with 30 ms of jitter within its first 100 ms, at a capacity
+measured from a handful of datagrams (`TestJitteryLaneStartsUp`).
 
 *Hold and pulse (`control.go`).* Raising the target until the path queues, then
 cutting it, keeps a standing queue in the path's own buffer, where small
