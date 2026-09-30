@@ -802,3 +802,58 @@ Open, in the order I would take them: an acknowledgement format whose receipt
 bitmap scales with the rate, then repair from gaps; a loss signal that does
 not count timeouts later shown spurious; a capacity estimate that is not
 taken from an application-limited transfer.
+
+### Loss window and further repair experiments — 2026-09-30
+
+Branch `tcp-fast` on top of `main` at `1802c9e`.
+
+Kept: material loss is judged over the last second instead of one delivery
+round (`6199555`). In the model a bursty sender at a third of a lossy
+300 Mbit/s lane's capacity saw the target cut below its own rate (11.7 of
+12.0 MB/s offered, 8 cuts in 20 s); with the change the target stays at 19.8
+and is cut twice. Acknowledgements now leave in lane creation order
+(`668f40a`), which makes two-lane model runs repeatable: six executions of
+`TestLightlyLoadedLaneTargetStaysWithinCapacity` gave six targets before and
+one after.
+
+T = `6199555` (`wanbond-t1`), W = `main` (`wanbond-w1`), order T W W T:
+
+| Measurement | W | T |
+|---|---|---|
+| Radio TCP up / down, Mbit/s | 1.222/82.4, 1.289/83.7 | 1.290/73.0, 1.291/80.6 |
+| Radio continuity | 2 of 2 pass | 2 of 2 pass |
+| 300+300 UDP up / down, Mbit/s | 291/321, 314/244 | 291/367, 407/405 |
+| 300+300 TCP up / down, Mbit/s | 107/98, 122/82 | 103/81, 121/73 |
+
+No measurable difference on either profile; `668f40a` was not in the binary
+measured.
+
+What limits TCP at 300+300 Mbit/s, measured on T-equivalent builds:
+
+- In four 60 s transfers, TCP retransmitted 5-10 times and the resequencer
+  abandoned 1-10 gaps; the two counts track each other. Every abandoned
+  sequence arrived afterwards as a stale frame: the repair was late, not lost.
+- 922 repairs in 40 s left more than 150 ms after the first transmission. On
+  the lossy WAN the timer that triggers them was 150-175 ms (round trip
+  40 ms), so a repair through the 5G WAN arrives 190-245 ms after the
+  original, at the edge of the receiver's 250 ms hold. On the lossless 5G WAN
+  they came in bursts of 9-68: datagrams unacknowledged after 150-175 ms
+  while acknowledgements kept arriving.
+
+Not kept, each tried in the deterministic model on a saturated lossy lane:
+
+| Attempt | Result |
+|---|---|
+| Verdict from receipt reports: unreported while a send this much later is confirmed | verdicts fire 25-100 ms after the first transmission, but the repair then waits for a window slot behind the datagram it replaces; repaired datagrams still arrive at 180-210 ms |
+| The same, with the repair taking the lost datagram's place in the window | the target then fell to 22 of 37.5 MB/s for ten seconds in one model, and runs were not repeatable |
+| Verdicts limited to sequences the lane bitmaps covered without a hole, acknowledgements every 32 datagrams | acknowledgements arrive out of order through the reverse path's jitter, so the coverage always has holes; the more frequent acknowledgements also left a 24 ms queue in the steady-state model |
+| A shorter timer for repairs than for declaring loss | repairs still arrived at 226 ms: on a saturated lane they wait for the window, not the timer; two other models regressed |
+| Ignoring delay signals on a lane that sends below its target | no effect on the reproduced case; broke `TestLateACKStillMeasuresCongestion` |
+
+The saved work is in the stash on `tcp-fast` ("gap repair v5 WIP").
+
+Open: on a saturated lane a repair waits for the window, and the saturated
+lossy lane of the model carries a 35 ms standing queue on `main` as well
+(transit p50 58 ms against 20 ms of path). A model of a TCP sender through the
+real resequencer would let these be judged in seconds instead of half-hour lab
+series whose TCP results vary between 50 and 200 Mbit/s.

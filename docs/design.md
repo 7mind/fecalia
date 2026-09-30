@@ -247,12 +247,16 @@ than 8 ms at the minimum supported pacing rate. A new bucket establishes its own
 minimum, and explicit baseline calibration clears all buckets. Control intervals
 take the minimum of the resulting queue-delay samples. A congestion signal is
 material loss, or a minimum forward queue delay across a control interval
-above `max(10 ms, 2*idleForwardVariation)`. Loss is material when a delivery
-round timed out at least three datagrams and 2% of those sent (BBRv2's startup
-exit rule, applied in every state): a path that loses a fraction of a percent
-at random loses something in every control interval at a high rate, and
+above `max(10 ms, 2*idleForwardVariation)`. Loss is material when the last
+second timed out at least three datagrams and 2% of those sent (BBRv2's startup
+exit threshold, applied in every state): a path that loses a fraction of a
+percent at random loses something in every control interval at a high rate, and
 cutting on each of them held a 300 Mbit/s lane at 3 MB/s
-(`TestRandomLossDoesNotCollapseTheTarget`); repair covers such loss. Jitter spreads the samples, and the
+(`TestRandomLossDoesNotCollapseTheTarget`); repair covers such loss. The share
+is taken over a second and not over one delivery round: a round of a hundred
+datagrams on a path losing 0.4% holds three losses once in fifty rounds, and
+each then ended discovery at the sender's own rate
+(`TestUnderusedLossyLaneKeepsItsTarget`). Jitter spreads the samples, and the
 minimum of a few exceeds the threshold by chance: with a 60 ms spread and two
 samples, in most intervals. The mean difference between consecutive samples
 estimates the spread (a third of it for a uniform spread; a queue changes
