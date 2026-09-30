@@ -173,8 +173,8 @@ type lane struct {
 	startupFlatRounds    int
 	roundEnd             uint64
 	roundDone            bool
-	roundSent            int
-	roundLost            int
+	recentSent           rateMeter
+	recentLost           rateMeter
 	roundLossy           bool
 	previousDelivery     float64
 	control              control
@@ -562,7 +562,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 		path.firstSent = now
 	}
 	path.attempts[path.seq] = attempt{packet: p, sent: now, bytes: size}
-	path.roundSent++
+	path.recentSent.add(now, 1)
 	path.inflight += size
 	path.classInflight[p.class] += size
 	path.sent += uint64(size)
@@ -627,7 +627,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			if !a.released && now.Sub(a.sent) >= path.rto() {
 				path.lostSinceAdjust = path.lostSinceAdjust || a.packet != nil
 				if a.packet != nil {
-					path.roundLost++
+					path.recentLost.add(now, 1)
 				}
 				if path.lastACK.Before(a.sent) {
 					path.stalled = true
@@ -916,8 +916,12 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	if fresh && a.high >= p.roundEnd {
 		// A delivery round ends once data sent after it began is acknowledged.
 		p.roundEnd, p.roundDone = p.seq+1, true
-		p.roundLossy = p.roundLost >= startupLossEvents && float64(p.roundLost) >= startupLossRatio*float64(p.roundSent)
-		p.roundSent, p.roundLost = 0, 0
+		// Judged over the last second, not the round: a round of a hundred
+		// datagrams on a path that loses 0.4% at random holds three losses
+		// once in fifty rounds, twice a second at that rate, and each passed
+		// for material loss (`TestUnderusedLossyLaneKeepsItsTarget`).
+		lost := p.recentLost.total(now)
+		p.roundLossy = lost >= startupLossEvents && lost >= startupLossRatio*p.recentSent.total(now)
 	}
 	for _, path := range t.paths {
 		var feedbackSample time.Duration
