@@ -337,7 +337,13 @@ The cost is a slower start of bulk traffic beside voice.
 
 While holding, one signal may be jitter: only a
 second consecutive signal cuts the target, by 10%, and lowers the estimate by
-3%. Cuts that take the target below 75% of the estimate mean capacity fell;
+3%. A peer that restarts takes the lane's sequence spaces and probing state
+with it but not its capacity estimate: the path did not restart. Cleared with
+the rest, the estimate left the lane out of discovery with no bound but a
+congestion signal, and on the production satellite link, which drops rather
+than queues, the target rose from 80 kB/s to 7.4 MB/s in fifteen seconds at
+the first download after a redeployment while the lane delivered 65 kB/s
+(`TestPeerRestartKeepsTheCapacityEstimate`). Cuts that take the target below 75% of the estimate mean capacity fell;
 delivery is measured again and a pulse follows at once. A signal while no
 datagram has waited 5 ms for a lane measures the sender, not the path, and
 starts no hold. The drained sample that re-establishes the delay baseline also
