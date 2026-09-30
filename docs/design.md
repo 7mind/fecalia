@@ -268,14 +268,37 @@ raises the estimate by 5%, the next by 10%, and the third returns the lane to
 discovery at a gain of 1.5. Discovery also uses that gain instead of 2 while
 real-time datagrams are carried: its overshoot queues in the path's buffer
 ahead of them (VM run `20260929-152215-continuity`: 370 ms voice round trips in
-the first five seconds of a cold start). While holding, one signal may be jitter: only a
+the first five seconds of a cold start).
+
+Growth needs evidence. A lane that sends less than three quarters of its held
+target starts no pulse: the pulse would test nothing, and its silence would
+raise the estimate. On a lane that carries the originals of a steady real-time
+stream (traffic in every 200 ms of the last second), discovery bounds the
+target by 1.5 times the most the lane delivered in the last ten seconds, not by
+what was sent and not by the initial assumption of 1 Mbit/s; a burst delivers
+too little to measure anything and keeps that assumption. Other lanes are not
+bound: their overshoot delays no real-time datagram, and a bound that followed
+a paused sender's delivery down left TCP to start again from nothing (VM run
+`20260929-234339-continuity`: no TCP delivery in 65 seconds). The bound applies on every acknowledgement, because the control
+interval runs only for a backlogged lane and a lightly loaded one never is. A standby lane that carried two voice streams
+at half its capacity otherwise drifted to 81-97 kB/s on a 62.5 kB/s path, and
+when the other lane failed its traffic overfilled the path's buffer, where
+voice has no priority (VM runs of 2026-09-29: 300-390 ms voice round trips for
+seconds after the failure; `TestLightlyLoadedLaneTargetStaysWithinCapacity`).
+The cost is a slower start of bulk traffic beside voice.
+
+While holding, one signal may be jitter: only a
 second consecutive signal cuts the target, by 10%, and lowers the estimate by
 3%. Cuts that take the target below 75% of the estimate mean capacity fell;
 delivery is measured again and a pulse follows at once. A signal while no
 datagram has waited 5 ms for a lane measures the sender, not the path, and
 starts no hold. The drained sample that re-establishes the delay baseline also
 refreshes the unloaded round trip used for the window: a held target can no
-longer compensate for a window sized from an outdated round trip. Unloaded estimates update only after two seconds without transmitting
+longer compensate for a window sized from an outdated round trip. It moves the
+estimate halfway and leaves its variation alone. One sample is a draw from
+the lane's jitter: replacing the estimate with it ranked a lane of 80 ms mean
+round trip, at 23 ms, ahead of one of 46 ms, and real-time datagrams moved to
+the slower lane for tens of seconds (`TestOneUnloadedSampleDoesNotReorderLanes`). Unloaded estimates update only after two seconds without transmitting
 application datagrams on that lane; a transient empty queue during a transfer
 does not qualify. The forward estimate uses only empty keepalive transit samples
 and excludes return-path delay. Its relative-clock mean is reset when the remote
@@ -403,8 +426,25 @@ one bulk datagram in flight is a third of the window. Small datagrams may borrow
 queued small datagrams gets the same lead. Real-time datagrams may exceed a
 full congestion window by one datagram and go to the lane on which they would
 arrive first. Only real-time datagrams are copied onto a second lane.
-Additional copies have an allowance of 10% of the healthy lanes'
+Additional copies have an allowance of 20% of the healthy lanes'
 aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance.
+A copy is sent with its original or not at all, so the other lanes reserve
+capacity for the copies of the originals they do not carry, as much as the
+allowance and the real-time demand permit; lower classes are paced and
+windowed to leave it free, and a copy may lead the pacing clock by one full
+datagram of a lower class. Without the reservation bulk filled the second
+lane's window and pacing slots, four in ten voice datagrams went uncopied
+whatever the allowance, and each of those lost on its lane arrived about
+250 ms late (`TestVoiceCopiesHaveRoomOnTheOtherLane`). Two 50 Hz voice streams
+need 30 kB/s of copies, 15% of a 0.4+1.25 Mbit/s uplink.
+
+A real-time datagram that waited is worth less than the one behind it. When
+real-time datagrams have waited more than 20 ms for a lane throughout 100 ms
+without the queue emptying,
+the oldest are dropped until the queue is current. A backlog formed when a
+lane fails otherwise drains only as fast as the remaining capacity exceeds the
+flow's rate, which on a slow lane takes seconds, and every datagram meanwhile
+arrives late by the backlog (`TestVoiceCatchesUpAfterTakeover`).
 An initially unreplicated real-time datagram can use this same budget for one earlier
 cross-path copy after `max(60 ms, baseRTT + 25 ms)` if its original lane has
 returned no ACK since it was sent. This avoids waiting for a long feedback tail

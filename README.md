@@ -72,8 +72,8 @@ distinguish the pacing target from actual send and delivery rates. The repair
 timer also measures full delivery-confirmation time so reordered packets do not
 trigger premature retries. Linux startup requires `tc`
 and removes the old wanbond HTB/bfifo cap when that shaper is no longer enabled.
-Small-packet duplication follows learned capacity, capped at 10% of the aggregate
-pacing target and 64 kB/s. Bulk receive batching reduces return ACK traffic and
+Small-packet duplication follows learned capacity, capped at 20% of the aggregate
+pacing target and 64 kB/s; the second lane reserves capacity for the copies. Bulk receive batching reduces return ACK traffic and
 flushes immediately for interactive packets.
 
 Lost datagrams receive bounded cross-path retries. Bulk repair lasts at most

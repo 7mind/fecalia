@@ -655,3 +655,65 @@ source of the tail. Its source has not been identified. Two of the failures of
 B were gaps of 205 and 206 ms in the first two seconds. All six basic-profile
 continuity runs passed. Radio download was below its gate in one run of each
 binary.
+
+### Voice beside bulk: copies, growth by evidence, lane ranking — 2026-09-29/30
+
+The comparison above changed the allowance alone and found nothing because the
+allowance was not the limit. Each cause below was reproduced in the
+deterministic model or by a trace before it was changed:
+
+| Cause | Observation | Change |
+|---|---|---|
+| Copies had no room on the second WAN | Bulk filled its window and pacing slots; four in ten voice datagrams went uncopied at 10% and at 20% | The other lanes reserve capacity for copies; allowance 20% |
+| The standby WAN's target drifted above its capacity | Pulses on a lane sending below its target always "succeeded"; 81-97 kB/s on the 62.5 kB/s WAN, then 300-390 ms voice round trips when LTE failed | No pulse on a lane sending below its target; on the voice lane discovery is bound by recent delivery |
+| A voice backlog formed at a failure drained over seconds | Remaining capacity barely exceeds two voice streams | Real-time datagrams that waited give way to those behind them |
+| One unloaded sample replaced a lane's round trip | The 80 ms LTE lane ranked at 23 ms ahead of the 46 ms lane; voice moved to it (about one model run in a hundred) | The sample moves the estimate halfway |
+
+A = `main` at `b2a72d7` (`11a6b020…`); E3 = the first three changes
+(`9ddc6f56…`); E5 = all four, the candidate (`34921a4d…`). Interleaved within
+each series. Voice p99 is over datagrams sent after the first five seconds
+while the Starlink WAN was up, hub / edge, radio profile.
+
+| Series | Binary | Voice p99, ms | Round trips over 200 ms per stream | Radio continuity | Basic continuity | Radio up / down, Mbit/s |
+|---|---|---|---|---|---|---|
+| 10 | A | 184/156, 152/150, 169/172, 127/141 | 4-24 | 1 of 4 | 1 of 2 | 1.290/81.2, 1.288/78.2 |
+| 10 | E3 | 115/111, 118/122, 127/130, 115/106 | 0-4 | 3 of 4 | 2 of 2 | 1.289/73.5, 1.257/81.8 |
+| 12 | A | 202/183, 183/163, 139/142, 254/242 | 11-63 | 1 of 4 | 4 of 4 | 1.255/79.7, 1.291/83.8 |
+| 12 | E5 | 104/109, 108/107, 114/111, 126/129 | 0-2 | 1 of 4 | 4 of 4 | 1.291/74.5, 1.254/81.4 |
+
+Every voice p99 of E3 and E5 is below 150 ms; 11 of 16 of A are not. What
+still fails on the candidates is not the voice latency with Starlink up:
+
+| Failure | E3 | E5 | A |
+|---|---|---|---|
+| Voice p99 while only LTE is up (gate 181.6 ms) | 1 of 4 (200.8) | 1 of 4 (207.9) | 5 of 8 |
+| TCP without delivery for 3 s while only Starlink is up | 0 of 4 | 2 of 4 | 0 of 8 |
+| Voice p99 with Starlink up | 0 of 4 | 0 of 4 | 6 of 8 |
+
+Costs and limits:
+
+| Measurement | A | E3 / E5 |
+|---|---|---|
+| TCP upload beside two voice streams, whole scenario, Mbit/s | 0.47-0.58 | 0.31-0.36 |
+| TCP download beside two voice streams, whole scenario, Mbit/s | 32.0-52.1 | 39.0-53.6 |
+| TCP delivered in the five seconds with only Starlink up, series 12, kB, down / up | 3-34 / 7-18 | 0-7 / 0-11 |
+| Throughput without voice (`benchmark.py`) | unchanged | unchanged |
+
+The upload beside voice carries about a third less TCP: the copies take up to
+20% of a 1.65 Mbit/s uplink. With only the 0.4/0.5 Mbit/s Starlink WAN up, two
+voice streams take 56-70% of it and the target no longer exceeds its capacity,
+so TCP gets less than before and sometimes nothing for the five seconds. A
+model of a backed-off sender's retransmissions on that lane delivered 75-90%
+of them, so the lab's TCP stall is not explained by the tunnel dropping them;
+its cause is open.
+
+Rejected on the way, each measured in a series of its own:
+
+| Variant | Result |
+|---|---|
+| Discovery bound on every lane, by current delivery (`e2`) | One run without any TCP delivery in 65 s; slow TCP start in the others |
+| Unloaded sample also counted towards the variation (`e4`) | Both basic-profile runs failed: voice moved to the 25 ms lane, 246 ms gap at its failure |
+| Catch-up rule alone decides nothing in the lab | E0 (without) and E1 (with) within run-to-run variation; kept on the model's evidence (287 late of 5600 without, 21 with) |
+
+Series 6-9 and 11 (`C20`, `E0`, `E1`, `e2`, `e4`) are in the lab state
+directory under the binaries' hashes.
