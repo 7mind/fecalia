@@ -322,25 +322,118 @@ func (p *lane) discover(now time.Time, realtime, stream, laneLimited bool) {
 	}
 }
 
+// lossLedger measures a lane's loss from byte counts: the bytes the sender put
+// on the lane up to an acknowledged sequence, against the bytes the receiver
+// reports having received on it. A timeout cannot tell a lost datagram from a
+// late one; with latency that wanders, datagrams that arrived were timed out,
+// repaired and counted as lost (VM run of 2026-09-30: 284 loss cuts in one
+// transfer over links that dropped nothing).
+//
+// The deficit of received against sent bytes is the loss so far plus the
+// datagrams below the acknowledged sequence that have not arrived yet. That
+// backlog is never negative and empties as they arrive, so the lowest deficit
+// over a settling period is the loss, and its growth from one period to a
+// later one is the loss in between.
+type lossLedger struct {
+	entries []lossEntry
+}
+
+type lossEntry struct {
+	at      time.Time
+	seq     uint64
+	sent    uint64
+	deficit float64
+}
+
+const (
+	lossHorizon = time.Second
+	lossSettle  = 200 * time.Millisecond
+)
+
+// record adds the counts confirmed with the acknowledgement of seq; late is
+// what the sender believes is still on its way below seq.
+func (l *lossLedger) record(now time.Time, seq, sent, received, late uint64) {
+	for len(l.entries) > 0 && now.Sub(l.entries[0].at) >= lossHorizon+2*lossSettle {
+		l.entries = l.entries[1:]
+	}
+	if n := len(l.entries); n > 0 && seq <= l.entries[n-1].seq {
+		return
+	}
+	l.entries = append(l.entries, lossEntry{now, seq, sent, float64(sent) - float64(received) - float64(late)})
+}
+
+// settled is the loss so far, in bytes: the lowest deficit of the current
+// settling period. It is meaningful only as a difference.
+func (l *lossLedger) settled(now time.Time) (deficit float64, known bool) {
+	for i := range l.entries {
+		if e := l.entries[i]; now.Sub(e.at) < lossSettle && (!known || e.deficit < deficit) {
+			deficit, known = e.deficit, true
+		}
+	}
+	return deficit, known
+}
+
+// lost is the loss, in bytes, between the settling period a horizon ago and
+// the current one, with the bytes and datagrams sent in between.
+func (l *lossLedger) lost(now time.Time) (bytes, sent, datagrams float64) {
+	var old, recent *lossEntry
+	for i := range l.entries {
+		e := &l.entries[i]
+		switch age := now.Sub(e.at); {
+		case age >= lossHorizon && age < lossHorizon+lossSettle:
+			if old == nil || e.deficit < old.deficit {
+				old = e
+			}
+		case age < lossSettle:
+			if recent == nil || e.deficit < recent.deficit {
+				recent = e
+			}
+		}
+	}
+	if old == nil || recent == nil || recent.seq <= old.seq {
+		return 0, 0, 0
+	}
+	return math.Max(0, recent.deficit-old.deficit), float64(recent.sent - old.sent), float64(recent.seq - old.seq)
+}
+
+// material reports loss of at least three datagrams and 2% of what was sent
+// over the horizon (BBRv2's threshold). A path that loses a fraction of a
+// percent at random loses something in every control interval at a high rate;
+// repair covers that, and only material loss is congestion.
+func (l *lossLedger) material(now time.Time) bool {
+	lost, sent, datagrams := l.lost(now)
+	return datagrams > 0 && lost >= startupLossEvents*sent/datagrams && lost >= startupLossRatio*sent
+}
+
 const (
 	peakBucket  = 2 * time.Second
 	peakBuckets = 5
 )
 
-// peak reports the highest of the values recorded in the last ten seconds.
+// peak reports the highest of the values recorded in the last five buckets
+// of two seconds, or of the bucket length set.
 type peak struct {
+	bucket  time.Duration
 	start   time.Time
 	buckets [peakBuckets]float64
 	index   int
 }
 
+func (m *peak) length() time.Duration {
+	if m.bucket == 0 {
+		return peakBucket
+	}
+	return m.bucket
+}
+
 func (m *peak) rotate(now time.Time) {
-	if m.start.IsZero() || now.Sub(m.start) >= peakBuckets*peakBucket {
-		*m = peak{start: now}
+	bucket := m.length()
+	if m.start.IsZero() || now.Sub(m.start) >= peakBuckets*bucket {
+		*m = peak{bucket: m.bucket, start: now}
 		return
 	}
-	for now.Sub(m.start) >= peakBucket {
-		m.start = m.start.Add(peakBucket)
+	for now.Sub(m.start) >= bucket {
+		m.start = m.start.Add(bucket)
 		m.index = (m.index + 1) % peakBuckets
 		m.buckets[m.index] = 0
 	}

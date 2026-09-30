@@ -19,7 +19,9 @@ const (
 	maximumRate           = 1250000000.0
 	targetQueue           = 10 * time.Millisecond
 	jitterAllowanceFactor = 2
-	jitterSpreadFactor    = 3 // a uniform spread is three times the mean difference of consecutive samples
+	jitterSpreadFactor    = 3                // a uniform spread is three times the mean difference of consecutive samples
+	reorderHeadroom       = 1.25             // allowance above the reordering observed
+	reorderMemory         = 10 * time.Second // per bucket; observed reordering is remembered for five
 	lossPacingHeadroom    = 1.05
 	lossRateReduction     = 0.9
 	queueSendExcessRatio  = 1.2
@@ -55,8 +57,6 @@ const (
 	// maxWander bounds what passes for a path's own latency wander; a larger
 	// delay on a lightly loaded lane is somebody's queue.
 	maxWander           = 3 * targetQueue
-	lossConfirmation    = 2 // timeouts without confirmation before a datagram counts as lost
-	repairConfirmation  = 8 // tenths of the base round trip a repair needs to be confirmed
 	feedbackHorizon     = 2 * time.Second
 	deliveryInterval    = 50 * time.Millisecond
 	baselineInterval    = 10 * time.Second
@@ -181,11 +181,9 @@ type attempt struct {
 	bytes     int
 	released  bool
 	confirmed bool
-	// timedOut: the timeout passed without a confirmation and the datagram
-	// was offered for repair. counted: it has been counted as lost, which
-	// waits until the timeout is shown not to have been premature.
-	timedOut bool
-	counted  bool
+	// through is the lane's cumulative wire bytes sent up to and including
+	// this attempt; against the receiver's cumulative count it measures loss.
+	through uint64
 }
 
 type transitBaseline struct {
@@ -207,13 +205,14 @@ type lane struct {
 	startupFlatRounds    int
 	roundEnd             uint64
 	roundDone            bool
-	recentSent           rateMeter
-	recentLost           rateMeter
+	losses               lossLedger
 	roundLossy           bool
 	previousDelivery     float64
 	control              control
 	peakDelivery         float64
 	recentDelivery       peak
+	reordering           peak
+	newestConfirmed      time.Time
 	wander               time.Duration
 	wanderVariation      time.Duration
 	wanderKnown          bool
@@ -240,7 +239,8 @@ type lane struct {
 	lastACK            time.Time
 	ackGap             time.Duration
 	lastAdjust         time.Time
-	lostSinceAdjust    bool
+	lossMark           float64
+	lossMarked         bool
 	inflight           int
 	classInflight      [classes]int
 	confirmedWireBytes int
@@ -372,7 +372,8 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.lastACK, p.ackGap = time.Time{}, 0
 		p.nextSend = time.Time{}
 		p.stalled = false
-		p.lostSinceAdjust = false
+		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
+		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
 		p.ackRevision = 0
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
@@ -404,7 +405,7 @@ func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) 
 		if rtt <= 0 {
 			rtt = 50 * time.Millisecond
 		}
-		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, discoveryGain: startupDeliveryGain, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt)}
+		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, discoveryGain: startupDeliveryGain, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt), reordering: peak{bucket: reorderMemory}}
 		p.lastTransmit = now
 		p.nextBaseline = now.Add(baselineInterval + time.Duration((uint16(id)^uint16(id)>>8)&255)*baselineStagger)
 		t.paths = append(t.paths, p)
@@ -487,6 +488,40 @@ func (p *lane) rto() time.Duration {
 		variation = max(variation, unknown)
 	}
 	return max(minimumRTO, p.rtt+4*variation+p.peerACKInterval(), p.feedbackRTT+4*p.feedbackRTTVariation)
+}
+
+// observeOrder records how far a confirmed datagram was sent before the newest
+// one that an earlier acknowledgement confirmed: the path delivered them in
+// the other order, and by that much it reorders. What one acknowledgement
+// confirms arrived in an order it does not tell.
+func (p *lane) observeOrder(now, sent time.Time) {
+	if sent.Before(p.newestConfirmed) {
+		p.reordering.record(now, float64(p.newestConfirmed.Sub(sent)))
+	}
+}
+
+// lateBelow is the bytes sent before the acknowledged sequence, not confirmed
+// by this acknowledgement, and sent so shortly before the acknowledged
+// datagram that they may still be on their way: the path's jitter lets later
+// datagrams arrive first. They are missing from the receiver's byte count
+// without being lost, and while the rate doubles their number doubles with it.
+func (p *lane) lateBelow(a acknowledgement, highSent, now time.Time) uint64 {
+	allowance := max(targetQueue, jitterSpreadFactor*p.delayJitter, jitterSpreadFactor*p.idleForwardVariation,
+		time.Duration(reorderHeadroom*p.reordering.value(now)))
+	var late uint64
+	for seq, sent := range p.attempts {
+		if seq >= a.high || highSent.Sub(sent.sent) >= allowance {
+			continue
+		}
+		if a.high-seq < 64 && a.mask&(uint64(1)<<(a.high-seq)) != 0 {
+			continue
+		}
+		if sent.packet != nil && (sent.packet.acked || a.received(sent.packet.seq)) {
+			continue
+		}
+		late += uint64(sent.bytes)
+	}
+	return late
 }
 
 // ackIntervalFor bounds acknowledgement bytes to a share of the bytes they
@@ -622,8 +657,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	if path.firstSent.IsZero() {
 		path.firstSent = now
 	}
-	path.attempts[path.seq] = attempt{packet: p, sent: now, bytes: size}
-	path.recentSent.add(now, 1)
+	path.attempts[path.seq] = attempt{packet: p, sent: now, bytes: size, through: path.sent + uint64(size)}
 	path.inflight += size
 	path.classInflight[p.class] += size
 	path.sent += uint64(size)
@@ -685,20 +719,12 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			path.baselinePending = true
 		}
 		for seq, a := range path.attempts {
-			if a.timedOut && !a.counted && !a.confirmed && a.packet != nil && now.Sub(a.sent) >= lossConfirmation*path.rto() {
-				// Still unconfirmed after a further timeout: lost.
-				path.lostSinceAdjust = true
-				path.recentLost.add(now, 1)
-				a.counted = true
-				path.attempts[seq] = a
-			}
 			if !a.released && now.Sub(a.sent) >= path.rto() {
-				// The datagram is sent again now, but not yet counted as lost:
-				// a confirmation delayed by jitter or by the acknowledgement
-				// cadence arrives after this as often as a loss does (model:
-				// 77 timeouts a second on a lane losing 37), and counting
-				// those cut the target of a lane that lost nothing.
-				a.timedOut = true
+				// The datagram is sent again now. Whether it was lost is not
+				// decided here: a confirmation delayed by jitter or by the
+				// acknowledgement cadence arrives after the timeout as often
+				// as a loss does. Loss is measured from the receiver's
+				// cumulative byte count (lossLedger).
 				if path.lastACK.Before(a.sent) {
 					path.stalled = true
 					if a.packet != nil && now.Sub(path.lastAdjust) >= deliveryInterval {
@@ -727,7 +753,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			if path.firstSent.IsZero() {
 				path.firstSent = now
 			}
-			path.attempts[path.seq] = attempt{sent: now, bytes: wireOverhead}
+			path.attempts[path.seq] = attempt{sent: now, bytes: wireOverhead, through: path.sent + wireOverhead}
 			path.inflight += wireOverhead
 			path.sent += wireOverhead
 			out = append(out, Transmission{path.id, dataFrame(t.epoch, t.remote, path.id, path.seq, 0, 0, nil)})
@@ -904,6 +930,12 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	backlogged := t.queued() > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
 	var physicalFeedback time.Duration
+	newestConfirmed := p.newestConfirmed
+	// The acknowledged sequence: when it was sent, and the bytes sent on the
+	// lane up to it.
+	var highSent time.Time
+	var through uint64
+	var counted bool
 	for seq, pending := range t.pending {
 		if a.received(seq) {
 			pending.acked = true
@@ -914,6 +946,8 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		if seq <= a.high && a.high-seq < 64 && a.mask&(uint64(1)<<(a.high-seq)) != 0 {
 			if !sent.confirmed {
 				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
+				p.observeOrder(now, sent.sent)
+				newestConfirmed = maxTime(newestConfirmed, sent.sent)
 			}
 			if sent.packet != nil {
 				p.confirmedWireBytes = min(maxPackets*maxDatagram, p.confirmedWireBytes+sent.bytes)
@@ -927,6 +961,9 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 				delete(t.pending, sent.packet.seq)
 			}
 			delete(p.attempts, seq)
+			if fresh && seq == a.high {
+				highSent, through, counted = sent.sent, sent.through, true
+			}
 			if fresh && seq == a.high && a.delay <= uint64(now.Sub(sent.sent)) {
 				p.stalled = false
 				sample = now.Sub(sent.sent) - time.Duration(a.delay)
@@ -980,19 +1017,10 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			}
 			if !sent.confirmed && sent.packet.attempts == 1 {
 				physicalFeedback = max(physicalFeedback, now.Sub(sent.sent))
+				p.observeOrder(now, sent.sent)
 			}
 			delete(p.attempts, seq)
 		}
-	}
-	if fresh && a.high >= p.roundEnd {
-		// A delivery round ends once data sent after it began is acknowledged.
-		p.roundEnd, p.roundDone = p.seq+1, true
-		// Judged over the last second, not the round: a round of a hundred
-		// datagrams on a path that loses 0.4% at random holds three losses
-		// once in fifty rounds, twice a second at that rate, and each passed
-		// for material loss (`TestUnderusedLossyLaneKeepsItsTarget`).
-		lost := p.recentLost.total(now)
-		p.roundLossy = lost >= startupLossEvents && lost >= startupLossRatio*p.recentSent.total(now)
 	}
 	for _, path := range t.paths {
 		var feedbackSample time.Duration
@@ -1001,19 +1029,13 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		}
 		for seq, sent := range path.attempts {
 			if sent.packet != nil && (sent.packet.acked || a.received(sent.packet.seq)) && !sent.confirmed {
-				if sent.timedOut && !sent.counted && sent.packet.attempts > 1 && now.Sub(sent.packet.lastSent) >= repairConfirmation*path.baseRTT/10 {
-					// Confirmed no sooner than its repair could have been: the
-					// timed-out transmission itself was lost.
-					path.lostSinceAdjust = true
-					path.recentLost.add(now, 1)
-					sent.counted = true
-				}
 				sent.packet.acked = true
 				if !sent.released {
 					path.release(sent)
 				}
 				if sent.packet.attempts == 1 {
 					feedbackSample = max(feedbackSample, now.Sub(sent.sent))
+					path.observeOrder(now, sent.sent)
 				}
 				sent.released = true
 				sent.confirmed = true
@@ -1021,6 +1043,15 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			}
 		}
 		path.observeFeedbackRTT(feedbackSample)
+	}
+	p.newestConfirmed = newestConfirmed
+	if counted {
+		p.losses.record(now, a.high, through, a.bytes, p.lateBelow(a, highSent, now))
+	}
+	if fresh && a.high >= p.roundEnd {
+		// A delivery round ends once data sent after it began is acknowledged.
+		p.roundEnd, p.roundDone = p.seq+1, true
+		p.roundLossy = p.losses.material(now)
 	}
 	if !fresh {
 		return
@@ -1096,8 +1127,13 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		return
 	}
 	p.haveInterval, p.intervalSamples, p.intervalJitter = false, 0, p.delayJitter
-	lost := p.lostSinceAdjust
-	p.lostSinceAdjust = false
+	// Loss since the last control interval: growth of the settled deficit by
+	// at least one datagram.
+	lost := false
+	if settled, known := p.losses.settled(now); known {
+		lost = p.lossMarked && settled-p.lossMark >= wireOverhead
+		p.lossMark, p.lossMarked = settled, true
+	}
 	if !backlogged {
 		return
 	}

@@ -69,16 +69,6 @@ func (m *rateMeter) rate(now time.Time) float64 {
 	return highest / meterBucket.Seconds()
 }
 
-// total is the sum of what the recent buckets recorded.
-func (m *rateMeter) total(now time.Time) float64 {
-	m.rotate(now)
-	var sum float64
-	for _, bucket := range m.buckets {
-		sum += bucket
-	}
-	return sum
-}
-
 // steady reports that every recent bucket carried traffic: a stream, not a
 // burst.
 func (m *rateMeter) steady(now time.Time) bool {
