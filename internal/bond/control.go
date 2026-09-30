@@ -23,6 +23,9 @@ const (
 	verdictExpiry    = time.Second
 	maxFlush         = 500 * time.Millisecond
 	flushQueues      = 2 // flush for this many times the queue delay measured
+	// A probe's queue is allowed this many times the delay measured to
+	// drain: the delay is measured a round trip late, and the probe ran on.
+	drainQueues = 2
 )
 
 // control holds a lane's target between discovery runs.
@@ -34,8 +37,10 @@ const (
 // lag. A pulse that draws no congestion signal raises the estimate, and
 // consecutive ones return the lane to discovery.
 type control struct {
-	capacity   float64
-	draining   bool
+	capacity float64
+	draining bool
+	// drainBy is when the probe's queue will have left the path.
+	drainBy    time.Time
 	flushUntil time.Time
 	holdSignal bool
 	nextPulse  time.Time
@@ -154,6 +159,14 @@ func (p *lane) cut(lost bool) float64 {
 func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	c := &p.control
 	queued := p.queueDelay
+	if c.draining && !now.Before(c.drainBy) {
+		// The probe's queue has had the time to leave, and delay was seen
+		// throughout: it is not the probe's. Taken for it, the delay of a lane
+		// that lost half its capacity while a probe drained held the target at
+		// three quarters of the old capacity, with a full buffer in the path
+		// (`TestCapacityDropIsNotALevelShift`).
+		c.draining, c.holdSignal = false, true
+	}
 	switch {
 	case p.startup || c.capacity == 0:
 		// Discovery saturated the path, so recent delivery measures capacity,
@@ -167,6 +180,7 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// trace 20260929-171122-radio-down-k1: 995 datagrams expired at once).
 		p.startup = false
 		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.measuredDelivery(), false, 0, true
+		c.drainBy = now.Add(p.drainTime(queued))
 		c.flushUntil = now.Add(min(maxFlush, flushQueues*queued))
 		p.schedulePulse(now)
 		if !laneLimited {
@@ -178,6 +192,7 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 	case c.awaitingVerdict():
 		// The pulse found the limit: the estimate stands and its queue drains.
 		c.pulseWins, c.draining = 0, true
+		c.drainBy = now.Add(p.drainTime(queued))
 		p.rate = math.Max(minimumRate, capacityDrain*c.capacity)
 		p.schedulePulse(now)
 	case c.draining:
@@ -199,6 +214,13 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		c.capacity *= capacityDecay
 		p.rate = math.Max(minimumRate, p.cut(lost))
 	}
+}
+
+// drainTime is how long a probe's queue may take to leave a path sent to at
+// the draining target, with the round trip its feedback needs and a control
+// interval.
+func (p *lane) drainTime(queued time.Duration) time.Duration {
+	return time.Duration(drainQueues*float64(queued)/(1-capacityDrain)) + 2*p.rtt
 }
 
 func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
