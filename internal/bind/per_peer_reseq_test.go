@@ -85,7 +85,7 @@ func TestPerPeerResequencerLifecycle(t *testing.T) {
 
 	// --- Rebaseline on peer A leaves peer B's release point untouched (D32, per-peer). ---
 	// Advance BOTH peers' release point to a high outer-seq (the prior hub's high-rate stream).
-	const high = uint64(10000)
+	const high = uint64(4*resequencerWindow + 1808)
 	for _, ps := range []*peerState{primary, second} {
 		ps.resequencer.Load().Observe(high, []byte("high"), srcA)
 		if _, ok := ps.resequencer.Load().Pop(); !ok {

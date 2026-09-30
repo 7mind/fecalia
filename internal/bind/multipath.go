@@ -47,12 +47,14 @@ const maxDatagram = 65535
 // Receive-resequencer tuning (T18), sized against P0 findings §6.
 //
 // resequencerWindow is the maximum span of outer-seq positions the receive
-// resequencer buffers while it waits for an out-of-order frame. WG's inner RFC
-// 6479 anti-replay window is 8128 messages (docs/p0-findings.md §6); the window
-// here sits ~4x below that, so even a worst-case burst of reordered/held frames
-// stays comfortably inside the inner filter's tolerance while spanning far more
-// packets than the measured ~19 ms emulated cross-path skew (and the larger,
-// more variable real Starlink/5G skew) needs at realistic per-path rates.
+// resequencer buffers while it waits for an out-of-order frame. It must cover
+// the datagrams that arrive while a lost one is repaired: at 600 Mbit/s and a
+// 250 ms repair, 12500. At 2048 a gap was abandoned, a loss to TCP, as soon as
+// the flow exceeded about 10000 datagrams a second, which held a TCP transfer
+// near 100 Mbit/s on 300+300 Mbit/s links. The engine's inner RFC 6479
+// anti-replay window (131008 messages in the vendored engine; 8128 upstream,
+// docs/p0-findings.md §6) sits 4x above it, so held frames released behind
+// real-time ones that bypassed them stay inside the inner filter's tolerance.
 //
 // resequencerTimeout bounds how long a head-of-line-blocked run is held for a
 // missing (presumed-lost) lower frame before that gap is skipped and the run
@@ -60,7 +62,7 @@ const maxDatagram = 65535
 // impose on the whole bond (P0 §7 head-of-line concern) — to a few multiples of
 // a Starlink RTT (~45 ms) rather than holding a gap forever.
 const (
-	resequencerWindow  = 2048
+	resequencerWindow  = 32768
 	resequencerTimeout = 250 * time.Millisecond
 )
 

@@ -16,10 +16,10 @@ import (
 const (
 	preRestartSession  uint64 = 0xAAAA0000AAAA0001
 	postRestartSession uint64 = 0xBBBB0000BBBB0002
-	// restartHighSeq is a release point far past resequencerWindow (2048): the pre-restart
+	// restartHighSeq is a release point far past resequencerWindow: the pre-restart
 	// boot's busy stream advanced `next` here, so the restarted boot's low outer-seq init is
 	// >1 window below it — the SUSPECT region that, before T119, blackholed the wrapped init.
-	restartHighSeq uint64 = 9000
+	restartHighSeq uint64 = 4*resequencerWindow + 808
 )
 
 // deliverDATA encodes one DATA frame under psk and pushes it through the FULL receive path

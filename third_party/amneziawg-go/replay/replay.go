@@ -11,10 +11,14 @@ type block uint64
 const (
 	blockBitLog = 6                // 1<<6 == 64 bits
 	blockBits   = 1 << blockBitLog // must be power of 2
-	ringBlocks  = 1 << 7           // must be power of 2
-	windowSize  = (ringBlocks - 1) * blockBits
-	blockMask   = ringBlocks - 1
-	bitMask     = blockBits - 1
+	// wanbond: 1<<7 upstream (a window of 8128 messages). The bond releases
+	// real-time datagrams ahead of bulk it still holds for repair, so counters
+	// arrive out of order by as many datagrams as are held: 12500 at 600 Mbit/s
+	// and a 250 ms repair. 1<<11 gives a window of 131008.
+	ringBlocks = 1 << 11 // must be power of 2
+	windowSize = (ringBlocks - 1) * blockBits
+	blockMask  = ringBlocks - 1
+	bitMask    = blockBits - 1
 )
 
 // A Filter rejects replayed messages by checking if message counter value is
