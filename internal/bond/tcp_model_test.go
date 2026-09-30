@@ -397,14 +397,10 @@ func megabits(bytesPerSecond []float64) []int {
 	return out
 }
 
-// Latency as measured on the production links on 2026-09-30 (600 pings each,
-// idle): one moves between levels 10-20 ms apart that last for seconds, with
-// a round-trip standard deviation of 10 ms; the other scatters with 6.6 ms
-// and no memory beyond a fraction of a second.
-var (
-	measuredSatellite = modelLane{delay: 20 * time.Millisecond, jitter: 6 * time.Millisecond, drift: 50 * time.Millisecond, shift: 8 * time.Millisecond, shiftEvery: 15 * time.Second}
-	measuredMobile    = modelLane{delay: 12 * time.Millisecond, jitter: 9 * time.Millisecond, drift: 50 * time.Millisecond}
-)
+// Latency as measured on the production mobile link on 2026-09-30 (600 pings,
+// idle): it scatters with a round-trip standard deviation of 6.6 ms and no
+// memory beyond a fraction of a second.
+var measuredMobile = modelLane{delay: 12 * time.Millisecond, jitter: 9 * time.Millisecond, drift: 50 * time.Millisecond}
 
 func withRate(l modelLane, rate, loss float64) modelLane {
 	l.rate, l.loss = rate, loss

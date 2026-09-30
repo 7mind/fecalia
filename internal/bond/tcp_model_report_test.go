@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// The production satellite link, measured with the mobile one: it moves
+// between levels 10-20 ms apart that last for seconds, with a round-trip
+// standard deviation of 10 ms.
+var measuredSatellite = modelLane{delay: 20 * time.Millisecond, jitter: 6 * time.Millisecond, drift: 50 * time.Millisecond, shift: 8 * time.Millisecond, shiftEvery: 15 * time.Second}
+
 // Reports a TCP transfer through the bond under several link models. It
 // asserts nothing and takes minutes: run with -tags model.
 func TestTCPTransferModelReports(t *testing.T) {
