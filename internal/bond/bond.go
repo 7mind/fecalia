@@ -19,6 +19,7 @@ const (
 	maximumRate           = 1250000000.0
 	targetQueue           = 10 * time.Millisecond
 	jitterAllowanceFactor = 2
+	jitterSpreadFactor    = 3 // a uniform spread is three times the mean difference of consecutive samples
 	lossPacingHeadroom    = 1.05
 	lossRateReduction     = 0.9
 	queueSendExcessRatio  = 1.2
@@ -492,7 +493,7 @@ func (p *lane) delaySamplesNeeded() int {
 		// datagrams (`TestJitteryLaneStartsUp`).
 		jitter = max(jitter, p.idleRTTVariation)
 	}
-	spread := 3 * jitter
+	spread := jitterSpreadFactor * jitter
 	threshold := p.congestionThreshold()
 	if spread <= threshold {
 		return 1
@@ -1039,7 +1040,11 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		queueDelay = p.intervalQueueDelay
 	}
 	if sample > 0 && queueDelay <= maxWander && p.lightlyLoaded() {
-		p.observeWander(queueDelay)
+		// Jitter drawn anew for every datagram also lifts the lowest of a few
+		// samples above the floor, by the spread over one more than their
+		// number. Only what exceeds that is the path's wander.
+		scatter := jitterSpreadFactor * p.delayJitter / time.Duration(max(1, p.intervalSamples)+1)
+		p.observeWander(max(0, queueDelay-scatter))
 	}
 	delayed := sample > 0 && queueDelay > p.congestionThreshold()
 	if delayed && p.intervalSamples < p.delaySamplesNeeded() {

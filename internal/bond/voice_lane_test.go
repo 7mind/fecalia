@@ -169,6 +169,23 @@ func TestVoiceSurvivesOnSingleSlowLane(t *testing.T) {
 	}
 }
 
+// With only a jittery lane left, voice shares its queue in the path with bulk:
+// the queue the delay threshold tolerates is voice latency. Jitter drawn anew
+// for every datagram lifts the lowest of a control interval's few samples
+// above the floor; taken for the path's own wander, that raised the threshold
+// by twenty milliseconds and voice latency with it (VM runs of 2026-09-30,
+// voice round trips with only the 40±30 ms WAN up: p99 148-181 ms before the
+// wander allowance, 172-212 ms with it, against a gate of 181.6 ms).
+func TestVoiceOnJitteryLaneAloneKeepsItsLatency(t *testing.T) {
+	delivered, sent, p99 := voiceUnderLoad(t, []float64{156250}, []time.Duration{40 * time.Millisecond}, []time.Duration{30 * time.Millisecond}, 100)
+	t.Logf("delivered %d/%d voice datagrams, one-way p99 %s", delivered, sent, p99)
+	// The lane costs up to 70 ms; a bulk datagram ahead 9 ms; the queue of a
+	// capacity pulse at the jitter-widened threshold the rest.
+	if delivered < sent*99/100 || p99 > 130*time.Millisecond {
+		t.Fatalf("voice delayed on a jittery lane: %d/%d delivered, one-way p99 %s", delivered, sent, p99)
+	}
+}
+
 // When the lane voice rides fails, the silence must stay below what a
 // conversation tolerates, and only the datagrams already in flight may be lost
 // (VM runs 20260929-142206-continuity: 337 and 458 ms gaps at a lane failure).
