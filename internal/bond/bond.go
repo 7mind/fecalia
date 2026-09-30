@@ -102,6 +102,7 @@ type PacketMetadata struct {
 
 type PathStats struct {
 	Path                 PathID
+	Capacity             float64 // the demonstrated capacity the target holds below; 0 while discovering
 	Rate                 float64
 	SendRate             float64
 	DeliveryRate         float64
@@ -356,7 +357,16 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.idleForwardMean, p.idleForwardVariation = 0, 0
 		p.idleForwardKnown = false
 		p.feedbackAt = time.Time{}
-		p.control = control{}
+		// The peer restarted, not the path: the capacity estimate stands, and
+		// the probing state starts over. With the estimate gone and the lane
+		// out of discovery, the target grew unbounded until a signal stopped
+		// it, and a path that drops rather than queues gave none
+		// (TestPeerRestartKeepsTheCapacityEstimate). A lane that never found its
+		// capacity discovers it.
+		p.control = control{capacity: p.control.capacity}
+		if p.control.capacity == 0 && !p.startup {
+			p.startup, p.startupBest, p.startupFlatRounds, p.discoveryGain = true, 0, 0, rediscoveryGain
+		}
 	}
 	return true
 }
@@ -1136,7 +1146,7 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
 	for _, p := range t.paths {
 		s.Paths = append(s.Paths, PathStats{
-			Path: p.id, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
+			Path: p.id, Capacity: p.control.capacity, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
 			RTT: p.rtt, RTTVariation: p.rttVariation, IdleRTTVariation: p.idleRTTVariation,
 			IdleForwardVariation: p.idleForwardVariation,
 			FeedbackRTT:          p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
