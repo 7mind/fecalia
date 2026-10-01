@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
@@ -474,5 +476,27 @@ func TestMetricsSourcePMTULookup(t *testing.T) {
 	})
 	if got := src.Paths()[0].PMTU; got != 1400 {
 		t.Fatalf("wired PMTU = %d, want the discovered 1400 (raw, un-junked)", got)
+	}
+}
+
+// TestAdaptiveNamesLanesAfterTheirLocalPath: a lane's id carries its local
+// path's wire id in the high byte; the adapter names each lane after that path
+// so the monitor can show names rather than ids.
+func TestAdaptiveNamesLanesAfterTheirLocalPath(t *testing.T) {
+	provider := &fakeProvider{}
+	provider.set([]bind.PeerSnapshot{
+		{Name: "hub", Paths: []bind.PathTraffic{{Name: "starlink", ID: 0}, {Name: "5g", ID: 1}},
+			Adaptive: &bond.Snapshot{QueueDrops: 3, Paths: []bond.PathStats{{Path: 0}, {Path: 256}, {Path: 257}}}},
+		{Name: "unopened", Paths: []bind.PathTraffic{{Name: "starlink", ID: 0}}},
+	})
+	src := newMetricsSource(provider, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(0, 0)})
+
+	got := src.Adaptive()
+	if len(got) != 1 || got[0].Peer != "hub" || got[0].State.QueueDrops != 3 {
+		t.Fatalf("Adaptive() = %+v, want the one peer with a transport", got)
+	}
+	want := map[bond.PathID]string{0: "starlink", 256: "5g", 257: "5g"}
+	if !reflect.DeepEqual(got[0].LanePaths, want) {
+		t.Fatalf("LanePaths = %v, want %v", got[0].LanePaths, want)
 	}
 }

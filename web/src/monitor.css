@@ -75,7 +75,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .peer-label { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 16px; letter-spacing: -.02em; overflow-wrap: anywhere; min-width: 0; }
 .active-exit-badge { padding: 2px 5px; background: var(--success-bg); color: var(--success); font-size: 10px; letter-spacing: .04em; font-weight: 700; }
 .stat-group { min-width: 0; }
-.stat-group[data-kind="paths"] { grid-column: 1 / -1; }
+.stat-group[data-kind="paths"], .stat-group[data-kind="lanes"] { grid-column: 1 / -1; }
 .stat-group h4 { margin: 0 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; }
 .path-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px; }
 .path-card { min-width: 0; padding: 8px 10px; background: var(--surface); }

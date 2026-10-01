@@ -39,6 +39,8 @@ class StubSocket extends EventTarget {
 function makeSnapshot(): MonitorSnapshot {
   return {
     paths: [],
+    lanes: [],
+    transport: [],
     reseq: [],
     session: { established: true, lastHandshakeSeconds: 1 },
     peerNames: [],

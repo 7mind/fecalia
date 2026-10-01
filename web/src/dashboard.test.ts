@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   DaemonSnapshot,
   EndpointSnapshot,
+  LaneSnapshot,
   MonitorSnapshot,
   PathSnapshot,
   PeerSessionSnapshot,
@@ -23,6 +24,40 @@ function path(overrides: Partial<PathSnapshot> = {}): PathSnapshot {
     up: true,
     bindMode: 'auto',
     boundDevice: '',
+    ...overrides,
+  };
+}
+
+function lane(overrides: Partial<LaneSnapshot> = {}): LaneSnapshot {
+  return {
+    peer: '',
+    path: '5g',
+    remotePath: 0,
+    lane: 256,
+    up: true,
+    discovering: false,
+    targetBps: 1000000,
+    sendBps: 800000,
+    deliveryBps: 720000,
+    capacityBps: 1040000,
+    rttSeconds: 0.06,
+    queueDelaySeconds: 0.037,
+    thresholdSeconds: 0.03,
+    inFlightBytes: 5000,
+    windowBytes: 30000,
+    sentBytes: 2048,
+    ackedBytes: 1024,
+    repairs: 12,
+    delaySignals: 21,
+    lossSignals: 22,
+    discoveryCongested: 23,
+    discoveryPlateau: 24,
+    capacityRemeasured: 25,
+    capacityDecays: 26,
+    pulses: 27,
+    pulseWins: 28,
+    pulseLosses: 29,
+    rediscoveries: 30,
     ...overrides,
   };
 }
@@ -77,6 +112,8 @@ function peerSession(overrides: Partial<PeerSessionSnapshot> = {}): PeerSessionS
 function multiPeerSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: 'peerA' }), path({ name: 'wan1', peer: 'peerB' })],
+    lanes: [],
+    transport: [],
     reseq: [reseq({ peer: 'peerA' }), reseq({ peer: 'peerB' })],
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA', 'peerB'],
@@ -96,6 +133,8 @@ function multiPeerSnapshot(): MonitorSnapshot {
 function singlePeerSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: '' })],
+    lanes: [],
+    transport: [],
     reseq: [reseq({ peer: '' })],
     session: { established: true, lastHandshakeSeconds: 1 },
     peerNames: [],
@@ -119,6 +158,8 @@ function singlePeerSnapshot(): MonitorSnapshot {
 function twoPeerConcentratorSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: 'peerA' }), path({ name: 'wan1', peer: 'peerB' })],
+    lanes: [],
+    transport: [],
     reseq: [reseq({ peer: 'peerA' }), reseq({ peer: 'peerB' })],
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA', 'peerB'],
@@ -150,6 +191,8 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
 function singlePeerNamedSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: 'peerA' })],
+    lanes: [],
+    transport: [],
     reseq: [reseq({ peer: 'peerA' })],
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA'],
@@ -186,6 +229,55 @@ describe('mountDashboard', () => {
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
+  });
+
+  it('renders each transport lane with its target, capacity, queue against threshold and control decisions', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = singlePeerSnapshot();
+    snapshot.lanes = [
+      lane(),
+      lane({ path: 'starlink', remotePath: 1, lane: 1, discovering: true, capacityBps: 0 }),
+      lane({ path: 'lte', lane: 512, up: false }),
+    ];
+    snapshot.transport = [
+      { peer: '', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7 },
+    ];
+    dashboard.onSnapshot(snapshot);
+
+    const cards = container.querySelectorAll<HTMLElement>('[data-testid="lane-card"]');
+    expect(cards).toHaveLength(3);
+    expect(cards[0].querySelector('strong')!.textContent).toBe('5g #0');
+    expect(Array.from(cards).map((c) => c.querySelector('[data-testid="lane-state"]')!.textContent)).toEqual(['HOLD', 'PROBING', 'DOWN']);
+    expect(cards[2].classList.contains('is-down')).toBe(true);
+    // 1,000,000 bit/s target is 125,000 B/s; 1,040,000 bit/s capacity is 130,000 B/s.
+    expect(cards[0].textContent).toContain('122KB/s');
+    expect(cards[0].querySelector('[data-testid="lane-capacity"]')!.textContent).toBe('127KB/s');
+    expect(cards[1].querySelector('[data-testid="lane-capacity"]')!.textContent).toBe('unknown');
+    expect(cards[0].querySelector('[data-testid="lane-queue"]')!.textContent).toBe('37.0ms of 30.0ms');
+    const cells = (root: Element): string => Array.from(root.querySelectorAll('td'), (td) => td.textContent!.trim()).join(' ');
+    const decisions = cells(cards[0].querySelector('[data-testid="lane-decisions"]')!);
+    expect(decisions).toContain('delay 21 · loss 22');
+    expect(decisions).toContain('27 · won 28 · lost 29');
+    expect(decisions).toContain('remeasured 25 · decayed 26');
+    expect(decisions).toContain('ended by congestion 23 · plateau 24 · restarted 30');
+    expect(decisions).toContain('repairs 12');
+
+    const queue = cells(container.querySelector('[data-testid="transport-card"]')!);
+    expect(queue).toContain('dropped 9');
+    expect(queue).toContain('queue full 1');
+    expect(queue).toContain('duplicates 6');
+  });
+
+  it('groups lanes under their peer and omits the lane groups when a snapshot has none', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = multiPeerSnapshot();
+    snapshot.lanes = [lane({ peer: 'peerB', path: 'wan1' })];
+    dashboard.onSnapshot(snapshot);
+
+    const sections = container.querySelectorAll<HTMLElement>('[data-testid="peer-section"]');
+    expect(sections[0].querySelector('[data-testid="stat-group-lanes"]')).toBeNull();
+    expect(sections[1].querySelectorAll('[data-testid="lane-card"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="stat-group-transport"]')).toBeNull();
   });
 
   it('converts bit-rate telemetry to byte-rate display units', () => {
@@ -285,6 +377,8 @@ describe('mountDashboard', () => {
           addressing: { source: '10.0.0.5', remote: '203.0.113.9:51820' },
         }),
       ],
+      lanes: [],
+      transport: [],
       reseq: [reseq({ peer: '' })],
       session: { established: true, lastHandshakeSeconds: 1 },
       peerNames: [],

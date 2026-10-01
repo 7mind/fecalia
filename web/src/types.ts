@@ -33,6 +33,62 @@ export interface PathSnapshot {
 }
 
 /**
+ * Mirrors monitor.LaneSnapshot: one transport lane, a local path paired with
+ * one of the peer's (`remotePath`); `lane` is the id in the `lane` label of
+ * the wanbond_adaptive_* series. Rates are bits per second. capacityBps is 0
+ * until the lane has demonstrated a capacity; the target is held just below
+ * it afterwards. queueDelaySeconds above thresholdSeconds is what the lane
+ * takes for a queue. The counters from delaySignals on are the control's
+ * cumulative decisions.
+ */
+export interface LaneSnapshot {
+  peer: string;
+  path: string;
+  remotePath: number;
+  lane: number;
+  up: boolean;
+  discovering: boolean;
+  targetBps: number;
+  sendBps: number;
+  deliveryBps: number;
+  capacityBps: number;
+  rttSeconds: number;
+  queueDelaySeconds: number;
+  thresholdSeconds: number;
+  inFlightBytes: number;
+  windowBytes: number;
+  sentBytes: number;
+  ackedBytes: number;
+  repairs: number;
+  delaySignals: number;
+  lossSignals: number;
+  discoveryCongested: number;
+  discoveryPlateau: number;
+  capacityRemeasured: number;
+  capacityDecays: number;
+  pulses: number;
+  pulseWins: number;
+  pulseLosses: number;
+  rediscoveries: number;
+}
+
+/**
+ * Mirrors monitor.TransportSnapshot: one peer's transport queue counters,
+ * cumulative except interactiveQueued.
+ */
+export interface TransportSnapshot {
+  peer: string;
+  queueDrops: number;
+  admissionDrops: number;
+  aqmDrops: number;
+  interactiveDrops: number;
+  interactiveQueued: number;
+  expired: number;
+  duplicates: number;
+  coalescedAcks: number;
+}
+
+/**
  * Mirrors monitor.ReseqSnapshot: one per-peer resequencer counter set.
  * holds/holdNanos (T242) mirror reseq.Stats' HoL-stall
  * / hold accounting verbatim. armedDeadlineUnixNano and armedWindowNanos
@@ -141,6 +197,8 @@ export interface PeerSessionSnapshot {
  */
 export interface MonitorSnapshot {
   paths: PathSnapshot[];
+  lanes: LaneSnapshot[];
+  transport: TransportSnapshot[];
   reseq: ReseqSnapshot[];
   session: SessionSnapshot;
   peerNames: string[];

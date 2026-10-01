@@ -4,11 +4,13 @@ import type {
   ExitError,
   ExitRequest,
   ExitResponse,
+  LaneSnapshot,
   MonitorSnapshot,
   PathSnapshot,
   PeerSessionSnapshot,
   ReseqSnapshot,
   SessionSnapshot,
+  TransportSnapshot,
 } from './types';
 import { pushSample, renderSparklineSvg } from './sparkline';
 
@@ -38,6 +40,12 @@ interface PathBuffers {
   loss: number[];
   rtt: number[];
   throughput: number[];
+}
+
+interface LaneBuffers {
+  target: number[];
+  send: number[];
+  queue: number[];
 }
 
 /** Handle returned to the caller: feed it snapshots as they arrive. */
@@ -197,6 +205,66 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       </div>`;
   }
 
+  const laneBuffers = new Map<string, LaneBuffers>();
+
+  function laneBufferFor(key: string): LaneBuffers {
+    let b = laneBuffers.get(key);
+    if (!b) {
+      b = { target: [], send: [], queue: [] };
+      laneBuffers.set(key, b);
+    }
+    return b;
+  }
+
+  // A lane is one local path paired with one of the peer's. Its target is
+  // held just below the capacity it has demonstrated; a queue delay above
+  // the threshold is what its control takes for congestion, and the counters
+  // say what it concluded.
+  function renderLaneCard(l: LaneSnapshot): string {
+    const buf = laneBufferFor(`${l.peer} ${l.lane}`);
+    pushSample(buf.target, l.targetBps);
+    pushSample(buf.send, l.sendBps);
+    pushSample(buf.queue, l.queueDelaySeconds);
+    const state = !l.up ? 'DOWN' : l.discovering ? 'PROBING' : 'HOLD';
+    const capacity = l.capacityBps > 0 ? formatBytesPerSec(l.capacityBps / 8) : 'unknown';
+    return `
+      <div class="path-card lane-card ${l.up ? 'is-up' : 'is-down'}" data-testid="lane-card" data-lane="${l.lane}">
+        <div class="path-card-heading">
+          <strong>${escapeHtml(l.path)} #${l.remotePath}</strong>
+          <span class="state-pill" data-testid="lane-state">${state}</span>
+        </div>
+        <table>
+          <tr><td>target</td><td>${formatBytesPerSec(l.targetBps / 8)}</td><td>${renderSparklineSvg(buf.target)}</td></tr>
+          <tr><td>sent</td><td>${formatBytesPerSec(l.sendBps / 8)}</td><td>${renderSparklineSvg(buf.send)}</td></tr>
+          <tr><td>delivered</td><td colspan="2">${formatBytesPerSec(l.deliveryBps / 8)}</td></tr>
+          <tr><td>capacity</td><td colspan="2" data-testid="lane-capacity">${capacity}</td></tr>
+          <tr><td>queue</td><td data-testid="lane-queue">${formatMs(l.queueDelaySeconds)} of ${formatMs(l.thresholdSeconds)}</td><td>${renderSparklineSvg(buf.queue)}</td></tr>
+          <tr><td>RTT</td><td colspan="2">${formatMs(l.rttSeconds)}</td></tr>
+          <tr><td>in flight</td><td colspan="2">${formatBytes(l.inFlightBytes)} of ${formatBytes(l.windowBytes)}</td></tr>
+        </table>
+        <details class="path-details" data-path-detail="lane:${encodeURIComponent(l.peer)}:${l.lane}"><summary>Control decisions</summary><table data-testid="lane-decisions">
+          <tr><td>signals</td><td>delay ${l.delaySignals} · loss ${l.lossSignals}</td></tr>
+          <tr><td>probes</td><td>${l.pulses} · won ${l.pulseWins} · lost ${l.pulseLosses}</td></tr>
+          <tr><td>estimate</td><td>remeasured ${l.capacityRemeasured} · decayed ${l.capacityDecays}</td></tr>
+          <tr><td>discovery</td><td>ended by congestion ${l.discoveryCongested} · plateau ${l.discoveryPlateau} · restarted ${l.rediscoveries}</td></tr>
+          <tr><td>repairs</td><td>${l.repairs}</td></tr>
+          <tr><td>sent / acked</td><td>${formatBytes(l.sentBytes)} / ${formatBytes(l.ackedBytes)}</td></tr>
+        </table></details>
+      </div>`;
+  }
+
+  function renderTransportCard(q: TransportSnapshot): string {
+    return `
+      <div class="reseq-card" data-testid="transport-card">
+        <table>
+          <tr><td>dropped</td><td>${q.queueDrops}</td><td>queue full</td><td>${q.admissionDrops}</td></tr>
+          <tr><td>AQM</td><td>${q.aqmDrops}</td><td>small dropped</td><td>${q.interactiveDrops}</td></tr>
+          <tr><td>expired</td><td>${q.expired}</td><td>duplicates</td><td>${q.duplicates}</td></tr>
+          <tr><td>small waiting</td><td>${q.interactiveQueued}</td><td>ACKs coalesced</td><td>${q.coalescedAcks}</td></tr>
+        </table>
+      </div>`;
+  }
+
   function renderReseqCard(r: ReseqSnapshot): string {
     return `
       <div class="reseq-card" data-testid="reseq-card">
@@ -287,6 +355,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   function renderSection(
     peerLabel: string | null,
     paths: PathSnapshot[],
+    lanes: LaneSnapshot[],
+    transport: TransportSnapshot[],
     reseq: ReseqSnapshot[],
     addressingHidden: boolean,
     endpoints: EndpointSnapshot[] = [],
@@ -314,6 +384,14 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <h4>Paths</h4>
           <div class="path-grid">${paths.map((p) => renderPathCard(p, addressingHidden)).join('')}</div>
         </div>
+        ${lanes.length > 0 ? `<div class="stat-group" data-kind="lanes" data-testid="stat-group-lanes">
+          <h4>Transport lanes</h4>
+          <div class="path-grid">${lanes.map((l) => renderLaneCard(l)).join('')}</div>
+        </div>` : ''}
+        ${transport.length > 0 ? `<div class="stat-group" data-kind="transport" data-testid="stat-group-transport">
+          <h4>Transport queue</h4>
+          ${transport.map((q) => renderTransportCard(q)).join('')}
+        </div>` : ''}
         <div class="stat-group" data-kind="reseq" data-testid="stat-group-reseq">
           <h4>Resequencer</h4>
           ${reseq.map((r) => renderReseqCard(r)).join('')}
@@ -385,6 +463,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     const grouped = snapshot.multiPeer && snapshot.peerNames.length > 1;
     if (grouped) {
       const pathsByPeer = groupByPeer(snapshot.paths);
+      const lanesByPeer = groupByPeer(snapshot.lanes);
+      const transportByPeer = groupByPeer(snapshot.transport);
       const reseqByPeer = groupByPeer(snapshot.reseq);
       const endpointsByPeer = groupByPeer(snapshot.endpoints);
       const peerSessionsByPeer = groupByPeer(snapshot.peerSessions);
@@ -393,6 +473,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           renderSection(
             peer,
             pathsByPeer.get(peer) ?? [],
+            lanesByPeer.get(peer) ?? [],
+            transportByPeer.get(peer) ?? [],
             reseqByPeer.get(peer) ?? [],
             snapshot.addressingHidden,
             endpointsByPeer.get(peer) ?? [],
@@ -409,6 +491,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       sectionsHtml = renderSection(
         null,
         snapshot.paths,
+        snapshot.lanes,
+        snapshot.transport,
         snapshot.reseq,
         snapshot.addressingHidden,
       );

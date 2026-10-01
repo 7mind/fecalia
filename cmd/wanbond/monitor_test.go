@@ -140,3 +140,31 @@ func TestFindMonitorConfigRejectsAmbiguousHosts(t *testing.T) {
 		t.Fatalf("got %v, want ambiguity error", err)
 	}
 }
+
+func TestMonitorRendersLanesAndTransportQueue(t *testing.T) {
+	output := renderMonitor(monitor.MonitorSnapshot{
+		Daemon: monitor.DaemonSnapshot{Role: "edge", Version: "test"},
+		Lanes: []monitor.LaneSnapshot{
+			{Peer: "hub", Path: "5g", RemotePath: 0, Lane: 256, Up: true, TargetBps: 1000000, SendBps: 800000, DeliveryBps: 720000, CapacityBps: 1040000,
+				RTTSeconds: 0.06, QueueDelaySeconds: 0.037, ThresholdSeconds: 0.03, InFlightBytes: 5000, WindowBytes: 30000, Repairs: 12,
+				DelaySignals: 21, LossSignals: 22, Pulses: 27, PulseWins: 28, PulseLosses: 29, CapacityRemeasured: 25, CapacityDecays: 26},
+			{Path: "starlink", RemotePath: 1, Up: true, Discovering: true, TargetBps: 1000000},
+			{Path: "lte", Up: false},
+		},
+		Transport: []monitor.TransportSnapshot{{Peer: "hub", QueueDrops: 9, AdmissionDrops: 1, AQMDrops: 2, InteractiveDrops: 3, Expired: 5, Duplicates: 6}},
+	}, time.Unix(0, 0), false, false)
+	for _, want := range []string{
+		"LANES",
+		"hub / 5g #0                 HOLD    122.1KiB/s  97.7KiB/s   127.0KiB/s",
+		"delivered 87.9KiB/s   queue 37ms of 30ms  rtt 60ms  in flight 4.9KiB of 29.3KiB",
+		"signals delay 21 loss 22  probes 27 won 28 lost 29  estimate remeasured 25 decayed 26  repairs 12",
+		"starlink #1                 PROBING 122.1KiB/s  0B/s        unknown",
+		"lte #0                      DOWN",
+		"TRANSPORT QUEUE",
+		"hub                dropped 9 (full 1, aqm 2, small 3)  expired 5  duplicates 6",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("monitor output lacks %q:\n%s", want, output)
+		}
+	}
+}

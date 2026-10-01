@@ -27,6 +27,7 @@ type fakeSource struct {
 	session      SessionSnapshot
 	peerSessions []PeerSessionSnapshot
 	peerNames    []string
+	adaptive     []AdaptiveSnapshot
 }
 
 type fakeEngineSource struct {
@@ -41,6 +42,7 @@ func (f fakeSource) Reseq() []ReseqSnapshot              { return f.reseq }
 func (f fakeSource) Session() SessionSnapshot            { return f.session }
 func (f fakeSource) PeerSessions() []PeerSessionSnapshot { return f.peerSessions }
 func (f fakeSource) PeerNames() []string                 { return f.peerNames }
+func (f fakeSource) Adaptive() []AdaptiveSnapshot        { return f.adaptive }
 
 func testLogger(t *testing.T) log.Logger {
 	t.Helper()

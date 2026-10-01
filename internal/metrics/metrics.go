@@ -301,6 +301,9 @@ type Source interface {
 	Paths() []PathSnapshot
 	// Reseq returns the current per-peer resequencer counters (T94).
 	Reseq() []ReseqSnapshot
+	// Adaptive returns the current per-peer transport state: lanes, their
+	// control state and the transport's queue counters.
+	Adaptive() []AdaptiveSnapshot
 	// Session returns the current connection-scoped WG-session snapshot (I2).
 	Session() SessionSnapshot
 	// PeerSessions returns the current per-peer WG-session snapshot (T256, G28, M106):

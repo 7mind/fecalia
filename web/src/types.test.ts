@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { MonitorSnapshot } from './types';
+import type { LaneSnapshot, MonitorSnapshot, TransportSnapshot } from './types';
 
 // Captured frames mirroring the JSON monitor.BuildSnapshot actually emits
 // (internal/monitor/monitor.go, T214/T218). Kept as literal JSON text (not
@@ -26,6 +26,8 @@ const REDACTED_FRAME = `{
       "boundDevice": "eth0"
     }
   ],
+  "lanes": [],
+  "transport": [],
   "reseq": [],
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": [],
@@ -61,6 +63,8 @@ const FULL_FRAME = `{
       "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" }
     }
   ],
+  "lanes": [],
+  "transport": [],
   "reseq": [],
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": [],
@@ -88,6 +92,8 @@ const TWO_PEER_FRAME = `{
     { "name": "wan0", "peer": "tokyo", "txBytes": 1000, "rxBytes": 2000, "throughputBps": 5000, "rttSeconds": 0.02, "jitterSeconds": 0.001, "loss": 0.01, "up": true, "bindMode": "device", "boundDevice": "eth0", "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" } },
     { "name": "wan1", "peer": "osaka", "txBytes": 500, "rxBytes": 900, "throughputBps": 2500, "rttSeconds": 0.04, "jitterSeconds": 0.002, "loss": 0.02, "up": true, "bindMode": "device", "boundDevice": "eth1", "addressing": { "source": "192.0.2.2", "remote": "198.51.100.8:51820" } }
   ],
+  "lanes": [],
+  "transport": [],
   "reseq": [
     { "peer": "tokyo", "released": 10, "droppedDup": 0, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 3, "holdNanos": 1500000, "armedDeadlineUnixNano": 1700000000000000000, "armedWindowNanos": 60000000, "deadlineWakeups": 2, "gapFills": 1 },
     { "peer": "osaka", "released": 20, "droppedDup": 1, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 0, "holdNanos": 0, "armedDeadlineUnixNano": 0, "armedWindowNanos": 0, "deadlineWakeups": 0, "gapFills": 0 }
@@ -217,5 +223,39 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
       { peer: 'tokyo', released: 10, droppedDup: 0, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 3, holdNanos: 1500000, armedDeadlineUnixNano: 1700000000000000000, armedWindowNanos: 60000000, deadlineWakeups: 2, gapFills: 1 },
       { peer: 'osaka', released: 20, droppedDup: 1, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 0, holdNanos: 0, armedDeadlineUnixNano: 0, armedWindowNanos: 0, deadlineWakeups: 0, gapFills: 0 },
     ]);
+  });
+
+  it('parses lanes and transport queue counters as monitor.BuildSnapshot emits them', () => {
+    // The lane and transport objects of TestBuildSnapshotLanesMirrorTransport
+    // (internal/monitor/monitor_test.go), field for field.
+    const frame = `{
+      "paths": [],
+      "lanes": [
+        { "peer": "hub", "path": "5g", "remotePath": 0, "lane": 256, "up": true, "discovering": true,
+          "targetBps": 1000000, "sendBps": 800000, "deliveryBps": 720000, "capacityBps": 1040000,
+          "rttSeconds": 0.06, "queueDelaySeconds": 0.037, "thresholdSeconds": 0.03,
+          "inFlightBytes": 5000, "windowBytes": 30000, "sentBytes": 11, "ackedBytes": 10, "repairs": 12,
+          "delaySignals": 21, "lossSignals": 22, "discoveryCongested": 23, "discoveryPlateau": 24,
+          "capacityRemeasured": 25, "capacityDecays": 26, "pulses": 27, "pulseWins": 28, "pulseLosses": 29, "rediscoveries": 30 }
+      ],
+      "transport": [
+        { "peer": "hub", "queueDrops": 9, "admissionDrops": 1, "aqmDrops": 2, "interactiveDrops": 3, "interactiveQueued": 4, "expired": 5, "duplicates": 6, "coalescedAcks": 7 }
+      ],
+      "reseq": [], "session": { "established": false, "lastHandshakeSeconds": 0 }, "peerNames": [""], "multiPeer": false,
+      "daemon": { "role": "edge", "version": "v0.1.0", "uptimeSeconds": 1 }, "endpoints": [], "peerSessions": [],
+      "activeExit": "", "exitMode": "", "exitCapablePeers": [], "wgPublicKeyFingerprint": "", "addressingHidden": false, "exitControlAvailable": false
+    }`;
+    const snapshot: MonitorSnapshot = JSON.parse(frame) as MonitorSnapshot;
+    const expected: LaneSnapshot = {
+      peer: 'hub', path: '5g', remotePath: 0, lane: 256, up: true, discovering: true,
+      targetBps: 1000000, sendBps: 800000, deliveryBps: 720000, capacityBps: 1040000,
+      rttSeconds: 0.06, queueDelaySeconds: 0.037, thresholdSeconds: 0.03,
+      inFlightBytes: 5000, windowBytes: 30000, sentBytes: 11, ackedBytes: 10, repairs: 12,
+      delaySignals: 21, lossSignals: 22, discoveryCongested: 23, discoveryPlateau: 24,
+      capacityRemeasured: 25, capacityDecays: 26, pulses: 27, pulseWins: 28, pulseLosses: 29, rediscoveries: 30,
+    };
+    expect(snapshot.lanes).toEqual([expected]);
+    const queue: TransportSnapshot = { peer: 'hub', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7 };
+    expect(snapshot.transport).toEqual([queue]);
   });
 });

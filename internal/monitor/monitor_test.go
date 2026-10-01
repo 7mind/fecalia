@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -22,6 +23,7 @@ type fakeSource struct {
 	session      metrics.SessionSnapshot
 	peerSessions []metrics.PeerSessionSnapshot
 	peerNames    []string
+	adaptive     []metrics.AdaptiveSnapshot
 }
 
 func (f fakeSource) Paths() []metrics.PathSnapshot               { return f.paths }
@@ -29,6 +31,7 @@ func (f fakeSource) Reseq() []metrics.ReseqSnapshot              { return f.rese
 func (f fakeSource) Session() metrics.SessionSnapshot            { return f.session }
 func (f fakeSource) PeerSessions() []metrics.PeerSessionSnapshot { return f.peerSessions }
 func (f fakeSource) PeerNames() []string                         { return f.peerNames }
+func (f fakeSource) Adaptive() []metrics.AdaptiveSnapshot        { return f.adaptive }
 
 // TestBuildSnapshot_ExtendedFields exercises the G21 contract extension (T214):
 // the daemon identity, per-path bind metadata + the
@@ -489,7 +492,7 @@ func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	for _, field := range []string{`"paths":[]`, `"reseq":[]`, `"peerSessions":[]`, `"exitCapablePeers":[]`} {
+	for _, field := range []string{`"paths":[]`, `"lanes":[]`, `"transport":[]`, `"reseq":[]`, `"peerSessions":[]`, `"exitCapablePeers":[]`} {
 		if !strings.Contains(string(b), field) {
 			t.Errorf("marshalled JSON %s does not contain %q, want an empty array not null", b, field)
 		}
@@ -558,6 +561,14 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 	delete(got, "exitControlAvailable")
 	delete(got, "exitCapablePeers")
 	delete(ep0, "peer")
+	// The transport's lanes and queue counters are additive as well; this
+	// source has none.
+	for _, field := range []string{"lanes", "transport"} {
+		if list, ok := got[field].([]any); !ok || len(list) != 0 {
+			t.Fatalf("%s = %#v, want an empty array", field, got[field])
+		}
+		delete(got, field)
+	}
 
 	want := map[string]any{
 		"paths": []any{
@@ -622,5 +633,58 @@ func TestBuildSnapshotExitControlAvailableTracksRawLoopbackVerdict(t *testing.T)
 				t.Errorf("AddressingHidden = %v, want %v", snap.AddressingHidden, tc.wantHidden)
 			}
 		})
+	}
+}
+
+// TestBuildSnapshotLanesMirrorTransport pins the lane and transport objects:
+// rates in bits per second, the local path's name and the peer's path id taken
+// from the lane id, every decision counter, and the exact key sets.
+func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
+	src := fakeSource{
+		peerNames: []string{""},
+		adaptive: []metrics.AdaptiveSnapshot{{
+			Peer:      "hub",
+			LanePaths: map[bond.PathID]string{256: "5g"},
+			State: bond.Snapshot{
+				QueueDrops: 9, AdmissionDrops: 1, AQMDrops: 2, InteractiveQueueDrops: 3, InteractiveQueued: 4, Expired: 5, Duplicates: 6, CoalescedACKs: 7,
+				Paths: []bond.PathStats{{
+					Path: 256, Capacity: 130000, Rate: 125000, SendRate: 100000, DeliveryRate: 90000,
+					RTT: 60 * time.Millisecond, QueueDelay: 37 * time.Millisecond, Threshold: 30 * time.Millisecond,
+					InFlight: 5000, Window: 30000, Sent: 11, ACKed: 10, Retransmits: 12, Up: true, Discovering: true,
+					Decisions: bond.Decisions{DelaySignals: 21, LossSignals: 22, DiscoveryCongested: 23, DiscoveryPlateau: 24,
+						CapacityRemeasured: 25, CapacityDecays: 26, Pulses: 27, PulseWins: 28, PulseLosses: 29, Rediscoveries: 30},
+				}},
+			},
+		}},
+	}
+	b, err := json.Marshal(BuildSnapshot(src, Info{}, true, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Lanes     []map[string]any `json:"lanes"`
+		Transport []map[string]any `json:"transport"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	wantLane := map[string]any{
+		"peer": "hub", "path": "5g", "remotePath": float64(0), "lane": float64(256), "up": true, "discovering": true,
+		"targetBps": float64(1000000), "sendBps": float64(800000), "deliveryBps": float64(720000), "capacityBps": float64(1040000),
+		"rttSeconds": 0.06, "queueDelaySeconds": 0.037, "thresholdSeconds": 0.03,
+		"inFlightBytes": float64(5000), "windowBytes": float64(30000), "sentBytes": float64(11), "ackedBytes": float64(10), "repairs": float64(12),
+		"delaySignals": float64(21), "lossSignals": float64(22), "discoveryCongested": float64(23), "discoveryPlateau": float64(24),
+		"capacityRemeasured": float64(25), "capacityDecays": float64(26), "pulses": float64(27), "pulseWins": float64(28),
+		"pulseLosses": float64(29), "rediscoveries": float64(30),
+	}
+	if len(got.Lanes) != 1 || !reflect.DeepEqual(got.Lanes[0], wantLane) {
+		t.Errorf("lanes = %v\nwant   [%v]", got.Lanes, wantLane)
+	}
+	wantTransport := map[string]any{
+		"peer": "hub", "queueDrops": float64(9), "admissionDrops": float64(1), "aqmDrops": float64(2), "interactiveDrops": float64(3),
+		"interactiveQueued": float64(4), "expired": float64(5), "duplicates": float64(6), "coalescedAcks": float64(7),
+	}
+	if len(got.Transport) != 1 || !reflect.DeepEqual(got.Transport[0], wantTransport) {
+		t.Errorf("transport = %v\nwant        [%v]", got.Transport, wantTransport)
 	}
 }

@@ -74,6 +74,60 @@ type ReseqSnapshot struct {
 	GapFills              uint64 `json:"gapFills"`
 }
 
+// LaneSnapshot is the JSON encoding of one transport lane (bond.PathStats): a
+// local path paired with one of the peer's. Rates are in bits per second, as
+// PathSnapshot.ThroughputBps is. CapacityBps is 0 until the lane has
+// demonstrated a capacity; the target is held just below it afterwards, and
+// QueueDelaySeconds above ThresholdSeconds is what the lane takes for a queue.
+type LaneSnapshot struct {
+	Peer string `json:"peer"`
+	// Path is the local path's name, RemotePath the peer's path id the lane
+	// pairs it with, and Lane the transport's lane id (as in the `lane` label
+	// of the wanbond_adaptive_* series).
+	Path              string  `json:"path"`
+	RemotePath        uint8   `json:"remotePath"`
+	Lane              uint16  `json:"lane"`
+	Up                bool    `json:"up"`
+	Discovering       bool    `json:"discovering"`
+	TargetBps         float64 `json:"targetBps"`
+	SendBps           float64 `json:"sendBps"`
+	DeliveryBps       float64 `json:"deliveryBps"`
+	CapacityBps       float64 `json:"capacityBps"`
+	RTTSeconds        float64 `json:"rttSeconds"`
+	QueueDelaySeconds float64 `json:"queueDelaySeconds"`
+	ThresholdSeconds  float64 `json:"thresholdSeconds"`
+	InFlightBytes     int     `json:"inFlightBytes"`
+	WindowBytes       int     `json:"windowBytes"`
+	SentBytes         uint64  `json:"sentBytes"`
+	AckedBytes        uint64  `json:"ackedBytes"`
+	Repairs           uint64  `json:"repairs"`
+	// The control's decisions (bond.Decisions), cumulative.
+	DelaySignals       uint64 `json:"delaySignals"`
+	LossSignals        uint64 `json:"lossSignals"`
+	DiscoveryCongested uint64 `json:"discoveryCongested"`
+	DiscoveryPlateau   uint64 `json:"discoveryPlateau"`
+	CapacityRemeasured uint64 `json:"capacityRemeasured"`
+	CapacityDecays     uint64 `json:"capacityDecays"`
+	Pulses             uint64 `json:"pulses"`
+	PulseWins          uint64 `json:"pulseWins"`
+	PulseLosses        uint64 `json:"pulseLosses"`
+	Rediscoveries      uint64 `json:"rediscoveries"`
+}
+
+// TransportSnapshot is the JSON encoding of one peer's transport queue
+// counters (bond.Snapshot), cumulative except InteractiveQueued.
+type TransportSnapshot struct {
+	Peer              string `json:"peer"`
+	QueueDrops        uint64 `json:"queueDrops"`
+	AdmissionDrops    uint64 `json:"admissionDrops"`
+	AQMDrops          uint64 `json:"aqmDrops"`
+	InteractiveDrops  uint64 `json:"interactiveDrops"`
+	InteractiveQueued int    `json:"interactiveQueued"`
+	Expired           uint64 `json:"expired"`
+	Duplicates        uint64 `json:"duplicates"`
+	CoalescedACKs     uint64 `json:"coalescedAcks"`
+}
+
 // SessionSnapshot is the JSON encoding of the connection-scoped WG-session
 // snapshot (metrics.SessionSnapshot). LastHandshakeSeconds is the elapsed time
 // since the peer's most recent completed handshake, zero when none has ever
@@ -173,11 +227,15 @@ type Info struct {
 // Reseq entries carry a meaningful Peer, only when 2+ peers are
 // bound; on a single-bound-peer Source, Peer is "" throughout. See BuildSnapshot.
 type MonitorSnapshot struct {
-	Paths     []PathSnapshot  `json:"paths"`
-	Reseq     []ReseqSnapshot `json:"reseq"`
-	Session   SessionSnapshot `json:"session"`
-	PeerNames []string        `json:"peerNames"`
-	MultiPeer bool            `json:"multiPeer"`
+	Paths []PathSnapshot `json:"paths"`
+	// Lanes and Transport mirror metrics.Source.Adaptive(): every lane of
+	// every bound peer, and each peer's queue counters.
+	Lanes     []LaneSnapshot      `json:"lanes"`
+	Transport []TransportSnapshot `json:"transport"`
+	Reseq     []ReseqSnapshot     `json:"reseq"`
+	Session   SessionSnapshot     `json:"session"`
+	PeerNames []string            `json:"peerNames"`
+	MultiPeer bool                `json:"multiPeer"`
 	// Daemon carries the process identity (role/version/uptime, Q60).
 	Daemon DaemonSnapshot `json:"daemon"`
 	// Endpoints is the ordered hub-endpoint list with active/standby state
@@ -260,6 +318,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 	session := src.Session()
 	peerSessions := src.PeerSessions()
 	peerNames := src.PeerNames()
+	transports := src.Adaptive()
 
 	// UptimeSeconds is LIVE when a provider is supplied (R242): evaluated here on every
 	// snapshot so a long-lived client sees uptime advance rather than frozen at the
@@ -283,6 +342,8 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 
 	out := MonitorSnapshot{
 		Paths:            make([]PathSnapshot, len(paths)),
+		Lanes:            []LaneSnapshot{},
+		Transport:        make([]TransportSnapshot, len(transports)),
 		Reseq:            make([]ReseqSnapshot, len(reseqSnapshots)),
 		PeerSessions:     make([]PeerSessionSnapshot, len(peerSessions)),
 		ActiveExit:       activeExit,
@@ -357,6 +418,55 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 			ArmedWindowNanos:      r.ArmedWindow.Nanoseconds(),
 			DeadlineWakeups:       r.DeadlineWakeups,
 			GapFills:              r.GapFills,
+		}
+	}
+
+	const bitsPerByte = 8
+	for i, transport := range transports {
+		s := transport.State
+		out.Transport[i] = TransportSnapshot{
+			Peer:              transport.Peer,
+			QueueDrops:        s.QueueDrops,
+			AdmissionDrops:    s.AdmissionDrops,
+			AQMDrops:          s.AQMDrops,
+			InteractiveDrops:  s.InteractiveQueueDrops,
+			InteractiveQueued: s.InteractiveQueued,
+			Expired:           s.Expired,
+			Duplicates:        s.Duplicates,
+			CoalescedACKs:     s.CoalescedACKs,
+		}
+		for _, lane := range s.Paths {
+			d := lane.Decisions
+			out.Lanes = append(out.Lanes, LaneSnapshot{
+				Peer:               transport.Peer,
+				Path:               transport.LanePaths[lane.Path],
+				RemotePath:         uint8(lane.Path),
+				Lane:               uint16(lane.Path),
+				Up:                 lane.Up,
+				Discovering:        lane.Discovering,
+				TargetBps:          lane.Rate * bitsPerByte,
+				SendBps:            lane.SendRate * bitsPerByte,
+				DeliveryBps:        lane.DeliveryRate * bitsPerByte,
+				CapacityBps:        lane.Capacity * bitsPerByte,
+				RTTSeconds:         lane.RTT.Seconds(),
+				QueueDelaySeconds:  lane.QueueDelay.Seconds(),
+				ThresholdSeconds:   lane.Threshold.Seconds(),
+				InFlightBytes:      lane.InFlight,
+				WindowBytes:        lane.Window,
+				SentBytes:          lane.Sent,
+				AckedBytes:         lane.ACKed,
+				Repairs:            lane.Retransmits,
+				DelaySignals:       d.DelaySignals,
+				LossSignals:        d.LossSignals,
+				DiscoveryCongested: d.DiscoveryCongested,
+				DiscoveryPlateau:   d.DiscoveryPlateau,
+				CapacityRemeasured: d.CapacityRemeasured,
+				CapacityDecays:     d.CapacityDecays,
+				Pulses:             d.Pulses,
+				PulseWins:          d.PulseWins,
+				PulseLosses:        d.PulseLosses,
+				Rediscoveries:      d.Rediscoveries,
+			})
 		}
 	}
 

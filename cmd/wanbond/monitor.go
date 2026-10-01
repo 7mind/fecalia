@@ -228,6 +228,40 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 			fmt.Fprintf(&b, "    source %s  remote %s\n", p.Addressing.Source, p.Addressing.Remote)
 		}
 	}
+	if len(s.Lanes) > 0 {
+		fmt.Fprintln(&b, "\n"+monitorStyle("LANES", monitorHeadingColor, color))
+		fmt.Fprintln(&b, "  PEER / PATH #REMOTE         STATE    TARGET      SENT        CAPACITY")
+		for _, l := range s.Lanes {
+			name := fmt.Sprintf("%s #%d", l.Path, l.RemotePath)
+			if l.Peer != "" {
+				name = l.Peer + " / " + name
+			}
+			state := "HOLD"
+			switch {
+			case !l.Up:
+				state = "DOWN"
+			case l.Discovering:
+				state = "PROBING"
+			}
+			capacity := "unknown"
+			if l.CapacityBps > 0 {
+				capacity = formatRate(l.CapacityBps / 8)
+			}
+			fmt.Fprintf(&b, "  %-27.27s %s %-11s %-11s %s\n",
+				name, monitorStatus(fmt.Sprintf("%-7s", state), l.Up, color), formatRate(l.TargetBps/8), formatRate(l.SendBps/8), capacity)
+			fmt.Fprintf(&b, "    delivered %-11s queue %.0fms of %.0fms  rtt %.0fms  in flight %s of %s\n",
+				formatRate(l.DeliveryBps/8), l.QueueDelaySeconds*1000, l.ThresholdSeconds*1000, l.RTTSeconds*1000, formatBytes(uint64(l.InFlightBytes)), formatBytes(uint64(l.WindowBytes)))
+			fmt.Fprintf(&b, "    signals delay %d loss %d  probes %d won %d lost %d  estimate remeasured %d decayed %d  repairs %d\n",
+				l.DelaySignals, l.LossSignals, l.Pulses, l.PulseWins, l.PulseLosses, l.CapacityRemeasured, l.CapacityDecays, l.Repairs)
+		}
+	}
+	if len(s.Transport) > 0 {
+		fmt.Fprintln(&b, "\n"+monitorStyle("TRANSPORT QUEUE", monitorHeadingColor, color))
+		for _, q := range s.Transport {
+			fmt.Fprintf(&b, "  %-18s dropped %d (full %d, aqm %d, small %d)  expired %d  duplicates %d\n",
+				peerName(q.Peer), q.QueueDrops, q.AdmissionDrops, q.AQMDrops, q.InteractiveDrops, q.Expired, q.Duplicates)
+		}
+	}
 	if len(s.Reseq) > 0 {
 		fmt.Fprintln(&b, "\n"+monitorStyle("RESEQUENCER", monitorHeadingColor, color))
 		for _, r := range s.Reseq {

@@ -65,10 +65,8 @@ func NewServer(addr string, src Source, livenessBudgetSane *bool, logger log.Log
 	if err := reg.Register(NewCollector(src)); err != nil {
 		return nil, fmt.Errorf("metrics: register collector: %w", err)
 	}
-	if adaptive, ok := src.(AdaptiveSource); ok {
-		if err := reg.Register(newAdaptiveCollector(adaptive)); err != nil {
-			return nil, err
-		}
+	if err := reg.Register(newAdaptiveCollector(src)); err != nil {
+		return nil, fmt.Errorf("metrics: register transport collector: %w", err)
 	}
 	var livenessBudgetGauge prometheus.Gauge
 	if livenessBudgetSane != nil {

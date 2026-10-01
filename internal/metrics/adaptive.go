@@ -7,11 +7,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// AdaptiveSnapshot is one bound peer's transport state. Peer follows the same
+// rule as the other per-peer snapshots: "" on a single-bound-peer Source.
 type AdaptiveSnapshot struct {
 	Peer  string
 	State bond.Snapshot
+	// LanePaths names the local path each lane of State.Paths leaves through.
+	LanePaths map[bond.PathID]string
 }
 
+// AdaptiveSource is the part of Source the transport collector reads.
 type AdaptiveSource interface {
 	Adaptive() []AdaptiveSnapshot
 }

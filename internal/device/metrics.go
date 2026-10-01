@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
@@ -198,12 +199,24 @@ func (s *metricsSource) Reseq() []metrics.ReseqSnapshot {
 	return out
 }
 
+// Adaptive implements metrics.Source: each bound peer's transport state, with
+// its lanes named after the local path they leave through (the high byte of a
+// lane's id is that path's wire id).
 func (s *metricsSource) Adaptive() []metrics.AdaptiveSnapshot {
 	var out []metrics.AdaptiveSnapshot
 	for _, peer := range s.provider.PeerSnapshots() {
-		if peer.Adaptive != nil {
-			out = append(out, metrics.AdaptiveSnapshot{Peer: peer.Name, State: *peer.Adaptive})
+		if peer.Adaptive == nil {
+			continue
 		}
+		names := make(map[uint8]string, len(peer.Paths))
+		for _, path := range peer.Paths {
+			names[path.ID] = path.Name
+		}
+		lanes := make(map[bond.PathID]string, len(peer.Adaptive.Paths))
+		for _, lane := range peer.Adaptive.Paths {
+			lanes[lane.Path] = names[uint8(lane.Path>>8)]
+		}
+		out = append(out, metrics.AdaptiveSnapshot{Peer: peer.Name, State: *peer.Adaptive, LanePaths: lanes})
 	}
 	return out
 }

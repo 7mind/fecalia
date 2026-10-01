@@ -3098,7 +3098,9 @@ func (m *Multipath) PeerReflect(peerIdx int, raw []byte) ([]byte, error) {
 // the Estimate/State — it does NOT compute a rate here (the adapter derives throughput
 // from the byte-counter delta across scrapes).
 type PathTraffic struct {
-	Name     string
+	Name string
+	// ID is the path's stable wire id; the high byte of each of its lanes.
+	ID       uint8
 	TxBytes  uint64
 	RxBytes  uint64
 	Estimate telemetry.Estimate
@@ -3197,6 +3199,7 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 			// synchronized. All are read here, after m.mu is released.
 			pt := PathTraffic{
 				Name:              pr.pp.name,
+				ID:                pr.pp.id,
 				TxBytes:           pr.tx,
 				RxBytes:           pr.rx,
 				ProbeSendErrors:   pr.probeErrs,
