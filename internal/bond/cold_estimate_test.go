@@ -34,6 +34,12 @@ func TestSenderLimitedDiscoveryKeepsTheEstimate(t *testing.T) {
 	if !first.startup || first.control.capacity != 0 || first.rate >= 1.5e6 {
 		t.Errorf("a first discovery met by a sender-limited signal: discovering %v, estimate %.0f, target %.0f B/s", first.startup, first.control.capacity, first.rate)
 	}
+	// It gives way by a tenth. Cut to what the lane delivers, it fell to the
+	// floor at the sender's first datagrams, the sender then waited for the
+	// lane, and the next signal ended discovery there.
+	if first.rate < 0.89*1.5e6 {
+		t.Errorf("a sender-limited signal cut a discovering lane's target from 1500000 to %.0f B/s", first.rate)
+	}
 
 	// A lane that limits the sender has shown its capacity.
 	limiting := starting(1.16e6)
@@ -49,5 +55,53 @@ func TestSenderLimitedDiscoveryKeepsTheEstimate(t *testing.T) {
 	policed.congested(now, true, false)
 	if got := policed.control.capacity; got != 60e3 {
 		t.Errorf("material loss ended discovery with an estimate of %.0f B/s, delivered 60000", got)
+	}
+}
+
+// A probe that draws no congestion signal raises the estimate. On a path
+// that drops what it cannot forward, the loss a probe caused shows later, so
+// there a win counts only after thirty more datagrams; the next probe did not
+// wait for that, and below about 170 kB/s every probe replaced the last
+// before it was counted. No win was, the gain stayed at a twentieth and the
+// lane never returned to discovery. Production, 2026-10-01: the mobile
+// downlink lane, cold, ended its first discovery at about 90 kB/s and held a
+// 15 s Speedtest download at 1.2 Mbit/s (50 Mbit/s lane); the uplink lane at
+// 16-25 kB/s ran ten probes in eight seconds, none counted won. A lane that
+// has shown no material loss lately does not wait for the thirty datagrams.
+func TestProbeWinsCountOnASlowLane(t *testing.T) {
+	start := time.Unix(100, 0)
+	probing := func(policed bool) (*lane, time.Duration) {
+		now := start
+		p := &lane{rate: capacityHold * 90e3, deliveryRate: 85e3, sendRate: 85e3, rtt: 60 * time.Millisecond}
+		p.control.capacity = 90e3
+		if policed {
+			p.droppedAt = now
+		}
+		p.schedulePulse(now)
+		p.control.nextPulse = now
+		var sent float64
+		for step := 0; step < 200 && !p.startup; step++ {
+			now = now.Add(50 * time.Millisecond)
+			for sent += 65 * 0.05; sent >= 1; sent-- {
+				p.seq++
+			}
+			p.sendRate = p.rate
+			p.holdOrPulse(now, true)
+		}
+		return p, now.Sub(start)
+	}
+
+	p, elapsed := probing(false)
+	t.Logf("no loss seen: %d probes, %d won, estimate %.0f B/s, discovering %v after %s", p.decisions.Pulses, p.decisions.PulseWins, p.control.capacity, p.startup, elapsed)
+	if p.decisions.PulseWins < pulseWinsToLeave || !p.startup || elapsed > 4*time.Second {
+		t.Errorf("%d probes without a congestion signal in %s: %d counted won, back in discovery: %v", p.decisions.Pulses, elapsed, p.decisions.PulseWins, p.startup)
+	}
+
+	// A path that polices keeps the wait: probing it costs datagrams
+	// (`TestPolicedLaneIsNotOverdriven`).
+	q, _ := probing(true)
+	t.Logf("answered with loss lately: %d probes, %d won, estimate %.0f B/s, discovering %v", q.decisions.Pulses, q.decisions.PulseWins, q.control.capacity, q.startup)
+	if q.startup {
+		t.Errorf("a lane that answered a probe with loss returned to discovery after %d probes", q.decisions.Pulses)
 	}
 }

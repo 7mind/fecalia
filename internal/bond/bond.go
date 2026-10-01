@@ -285,6 +285,7 @@ type lane struct {
 	floorTested        time.Time
 	floorTestEvery     time.Duration
 	stalled            bool
+	droppedAt          time.Time // when the path last showed material loss
 	lastTransmit       time.Time
 	lastPayload        time.Time
 	attempts           map[uint64]attempt

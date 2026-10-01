@@ -23,6 +23,7 @@ const (
 	// A probe that ends in loss found a path that drops rather than queues;
 	// the next waits twice as long, up to this, until one ends without loss.
 	maxPulseInterval = 16 * time.Second
+	policingMemory   = time.Minute // how long a path that showed material loss counts as one that polices
 	// The least time between two tests of a lane's transit floor doubles with
 	// every test that finds a queue, up to the longest, and starts again when
 	// one finds the floor moved: a lane whose delay keeps turning out to be a
@@ -219,6 +220,7 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 		}
 		if lost {
 			p.decisions.LossSignals++
+			p.droppedAt = now
 		}
 		p.congested(now, lost, laneLimited)
 	case sampled:
@@ -290,9 +292,12 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// nothing yet: what it delivers measures the sender. Taken for its
 		// capacity, that held the target at the sender's first datagrams,
 		// and probes then raised it by a twentieth at a time. The target
-		// gives way to the delay and discovery goes on
-		// (`TestSenderLimitedDiscoveryKeepsTheEstimate`).
-		p.rate = math.Max(minimumRate, p.cut(false))
+		// gives way to the delay by a tenth and discovery goes on
+		// (`TestSenderLimitedDiscoveryKeepsTheEstimate`). Cut to what the
+		// lane delivers, the sender's first datagrams, it fell to the floor;
+		// the sender then waited for the lane, and the next signal ended
+		// discovery there.
+		p.rate = math.Max(minimumRate, 0.9*p.rate)
 	case p.startup || c.capacity == 0:
 		// Discovery saturated the path, so recent delivery measures capacity,
 		// unless the sender was the limit: then it measures the sender, and
@@ -464,10 +469,21 @@ func (p *lane) floorTestable(now time.Time, queued time.Duration) bool {
 		now.Sub(p.floorTested) >= max(floorTestInterval, p.floorTestEvery)
 }
 
+// polices reports that the path answered with material loss lately: it
+// drops what it cannot forward instead of queueing it.
+func (p *lane) polices(now time.Time) bool {
+	return !p.droppedAt.IsZero() && now.Sub(p.droppedAt) < policingMemory
+}
+
 // pulseSettled reports that loss the last pulse may have caused would have
-// shown by now.
+// shown by now. On a path that polices that takes thirty datagrams more. The
+// next pulse does not wait for them, and below about 170 kB/s every pulse
+// replaced the last before it counted: a lane left with a low estimate rose
+// by a twentieth per pulse and never returned to discovery
+// (`TestProbeWinsCountOnASlowLane`). A path that has shown no loss answers
+// with delay, which the pulse's verdict already waited for.
 func (p *lane) pulseSettled(now time.Time) bool {
-	return now.Sub(p.control.wonAt) >= lossSettle+p.rtt && p.seq-p.control.wonSeq >= pulseConfirmDatagrams
+	return now.Sub(p.control.wonAt) >= lossSettle+p.rtt && (p.seq-p.control.wonSeq >= pulseConfirmDatagrams || !p.polices(now))
 }
 
 func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
